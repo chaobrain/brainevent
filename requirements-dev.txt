@@ -1,0 +1,7 @@
+-r requirements.txt
+numba
+warp-lang
+
+# test requirements
+pytest
+absl-py
