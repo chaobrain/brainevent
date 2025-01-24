@@ -17,17 +17,12 @@ from __future__ import annotations
 
 from typing import Union, Callable, Optional
 
-import brainstate as bst
 import brainunit as u
 import jax
-import jax.experimental.pallas as pl
 import jax.numpy as jnp
-import numpy as np
-from jax.interpreters import ad
 
-from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_numba import numba_environ, NumbaKernelGenerator
-from ._xla_custom_op_pallas import PallasKernelGenerator
+import brainstate as bst
+from ._vector_event import event_liner_p_call
 
 __all__ = [
     'Linear',

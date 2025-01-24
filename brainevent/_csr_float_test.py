@@ -12,10 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-# -*- coding: utf-8 -*-
 
 
-import brainunit as u
 import jax
 import jax.numpy as jnp
 import unittest
@@ -27,111 +25,45 @@ from ._csr_test_util import _get_csr, vector_csr, matrix_csr, csr_vector, csr_ma
 
 # bst.environ.set(platform='cpu')
 
-class TestCSR(unittest.TestCase):
-    def test_event_homo_bool(self):
-        for dat in [1., 2., 3.]:
-            mask = (bst.random.rand(10, 20) < 0.1).astype(float) * dat
-            csr = u.sparse.CSR.fromdense(mask)
-            csr = brainevent.CSR((dat, csr.indices, csr.indptr), shape=mask.shape)
-
-            v = brainevent.EventArray(bst.random.rand(20) < 0.5)
-            self.assertTrue(
-                u.math.allclose(
-                    mask.astype(float) @ v.data.astype(float),
-                    csr @ v
-                )
-            )
-
-            v = brainevent.EventArray(bst.random.rand(10) < 0.5)
-            self.assertTrue(
-                u.math.allclose(
-                    v.data.astype(float) @ mask.astype(float),
-                    v @ csr
-                )
-            )
-
-    def test_event_homo_heter(self):
-        mat = bst.random.rand(10, 20)
-        mask = (bst.random.rand(10, 20) < 0.1) * mat
-        csr = u.sparse.CSR.fromdense(mask)
-        csr = brainevent.CSR((csr.data, csr.indices, csr.indptr), shape=mask.shape)
-
-        v = brainevent.EventArray(bst.random.rand(20) < 0.5)
-        self.assertTrue(
-            u.math.allclose(
-                mask.astype(float) @ v.data.astype(float),
-                csr @ v
-            )
-        )
-
-        v = brainevent.EventArray(bst.random.rand(10) < 0.5)
-        self.assertTrue(
-            u.math.allclose(
-                v.data.astype(float) @ mask.astype(float),
-                v @ csr
-            )
-        )
-
-    def test_event_heter_float_as_bool(self):
-        mat = bst.random.rand(10, 20)
-        mask = (mat < 0.1).astype(float) * mat
-        csr = u.sparse.CSR.fromdense(mask)
-        csr = brainevent.CSR((csr.data, csr.indices, csr.indptr), shape=mask.shape)
-
-        v = brainevent.EventArray((bst.random.rand(20) < 0.5).astype(float))
-        self.assertTrue(
-            u.math.allclose(
-                mask.astype(float) @ v.data.astype(float),
-                csr @ v
-            )
-        )
-
-        v = brainevent.EventArray((bst.random.rand(10) < 0.5).astype(float))
-        self.assertTrue(
-            u.math.allclose(
-                v.data.astype(float) @ mask.astype(float),
-                v @ csr
-            )
-        )
-
-
 class TestVectorCSR(unittest.TestCase):
     def test_vector_csr(self, ):
         m, n = 20, 40
-        x = bst.random.rand(m) < 0.1
+        x = bst.random.rand(m)
         indptr, indices = _get_csr(m, n, 0.1)
 
         for homo_w in [True, False]:
             print(f'homo_w = {homo_w}')
             data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
             csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
-            y = brainevent.EventArray(x) @ csr
+            y = x @ csr
             y2 = vector_csr(x, csr.data, indices, indptr, [m, n])
             self.assertTrue(jnp.allclose(y, y2))
 
     def test_vector_csr_vmap_vector(self):
         n_batch, m, n = 10, 20, 40
-        xs = bst.random.rand(n_batch, m) < 0.1
+        xs = bst.random.rand(n_batch, m)
         indptr, indices = _get_csr(m, n, 0.1)
 
         for homo_w in [True, False]:
             data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
             csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
-            y = jax.vmap(lambda x: brainevent.EventArray(x) @ csr)(xs)
+            y = jax.vmap(lambda x: x @ csr)(xs)
             y2 = jax.vmap(lambda x: vector_csr(x, csr.data, indices, indptr, [m, n]))(xs)
+
+            print(y.shape, y2.shape)
             self.assertTrue(jnp.allclose(y, y2))
 
 
 class TestMatrixCSR(unittest.TestCase):
     def test_matrix_csr(self):
         k, m, n = 10, 20, 40
-        x = bst.random.rand(k, m) < 0.1
+        x = bst.random.rand(k, m)
         indptr, indices = _get_csr(m, n, 0.1)
 
         for homo_w in [True, False]:
             data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
             csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
-            y = brainevent.EventArray(x) @ csr
+            y = x @ csr
             y2 = matrix_csr(x, csr.data, indices, indptr, [m, n])
             self.assertTrue(jnp.allclose(y, y2))
 
@@ -139,13 +71,13 @@ class TestMatrixCSR(unittest.TestCase):
 class TestCSRVector(unittest.TestCase):
     def test_csr_vector(self):
         m, n = 20, 40
-        v = bst.random.rand(n) < 0.1
+        v = bst.random.rand(n)
         indptr, indices = _get_csr(m, n, 0.1)
 
         for homo_w in [True, False]:
             data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
             csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
-            y = csr @ brainevent.EventArray(v)
+            y = csr @ v
             y2 = csr_vector(v, csr.data, indices, indptr, [m, n])
             self.assertTrue(jnp.allclose(y, y2))
 
@@ -153,13 +85,13 @@ class TestCSRVector(unittest.TestCase):
 class TestCSRMatrix(unittest.TestCase):
     def test_csr_matrix(self):
         m, n, k = 20, 40, 10
-        matrix = bst.random.rand(n, k) < 0.1
+        matrix = bst.random.rand(n, k)
         indptr, indices = _get_csr(m, n, 0.1)
 
         for homo_w in [True, False]:
             data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
             csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
-            y = csr @ brainevent.EventArray(matrix)
+            y = csr @ matrix
             y2 = csr_matrix(matrix, csr.data, indices, indptr, [m, n])
             self.assertTrue(jnp.allclose(y, y2))
 

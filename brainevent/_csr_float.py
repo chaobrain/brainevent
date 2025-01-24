@@ -58,7 +58,7 @@ def _csr_matvec(
     """
     data, unitd = u.split_mantissa_unit(data)
     v, unitv = u.split_mantissa_unit(v)
-    res = csrmv_p_call(data, indices, indptr, v, shape=shape, transpose=transpose)
+    res = csrmv_p_call(data, indices, indptr, v, shape=shape, transpose=transpose)[0]
     return u.maybe_decimal(res * unitd * unitv)
 
 
@@ -70,7 +70,6 @@ def _csr_matmat(
     *,
     shape: bst.typing.Shape,
     transpose: bool = False,
-    float_as_event: bool = True,
 ) -> Union[jax.Array, u.Quantity]:
     """
     Product of CSR sparse matrix and a dense matrix.
@@ -98,7 +97,6 @@ def _csr_matmat(
         B,
         shape=shape,
         transpose=transpose,
-        float_as_event=float_as_event,
     )[0]
     return u.maybe_decimal(res * (unitd * unitb))
 
@@ -463,7 +461,6 @@ def csrmm_cpu_kernel_generator(
 
 
 def csrmm_gpu_kernel_generator(
-    float_as_event: bool,
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
@@ -552,6 +549,46 @@ def csrmm_gpu_kernel_generator(
                 posts[i, k] = r
 
     return mm
+
+
+def csrmm_jvp_left(data_dot, data, indices, indptr, B, *, shape, transpose, **kwargs):
+    return [
+        _csr_matmat(
+            data_dot,
+            indices,
+            indptr,
+            B,
+            shape=shape,
+            transpose=transpose
+        )
+    ]
+
+
+def csrmm_jvp_right(B_dot, data, indices, indptr, B, *, shape, transpose, **kwargs):
+    return [
+        _csr_matmat(
+            data,
+            indices,
+            indptr,
+            B_dot,
+            shape=shape,
+            transpose=transpose
+        )
+    ]
+
+
+def csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose, **kwargs):
+    assert not ad.is_undefined_primal(indices)
+    assert not ad.is_undefined_primal(indptr)
+
+    if ad.is_undefined_primal(B):
+        dB = _csr_matmat(data, indices, indptr, ct, shape=shape, transpose=not transpose)
+        return data, indices, indptr, dB
+    else:
+        B = jnp.asarray(B)
+        row, col = _csr_to_coo(indices, indptr)
+        d_data = (ct[row] * B[col]).sum(axis=1)
+        return d_data, indices, indptr, B
 
 
 def csrmm_batching(args, axes, **kwargs):
@@ -653,4 +690,6 @@ csrmm_p = XLACustomKernel(
         input_output_aliases={4: 0}
     ),
 )
+csrmm_p.defjvp(csrmm_jvp_left, None, None, csrmm_jvp_right)
+csrmm_p.def_transpose_rule(csrmm_transpose_rule)
 csrmm_p.def_batching_rule(csrmm_batching)
