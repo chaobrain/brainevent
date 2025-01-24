@@ -81,7 +81,7 @@ class Linear(bst.nn.Module):
         return event_linear(spk, weight, block_size=self.block_size, float_as_event=self.float_as_event)
 
 
-def event_linear(spk, weight, *, block_size, float_as_event) -> jax.Array | u.Quantity:
+def event_linear(spk, weight, *, block_size, float_as_event) -> Union[jax.Array, u.Quantity]:
     """
     The event-driven linear computation.
 

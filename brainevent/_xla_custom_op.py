@@ -123,7 +123,7 @@ class XLACustomKernel:
         self,
         name: str,
         cpu_kernel: NumbaKernelGenerator = None,
-        gpu_kernel: PallasKernelGenerator | WarpKernelGenerator = None,
+        gpu_kernel: Union[PallasKernelGenerator, WarpKernelGenerator] = None,
         batching_translation: Callable = None,
         jvp_translation: Callable = None,
         transpose_translation: Callable = None,
@@ -199,7 +199,7 @@ class XLACustomKernel:
             raise TypeError('The `kernel_generator` should be an instance of `NumbaKernel`.')
         register_numba_mlir_cpu_translation_rule(self.primitive, kernel_generator)
 
-    def def_gpu_kernel(self, kernel_generator: PallasKernelGenerator | WarpKernelGenerator):
+    def def_gpu_kernel(self, kernel_generator: Union[PallasKernelGenerator, WarpKernelGenerator]):
         """
         Define the GPU kernel using the JAX Pallas or Warp.
         """

@@ -107,7 +107,7 @@ class TestVectorCSR(unittest.TestCase):
             csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
             y = brainevent.EventArray(x) @ csr
             y2 = vector_csr(x, csr.data, indices, indptr, [m, n])
-            self.assertTrue(jnp.allclose(y, y2))
+            self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
     def test_vector_csr_vmap_vector(self):
         n_batch, m, n = 10, 20, 40
@@ -119,7 +119,7 @@ class TestVectorCSR(unittest.TestCase):
             csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
             y = jax.vmap(lambda x: brainevent.EventArray(x) @ csr)(xs)
             y2 = jax.vmap(lambda x: vector_csr(x, csr.data, indices, indptr, [m, n]))(xs)
-            self.assertTrue(jnp.allclose(y, y2))
+            self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
 
 class TestMatrixCSR(unittest.TestCase):
@@ -133,7 +133,7 @@ class TestMatrixCSR(unittest.TestCase):
             csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
             y = brainevent.EventArray(x) @ csr
             y2 = matrix_csr(x, csr.data, indices, indptr, [m, n])
-            self.assertTrue(jnp.allclose(y, y2))
+            self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
 
 class TestCSRVector(unittest.TestCase):

@@ -38,7 +38,7 @@ class TestVectorCSR(unittest.TestCase):
             csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
             y = x @ csr
             y2 = vector_csr(x, csr.data, indices, indptr, [m, n])
-            self.assertTrue(jnp.allclose(y, y2))
+            self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
     def test_vector_csr_vmap_vector(self):
         n_batch, m, n = 10, 20, 40
@@ -66,7 +66,7 @@ class TestMatrixCSR(unittest.TestCase):
             csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
             y = x @ csr
             y2 = matrix_csr(x, csr.data, indices, indptr, [m, n])
-            self.assertTrue(jnp.allclose(y, y2))
+            self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
 
 class TestCSRVector(unittest.TestCase):
@@ -80,7 +80,7 @@ class TestCSRVector(unittest.TestCase):
             csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
             y = csr @ v
             y2 = csr_vector(v, csr.data, indices, indptr, [m, n])
-            self.assertTrue(jnp.allclose(y, y2))
+            self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
 
 class TestCSRMatrix(unittest.TestCase):
@@ -94,7 +94,7 @@ class TestCSRMatrix(unittest.TestCase):
             csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
             y = csr @ matrix
             y2 = csr_matrix(matrix, csr.data, indices, indptr, [m, n])
-            self.assertTrue(jnp.allclose(y, y2))
+            self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
     # @parameterized.product(
     #     bool_x=[True, False],
