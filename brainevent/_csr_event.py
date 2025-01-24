@@ -24,7 +24,7 @@ from brainunit.sparse._csr import _csr_to_coo
 from jax.interpreters import ad
 
 import brainstate as bst
-from ._csr_float import _csr_matvec
+from ._csr_float import _csr_matvec, _csr_matmat
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
@@ -1058,6 +1058,46 @@ def event_csrmm_gpu_kernel_generator(
     return mm
 
 
+def csrmm_jvp_left(data_dot, data, indices, indptr, B, *, shape, transpose, **kwargs):
+    return [
+        _csr_matmat(
+            data_dot,
+            indices,
+            indptr,
+            B,
+            shape=shape,
+            transpose=transpose
+        )
+    ]
+
+
+def csrmm_jvp_right(B_dot, data, indices, indptr, B, *, shape, transpose, **kwargs):
+    return [
+        _csr_matmat(
+            data,
+            indices,
+            indptr,
+            B_dot,
+            shape=shape,
+            transpose=transpose
+        )
+    ]
+
+
+def csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose, **kwargs):
+    assert not ad.is_undefined_primal(indices)
+    assert not ad.is_undefined_primal(indptr)
+
+    if ad.is_undefined_primal(B):
+        dB = _csr_matmat(data, indices, indptr, ct, shape=shape, transpose=not transpose)
+        return data, indices, indptr, dB
+    else:
+        B = jnp.asarray(B)
+        row, col = _csr_to_coo(indices, indptr)
+        d_data = (ct[row] * B[col]).sum(axis=1)
+        return d_data, indices, indptr, B
+
+
 def event_csrmm_batching(args, axes, **kwargs):
     if tuple(axes) == (None, None, None, 0, None):
         assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
@@ -1162,4 +1202,6 @@ event_csrmm_p = XLACustomKernel(
         input_output_aliases={4: 0}
     ),
 )
+event_csrmm_p.defjvp(csrmm_jvp_left, None, None, csrmm_jvp_right)
+event_csrmm_p.def_transpose_rule(csrmm_transpose_rule)
 event_csrmm_p.def_batching_rule(event_csrmm_batching)

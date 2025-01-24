@@ -19,7 +19,7 @@ import ctypes
 import dataclasses
 import functools
 import importlib.util
-from typing import Callable, Sequence, Dict
+from typing import Callable, Sequence, Dict, Union
 
 import jax
 import numpy as np
@@ -73,9 +73,9 @@ class WarpKernelGenerator:
     __module__ = 'brainevent'
 
     generator: Callable[..., Callable]
-    dim: int | Sequence[int] | Callable[..., Sequence[int]] | Callable[..., int]
-    input_output_aliases: Dict[int, int] | Callable[..., Dict[int, int]] | None = None
-    block_dim: int | Callable[..., int] | None = None
+    dim: Union[int, Sequence[int], Callable[..., Sequence[int]], Callable[..., int]]
+    input_output_aliases: Union[Dict[int, int], Callable[..., Dict[int, int]], None] = None
+    block_dim: Union[int, Callable[..., int], None] = None
 
     def generate_kernel(self, **kwargs):
         return self.generator(**kwargs)

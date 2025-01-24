@@ -21,7 +21,7 @@ import functools
 import importlib.util
 import threading
 from contextlib import contextmanager
-from typing import Callable, Dict
+from typing import Callable, Dict, Union
 
 import jax
 from jax.interpreters import mlir
@@ -57,7 +57,7 @@ numba_environ = EnvironContext()
 
 @contextmanager
 def set_numba_environ(
-    parallel_if_possible: int | bool = None,
+    parallel_if_possible: Union[int, bool] = None,
     **kwargs
 ) -> None:
     """
