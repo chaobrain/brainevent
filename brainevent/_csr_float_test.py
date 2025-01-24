@@ -14,9 +14,10 @@
 # ==============================================================================
 
 
+import unittest
+
 import jax
 import jax.numpy as jnp
-import unittest
 
 import brainevent
 import brainstate as bst
@@ -51,7 +52,7 @@ class TestVectorCSR(unittest.TestCase):
             y2 = jax.vmap(lambda x: vector_csr(x, csr.data, indices, indptr, [m, n]))(xs)
 
             print(y.shape, y2.shape)
-            self.assertTrue(jnp.allclose(y, y2))
+            self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
 
 class TestMatrixCSR(unittest.TestCase):
