@@ -45,7 +45,7 @@ class PallasKernelGenerator:
     """
     __module__ = 'brainevent'
     generator: Callable[..., Callable]
-    block_dim: Union[int, Callable[..., int]]
+    block_dim: Union[int, Callable[..., int]] = None
     input_output_aliases: Union[Dict[int, int], Callable[..., Dict[int, int]], None] = None
 
     def generate_kernel(self, **kwargs):
@@ -56,6 +56,8 @@ class PallasKernelGenerator:
             return self.block_dim(**kwargs)
         elif isinstance(self.block_dim, int):
             return self.block_dim
+        elif self.block_dim is None:
+            return None
         else:
             raise ValueError(f"Invalid block_dim: {self.block_dim}")
 
