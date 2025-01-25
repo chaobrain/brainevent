@@ -16,7 +16,7 @@
 # -*- coding: utf-8 -*-
 
 import functools
-from typing import Callable, Sequence, Tuple, Protocol, Union, Optional, Any
+from typing import Callable, Sequence, Tuple, Protocol, Union, Optional
 
 import jax
 import numpy as np
@@ -41,8 +41,6 @@ if jax.__version_info__ < (0, 4, 38):
     from jax.core import Primitive
 else:
     from jax.extend.core import Primitive
-
-PyTree = Any
 
 __all__ = [
     'XLACustomKernel',
@@ -178,13 +176,13 @@ class XLACustomKernel:
     def _abstract_eval(self, *ins, outs: Sequence[jax.core.ShapedArray], **kwargs):
         return tuple(outs)
 
-    def call(self, *ins, outs: PyTree[ShapeDtype], **kwargs, ):
+    def call(self, *ins, outs: Union[ShapeDtype, Sequence[ShapeDtype]], **kwargs, ):
         """
         Call the custom operator.
         """
         return self.__call__(*ins, outs=outs, **kwargs, )
 
-    def bind(self, *ins, outs: PyTree[ShapeDtype], **kwargs, ):
+    def bind(self, *ins, outs: Union[ShapeDtype, Sequence[ShapeDtype]], **kwargs, ):
         """
         Call the custom operator.
         """
@@ -193,7 +191,7 @@ class XLACustomKernel:
     def __call__(
         self,
         *ins,
-        outs: PyTree[ShapeDtype],
+        outs: Union[ShapeDtype, Sequence[ShapeDtype]],
         **kwargs,
     ):
         """
