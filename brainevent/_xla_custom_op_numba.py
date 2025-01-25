@@ -102,9 +102,6 @@ class NumbaKernelGenerator:
         return self.generator(**kwargs)
 
 
-
-
-
 def _shape_to_layout(shape):
     return tuple(range(len(shape) - 1, -1, -1))
 

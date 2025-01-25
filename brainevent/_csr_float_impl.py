@@ -14,7 +14,7 @@
 # ==============================================================================
 
 
-from typing import Callable, Union
+from typing import Callable, Union, Sequence
 
 import brainunit as u
 import jax
@@ -22,7 +22,6 @@ import jax.numpy as jnp
 from brainunit.sparse._csr import _csr_to_coo
 from jax.interpreters import ad
 
-import brainstate as bst
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
@@ -36,7 +35,7 @@ def _csr_matvec(
     indptr: jax.Array,
     v: Union[jax.Array, u.Quantity],
     *,
-    shape: bst.typing.Shape,
+    shape: Sequence[int],
     transpose: bool = False
 ) -> Union[jax.Array, u.Quantity]:
     """
@@ -68,7 +67,7 @@ def _csr_matmat(
     indptr: jax.Array,
     B: Union[jax.Array, u.Quantity],
     *,
-    shape: bst.typing.Shape,
+    shape: Sequence[int],
     transpose: bool = False,
 ) -> Union[jax.Array, u.Quantity]:
     """
@@ -362,7 +361,7 @@ def csrmv_p_call(
     indptr,
     v,
     *,
-    shape: bst.typing.Shape,
+    shape: Sequence[int],
     transpose: bool,
 ):
     if jnp.ndim(weights) == 0:
@@ -647,7 +646,7 @@ def csrmm_p_call(
     indptr,
     B,
     *,
-    shape: bst.typing.Shape,
+    shape: Sequence[int],
     transpose: bool,
 ):
     if jnp.ndim(weights) == 0:

@@ -19,8 +19,8 @@ import jax.numpy
 import jax.numpy as jnp
 from absl.testing import parameterized
 
-import brainstate as bst
 import brainevent
+import brainstate as bst
 
 
 class TestFixedProbCSR(parameterized.TestCase):
