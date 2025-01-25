@@ -66,4 +66,22 @@ def register_pallas_mlir_gpu_translation_rule(
         multiple_results=True
     )
     mlir.register_lowering(primitive, lower, platform='cuda')
+
+
+def register_pallas_mlir_tpu_translation_rule(
+    primitive: Primitive,
+    kernel_generator: PallasKernelGenerator,
+):
+    """
+    Register the JAX Pallas GPU translation rule for the custom operator.
+
+    Args:
+        primitive: Primitive. The custom operator.
+        kernel_generator: Callable. The function defines the computation on GPU backend.
+            It can be a function to generate the JAX Pallas kernel.
+    """
+    lower = mlir.lower_fun(
+        lambda *args, **kwargs: kernel_generator.generate_kernel(**kwargs)(*args),
+        multiple_results=True
+    )
     mlir.register_lowering(primitive, lower, platform='tpu')

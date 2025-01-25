@@ -13,17 +13,4 @@
 # limitations under the License.
 # ==============================================================================
 
-
-__all__ = [
-    'EventArray',
-    'EventScalar',
-]
-
-
-class EventArray:
-    def __init__(self, data, *args, **kwargs):
-        self.data = data
-
-
-class EventScalar(EventArray):
-    pass
+# -*- coding: utf-8 -*-

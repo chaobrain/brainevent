@@ -15,10 +15,11 @@
 # -*- coding: utf-8 -*-
 
 
+import unittest
+
 import brainunit as u
 import jax
 import jax.numpy as jnp
-import unittest
 
 import brainevent
 import brainstate as bst

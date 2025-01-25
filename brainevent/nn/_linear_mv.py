@@ -22,7 +22,7 @@ import jax
 import jax.numpy as jnp
 
 import brainstate as bst
-from ._vector_event import event_liner_p_call
+from brainevent._vector_event_impl import event_liner_p_call
 
 __all__ = [
     'Linear',
