@@ -17,7 +17,7 @@
 
 
 import dataclasses
-from typing import Callable
+from typing import Callable, Union, Dict
 
 import jax
 from jax.interpreters import mlir
@@ -41,12 +41,23 @@ class PallasKernelGenerator:
         generator: Callable. The function defines the computation on GPU/TPU backend using JAX Pallas.
             See the `JAX Pallas documentation <https://jax.readthedocs.io/en/latest/pallas/quickstart.html>`_
             for more details .
+        block_dim: Union[int, Callable[..., int]. The block dimension of the JAX Pallas kernel.
     """
     __module__ = 'brainevent'
     generator: Callable[..., Callable]
+    block_dim: Union[int, Callable[..., int]]
+    input_output_aliases: Union[Dict[int, int], Callable[..., Dict[int, int]], None] = None
 
     def generate_kernel(self, **kwargs):
         return self.generator(**kwargs)
+
+    def get_block_dim(self, **kwargs):
+        if callable(self.block_dim):
+            return self.block_dim(**kwargs)
+        elif isinstance(self.block_dim, int):
+            return self.block_dim
+        else:
+            raise ValueError(f"Invalid block_dim: {self.block_dim}")
 
 
 def register_pallas_mlir_gpu_translation_rule(
@@ -62,7 +73,10 @@ def register_pallas_mlir_gpu_translation_rule(
             It can be a function to generate the JAX Pallas kernel.
     """
     lower = mlir.lower_fun(
-        lambda *args, **kwargs: kernel_generator.generate_kernel(**kwargs)(*args),
+        lambda *args, **kwargs: kernel_generator.generate_kernel(
+            block_dim=kernel_generator.get_block_dim(**kwargs),
+            **kwargs
+        )(*args),
         multiple_results=True
     )
     mlir.register_lowering(primitive, lower, platform='cuda')
@@ -81,7 +95,10 @@ def register_pallas_mlir_tpu_translation_rule(
             It can be a function to generate the JAX Pallas kernel.
     """
     lower = mlir.lower_fun(
-        lambda *args, **kwargs: kernel_generator.generate_kernel(**kwargs)(*args),
+        lambda *args, **kwargs: kernel_generator.generate_kernel(
+            block_dim=kernel_generator.get_block_dim(**kwargs),
+            **kwargs
+        )(*args),
         multiple_results=True
     )
     mlir.register_lowering(primitive, lower, platform='tpu')

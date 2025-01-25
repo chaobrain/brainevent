@@ -29,8 +29,8 @@ model the brain dynamics in a more efficient and biologically plausible way.
 
 Particularly, it implements the following commonly used data structures for event-driven computation:
 
-- ``EventVector``: a vector of events, $v$.
-- ``EventMatrix``: a matrix of events, $M$.
+- ``EventVector``: a vector of events, $\mathbf{v}$.
+- ``EventMatrix``: a matrix of events, $\mathbf{M}$.
 - ``COO``: a sparse matrix in COO format for sparse and event-driven computation.
 - ``CSR``: a sparse matrix in CSR format for sparse and event-driven computation.
 - ``CSC``: a sparse matrix in CSC format for sparse and event-driven computation.

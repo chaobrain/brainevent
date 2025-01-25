@@ -109,7 +109,7 @@ def csrmv_cpu_kernel_generator(
 
     if weight_info.size == 1:
         if transpose:
-            @numba.njit(**numba_environ.numba_setting)
+            @numba.njit(**numba_environ.setting)
             def mv(weights, indices, indptr, v, _, posts):
                 w = weights[0]
                 for i in range(v.shape[0]):
@@ -119,7 +119,7 @@ def csrmv_cpu_kernel_generator(
 
 
         else:
-            @numba.njit(**numba_environ.numba_setting)
+            @numba.njit(**numba_environ.setting)
             def mv(weights, indices, indptr, v, _, posts):
                 w = weights[0]
                 for i in range(indptr.shape[0] - 1):
@@ -130,7 +130,7 @@ def csrmv_cpu_kernel_generator(
 
     else:
         if transpose:
-            @numba.njit(**numba_environ.numba_setting)
+            @numba.njit(**numba_environ.setting)
             def mv(weights, indices, indptr, v, _, posts):
                 for i in range(v.shape[0]):
                     sp = v[i]
@@ -138,7 +138,7 @@ def csrmv_cpu_kernel_generator(
                         posts[indices[j]] += weights[j] * sp
 
         else:
-            @numba.njit(**numba_environ.numba_setting)
+            @numba.njit(**numba_environ.setting)
             def mv(weights, indices, indptr, v, _, posts):
                 for i in range(indptr.shape[0] - 1):
                     r = 0.
@@ -414,7 +414,7 @@ def csrmm_cpu_kernel_generator(
     if weight_info.size == 1:
         if transpose:
             # csr.T @ B
-            @numba.njit(**numba_environ.numba_setting, parallel=numba_environ.numba_parallel)
+            @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
             def mm(weights, indices, indptr, B, _, posts):
                 w = weights[0]
                 for k in numba.prange(B.shape[1]):
@@ -425,7 +425,7 @@ def csrmm_cpu_kernel_generator(
 
         else:
             # csr @ B
-            @numba.njit(**numba_environ.numba_setting)
+            @numba.njit(**numba_environ.setting)
             def mm(weights, indices, indptr, B, _, posts):
                 w = weights[0]
                 for i in range(indptr.shape[0] - 1):
@@ -438,7 +438,7 @@ def csrmm_cpu_kernel_generator(
     else:
         if transpose:
             # csr.T @ B
-            @numba.njit(**numba_environ.numba_setting, parallel=numba_environ.numba_parallel)
+            @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
             def mm(weights, indices, indptr, B, _, posts):
                 for k in numba.prange(B.shape[1]):
                     for i in range(B.shape[0]):
@@ -447,7 +447,7 @@ def csrmm_cpu_kernel_generator(
 
         else:
             # csr @ B
-            @numba.njit(**numba_environ.numba_setting)
+            @numba.njit(**numba_environ.setting)
             def mm(weights, indices, indptr, B, _, posts):
                 for i in range(indptr.shape[0] - 1):
                     for k in range(B.shape[1]):
