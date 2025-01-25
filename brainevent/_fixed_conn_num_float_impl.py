@@ -40,7 +40,7 @@ def fixed_post_num_mv_numba_kernel_generator(
     if transpose:
         # fixed pre connection number
         if jnp.size(weight_info) == 1:
-            @numba.njit(**numba_environ.numba_setting)
+            @numba.njit(**numba_environ.setting)
             def ell_mv(weights, indices, vector, _, posts):
                 w = weights[0]
                 for i in range(vector.shape[0]):
@@ -49,7 +49,7 @@ def fixed_post_num_mv_numba_kernel_generator(
                         posts[indices[i, j]] += wv
 
         else:
-            @numba.njit(**numba_environ.numba_setting)
+            @numba.njit(**numba_environ.setting)
             def ell_mv(weights, indices, vector, _, posts):
                 for i in range(vector.shape[0]):
                     for j in range(indices.shape[1]):
@@ -59,14 +59,14 @@ def fixed_post_num_mv_numba_kernel_generator(
         # fixed post connection number
 
         if jnp.size(weight_info) == 1:
-            @numba.njit(**numba_environ.numba_setting)
+            @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
             def ell_mv(weights, indices, vector, _, posts):
                 w = weights[0]
                 for i in range(indices.shape[0]):
                     posts[i] = w * np.sum(vector[indices[i]])
 
         else:
-            @numba.njit(**numba_environ.numba_setting)
+            @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
             def ell_mv(weights, indices, vector, _, posts):
                 for i in range(indices.shape[0]):
                     posts[i] = np.sum(weights[i] * vector[indices[i]])
@@ -155,7 +155,7 @@ def fixed_post_num_mv_warp_kernel_generator(
 
 
 def fixed_post_num_mv_pallas_kernel_generator(
-    block_size: int,
+    block_dim: int,
     shape: Sequence[int],
     transpose: bool,
     weight_info: jax.ShapeDtypeStruct,
@@ -182,12 +182,12 @@ def fixed_post_num_mv_pallas_kernel_generator(
                 # out_ref: [n_post]
 
                 r_pid = pl.program_id(0)
-                c_start = pl.program_id(1) * block_size
-                mask = jnp.arange(block_size) + c_start
-                row_length = jnp.minimum(n_pre - r_pid * block_size, block_size)
+                c_start = pl.program_id(1) * block_dim
+                mask = jnp.arange(block_dim) + c_start
+                row_length = jnp.minimum(n_pre - r_pid * block_dim, block_dim)
 
                 def body_fn(j, _):
-                    y = vec_ref[j] * jnp.ones(block_size, dtype=weight_info.dtype)
+                    y = vec_ref[j] * jnp.ones(block_dim, dtype=weight_info.dtype)
                     ind = pl.load(ind_ref, (j, pl.dslice(None)), mask=mask)
                     pl.atomic_add(out_ref, ind, y, mask=mask)
 
@@ -200,13 +200,13 @@ def fixed_post_num_mv_pallas_kernel_generator(
                     jax.ShapeDtypeStruct((n_post,), weight_info.dtype),
                 ],
                 in_specs=[
-                    pl.BlockSpec((block_size, block_size), lambda i, j: (i, j)),  # ind_ref
-                    pl.BlockSpec((block_size,), lambda i, j: i),  # vec_ref
+                    pl.BlockSpec((block_dim, block_dim), lambda i, j: (i, j)),  # ind_ref
+                    pl.BlockSpec((block_dim,), lambda i, j: i),  # vec_ref
                     pl.BlockSpec((n_post,), lambda i, j: 0),  # out_ref
                 ],
                 grid=(
-                    pl.cdiv(n_pre, block_size),
-                    pl.cdiv(n_conn, block_size),
+                    pl.cdiv(n_pre, block_dim),
+                    pl.cdiv(n_conn, block_dim),
                 ),
                 input_output_aliases={2: 0},
                 interpret=False
@@ -225,9 +225,9 @@ def fixed_post_num_mv_pallas_kernel_generator(
                 # out_ref: [n_post]
 
                 r_pid = pl.program_id(0)
-                c_start = pl.program_id(1) * block_size
-                mask = jnp.arange(block_size) + c_start
-                row_length = jnp.minimum(n_pre - r_pid * block_size, block_size)
+                c_start = pl.program_id(1) * block_dim
+                mask = jnp.arange(block_dim) + c_start
+                row_length = jnp.minimum(n_pre - r_pid * block_dim, block_dim)
 
                 def body_fn(j, _):
                     w = pl.load(w_ref, (j, pl.dslice(None)), mask=mask)
@@ -244,14 +244,14 @@ def fixed_post_num_mv_pallas_kernel_generator(
                     jax.ShapeDtypeStruct((n_post,), weight_info.dtype),
                 ],
                 in_specs=[
-                    pl.BlockSpec((block_size, block_size), lambda i, j: (i, j)),  # w_ref
-                    pl.BlockSpec((block_size, block_size), lambda i, j: (i, j)),  # ind_ref
-                    pl.BlockSpec((block_size,), lambda i, j: i),  # vec_ref
+                    pl.BlockSpec((block_dim, block_dim), lambda i, j: (i, j)),  # w_ref
+                    pl.BlockSpec((block_dim, block_dim), lambda i, j: (i, j)),  # ind_ref
+                    pl.BlockSpec((block_dim,), lambda i, j: i),  # vec_ref
                     pl.BlockSpec((n_post,), lambda i: 0)  # out_ref
                 ],
                 grid=(
-                    pl.cdiv(n_pre, block_size),
-                    pl.cdiv(n_conn, block_size),
+                    pl.cdiv(n_pre, block_dim),
+                    pl.cdiv(n_conn, block_dim),
                 ),
                 input_output_aliases={3: 0},
                 interpret=False
@@ -268,16 +268,16 @@ def fixed_post_num_mv_jvp_spikes(
     indices,
     spikes,
     *,
-    n_post,
-    block_size,
+    shape,
+    transpose,
     **kwargs
 ):
     return fixed_post_num_mv_p_call(
-        spk_dot,
         weights,
         indices,
-        n_post=n_post,
-        block_size=block_size,
+        spk_dot,
+        shape=shape,
+        transpose=transpose,
     )
 
 
@@ -287,21 +287,29 @@ def fixed_post_num_mv_jvp_weights(
     indices,
     vector,
     *,
-    block_size, n_post, **kwargs
+    shape,
+    transpose,
+    **kwargs
 ):
     return fixed_post_num_mv_p_call(
-        vector,
         w_dot,
         indices,
-        block_size=block_size,
-        n_post=n_post,
+        vector,
+        shape=shape,
+        transpose=transpose,
     )
 
 
 def fixed_post_num_mv_transpose_rule(
-    ct, weights, indices, vector,
+    ct,
+    weights,
+    indices,
+    vector,
     *,
-    n_post, block_size, weight_info, **kwargs
+    shape,
+    transpose,
+    weight_info,
+    **kwargs
 ):
     if ad.is_undefined_primal(indices):
         raise ValueError("Cannot transpose with respect to sparse indices.")
@@ -324,11 +332,11 @@ def fixed_post_num_mv_transpose_rule(
         if homo:
             # scalar
             ct_gmax = fixed_post_num_mv_p_call(
-                vector,
                 jnp.asarray(1., dtype=weight_info.dtype),
                 indices,
-                block_size=block_size,
-                n_post=n_post,
+                vector,
+                shape=shape,
+                transpose=transpose,
             )
             ct_gmax = jnp.inner(ct, ct_gmax[0])
         else:
@@ -343,8 +351,7 @@ def fixed_post_num_mv_p_call(
     *,
     shape: Tuple[int, int],
     transpose: bool,
-    block_size: int = None
-):
+) -> Tuple[Union[jax.Array, u.Quantity]]:
     assert weights.ndim == 2, 'weight dim should be 2'
     assert weights.shape[0] == shape[0], f'Pre size mismatch, got {weights.shape[0]} != {shape[0]}'
     n_pre, n_post = shape
@@ -356,19 +363,6 @@ def fixed_post_num_mv_p_call(
         assert vector.shape[0] == n_post, f'When not transpose, vector shape should be {n_post}, got {vector.shape[0]}'
 
     n_conn = indices.shape[1]
-    if block_size is None:
-        # which is used for TPU/GPU kernel written in JAX pallas
-        if n_conn <= 32:
-            block_size = 32
-        elif n_conn <= 64:
-            block_size = 64
-        elif n_conn <= 128:
-            block_size = 128
-        elif n_conn <= 256:
-            block_size = 256
-        else:
-            block_size = 128
-
     weights, w_unit = u.split_mantissa_unit(weights)
     vector, v_unit = u.split_mantissa_unit(vector)
 
@@ -379,26 +373,57 @@ def fixed_post_num_mv_p_call(
         jnp.zeros(out.shape, out.dtype),
         transpose=transpose,
         shape=shape,
-        block_size=block_size,
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         vector_info=jax.ShapeDtypeStruct(vector.shape, vector.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         outs=out
     )
-    return [u.maybe_decimal(r * v_unit * w_unit)]
+    return (u.maybe_decimal(r * v_unit * w_unit),)
+
+
+def _generate_block_dim(
+    indices_info: jax.ShapeDtypeStruct,
+    **kwargs
+) -> int:
+    # which is used for TPU/GPU kernel written in JAX pallas
+    n_conn = indices_info.shape[1]
+    if n_conn <= 32:
+        block_size = 32
+    elif n_conn <= 64:
+        block_size = 64
+    elif n_conn <= 128:
+        block_size = 128
+    elif n_conn <= 256:
+        block_size = 256
+    else:
+        block_size = 128
+
+    return block_size
 
 
 fixed_post_num_mv_p = XLACustomKernel(
     'fixed_post_num_mv',
-    cpu_kernel=NumbaKernelGenerator(fixed_post_num_mv_numba_kernel_generator, input_output_aliases={2: 0}),
+    cpu_kernel=NumbaKernelGenerator(
+        fixed_post_num_mv_numba_kernel_generator,
+        input_output_aliases={2: 0}
+    ),
     gpu_kernel=WarpKernelGenerator(
-        fixed_post_num_mv_pallas_kernel_generator,
+        fixed_post_num_mv_warp_kernel_generator,
         dim=lambda transpose, indices_info, vecto_infor, **kwargs: (
-            vecto_infor.shape[0] if transpose else indices_info.shape[0]
+            vecto_infor.shape[0]
+            if transpose else
+            indices_info.shape[0]
         ),
         input_output_aliases={2: 0}
     ),
-    tpu_kernel=PallasKernelGenerator(fixed_post_num_mv_pallas_kernel_generator),
+    tpu_kernel=PallasKernelGenerator(
+        fixed_post_num_mv_pallas_kernel_generator,
+        block_dim=_generate_block_dim
+    ),
 )
-fixed_post_num_mv_p.defjvp(fixed_post_num_mv_jvp_weights, None, fixed_post_num_mv_jvp_spikes)
+fixed_post_num_mv_p.defjvp(
+    fixed_post_num_mv_jvp_weights,
+    None,
+    fixed_post_num_mv_jvp_spikes
+)
 fixed_post_num_mv_p.def_transpose_rule(fixed_post_num_mv_transpose_rule)

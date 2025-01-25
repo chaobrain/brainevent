@@ -15,13 +15,13 @@
 
 import unittest
 
+import brainstate as bst
 import jax
 import jax.numpy as jnp
 import pytest
 from jax.experimental import pallas as pl
 
 import brainevent
-import brainstate as bst
 
 
 @pytest.mark.skipif(jax.default_backend() != 'gpu', reason="GPU not available")

@@ -62,21 +62,21 @@ def mv_cpu_kernel_generator(
     if transpose:
         if spk_info.dtype == jnp.bool_:
 
-            @numba.njit(**numba_environ.numba_setting)
+            @numba.njit(**numba_environ.setting)
             def _kernel(weights, spikes, _, posts):
                 for i in range(spikes.shape[0]):
                     if spikes[i]:
                         posts += weights[i]
 
         elif float_as_event:
-            @numba.njit(**numba_environ.numba_setting)
+            @numba.njit(**numba_environ.setting)
             def _kernel(weights, spikes, _, posts):
                 for i in range(spikes.shape[0]):
                     if spikes[i] != 0.:
                         posts += weights[i]
 
         else:
-            @numba.njit(**numba_environ.numba_setting)
+            @numba.njit(**numba_environ.setting)
             def _kernel(weights, spikes, _, posts):
                 for i in range(spikes.shape[0]):
                     sp = spikes[i]
@@ -86,21 +86,21 @@ def mv_cpu_kernel_generator(
     else:
         if spk_info.dtype == jnp.bool_:
 
-            @numba.njit(**numba_environ.numba_setting)
+            @numba.njit(**numba_environ.setting)
             def _kernel(weights, spikes, _, posts):
                 for i in range(spikes.shape[0]):
                     if spikes[i]:
                         posts += weights[:, i]
 
         elif float_as_event:
-            @numba.njit(**numba_environ.numba_setting)
+            @numba.njit(**numba_environ.setting)
             def _kernel(weights, spikes, _, posts):
                 for i in range(spikes.shape[0]):
                     if spikes[i] != 0.:
                         posts += weights[:, i]
 
         else:
-            @numba.njit(**numba_environ.numba_setting)
+            @numba.njit(**numba_environ.setting)
             def _kernel(weights, spikes, _, posts):
                 for i in range(spikes.shape[0]):
                     sp = spikes[i]

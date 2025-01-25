@@ -23,14 +23,15 @@
 #
 # - Vogels, T. P. and Abbott, L. F. (2005), Signal propagation and logic gating in networks of integrate-and-fire neurons., J. Neurosci., 25, 46, 10786–95
 
-import jax
-import brainunit as u
 import time
-import brainstate as bst
-import brainevent
 
-import warp as wp
+import brainstate as bst
+import brainunit as u
+import jax
 import numpy as np
+import warp as wp
+
+import brainevent
 
 
 class WarpFixedProb(bst.nn.Module):
@@ -64,7 +65,7 @@ class WarpFixedProb(bst.nn.Module):
             gpu_kernel=brainevent.WarpKernelGenerator(
                 lambda **kwargs: triple_kernel,
                 input_output_aliases={3: 0},
-                dim=(self.n_pre, ),
+                dim=(self.n_pre,),
             ),
         )
 
@@ -85,9 +86,11 @@ class EINet(bst.nn.DynamicsGroup):
         self.n_exc = int(3200 * scale)
         self.n_inh = int(800 * scale)
         self.num = self.n_exc + self.n_inh
-        self.N = bst.nn.LIFRef(self.num, V_rest=-60. * u.mV, V_th=-50. * u.mV, V_reset=-60. * u.mV,
-                               tau=20. * u.ms, tau_ref=5. * u.ms,
-                               V_initializer=bst.init.Normal(-55., 2., unit=u.mV))
+        self.N = bst.nn.LIFRef(
+            self.num, V_rest=-60. * u.mV, V_th=-50. * u.mV, V_reset=-60. * u.mV,
+            tau=20. * u.ms, tau_ref=5. * u.ms,
+            V_initializer=bst.init.Normal(-55., 2., unit=u.mV)
+        )
         self.E = bst.nn.AlignPostProj(
             # comm=bst.event.FixedProb(self.n_exc, self.num, prob=80 / self.num, weight=0.6 * u.mS),
             comm=WarpFixedProb(self.n_exc, self.num, prob=80 / self.num, weight=0.6 * u.mS),

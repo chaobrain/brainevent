@@ -26,6 +26,7 @@ from jax.experimental.sparse import JAXSparse
 
 from ._array import EventArray
 from ._fixed_conn_num_float_impl import fixed_post_num_mv_p_call
+from ._fixed_conn_num_event_impl import event_fixed_post_num_mv_p_call
 
 __all__ = [
     'FixedPostNumConn',
@@ -201,12 +202,13 @@ class FixedPostNumConn(u.sparse.SparseMatrix):
         if isinstance(other, EventArray):
             other = other.data
             if other.ndim == 1:
-                return _event_perfect_ellmv(
+                return event_fixed_post_num_mv_p_call(
                     data,
                     self.indices,
                     other,
                     shape=self.shape,
                     transpose=False,
+                    float_as_event=True,
                 )
             elif other.ndim == 2:
                 return _event_perfect_ellmm(
