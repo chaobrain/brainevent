@@ -21,6 +21,7 @@ from absl.testing import parameterized
 
 import brainevent
 import brainstate as bst
+import brainevent.nn
 
 
 class TestFixedProbCSR(parameterized.TestCase):
@@ -30,18 +31,18 @@ class TestFixedProbCSR(parameterized.TestCase):
     def test1(self, allow_multi_conn):
         x = bst.random.rand(20) < 0.1
         # x = bst.random.rand(20)
-        m = brainevent.FixedProb(20, 40, 0.1, 1.0, seed=123, allow_multi_conn=allow_multi_conn)
+        m = brainevent.nn.FixedProb(20, 40, 0.1, 1.0, seed=123, allow_multi_conn=allow_multi_conn)
         y = m(x)
         print(y)
 
-        m2 = brainevent.FixedProb(20, 40, 0.1, bst.init.KaimingUniform(), seed=123)
+        m2 = brainevent.nn.FixedProb(20, 40, 0.1, bst.init.KaimingUniform(), seed=123)
         print(m2(x))
 
     def test_grad_bool(self):
         n_in = 20
         n_out = 30
         x = bst.random.rand(n_in) < 0.3
-        fn = brainevent.FixedProb(n_in, n_out, 0.1, bst.init.KaimingUniform(), seed=123)
+        fn = brainevent.nn.FixedProb(n_in, n_out, 0.1, bst.init.KaimingUniform(), seed=123)
 
         def f(x):
             return fn(x).sum()
@@ -62,9 +63,9 @@ class TestFixedProbCSR(parameterized.TestCase):
             x = bst.random.rand(n_in)
 
         if homo_w:
-            fn = brainevent.FixedProb(n_in, n_out, 0.1, 1.5, seed=123, float_as_event=bool_x)
+            fn = brainevent.nn.FixedProb(n_in, n_out, 0.1, 1.5, seed=123, float_as_event=bool_x)
         else:
-            fn = brainevent.FixedProb(n_in, n_out, 0.1, bst.init.KaimingUniform(), seed=123, float_as_event=bool_x)
+            fn = brainevent.nn.FixedProb(n_in, n_out, 0.1, bst.init.KaimingUniform(), seed=123, float_as_event=bool_x)
         w = fn.weight.value
 
         def f(x, w):
@@ -101,7 +102,7 @@ class TestFixedProbCSR(parameterized.TestCase):
         else:
             x = bst.random.rand(n_in)
 
-        fn = brainevent.FixedProb(
+        fn = brainevent.nn.FixedProb(
             n_in, n_out, 0.1, 1.5 if homo_w else bst.init.KaimingUniform(),
             seed=123,
             float_as_event=bool_x

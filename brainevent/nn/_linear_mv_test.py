@@ -21,6 +21,7 @@ from absl.testing import parameterized
 
 import brainevent
 import brainstate as bst
+import brainevent.nn
 
 
 class TestEventLinear(parameterized.TestCase):
@@ -32,7 +33,7 @@ class TestEventLinear(parameterized.TestCase):
         x = bst.random.rand(20) < 0.1
         if not bool_x:
             x = jnp.asarray(x, dtype=float)
-        m = brainevent.Linear(
+        m = brainevent.nn.Linear(
             20, 40,
             1.5 if homo_w else bst.init.KaimingUniform(),
             float_as_event=bool_x
@@ -46,7 +47,7 @@ class TestEventLinear(parameterized.TestCase):
         n_in = 20
         n_out = 30
         x = bst.random.rand(n_in) < 0.3
-        fn = brainevent.Linear(n_in, n_out, bst.init.KaimingUniform())
+        fn = brainevent.nn.Linear(n_in, n_out, bst.init.KaimingUniform())
 
         with self.assertRaises(TypeError):
             print(jax.grad(lambda x: fn(x).sum())(x))
@@ -63,7 +64,7 @@ class TestEventLinear(parameterized.TestCase):
         else:
             x = bst.random.rand(n_in)
 
-        fn = brainevent.Linear(n_in, n_out, 1.5 if homo_w else bst.init.KaimingUniform(), float_as_event=bool_x)
+        fn = brainevent.nn.Linear(n_in, n_out, 1.5 if homo_w else bst.init.KaimingUniform(), float_as_event=bool_x)
         w = fn.weight.value
 
         def f(x, w):
@@ -99,7 +100,7 @@ class TestEventLinear(parameterized.TestCase):
         else:
             x = bst.random.rand(n_in)
 
-        fn = brainevent.Linear(
+        fn = brainevent.nn.Linear(
             n_in, n_out, 1.5 if homo_w else bst.init.KaimingUniform(),
             float_as_event=bool_x
         )

@@ -16,7 +16,6 @@
 # -*- coding: utf-8 -*-
 
 
-from __future__ import annotations
 
 from typing import Callable
 
@@ -630,14 +629,6 @@ def transpose_rule(
         return spikes, (ad.Zero(weights) if type(ct) is ad.Zero else ct_gmax), indices
 
 
-event_ellmv_p = XLACustomKernel(
-    'event_ell_mv',
-    cpu_kernel=NumbaKernelGenerator(cpu_kernel_generator),
-    gpu_kernel=PallasKernelGenerator(gpu_kernel_generator),
-)
-event_ellmv_p.defjvp(jvp_spikes, jvp_weights, None)
-event_ellmv_p.def_transpose_rule(transpose_rule)
-
 
 def event_ellmv_p_call(
     spikes, weights, indices,
@@ -673,215 +664,11 @@ def event_ellmv_p_call(
     )
 
 
-def ell_cpu_kernel_generator(
-    weight_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    import numba  # pylint: disable=import-outside-toplevel
-
-    if jnp.size(weight_info) == 1:
-        @numba.njit(**numba_environ.numba_setting)
-        def ell_mv(vector, weights, indices, posts):
-            posts[:] = 0.
-            w = weights[()]
-            for i in range(vector.shape[0]):
-                wv = w * vector[i]
-                for j in range(indices.shape[1]):
-                    posts[indices[i, j]] += wv
-
-    else:
-        @numba.njit(**numba_environ.numba_setting)
-        def ell_mv(vector, weights, indices, posts):
-            posts[:] = 0.
-            for i in range(vector.shape[0]):
-                for j in range(indices.shape[1]):
-                    posts[indices[i, j]] += weights[i, j] * vector[i]
-
-    return ell_mv
-
-
-def ell_gpu_kernel_generator(
-    block_size: int,
-    n_pre: int,
-    n_conn: int,
-    n_post: int,
-    weight_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    homo = jnp.size(weight_info) == 1
-
-    if homo:
-        def _kernel(
-            vec_ref, ind_ref, _, out_ref,
-        ):
-            # 每个block 处理 [block_size] 大小的vector
-            # 每个block 处理 [block_size, block_size] 大小的indices 和 weights
-
-            # -------------------------------
-            # vec_ref: [block_size]
-            # ind_ref: [block_size, block_size]
-            # out_ref: [n_post]
-
-            r_pid = pl.program_id(0)
-            c_start = pl.program_id(1) * block_size
-            mask = jnp.arange(block_size) + c_start
-            row_length = jnp.minimum(n_pre - r_pid * block_size, block_size)
-
-            def body_fn(j, _):
-                y = vec_ref[j] * jnp.ones(block_size, dtype=weight_info.dtype)
-                ind = pl.load(ind_ref, (j, pl.dslice(None)), mask=mask)
-                pl.atomic_add(out_ref, ind, y, mask=mask)
-
-            jax.lax.fori_loop(0, row_length, body_fn, None)
-
-        # heterogeneous weights
-        kernel = pl.pallas_call(
-            _kernel,
-            out_shape=[
-                jax.ShapeDtypeStruct((n_post,), weight_info.dtype),
-            ],
-            in_specs=[
-                pl.BlockSpec((block_size,), lambda i, j: i),  # vec_ref
-                pl.BlockSpec((block_size, block_size), lambda i, j: (i, j)),  # ind_ref
-                pl.BlockSpec((n_post,), lambda i, j: 0)  # out_ref
-            ],
-            grid=(
-                pl.cdiv(n_pre, block_size),
-                pl.cdiv(n_conn, block_size),
-            ),
-            input_output_aliases={2: 0},
-            interpret=False
-        )
-        return lambda vector, weight, indices: kernel(vector, indices, jnp.zeros(n_post, dtype=weight.dtype)) * weight
-
-    else:
-        def _kernel(
-            vec_ref, ind_ref, w_ref, _, out_ref,
-        ):
-            # 每个block 处理 [block_size] 大小的vector
-            # 每个block 处理 [block_size, n_conn] 大小的indices 和 weights
-
-            # -------------------------------
-            # vec_ref: [block_size]
-            # ind_ref: [block_size, block_size]
-            # w_ref: [block_size, block_size]
-            # out_ref: [n_post]
-
-            r_pid = pl.program_id(0)
-            c_start = pl.program_id(1) * block_size
-            mask = jnp.arange(block_size) + c_start
-            row_length = jnp.minimum(n_pre - r_pid * block_size, block_size)
-
-            def body_fn(j, _):
-                w = pl.load(w_ref, (j, pl.dslice(None)), mask=mask)
-                y = w * vec_ref[j]
-                ind = pl.load(ind_ref, (j, pl.dslice(None)), mask=mask)
-                pl.atomic_add(out_ref, ind, y, mask=mask)
-
-            jax.lax.fori_loop(0, row_length, body_fn, None)
-
-        # heterogeneous weights
-        kernel = pl.pallas_call(
-            _kernel,
-            out_shape=[
-                jax.ShapeDtypeStruct((n_post,), weight_info.dtype),
-            ],
-            in_specs=[
-                pl.BlockSpec((block_size,), lambda i, j: i),  # vec_ref
-                pl.BlockSpec((block_size, block_size), lambda i, j: (i, j)),  # ind_ref
-                pl.BlockSpec((block_size, block_size), lambda i, j: (i, j)),  # w_ref
-                pl.BlockSpec((n_post,), lambda i: 0)  # out_ref
-            ],
-            grid=(
-                pl.cdiv(n_pre, block_size),
-                pl.cdiv(n_conn, block_size),
-            ),
-            input_output_aliases={3: 0},
-            interpret=False
-        )
-        return lambda vector, weight, indices: kernel(vector, indices, weight, jnp.zeros(n_post, dtype=weight.dtype))
-
-
-def jvp_weights_no_spk(w_dot, vector, weights, indices, *, block_size, n_post, **kwargs):
-    return ellmv_p_call(
-        vector,
-        w_dot,
-        indices,
-        block_size=block_size,
-        n_post=n_post,
-    )
-
-
-def transpose_rule_no_spk(
-    ct, vector, weights, indices,
-    *,
-    n_post, block_size, weight_info, **kwargs
-):
-    if ad.is_undefined_primal(indices):
-        raise ValueError("Cannot transpose with respect to sparse indices.")
-
-    ct = ct[0]
-
-    # ∂L/∂spk = ∂L/∂y * ∂y/∂spk
-    homo = weight_info.size == 1
-    if ad.is_undefined_primal(vector):
-        if homo:
-            # homogeneous weight
-            ct_spk = jax.vmap(lambda idx: jnp.sum(ct[idx] * weights))(indices)
-        else:
-            # heterogeneous weight
-            ct_spk = jax.vmap(lambda idx, w: jnp.inner(ct[idx], w))(indices, weights)
-        return (ad.Zero(vector) if type(ct) is ad.Zero else ct_spk), weights, indices
-
-    else:
-        # ∂L/∂w = ∂L/∂y * ∂y/∂w
-        if homo:
-            # scalar
-            ct_gmax = ellmv_p_call(
-                vector,
-                jnp.asarray(1., dtype=weight_info.dtype),
-                indices,
-                block_size=block_size,
-                n_post=n_post,
-            )
-            ct_gmax = jnp.inner(ct, ct_gmax[0])
-        else:
-            ct_gmax = jax.vmap(lambda vec, one_ind: ct[one_ind] * vec)(vector, indices)
-        return vector, (ad.Zero(weights) if type(ct) is ad.Zero else ct_gmax), indices
-
-
-ellmv_p = XLACustomKernel(
-    'ell_mv',
-    cpu_kernel=NumbaKernelGenerator(ell_cpu_kernel_generator),
-    gpu_kernel=PallasKernelGenerator(ell_gpu_kernel_generator),
+event_ellmv_p = XLACustomKernel(
+    'event_ell_mv',
+    cpu_kernel=NumbaKernelGenerator(cpu_kernel_generator),
+    gpu_kernel=PallasKernelGenerator(gpu_kernel_generator),
 )
-ellmv_p.defjvp(jvp_spikes, jvp_weights_no_spk, None)
-ellmv_p.def_transpose_rule(transpose_rule_no_spk)
+event_ellmv_p.defjvp(jvp_spikes, jvp_weights, None)
+event_ellmv_p.def_transpose_rule(transpose_rule)
 
-
-def ellmv_p_call(vector, weights, indices, *, n_post, block_size):
-    n_conn = indices.shape[1]
-    if block_size is None:
-        if n_conn <= 16:
-            block_size = 16
-        elif n_conn <= 32:
-            block_size = 32
-        elif n_conn <= 64:
-            block_size = 64
-        elif n_conn <= 128:
-            block_size = 128
-        elif n_conn <= 256:
-            block_size = 256
-        else:
-            block_size = 128
-    return ellmv_p(
-        vector,
-        weights,
-        indices,
-        n_post=n_post,
-        n_pre=indices.shape[0],
-        n_conn=indices.shape[1],
-        block_size=block_size,
-        weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
-        outs=[jax.ShapeDtypeStruct([n_post], weights.dtype)]
-    )

@@ -25,6 +25,12 @@ from brainunit.sparse._coo import _coo_todense, COOInfo
 from jax.experimental.sparse import JAXSparse
 
 from ._array import EventArray
+from ._fixed_conn_num_float_impl import fixed_post_num_mv_p_call
+
+__all__ = [
+    'FixedPostNumConn',
+    'FixedPreNumConn',
+]
 
 
 # TODO: docstring needed to be improved
@@ -36,8 +42,9 @@ class FixedPostNumConn(u.sparse.SparseMatrix):
     data: Union[jax.Array, u.Quantity]
     indices: jax.Array
     shape: tuple[int, int]
-    num_pre_conn = property(lambda self: self.indices.shape[0])
-    num_post_conn = property(lambda self: self.indices.shape[1])
+    num_pre = property(lambda self: self.indices.shape[0])
+    num_conn = property(lambda self: self.indices.shape[1])
+    num_post = property(lambda self: self.shape[1])
     nse = property(lambda self: self.indices.size)
     dtype = property(lambda self: self.data.dtype)
 
@@ -56,18 +63,8 @@ class FixedPostNumConn(u.sparse.SparseMatrix):
         """
         Convert the matrix to dense format.
         """
-        pre_ids = jnp.repeat(jnp.arange(self.indices.shape[0]), self.indices.shape[1])
-        post_ids = self.indices.flatten()
-        spinfo = COOInfo(self.shape, rows_sorted=True, cols_sorted=False)
+        pre_ids, post_ids, spinfo = fixed_post_num_to_coo(self)
         return _coo_todense(self.data, pre_ids, post_ids, spinfo=spinfo)
-
-        # if self.post_oriented:
-        #     pass
-        # else:
-        #     pre_ids = self.indices.flatten()
-        #     post_ids = jnp.repeat(jnp.arange(self.indices.shape[0]), self.indices.shape[1])
-        #     spinfo = COOInfo(self.shape, rows_sorted=False, cols_sorted=True)
-        # return _coo_todense(self.data, pre_ids, post_ids, spinfo=spinfo)
 
     @property
     def T(self):
@@ -113,7 +110,7 @@ class FixedPostNumConn(u.sparse.SparseMatrix):
             )
 
         elif other.ndim == 2 and other.shape == self.shape:
-            rows, cols, _ = _perfect_ell_to_coo(self)
+            rows, cols, _ = fixed_post_num_to_coo(self)
             other = other[rows, cols]
             return FixedPostNumConn(
                 (op(self.data, other),
@@ -147,7 +144,7 @@ class FixedPostNumConn(u.sparse.SparseMatrix):
                 shape=self.shape,
             )
         elif other.ndim == 2 and other.shape == self.shape:
-            rows, cols, _ = _perfect_ell_to_coo(self)
+            rows, cols, _ = fixed_post_num_to_coo(self)
             other = other[rows, cols]
             return FixedPostNumConn(
                 (
@@ -226,7 +223,7 @@ class FixedPostNumConn(u.sparse.SparseMatrix):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
-                return _perfect_ellmv(
+                return fixed_post_num_mv_p_call(
                     data,
                     self.indices,
                     other,
@@ -319,8 +316,9 @@ class FixedPreNumConn(u.sparse.SparseMatrix):
     data: Union[jax.Array, u.Quantity]
     indices: jax.Array
     shape: tuple[int, int]
-    num_pre_conn = property(lambda self: self.indices.shape[1])
-    num_post_conn = property(lambda self: self.indices.shape[0])
+    num_conn = property(lambda self: self.indices.shape[1])
+    num_post = property(lambda self: self.indices.shape[0])
+    num_pre = property(lambda self: self.shape[0])
     nse = property(lambda self: self.indices.size)
     dtype = property(lambda self: self.data.dtype)
 
@@ -339,9 +337,7 @@ class FixedPreNumConn(u.sparse.SparseMatrix):
         """
         Convert the matrix to dense format.
         """
-        pre_ids = self.indices.flatten()
-        post_ids = jnp.repeat(jnp.arange(self.indices.shape[0]), self.indices.shape[1])
-        spinfo = COOInfo(self.shape, rows_sorted=False, cols_sorted=True)
+        pre_ids, post_ids, spinfo = fixed_pre_num_to_coo(self)
         return _coo_todense(self.data, pre_ids, post_ids, spinfo=spinfo)
 
     @property
@@ -365,7 +361,7 @@ class FixedPreNumConn(u.sparse.SparseMatrix):
         return FixedPreNumConn((-self.data, self.indices), shape=self.shape)
 
     def __pos__(self):
-        return FixedPosFixedPreNumtNum((self.data.__pos__(), self.indices), shape=self.shape)
+        return FixedPreNumConn((self.data.__pos__(), self.indices), shape=self.shape)
 
     def _binary_op(self, other, op):
         if isinstance(other, FixedPreNumConn):
@@ -388,7 +384,7 @@ class FixedPreNumConn(u.sparse.SparseMatrix):
             )
 
         elif other.ndim == 2 and other.shape == self.shape:
-            rows, cols, _ = _perfect_ell_to_coo(self)
+            rows, cols, _ = fixed_pre_num_to_coo(self)
             other = other[rows, cols]
             return FixedPreNumConn(
                 (op(self.data, other),
@@ -422,7 +418,7 @@ class FixedPreNumConn(u.sparse.SparseMatrix):
                 shape=self.shape,
             )
         elif other.ndim == 2 and other.shape == self.shape:
-            rows, cols, _ = _perfect_ell_to_coo(self)
+            rows, cols, _ = fixed_pre_num_to_coo(self)
             other = other[rows, cols]
             return FixedPreNumConn(
                 (
@@ -583,3 +579,17 @@ class FixedPreNumConn(u.sparse.SparseMatrix):
             raise ValueError(f"CSR.tree_unflatten: invalid {aux_data=}")
         obj.__dict__.update(**aux_data)
         return obj
+
+
+def fixed_post_num_to_coo(self: FixedPostNumConn):
+    pre_ids = jnp.repeat(jnp.arange(self.indices.shape[0]), self.indices.shape[1])
+    post_ids = self.indices.flatten()
+    spinfo = COOInfo(self.shape, rows_sorted=True, cols_sorted=False)
+    return pre_ids, post_ids, spinfo
+
+
+def fixed_pre_num_to_coo(self: FixedPreNumConn):
+    pre_ids = self.indices.flatten()
+    post_ids = jnp.repeat(jnp.arange(self.indices.shape[0]), self.indices.shape[1])
+    spinfo = COOInfo(self.shape, rows_sorted=False, cols_sorted=True)
+    return pre_ids, post_ids, spinfo
