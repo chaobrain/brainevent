@@ -1,7 +1,4 @@
-
-# Enabling Event-driven Computation for Brain Dynamics
-
-
+# Enabling Event-driven Computation in Brain Dynamics Modeling
 
 [//]: # (<p align="center">)
 
@@ -23,6 +20,29 @@
 </p>
 
 
+
+
+Brain is characterized by the discrete spiking events, which are the fundamental units of computation in the brain. 
+
+`BrainEvent` provides a set of data structures and algorithms for such event-driven computation, which can be used to 
+model the brain dynamics in a more efficient and biologically plausible way.
+
+Particularly, it implements the following commonly used data structures for event-driven computation:
+
+- ``EventVector``: a vector of events, $v$.
+- ``EventMatrix``: a matrix of events, $M$.
+- ``COO``: a sparse matrix in COO format for sparse and event-driven computation.
+- ``CSR``: a sparse matrix in CSR format for sparse and event-driven computation.
+- ``CSC``: a sparse matrix in CSC format for sparse and event-driven computation.
+- ``BlockCSR``: a block sparse matrix in CSR format for sparse and event-driven computation.
+- ``BlockELL``: a block sparse matrix in ELL format for sparse and event-driven computation.
+- ``JITC_CSR``: a just-in-time connectivity sparse matrix in CSR format for sparse and event-driven computation.
+- ``JITC_CSC``: a just-in-time connectivity sparse matrix in CSC format for sparse and event-driven computation.
+- ``FixedPreNumConn``: a fixed number of pre-synaptic connections for sparse and event-driven computation.
+- ``FixedPostNumConn``: a fixed number of post-synaptic connections for sparse and event-driven computation.
+- ...
+
+
 ## Installation
 
 You can install ``brainevent`` via pip:
@@ -31,13 +51,10 @@ You can install ``brainevent`` via pip:
 pip install brainevent --upgrade
 ```
 
-
-
 ## Documentation
 
-The official documentation is hosted on Read the Docs: [https://brainevent.readthedocs.io/](https://brainevent.readthedocs.io/)
-
-
+The official documentation is hosted on Read the
+Docs: [https://brainevent.readthedocs.io/](https://brainevent.readthedocs.io/)
 
 ## See also the BDP ecosystem
 
