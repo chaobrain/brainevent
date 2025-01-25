@@ -13,17 +13,14 @@
 # limitations under the License.
 # ==============================================================================
 
+# -*- coding: utf-8 -*-
+
+
+from ._linear_mv import Linear
+from ._fixedprob_mv import FixedProb
 
 __all__ = [
-    'EventArray',
-    'EventScalar',
+    'Linear',
+    'FixedProb',
 ]
 
-
-class EventArray:
-    def __init__(self, data, *args, **kwargs):
-        self.data = data
-
-
-class EventScalar(EventArray):
-    pass

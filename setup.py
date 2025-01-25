@@ -58,7 +58,7 @@ setup(
     author_email='chao.brain@qq.com',
     packages=packages,
     python_requires='>=3.9',
-    install_requires=['numpy>=1.15', 'jax', 'brainunit>=0.0.4', 'brainstate>=0.1.0'],
+    install_requires=['numpy>=1.15', 'jax', 'brainunit>=0.0.4'],
     url='https://github.com/chaobrain/brainevent',
     project_urls={
         "Bug Tracker": "https://github.com/chaobrain/brainevent/issues",

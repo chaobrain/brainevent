@@ -16,17 +16,26 @@
 # -*- coding: utf-8 -*-
 
 import functools
-from typing import Callable, Sequence, Tuple, Protocol, Union
+from typing import Callable, Sequence, Tuple, Protocol, Union, Optional
 
 import jax
 import numpy as np
-from brainstate.typing import PyTree
 from jax import tree_util
 from jax.interpreters import xla, mlir, batching, ad
 
-from ._xla_custom_op_numba import NumbaKernelGenerator, register_numba_mlir_cpu_translation_rule
-from ._xla_custom_op_pallas import PallasKernelGenerator, register_pallas_mlir_gpu_translation_rule
-from ._xla_custom_op_warp import WarpKernelGenerator, register_warp_mlir_gpu_translation_rule
+from ._xla_custom_op_numba import (
+    NumbaKernelGenerator,
+    register_numba_mlir_cpu_translation_rule
+)
+from ._xla_custom_op_pallas import (
+    PallasKernelGenerator,
+    register_pallas_mlir_gpu_translation_rule,
+    register_pallas_mlir_tpu_translation_rule
+)
+from ._xla_custom_op_warp import (
+    WarpKernelGenerator,
+    register_warp_mlir_gpu_translation_rule
+)
 
 if jax.__version_info__ < (0, 4, 38):
     from jax.core import Primitive
@@ -122,8 +131,9 @@ class XLACustomKernel:
     def __init__(
         self,
         name: str,
-        cpu_kernel: NumbaKernelGenerator = None,
-        gpu_kernel: Union[PallasKernelGenerator, WarpKernelGenerator] = None,
+        cpu_kernel: Optional[NumbaKernelGenerator] = None,
+        gpu_kernel: Optional[Union[PallasKernelGenerator, WarpKernelGenerator]] = None,
+        tpu_kernel: Optional[PallasKernelGenerator] = None,
         batching_translation: Callable = None,
         jvp_translation: Callable = None,
         transpose_translation: Callable = None,
@@ -139,8 +149,14 @@ class XLACustomKernel:
         # cpu kernel
         if cpu_kernel is not None:
             self.def_cpu_kernel(cpu_kernel)
+
+        # gpu kernel
         if gpu_kernel is not None:
             self.def_gpu_kernel(gpu_kernel)
+
+        # tpu kernel
+        if tpu_kernel is not None:
+            self.def_tpu_kernel(tpu_kernel)
 
         # batching rule
         if batching_translation is not None:
@@ -160,13 +176,13 @@ class XLACustomKernel:
     def _abstract_eval(self, *ins, outs: Sequence[jax.core.ShapedArray], **kwargs):
         return tuple(outs)
 
-    def call(self, *ins, outs: PyTree[ShapeDtype], **kwargs, ):
+    def call(self, *ins, outs: Union[ShapeDtype, Sequence[ShapeDtype]], **kwargs, ):
         """
         Call the custom operator.
         """
         return self.__call__(*ins, outs=outs, **kwargs, )
 
-    def bind(self, *ins, outs: PyTree[ShapeDtype], **kwargs, ):
+    def bind(self, *ins, outs: Union[ShapeDtype, Sequence[ShapeDtype]], **kwargs, ):
         """
         Call the custom operator.
         """
@@ -175,7 +191,7 @@ class XLACustomKernel:
     def __call__(
         self,
         *ins,
-        outs: PyTree[ShapeDtype],
+        outs: Union[ShapeDtype, Sequence[ShapeDtype]],
         **kwargs,
     ):
         """
@@ -212,6 +228,12 @@ class XLACustomKernel:
 
         else:
             raise TypeError('The `kernel_generator` should be an instance of `PallasKernel` or `WarpKernel`.')
+
+    def def_tpu_kernel(self, kernel_generator: PallasKernelGenerator):
+        """
+        Define the TPU kernel using the JAX Pallas.
+        """
+        register_pallas_mlir_tpu_translation_rule(self.primitive, kernel_generator)
 
     def def_batching_rule(self, fun):
         """Define the batching rule.
@@ -299,4 +321,3 @@ def _general_batching_rule(prim, args, axes, **kwargs):
 
 def register_general_batching(prim):
     batching.primitive_batchers[prim] = functools.partial(_general_batching_rule, prim)
-

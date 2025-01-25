@@ -20,14 +20,13 @@ from typing import Union
 import brainunit as u
 import jax
 import jax.numpy as jnp
-import numpy as np
 from brainunit.sparse._csr import _csr_to_coo, _csr_todense
 from jax.experimental.sparse import CSR
 from jax.experimental.sparse import JAXSparse
 
 from ._array import EventArray
-from ._csr_event import _event_csr_matvec, _event_csr_matmat
-from ._csr_float import _csr_matvec, _csr_matmat
+from ._csr_event_impl import _event_csr_matvec, _event_csr_matmat
+from ._csr_float_impl import _csr_matvec, _csr_matmat
 
 __all__ = [
     'CSR',
@@ -45,16 +44,15 @@ class CSR(u.sparse.SparseMatrix):
     indices: jax.Array
     indptr: jax.Array
     shape: tuple[int, int]
-    nse = property(lambda self: self.data.size)
+    nse = property(lambda self: self.indices.size)
     dtype = property(lambda self: self.data.dtype)
-    _bufs = property(lambda self: (self.data, self.indices, self.indptr))
 
     def __init__(self, args, *, shape):
         self.data, self.indices, self.indptr = map(u.math.asarray, args)
         super().__init__(args, shape=shape)
 
     @classmethod
-    def fromdense(cls, mat, *, nse=None, index_dtype=np.int32) -> 'CSR':
+    def fromdense(cls, mat, *, nse=None, index_dtype=jnp.int32) -> 'CSR':
         if nse is None:
             nse = (u.get_mantissa(mat) != 0).sum()
         csr = u.sparse.csr_fromdense(mat, nse=nse, index_dtype=index_dtype)
@@ -68,6 +66,10 @@ class CSR(u.sparse.SparseMatrix):
 
     def todense(self):
         return _csr_todense(self.data, self.indices, self.indptr, shape=self.shape)
+
+    @property
+    def T(self):
+        return self.transpose()
 
     def transpose(self, axes=None):
         assert axes is None, "transpose does not support axes argument."
@@ -308,11 +310,11 @@ class CSC(u.sparse.SparseMatrix):
     Event-driven and Unit-aware CSC matrix.
 
     """
-    data: jax.Array
+    data: Union[jax.Array, u.Quantity]
     indices: jax.Array
     indptr: jax.Array
     shape: tuple[int, int]
-    nse = property(lambda self: self.data.size)
+    nse = property(lambda self: self.indices.size)
     dtype = property(lambda self: self.data.dtype)
 
     def __init__(self, args, *, shape):
@@ -320,7 +322,7 @@ class CSC(u.sparse.SparseMatrix):
         super().__init__(args, shape=shape)
 
     @classmethod
-    def fromdense(cls, mat, *, nse=None, index_dtype=np.int32) -> 'CSC':
+    def fromdense(cls, mat, *, nse=None, index_dtype=jnp.int32) -> 'CSC':
         if nse is None:
             nse = (u.get_mantissa(mat) != 0).sum()
         csc = u.sparse.csr_fromdense(mat.T, nse=nse, index_dtype=index_dtype).T
@@ -328,7 +330,9 @@ class CSC(u.sparse.SparseMatrix):
 
     @classmethod
     def _empty(cls, shape, *, dtype=None, index_dtype='int32'):
-        """Create an empty CSC instance. Public method is sparse.empty()."""
+        """
+        Create an empty CSC instance. Public method is sparse.empty().
+        """
         shape = tuple(shape)
         if len(shape) != 2:
             raise ValueError(f"CSC must have ndim=2; got {shape=}")
@@ -345,6 +349,10 @@ class CSC(u.sparse.SparseMatrix):
 
     def todense(self):
         return self.T.todense().T
+
+    @property
+    def T(self):
+        return self.transpose()
 
     def transpose(self, axes=None):
         assert axes is None
