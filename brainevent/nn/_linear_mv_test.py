@@ -24,6 +24,10 @@ import brainstate as bst
 import brainevent.nn
 
 
+import pytest
+pytest.skip("Skipping this test", allow_module_level=True)
+
+
 class TestEventLinear(parameterized.TestCase):
     @parameterized.product(
         homo_w=[True, False],

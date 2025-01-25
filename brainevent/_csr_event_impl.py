@@ -73,7 +73,7 @@ def _event_csr_matmat(
     indptr: jax.Array,
     B: Union[jax.Array, u.Quantity],
     *,
-    shape: bst.typing.Shape,
+    shape: Sequence[int],
     transpose: bool = False,
     float_as_event: bool = True,
 ) -> Union[jax.Array, u.Quantity]:
