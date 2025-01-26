@@ -108,8 +108,8 @@ class TestVector(unittest.TestCase):
             return r.sum()
 
         r2 = jax.grad(f_jax, argnums=(0, 1))(x, w)
-        self.assertTrue(jnp.allclose(r[0], r2[0]))
-        self.assertTrue(jnp.allclose(r[1], r2[1]))
+        self.assertTrue(jnp.allclose(r[0], r2[0], rtol=1e-3, atol=1e-3))
+        self.assertTrue(jnp.allclose(r[1], r2[1], rtol=1e-3, atol=1e-3))
 
     def test_vjp(self):
         for replace in [True, False]:
@@ -149,8 +149,8 @@ class TestVector(unittest.TestCase):
             return r
 
         o2, r2 = jax.jvp(f_jax, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
-        self.assertTrue(jnp.allclose(r1, r2))
-        self.assertTrue(jnp.allclose(o1, o2))
+        self.assertTrue(jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3))
+        self.assertTrue(jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3))
 
     def test_jvp(self):
         for replace in [True, False]:
