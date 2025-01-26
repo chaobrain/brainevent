@@ -1,0 +1,7 @@
+-r requirements.txt
+numba
+brainstate
+
+# test requirements
+pytest
+absl-py

@@ -16,15 +16,15 @@
 
 import unittest
 
+import brainstate as bst
 import jax
 import jax.numpy as jnp
 
 import brainevent
-import brainstate as bst
-from ._csr_test_util import _get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
-
+from brainevent._csr_test_util import _get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
 
 # bst.environ.set(platform='cpu')
+
 
 class TestVectorCSR(unittest.TestCase):
     def test_vector_csr(self, ):
@@ -38,6 +38,18 @@ class TestVectorCSR(unittest.TestCase):
             csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
             y = x @ csr
             y2 = vector_csr(x, csr.data, indices, indptr, [m, n])
+            self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+
+    def test_csr_vector(self):
+        m, n = 20, 40
+        v = bst.random.rand(n)
+        indptr, indices = _get_csr(m, n, 0.1)
+
+        for homo_w in [True, False]:
+            data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
+            csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
+            y = csr @ v
+            y2 = csr_vector(v, csr.data, indices, indptr, [m, n])
             self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
     def test_vector_csr_vmap_vector(self):
@@ -54,6 +66,86 @@ class TestVectorCSR(unittest.TestCase):
             print(y.shape, y2.shape)
             self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
+    def _test_vjp(self, homo_w, replace, transpose):
+        n_in = 20
+        n_out = 30
+        shape = [n_in, n_out]
+        x = bst.random.rand(n_in) if transpose else bst.random.rand(n_out)
+
+        indptr, indices = _get_csr(n_in, n_out, 0.2, replace=replace)
+        w = 1.5 if homo_w else bst.init.Normal()(indices.shape)
+        csr = brainevent.CSR((w, indices, indptr), shape=shape)
+
+        def f_brainevent(x, w):
+            if transpose:
+                r = x @ csr.with_data(w)
+            else:
+                r = csr.with_data(w) @ x
+            return r.sum()
+
+        r = jax.grad(f_brainevent, argnums=(0, 1))(x, w)
+
+        # -------------------
+        # TRUE gradients
+
+        def f_jax(x, w):
+            if transpose:
+                r = vector_csr(x, w, indices, indptr, shape=shape)
+            else:
+                r = csr_vector(x, w, indices, indptr, shape=shape)
+            return r.sum()
+
+        r2 = jax.grad(f_jax, argnums=(0, 1))(x, w)
+        self.assertTrue(jnp.allclose(r[0], r2[0], rtol=1e-3, atol=1e-3))
+        self.assertTrue(jnp.allclose(r[1], r2[1], rtol=1e-3, atol=1e-3))
+
+    def test_vjp(self):
+        for replace in [True, False]:
+            for transpose in [True, False]:
+                for homo_w in [True, False]:
+                    print(f'replace = {replace}, transpose = {transpose}, homo_w = {homo_w}')
+                    self._test_vjp(homo_w=homo_w, replace=replace, transpose=transpose)
+
+    def _test_jvp(self, homo_w, replace, transpose):
+        n_in = 20
+        n_out = 30
+        shape = [n_in, n_out]
+        x = bst.random.rand(n_in if transpose else n_out)
+        indptr, indices = _get_csr(n_in, n_out, 0.1, replace=replace)
+
+        w = 1.5 if homo_w else bst.init.Normal()(indices.shape)
+        csr = brainevent.CSR((w, indices, indptr), shape=shape)
+
+        def f_brainevent(x, w):
+            if transpose:
+                r = x @ csr.with_data(w)
+            else:
+                r = csr.with_data(w) @ x
+            return r
+
+        o1, r1 = jax.jvp(f_brainevent, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
+
+        # -------------------
+        # TRUE gradients
+
+        def f_jax(x, w):
+            if transpose:
+                r = vector_csr(x, w, indices, indptr, shape=shape)
+            else:
+                r = csr_vector(x, w, indices, indptr, shape=shape)
+            return r
+
+        o2, r2 = jax.jvp(f_jax, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
+        self.assertTrue(jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3))
+        self.assertTrue(jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3))
+
+    def test_jvp(self):
+        for replace in [True, False]:
+            for transpose in [True, False]:
+                for homo_w in [True, False]:
+                    print(f'replace = {replace}, transpose = {transpose}, homo_w = {homo_w}')
+                    self._test_jvp(homo_w=homo_w, replace=replace, transpose=transpose)
+
 
 class TestMatrixCSR(unittest.TestCase):
     def test_matrix_csr(self):
@@ -68,22 +160,6 @@ class TestMatrixCSR(unittest.TestCase):
             y2 = matrix_csr(x, csr.data, indices, indptr, [m, n])
             self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
-
-class TestCSRVector(unittest.TestCase):
-    def test_csr_vector(self):
-        m, n = 20, 40
-        v = bst.random.rand(n)
-        indptr, indices = _get_csr(m, n, 0.1)
-
-        for homo_w in [True, False]:
-            data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
-            csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
-            y = csr @ v
-            y2 = csr_vector(v, csr.data, indices, indptr, [m, n])
-            self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
-
-
-class TestCSRMatrix(unittest.TestCase):
     def test_csr_matrix(self):
         m, n, k = 20, 40, 10
         matrix = bst.random.rand(n, k)

@@ -24,6 +24,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
+from ._fixed_conn_num_misc import generate_block_dim, check_shape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
 from ._xla_custom_op_pallas import PallasKernelGenerator
@@ -262,11 +263,12 @@ def fixed_post_num_mv_pallas_kernel_generator(
         raise NotImplementedError
 
 
-def fixed_post_num_mv_jvp_spikes(
+def fixed_post_num_mv_jvp_vector(
     spk_dot,
     weights,
     indices,
     spikes,
+    _,
     *,
     shape,
     transpose,
@@ -286,6 +288,7 @@ def fixed_post_num_mv_jvp_weights(
     weights,
     indices,
     vector,
+    _,
     *,
     shape,
     transpose,
@@ -305,6 +308,7 @@ def fixed_post_num_mv_transpose_rule(
     weights,
     indices,
     vector,
+    _,
     *,
     shape,
     transpose,
@@ -319,29 +323,37 @@ def fixed_post_num_mv_transpose_rule(
     # ∂L/∂spk = ∂L/∂y * ∂y/∂spk
     homo = weight_info.size == 1
     if ad.is_undefined_primal(vector):
-        if homo:
-            # homogeneous weight
-            ct_spk = jax.vmap(lambda idx: jnp.sum(ct[idx] * weights))(indices)
+        if type(ct) is ad.Zero:
+            ct_vector = ad.Zero(vector)
         else:
-            # heterogeneous weight
-            ct_spk = jax.vmap(lambda idx, w: jnp.inner(ct[idx], w))(indices, weights)
-        return (ad.Zero(vector) if type(ct) is ad.Zero else ct_spk), weights, indices
-
+            ct_vector = fixed_post_num_mv_p_call(
+                weights,
+                indices,
+                ct,
+                shape=shape,
+                transpose=not transpose
+            )[0]
+        return weights, indices, ct_vector, _
     else:
         # ∂L/∂w = ∂L/∂y * ∂y/∂w
-        if homo:
-            # scalar
-            ct_gmax = fixed_post_num_mv_p_call(
-                jnp.asarray(1., dtype=weight_info.dtype),
+        if type(ct) is ad.Zero:
+            ct_weight = ad.Zero(weights)
+        elif homo:
+            ct_weight = fixed_post_num_mv_p_call(
+                jnp.ones([1], dtype=weight_info.dtype),
                 indices,
                 vector,
                 shape=shape,
-                transpose=transpose,
-            )
-            ct_gmax = jnp.inner(ct, ct_gmax[0])
+                transpose=transpose
+            )[0]
+            ct_weight = jnp.inner(ct, ct_weight).reshape(*weight_info.shape)
+
         else:
-            ct_gmax = jax.vmap(lambda vec, one_ind: ct[one_ind] * vec)(vector, indices)
-        return vector, (ad.Zero(weights) if type(ct) is ad.Zero else ct_gmax), indices
+            if transpose:
+                ct_weight = jax.vmap(lambda v, ind: v * ct[ind])(vector, indices)
+            else:
+                ct_weight = jax.vmap(lambda c, ind: c * vector[ind])(ct, indices)
+        return ct_weight, indices, vector, _
 
 
 def fixed_post_num_mv_p_call(
@@ -352,17 +364,7 @@ def fixed_post_num_mv_p_call(
     shape: Tuple[int, int],
     transpose: bool,
 ) -> Tuple[Union[jax.Array, u.Quantity]]:
-    assert weights.ndim == 2, 'weight dim should be 2'
-    assert weights.shape[0] == shape[0], f'Pre size mismatch, got {weights.shape[0]} != {shape[0]}'
-    n_pre, n_post = shape
-    if transpose:
-        out = jax.ShapeDtypeStruct([n_post], weights.dtype)
-        assert vector.shape[0] == n_pre, f'When transpose, vector shape should be {n_pre}, got {vector.shape[0]}'
-    else:
-        out = jax.ShapeDtypeStruct([n_pre], weights.dtype)
-        assert vector.shape[0] == n_post, f'When not transpose, vector shape should be {n_post}, got {vector.shape[0]}'
-
-    n_conn = indices.shape[1]
+    out, weights, n_pre, n_post = check_shape(weights, indices, vector, shape, transpose)
     weights, w_unit = u.split_mantissa_unit(weights)
     vector, v_unit = u.split_mantissa_unit(vector)
 
@@ -381,31 +383,11 @@ def fixed_post_num_mv_p_call(
     return (u.maybe_decimal(r * v_unit * w_unit),)
 
 
-def _generate_block_dim(
-    indices_info: jax.ShapeDtypeStruct,
-    **kwargs
-) -> int:
-    # which is used for TPU/GPU kernel written in JAX pallas
-    n_conn = indices_info.shape[1]
-    if n_conn <= 32:
-        block_size = 32
-    elif n_conn <= 64:
-        block_size = 64
-    elif n_conn <= 128:
-        block_size = 128
-    elif n_conn <= 256:
-        block_size = 256
-    else:
-        block_size = 128
-
-    return block_size
-
-
 fixed_post_num_mv_p = XLACustomKernel(
     'fixed_post_num_mv',
     cpu_kernel=NumbaKernelGenerator(
         fixed_post_num_mv_numba_kernel_generator,
-        input_output_aliases={2: 0}
+        input_output_aliases={3: 0}
     ),
     gpu_kernel=WarpKernelGenerator(
         fixed_post_num_mv_warp_kernel_generator,
@@ -414,16 +396,18 @@ fixed_post_num_mv_p = XLACustomKernel(
             if transpose else
             indices_info.shape[0]
         ),
-        input_output_aliases={2: 0}
+        input_output_aliases={3: 0}
     ),
     tpu_kernel=PallasKernelGenerator(
         fixed_post_num_mv_pallas_kernel_generator,
-        block_dim=_generate_block_dim
+        block_dim=generate_block_dim,
+        input_output_aliases={3: 0}
     ),
 )
 fixed_post_num_mv_p.defjvp(
     fixed_post_num_mv_jvp_weights,
     None,
-    fixed_post_num_mv_jvp_spikes
+    fixed_post_num_mv_jvp_vector,
+    None,
 )
 fixed_post_num_mv_p.def_transpose_rule(fixed_post_num_mv_transpose_rule)

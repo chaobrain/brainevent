@@ -169,7 +169,7 @@ def numba_cpu_custom_call_target(output_ptrs, input_ptrs):
 
     # register
     xla_c_rule = cfunc(sig)(new_f)
-    target_name = f'numba_custom_call_{str(xla_c_rule.address)}'
+    target_name = f'brainevent_numba_call_{str(xla_c_rule.address)}'
 
     PyCapsule_Destructor = ctypes.CFUNCTYPE(None, ctypes.py_object)
     PyCapsule_New = ctypes.pythonapi.PyCapsule_New

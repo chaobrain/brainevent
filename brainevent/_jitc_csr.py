@@ -27,7 +27,7 @@ from brainunit.sparse._csr import _csr_to_coo, _csr_todense
 from jax.experimental.sparse import CSR
 from jax.experimental.sparse import JAXSparse
 
-from ._array import EventArray
+from ._event import EventArray
 from ._csr_event_impl import _event_csr_matvec, _event_csr_matmat
 from ._csr_float_impl import _csr_matvec, _csr_matmat
 

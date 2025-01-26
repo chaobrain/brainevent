@@ -73,9 +73,18 @@ class WarpKernelGenerator:
     __module__ = 'brainevent'
 
     generator: Callable[..., Callable]
-    dim: Union[int, Sequence[int], Callable[..., Sequence[int]], Callable[..., int]]
-    input_output_aliases: Union[Dict[int, int], Callable[..., Dict[int, int]], None] = None
+
+    # "dim" describes the launch dimensions of the kernel.
+    dim: Union[int, Sequence[int], Callable[..., Sequence[int]], Callable[..., int]] = None
+
+    # If "dim" is not provided, "tile" and "block_dim" should be provided.
+    # Then, the kernel is launched with tile-based operation:
+    #    https://nvidia.github.io/warp/modules/tiles.html
+    tile: Union[int, Sequence[int], Callable[..., Sequence[int]], Callable[..., int]] = None
     block_dim: Union[int, Callable[..., int], None] = None
+
+    # input_output_aliases: Dict[int, int]. The input-output aliases.
+    input_output_aliases: Union[Dict[int, int], Callable[..., Dict[int, int]], None] = None
 
     def generate_kernel(self, **kwargs):
         return self.generator(**kwargs)
@@ -331,9 +340,9 @@ def _warp_gpu_register_capsule():
 
     # Register the callback in XLA.
     if jax.__version_info__ < (0, 4, 35):
-        xla_client.register_custom_call_target("brainstate_warp_gpu_call", warp_capsule, platform="gpu")
+        xla_client.register_custom_call_target("brainevent_warp_gpu_call", warp_capsule, platform="gpu")
     else:
-        je.ffi.register_ffi_target('brainstate_warp_gpu_call', warp_capsule, platform="gpu", api_version=0)
+        je.ffi.register_ffi_target('brainevent_warp_gpu_call', warp_capsule, platform="gpu", api_version=0)
 
 
 def _register_warp_kernel(wp_kernel) -> int:
@@ -427,19 +436,6 @@ def _warp_gpu_lowering(
     kernel_id = _register_warp_kernel(wp_kernel)
 
     # ------------------
-    # launch dimensions
-    # ------------------
-    warp_dims = kernel_generator.dim
-    if callable(warp_dims):
-        warp_dims = warp_dims(**kwargs)
-    if isinstance(warp_dims, int):
-        warp_dims = (warp_dims,)
-    assert isinstance(warp_dims, (tuple, list)), (
-        f"Invalid launch dimensions, expected "
-        f"tuple or list, got {warp_dims}"
-    )
-
-    # ------------------
     # block dimensions
     # ------------------
     block_dim = kernel_generator.block_dim
@@ -453,6 +449,36 @@ def _warp_gpu_lowering(
         raise ValueError(
             f"Invalid block dimensions, expected "
             f"int, got {block_dim}"
+        )
+
+    # ------------------
+    # launch dimensions
+    # ------------------
+    warp_dims = kernel_generator.dim
+    if warp_dims is None:
+        assert kernel_generator.tile is not None, ('The tile dimensions should be provided when '
+                                                   'the launch dimensions are not provided.')
+        assert kernel_generator.block_dim is not None, (
+            'The block dimensions should be provided when the tile dimensions are provided.'
+        )
+        warp_dims = kernel_generator.tile
+        if callable(warp_dims):
+            warp_dims = warp_dims(**kwargs)
+        if isinstance(warp_dims, int):
+            warp_dims = (warp_dims,)
+        assert isinstance(warp_dims, (tuple, list)), (
+            f"Invalid launch dimensions, expected "
+            f"tuple or list, got {warp_dims}"
+        )
+        warp_dims = warp_dims + (block_dim,)
+    else:
+        if callable(warp_dims):
+            warp_dims = warp_dims(**kwargs)
+        if isinstance(warp_dims, int):
+            warp_dims = (warp_dims,)
+        assert isinstance(warp_dims, (tuple, list)), (
+            f"Invalid launch dimensions, expected "
+            f"tuple or list, got {warp_dims}"
         )
 
     # TODO: This may not be necessary, but it is perhaps better not to be
@@ -503,7 +529,7 @@ def _warp_gpu_lowering(
 
     # custom call
     out = custom_call(
-        b"brainstate_warp_gpu_call",
+        b"brainevent_warp_gpu_call",
         result_types=result_types,
         operands=args,
         backend_config=descriptor.encode("utf-8"),
