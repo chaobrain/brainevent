@@ -125,7 +125,6 @@ def event_csrmv_cpu_kernel_generator(
             if vector_info.dtype == jnp.bool_:
                 @numba.njit(**numba_environ.setting)
                 def mv(weights, indices, indptr, v, _, posts):
-                    posts[:] = 0.
                     w = weights[0]
                     for i in range(v.shape[0]):
                         if v[i]:
@@ -135,7 +134,6 @@ def event_csrmv_cpu_kernel_generator(
             elif float_as_event:
                 @numba.njit(**numba_environ.setting)
                 def mv(weights, indices, indptr, v, _, posts):
-                    posts[:] = 0.
                     w = weights[0]
                     for i in range(v.shape[0]):
                         if v[i] != 0.:
@@ -145,7 +143,6 @@ def event_csrmv_cpu_kernel_generator(
             else:
                 @numba.njit(**numba_environ.setting)
                 def mv(weights, indices, indptr, v, _, posts):
-                    posts[:] = 0.
                     w = weights[0]
                     for i in range(v.shape[0]):
                         sp = v[i]
@@ -158,7 +155,6 @@ def event_csrmv_cpu_kernel_generator(
             if vector_info.dtype == jnp.bool_:
                 @numba.njit(**numba_environ.setting)
                 def mv(weights, indices, indptr, v, _, posts):
-                    posts[:] = 0.
                     w = weights[0]
                     for i in range(indptr.shape[0] - 1):
                         r = 0.
@@ -170,7 +166,6 @@ def event_csrmv_cpu_kernel_generator(
             elif float_as_event:
                 @numba.njit(**numba_environ.setting)
                 def mv(weights, indices, indptr, v, _, posts):
-                    posts[:] = 0.
                     w = weights[0]
                     for i in range(indptr.shape[0] - 1):
                         r = 0.
@@ -182,7 +177,6 @@ def event_csrmv_cpu_kernel_generator(
             else:
                 @numba.njit(**numba_environ.setting)
                 def mv(weights, indices, indptr, v, _, posts):
-                    posts[:] = 0.
                     w = weights[0]
                     for i in range(indptr.shape[0] - 1):
                         r = 0.
