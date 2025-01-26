@@ -45,14 +45,15 @@ __all__ = [
 numba_installed = importlib.util.find_spec('numba') is not None
 
 
-class EnvironContext(threading.local):
-    def __init__(self):
+class NumbaEnvironment(threading.local):
+    def __init__(self, *args, **kwargs):
         # default environment settings
+        super().__init__(*args, **kwargs)
         self.parallel: bool = False
         self.setting: dict = dict(nogil=True, fastmath=True)
 
 
-numba_environ = EnvironContext()
+numba_environ = NumbaEnvironment()
 
 
 @contextmanager
