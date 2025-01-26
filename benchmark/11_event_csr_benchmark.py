@@ -23,8 +23,8 @@ from scipy.sparse import csr_matrix, coo_matrix
 import brainevent
 import brainstate as bst
 
-bst.environ.set(platform='cpu')
-# bst.environ.set(platform='gpu')
+# bst.environ.set(platform='cpu')
+bst.environ.set(platform='gpu')
 
 
 files = [

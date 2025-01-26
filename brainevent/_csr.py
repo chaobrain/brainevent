@@ -43,12 +43,30 @@ class CSR(u.sparse.SparseMatrix):
     data: Union[jax.Array, u.Quantity]
     indices: jax.Array
     indptr: jax.Array
+    id: jax.Array
     shape: tuple[int, int]
     nse = property(lambda self: self.indices.size)
     dtype = property(lambda self: self.data.dtype)
 
     def __init__(self, args, *, shape):
         self.data, self.indices, self.indptr = map(u.math.asarray, args)
+        m = (indices.shape[0] - 1) // 1024 + 1
+        self.id = jnp.zeros(m, self.indices.dtype)
+        sum = 0
+        k = 0
+
+        def cond_fun(carry):
+            k, sum, indptr = carry
+            return indptr[k + 1] <= sum
+
+        def body_fun(carry):
+            k, sum, indptr = carry
+            return k + 1, sum, indptr
+
+        for i in range(1, m):
+            sum += 1024
+            k = jax.lax.while_loop(cond_fun, body_fun, (k, sum, self.indptr))[0]
+            self.id.at[i].set(k)
         super().__init__(args, shape=shape)
 
     @classmethod
@@ -197,6 +215,7 @@ class CSR(u.sparse.SparseMatrix):
                     data,
                     self.indices,
                     self.indptr,
+                    self.id,
                     other,
                     shape=self.shape
                 )
@@ -219,6 +238,7 @@ class CSR(u.sparse.SparseMatrix):
                     data,
                     self.indices,
                     self.indptr,
+                    self.id,
                     other,
                     shape=self.shape
                 )
@@ -246,6 +266,7 @@ class CSR(u.sparse.SparseMatrix):
                     data,
                     self.indices,
                     self.indptr,
+                    self.id,
                     other,
                     shape=self.shape,
                     transpose=True
@@ -272,6 +293,7 @@ class CSR(u.sparse.SparseMatrix):
                     data,
                     self.indices,
                     self.indptr,
+                    self.id,
                     other,
                     shape=self.shape,
                     transpose=True
@@ -313,12 +335,30 @@ class CSC(u.sparse.SparseMatrix):
     data: Union[jax.Array, u.Quantity]
     indices: jax.Array
     indptr: jax.Array
+    id: jax.Array
     shape: tuple[int, int]
     nse = property(lambda self: self.indices.size)
     dtype = property(lambda self: self.data.dtype)
 
     def __init__(self, args, *, shape):
         self.data, self.indices, self.indptr = map(u.math.asarray, args)
+        m = (indices.shape[0] - 1) // 1024 + 1
+        self.id = jnp.zeros(m, self.indices.dtype)
+        sum = 0
+        k = 0
+
+        def cond_fun(carry):
+            k, sum, indptr = carry
+            return indptr[k + 1] <= sum
+
+        def body_fun(carry):
+            k, sum, indptr = carry
+            return k + 1, sum, indptr
+
+        for i in range(1, m):
+            sum += 1024
+            k = jax.lax.while_loop(cond_fun, body_fun, (k, sum, self.indptr))[0]
+            self.id.at[i].set(k)
         super().__init__(args, shape=shape)
 
     @classmethod
@@ -479,6 +519,7 @@ class CSC(u.sparse.SparseMatrix):
                     data,
                     self.indices,
                     self.indptr,
+                    self.id,
                     other,
                     shape=self.shape[::-1],
                     transpose=True
@@ -504,6 +545,7 @@ class CSC(u.sparse.SparseMatrix):
                     data,
                     self.indices,
                     self.indptr,
+                    self.id,
                     other,
                     shape=self.shape[::-1],
                     transpose=True
@@ -532,6 +574,7 @@ class CSC(u.sparse.SparseMatrix):
                     data,
                     self.indices,
                     self.indptr,
+                    self.id,
                     other,
                     shape=self.shape[::-1],
                     transpose=False
@@ -541,7 +584,8 @@ class CSC(u.sparse.SparseMatrix):
                 r = _event_csr_matmat(
                     data,
                     self.indices,
-                    self.indptr, other,
+                    self.indptr,
+                    other,
                     shape=self.shape[::-1],
                     transpose=False
                 )
@@ -557,6 +601,7 @@ class CSC(u.sparse.SparseMatrix):
                     data,
                     self.indices,
                     self.indptr,
+                    self.id,
                     other,
                     shape=self.shape[::-1],
                     transpose=False
@@ -566,7 +611,8 @@ class CSC(u.sparse.SparseMatrix):
                 r = _csr_matmat(
                     data,
                     self.indices,
-                    self.indptr, other,
+                    self.indptr,
+                    other,
                     shape=self.shape[::-1],
                     transpose=False
                 )
