@@ -15,16 +15,51 @@
 
 # -*- coding: utf-8 -*-
 
+from typing import Callable, Union, Sequence
+
 import warnings
 from functools import partial
 
+import jax
 import numpy as np
 from jax import core, numpy as jnp
 from jax.interpreters import ad, mlir
 from jaxlib import gpu_sparse
+import brainunit as u
+
+from ._xla_custom_op import XLACustomKernel
+from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
+from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
+
+Kernel = Callable
 
 __all__ = [
+    "_coo_matvec",
+    "_coo_matmat",
 ]
+
+
+def _coo_matvec(
+    data: Union[jax.Array, u.Quantity],
+    row: jax.Array,
+    col: jax.Array,
+    v: jax.Array,
+    *,
+    shape: Sequence[int],
+    transpose: bool = False
+) -> Union[jax.Array, u.Quantity]:
+    ...
+
+def _coo_matmat(
+    data: Union[jax.Array, u.Quantity],
+    row: jax.Array,
+    col: jax.Array,
+    B: jax.Array,
+    *,
+    shape: Sequence[int],
+    transpose: bool = False
+):
+    ...
 
 
 # --------------------------------------------------------------------

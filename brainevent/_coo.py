@@ -24,6 +24,7 @@ from typing import Any, Tuple, Sequence, NamedTuple
 import jax
 import jax.numpy as jnp
 import numpy as np
+import brainunit as u
 from brainunit._base import Quantity, split_mantissa_unit, maybe_decimal, get_unit
 from brainunit._sparse_base import SparseMatrix
 from brainunit.math._fun_array_creation import asarray
@@ -32,6 +33,10 @@ from jax import lax
 from jax import tree_util
 from jax._src.lax.lax import _const
 from jax.experimental.sparse import JAXSparse
+
+from ._array import EventArray
+from ._coo_event_impl import _event_coo_matvec, _event_coo_matmat
+from ._coo_float_impl import _coo_matvec, _coo_matmat
 
 __all__ = [
     'COO', 'COOInfo',
@@ -96,7 +101,10 @@ class COO(SparseMatrix):
         nse: int | None = None,
         index_dtype: jax.typing.DTypeLike = np.int32
     ) -> COO:
-        return coo_fromdense(mat, nse=nse, index_dtype=index_dtype)
+        if nse is None:
+            nse = (u.get_mantissa(mat) != 0.).sum()
+        coo = u.sparse.coo_fromdense(mat, nse=nse, index_dtype=index_dtype)
+        return COO(coo.data, coo.row, coo.col, shape=coo.shape)
 
     def _sort_indices(self) -> COO:
         """Return a copy of the COO matrix with sorted indices.

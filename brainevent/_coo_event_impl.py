@@ -14,3 +14,43 @@
 # ==============================================================================
 
 # -*- coding: utf-8 -*-
+
+
+from typing import Callable, Union, Sequence
+
+import brainunit as u
+import jax
+import jax.numpy as jnp
+import numpy as np
+from brainunit.sparse._csr import _csr_to_coo
+from jax.interpreters import ad
+
+from ._coo_float_impl import _coo_matvec, _coo_matmat
+from ._xla_custom_op import XLACustomKernel
+from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
+from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
+
+
+def _event_coo_matvec(
+    data: Union[jax.Array, u.Quantity],
+    row: jax.Array,
+    col: jax.Array,
+    v: jax.Array,
+    *,
+    shape: Sequence[int],
+    transpose: bool = False,
+    float_as_event: bool = True
+) -> Union[jax.Array, u.Quantity]:
+    ...
+
+def _event_coo_matmat(
+data: Union[jax.Array, u.Quantity],
+    row: jax.Array,
+    col: jax.Array,
+    B: jax.Array,
+    *,
+    shape: Sequence[int],
+    transpose: bool = False,
+    float_as_event: bool = True
+) -> Union[jax.Array, u.Quantity]:
+    ...
