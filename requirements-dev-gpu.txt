@@ -1,8 +1,6 @@
 -r requirements.txt
-numba
 warp-lang
 brainstate
 
 # test requirements
 pytest
-absl-py
