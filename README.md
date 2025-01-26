@@ -32,7 +32,7 @@ Particularly, it provides the following class to represent binary events in the 
 - ``EventArray``: representing array with a vector/matrix of events.
 
 Furthermore, it implements the following commonly used data structures for event-driven computation
-of the above classes:
+of the above class:
 
 - ``COO``: a sparse matrix in COO format for sparse and event-driven computation.
 - ``CSR``: a sparse matrix in CSR format for sparse and event-driven computation.
@@ -44,6 +44,10 @@ of the above classes:
 - ``FixedPreNumConn``: a fixed number of pre-synaptic connections for sparse and event-driven computation.
 - ``FixedPostNumConn``: a fixed number of post-synaptic connections for sparse and event-driven computation.
 - ...
+
+
+`BrainEvent` is fully compatible with physical units and unit-aware computations provided in [BrainUnit](https://github.com/chaobrain/brainunit).
+
 
 ## Installation
 
