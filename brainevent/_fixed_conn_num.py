@@ -25,8 +25,8 @@ from brainunit.sparse._coo import _coo_todense, COOInfo
 from jax.experimental.sparse import JAXSparse
 
 from ._array import EventArray
-from ._fixed_conn_num_float_impl import fixed_post_num_mv_p_call
 from ._fixed_conn_num_event_impl import event_fixed_post_num_mv_p_call
+from ._fixed_conn_num_float_impl import fixed_post_num_mv_p_call
 
 __all__ = [
     'FixedPostNumConn',
@@ -297,16 +297,13 @@ class FixedPostNumConn(u.sparse.SparseMatrix):
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
     def tree_flatten(self):
-        return (self.data,), {"shape": self.shape, "indices": self.indices}
+        return (self.data,), (self.indices, self.shape)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
-        obj = object.__new__(cls)
-        obj.data, = children
-        if aux_data.keys() != {'shape', 'indices'}:
-            raise ValueError(f"CSR.tree_unflatten: invalid {aux_data=}")
-        obj.__dict__.update(**aux_data)
-        return obj
+        data, = children
+        indices, shape = aux_data
+        return FixedPostNumConn((data, indices), shape=shape)
 
 
 # TODO: docstring needed to be improved
@@ -571,16 +568,13 @@ class FixedPreNumConn(u.sparse.SparseMatrix):
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
     def tree_flatten(self):
-        return (self.data,), {"shape": self.shape, "indices": self.indices}
+        return (self.data,), (self.indices, self.shape)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
-        obj = object.__new__(cls)
-        obj.data, = children
-        if aux_data.keys() != {'shape', 'indices'}:
-            raise ValueError(f"CSR.tree_unflatten: invalid {aux_data=}")
-        obj.__dict__.update(**aux_data)
-        return obj
+        data, = children
+        indices, shape = aux_data
+        return FixedPreNumConn((data, indices), shape=shape)
 
 
 def fixed_post_num_to_coo(self: FixedPostNumConn):

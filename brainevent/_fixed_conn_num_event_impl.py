@@ -403,6 +403,7 @@ def event_fixed_post_num_mv_jvp_spikes(
     weights,
     indices,
     spikes,
+    _,
     *,
     shape,
     transpose,
@@ -422,6 +423,7 @@ def event_fixed_post_num_mv_jvp_weights(
     weights,
     indices,
     spikes,
+    _,
     *,
     shape,
     float_as_event,
@@ -443,6 +445,7 @@ def event_fixed_post_num_mv_transpose_rule(
     weights,
     indices,
     spikes,
+    _,
     *,
     float_as_event,
     shape,
@@ -560,6 +563,7 @@ event_fixed_post_num_mv_p.defjvp(
     event_fixed_post_num_mv_jvp_weights,
     None,
     event_fixed_post_num_mv_jvp_spikes,
+    None,
 )
 event_fixed_post_num_mv_p.def_transpose_rule(
     event_fixed_post_num_mv_transpose_rule

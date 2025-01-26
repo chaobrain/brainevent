@@ -365,7 +365,6 @@ def fixed_post_num_mv_p_call(
     transpose: bool,
 ) -> Tuple[Union[jax.Array, u.Quantity]]:
     out, weights, n_pre, n_post = check_shape(weights, indices, vector, shape, transpose)
-    n_conn = indices.shape[1]
     weights, w_unit = u.split_mantissa_unit(weights)
     vector, v_unit = u.split_mantissa_unit(vector)
 
