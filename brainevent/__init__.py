@@ -15,30 +15,28 @@
 
 __version__ = "0.0.1"
 
-from ._array import EventArray
+from ._event import EventArray
 from ._block_csr import BlockCSR
 from ._block_ell import BlockELL
 from ._coo import COO
 from ._csr import CSR, CSC
 from ._fixed_conn_num import FixedPostNumConn, FixedPreNumConn
 from ._jitc_csr import JITC_CSR, JITC_CSC
-from ._matrix import EventMatrix
-from ._vector import EventVector
 from ._xla_custom_op import XLACustomKernel, defjvp
 from ._xla_custom_op_numba import NumbaKernelGenerator, set_numba_environ
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type
 
 __all__ = [
+    # events
+    'EventArray',
+
     # data structures
     'COO',
     'CSR', 'CSC',
     'JITC_CSR', 'JITC_CSC',
     'BlockCSR',
     'BlockELL',
-    'EventArray',
-    'EventVector',
-    'EventMatrix',
     'FixedPreNumConn',
     'FixedPostNumConn',
 

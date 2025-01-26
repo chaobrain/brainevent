@@ -22,18 +22,17 @@
 
 
 
-Brain is characterized by the discrete spiking events, which are the fundamental units of computation in the brain. 
+Brain is characterized by the discrete spiking events, which are the fundamental units of computation in the brain.
 
-`BrainEvent` provides a set of data structures and algorithms for such event-driven computation, which can be used to 
+`BrainEvent` provides a set of data structures and algorithms for such event-driven computation, which can be used to
 model the brain dynamics in a more efficient and biologically plausible way.
 
 Particularly, it provides the following class to represent binary events in the brain:
 
-- ``EventVector``: a vector of events, $\mathbf{v}$,
-- ``EventMatrix``: a matrix of events, $\mathbf{M}$,
-- ``EventArray``: the general class for representing events.
+- ``EventArray``: representing array with a vector/matrix of events.
 
-Furthermore, it implements the following commonly used data structures for event-driven computation of the above classes:
+Furthermore, it implements the following commonly used data structures for event-driven computation
+of the above classes:
 
 - ``COO``: a sparse matrix in COO format for sparse and event-driven computation.
 - ``CSR``: a sparse matrix in CSR format for sparse and event-driven computation.
@@ -45,9 +44,6 @@ Furthermore, it implements the following commonly used data structures for event
 - ``FixedPreNumConn``: a fixed number of pre-synaptic connections for sparse and event-driven computation.
 - ``FixedPostNumConn``: a fixed number of post-synaptic connections for sparse and event-driven computation.
 - ...
-
-
-
 
 ## Installation
 
