@@ -215,7 +215,6 @@ class CSR(u.sparse.SparseMatrix):
                     data,
                     self.indices,
                     self.indptr,
-                    self.id,
                     other,
                     shape=self.shape
                 )
@@ -266,7 +265,6 @@ class CSR(u.sparse.SparseMatrix):
                     data,
                     self.indices,
                     self.indptr,
-                    self.id,
                     other,
                     shape=self.shape,
                     transpose=True
@@ -519,7 +517,6 @@ class CSC(u.sparse.SparseMatrix):
                     data,
                     self.indices,
                     self.indptr,
-                    self.id,
                     other,
                     shape=self.shape[::-1],
                     transpose=True
@@ -574,7 +571,6 @@ class CSC(u.sparse.SparseMatrix):
                     data,
                     self.indices,
                     self.indptr,
-                    self.id,
                     other,
                     shape=self.shape[::-1],
                     transpose=False
