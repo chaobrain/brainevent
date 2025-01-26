@@ -25,6 +25,7 @@ import jax.numpy as jnp
 from jax.interpreters import ad
 
 from ._fixed_conn_num_float_impl import fixed_post_num_mv_p_call
+from ._fixed_conn_num_misc import generate_block_dim, check_shape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
 from ._xla_custom_op_pallas import PallasKernelGenerator
@@ -514,17 +515,7 @@ def event_fixed_post_num_mv_p_call(
     transpose: bool = False,
     float_as_event: bool = True,
 ) -> Tuple[Union[jax.Array, u.Quantity]]:
-    assert weights.ndim == 2, 'weight dim should be 2'
-    assert weights.shape[0] == shape[0], f'Pre size mismatch, got {weights.shape[0]} != {shape[0]}'
-    n_pre, n_post = shape
-
-    if transpose:
-        out = jax.ShapeDtypeStruct([n_post], weights.dtype)
-        assert spikes.shape[0] == n_pre, f'When transpose, vector shape should be {n_pre}, got {spikes.shape[0]}'
-    else:
-        out = jax.ShapeDtypeStruct([n_pre], weights.dtype)
-        assert spikes.shape[0] == n_post, f'When not transpose, vector shape should be {n_post}, got {spikes.shape[0]}'
-
+    out, weights, n_pre, n_post = check_shape(weights, indices, spikes, shape, transpose)
     weights, w_unit = u.split_mantissa_unit(weights)
     spikes, v_unit = u.split_mantissa_unit(spikes)
 
@@ -544,31 +535,11 @@ def event_fixed_post_num_mv_p_call(
     return (u.maybe_decimal(r * v_unit * w_unit),)
 
 
-def _generate_block_dim(
-    indices_info: jax.ShapeDtypeStruct,
-    **kwargs
-) -> int:
-    n_conn = indices_info.shape[1]
-    if n_conn <= 16:
-        block_size = 16
-    elif n_conn <= 32:
-        block_size = 32
-    elif n_conn <= 64:
-        block_size = 64
-    elif n_conn <= 128:
-        block_size = 128
-    elif n_conn <= 256:
-        block_size = 256
-    else:
-        block_size = 128
-    return block_size
-
-
 event_fixed_post_num_mv_p = XLACustomKernel(
     'event_fixed_post_num_mv',
     cpu_kernel=NumbaKernelGenerator(
         event_fixed_post_num_mv_numba_kernel_generator,
-        input_output_aliases={2: 0}
+        input_output_aliases={3: 0}
     ),
     gpu_kernel=WarpKernelGenerator(
         event_fixed_post_num_mv_pallas_kernel_generator,
@@ -577,12 +548,12 @@ event_fixed_post_num_mv_p = XLACustomKernel(
             if transpose else
             indices_info.shape[0]
         ),
-        input_output_aliases={2: 0}
+        input_output_aliases={3: 0}
     ),
     tpu_kernel=PallasKernelGenerator(
         event_fixed_post_num_mv_pallas_kernel_generator,
-        block_dim=_generate_block_dim,
-        input_output_aliases={2: 0}
+        block_dim=generate_block_dim,
+        input_output_aliases={3: 0}
     ),
 )
 event_fixed_post_num_mv_p.defjvp(

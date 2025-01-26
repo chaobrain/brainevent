@@ -331,9 +331,9 @@ def _warp_gpu_register_capsule():
 
     # Register the callback in XLA.
     if jax.__version_info__ < (0, 4, 35):
-        xla_client.register_custom_call_target("brainstate_warp_gpu_call", warp_capsule, platform="gpu")
+        xla_client.register_custom_call_target("brainevent_warp_gpu_call", warp_capsule, platform="gpu")
     else:
-        je.ffi.register_ffi_target('brainstate_warp_gpu_call', warp_capsule, platform="gpu", api_version=0)
+        je.ffi.register_ffi_target('brainevent_warp_gpu_call', warp_capsule, platform="gpu", api_version=0)
 
 
 def _register_warp_kernel(wp_kernel) -> int:
@@ -503,7 +503,7 @@ def _warp_gpu_lowering(
 
     # custom call
     out = custom_call(
-        b"brainstate_warp_gpu_call",
+        b"brainevent_warp_gpu_call",
         result_types=result_types,
         operands=args,
         backend_config=descriptor.encode("utf-8"),

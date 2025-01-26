@@ -21,7 +21,7 @@ import jax.numpy as jnp
 
 import brainevent
 import brainstate as bst
-from ._csr_test_util import _get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
+from brainevent._csr_test_util import _get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
 
 
 # bst.environ.set(platform='cpu')

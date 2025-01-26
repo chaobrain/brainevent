@@ -209,7 +209,7 @@ class FixedPostNumConn(u.sparse.SparseMatrix):
                     shape=self.shape,
                     transpose=False,
                     float_as_event=True,
-                )
+                )[0]
             elif other.ndim == 2:
                 return _event_perfect_ellmm(
                     data,
@@ -231,7 +231,7 @@ class FixedPostNumConn(u.sparse.SparseMatrix):
                     other,
                     shape=self.shape,
                     transpose=False,
-                )
+                )[0]
             elif other.ndim == 2:
                 return _perfect_ellmm(
                     data,
@@ -252,13 +252,13 @@ class FixedPostNumConn(u.sparse.SparseMatrix):
         if isinstance(other, EventArray):
             other = other.data
             if other.ndim == 1:
-                return _event_perfect_ellmv(
+                return event_fixed_post_num_mv_p_call(
                     data,
                     self.indices,
                     other,
                     shape=self.shape,
                     transpose=True,
-                )
+                )[0]
             elif other.ndim == 2:
                 other = other.T
                 r = _event_perfect_ellmm(
@@ -276,13 +276,13 @@ class FixedPostNumConn(u.sparse.SparseMatrix):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
-                return _perfect_ellmv(
+                return fixed_post_num_mv_p_call(
                     data,
                     self.indices,
                     other,
                     shape=self.shape,
                     transpose=True,
-                )
+                )[0]
             elif other.ndim == 2:
                 other = other.T
                 r = _perfect_ellmm(
