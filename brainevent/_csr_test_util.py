@@ -17,12 +17,19 @@
 
 import jax.numpy as jnp
 import numpy as np
+import brainstate as bst
 
 
-def _get_csr(n_pre, n_post, prob):
+def _get_csr(n_pre, n_post, prob, replace=True):
     n_conn = int(n_post * prob)
     indptr = np.arange(n_pre + 1) * n_conn
-    indices = np.random.randint(0, n_post, (n_pre * n_conn,))
+    if replace:
+        indices = np.random.randint(0, n_post, (n_pre * n_conn,))
+    else:
+        indices = bst.compile.for_loop(
+            lambda *args: bst.random.choice(n_post, n_conn, replace=False),
+            length=n_pre
+        ).flatten()
     return indptr, indices
 
 

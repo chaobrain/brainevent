@@ -15,18 +15,19 @@
 
 
 import operator
-from typing import Union
+from typing import Union, Sequence, Tuple
 
 import brainunit as u
 import jax
 import jax.numpy as jnp
+import numpy as np
 from brainunit.sparse._csr import _csr_to_coo, _csr_todense
 from jax.experimental.sparse import CSR
 from jax.experimental.sparse import JAXSparse
 
-from ._event import EventArray
 from ._csr_event_impl import _event_csr_matvec, _event_csr_matmat
 from ._csr_float_impl import _csr_matvec, _csr_matmat
+from ._event import EventArray
 
 __all__ = [
     'CSR',
@@ -47,7 +48,12 @@ class CSR(u.sparse.SparseMatrix):
     nse = property(lambda self: self.indices.size)
     dtype = property(lambda self: self.data.dtype)
 
-    def __init__(self, args, *, shape):
+    def __init__(
+        self,
+        args: Sequence[Union[jax.Array, np.ndarray, u.Quantity]],
+        *,
+        shape: Tuple[int, int]
+    ):
         self.data, self.indices, self.indptr = map(u.math.asarray, args)
         super().__init__(args, shape=shape)
 
@@ -314,7 +320,12 @@ class CSC(u.sparse.SparseMatrix):
     nse = property(lambda self: self.indices.size)
     dtype = property(lambda self: self.data.dtype)
 
-    def __init__(self, args, *, shape):
+    def __init__(
+        self,
+        args: Sequence[Union[jax.Array, np.ndarray, u.Quantity]],
+        *,
+        shape: Tuple[int, int]
+    ):
         self.data, self.indices, self.indptr = map(u.math.asarray, args)
         super().__init__(args, shape=shape)
 
@@ -579,4 +590,3 @@ class CSC(u.sparse.SparseMatrix):
         data, = children
         indices, indptr, shape = aux_data
         return CSC([data, indices, indptr], shape=shape)
-

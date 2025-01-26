@@ -47,6 +47,10 @@ def _as_jax_array_(obj):
     return obj.value if isinstance(obj, EventArray) else obj
 
 
+def _known_type(x):
+    return isinstance(x, (u.Quantity, jax.Array, np.ndarray))
+
+
 ArrayLike = Union[jax.Array, np.ndarray, u.Quantity]
 
 
@@ -327,14 +331,23 @@ class EventArray(object):
         return self
 
     def __matmul__(self, oc):
-        return self.value @ _as_jax_array_(oc)
+        if _known_type(oc):
+            return self.value @ _as_jax_array_(oc)
+        else:
+            return oc.__rmatmul__(self)
 
     def __rmatmul__(self, oc):
-        return _as_jax_array_(oc) @ self.value
+        if _known_type(oc):
+            return _as_jax_array_(oc) @ self.value
+        else:
+            return oc.__matmul__(self)
 
     def __imatmul__(self, oc):
         # a @= b
-        self.value = self.value @ _as_jax_array_(oc)
+        if _known_type(oc):
+            self.value = self.value @ _as_jax_array_(oc)
+        else:
+            self.value = oc.__rmatmul__(self)
         return self
 
     def __and__(self, oc):
@@ -510,7 +523,10 @@ class EventArray(object):
 
     def dot(self, b):
         """Dot product of two arrays."""
-        return self.value.dot(_as_jax_array_(b))
+        if _known_type(b):
+            return self.value.dot(_as_jax_array_(b))
+        else:
+            return b.__rmatmul__(self)
 
     def fill(self, value):
         """Fill the array with a scalar value."""
@@ -1099,7 +1115,7 @@ class EventArray(object):
 
     def sinh(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Optional[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array]:
         r = u.math.sinh(self.value)
         if out is None:
             return r

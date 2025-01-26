@@ -125,6 +125,7 @@ def event_csrmv_cpu_kernel_generator(
             if vector_info.dtype == jnp.bool_:
                 @numba.njit(**numba_environ.setting)
                 def mv(weights, indices, indptr, v, _, posts):
+                    posts[:] = 0.
                     w = weights[0]
                     for i in range(v.shape[0]):
                         if v[i]:
@@ -134,6 +135,7 @@ def event_csrmv_cpu_kernel_generator(
             elif float_as_event:
                 @numba.njit(**numba_environ.setting)
                 def mv(weights, indices, indptr, v, _, posts):
+                    posts[:] = 0.
                     w = weights[0]
                     for i in range(v.shape[0]):
                         if v[i] != 0.:
@@ -143,6 +145,7 @@ def event_csrmv_cpu_kernel_generator(
             else:
                 @numba.njit(**numba_environ.setting)
                 def mv(weights, indices, indptr, v, _, posts):
+                    posts[:] = 0.
                     w = weights[0]
                     for i in range(v.shape[0]):
                         sp = v[i]
@@ -155,6 +158,7 @@ def event_csrmv_cpu_kernel_generator(
             if vector_info.dtype == jnp.bool_:
                 @numba.njit(**numba_environ.setting)
                 def mv(weights, indices, indptr, v, _, posts):
+                    posts[:] = 0.
                     w = weights[0]
                     for i in range(indptr.shape[0] - 1):
                         r = 0.
@@ -166,6 +170,7 @@ def event_csrmv_cpu_kernel_generator(
             elif float_as_event:
                 @numba.njit(**numba_environ.setting)
                 def mv(weights, indices, indptr, v, _, posts):
+                    posts[:] = 0.
                     w = weights[0]
                     for i in range(indptr.shape[0] - 1):
                         r = 0.
@@ -177,6 +182,7 @@ def event_csrmv_cpu_kernel_generator(
             else:
                 @numba.njit(**numba_environ.setting)
                 def mv(weights, indices, indptr, v, _, posts):
+                    posts[:] = 0.
                     w = weights[0]
                     for i in range(indptr.shape[0] - 1):
                         r = 0.
@@ -482,6 +488,7 @@ def event_csrmv_jvp_v(
     indices,
     indptr,
     v,
+    _,
     *,
     shape,
     transpose,
@@ -505,6 +512,7 @@ def event_csrmv_jvp_weights(
     indices,
     indptr,
     v,
+    _,
     *,
     shape,
     transpose,
@@ -528,6 +536,7 @@ def event_csrmv_transpose_rule(
     indices,
     indptr,
     events,
+    _,
     *,
     shape,
     float_as_event,
@@ -542,22 +551,25 @@ def event_csrmv_transpose_rule(
     if ad.is_undefined_primal(indices) or ad.is_undefined_primal(indptr):
         raise ValueError("Cannot transpose with respect to sparse indices.")
     if ad.is_undefined_primal(events):
-        ct_events = _csr_matvec(
-            data,
-            indices,
-            indptr,
-            ct,
-            shape=shape,
-            transpose=not transpose
-        )[0]
-        return data, indices, indptr, (ad.Zero(events) if type(ct) is ad.Zero else ct_events)
+        if type(ct) is ad.Zero:
+            ct_events = ad.Zero(events)
+        else:
+            ct_events = _csr_matvec(
+                data,
+                indices,
+                indptr,
+                ct,
+                shape=shape,
+                transpose=not transpose
+            )
+        return data, indices, indptr, ct_events, _
     else:
-        if type(ct[0]) is ad.Zero:
+        if type(ct) is ad.Zero:
             ct_values = ad.Zero(data)
         else:
             if data.aval.shape[0] == 1:  # scalar
                 ct_values = event_csrmv_p_call(
-                    jnp.ones(1, dtype=data.dtype),
+                    jnp.ones(1, dtype=data.aval.dtype),
                     indices,
                     indptr,
                     events,
@@ -565,11 +577,11 @@ def event_csrmv_transpose_rule(
                     transpose=transpose,
                     float_as_event=float_as_event,
                 )[0]
-                ct_values = jnp.inner(ct, ct_values)
+                ct_values = jnp.inner(ct, ct_values).reshape(*data.aval.shape)
             else:  # heterogeneous values
                 row, col = _csr_to_coo(indices, indptr)
                 ct_values = events[row] * ct[col] if transpose else events[col] * ct[row]
-        return ct_values, indices, indptr, events
+        return ct_values, indices, indptr, events, _
 
 
 def event_csrmv_batching(args, axes, **kwargs):
@@ -1057,7 +1069,18 @@ def event_csrmm_gpu_kernel_generator(
     return mm
 
 
-def csrmm_jvp_left(data_dot, data, indices, indptr, B, *, shape, transpose, **kwargs):
+def csrmm_jvp_left(
+    data_dot,
+    data,
+    indices,
+    indptr,
+    B,
+    _,
+    *,
+    shape,
+    transpose,
+    **kwargs
+):
     return [
         _csr_matmat(
             data_dot,
@@ -1070,7 +1093,18 @@ def csrmm_jvp_left(data_dot, data, indices, indptr, B, *, shape, transpose, **kw
     ]
 
 
-def csrmm_jvp_right(B_dot, data, indices, indptr, B, *, shape, transpose, **kwargs):
+def csrmm_jvp_right(
+    B_dot,
+    data,
+    indices,
+    indptr,
+    B,
+    _,
+    *,
+    shape,
+    transpose,
+    **kwargs
+):
     return [
         _csr_matmat(
             data,
@@ -1083,18 +1117,29 @@ def csrmm_jvp_right(B_dot, data, indices, indptr, B, *, shape, transpose, **kwar
     ]
 
 
-def csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose, **kwargs):
+def csrmm_transpose_rule(
+    ct,
+    data,
+    indices,
+    indptr,
+    B,
+    _,
+    *,
+    shape,
+    transpose,
+    **kwargs
+):
     assert not ad.is_undefined_primal(indices)
     assert not ad.is_undefined_primal(indptr)
 
     if ad.is_undefined_primal(B):
         dB = _csr_matmat(data, indices, indptr, ct, shape=shape, transpose=not transpose)
-        return data, indices, indptr, dB
+        return data, indices, indptr, dB, _
     else:
         B = jnp.asarray(B)
         row, col = _csr_to_coo(indices, indptr)
         d_data = (ct[row] * B[col]).sum(axis=1)
-        return d_data, indices, indptr, B
+        return d_data, indices, indptr, B, _
 
 
 def event_csrmm_batching(args, axes, **kwargs):
