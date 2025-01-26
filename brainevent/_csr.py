@@ -50,7 +50,7 @@ class CSR(u.sparse.SparseMatrix):
 
     def __init__(self, args, *, shape):
         self.data, self.indices, self.indptr = map(u.math.asarray, args)
-        m = (indices.shape[0] - 1) // 1024 + 1
+        m = (self.indices.shape[0] - 1) // 1024 + 1
         self.id = jnp.zeros(m, self.indices.dtype)
         sum = 0
         k = 0
@@ -342,7 +342,7 @@ class CSC(u.sparse.SparseMatrix):
 
     def __init__(self, args, *, shape):
         self.data, self.indices, self.indptr = map(u.math.asarray, args)
-        m = (indices.shape[0] - 1) // 1024 + 1
+        m = (self.indices.shape[0] - 1) // 1024 + 1
         self.id = jnp.zeros(m, self.indices.dtype)
         sum = 0
         k = 0

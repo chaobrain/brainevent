@@ -25,7 +25,7 @@ import brainevent
 import brainstate as bst
 
 bst.environ.set(platform='cpu')
-# bst.environ.set(platform='gpu')
+#bst.environ.set(platform='gpu')
 
 
 def load_sparse_matrix(filename):
