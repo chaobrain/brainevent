@@ -15,62 +15,61 @@
 
 # -*- coding: utf-8 -*-
 
+
+import brainstate as bst
 import jax.numpy as jnp
 import numpy as np
-import brainstate as bst
 
 
-def _get_csr(n_pre, n_post, prob, replace=True):
-    n_conn = int(n_post * prob)
-    indptr = np.arange(n_pre + 1) * n_conn
+def generate_data(n_pre: int, n_post: int, n_conn: int, replace: bool = True):
     if replace:
-        indices = np.random.randint(0, n_post, (n_pre * n_conn,))
+        indices = np.random.randint(0, n_post, (n_pre, n_conn,))
     else:
         indices = bst.compile.for_loop(
             lambda *args: bst.random.choice(n_post, n_conn, replace=False),
             length=n_pre
-        ).flatten()
-    return indptr, indices
+        )
+    return indices
 
 
-def vector_csr(x, w, indices, indptr, shape):
-    homo_w = jnp.size(w) == 1
+def vector_csr(x, weights, indices, shape):
+    homo_w = jnp.size(weights) == 1
     post = jnp.zeros((shape[1],))
     for i_pre in range(x.shape[0]):
-        ids = indices[indptr[i_pre]: indptr[i_pre + 1]]
-        post = post.at[ids].add(w * x[i_pre] if homo_w else w[indptr[i_pre]: indptr[i_pre + 1]] * x[i_pre])
+        post_ids = indices[i_pre]
+        post = post.at[post_ids].add(weights * x[i_pre] if homo_w else weights[i_pre] * x[i_pre])
     return post
 
 
-def matrix_csr(xs, w, indices, indptr, shape):
-    homo_w = jnp.size(w) == 1
+def matrix_csr(xs, weights, indices, shape):
+    homo_w = jnp.size(weights) == 1
     post = jnp.zeros((xs.shape[0], shape[1]))
     for i_pre in range(xs.shape[1]):
-        ids = indices[indptr[i_pre]: indptr[i_pre + 1]]
-        post = post.at[:, ids].add(
-            w * xs[:, i_pre: i_pre + 1]
+        post_ids = indices[i_pre]
+        post = post.at[:, post_ids].add(
+            weights * xs[:, i_pre: i_pre + 1]
             if homo_w else
-            (w[indptr[i_pre]: indptr[i_pre + 1]] * xs[:, i_pre: i_pre + 1])
+            (weights[i_pre] * xs[:, i_pre: i_pre + 1])
         )
     return post
 
 
-def csr_vector(x, w, indices, indptr, shape):
-    homo_w = jnp.size(w) == 1
+def csr_vector(x, weights, indices, shape):
+    homo_w = jnp.size(weights) == 1
     out = jnp.zeros([shape[0]])
     for i in range(shape[0]):
-        ids = indices[indptr[i]: indptr[i + 1]]
-        ws = w if homo_w else w[indptr[i]: indptr[i + 1]]
-        out = out.at[i].set(jnp.sum(x[ids] * ws))
+        post_ids = indices[i]
+        ws = weights if homo_w else weights[i]
+        out = out.at[i].set(jnp.sum(x[post_ids] * ws))
     return out
 
 
-def csr_matrix(xs, w, indices, indptr, shape):
+def csr_matrix(xs, weights, indices, shape):
     # CSR @ matrix
-    homo_w = jnp.size(w) == 1
+    homo_w = jnp.size(weights) == 1
     out = jnp.zeros([shape[0], xs.shape[1]])
     for i in range(shape[0]):
-        ids = indices[indptr[i]: indptr[i + 1]]
-        ws = w if homo_w else jnp.expand_dims(w[indptr[i]: indptr[i + 1]], axis=1)
-        out = out.at[i].set(jnp.sum(xs[ids] * ws, axis=0))
+        post_ids = indices[i]
+        ws = weights if homo_w else jnp.expand_dims(weights[i], axis=1)
+        out = out.at[i].set(jnp.sum(xs[post_ids] * ws, axis=0))
     return out
