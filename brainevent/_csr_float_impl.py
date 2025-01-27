@@ -182,14 +182,18 @@ def csrmv_gpu_kernel_generator(
                 posts: warp.array1d(dtype=weight_dtype),
             ):
                 i = warp.tid()
-                lborder = i * 256
-                rborder = min(lborder + 256, indices_shape)
+                lborder = i * 64
+                rborder = min(lborder + 64, indices_shape)
                 w = weights[0]
+                pos = indptr[id[i]]
                 for k in range(id[i],id[i+1]+1):
                     sp = v[k]
                     if sp != 0.:
                         wsp = w * sp
-                        for j in range(max(indptr[k], lborder), min(indptr[k+1], rborder)):
+                        posl = max(pos, lborder)
+                        pos = indptr[k+1]
+                        posr = min(pos, rborder)
+                        for j in range(posl, posr):
                             posts[indices[j]] += wsp
 
         else:
@@ -204,13 +208,17 @@ def csrmv_gpu_kernel_generator(
                 posts: warp.array1d(dtype=weight_dtype),
             ):
                 i = warp.tid()
-                lborder = i * 256
-                rborder = min(lborder + 256, indices_shape)
+                lborder = i * 64
+                rborder = min(lborder + 64, indices_shape)
                 w = weights[0]
 
+                pos = indptr[id[i]]
                 for k in range(id[i],id[i+1]+1):
                     r = weights.dtype(0.)
-                    for j in range(max(indptr[k], lborder), min(indptr[k + 1], rborder)):
+                    posl = max(pos, lborder)
+                    pos = indptr[k + 1]
+                    posr = min(pos, rborder)
+                    for j in range(posl, posr):
                         c = v[indices[j]]
                         if c != 0.:
                             r += w * c
@@ -229,13 +237,17 @@ def csrmv_gpu_kernel_generator(
                 posts: warp.array1d(dtype=weight_dtype),
             ):
                 i = warp.tid()
-                lborder = i * 256
-                rborder = min(lborder + 256, indices_shape)
+                lborder = i * 64
+                rborder = min(lborder + 64, indices_shape)
 
+                pos = indptr[id[i]]
                 for k in range(id[i], id[i+1]+1):
                     sp = v[k]
                     if sp != 0.:
-                        for j in range(max(indptr[k], lborder), min(indptr[k+1], rborder)):
+                        posl = max(pos, lborder)
+                        pos = indptr[k + 1]
+                        posr = min(pos, rborder)
+                        for j in range(posl, posr):
                             posts[indices[j]] += weights[j] * sp
 
         else:
@@ -250,11 +262,16 @@ def csrmv_gpu_kernel_generator(
                 posts: warp.array1d(dtype=weight_dtype),
             ):
                 i = warp.tid()
-                lborder = i * 256
-                rborder = min(lborder + 256, indices_shape)
+                lborder = i * 64
+                rborder = min(lborder + 64, indices_shape)
+
+                pos = indptr[id[i]]
                 for k in range(id[i], id[i+1]+1):
                     r = weights.dtype(0.)
-                    for j in range(max(indptr[k], lborder), min(indptr[k + 1], rborder)):
+                    posl = max(pos, lborder)
+                    pos = indptr[k + 1]
+                    posr = min(pos, rborder)
+                    for j in range(posl, posr):
                         c = v[indices[j]]
                         if c != 0.:
                             r += weights[j] * c
