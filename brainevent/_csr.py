@@ -56,14 +56,14 @@ class CSR(u.sparse.SparseMatrix):
         shape: Tuple[int, int]
     ):
         self.data, self.indices, self.indptr = map(u.math.asarray, args)
-        m = (self.indices.shape[0] - 1) // 1024 + 1
-        self.id = jnp.zeros(m, self.indices.dtype)
+        m = (self.indices.shape[0] -1) // 1024 + 1
+        self.id = jnp.zeros(m + 1, self.indices.dtype)
         sum = 0
         k = 0
 
         def cond_fun(carry):
             k, sum, indptr = carry
-            return indptr[k + 1] <= sum
+            return indptr[k + 1] < sum
 
         def body_fun(carry):
             k, sum, indptr = carry
@@ -73,6 +73,8 @@ class CSR(u.sparse.SparseMatrix):
             sum += 1024
             k = jax.lax.while_loop(cond_fun, body_fun, (k, sum, self.indptr))[0]
             self.id.at[i].set(k)
+
+        self.id.at[m].set(self.indptr.shape[0]-2)
         super().__init__(args, shape=shape)
 
     @classmethod
@@ -349,13 +351,13 @@ class CSC(u.sparse.SparseMatrix):
     ):
         self.data, self.indices, self.indptr = map(u.math.asarray, args)
         m = (self.indices.shape[0] - 1) // 1024 + 1
-        self.id = jnp.zeros(m, self.indices.dtype)
+        self.id = jnp.zeros(m + 1, self.indices.dtype)
         sum = 0
         k = 0
 
         def cond_fun(carry):
             k, sum, indptr = carry
-            return indptr[k + 1] <= sum
+            return indptr[k + 1] < sum
 
         def body_fun(carry):
             k, sum, indptr = carry
@@ -365,6 +367,7 @@ class CSC(u.sparse.SparseMatrix):
             sum += 1024
             k = jax.lax.while_loop(cond_fun, body_fun, (k, sum, self.indptr))[0]
             self.id.at[i].set(k)
+        self.id.at[m].set(self.indptr.shape[0] - 2)
         super().__init__(args, shape=shape)
 
     @classmethod

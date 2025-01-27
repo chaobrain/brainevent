@@ -184,20 +184,15 @@ def csrmv_gpu_kernel_generator(
                 i = warp.tid()
                 lborder = i * 1024
                 rborder = min(lborder + 1024, indices_shape)
-                k = id[i]
                 w = weights[0]
-
-                pos = indptr[k]
-                while pos < rborder:
+                for k in range(id[i],id[i+1]+1):
                     sp = v[k]
                     if sp != 0.:
                         wsp = w * sp
-                        posl = max(pos, lborder)
-                        pos = indptr[k + 1]
-                        posr = min(pos, rborder)
+                        posl = max(indptr[k], lborder)
+                        posr = min(indptr[k+1], rborder)
                         for j in range(posl, posr):
-                            posts[indices[j]] += wsp
-                    k += 1
+                            warp.atomic_add(posts,indices[j],wsp)
 
         else:
             @warp.kernel
@@ -213,21 +208,16 @@ def csrmv_gpu_kernel_generator(
                 i = warp.tid()
                 lborder = i * 1024
                 rborder = min(lborder + 1024, indices_shape)
-                k = id[i]
                 w = weights[0]
-
-                pos = indptr[k]
-                while pos < rborder:
+                for k in range(id[i],id[i+1]+1):
                     r = weights.dtype(0.)
-                    posl = max(pos, lborder)
-                    pos = indptr[k + 1]
-                    posr = min(pos, rborder)
+                    posl = max(indptr[k], lborder)
+                    posr = min(indptr[k+1], rborder)
                     for j in range(posl, posr):
                         c = v[indices[j]]
                         if c != 0.:
                             r += w * c
-                    posts[k] += r
-                    k += 1
+                    warp.atomic_add(posts,k,r)
 
     else:
         if transpose:
@@ -244,18 +234,13 @@ def csrmv_gpu_kernel_generator(
                 i = warp.tid()
                 lborder = i * 1024
                 rborder = min(lborder + 1024, indices_shape)
-                k = id[i]
-
-                pos = indptr[k]
-                while indptr[k] < rborder:
+                for k in range(id[i], id[i+1]+1):
                     sp = v[k]
                     if sp != 0.:
-                        posl = max(pos, lborder)
-                        pos = indptr[k + 1]
-                        posr = min(pos, rborder)
+                        posl = max(indptr[k], lborder)
+                        posr = min(indptr[k+1], rborder)
                         for j in range(posl, posr):
-                            posts[indices[j]] += weights[j] * sp
-                    k += 1
+                            warp.atomic_add(posts,indices[j],weights[j]*sp)
 
         else:
             @warp.kernel
@@ -271,20 +256,15 @@ def csrmv_gpu_kernel_generator(
                 i = warp.tid()
                 lborder = i * 1024
                 rborder = min(lborder + 1024, indices_shape)
-                k = id[i]
-
-                pos = indptr[k]
-                while pos < rborder:
+                for k in range(id[i], id[i+1]+1):
                     r = weights.dtype(0.)
-                    posl = max(pos, lborder)
-                    pos = indptr[k + 1]
-                    posr = min(pos, rborder)
+                    posl = max(indptr[k], lborder)
+                    posr = min(indptr[k+1], rborder)
                     for j in range(posl, posr):
                         c = v[indices[j]]
                         if c != 0.:
                             r += weights[j] * c
-                    posts[k] += r
-                    k += 1
+                    warp.atomic_add(posts,k,r)
 
     return mv
 
@@ -465,7 +445,7 @@ csrmv_p = XLACustomKernel(
     gpu_kernel=WarpKernelGenerator(
         csrmv_gpu_kernel_generator,
         dim=lambda id_info, **kwargs: (
-            id_info.shape[0]
+            id_info.shape[0] - 1
         ),
         input_output_aliases={5: 0}
     ),
