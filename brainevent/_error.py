@@ -16,8 +16,5 @@
 # -*- coding: utf-8 -*-
 
 
-from ._array import EventArray
-
-
-class EventVector(EventArray):
+class MathError(Exception):
     pass

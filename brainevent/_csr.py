@@ -15,18 +15,19 @@
 
 
 import operator
-from typing import Union
+from typing import Union, Sequence, Tuple
 
 import brainunit as u
 import jax
 import jax.numpy as jnp
+import numpy as np
 from brainunit.sparse._csr import _csr_to_coo, _csr_todense
 from jax.experimental.sparse import CSR
 from jax.experimental.sparse import JAXSparse
 
-from ._array import EventArray
 from ._csr_event_impl import _event_csr_matvec, _event_csr_matmat
 from ._csr_float_impl import _csr_matvec, _csr_matmat
+from ._event import EventArray
 
 __all__ = [
     'CSR',
@@ -47,7 +48,12 @@ class CSR(u.sparse.SparseMatrix):
     nse = property(lambda self: self.indices.size)
     dtype = property(lambda self: self.data.dtype)
 
-    def __init__(self, args, *, shape):
+    def __init__(
+        self,
+        args: Sequence[Union[jax.Array, np.ndarray, u.Quantity]],
+        *,
+        shape: Tuple[int, int]
+    ):
         self.data, self.indices, self.indptr = map(u.math.asarray, args)
         super().__init__(args, shape=shape)
 
@@ -291,16 +297,13 @@ class CSR(u.sparse.SparseMatrix):
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
     def tree_flatten(self):
-        return (self.data,), {"shape": self.shape, "indices": self.indices, "indptr": self.indptr}
+        return (self.data,), (self.indices, self.indptr, self.shape)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
-        obj = object.__new__(cls)
-        obj.data, = children
-        if aux_data.keys() != {'shape', 'indices', 'indptr'}:
-            raise ValueError(f"CSR.tree_unflatten: invalid {aux_data=}")
-        obj.__dict__.update(**aux_data)
-        return obj
+        data, = children
+        indices, indptr, shape = aux_data
+        return CSR([data, indices, indptr], shape=shape)
 
 
 # TODO: docstring needed to be improved
@@ -317,7 +320,12 @@ class CSC(u.sparse.SparseMatrix):
     nse = property(lambda self: self.indices.size)
     dtype = property(lambda self: self.data.dtype)
 
-    def __init__(self, args, *, shape):
+    def __init__(
+        self,
+        args: Sequence[Union[jax.Array, np.ndarray, u.Quantity]],
+        *,
+        shape: Tuple[int, int]
+    ):
         self.data, self.indices, self.indptr = map(u.math.asarray, args)
         super().__init__(args, shape=shape)
 
@@ -473,7 +481,7 @@ class CSC(u.sparse.SparseMatrix):
         data = self.data
 
         if isinstance(other, EventArray):
-            other = other.data
+            other = other.value
             if other.ndim == 1:
                 return _event_csr_matvec(
                     data,
@@ -526,7 +534,7 @@ class CSC(u.sparse.SparseMatrix):
         data = self.data
 
         if isinstance(other, EventArray):
-            other = other.data
+            other = other.value
             if other.ndim == 1:
                 return _event_csr_matvec(
                     data,
@@ -575,13 +583,10 @@ class CSC(u.sparse.SparseMatrix):
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
     def tree_flatten(self):
-        return (self.data,), {"shape": self.shape, "indices": self.indices, "indptr": self.indptr}
+        return (self.data,), (self.indices, self.indptr, self.shape)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
-        obj = object.__new__(cls)
-        obj.data, = children
-        if aux_data.keys() != {'shape', 'indices', 'indptr'}:
-            raise ValueError(f"CSR.tree_unflatten: invalid {aux_data=}")
-        obj.__dict__.update(**aux_data)
-        return obj
+        data, = children
+        indices, indptr, shape = aux_data
+        return CSC([data, indices, indptr], shape=shape)
