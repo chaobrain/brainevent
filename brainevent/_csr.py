@@ -588,8 +588,7 @@ class CSC(u.sparse.SparseMatrix):
                 r = _event_csr_matmat(
                     data,
                     self.indices,
-                    self.indptr,
-                    other,
+                    self.indptr, other,
                     shape=self.shape[::-1],
                     transpose=False
                 )
@@ -615,8 +614,7 @@ class CSC(u.sparse.SparseMatrix):
                 r = _csr_matmat(
                     data,
                     self.indices,
-                    self.indptr,
-                    other,
+                    self.indptr, other,
                     shape=self.shape[::-1],
                     transpose=False
                 )
