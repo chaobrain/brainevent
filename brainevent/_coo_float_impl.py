@@ -76,25 +76,32 @@ def coomv_cpu_kernel_generator(
     import numba  # pylint: disable=import-outside-toplevel
 
     if transpose:
-        # coo.T @ v
+        # v @ coo.T
         if weight_info.size == 1:
             @numba.njit(**numba_environ.setting)
             def mv(weights, row, col, v, _, posts):
-                ...
+                w = weights[0]
+                for i in numba.prange(row.shape[0]):
+                    posts[col[i]] += w * v[row[i]]
         else:
             @numba.njit(**numba_environ.setting)
             def mv(weights, row, col, v, _, posts):
-                ...
+                for i in numba.prange(row.shape[0]):
+                    posts[col[i]] += weights[i] * v[row[i]]
     else:
-        # v @ coo
+        # coo @ v
         if weight_info.size == 1:
             @numba.njit(**numba_environ.setting)
             def mv(weights, row, col, v, _, posts):
-                ...
+                w = weights[0]
+                for i in numba.prange(row.shape[0]):
+                    posts[row[i]] += w * v[col[i]]
         else:
             @numba.njit(**numba_environ.setting)
             def mv(weights, row, col, v, _, posts):
-                ...
+                w = weights[0]
+                for i in numba.prange(row.shape[0]):
+                    posts[row[i]] += w * v[col[i]]
 
     return mv
 
@@ -125,7 +132,9 @@ def coomv_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype),
             ):
-                ...
+                i = warp.tid()
+                w = weights[0]
+                posts[col[i]] += w * v[row[i]]
         else:
             @warp.kernel
             def mv(
@@ -136,7 +145,8 @@ def coomv_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype),
             ):
-                ...
+                i = warp.tid()
+                posts[col[i]] += weights[i] * v[row[i]]
     else:
         if weight_info.size == 1:
             @warp.kernel
@@ -148,7 +158,9 @@ def coomv_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype),
             ):
-                ...
+                i = warp.tid()
+                w = weights[0]
+                posts[row[i]] += w * v[col[i]]
         else:
             @warp.kernel
             def mv(
@@ -159,7 +171,8 @@ def coomv_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype),
             ):
-                ...
+                i = warp.tid()
+                posts[row[i]] += weights[i] * v[col[i]]
 
     return mv
 
@@ -169,6 +182,7 @@ def coomv_jvp_v(
     row,
     col,
     v,
+    _,
     *,
     shape,
     transpose,
@@ -189,6 +203,7 @@ def coomv_jvp_weights(
     row,
     col,
     v,
+    _,
     *,
     shape,
     transpose,
@@ -209,6 +224,7 @@ def coomv_transpose_rule(
     row,
     col,
     v,
+    _,
     *,
     shape,
     transpose,
@@ -218,10 +234,10 @@ def coomv_transpose_rule(
     assert not ad.is_undefined_primal(col)
 
     if ad.is_undefined_primal(v):
-        return data, row, col, _coo_matvec(data, row, col, ct, shape=shape, transpose=not transpose)
+        return data, row, col, _coo_matvec(data, row, col, ct, shape=shape, transpose=not transpose), _
     else:
         v = jnp.asarray(v)
-        return ct[row] * v[col], row, col, v
+        return ct[row] * v[col], row, col, v, _
 
 def coomv_batching(
     args,
@@ -295,8 +311,8 @@ coomv_p = XLACustomKernel(
     gpu_kernel=WarpKernelGenerator(
         coomv_gpu_kernel_generator,
         # TODO: check if dim param correct
-        dim=lambda row_info, vector_info, transpose, **kwargs: (
-            vector_info.shape[0] if transpose else row_info.shape[0] - 1
+        dim=lambda row_info, **kwargs: (
+            row_info.shape[0]
         ),
         input_output_aliases={4:0}
     )
@@ -318,22 +334,28 @@ def coomm_cpu_kernel_generator(
         if weight_info.size == 1:
             @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
             def mm(weights, row, col, B, _, posts):
-                ...
+                w = weights[0]
+                for i in numba.prange(row.shape[0]):
+                    posts[col[i], :] += w * B[row[i], :]
         else:
             @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
             def mm(weights, row, col, B, _, posts):
-                ...
+                for i in numba.prange(row.shape[0]):
+                    posts[col[i], :] += weights[i] * B[row[i], :]
 
     else:
         # coo @ B
         if weight_info.size == 1:
             @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
             def mm(weights, row, col, B, _, posts):
-                ...
+                w = weights[0]
+                for i in numba.prange(row.shape[0]):
+                    posts[row[i], :] += w * B[col[i], :]
         else:
             @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
             def mm(weights, row, col, B, _, posts):
-                ...
+                for i in numba.prange(row.shape[0]):
+                    posts[row[i], :] += weights[i] * B[col[i], :]
 
     return mm
 
@@ -364,7 +386,9 @@ def coomm_gpu_kernel_generator(
                 _: warp.array2d(dtype=weight_dtype),
                 posts: warp.array2d(dtype=weight_dtype)
             ):
-                ...
+                i = warp.tid()
+                w = weights[0]
+                posts[col[i], :] += w * B[row[i], :]
         else:
             @warp.kernel
             def mm(
@@ -375,7 +399,8 @@ def coomm_gpu_kernel_generator(
                 _: warp.array2d(dtype=weight_dtype),
                 posts: warp.array2d(dtype=weight_dtype)
             ):
-                ...
+                i = warp.tid()
+                posts[col[i], :] += weights[i] * B[row[i], :]
     else:
         # coo @ B
         if weight_info.size == 1:
@@ -388,7 +413,9 @@ def coomm_gpu_kernel_generator(
                 _: warp.array2d(dtype=weight_dtype),
                 posts: warp.array2d(dtype=weight_dtype)
             ):
-                ...
+                i = warp.tid()
+                w = weights[0]
+                posts[row[i], :] += w * B[col[i], :]
         else:
             @warp.kernel
             def mm(
@@ -399,7 +426,8 @@ def coomm_gpu_kernel_generator(
                 _: warp.array2d(dtype=weight_dtype),
                 posts: warp.array2d(dtype=weight_dtype)
             ):
-                ...
+                i = warp.tid()
+                posts[row[i], :] += weights[i] * B[col[i], :]
     return mm
 
 
@@ -409,6 +437,7 @@ def coomm_jvp_left(
     row,
     col,
     B,
+    _,
     *,
     shape,
     transpose,
@@ -429,6 +458,7 @@ def coomm_jvp_right(
     row,
     col,
     B,
+    _,
     *,
     shape,
     transpose,
@@ -449,6 +479,7 @@ def coomm_transpose_rule(
     row,
     col,
     B,
+    _,
     *,
     shape,
     transpose
@@ -457,10 +488,12 @@ def coomm_transpose_rule(
     assert not ad.is_undefined_primal(col)
     if ad.is_undefined_primal(B):
         # TODO: replace _coo_matmat with coomm_p_call may improve efficiency
-        return data, row, col, _coo_matmat(data, row, col, ct, shape=shape, transpose=not transpose)
+        dB = _coo_matmat(data, row, col, ct, shape=shape, transpose=not transpose)
+        return data, row, col, dB, _
     else:
         B = jnp.asarray(B)
-        return (ct[row] * B[col]).sum(1), row, col, B
+        d_data = (ct[row] * B[col]).sum(1)
+        return d_data, row, col, B, _
 
 def coomm_batching(
     args,
@@ -556,10 +589,8 @@ coomm_p = XLACustomKernel(
     gpu_kernel=WarpKernelGenerator(
         coomm_gpu_kernel_generator,
         # TODO: check if dim param is correct
-        dim=lambda matrix_info, row_info, transpose, **kwargs: (
-            tuple(reversed(matrix_info.shape))
-            if transpose else
-            [matrix_info.shape[1], row_info.shape[0] - 1]
+        dim=lambda row_info, **kwargs: (
+            row_info.shape[0]
         ),
         input_output_aliases={4: 0}
     )
