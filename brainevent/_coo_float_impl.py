@@ -99,9 +99,8 @@ def coomv_cpu_kernel_generator(
         else:
             @numba.njit(**numba_environ.setting)
             def mv(weights, row, col, v, _, posts):
-                w = weights[0]
                 for i in numba.prange(row.shape[0]):
-                    posts[row[i]] += w * v[col[i]]
+                    posts[row[i]] += weights[i] * v[col[i]]
 
     return mv
 
@@ -188,14 +187,24 @@ def coomv_jvp_v(
     transpose,
     **kwargs
 ):
-    return coomv_p_call(
-        data,
-        row,
-        col,
-        v_dot,
-        shape=shape,
-        transpose=transpose,
-    )
+    # return coomv_p_call(
+    #     data,
+    #     row,
+    #     col,
+    #     v_dot,
+    #     shape=shape,
+    #     transpose=transpose,
+    # )
+    return [
+        _coo_matvec(
+            data,
+            row,
+            col,
+            v_dot,
+            shape=shape,
+            transpose=transpose
+        )
+    ]
 
 def coomv_jvp_weights(
     data_dot,

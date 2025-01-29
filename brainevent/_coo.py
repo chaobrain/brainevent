@@ -27,6 +27,7 @@ import numpy as np
 import brainunit as u
 from brainunit._base import Quantity, split_mantissa_unit, maybe_decimal, get_unit
 from brainunit._sparse_base import SparseMatrix
+from brainunit.sparse._coo import _coo_todense
 from brainunit.math._fun_array_creation import asarray
 from brainunit.math._fun_keep_unit import promote_dtypes
 from jax import lax
@@ -34,9 +35,9 @@ from jax import tree_util
 from jax._src.lax.lax import _const
 from jax.experimental.sparse import JAXSparse
 
-from ._array import EventArray
 from ._coo_event_impl import _event_coo_matvec, _event_coo_matmat
 from ._coo_float_impl import _coo_matvec, _coo_matmat
+from ._event import EventArray
 
 __all__ = [
     'COO', 'COOInfo',
@@ -187,7 +188,11 @@ class COO(SparseMatrix):
         return COO((data, self.row, self.col), shape=self.shape)
 
     def todense(self) -> jax.Array:
-        return coo_todense(self)
+        return _coo_todense(self.data, self.row, self.col, spinfo=self.shape)
+
+    @property
+    def T(self):
+        return self.transpose()
 
     def transpose(self, axes: Tuple[int, ...] | None = None) -> COO:
         if axes is not None:
@@ -369,45 +374,108 @@ class COO(SparseMatrix):
     def __matmul__(
         self, other: jax.typing.ArrayLike
     ) -> jax.Array | Quantity:
+        # coo @ other
         if isinstance(other, JAXSparse):
             raise NotImplementedError("matmul between two sparse objects.")
-        other = asarray(other)
-        data, other = promote_dtypes(self.data, other)
-        self_promoted = COO(
-            (
-                data,
-                self.row,
-                self.col
-            ),
-            **self._info._asdict()
-        )
-        if other.ndim == 1:
-            return coo_matvec(self_promoted, other)
-        elif other.ndim == 2:
-            return coo_matmat(self_promoted, other)
+        data = self.data
+
+        if isinstance(other, EventArray):
+            other =other.data
+            if other.ndim == 1:
+                return _event_coo_matvec(
+                    data,
+                    self.row,
+                    self.col,
+                    other,
+                    shape=self.shape
+                )
+            elif other.ndim == 2:
+                return _event_coo_matmat(
+                    data,
+                    self.row,
+                    self.col,
+                    other,
+                    shape=self.shape
+                )
+            else:
+                raise NotImplementedError(f"matmul with object of shape {other.shape}")
         else:
-            raise NotImplementedError(f"matmul with object of shape {other.shape}")
+            other = u.math.asarray(other)
+            data, other = u.math.promote_dtypes(self.data, other)
+            if other.ndim == 1:
+                return _coo_matvec(
+                    data,
+                    self.row,
+                    self.col,
+                    other,
+                    shape=self.shape
+                )
+            elif other.ndim == 2:
+                return _coo_matmat(
+                    data,
+                    self.row,
+                    self.col,
+                    other,
+                    shape=self.shape
+                )
+            else:
+                raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
     def __rmatmul__(
         self,
         other: jax.typing.ArrayLike
     ) -> jax.Array | Quantity:
+        # other @ coo
         if isinstance(other, JAXSparse):
             raise NotImplementedError("matmul between two sparse objects.")
-        other = asarray(other)
-        data, other = promote_dtypes(self.data, other)
-        self_promoted = COO(
-            (
-                data,
-                self.row,
-                self.col
-            ),
-            **self._info._asdict()
-        )
-        if other.ndim == 1:
-            return coo_matvec(self_promoted, other, transpose=True)
-        elif other.ndim == 2:
-            other = other.T
-            return coo_matmat(self_promoted, other, transpose=True).T
+        data = self.data
+
+        if isinstance(other, EventArray):
+            other =other.data
+            if other.ndim == 1:
+                return _event_coo_matvec(
+                    data,
+                    self.row,
+                    self.col,
+                    other,
+                    shape=self.shape,
+                    transpose=True
+                )
+            elif other.ndim == 2:
+                other = other.T
+                r = _event_coo_matmat(
+                    data,
+                    self.row,
+                    self.col,
+                    other,
+                    shape=self.shape,
+                    transpose=True
+                )
+                return r.T
+            else:
+                raise NotImplementedError(f"matmul with object of shape {other.shape}")
         else:
-            raise NotImplementedError(f"matmul with object of shape {other.shape}")
+            other = u.math.asarray(other)
+            data, other = u.math.promote_dtypes(self.data, other)
+            if other.ndim == 1:
+                return _coo_matvec(
+                    data,
+                    self.row,
+                    self.col,
+                    other,
+                    shape=self.shape,
+                    transpose=True
+                )
+            elif other.ndim == 2:
+                other = other.T
+                r = _coo_matmat(
+                    data,
+                    self.row,
+                    self.col,
+                    other,
+                    shape=self.shape,
+                    transpose=True
+                )
+                return r.T
+            else:
+                raise NotImplementedError(f"matmul with object of shape {other.shape}")
