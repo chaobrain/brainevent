@@ -462,15 +462,15 @@ def compare_spmm_performance(
     print()
 
 
-for filename in files:
-    compare_spmv_performance(
-        csr_matrices[filename],
-        n_run=3 if bst.environ.get_platform() == 'cpu' else 30
-    )
-
 # for filename in files:
-#     compare_spmm_performance(
+#     compare_spmv_performance(
 #         csr_matrices[filename],
-#         n_run=3 if bst.environ.get_platform() == 'cpu' else 30,
-#         batch_size=100
+#         n_run=3 if bst.environ.get_platform() == 'cpu' else 30
 #     )
+
+for filename in files:
+    compare_spmm_performance(
+        csr_matrices[filename],
+        n_run=3 if bst.environ.get_platform() == 'cpu' else 30,
+        batch_size=100
+    )

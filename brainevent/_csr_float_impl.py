@@ -66,6 +66,7 @@ def _csr_matmat(
     data: Union[jax.Array, u.Quantity],
     indices: jax.Array,
     indptr: jax.Array,
+    id: jax.Array,
     B: Union[jax.Array, u.Quantity],
     *,
     shape: Sequence[int],
@@ -94,6 +95,7 @@ def _csr_matmat(
         data,
         indices,
         indptr,
+        id,
         B,
         shape=shape,
         transpose=transpose,
@@ -363,7 +365,7 @@ def csrmv_transpose_rule(
                 shape=shape,
                 transpose=not transpose
             )
-        return data, indices, indptr, ct_events, _
+        return data, indices, indptr, id, ct_events, _
     else:
         if type(ct) is ad.Zero:
             ct_values = ad.Zero(data)
@@ -382,28 +384,30 @@ def csrmv_transpose_rule(
             else:  # heterogeneous values
                 row, col = _csr_to_coo(indices, indptr)
                 ct_values = vector[row] * ct[col] if transpose else vector[col] * ct[row]
-        return ct_values, indices, indptr, vector, _
+        return ct_values, indices, indptr, id, vector, _
 
 
 def csrmv_batching(args, axes, **kwargs):
-    if tuple(axes) == (None, None, None, 0, None):
+    if tuple(axes) == (None, None, None, None, 0, None):
         assert args[4].ndim == 2, 'Batching axis 0 requires 2D input.'
         r = csrmm_p_call(
             args[0],
             args[1],
             args[2],
+            args[3],
             args[4].T,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
         )
         return r, [1]
 
-    elif tuple(axes) == (None, None, None, 1, None):
+    elif tuple(axes) == (None, None, None, None, 1, None):
         assert args[4].ndim == 2, 'Batching axis 0 requires 2D input.'
         r = csrmm_p_call(
             args[0],
             args[1],
             args[2],
+            args[3],
             args[4],
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
@@ -461,7 +465,7 @@ csrmv_p = XLACustomKernel(
         input_output_aliases={5: 0}
     ),
 )
-csrmv_p.defjvp(csrmv_jvp_weights, None, None, csrmv_jvp_v)
+csrmv_p.defjvp(csrmv_jvp_weights, None, None, None, csrmv_jvp_v)
 csrmv_p.def_transpose_rule(csrmv_transpose_rule)
 csrmv_p.def_batching_rule(csrmv_batching)
 
@@ -477,7 +481,7 @@ def csrmm_cpu_kernel_generator(
         if transpose:
             # csr.T @ B
             @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
-            def mm(weights, indices, indptr, B, _, posts):
+            def mm(weights, indices, indptr, id, B, _, posts):
                 w = weights[0]
                 for k in numba.prange(B.shape[1]):
                     for i in range(B.shape[0]):
@@ -488,7 +492,7 @@ def csrmm_cpu_kernel_generator(
         else:
             # csr @ B
             @numba.njit(**numba_environ.setting)
-            def mm(weights, indices, indptr, B, _, posts):
+            def mm(weights, indices, indptr, id, B, _, posts):
                 w = weights[0]
                 for i in range(indptr.shape[0] - 1):
                     for k in range(B.shape[1]):
@@ -501,7 +505,7 @@ def csrmm_cpu_kernel_generator(
         if transpose:
             # csr.T @ B
             @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
-            def mm(weights, indices, indptr, B, _, posts):
+            def mm(weights, indices, indptr, id, B, _, posts):
                 for k in numba.prange(B.shape[1]):
                     for i in range(B.shape[0]):
                         for j in range(indptr[i], indptr[i + 1]):
@@ -510,7 +514,7 @@ def csrmm_cpu_kernel_generator(
         else:
             # csr @ B
             @numba.njit(**numba_environ.setting)
-            def mm(weights, indices, indptr, B, _, posts):
+            def mm(weights, indices, indptr, id, B, _, posts):
                 for i in range(indptr.shape[0] - 1):
                     for k in range(B.shape[1]):
                         r = 0.
@@ -526,6 +530,7 @@ def csrmm_gpu_kernel_generator(
     vector_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
     indptr_info: jax.ShapeDtypeStruct,
+    id_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs
 ) -> Kernel:
@@ -535,6 +540,9 @@ def csrmm_gpu_kernel_generator(
     spike_dtype = dtype_to_warp_type(vector_info.dtype)
     indices_dtype = dtype_to_warp_type(indices_info.dtype)
     indptr_dtype = dtype_to_warp_type(indptr_info.dtype)
+    id_dtype = dtype_to_warp_type(id_info.dtype)
+
+    indices_shape = indices_info.shape[0]
 
     if weight_info.size == 1:
         if transpose:
@@ -544,15 +552,25 @@ def csrmm_gpu_kernel_generator(
                 weights: warp.array1d(dtype=weight_dtype),
                 indices: warp.array1d(dtype=indices_dtype),
                 indptr: warp.array1d(dtype=indptr_dtype),
+                id: warp.array1d(dtype=id_dtype),
                 B: warp.array2d(dtype=spike_dtype),
                 _: warp.array2d(dtype=weight_dtype),
                 posts: warp.array2d(dtype=weight_dtype),
             ):
-                k, i = warp.tid()
+                t, i = warp.tid()
+                lborder = i * 64
+                rborder = min(lborder + 64, indices_shape)
                 w = weights[0]
-                wsp = w * B[i, k]
-                for j in range(indptr[i], indptr[i + 1]):
-                    posts[indices[j], k] += wsp
+                pos = indptr[id[i]]
+                for k in range(id[i], id[i + 1] + 1):
+                    sp = B[k, t]
+                    if sp != 0.:
+                        wsp = w * sp
+                        posl = max(pos, lborder)
+                        pos = indptr[k + 1]
+                        posr = min(pos, rborder)
+                        for j in range(posl, posr):
+                            posts[indices[j], t] += wsp
 
         else:
             # csr @ B
@@ -561,17 +579,27 @@ def csrmm_gpu_kernel_generator(
                 weights: warp.array1d(dtype=weight_dtype),
                 indices: warp.array1d(dtype=indices_dtype),
                 indptr: warp.array1d(dtype=indptr_dtype),
+                id: warp.array1d(dtype=id_dtype),
                 B: warp.array2d(dtype=spike_dtype),
                 _: warp.array2d(dtype=weight_dtype),
                 posts: warp.array2d(dtype=weight_dtype),
             ):
-                k, i = warp.tid()
+                t, i = warp.tid()
+                lborder = i * 64
+                rborder = min(lborder + 64, indices_shape)
                 w = weights[0]
-                r = weights.dtype(0.)
-                for j in range(indptr[i], indptr[i + 1]):
-                    index = indices[j]
-                    r += w * B[index, k]
-                posts[i, k] = r
+
+                pos = indptr[id[i]]
+                for k in range(id[i], id[i + 1] + 1):
+                    r = weights.dtype(0.)
+                    posl = max(pos, lborder)
+                    pos = indptr[k + 1]
+                    posr = min(pos, rborder)
+                    for j in range(posl, posr):
+                        c = B[indices[j], t]
+                        if c != 0.:
+                            r += w * c
+                    posts[k, t] += r
 
     else:
         if transpose:
@@ -581,14 +609,24 @@ def csrmm_gpu_kernel_generator(
                 weights: warp.array1d(dtype=weight_dtype),
                 indices: warp.array1d(dtype=indices_dtype),
                 indptr: warp.array1d(dtype=indptr_dtype),
+                id: warp.array1d(dtype=id_dtype),
                 B: warp.array2d(dtype=spike_dtype),
                 _: warp.array2d(dtype=weight_dtype),
                 posts: warp.array2d(dtype=weight_dtype),
             ):
-                k, i = warp.tid()
-                sp = B[i, k]
-                for j in range(indptr[i], indptr[i + 1]):
-                    posts[indices[j], k] += weights[j] * sp
+                t, i = warp.tid()
+                lborder = i * 64
+                rborder = min(lborder + 64, indices_shape)
+
+                pos = indptr[id[i]]
+                for k in range(id[i], id[i + 1] + 1):
+                    sp = B[k, t]
+                    if sp != 0.:
+                        posl = max(pos, lborder)
+                        pos = indptr[k + 1]
+                        posr = min(pos, rborder)
+                        for j in range(posl, posr):
+                            posts[indices[j], t] += weights[j] * sp
 
         else:
             # csr @ B
@@ -598,16 +636,26 @@ def csrmm_gpu_kernel_generator(
                 weights: warp.array1d(dtype=weight_dtype),
                 indices: warp.array1d(dtype=indices_dtype),
                 indptr: warp.array1d(dtype=indptr_dtype),
+                id: warp.array1d(dtype=id_dtype),
                 B: warp.array2d(dtype=spike_dtype),
                 _: warp.array2d(dtype=weight_dtype),
                 posts: warp.array2d(dtype=weight_dtype),
             ):
-                k, i = warp.tid()
-                r = weights.dtype(0.)
-                for j in range(indptr[i], indptr[i + 1]):
-                    index = indices[j]
-                    r += weights[j] * B[index, k]
-                posts[i, k] = r
+                t, i = warp.tid()
+                lborder = i * 64
+                rborder = min(lborder + 64, indices_shape)
+
+                pos = indptr[id[i]]
+                for k in range(id[i], id[i + 1] + 1):
+                    r = weights.dtype(0.)
+                    posl = max(pos, lborder)
+                    pos = indptr[k + 1]
+                    posr = min(pos, rborder)
+                    for j in range(posl, posr):
+                        c = B[indices[j], t]
+                        if c != 0.:
+                            r += weights[j] * c
+                    posts[k, t] += r
 
     return mm
 
@@ -617,6 +665,7 @@ def csrmm_jvp_left(
     data,
     indices,
     indptr,
+    id,
     B,
     _,
     *,
@@ -629,6 +678,7 @@ def csrmm_jvp_left(
             data_dot,
             indices,
             indptr,
+            id,
             B,
             shape=shape,
             transpose=transpose
@@ -641,6 +691,7 @@ def csrmm_jvp_right(
     data,
     indices,
     indptr,
+    id,
     B,
     _,
     *,
@@ -653,6 +704,7 @@ def csrmm_jvp_right(
             data,
             indices,
             indptr,
+            id,
             B_dot,
             shape=shape,
             transpose=transpose
@@ -665,6 +717,7 @@ def csrmm_transpose_rule(
     data,
     indices,
     indptr,
+    id,
     B,
     _,
     *,
@@ -676,24 +729,25 @@ def csrmm_transpose_rule(
     assert not ad.is_undefined_primal(indptr)
 
     if ad.is_undefined_primal(B):
-        dB = _csr_matmat(data, indices, indptr, ct, shape=shape, transpose=not transpose)
-        return data, indices, indptr, dB, _
+        dB = _csr_matmat(data, indices, indptr, id, ct, shape=shape, transpose=not transpose)
+        return data, indices, indptr, id, dB, _
     else:
         B = jnp.asarray(B)
         row, col = _csr_to_coo(indices, indptr)
         d_data = (ct[row] * B[col]).sum(axis=1)
-        return d_data, indices, indptr, B, _
+        return d_data, indices, indptr, id, B, _
 
 
 def csrmm_batching(args, axes, **kwargs):
     if tuple(axes) == (None, None, None, 0, None):
-        assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
-        batch_size, m, n = args[3].shape
-        B = jnp.transpose(args[3], (1, 0, 2)).reshape(m, batch_size * n)
+        assert args[4].ndim == 3, 'Batching axis 0 requires 3D input.'
+        batch_size, m, n = args[4].shape
+        B = jnp.transpose(args[4], (1, 0, 2)).reshape(m, batch_size * n)
         r = csrmm_p_call(
             args[0],
             args[1],
             args[2],
+            args[3],
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
@@ -702,13 +756,14 @@ def csrmm_batching(args, axes, **kwargs):
         return [r], [1]
 
     elif tuple(axes) == (None, None, None, 1, None):
-        assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
-        m, batch_size, n = args[3].shape
-        B = args[3].reshape(m, batch_size * n)
+        assert args[4].ndim == 3, 'Batching axis 0 requires 3D input.'
+        m, batch_size, n = args[4].shape
+        B = args[4].reshape(m, batch_size * n)
         r = csrmm_p_call(
             args[0],
             args[1],
             args[2],
+            args[3],
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
@@ -717,13 +772,14 @@ def csrmm_batching(args, axes, **kwargs):
         return [r], [1]
 
     elif tuple(axes) == (None, None, None, 2, None):
-        assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
-        m, n, batch_size = args[3].shape
-        B = args[3].reshape(m, batch_size * n)
+        assert args[4].ndim == 3, 'Batching axis 0 requires 3D input.'
+        m, n, batch_size = args[4].shape
+        B = args[4].reshape(m, batch_size * n)
         r = csrmm_p_call(
             args[0],
             args[1],
             args[2],
+            args[3],
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
@@ -739,6 +795,7 @@ def csrmm_p_call(
     weights,
     indices,
     indptr,
+    id,
     B,
     *,
     shape: Sequence[int],
@@ -756,6 +813,7 @@ def csrmm_p_call(
         weights,
         indices,
         indptr,
+        id,
         B,
         jnp.zeros(out_info.shape, out_info.dtype),
         outs=[out_info],
@@ -763,6 +821,7 @@ def csrmm_p_call(
         transpose=transpose,
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
+        id_info=jax.ShapeDtypeStruct(id.shape, id.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         vector_info=jax.ShapeDtypeStruct(B.shape, B.dtype),
     )
@@ -772,18 +831,16 @@ csrmm_p = XLACustomKernel(
     'csrmm',
     cpu_kernel=NumbaKernelGenerator(
         csrmm_cpu_kernel_generator,
-        input_output_aliases={4: 0}
+        input_output_aliases={5: 0}
     ),
     gpu_kernel=WarpKernelGenerator(
         csrmm_gpu_kernel_generator,
-        dim=lambda vector_info, indptr_info, transpose, **kwargs: (
-            tuple(reversed(vector_info.shape))
-            if transpose else
-            [vector_info.shape[1], indptr_info.shape[0] - 1]
+        dim=lambda vector_info, indptr_info, id_info, transpose, **kwargs: (
+            [vector_info.shape[1], id_info.shape[0] - 1]
         ),
-        input_output_aliases={4: 0}
+        input_output_aliases={5: 0}
     ),
 )
-csrmm_p.defjvp(csrmm_jvp_left, None, None, csrmm_jvp_right)
+csrmm_p.defjvp(csrmm_jvp_left, None, None, None, csrmm_jvp_right)
 csrmm_p.def_transpose_rule(csrmm_transpose_rule)
 csrmm_p.def_batching_rule(csrmm_batching)
