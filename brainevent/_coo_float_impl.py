@@ -67,7 +67,6 @@ def _coo_matmat(
     res = coomm_p_call(data, row, col, B, shape=shape, transpose=transpose)[0]
     return u.maybe_decimal(res * (unitd * unitb))
 
-# TODO: Implement coomv cpu kernel
 def coomv_cpu_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     transpose: bool,
@@ -104,7 +103,6 @@ def coomv_cpu_kernel_generator(
 
     return mv
 
-# TODO: Implement coomv gpu kernel
 def coomv_gpu_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
@@ -241,12 +239,36 @@ def coomv_transpose_rule(
 ):
     assert not ad.is_undefined_primal(row)
     assert not ad.is_undefined_primal(col)
+    ct = ct[0]
 
     if ad.is_undefined_primal(v):
-        return data, row, col, _coo_matvec(data, row, col, ct, shape=shape, transpose=not transpose), _
+        if type(ct) is ad.Zero:
+            ct_events = ad.Zero(v)
+        else:
+            ct_events = _coo_matvec(
+                data,
+                row,
+                col,
+                ct,
+                shape=shape,
+                transpose=not transpose
+            )
+        return data, row, col, ct_events, _
     else:
         v = jnp.asarray(v)
-        return ct[row] * v[col], row, col, v, _
+        if data.aval.shape[0] == 1: # scalar
+            ct_values = coomv_p_call(
+                jnp.ones(1, dtype=data.aval.dtype),
+                row,
+                col,
+                v,
+                shape=shape,
+                transpose=transpose,
+            )[0]
+            ct_values = jnp.inner(ct, ct_values).reshape(*data.aval.shape)
+        else:
+            ct_values = v[row] * ct[col] if transpose else v[col] * ct[row]
+        return ct_values, row, col, v, _
 
 def coomv_batching(
     args,
@@ -319,7 +341,6 @@ coomv_p = XLACustomKernel(
     cpu_kernel=NumbaKernelGenerator(coomv_cpu_kernel_generator, input_output_aliases={4:0}),
     gpu_kernel=WarpKernelGenerator(
         coomv_gpu_kernel_generator,
-        # TODO: check if dim param correct
         dim=lambda row_info, **kwargs: (
             row_info.shape[0]
         ),
@@ -495,8 +516,8 @@ def coomm_transpose_rule(
 ):
     assert not ad.is_undefined_primal(row)
     assert not ad.is_undefined_primal(col)
+    # TODO: Can optimize transpose rule if data is homogenous?
     if ad.is_undefined_primal(B):
-        # TODO: replace _coo_matmat with coomm_p_call may improve efficiency
         dB = _coo_matmat(data, row, col, ct, shape=shape, transpose=not transpose)
         return data, row, col, dB, _
     else:
@@ -597,7 +618,6 @@ coomm_p = XLACustomKernel(
     ),
     gpu_kernel=WarpKernelGenerator(
         coomm_gpu_kernel_generator,
-        # TODO: check if dim param is correct
         dim=lambda row_info, **kwargs: (
             row_info.shape[0]
         ),
