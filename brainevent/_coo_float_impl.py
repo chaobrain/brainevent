@@ -74,33 +74,31 @@ def coomv_cpu_kernel_generator(
 ) -> Kernel:
     import numba  # pylint: disable=import-outside-toplevel
 
-    if transpose:
-        # v @ coo.T
-        if weight_info.size == 1:
-            @numba.njit(**numba_environ.setting)
+    match (transpose, weight_info.size):
+        # transpose=True, homogeneous
+        case (True, 1):
             def mv(weights, row, col, v, _, posts):
                 w = weights[0]
                 for i in numba.prange(row.shape[0]):
                     posts[col[i]] += w * v[row[i]]
-        else:
-            @numba.njit(**numba_environ.setting)
+        # transpose=True, heterogeneous
+        case (True, _):
             def mv(weights, row, col, v, _, posts):
                 for i in numba.prange(row.shape[0]):
                     posts[col[i]] += weights[i] * v[row[i]]
-    else:
-        # coo @ v
-        if weight_info.size == 1:
-            @numba.njit(**numba_environ.setting)
+        # transpose=False, homogeneous
+        case (False, 1):
             def mv(weights, row, col, v, _, posts):
                 w = weights[0]
                 for i in numba.prange(row.shape[0]):
                     posts[row[i]] += w * v[col[i]]
-        else:
-            @numba.njit(**numba_environ.setting)
+        # transpose=False, heterogeneous
+        case (False, _):
             def mv(weights, row, col, v, _, posts):
                 for i in numba.prange(row.shape[0]):
                     posts[row[i]] += weights[i] * v[col[i]]
 
+    mv = numba.njit(**numba_environ.setting)(mv)
     return mv
 
 def coomv_gpu_kernel_generator(
@@ -118,9 +116,10 @@ def coomv_gpu_kernel_generator(
     col_dtype = dtype_to_warp_type(col_info.dtype)
     vector_dtype = dtype_to_warp_type(vector_info.dtype)
 
-    if transpose:
-        if weight_info.size == 1:
-            @warp.kernel
+
+    match (transpose, weight_info.size):
+        # transpose=True, homogeneous
+        case (True, 1):
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
                 row: warp.array1d(dtype=row_dtype),
@@ -132,8 +131,8 @@ def coomv_gpu_kernel_generator(
                 i = warp.tid()
                 w = weights[0]
                 posts[col[i]] += w * v[row[i]]
-        else:
-            @warp.kernel
+        # transpose=True, heterogeneous
+        case (True, _):
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
                 row: warp.array1d(dtype=row_dtype),
@@ -144,9 +143,8 @@ def coomv_gpu_kernel_generator(
             ):
                 i = warp.tid()
                 posts[col[i]] += weights[i] * v[row[i]]
-    else:
-        if weight_info.size == 1:
-            @warp.kernel
+        # transpose=False, homogeneous
+        case (False, 1):
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
                 row: warp.array1d(dtype=row_dtype),
@@ -158,8 +156,8 @@ def coomv_gpu_kernel_generator(
                 i = warp.tid()
                 w = weights[0]
                 posts[row[i]] += w * v[col[i]]
-        else:
-            @warp.kernel
+        # transpose=False, heterogeneous
+        case (False, _):
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
                 row: warp.array1d(dtype=row_dtype),
@@ -171,6 +169,7 @@ def coomv_gpu_kernel_generator(
                 i = warp.tid()
                 posts[row[i]] += weights[i] * v[col[i]]
 
+    mv = warp.kernel(mv)
     return mv
 
 def coomv_jvp_v(
@@ -359,34 +358,31 @@ def coomm_cpu_kernel_generator(
 ) -> Kernel:
     import numba
 
-    if transpose:
-        # coo.T @ B
-        if weight_info.size == 1:
-            @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
+    match (transpose, weight_info.size):
+        # transpose=True, homogeneous
+        case (True, 1):
             def mm(weights, row, col, B, _, posts):
                 w = weights[0]
                 for i in numba.prange(row.shape[0]):
                     posts[col[i], :] += w * B[row[i], :]
-        else:
-            @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
+        # transpose=True, heterogeneous
+        case (True, _):
             def mm(weights, row, col, B, _, posts):
                 for i in numba.prange(row.shape[0]):
                     posts[col[i], :] += weights[i] * B[row[i], :]
-
-    else:
-        # coo @ B
-        if weight_info.size == 1:
-            @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
+        # transpose=False, homogeneous
+        case (False, 1):
             def mm(weights, row, col, B, _, posts):
                 w = weights[0]
                 for i in numba.prange(row.shape[0]):
                     posts[row[i], :] += w * B[col[i], :]
-        else:
-            @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
+        # transpose=False, heterogeneous
+        case (False, _):
             def mm(weights, row, col, B, _, posts):
                 for i in numba.prange(row.shape[0]):
                     posts[row[i], :] += weights[i] * B[col[i], :]
 
+    mm = numba.njit(**numba_environ.setting)(mm)
     return mm
 
 def coomm_gpu_kernel_generator(
@@ -404,10 +400,9 @@ def coomm_gpu_kernel_generator(
     row_dtype = dtype_to_warp_type(row_info.dtype)
     col_dtype = dtype_to_warp_type(col_info.dtype)
 
-    if transpose:
-        # coo.T @ B
-        if weight_info.size == 1:
-            @warp.kernel
+    match (transpose, weight_info.size):
+        # transpose=True, weight.size==1
+        case (True, 1):
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
                 row: warp.array1d(dtype=row_dtype),
@@ -419,8 +414,8 @@ def coomm_gpu_kernel_generator(
                 i = warp.tid()
                 w = weights[0]
                 posts[col[i], :] += w * B[row[i], :]
-        else:
-            @warp.kernel
+        # transpose=True, weight.size!=1
+        case (True, _):
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
                 row: warp.array1d(dtype=row_dtype),
@@ -431,10 +426,8 @@ def coomm_gpu_kernel_generator(
             ):
                 i = warp.tid()
                 posts[col[i], :] += weights[i] * B[row[i], :]
-    else:
-        # coo @ B
-        if weight_info.size == 1:
-            @warp.kernel
+        # transpose=False, weight.size==1
+        case (False, 1):
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
                 row: warp.array1d(dtype=row_dtype),
@@ -446,8 +439,8 @@ def coomm_gpu_kernel_generator(
                 i = warp.tid()
                 w = weights[0]
                 posts[row[i], :] += w * B[col[i], :]
-        else:
-            @warp.kernel
+        # transpose=False, weight.size!=1
+        case (False, _):
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
                 row: warp.array1d(dtype=row_dtype),
@@ -458,6 +451,8 @@ def coomm_gpu_kernel_generator(
             ):
                 i = warp.tid()
                 posts[row[i], :] += weights[i] * B[col[i], :]
+
+    mm = warp.kernel(mm)
     return mm
 
 
