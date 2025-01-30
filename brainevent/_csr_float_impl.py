@@ -184,8 +184,8 @@ def csrmv_gpu_kernel_generator(
                 posts: warp.array1d(dtype=weight_dtype),
             ):
                 i = warp.tid()
-                lborder = i * 64
-                rborder = min(lborder + 64, indices_shape)
+                lborder = i * 32
+                rborder = min(lborder + 32, indices_shape)
                 w = weights[0]
                 pos = indptr[id[i]]
                 for k in range(id[i],id[i+1]+1):
@@ -210,8 +210,8 @@ def csrmv_gpu_kernel_generator(
                 posts: warp.array1d(dtype=weight_dtype),
             ):
                 i = warp.tid()
-                lborder = i * 64
-                rborder = min(lborder + 64, indices_shape)
+                lborder = i * 32
+                rborder = min(lborder + 32, indices_shape)
                 w = weights[0]
 
                 pos = indptr[id[i]]
@@ -239,8 +239,8 @@ def csrmv_gpu_kernel_generator(
                 posts: warp.array1d(dtype=weight_dtype),
             ):
                 i = warp.tid()
-                lborder = i * 64
-                rborder = min(lborder + 64, indices_shape)
+                lborder = i * 32
+                rborder = min(lborder + 32, indices_shape)
 
                 pos = indptr[id[i]]
                 for k in range(id[i], id[i+1]+1):
@@ -264,8 +264,8 @@ def csrmv_gpu_kernel_generator(
                 posts: warp.array1d(dtype=weight_dtype),
             ):
                 i = warp.tid()
-                lborder = i * 64
-                rborder = min(lborder + 64, indices_shape)
+                lborder = i * 32
+                rborder = min(lborder + 32, indices_shape)
 
                 pos = indptr[id[i]]
                 for k in range(id[i], id[i+1]+1):
@@ -558,8 +558,8 @@ def csrmm_gpu_kernel_generator(
                 posts: warp.array2d(dtype=weight_dtype),
             ):
                 t, i = warp.tid()
-                lborder = i * 64
-                rborder = min(lborder + 64, indices_shape)
+                lborder = i * 32
+                rborder = min(lborder + 32, indices_shape)
                 w = weights[0]
                 pos = indptr[id[i]]
                 for k in range(id[i], id[i + 1] + 1):
@@ -585,8 +585,8 @@ def csrmm_gpu_kernel_generator(
                 posts: warp.array2d(dtype=weight_dtype),
             ):
                 t, i = warp.tid()
-                lborder = i * 64
-                rborder = min(lborder + 64, indices_shape)
+                lborder = i * 32
+                rborder = min(lborder + 32, indices_shape)
                 w = weights[0]
 
                 pos = indptr[id[i]]
@@ -615,8 +615,8 @@ def csrmm_gpu_kernel_generator(
                 posts: warp.array2d(dtype=weight_dtype),
             ):
                 t, i = warp.tid()
-                lborder = i * 64
-                rborder = min(lborder + 64, indices_shape)
+                lborder = i * 32
+                rborder = min(lborder + 32, indices_shape)
 
                 pos = indptr[id[i]]
                 for k in range(id[i], id[i + 1] + 1):
@@ -642,8 +642,8 @@ def csrmm_gpu_kernel_generator(
                 posts: warp.array2d(dtype=weight_dtype),
             ):
                 t, i = warp.tid()
-                lborder = i * 64
-                rborder = min(lborder + 64, indices_shape)
+                lborder = i * 32
+                rborder = min(lborder + 32, indices_shape)
 
                 pos = indptr[id[i]]
                 for k in range(id[i], id[i + 1] + 1):
@@ -739,7 +739,7 @@ def csrmm_transpose_rule(
 
 
 def csrmm_batching(args, axes, **kwargs):
-    if tuple(axes) == (None, None, None, 0, None):
+    if tuple(axes) == (None, None, None, None, 0, None):
         assert args[4].ndim == 3, 'Batching axis 0 requires 3D input.'
         batch_size, m, n = args[4].shape
         B = jnp.transpose(args[4], (1, 0, 2)).reshape(m, batch_size * n)
@@ -755,7 +755,7 @@ def csrmm_batching(args, axes, **kwargs):
         r = jnp.reshape(r[0], [r[0].shape[0], batch_size, n])
         return [r], [1]
 
-    elif tuple(axes) == (None, None, None, 1, None):
+    elif tuple(axes) == (None, None, None, None, 1, None):
         assert args[4].ndim == 3, 'Batching axis 0 requires 3D input.'
         m, batch_size, n = args[4].shape
         B = args[4].reshape(m, batch_size * n)
@@ -771,7 +771,7 @@ def csrmm_batching(args, axes, **kwargs):
         r = jnp.reshape(r[0], [r[0].shape[0], batch_size, n])
         return [r], [1]
 
-    elif tuple(axes) == (None, None, None, 2, None):
+    elif tuple(axes) == (None, None, None, None, 2, None):
         assert args[4].ndim == 3, 'Batching axis 0 requires 3D input.'
         m, n, batch_size = args[4].shape
         B = args[4].reshape(m, batch_size * n)

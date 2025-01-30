@@ -56,13 +56,13 @@ class CSR(u.sparse.SparseMatrix):
         shape: Tuple[int, int]
     ):
         self.data, self.indices, self.indptr = map(u.math.asarray, args)
-        m = (self.indices.shape[0] -1) // 64 + 1
+        m = (self.indices.shape[0] -1) // 32 + 1
         id = np.zeros(m + 1, self.indices.dtype)
         sum = 0
         pos = 0
         for k in range(0, self.indptr.shape[0] - 1):
             posl = pos
-            pos = self.indptr[k+1] // 64 + 1
+            pos = self.indptr[k+1] // 32 + 1
             posr = pos
             for j in range(posl,posr):
                 id[j] = k
@@ -216,6 +216,7 @@ class CSR(u.sparse.SparseMatrix):
                     data,
                     self.indices,
                     self.indptr,
+                    self.id,
                     other,
                     shape=self.shape
                 )
@@ -224,6 +225,7 @@ class CSR(u.sparse.SparseMatrix):
                     data,
                     self.indices,
                     self.indptr,
+                    self.id,
                     other,
                     shape=self.shape
                 )
@@ -267,6 +269,7 @@ class CSR(u.sparse.SparseMatrix):
                     data,
                     self.indices,
                     self.indptr,
+                    self.id,
                     other,
                     shape=self.shape,
                     transpose=True
@@ -277,6 +280,7 @@ class CSR(u.sparse.SparseMatrix):
                     data,
                     self.indices,
                     self.indptr,
+                    self.id,
                     other,
                     shape=self.shape,
                     transpose=True
@@ -345,13 +349,13 @@ class CSC(u.sparse.SparseMatrix):
         shape: Tuple[int, int]
     ):
         self.data, self.indices, self.indptr = map(u.math.asarray, args)
-        m = (self.indices.shape[0] - 1) // 64 + 1
+        m = (self.indices.shape[0] - 1) // 32 + 1
         id = np.zeros(m + 1, self.indices.dtype)
         sum = 0
         pos = 0
         for k in range(0, self.indptr.shape[0] - 1):
             posl = pos
-            pos = self.indptr[k + 1] // 64 + 1
+            pos = self.indptr[k + 1] // 32 + 1
             posr = pos
             for j in range(posl, posr):
                 id[j] = k
@@ -517,6 +521,7 @@ class CSC(u.sparse.SparseMatrix):
                     data,
                     self.indices,
                     self.indptr,
+                    self.id,
                     other,
                     shape=self.shape[::-1],
                     transpose=True
@@ -526,6 +531,7 @@ class CSC(u.sparse.SparseMatrix):
                     data,
                     self.indices,
                     self.indptr,
+                    self.id,
                     other,
                     shape=self.shape[::-1],
                     transpose=True
@@ -572,6 +578,7 @@ class CSC(u.sparse.SparseMatrix):
                     data,
                     self.indices,
                     self.indptr,
+                    self.id,
                     other,
                     shape=self.shape[::-1],
                     transpose=False
@@ -581,7 +588,9 @@ class CSC(u.sparse.SparseMatrix):
                 r = _event_csr_matmat(
                     data,
                     self.indices,
-                    self.indptr, other,
+                    self.indptr,
+                    self.id,
+                    other,
                     shape=self.shape[::-1],
                     transpose=False
                 )

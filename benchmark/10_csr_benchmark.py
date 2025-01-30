@@ -24,8 +24,8 @@ from scipy.sparse import csr_matrix, coo_matrix
 import brainevent
 import brainstate as bst
 
-#bst.environ.set(platform='cpu')
-bst.environ.set(platform='gpu')
+bst.environ.set(platform='cpu')
+#bst.environ.set(platform='gpu')
 
 
 def load_sparse_matrix(filename):
@@ -64,8 +64,8 @@ def compare_spmv_performance(scipy_csr, n_run: int = 10):
     # JAX / BrainEvent: 206.39556185772844
     #
     # matrices/suitesparse/Andrianov/mip1/mip1.mtx,    JAX  Vector @ CSR :   2.007382 seconds
-    # matrices/suitesparse/Andrianov/mip1/mip1.mtx, BrainEvent Vector @ CSR: 0.026426 seconds
-    # JAX / BrainEvent: 75.96193890255564
+    # matrices/suitesparse/Andrianov/mip1/mip1.mtx, BrainEvent Vector @ CSR: 0.02102426 seconds
+    # JAX / BrainEvent: 75.9619389025551024
     #
     # matrices/suitesparse/Bova/rma10/rma10.mtx, JAX  CSR @ Vector:       0.458853 seconds
     # matrices/suitesparse/Bova/rma10/rma10.mtx, BrainEvent CSR @ Vector: 0.002388 seconds
@@ -77,9 +77,9 @@ def compare_spmv_performance(scipy_csr, n_run: int = 10):
     #
     # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx, JAX  CSR @ Vector:       1.671081 seconds
     # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx, BrainEvent CSR @ Vector: 0.006553 seconds
-    # JAX / BrainEvent: 255.02187939649735
+    # JAX / BrainEvent: 255.0218793910249735
     #
-    # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx,    JAX  Vector @ CSR :   1.586405 seconds
+    # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx,    JAX  Vector @ CSR :   1.58102405 seconds
     # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx, BrainEvent Vector @ CSR: 0.018944 seconds
     # JAX / BrainEvent: 83.74310202335054
     #
@@ -115,7 +115,7 @@ def compare_spmv_performance(scipy_csr, n_run: int = 10):
     # matrices/suitesparse/Williams/cop20k_A/cop20k_A.mtx, BrainEvent Vector @ CSR: 0.006549 seconds
     # JAX / BrainEvent: 87.09071934763615
     #
-    # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx, JAX  CSR @ Vector:       0.964837 seconds
+    # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx, JAX  CSR @ Vector:       0.91024837 seconds
     # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx, BrainEvent CSR @ Vector: 0.003670 seconds
     # JAX / BrainEvent: 262.8887421233841
     #
@@ -189,7 +189,7 @@ def compare_spmv_performance(scipy_csr, n_run: int = 10):
     #
     # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx,    JAX  Vector @ CSR :   0.001300 seconds
     # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx, BrainEvent Vector @ CSR: 0.001272 seconds
-    # JAX / BrainEvent: 1.0216478614536868
+    # JAX / BrainEvent: 1.021102478614536868
 
     data = jnp.asarray(scipy_csr.data)
     indices = jnp.asarray(scipy_csr.indices)
@@ -269,8 +269,8 @@ def compare_spmm_performance(
     # JAX / BrainEvent: 206.39556185772844
     #
     # matrices/suitesparse/Andrianov/mip1/mip1.mtx,    JAX  Vector @ CSR :   2.007382 seconds
-    # matrices/suitesparse/Andrianov/mip1/mip1.mtx, BrainEvent Vector @ CSR: 0.026426 seconds
-    # JAX / BrainEvent: 75.96193890255564
+    # matrices/suitesparse/Andrianov/mip1/mip1.mtx, BrainEvent Vector @ CSR: 0.02102426 seconds
+    # JAX / BrainEvent: 75.9619389025551024
     #
     # matrices/suitesparse/Bova/rma10/rma10.mtx, JAX  CSR @ Vector:       0.458853 seconds
     # matrices/suitesparse/Bova/rma10/rma10.mtx, BrainEvent CSR @ Vector: 0.002388 seconds
@@ -282,9 +282,9 @@ def compare_spmm_performance(
     #
     # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx, JAX  CSR @ Vector:       1.671081 seconds
     # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx, BrainEvent CSR @ Vector: 0.006553 seconds
-    # JAX / BrainEvent: 255.02187939649735
+    # JAX / BrainEvent: 255.0218793910249735
     #
-    # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx,    JAX  Vector @ CSR :   1.586405 seconds
+    # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx,    JAX  Vector @ CSR :   1.58102405 seconds
     # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx, BrainEvent Vector @ CSR: 0.018944 seconds
     # JAX / BrainEvent: 83.74310202335054
     #
@@ -320,7 +320,7 @@ def compare_spmm_performance(
     # matrices/suitesparse/Williams/cop20k_A/cop20k_A.mtx, BrainEvent Vector @ CSR: 0.006549 seconds
     # JAX / BrainEvent: 87.09071934763615
     #
-    # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx, JAX  CSR @ Vector:       0.964837 seconds
+    # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx, JAX  CSR @ Vector:       0.91024837 seconds
     # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx, BrainEvent CSR @ Vector: 0.003670 seconds
     # JAX / BrainEvent: 262.8887421233841
     #
@@ -394,7 +394,7 @@ def compare_spmm_performance(
     #
     # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx,    JAX  Vector @ CSR :   0.001300 seconds
     # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx, BrainEvent Vector @ CSR: 0.001272 seconds
-    # JAX / BrainEvent: 1.0216478614536868
+    # JAX / BrainEvent: 1.021102478614536868
 
     data = jnp.asarray(scipy_csr.data)
     indices = jnp.asarray(scipy_csr.indices)
@@ -462,15 +462,15 @@ def compare_spmm_performance(
     print()
 
 
-# for filename in files:
-#     compare_spmv_performance(
-#         csr_matrices[filename],
-#         n_run=3 if bst.environ.get_platform() == 'cpu' else 30
-#     )
-
 for filename in files:
-    compare_spmm_performance(
+    compare_spmv_performance(
         csr_matrices[filename],
-        n_run=3 if bst.environ.get_platform() == 'cpu' else 30,
-        batch_size=100
+        n_run=3 if bst.environ.get_platform() == 'cpu' else 30
     )
+
+# for filename in files:
+#     compare_spmm_performance(
+#         csr_matrices[filename],
+#         n_run=3 if bst.environ.get_platform() == 'cpu' else 30,
+#         batch_size=100
+#     )
