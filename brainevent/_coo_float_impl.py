@@ -86,6 +86,7 @@ def coomv_cpu_kernel_generator(
             def mv(weights, row, col, v, _, posts):
                 for i in numba.prange(row.shape[0]):
                     posts[col[i]] += weights[i] * v[row[i]]
+
         # transpose=False, homogeneous
         case (False, 1):
             def mv(weights, row, col, v, _, posts):
@@ -143,6 +144,7 @@ def coomv_gpu_kernel_generator(
             ):
                 i = warp.tid()
                 posts[col[i]] += weights[i] * v[row[i]]
+
         # transpose=False, homogeneous
         case (False, 1):
             def mv(
@@ -370,6 +372,7 @@ def coomm_cpu_kernel_generator(
             def mm(weights, row, col, B, _, posts):
                 for i in numba.prange(row.shape[0]):
                     posts[col[i], :] += weights[i] * B[row[i], :]
+
         # transpose=False, homogeneous
         case (False, 1):
             def mm(weights, row, col, B, _, posts):
@@ -426,6 +429,7 @@ def coomm_gpu_kernel_generator(
             ):
                 i = warp.tid()
                 posts[col[i], :] += weights[i] * B[row[i], :]
+
         # transpose=False, weight.size==1
         case (False, 1):
             def mm(

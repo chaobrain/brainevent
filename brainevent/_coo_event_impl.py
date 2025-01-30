@@ -88,57 +88,87 @@ def event_coomv_cpu_kernel_generator(
         case (True, 1, jnp.bool_, _):
             # bool
             def mv(weights, row, col, v, _, posts):
-                ...
+                w = weights[0]
+                for i in numba.prange(row.shape[0]):
+                    if v[row[i]]:
+                        posts[col[i]] += w
         case (True, 1, _, True):
             # float_as_event
             def mv(weights, row, col, v, _, posts):
-                ...
+                w = weights[0]
+                for i in numba.prange(row.shape[0]):
+                    if v[row[i]] != 0.:
+                        posts[col[i]] += w
         case (True, 1, _, False):
             # other
             def mv(weights, row, col, v, _, posts):
-                ...
+                w = weights[0]
+                for i in numba.prange(row.shape[0]):
+                    if v[row[i]] != 0.:
+                        posts[col[i]] += w * v[row[i]]
 
         # transpose=True, heterogeneous
         case (True, _, jnp.bool_, _):
             # bool
             def mv(weights, row, col, v, _, posts):
-                ...
+                for i in numba.prange(row.shape[0]):
+                    if v[row[i]]:
+                        posts[col[i]] += weights[i]
         case (True, _, _, True):
             # float_as_event
             def mv(weights, row, col, v, _, posts):
-                ...
+                for i in numba.prange(row.shape[0]):
+                    if v[row[i]] != 0.:
+                        posts[col[i]] += weights[i]
         case (True, _, _, False):
             # other
             def mv(weights, row, col, v, _, posts):
-                ...
+                for i in numba.prange(row.shape[0]):
+                    if v[row[i]] != 0.:
+                        posts[col[i]] += weights[i] * v[row[i]]
 
         # transpose=False, homogeneous
         case (False, 1, jnp.bool_, _):
             # bool
             def mv(weights, row, col, v, _, posts):
-                ...
+                w = weights[0]
+                for i in numba.prange(row.shape[0]):
+                    if v[col[i]]:
+                        posts[row[i]] += w
         case (False, 1, _, True):
             # float_as_event
             def mv(weights, row, col, v, _, posts):
-                ...
+                w = weights[0]
+                for i in numba.prange(row.shape[0]):
+                    if v[col[i]] != 0.:
+                        posts[row[i]] += w
         case (False, 1, _, False):
             # other
             def mv(weights, row, col, v, _, posts):
-                ...
+                w = weights[0]
+                for i in numba.prange(row.shape[0]):
+                    if v[col[i]] != 0.:
+                        posts[row[i]] += w * v[col[i]]
 
         # transpose=False, heterogeneous
         case (False, _, jnp.bool_, _):
             # bool
             def mv(weights, row, col, v, _, posts):
-                ...
+                for i in numba.prange(row.shape[0]):
+                    if v[col[i]]:
+                        posts[row[i]] += weights[i]
         case (False, _, _, True):
             # float_as_event
             def mv(weights, row, col, v, _, posts):
-                ...
+                for i in numba.prange(row.shape[0]):
+                    if v[col[i]] != 0.:
+                        posts[row[i]] += weights[i]
         case (False, _, _, False):
             # other
             def mv(weights, row, col, v, _, posts):
-                ...
+                for i in numba.prange(row.shape[0]):
+                    if v[col[i]] != 0.:
+                        posts[row[i]] += weights[i] * v[col[i]]
 
     # 统一添加装饰器
     mv = numba.njit(**numba_environ.setting)(mv)
@@ -174,7 +204,10 @@ def event_coomv_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype)
             ):
-                ...
+                i = warp.tid()
+                w = weights[0]
+                if v[row[i]]:
+                    posts[col[i]] += w
         case(True, 1, _, True):
             # float_as_event
             def mv(
@@ -185,7 +218,10 @@ def event_coomv_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype)
             ):
-                ...
+                i = warp.tid()
+                w = weights[0]
+                if v[row[i]] != 0.:
+                    posts[col[i]] += w
         case(True, 1, _, False):
             # other
             def mv(
@@ -196,7 +232,10 @@ def event_coomv_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype)
             ):
-                ...
+                i = warp.tid()
+                w = weights[0]
+                if v[row[i]] != 0.:
+                    posts[col[i]] += w * v[row[i]]
 
         # transpose=True, heterogeneous
         case(True, _, jnp.bool_, _):
@@ -209,7 +248,9 @@ def event_coomv_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype)
             ):
-                ...
+                i = warp.tid()
+                if v[row[i]]:
+                    posts[col[i]] += weights[i]
         case(True, _, _, True):
             # float_as_event
             def mv(
@@ -220,7 +261,9 @@ def event_coomv_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype)
             ):
-                ...
+                i = warp.tid()
+                if v[row[i]] != 0.:
+                    posts[col[i]] += weights[i]
         case(True, _, _, False):
             # other
             def mv(
@@ -231,7 +274,9 @@ def event_coomv_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype)
             ):
-                ...
+                i = warp.tid()
+                if v[row[i]] != 0.:
+                    posts[col[i]] += weights[i] * v[row[i]]
 
         # transpose=False, homogeneous
         case(False, 1, jnp.bool_, _):
@@ -244,7 +289,10 @@ def event_coomv_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype)
             ):
-                ...
+                i = warp.tid()
+                w = weights[0]
+                if v[col[i]]:
+                    posts[row[i]] += w
         case(False, 1, _, True):
             # float_as_event
             def mv(
@@ -255,7 +303,10 @@ def event_coomv_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype)
             ):
-                ...
+                i = warp.tid()
+                w = weights[0]
+                if v[col[i]] != 0.:
+                    posts[row[i]] += w
         case(False, 1, _, False):
             # other
             def mv(
@@ -266,7 +317,10 @@ def event_coomv_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype)
             ):
-                ...
+                i = warp.tid()
+                w = weights[0]
+                if v[col[i]] != 0.:
+                    posts[row[i]] += w * v[col[i]]
 
         # transpose=False, heterogeneous
         case(False, _, jnp.bool_, _):
@@ -279,7 +333,9 @@ def event_coomv_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype)
             ):
-                ...
+                i = warp.tid()
+                if v[col[i]]:
+                    posts[row[i]] += weights[i]
         case(False, _, _, True):
             # float_as_event
             def mv(
@@ -290,7 +346,9 @@ def event_coomv_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype)
             ):
-                ...
+                i = warp.tid()
+                if v[col[i]] != 0.:
+                    posts[row[i]] += weights[i]
         case(False, _, _, False):
             # other
             def mv(
@@ -301,7 +359,9 @@ def event_coomv_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype)
             ):
-                ...
+                i = warp.tid()
+                if v[col[i]] != 0.:
+                    posts[row[i]] += weights[i] * v[col[i]]
     mv = warp.kernel(mv)
     return mv
 
@@ -498,58 +558,100 @@ def event_coomm_cpu_kernel_generator(
         # transpose=True, homogeneous
         case (True, 1, jnp.bool_, _):
             # bool
-            def mm(weights, row, col, v, _, posts):
-                ...
+            def mm(weights, row, col, B, _, posts):
+                w = weights[0]
+                for i in numba.prange(row.shape[0]):
+                    for j in numba.prange(B.shape[1]):
+                        if B[row[i], j]:
+                            posts[col[i], j] += w
         case (True, 1, _, True):
             # float_as_event
-            def mm(weights, row, col, v, _, posts):
-                ...
+            def mm(weights, row, col, B, _, posts):
+                w = weights[0]
+                for i in numba.prange(row.shape[0]):
+                    for j in numba.prange(B.shape[1]):
+                        if B[row[i], j] != 0.:
+                            posts[col[i], j] += w
         case (True, 1, _, False):
             # other
-            def mm(weights, row, col, v, _, posts):
-                ...
+            def mm(weights, row, col, B, _, posts):
+                w = weights[0]
+                for i in numba.prange(row.shape[0]):
+                    for j in numba.prange(B.shape[1]):
+                        if B[row[i], j] != 0.:
+                            posts[col[i], j] += w * B[row[i], j]
 
         # transpose=True, heterogeneous
         case (True, _, jnp.bool_, _):
             # bool
-            def mm(weights, row, col, v, _, posts):
-                ...
+            def mm(weights, row, col, B, _, posts):
+                for i in numba.prange(row.shape[0]):
+                    for j in numba.prange(B.shape[1]):
+                        if B[row[i], j]:
+                            posts[col[i], j] += weights[i]
         case (True, _, _, True):
             # float_as_event
-            def mm(weights, row, col, v, _, posts):
-                ...
+            def mm(weights, row, col, B, _, posts):
+                for i in numba.prange(row.shape[0]):
+                    for j in numba.prange(B.shape[1]):
+                        if B[row[i], j] != 0.:
+                            posts[col[i], j] += weights[i]
         case (True, _, _, False):
             # other
-            def mm(weights, row, col, v, _, posts):
-                ...
+            def mm(weights, row, col, B, _, posts):
+                for i in numba.prange(row.shape[0]):
+                    for j in numba.prange(B.shape[1]):
+                        if B[row[i], j] != 0.:
+                            posts[col[i], j] += weights[i] * B[row[i], j]
 
         # transpose=False, homogeneous
         case (False, 1, jnp.bool_, _):
             # bool
-            def mm(weights, row, col, v, _, posts):
-                ...
+            def mm(weights, row, col, B, _, posts):
+                w = weights[0]
+                for i in numba.prange(row.shape[0]):
+                    for j in numba.prange(B.shape[1]):
+                        if B[col[i], j]:
+                            posts[row[i], j] += w
         case (False, 1, _, True):
             # float_as_event
-            def mm(weights, row, col, v, _, posts):
-                ...
+            def mm(weights, row, col, B, _, posts):
+                w = weights[0]
+                for i in numba.prange(row.shape[0]):
+                    for j in numba.prange(B.shape[1]):
+                        if B[col[i], j] != 0.:
+                            posts[row[i], j] += w
         case (False, 1, _, False):
             # other
-            def mm(weights, row, col, v, _, posts):
-                ...
+            def mm(weights, row, col, B, _, posts):
+                w = weights[0]
+                for i in numba.prange(row.shape[0]):
+                    for j in numba.prange(B.shape[1]):
+                        if B[col[i], j] != 0.:
+                            posts[row[i], j] += w * B[col[i], j]
 
         # transpose=False, heterogeneous
         case (False, _, jnp.bool_, _):
             # bool
-            def mm(weights, row, col, v, _, posts):
-                ...
+            def mm(weights, row, col, B, _, posts):
+                for i in numba.prange(row.shape[0]):
+                    for j in numba.prange(B.shape[1]):
+                        if B[col[i], j]:
+                            posts[row[i], j] += weights[i]
         case (False, _, _, True):
             # float_as_event
-            def mm(weights, row, col, v, _, posts):
-                ...
+            def mm(weights, row, col, B, _, posts):
+                for i in numba.prange(row.shape[0]):
+                    for j in numba.prange(B.shape[1]):
+                        if B[col[i], j] != 0.:
+                            posts[row[i], j] += weights[i]
         case (False, _, _, False):
             # other
-            def mm(weights, row, col, v, _, posts):
-                ...
+            def mm(weights, row, col, B, _, posts):
+                for i in numba.prange(row.shape[0]):
+                    for j in numba.prange(B.shape[1]):
+                        if B[col[i], j] != 0.:
+                            posts[row[i], j] += weights[i] * B[col[i], j]
 
     # 统一添加装饰器
     mm = numba.njit(**numba_environ.setting)(mm)
@@ -582,33 +684,42 @@ def event_coomm_gpu_kernel_generator(
                 weights: warp.array1d(dtype=weight_dtype),
                 row: warp.array1d(dtype=row_dtype),
                 col: warp.array1d(dtype=col_dtype),
-                v: warp.array1d(dtype=spike_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype)
+                B: warp.array2d(dtype=spike_dtype),
+                _: warp.array2d(dtype=weight_dtype),
+                posts: warp.array2d(dtype=weight_dtype)
             ):
-                ...
+                i, j = warp.tid()
+                w = weights[0]
+                if B[row[i], j]:
+                    posts[col[i], :] += w
         case(True, 1, _, True):
             # float_as_event
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
                 row: warp.array1d(dtype=row_dtype),
                 col: warp.array1d(dtype=col_dtype),
-                v: warp.array1d(dtype=spike_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype)
+                B: warp.array2d(dtype=spike_dtype),
+                _: warp.array2d(dtype=weight_dtype),
+                posts: warp.array2d(dtype=weight_dtype)
             ):
-                ...
+                i, j = warp.tid()
+                w = weights[0]
+                if B[row[i], j] != 0.:
+                    posts[col[i], :] += w
         case(True, 1, _, False):
             # other
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
                 row: warp.array1d(dtype=row_dtype),
                 col: warp.array1d(dtype=col_dtype),
-                v: warp.array1d(dtype=spike_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype)
+                B: warp.array2d(dtype=spike_dtype),
+                _: warp.array2d(dtype=weight_dtype),
+                posts: warp.array2d(dtype=weight_dtype)
             ):
-                ...
+                i, j = warp.tid()
+                w = weights[0]
+                if B[row[i], j] != 0.:
+                    posts[col[i], :] += w * B[row[i], j]
 
         # transpose=True, heterogeneous
         case(True, _, jnp.bool_, _):
@@ -617,33 +728,39 @@ def event_coomm_gpu_kernel_generator(
                 weights: warp.array1d(dtype=weight_dtype),
                 row: warp.array1d(dtype=row_dtype),
                 col: warp.array1d(dtype=col_dtype),
-                v: warp.array1d(dtype=spike_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype)
+                B: warp.array2d(dtype=spike_dtype),
+                _: warp.array2d(dtype=weight_dtype),
+                posts: warp.array2d(dtype=weight_dtype)
             ):
-                ...
+                i, j = warp.tid()
+                if B[row[i], j]:
+                    posts[col[i], :] += weights[i]
         case(True, _, _, True):
             # float_as_event
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
                 row: warp.array1d(dtype=row_dtype),
                 col: warp.array1d(dtype=col_dtype),
-                v: warp.array1d(dtype=spike_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype)
+                B: warp.array2d(dtype=spike_dtype),
+                _: warp.array2d(dtype=weight_dtype),
+                posts: warp.array2d(dtype=weight_dtype)
             ):
-                ...
+                i, j = warp.tid()
+                if B[row[i], j] != 0.:
+                    posts[col[i], :] += weights[i]
         case(True, _, _, False):
             # other
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
                 row: warp.array1d(dtype=row_dtype),
                 col: warp.array1d(dtype=col_dtype),
-                v: warp.array1d(dtype=spike_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype)
+                B: warp.array2d(dtype=spike_dtype),
+                _: warp.array2d(dtype=weight_dtype),
+                posts: warp.array2d(dtype=weight_dtype)
             ):
-                ...
+                i, j = warp.tid()
+                if B[row[i], j] != 0.:
+                    posts[col[i], :] += weights[i] * B[row[i], j]
 
         # transpose=False, homogeneous
         case(False, 1, jnp.bool_, _):
@@ -652,33 +769,42 @@ def event_coomm_gpu_kernel_generator(
                 weights: warp.array1d(dtype=weight_dtype),
                 row: warp.array1d(dtype=row_dtype),
                 col: warp.array1d(dtype=col_dtype),
-                v: warp.array1d(dtype=spike_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype)
+                B: warp.array2d(dtype=spike_dtype),
+                _: warp.array2d(dtype=weight_dtype),
+                posts: warp.array2d(dtype=weight_dtype)
             ):
-                ...
+                i, j = warp.tid()
+                w = weights[0]
+                if B[col[i], j]:
+                    posts[row[i], :] += w
         case(False, 1, _, True):
             # float_as_event
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
                 row: warp.array1d(dtype=row_dtype),
                 col: warp.array1d(dtype=col_dtype),
-                v: warp.array1d(dtype=spike_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype)
+                B: warp.array2d(dtype=spike_dtype),
+                _: warp.array2d(dtype=weight_dtype),
+                posts: warp.array2d(dtype=weight_dtype)
             ):
-                ...
+                i, j = warp.tid()
+                w = weights[0]
+                if B[col[i], j] != 0.:
+                    posts[row[i], :] += w
         case(False, 1, _, False):
             # other
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
                 row: warp.array1d(dtype=row_dtype),
                 col: warp.array1d(dtype=col_dtype),
-                v: warp.array1d(dtype=spike_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype)
+                B: warp.array2d(dtype=spike_dtype),
+                _: warp.array2d(dtype=weight_dtype),
+                posts: warp.array2d(dtype=weight_dtype)
             ):
-                ...
+                i, j = warp.tid()
+                w = weights[0]
+                if B[col[i], j] != 0.:
+                    posts[row[i], :] += w * B[col[i], j]
 
         # transpose=False, heterogeneous
         case(False, _, jnp.bool_, _):
@@ -687,33 +813,40 @@ def event_coomm_gpu_kernel_generator(
                 weights: warp.array1d(dtype=weight_dtype),
                 row: warp.array1d(dtype=row_dtype),
                 col: warp.array1d(dtype=col_dtype),
-                v: warp.array1d(dtype=spike_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype)
+                B: warp.array2d(dtype=spike_dtype),
+                _: warp.array2d(dtype=weight_dtype),
+                posts: warp.array2d(dtype=weight_dtype)
             ):
-                ...
+                i, j = warp.tid()
+                if B[col[i], j]:
+                    posts[row[i], :] += weights[i]
         case(False, _, _, True):
             # float_as_event
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
                 row: warp.array1d(dtype=row_dtype),
                 col: warp.array1d(dtype=col_dtype),
-                v: warp.array1d(dtype=spike_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype)
+                B: warp.array2d(dtype=spike_dtype),
+                _: warp.array2d(dtype=weight_dtype),
+                posts: warp.array2d(dtype=weight_dtype)
             ):
-                ...
+                i, j = warp.tid()
+                if B[col[i], j] != 0.:
+                    posts[row[i], :] += weights[i]
         case(False, _, _, False):
             # other
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
                 row: warp.array1d(dtype=row_dtype),
                 col: warp.array1d(dtype=col_dtype),
-                v: warp.array1d(dtype=spike_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype)
+                B: warp.array2d(dtype=spike_dtype),
+                _: warp.array2d(dtype=weight_dtype),
+                posts: warp.array2d(dtype=weight_dtype)
             ):
-                ...
+                i, j = warp.tid()
+                if B[col[i], j] != 0.:
+                    posts[row[i], :] += weights[i] * B[col[i], j]
+                
     mm = warp.kernel(mm)
     return mm
 
