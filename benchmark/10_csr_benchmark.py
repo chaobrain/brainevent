@@ -23,9 +23,8 @@ from scipy.sparse import csr_matrix, coo_matrix
 
 import brainevent
 import brainstate as bst
-
-bst.environ.set(platform='cpu')
-#bst.environ.set(platform='gpu')
+# bst.environ.set(platform='cpu')
+bst.environ.set(platform='gpu')
 
 
 def load_sparse_matrix(filename):
@@ -462,15 +461,15 @@ def compare_spmm_performance(
     print()
 
 
-for filename in files:
-    compare_spmv_performance(
-        csr_matrices[filename],
-        n_run=3 if bst.environ.get_platform() == 'cpu' else 30
-    )
-
 # for filename in files:
-#     compare_spmm_performance(
+#     compare_spmv_performance(
 #         csr_matrices[filename],
-#         n_run=3 if bst.environ.get_platform() == 'cpu' else 30,
-#         batch_size=100
+#         n_run=3 if bst.environ.get_platform() == 'cpu' else 30
 #     )
+
+for filename in files:
+    compare_spmm_performance(
+        csr_matrices[filename],
+        n_run=3 if bst.environ.get_platform() == 'cpu' else 30,
+        batch_size=100
+    )
