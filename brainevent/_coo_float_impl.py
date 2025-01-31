@@ -414,9 +414,9 @@ def coomm_gpu_kernel_generator(
                 _: warp.array2d(dtype=weight_dtype),
                 posts: warp.array2d(dtype=weight_dtype)
             ):
-                i = warp.tid()
+                i, j = warp.tid()
                 w = weights[0]
-                posts[col[i], :] += w * B[row[i], :]
+                posts[col[i], j] += w * B[row[i], j]
         # transpose=True, weight.size!=1
         case (True, _):
             def mm(
@@ -427,8 +427,8 @@ def coomm_gpu_kernel_generator(
                 _: warp.array2d(dtype=weight_dtype),
                 posts: warp.array2d(dtype=weight_dtype)
             ):
-                i = warp.tid()
-                posts[col[i], :] += weights[i] * B[row[i], :]
+                i, j = warp.tid()
+                posts[col[i], j] += weights[i] * B[row[i], j]
 
         # transpose=False, weight.size==1
         case (False, 1):
@@ -440,9 +440,9 @@ def coomm_gpu_kernel_generator(
                 _: warp.array2d(dtype=weight_dtype),
                 posts: warp.array2d(dtype=weight_dtype)
             ):
-                i = warp.tid()
+                i, j = warp.tid()
                 w = weights[0]
-                posts[row[i], :] += w * B[col[i], :]
+                posts[row[i], j] += w * B[col[i], j]
         # transpose=False, weight.size!=1
         case (False, _):
             def mm(
@@ -453,8 +453,8 @@ def coomm_gpu_kernel_generator(
                 _: warp.array2d(dtype=weight_dtype),
                 posts: warp.array2d(dtype=weight_dtype)
             ):
-                i = warp.tid()
-                posts[row[i], :] += weights[i] * B[col[i], :]
+                i, j = warp.tid()
+                posts[row[i], j] += weights[i] * B[col[i], j]
 
     mm = warp.kernel(mm)
     return mm
@@ -617,8 +617,8 @@ coomm_p = XLACustomKernel(
     ),
     gpu_kernel=WarpKernelGenerator(
         coomm_gpu_kernel_generator,
-        dim=lambda row_info, **kwargs: (
-            row_info.shape[0]
+        dim=lambda row_info, matrix_info, **kwargs: (
+            row_info.shape[0], matrix_info.shape[1]
         ),
         input_output_aliases={4: 0}
     )
