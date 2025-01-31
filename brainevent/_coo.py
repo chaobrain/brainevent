@@ -380,7 +380,7 @@ class COO(SparseMatrix):
         data = self.data
 
         if isinstance(other, EventArray):
-            other =other.data
+            other = other.data
             if other.ndim == 1:
                 return _event_coo_matvec(
                     data,

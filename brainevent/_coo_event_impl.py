@@ -453,6 +453,7 @@ def event_coomv_transpose_rule(
                     events,
                     shape=shape,
                     transpose=transpose,
+                    float_as_event=float_as_event
                 )[0]
                 ct_values = jnp.inner(ct, ct_values).reshape(*data.aval.shape)
             else:
@@ -534,8 +535,8 @@ event_coomv_p = XLACustomKernel(
     gpu_kernel=WarpKernelGenerator(
         event_coomv_gpu_kernel_generator,
         # TODO: check if dim param is correct
-        dim=lambda row_info, vector_info, transpose, **kwargs: (
-            vector_info.shape[0] if transpose else row_info.shape[0] - 1
+        dim=lambda row_info, **kwargs: (
+            row_info.shape[0]
         ),
         input_output_aliases={4:0}
     ),
@@ -547,13 +548,13 @@ event_coomv_p.def_batching_rule(event_coomv_batching)
 def event_coomm_cpu_kernel_generator(
     float_as_event: bool,
     weight_info: jax.ShapeDtypeStruct,
-    vector_info: jax.ShapeDtypeStruct,
+    matrix_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs
 ) -> Kernel:
     import numba  # pylint: disable=import-outside-toplevel
 
-    match (transpose, weight_info.size, vector_info.dtype, float_as_event):
+    match (transpose, weight_info.size, matrix_info.dtype, float_as_event):
 
         # transpose=True, homogeneous
         case (True, 1, jnp.bool_, _):
@@ -846,7 +847,7 @@ def event_coomm_gpu_kernel_generator(
                 i, j = warp.tid()
                 if B[col[i], j] != 0.:
                     posts[row[i], :] += weights[i] * B[col[i], j]
-                
+
     mm = warp.kernel(mm)
     return mm
 
@@ -1020,9 +1021,7 @@ event_coomm_p = XLACustomKernel(
         event_coomm_gpu_kernel_generator,
         # TODO: check if dim param is correct
         dim=lambda matrix_info, row_info, transpose, **kwargs: (
-            tuple(reversed(matrix_info.shape))
-            if transpose else
-            [matrix_info.shape[1], row_info.shape[0] - 1]
+            row_info.shape[0], matrix_info.shape[1]
         ),
         input_output_aliases={4: 0}
     )
