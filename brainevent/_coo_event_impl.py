@@ -534,7 +534,6 @@ event_coomv_p = XLACustomKernel(
     cpu_kernel=NumbaKernelGenerator(event_coomv_cpu_kernel_generator, input_output_aliases={4:0}),
     gpu_kernel=WarpKernelGenerator(
         event_coomv_gpu_kernel_generator,
-        # TODO: check if dim param is correct
         dim=lambda row_info, **kwargs: (
             row_info.shape[0]
         ),
@@ -1019,7 +1018,6 @@ event_coomm_p = XLACustomKernel(
     ),
     gpu_kernel=WarpKernelGenerator(
         event_coomm_gpu_kernel_generator,
-        # TODO: check if dim param is correct
         dim=lambda matrix_info, row_info, transpose, **kwargs: (
             row_info.shape[0], matrix_info.shape[1]
         ),
