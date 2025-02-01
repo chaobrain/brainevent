@@ -51,7 +51,8 @@ class FixedPostNumConn(u.sparse.SparseMatrix):
 
     def __init__(self, args, *, shape: Sequence[int]):
         self.data, self.indices = map(u.math.asarray, args)
-        assert self.indices.shape[0] == shape[0], 'Pre-synaptic neuron number mismatch.'
+        assert self.indices.shape[0] == shape[0], \
+            f'Pre-synaptic neuron number mismatch. {self.indices.shape[0]} != {shape[0]}'
         super().__init__(args, shape=shape)
 
     def with_data(self, data: Union[jax.Array, u.Quantity]) -> 'FixedPostNumConn':

@@ -17,10 +17,11 @@
 
 
 from ._linear_mv import Linear
-from ._fixedprob_mv import FixedProb
+from ._fixedprob_mv import FixedProb, FixedNumConn
 
 __all__ = [
     'Linear',
     'FixedProb',
+    'FixedNumConn',
 ]
 

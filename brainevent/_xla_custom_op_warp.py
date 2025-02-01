@@ -540,7 +540,7 @@ def _warp_gpu_lowering(
     return out
 
 
-def register_warp_mlir_gpu_translation_rule(
+def register_warp_gpu_translation(
     primitive: Primitive,
     kernel_generator: WarpKernelGenerator,
 ):
