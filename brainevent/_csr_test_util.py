@@ -15,9 +15,9 @@
 
 # -*- coding: utf-8 -*-
 
+import brainstate as bst
 import jax.numpy as jnp
 import numpy as np
-import brainstate as bst
 
 
 def _get_csr(n_pre, n_post, prob, replace=True):

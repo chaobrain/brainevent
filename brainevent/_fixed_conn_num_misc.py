@@ -16,8 +16,8 @@
 # -*- coding: utf-8 -*-
 
 
-import jax
 import brainunit as u
+import jax
 
 
 def check_shape(weights, indices, vector, shape, transpose):
@@ -40,7 +40,6 @@ def check_shape(weights, indices, vector, shape, transpose):
     return out, weights, n_pre, n_post
 
 
-
 def generate_block_dim(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs
@@ -59,5 +58,3 @@ def generate_block_dim(
         block_size = 128
 
     return block_size
-
-

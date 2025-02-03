@@ -21,13 +21,13 @@ import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
-from brainunit.sparse._csr import _csr_to_coo, _csr_todense
 from jax.experimental.sparse import CSR
 from jax.experimental.sparse import JAXSparse
 
 from ._csr_event_impl import _event_csr_matvec, _event_csr_matmat
 from ._csr_float_impl import _csr_matvec, _csr_matmat
 from ._event import EventArray
+from ._misc import _csr_to_coo, _csr_todense
 
 __all__ = [
     'CSR',

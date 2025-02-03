@@ -18,7 +18,6 @@
 
 import brainstate as bst
 import jax.numpy as jnp
-import numpy as np
 
 
 def generate_data(n_pre: int, n_post: int, n_conn: int, replace: bool = True, rng=bst.random.DEFAULT):

@@ -201,9 +201,9 @@ class TestVectorCSR(unittest.TestCase):
 
         def f_jax(x, w):
             if transpose:
-                r = vector_csr(x, w, indices, indptr,shape=shape)
+                r = vector_csr(x, w, indices, indptr, shape=shape)
             else:
-                r = csr_vector(x, w, indices, indptr,shape=shape)
+                r = csr_vector(x, w, indices, indptr, shape=shape)
             return r
 
         o2, r2 = jax.jvp(f_jax, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
@@ -216,7 +216,6 @@ class TestVectorCSR(unittest.TestCase):
                 for homo_w in [True, False]:
                     print(f'replace = {replace}, transpose = {transpose}, homo_w = {homo_w}')
                     self._test_jvp(homo_w=homo_w, replace=replace, transpose=transpose)
-
 
 
 class TestMatrixCSR(unittest.TestCase):
