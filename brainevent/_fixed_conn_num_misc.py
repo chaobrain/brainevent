@@ -15,18 +15,29 @@
 
 # -*- coding: utf-8 -*-
 
+from typing import Sequence
 
 import brainunit as u
 import jax
 
 
-def check_shape(weights, indices, vector, shape, transpose):
+def check_shape(
+    weights: jax.Array,
+    indices: jax.Array,
+    vector: jax.Array,
+    shape: Sequence[int],
+    transpose: bool,
+    require_scalar_weight: bool = False
+):
     if weights.ndim == 2:
         assert weights.shape == indices.shape, f'The shape of weights and indices should be the same.'
     elif weights.ndim == 1:
         assert weights.size == 1, f'When weights is 1D, it should be a scalar, got {weights.size}.'
+        if require_scalar_weight:
+            weights = weights[0]
     elif weights.ndim == 0:
-        weights = u.math.asarray([weights])
+        if not require_scalar_weight:
+            weights = u.math.asarray([weights])
     else:
         raise ValueError(f'weight dim should be 2, 1, or 0, but got {weights.ndim}')
     assert indices.shape[0] == shape[0], f'Pre size mismatch, got {weights.shape[0]} != {shape[0]}'
