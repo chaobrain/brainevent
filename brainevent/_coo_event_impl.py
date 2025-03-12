@@ -21,8 +21,6 @@ from typing import Callable, Union, Sequence
 import brainunit as u
 import jax
 import jax.numpy as jnp
-import numpy as np
-from brainunit.sparse._csr import _csr_to_coo
 from jax.interpreters import ad
 
 from ._coo_float_impl import _coo_matvec, _coo_matmat
@@ -31,6 +29,7 @@ from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 
 Kernel = Callable
+
 
 def _event_coo_matvec(
     data: Union[jax.Array, u.Quantity],
@@ -52,8 +51,9 @@ def _event_coo_matvec(
     )[0]
     return u.maybe_decimal(res * (unitd * unitv))
 
+
 def _event_coo_matmat(
-data: Union[jax.Array, u.Quantity],
+    data: Union[jax.Array, u.Quantity],
     row: jax.Array,
     col: jax.Array,
     B: jax.Array,
@@ -175,6 +175,7 @@ def event_coomv_cpu_kernel_generator(
 
     return mv
 
+
 def event_coomv_gpu_kernel_generator(
     float_as_event: bool,
     weight_info: jax.ShapeDtypeStruct,
@@ -194,7 +195,7 @@ def event_coomv_gpu_kernel_generator(
     match (transpose, weight_info.size, vector_info.dtype, float_as_event):
 
         # transpose=True, homogeneous
-        case(True, 1, jnp.bool_, _):
+        case (True, 1, jnp.bool_, _):
             # bool
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -208,7 +209,7 @@ def event_coomv_gpu_kernel_generator(
                 w = weights[0]
                 if v[row[i]]:
                     posts[col[i]] += w
-        case(True, 1, _, True):
+        case (True, 1, _, True):
             # float_as_event
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -222,7 +223,7 @@ def event_coomv_gpu_kernel_generator(
                 w = weights[0]
                 if v[row[i]] != 0.:
                     posts[col[i]] += w
-        case(True, 1, _, False):
+        case (True, 1, _, False):
             # other
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -238,7 +239,7 @@ def event_coomv_gpu_kernel_generator(
                     posts[col[i]] += w * v[row[i]]
 
         # transpose=True, heterogeneous
-        case(True, _, jnp.bool_, _):
+        case (True, _, jnp.bool_, _):
             # bool
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -251,7 +252,7 @@ def event_coomv_gpu_kernel_generator(
                 i = warp.tid()
                 if v[row[i]]:
                     posts[col[i]] += weights[i]
-        case(True, _, _, True):
+        case (True, _, _, True):
             # float_as_event
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -264,7 +265,7 @@ def event_coomv_gpu_kernel_generator(
                 i = warp.tid()
                 if v[row[i]] != 0.:
                     posts[col[i]] += weights[i]
-        case(True, _, _, False):
+        case (True, _, _, False):
             # other
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -279,7 +280,7 @@ def event_coomv_gpu_kernel_generator(
                     posts[col[i]] += weights[i] * v[row[i]]
 
         # transpose=False, homogeneous
-        case(False, 1, jnp.bool_, _):
+        case (False, 1, jnp.bool_, _):
             # bool
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -293,7 +294,7 @@ def event_coomv_gpu_kernel_generator(
                 w = weights[0]
                 if v[col[i]]:
                     posts[row[i]] += w
-        case(False, 1, _, True):
+        case (False, 1, _, True):
             # float_as_event
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -307,7 +308,7 @@ def event_coomv_gpu_kernel_generator(
                 w = weights[0]
                 if v[col[i]] != 0.:
                     posts[row[i]] += w
-        case(False, 1, _, False):
+        case (False, 1, _, False):
             # other
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -323,7 +324,7 @@ def event_coomv_gpu_kernel_generator(
                     posts[row[i]] += w * v[col[i]]
 
         # transpose=False, heterogeneous
-        case(False, _, jnp.bool_, _):
+        case (False, _, jnp.bool_, _):
             # bool
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -336,7 +337,7 @@ def event_coomv_gpu_kernel_generator(
                 i = warp.tid()
                 if v[col[i]]:
                     posts[row[i]] += weights[i]
-        case(False, _, _, True):
+        case (False, _, _, True):
             # float_as_event
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -349,7 +350,7 @@ def event_coomv_gpu_kernel_generator(
                 i = warp.tid()
                 if v[col[i]] != 0.:
                     posts[row[i]] += weights[i]
-        case(False, _, _, False):
+        case (False, _, _, False):
             # other
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -364,6 +365,7 @@ def event_coomv_gpu_kernel_generator(
                     posts[row[i]] += weights[i] * v[col[i]]
     mv = warp.kernel(mv)
     return mv
+
 
 def event_coomv_jvp_v(
     v_dot,
@@ -388,6 +390,7 @@ def event_coomv_jvp_v(
         )
     ]
 
+
 def event_coomv_jvp_weights(
     data_dot,
     data,
@@ -410,6 +413,7 @@ def event_coomv_jvp_weights(
         transpose=transpose,
         float_as_event=float_as_event
     )
+
 
 def event_coomv_transpose_rule(
     ct,
@@ -460,6 +464,7 @@ def event_coomv_transpose_rule(
                 ct_values = events[row] * ct[col] if transpose else events[col] * ct[row]
         return ct_values, row, col, events, _
 
+
 def event_coomv_batching(
     args,
     axes,
@@ -494,6 +499,7 @@ def event_coomv_batching(
     else:
         raise NotImplementedError(f"Batching axes {axes} not implemented for event-driven COO matrix-vector product.")
 
+
 def event_coomv_p_call(
     weights,
     row,
@@ -504,45 +510,85 @@ def event_coomv_p_call(
     transpose: bool,
     float_as_event: bool,
 ):
+    """
+    Perform a custom sparse matrix-vector multiplication operation.
+
+    This function takes a sparse matrix represented in COO (Coordinate) format
+    and a dense vector, then performs a matrix-vector multiplication.
+
+    Parameters
+    ----------
+    weights : jax.Array
+        The non-zero values of the sparse matrix.
+    row : jax.Array
+        The row indices of the non-zero values in the sparse matrix.
+    col : jax.Array
+        The column indices of the non-zero values in the sparse matrix.
+    v : jax.Array
+        The dense vector to multiply with the sparse matrix.
+    shape : Sequence[int]
+        The shape of the sparse matrix.
+    transpose : bool
+        Whether to transpose the sparse matrix before multiplication.
+    float_as_event : bool
+        Treat floating-point values as events.
+
+    Returns
+    -------
+    jax.Array
+        The result of the sparse matrix-vector multiplication.
+    """
+    # Convert scalar weights to a single-element array
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
 
+    # Determine the output shape based on whether the sparse matrix is transposed
     out_info = (
+        # If transposed, the output shape is [shape[1]]
         jax.ShapeDtypeStruct([shape[1]], weights.dtype)
         if transpose else
+        # If not transposed, the output shape is [shape[0]]
         jax.ShapeDtypeStruct([shape[0]], weights.dtype)
     )
 
+    # Call the custom kernel with the provided arguments and output information
     return event_coomv_p(
         weights,
         row,
         col,
         v,
+        # Initialize the output array with zeros
         jnp.zeros(out_info.shape, out_info.dtype),
         outs=[out_info],
         float_as_event=float_as_event,
         shape=shape,
         transpose=transpose,
+        # Provide shape and dtype information for row indices
         row_info=jax.ShapeDtypeStruct(row.shape, row.dtype),
+        # Provide shape and dtype information for column indices
         col_info=jax.ShapeDtypeStruct(col.shape, col.dtype),
+        # Provide shape and dtype information for non-zero values
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        # Provide shape and dtype information for the dense vector
         vector_info=jax.ShapeDtypeStruct(v.shape, v.dtype),
     )
 
+
 event_coomv_p = XLACustomKernel(
     'event_coomv',
-    cpu_kernel=NumbaKernelGenerator(event_coomv_cpu_kernel_generator, input_output_aliases={4:0}),
+    cpu_kernel=NumbaKernelGenerator(event_coomv_cpu_kernel_generator, input_output_aliases={4: 0}),
     gpu_kernel=WarpKernelGenerator(
         event_coomv_gpu_kernel_generator,
         dim=lambda row_info, **kwargs: (
             row_info.shape[0]
         ),
-        input_output_aliases={4:0}
+        input_output_aliases={4: 0}
     ),
 )
 event_coomv_p.defjvp(event_coomv_jvp_weights, None, None, event_coomv_jvp_v)
 event_coomv_p.def_transpose_rule(event_coomv_transpose_rule)
 event_coomv_p.def_batching_rule(event_coomv_batching)
+
 
 def event_coomm_cpu_kernel_generator(
     float_as_event: bool,
@@ -678,7 +724,7 @@ def event_coomm_gpu_kernel_generator(
     match (transpose, weight_info.size, matrix_info.dtype, float_as_event):
 
         # transpose=True, homogeneous
-        case(True, 1, jnp.bool_, _):
+        case (True, 1, jnp.bool_, _):
             # bool
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -692,7 +738,7 @@ def event_coomm_gpu_kernel_generator(
                 w = weights[0]
                 if B[row[i], j]:
                     posts[col[i], :] += w
-        case(True, 1, _, True):
+        case (True, 1, _, True):
             # float_as_event
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -706,7 +752,7 @@ def event_coomm_gpu_kernel_generator(
                 w = weights[0]
                 if B[row[i], j] != 0.:
                     posts[col[i], :] += w
-        case(True, 1, _, False):
+        case (True, 1, _, False):
             # other
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -722,7 +768,7 @@ def event_coomm_gpu_kernel_generator(
                     posts[col[i], :] += w * B[row[i], j]
 
         # transpose=True, heterogeneous
-        case(True, _, jnp.bool_, _):
+        case (True, _, jnp.bool_, _):
             # bool
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -735,7 +781,7 @@ def event_coomm_gpu_kernel_generator(
                 i, j = warp.tid()
                 if B[row[i], j]:
                     posts[col[i], :] += weights[i]
-        case(True, _, _, True):
+        case (True, _, _, True):
             # float_as_event
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -748,7 +794,7 @@ def event_coomm_gpu_kernel_generator(
                 i, j = warp.tid()
                 if B[row[i], j] != 0.:
                     posts[col[i], :] += weights[i]
-        case(True, _, _, False):
+        case (True, _, _, False):
             # other
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -763,7 +809,7 @@ def event_coomm_gpu_kernel_generator(
                     posts[col[i], :] += weights[i] * B[row[i], j]
 
         # transpose=False, homogeneous
-        case(False, 1, jnp.bool_, _):
+        case (False, 1, jnp.bool_, _):
             # bool
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -777,7 +823,7 @@ def event_coomm_gpu_kernel_generator(
                 w = weights[0]
                 if B[col[i], j]:
                     posts[row[i], :] += w
-        case(False, 1, _, True):
+        case (False, 1, _, True):
             # float_as_event
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -791,7 +837,7 @@ def event_coomm_gpu_kernel_generator(
                 w = weights[0]
                 if B[col[i], j] != 0.:
                     posts[row[i], :] += w
-        case(False, 1, _, False):
+        case (False, 1, _, False):
             # other
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -807,7 +853,7 @@ def event_coomm_gpu_kernel_generator(
                     posts[row[i], :] += w * B[col[i], j]
 
         # transpose=False, heterogeneous
-        case(False, _, jnp.bool_, _):
+        case (False, _, jnp.bool_, _):
             # bool
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -820,7 +866,7 @@ def event_coomm_gpu_kernel_generator(
                 i, j = warp.tid()
                 if B[col[i], j]:
                     posts[row[i], :] += weights[i]
-        case(False, _, _, True):
+        case (False, _, _, True):
             # float_as_event
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -833,7 +879,7 @@ def event_coomm_gpu_kernel_generator(
                 i, j = warp.tid()
                 if B[col[i], j] != 0.:
                     posts[row[i], :] += weights[i]
-        case(False, _, _, False):
+        case (False, _, _, False):
             # other
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -849,6 +895,7 @@ def event_coomm_gpu_kernel_generator(
 
     mm = warp.kernel(mm)
     return mm
+
 
 def event_coomm_jvp_left(
     data_dot,
@@ -873,6 +920,7 @@ def event_coomm_jvp_left(
         )
     ]
 
+
 def event_coomm_jvp_right(
     B_dot,
     data,
@@ -896,6 +944,7 @@ def event_coomm_jvp_right(
         )
     ]
 
+
 def event_coomm_transpose_rule(
     ct,
     data,
@@ -918,6 +967,7 @@ def event_coomm_transpose_rule(
         B = jnp.asarray(B)
         d_data = (ct[row] * B[col]).sum(1)
         return d_data, row, col, B, _
+
 
 def event_coomm_batching(
     args,
@@ -986,14 +1036,47 @@ def event_coomm_p_call(
     transpose: bool,
     float_as_event: bool,
 ):
+    """
+    Perform a custom sparse matrix-matrix multiplication operation.
+
+    This function takes a sparse matrix represented in COO (Coordinate) format
+    and a dense matrix, then performs a matrix-matrix multiplication.
+
+    Parameters
+    ----------
+    weights : jax.Array
+        The non-zero values of the sparse matrix.
+    row : jax.Array
+        The row indices of the non-zero values in the sparse matrix.
+    col : jax.Array
+        The column indices of the non-zero values in the sparse matrix.
+    B : jax.Array
+        The dense matrix to multiply with the sparse matrix.
+    shape : Sequence[int]
+        The shape of the sparse matrix.
+    transpose : bool
+        Whether to transpose the sparse matrix before multiplication.
+    float_as_event : bool
+        Treat floating-point values as events.
+
+    Returns
+    -------
+    jax.Array
+        The result of the sparse matrix-matrix multiplication.
+    """
+    # Convert scalar weights to a single-element array
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
 
+    # Determine the output shape based on whether the sparse matrix is transposed
     out_info = (
+        # If transposed, the output shape is [shape[1], B.shape[1]]
         jax.ShapeDtypeStruct([shape[1], B.shape[1]], weights.dtype)
         if transpose else
+        # If not transposed, the output shape is [shape[0], B.shape[1]]
         jax.ShapeDtypeStruct([shape[0], B.shape[1]], weights.dtype)
     )
+    # Call the custom kernel with the provided arguments and output information
     return event_coomm_p(
         weights,
         row,
@@ -1009,6 +1092,7 @@ def event_coomm_p_call(
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         matrix_info=jax.ShapeDtypeStruct(B.shape, B.dtype),
     )
+
 
 event_coomm_p = XLACustomKernel(
     'event_coomm',

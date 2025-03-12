@@ -19,53 +19,80 @@
 from __future__ import annotations
 
 import operator
-from typing import Any, Tuple, Sequence, NamedTuple
+from typing import Any, Tuple
 
-import jax
-import jax.numpy as jnp
-import numpy as np
 import brainunit as u
-from brainunit._base import Quantity, split_mantissa_unit, maybe_decimal, get_unit
-from brainunit._sparse_base import SparseMatrix
-from brainunit.sparse._coo import _coo_todense
-from brainunit.math._fun_array_creation import asarray
-from brainunit.math._fun_keep_unit import promote_dtypes
-from jax import lax
-from jax import tree_util
-from jax._src.lax.lax import _const
+import jax
+import numpy as np
 from jax.experimental.sparse import JAXSparse
 
 from ._coo_event_impl import _event_coo_matvec, _event_coo_matmat
 from ._coo_float_impl import _coo_matvec, _coo_matmat
 from ._event import EventArray
+from ._misc import _coo_todense, COOInfo
 
 __all__ = [
-    'COO', 'COOInfo',
+    'COO',
 ]
 
-Dtype = Any
-Shape = tuple[int, ...]
 
-
-class COOInfo(NamedTuple):
-    shape: Shape
-    rows_sorted: bool = False
-    cols_sorted: bool = False
-
-
-@tree_util.register_pytree_node_class
-class COO(SparseMatrix):
-    """Experimental COO matrix implemented in JAX.
-
-    Note: this class has minimal compatibility with JAX transforms such as
-    grad and autodiff, and offers very little functionality. In general you
-    should prefer :class:`jax.experimental.sparse.BCOO`.
-
-    Additionally, there are known failures in the case that `nse` is larger
-    than the true number of nonzeros in the represented matrix. This situation
-    is better handled in BCOO.
+@jax.tree_util.register_pytree_node_class
+class COO(u.sparse.SparseMatrix):
     """
-    data: jax.Array
+    Coordinate Format (COO) sparse matrix.
+
+    This class represents a sparse matrix in coordinate format, where non-zero
+    elements are stored as triplets (row, column, value).
+
+    Attributes
+    -----------
+    data : jax.Array, Quantity
+        Array of the non-zero values in the matrix.
+    row : jax.Array
+        Array of row indices for each non-zero element.
+    col : jax.Array
+        Array of column indices for each non-zero element.
+    shape : tuple[int, int]
+        Shape of the matrix (rows, columns).
+    nse : int
+        Number of stored elements (property).
+    dtype : dtype
+        Data type of the matrix elements (property).
+    _info : COOInfo
+        Additional information about the matrix structure (property).
+    _bufs : tuple
+        Tuple of (data, row, col) arrays (property).
+    _rows_sorted : bool
+        Whether row indices are sorted.
+    _cols_sorted : bool
+        Whether column indices are sorted within each row.
+
+    Methods
+    --------
+    fromdense(cls, mat, *, nse=None, index_dtype=np.int32)
+        Create a COO matrix from a dense matrix.
+    _sort_indices()
+        Return a copy of the COO matrix with sorted indices.
+    with_data(data)
+        Create a new COO matrix with the same structure but different data.
+    todense()
+        Convert the COO matrix to a dense array.
+    transpose(axes=None)
+        Transpose the COO matrix.
+    tree_flatten()
+        Flatten the COO matrix for JAX transformations.
+    tree_unflatten(cls, aux_data, children)
+        Reconstruct a COO matrix from flattened data.
+
+    The class also supports various arithmetic operations (+, -, *, /, @, etc.)
+    and comparisons with other COO matrices, dense arrays, and scalars.
+
+    Note
+    -----
+    This class is registered as a PyTree node for JAX, allowing it to be used
+    with JAX transformations and compiled functions.
+    """
+    data: jax.Array | u.Quantity
     row: jax.Array
     col: jax.Array
     shape: tuple[int, int]
@@ -83,13 +110,27 @@ class COO(SparseMatrix):
 
     def __init__(
         self,
-        args: Tuple[jax.Array | Quantity, jax.Array, jax.Array],
+        args: Tuple[jax.Array | u.Quantity, jax.Array, jax.Array],
         *,
-        shape: Shape,
+        shape: Tuple[int, int],
         rows_sorted: bool = False,
         cols_sorted: bool = False
     ):
-        self.data, self.row, self.col = map(asarray, args)
+        """
+        Initialize a COO matrix.
+
+        Parameters
+        -----------
+        args : Tuple[jax.Array | u.Quantity, jax.Array, jax.Array]
+            Tuple containing (data, row indices, column indices).
+        shape : Shape
+            Shape of the matrix (rows, columns).
+        rows_sorted : bool, optional
+            Whether row indices are sorted. Default is False.
+        cols_sorted : bool, optional
+            Whether column indices are sorted within each row. Default is False.
+        """
+        self.data, self.row, self.col = map(u.math.asarray, args)
         self._rows_sorted = rows_sorted
         self._cols_sorted = cols_sorted
         super().__init__(args, shape=shape)
@@ -102,6 +143,27 @@ class COO(SparseMatrix):
         nse: int | None = None,
         index_dtype: jax.typing.DTypeLike = np.int32
     ) -> COO:
+        """
+        Create a COO (Coordinate Format) sparse matrix from a dense matrix.
+
+        This method converts a dense matrix to a sparse COO representation.
+
+        Parameters
+        -----------
+        mat : jax.Array
+            The dense matrix to be converted to COO format.
+        nse : int | None, optional
+            The number of non-zero elements in the matrix. If None, it will be
+            calculated from the input matrix. Default is None.
+        index_dtype : jax.typing.DTypeLike, optional
+            The data type to be used for the row and column indices.
+            Default is np.int32.
+
+        Returns
+        --------
+        COO
+            A new COO sparse matrix object representing the input dense matrix.
+        """
         if nse is None:
             nse = (u.get_mantissa(mat) != 0.).sum()
         coo = u.sparse.coo_fromdense(mat, nse=nse, index_dtype=index_dtype)
@@ -113,14 +175,13 @@ class COO(SparseMatrix):
         The matrix is sorted by row indices and column indices per row.
         If self._rows_sorted is True, this returns ``self`` without a copy.
         """
-        # TODO(jakevdp): would be benefit from lowering this to cusparse sort_rows utility?
         if self._rows_sorted:
             return self
-        data, unit = split_mantissa_unit(self.data)
-        row, col, data = lax.sort((self.row, self.col, data), num_keys=2)
+        data, unit = u.split_mantissa_unit(self.data)
+        row, col, data = jax.lax.sort((self.row, self.col, data), num_keys=2)
         return self.__class__(
             (
-                maybe_decimal(Quantity(data, unit=unit)),
+                u.maybe_decimal(u.Quantity(data, unit=unit)),
                 row,
                 col
             ),
@@ -128,73 +189,79 @@ class COO(SparseMatrix):
             rows_sorted=True
         )
 
-    @classmethod
-    def _empty(
-        cls,
-        shape: Sequence[int],
-        *,
-        dtype: jax.typing.DTypeLike | None = None,
-        index_dtype: jax.typing.DTypeLike = 'int32'
-    ) -> COO:
-        """Create an empty COO instance. Public method is sparse.empty()."""
-        shape = tuple(shape)
-        if len(shape) != 2:
-            raise ValueError(f"COO must have ndim=2; got {shape=}")
-        data = jnp.empty(0, dtype)
-        row = col = jnp.empty(0, index_dtype)
-        return cls(
-            (data, row, col),
-            shape=shape,
-            rows_sorted=True,
-            cols_sorted=True
-        )
+    def with_data(self, data: jax.Array | u.Quantity) -> COO:
+        """
+        Create a new COO matrix with the same structure but different data.
 
-    @classmethod
-    def _eye(
-        cls,
-        N: int,
-        M: int,
-        k: int,
-        *,
-        dtype: jax.typing.DTypeLike | None = None,
-        index_dtype: jax.typing.DTypeLike = 'int32'
-    ) -> COO:
-        if k > 0:
-            diag_size = min(N, M - k)
-        else:
-            diag_size = min(N + k, M)
+        This method returns a new COO matrix with the same row and column indices
+        as the current matrix, but with new data values.
 
-        if diag_size <= 0:
-            # if k is out of range, return an empty matrix.
-            return cls._empty((N, M), dtype=dtype, index_dtype=index_dtype)
+        Parameters
+        -----------
+        data : jax.Array | u.Quantity
+            The new data to be used in the COO matrix. Must have the same shape,
+            dtype, and unit as the current matrix's data.
 
-        data = jnp.ones(diag_size, dtype=dtype)
-        idx = jnp.arange(diag_size, dtype=index_dtype)
-        zero = _const(idx, 0)
-        k = _const(idx, k)
-        row = lax.sub(idx, lax.cond(k >= 0, lambda: zero, lambda: k))
-        col = lax.add(idx, lax.cond(k <= 0, lambda: zero, lambda: k))
-        return cls(
-            (data, row, col),
-            shape=(N, M),
-            rows_sorted=True,
-            cols_sorted=True
-        )
+        Returns
+        --------
+        COO
+            A new COO matrix with the provided data and the same structure as
+            the current matrix.
 
-    def with_data(self, data: jax.Array | Quantity) -> COO:
+        Raises
+        -------
+        AssertionError
+            If the shape, dtype, or unit of the new data doesn't match the
+            current matrix's data.
+        """
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
-        assert get_unit(data) == get_unit(self.data)
+        assert u.get_unit(data) == u.get_unit(self.data)
         return COO((data, self.row, self.col), shape=self.shape)
 
     def todense(self) -> jax.Array:
-        return _coo_todense(self.data, self.row, self.col, spinfo=self.shape)
+        """
+        Convert the COO matrix to a dense array.
+
+        Returns
+        --------
+        jax.Array
+            A dense representation of the COO matrix.
+        """
+        return _coo_todense(self.data, self.row, self.col, spinfo=self._info)
 
     @property
     def T(self):
+        """
+        Get the transpose of the COO matrix.
+
+        Returns
+        --------
+        COO
+            The transposed COO matrix.
+        """
         return self.transpose()
 
     def transpose(self, axes: Tuple[int, ...] | None = None) -> COO:
+        """
+        Transpose the COO matrix.
+
+        Parameters
+        -----------
+        axes : Tuple[int, ...] | None, optional
+            The axes to transpose over. Currently not implemented and will
+            raise a NotImplementedError if provided.
+
+        Returns
+        --------
+        COO
+            The transposed COO matrix.
+
+        Raises
+        -------
+        NotImplementedError
+            If axes argument is provided.
+        """
         if axes is not None:
             raise NotImplementedError("axes argument to transpose()")
         return COO(
@@ -205,8 +272,20 @@ class COO(SparseMatrix):
         )
 
     def tree_flatten(self) -> Tuple[
-        Tuple[jax.Array | Quantity,], dict[str, Any]
+        Tuple[jax.Array | u.Quantity,], dict[str, Any]
     ]:
+        """
+        Flatten the COO matrix for JAX transformations.
+
+        This method is used by JAX to serialize the COO matrix object.
+
+        Returns
+        --------
+        Tuple[Tuple[jax.Array | u.Quantity,], dict[str, Any]]
+            A tuple containing:
+            - A tuple with the matrix data.
+            - A dictionary with auxiliary data (shape, sorting information, row and column indices).
+        """
         aux = self._info._asdict()
         aux['row'] = self.row
         aux['col'] = self.col
@@ -214,6 +293,28 @@ class COO(SparseMatrix):
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
+        """
+        Reconstruct a COO matrix from flattened data.
+
+        This class method is used by JAX to deserialize the COO matrix object.
+
+        Parameters
+        -----------
+        aux_data : dict
+            Auxiliary data containing shape, sorting information, and row and column indices.
+        children : tuple
+            A tuple containing the matrix data.
+
+        Returns
+        --------
+        COO
+            The reconstructed COO matrix.
+
+        Raises
+        -------
+        ValueError
+            If the auxiliary data doesn't contain the expected keys.
+        """
         obj = object.__new__(cls)
         obj.data, = children
         if aux_data.keys() != {'shape', 'rows_sorted', 'cols_sorted', 'row', 'col'}:
@@ -265,7 +366,7 @@ class COO(SparseMatrix):
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
-        other = asarray(other)
+        other = u.math.asarray(other)
         if other.size == 1:
             return COO(
                 (
@@ -308,7 +409,7 @@ class COO(SparseMatrix):
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
-        other = asarray(other)
+        other = u.math.asarray(other)
         if other.size == 1:
             return COO(
                 (
@@ -335,53 +436,268 @@ class COO(SparseMatrix):
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
-    def __mul__(self, other: jax.Array | Quantity) -> COO:
+    def __mul__(self, other: jax.Array | u.Quantity) -> COO:
+        """
+        Perform element-wise multiplication of the COO matrix with another object.
+
+        This method is called when the COO matrix is on the left side of the
+        multiplication operator.
+
+        Parameters
+        -----------
+        other : jax.Array | u.Quantity
+            The object to be multiplied with the COO matrix.
+
+        Returns
+        --------
+        COO
+            A new COO matrix resulting from the element-wise multiplication.
+        """
         return self._binary_op(other, operator.mul)
 
-    def __rmul__(self, other: jax.Array | Quantity) -> COO:
+    def __rmul__(self, other: jax.Array | u.Quantity) -> COO:
+        """
+        Perform right element-wise multiplication of the COO matrix with another object.
+
+        This method is called when the COO matrix is on the right side of the
+        multiplication operator.
+
+        Parameters
+        -----------
+        other : jax.Array | u.Quantity
+            The object to be multiplied with the COO matrix.
+
+        Returns
+        --------
+        COO
+            A new COO matrix resulting from the element-wise multiplication.
+        """
         return self._binary_rop(other, operator.mul)
 
-    def __div__(self, other: jax.Array | Quantity) -> COO:
+    def __div__(self, other: jax.Array | u.Quantity) -> COO:
+        """
+        Perform element-wise division of the COO matrix by another object.
+
+        This method is called when the COO matrix is on the left side of the
+        division operator.
+
+        Parameters
+        -----------
+        other : jax.Array | u.Quantity
+            The object to divide the COO matrix by.
+
+        Returns
+        --------
+        COO
+            A new COO matrix resulting from the element-wise division.
+        """
         return self._binary_op(other, operator.truediv)
 
-    def __rdiv__(self, other: jax.Array | Quantity) -> COO:
+    def __rdiv__(self, other: jax.Array | u.Quantity) -> COO:
+        """
+        Perform right element-wise division of the COO matrix by another object.
+
+        This method is called when the COO matrix is on the right side of the
+        division operator.
+
+        Parameters
+        -----------
+        other : jax.Array | u.Quantity
+            The object to divide the COO matrix by.
+
+        Returns
+        --------
+        COO
+            A new COO matrix resulting from the element-wise division.
+        """
         return self._binary_rop(other, operator.truediv)
 
     def __truediv__(self, other) -> COO:
+        """
+        Perform true division of the COO matrix by another object.
+
+        This method is an alias for __div__.
+
+        Parameters
+        -----------
+        other : jax.Array | u.Quantity
+            The object to divide the COO matrix by.
+
+        Returns
+        --------
+        COO
+            A new COO matrix resulting from the true division.
+        """
         return self.__div__(other)
 
     def __rtruediv__(self, other) -> COO:
+        """
+        Perform right true division of the COO matrix by another object.
+
+        This method is an alias for __rdiv__.
+
+        Parameters
+        -----------
+        other : jax.Array | u.Quantity
+            The object to divide the COO matrix by.
+
+        Returns
+        --------
+        COO
+            A new COO matrix resulting from the right true division.
+        """
         return self.__rdiv__(other)
 
     def __add__(self, other) -> COO:
+        """
+        Perform element-wise addition of the COO matrix with another object.
+
+        This method is called when the COO matrix is on the left side of the
+        addition operator.
+
+        Parameters
+        -----------
+        other : jax.Array | u.Quantity
+            The object to be added to the COO matrix.
+
+        Returns
+        --------
+        COO
+            A new COO matrix resulting from the element-wise addition.
+        """
         return self._binary_op(other, operator.add)
 
     def __radd__(self, other) -> COO:
+        """
+        Perform right element-wise addition of the COO matrix with another object.
+
+        This method is called when the COO matrix is on the right side of the
+        addition operator.
+
+        Parameters
+        -----------
+        other : jax.Array | u.Quantity
+            The object to be added to the COO matrix.
+
+        Returns
+        --------
+        COO
+            A new COO matrix resulting from the element-wise addition.
+        """
         return self._binary_rop(other, operator.add)
 
     def __sub__(self, other) -> COO:
+        """
+        Perform element-wise subtraction of another object from the COO matrix.
+
+        This method is called when the COO matrix is on the left side of the
+        subtraction operator.
+
+        Parameters
+        -----------
+        other : jax.Array | u.Quantity
+            The object to be subtracted from the COO matrix.
+
+        Returns
+        --------
+        COO
+            A new COO matrix resulting from the element-wise subtraction.
+        """
         return self._binary_op(other, operator.sub)
 
     def __rsub__(self, other) -> COO:
+        """
+        Perform right element-wise subtraction of the COO matrix from another object.
+
+        This method is called when the COO matrix is on the right side of the
+        subtraction operator.
+
+        Parameters
+        -----------
+        other : jax.Array | u.Quantity
+            The object to subtract the COO matrix from.
+
+        Returns
+        --------
+        COO
+            A new COO matrix resulting from the element-wise subtraction.
+        """
         return self._binary_rop(other, operator.sub)
 
     def __mod__(self, other) -> COO:
+        """
+        Perform element-wise modulo operation of the COO matrix with another object.
+
+        This method is called when the COO matrix is on the left side of the
+        modulo operator.
+
+        Parameters
+        -----------
+        other : jax.Array | u.Quantity
+            The object to perform the modulo operation with the COO matrix.
+
+        Returns
+        --------
+        COO
+            A new COO matrix resulting from the element-wise modulo operation.
+        """
         return self._binary_op(other, operator.mod)
 
     def __rmod__(self, other) -> COO:
+        """
+        Perform right element-wise modulo operation of the COO matrix with another object.
+
+        This method is called when the COO matrix is on the right side of the
+        modulo operator.
+
+        Parameters
+        -----------
+        other : jax.Array | u.Quantity
+            The object to perform the modulo operation with the COO matrix.
+
+        Returns
+        --------
+        COO
+            A new COO matrix resulting from the element-wise modulo operation.
+        """
         return self._binary_rop(other, operator.mod)
 
     def __matmul__(
         self, other: jax.typing.ArrayLike
-    ) -> jax.Array | Quantity:
+    ) -> jax.Array | u.Quantity:
+        """
+        Perform matrix multiplication (coo @ other).
+
+        This method is called when the COO matrix is on the left side of the
+        matrix multiplication operator.
+
+        Parameters
+        -----------
+        other : jax.typing.ArrayLike
+            The object to be multiplied with the COO matrix.
+
+        Returns
+        --------
+        jax.Array | u.Quantity
+            The result of the matrix multiplication.
+
+        Raises
+        -------
+        NotImplementedError
+            If the `other` object is a sparse matrix or has an unsupported shape.
+        """
         # coo @ other
         if isinstance(other, JAXSparse):
+            # Raise an error if attempting matrix multiplication between two sparse objects
             raise NotImplementedError("matmul between two sparse objects.")
+        # Get the data of the COO matrix
         data = self.data
 
         if isinstance(other, EventArray):
+            # Extract the data from the EventArray
             other = other.data
             if other.ndim == 1:
+                # Perform matrix-vector multiplication with event data
                 return _event_coo_matvec(
                     data,
                     self.row,
@@ -390,6 +706,7 @@ class COO(SparseMatrix):
                     shape=self.shape
                 )
             elif other.ndim == 2:
+                # Perform matrix-matrix multiplication with event data
                 return _event_coo_matmat(
                     data,
                     self.row,
@@ -398,11 +715,15 @@ class COO(SparseMatrix):
                     shape=self.shape
                 )
             else:
+                # Raise an error if the shape of the other object is unsupported
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
         else:
+            # Convert the other object to an appropriate array type
             other = u.math.asarray(other)
+            # Promote the data types of the matrix and the other object
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
+                # Perform matrix-vector multiplication
                 return _coo_matvec(
                     data,
                     self.row,
@@ -411,6 +732,7 @@ class COO(SparseMatrix):
                     shape=self.shape
                 )
             elif other.ndim == 2:
+                # Perform matrix-matrix multiplication
                 return _coo_matmat(
                     data,
                     self.row,
@@ -419,20 +741,45 @@ class COO(SparseMatrix):
                     shape=self.shape
                 )
             else:
+                # Raise an error if the shape of the other object is unsupported
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
     def __rmatmul__(
         self,
         other: jax.typing.ArrayLike
-    ) -> jax.Array | Quantity:
+    ) -> jax.Array | u.Quantity:
+        """
+        Perform right matrix multiplication (other @ coo).
+
+        This method is called when the COO matrix is on the right side of the
+        matrix multiplication operator.
+
+        Parameters
+        -----------
+        other : jax.typing.ArrayLike
+            The object to be multiplied with the COO matrix.
+
+        Returns
+        --------
+        jax.Array | u.Quantity
+            The result of the matrix multiplication.
+
+        Raises
+        -------
+        NotImplementedError
+            If the `other` object is a sparse matrix or has an unsupported shape.
+        """
         # other @ coo
         if isinstance(other, JAXSparse):
+            # Raise an error if attempting matrix multiplication between two sparse objects
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
 
         if isinstance(other, EventArray):
-            other =other.data
+            # Extract the data from the EventArray
+            other = other.data
             if other.ndim == 1:
+                # Perform matrix-vector multiplication with event data
                 return _event_coo_matvec(
                     data,
                     self.row,
@@ -442,7 +789,9 @@ class COO(SparseMatrix):
                     transpose=True
                 )
             elif other.ndim == 2:
+                # Transpose the other matrix for multiplication
                 other = other.T
+                # Perform matrix-matrix multiplication with event data
                 r = _event_coo_matmat(
                     data,
                     self.row,
@@ -451,13 +800,18 @@ class COO(SparseMatrix):
                     shape=self.shape,
                     transpose=True
                 )
+                # Transpose the result back to the original orientation
                 return r.T
             else:
+                # Raise an error if the shape of the other object is unsupported
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
         else:
+            # Convert the other object to an appropriate array type
             other = u.math.asarray(other)
+            # Promote the data types of the matrix and the other object
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
+                # Perform matrix-vector multiplication
                 return _coo_matvec(
                     data,
                     self.row,
@@ -467,7 +821,9 @@ class COO(SparseMatrix):
                     transpose=True
                 )
             elif other.ndim == 2:
+                # Transpose the other matrix for multiplication
                 other = other.T
+                # Perform matrix-matrix multiplication
                 r = _coo_matmat(
                     data,
                     self.row,
@@ -476,6 +832,8 @@ class COO(SparseMatrix):
                     shape=self.shape,
                     transpose=True
                 )
+                # Transpose the result back to the original orientation
                 return r.T
             else:
+                # Raise an error if the shape of the other object is unsupported
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")

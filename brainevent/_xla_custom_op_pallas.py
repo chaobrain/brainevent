@@ -62,7 +62,7 @@ class PallasKernelGenerator:
             raise ValueError(f"Invalid block_dim: {self.block_dim}")
 
 
-def register_pallas_mlir_gpu_translation_rule(
+def register_pallas_gpu_translation(
     primitive: Primitive,
     kernel_generator: PallasKernelGenerator,
 ):
@@ -84,7 +84,7 @@ def register_pallas_mlir_gpu_translation_rule(
     mlir.register_lowering(primitive, lower, platform='cuda')
 
 
-def register_pallas_mlir_tpu_translation_rule(
+def register_pallas_tpu_translation(
     primitive: Primitive,
     kernel_generator: PallasKernelGenerator,
 ):

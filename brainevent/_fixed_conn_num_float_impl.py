@@ -356,7 +356,7 @@ def fixed_post_num_mv_transpose_rule(
         return ct_weight, indices, vector, _
 
 
-def fixed_post_num_mv_p_call(
+def _warp_fixed_post_num_mv_call(
     weights: Union[jax.Array, u.Quantity],
     indices: jax.Array,
     vector: Union[jax.Array, u.Quantity],
@@ -381,6 +381,52 @@ def fixed_post_num_mv_p_call(
         outs=out
     )
     return (u.maybe_decimal(r * v_unit * w_unit),)
+
+
+def _jax_fixed_post_num_mv_call(
+    weights: Union[jax.Array, u.Quantity],
+    indices: jax.Array,
+    vector: Union[jax.Array, u.Quantity],
+    *,
+    shape: Tuple[int, int],
+    transpose: bool,
+) -> Tuple[Union[jax.Array, u.Quantity]]:
+    assert not transpose, "JAX backend does not support transpose mode."
+    out, weights, n_pre, n_post = check_shape(
+        weights, indices, vector, shape, transpose,
+        require_scalar_weight=True,
+    )
+    scalar_weight = weights.ndim == 0
+    if scalar_weight:
+        return jax.vmap(lambda ind: weights * u.math.sum(vector[ind]))(indices),
+    else:
+        return jax.vmap(lambda w, ind: u.math.sum(w * vector[ind]))(weights, indices),
+
+
+def fixed_post_num_mv_p_call(
+    weights: Union[jax.Array, u.Quantity],
+    indices: jax.Array,
+    vector: Union[jax.Array, u.Quantity],
+    *,
+    shape: Tuple[int, int],
+    transpose: bool,
+) -> Tuple[Union[jax.Array, u.Quantity]]:
+    if transpose:
+        return _warp_fixed_post_num_mv_call(
+            weights,
+            indices,
+            vector,
+            shape=shape,
+            transpose=transpose
+        )
+    else:
+        return _jax_fixed_post_num_mv_call(
+            weights,
+            indices,
+            vector,
+            shape=shape,
+            transpose=transpose
+        )
 
 
 fixed_post_num_mv_p = XLACustomKernel(

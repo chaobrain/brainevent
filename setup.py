@@ -41,8 +41,15 @@ with io.open(os.path.join(here, 'README.md'), 'r', encoding='utf-8') as f:
 # installation packages
 packages = find_packages(
     exclude=[
-        "docs*", "tests*", "examples*", "benchmark*", "experiments*", "build*",
-        "dist*", "brainevent.egg-info*", "brainevent/__pycache__*",
+        "docs*",
+        "tests*",
+        "examples*",
+        "benchmark*",
+        "experiments*",
+        "build*",
+        "dist*",
+        "brainevent.egg-info*",
+        "brainevent/__pycache__*",
         "brainevent/__init__.py"
     ]
 )

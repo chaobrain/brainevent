@@ -177,81 +177,223 @@ def event_fixed_post_num_mv_numba_kernel_generator(
 
 
 def event_fixed_post_num_mv_warp_kernel_generator(
+    float_as_event: bool,
     transpose: bool,
     weight_info: jax.ShapeDtypeStruct,
-    vector_info: jax.ShapeDtypeStruct,
+    spike_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
     import warp  # pylint: disable=import-outside-toplevel
 
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
-    vector_dtype = dtype_to_warp_type(vector_info.dtype)
+    vector_dtype = dtype_to_warp_type(spike_info.dtype)
     indices_dtype = dtype_to_warp_type(indices_info.dtype)
 
     if transpose:
-        # fixed pre connection number
-        if jnp.size(weight_info) == 1:
-            @warp.kernel
-            def ell_mv(
-                weights: warp.array2d(dtype=weight_dtype),
-                indices: warp.array2d(dtype=indices_dtype),
-                vector: warp.array1d(dtype=vector_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype)
-            ):
-                i = warp.tid()
-                w = weights[0]
-                wv = w * vector[i]
-                for j in range(indices.shape[1]):
-                    posts[indices[i, j]] += wv
+        if weight_info.size == 1:
+            if spike_info.dtype == jnp.bool_:
+                @warp.kernel
+                def ell_mv(
+                    weights: warp.array1d(dtype=weight_dtype),
+                    indices: warp.array2d(dtype=indices_dtype),
+                    spikes: warp.array1d(dtype=vector_dtype),
+                    _: warp.array1d(dtype=weight_dtype),
+                    posts: warp.array1d(dtype=weight_dtype)
+                ):
+                    i = warp.tid()
+                    w = weights[0]
+                    if spikes[i]:
+                        for j in range(indices.shape[1]):
+                            posts[indices[i, j]] += w
+                            # posts[indices[i, j]] += weights
+
+            elif float_as_event:
+                @warp.kernel
+                def ell_mv(
+                    weights: warp.array1d(dtype=weight_dtype),
+                    indices: warp.array2d(dtype=indices_dtype),
+                    spikes: warp.array1d(dtype=vector_dtype),
+                    _: warp.array1d(dtype=weight_dtype),
+                    posts: warp.array1d(dtype=weight_dtype)
+                ):
+                    i = warp.tid()
+                    w = weights[0]
+                    if spikes[i] != 0.:
+                        for j in range(indices.shape[1]):
+                            posts[indices[i, j]] += w
+
+            else:
+                @warp.kernel
+                def ell_mv(
+                    weights: warp.array1d(dtype=weight_dtype),
+                    indices: warp.array2d(dtype=indices_dtype),
+                    spikes: warp.array1d(dtype=vector_dtype),
+                    _: warp.array1d(dtype=weight_dtype),
+                    posts: warp.array1d(dtype=weight_dtype)
+                ):
+                    i = warp.tid()
+                    w = weights[0]
+                    sp = spikes[i]
+                    if sp != 0.:
+                        wsp = w * sp
+                        for j in range(indices.shape[1]):
+                            posts[indices[i, j]] += wsp
 
         else:
-            @warp.kernel
-            def ell_mv(
-                weights: warp.array2d(dtype=weight_dtype),
-                indices: warp.array2d(dtype=indices_dtype),
-                vector: warp.array1d(dtype=vector_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype)
-            ):
-                i = warp.tid()
-                for j in range(indices.shape[1]):
-                    posts[indices[i, j]] += weights[i, j] * vector[i]
+            if spike_info.dtype == jnp.bool_:
+                @warp.kernel
+                def ell_mv(
+                    weights: warp.array2d(dtype=weight_dtype),
+                    indices: warp.array2d(dtype=indices_dtype),
+                    spikes: warp.array1d(dtype=vector_dtype),
+                    _: warp.array1d(dtype=weight_dtype),
+                    posts: warp.array1d(dtype=weight_dtype)
+                ):
+                    i = warp.tid()
+                    if spikes[i]:
+                        for j in range(indices.shape[1]):
+                            posts[indices[i, j]] += weights[i, j]
+
+            elif float_as_event:
+                @warp.kernel
+                def ell_mv(
+                    weights: warp.array2d(dtype=weight_dtype),
+                    indices: warp.array2d(dtype=indices_dtype),
+                    spikes: warp.array1d(dtype=vector_dtype),
+                    _: warp.array1d(dtype=weight_dtype),
+                    posts: warp.array1d(dtype=weight_dtype)
+                ):
+                    i = warp.tid()
+                    if spikes[i] != 0.:
+                        for j in range(indices.shape[1]):
+                            posts[indices[i, j]] += weights[i, j]
+
+            else:
+                @warp.kernel
+                def ell_mv(
+                    weights: warp.array2d(dtype=weight_dtype),
+                    indices: warp.array2d(dtype=indices_dtype),
+                    spikes: warp.array1d(dtype=vector_dtype),
+                    _: warp.array1d(dtype=weight_dtype),
+                    posts: warp.array1d(dtype=weight_dtype)
+                ):
+                    i = warp.tid()
+                    sp = spikes[i]
+                    if sp != 0.:
+                        for j in range(indices.shape[1]):
+                            posts[indices[i, j]] += weights[i, j] * sp
 
     else:
-        # fixed post connection number
+        if weight_info.size == 1:
+            if spike_info.dtype == jnp.bool_:
+                @warp.kernel
+                def ell_mv(
+                    weights: warp.array1d(dtype=weight_dtype),
+                    indices: warp.array2d(dtype=indices_dtype),
+                    spikes: warp.array1d(dtype=vector_dtype),
+                    _: warp.array1d(dtype=weight_dtype),
+                    posts: warp.array1d(dtype=weight_dtype)
+                ):
+                    i = warp.tid()
+                    w = weights[0]
+                    r = weights.dtype(0.)
+                    for j in range(indices.shape[1]):  # n_conn
+                        index = indices[i, j]
+                        if spikes[index]:
+                            r += w
+                    posts[i] = r
 
-        if jnp.size(weight_info) == 1:
-            @warp.kernel
-            def ell_mv(
-                weights: warp.array2d(dtype=weight_dtype),
-                indices: warp.array2d(dtype=indices_dtype),
-                vector: warp.array1d(dtype=vector_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype)
-            ):
-                i = warp.tid()
-                w = weights[0]
-                r = weights.dtype(0.)
-                for j in range(indices.shape[1]):
-                    r += vector[indices[i, j]]
-                posts[i] = w * r
+            elif float_as_event:
+                @warp.kernel
+                def ell_mv(
+                    weights: warp.array1d(dtype=weight_dtype),
+                    indices: warp.array2d(dtype=indices_dtype),
+                    spikes: warp.array1d(dtype=vector_dtype),
+                    _: warp.array1d(dtype=weight_dtype),
+                    posts: warp.array1d(dtype=weight_dtype)
+                ):
+                    i = warp.tid()
+                    w = weights[0]
+                    r = weights.dtype(0.)
+                    for j in range(indices.shape[1]):  # n_conn
+                        index = indices[i, j]
+                        if spikes[index] != 0.:
+                            r += w
+                    posts[i] = r
+
+
+            else:
+                @warp.kernel
+                def ell_mv(
+                    weights: warp.array1d(dtype=weight_dtype),
+                    indices: warp.array2d(dtype=indices_dtype),
+                    spikes: warp.array1d(dtype=vector_dtype),
+                    _: warp.array1d(dtype=weight_dtype),
+                    posts: warp.array1d(dtype=weight_dtype)
+                ):
+                    i = warp.tid()
+                    w = weights[0]
+                    r = weights.dtype(0.)
+                    for j in range(indices.shape[1]):  # n_conn
+                        index = indices[i, j]
+                        sp = spikes[index]
+                        if sp != 0.:
+                            r += sp
+                    posts[i] = r * w
 
         else:
-            @warp.kernel
-            def ell_mv(
-                weights: warp.array2d(dtype=weight_dtype),
-                indices: warp.array2d(dtype=indices_dtype),
-                vector: warp.array1d(dtype=vector_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype)
-            ):
-                i = warp.tid()
-                r = weights.dtype(0.)
-                for j in range(indices.shape[1]):
-                    r += weights[i, j] * vector[indices[i, j]]
-                posts[i] = r
+            if spike_info.dtype == jnp.bool_:
+                @warp.kernel
+                def ell_mv(
+                    weights: warp.array2d(dtype=weight_dtype),
+                    indices: warp.array2d(dtype=indices_dtype),
+                    spikes: warp.array1d(dtype=vector_dtype),
+                    _: warp.array1d(dtype=weight_dtype),
+                    posts: warp.array1d(dtype=weight_dtype)
+                ):
+                    i = warp.tid()
+                    r = weights.dtype(0.)
+                    for j in range(indices.shape[1]):  # n_conn
+                        index = indices[i, j]
+                        if spikes[index]:
+                            r += weights[i, j]
+                    posts[i] = r
+
+            elif float_as_event:
+                @warp.kernel
+                def ell_mv(
+                    weights: warp.array2d(dtype=weight_dtype),
+                    indices: warp.array2d(dtype=indices_dtype),
+                    spikes: warp.array1d(dtype=vector_dtype),
+                    _: warp.array1d(dtype=weight_dtype),
+                    posts: warp.array1d(dtype=weight_dtype)
+                ):
+                    i = warp.tid()
+                    r = weights.dtype(0.)
+                    for j in range(indices.shape[1]):  # n_conn
+                        index = indices[i, j]
+                        if spikes[index] != 0.:
+                            r += weights[i, j]
+                    posts[i] = r
+
+            else:
+                @warp.kernel
+                def ell_mv(
+                    weights: warp.array2d(dtype=weight_dtype),
+                    indices: warp.array2d(dtype=indices_dtype),
+                    spikes: warp.array1d(dtype=vector_dtype),
+                    _: warp.array1d(dtype=weight_dtype),
+                    posts: warp.array1d(dtype=weight_dtype)
+                ):
+                    i = warp.tid()
+                    r = weights.dtype(0.)
+                    for j in range(indices.shape[1]):  # n_conn
+                        index = indices[i, j]
+                        sp = spikes[index]
+                        if sp != 0.:
+                            r += weights[i, j] * sp
+                    posts[i] = r
 
     return ell_mv
 
@@ -410,9 +552,9 @@ def event_fixed_post_num_mv_jvp_spikes(
     **kwargs
 ):
     return fixed_post_num_mv_p_call(
-        spk_dot,
         weights,
         indices,
+        spk_dot,
         shape=shape,
         transpose=transpose,
     )
@@ -462,17 +604,22 @@ def event_fixed_post_num_mv_transpose_rule(
     # ∂L/∂spk = ∂L/∂y * ∂y/∂spk
     homo = weight_info.size == 1
     if ad.is_undefined_primal(spikes):
-        if homo:
-            # homogeneous weight
-            ct_spk = jax.vmap(lambda idx: jnp.sum(ct[idx] * weights))(indices)
+        if type(ct) is ad.Zero:
+            ct_spk = ad.Zero(spikes)
         else:
-            # heterogeneous weight
-            ct_spk = jax.vmap(lambda idx, w: jnp.inner(ct[idx], w))(indices, weights)
-        return (ad.Zero(spikes) if type(ct) is ad.Zero else ct_spk), weights, indices
+            if homo:
+                # homogeneous weight
+                ct_spk = jax.vmap(lambda idx: jnp.sum(ct[idx] * weights))(indices)
+            else:
+                # heterogeneous weight
+                ct_spk = jax.vmap(lambda idx, w: jnp.inner(ct[idx], w))(indices, weights)
+        return weights, indices, ct_spk, _
 
     else:
         # ∂L/∂w = ∂L/∂y * ∂y/∂w
-        if homo:
+        if type(ct) is ad.Zero:
+            ct_gmax = ad.Zero(weights)
+        elif homo:
             # scalar
             ct_gmax = event_fixed_post_num_mv_p_call(
                 jnp.asarray(1., dtype=weight_info.dtype),
@@ -482,31 +629,13 @@ def event_fixed_post_num_mv_transpose_rule(
                 transpose=transpose,
                 float_as_event=float_as_event
             )
-            ct_gmax = jnp.inner(ct, ct_gmax[0])
+            ct_gmax = jnp.inner(ct, ct_gmax[0]).reshape(*weight_info.shape)
         else:
-            def map_fn(one_spk, one_ind):
-                if spikes.dtype == jnp.bool_:
-                    return jax.lax.cond(
-                        one_spk,
-                        lambda: ct[one_ind],
-                        lambda: jnp.zeros([n_conn], weight_info.dtype)
-                    )
-                else:
-                    if float_as_event:
-                        return jax.lax.cond(
-                            one_spk == 0.,
-                            lambda: jnp.zeros([n_conn], weight_info.dtype),
-                            lambda: ct[one_ind]
-                        )
-                    else:
-                        return jax.lax.cond(
-                            one_spk == 0.,
-                            lambda: jnp.zeros([n_conn], weight_info.dtype),
-                            lambda: ct[one_ind] * one_spk
-                        )
-
-            ct_gmax = jax.vmap(map_fn)(spikes, indices)
-        return spikes, (ad.Zero(weights) if type(ct) is ad.Zero else ct_gmax), indices
+            if transpose:
+                ct_gmax = jax.vmap(lambda v, ind: v * ct[ind])(spikes, indices)
+            else:
+                ct_gmax = jax.vmap(lambda c, ind: c * spikes[ind])(ct, indices)
+        return ct_gmax, indices, spikes, _
 
 
 def event_fixed_post_num_mv_p_call(
@@ -545,9 +674,9 @@ event_fixed_post_num_mv_p = XLACustomKernel(
         input_output_aliases={3: 0}
     ),
     gpu_kernel=WarpKernelGenerator(
-        event_fixed_post_num_mv_pallas_kernel_generator,
-        dim=lambda transpose, indices_info, vecto_infor, **kwargs: (
-            vecto_infor.shape[0]
+        event_fixed_post_num_mv_warp_kernel_generator,
+        dim=lambda transpose, indices_info, spike_info, **kwargs: (
+            spike_info.shape[0]
             if transpose else
             indices_info.shape[0]
         ),

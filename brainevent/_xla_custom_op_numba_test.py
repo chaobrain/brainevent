@@ -16,13 +16,13 @@
 import importlib.util
 import unittest
 
+import brainstate as bst
 import jax
 import jax.numpy as jnp
 import pytest
 from jax.experimental import pallas as pl
 
 import brainevent
-import brainstate as bst
 
 numba_installed = importlib.util.find_spec('numba') is not None
 
