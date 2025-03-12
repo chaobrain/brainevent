@@ -619,27 +619,55 @@ def event_csrmv_p_call(
     transpose: bool,
     float_as_event: bool,
 ):
+    """
+    Perform a call to the event CSR matrix-vector multiplication custom operation.
+
+    This function prepares the inputs and calls the event_csrmv_p custom operation
+    to perform matrix-vector multiplication using a CSR (Compressed Sparse Row) format.
+
+    Args:
+        weights (jax.Array): Non-zero elements of the CSR sparse matrix.
+        indices (jax.Array): Column indices of non-zero elements in the CSR sparse matrix.
+        indptr (jax.Array): Index pointers of the CSR sparse matrix, indicating the start of each row.
+        v (jax.Array): The dense vector to be multiplied with the sparse matrix.
+        shape (Sequence[int]): A sequence of length 2, representing the shape of the sparse matrix.
+        transpose (bool): Whether to transpose the sparse matrix before multiplication.
+        float_as_event (bool): Whether to treat floating-point numbers as events.
+
+    Returns:
+        jax.Array: The result of the matrix-vector multiplication.
+    """
+    # Check if weights is a scalar. If so, convert it to a one-dimensional array.
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
 
+    # Determine the output shape and data type based on whether the sparse matrix is transposed.
     out_info = (
+        # If transpose is True, the output shape is (shape[1],).
         jax.ShapeDtypeStruct([shape[1]], weights.dtype)
         if transpose else
+        # If transpose is False, the output shape is (shape[0],).
         jax.ShapeDtypeStruct([shape[0]], weights.dtype)
     )
+    # Call the event_csrmv_p custom operation to perform the matrix-vector multiplication.
     return event_csrmv_p(
         weights,
         indices,
         indptr,
         v,
+        # Initialize a zero vector with the output shape and data type.
         jnp.zeros(out_info.shape, out_info.dtype),
         outs=[out_info],
         float_as_event=float_as_event,
         shape=shape,
         transpose=transpose,
+        # Provide shape and data type information for indices.
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
+        # Provide shape and data type information for indptr.
         indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
+        # Provide shape and data type information for weights.
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        # Provide shape and data type information for v.
         vector_info=jax.ShapeDtypeStruct(v.shape, v.dtype),
     )
 
@@ -1199,27 +1227,52 @@ def event_csrmm_p_call(
     transpose: bool,
     float_as_event: bool,
 ):
+    """
+    Perform a call to the event CSR matrix-matrix multiplication custom operation.
+
+    Args:
+        weights (jax.Array): Non-zero elements of the CSR sparse matrix.
+        indices (jax.Array): Column indices of non-zero elements in the CSR sparse matrix.
+        indptr (jax.Array): Index pointers of the CSR sparse matrix, indicating the start of each row.
+        B (jax.Array): A dense matrix.
+        shape (Sequence[int]): A sequence of length 2, representing the shape of the sparse matrix.
+        transpose (bool): A boolean indicating whether to transpose the sparse matrix before multiplication.
+        float_as_event (bool): A boolean indicating whether to treat floating-point numbers as events.
+
+    Returns:
+        jax.Array: The result of the matrix-matrix multiplication.
+    """
+    # Check if weights is a scalar. If so, convert it to a one-dimensional array.
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
 
+    # Determine the output shape and data type based on whether the sparse matrix is transposed.
     out_info = (
+        # If transpose is True, the output shape is (shape[1], B.shape[1]).
         jax.ShapeDtypeStruct([shape[1], B.shape[1]], weights.dtype)
         if transpose else
+        # If transpose is False, the output shape is (shape[0], B.shape[1]).
         jax.ShapeDtypeStruct([shape[0], B.shape[1]], weights.dtype)
     )
+    # Call the event_csrmm_p custom operation to perform the matrix-matrix multiplication.
     return event_csrmm_p(
         weights,
         indices,
         indptr,
         B,
+        # Initialize a zero matrix with the output shape and data type.
         jnp.zeros(out_info.shape, out_info.dtype),
         outs=[out_info],
         shape=shape,
         transpose=transpose,
         float_as_event=float_as_event,
+        # Provide shape and data type information for indices.
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
+        # Provide shape and data type information for indptr.
         indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
+        # Provide shape and data type information for weights.
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        # Provide shape and data type information for B.
         vector_info=jax.ShapeDtypeStruct(B.shape, B.dtype),
     )
 

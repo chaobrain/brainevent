@@ -14,9 +14,10 @@
 # ==============================================================================
 
 
+import brainstate as bst
 import jax.numpy as jnp
 import numpy as np
-import brainstate as bst
+
 
 def _get_coo(n_pre, n_post, prob, replace=True):
     n_conn = int(n_post * prob)
@@ -32,6 +33,7 @@ def _get_coo(n_pre, n_post, prob, replace=True):
 
     return rows, cols
 
+
 def _coo_matvec_impl(data, row, col, v, *, spinfo, transpose):
     v = jnp.asarray(v)
     if transpose:
@@ -39,6 +41,7 @@ def _coo_matvec_impl(data, row, col, v, *, spinfo, transpose):
     out_shape = spinfo[1] if transpose else spinfo[0]
     dv = data * v[col]
     return jnp.zeros(out_shape, dv.dtype).at[row].add(dv)
+
 
 def vector_coo(x, w, row, col, shape):
     homo_w = jnp.size(w) == 1
@@ -48,6 +51,7 @@ def vector_coo(x, w, row, col, shape):
     else:
         return _coo_matvec_impl(w, row, col, x, spinfo=shape, transpose=True)
 
+
 def coo_vector(x, w, row, col, shape):
     homo_w = jnp.size(w) == 1
     if homo_w:
@@ -55,6 +59,7 @@ def coo_vector(x, w, row, col, shape):
         return _coo_matvec_impl(data, row, col, x, spinfo=shape, transpose=False)
     else:
         return _coo_matvec_impl(w, row, col, x, spinfo=shape, transpose=False)
+
 
 def matrix_coo(xs, w, row, col, shape):
     homo_w = jnp.size(w) == 1

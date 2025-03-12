@@ -510,28 +510,66 @@ def event_coomv_p_call(
     transpose: bool,
     float_as_event: bool,
 ):
+    """
+    Perform a custom sparse matrix-vector multiplication operation.
+
+    This function takes a sparse matrix represented in COO (Coordinate) format
+    and a dense vector, then performs a matrix-vector multiplication.
+
+    Parameters
+    ----------
+    weights : jax.Array
+        The non-zero values of the sparse matrix.
+    row : jax.Array
+        The row indices of the non-zero values in the sparse matrix.
+    col : jax.Array
+        The column indices of the non-zero values in the sparse matrix.
+    v : jax.Array
+        The dense vector to multiply with the sparse matrix.
+    shape : Sequence[int]
+        The shape of the sparse matrix.
+    transpose : bool
+        Whether to transpose the sparse matrix before multiplication.
+    float_as_event : bool
+        Treat floating-point values as events.
+
+    Returns
+    -------
+    jax.Array
+        The result of the sparse matrix-vector multiplication.
+    """
+    # Convert scalar weights to a single-element array
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
 
+    # Determine the output shape based on whether the sparse matrix is transposed
     out_info = (
+        # If transposed, the output shape is [shape[1]]
         jax.ShapeDtypeStruct([shape[1]], weights.dtype)
         if transpose else
+        # If not transposed, the output shape is [shape[0]]
         jax.ShapeDtypeStruct([shape[0]], weights.dtype)
     )
 
+    # Call the custom kernel with the provided arguments and output information
     return event_coomv_p(
         weights,
         row,
         col,
         v,
+        # Initialize the output array with zeros
         jnp.zeros(out_info.shape, out_info.dtype),
         outs=[out_info],
         float_as_event=float_as_event,
         shape=shape,
         transpose=transpose,
+        # Provide shape and dtype information for row indices
         row_info=jax.ShapeDtypeStruct(row.shape, row.dtype),
+        # Provide shape and dtype information for column indices
         col_info=jax.ShapeDtypeStruct(col.shape, col.dtype),
+        # Provide shape and dtype information for non-zero values
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        # Provide shape and dtype information for the dense vector
         vector_info=jax.ShapeDtypeStruct(v.shape, v.dtype),
     )
 
@@ -998,14 +1036,47 @@ def event_coomm_p_call(
     transpose: bool,
     float_as_event: bool,
 ):
+    """
+    Perform a custom sparse matrix-matrix multiplication operation.
+
+    This function takes a sparse matrix represented in COO (Coordinate) format
+    and a dense matrix, then performs a matrix-matrix multiplication.
+
+    Parameters
+    ----------
+    weights : jax.Array
+        The non-zero values of the sparse matrix.
+    row : jax.Array
+        The row indices of the non-zero values in the sparse matrix.
+    col : jax.Array
+        The column indices of the non-zero values in the sparse matrix.
+    B : jax.Array
+        The dense matrix to multiply with the sparse matrix.
+    shape : Sequence[int]
+        The shape of the sparse matrix.
+    transpose : bool
+        Whether to transpose the sparse matrix before multiplication.
+    float_as_event : bool
+        Treat floating-point values as events.
+
+    Returns
+    -------
+    jax.Array
+        The result of the sparse matrix-matrix multiplication.
+    """
+    # Convert scalar weights to a single-element array
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
 
+    # Determine the output shape based on whether the sparse matrix is transposed
     out_info = (
+        # If transposed, the output shape is [shape[1], B.shape[1]]
         jax.ShapeDtypeStruct([shape[1], B.shape[1]], weights.dtype)
         if transpose else
+        # If not transposed, the output shape is [shape[0], B.shape[1]]
         jax.ShapeDtypeStruct([shape[0], B.shape[1]], weights.dtype)
     )
+    # Call the custom kernel with the provided arguments and output information
     return event_coomm_p(
         weights,
         row,

@@ -35,7 +35,6 @@ __all__ = [
 ]
 
 
-# TODO: docstring needed to be improved
 @jax.tree_util.register_pytree_node_class
 class CSR(u.sparse.SparseMatrix):
     """
@@ -45,7 +44,7 @@ class CSR(u.sparse.SparseMatrix):
     row-wise operations and matrix-vector multiplications. It is compatible with
     JAX's tree utilities and supports unit-aware computations.
 
-    Attributes:
+    Attributes
     -----------
     data : Union[jax.Array, u.Quantity]
         Array of the non-zero values in the matrix.
@@ -60,7 +59,7 @@ class CSR(u.sparse.SparseMatrix):
     dtype : dtype
         Data type of the matrix values.
 
-    Methods:
+    Methods
     --------
     fromdense(cls, mat, *, nse=None, index_dtype=jnp.int32)
         Create a CSR matrix from a dense matrix.
@@ -94,7 +93,7 @@ class CSR(u.sparse.SparseMatrix):
 
         This constructor creates a CSR matrix from the given arguments and shape.
 
-        Parameters:
+        Parameters
         -----------
         args : Sequence[Union[jax.Array, np.ndarray, u.Quantity]]
             A sequence of three arrays representing the CSR matrix:
@@ -105,7 +104,7 @@ class CSR(u.sparse.SparseMatrix):
         shape : Tuple[int, int]
             The shape of the matrix as a tuple of (num_rows, num_columns).
 
-        Returns:
+        Returns
         --------
         None
             This method initializes the CSR matrix object but does not return a value.
@@ -120,7 +119,7 @@ class CSR(u.sparse.SparseMatrix):
     
         This method converts a dense matrix to a Compressed Sparse Row (CSR) format.
     
-        Parameters:
+        Parameters
         -----------
         mat : array_like
             The dense matrix to be converted to CSR format.
@@ -130,7 +129,7 @@ class CSR(u.sparse.SparseMatrix):
         index_dtype : dtype, optional
             The data type to be used for index arrays (default is jnp.int32).
     
-        Returns:
+        Returns
         --------
         CSR
             A new CSR matrix object created from the input dense matrix.
@@ -147,18 +146,18 @@ class CSR(u.sparse.SparseMatrix):
         This method creates a new CSR matrix instance with the provided data,
         maintaining the original indices, indptr, and shape.
     
-        Parameters:
+        Parameters
         -----------
         data : Union[jax.Array, u.Quantity]
             The new data array to replace the existing data in the CSR matrix.
             It must have the same shape, dtype, and unit as the original data.
     
-        Returns:
+        Returns
         --------
         CSR
             A new CSR matrix instance with updated data and the same structure as the original.
     
-        Raises:
+        Raises
         -------
         AssertionError
             If the shape, dtype, or unit of the new data doesn't match the original data.
@@ -167,7 +166,7 @@ class CSR(u.sparse.SparseMatrix):
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
         return CSR((data, self.indices, self.indptr), shape=self.shape)
-    
+
     def todense(self):
         """
         Convert the CSR matrix to a dense matrix.
@@ -175,13 +174,13 @@ class CSR(u.sparse.SparseMatrix):
         This method transforms the compressed sparse row (CSR) representation
         into a full dense matrix.
     
-        Returns:
+        Returns
         --------
         array_like
             A dense matrix representation of the CSR matrix.
         """
         return _csr_todense(self.data, self.indices, self.indptr, shape=self.shape)
-    
+
     @property
     def T(self):
         """
@@ -189,31 +188,31 @@ class CSR(u.sparse.SparseMatrix):
     
         This property returns the transpose of the matrix without copying the data.
     
-        Returns:
+        Returns
         --------
         CSC
             The transpose of the CSR matrix as a CSC (Compressed Sparse Column) matrix.
         """
         return self.transpose()
-    
+
     def transpose(self, axes=None):
         """
         Transpose the CSR matrix.
     
         This method returns the transpose of the CSR matrix as a CSC matrix.
     
-        Parameters:
+        Parameters
         -----------
         axes : None
             This parameter is not used and must be None. Included for compatibility
             with numpy's transpose function signature.
     
-        Returns:
+        Returns
         --------
         CSC
             The transpose of the CSR matrix as a CSC (Compressed Sparse Column) matrix.
     
-        Raises:
+        Raises
         -------
         AssertionError
             If axes is not None, as this implementation doesn't support custom axis ordering.
@@ -443,7 +442,7 @@ class CSR(u.sparse.SparseMatrix):
         This method is used by JAX's tree utilities to flatten the CSR matrix
         into a form suitable for transformation and reconstruction.
     
-        Returns:
+        Returns
         --------
         tuple
             A tuple containing two elements:
@@ -451,7 +450,7 @@ class CSR(u.sparse.SparseMatrix):
             - A tuple with the CSR matrix's indices, indptr, and shape.
         """
         return (self.data,), (self.indices, self.indptr, self.shape)
-    
+
     @classmethod
     def tree_unflatten(cls, aux_data, children):
         """
@@ -460,14 +459,14 @@ class CSR(u.sparse.SparseMatrix):
         This class method is used by JAX's tree utilities to reconstruct
         a CSR matrix from its flattened representation.
     
-        Parameters:
+        Parameters
         -----------
         aux_data : tuple
             A tuple containing the CSR matrix's indices, indptr, and shape.
         children : tuple
             A tuple containing the CSR matrix's data as its only element.
     
-        Returns:
+        Returns
         --------
         CSR
             A new CSR matrix instance reconstructed from the flattened data.
@@ -477,7 +476,6 @@ class CSR(u.sparse.SparseMatrix):
         return CSR([data, indices, indptr], shape=shape)
 
 
-# TODO: docstring needed to be improved
 @jax.tree_util.register_pytree_node_class
 class CSC(u.sparse.SparseMatrix):
     """
@@ -487,7 +485,7 @@ class CSC(u.sparse.SparseMatrix):
     column-wise operations. It is compatible with JAX's tree utilities and
     supports unit-aware computations.
 
-    Attributes:
+    Attributes
     -----------
     data : Union[jax.Array, u.Quantity]
         Array of the non-zero values in the matrix.
@@ -502,7 +500,7 @@ class CSC(u.sparse.SparseMatrix):
     dtype : dtype
         Data type of the matrix values.
 
-    Methods:
+    Methods
     --------
     fromdense(cls, mat, *, nse=None, index_dtype=jnp.int32)
         Create a CSC matrix from a dense matrix.
@@ -531,7 +529,25 @@ class CSC(u.sparse.SparseMatrix):
         *,
         shape: Tuple[int, int]
     ):
+        """
+        Initialize a CSC (Compressed Sparse Column) matrix.
+
+        This constructor creates a CSC matrix from the given arguments and shape.
+
+        Parameters
+        ----------
+        args : Sequence[Union[jax.Array, np.ndarray, u.Quantity]]
+            A sequence of three arrays representing the CSC matrix:
+            - data: Contains the non-zero values of the matrix.
+            - indices: Contains the row indices for each non-zero element.
+            - indptr: Contains the column pointers indicating where each column starts in the data and indices arrays.
+
+        shape : Tuple[int, int]
+            The shape of the matrix as a tuple of (num_rows, num_columns).
+        """
+        # Convert each element in args to a jax array using u.math.asarray
         self.data, self.indices, self.indptr = map(u.math.asarray, args)
+        # Call the constructor of the superclass to initialize the object with the given args and shape
         super().__init__(args, shape=shape)
 
     @classmethod
@@ -542,7 +558,7 @@ class CSC(u.sparse.SparseMatrix):
         This method converts a dense matrix to CSC format, which is an efficient
         storage format for sparse matrices.
     
-        Parameters:
+        Parameters
         -----------
         mat : array_like
             The dense matrix to be converted to CSC format.
@@ -552,7 +568,7 @@ class CSC(u.sparse.SparseMatrix):
         index_dtype : dtype, optional
             The data type to be used for index arrays (default is jnp.int32).
     
-        Returns:
+        Returns
         --------
         CSC
             A new CSC matrix instance created from the input dense matrix.
@@ -561,7 +577,7 @@ class CSC(u.sparse.SparseMatrix):
             nse = (u.get_mantissa(mat) != 0).sum()
         csc = u.sparse.csr_fromdense(mat.T, nse=nse, index_dtype=index_dtype).T
         return CSC((csc.data, csc.indices, csc.indptr), shape=csc.shape)
-    
+
     @classmethod
     def _empty(cls, shape, *, dtype=None, index_dtype='int32'):
         """
@@ -569,7 +585,7 @@ class CSC(u.sparse.SparseMatrix):
     
         This method initializes an empty CSC matrix with the specified shape and data types.
     
-        Parameters:
+        Parameters
         -----------
         shape : tuple
             The shape of the matrix as a tuple (rows, columns).
@@ -578,12 +594,12 @@ class CSC(u.sparse.SparseMatrix):
         index_dtype : dtype, optional
             The data type for index arrays (default is 'int32').
     
-        Returns:
+        Returns
         --------
         CSC
             An empty CSC matrix instance with the specified shape and data types.
     
-        Raises:
+        Raises
         -------
         ValueError
             If the provided shape does not represent a 2-dimensional matrix.
@@ -595,7 +611,7 @@ class CSC(u.sparse.SparseMatrix):
         indices = jnp.empty(0, index_dtype)
         indptr = jnp.zeros(shape[1] + 1, index_dtype)
         return cls((data, indices, indptr), shape=shape)
-    
+
     def with_data(self, data: Union[jax.Array, u.Quantity]) -> 'CSC':
         """
         Create a new CSC matrix with updated data while keeping the same structure.
@@ -603,18 +619,18 @@ class CSC(u.sparse.SparseMatrix):
         This method creates a new CSC matrix instance with the provided data,
         maintaining the original indices, indptr, and shape.
     
-        Parameters:
+        Parameters
         -----------
         data : Union[jax.Array, u.Quantity]
             The new data array to replace the existing data in the CSC matrix.
             It must have the same shape, dtype, and unit as the original data.
     
-        Returns:
+        Returns
         --------
         CSC
             A new CSC matrix instance with updated data and the same structure as the original.
     
-        Raises:
+        Raises
         -------
         AssertionError
             If the shape, dtype, or unit of the new data doesn't match the original data.
@@ -623,7 +639,7 @@ class CSC(u.sparse.SparseMatrix):
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
         return CSC((data, self.indices, self.indptr), shape=self.shape)
-    
+
     def todense(self):
         """
         Convert the CSC matrix to a dense matrix.
@@ -631,13 +647,13 @@ class CSC(u.sparse.SparseMatrix):
         This method transforms the compressed sparse column (CSC) representation
         into a full dense matrix.
     
-        Returns:
+        Returns
         --------
         array_like
             A dense matrix representation of the CSC matrix.
         """
         return self.T.todense().T
-    
+
     @property
     def T(self):
         """
@@ -645,31 +661,31 @@ class CSC(u.sparse.SparseMatrix):
     
         This property returns the transpose of the matrix without copying the data.
     
-        Returns:
+        Returns
         --------
         CSR
             The transpose of the CSC matrix as a CSR (Compressed Sparse Row) matrix.
         """
         return self.transpose()
-    
+
     def transpose(self, axes=None):
         """
         Transpose the CSC matrix.
     
         This method returns the transpose of the CSC matrix as a CSR matrix.
     
-        Parameters:
+        Parameters
         -----------
         axes : None
             This parameter is not used and must be None. Included for compatibility
             with numpy's transpose function signature.
     
-        Returns:
+        Returns
         --------
         CSR
             The transpose of the CSC matrix as a CSR (Compressed Sparse Row) matrix.
     
-        Raises:
+        Raises
         -------
         AssertionError
             If axes is not None, as this implementation doesn't support custom axis ordering.
@@ -900,7 +916,7 @@ class CSC(u.sparse.SparseMatrix):
         This method is used by JAX's tree utilities to flatten the CSC matrix
         into a form suitable for transformation and reconstruction.
 
-        Returns:
+        Returns
         --------
         tuple
             A tuple containing two elements:
@@ -917,14 +933,14 @@ class CSC(u.sparse.SparseMatrix):
         This class method is used by JAX's tree utilities to reconstruct
         a CSC matrix from its flattened representation.
 
-        Parameters:
+        Parameters
         -----------
         aux_data : tuple
             A tuple containing the CSC matrix's indices, indptr, and shape.
         children : tuple
             A tuple containing the CSC matrix's data as its only element.
 
-        Returns:
+        Returns
         --------
         CSC
             A new CSC matrix instance reconstructed from the flattened data.
