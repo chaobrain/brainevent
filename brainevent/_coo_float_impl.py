@@ -17,15 +17,10 @@
 
 from typing import Callable, Union, Sequence
 
-import warnings
-from functools import partial
-
-import jax
-import numpy as np
-from jax import core, numpy as jnp
-from jax.interpreters import ad, mlir
-from jaxlib import gpu_sparse
 import brainunit as u
+import jax
+from jax import numpy as jnp
+from jax.interpreters import ad
 
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
@@ -53,6 +48,7 @@ def _coo_matvec(
     res = coomv_p_call(data, row, col, v, shape=shape, transpose=transpose)[0]
     return u.maybe_decimal(res * unitd * unitv)
 
+
 def _coo_matmat(
     data: Union[jax.Array, u.Quantity],
     row: jax.Array,
@@ -66,6 +62,7 @@ def _coo_matmat(
     B, unitb = u.split_mantissa_unit(B)
     res = coomm_p_call(data, row, col, B, shape=shape, transpose=transpose)[0]
     return u.maybe_decimal(res * (unitd * unitb))
+
 
 def coomv_cpu_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
@@ -102,6 +99,7 @@ def coomv_cpu_kernel_generator(
     mv = numba.njit(**numba_environ.setting)(mv)
     return mv
 
+
 def coomv_gpu_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
@@ -116,7 +114,6 @@ def coomv_gpu_kernel_generator(
     row_dtype = dtype_to_warp_type(row_info.dtype)
     col_dtype = dtype_to_warp_type(col_info.dtype)
     vector_dtype = dtype_to_warp_type(vector_info.dtype)
-
 
     match (transpose, weight_info.size):
         # transpose=True, homogeneous
@@ -174,6 +171,7 @@ def coomv_gpu_kernel_generator(
     mv = warp.kernel(mv)
     return mv
 
+
 def coomv_jvp_v(
     v_dot,
     data,
@@ -205,6 +203,7 @@ def coomv_jvp_v(
         )
     ]
 
+
 def coomv_jvp_weights(
     data_dot,
     data,
@@ -225,6 +224,7 @@ def coomv_jvp_weights(
         shape=shape,
         transpose=transpose,
     )
+
 
 def coomv_transpose_rule(
     ct,
@@ -257,7 +257,7 @@ def coomv_transpose_rule(
         return data, row, col, ct_events, _
     else:
         v = jnp.asarray(v)
-        if data.aval.shape[0] == 1: # scalar
+        if data.aval.shape[0] == 1:  # scalar
             ct_values = coomv_p_call(
                 jnp.ones(1, dtype=data.aval.dtype),
                 row,
@@ -270,6 +270,7 @@ def coomv_transpose_rule(
         else:
             ct_values = v[row] * ct[col] if transpose else v[col] * ct[row]
         return ct_values, row, col, v, _
+
 
 def coomv_batching(
     args,
@@ -302,6 +303,7 @@ def coomv_batching(
 
     else:
         raise NotImplementedError(f"Batching axes {axes} not implemented for event-driven COO matrix-vector product.")
+
 
 def coomv_p_call(
     weights,
@@ -337,15 +339,16 @@ def coomv_p_call(
 
     )
 
+
 coomv_p = XLACustomKernel(
     'coomv',
-    cpu_kernel=NumbaKernelGenerator(coomv_cpu_kernel_generator, input_output_aliases={4:0}),
+    cpu_kernel=NumbaKernelGenerator(coomv_cpu_kernel_generator, input_output_aliases={4: 0}),
     gpu_kernel=WarpKernelGenerator(
         coomv_gpu_kernel_generator,
         dim=lambda row_info, **kwargs: (
             row_info.shape[0]
         ),
-        input_output_aliases={4:0}
+        input_output_aliases={4: 0}
     )
 )
 coomv_p.defjvp(coomv_jvp_weights, None, None, coomv_jvp_v)
@@ -387,6 +390,7 @@ def coomm_cpu_kernel_generator(
 
     mm = numba.njit(**numba_environ.setting)(mm)
     return mm
+
 
 def coomm_gpu_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
@@ -481,6 +485,7 @@ def coomm_jvp_left(
         transpose=transpose
     )
 
+
 def coomm_jvp_right(
     B_dot,
     data,
@@ -501,6 +506,7 @@ def coomm_jvp_right(
         shape=shape,
         transpose=transpose
     )
+
 
 def coomm_transpose_rule(
     ct,
@@ -523,6 +529,7 @@ def coomm_transpose_rule(
         B = jnp.asarray(B)
         d_data = (ct[row] * B[col]).sum(1)
         return d_data, row, col, B, _
+
 
 def coomm_batching(
     args,
@@ -577,6 +584,7 @@ def coomm_batching(
     else:
         raise NotImplementedError(f"Batching axes {axes} not implemented for event-driven COO matrix-vector product.")
 
+
 def coomm_p_call(
     weights,
     row,
@@ -609,11 +617,12 @@ def coomm_p_call(
         col_info=jax.ShapeDtypeStruct(col.shape, col.dtype),
     )
 
+
 coomm_p = XLACustomKernel(
     'coomm',
     cpu_kernel=NumbaKernelGenerator(
         coomm_cpu_kernel_generator,
-        input_output_aliases={4:0}
+        input_output_aliases={4: 0}
     ),
     gpu_kernel=WarpKernelGenerator(
         coomm_gpu_kernel_generator,

@@ -206,7 +206,7 @@ def numba_cpu_custom_call_target(output_ptrs, input_ptrs):
     ).results
 
 
-def register_numba_mlir_cpu_translation_rule(
+def register_numba_cpu_translatione(
     primitive: Primitive,
     cpu_kernel: NumbaKernelGenerator,
     debug: bool = False

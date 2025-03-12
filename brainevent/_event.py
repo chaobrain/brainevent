@@ -43,7 +43,7 @@ def _check_out(out):
         raise TypeError(f'out must be an instance of Array. But got {type(out)}')
 
 
-def _as_jax_array_(obj):
+def _as_array(obj):
     return obj.value if isinstance(obj, EventArray) else obj
 
 
@@ -195,7 +195,7 @@ class EventArray(object):
 
         # index is a tuple
         if isinstance(index, tuple):
-            index = tuple(_as_jax_array_(x) for x in index)
+            index = tuple(_as_array(x) for x in index)
         # index is Array
         elif isinstance(index, EventArray):
             index = index.value
@@ -227,182 +227,182 @@ class EventArray(object):
         return self.value.__invert__()
 
     def __eq__(self, oc):
-        return self.value == _as_jax_array_(oc)
+        return self.value == _as_array(oc)
 
     def __ne__(self, oc):
-        return self.value != _as_jax_array_(oc)
+        return self.value != _as_array(oc)
 
     def __lt__(self, oc):
-        return self.value < _as_jax_array_(oc)
+        return self.value < _as_array(oc)
 
     def __le__(self, oc):
-        return self.value <= _as_jax_array_(oc)
+        return self.value <= _as_array(oc)
 
     def __gt__(self, oc):
-        return self.value > _as_jax_array_(oc)
+        return self.value > _as_array(oc)
 
     def __ge__(self, oc):
-        return self.value >= _as_jax_array_(oc)
+        return self.value >= _as_array(oc)
 
     def __add__(self, oc):
-        return self.value + _as_jax_array_(oc)
+        return self.value + _as_array(oc)
 
     def __radd__(self, oc):
-        return self.value + _as_jax_array_(oc)
+        return self.value + _as_array(oc)
 
     def __iadd__(self, oc):
         # a += b
-        self.value = self.value + _as_jax_array_(oc)
+        self.value = self.value + _as_array(oc)
         return self
 
     def __sub__(self, oc):
-        return self.value - _as_jax_array_(oc)
+        return self.value - _as_array(oc)
 
     def __rsub__(self, oc):
-        return _as_jax_array_(oc) - self.value
+        return _as_array(oc) - self.value
 
     def __isub__(self, oc):
         # a -= b
-        self.value = self.value - _as_jax_array_(oc)
+        self.value = self.value - _as_array(oc)
         return self
 
     def __mul__(self, oc):
-        return self.value * _as_jax_array_(oc)
+        return self.value * _as_array(oc)
 
     def __rmul__(self, oc):
-        return _as_jax_array_(oc) * self.value
+        return _as_array(oc) * self.value
 
     def __imul__(self, oc):
         # a *= b
-        self.value = self.value * _as_jax_array_(oc)
+        self.value = self.value * _as_array(oc)
         return self
 
     def __rdiv__(self, oc):
-        return _as_jax_array_(oc) / self.value
+        return _as_array(oc) / self.value
 
     def __truediv__(self, oc):
-        return self.value / _as_jax_array_(oc)
+        return self.value / _as_array(oc)
 
     def __rtruediv__(self, oc):
-        return _as_jax_array_(oc) / self.value
+        return _as_array(oc) / self.value
 
     def __itruediv__(self, oc):
         # a /= b
-        self.value = self.value / _as_jax_array_(oc)
+        self.value = self.value / _as_array(oc)
         return self
 
     def __floordiv__(self, oc):
-        return self.value // _as_jax_array_(oc)
+        return self.value // _as_array(oc)
 
     def __rfloordiv__(self, oc):
-        return _as_jax_array_(oc) // self.value
+        return _as_array(oc) // self.value
 
     def __ifloordiv__(self, oc):
         # a //= b
-        self.value = self.value // _as_jax_array_(oc)
+        self.value = self.value // _as_array(oc)
         return self
 
     def __divmod__(self, oc):
-        return self.value.__divmod__(_as_jax_array_(oc))
+        return self.value.__divmod__(_as_array(oc))
 
     def __rdivmod__(self, oc):
-        return self.value.__rdivmod__(_as_jax_array_(oc))
+        return self.value.__rdivmod__(_as_array(oc))
 
     def __mod__(self, oc):
-        return self.value % _as_jax_array_(oc)
+        return self.value % _as_array(oc)
 
     def __rmod__(self, oc):
-        return _as_jax_array_(oc) % self.value
+        return _as_array(oc) % self.value
 
     def __imod__(self, oc):
         # a %= b
-        self.value = self.value % _as_jax_array_(oc)
+        self.value = self.value % _as_array(oc)
         return self
 
     def __pow__(self, oc):
-        return self.value ** _as_jax_array_(oc)
+        return self.value ** _as_array(oc)
 
     def __rpow__(self, oc):
-        return _as_jax_array_(oc) ** self.value
+        return _as_array(oc) ** self.value
 
     def __ipow__(self, oc):
         # a **= b
-        self.value = self.value ** _as_jax_array_(oc)
+        self.value = self.value ** _as_array(oc)
         return self
 
     def __matmul__(self, oc):
         if _known_type(oc):
-            return self.value @ _as_jax_array_(oc)
+            return self.value @ _as_array(oc)
         else:
             return oc.__rmatmul__(self)
 
     def __rmatmul__(self, oc):
         if _known_type(oc):
-            return _as_jax_array_(oc) @ self.value
+            return _as_array(oc) @ self.value
         else:
             return oc.__matmul__(self)
 
     def __imatmul__(self, oc):
         # a @= b
         if _known_type(oc):
-            self.value = self.value @ _as_jax_array_(oc)
+            self.value = self.value @ _as_array(oc)
         else:
             self.value = oc.__rmatmul__(self)
         return self
 
     def __and__(self, oc):
-        return self.value & _as_jax_array_(oc)
+        return self.value & _as_array(oc)
 
     def __rand__(self, oc):
-        return _as_jax_array_(oc) & self.value
+        return _as_array(oc) & self.value
 
     def __iand__(self, oc):
         # a &= b
-        self.value = self.value & _as_jax_array_(oc)
+        self.value = self.value & _as_array(oc)
         return self
 
     def __or__(self, oc):
-        return self.value | _as_jax_array_(oc)
+        return self.value | _as_array(oc)
 
     def __ror__(self, oc):
-        return _as_jax_array_(oc) | self.value
+        return _as_array(oc) | self.value
 
     def __ior__(self, oc):
         # a |= b
-        self.value = self.value | _as_jax_array_(oc)
+        self.value = self.value | _as_array(oc)
         return self
 
     def __xor__(self, oc):
-        return self.value ^ _as_jax_array_(oc)
+        return self.value ^ _as_array(oc)
 
     def __rxor__(self, oc):
-        return _as_jax_array_(oc) ^ self.value
+        return _as_array(oc) ^ self.value
 
     def __ixor__(self, oc):
         # a ^= b
-        self.value = self.value ^ _as_jax_array_(oc)
+        self.value = self.value ^ _as_array(oc)
         return self
 
     def __lshift__(self, oc):
-        return self.value << _as_jax_array_(oc)
+        return self.value << _as_array(oc)
 
     def __rlshift__(self, oc):
-        return _as_jax_array_(oc) << self.value
+        return _as_array(oc) << self.value
 
     def __ilshift__(self, oc):
         # a <<= b
-        self.value = self.value << _as_jax_array_(oc)
+        self.value = self.value << _as_array(oc)
         return self
 
     def __rshift__(self, oc):
-        return self.value >> _as_jax_array_(oc)
+        return self.value >> _as_array(oc)
 
     def __rrshift__(self, oc):
-        return _as_jax_array_(oc) >> self.value
+        return _as_array(oc) >> self.value
 
     def __irshift__(self, oc):
         # a >>= b
-        self.value = self.value >> _as_jax_array_(oc)
+        self.value = self.value >> _as_array(oc)
         return self
 
     def __round__(self, ndigits=None):
@@ -484,8 +484,8 @@ class EventArray(object):
 
     def clip(self, min=None, max=None, out=None, ):
         """Return an array whose values are limited to [min, max]. One of max or min must be given."""
-        min = _as_jax_array_(min)
-        max = _as_jax_array_(max)
+        min = _as_array(min)
+        max = _as_array(max)
         r = self.value.clip(min=min, max=max)
         if out is None:
             return r
@@ -495,7 +495,7 @@ class EventArray(object):
 
     def compress(self, condition, axis=None):
         """Return selected slices of this array along given axis."""
-        return self.value.compress(condition=_as_jax_array_(condition), axis=axis)
+        return self.value.compress(condition=_as_array(condition), axis=axis)
 
     def conj(self):
         """Complex-conjugate all elements."""
@@ -524,7 +524,7 @@ class EventArray(object):
     def dot(self, b):
         """Dot product of two arrays."""
         if _known_type(b):
-            return self.value.dot(_as_jax_array_(b))
+            return self.value.dot(_as_array(b))
         else:
             return b.__rmatmul__(self)
 
@@ -633,7 +633,7 @@ class EventArray(object):
         indices : array of ints
             Array of insertion points with the same shape as `v`.
         """
-        return self.value.searchsorted(v=_as_jax_array_(v), side=side, sorter=sorter)
+        return self.value.searchsorted(v=_as_array(v), side=side, sorter=sorter)
 
     def sort(self, axis=-1, stable=True, order=None):
         """Sort an array in-place.
@@ -741,7 +741,7 @@ class EventArray(object):
 
     def take(self, indices, axis=None, mode=None):
         """Return an array formed from the elements of a at the given indices."""
-        return self.value.take(indices=_as_jax_array_(indices), axis=axis, mode=mode)
+        return self.value.take(indices=_as_array(indices), axis=axis, mode=mode)
 
     def tobytes(self):
         """Construct Python bytes containing the raw data bytes in the array.
@@ -828,7 +828,7 @@ class EventArray(object):
         c : ndarray
             The tiled output array.
         """
-        return self.value.tile(_as_jax_array_(reps))
+        return self.value.tile(_as_array(reps))
 
     def var(self, axis=None, dtype=None, ddof=0, keepdims=False):
         """Returns the variance of the array elements, along given axis."""
@@ -944,7 +944,7 @@ class EventArray(object):
             typically not contiguous. Furthermore, more than one element of a
             expanded array may refer to a single memory location.
         """
-        return u.math.broadcast_to(self.value, _as_jax_array_(array))
+        return u.math.broadcast_to(self.value, _as_array(array))
 
     def pow(self, index: int):
         return self.value ** index
@@ -975,8 +975,8 @@ class EventArray(object):
           out: the output tensor.
 
         """
-        vec1 = _as_jax_array_(vec1)
-        vec2 = _as_jax_array_(vec2)
+        vec1 = _as_array(vec1)
+        vec2 = _as_array(vec2)
         r = alpha * u.math.outer(vec1, vec2) + beta * self.value
         if out is None:
             return r
@@ -992,8 +992,8 @@ class EventArray(object):
         beta: float = 1.0,
         alpha: float = 1.0
     ):
-        vec1 = _as_jax_array_(vec1)
-        vec2 = _as_jax_array_(vec2)
+        vec1 = _as_array(vec1)
+        vec2 = _as_array(vec2)
         r = alpha * u.math.outer(vec1, vec2) + beta * self.value
         self.value = r
         return self
@@ -1002,7 +1002,7 @@ class EventArray(object):
         self,
         other: Union['EventArray', ArrayLike]
     ) -> Union[u.Quantity, jax.Array]:
-        other = _as_jax_array_(other)
+        other = _as_array(other)
         return u.math.outer(self.value, other.value)
 
     def abs(
@@ -1205,8 +1205,8 @@ class EventArray(object):
         if min_value is None, then no lower bound,
         if max_value is None, then no upper bound.
         """
-        min_value = _as_jax_array_(min_value)
-        max_value = _as_jax_array_(max_value)
+        min_value = _as_array(min_value)
+        max_value = _as_array(max_value)
         r = u.math.clip(self.value, min_value, max_value)
         if out is None:
             return r
@@ -1253,9 +1253,9 @@ class EventArray(object):
         fweights: Union['EventArray', ArrayLike] = None,
         aweights: Union['EventArray', ArrayLike] = None
     ) -> 'EventArray':
-        y = _as_jax_array_(y)
-        fweights = _as_jax_array_(fweights)
-        aweights = _as_jax_array_(aweights)
+        y = _as_array(y)
+        fweights = _as_array(fweights)
+        aweights = _as_array(aweights)
         r = u.math.cov(self.value, y, rowvar, bias, fweights, aweights)
         return r
 

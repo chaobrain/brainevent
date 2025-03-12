@@ -15,11 +15,11 @@
 
 __version__ = "0.0.1"
 
-from ._event import EventArray
 from ._block_csr import BlockCSR
 from ._block_ell import BlockELL
 from ._coo import COO
 from ._csr import CSR, CSC
+from ._event import EventArray
 from ._fixed_conn_num import FixedPostNumConn, FixedPreNumConn
 from ._jitc_csr import JITC_CSR, JITC_CSC
 from ._xla_custom_op import XLACustomKernel, defjvp

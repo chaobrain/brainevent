@@ -62,7 +62,7 @@ pip install brainevent --upgrade
 The official documentation is hosted on Read the
 Docs: [https://brainevent.readthedocs.io/](https://brainevent.readthedocs.io/)
 
-## See also the BDP ecosystem
+## See also the brain modeling ecosystem
 
-We are building the Brain Dynamics Programming ecosystem: https://ecosystem-for-brain-dynamics.readthedocs.io/
+We are building the Brain Modeling ecosystem: https://brainmodeling.readthedocs.io/
 

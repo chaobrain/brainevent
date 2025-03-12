@@ -16,11 +16,11 @@
 # -*- coding: utf-8 -*-
 
 
+from ._fixedprob_mv import FixedProb, FixedNumConn
 from ._linear_mv import Linear
-from ._fixedprob_mv import FixedProb
 
 __all__ = [
     'Linear',
     'FixedProb',
+    'FixedNumConn',
 ]
-

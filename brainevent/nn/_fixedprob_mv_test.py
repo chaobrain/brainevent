@@ -15,15 +15,15 @@
 
 from __future__ import annotations
 
+import brainstate as bst
 import jax.numpy
 import jax.numpy as jnp
+import pytest
 from absl.testing import parameterized
 
 import brainevent
-import brainstate as bst
 import brainevent.nn
 
-import pytest
 pytest.skip("Skipping this test", allow_module_level=True)
 
 
