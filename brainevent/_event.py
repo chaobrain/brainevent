@@ -117,8 +117,10 @@ class EventArray(object):
         Raises:
             MathError: If the shape or dtype of the new value does not match the original value.
         """
+        # Get the current value for comparison with the new value
         self_value = self._check_tracer()
 
+        # Handle different types of incoming values
         if isinstance(value, EventArray):
             value = value.value
         elif isinstance(value, np.ndarray):
@@ -127,43 +129,86 @@ class EventArray(object):
             pass
         else:
             value = u.math.asarray(value)
+
         # check
+        # Check if the shape of the new value matches the original value
         if value.shape != self_value.shape:
             raise MathError(
                 f"The shape of the original data is {self_value.shape}, "
                 f"while we got {value.shape}."
             )
+
+        # Check if the dtype of the new value matches the original value
         if value.dtype != self_value.dtype:
             raise MathError(
                 f"The dtype of the original data is {self_value.dtype}, "
                 f"while we got {value.dtype}."
             )
+
+        # Set the new value after passing the check
         self._value = value
 
     def update(self, value):
-        """Update the value of this Array.
+        """
+        Update the value of this EventArray.
+
+        This method updates the internal value of the EventArray with a new value.
+
+        Parameters
+        ----------
+        value : array-like
+            The new value to update the EventArray with. This should be compatible
+            with the current array in terms of shape and dtype.
+
+        Returns
+        -------
+        None
+            This method modifies the EventArray in-place and doesn't return anything.
+
+        Raises
+        ------
+        MathError
+            If the shape or dtype of the new value does not match the original value.
         """
         self.value = value
 
-    @property
-    def dtype(self):
-        """Variable dtype."""
-        return _get_dtype(self._value)
-
-    @property
-    def shape(self):
-        """Variable shape."""
-        return self.value.shape
-
-    @property
     def ndim(self):
-        """
-        Get the number of dimensions of the array.
+        """Return the number of dimensions (rank) of the array.
+
+        This property indicates the number of axes in the array. For example:
+        - A scalar has ndim = 0
+        - A vector has ndim = 1
+        - A matrix has ndim = 2
+        - And so on for higher dimensional arrays
 
         Returns:
-            The number of dimensions.
+            int: The number of dimensions of the array.
         """
         return self.value.ndim
+
+    def dtype(self):
+        """Return the data type of the array's elements.
+
+        This property accesses the data type (dtype) of the underlying array.
+        For arrays containing numbers, this is their precision (e.g., float32,
+        int64, etc.).
+
+        Returns:
+            dtype: The data type of the array's elements.
+        """
+        return _get_dtype(self._value)
+
+    def shape(self):
+        """Return the dimensions of the array as a tuple.
+
+        This property returns the shape of the underlying array, which indicates
+        the size of each dimension. For example, a 3x4 matrix would have shape (3, 4),
+        while a 1D array with 5 elements would have shape (5,).
+
+        Returns:
+            tuple: A tuple of integers indicating the size of each dimension.
+        """
+        return u.math.shape(self.value)
 
     @property
     def imag(self):
@@ -173,8 +218,7 @@ class EventArray(object):
         Returns:
             The imaginary part of the array.
         """
-        # Bug fix: 'image' should be 'imag'
-        return self.value.imag
+        return u.math.imag(self.value)
 
     @property
     def real(self):
