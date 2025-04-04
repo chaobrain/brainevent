@@ -111,15 +111,14 @@ class CSR(u.sparse.SparseMatrix):
             This method initializes the CSR matrix object but does not return a value.
         """
         self.data, self.indices, self.indptr = map(u.math.asarray, args)
-        m = (self.indices.shape[0] -1) // 32 + 1
+        m = (self.indices.shape[0] - 1) // 32 + 1
         id = np.zeros(m + 1, self.indices.dtype)
-        sum = 0
         pos = 0
         for k in range(0, self.indptr.shape[0] - 1):
             posl = pos
-            pos = self.indptr[k+1] // 32 + 1
+            pos = self.indptr[k + 1] // 32 + 1
             posr = pos
-            for j in range(posl,posr):
+            for j in range(posl, posr):
                 id[j] = k
         id[m] = self.indptr.shape[0] - 2
         self.id = jnp.array(id)

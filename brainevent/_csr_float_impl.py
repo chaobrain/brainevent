@@ -188,12 +188,12 @@ def csrmv_gpu_kernel_generator(
                 rborder = min(lborder + 32, indices_shape)
                 w = weights[0]
                 pos = indptr[id[i]]
-                for k in range(id[i],id[i+1]+1):
+                for k in range(id[i], id[i + 1] + 1):
                     sp = v[k]
                     if sp != 0.:
                         wsp = w * sp
                         posl = max(pos, lborder)
-                        pos = indptr[k+1]
+                        pos = indptr[k + 1]
                         posr = min(pos, rborder)
                         for j in range(posl, posr):
                             posts[indices[j]] += wsp
@@ -215,7 +215,7 @@ def csrmv_gpu_kernel_generator(
                 w = weights[0]
 
                 pos = indptr[id[i]]
-                for k in range(id[i],id[i+1]+1):
+                for k in range(id[i], id[i + 1] + 1):
                     r = weights.dtype(0.)
                     posl = max(pos, lborder)
                     pos = indptr[k + 1]
@@ -243,7 +243,7 @@ def csrmv_gpu_kernel_generator(
                 rborder = min(lborder + 32, indices_shape)
 
                 pos = indptr[id[i]]
-                for k in range(id[i], id[i+1]+1):
+                for k in range(id[i], id[i + 1] + 1):
                     sp = v[k]
                     if sp != 0.:
                         posl = max(pos, lborder)
@@ -268,7 +268,7 @@ def csrmv_gpu_kernel_generator(
                 rborder = min(lborder + 32, indices_shape)
 
                 pos = indptr[id[i]]
-                for k in range(id[i], id[i+1]+1):
+                for k in range(id[i], id[i + 1] + 1):
                     r = weights.dtype(0.)
                     posl = max(pos, lborder)
                     pos = indptr[k + 1]
@@ -459,9 +459,7 @@ csrmv_p = XLACustomKernel(
     cpu_kernel=NumbaKernelGenerator(csrmv_cpu_kernel_generator, input_output_aliases={5: 0}),
     gpu_kernel=WarpKernelGenerator(
         csrmv_gpu_kernel_generator,
-        dim=lambda id_info, **kwargs: (
-            id_info.shape[0] - 1
-        ),
+        dim=lambda id_info, **kwargs: id_info.shape[0] - 1,
         input_output_aliases={5: 0}
     ),
 )
