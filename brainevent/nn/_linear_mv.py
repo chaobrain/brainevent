@@ -17,11 +17,11 @@ from __future__ import annotations
 
 from typing import Union, Callable, Optional
 
+import brainstate as bst
 import brainunit as u
 import jax
 import jax.numpy as jnp
 
-import brainstate as bst
 from brainevent._event_vector_impl import event_liner_p_call
 
 __all__ = [

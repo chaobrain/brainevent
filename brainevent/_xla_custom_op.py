@@ -25,16 +25,16 @@ from jax.interpreters import xla, mlir, batching, ad
 
 from ._xla_custom_op_numba import (
     NumbaKernelGenerator,
-    register_numba_mlir_cpu_translation_rule
+    register_numba_cpu_translatione
 )
 from ._xla_custom_op_pallas import (
     PallasKernelGenerator,
-    register_pallas_mlir_gpu_translation_rule,
-    register_pallas_mlir_tpu_translation_rule
+    register_pallas_gpu_translation,
+    register_pallas_tpu_translation
 )
 from ._xla_custom_op_warp import (
     WarpKernelGenerator,
-    register_warp_mlir_gpu_translation_rule
+    register_warp_gpu_translation
 )
 
 if jax.__version_info__ < (0, 4, 38):
@@ -113,7 +113,13 @@ class ShapeDtype(Protocol):
 
 
 class XLACustomKernel:
-    """Creating a XLA custom call operator.
+    """
+    Creating a XLA custom call kernel.
+
+    This class defines a domain-specific interface for defining custom XLA kernels.
+    For a kernel customization, there are two basic concepts need to be familiar with:
+
+    1. ``operands``: The input arguments of the kernel. It should be arrays.
 
     Args:
         cpu_kernel: Callable. The function defines the computation on CPU backend.
@@ -213,7 +219,7 @@ class XLACustomKernel:
         """
         if not isinstance(kernel_generator, NumbaKernelGenerator):
             raise TypeError('The `kernel_generator` should be an instance of `NumbaKernel`.')
-        register_numba_mlir_cpu_translation_rule(self.primitive, kernel_generator)
+        register_numba_cpu_translatione(self.primitive, kernel_generator)
 
     def def_gpu_kernel(self, kernel_generator: Union[PallasKernelGenerator, WarpKernelGenerator]):
         """
@@ -221,10 +227,10 @@ class XLACustomKernel:
         """
 
         if isinstance(kernel_generator, PallasKernelGenerator):
-            register_pallas_mlir_gpu_translation_rule(self.primitive, kernel_generator)
+            register_pallas_gpu_translation(self.primitive, kernel_generator)
 
         elif isinstance(kernel_generator, WarpKernelGenerator):
-            register_warp_mlir_gpu_translation_rule(self.primitive, kernel_generator)
+            register_warp_gpu_translation(self.primitive, kernel_generator)
 
         else:
             raise TypeError('The `kernel_generator` should be an instance of `PallasKernel` or `WarpKernel`.')
@@ -233,7 +239,7 @@ class XLACustomKernel:
         """
         Define the TPU kernel using the JAX Pallas.
         """
-        register_pallas_mlir_tpu_translation_rule(self.primitive, kernel_generator)
+        register_pallas_tpu_translation(self.primitive, kernel_generator)
 
     def def_batching_rule(self, fun):
         """Define the batching rule.

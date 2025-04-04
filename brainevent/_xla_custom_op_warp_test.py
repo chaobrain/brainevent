@@ -16,13 +16,13 @@
 import importlib.util
 import unittest
 
+import brainstate as bst
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 import brainevent
-import brainstate as bst
 
 warp_installed = importlib.util.find_spec('warp') is not None
 

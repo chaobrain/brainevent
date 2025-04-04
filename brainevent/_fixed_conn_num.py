@@ -21,12 +21,12 @@ from typing import Union, Sequence
 import brainunit as u
 import jax
 import jax.numpy as jnp
-from brainunit.sparse._coo import _coo_todense, COOInfo
 from jax.experimental.sparse import JAXSparse
 
 from ._event import EventArray
 from ._fixed_conn_num_event_impl import event_fixed_post_num_mv_p_call
 from ._fixed_conn_num_float_impl import fixed_post_num_mv_p_call
+from ._misc import _coo_todense, COOInfo
 
 __all__ = [
     'FixedPostNumConn',
@@ -51,7 +51,8 @@ class FixedPostNumConn(u.sparse.SparseMatrix):
 
     def __init__(self, args, *, shape: Sequence[int]):
         self.data, self.indices = map(u.math.asarray, args)
-        assert self.indices.shape[0] == shape[0], 'Pre-synaptic neuron number mismatch.'
+        assert self.indices.shape[0] == shape[0], \
+            f'Pre-synaptic neuron number mismatch. {self.indices.shape[0]} != {shape[0]}'
         super().__init__(args, shape=shape)
 
     def with_data(self, data: Union[jax.Array, u.Quantity]) -> 'FixedPostNumConn':

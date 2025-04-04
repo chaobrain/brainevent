@@ -95,13 +95,13 @@ class EINet(bst.nn.DynamicsGroup):
             V_initializer=bst.init.Normal(-55., 2., unit=u.mV)
         )
         self.E = bst.nn.AlignPostProj(
-            comm=brainevent.nn.FixedProb(self.n_exc, self.num, prob=80 / self.num, weight=1.62 * u.mS),
+            comm=brainevent.nn.FixedProb(self.n_exc, self.num, conn_num=80 / self.num, conn_weight=1.62 * u.mS),
             syn=bst.nn.Expon.desc(self.num, tau=5. * u.ms),
             out=bst.nn.CUBA.desc(scale=u.volt),
             post=self.N
         )
         self.I = bst.nn.AlignPostProj(
-            comm=brainevent.nn.FixedProb(self.n_inh, self.num, prob=80 / self.num, weight=-9.0 * u.mS),
+            comm=brainevent.nn.FixedProb(self.n_inh, self.num, conn_num=80 / self.num, conn_weight=-9.0 * u.mS),
             syn=bst.nn.Expon.desc(self.num, tau=10. * u.ms),
             out=bst.nn.CUBA.desc(scale=u.volt),
             post=self.N
