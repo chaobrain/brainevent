@@ -25,92 +25,42 @@
 
 import time
 
-import brainstate as bst
+import brainstate
 import brainunit as u
 import jax
-import numpy as np
-import warp as wp
 
 import brainevent
 
 
-class WarpFixedProb(bst.nn.Module):
-    def __init__(self, n_pre, n_post, prob, weight, seed=None):
-        super().__init__()
-        self.prob = prob
-        self.weight = u.math.asarray([weight])
-        self.n_pre = n_pre
-        self.n_post = n_post
-        self.n_conn = int(prob * n_post)
-
-        self.indices = np.random.RandomState(seed).randint(0, self.n_post, size=(self.n_pre, self.n_conn))
-
-        @wp.kernel
-        def triple_kernel(
-            spikes: wp.array1d(dtype=float),
-            weights: wp.array1d(dtype=float),
-            indices: wp.array2d(dtype=int),
-            _: wp.array1d(dtype=float),
-            posts: wp.array1d(dtype=float),
-        ):
-            spk_id = wp.tid()
-            w = weights[0]
-            if spikes[spk_id] != 0.:
-                for j in range(indices.shape[1]):
-                    index = indices[spk_id, j]
-                    posts[index] += w
-
-        self.op = brainevent.XLACustomKernel(
-            name="event_ell_mv",
-            gpu_kernel=brainevent.WarpKernelGenerator(
-                lambda **kwargs: triple_kernel,
-                input_output_aliases={3: 0},
-                dim=(self.n_pre,),
-            ),
-        )
-
-    def update(self, x):
-        r = self.op.call(
-            x,
-            u.get_mantissa(self.weight),
-            self.indices,
-            jax.numpy.zeros((self.n_post,), dtype=bst.environ.dftype()),
-            outs=jax.core.ShapedArray((self.n_post,), bst.environ.dftype()),
-        )
-        return r * u.get_unit(self.weight)
-
-
-class EINet(bst.nn.DynamicsGroup):
+class EINet(brainstate.nn.DynamicsGroup):
     def __init__(self, scale):
         super().__init__()
         self.n_exc = int(3200 * scale)
         self.n_inh = int(800 * scale)
         self.num = self.n_exc + self.n_inh
-        self.N = bst.nn.LIFRef(
+        self.N = brainstate.nn.LIFRef(
             self.num, V_rest=-60. * u.mV, V_th=-50. * u.mV, V_reset=-60. * u.mV,
             tau=20. * u.ms, tau_ref=5. * u.ms,
-            V_initializer=bst.init.Normal(-55., 2., unit=u.mV)
+            V_initializer=brainstate.init.Normal(-55., 2., unit=u.mV)
         )
-        self.E = bst.nn.AlignPostProj(
-            # comm=bst.event.FixedProb(self.n_exc, self.num, prob=80 / self.num, weight=0.6 * u.mS),
-            comm=WarpFixedProb(self.n_exc, self.num, prob=80 / self.num, weight=0.6 * u.mS),
-            syn=bst.nn.Expon.desc(self.num, tau=5. * u.ms),
-            out=bst.nn.COBA.desc(E=0. * u.mV),
+        self.E = brainstate.nn.AlignPostProj(
+            comm=brainevent.nn.FixedProb(self.n_exc, self.num, conn_num=80 / self.num, conn_weight=0.6 * u.mS),
+            syn=brainstate.nn.Expon.desc(self.num, tau=5. * u.ms),
+            out=brainstate.nn.COBA.desc(E=0. * u.mV),
             post=self.N
         )
-        self.I = bst.nn.AlignPostProj(
-            # comm=bst.event.FixedProb(self.n_inh, self.num, prob=80 / self.num, weight=6.7 * u.mS),
-            comm=WarpFixedProb(self.n_inh, self.num, prob=80 / self.num, weight=6.7 * u.mS),
-            syn=bst.nn.Expon.desc(self.num, tau=10. * u.ms),
-            out=bst.nn.COBA.desc(E=-80. * u.mV),
+        self.I = brainstate.nn.AlignPostProj(
+            comm=brainevent.nn.FixedProb(self.n_inh, self.num, conn_num=80 / self.num, conn_weight=6.7 * u.mS),
+            syn=brainstate.nn.Expon.desc(self.num, tau=10. * u.ms),
+            out=brainstate.nn.COBA.desc(E=-80. * u.mV),
             post=self.N
         )
 
     def init_state(self, *args, **kwargs):
-        self.rate = bst.ShortTermState(u.math.zeros(self.num))
+        self.rate = brainstate.ShortTermState(u.math.zeros(self.num))
 
     def update(self, t, inp):
-        with bst.environ.context(t=t):
+        with brainstate.environ.context(t=t):
             spk = self.N.get_spike()
             self.E(spk[:self.n_exc])
             self.I(spk[self.n_exc:])
@@ -118,17 +68,17 @@ class EINet(bst.nn.DynamicsGroup):
             self.rate.value += self.N.get_spike()
 
 
-@bst.compile.jit(static_argnums=0)
+@brainstate.compile.jit(static_argnums=0)
 def run(scale: float):
     # network
     net = EINet(scale)
-    bst.nn.init_all_states(net)
+    brainstate.nn.init_all_states(net)
 
     duration = 1e4 * u.ms
     # simulation
-    with bst.environ.context(dt=0.1 * u.ms):
-        times = u.math.arange(0. * u.ms, duration, bst.environ.get_dt())
-        bst.compile.for_loop(lambda t: net.update(t, 20. * u.mA), times)
+    with brainstate.environ.context(dt=0.1 * u.ms):
+        times = u.math.arange(0. * u.ms, duration, brainstate.environ.get_dt())
+        brainstate.compile.for_loop(lambda t: net.update(t, 20. * u.mA), times)
 
     return net.num, net.rate.value.sum() / net.num / duration.to_decimal(u.second)
 

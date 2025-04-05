@@ -23,6 +23,8 @@ import numpy as np
 from jax import tree_util
 from jax.interpreters import xla, mlir, batching, ad
 
+from ._compatible_import import Primitive
+from ._misc import general_batching_rule
 from ._xla_custom_op_numba import (
     NumbaKernelGenerator,
     register_numba_cpu_translatione
@@ -36,11 +38,6 @@ from ._xla_custom_op_warp import (
     WarpKernelGenerator,
     register_warp_gpu_translation
 )
-
-if jax.__version_info__ < (0, 4, 38):
-    from jax.core import Primitive
-else:
-    from jax.extend.core import Primitive
 
 __all__ = [
     'XLACustomKernel',
@@ -305,25 +302,5 @@ def _transform_to_shapedarray(a):
     return jax.core.ShapedArray(a.shape, a.dtype)
 
 
-def _general_batching_rule(prim, args, axes, **kwargs):
-    batch_axes, batch_args, non_batch_args = [], {}, {}
-    for ax_i, ax in enumerate(axes):
-        if ax is None:
-            non_batch_args[f'ax{ax_i}'] = args[ax_i]
-        else:
-            batch_args[f'ax{ax_i}'] = args[ax_i] if ax == 0 else jax.numpy.moveaxis(args[ax_i], ax, 0)
-            batch_axes.append(ax_i)
-
-    def f(_, x):
-        pars = tuple([(x[f'ax{i}'] if i in batch_axes else non_batch_args[f'ax{i}'])
-                      for i in range(len(axes))])
-        return 0, prim.bind(*pars, **kwargs)
-
-    _, outs = jax.lax.scan(f, 0, batch_args)
-    out_vals, out_tree = jax.tree.flatten(outs)
-    out_dim = jax.tree.unflatten(out_tree, (0,) * len(out_vals))
-    return outs, out_dim
-
-
 def register_general_batching(prim):
-    batching.primitive_batchers[prim] = functools.partial(_general_batching_rule, prim)
+    batching.primitive_batchers[prim] = functools.partial(general_batching_rule, prim)

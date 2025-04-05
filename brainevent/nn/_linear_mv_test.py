@@ -15,59 +15,54 @@
 
 from __future__ import annotations
 
-import brainstate as bst
+import brainstate
 import jax
 import jax.numpy as jnp
 import pytest
-from absl.testing import parameterized
 
 import brainevent
-import brainevent.nn
 
 pytest.skip("Skipping this test", allow_module_level=True)
 
 
-class TestEventLinear(parameterized.TestCase):
-    @parameterized.product(
-        homo_w=[True, False],
-        bool_x=[True, False],
-    )
+class TestEventLinear:
+    @pytest.mark.parametrize('bool_x', [True, False])
+    @pytest.mark.parametrize('homo_w', [True, False])
     def test1(self, homo_w, bool_x):
-        x = bst.random.rand(20) < 0.1
+        x = brainstate.random.rand(20) < 0.1
         if not bool_x:
             x = jnp.asarray(x, dtype=float)
         m = brainevent.nn.Linear(
             20, 40,
-            1.5 if homo_w else bst.init.KaimingUniform(),
+            1.5 if homo_w else brainstate.init.KaimingUniform(),
             float_as_event=bool_x
         )
         y = m(x)
         print(y)
 
-        self.assertTrue(jnp.allclose(y, (x.sum() * m.weight.value) if homo_w else (x @ m.weight.value)))
+        assert (jnp.allclose(y, (x.sum() * m.weight.value) if homo_w else (x @ m.weight.value)))
 
     def test_grad_bool(self):
         n_in = 20
         n_out = 30
-        x = bst.random.rand(n_in) < 0.3
-        fn = brainevent.nn.Linear(n_in, n_out, bst.init.KaimingUniform())
+        x = brainstate.random.rand(n_in) < 0.3
+        fn = brainevent.nn.Linear(n_in, n_out, brainstate.init.KaimingUniform())
 
-        with self.assertRaises(TypeError):
+        with pytest.raises(TypeError):
             print(jax.grad(lambda x: fn(x).sum())(x))
 
-    @parameterized.product(
-        bool_x=[True, False],
-        homo_w=[True, False]
-    )
+    @pytest.mark.parametrize('bool_x', [True, False])
+    @pytest.mark.parametrize('homo_w', [True, False])
     def test_vjp(self, bool_x, homo_w):
         n_in = 20
         n_out = 30
         if bool_x:
-            x = jax.numpy.asarray(bst.random.rand(n_in) < 0.3, dtype=float)
+            x = jax.numpy.asarray(brainstate.random.rand(n_in) < 0.3, dtype=float)
         else:
-            x = bst.random.rand(n_in)
+            x = brainstate.random.rand(n_in)
 
-        fn = brainevent.nn.Linear(n_in, n_out, 1.5 if homo_w else bst.init.KaimingUniform(), float_as_event=bool_x)
+        fn = brainevent.nn.Linear(n_in, n_out, 1.5 if homo_w else brainstate.init.KaimingUniform(),
+                                  float_as_event=bool_x)
         w = fn.weight.value
 
         def f(x, w):
@@ -84,27 +79,25 @@ class TestEventLinear(parameterized.TestCase):
             return y.sum()
 
         r2 = jax.grad(f2, argnums=(0, 1))(x, w)
-        self.assertTrue(jnp.allclose(r1[0], r2[0]))
+        assert (jnp.allclose(r1[0], r2[0]))
 
         if not jnp.allclose(r1[1], r2[1]):
             print(r1[1] - r2[1])
 
-        self.assertTrue(jnp.allclose(r1[1], r2[1]))
+        assert (jnp.allclose(r1[1], r2[1]))
 
-    @parameterized.product(
-        bool_x=[True, False],
-        homo_w=[True, False]
-    )
+    @pytest.mark.parametrize('bool_x', [True, False])
+    @pytest.mark.parametrize('homo_w', [True, False])
     def test_jvp(self, bool_x, homo_w):
         n_in = 20
         n_out = 30
         if bool_x:
-            x = jax.numpy.asarray(bst.random.rand(n_in) < 0.3, dtype=float)
+            x = jax.numpy.asarray(brainstate.random.rand(n_in) < 0.3, dtype=float)
         else:
-            x = bst.random.rand(n_in)
+            x = brainstate.random.rand(n_in)
 
         fn = brainevent.nn.Linear(
-            n_in, n_out, 1.5 if homo_w else bst.init.KaimingUniform(),
+            n_in, n_out, 1.5 if homo_w else brainstate.init.KaimingUniform(),
             float_as_event=bool_x
         )
         w = fn.weight.value
@@ -123,5 +116,5 @@ class TestEventLinear(parameterized.TestCase):
             return y
 
         o2, r2 = jax.jvp(f, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
-        self.assertTrue(jnp.allclose(o1, o2))
-        self.assertTrue(jnp.allclose(r1, r2))
+        assert (jnp.allclose(o1, o2))
+        assert (jnp.allclose(r1, r2))

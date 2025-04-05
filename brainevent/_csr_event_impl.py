@@ -14,7 +14,7 @@
 # ==============================================================================
 
 
-from typing import Callable, Union, Sequence
+from typing import Callable, Sequence
 
 import brainunit as u
 import jax
@@ -23,22 +23,23 @@ import numpy as np
 from jax.interpreters import ad
 
 from ._csr_float_impl import _csr_matvec, _csr_matmat
-from ._misc import _csr_to_coo
+from ._misc import _csr_to_coo, general_batching_rule
+from ._typing import Data, Indptr, Index, MatrixShape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 
 
 def _event_csr_matvec(
-    data: Union[jax.Array, u.Quantity],
-    indices: jax.Array,
-    indptr: jax.Array,
-    v: Union[jax.Array, u.Quantity],
+    data: Data,
+    indices: Index,
+    indptr: Indptr,
+    v: Data,
     *,
-    shape: Sequence[int],
+    shape: MatrixShape,
     transpose: bool = False,
     float_as_event: bool = True,
-) -> Union[jax.Array, u.Quantity]:
+) -> Data:
     """
     Product of CSR sparse matrix and a dense vector.
 
@@ -59,7 +60,10 @@ def _event_csr_matvec(
     data, unitd = u.split_mantissa_unit(data)
     v, unitv = u.split_mantissa_unit(v)
     res = event_csrmv_p_call(
-        data, indices, indptr, v,
+        data,
+        indices,
+        indptr,
+        v,
         shape=shape,
         transpose=transpose,
         float_as_event=float_as_event
@@ -68,15 +72,15 @@ def _event_csr_matvec(
 
 
 def _event_csr_matmat(
-    data: Union[jax.Array, u.Quantity],
-    indices: jax.Array,
-    indptr: jax.Array,
-    B: Union[jax.Array, u.Quantity],
+    data: Data,
+    indices: Index,
+    indptr: Indptr,
+    B: Data,
     *,
-    shape: Sequence[int],
+    shape: MatrixShape,
     transpose: bool = False,
     float_as_event: bool = True,
-) -> Union[jax.Array, u.Quantity]:
+) -> Data:
     """
     Product of CSR sparse matrix and a dense matrix.
 
@@ -606,7 +610,7 @@ def event_csrmv_batching(args, axes, **kwargs):
         return r, [1]
 
     else:
-        raise NotImplementedError(f"Batching axes {axes} not implemented for event-driven CSR matrix-vector product.")
+        return general_batching_rule(event_csrmv_p, args, axes, **kwargs)
 
 
 def event_csrmv_p_call(
@@ -615,7 +619,7 @@ def event_csrmv_p_call(
     indptr,
     v,
     *,
-    shape: Sequence[int],
+    shape: MatrixShape,
     transpose: bool,
     float_as_event: bool,
 ):
@@ -1149,6 +1153,7 @@ def csrmm_transpose_rule(
     *,
     shape,
     transpose,
+    float_as_event,
     **kwargs
 ):
     assert not ad.is_undefined_primal(indices)
@@ -1159,9 +1164,21 @@ def csrmm_transpose_rule(
         return data, indices, indptr, dB, _
     else:
         B = jnp.asarray(B)
-        row, col = _csr_to_coo(indices, indptr)
-        d_data = (ct[row] * B[col]).sum(axis=1)
-        return d_data, indices, indptr, B, _
+        if data.aval.shape[0] == 1:  # scalar
+            r = event_csrmm_p_call(
+                jnp.ones(1, dtype=data.aval.dtype),
+                indices,
+                indptr,
+                B,
+                shape=shape,
+                transpose=transpose,
+                float_as_event=float_as_event
+            )[0]
+            return jnp.sum(r * ct), indices, indptr, B, _
+        else:
+            row, col = _csr_to_coo(indices, indptr)
+            d_data = (ct[row] * B[col]).sum(axis=1)
+            return d_data, indices, indptr, B, _
 
 
 def event_csrmm_batching(args, axes, **kwargs):
@@ -1214,7 +1231,7 @@ def event_csrmm_batching(args, axes, **kwargs):
         return [r], [2]
 
     else:
-        raise NotImplementedError(f"Batching axes {axes} not implemented for event-driven CSR matrix-vector product.")
+        return general_batching_rule(event_csrmm_p, args, axes, **kwargs)
 
 
 def event_csrmm_p_call(
@@ -1223,7 +1240,7 @@ def event_csrmm_p_call(
     indptr,
     B,
     *,
-    shape: Sequence[int],
+    shape: MatrixShape,
     transpose: bool,
     float_as_event: bool,
 ):

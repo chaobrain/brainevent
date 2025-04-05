@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Union, Callable, Optional
 
-import brainstate as bst
+import brainstate
 import brainunit as u
 import jax
 import jax.numpy as jnp
@@ -29,7 +29,7 @@ __all__ = [
 ]
 
 
-class Linear(bst.nn.Module):
+class Linear(brainstate.nn.Module):
     """
     The FixedProb module implements a fixed probability connection with CSR sparse data structure.
 
@@ -49,17 +49,17 @@ class Linear(bst.nn.Module):
         Name of the module.
     """
 
-    __module__ = 'brainevent'
+    __module__ = 'brainevent.nn'
 
     def __init__(
         self,
-        in_size: bst.typing.Size,
-        out_size: bst.typing.Size,
-        weight: Union[Callable, bst.typing.ArrayLike],
+        in_size: brainstate.typing.Size,
+        out_size: brainstate.typing.Size,
+        weight: Union[Callable, brainstate.typing.ArrayLike],
         float_as_event: bool = True,
         block_size: int = 64,
         name: Optional[str] = None,
-        param_type: type = bst.ParamState,
+        param_type: type = brainstate.ParamState,
     ):
         super().__init__(name=name)
 
@@ -70,7 +70,7 @@ class Linear(bst.nn.Module):
         self.block_size = block_size
 
         # maximum synaptic conductance
-        weight = bst.init.param(weight, (self.in_size[-1], self.out_size[-1]), allow_none=False)
+        weight = brainstate.init.param(weight, (self.in_size[-1], self.out_size[-1]), allow_none=False)
         self.weight = param_type(weight)
 
     def update(self, spk: jax.Array) -> Union[jax.Array, u.Quantity]:
