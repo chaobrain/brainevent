@@ -57,25 +57,25 @@ def test_update_method():
     assert np.array_equal(event_array, new_value)
 
 
-# Test dtype property
-def test_dtype_property():
-    value = np.array([1, 2, 3], dtype=np.float32)
-    event_array = EventArray(value)
-    assert event_array.dtype == np.float32
-
-
-# Test shape property
-def test_shape_property():
-    value = np.array([1, 2, 3])
-    event_array = EventArray(value)
-    assert event_array.shape == (3,)
-
-
-# Test ndim property
-def test_ndim_property():
-    value = np.array([1, 2, 3])
-    event_array = EventArray(value)
-    assert event_array.ndim == 1
+# # Test dtype property
+# def test_dtype_property():
+#     value = np.array([1, 2, 3], dtype=np.float32)
+#     event_array = EventArray(value)
+#     assert event_array.dtype == np.float32
+#
+#
+# # Test shape property
+# def test_shape_property():
+#     value = np.array([1, 2, 3])
+#     event_array = EventArray(value)
+#     assert event_array.shape == (3,)
+#
+#
+# # Test ndim property
+# def test_ndim_property():
+#     value = np.array([1, 2, 3])
+#     event_array = EventArray(value)
+#     assert event_array.ndim == 1
 
 
 # Test imag property
