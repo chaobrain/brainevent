@@ -22,6 +22,7 @@ import jax
 from jax import numpy as jnp
 from jax.interpreters import ad
 
+from ._misc import general_batching_rule
 from ._typing import Kernel, Data, Row, Col, MatrixShape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
@@ -77,6 +78,7 @@ def coomv_cpu_kernel_generator(
                 w = weights[0]
                 for i in numba.prange(row.shape[0]):
                     posts[col[i]] += w * v[row[i]]
+
         # transpose=True, heterogeneous
         case (True, _):
             def mv(weights, row, col, v, _, posts):
@@ -89,6 +91,7 @@ def coomv_cpu_kernel_generator(
                 w = weights[0]
                 for i in numba.prange(row.shape[0]):
                     posts[row[i]] += w * v[col[i]]
+
         # transpose=False, heterogeneous
         case (False, _):
             def mv(weights, row, col, v, _, posts):
@@ -128,6 +131,7 @@ def coomv_gpu_kernel_generator(
                 i = warp.tid()
                 w = weights[0]
                 posts[col[i]] += w * v[row[i]]
+
         # transpose=True, heterogeneous
         case (True, _):
             def mv(
@@ -154,6 +158,7 @@ def coomv_gpu_kernel_generator(
                 i = warp.tid()
                 w = weights[0]
                 posts[row[i]] += w * v[col[i]]
+
         # transpose=False, heterogeneous
         case (False, _):
             def mv(
@@ -301,7 +306,7 @@ def coomv_batching(
         return r, [1]
 
     else:
-        raise NotImplementedError(f"Batching axes {axes} not implemented for event-driven COO matrix-vector product.")
+        return general_batching_rule(coomv_p_call, args, axes, **kwargs)
 
 
 def coomv_p_call(
@@ -312,6 +317,7 @@ def coomv_p_call(
     *,
     shape: Sequence[int],
     transpose: bool,
+    **kwargs,
 ):
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
@@ -344,9 +350,7 @@ coomv_p = XLACustomKernel(
     cpu_kernel=NumbaKernelGenerator(coomv_cpu_kernel_generator, input_output_aliases={4: 0}),
     gpu_kernel=WarpKernelGenerator(
         coomv_gpu_kernel_generator,
-        dim=lambda row_info, **kwargs: (
-            row_info.shape[0]
-        ),
+        dim=lambda row_info, **kwargs: row_info.shape[0],
         input_output_aliases={4: 0}
     )
 )
@@ -369,6 +373,7 @@ def coomm_cpu_kernel_generator(
                 w = weights[0]
                 for i in numba.prange(row.shape[0]):
                     posts[col[i], :] += w * B[row[i], :]
+
         # transpose=True, heterogeneous
         case (True, _):
             def mm(weights, row, col, B, _, posts):
@@ -381,6 +386,7 @@ def coomm_cpu_kernel_generator(
                 w = weights[0]
                 for i in numba.prange(row.shape[0]):
                     posts[row[i], :] += w * B[col[i], :]
+
         # transpose=False, heterogeneous
         case (False, _):
             def mm(weights, row, col, B, _, posts):
@@ -420,6 +426,7 @@ def coomm_gpu_kernel_generator(
                 i, j = warp.tid()
                 w = weights[0]
                 posts[col[i], j] += w * B[row[i], j]
+
         # transpose=True, weight.size!=1
         case (True, _):
             def mm(
@@ -446,6 +453,7 @@ def coomm_gpu_kernel_generator(
                 i, j = warp.tid()
                 w = weights[0]
                 posts[row[i], j] += w * B[col[i], j]
+
         # transpose=False, weight.size!=1
         case (False, _):
             def mm(
@@ -581,7 +589,7 @@ def coomm_batching(
         return [r], [2]
 
     else:
-        raise NotImplementedError(f"Batching axes {axes} not implemented for event-driven COO matrix-vector product.")
+        return general_batching_rule(coomm_p_call, args, axes, **kwargs)
 
 
 def coomm_p_call(
@@ -592,6 +600,7 @@ def coomm_p_call(
     *,
     shape: Sequence[int],
     transpose: bool,
+    **kwargs,
 ):
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
@@ -619,15 +628,10 @@ def coomm_p_call(
 
 coomm_p = XLACustomKernel(
     'coomm',
-    cpu_kernel=NumbaKernelGenerator(
-        coomm_cpu_kernel_generator,
-        input_output_aliases={4: 0}
-    ),
+    cpu_kernel=NumbaKernelGenerator(coomm_cpu_kernel_generator, input_output_aliases={4: 0}),
     gpu_kernel=WarpKernelGenerator(
         coomm_gpu_kernel_generator,
-        dim=lambda row_info, matrix_info, **kwargs: (
-            row_info.shape[0], matrix_info.shape[1]
-        ),
+        dim=lambda row_info, matrix_info, **kwargs: (row_info.shape[0], matrix_info.shape[1]),
         input_output_aliases={4: 0}
     )
 )

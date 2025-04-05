@@ -75,11 +75,11 @@ class EventArray(object):
         return self._value
 
     @property
-    def data(self):
+    def data(self) -> Union[jax.Array, u.Quantity]:
         return self._value
 
     @property
-    def value(self):
+    def value(self) -> Union[jax.Array, u.Quantity]:
         # return the value
         return self._value
 
@@ -129,7 +129,7 @@ class EventArray(object):
 
     @property
     def imag(self):
-        return self.value.image
+        return self.value.imag
 
     @property
     def real(self):
@@ -417,14 +417,7 @@ class EventArray(object):
         return self.value.at
 
     def block_until_ready(self):
-        return self.value.block_until_ready()
-
-    def device(self):
-        return self.value.device()
-
-    @property
-    def device_buffer(self):
-        return self.value.device_buffer
+        return jax.block_until_ready(self.value)
 
     # ----------------------- #
     #      NumPy methods      #
@@ -957,7 +950,7 @@ class EventArray(object):
         beta: float = 1.0,
         alpha: float = 1.0,
         out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         r"""Performs the outer-product of vectors ``vec1`` and ``vec2`` and adds it to the matrix ``input``.
 
         Optional values beta and alpha are scaling factors on the outer product
@@ -1007,7 +1000,7 @@ class EventArray(object):
 
     def abs(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         r = u.math.abs(self.value)
         if out is None:
             return r
@@ -1069,7 +1062,7 @@ class EventArray(object):
 
     def sin(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         r = u.math.sin(self.value)
         if out is None:
             return r
@@ -1087,7 +1080,7 @@ class EventArray(object):
 
     def cos(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         r = u.math.cos(self.value)
         if out is None:
             return r
@@ -1101,7 +1094,7 @@ class EventArray(object):
 
     def tan(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         r = u.math.tan(self.value)
         if out is None:
             return r
@@ -1115,7 +1108,7 @@ class EventArray(object):
 
     def sinh(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         r = u.math.sinh(self.value)
         if out is None:
             return r
@@ -1129,7 +1122,7 @@ class EventArray(object):
 
     def cosh(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         r = u.math.cosh(self.value)
         if out is None:
             return r
@@ -1143,7 +1136,7 @@ class EventArray(object):
 
     def tanh(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         r = u.math.tanh(self.value)
         if out is None:
             return r
@@ -1157,7 +1150,7 @@ class EventArray(object):
 
     def arcsin(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         r = u.math.arcsin(self.value)
         if out is None:
             return r
@@ -1171,7 +1164,7 @@ class EventArray(object):
 
     def arccos(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         r = u.math.arccos(self.value)
         if out is None:
             return r
@@ -1185,7 +1178,7 @@ class EventArray(object):
 
     def arctan(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         r = u.math.arctan(self.value)
         if out is None:
             return r
@@ -1199,7 +1192,7 @@ class EventArray(object):
         max_value: Optional[Union['EventArray', ArrayLike]] = None,
         *,
         out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         """
         return the value between min_value and max_value,
         if min_value is None, then no lower bound,
@@ -1252,7 +1245,7 @@ class EventArray(object):
         bias: bool = False,
         fweights: Union['EventArray', ArrayLike] = None,
         aweights: Union['EventArray', ArrayLike] = None
-    ) -> 'EventArray':
+    ) -> Union[jax.Array, u.Quantity]:
         y = _as_array(y)
         fweights = _as_array(fweights)
         aweights = _as_array(aweights)

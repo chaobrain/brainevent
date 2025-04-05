@@ -15,6 +15,7 @@
 
 
 import brainstate as bst
+import jax.lax
 import jax.numpy as jnp
 import numpy as np
 
@@ -64,24 +65,32 @@ def coo_vector(x, w, row, col, shape):
 def matrix_coo(xs, w, row, col, shape):
     homo_w = jnp.size(w) == 1
     data = jnp.ones(row.shape) * w if homo_w else w
-    output = jnp.zeros((xs.shape[0], shape[1]), dtype=xs.dtype)
+    row = jnp.asarray(row)
+    col = jnp.asarray(col)
 
-    for i in range(len(data)):
+    def f(o, i):
         r = row[i]
         c = col[i]
-        output = output.at[:, c].add(xs[:, r] * data[i])
+        o = o.at[:, c].add(xs[:, r] * data[i])
+        return o, None
 
+    output = jnp.zeros((xs.shape[0], shape[1]), dtype=xs.dtype)
+    output, _ = jax.lax.scan(f, output, jnp.arange(len(data)))
     return output
 
 
 def coo_matrix(xs, w, row, col, shape):
     homo_w = jnp.size(w) == 1
     data = jnp.ones(row.shape) * w if homo_w else w
-    output = jnp.zeros((shape[0], xs.shape[1]), dtype=xs.dtype)
+    row = jnp.asarray(row)
+    col = jnp.asarray(col)
 
-    for i in range(len(data)):
+    def f(o, i):
         r = row[i]
         c = col[i]
-        output = output.at[r].add(data[i] * xs[c])
+        o = o.at[r].add(data[i] * xs[c])
+        return o, None
 
+    output = jnp.zeros((shape[0], xs.shape[1]), dtype=xs.dtype)
+    output, _ = jax.lax.scan(f, output, jnp.arange(len(data)))
     return output

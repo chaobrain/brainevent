@@ -51,7 +51,7 @@ numba_environ = NumbaEnvironment()
 def set_numba_environ(
     parallel_if_possible: Union[int, bool] = None,
     **kwargs
-) -> None:
+):
     """
     Enable Numba parallel execution if possible.
     """
@@ -70,6 +70,7 @@ def set_numba_environ(
                 numba.set_num_threads(parallel_if_possible)
             else:
                 raise ValueError('The argument `parallel_if_possible` must be a boolean or an integer.')
+        yield numba_environ.setting.copy()
     finally:
         numba_environ.parallel = old_parallel
         numba_environ.setting = old_setting
