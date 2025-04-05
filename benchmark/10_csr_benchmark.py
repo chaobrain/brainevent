@@ -24,7 +24,7 @@ from scipy.sparse import csr_matrix, coo_matrix
 import brainevent
 import brainstate as bst
 
-# bst.environ.set(platform='cpu')
+# brainstate.environ.set(platform='cpu')
 bst.environ.set(platform='gpu')
 
 
@@ -465,7 +465,7 @@ def compare_spmm_performance(
 # for filename in files:
 #     compare_spmv_performance(
 #         csr_matrices[filename],
-#         n_run=3 if bst.environ.get_platform() == 'cpu' else 30
+#         n_run=3 if brainstate.environ.get_platform() == 'cpu' else 30
 #     )
 
 for filename in files:

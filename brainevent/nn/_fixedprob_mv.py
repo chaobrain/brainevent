@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Union, Callable, Optional
 
-import brainstate as bst
+import brainstate
 import brainunit as u
 import jax
 import jax.numpy as jnp
@@ -39,10 +39,10 @@ def init_indices_without_replace(
     seed: int | None,
     method: str
 ):
-    rng = bst.random.default_rng(seed)
+    rng = brainstate.random.default_rng(seed)
 
     if method == 'vmap':
-        @bst.augment.vmap(rngs=rng)
+        @brainstate.augment.vmap
         def rand_indices(key):
             rng.set_key(key)
             return rng.choice(n_post, size=(conn_num,), replace=False)
@@ -50,7 +50,7 @@ def init_indices_without_replace(
         return rand_indices(rng.split_key(n_pre))
 
     elif method == 'for_loop':
-        return bst.compile.for_loop(
+        return brainstate.compile.for_loop(
             lambda *args: rng.choice(n_post, size=(conn_num,), replace=False),
             length=n_pre
         )
@@ -59,7 +59,7 @@ def init_indices_without_replace(
         raise ValueError(f"Unknown method: {method}")
 
 
-class FixedNumConn(bst.nn.Module):
+class FixedNumConn(brainstate.nn.Module):
     """
     The FixedProb module implements a fixed probability connection with CSR sparse data structure.
 
@@ -94,20 +94,20 @@ class FixedNumConn(bst.nn.Module):
         Name of the module.
     """
 
-    __module__ = 'brainevent'
+    __module__ = 'brainevent.nn'
 
     def __init__(
         self,
-        in_size: bst.typing.Size,
-        out_size: bst.typing.Size,
+        in_size: brainstate.typing.Size,
+        out_size: brainstate.typing.Size,
         conn_num: Union[int, float],
-        conn_weight: Union[Callable, bst.typing.ArrayLike],
+        conn_weight: Union[Callable, brainstate.typing.ArrayLike],
         conn_target: str = 'post',  # 'pre' or 'post'
         allow_multi_conn: bool = True,
         seed: Optional[int] = None,
         name: Optional[str] = None,
         conn_init: str = 'vmap',  # 'vmap' or 'for_loop'
-        param_type: type = bst.ParamState,
+        param_type: type = brainstate.ParamState,
     ):
         super().__init__(name=name)
 
@@ -140,13 +140,13 @@ class FixedNumConn(bst.nn.Module):
                     indices = rng.randint(0, n_post, size=(n_pre, self.conn_num))
                 else:
                     indices = init_indices_without_replace(self.conn_num, n_pre, n_post, seed, conn_init)
-                indices = u.math.asarray(indices, dtype=bst.environ.ditype())
+                indices = u.math.asarray(indices, dtype=brainstate.environ.ditype())
             csr = (
                 FixedPostNumConn((conn_weight, indices), shape=(n_pre, n_post))
                 if self.conn_target == 'post' else
                 FixedPreNumConn((conn_weight, indices), shape=(n_pre, n_post))
             )
-            conn_weight = bst.init.param(conn_weight, (n_pre, self.conn_num), allow_none=False)
+            conn_weight = brainstate.init.param(conn_weight, (n_pre, self.conn_num), allow_none=False)
             self.weight = param_type(conn_weight)
             self.conn = csr
 
@@ -159,7 +159,7 @@ class FixedNumConn(bst.nn.Module):
             unit = u.get_unit(weight)
             r = jnp.zeros(spk.shape[:-1] + (self.out_size[-1],), dtype=weight.dtype)
             r = u.maybe_decimal(u.Quantity(r, unit=unit))
-            return u.math.asarray(r, dtype=bst.environ.dftype())
+            return u.math.asarray(r, dtype=brainstate.environ.dftype())
 
 
 FixedProb = FixedNumConn

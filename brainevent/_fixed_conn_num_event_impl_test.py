@@ -30,7 +30,7 @@ import brainevent
 from brainevent._fixed_conn_num_test_util import generate_data, vector_csr, csr_vector
 
 
-# bst.environ.set(platform='cpu')
+# brainstate.environ.set(platform='cpu')
 
 
 class TestVector(unittest.TestCase):
@@ -80,11 +80,11 @@ class TestVector(unittest.TestCase):
 
     # def test_vector_csr_vmap_vector(self):
     #     n_batch, m, n = 10, 20, 40
-    #     xs = bst.random.rand(n_batch, m)
+    #     xs = brainstate.random.rand(n_batch, m)
     #     indices = generate_data(m, n, 8)
     #
     #     for homo_w in [True, False]:
-    #         data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
+    #         data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
     #         csr = brainevent.FixedPostNumConn([data, indices], shape=(m, n))
     #         y = jax.vmap(lambda x: x @ csr)(xs)
     #         y2 = jax.vmap(lambda x: vector_csr(x, csr.data, indices, [m, n]))(xs)
