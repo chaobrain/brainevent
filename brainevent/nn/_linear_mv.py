@@ -78,10 +78,10 @@ class Linear(bst.nn.Module):
         if u.math.size(weight) == 1:
             return u.math.ones(self.out_size) * (u.math.sum(spk) * weight)
 
-        return event_linear(spk, weight, block_size=self.block_size, float_as_event=self.float_as_event)
+        return event_linear(spk, weight, transpose=True, float_as_event=self.float_as_event)
 
 
-def event_linear(spk, weight, *, block_size, float_as_event) -> Union[jax.Array, u.Quantity]:
+def event_linear(spk, weight, *, transpose, float_as_event) -> Union[jax.Array, u.Quantity]:
     """
     The event-driven linear computation.
 
@@ -91,7 +91,7 @@ def event_linear(spk, weight, *, block_size, float_as_event) -> Union[jax.Array,
         Maximum synaptic conductance.
     spk : jax.Array
         Spike events.
-    block_size : int
+    transpose : bool
         Block size for parallel computation.
     float_as_event : bool
         Whether to treat float as event.
@@ -112,7 +112,7 @@ def event_linear(spk, weight, *, block_size, float_as_event) -> Union[jax.Array,
         return event_liner_p_call(
             spk,
             weight,
-            block_size=block_size,
+            transpose=transpose,
             float_as_event=float_as_event,
         )
 

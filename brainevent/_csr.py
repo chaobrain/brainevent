@@ -475,6 +475,14 @@ class CSR(u.sparse.SparseMatrix):
         indices, indptr, shape = aux_data
         return CSR([data, indices, indptr], shape=shape)
 
+    def yw_to_w(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity]
+    ) -> Union[jax.Array, u.Quantity]:
+        pass
+
+
 
 @jax.tree_util.register_pytree_node_class
 class CSC(u.sparse.SparseMatrix):

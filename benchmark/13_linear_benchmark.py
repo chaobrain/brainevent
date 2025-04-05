@@ -28,7 +28,7 @@ import brainevent
 
 
 def forward(n_pre, n_post, spk_prob, as_float: bool):
-    linear = brainevent.Linear(n_pre, n_post, weight=bst.init.KaimingUniform(), block_size=256)
+    linear = brainevent.nn.Linear(n_pre, n_post, weight=bst.init.KaimingUniform(), block_size=256)
     spike = (bst.random.rand(n_pre) < spk_prob)
 
     if as_float:
