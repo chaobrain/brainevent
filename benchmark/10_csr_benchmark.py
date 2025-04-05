@@ -14,10 +14,14 @@
 # ==============================================================================
 
 import time
+import sys
+sys.path.append('..')
 
 import brainstate
 import jax
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
+import numpy as np
 from jax.experimental.sparse import CSR
 from scipy.io import mmread
 from scipy.sparse import csr_matrix, coo_matrix
@@ -50,141 +54,21 @@ for filename in files:
 print()
 
 
+def visualization(results, title: str):
+    filenames = list(results.keys())
+    ratios = np.asarray(list(results.values())) - 1.0
+
+    plt.figure(figsize=(10, 6))
+    plt.barh(filenames, ratios, color='skyblue')
+    plt.xlabel('BrainEvent / JAX Accleration Ratio')
+    plt.title(title)
+    plt.grid(axis='x', linestyle='--', alpha=0.7)
+    plt.xticks(rotation=45)  # 显示x轴刻度并旋转45度
+    plt.tight_layout()
+    plt.show()
+
+
 def compare_spmv_performance(scipy_csr, n_run: int = 10):
-    # Intel i9-12900H, WSL 2, ubuntu
-    #
-    # matrices/suitesparse/Andrianov/mip1/mip1.mtx, JAX  CSR @ Vector:       2.012777 seconds
-    # matrices/suitesparse/Andrianov/mip1/mip1.mtx, BrainEvent CSR @ Vector: 0.009752 seconds
-    # JAX / BrainEvent: 206.39556185772844
-    #
-    # matrices/suitesparse/Andrianov/mip1/mip1.mtx,    JAX  Vector @ CSR :   2.007382 seconds
-    # matrices/suitesparse/Andrianov/mip1/mip1.mtx, BrainEvent Vector @ CSR: 0.026426 seconds
-    # JAX / BrainEvent: 75.96193890255564
-    #
-    # matrices/suitesparse/Bova/rma10/rma10.mtx, JAX  CSR @ Vector:       0.458853 seconds
-    # matrices/suitesparse/Bova/rma10/rma10.mtx, BrainEvent CSR @ Vector: 0.002388 seconds
-    # JAX / BrainEvent: 192.1558891070656
-    #
-    # matrices/suitesparse/Bova/rma10/rma10.mtx,    JAX  Vector @ CSR :   0.526321 seconds
-    # matrices/suitesparse/Bova/rma10/rma10.mtx, BrainEvent Vector @ CSR: 0.006309 seconds
-    # JAX / BrainEvent: 83.42020934890225
-    #
-    # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx, JAX  CSR @ Vector:       1.671081 seconds
-    # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx, BrainEvent CSR @ Vector: 0.006553 seconds
-    # JAX / BrainEvent: 255.02187939649735
-    #
-    # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx,    JAX  Vector @ CSR :   1.586405 seconds
-    # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx, BrainEvent Vector @ CSR: 0.018944 seconds
-    # JAX / BrainEvent: 83.74310202335054
-    #
-    # matrices/suitesparse/IBM_EDA/dc2/dc2.mtx, JAX  CSR @ Vector:       0.190031 seconds
-    # matrices/suitesparse/IBM_EDA/dc2/dc2.mtx, BrainEvent CSR @ Vector: 0.000896 seconds
-    # JAX / BrainEvent: 212.03724394785849
-    #
-    # matrices/suitesparse/IBM_EDA/dc2/dc2.mtx,    JAX  Vector @ CSR :   0.179509 seconds
-    # matrices/suitesparse/IBM_EDA/dc2/dc2.mtx, BrainEvent Vector @ CSR: 0.002131 seconds
-    # JAX / BrainEvent: 84.23150357995227
-    #
-    # matrices/suitesparse/Williams/cant/cant.mtx, JAX  CSR @ Vector:       0.875300 seconds
-    # matrices/suitesparse/Williams/cant/cant.mtx, BrainEvent CSR @ Vector: 0.003423 seconds
-    # JAX / BrainEvent: 255.71899233805436
-    #
-    # matrices/suitesparse/Williams/cant/cant.mtx,    JAX  Vector @ CSR :   0.833090 seconds
-    # matrices/suitesparse/Williams/cant/cant.mtx, BrainEvent Vector @ CSR: 0.010198 seconds
-    # JAX / BrainEvent: 81.6918017456359
-    #
-    # matrices/suitesparse/Williams/consph/consph.mtx, JAX  CSR @ Vector:       1.758335 seconds
-    # matrices/suitesparse/Williams/consph/consph.mtx, BrainEvent CSR @ Vector: 0.004156 seconds
-    # JAX / BrainEvent: 423.07205139972467
-    #
-    # matrices/suitesparse/Williams/consph/consph.mtx,    JAX  Vector @ CSR :   1.271770 seconds
-    # matrices/suitesparse/Williams/consph/consph.mtx, BrainEvent Vector @ CSR: 0.014446 seconds
-    # JAX / BrainEvent: 88.03311713674297
-    #
-    # matrices/suitesparse/Williams/cop20k_A/cop20k_A.mtx, JAX  CSR @ Vector:       0.562398 seconds
-    # matrices/suitesparse/Williams/cop20k_A/cop20k_A.mtx, BrainEvent CSR @ Vector: 0.002839 seconds
-    # JAX / BrainEvent: 198.0689655172414
-    #
-    # matrices/suitesparse/Williams/cop20k_A/cop20k_A.mtx,    JAX  Vector @ CSR :   0.570374 seconds
-    # matrices/suitesparse/Williams/cop20k_A/cop20k_A.mtx, BrainEvent Vector @ CSR: 0.006549 seconds
-    # JAX / BrainEvent: 87.09071934763615
-    #
-    # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx, JAX  CSR @ Vector:       0.964837 seconds
-    # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx, BrainEvent CSR @ Vector: 0.003670 seconds
-    # JAX / BrainEvent: 262.8887421233841
-    #
-    # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx,    JAX  Vector @ CSR :   0.903681 seconds
-    # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx, BrainEvent Vector @ CSR: 0.010366 seconds
-    # JAX / BrainEvent: 87.18108702819158
-
-    #
-    # NVIDIA GeForce RTX 3080 Ti Laptop GPU, WSL 2, ubuntu
-    #
-    # matrices/suitesparse/Andrianov/mip1/mip1.mtx, JAX  CSR @ Vector:       0.001310 seconds
-    # matrices/suitesparse/Andrianov/mip1/mip1.mtx, BrainEvent CSR @ Vector: 0.007625 seconds
-    # JAX / BrainEvent: 0.17180381181694523
-    #
-    # Module brainevent._csr 6c2f2e1 load on device 'cuda:0' took 0.85 ms  (cached)
-    # matrices/suitesparse/Andrianov/mip1/mip1.mtx,    JAX  Vector @ CSR :   0.001319 seconds
-    # matrices/suitesparse/Andrianov/mip1/mip1.mtx, BrainEvent Vector @ CSR: 0.007955 seconds
-    # JAX / BrainEvent: 0.1658451794651509
-    #
-    # matrices/suitesparse/Bova/rma10/rma10.mtx, JAX  CSR @ Vector:       0.001085 seconds
-    # matrices/suitesparse/Bova/rma10/rma10.mtx, BrainEvent CSR @ Vector: 0.001257 seconds
-    # JAX / BrainEvent: 0.8630545859260383
-    #
-    # matrices/suitesparse/Bova/rma10/rma10.mtx,    JAX  Vector @ CSR :   0.001128 seconds
-    # matrices/suitesparse/Bova/rma10/rma10.mtx, BrainEvent Vector @ CSR: 0.001358 seconds
-    # JAX / BrainEvent: 0.8312374863887034
-    #
-    # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx, JAX  CSR @ Vector:       0.001224 seconds
-    # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx, BrainEvent CSR @ Vector: 0.001384 seconds
-    # JAX / BrainEvent: 0.8845153250213924
-    #
-    # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx,    JAX  Vector @ CSR :   0.001260 seconds
-    # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx, BrainEvent Vector @ CSR: 0.002355 seconds
-    # JAX / BrainEvent: 0.5349107914057438
-    #
-    # matrices/suitesparse/IBM_EDA/dc2/dc2.mtx, JAX  CSR @ Vector:       0.000216 seconds
-    # matrices/suitesparse/IBM_EDA/dc2/dc2.mtx, BrainEvent CSR @ Vector: 0.012997 seconds
-    # JAX / BrainEvent: 0.01660174761674728
-    #
-    # matrices/suitesparse/IBM_EDA/dc2/dc2.mtx,    JAX  Vector @ CSR :   0.001293 seconds
-    # matrices/suitesparse/IBM_EDA/dc2/dc2.mtx, BrainEvent Vector @ CSR: 0.011234 seconds
-    # JAX / BrainEvent: 0.11509207054379277
-    #
-    # matrices/suitesparse/Williams/cant/cant.mtx, JAX  CSR @ Vector:       0.001241 seconds
-    # matrices/suitesparse/Williams/cant/cant.mtx, BrainEvent CSR @ Vector: 0.001418 seconds
-    # JAX / BrainEvent: 0.8747695807349883
-    #
-    # matrices/suitesparse/Williams/cant/cant.mtx,    JAX  Vector @ CSR :   0.001222 seconds
-    # matrices/suitesparse/Williams/cant/cant.mtx, BrainEvent Vector @ CSR: 0.001286 seconds
-    # JAX / BrainEvent: 0.9501436914804858
-    #
-    # matrices/suitesparse/Williams/consph/consph.mtx, JAX  CSR @ Vector:       0.001363 seconds
-    # matrices/suitesparse/Williams/consph/consph.mtx, BrainEvent CSR @ Vector: 0.001299 seconds
-    # JAX / BrainEvent: 1.0494776845545173
-    #
-    # matrices/suitesparse/Williams/consph/consph.mtx,    JAX  Vector @ CSR :   0.002331 seconds
-    # matrices/suitesparse/Williams/consph/consph.mtx, BrainEvent Vector @ CSR: 0.006609 seconds
-    # JAX / BrainEvent: 0.35272544943191997
-    #
-    # matrices/suitesparse/Williams/cop20k_A/cop20k_A.mtx, JAX  CSR @ Vector:       0.001293 seconds
-    # matrices/suitesparse/Williams/cop20k_A/cop20k_A.mtx, BrainEvent CSR @ Vector: 0.001320 seconds
-    # JAX / BrainEvent: 0.9797502348322454
-    #
-    # matrices/suitesparse/Williams/cop20k_A/cop20k_A.mtx,    JAX  Vector @ CSR :   0.001189 seconds
-    # matrices/suitesparse/Williams/cop20k_A/cop20k_A.mtx, BrainEvent Vector @ CSR: 0.001339 seconds
-    # JAX / BrainEvent: 0.8880907147945855
-    #
-    # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx, JAX  CSR @ Vector:       0.001057 seconds
-    # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx, BrainEvent CSR @ Vector: 0.001328 seconds
-    # JAX / BrainEvent: 0.7961871480801106
-    #
-    # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx,    JAX  Vector @ CSR :   0.001300 seconds
-    # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx, BrainEvent Vector @ CSR: 0.001272 seconds
-    # JAX / BrainEvent: 1.0216478614536868
-
     data = jnp.asarray(scipy_csr.data)
     indices = jnp.asarray(scipy_csr.indices)
     indptr = jnp.asarray(scipy_csr.indptr)
@@ -249,6 +133,7 @@ def compare_spmv_performance(scipy_csr, n_run: int = 10):
     print(f"{filename}, BrainEvent Vector @ CSR: {t_be_vector_csr:.6f} seconds")
     print(f'JAX / BrainEvent: {t_jax_vector_csr / t_be_vector_csr}, max value diff: {jnp.max(jnp.abs(r1 - r2))}')
     print()
+    return t_jax_vector_csr / t_be_vector_csr
 
 
 def compare_spmm_performance(
@@ -256,140 +141,6 @@ def compare_spmm_performance(
     n_run: int = 10,
     batch_size: int = 100
 ):
-    # Intel i9-12900H, WSL 2, ubuntu
-    #
-    # matrices/suitesparse/Andrianov/mip1/mip1.mtx, JAX  CSR @ Vector:       2.012777 seconds
-    # matrices/suitesparse/Andrianov/mip1/mip1.mtx, BrainEvent CSR @ Vector: 0.009752 seconds
-    # JAX / BrainEvent: 206.39556185772844
-    #
-    # matrices/suitesparse/Andrianov/mip1/mip1.mtx,    JAX  Vector @ CSR :   2.007382 seconds
-    # matrices/suitesparse/Andrianov/mip1/mip1.mtx, BrainEvent Vector @ CSR: 0.026426 seconds
-    # JAX / BrainEvent: 75.96193890255564
-    #
-    # matrices/suitesparse/Bova/rma10/rma10.mtx, JAX  CSR @ Vector:       0.458853 seconds
-    # matrices/suitesparse/Bova/rma10/rma10.mtx, BrainEvent CSR @ Vector: 0.002388 seconds
-    # JAX / BrainEvent: 192.1558891070656
-    #
-    # matrices/suitesparse/Bova/rma10/rma10.mtx,    JAX  Vector @ CSR :   0.526321 seconds
-    # matrices/suitesparse/Bova/rma10/rma10.mtx, BrainEvent Vector @ CSR: 0.006309 seconds
-    # JAX / BrainEvent: 83.42020934890225
-    #
-    # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx, JAX  CSR @ Vector:       1.671081 seconds
-    # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx, BrainEvent CSR @ Vector: 0.006553 seconds
-    # JAX / BrainEvent: 255.02187939649735
-    #
-    # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx,    JAX  Vector @ CSR :   1.586405 seconds
-    # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx, BrainEvent Vector @ CSR: 0.018944 seconds
-    # JAX / BrainEvent: 83.74310202335054
-    #
-    # matrices/suitesparse/IBM_EDA/dc2/dc2.mtx, JAX  CSR @ Vector:       0.190031 seconds
-    # matrices/suitesparse/IBM_EDA/dc2/dc2.mtx, BrainEvent CSR @ Vector: 0.000896 seconds
-    # JAX / BrainEvent: 212.03724394785849
-    #
-    # matrices/suitesparse/IBM_EDA/dc2/dc2.mtx,    JAX  Vector @ CSR :   0.179509 seconds
-    # matrices/suitesparse/IBM_EDA/dc2/dc2.mtx, BrainEvent Vector @ CSR: 0.002131 seconds
-    # JAX / BrainEvent: 84.23150357995227
-    #
-    # matrices/suitesparse/Williams/cant/cant.mtx, JAX  CSR @ Vector:       0.875300 seconds
-    # matrices/suitesparse/Williams/cant/cant.mtx, BrainEvent CSR @ Vector: 0.003423 seconds
-    # JAX / BrainEvent: 255.71899233805436
-    #
-    # matrices/suitesparse/Williams/cant/cant.mtx,    JAX  Vector @ CSR :   0.833090 seconds
-    # matrices/suitesparse/Williams/cant/cant.mtx, BrainEvent Vector @ CSR: 0.010198 seconds
-    # JAX / BrainEvent: 81.6918017456359
-    #
-    # matrices/suitesparse/Williams/consph/consph.mtx, JAX  CSR @ Vector:       1.758335 seconds
-    # matrices/suitesparse/Williams/consph/consph.mtx, BrainEvent CSR @ Vector: 0.004156 seconds
-    # JAX / BrainEvent: 423.07205139972467
-    #
-    # matrices/suitesparse/Williams/consph/consph.mtx,    JAX  Vector @ CSR :   1.271770 seconds
-    # matrices/suitesparse/Williams/consph/consph.mtx, BrainEvent Vector @ CSR: 0.014446 seconds
-    # JAX / BrainEvent: 88.03311713674297
-    #
-    # matrices/suitesparse/Williams/cop20k_A/cop20k_A.mtx, JAX  CSR @ Vector:       0.562398 seconds
-    # matrices/suitesparse/Williams/cop20k_A/cop20k_A.mtx, BrainEvent CSR @ Vector: 0.002839 seconds
-    # JAX / BrainEvent: 198.0689655172414
-    #
-    # matrices/suitesparse/Williams/cop20k_A/cop20k_A.mtx,    JAX  Vector @ CSR :   0.570374 seconds
-    # matrices/suitesparse/Williams/cop20k_A/cop20k_A.mtx, BrainEvent Vector @ CSR: 0.006549 seconds
-    # JAX / BrainEvent: 87.09071934763615
-    #
-    # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx, JAX  CSR @ Vector:       0.964837 seconds
-    # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx, BrainEvent CSR @ Vector: 0.003670 seconds
-    # JAX / BrainEvent: 262.8887421233841
-    #
-    # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx,    JAX  Vector @ CSR :   0.903681 seconds
-    # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx, BrainEvent Vector @ CSR: 0.010366 seconds
-    # JAX / BrainEvent: 87.18108702819158
-
-    #
-    # NVIDIA GeForce RTX 3080 Ti Laptop GPU, WSL 2, ubuntu
-    #
-    # matrices/suitesparse/Andrianov/mip1/mip1.mtx, JAX  CSR @ Vector:       0.001310 seconds
-    # matrices/suitesparse/Andrianov/mip1/mip1.mtx, BrainEvent CSR @ Vector: 0.007625 seconds
-    # JAX / BrainEvent: 0.17180381181694523
-    #
-    # Module brainevent._csr 6c2f2e1 load on device 'cuda:0' took 0.85 ms  (cached)
-    # matrices/suitesparse/Andrianov/mip1/mip1.mtx,    JAX  Vector @ CSR :   0.001319 seconds
-    # matrices/suitesparse/Andrianov/mip1/mip1.mtx, BrainEvent Vector @ CSR: 0.007955 seconds
-    # JAX / BrainEvent: 0.1658451794651509
-    #
-    # matrices/suitesparse/Bova/rma10/rma10.mtx, JAX  CSR @ Vector:       0.001085 seconds
-    # matrices/suitesparse/Bova/rma10/rma10.mtx, BrainEvent CSR @ Vector: 0.001257 seconds
-    # JAX / BrainEvent: 0.8630545859260383
-    #
-    # matrices/suitesparse/Bova/rma10/rma10.mtx,    JAX  Vector @ CSR :   0.001128 seconds
-    # matrices/suitesparse/Bova/rma10/rma10.mtx, BrainEvent Vector @ CSR: 0.001358 seconds
-    # JAX / BrainEvent: 0.8312374863887034
-    #
-    # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx, JAX  CSR @ Vector:       0.001224 seconds
-    # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx, BrainEvent CSR @ Vector: 0.001384 seconds
-    # JAX / BrainEvent: 0.8845153250213924
-    #
-    # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx,    JAX  Vector @ CSR :   0.001260 seconds
-    # matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx, BrainEvent Vector @ CSR: 0.002355 seconds
-    # JAX / BrainEvent: 0.5349107914057438
-    #
-    # matrices/suitesparse/IBM_EDA/dc2/dc2.mtx, JAX  CSR @ Vector:       0.000216 seconds
-    # matrices/suitesparse/IBM_EDA/dc2/dc2.mtx, BrainEvent CSR @ Vector: 0.012997 seconds
-    # JAX / BrainEvent: 0.01660174761674728
-    #
-    # matrices/suitesparse/IBM_EDA/dc2/dc2.mtx,    JAX  Vector @ CSR :   0.001293 seconds
-    # matrices/suitesparse/IBM_EDA/dc2/dc2.mtx, BrainEvent Vector @ CSR: 0.011234 seconds
-    # JAX / BrainEvent: 0.11509207054379277
-    #
-    # matrices/suitesparse/Williams/cant/cant.mtx, JAX  CSR @ Vector:       0.001241 seconds
-    # matrices/suitesparse/Williams/cant/cant.mtx, BrainEvent CSR @ Vector: 0.001418 seconds
-    # JAX / BrainEvent: 0.8747695807349883
-    #
-    # matrices/suitesparse/Williams/cant/cant.mtx,    JAX  Vector @ CSR :   0.001222 seconds
-    # matrices/suitesparse/Williams/cant/cant.mtx, BrainEvent Vector @ CSR: 0.001286 seconds
-    # JAX / BrainEvent: 0.9501436914804858
-    #
-    # matrices/suitesparse/Williams/consph/consph.mtx, JAX  CSR @ Vector:       0.001363 seconds
-    # matrices/suitesparse/Williams/consph/consph.mtx, BrainEvent CSR @ Vector: 0.001299 seconds
-    # JAX / BrainEvent: 1.0494776845545173
-    #
-    # matrices/suitesparse/Williams/consph/consph.mtx,    JAX  Vector @ CSR :   0.002331 seconds
-    # matrices/suitesparse/Williams/consph/consph.mtx, BrainEvent Vector @ CSR: 0.006609 seconds
-    # JAX / BrainEvent: 0.35272544943191997
-    #
-    # matrices/suitesparse/Williams/cop20k_A/cop20k_A.mtx, JAX  CSR @ Vector:       0.001293 seconds
-    # matrices/suitesparse/Williams/cop20k_A/cop20k_A.mtx, BrainEvent CSR @ Vector: 0.001320 seconds
-    # JAX / BrainEvent: 0.9797502348322454
-    #
-    # matrices/suitesparse/Williams/cop20k_A/cop20k_A.mtx,    JAX  Vector @ CSR :   0.001189 seconds
-    # matrices/suitesparse/Williams/cop20k_A/cop20k_A.mtx, BrainEvent Vector @ CSR: 0.001339 seconds
-    # JAX / BrainEvent: 0.8880907147945855
-    #
-    # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx, JAX  CSR @ Vector:       0.001057 seconds
-    # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx, BrainEvent CSR @ Vector: 0.001328 seconds
-    # JAX / BrainEvent: 0.7961871480801106
-    #
-    # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx,    JAX  Vector @ CSR :   0.001300 seconds
-    # matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx, BrainEvent Vector @ CSR: 0.001272 seconds
-    # JAX / BrainEvent: 1.0216478614536868
-
     data = jnp.asarray(scipy_csr.data)
     indices = jnp.asarray(scipy_csr.indices)
     indptr = jnp.asarray(scipy_csr.indptr)
@@ -455,16 +206,29 @@ def compare_spmm_performance(
     print(f'JAX / BrainEvent: {t_jax_vector_csr / t_be_vector_csr}, max value diff: {jnp.max(jnp.abs(r1 - r2))}')
     print()
 
+    return t_jax_vector_csr / t_be_vector_csr
 
-for filename in files:
-    compare_spmv_performance(
-        csr_matrices[filename],
-        n_run=3 if brainstate.environ.get_platform() == 'cpu' else 30
-    )
 
-for filename in files:
-    compare_spmm_performance(
-        csr_matrices[filename],
-        n_run=3 if brainstate.environ.get_platform() == 'cpu' else 30,
-        batch_size=100
-    )
+def evaluate_spmv_performance():
+    results = dict()
+    for filename in files:
+        results[filename] = compare_spmv_performance(
+            csr_matrices[filename], n_run=3 if brainstate.environ.get_platform() == 'cpu' else 30
+        )
+    title = 'Intel-i9-12900H-SpMV-CSR' if brainstate.environ.get_platform() == 'cpu' else 'RTX-3080Ti-SpMV-CSR'
+    visualization(results, title=title)
+
+
+def evaluate_spmm_performance():
+    results = dict()
+    for filename in files:
+        results[filename] = compare_spmm_performance(
+            csr_matrices[filename], n_run=3 if brainstate.environ.get_platform() == 'cpu' else 30
+        )
+    title = 'Intel-i9-12900H-SpMM-CSR' if brainstate.environ.get_platform() == 'cpu' else 'RTX-3080Ti-SpMM-CSR'
+    visualization(results, title=title)
+
+
+if __name__ == '__main__':
+    evaluate_spmv_performance()
+    evaluate_spmm_performance()
