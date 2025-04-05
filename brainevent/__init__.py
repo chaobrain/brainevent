@@ -15,7 +15,6 @@
 
 __version__ = "0.0.1"
 
-from . import nn
 from ._block_csr import BlockCSR
 from ._block_ell import BlockELL
 from ._coo import COO
@@ -48,3 +47,40 @@ __all__ = [
     'PallasKernelGenerator',
     'dtype_to_warp_type',
 ]
+
+
+def __getattr(name):
+    """
+    Custom attribute lookup function for lazy-loading modules.
+
+    This function implements lazy loading for the 'nn' submodule. When the
+    'nn' attribute is accessed for the first time, this function dynamically
+    imports the module and returns it, avoiding unnecessary imports at startup.
+
+    Parameters
+    ----------
+    name : str
+        Name of the attribute being accessed.
+
+    Returns
+    -------
+    module
+        The requested module if it exists.
+
+    Raises
+    ------
+    AttributeError
+        If the requested attribute does not exist in the brainevent package.
+    """
+    if name == 'nn':
+        # Import the module directly from its actual location
+        # instead of from the brainevent package
+        import brainevent.nn as nn
+        return nn
+    raise AttributeError(f"brainevent has no attribute {name!r}")
+
+
+# Register the getattr function as the module's __getattr__ hook
+# This enables Python's attribute lookup mechanism to call our custom function
+# when an undefined attribute is accessed
+__getattr__ = __getattr
