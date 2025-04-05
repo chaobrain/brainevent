@@ -15,7 +15,7 @@
 
 # -*- coding: utf-8 -*-
 
-import brainstate as bst
+import brainstate
 import jax.numpy as jnp
 import numpy as np
 
@@ -24,10 +24,10 @@ def _get_csr(n_pre, n_post, prob, replace=True):
     n_conn = int(n_post * prob)
     indptr = np.arange(n_pre + 1) * n_conn
     if replace:
-        indices = np.random.randint(0, n_post, (n_pre * n_conn,))
+        indices = brainstate.random.randint(0, n_post, (n_pre * n_conn,))
     else:
-        indices = bst.compile.for_loop(
-            lambda *args: bst.random.choice(n_post, n_conn, replace=False),
+        indices = brainstate.compile.for_loop(
+            lambda *args: brainstate.random.choice(n_post, n_conn, replace=False),
             length=n_pre
         ).flatten()
     return indptr, indices
@@ -38,7 +38,9 @@ def vector_csr(x, w, indices, indptr, shape):
     post = jnp.zeros((shape[1],))
     for i_pre in range(x.shape[0]):
         ids = indices[indptr[i_pre]: indptr[i_pre + 1]]
-        post = post.at[ids].add(w * x[i_pre] if homo_w else w[indptr[i_pre]: indptr[i_pre + 1]] * x[i_pre])
+        inc = w * x[i_pre] if homo_w else w[indptr[i_pre]: indptr[i_pre + 1]] * x[i_pre]
+        ids, inc = jnp.broadcast_arrays(ids, inc)
+        post = post.at[ids].add(inc)
     return post
 
 
