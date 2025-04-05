@@ -15,18 +15,15 @@
 
 # -*- coding: utf-8 -*-
 
-from typing import Callable
-
 import brainunit as u
 import jax
 import jax.numpy as jnp
 from jax.interpreters import ad
 
+from ._typing import Kernel
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import numba_environ, NumbaKernelGenerator
 from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type
-
-Kernel = Callable
 
 
 def event_mv(
