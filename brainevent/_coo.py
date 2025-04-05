@@ -24,8 +24,8 @@ from typing import Any, Tuple
 import brainunit as u
 import jax
 import numpy as np
-from jax.experimental.sparse import JAXSparse
 
+from ._compatible_import import JAXSparse
 from ._coo_event_impl import _event_coo_matvec, _event_coo_matmat
 from ._coo_float_impl import _coo_matvec, _coo_matmat
 from ._event import EventArray

@@ -16,8 +16,9 @@
 __all__ = [
     'Primitive',
     'register_custom_call',
+    'pallas',
+    'JAXSparse',
 ]
-
 
 import jax
 
@@ -53,3 +54,7 @@ def register_custom_call(target_name, capsule, backend: str):
     else:
         je.ffi.register_ffi_target(target_name, capsule, backend, api_version=0)
 
+
+# import experimental module in JAX for compatibility
+from jax.experimental import pallas
+from jax.experimental.sparse import JAXSparse

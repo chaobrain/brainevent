@@ -22,7 +22,8 @@ import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.experimental import pallas as pl
+
+from ._compatible_import import pallas as pl
 
 __all__ = [
     'BlockELL',
