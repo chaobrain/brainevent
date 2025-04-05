@@ -19,6 +19,7 @@ from ._block_csr import BlockCSR
 from ._block_ell import BlockELL
 from ._coo import COO
 from ._csr import CSR, CSC
+from ._csrlb import CSR_LB, CSC_LB
 from ._event import EventArray
 from ._fixed_conn_num import FixedPostNumConn, FixedPreNumConn
 from ._jitc_csr import JITC_CSR, JITC_CSC
@@ -34,6 +35,7 @@ __all__ = [
     # data structures
     'COO',
     'CSR', 'CSC',
+    'CSR_LB', 'CSC_LB',
     'JITC_CSR', 'JITC_CSC',
     'BlockCSR',
     'BlockELL',
