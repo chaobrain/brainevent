@@ -88,7 +88,6 @@ class EventArray(object):
 
     @property
     def data(self) -> Union[jax.Array, u.Quantity]:
-    def data(self):
         """
         Get the array value.
 
@@ -100,7 +99,6 @@ class EventArray(object):
     @property
     def value(self) -> Union[jax.Array, u.Quantity]:
         # return the value
-    def value(self):
         """
         Return the value of the array.
 
