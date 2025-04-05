@@ -21,8 +21,8 @@ from typing import Union, Sequence
 import brainunit as u
 import jax
 import jax.numpy as jnp
-from jax.experimental.sparse import JAXSparse
 
+from ._compatible_import import JAXSparse
 from ._event import EventArray
 from ._fixed_conn_num_event_impl import event_fixed_post_num_mv_p_call
 from ._fixed_conn_num_float_impl import fixed_post_num_mv_p_call

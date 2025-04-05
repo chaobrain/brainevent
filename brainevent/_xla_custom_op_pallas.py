@@ -19,13 +19,9 @@
 import dataclasses
 from typing import Callable, Union, Dict
 
-import jax
 from jax.interpreters import mlir
 
-if jax.__version_info__ < (0, 4, 38):
-    from jax.core import Primitive
-else:
-    from jax.extend.core import Primitive
+from ._compatible_import import Primitive
 
 __all__ = [
     'PallasKernelGenerator',
