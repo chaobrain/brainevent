@@ -16,7 +16,6 @@
 # -*- coding: utf-8 -*-
 
 import operator
-from typing import Sequence
 
 import brainunit as u
 import jax
@@ -50,7 +49,7 @@ class FixedPostNumConn(u.sparse.SparseMatrix):
     nse = property(lambda self: self.indices.size)
     dtype = property(lambda self: self.data.dtype)
 
-    def __init__(self, args: Sequence[Data, Index], *, shape: MatrixShape):
+    def __init__(self, args, *, shape: MatrixShape):
         self.data, self.indices = map(u.math.asarray, args)
         assert self.indices.shape[0] == shape[0], \
             f'Pre-synaptic neuron number mismatch. {self.indices.shape[0]} != {shape[0]}'
@@ -323,7 +322,7 @@ class FixedPreNumConn(u.sparse.SparseMatrix):
     nse = property(lambda self: self.indices.size)
     dtype = property(lambda self: self.data.dtype)
 
-    def __init__(self, args: Sequence[Data, Index], *, shape: MatrixShape):
+    def __init__(self, args, *, shape: MatrixShape):
         self.data, self.indices = map(u.math.asarray, args)
         assert self.indices.shape[0] == shape[1], 'Post-synaptic neuron number mismatch.'
         super().__init__(args, shape=shape)
