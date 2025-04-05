@@ -13,7 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 
-
 import operator
 from typing import Union, Optional, Sequence, Any
 
@@ -62,6 +61,13 @@ class EventArray(object):
     __slots__ = ('_value',)
 
     def __init__(self, value, dtype: Any = None):
+        """
+        Initialize an EventArray instance.
+
+        Args:
+            value: The input value, which can be an EventArray, tuple, list, or np.ndarray.
+            dtype: The data type of the array. If None, the data type will be inferred from the input value.
+        """
         # array value
         if isinstance(value, EventArray):
             value = value._value
@@ -72,21 +78,52 @@ class EventArray(object):
         self._value = value
 
     def _check_tracer(self):
+        """
+        Check the tracer of the array value.
+
+        Returns:
+            The array value.
+        """
         return self._value
 
     @property
     def data(self) -> Union[jax.Array, u.Quantity]:
+    def data(self):
+        """
+        Get the array value.
+
+        Returns:
+            The array value.
+        """
         return self._value
 
     @property
     def value(self) -> Union[jax.Array, u.Quantity]:
         # return the value
+    def value(self):
+        """
+        Return the value of the array.
+
+        Returns:
+            The array value.
+        """
         return self._value
 
     @value.setter
     def value(self, value):
+        """
+        Set the value of the array.
+
+        Args:
+            value: The new value to be set.
+
+        Raises:
+            MathError: If the shape or dtype of the new value does not match the original value.
+        """
+        # Get the current value for comparison with the new value
         self_value = self._check_tracer()
 
+        # Handle different types of incoming values
         if isinstance(value, EventArray):
             value = value.value
         elif isinstance(value, np.ndarray):
@@ -95,52 +132,125 @@ class EventArray(object):
             pass
         else:
             value = u.math.asarray(value)
+
         # check
+        # Check if the shape of the new value matches the original value
         if value.shape != self_value.shape:
             raise MathError(
                 f"The shape of the original data is {self_value.shape}, "
                 f"while we got {value.shape}."
             )
+
+        # Check if the dtype of the new value matches the original value
         if value.dtype != self_value.dtype:
             raise MathError(
                 f"The dtype of the original data is {self_value.dtype}, "
                 f"while we got {value.dtype}."
             )
+
+        # Set the new value after passing the check
         self._value = value
 
     def update(self, value):
-        """Update the value of this Array.
+        """
+        Update the value of this EventArray.
+
+        This method updates the internal value of the EventArray with a new value.
+
+        Parameters
+        ----------
+        value : array-like
+            The new value to update the EventArray with. This should be compatible
+            with the current array in terms of shape and dtype.
+
+        Returns
+        -------
+        None
+            This method modifies the EventArray in-place and doesn't return anything.
+
+        Raises
+        ------
+        MathError
+            If the shape or dtype of the new value does not match the original value.
         """
         self.value = value
 
-    @property
+    def ndim(self):
+        """Return the number of dimensions (rank) of the array.
+
+        This property indicates the number of axes in the array. For example:
+        - A scalar has ndim = 0
+        - A vector has ndim = 1
+        - A matrix has ndim = 2
+        - And so on for higher dimensional arrays
+
+        Returns:
+            int: The number of dimensions of the array.
+        """
+        return self.value.ndim
+
     def dtype(self):
-        """Variable dtype."""
+        """Return the data type of the array's elements.
+
+        This property accesses the data type (dtype) of the underlying array.
+        For arrays containing numbers, this is their precision (e.g., float32,
+        int64, etc.).
+
+        Returns:
+            dtype: The data type of the array's elements.
+        """
         return _get_dtype(self._value)
 
-    @property
     def shape(self):
-        """Variable shape."""
-        return self.value.shape
+        """Return the dimensions of the array as a tuple.
 
-    @property
-    def ndim(self):
-        return self.value.ndim
+        This property returns the shape of the underlying array, which indicates
+        the size of each dimension. For example, a 3x4 matrix would have shape (3, 4),
+        while a 1D array with 5 elements would have shape (5,).
+
+        Returns:
+            tuple: A tuple of integers indicating the size of each dimension.
+        """
+        return u.math.shape(self.value)
 
     @property
     def imag(self):
-        return self.value.imag
+        """
+        Get the imaginary part of the array.
+
+        Returns:
+            The imaginary part of the array.
+        """
+        return u.math.imag(self.value)
 
     @property
     def real(self):
+        """
+        Get the real part of the array.
+
+        Returns:
+            The real part of the array.
+        """
         return self.value.real
 
     @property
     def size(self):
+        """
+        Get the number of elements in the array.
+
+        Returns:
+            The number of elements.
+        """
         return self.value.size
 
     @property
     def T(self):
+        """
+        Get the transpose of the array.
+
+        Returns:
+            The transpose of the array.
+        """
         return self.value.T
 
     # ----------------------- #
@@ -148,6 +258,12 @@ class EventArray(object):
     # ----------------------- #
 
     def __repr__(self) -> str:
+        """
+        Return a string representation of the EventArray.
+
+        Returns:
+            A string representation of the EventArray.
+        """
         print_code = repr(self.value)
         if ', dtype' in print_code:
             print_code = print_code.split(', dtype')[0] + ')'
@@ -179,6 +295,15 @@ class EventArray(object):
             yield self.value[i]
 
     def __getitem__(self, index):
+        """
+        Get an item from the array.
+
+        Args:
+            index: The index of the item to get.
+
+        Returns:
+            The item at the specified index.
+        """
         if isinstance(index, tuple):
             index = tuple((x.value if isinstance(x, EventArray) else x) for x in index)
         elif isinstance(index, EventArray):
@@ -186,6 +311,13 @@ class EventArray(object):
         return self.value[index]
 
     def __setitem__(self, index, value):
+        """
+        Set an item in the array.
+
+        Args:
+            index: The index of the item to set.
+            value: The new value to be set.
+        """
         # value is Array
         if isinstance(value, EventArray):
             value = value.value
@@ -212,137 +344,464 @@ class EventArray(object):
     # ---------- #
 
     def __len__(self) -> int:
+        """
+        Get the length of the array.
+
+        Returns:
+            The length of the array.
+        """
         return len(self.value)
 
     def __neg__(self):
+        """
+        Return the negative of the array.
+
+        Returns:
+            The negative of the array.
+        """
         return self.value.__neg__()
 
     def __pos__(self):
+        """
+        Return the positive of the array.
+
+        Returns:
+            The positive of the array.
+        """
         return self.value.__pos__()
 
     def __abs__(self):
+        """
+        Return the absolute value of the array.
+
+        Returns:
+            The absolute value of the array.
+        """
         return self.value.__abs__()
 
     def __invert__(self):
+        """
+        Return the bitwise inversion of the array.
+
+        Returns:
+            The bitwise inversion of the array.
+        """
         return self.value.__invert__()
 
     def __eq__(self, oc):
+        """
+        Compare the array with another object for equality.
+
+        Args:
+            oc: The object to compare with.
+
+        Returns:
+            A boolean array indicating the equality.
+        """
         return self.value == _as_array(oc)
 
     def __ne__(self, oc):
+        """
+        Compare the array with another object for inequality.
+
+        Args:
+            oc: The object to compare with.
+
+        Returns:
+            A boolean array indicating the inequality.
+        """
         return self.value != _as_array(oc)
 
     def __lt__(self, oc):
+        """
+        Compare the array with another object for less than.
+
+        Args:
+            oc: The object to compare with.
+
+        Returns:
+            A boolean array indicating the comparison result.
+        """
         return self.value < _as_array(oc)
 
     def __le__(self, oc):
+        """
+        Compare the array with another object for less than or equal to.
+
+        Args:
+            oc: The object to compare with.
+
+        Returns:
+            A boolean array indicating the comparison result.
+        """
         return self.value <= _as_array(oc)
 
     def __gt__(self, oc):
+        """
+        Compare the array with another object for greater than.
+
+        Args:
+            oc: The object to compare with.
+
+        Returns:
+            A boolean array indicating the comparison result.
+        """
         return self.value > _as_array(oc)
 
     def __ge__(self, oc):
+        """
+        Compare the array with another object for greater than or equal to.
+
+        Args:
+            oc: The object to compare with.
+
+        Returns:
+            A boolean array indicating the comparison result.
+        """
         return self.value >= _as_array(oc)
 
     def __add__(self, oc):
+        """
+        Add the array with another object.
+
+        Args:
+            oc: The object to add.
+
+        Returns:
+            The result of the addition.
+        """
         return self.value + _as_array(oc)
 
     def __radd__(self, oc):
+        """
+        Add another object with the array.
+
+        Args:
+            oc: The object to add.
+
+        Returns:
+            The result of the addition.
+        """
         return self.value + _as_array(oc)
 
     def __iadd__(self, oc):
+        """
+        Add another object to the array in-place.
+
+        Args:
+            oc: The object to add.
+
+        Returns:
+            The updated array.
+        """
         # a += b
         self.value = self.value + _as_array(oc)
         return self
 
     def __sub__(self, oc):
+        """
+        Subtract another object from the array.
+
+        Args:
+            oc: The object to subtract.
+
+        Returns:
+            The result of the subtraction.
+        """
         return self.value - _as_array(oc)
 
     def __rsub__(self, oc):
+        """
+        Subtract the array from another object.
+
+        Args:
+            oc: The object to subtract from.
+
+        Returns:
+            The result of the subtraction.
+        """
         return _as_array(oc) - self.value
 
     def __isub__(self, oc):
+        """
+        Subtract another object from the array in-place.
+
+        Args:
+            oc: The object to subtract.
+
+        Returns:
+            The updated array.
+        """
         # a -= b
         self.value = self.value - _as_array(oc)
         return self
 
     def __mul__(self, oc):
+        """
+        Multiply the array with another object.
+
+        Args:
+            oc: The object to multiply.
+
+        Returns:
+            The result of the multiplication.
+        """
         return self.value * _as_array(oc)
 
     def __rmul__(self, oc):
+        """
+        Multiply another object with the array.
+
+        Args:
+            oc: The object to multiply.
+
+        Returns:
+            The result of the multiplication.
+        """
         return _as_array(oc) * self.value
 
     def __imul__(self, oc):
+        """
+        Multiply the array with another object in-place.
+
+        Args:
+            oc: The object to multiply.
+
+        Returns:
+            The updated array.
+        """
         # a *= b
         self.value = self.value * _as_array(oc)
         return self
 
     def __rdiv__(self, oc):
+        """
+        Divide another object by the array.
+
+        Args:
+            oc: The object to divide.
+
+        Returns:
+            The result of the division.
+        """
         return _as_array(oc) / self.value
 
     def __truediv__(self, oc):
+        """
+        Divide the array by another object.
+
+        Args:
+            oc: The object to divide by.
+
+        Returns:
+            The result of the division.
+        """
         return self.value / _as_array(oc)
 
     def __rtruediv__(self, oc):
+        """
+        Divide another object by the array.
+
+        Args:
+            oc: The object to divide.
+
+        Returns:
+            The result of the division.
+        """
         return _as_array(oc) / self.value
 
     def __itruediv__(self, oc):
+        """
+        Divide the array by another object in-place.
+
+        Args:
+            oc: The object to divide by.
+
+        Returns:
+            The updated array.
+        """
         # a /= b
         self.value = self.value / _as_array(oc)
         return self
 
     def __floordiv__(self, oc):
+        """
+        Perform floor division on the array by another object.
+
+        Args:
+            oc: The object to divide by.
+
+        Returns:
+            The result of the floor division.
+        """
         return self.value // _as_array(oc)
 
     def __rfloordiv__(self, oc):
+        """
+        Perform floor division on another object by the array.
+
+        Args:
+            oc: The object to divide.
+
+        Returns:
+            The result of the floor division.
+        """
         return _as_array(oc) // self.value
 
     def __ifloordiv__(self, oc):
+        """
+        Perform floor division on the array by another object in-place.
+
+        Args:
+            oc: The object to divide by.
+
+        Returns:
+            The updated array.
+        """
         # a //= b
         self.value = self.value // _as_array(oc)
         return self
 
     def __divmod__(self, oc):
+        """
+        Perform divmod operation on the array by another object.
+
+        Args:
+            oc: The object to divide by.
+
+        Returns:
+            The result of the divmod operation.
+        """
         return self.value.__divmod__(_as_array(oc))
 
     def __rdivmod__(self, oc):
+        """
+        Perform divmod operation on another object by the array.
+
+        Args:
+            oc: The object to divide.
+
+        Returns:
+            The result of the divmod operation.
+        """
         return self.value.__rdivmod__(_as_array(oc))
 
     def __mod__(self, oc):
+        """
+        Perform modulo operation on the array by another object.
+
+        Args:
+            oc: The object to divide by.
+
+        Returns:
+            The result of the modulo operation.
+        """
         return self.value % _as_array(oc)
 
     def __rmod__(self, oc):
+        """
+        Perform modulo operation on another object by the array.
+
+        Args:
+            oc: The object to divide.
+
+        Returns:
+            The result of the modulo operation.
+        """
         return _as_array(oc) % self.value
 
     def __imod__(self, oc):
+        """
+        Perform modulo operation on the array by another object in-place.
+
+        Args:
+            oc: The object to divide by.
+
+        Returns:
+            The updated array.
+        """
         # a %= b
         self.value = self.value % _as_array(oc)
         return self
 
     def __pow__(self, oc):
+        """
+        Raise the array to the power of another object.
+
+        Args:
+            oc: The object to raise to the power.
+
+        Returns:
+            The result of the power operation.
+        """
         return self.value ** _as_array(oc)
 
     def __rpow__(self, oc):
+        """
+        Raise another object to the power of the array.
+
+        Args:
+            oc: The object to raise to the power.
+
+        Returns:
+            The result of the power operation.
+        """
         return _as_array(oc) ** self.value
 
     def __ipow__(self, oc):
+        """
+        Raise the array to the power of another object in-place.
+
+        Args:
+            oc: The object to raise to the power.
+
+        Returns:
+            The updated array.
+        """
         # a **= b
         self.value = self.value ** _as_array(oc)
         return self
 
     def __matmul__(self, oc):
+        """
+        Perform matrix multiplication on the array with another object.
+
+        Args:
+            oc: The object to multiply.
+
+        Returns:
+            The result of the matrix multiplication.
+        """
         if _known_type(oc):
             return self.value @ _as_array(oc)
         else:
             return oc.__rmatmul__(self)
 
     def __rmatmul__(self, oc):
+        """
+        Perform matrix multiplication on another object with the array.
+
+        Args:
+            oc: The object to multiply.
+
+        Returns:
+            The result of the matrix multiplication.
+        """
         if _known_type(oc):
             return _as_array(oc) @ self.value
         else:
             return oc.__matmul__(self)
 
     def __imatmul__(self, oc):
+        """
+        Perform matrix multiplication on the array with another object in-place.
+
+        Args:
+            oc: The object to multiply.
+
+        Returns:
+            The updated array.
+        """
         # a @= b
         if _known_type(oc):
             self.value = self.value @ _as_array(oc)
@@ -351,61 +810,205 @@ class EventArray(object):
         return self
 
     def __and__(self, oc):
+        """
+        Perform bitwise AND operation on the array with another object.
+
+        Args:
+            oc: The object to perform AND operation with.
+
+        Returns:
+            The result of the bitwise AND operation.
+        """
         return self.value & _as_array(oc)
 
     def __rand__(self, oc):
+        """
+        Perform bitwise AND operation on another object with the array.
+
+        Args:
+            oc: The object to perform AND operation with.
+
+        Returns:
+            The result of the bitwise AND operation.
+        """
         return _as_array(oc) & self.value
 
     def __iand__(self, oc):
+        """
+        Perform bitwise AND operation on the array with another object in-place.
+
+        Args:
+            oc: The object to perform AND operation with.
+
+        Returns:
+            The updated array.
+        """
         # a &= b
         self.value = self.value & _as_array(oc)
         return self
 
     def __or__(self, oc):
+        """
+        Perform bitwise OR operation on the array with another object.
+
+        Args:
+            oc: The object to perform OR operation with.
+
+        Returns:
+            The result of the bitwise OR operation.
+        """
         return self.value | _as_array(oc)
 
     def __ror__(self, oc):
+        """
+        Perform bitwise OR operation on another object with the array.
+
+        Args:
+            oc: The object to perform OR operation with.
+
+        Returns:
+            The result of the bitwise OR operation.
+        """
         return _as_array(oc) | self.value
 
     def __ior__(self, oc):
+        """
+        Perform bitwise OR operation on the array with another object in-place.
+
+        Args:
+            oc: The object to perform OR operation with.
+
+        Returns:
+            The updated array.
+        """
         # a |= b
         self.value = self.value | _as_array(oc)
         return self
 
     def __xor__(self, oc):
+        """
+        Perform bitwise XOR operation on the array with another object.
+
+        Args:
+            oc: The object to perform XOR operation with.
+
+        Returns:
+            The result of the bitwise XOR operation.
+        """
         return self.value ^ _as_array(oc)
 
     def __rxor__(self, oc):
+        """
+        Perform bitwise XOR operation on another object with the array.
+
+        Args:
+            oc: The object to perform XOR operation with.
+
+        Returns:
+            The result of the bitwise XOR operation.
+        """
         return _as_array(oc) ^ self.value
 
     def __ixor__(self, oc):
+        """
+        Perform bitwise XOR operation on the array with another object in-place.
+
+        Args:
+            oc: The object to perform XOR operation with.
+
+        Returns:
+            The updated array.
+        """
         # a ^= b
         self.value = self.value ^ _as_array(oc)
         return self
 
     def __lshift__(self, oc):
+        """
+        Perform left shift operation on the array by another object.
+
+        Args:
+            oc: The object to shift by.
+
+        Returns:
+            The result of the left shift operation.
+        """
         return self.value << _as_array(oc)
 
     def __rlshift__(self, oc):
+        """
+        Perform left shift operation on another object by the array.
+
+        Args:
+            oc: The object to shift.
+
+        Returns:
+            The result of the left shift operation.
+        """
         return _as_array(oc) << self.value
 
     def __ilshift__(self, oc):
+        """
+        Perform left shift operation on the array by another object in-place.
+
+        Args:
+            oc: The object to shift by.
+
+        Returns:
+            The updated array.
+        """
         # a <<= b
         self.value = self.value << _as_array(oc)
         return self
 
     def __rshift__(self, oc):
+        """
+        Perform right shift operation on the array by another object.
+
+        Args:
+            oc: The object to shift by.
+
+        Returns:
+            The result of the right shift operation.
+        """
         return self.value >> _as_array(oc)
 
     def __rrshift__(self, oc):
+        """
+        Perform right shift operation on another object by the array.
+
+        Args:
+            oc: The object to shift.
+
+        Returns:
+            The result of the right shift operation.
+        """
         return _as_array(oc) >> self.value
 
     def __irshift__(self, oc):
+        """
+        Perform right shift operation on the array by another object in-place.
+
+        Args:
+            oc: The object to shift by.
+
+        Returns:
+            The updated array.
+        """
         # a >>= b
         self.value = self.value >> _as_array(oc)
         return self
 
     def __round__(self, ndigits=None):
+        """
+        Round the array to a specified number of decimal places.
+
+        Args:
+            ndigits: The number of decimal places to round to.
+
+        Returns:
+            The rounded array.
+        """
         return self.value.__round__(ndigits)
 
     # ----------------------- #
@@ -414,6 +1017,12 @@ class EventArray(object):
 
     @property
     def at(self):
+        """
+        Get the 'at' property of the array.
+
+        Returns:
+            The 'at' property of the array.
+        """
         return self.value.at
 
     def block_until_ready(self):
@@ -472,11 +1081,65 @@ class EventArray(object):
         return self.value.byteswap(inplace=inplace)
 
     def choose(self, choices, mode='raise'):
-        """Use an index array to construct a new array from a set of choices."""
+        """
+        Use an index array to construct a new array from a set of choices.
+
+        This method uses the index array (self) to select elements from the choices array.
+
+        Parameters
+        ----------
+        choices : sequence of arrays
+            The arrays from which to choose. Each array in the sequence must be of the same shape as self,
+            or broadcastable to that shape.
+
+        mode : {'raise', 'wrap', 'clip'}, optional
+            Specifies how indices outside the valid range should be handled:
+            - 'raise' : raise an error (default)
+            - 'wrap' : wrap around
+            - 'clip' : clip to the range
+
+        Returns
+        -------
+        ndarray
+            The merged result, with elements chosen from `choices` based on the index array.
+
+        Raises
+        ------
+        ValueError
+            If an invalid `mode` is specified.
+        """
         return self.value.choose(choices=choices, mode=mode)
 
-    def clip(self, min=None, max=None, out=None, ):
-        """Return an array whose values are limited to [min, max]. One of max or min must be given."""
+    def clip(self, min=None, max=None, out=None):
+        """
+        Return an array with its values clipped to be within the specified range [min, max].
+
+        This method limits the values in the array to be within the given range. Values smaller
+        than the minimum are set to the minimum, and values larger than the maximum are set to
+        the maximum.
+
+        Parameters
+        ----------
+        min : scalar or array_like, optional
+            Minimum value. If None, clipping is not performed on lower interval edge.
+            Not more than one of min and max may be None.
+        max : scalar or array_like, optional
+            Maximum value. If None, clipping is not performed on upper interval edge.
+            Not more than one of min and max may be None.
+        out : ndarray, optional
+            The results will be placed in this array. It may be the input array for in-place clipping.
+            Out must be of the right shape to hold the output. Its type is preserved.
+
+        Returns
+        -------
+        ndarray
+            An array with the elements of self, but where values < min are replaced with min,
+            and those > max with max.
+
+        Note
+        ----
+        At least one of max or min must be given.
+        """
         min = _as_array(min)
         max = _as_array(max)
         r = self.value.clip(min=min, max=max)
@@ -487,110 +1150,337 @@ class EventArray(object):
             out.value = r
 
     def compress(self, condition, axis=None):
-        """Return selected slices of this array along given axis."""
+        """
+        Return selected slices of this array along the given axis.
+
+        This method selects elements from the array based on a boolean condition,
+        returning a new array with only the elements where the condition is True.
+
+        Parameters
+        ----------
+        condition : array_like
+            A 1-D array of booleans. Where True, the corresponding element in the
+            array is selected. The length of the condition array should be the size
+            of the array along the given axis.
+
+        axis : int, optional
+            The axis along which to select elements. Default is None, which selects
+            elements from the flattened array.
+
+        Returns
+        -------
+        ndarray
+            A new array containing the selected elements. The returned array has the
+            same number of dimensions as the input array, but the size of the axis
+            along which elements were selected may be smaller.
+        """
         return self.value.compress(condition=_as_array(condition), axis=axis)
 
     def conj(self):
-        """Complex-conjugate all elements."""
+        """
+        Compute the complex conjugate of all elements in the array.
+
+        This method returns a new array with the complex conjugate of each element
+        in the original array. For real numbers, this operation has no effect.
+
+        Returns
+        -------
+        ndarray
+            A new array with the complex conjugate of each element from the original array.
+        """
         return self.value.conj()
 
     def conjugate(self):
-        """Return the complex conjugate, element-wise."""
+        """
+        Compute the complex conjugate of all elements in the array, element-wise.
+
+        This method returns a new array with the complex conjugate of each element
+        in the original array. For real numbers, this operation has no effect.
+        This method is identical to the `conj` method.
+
+        Returns
+        -------
+        ndarray
+            A new array with the complex conjugate of each element from the original array.
+        """
         return self.value.conjugate()
 
     def copy(self):
-        """Return a copy of the array."""
+        """
+        Return a copy of the array.
+
+        This method creates and returns a new array with a copy of the data from the original array.
+
+        Returns:
+            ndarray: A new array object with a copy of the data from the original array.
+        """
         return self.value.copy()
 
     def cumprod(self, axis=None, dtype=None):
-        """Return the cumulative product of the elements along the given axis."""
+        """
+        Return the cumulative product of the elements along the given axis.
+
+        Parameters:
+            axis (int, optional): Axis along which the cumulative product is computed.
+                If None (default), the cumulative product of the flattened array is computed.
+            dtype (data-type, optional): Type of the returned array and of the accumulator
+                in which the elements are multiplied. If dtype is not specified, it defaults
+                to the dtype of the input array.
+
+        Returns:
+            ndarray: An array of the same shape as the input array, containing the cumulative
+            product of the elements along the specified axis.
+        """
         return self.value.cumprod(axis=axis, dtype=dtype)
 
     def cumsum(self, axis=None, dtype=None):
-        """Return the cumulative sum of the elements along the given axis."""
+        """
+        Return the cumulative sum of the elements along the given axis.
+
+        Parameters:
+            axis (int, optional): Axis along which the cumulative sum is computed.
+                If None (default), the cumulative sum of the flattened array is computed.
+            dtype (data-type, optional): Type of the returned array and of the accumulator
+                in which the elements are summed. If dtype is not specified, it defaults
+                to the dtype of the input array.
+
+        Returns:
+            ndarray: An array of the same shape as the input array, containing the cumulative
+            sum of the elements along the specified axis.
+        """
         return self.value.cumsum(axis=axis, dtype=dtype)
 
     def diagonal(self, offset=0, axis1=0, axis2=1):
-        """Return specified diagonals."""
+        """
+        Return specified diagonals of the array.
+
+        Parameters:
+            offset (int, optional): Offset of the diagonal from the main diagonal.
+                Can be positive or negative. Defaults to 0 (main diagonal).
+            axis1 (int, optional): Axis to be used as the first axis of the 2-D sub-arrays
+                from which the diagonals should be taken. Defaults to 0.
+            axis2 (int, optional): Axis to be used as the second axis of the 2-D sub-arrays
+                from which the diagonals should be taken. Defaults to 1.
+
+        Returns:
+            ndarray: An array containing the diagonal elements. If the dimension of the input
+            array is greater than 2, then the result is a 1-D array if offset is specified,
+            otherwise it has the same dimension as the input array minus 2.
+        """
         return self.value.diagonal(offset=offset, axis1=axis1, axis2=axis2)
 
     def dot(self, b):
-        """Dot product of two arrays."""
+        """
+        Compute the dot product of two arrays.
+
+        This method calculates the dot product (matrix multiplication) of the current array
+        with another array or matrix.
+
+        Parameters
+        ----------
+        b : array_like
+            The array or matrix to compute the dot product with.
+
+        Returns
+        -------
+        ndarray
+            The result of the dot product operation. The shape of the output depends
+            on the shapes of the input arrays and the nature of the dot product operation.
+
+        Notes
+        -----
+        If the type of 'b' is known, it uses the dot method of the underlying array.
+        Otherwise, it delegates to the right matrix multiplication method of 'b'.
+        """
         if _known_type(b):
             return self.value.dot(_as_array(b))
         else:
             return b.__rmatmul__(self)
 
     def fill(self, value):
-        """Fill the array with a scalar value."""
+        """
+        Fill the array with a scalar value.
+
+        This method replaces all elements in the array with the specified scalar value.
+
+        Parameters
+        ----------
+        value : scalar
+            The scalar value to fill the array with. This value will be broadcast
+            to fill the entire array.
+
+        Returns
+        -------
+        None
+            This method modifies the array in-place and does not return a value.
+        """
         self.value = u.math.ones_like(self.value) * value
 
     def flatten(self):
+        """
+        Return a flattened array.
+
+        Returns:
+            A flattened array.
+        """
         return self.value.flatten()
 
     def item(self, *args):
-        """Copy an element of an array to a standard Python scalar and return it."""
+        """Copy an element of an array to a standard Python scalar and return it.
+
+        Args:
+            *args: Index or indices of the element to be extracted. If not provided, the first element is returned.
+
+        Returns:
+            scalar: The extracted element as a standard Python scalar.
+        """
         return self.value.item(*args)
 
     def max(self, axis=None, keepdims=False, *args, **kwargs):
-        """Return the maximum along a given axis."""
+        """Return the maximum value along a given axis.
+
+        Args:
+            axis (int or tuple of ints, optional): Axis or axes along which to operate. By default, flattened input is used.
+            keepdims (bool, optional): If True, the axes which are reduced are left in the result as dimensions with size one.
+            *args: Additional positional arguments to be passed to the underlying max function.
+            **kwargs: Additional keyword arguments to be passed to the underlying max function.
+
+        Returns:
+            ndarray or scalar: Maximum of array elements along the given axis.
+        """
         res = self.value.max(axis=axis, keepdims=keepdims, *args, **kwargs)
         return res
 
     def mean(self, axis=None, dtype=None, keepdims=False, *args, **kwargs):
-        """Returns the average of the array elements along given axis."""
+        """Calculate the arithmetic mean along the specified axis.
+
+        Args:
+            axis (int or tuple of ints, optional): Axis or axes along which the mean is computed. The default is to compute the mean of the flattened array.
+            dtype (data-type, optional): Type to use in computing the mean.
+            keepdims (bool, optional): If True, the axes which are reduced are left in the result as dimensions with size one.
+            *args: Additional positional arguments to be passed to the underlying mean function.
+            **kwargs: Additional keyword arguments to be passed to the underlying mean function.
+
+        Returns:
+            ndarray or scalar: Array containing the mean values.
+        """
         res = self.value.mean(axis=axis, dtype=dtype, keepdims=keepdims, *args, **kwargs)
         return res
 
     def min(self, axis=None, keepdims=False, *args, **kwargs):
-        """Return the minimum along a given axis."""
+        """Return the minimum value along a given axis.
+
+        Args:
+            axis (int or tuple of ints, optional): Axis or axes along which to operate. By default, flattened input is used.
+            keepdims (bool, optional): If True, the axes which are reduced are left in the result as dimensions with size one.
+            *args: Additional positional arguments to be passed to the underlying min function.
+            **kwargs: Additional keyword arguments to be passed to the underlying min function.
+
+        Returns:
+            ndarray or scalar: Minimum of array elements along the given axis.
+        """
         res = self.value.min(axis=axis, keepdims=keepdims, *args, **kwargs)
         return res
 
     def nonzero(self):
-        """Return the indices of the elements that are non-zero."""
+        """Return the indices of the elements that are non-zero.
+
+        Returns:
+            tuple of arrays: Indices of elements that are non-zero.
+        """
         return self.value.nonzero()
 
     def prod(self, axis=None, dtype=None, keepdims=False, initial=1, where=True):
-        """Return the product of the array elements over the given axis."""
+        """Return the product of the array elements over the given axis.
+
+        Args:
+            axis (int or tuple of ints, optional): Axis or axes along which a product is performed.
+            dtype (data-type, optional): The data-type of the returned array and of the accumulator in which the elements are multiplied.
+            keepdims (bool, optional): If True, the axes which are reduced are left in the result as dimensions with size one.
+            initial (scalar, optional): The starting value for the product.
+            where (array_like of bool, optional): Elements to include in the product.
+
+        Returns:
+            ndarray or scalar: Product of array elements over the given axis.
+        """
         res = self.value.prod(axis=axis, dtype=dtype, keepdims=keepdims, initial=initial, where=where)
         return res
 
     def ptp(self, axis=None, keepdims=False):
-        """Peak to peak (maximum - minimum) value along a given axis."""
+        """Range of values (maximum - minimum) along an axis.
+
+        Args:
+            axis (int or tuple of ints, optional): Axis along which to find the peak-to-peak value. By default, flatten the array.
+            keepdims (bool, optional): If True, the axes which are reduced are left in the result as dimensions with size one.
+
+        Returns:
+            ndarray or scalar: Peak-to-peak (maximum - minimum) value along the given axis.
+        """
         r = self.value.ptp(axis=axis, keepdims=keepdims)
         return r
 
     def put(self, indices, values):
         """Replaces specified elements of an array with given values.
 
-        Parameters
-        ----------
-        indices: array_like
-          Target indices, interpreted as integers.
-        values: array_like
-          Values to place in the array at target indices.
+        Args:
+            indices (array_like): Target indices, interpreted as integers.
+            values (array_like): Values to place in the array at target indices.
         """
         self.__setitem__(indices, values)
 
     def ravel(self, order=None):
-        """Return a flattened array."""
+        """Return a flattened array.
+
+        Args:
+            order (str, optional): The elements of 'a' are read using this index order. 'C' means to index the elements in C-like order, 'F' means to index the elements in Fortran-like order, 'A' means to read the elements in Fortran-like order if 'a' is Fortran contiguous in memory, C-like order otherwise. 'K' means to read the elements in the order they occur in memory.
+
+        Returns:
+            ndarray: A 1-D array containing the same elements as the input array.
+        """
         return self.value.ravel(order=order)
 
     def repeat(self, repeats, axis=None):
-        """Repeat elements of an array."""
+        """Repeat elements of an array.
+
+        Args:
+            repeats (int or array of ints): The number of repetitions for each element.
+            axis (int, optional): The axis along which to repeat values.
+
+        Returns:
+            ndarray: Output array which has the same shape as input array, except along the given axis.
+        """
         return self.value.repeat(repeats=repeats, axis=axis)
 
     def reshape(self, *shape, order='C'):
-        """Returns an array containing the same data with a new shape."""
+        """Returns an array containing the same data with a new shape.
+
+        Args:
+            *shape (int or tuple of ints): The new shape should be compatible with the original shape.
+            order (str, optional): Read the elements using this index order. 'C' means to read the elements in C-like order, 'F' means to read the elements in Fortran-like order, 'A' means to read the elements in Fortran-like order if a is Fortran contiguous in memory, C-like order otherwise.
+
+        Returns:
+            ndarray: Array with the same data as the input array, but with a new shape.
+        """
         return self.value.reshape(*shape, order=order)
 
     def resize(self, new_shape):
-        """Change shape and size of array in-place."""
+        """Change shape and size of array in-place.
+
+        Args:
+            new_shape (int or tuple of ints): Shape of resized array.
+        """
         self.value = self.value.reshape(new_shape)
 
     def round(self, decimals=0):
-        """Return ``a`` with each element rounded to the given number of decimals."""
+        """Return the array with each element rounded to the given number of decimals.
+
+        Args:
+            decimals (int, optional): Number of decimal places to round to (default: 0).
+                If decimals is negative, it specifies the number of positions to the left of the decimal point.
+
+        Returns:
+            ndarray: An array with the same shape as the input array, but with the elements rounded.
+        """
         return self.value.round(decimals=decimals)
 
     def searchsorted(self, v, side='left', sorter=None):
@@ -648,7 +1538,24 @@ class EventArray(object):
         self.value = self.value.sort(axis=axis, stable=stable, order=order)
 
     def squeeze(self, axis=None):
-        """Remove axes of length one from ``a``."""
+        """
+        Remove axes of length one from the array.
+
+        This function removes single-dimensional entries from the shape of the array.
+
+        Parameters
+        ----------
+        axis : int or tuple of ints, optional
+            Selects a subset of the single-dimensional entries in the shape.
+            If an axis is selected with shape entry greater than one, an error is raised.
+            If None (default), all single-dimensional entries will be removed from the shape.
+
+        Returns
+        -------
+        ndarray
+            The input array with all or a subset of the dimensions of length 1 removed.
+            This is always a view of the input array.
+        """
         return self.value.squeeze(axis=axis)
 
     def std(self, axis=None, dtype=None, ddof=0, keepdims=False):
@@ -1325,22 +2232,59 @@ class EventArray(object):
         return u.math.asarray(self.value, dtype=np.bool_)
 
     def int(self):
+        """
+        Convert the array to a 32-bit integer data type.
+
+        Returns:
+            The array converted to a 32-bit integer data type.
+        """
         return u.math.asarray(self.value, dtype=np.int32)
 
     def long(self):
+        """
+        Convert the array to a 64-bit integer data type.
+
+        Returns:
+            The array converted to a 64-bit integer data type.
+        """
         return u.math.asarray(self.value, dtype=np.int64)
 
     def half(self):
+        """
+        Convert the array to a 16-bit floating-point data type.
+
+        Returns:
+            The array converted to a 16-bit floating-point data type.
+        """
         return u.math.asarray(self.value, dtype=np.float16)
 
     def float(self):
+        """
+        Convert the array to a 32-bit floating-point data type.
+
+        Returns:
+            The array converted to a 32-bit floating-point data type.
+        """
         return u.math.asarray(self.value, dtype=np.float32)
 
     def bfloat16(self):
+        """
+        Convert the array to a Brain Floating Point 16 (bfloat16) data type.
+
+        Returns:
+            The array converted to a bfloat16 data type.
+        """
         return u.math.asarray(self.value, dtype=jax.numpy.bfloat16)
 
     def double(self):
+        """
+        Convert the array to a 64-bit floating-point data type.
+
+        Returns:
+            The array converted to a 64-bit floating-point data type.
+        """
         return u.math.asarray(self.value, dtype=np.float64)
 
 
+# Set the array priority for the EventArray class
 setattr(EventArray, "__array_priority__", 100)
