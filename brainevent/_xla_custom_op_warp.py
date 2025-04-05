@@ -27,15 +27,7 @@ from jax.interpreters import mlir
 from jax.interpreters.mlir import ir
 from jaxlib.hlo_helpers import custom_call
 
-if jax.__version_info__ < (0, 4, 35):
-    from jax.lib import xla_client
-else:
-    import jax.extend as je
-
-if jax.__version_info__ < (0, 4, 38):
-    from jax.core import Primitive
-else:
-    from jax.extend.core import Primitive
+from ._compatible_import import Primitive, register_custom_call
 
 __all__ = [
     'WarpKernelGenerator',
@@ -339,10 +331,7 @@ def _warp_gpu_register_capsule():
     )
 
     # Register the callback in XLA.
-    if jax.__version_info__ < (0, 4, 35):
-        xla_client.register_custom_call_target("brainevent_warp_gpu_call", warp_capsule, platform="gpu")
-    else:
-        je.ffi.register_ffi_target('brainevent_warp_gpu_call', warp_capsule, platform="gpu", api_version=0)
+    register_custom_call("brainevent_warp_gpu_call", warp_capsule, "gpu")
 
 
 def _register_warp_kernel(wp_kernel) -> int:

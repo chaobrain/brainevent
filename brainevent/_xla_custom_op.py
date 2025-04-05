@@ -23,6 +23,7 @@ import numpy as np
 from jax import tree_util
 from jax.interpreters import xla, mlir, batching, ad
 
+from ._compatible_import import Primitive
 from ._xla_custom_op_numba import (
     NumbaKernelGenerator,
     register_numba_cpu_translatione
@@ -36,11 +37,6 @@ from ._xla_custom_op_warp import (
     WarpKernelGenerator,
     register_warp_gpu_translation
 )
-
-if jax.__version_info__ < (0, 4, 38):
-    from jax.core import Primitive
-else:
-    from jax.extend.core import Primitive
 
 __all__ = [
     'XLACustomKernel',
