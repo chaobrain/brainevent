@@ -15,12 +15,14 @@
 
 # -*- coding: utf-8 -*-
 
-from typing import Union, Sequence, Tuple, NamedTuple
+from typing import Tuple, NamedTuple
 
 import brainunit as u
 import jax
 import jax.numpy as jnp
 from jax.experimental.sparse import csr_todense_p, coo_todense_p
+
+from ._typing import MatrixShape, Data, Index
 
 
 class COOInfo(NamedTuple):
@@ -40,18 +42,18 @@ class COOInfo(NamedTuple):
             Indicates whether the column indices are in sorted order within each row.
             Only relevant if ``rows_sorted`` is True.
     """
-    shape: Sequence[int]
+    shape: MatrixShape
     rows_sorted: bool = False
     cols_sorted: bool = False
 
 
 def _coo_todense(
-    data: Union[jax.Array, u.Quantity],
-    row: jax.Array,
-    col: jax.Array,
+    data: Data,
+    row: Index,
+    col: Index,
     *,
     spinfo: COOInfo
-) -> Union[jax.Array, u.Quantity]:
+) -> Data:
     """Convert CSR-format sparse matrix to a dense matrix.
 
     Args:
@@ -75,11 +77,12 @@ def _csr_to_coo(indices: jax.Array, indptr: jax.Array) -> Tuple[jax.Array, jax.A
 
 
 def _csr_todense(
-    data: Union[jax.Array, u.Quantity],
-    indices: jax.Array,
-    indptr: jax.Array, *,
-    shape: Sequence[int]
-) -> Union[jax.Array, u.Quantity]:
+    data: Data,
+    indices: Index,
+    indptr: Index,
+    *,
+    shape: MatrixShape
+) -> Data:
     """
     Convert CSR-format sparse matrix to a dense matrix.
 

@@ -15,18 +15,17 @@
 
 # -*- coding: utf-8 -*-
 
-from typing import Callable, Union, Sequence
+from typing import Sequence
 
 import brainunit as u
 import jax
 from jax import numpy as jnp
 from jax.interpreters import ad
 
+from ._typing import Kernel, Data, Row, Col, MatrixShape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
-
-Kernel = Callable
 
 __all__ = [
     "_coo_matvec",
@@ -35,14 +34,14 @@ __all__ = [
 
 
 def _coo_matvec(
-    data: Union[jax.Array, u.Quantity],
-    row: jax.Array,
-    col: jax.Array,
-    v: jax.Array,
+    data: Data,
+    row: Row,
+    col: Col,
+    v: Data,
     *,
-    shape: Sequence[int],
+    shape: MatrixShape,
     transpose: bool = False
-) -> Union[jax.Array, u.Quantity]:
+) -> Data:
     data, unitd = u.split_mantissa_unit(data)
     v, unitv = u.split_mantissa_unit(v)
     res = coomv_p_call(data, row, col, v, shape=shape, transpose=transpose)[0]
@@ -50,12 +49,12 @@ def _coo_matvec(
 
 
 def _coo_matmat(
-    data: Union[jax.Array, u.Quantity],
-    row: jax.Array,
-    col: jax.Array,
-    B: jax.Array,
+    data: Data,
+    row: Row,
+    col: Col,
+    B: Data,
     *,
-    shape: Sequence[int],
+    shape: MatrixShape,
     transpose: bool = False
 ):
     data, unitd = u.split_mantissa_unit(data)

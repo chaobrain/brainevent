@@ -14,7 +14,7 @@
 # ==============================================================================
 
 
-from typing import Callable, Union, Sequence
+from typing import Sequence
 
 import brainunit as u
 import jax
@@ -23,22 +23,21 @@ import numpy as np
 from jax.interpreters import ad
 
 from ._misc import _csr_to_coo, general_batching_rule
+from ._typing import Kernel, Data, Indptr, Index, MatrixShape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 
-Kernel = Callable
-
 
 def _csr_matvec(
-    data: Union[jax.Array, u.Quantity],
-    indices: jax.Array,
-    indptr: jax.Array,
-    v: Union[jax.Array, u.Quantity],
+    data: Data,
+    indices: Index,
+    indptr: Indptr,
+    v: Data,
     *,
-    shape: Sequence[int],
+    shape: MatrixShape,
     transpose: bool = False
-) -> Union[jax.Array, u.Quantity]:
+) -> Data:
     """
     Product of CSR sparse matrix and a dense vector.
 
@@ -63,14 +62,14 @@ def _csr_matvec(
 
 
 def _csr_matmat(
-    data: Union[jax.Array, u.Quantity],
-    indices: jax.Array,
-    indptr: jax.Array,
-    B: Union[jax.Array, u.Quantity],
+    data: Data,
+    indices: Index,
+    indptr: Indptr,
+    B: Data,
     *,
-    shape: Sequence[int],
+    shape: MatrixShape,
     transpose: bool = False,
-) -> Union[jax.Array, u.Quantity]:
+) -> Data:
     """
     Product of CSR sparse matrix and a dense matrix.
 
