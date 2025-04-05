@@ -27,6 +27,7 @@ from ._csr_event_impl import _event_csr_matvec, _event_csr_matmat
 from ._csr_float_impl import _csr_matvec, _csr_matmat
 from ._event import EventArray
 from ._misc import _csr_to_coo, _csr_todense
+from ._typing import Data, Indptr, Index, MatrixShape
 
 __all__ = [
     'CSR',
@@ -45,7 +46,7 @@ class CSR(u.sparse.SparseMatrix):
 
     Attributes
     -----------
-    data : Union[jax.Array, u.Quantity]
+    data : Data
         Array of the non-zero values in the matrix.
     indices : jax.Array
         Array of column indices for the non-zero values.
@@ -74,18 +75,18 @@ class CSR(u.sparse.SparseMatrix):
     The class also supports various arithmetic operations (+, -, *, /, @) with
     other CSR matrices, dense arrays, and scalars.
     """
-    data: Union[jax.Array, u.Quantity]
-    indices: jax.Array
-    indptr: jax.Array
-    shape: tuple[int, int]
+    data: Data
+    indices: Index
+    indptr: Indptr
+    shape: MatrixShape
     nse = property(lambda self: self.indices.size)
     dtype = property(lambda self: self.data.dtype)
 
     def __init__(
         self,
-        args: Sequence[Union[jax.Array, np.ndarray, u.Quantity]],
+        args: Tuple[Data, Index, Index],
         *,
-        shape: Tuple[int, int]
+        shape: MatrixShape
     ):
         """
         Initialize a CSR (Compressed Sparse Row) matrix.
@@ -138,7 +139,7 @@ class CSR(u.sparse.SparseMatrix):
         csr = u.sparse.csr_fromdense(mat, nse=nse, index_dtype=index_dtype)
         return CSR((csr.data, csr.indices, csr.indptr), shape=csr.shape)
 
-    def with_data(self, data: Union[jax.Array, u.Quantity]) -> 'CSR':
+    def with_data(self, data: Data) -> 'CSR':
         """
         Create a new CSR matrix with updated data while keeping the same structure.
     
@@ -147,7 +148,7 @@ class CSR(u.sparse.SparseMatrix):
     
         Parameters
         -----------
-        data : Union[jax.Array, u.Quantity]
+        data : Data
             The new data array to replace the existing data in the CSR matrix.
             It must have the same shape, dtype, and unit as the original data.
     
@@ -292,16 +293,16 @@ class CSR(u.sparse.SparseMatrix):
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
-    def __mul__(self, other: Union[jax.Array, u.Quantity]) -> 'CSR':
+    def __mul__(self, other: Data) -> 'CSR':
         return self._binary_op(other, operator.mul)
 
-    def __rmul__(self, other: Union[jax.Array, u.Quantity]) -> 'CSR':
+    def __rmul__(self, other: Data) -> 'CSR':
         return self._binary_rop(other, operator.mul)
 
-    def __div__(self, other: Union[jax.Array, u.Quantity]) -> 'CSR':
+    def __div__(self, other: Data) -> 'CSR':
         return self._binary_op(other, operator.truediv)
 
-    def __rdiv__(self, other: Union[jax.Array, u.Quantity]) -> 'CSR':
+    def __rdiv__(self, other: Data) -> 'CSR':
         return self._binary_rop(other, operator.truediv)
 
     def __truediv__(self, other) -> 'CSR':
@@ -486,7 +487,7 @@ class CSC(u.sparse.SparseMatrix):
 
     Attributes
     -----------
-    data : Union[jax.Array, u.Quantity]
+    data : Data
         Array of the non-zero values in the matrix.
     indices : jax.Array
         Array of row indices for the non-zero values.
@@ -515,18 +516,18 @@ class CSC(u.sparse.SparseMatrix):
     The class also supports various arithmetic operations (+, -, *, /, @) with
     other CSC matrices, dense arrays, and scalars.
     """
-    data: Union[jax.Array, u.Quantity]
-    indices: jax.Array
-    indptr: jax.Array
-    shape: tuple[int, int]
+    data: Data
+    indices: Index
+    indptr: Indptr
+    shape: MatrixShape
     nse = property(lambda self: self.indices.size)
     dtype = property(lambda self: self.data.dtype)
 
     def __init__(
         self,
-        args: Sequence[Union[jax.Array, np.ndarray, u.Quantity]],
+        args: Tuple[Data, Index, Index],
         *,
-        shape: Tuple[int, int]
+        shape: MatrixShape
     ):
         """
         Initialize a CSC (Compressed Sparse Column) matrix.
@@ -611,7 +612,7 @@ class CSC(u.sparse.SparseMatrix):
         indptr = jnp.zeros(shape[1] + 1, index_dtype)
         return cls((data, indices, indptr), shape=shape)
 
-    def with_data(self, data: Union[jax.Array, u.Quantity]) -> 'CSC':
+    def with_data(self, data: Data) -> 'CSC':
         """
         Create a new CSC matrix with updated data while keeping the same structure.
     
@@ -620,7 +621,7 @@ class CSC(u.sparse.SparseMatrix):
     
         Parameters
         -----------
-        data : Union[jax.Array, u.Quantity]
+        data : Data
             The new data array to replace the existing data in the CSC matrix.
             It must have the same shape, dtype, and unit as the original data.
     
@@ -765,16 +766,16 @@ class CSC(u.sparse.SparseMatrix):
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
-    def __mul__(self, other: Union[jax.Array, u.Quantity]) -> 'CSC':
+    def __mul__(self, other: Data) -> 'CSC':
         return self._binary_op(other, operator.mul)
 
-    def __rmul__(self, other: Union[jax.Array, u.Quantity]) -> 'CSC':
+    def __rmul__(self, other: Data) -> 'CSC':
         return self._binary_rop(other, operator.mul)
 
-    def __div__(self, other: Union[jax.Array, u.Quantity]) -> 'CSC':
+    def __div__(self, other: Data) -> 'CSC':
         return self._binary_op(other, operator.truediv)
 
-    def __rdiv__(self, other: Union[jax.Array, u.Quantity]) -> 'CSC':
+    def __rdiv__(self, other: Data) -> 'CSC':
         return self._binary_rop(other, operator.truediv)
 
     def __truediv__(self, other) -> 'CSC':

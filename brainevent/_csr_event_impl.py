@@ -14,7 +14,7 @@
 # ==============================================================================
 
 
-from typing import Callable, Union, Sequence
+from typing import Callable, Sequence
 
 import brainunit as u
 import jax
@@ -24,21 +24,22 @@ from jax.interpreters import ad
 
 from ._csr_float_impl import _csr_matvec, _csr_matmat
 from ._misc import _csr_to_coo, general_batching_rule
+from ._typing import Data, Indptr, Index, MatrixShape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 
 
 def _event_csr_matvec(
-    data: Union[jax.Array, u.Quantity],
-    indices: jax.Array,
-    indptr: jax.Array,
-    v: Union[jax.Array, u.Quantity],
+    data: Data,
+    indices: Index,
+    indptr: Indptr,
+    v: Data,
     *,
-    shape: Sequence[int],
+    shape: MatrixShape,
     transpose: bool = False,
     float_as_event: bool = True,
-) -> Union[jax.Array, u.Quantity]:
+) -> Data:
     """
     Product of CSR sparse matrix and a dense vector.
 
@@ -71,15 +72,15 @@ def _event_csr_matvec(
 
 
 def _event_csr_matmat(
-    data: Union[jax.Array, u.Quantity],
-    indices: jax.Array,
-    indptr: jax.Array,
-    B: Union[jax.Array, u.Quantity],
+    data: Data,
+    indices: Index,
+    indptr: Indptr,
+    B: Data,
     *,
-    shape: Sequence[int],
+    shape: MatrixShape,
     transpose: bool = False,
     float_as_event: bool = True,
-) -> Union[jax.Array, u.Quantity]:
+) -> Data:
     """
     Product of CSR sparse matrix and a dense matrix.
 
@@ -618,7 +619,7 @@ def event_csrmv_p_call(
     indptr,
     v,
     *,
-    shape: Sequence[int],
+    shape: MatrixShape,
     transpose: bool,
     float_as_event: bool,
 ):
@@ -1239,7 +1240,7 @@ def event_csrmm_p_call(
     indptr,
     B,
     *,
-    shape: Sequence[int],
+    shape: MatrixShape,
     transpose: bool,
     float_as_event: bool,
 ):

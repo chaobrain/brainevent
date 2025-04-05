@@ -16,7 +16,7 @@
 # -*- coding: utf-8 -*-
 
 import operator
-from typing import Union, Sequence
+from typing import Tuple
 
 import brainunit as u
 import jax
@@ -27,6 +27,7 @@ from ._event import EventArray
 from ._fixed_conn_num_event_impl import event_fixed_post_num_mv_p_call
 from ._fixed_conn_num_float_impl import fixed_post_num_mv_p_call
 from ._misc import _coo_todense, COOInfo
+from ._typing import Data, MatrixShape, Index
 
 __all__ = [
     'FixedPostNumConn',
@@ -40,22 +41,22 @@ class FixedPostNumConn(u.sparse.SparseMatrix):
     """
     Fixed total number of postsynaptic neurons.
     """
-    data: Union[jax.Array, u.Quantity]
-    indices: jax.Array
-    shape: tuple[int, int]
+    data: Data
+    indices: Index
+    shape: MatrixShape
     num_pre = property(lambda self: self.indices.shape[0])
     num_conn = property(lambda self: self.indices.shape[1])
     num_post = property(lambda self: self.shape[1])
     nse = property(lambda self: self.indices.size)
     dtype = property(lambda self: self.data.dtype)
 
-    def __init__(self, args, *, shape: Sequence[int]):
+    def __init__(self, args: Tuple[Data, Index], *, shape: MatrixShape):
         self.data, self.indices = map(u.math.asarray, args)
         assert self.indices.shape[0] == shape[0], \
             f'Pre-synaptic neuron number mismatch. {self.indices.shape[0]} != {shape[0]}'
         super().__init__(args, shape=shape)
 
-    def with_data(self, data: Union[jax.Array, u.Quantity]) -> 'FixedPostNumConn':
+    def with_data(self, data: Data) -> 'FixedPostNumConn':
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
@@ -158,16 +159,16 @@ class FixedPostNumConn(u.sparse.SparseMatrix):
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
-    def __mul__(self, other: Union[jax.Array, u.Quantity]) -> 'FixedPostNumConn':
+    def __mul__(self, other: Data) -> 'FixedPostNumConn':
         return self._binary_op(other, operator.mul)
 
-    def __rmul__(self, other: Union[jax.Array, u.Quantity]) -> 'FixedPostNumConn':
+    def __rmul__(self, other: Data) -> 'FixedPostNumConn':
         return self._binary_rop(other, operator.mul)
 
-    def __div__(self, other: Union[jax.Array, u.Quantity]) -> 'FixedPostNumConn':
+    def __div__(self, other: Data) -> 'FixedPostNumConn':
         return self._binary_op(other, operator.truediv)
 
-    def __rdiv__(self, other: Union[jax.Array, u.Quantity]) -> 'FixedPostNumConn':
+    def __rdiv__(self, other: Data) -> 'FixedPostNumConn':
         return self._binary_rop(other, operator.truediv)
 
     def __truediv__(self, other) -> 'FixedPostNumConn':
@@ -313,21 +314,21 @@ class FixedPreNumConn(u.sparse.SparseMatrix):
     """
     Fixed total number of pre-synaptic neurons.
     """
-    data: Union[jax.Array, u.Quantity]
-    indices: jax.Array
-    shape: tuple[int, int]
+    data: Data
+    indices: Index
+    shape: MatrixShape
     num_conn = property(lambda self: self.indices.shape[1])
     num_post = property(lambda self: self.indices.shape[0])
     num_pre = property(lambda self: self.shape[0])
     nse = property(lambda self: self.indices.size)
     dtype = property(lambda self: self.data.dtype)
 
-    def __init__(self, args, *, shape: Sequence[int]):
+    def __init__(self, args: Tuple[Data, Index], *, shape: MatrixShape):
         self.data, self.indices = map(u.math.asarray, args)
         assert self.indices.shape[0] == shape[1], 'Post-synaptic neuron number mismatch.'
         super().__init__(args, shape=shape)
 
-    def with_data(self, data: Union[jax.Array, u.Quantity]) -> 'FixedPreNumConn':
+    def with_data(self, data: Data) -> 'FixedPreNumConn':
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
@@ -430,16 +431,16 @@ class FixedPreNumConn(u.sparse.SparseMatrix):
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
-    def __mul__(self, other: Union[jax.Array, u.Quantity]) -> 'FixedPreNumConn':
+    def __mul__(self, other: Data) -> 'FixedPreNumConn':
         return self._binary_op(other, operator.mul)
 
-    def __rmul__(self, other: Union[jax.Array, u.Quantity]) -> 'FixedPreNumConn':
+    def __rmul__(self, other: Data) -> 'FixedPreNumConn':
         return self._binary_rop(other, operator.mul)
 
-    def __div__(self, other: Union[jax.Array, u.Quantity]) -> 'FixedPreNumConn':
+    def __div__(self, other: Data) -> 'FixedPreNumConn':
         return self._binary_op(other, operator.truediv)
 
-    def __rdiv__(self, other: Union[jax.Array, u.Quantity]) -> 'FixedPreNumConn':
+    def __rdiv__(self, other: Data) -> 'FixedPreNumConn':
         return self._binary_rop(other, operator.truediv)
 
     def __truediv__(self, other) -> 'FixedPreNumConn':
