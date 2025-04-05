@@ -33,6 +33,21 @@ else:
 
 
 def register_custom_call(target_name, capsule, backend: str):
+    """
+    Register a custom XLA computation call target.
+
+    This function provides JAX version compatibility, using different APIs based on
+    the JAX version number to register custom calls.
+
+    Args:
+        target_name: The identifier name for the custom call.
+        capsule: Python capsule object pointing to the implementation function.
+        backend: str, specifies the backend type (e.g., 'cpu', 'gpu', or 'tpu').
+
+    Notes:
+        - For JAX versions before 0.4.35, uses xla_client.register_custom_call_target
+        - For JAX 0.4.35 and later, uses jax.extend.ffi.register_ffi_target with api_version=0
+    """
     if jax.__version_info__ < (0, 4, 35):
         xla_client.register_custom_call_target(target_name, capsule, backend)
     else:
