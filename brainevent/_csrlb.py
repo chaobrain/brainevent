@@ -107,6 +107,7 @@ class CSR_LB(CSR):
             - data: Contains the non-zero values of the matrix.
             - indices: Contains the column indices for each non-zero element.
             - indptr: Contains the row pointers indicating where each row starts in the data and indices arrays.
+            - ids: (Optional) Array of integer IDs used for load balancing, derived from the `indptr` array.
 
         shape : Tuple[int, int]
             The shape of the matrix as a tuple of (num_rows, num_columns).
@@ -475,6 +476,7 @@ class CSC_LB(CSC):
             - data: Contains the non-zero values of the matrix.
             - indices: Contains the row indices for each non-zero element.
             - indptr: Contains the column pointers indicating where each column starts in the data and indices arrays.
+            - ids: (Optional) Array of integer IDs used for load balancing, derived from the `indptr` array.
 
         shape : Tuple[int, int]
             The shape of the matrix as a tuple of (num_rows, num_columns).
