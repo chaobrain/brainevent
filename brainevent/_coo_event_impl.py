@@ -24,6 +24,7 @@ import jax.numpy as jnp
 from jax.interpreters import ad
 
 from ._coo_float_impl import _coo_matvec, _coo_matmat
+from ._misc import general_batching_rule
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
@@ -497,7 +498,7 @@ def event_coomv_batching(
         return r, [1]
 
     else:
-        raise NotImplementedError(f"Batching axes {axes} not implemented for event-driven COO matrix-vector product.")
+        return general_batching_rule(event_coomv_p_call, args, axes, **kwargs)
 
 
 def event_coomv_p_call(
@@ -1023,7 +1024,7 @@ def event_coomm_batching(
         return [r], [2]
 
     else:
-        raise NotImplementedError(f"Batching axes {axes} not implemented for event-driven CSR matrix-vector product.")
+        return general_batching_rule(event_coomm_p_call, args, axes, **kwargs)
 
 
 def event_coomm_p_call(

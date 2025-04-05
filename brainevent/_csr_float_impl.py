@@ -19,9 +19,10 @@ from typing import Callable, Union, Sequence
 import brainunit as u
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.interpreters import ad
 
-from ._misc import _csr_to_coo
+from ._misc import _csr_to_coo, general_batching_rule
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
@@ -358,7 +359,7 @@ def csrmv_batching(args, axes, **kwargs):
         return r, [1]
 
     else:
-        raise NotImplementedError(f"Batching axes {axes} not implemented for event-driven CSR matrix-vector product.")
+        return general_batching_rule(csrmv_p, args, axes, **kwargs)
 
 
 def csrmv_p_call(
@@ -436,7 +437,7 @@ def csrmm_cpu_kernel_generator(
                 w = weights[0]
                 for i in range(indptr.shape[0] - 1):
                     for k in range(B.shape[1]):
-                        r = 0.
+                        r = np.zeros((), dtype=posts.dtype)
                         for j in range(indptr[i], indptr[i + 1]):
                             r += w * B[indices[j], k]
                         posts[i, k] = r
@@ -457,7 +458,7 @@ def csrmm_cpu_kernel_generator(
             def mm(weights, indices, indptr, B, _, posts):
                 for i in range(indptr.shape[0] - 1):
                     for k in range(B.shape[1]):
-                        r = 0.
+                        r = np.zeros((), dtype=posts.dtype)
                         for j in range(indptr[i], indptr[i + 1]):
                             r += weights[j] * B[indices[j], k]
                         posts[i, k] = r
@@ -618,15 +619,27 @@ def csrmm_transpose_rule(
 ):
     assert not ad.is_undefined_primal(indices)
     assert not ad.is_undefined_primal(indptr)
+    ct = ct[0]
 
     if ad.is_undefined_primal(B):
         dB = _csr_matmat(data, indices, indptr, ct, shape=shape, transpose=not transpose)
         return data, indices, indptr, dB, _
     else:
         B = jnp.asarray(B)
-        row, col = _csr_to_coo(indices, indptr)
-        d_data = (ct[row] * B[col]).sum(axis=1)
-        return d_data, indices, indptr, B, _
+        if data.aval.shape[0] == 1:  # scalar
+            r = csrmm_p_call(
+                jnp.ones(1, dtype=data.aval.dtype),
+                indices,
+                indptr,
+                B,
+                shape=shape,
+                transpose=transpose
+            )[0]
+            return jnp.sum(r * ct), indices, indptr, B, _
+        else:
+            row, col = _csr_to_coo(indices, indptr)
+            d_data = (ct[row] * B[col]).sum(axis=1)
+            return d_data, indices, indptr, B, _
 
 
 def csrmm_batching(args, axes, **kwargs):
@@ -676,7 +689,7 @@ def csrmm_batching(args, axes, **kwargs):
         return [r], [2]
 
     else:
-        raise NotImplementedError(f"Batching axes {axes} not implemented for event-driven CSR matrix-vector product.")
+        return general_batching_rule(csrmm_p, args, axes, **kwargs)
 
 
 def csrmm_p_call(

@@ -66,7 +66,7 @@ import time
 import brainstate as bst
 import brainevent
 
-# bst.environ.set(platform='cpu')
+# brainstate.environ.set(platform='cpu')
 
 
 def forward(n_pre, n_post, conn_prob, spk_prob, as_float: bool):
