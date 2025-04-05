@@ -15,7 +15,7 @@
 
 import time
 
-import brainstate as bst
+import brainstate
 import jax
 import jax.numpy as jnp
 from jax.experimental.sparse import CSR
@@ -25,7 +25,7 @@ from scipy.sparse import csr_matrix, coo_matrix
 import brainevent
 
 # brainstate.environ.set(platform='cpu')
-bst.environ.set(platform='gpu')
+brainstate.environ.set(platform='gpu')
 
 files = [
     'matrices/suitesparse/Andrianov/mip1/mip1.mtx',
@@ -394,8 +394,8 @@ def compare_spmm_performance(
     indices = jnp.asarray(scipy_csr.indices)
     indptr = jnp.asarray(scipy_csr.indptr)
 
-    jax_csr = CSR([data, indices, indptr], shape=scipy_csr.shape)
-    brainevent_csr = brainevent.CSR([data, indices, indptr], shape=scipy_csr.shape)
+    jax_csr = CSR((data, indices, indptr), shape=scipy_csr.shape)
+    brainevent_csr = brainevent.CSR((data, indices, indptr), shape=scipy_csr.shape)
 
     @jax.jit
     def f_jax(v):
@@ -405,7 +405,7 @@ def compare_spmm_performance(
     def f_brainevent(v):
         return brainevent_csr @ v
 
-    matrix = jax.block_until_ready(bst.random.randn(scipy_csr.shape[1], batch_size))
+    matrix = jax.block_until_ready(brainstate.random.randn(scipy_csr.shape[1], batch_size))
 
     r1 = jax.block_until_ready(f_jax(matrix))
     r2 = jax.block_until_ready(f_brainevent(matrix))
@@ -434,7 +434,7 @@ def compare_spmm_performance(
     def f_brainevent(v):
         return v @ brainevent_csr
 
-    matrix = jax.block_until_ready(bst.random.randn(batch_size, scipy_csr.shape[0]))
+    matrix = jax.block_until_ready(brainstate.random.randn(batch_size, scipy_csr.shape[0]))
 
     r1 = jax.block_until_ready(f_jax(matrix))
     r2 = jax.block_until_ready(f_brainevent(matrix))
@@ -456,15 +456,15 @@ def compare_spmm_performance(
     print()
 
 
-# for filename in files:
-#     compare_spmv_performance(
-#         csr_matrices[filename],
-#         n_run=3 if brainstate.environ.get_platform() == 'cpu' else 30
-#     )
+for filename in files:
+    compare_spmv_performance(
+        csr_matrices[filename],
+        n_run=3 if brainstate.environ.get_platform() == 'cpu' else 30
+    )
 
 for filename in files:
     compare_spmm_performance(
         csr_matrices[filename],
-        n_run=3 if bst.environ.get_platform() == 'cpu' else 30,
+        n_run=3 if brainstate.environ.get_platform() == 'cpu' else 30,
         batch_size=100
     )
