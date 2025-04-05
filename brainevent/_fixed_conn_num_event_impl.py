@@ -20,10 +20,10 @@ from typing import Tuple, Union
 
 import brainunit as u
 import jax
-import jax.experimental.pallas as pl
 import jax.numpy as jnp
 from jax.interpreters import ad
 
+from ._compatible_import import pallas as pl
 from ._fixed_conn_num_float_impl import fixed_post_num_mv_p_call
 from ._fixed_conn_num_misc import generate_block_dim, check_shape
 from ._xla_custom_op import XLACustomKernel
