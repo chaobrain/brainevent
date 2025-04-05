@@ -22,12 +22,13 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
+from ._compatible_import import pallas as pl
 from ._misc import _csr_to_coo, general_batching_rule
 from ._typing import Kernel, Data, Indptr, Index, MatrixShape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
-
+from ._xla_custom_op_pallas import PallasKernelGenerator
 
 def _csr_matvec(
     data: Data,
@@ -464,96 +465,151 @@ def csrmm_cpu_kernel_generator(
 
     return mm
 
-
 def csrmm_gpu_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
-    indptr_info: jax.ShapeDtypeStruct,
+    shape: Sequence[int],
     transpose: bool,
     **kwargs
 ) -> Kernel:
-    import warp  # pylint: disable=import-outside-toplevel
 
-    weight_dtype = dtype_to_warp_type(weight_info.dtype)
-    spike_dtype = dtype_to_warp_type(vector_info.dtype)
-    indices_dtype = dtype_to_warp_type(indices_info.dtype)
-    indptr_dtype = dtype_to_warp_type(indptr_info.dtype)
+    n_pre, n_post = shape
+
+    n_k = vector_info.shape[1]
+    m = indices_info.shape[0]
 
     if weight_info.size == 1:
         if transpose:
             # csr.T @ B
-            @warp.kernel
-            def mm(
-                weights: warp.array1d(dtype=weight_dtype),
-                indices: warp.array1d(dtype=indices_dtype),
-                indptr: warp.array1d(dtype=indptr_dtype),
-                B: warp.array2d(dtype=spike_dtype),
-                _: warp.array2d(dtype=weight_dtype),
-                posts: warp.array2d(dtype=weight_dtype),
-            ):
-                k, i = warp.tid()
-                w = weights[0]
-                wsp = w * B[i, k]
-                for j in range(indptr[i], indptr[i + 1]):
-                    posts[indices[j], k] += wsp
+            def _kernel(ind_ref,ipt_ref,B_ref,_,out_ref):
+                k_pid = pl.program_id(0)
+                result = jnp.zeros(n_post, dtype=weight_info.dtype)
+                def body_fn(j, result):
+                    l = pl.load(ipt_ref,(j,))
+                    r = pl.load(ipt_ref,(j + 1,))
+                    v = pl.load(B_ref ,(j, k_pid))
+                    col_length = r - l
+                    y = v * jnp.ones(col_length, dtype=weight_info.dtype)
+                    ind = pl.load(ind_ref, (pl.dslice(l,r),))
+                    pl.atomic_add(result, ind, y)
+                    return result
+                jax.lax.fori_loop(0, n_pre, body_fn, result)
+                index = jnp.arange(n_post)
+                pl.store(out_ref, (index,k_pid), result)
+
+            kernel = pl.pallas_call(
+                _kernel,
+                out_shape=[
+                    jax.ShapeDtypeStruct((n_post, n_k),weight_info.dtype),
+                ],
+                grid=(
+                    n_k,
+                ),
+                input_output_aliases={3: 0},
+                interpret=False,
+            )
+            return lambda weight, indices, indptr, B, _: kernel(indices, indptr, B, _) * weight
 
         else:
             # csr @ B
-            @warp.kernel
-            def mm(
-                weights: warp.array1d(dtype=weight_dtype),
-                indices: warp.array1d(dtype=indices_dtype),
-                indptr: warp.array1d(dtype=indptr_dtype),
-                B: warp.array2d(dtype=spike_dtype),
-                _: warp.array2d(dtype=weight_dtype),
-                posts: warp.array2d(dtype=weight_dtype),
-            ):
-                k, i = warp.tid()
-                w = weights[0]
-                r = weights.dtype(0.)
-                for j in range(indptr[i], indptr[i + 1]):
-                    index = indices[j]
-                    r += w * B[index, k]
-                posts[i, k] = r
+            def _kernel(ind_ref, ipt_ref, B_ref, _, out_ref):
+                i_pid = pl.program_id(0)
+                result = jnp.zeros(n_k, dtype=weight_info.dtype)
+                l = pl.load(ipt_ref,(i_pid,))
+                r = pl.load(ipt_ref,(i_pid + 1,))
+                def body_fn(j, result):
+                    col = pl.load(ind_ref ,(j,))
+                    v = pl.load(B_ref, (col,pl.dslice(0,n_k)))
+                    result += v
+                    return result
+                jax.lax.fori_loop(l, r, body_fn,result)
+                index = jnp.arange(n_k)
+                pl.store(out_ref, (i_pid, index), result)
+
+
+            kernel = pl.pallas_call(
+                _kernel,
+                out_shape=[
+                    jax.ShapeDtypeStruct((n_pre, n_k), weight_info.dtype),
+                ],
+                grid=(
+                    n_pre,
+                ),
+                input_output_aliases={3: 0},
+                interpret=False,
+            )
+            return lambda weight, indices, indptr, B, _: kernel(indices, indptr, B, _) * weight
 
     else:
         if transpose:
             # csr.T @ B
-            @warp.kernel
-            def mm(
-                weights: warp.array1d(dtype=weight_dtype),
-                indices: warp.array1d(dtype=indices_dtype),
-                indptr: warp.array1d(dtype=indptr_dtype),
-                B: warp.array2d(dtype=spike_dtype),
-                _: warp.array2d(dtype=weight_dtype),
-                posts: warp.array2d(dtype=weight_dtype),
-            ):
-                k, i = warp.tid()
-                sp = B[i, k]
-                for j in range(indptr[i], indptr[i + 1]):
-                    posts[indices[j], k] += weights[j] * sp
+            def _kernel(w_ref, ind_ref, ipt_ref, B_ref, _, out_ref):
+                k_pid = pl.program_id(0)
+                result = jnp.zeros(n_post, dtype=weight_info.dtype)
+
+                def body_fn(j, result):
+                    l = pl.load(ipt_ref, (j,))
+                    r = pl.load(ipt_ref, (j + 1,))
+                    v = pl.load(B_ref, (j, k_pid))
+                    col_length = r - l
+                    w = pl.load(w_ref, (pl.dslice(l,r),))
+                    y = v * w
+                    ind = pl.load(ind_ref, (pl.dslice(l,r),))
+                    pl.atomic_add(result, ind, y)
+                    return result
+
+                jax.lax.fori_loop(0, n_pre, body_fn, result)
+                index = jnp.arange(n_post)
+                pl.store(out_ref, (index, k_pid), result)
+
+
+            kernel = pl.pallas_call(
+                _kernel,
+                out_shape=[
+                    jax.ShapeDtypeStruct((n_post, n_k), weight_info.dtype),
+                ],
+                grid=(
+                    n_k,
+                ),
+                input_output_aliases={4: 0},
+                interpret=False,
+            )
+            return lambda weight, indices, indptr, B, _: kernel(weight, indices, indptr, B, _)
 
         else:
             # csr @ B
 
-            @warp.kernel
-            def mm(
-                weights: warp.array1d(dtype=weight_dtype),
-                indices: warp.array1d(dtype=indices_dtype),
-                indptr: warp.array1d(dtype=indptr_dtype),
-                B: warp.array2d(dtype=spike_dtype),
-                _: warp.array2d(dtype=weight_dtype),
-                posts: warp.array2d(dtype=weight_dtype),
-            ):
-                k, i = warp.tid()
-                r = weights.dtype(0.)
-                for j in range(indptr[i], indptr[i + 1]):
-                    index = indices[j]
-                    r += weights[j] * B[index, k]
-                posts[i, k] = r
+            def _kernel(w_ref, ind_ref, ipt_ref, B_ref, _, out_ref):
+                i_pid = pl.program_id(0)
+                result = jnp.zeros(n_k, dtype=weight_info.dtype)
+                l = pl.load(ipt_ref, (i_pid,))
+                r = pl.load(ipt_ref, (i_pid + 1,))
 
-    return mm
+                def body_fn(j, result):
+                    col = pl.load(ind_ref, (j,))
+                    w = pl.load(w_ref, (j,))
+                    v = pl.load(B_ref, (col, pl.dslice(0, n_k)))
+                    result += w * v
+                    return result
+
+                jax.lax.fori_loop(l, r, body_fn, result)
+                index = jnp.arange(n_k)
+                pl.store(out_ref, (i_pid, index), result)
+
+
+            kernel = pl.pallas_call(
+                _kernel,
+                out_shape=[
+                    jax.ShapeDtypeStruct((n_pre, n_k), weight_info.dtype),
+                ],
+                grid=(
+                    n_pre,
+                ),
+                input_output_aliases={4: 0},
+                interpret=False,
+            )
+            return lambda weight, indices, indptr, B, _: kernel(weight, indices, indptr, B, _)
 
 
 def csrmm_jvp_left(
@@ -730,13 +786,8 @@ csrmm_p = XLACustomKernel(
         csrmm_cpu_kernel_generator,
         input_output_aliases={4: 0}
     ),
-    gpu_kernel=WarpKernelGenerator(
+    gpu_kernel=PallasKernelGenerator(
         csrmm_gpu_kernel_generator,
-        dim=lambda vector_info, indptr_info, transpose, **kwargs: (
-            tuple(reversed(vector_info.shape))
-            if transpose else
-            [vector_info.shape[1], indptr_info.shape[0] - 1]
-        ),
         input_output_aliases={4: 0}
     ),
 )
