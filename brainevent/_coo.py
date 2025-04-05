@@ -71,8 +71,6 @@ class COO(u.sparse.SparseMatrix):
     --------
     fromdense(cls, mat, *, nse=None, index_dtype=np.int32)
         Create a COO matrix from a dense matrix.
-    _sort_indices()
-        Return a copy of the COO matrix with sorted indices.
     with_data(data)
         Create a new COO matrix with the same structure but different data.
     todense()
@@ -326,29 +324,41 @@ class COO(u.sparse.SparseMatrix):
         obj.col = aux_data['col']
         return obj
 
-    def __abs__(self):
+    def _unitary_op(self, op):
+        """
+        Perform a unitary operation on the data of the COO matrix.
+
+        This method is used for unary operations like abs, neg, and pos.
+
+        Parameters
+        -----------
+        op : callable
+            The unary operation to apply to the data.
+
+        Returns
+        --------
+        COO
+            A new COO matrix with the result of applying the operation to the data.
+        """
         return COO(
-            (self.data.__abs__(), self.row, self.col),
+            (
+                op(self.data),
+                self.row,
+                self.col
+            ),
             shape=self.shape,
             rows_sorted=self._rows_sorted,
             cols_sorted=self._cols_sorted
         )
+
+    def __abs__(self):
+        return self._unitary_op(operator.abs)
 
     def __neg__(self):
-        return COO(
-            (-self.data, self.row, self.col),
-            shape=self.shape,
-            rows_sorted=self._rows_sorted,
-            cols_sorted=self._cols_sorted
-        )
+        return self._unitary_op(operator.neg)
 
     def __pos__(self):
-        return COO(
-            (self.data.__pos__(), self.row, self.col),
-            shape=self.shape,
-            rows_sorted=self._rows_sorted,
-            cols_sorted=self._cols_sorted
-        )
+        return self._unitary_op(operator.pos)
 
     def _binary_op(self, other, op):
         if isinstance(other, COO):
