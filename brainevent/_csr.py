@@ -220,14 +220,32 @@ class CSR(u.sparse.SparseMatrix):
         assert axes is None, "transpose does not support axes argument."
         return CSC((self.data, self.indices, self.indptr), shape=self.shape[::-1])
 
+    def _unitary_op(self, op):
+        """
+        Apply a unary operation to the data of the CSR matrix.
+
+        This method applies a given unary operation to the data array of the CSR matrix.
+
+        Parameters
+        ----------
+        op : callable
+            A unary operation to apply to the data array (e.g., abs, neg, pos).
+
+        Returns
+        -------
+        CSR
+            A new CSR matrix with the result of applying the operation to its data.
+        """
+        return CSR((op(self.data), self.indices, self.indptr), shape=self.shape)
+
     def __abs__(self):
-        return CSR((abs(self.data), self.indices, self.indptr), shape=self.shape)
+        return self._unitary_op(operator.abs)
 
     def __neg__(self):
-        return CSR((-self.data, self.indices, self.indptr), shape=self.shape)
+        return self._unitary_op(operator.neg)
 
     def __pos__(self):
-        return CSR((self.data.__pos__(), self.indices, self.indptr), shape=self.shape)
+        return self._unitary_op(operator.pos)
 
     def _binary_op(self, other, op):
         if isinstance(other, CSR):
@@ -693,14 +711,32 @@ class CSC(u.sparse.SparseMatrix):
         assert axes is None
         return CSR((self.data, self.indices, self.indptr), shape=self.shape[::-1])
 
+    def _unitary_op(self, op):
+        """
+        Apply a unary operation to the data of the CSC matrix.
+
+        This method applies a given unary operation to the data array of the CSC matrix.
+
+        Parameters
+        ----------
+        op : callable
+            A unary operation to apply to the data array (e.g., abs, neg, pos).
+
+        Returns
+        -------
+        CSC
+            A new CSC matrix with the result of applying the operation to its data.
+        """
+        return CSC((op(self.data), self.indices, self.indptr), shape=self.shape)
+
     def __abs__(self):
-        return CSC((abs(self.data), self.indices, self.indptr), shape=self.shape)
+        return self._unitary_op(operator.abs)
 
     def __neg__(self):
-        return CSC((-self.data, self.indices, self.indptr), shape=self.shape)
+        return self._unitary_op(operator.neg)
 
     def __pos__(self):
-        return CSC((self.data.__pos__(), self.indices, self.indptr), shape=self.shape)
+        return self._unitary_op(operator.pos)
 
     def _binary_op(self, other, op):
         if isinstance(other, CSC):

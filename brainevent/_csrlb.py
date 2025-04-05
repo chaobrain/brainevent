@@ -15,7 +15,6 @@
 
 
 import importlib.util
-import operator
 from typing import Union, Sequence, Tuple
 
 import brainunit as u
@@ -221,14 +220,23 @@ class CSR_LB(CSR):
         assert axes is None, "transpose does not support axes argument."
         return CSC_LB((self.data, self.indices, self.indptr, self.ids), shape=self.shape[::-1])
 
-    def __abs__(self):
-        return CSR_LB((abs(self.data), self.indices, self.indptr, self.ids), shape=self.shape)
+    def _unitary_op(self, op):
+        """
+        Apply a unary operation to the data of the CSR matrix.
 
-    def __neg__(self):
-        return CSR_LB((-self.data, self.indices, self.indptr, self.ids), shape=self.shape)
+        This method is used internally to apply unary operations like abs, neg, etc.
 
-    def __pos__(self):
-        return CSR_LB((self.data.__pos__(), self.indices, self.indptr, self.ids), shape=self.shape)
+        Parameters
+        ----------
+        op : function
+            The unary operation to apply to the data array.
+
+        Returns
+        -------
+        CSR_LB
+            A new CSR matrix with the result of applying the unary operation to its data.
+        """
+        return CSR_LB((op(self.data), self.indices, self.indptr, self.ids), shape=self.shape)
 
     def _binary_op(self, other, op):
         if isinstance(other, CSR):
@@ -267,42 +275,6 @@ class CSR_LB(CSR):
             return CSR_LB((op(other, self.data), self.indices, self.indptr, self.ids), shape=self.shape)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
-
-    def __mul__(self, other: Union[jax.Array, u.Quantity]) -> 'CSR':
-        return self._binary_op(other, operator.mul)
-
-    def __rmul__(self, other: Union[jax.Array, u.Quantity]) -> 'CSR':
-        return self._binary_rop(other, operator.mul)
-
-    def __div__(self, other: Union[jax.Array, u.Quantity]) -> 'CSR':
-        return self._binary_op(other, operator.truediv)
-
-    def __rdiv__(self, other: Union[jax.Array, u.Quantity]) -> 'CSR':
-        return self._binary_rop(other, operator.truediv)
-
-    def __truediv__(self, other) -> 'CSR':
-        return self.__div__(other)
-
-    def __rtruediv__(self, other) -> 'CSR':
-        return self.__rdiv__(other)
-
-    def __add__(self, other) -> 'CSR':
-        return self._binary_op(other, operator.add)
-
-    def __radd__(self, other) -> 'CSR':
-        return self._binary_rop(other, operator.add)
-
-    def __sub__(self, other) -> 'CSR':
-        return self._binary_op(other, operator.sub)
-
-    def __rsub__(self, other) -> 'CSR':
-        return self._binary_rop(other, operator.sub)
-
-    def __mod__(self, other) -> 'CSR':
-        return self._binary_op(other, operator.mod)
-
-    def __rmod__(self, other) -> 'CSR':
-        return self._binary_rop(other, operator.mod)
 
     def __matmul__(self, other):
         # csr @ other
@@ -542,40 +514,6 @@ class CSC_LB(CSC):
         csc = u.sparse.csr_fromdense(mat.T, nse=nse, index_dtype=index_dtype).T
         return CSC_LB((csc.data, csc.indices, csc.indptr), shape=csc.shape)
 
-    @classmethod
-    def _empty(cls, shape, *, dtype=None, index_dtype='int32'):
-        """
-        Create an empty CSC instance. Public method is sparse.empty().
-    
-        This method initializes an empty CSC matrix with the specified shape and data types.
-    
-        Parameters
-        -----------
-        shape : tuple
-            The shape of the matrix as a tuple (rows, columns).
-        dtype : dtype, optional
-            The data type for the matrix values. If None, the default dtype is used.
-        index_dtype : dtype, optional
-            The data type for index arrays (default is 'int32').
-    
-        Returns
-        --------
-        CSC_LB
-            An empty CSC matrix instance with the specified shape and data types.
-    
-        Raises
-        -------
-        ValueError
-            If the provided shape does not represent a 2-dimensional matrix.
-        """
-        shape = tuple(shape)
-        if len(shape) != 2:
-            raise ValueError(f"CSC must have ndim=2; got {shape=}")
-        data = jnp.empty(0, dtype)
-        indices = jnp.empty(0, index_dtype)
-        indptr = jnp.zeros(shape[1] + 1, index_dtype)
-        return cls((data, indices, indptr), shape=shape)
-
     def with_data(self, data: Union[jax.Array, u.Quantity]) -> 'CSC_LB':
         """
         Create a new CSC matrix with updated data while keeping the same structure.
@@ -602,35 +540,7 @@ class CSC_LB(CSC):
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
-        return CSC_LB((data, self.indices, self.indptr), shape=self.shape)
-
-    def todense(self):
-        """
-        Convert the CSC matrix to a dense matrix.
-    
-        This method transforms the compressed sparse column (CSC) representation
-        into a full dense matrix.
-    
-        Returns
-        --------
-        array_like
-            A dense matrix representation of the CSC matrix.
-        """
-        return self.T.todense().T
-
-    @property
-    def T(self):
-        """
-        Get the transpose of the CSC matrix.
-    
-        This property returns the transpose of the matrix without copying the data.
-    
-        Returns
-        --------
-        CSR
-            The transpose of the CSC matrix as a CSR (Compressed Sparse Row) matrix.
-        """
-        return self.transpose()
+        return CSC_LB((data, self.indices, self.indptr, self.ids), shape=self.shape)
 
     def transpose(self, axes=None):
         """
@@ -655,116 +565,60 @@ class CSC_LB(CSC):
             If axes is not None, as this implementation doesn't support custom axis ordering.
         """
         assert axes is None
-        return CSR_LB((self.data, self.indices, self.indptr), shape=self.shape[::-1])
+        return CSR_LB((self.data, self.indices, self.indptr, self.ids), shape=self.shape[::-1])
 
-    def __abs__(self):
-        return CSC_LB((abs(self.data), self.indices, self.indptr), shape=self.shape)
+    def _unitary_op(self, op):
+        """
+        Apply a unary operation to the data of the CSC matrix.
 
-    def __neg__(self):
-        return CSC_LB((-self.data, self.indices, self.indptr), shape=self.shape)
+        This method is used internally to apply unary operations like abs, neg, etc.
 
-    def __pos__(self):
-        return CSC_LB((self.data.__pos__(), self.indices, self.indptr), shape=self.shape)
+        Parameters
+        ----------
+        op : function
+            The unary operation to apply to the data array.
+
+        Returns
+        -------
+        CSC_LB
+            A new CSC matrix with the result of applying the unary operation to its data.
+        """
+        return CSC_LB((op(self.data), self.indices, self.indptr, self.ids), shape=self.shape)
 
     def _binary_op(self, other, op):
         if isinstance(other, CSC_LB):
             if id(other.indices) == id(self.indices) and id(other.indptr) == id(self.indptr):
-                return CSC_LB(
-                    (op(self.data, other.data),
-                     self.indices,
-                     self.indptr),
-                    shape=self.shape
-                )
+                return CSC_LB((op(self.data, other.data), self.indices, self.indptr, self.ids), shape=self.shape)
+
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return CSC_LB(
-                (op(self.data, other),
-                 self.indices,
-                 self.indptr),
-                shape=self.shape
-            )
+            return CSC_LB((op(self.data, other), self.indices, self.indptr, self.ids), shape=self.shape)
         elif other.ndim == 2 and other.shape == self.shape:
             cols, rows = _csr_to_coo(self.indices, self.indptr)
             other = other[rows, cols]
-            return CSC_LB(
-                (op(self.data, other),
-                 self.indices,
-                 self.indptr),
-                shape=self.shape
-            )
+            return CSC_LB((op(self.data, other), self.indices, self.indptr, self.ids), shape=self.shape)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
     def _binary_rop(self, other, op):
         if isinstance(other, CSC_LB):
             if id(other.indices) == id(self.indices) and id(other.indptr) == id(self.indptr):
-                return CSC_LB(
-                    (op(other.data, self.data),
-                     self.indices,
-                     self.indptr),
-                    shape=self.shape
-                )
+                return CSC_LB((op(other.data, self.data), self.indices, self.indptr, self.ids), shape=self.shape)
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return CSC_LB(
-                (op(other, self.data),
-                 self.indices,
-                 self.indptr),
-                shape=self.shape
-            )
+            return CSC_LB((op(other, self.data), self.indices, self.indptr, self.ids), shape=self.shape)
         elif other.ndim == 2 and other.shape == self.shape:
             cols, rows = _csr_to_coo(self.indices, self.indptr)
             other = other[rows, cols]
-            return CSC_LB(
-                (op(other, self.data),
-                 self.indices,
-                 self.indptr),
-                shape=self.shape
-            )
+            return CSC_LB((op(other, self.data), self.indices, self.indptr, self.ids), shape=self.shape)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
-
-    def __mul__(self, other: Union[jax.Array, u.Quantity]) -> 'CSC_LB':
-        return self._binary_op(other, operator.mul)
-
-    def __rmul__(self, other: Union[jax.Array, u.Quantity]) -> 'CSC_LB':
-        return self._binary_rop(other, operator.mul)
-
-    def __div__(self, other: Union[jax.Array, u.Quantity]) -> 'CSC_LB':
-        return self._binary_op(other, operator.truediv)
-
-    def __rdiv__(self, other: Union[jax.Array, u.Quantity]) -> 'CSC_LB':
-        return self._binary_rop(other, operator.truediv)
-
-    def __truediv__(self, other) -> 'CSC_LB':
-        return self.__div__(other)
-
-    def __rtruediv__(self, other) -> 'CSC_LB':
-        return self.__rdiv__(other)
-
-    def __add__(self, other) -> 'CSC_LB':
-        return self._binary_op(other, operator.add)
-
-    def __radd__(self, other) -> 'CSC_LB':
-        return self._binary_rop(other, operator.add)
-
-    def __sub__(self, other) -> 'CSC_LB':
-        return self._binary_op(other, operator.sub)
-
-    def __rsub__(self, other) -> 'CSC_LB':
-        return self._binary_rop(other, operator.sub)
-
-    def __mod__(self, other) -> 'CSC_LB':
-        return self._binary_op(other, operator.mod)
-
-    def __rmod__(self, other) -> 'CSC_LB':
-        return self._binary_rop(other, operator.mod)
 
     def __matmul__(self, other):
         if isinstance(other, JAXSparse):
@@ -881,13 +735,13 @@ class CSC_LB(CSC):
         into a form suitable for transformation and reconstruction.
 
         Returns
-        --------
+        -------
         tuple
             A tuple containing two elements:
             - A tuple with the CSC matrix's data as the only element.
-            - A tuple with the CSC matrix's indices, indptr, and shape.
+            - A tuple with the CSC matrix's indices, indptr, ids, and shape.
         """
-        return (self.data,), (self.indices, self.indptr, self.shape)
+        return (self.data,), (self.indices, self.indptr, self.ids, self.shape)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
@@ -898,17 +752,17 @@ class CSC_LB(CSC):
         a CSC matrix from its flattened representation.
 
         Parameters
-        -----------
+        ----------
         aux_data : tuple
-            A tuple containing the CSC matrix's indices, indptr, and shape.
+            A tuple containing the CSC matrix's indices, indptr, ids, and shape.
         children : tuple
             A tuple containing the CSC matrix's data as its only element.
 
         Returns
-        --------
+        -------
         CSC_LB
             A new CSC matrix instance reconstructed from the flattened data.
         """
         data, = children
-        indices, indptr, shape = aux_data
-        return CSC_LB([data, indices, indptr], shape=shape)
+        indices, indptr, ids, shape = aux_data
+        return CSC_LB([data, indices, indptr, ids], shape=shape)
