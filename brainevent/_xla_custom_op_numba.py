@@ -23,19 +23,10 @@ import threading
 from contextlib import contextmanager
 from typing import Callable, Dict, Union
 
-import jax
 from jax.interpreters import mlir
 from jaxlib.hlo_helpers import custom_call
 
-if jax.__version_info__ < (0, 4, 35):
-    from jax.lib import xla_client
-else:
-    import jax.extend as je
-
-if jax.__version_info__ < (0, 4, 38):
-    from jax.core import Primitive
-else:
-    from jax.extend.core import Primitive
+from ._compatible_import import register_custom_call, Primitive
 
 __all__ = [
     'NumbaKernelGenerator',
@@ -189,10 +180,7 @@ def numba_cpu_custom_call_target(output_ptrs, input_ptrs):
         PyCapsule_Destructor(0)
     )
 
-    if jax.__version_info__ < (0, 4, 35):
-        xla_client.register_custom_call_target(target_name, capsule, "cpu")
-    else:
-        je.ffi.register_ffi_target(target_name, capsule, "cpu", api_version=0)
+    register_custom_call(target_name, capsule, "cpu")
 
     # call
     return custom_call(
