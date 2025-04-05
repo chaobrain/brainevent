@@ -31,6 +31,7 @@ from ._compatible_import import register_custom_call, Primitive
 __all__ = [
     'NumbaKernelGenerator',
     'set_numba_environ',
+    'numba_environ_context',
 ]
 
 numba_installed = importlib.util.find_spec('numba') is not None
@@ -48,7 +49,7 @@ numba_environ = NumbaEnvironment()
 
 
 @contextmanager
-def set_numba_environ(
+def numba_environ_context(
     parallel_if_possible: Union[int, bool] = None,
     **kwargs
 ):
@@ -74,6 +75,27 @@ def set_numba_environ(
     finally:
         numba_environ.parallel = old_parallel
         numba_environ.setting = old_setting
+
+
+@contextmanager
+def set_numba_environ(
+    parallel_if_possible: Union[int, bool] = None,
+    **kwargs
+):
+    """
+    Enable Numba parallel execution if possible.
+    """
+    numba_environ.setting.update(kwargs)
+    if parallel_if_possible is not None:
+        if isinstance(parallel_if_possible, bool):
+            numba_environ.parallel = parallel_if_possible
+        elif isinstance(parallel_if_possible, int):
+            numba_environ.parallel = True
+            assert parallel_if_possible > 0, 'The number of threads must be a positive integer.'
+            import numba  # pylint: disable=import-outside-toplevel
+            numba.set_num_threads(parallel_if_possible)
+        else:
+            raise ValueError('The argument `parallel_if_possible` must be a boolean or an integer.')
 
 
 @dataclasses.dataclass(frozen=True)

@@ -15,23 +15,17 @@
 
 import time
 
+import brainstate as bst
 import jax
 import jax.numpy as jnp
-import scipy.io
 from jax.experimental.sparse import CSR
+from scipy.io import mmread
 from scipy.sparse import csr_matrix, coo_matrix
 
 import brainevent
-import brainstate as bst
 
 # brainstate.environ.set(platform='cpu')
 bst.environ.set(platform='gpu')
-
-
-def load_sparse_matrix(filename):
-    matrix = scipy.io.mmread(filename)
-    return matrix
-
 
 files = [
     'matrices/suitesparse/Andrianov/mip1/mip1.mtx',
@@ -48,7 +42,7 @@ files = [
 csr_matrices = dict()
 for filename in files:
     print(f'Loading {filename} ...')
-    mat = load_sparse_matrix(filename)
+    mat = mmread(filename)
     if isinstance(mat, coo_matrix):
         csr_matrices[filename] = mat.tocsr()
     if isinstance(mat, csr_matrix):
@@ -195,8 +189,8 @@ def compare_spmv_performance(scipy_csr, n_run: int = 10):
     indices = jnp.asarray(scipy_csr.indices)
     indptr = jnp.asarray(scipy_csr.indptr)
 
-    jax_csr = CSR([data, indices, indptr], shape=scipy_csr.shape)
-    brainevent_csr = brainevent.CSR([data, indices, indptr], shape=scipy_csr.shape)
+    jax_csr = CSR((data, indices, indptr), shape=scipy_csr.shape)
+    brainevent_csr = brainevent.CSR((data, indices, indptr), shape=scipy_csr.shape)
 
     @jax.jit
     def f_jax(v):
