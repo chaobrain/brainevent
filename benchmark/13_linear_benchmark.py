@@ -20,7 +20,7 @@ os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 import jax
 
 import time
-import brainstate as bst
+import brainstate
 import brainevent
 
 
@@ -28,8 +28,8 @@ import brainevent
 
 
 def forward(n_pre, n_post, spk_prob, as_float: bool):
-    linear = brainevent.nn.Linear(n_pre, n_post, weight=bst.init.KaimingUniform(), block_size=256)
-    spike = (bst.random.rand(n_pre) < spk_prob)
+    linear = brainevent.nn.Linear(n_pre, n_post, weight=brainstate.init.KaimingUniform(), block_size=256)
+    spike = (brainstate.random.rand(n_pre) < spk_prob)
 
     if as_float:
         spike = spike.astype(float)
@@ -65,7 +65,7 @@ def forward(n_pre, n_post, spk_prob, as_float: bool):
 
 def benchmark_forward():
     for n_pre, n_post in [
-        (1000, 1000),
+        # (1000, 1000),
         (1000, 10000),
         (10000, 10000),
         (10000, 1000),

@@ -15,13 +15,12 @@
 
 from __future__ import annotations
 
+import jax
 import brainstate
-import jax.numpy
 import jax.numpy as jnp
 import pytest
 
 import brainevent
-import brainevent.nn
 
 pytest.skip("Skipping this test", allow_module_level=True)
 

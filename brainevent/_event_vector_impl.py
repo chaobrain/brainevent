@@ -42,6 +42,9 @@ def event_mv(
         float_as_event: If True, treat the event as a float.
         transpose: If True, transpose the matrix.
     """
+    with jax.ensure_compile_time_eval():
+        weights = u.math.asarray(weights)
+        spikes = u.math.asarray(spikes)
     weight_val, weight_unit = u.split_mantissa_unit(weights)
     spk_val, spk_unit = u.split_mantissa_unit(spikes)
     r = event_liner_p_call(weight_val, spk_val, float_as_event=float_as_event, transpose=transpose)

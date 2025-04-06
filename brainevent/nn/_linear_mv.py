@@ -20,9 +20,9 @@ from typing import Union, Callable, Optional
 import brainstate
 import brainunit as u
 import jax
-import jax.numpy as jnp
 
-from brainevent._event_vector_impl import event_liner_p_call
+from brainevent._event import EventArray
+from brainevent._typing import Data
 
 __all__ = [
     'Linear',
@@ -73,55 +73,8 @@ class Linear(brainstate.nn.Module):
         weight = brainstate.init.param(weight, (self.in_size[-1], self.out_size[-1]), allow_none=False)
         self.weight = param_type(weight)
 
-    def update(self, spk: jax.Array) -> Union[jax.Array, u.Quantity]:
+    def update(self, spk: jax.Array) -> Data:
         weight = self.weight.value
         if u.math.size(weight) == 1:
             return u.math.ones(self.out_size) * (u.math.sum(spk) * weight)
-
-        return event_linear(spk, weight, transpose=True, float_as_event=self.float_as_event)
-
-
-def event_linear(spk, weight, *, transpose, float_as_event) -> Union[jax.Array, u.Quantity]:
-    """
-    The event-driven linear computation.
-
-    Parameters
-    ----------
-    weight : brainunit.Quantity or jax.Array
-        Maximum synaptic conductance.
-    spk : jax.Array
-        Spike events.
-    transpose : bool
-        Block size for parallel computation.
-    float_as_event : bool
-        Whether to treat float as event.
-
-    Returns
-    -------
-    post_data : brainunit.Quantity or jax.Array
-        Post synaptic data.
-    """
-    with jax.ensure_compile_time_eval():
-        weight = u.math.asarray(weight)
-        unit = u.get_unit(weight)
-        weight = u.get_mantissa(weight)
-        spk = jnp.asarray(spk)
-
-    def mv(spk_vector):
-        assert spk_vector.ndim == 1, f"spk must be 1D. Got: {spk.ndim}"
-        return event_liner_p_call(
-            spk,
-            weight,
-            transpose=transpose,
-            float_as_event=float_as_event,
-        )
-
-    assert spk.ndim >= 1, f"spk must be at least 1D. Got: {spk.ndim}"
-    assert weight.ndim in [2, 0], f"weight must be 2D or 0D. Got: {weight.ndim}"
-
-    if spk.ndim == 1:
-        [post_data] = mv(spk)
-    else:
-        [post_data] = jax.vmap(mv)(u.math.reshape(spk, (-1, spk.shape[-1])))
-        post_data = u.math.reshape(post_data, spk.shape[:-1] + post_data.shape[-1:])
-    return u.maybe_decimal(u.Quantity(post_data, unit=unit))
+        return EventArray(spk) @ weight
