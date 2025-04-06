@@ -41,10 +41,6 @@ class Linear(brainstate.nn.Module):
         Number of post-synaptic neurons, i.e., output size.
     weight : float or callable or jax.Array or brainunit.Quantity
         Maximum synaptic conductance.
-    block_size : int, optional
-        Block size for parallel computation.
-    float_as_event : bool, optional
-        Whether to treat float as event.
     name : str, optional
         Name of the module.
     """
@@ -56,8 +52,6 @@ class Linear(brainstate.nn.Module):
         in_size: brainstate.typing.Size,
         out_size: brainstate.typing.Size,
         weight: Union[Callable, brainstate.typing.ArrayLike],
-        float_as_event: bool = True,
-        block_size: int = 64,
         name: Optional[str] = None,
         param_type: type = brainstate.ParamState,
     ):
@@ -66,8 +60,6 @@ class Linear(brainstate.nn.Module):
         # network parameters
         self.in_size = in_size
         self.out_size = out_size
-        self.float_as_event = float_as_event
-        self.block_size = block_size
 
         # maximum synaptic conductance
         weight = brainstate.init.param(weight, (self.in_size[-1], self.out_size[-1]), allow_none=False)
