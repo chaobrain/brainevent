@@ -38,7 +38,7 @@ __all__ = [
 
 
 def _jitc_csr_matvec_homo(
-    weight: Data,
+    weight: Data | float,
     conn_prob: float,
     v: Data,
     seed: Optional[int] = None,
@@ -73,11 +73,11 @@ def _jitc_csr_matvec_homo(
 
     Parameters
     ----------
-    weight: float
+    weight: Array, ndarray, Quantity, float
         The value of the random matrix.
     conn_prob: float
         The connection probability.
-    v: Array, ndarray
+    v: Array, ndarray, Quantity
         The vector.
     seed: int
         The random number generation seed.
@@ -92,12 +92,12 @@ def _jitc_csr_matvec_homo(
 
     Returns
     -------
-    out: Array, ndarray
+    out: Array, ndarray, Quantity
         The output of :math:`y = M @ v`.
     """
     conn_len = jnp.ceil(1.0 / conn_prob) * 2 - 1
     clen = jnp.asarray(jnp.atleast_1d(conn_len), dtype=jnp.int32)
-    if seed is not None:
+    if seed is None:
         with jax.ensure_compile_time_eval():
             seed = np.random.randint(0, int(1e8), 1)
     seed = jnp.asarray(seed, dtype=jnp.uint32)
@@ -418,11 +418,9 @@ def _jitc_csr_matmat_normal(
 # jitc csrmv homo
 
 def jitc_csrmv_homo_cpu_kernel_generator(
-    weight: Data,
-    clen: float,
-    shape: Tuple[int, int],
     transpose: bool = False,
     outdim_parallel: bool = True,
+    **kwargs
 ) -> Kernel:
     r"""Generate the CPU kernel for the :func:`_jitc_csr_matvec_homo` operation.
     Parameters
@@ -446,14 +444,43 @@ def jitc_csrmv_homo_cpu_kernel_generator(
     """
     import numba    # pylint: disable=import-outside-toplevel
 
-    match (outdim_parallel):
+    if outdim_parallel:
         # outdim_parallel=True
-        case True:
-            def kernel(weight, clen, v, seed, _, posts):
-                ...
-        case False:
-            def kernel(weight, clen, v, seed, _, posts):
-                ...
+        def kernel(weight, clen, v, seed, _, posts):
+            num_row = posts.shape[0]
+            num_col = v.shape[0]
+            weight0 = weight[0]
+            clen0 = clen[0]
+            seed0 = seed[0]
+            np.random.seed(seed0)
+
+            for row_i in range(num_row):
+                total = 0.0
+                col_i = np.random.randint(0, clen0 - 1)
+
+                while col_i < num_col:
+                    total += v[col_i]
+                    col_i += np.random.randint(1, clen0)
+
+                posts[row_i] = total * weight0
+    else:
+        # outdim_parallel=False
+        def kernel(weight, clen, v, seed, _, posts):
+            num_row = posts.shape[0]
+            num_col = v.shape[0]
+            weight0 = weight[0]
+            clen0 = clen[0]
+            seed0 = seed[0]
+            np.random.seed(seed0)
+
+            for col_i in range(num_col):
+                total = 0.0
+                row_i = np.random.randint(0, clen0 - 1)
+
+                temp = v[col_i] * weight0
+                while row_i < num_row:
+                    posts[row_i] += temp
+                    col_i += np.random.randint(1, clen0)
 
     kernel = numba.njit(**numba_environ.setting)(kernel)
     return kernel
@@ -542,7 +569,7 @@ def jitc_csrmv_homo_batching(
 
 def jitc_csrmv_homo_p_call(
     weight,
-    conn_prob,
+    clen,
     v,
     seed,
     *,
@@ -560,7 +587,7 @@ def jitc_csrmv_homo_p_call(
 
     return jitc_csrmv_homo_p(
         weight,
-        conn_prob,
+        clen,
         v,
         seed,
         jnp.zeros(out_info.shape, out_info.dtype),
