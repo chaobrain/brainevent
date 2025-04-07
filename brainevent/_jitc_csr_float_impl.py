@@ -12,9 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Sequence
 
-from ._typing import Data, Kernel
+import brainunit as u
+import jax
+import numpy as np
+from jax import numpy as jnp
+from jax.interpreters import ad
+
+from ._typing import Kernel, Data, Row, Col, MatrixShape
+from ._xla_custom_op import XLACustomKernel
+from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
+from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 
 # -*- coding: utf-8 -*-
 
@@ -86,7 +95,34 @@ def _jitc_csr_matvec_homo(
     out: Array, ndarray
         The output of :math:`y = M @ v`.
     """
-    ...
+    conn_len = jnp.ceil(1.0 / conn_prob) * 2 - 1
+    clen = jnp.asarray(jnp.atleast_1d(conn_len), dtype=jnp.int32)
+    if seed is not None:
+        with jax.ensure_compile_time_eval():
+            seed = np.random.randint(0, int(1e8), 1)
+    seed = jnp.asarray(seed, dtype=jnp.uint32)
+    seed = jnp.atleast_1d(seed)
+    return _raw_jitc_csr_matvec_homo(
+        weight, clen, v, seed,
+        shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
+    )
+
+
+def _raw_jitc_csr_matvec_homo(
+    weight: Data,
+    clen: Data,
+    v: Data,
+    seed: Optional[Data],
+    *,
+    shape: Tuple[int, int],
+    transpose: bool = False,
+    outdim_parallel: bool = True,
+) -> Data:
+    weight, unitd = u.split_mantissa_unit(weight)
+    v, unitv = u.split_mantissa_unit(v)
+    res = jitc_csrmv_homo_p_call(weight, clen, v, seed, shape=shape, transpose=transpose,
+                                 outdim_parallel=outdim_parallel)
+    return u.maybe_decimal(res * unitd * unitv)
 
 
 def _jitc_csr_matvec_uniform(
@@ -408,7 +444,20 @@ def jitc_csrmv_homo_cpu_kernel_generator(
     kernel: Kernel
         The CPU kernel.
     """
-    ...
+    import numba    # pylint: disable=import-outside-toplevel
+
+    match (outdim_parallel):
+        # outdim_parallel=True
+        case True:
+            def kernel(weight, clen, v, seed, _, posts):
+                ...
+        case False:
+            def kernel(weight, clen, v, seed, _, posts):
+                ...
+
+    kernel = numba.njit(**numba_environ.setting)(kernel)
+    return kernel
+
 
 
 
@@ -490,6 +539,48 @@ def jitc_csrmv_homo_batching(
     **kwargs
 ):
     ...
+
+def jitc_csrmv_homo_p_call(
+    weight,
+    conn_prob,
+    v,
+    seed,
+    *,
+    shape: Sequence[int],
+    transpose: bool,
+    outdim_parallel: bool,
+):
+    weight = jnp.asarray([weight])
+
+    out_info = (
+        jax.ShapeDtypeStruct([shape[1]], weight.dtype)
+        if transpose else
+        jax.ShapeDtypeStruct([shape[0]], weight.dtype)
+    )
+
+    return jitc_csrmv_homo_p(
+        weight,
+        conn_prob,
+        v,
+        seed,
+        jnp.zeros(out_info.shape, out_info.dtype),
+        outs=[out_info]
+    )
+
+jitc_csrmv_homo_p = XLACustomKernel(
+    'jitc_csrmv_homo',
+    cpu_kernel=NumbaKernelGenerator(jitc_csrmv_homo_cpu_kernel_generator, input_output_aliases={4: 0}),
+    gpu_kernel=WarpKernelGenerator(
+        jitc_csrmv_homo_gpu_kernel_generator,
+        # TODO: dim number
+        # dim=lambda
+        input_output_aliases={4: 0}
+    )
+)
+
+jitc_csrmv_homo_p.defjvp(jitc_csrmv_homo_jvp_weights, None, None, jitc_csrmv_homo_jvp_v)
+jitc_csrmv_homo_p.def_transpose_rule(jitc_csrmv_homo_transpose_rules)
+jitc_csrmv_homo_p.def_batching_rule(jitc_csrmv_homo_batching)
 
 # jitc csrmv uniform
 
@@ -611,6 +702,35 @@ def jitc_csrmv_uniform_batching(
 ):
     ...
 
+
+def jitc_csrmv_uniform_p_call(
+    w_low,
+    w_high,
+    clen,
+    v,
+    seed,
+    *,
+    shape: Sequence[int],
+    transpose: bool,
+    outdim_parallel: bool,
+):
+    ...
+
+jitc_csrmv_uniform_p = XLACustomKernel(
+    'jitc_csrmv_uniform',
+    cpu_kernel=NumbaKernelGenerator(jitc_csrmv_uniform_cpu_kernel_generator, input_output_aliases={5: 0}),
+    gpu_kernel=WarpKernelGenerator(
+        jitc_csrmv_uniform_gpu_kernel_generator,
+        # TODO: dim number
+        # dim=lambda
+        input_output_aliases={5: 0}
+    )
+)
+
+jitc_csrmv_uniform_p.defjvp(jitc_csrmv_uniform_jvp_weights, None, None, jitc_csrmv_uniform_jvp_v)
+jitc_csrmv_uniform_p.def_transpose_rule(jitc_csrmv_uniform_transpose_rules)
+jitc_csrmv_uniform_p.def_batching_rule(jitc_csrmv_uniform_batching)
+
 # jitc csrmv normal
 
 def jitc_csrmv_normal_cpu_kernel_generator(
@@ -731,6 +851,34 @@ def jitc_csrmv_normal_batching(
 ):
     ...
 
+def jitc_csrmv_normal_p_call(
+    w_mu,
+    w_sigma,
+    clen,
+    v,
+    seed,
+    *,
+    shape: Sequence[int],
+    transpose: bool,
+    outdim_parallel: bool,
+):
+    ...
+
+jitc_csrmv_normal_p = XLACustomKernel(
+    'jitc_csrmv_normal',
+    cpu_kernel=NumbaKernelGenerator(jitc_csrmv_normal_cpu_kernel_generator, input_output_aliases={5: 0}),
+    gpu_kernel=WarpKernelGenerator(
+        jitc_csrmv_normal_gpu_kernel_generator,
+        # TODO: dim number
+        # dim=lambda
+        input_output_aliases={5: 0}
+    )
+)
+
+jitc_csrmv_normal_p.defjvp(jitc_csrmv_normal_jvp_weights, None, None, jitc_csrmv_normal_jvp_v)
+jitc_csrmv_normal_p.def_transpose_rule(jitc_csrmv_normal_transpose_rules)
+jitc_csrmv_normal_p.def_batching_rule(jitc_csrmv_normal_batching)
+
 
 # Kernel generators for JIT connection SPMM
 
@@ -844,6 +992,34 @@ def jitc_csrmm_homo_batching(
     **kwargs
 ):
     ...
+
+def jitc_csrmm_homo_p_call(
+    weight,
+    clen,
+    v,
+    seed,
+    *,
+    shape: Sequence[int],
+    transpose: bool,
+    outdim_parallel: bool,
+):
+    ...
+
+jitc_csrmm_homo_p = XLACustomKernel(
+    'jitc_csrmm_homo',
+    cpu_kernel=NumbaKernelGenerator(jitc_csrmm_homo_cpu_kernel_generator, input_output_aliases={4: 0}),
+    gpu_kernel=WarpKernelGenerator(
+        jitc_csrmm_homo_gpu_kernel_generator,
+        # TODO: dim number
+        # dim=lambda
+        input_output_aliases={4: 0}
+    )
+)
+
+jitc_csrmm_homo_p.defjvp(jitc_csrmm_homo_jvp_left, None, None, jitc_csrmm_homo_jvp_right)
+jitc_csrmm_homo_p.def_transpose_rule(jitc_csrmm_homo_transpose_rules)
+jitc_csrmm_homo_p.def_batching_rule(jitc_csrmm_homo_batching)
+
 
 # jitc csrmm uniform
 
@@ -964,6 +1140,35 @@ def jitc_csrmm_uniform_batching(
     **kwargs
 ):
     ...
+
+
+def jitc_csrmm_uniform_p_call(
+    w_low,
+    w_high,
+    clen,
+    v,
+    seed,
+    *,
+    shape: Sequence[int],
+    transpose: bool,
+    outdim_parallel: bool,
+):
+    ...
+
+jitc_csrmm_uniform_p = XLACustomKernel(
+    'jitc_csrmm_uniform',
+    cpu_kernel=NumbaKernelGenerator(jitc_csrmm_uniform_cpu_kernel_generator, input_output_aliases={5: 0}),
+    gpu_kernel=WarpKernelGenerator(
+        jitc_csrmm_uniform_gpu_kernel_generator,
+        # TODO: dim number
+        # dim=lambda
+        input_output_aliases={5: 0}
+    )
+)
+
+jitc_csrmm_uniform_p.defjvp(jitc_csrmm_uniform_jvp_left, None, None, jitc_csrmm_uniform_jvp_right)
+jitc_csrmm_uniform_p.def_transpose_rule(jitc_csrmm_uniform_transpose_rules)
+jitc_csrmm_uniform_p.def_batching_rule(jitc_csrmm_uniform_batching)
 
 
 
@@ -1087,3 +1292,31 @@ def jitc_csrmm_normal_batching(
     **kwargs
 ):
     ...
+
+def jitc_csrmm_normal_p_call(
+    w_mu,
+    w_sigma,
+    clen,
+    v,
+    seed,
+    *,
+    shape: Sequence[int],
+    transpose: bool,
+    outdim_parallel: bool,
+):
+    ...
+
+jitc_csrmm_normal_p = XLACustomKernel(
+    'jitc_csrmm_normal',
+    cpu_kernel=NumbaKernelGenerator(jitc_csrmm_normal_cpu_kernel_generator, input_output_aliases={5: 0}),
+    gpu_kernel=WarpKernelGenerator(
+        jitc_csrmm_normal_gpu_kernel_generator,
+        # TODO: dim number
+        # dim=lambda
+        input_output_aliases={5: 0}
+    )
+)
+
+jitc_csrmm_normal_p.defjvp(jitc_csrmm_normal_jvp_left, None, None, jitc_csrmm_normal_jvp_right)
+jitc_csrmm_normal_p.def_transpose_rule(jitc_csrmm_normal_transpose_rules)
+jitc_csrmm_normal_p.def_batching_rule(jitc_csrmm_normal_batching)
