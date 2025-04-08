@@ -117,7 +117,7 @@ class CSR_LB(CSR):
             ids = transform_to_id(self.indices.size, np.asarray(self.indptr))
         else:
             ids = args[3]  # type: jax.Array | np.ndarray
-        self.ids = jnp.asarray(ids, device=self.indptr.device)
+        self.ids = jax.device_put(jnp.asarray(ids), device=next(iter(self.indptr.devices())))
 
     @classmethod
     def fromdense(cls, mat, *, nse=None, index_dtype=jnp.int32) -> 'CSR_LB':
@@ -312,6 +312,7 @@ class CSR_LB(CSR):
                     data,
                     self.indices,
                     self.indptr,
+                    self.ids,
                     other,
                     shape=self.shape
                 )
@@ -320,6 +321,7 @@ class CSR_LB(CSR):
                     data,
                     self.indices,
                     self.indptr,
+                    self.ids,
                     other,
                     shape=self.shape
                 )
@@ -365,6 +367,7 @@ class CSR_LB(CSR):
                     data,
                     self.indices,
                     self.indptr,
+                    self.ids,
                     other,
                     shape=self.shape,
                     transpose=True
@@ -375,6 +378,7 @@ class CSR_LB(CSR):
                     data,
                     self.indices,
                     self.indptr,
+                    self.ids,
                     other,
                     shape=self.shape,
                     transpose=True
@@ -659,6 +663,7 @@ class CSC_LB(CSC):
                     data,
                     self.indices,
                     self.indptr,
+                    self.ids,
                     other,
                     shape=self.shape[::-1],
                     transpose=True
@@ -668,6 +673,7 @@ class CSC_LB(CSC):
                     data,
                     self.indices,
                     self.indptr,
+                    self.ids,
                     other,
                     shape=self.shape[::-1],
                     transpose=True
@@ -712,6 +718,7 @@ class CSC_LB(CSC):
                     data,
                     self.indices,
                     self.indptr,
+                    self.ids,
                     other,
                     shape=self.shape[::-1],
                     transpose=False
@@ -721,7 +728,9 @@ class CSC_LB(CSC):
                 r = _csr_matmat(
                     data,
                     self.indices,
-                    self.indptr, other,
+                    self.indptr,
+                    self.ids,
+                    other,
                     shape=self.shape[::-1],
                     transpose=False
                 )
