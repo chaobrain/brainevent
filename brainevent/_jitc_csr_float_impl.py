@@ -100,7 +100,7 @@ def _jitc_csr_matvec_homo(
     if seed is None:
         with jax.ensure_compile_time_eval():
             seed = np.random.randint(0, int(1e8), 1)
-    seed = jnp.asarray(seed, dtype=jnp.uint32)
+    seed = jnp.asarray(seed, dtype=jnp.int32)
     seed = jnp.atleast_1d(seed)
     return _raw_jitc_csr_matvec_homo(
         weight, clen, v, seed,
@@ -479,7 +479,7 @@ def jitc_csrmv_homo_cpu_kernel_generator(
                 temp = v[i_col] * weight0
                 while i_row < num_row:
                     posts[i_row] += temp
-                    i_col += np.random.randint(1, clen0)
+                    i_row += np.random.randint(1, clen0)
 
     kernel = numba.njit(**numba_environ.setting)(kernel)
     return kernel
@@ -493,6 +493,7 @@ def jitc_csrmv_homo_gpu_kernel_generator(
     shape: Tuple[int, int],
     transpose: bool = False,
     outdim_parallel: bool = True,
+    **kwargs
 ) -> Kernel:
     r"""Generate the GPU kernel for the :func:`_jitc_csr_matvec_homo` operation.
     Parameters
@@ -537,28 +538,28 @@ def jitc_csrmv_homo_gpu_kernel_generator(
             clen0 = clen[0]
             seed0 = seed[0]
 
-            step = warp.max(warp.uint32((num_row + 1) >> 5), 1)
+            step = warp.max(warp.int32((num_row + 1) >> 5), 1)
 
             tid = warp.tid()
 
             i_row = tid >> 5
             i_thread = tid & 31
-            if i_row < num_row:
-                i_col = step * i_thread - 1
-                end_col = warp.min(i_col + step, num_col)
 
-                r = 0.0
-                state = warp.rand_init(seed0 + tid)
+            i_col = warp.int32(step * i_thread - 1)
+            end_col = warp.min(i_col + step, num_col)
 
+            r = float(0.0)
+            state = warp.rand_init(seed0 + tid)
+
+            inc = warp.randi(state, 1, clen0)
+            i_col += inc
+
+            while i_col < end_col:
+                r += v[i_col]
                 inc = warp.randi(state, 1, clen0)
                 i_col += inc
 
-                while i_col < end_col:
-                    r += v[i_col]
-                    inc = warp.randi(state, 1, clen0)
-                    i_col += inc
-
-                posts[i_row] += r * weight0
+            posts[i_row] += r * weight0
     else:
         def kernel(
             weight: warp.array1d(dtype=weight_dtype),
@@ -574,29 +575,28 @@ def jitc_csrmv_homo_gpu_kernel_generator(
             clen0 = clen[0]
             seed0 = seed[0]
 
-            step = warp.max(warp.uint32((num_row + 1) >> 5), 1)
+            step = warp.max(warp.int32((num_row + 1) >> 5), 1)
 
             tid = warp.tid()
-            i_row = tid >> 5
-            i_thread = tid & 31
+            i_col = tid >> 5
+            index = tid & 31
 
-            if i_row < num_row:
-                i_col = step * i_thread - 1
-                end_col = warp.min(i_col + step, num_col)
+            col_v = v[i_col]
+            i_row = warp.int32(step * index - 1)
+            end = warp.min(i_row + step, num_row)
 
-                r = 0.0
-                state = warp.rand_init(seed0 + tid)
+            state = warp.rand_init(seed0 + tid)
 
+            inc = warp.randi(state, 1, clen0)
+            i_row += inc
+
+            while i_row < end:
+                posts[i_row] += col_v * weight0
                 inc = warp.randi(state, 1, clen0)
                 i_row += inc
 
-                while i_row < end_col:
-                    posts[i_row] += v[i_col] * weight0
-                    inc = warp.randi(state, 1, clen0)
-                    i_row += inc
-
-        kernel = warp.kernel(kernel)
-        return kernel
+    kernel = warp.kernel(kernel)
+    return kernel
 
 
 
@@ -677,7 +677,15 @@ def jitc_csrmv_homo_p_call(
         v,
         seed,
         jnp.zeros(out_info.shape, out_info.dtype),
-        outs=[out_info]
+        outs=[out_info],
+        weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
+        clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
+        v_info=jax.ShapeDtypeStruct(v.shape, v.dtype),
+        seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
+        out_info=out_info,
+        shape=shape,
+        transpose=transpose,
+        outdim_parallel=outdim_parallel,
     )
 
 
@@ -686,11 +694,10 @@ jitc_csrmv_homo_p = XLACustomKernel(
     cpu_kernel=NumbaKernelGenerator(jitc_csrmv_homo_cpu_kernel_generator, input_output_aliases={4: 0}),
     gpu_kernel=WarpKernelGenerator(
         jitc_csrmv_homo_gpu_kernel_generator,
-        dim=lambda shape, transpose, outdim_parallel, **kwargs: (
-            shape[1] if transpose and outdim_parallel or not (transpose and outdim_parallel)
-            else shape[0]
+        dim=lambda v_info, out_info, outdim_parallel, **kwargs: (
+            out_info.shape[0] * 32 if outdim_parallel else
+            v_info.shape[0] * 32
         ),
-        # dim=lambda
         input_output_aliases={4: 0}
     )
 )
