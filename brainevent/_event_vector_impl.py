@@ -134,7 +134,7 @@ def mv_gpu_kernel_generator(
                 if spikes[i]:
                     out[i] += weights[i]
 
-    return kernel()
+    return kernel
 
 
 def jvp_weights(w_dot, weights, spikes, *, float_as_event, transpose, **kwargs):
