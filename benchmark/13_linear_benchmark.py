@@ -14,14 +14,16 @@
 # ==============================================================================
 
 import os
+import time
 
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
 import jax
 
-import time
+import numpy as np
 import brainstate
 import brainevent
+import matplotlib.pyplot as plt
 
 
 # brainstate.environ.set(platform='cpu')
@@ -58,29 +60,64 @@ def forward(n_pre, n_post, spk_prob, as_float: bool):
         jax.block_until_ready(f2(spike))
     r2 = time.time() - t0
     print(f"n_pre: {n_pre}, n_post: {n_post}, spike probability: {spk_prob}, Matmul: {r2} s")
-    print('Acceleration ratio:', r2 / r1 - 1.)
 
+    ratio = (r2 / r1 - 1.) if r2 > r1 else -(r1 / r2 - 1.)
+    print('Acceleration ratio:', ratio)
     print()
+    return ratio
 
 
-def benchmark_forward():
+def visualize(results, title='Acceleration Ratio', filename=None):
+    labels = list(results.keys())
+    ratio = list(results.values())
+
+    x = np.arange(len(labels))  # x轴的位置
+    width = 0.35  # 条形的宽度
+
+    fig, ax = plt.subplots()
+    bars = ax.bar(x, ratio, width, label='Ratio')
+
+    # 添加标签
+    ax.set_xlabel('Configurations')
+    ax.set_ylabel('Acceleration Ratio')
+    ax.set_title(title)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=45, ha='right')
+
+    # 在每个条形上添加数值标签
+    for bar in bars:
+        height = bar.get_height()
+        ax.annotate(f'{height:.2f}',  # 格式化数值
+                    xy=(bar.get_x() + bar.get_width() / 2, height),  # 标签位置
+                    xytext=(0, 3),  # 偏移量
+                    textcoords="offset points",
+                    ha='center',
+                    va='bottom')
+
+    fig.tight_layout()
+    if filename is not None:
+        plt.savefig(filename)
+    plt.show()
+
+
+def benchmark_forward(prob=0.1):
+    results = {}
     for n_pre, n_post in [
         # (1000, 1000),
         (1000, 10000),
-        (10000, 10000),
         (10000, 1000),
+        (10000, 10000),
         (20000, 10000),
+        (10000, 20000),
         (20000, 20000),
         # (10000, 100000),
     ]:
-        forward(n_pre, n_post, 0.01, True)
-        forward(n_pre, n_post, 0.1, True)
-        print()
-        print()
+        results[f'{n_pre}x{n_post}'] = forward(n_pre, n_post, prob, True)
+
+    visualize(results, title=f'Acceleration Ratio (p={prob})', filename=f'results/event-mv-prob={prob}.pdf')
 
 
 if __name__ == '__main__':
-    # forward(1000, 2000, 0.01, True)
-    # forward(2000, 4000, 0.01, True)
-    # forward(10000, 20000, 0.01, True)
-    benchmark_forward()
+    benchmark_forward(0.1)
+    benchmark_forward(0.01)
+    benchmark_forward(0.001)
