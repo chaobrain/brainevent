@@ -21,7 +21,7 @@ import jax.numpy as jnp
 import brainstate as bs
 from functools import partial
 
-from numba.cuda.kernels.transpose import transpose
+# jax.config.update('jax_default_device', jax.devices('cpu')[0])
 
 from ._jitc_csr_float_impl import (
     _jitc_csr_matvec_homo,
@@ -31,10 +31,6 @@ from ._jitc_csr_float_impl import (
     _jitc_csr_matmat_uniform,
     _jitc_csr_matmat_normal,
 )
-
-
-
-# 假设函数 _jitc_csr_matvec_homo 和 _raw_jitc_csr_matvec_homo 已正确导入
 
 class TestJitcCsrMatvecHomo(unittest.TestCase):
 
@@ -65,7 +61,42 @@ class TestJitcCsrMatvecHomo(unittest.TestCase):
                             r2 = _jitc_csr_matvec_homo(weight, prob, vector, seed=seed, shape=shape,
                                                             transpose=transpose,
                                                             outdim_parallel=outdim_parallel)
+                            # print(f'transpose: {transpose}, outdim_parallel: {outdim_parallel}')
+                            # print(r1)
                             self.assertTrue(jnp.allclose(r1, r2, atol=1e-6))
+
+    def _test_jvp(self, weight, prob, transpose, outdim_parallel):
+        seed = 1234
+        n_in = 20
+        n_out = 30
+        shape = (n_in, n_out)
+
+        x = jnp.asarray(np.random.random(n_in if transpose else n_out))
+
+        def f_brainevent(x, w):
+            return _jitc_csr_matvec_homo(w, prob, x, seed=seed, shape=shape,
+                                         transpose=transpose, outdim_parallel=outdim_parallel)
+
+        out1, jvp_x1 = jax.jvp(f_brainevent, (x, jnp.array(weight)),
+                               (jnp.ones_like(x), jnp.array(1.0)))
+
+        out2, jvp_x2 = jax.jvp(f_brainevent, (x, jnp.array(weight)),
+                               (jnp.ones_like(x), jnp.array(1.0)))
+
+        self.assertTrue(jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
+        self.assertTrue(jnp.allclose(jvp_x1, jvp_x2, rtol=1e-5, atol=1e-5))
+
+        self.assertFalse(jnp.allclose(jvp_x1, jnp.zeros_like(jvp_x1)))
+
+    def test_jvp(self):
+        for weight in [-1., 1.]:
+            for prob in [0.5]:
+                for transpose in [True, False]:
+                    for outdim_parallel in [True, False]:
+                        print(
+                            f'prob = {prob}, transpose = {transpose}, outdim_parallel = {outdim_parallel}, weight = {weight}')
+                        self._test_jvp(weight=weight, prob=prob, transpose=transpose, outdim_parallel=outdim_parallel)
+
 
 if __name__ == '__main__':
     unittest.main()

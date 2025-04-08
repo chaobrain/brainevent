@@ -610,9 +610,20 @@ def jitc_csrmv_homo_jvp_v(
     *,
     shape,
     transpose,
-    outdim_parallel
+    outdim_parallel,
+    **kwargs
 ):
-    ...
+    return [
+        _raw_jitc_csr_matvec_homo(
+            weight,
+            clen,
+            v_dot,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            outdim_parallel=outdim_parallel
+        )
+    ]
 
 
 def jitc_csrmv_homo_jvp_weights(
@@ -625,9 +636,18 @@ def jitc_csrmv_homo_jvp_weights(
     *,
     shape,
     transpose,
-    outdim_parallel
+    outdim_parallel,
+    **kwargs
 ):
-    ...
+    return jitc_csrmv_homo_p_call(
+        w_dot,
+        clen,
+        v,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        outdim_parallel=outdim_parallel
+    )
 
 
 def jitc_csrmv_homo_transpose_rules(
@@ -640,9 +660,25 @@ def jitc_csrmv_homo_transpose_rules(
     *,
     shape,
     transpose,
-    outdim_parallel
+    outdim_parallel,
+    **kwargs
 ):
-    ...
+    assert not ad.is_undefined_primal(weight)
+    assert not ad.is_undefined_primal(clen)
+    assert not ad.is_undefined_primal(seed)
+    assert ad.is_undefined_primal(v)
+
+    r = jitc_csrmv_homo_p_call(
+        ct[0],
+        weight,
+        clen,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        outdim_parallel=outdim_parallel
+    )[0]
+
+    return weight, clen, r, seed, _
 
 
 def jitc_csrmv_homo_batching(
@@ -650,7 +686,31 @@ def jitc_csrmv_homo_batching(
     axes,
     **kwargs
 ):
-    ...
+    if tuple(axes) == (None, None, 0, None, None):
+        assert args[3].ndim == 2, 'Batching axis 0 requires 2D input.'
+        r = jitc_csrmm_homo_p_call(
+            args[0],
+            args[1],
+            args[2].T,
+            args[3],
+            shape=kwargs['shape'],
+            transpose=kwargs['transpose'],
+            outdim_parallel=kwargs['outdim_parallel1']
+        )
+        return r, [1]
+    elif tuple(axes) == (None, None, 1, None, None):
+        r = jitc_csrmm_homo_p_call(
+            args[0],
+            args[1],
+            args[2],
+            args[3],
+            shape=kwargs['shape'],
+            transpose=kwargs['transpose'],
+            outdim_parallel=kwargs['outdim_parallel1']
+        )
+        return r, [1]
+    else:
+        raise NotImplementedError(f"Batching axes {axes} not implemented for event-driven COO matrix-vector product.")
 
 
 def jitc_csrmv_homo_p_call(
@@ -663,7 +723,7 @@ def jitc_csrmv_homo_p_call(
     transpose: bool,
     outdim_parallel: bool,
 ):
-    weight = jnp.asarray([weight])
+    weight = jnp.atleast_1d(weight)
 
     out_info = (
         jax.ShapeDtypeStruct([shape[1]], weight.dtype)
