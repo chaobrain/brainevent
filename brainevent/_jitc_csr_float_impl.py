@@ -558,7 +558,46 @@ def jitc_csrmv_homo_gpu_kernel_generator(
                     inc = warp.randi(state, 1, clen0)
                     i_col += inc
 
-                posts[i_row] = r * weight0
+                posts[i_row] += r * weight0
+    else:
+        def kernel(
+            weight: warp.array1d(dtype=weight_dtype),
+            clen: warp.array1d(dtype=clen_dtype),
+            v: warp.array1d(dtype=v_dtype),
+            seed: warp.array1d(dtype=seed_dtype),
+            _: warp.array1d(dtype=weight_dtype),
+            posts: warp.array1d(dtype=weight_dtype),
+        ):
+            num_row = posts.shape[0]
+            num_col = v.shape[0]
+            weight0 = weight[0]
+            clen0 = clen[0]
+            seed0 = seed[0]
+
+            step = warp.max(warp.uint32((num_row + 1) >> 5), 1)
+
+            tid = warp.tid()
+            i_row = tid >> 5
+            i_thread = tid & 31
+
+            if i_row < num_row:
+                i_col = step * i_thread - 1
+                end_col = warp.min(i_col + step, num_col)
+
+                r = 0.0
+                state = warp.rand_init(seed0 + tid)
+
+                inc = warp.randi(state, 1, clen0)
+                i_row += inc
+
+                while i_row < end_col:
+                    posts[i_row] += v[i_col] * weight0
+                    inc = warp.randi(state, 1, clen0)
+                    i_row += inc
+
+        kernel = warp.kernel(kernel)
+        return kernel
+
 
 
 def jitc_csrmv_homo_jvp_v(
