@@ -21,8 +21,8 @@ import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.experimental.sparse import JAXSparse
 
+from ._compatible_import import JAXSparse
 from ._csr import CSR, CSC
 from ._csrlb_event_impl import _event_csr_matvec, _event_csr_matmat
 from ._csrlb_float_impl import _csr_matvec, _csr_matmat
