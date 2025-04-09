@@ -780,7 +780,7 @@ class EventArray(object):
             elif self.ndim == 1:
                 return event_mv(oc, self.value, transpose=True)
             elif self.ndim == 2:
-                return event_mv(oc, self.value.T, transpose=True).T
+                return event_mm(oc, self.value.T, transpose=True).T
             else:
                 raise MathError(
                     f"Matrix multiplication is only supported for 1D and 2D arrays. "
@@ -806,7 +806,7 @@ class EventArray(object):
             elif self.ndim == 1:
                 return event_mv(oc, self.value, transpose=False)
             elif self.ndim == 2:
-                return event_mv(oc, self.value, transpose=False)
+                return event_mm(oc, self.value, transpose=False)
             else:
                 raise MathError(
                     f"Matrix multiplication is only supported for 1D and 2D arrays. "

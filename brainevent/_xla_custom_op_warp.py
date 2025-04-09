@@ -46,6 +46,9 @@ if warp_installed:
     import warp.context  # pylint: disable=import-error, import-outside-toplevel
     import warp.types  # pylint: disable=import-error, import-outside-toplevel
 
+    warp.set_module_options({"enable_backward": False})
+    warp.config.enable_backward = False
+
 
 def _shape_to_layout(shape):
     return tuple(range(len(shape) - 1, -1, -1))
@@ -165,7 +168,7 @@ def _warp_gpu_custom_callback(stream, buffers, opaque, opaque_len):
         kernel_params[i + 1] = arg_ptr
 
     # Get current device.
-    device = warp.device_from_jax(_get_jax_device())
+    device = warp.get_cuda_device(_get_jax_device().id)
 
     # Get kernel hooks.
     # Note: module was loaded during jit lowering.

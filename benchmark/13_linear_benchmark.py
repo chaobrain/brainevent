@@ -19,6 +19,8 @@ import time
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
 import jax
+import sys
+sys.path.append('../')
 
 import numpy as np
 import brainstate
@@ -112,7 +114,7 @@ def benchmark_forward(prob=0.1):
         (20000, 20000),
         # (10000, 100000),
     ]:
-        results[f'{n_pre}x{n_post}'] = forward(n_pre, n_post, prob, True)
+        results[f'{n_pre}x{n_post}'] = forward(n_pre, n_post, prob, False)
 
     visualize(results, title=f'Acceleration Ratio (p={prob})', filename=f'results/event-mv-prob={prob}.pdf')
 
