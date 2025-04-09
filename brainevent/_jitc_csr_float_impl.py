@@ -123,7 +123,7 @@ def _raw_jitc_csr_matvec_homo(
     res = jitc_csrmv_homo_p_call(
         weight, clen, v, seed,
         shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
-    )
+    )[0]
     return u.maybe_decimal(res * unitd * unitv)
 
 
@@ -214,12 +214,12 @@ def _raw_jitc_csr_matvec_uniform(
 ) -> Data:
     u.fail_for_dimension_mismatch(w_low, w_high, "w_low and w_high must have the same dimension.")
     w_low, unit_w_low = u.split_mantissa_unit(w_low)
-    w_high, unit_w_high = u.split_mantissa_unit(w_high.in_unit(unit_w_low))
+    w_high, unit_w_high = u.split_mantissa_unit(w_high.in_unit(unit_w_low) if isinstance(w_high, u.Quantity) else w_high)
     v, unitv = u.split_mantissa_unit(v)
     res = jitc_csrmv_uniform_p_call(
         w_low, w_high, clen, v, seed,
         shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
-    )
+    )[0]
     return u.maybe_decimal(res * unit_w_low * unitv)
 
 
@@ -311,12 +311,12 @@ def _raw_jitc_csr_matvec_normal(
 ) -> Data:
     u.fail_for_dimension_mismatch(w_mu, w_sigma, "w_low and w_high must have the same dimension.")
     w_mu, unit_w_mu = u.split_mantissa_unit(w_mu)
-    w_sigma, unit_w_sigma = u.split_mantissa_unit(w_sigma.in_unit(unit_w_mu))
+    w_sigma, unit_w_sigma = u.split_mantissa_unit(w_sigma.in_unit(unit_w_mu)  if isinstance(w_mu, u.Quantity) else w_sigma)
     v, unitv = u.split_mantissa_unit(v)
     res = jitc_csrmv_normal_p_call(
         w_mu, w_sigma, clen, v, seed,
         shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
-    )
+    )[0]
     return u.maybe_decimal(res * unit_w_mu * unitv)
 
 
@@ -736,7 +736,7 @@ def jitc_csrmv_homo_transpose_rules(
     r = jitc_csrmv_homo_p_call(
         weight,
         clen,
-        ct[0],
+        ct,
         seed,
         shape=shape,
         transpose=transpose,
@@ -827,7 +827,7 @@ jitc_csrmv_homo_p = XLACustomKernel(
     )
 )
 
-jitc_csrmv_homo_p.defjvp(jitc_csrmv_homo_jvp_weights, None, jitc_csrmv_homo_jvp_v, None)
+jitc_csrmv_homo_p.defjvp(jitc_csrmv_homo_jvp_weights, None, jitc_csrmv_homo_jvp_v)
 jitc_csrmv_homo_p.def_transpose_rule(jitc_csrmv_homo_transpose_rules)
 jitc_csrmv_homo_p.def_batching_rule(jitc_csrmv_homo_batching)
 
@@ -1041,7 +1041,8 @@ def jitc_csrmv_uniform_jvp_v(
     *,
     shape,
     transpose,
-    outdim_parallel
+    outdim_parallel,
+    **kwargs
 ):
     return [
         _raw_jitc_csr_matvec_uniform(
@@ -1068,7 +1069,8 @@ def jitc_csrmv_uniform_jvp_w_low(
     *,
     shape,
     transpose,
-    outdim_parallel
+    outdim_parallel,
+    **kwargs
 ):
     return jitc_csrmv_uniform_p_call(
         w_low_dot,
@@ -1093,7 +1095,8 @@ def jitc_csrmv_uniform_jvp_w_high(
     *,
     shape,
     transpose,
-    outdim_parallel
+    outdim_parallel,
+    **kwargs
 ):
     return jitc_csrmv_uniform_p_call(
         w_high_dot,
@@ -1440,7 +1443,8 @@ def jitc_csrmv_normal_jvp_v(
     *,
     shape,
     transpose,
-    outdim_parallel
+    outdim_parallel,
+    **kwargs
 ):
     return [
         _raw_jitc_csr_matvec_normal(
@@ -1467,7 +1471,8 @@ def jitc_csrmv_normal_jvp_w_mu(
     *,
     shape,
     transpose,
-    outdim_parallel
+    outdim_parallel,
+    **kwargs
 ):
     return jitc_csrmv_uniform_p_call(
         w_mu_dot,
@@ -1491,7 +1496,8 @@ def jitc_csrmv_normal_jvp_w_sigma(
     *,
     shape,
     transpose,
-    outdim_parallel
+    outdim_parallel,
+    **kwargs
 ):
     return jitc_csrmv_uniform_p_call(
         w_mu,

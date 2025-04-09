@@ -25,12 +25,16 @@ from functools import partial
 
 from ._jitc_csr_float_impl import (
     _jitc_csr_matvec_homo,
-    _jitc_csr_matmat_uniform,
+    _jitc_csr_matvec_uniform,
     _jitc_csr_matvec_normal,
     _jitc_csr_matmat_homo,
     _jitc_csr_matmat_uniform,
     _jitc_csr_matmat_normal,
 )
+
+
+# jax.config.update('jax_default_device', jax.devices('cpu')[0])
+
 
 class TestJitcCsrMatvecHomo(unittest.TestCase):
 
@@ -56,11 +60,12 @@ class TestJitcCsrMatvecHomo(unittest.TestCase):
                     for transpose in [True, False]:
                         for outdim_parallel in [True, False]:
                             vector = jnp.asarray(np.random.random(shape[0] if transpose else shape[1]))
-                            r1 = _jitc_csr_matvec_homo(weight, prob, vector, seed=seed, shape=shape, transpose=transpose,
-                                                            outdim_parallel=outdim_parallel)
+                            r1 = _jitc_csr_matvec_homo(weight, prob, vector, seed=seed, shape=shape,
+                                                       transpose=transpose,
+                                                       outdim_parallel=outdim_parallel)
                             r2 = _jitc_csr_matvec_homo(weight, prob, vector, seed=seed, shape=shape,
-                                                            transpose=transpose,
-                                                            outdim_parallel=outdim_parallel)
+                                                       transpose=transpose,
+                                                       outdim_parallel=outdim_parallel)
                             # print(f'transpose: {transpose}, outdim_parallel: {outdim_parallel}')
                             # print(r1)
                             self.assertTrue(jnp.allclose(r1, r2, atol=1e-6))
@@ -97,6 +102,147 @@ class TestJitcCsrMatvecHomo(unittest.TestCase):
                             f'prob = {prob}, transpose = {transpose}, outdim_parallel = {outdim_parallel}, weight = {weight}')
                         self._test_jvp(weight=weight, prob=prob, transpose=transpose, outdim_parallel=outdim_parallel)
 
+
+class TestJitcCsrMatvecUniform(unittest.TestCase):
+
+    def test_zero_weight(self):
+        w_low = 0.0
+        w_high = 0.0
+        conn_prob = 0.5
+        v = jnp.array([1.0, 2.0, 3.0])
+        shape = (2, 3)
+        seed = 1234
+        for transpose in [True, False]:
+            for outdim_parallel in [True, False]:
+                result = _jitc_csr_matvec_uniform(w_low, w_high, conn_prob, v, seed=seed, shape=shape,
+                                                  transpose=transpose,
+                                                  outdim_parallel=outdim_parallel)
+                expected = jnp.zeros(shape[1]) if transpose else jnp.zeros(shape[0])
+                self.assertTrue(jnp.allclose(result, expected), msg="Weight zero test failed")
+
+    def test_random_connectivity(self):
+        seed = 1234
+        shapes = [(100, 200), (2, 1000), (1000, 2)]
+        w_low = 1.0
+        w_high = 2.0
+        for shape in shapes:
+            for prob in [0.01, 0.1, 0.5]:
+                for transpose in [True, False]:
+                    for outdim_parallel in [True, False]:
+                        vector = jnp.asarray(np.random.random(shape[0] if transpose else shape[1]))
+                        r1 = _jitc_csr_matvec_uniform(w_low, w_high, prob, vector, seed=seed, shape=shape,
+                                                      transpose=transpose,
+                                                      outdim_parallel=outdim_parallel)
+                        r2 = _jitc_csr_matvec_uniform(w_low, w_high, prob, vector, seed=seed, shape=shape,
+                                                      transpose=transpose,
+                                                      outdim_parallel=outdim_parallel)
+                        # print(f'transpose: {transpose}, outdim_parallel: {outdim_parallel}')
+                        # print(r1)
+                        self.assertTrue(jnp.allclose(r1, r2, atol=1e-6))
+
+    def _test_jvp(self, prob, transpose, outdim_parallel):
+        seed = 1234
+        n_in = 20
+        n_out = 30
+        shape = (n_in, n_out)
+        w_low = 1.0
+        w_high = 2.0
+
+        x = jnp.asarray(np.random.random(n_in if transpose else n_out))
+
+        def f_brainevent(x, w_low, w_high):
+            return _jitc_csr_matvec_uniform(w_low, w_high, prob, x, seed=seed, shape=shape,
+                                         transpose=transpose, outdim_parallel=outdim_parallel)
+
+        out1, jvp_x1 = jax.jvp(f_brainevent, (x, jnp.array(w_low), jnp.array(w_high)),
+                               (jnp.ones_like(x), jnp.array(1.0), jnp.array(1.0)))
+
+        out2, jvp_x2 = jax.jvp(f_brainevent, (x, jnp.array(w_low), jnp.array(w_high)),
+                               (jnp.ones_like(x), jnp.array(1.0), jnp.array(1.0)))
+
+        self.assertTrue(jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
+        self.assertTrue(jnp.allclose(jvp_x1, jvp_x2, rtol=1e-5, atol=1e-5))
+
+        self.assertFalse(jnp.allclose(jvp_x1, jnp.zeros_like(jvp_x1)))
+
+    def test_jvp(self):
+        for prob in [0.5]:
+            for transpose in [True, False]:
+                for outdim_parallel in [True, False]:
+                    print(
+                        f'prob = {prob}, transpose = {transpose}, outdim_parallel = {outdim_parallel}')
+                    self._test_jvp(prob=prob, transpose=transpose, outdim_parallel=outdim_parallel)
+
+
+class TestJitcCsrMatvecNormal(unittest.TestCase):
+
+    def test_zero_weight(self):
+        w_mu = 0.0
+        w_sigma = 0.0
+        conn_prob = 0.5
+        v = jnp.array([1.0, 2.0, 3.0])
+        shape = (2, 3)
+        seed = 1234
+        for transpose in [True, False]:
+            for outdim_parallel in [True, False]:
+                result = _jitc_csr_matvec_normal(w_mu, w_sigma, conn_prob, v, seed=seed, shape=shape,
+                                                  transpose=transpose,
+                                                  outdim_parallel=outdim_parallel)
+                expected = jnp.zeros(shape[1]) if transpose else jnp.zeros(shape[0])
+                self.assertTrue(jnp.allclose(result, expected), msg="Weight zero test failed")
+
+    def test_random_connectivity(self):
+        seed = 1234
+        shapes = [(100, 200), (2, 1000), (1000, 2)]
+        w_mu = 1.0
+        w_sigma = 2.0
+        for shape in shapes:
+            for prob in [0.01, 0.1, 0.5]:
+                for transpose in [True, False]:
+                    for outdim_parallel in [True, False]:
+                        vector = jnp.asarray(np.random.random(shape[0] if transpose else shape[1]))
+                        r1 = _jitc_csr_matvec_normal(w_mu, w_sigma, prob, vector, seed=seed, shape=shape,
+                                                      transpose=transpose,
+                                                      outdim_parallel=outdim_parallel)
+                        r2 = _jitc_csr_matvec_normal(w_mu, w_sigma, prob, vector, seed=seed, shape=shape,
+                                                      transpose=transpose,
+                                                      outdim_parallel=outdim_parallel)
+                        # print(f'transpose: {transpose}, outdim_parallel: {outdim_parallel}')
+                        # print(r1)
+                        self.assertTrue(jnp.allclose(r1, r2, atol=1e-6))
+
+    def _test_jvp(self, prob, transpose, outdim_parallel):
+        seed = 1234
+        n_in = 20
+        n_out = 30
+        shape = (n_in, n_out)
+        w_mu = 1.0
+        w_sigma = 2.0
+
+        x = jnp.asarray(np.random.random(n_in if transpose else n_out))
+
+        def f_brainevent(x, w_mu, w_sigma):
+            return _jitc_csr_matvec_uniform(w_mu, w_sigma, prob, x, seed=seed, shape=shape,
+                                            transpose=transpose, outdim_parallel=outdim_parallel)
+
+        out1, jvp_x1 = jax.jvp(f_brainevent, (x, jnp.array(w_mu), jnp.array(w_sigma)),
+                               (jnp.ones_like(x), jnp.array(1.0), jnp.array(1.0)))
+
+        out2, jvp_x2 = jax.jvp(f_brainevent, (x, jnp.array(w_mu), jnp.array(w_sigma)),
+                               (jnp.ones_like(x), jnp.array(1.0), jnp.array(1.0)))
+
+        self.assertTrue(jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
+        self.assertTrue(jnp.allclose(jvp_x1, jvp_x2, rtol=1e-5, atol=1e-5))
+
+        self.assertFalse(jnp.allclose(jvp_x1, jnp.zeros_like(jvp_x1)))
+
+    def test_jvp(self):
+        for prob in [0.5]:
+            for transpose in [True, False]:
+                for outdim_parallel in [True, False]:
+                    print(
+                        f'prob = {prob}, transpose = {transpose}, outdim_parallel = {outdim_parallel}')
+                    self._test_jvp(prob=prob, transpose=transpose, outdim_parallel=outdim_parallel)
 
 if __name__ == '__main__':
     unittest.main()
