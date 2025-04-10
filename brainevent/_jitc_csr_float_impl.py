@@ -2274,7 +2274,8 @@ def jitc_csrmm_uniform_jvp_w_low(
     *,
     shape,
     transpose,
-    outdim_parallel
+    outdim_parallel,
+    **kwargs
 ):
     return jitc_csrmm_uniform_p_call(
         w_low_dot,
