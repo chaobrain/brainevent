@@ -1072,7 +1072,7 @@ def jitc_csrmv_uniform_gpu_kernel_generator(
             i_col += inc
 
             while i_col < end_col:
-                row_v = warp.randu(state, w_low0, w_high0)
+                row_v = warp.randf(state, w_low0, w_high0)
                 r += v[i_col] * row_v
                 inc = warp.randi(state, 1, clen0)
                 i_col += inc
@@ -1111,7 +1111,7 @@ def jitc_csrmv_uniform_gpu_kernel_generator(
             i_row += inc
 
             while i_row < end:
-                row_v = warp.randu(state, w_low0, w_high0)
+                row_v = warp.randf(state, w_low0, w_high0)
                 posts[i_row] += col_v * row_v
                 inc = warp.randi(state, 1, clen0)
                 i_row += inc
@@ -1844,14 +1844,16 @@ def jitc_csrmm_homo_gpu_kernel_generator(
             _: warp.array1d(dtype=weight_dtype),
             posts: warp.array2d(dtype=weight_dtype),
         ):
-            num_rows, num_cols = posts.shape
+            num_rows = posts.shape[0]
+            num_cols = posts.shape[1]
+            # num_rows, num_cols = posts.shape
             weight0 = weight[0]
             clen0 = clen[0]
             seed0 = seed[0]
 
             i_row, i_col = warp.tid()
 
-            r = 0.0
+            r = float(0.0)
             state = warp.rand_init(seed0 + i_row * num_cols + i_col)
 
             cursor = warp.randi(state, 1, clen0)
@@ -1870,7 +1872,8 @@ def jitc_csrmm_homo_gpu_kernel_generator(
             _: warp.array1d(dtype=weight_dtype),
             posts: warp.array2d(dtype=weight_dtype),
         ):
-            num_rows, num_cols = posts.shape
+            num_rows = posts.shape[0]
+            num_cols = posts.shape[1]
             weight0 = weight[0]
             clen0 = clen[0]
             seed0 = seed[0]
@@ -1880,9 +1883,12 @@ def jitc_csrmm_homo_gpu_kernel_generator(
             state = warp.rand_init(seed0 + i_row * num_cols + i_col)
 
             cursor = warp.randi(state, 1, clen0)
-            r = B[i_row, :] * weight0
+            # warp doesn't support slicing
+            # r = B[i_row, :] * weight0
             while cursor < num_cols:
-                posts[cursor, :] += r
+                # posts[cursor, :] += r
+                for j in range(posts.shape[1]):
+                    posts[cursor, j] += B[i_row, j] * weight0
                 cursor += warp.randi(state, 1, clen0)
 
     kernel = warp.kernel(kernel)
