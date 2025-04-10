@@ -37,6 +37,20 @@ __all__ = [
 ]
 
 
+def _initialize_seed(seed=None):
+    """Initialize random seed if not provided."""
+    if seed is None:
+        with jax.ensure_compile_time_eval():
+            seed = np.random.randint(0, int(1e8), 1)
+    return jnp.asarray(jnp.atleast_1d(seed), dtype=jnp.int32)
+
+
+def _calculate_conn_len(conn_prob):
+    """Calculate connection length from connection probability."""
+    conn_len = jnp.ceil(1.0 / conn_prob) * 2 - 1
+    return jnp.asarray(jnp.atleast_1d(conn_len), dtype=jnp.int32)
+
+
 def _jitc_csr_matvec_homo(
     weight: Data | float,
     conn_prob: float,
@@ -95,13 +109,8 @@ def _jitc_csr_matvec_homo(
     out: Array, ndarray, Quantity
         The output of :math:`y = M @ v`.
     """
-    conn_len = jnp.ceil(1.0 / conn_prob) * 2 - 1
-    clen = jnp.asarray(jnp.atleast_1d(conn_len), dtype=jnp.int32)
-    if seed is None:
-        with jax.ensure_compile_time_eval():
-            seed = np.random.randint(0, int(1e8), 1)
-    seed = jnp.asarray(seed, dtype=jnp.int32)
-    seed = jnp.atleast_1d(seed)
+    seed = _initialize_seed(seed)
+    clen = _calculate_conn_len(conn_prob)
     return _raw_jitc_csr_matvec_homo(
         weight, clen, v, seed,
         shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
@@ -149,7 +158,8 @@ def _jitc_csr_matvec_uniform(
         This API may change in the future.
 
     In this operation, :math:`M` is the random matrix with a connection probability
-    `conn_prob`, and at each connection the value is the same scalar `weight`.
+    `conn_prob`, and at each connection the value is sampled from a uniform
+    distrubtion within the range of `w_low` and `w_high`.
 
     When ``transpose=True``, we perform an operation of :math:`y=M^T@v`.
 
@@ -164,13 +174,13 @@ def _jitc_csr_matvec_uniform(
 
     Parameters
     ----------
-    w_low: float
-        Lower boundary of the output interval.
-    w_high: float
-        Upper boundary of the output interval.
+    w_low: Array, ndarray, Quantity, float
+        The lower boundary of the random matrix.
+    w_high: Array, ndarray, Quantity, float
+        The upper boundary of the random matrix.
     conn_prob: float
         The connection probability.
-    vector: Array, ndarray
+    v: Array, ndarray, Quantity
         The vector.
     seed: int
         The random number generation seed.
@@ -188,13 +198,8 @@ def _jitc_csr_matvec_uniform(
     out: Array, ndarray
         The output of :math:`y = M @ v`.
     """
-    conn_len = jnp.ceil(1.0 / conn_prob) * 2 - 1
-    clen = jnp.asarray(jnp.atleast_1d(conn_len), dtype=jnp.int32)
-    if seed is None:
-        with jax.ensure_compile_time_eval():
-            seed = np.random.randint(0, int(1e8), 1)
-    seed = jnp.asarray(seed, dtype=jnp.int32)
-    seed = jnp.atleast_1d(seed)
+    seed = _initialize_seed(seed)
+    clen = _calculate_conn_len(conn_prob)
     return _raw_jitc_csr_matvec_uniform(
         w_low, w_high, clen, v, seed,
         shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
@@ -214,7 +219,8 @@ def _raw_jitc_csr_matvec_uniform(
 ) -> Data:
     u.fail_for_dimension_mismatch(w_low, w_high, "w_low and w_high must have the same dimension.")
     w_low, unit_w_low = u.split_mantissa_unit(w_low)
-    w_high, unit_w_high = u.split_mantissa_unit(w_high.in_unit(unit_w_low) if isinstance(w_high, u.Quantity) else w_high)
+    w_high, unit_w_high = u.split_mantissa_unit(
+        w_high.in_unit(unit_w_low) if isinstance(w_high, u.Quantity) else w_high)
     v, unitv = u.split_mantissa_unit(v)
     res = jitc_csrmv_uniform_p_call(
         w_low, w_high, clen, v, seed,
@@ -224,8 +230,8 @@ def _raw_jitc_csr_matvec_uniform(
 
 
 def _jitc_csr_matvec_normal(
-    w_mu: float,
-    w_sigma: float,
+    w_mu: Data | float,
+    w_sigma: Data | float,
     conn_prob: float,
     v: Data,
     seed: Optional[int] = None,
@@ -246,7 +252,8 @@ def _jitc_csr_matvec_normal(
         This API may change in the future.
 
     In this operation, :math:`M` is the random matrix with a connection probability
-    `conn_prob`, and at each connection the value is the same scalar `weight`.
+    `conn_prob`, and at each connection the value is sampled from a normal distribution
+    with mean `w_mu` and standard deviation `w_sigma`.
 
     When ``transpose=True``, we perform an operation of :math:`y=M^T@v`.
 
@@ -261,13 +268,13 @@ def _jitc_csr_matvec_normal(
 
     Parameters
     ----------
-    w_mu: float
+    w_mu: Array, ndarray, Quantity, float
         Mean (centre) of the distribution.
-    w_sigma: float
-        Standard deviation (spread or “width”) of the distribution. Must be non-negative.
+    w_sigma: Array, ndarray, Quantity, float
+        Standard deviation (spread or "width") of the distribution. Must be non-negative.
     conn_prob: float
         The connection probability.
-    vector: Array, ndarray
+    v: Array, ndarray, Quantity
         The vector.
     seed: int
         The random number generation seed.
@@ -282,16 +289,11 @@ def _jitc_csr_matvec_normal(
 
     Returns
     -------
-    out: Array, ndarray
+    out: Array, ndarray, Quantity
         The output of :math:`y = M @ v`.
     """
-    conn_len = jnp.ceil(1.0 / conn_prob) * 2 - 1
-    clen = jnp.asarray(jnp.atleast_1d(conn_len), dtype=jnp.int32)
-    if seed is None:
-        with jax.ensure_compile_time_eval():
-            seed = np.random.randint(0, int(1e8), 1)
-    seed = jnp.asarray(seed, dtype=jnp.int32)
-    seed = jnp.atleast_1d(seed)
+    seed = _initialize_seed(seed)
+    clen = _calculate_conn_len(conn_prob)
     return _raw_jitc_csr_matvec_normal(
         w_mu, w_sigma, clen, v, seed,
         shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
@@ -311,7 +313,8 @@ def _raw_jitc_csr_matvec_normal(
 ) -> Data:
     u.fail_for_dimension_mismatch(w_mu, w_sigma, "w_low and w_high must have the same dimension.")
     w_mu, unit_w_mu = u.split_mantissa_unit(w_mu)
-    w_sigma, unit_w_sigma = u.split_mantissa_unit(w_sigma.in_unit(unit_w_mu)  if isinstance(w_mu, u.Quantity) else w_sigma)
+    w_sigma, unit_w_sigma = u.split_mantissa_unit(
+        w_sigma.in_unit(unit_w_mu) if isinstance(w_mu, u.Quantity) else w_sigma)
     v, unitv = u.split_mantissa_unit(v)
     res = jitc_csrmv_normal_p_call(
         w_mu, w_sigma, clen, v, seed,
@@ -347,11 +350,11 @@ def _jitc_csr_matmat_homo(
         the speed compared with ``outdim_parallel=False``.
     Parameters
     ----------
-    weight: float
+    weight: Array, ndarray, Quantity, float
         The value of the random matrix.
     conn_prob: float
         The connection probability.
-    B: Array, ndarray
+    B: Array, ndarray, Quantity
         The matrix.
     seed: int
         The random number generation seed.
@@ -368,17 +371,13 @@ def _jitc_csr_matmat_homo(
     out: Array, ndarray
         The output of :math:`y = M @ B`.
     """
-    conn_len = jnp.ceil(1.0 / conn_prob) * 2 - 1
-    clen = jnp.asarray(jnp.atleast_1d(conn_len), dtype=jnp.int32)
-    if seed is None:
-        with jax.ensure_compile_time_eval():
-            seed = np.random.randint(0, int(1e8), 1)
-    seed = jnp.asarray(seed, dtype=jnp.int32)
-    seed = jnp.atleast_1d(seed)
+    seed = _initialize_seed(seed)
+    clen = _calculate_conn_len(conn_prob)
     return _raw_jitc_csr_matmat_homo(
         weight, clen, B, seed,
         shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
     )
+
 
 def _raw_jitc_csr_matmat_homo(
     weight: Data | float,
@@ -410,14 +409,15 @@ def _jitc_csr_matmat_uniform(
     transpose: bool = False,
     outdim_parallel: bool = True,
 ) -> Data:
-    r"""Perform the :math:`y=M@m` operation,
+    r"""Perform the :math:`y=M@B` operation,
     where :math:`M` is just-in-time randomly generated with a uniform distribution for its value.
     This operator support ``jit()``, ``vmap()``, ``grad()`` and ``pmap()`` etc. transformations
     on CPU and GPU devices.
     .. warning::
         This API may change in the future.
     In this operation, :math:`M` is the random matrix with a connection probability
-    `conn_prob`, and at each connection the value is the same scalar `weight`.
+    `conn_prob`, and at each connection the value is sampled from a uniform
+    distrubtion within the range of `w_low` and `w_high`.
     When ``transpose=True``, we perform an operation of :math:`y=M^T@m`.
     .. note::
         Note that the just-in-time generated :math:`M` (`transpose=False`) is
@@ -427,13 +427,13 @@ def _jitc_csr_matmat_uniform(
         the speed compared with ``outdim_parallel=False``.
     Parameters
     ----------
-    w_low: float
-        Lower boundary of the output interval.
-    w_high: float
-        Upper boundary of the output interval.
+    w_low: Array, ndarray, Quantity, float
+        The lower boundary of the random matrix.
+    w_high: Array, ndarray, Quantity, float
+        The upper boundary of the random matrix.
     conn_prob: float
         The connection probability.
-    m: Array, ndarray
+    B: Array, ndarray, Quantity
         The matrix.
     seed: int
         The random number generation seed.
@@ -448,19 +448,15 @@ def _jitc_csr_matmat_uniform(
     Returns
     -------
     out: Array, ndarray
-        The output of :math:`y = M @ m`.
+        The output of :math:`y = M @ B`.
     """
-    conn_len = jnp.ceil(1.0 / conn_prob) * 2 - 1
-    clen = jnp.asarray(jnp.atleast_1d(conn_len), dtype=jnp.int32)
-    if seed is None:
-        with jax.ensure_compile_time_eval():
-            seed = np.random.randint(0, int(1e8), 1)
-    seed = jnp.asarray(seed, dtype=jnp.int32)
-    seed = jnp.atleast_1d(seed)
+    seed = _initialize_seed(seed)
+    clen = _calculate_conn_len(conn_prob)
     return _raw_jitc_csr_matmat_uniform(
         w_low, w_high, clen, B, seed,
         shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
     )
+
 
 def _raw_jitc_csr_matmat_uniform(
     w_low: Data | float,
@@ -475,7 +471,8 @@ def _raw_jitc_csr_matmat_uniform(
 ) -> Data:
     u.fail_for_dimension_mismatch(w_low, w_high, "w_low and w_high must have the same dimension.")
     w_low, unit_w_low = u.split_mantissa_unit(w_low)
-    w_high, unit_w_high = u.split_mantissa_unit(w_high.in_unit(unit_w_low) if isinstance(w_high, u.Quantity) else w_high)
+    w_high, unit_w_high = u.split_mantissa_unit(
+        w_high.in_unit(unit_w_low) if isinstance(w_high, u.Quantity) else w_high)
     B, unitB = u.split_mantissa_unit(B)
     res = jitc_csrmm_uniform_p_call(
         w_low, w_high, clen, B, seed,
@@ -502,7 +499,8 @@ def _jitc_csr_matmat_normal(
     .. warning::
         This API may change in the future.
     In this operation, :math:`M` is the random matrix with a connection probability
-    `conn_prob`, and at each connection the value is the same scalar `weight`.
+    `conn_prob`, and at each connection the value is sampled from a normal distribution
+    with mean `w_mu` and standard deviation `w_sigma`.
     When ``transpose=True``, we perform an operation of :math:`y=M^T@m`.
     .. note::
         Note that the just-in-time generated :math:`M` (`transpose=False`) is
@@ -535,17 +533,13 @@ def _jitc_csr_matmat_normal(
     out: Array, ndarray
         The output of :math:`y = M @ m`.
     """
-    conn_len = jnp.ceil(1.0 / conn_prob) * 2 - 1
-    clen = jnp.asarray(jnp.atleast_1d(conn_len), dtype=jnp.int32)
-    if seed is None:
-        with jax.ensure_compile_time_eval():
-            seed = np.random.randint(0, int(1e8), 1)
-    seed = jnp.asarray(seed, dtype=jnp.int32)
-    seed = jnp.atleast_1d(seed)
+    seed = _initialize_seed(seed)
+    clen = _calculate_conn_len(conn_prob)
     return _raw_jitc_csr_matmat_normal(
         w_mu, w_sigma, clen, B, seed,
         shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
     )
+
 
 def _raw_jitc_csr_matmat_normal(
     w_mu: Data | float,
@@ -560,7 +554,8 @@ def _raw_jitc_csr_matmat_normal(
 ) -> Data:
     u.fail_for_dimension_mismatch(w_mu, w_sigma, "w_low and w_high must have the same dimension.")
     w_mu, unit_w_mu = u.split_mantissa_unit(w_mu)
-    w_sigma, unit_w_sigma = u.split_mantissa_unit(w_sigma.in_unit(unit_w_mu) if isinstance(w_mu, u.Quantity) else w_sigma)
+    w_sigma, unit_w_sigma = u.split_mantissa_unit(
+        w_sigma.in_unit(unit_w_mu) if isinstance(w_mu, u.Quantity) else w_sigma)
     B, unitB = u.split_mantissa_unit(B)
     res = jitc_csrmm_normal_p_call(
         w_mu, w_sigma, clen, B, seed,
@@ -579,24 +574,6 @@ def jitc_csrmv_homo_cpu_kernel_generator(
     **kwargs
 ) -> Kernel:
     r"""Generate the CPU kernel for the :func:`_jitc_csr_matvec_homo` operation.
-    Parameters
-    ----------
-    weight: float
-        The value of the random matrix.
-    clen: float
-        The connection length, equal to $$ \text{clen} = \left\lceil \frac{1}{p} \right\rceil \times 2 - 1 $$
-    shape: tuple of int
-        The matrix shape.
-    transpose: bool
-        Transpose the random matrix or not.
-    outdim_parallel: bool
-        Perform the parallel random generations along the out dimension or not.
-        It can be used to set the just-in-time generated :math:M^T: is the same
-        as the just-in-time generated :math:`M` when ``transpose=True``.
-    Returns
-    -------
-    kernel: Kernel
-        The CPU kernel.
     """
     import numba  # pylint: disable=import-outside-toplevel
 
@@ -652,24 +629,6 @@ def jitc_csrmv_homo_gpu_kernel_generator(
     **kwargs
 ) -> Kernel:
     r"""Generate the GPU kernel for the :func:`_jitc_csr_matvec_homo` operation.
-    Parameters
-    ----------
-    weight: float
-        The value of the random matrix.
-    clen: float
-        The connection length, equal to $$ \text{clen} = \left\lceil \frac{1}{p} \right\rceil \times 2 - 1 $$
-    shape: tuple of int
-        The matrix shape.
-    transpose: bool
-        Transpose the random matrix or not.
-    outdim_parallel: bool
-        Perform the parallel random generations along the out dimension or not.
-        It can be used to set the just-in-time generated :math:M^T: is the same
-        as the just-in-time generated :math:`M` when ``transpose=True``.
-    Returns
-    -------
-    kernel: Kernel
-        The GPU kernel.
     """
     import warp
 
@@ -930,26 +889,6 @@ def jitc_csrmv_uniform_cpu_kernel_generator(
     **kwargs
 ) -> Kernel:
     r"""Generate the CPU kernel for the :func:`_jitc_csr_matvec_uniform` operation.
-    Parameters
-    ----------
-    w_low: float
-        Lower boundary of the output interval.
-    w_high: float
-        Upper boundary of the output interval.
-    clen: float
-        The connection length, equal to $$ \text{clen} = \left\lceil \frac{1}{p} \right\rceil \times 2 - 1 $$
-    shape: tuple of int
-        The matrix shape.
-    transpose: bool
-        Transpose the random matrix or not.
-    outdim_parallel: bool
-        Perform the parallel random generations along the out dimension or not.
-        It can be used to set the just-in-time generated :math:M^T: is the same
-        as the just-in-time generated :math:`M` when ``transpose=True``.
-    Returns
-    -------
-    kernel: Kernel
-        The CPU kernel.
     """
     import numba  # pylint: disable=import-outside-toplevel
 
@@ -1009,26 +948,6 @@ def jitc_csrmv_uniform_gpu_kernel_generator(
     **kwargs
 ) -> Kernel:
     r"""Generate the GPU kernel for the :func:`_jitc_csr_matvec_uniform` operation.
-    Parameters
-    ----------
-    w_low: float
-        Lower boundary of the output interval.
-    w_high: float
-        Upper boundary of the output interval.
-    clen: float
-        The connection length, equal to $$ \text{clen} = \left\lceil \frac{1}{p} \right\rceil \times 2 - 1 $$
-    shape: tuple of int
-        The matrix shape.
-    transpose: bool
-        Transpose the random matrix or not.
-    outdim_parallel: bool
-        Perform the parallel random generations along the out dimension or not.
-        It can be used to set the just-in-time generated :math:M^T: is the same
-        as the just-in-time generated :math:`M` when ``transpose=True``.
-    Returns
-    -------
-    kernel: Kernel
-        The GPU kernel.
     """
     import warp
 
@@ -1332,26 +1251,6 @@ def jitc_csrmv_normal_cpu_kernel_generator(
     **kwargs
 ) -> Kernel:
     r"""Generate the CPU kernel for the :func:`_jitc_csr_matvec_normal` operation.
-    Parameters
-    ----------
-    w_mu: float
-        Mean (centre) of the distribution.
-    w_sigma: float
-        Standard deviation (spread or “width”) of the distribution. Must be non-negative.
-    clen: float
-        The connection length, equal to $$ \text{clen} = \left\lceil \frac{1}{p} \right\rceil \times 2 - 1 $$
-    shape: tuple of int
-        The matrix shape.
-    transpose: bool 
-        Transpose the random matrix or not.
-    outdim_parallel: bool
-        Perform the parallel random generations along the out dimension or not.
-        It can be used to set the just-in-time generated :math:M^T: is the same
-        as the just-in-time generated :math:`M` when ``transpose=True``.
-    Returns
-    -------
-    kernel: Kernel
-        The CPU kernel.
     """
     import numba  # pylint: disable=import-outside-toplevel
 
@@ -1411,26 +1310,6 @@ def jitc_csrmv_normal_gpu_kernel_generator(
     **kwargs
 ) -> Kernel:
     r"""Generate the GPU kernel for the :func:`_jitc_csr_matvec_normal` operation.
-    Parameters
-    ----------
-    w_mu: float
-        Mean (centre) of the distribution.
-    w_sigma: float
-        Standard deviation (spread or “width”) of the distribution. Must be non-negative.
-    clen: float
-        The connection length, equal to $$ \text{clen} = \left\lceil \frac{1}{p} \right\rceil \times 2 - 1 $$
-    shape: tuple of int
-        The matrix shape.
-    transpose: bool
-        Transpose the random matrix or not.
-    outdim_parallel: bool
-        Perform the parallel random generations along the out dimension or not.
-        It can be used to set the just-in-time generated :math:M^T: is the same
-        as the just-in-time generated :math:`M` when ``transpose=True``.
-    Returns
-    -------
-    kernel: Kernel
-        The GPU kernel.
     """
     import warp
 
@@ -1574,6 +1453,7 @@ def jitc_csrmv_normal_jvp_w_mu(
         transpose=transpose,
         outdim_parallel=outdim_parallel
     )
+
 
 def jitc_csrmv_normal_jvp_w_sigma(
     w_sigma_dot,
@@ -1720,7 +1600,8 @@ jitc_csrmv_normal_p = XLACustomKernel(
     )
 )
 
-jitc_csrmv_normal_p.defjvp(jitc_csrmv_normal_jvp_w_mu, jitc_csrmv_normal_jvp_w_sigma, None, jitc_csrmv_normal_jvp_v, None)
+jitc_csrmv_normal_p.defjvp(jitc_csrmv_normal_jvp_w_mu, jitc_csrmv_normal_jvp_w_sigma, None, jitc_csrmv_normal_jvp_v,
+                           None)
 jitc_csrmv_normal_p.def_transpose_rule(jitc_csrmv_normal_transpose_rules)
 jitc_csrmv_normal_p.def_batching_rule(jitc_csrmv_normal_batching)
 
@@ -1735,26 +1616,8 @@ def jitc_csrmm_homo_cpu_kernel_generator(
     **kwargs
 ) -> Kernel:
     r"""Generate the CPU kernel for the :func:`_jitc_csr_matmat_homo` operation.
-    Parameters
-    ----------
-    weight: float
-        The value of the random matrix.
-    clen: float
-        The connection length, equal to $$ \text{clen} = \left\lceil \frac{1}{p} \right\rceil \times 2 - 1 $$
-    shape: tuple of int
-        The matrix shape.
-    transpose: bool
-        Transpose the random matrix or not.
-    outdim_parallel: bool
-        Perform the parallel random generations along the out dimension or not.
-        It can be used to set the just-in-time generated :math:M^T: is the same
-        as the just-in-time generated :math:`M` when ``transpose=True``.
-    Returns
-    -------
-    kernel: Kernel
-        The CPU kernel.
     """
-    import numba    # pylint: disable=import-outside-toplevel
+    import numba  # pylint: disable=import-outside-toplevel
 
     if outdim_parallel:
         # outdim_parallel=True
@@ -1808,24 +1671,6 @@ def jitc_csrmm_homo_gpu_kernel_generator(
     **kwargs
 ) -> Kernel:
     r"""Generate the GPU kernel for the :func:`_jitc_csr_matmat_homo` operation.
-    Parameters
-    ----------
-    weight: float
-        The value of the random matrix.
-    clen: float
-        The connection length, equal to $$ \text{clen} = \left\lceil \frac{1}{p} \right\rceil \times 2 - 1 $$
-    shape: tuple of int
-        The matrix shape.
-    transpose: bool
-        Transpose the random matrix or not.
-    outdim_parallel: bool
-        Perform the parallel random generations along the out dimension or not.
-        It can be used to set the just-in-time generated :math:M^T: is the same
-        as the just-in-time generated :math:`M` when ``transpose=True``.
-    Returns
-    -------
-    kernel: Kernel
-        The GPU kernel.
     """
     import warp
 
@@ -2092,26 +1937,6 @@ def jitc_csrmm_uniform_cpu_kernel_generator(
     **kwargs
 ) -> Kernel:
     r"""Generate the CPU kernel for the :func:`_jitc_csr_matmat_uniform` operation.
-    Parameters
-    ----------
-    w_low: float
-        Lower boundary of the output interval.
-    w_high: float
-        Upper boundary of the output interval.
-    clen: float
-        The connection length, equal to $$ \text{clen} = \left\lceil \frac{1}{p} \right\rceil \times 2 - 1 $$
-    shape: tuple of int
-        The matrix shape.
-    transpose: bool
-        Transpose the random matrix or not.
-    outdim_parallel: bool
-        Perform the parallel random generations along the out dimension or not.
-        It can be used to set the just-in-time generated :math:M^T: is the same
-        as the just-in-time generated :math:`M` when ``transpose=True``.
-    Returns
-    -------
-    kernel: Kernel
-        The CPU kernel.
     """
     import numba
 
@@ -2160,7 +1985,6 @@ def jitc_csrmm_uniform_cpu_kernel_generator(
     return kernel
 
 
-
 def jitc_csrmm_uniform_gpu_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
@@ -2172,26 +1996,6 @@ def jitc_csrmm_uniform_gpu_kernel_generator(
     **kwargs
 ) -> Kernel:
     r"""Generate the GPU kernel for the :func:`_jitc_csr_matmat_uniform` operation.
-    Parameters
-    ----------
-    w_low: float
-        Lower boundary of the output interval.
-    w_high: float
-        Upper boundary of the output interval.
-    clen: float
-        The connection length, equal to $$ \text{clen} = \left\lceil \frac{1}{p} \right\rceil \times 2 - 1 $$
-    shape: tuple of int
-        The matrix shape.
-    transpose: bool
-        Transpose the random matrix or not.
-    outdim_parallel: bool
-        Perform the parallel random generations along the out dimension or not.
-        It can be used to set the just-in-time generated :math:M^T: is the same
-        as the just-in-time generated :math:`M` when ``transpose=True``.
-    Returns
-    -------
-    kernel: Kernel
-        The GPU kernel.
     """
     import warp
 
@@ -2288,6 +2092,7 @@ def jitc_csrmm_uniform_jvp_w_low(
         outdim_parallel=outdim_parallel,
     )
 
+
 def jitc_csrmm_uniform_jvp_w_high(
     w_high_dot,
     w_low,
@@ -2312,6 +2117,7 @@ def jitc_csrmm_uniform_jvp_w_high(
         transpose=transpose,
         outdim_parallel=outdim_parallel,
     )
+
 
 def jitc_csrmm_uniform_jvp_B(
     B_dot,
@@ -2497,26 +2303,6 @@ def jitc_csrmm_normal_cpu_kernel_generator(
     **kwargs
 ) -> Kernel:
     r"""Generate the CPU kernel for the :func:`_jitc_csr_matmat_normal` operation.
-    Parameters
-    ----------
-    w_mu: float
-        Mean (centre) of the distribution.
-    w_sigma: float
-        Standard deviation (spread or “width”) of the distribution. Must be non-negative.
-    clen: float
-        The connection length, equal to $$ \text{clen} = \left\lceil \frac{1}{p} \right\rceil \times 2 - 1 $$
-    shape: tuple of int
-        The matrix shape.
-    transpose: bool
-        Transpose the random matrix or not.
-    outdim_parallel: bool
-        Perform the parallel random generations along the out dimension or not.
-        It can be used to set the just-in-time generated :math:M^T: is the same
-        as the just-in-time generated :math:`M` when ``transpose=True``.
-    Returns
-    -------
-    kernel: Kernel
-        The CPU kernel.
     """
     import numba
 
@@ -2576,26 +2362,6 @@ def jitc_csrmm_normal_gpu_kernel_generator(
     **kwargs
 ) -> Kernel:
     r"""Generate the GPU kernel for the :func:`_jitc_csr_matmat_normal` operation.
-    Parameters
-    ----------
-    w_mu: float
-        Mean (centre) of the distribution.
-    w_sigma: float
-        Standard deviation (spread or “width”) of the distribution. Must be non-negative.
-    clen: float
-        The connection length, equal to $$ \text{clen} = \left\lceil \frac{1}{p} \right\rceil \times 2 - 1 $$
-    shape: tuple of int
-        The matrix shape.
-    transpose: bool
-        Transpose the random matrix or not.
-    outdim_parallel: bool
-        Perform the parallel random generations along the out dimension or not.
-        It can be used to set the just-in-time generated :math:M^T: is the same
-        as the just-in-time generated :math:`M` when ``transpose=True``.
-    Returns
-    -------
-    kernel: Kernel
-        The GPU kernel.
     """
     import warp
 
@@ -2691,6 +2457,7 @@ def jitc_csrmm_normal_jvp_w_mu(
         outdim_parallel=outdim_parallel,
     )
 
+
 def jitc_csrmm_normal_jvp_w_sigma(
     w_sigma_dot,
     w_mu,
@@ -2715,6 +2482,7 @@ def jitc_csrmm_normal_jvp_w_sigma(
         transpose=transpose,
         outdim_parallel=outdim_parallel,
     )
+
 
 def jitc_csrmm_normal_jvp_B(
     B_dot,

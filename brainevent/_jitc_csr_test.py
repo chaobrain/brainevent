@@ -15,11 +15,10 @@
 
 
 import unittest
-import numpy as np
+
 import jax
 import jax.numpy as jnp
-import brainstate as bs
-from functools import partial
+import numpy as np
 
 jax.config.update('jax_default_device', jax.devices('cpu')[0])
 
@@ -31,9 +30,6 @@ from ._jitc_csr_float_impl import (
     _jitc_csr_matmat_uniform,
     _jitc_csr_matmat_normal,
 )
-
-
-# jax.config.update('jax_default_device', jax.devices('cpu')[0])
 
 
 class TestJitcCsrMatvecHomo(unittest.TestCase):
@@ -150,7 +146,7 @@ class TestJitcCsrMatvecUniform(unittest.TestCase):
 
         def f_brainevent(x, w_low, w_high):
             return _jitc_csr_matvec_uniform(w_low, w_high, prob, x, seed=seed, shape=shape,
-                                         transpose=transpose, outdim_parallel=outdim_parallel)
+                                            transpose=transpose, outdim_parallel=outdim_parallel)
 
         out1, jvp_x1 = jax.jvp(f_brainevent, (x, jnp.array(w_low), jnp.array(w_high)),
                                (jnp.ones_like(x), jnp.array(1.0), jnp.array(1.0)))
@@ -160,7 +156,6 @@ class TestJitcCsrMatvecUniform(unittest.TestCase):
 
         self.assertTrue(jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
         self.assertTrue(jnp.allclose(jvp_x1, jvp_x2, rtol=1e-5, atol=1e-5))
-
 
     def test_jvp(self):
         for prob in [0.5]:
@@ -183,8 +178,8 @@ class TestJitcCsrMatvecNormal(unittest.TestCase):
         for transpose in [True, False]:
             for outdim_parallel in [True, False]:
                 result = _jitc_csr_matvec_normal(w_mu, w_sigma, conn_prob, v, seed=seed, shape=shape,
-                                                  transpose=transpose,
-                                                  outdim_parallel=outdim_parallel)
+                                                 transpose=transpose,
+                                                 outdim_parallel=outdim_parallel)
                 expected = jnp.zeros(shape[1]) if transpose else jnp.zeros(shape[0])
                 self.assertTrue(jnp.allclose(result, expected), msg="Weight zero test failed")
 
@@ -199,11 +194,11 @@ class TestJitcCsrMatvecNormal(unittest.TestCase):
                     for outdim_parallel in [True, False]:
                         vector = jnp.asarray(np.random.random(shape[0] if transpose else shape[1]))
                         r1 = _jitc_csr_matvec_normal(w_mu, w_sigma, prob, vector, seed=seed, shape=shape,
-                                                      transpose=transpose,
-                                                      outdim_parallel=outdim_parallel)
+                                                     transpose=transpose,
+                                                     outdim_parallel=outdim_parallel)
                         r2 = _jitc_csr_matvec_normal(w_mu, w_sigma, prob, vector, seed=seed, shape=shape,
-                                                      transpose=transpose,
-                                                      outdim_parallel=outdim_parallel)
+                                                     transpose=transpose,
+                                                     outdim_parallel=outdim_parallel)
                         # print(f'transpose: {transpose}, outdim_parallel: {outdim_parallel}')
                         # print(r1)
                         self.assertTrue(jnp.allclose(r1, r2, atol=1e-6))
@@ -230,7 +225,6 @@ class TestJitcCsrMatvecNormal(unittest.TestCase):
 
         self.assertTrue(jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
         self.assertTrue(jnp.allclose(jvp_x1, jvp_x2, rtol=1e-5, atol=1e-5))
-
 
     def test_jvp(self):
         for prob in [0.5]:
@@ -334,6 +328,7 @@ class TestJitcCsrMatmatHomo(unittest.TestCase):
                             f'prob = {prob}, transpose = {transpose}, outdim_parallel = {outdim_parallel}, weight = {weight}')
                         self._test_jvp(weight=weight, prob=prob, transpose=transpose, outdim_parallel=outdim_parallel)
 
+
 class TestJitcCsrMatmatUniform(unittest.TestCase):
 
     def test_zero_weight(self):
@@ -345,8 +340,9 @@ class TestJitcCsrMatmatUniform(unittest.TestCase):
         seed = 1234
         for transpose in [True, False]:
             for outdim_parallel in [True, False]:
-                result = _jitc_csr_matmat_uniform(w_low, w_high, conn_prob, B, seed=seed, shape=shape, transpose=transpose,
-                                               outdim_parallel=outdim_parallel)
+                result = _jitc_csr_matmat_uniform(w_low, w_high, conn_prob, B, seed=seed, shape=shape,
+                                                  transpose=transpose,
+                                                  outdim_parallel=outdim_parallel)
                 # Expected shape depends on transpose operation
                 expected_shape = (shape[1], B.shape[1]) if transpose else (shape[0], B.shape[1])
                 expected = jnp.zeros(expected_shape)
@@ -373,11 +369,11 @@ class TestJitcCsrMatmatUniform(unittest.TestCase):
                             B = jnp.asarray(np.random.random(B_shape))
 
                             r1 = _jitc_csr_matmat_uniform(w_low, w_high, prob, B, seed=seed, shape=shape,
-                                                       transpose=transpose,
-                                                       outdim_parallel=outdim_parallel)
+                                                          transpose=transpose,
+                                                          outdim_parallel=outdim_parallel)
                             r2 = _jitc_csr_matmat_uniform(w_low, w_high, prob, B, seed=seed, shape=shape,
-                                                       transpose=transpose,
-                                                       outdim_parallel=outdim_parallel)
+                                                          transpose=transpose,
+                                                          outdim_parallel=outdim_parallel)
                             # Results should be deterministic for same seed
                             # print(jnp.sum(r1 - r2))
                             # print(r1 - r2)
@@ -402,7 +398,7 @@ class TestJitcCsrMatmatUniform(unittest.TestCase):
 
         def f_brainevent(X, w_low, w_high):
             return _jitc_csr_matmat_uniform(w_low, w_high, prob, X, seed=seed, shape=shape,
-                                         transpose=transpose, outdim_parallel=outdim_parallel)
+                                            transpose=transpose, outdim_parallel=outdim_parallel)
 
         # Test JVP for both input matrix X and weight w
         out1, jvp_x1 = jax.jvp(f_brainevent, (X, jnp.array(w_low), jnp.array(w_high)),
@@ -428,6 +424,7 @@ class TestJitcCsrMatmatUniform(unittest.TestCase):
                         f'prob = {prob}, transpose = {transpose}, outdim_parallel = {outdim_parallel}')
                     self._test_jvp(prob=prob, transpose=transpose, outdim_parallel=outdim_parallel)
 
+
 class TestJitcCsrMatmatNormal(unittest.TestCase):
 
     def test_zero_weight(self):
@@ -439,8 +436,9 @@ class TestJitcCsrMatmatNormal(unittest.TestCase):
         seed = 1234
         for transpose in [True, False]:
             for outdim_parallel in [True, False]:
-                result = _jitc_csr_matmat_normal(w_mu, w_sigma, conn_prob, B, seed=seed, shape=shape, transpose=transpose,
-                                               outdim_parallel=outdim_parallel)
+                result = _jitc_csr_matmat_normal(w_mu, w_sigma, conn_prob, B, seed=seed, shape=shape,
+                                                 transpose=transpose,
+                                                 outdim_parallel=outdim_parallel)
                 # Expected shape depends on transpose operation
                 expected_shape = (shape[1], B.shape[1]) if transpose else (shape[0], B.shape[1])
                 expected = jnp.zeros(expected_shape)
@@ -467,11 +465,11 @@ class TestJitcCsrMatmatNormal(unittest.TestCase):
                             B = jnp.asarray(np.random.random(B_shape))
 
                             r1 = _jitc_csr_matmat_normal(w_mu, w_sigma, prob, B, seed=seed, shape=shape,
-                                                       transpose=transpose,
-                                                       outdim_parallel=outdim_parallel)
+                                                         transpose=transpose,
+                                                         outdim_parallel=outdim_parallel)
                             r2 = _jitc_csr_matmat_normal(w_mu, w_sigma, prob, B, seed=seed, shape=shape,
-                                                       transpose=transpose,
-                                                       outdim_parallel=outdim_parallel)
+                                                         transpose=transpose,
+                                                         outdim_parallel=outdim_parallel)
                             # Results should be deterministic for same seed
                             # print(jnp.sum(r1 - r2))
                             # print(r1 - r2)
@@ -496,7 +494,7 @@ class TestJitcCsrMatmatNormal(unittest.TestCase):
 
         def f_brainevent(X, w_mu, w_sigma):
             return _jitc_csr_matmat_normal(w_mu, w_sigma, prob, X, seed=seed, shape=shape,
-                                         transpose=transpose, outdim_parallel=outdim_parallel)
+                                           transpose=transpose, outdim_parallel=outdim_parallel)
 
         # Test JVP for both input matrix X and weight w
         out1, jvp_x1 = jax.jvp(f_brainevent, (X, jnp.array(w_mu), jnp.array(w_sigma)),
