@@ -581,7 +581,7 @@ def coomm_batching(
         return [r], [2]
 
     else:
-        raise NotImplementedError(f"Batching axes {axes} not implemented for event-driven COO matrix-vector product.")
+        raise NotImplementedError(f"Batching axes {axes} not implemented for event-driven COO matrix-matrix product.")
 
 
 def coomm_p_call(

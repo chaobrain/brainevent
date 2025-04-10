@@ -112,7 +112,7 @@ def _raw_jitc_csr_matvec_homo(
     weight: Data | float,
     clen: Data,
     v: Data,
-    seed: Optional[Data],
+    seed: Data,
     *,
     shape: Tuple[int, int],
     transpose: bool = False,
@@ -321,7 +321,7 @@ def _raw_jitc_csr_matvec_normal(
 
 
 def _jitc_csr_matmat_homo(
-    weight: float,
+    weight: Data | float,
     conn_prob: float,
     B: Data,
     seed: Optional[int] = None,
@@ -330,7 +330,7 @@ def _jitc_csr_matmat_homo(
     transpose: bool = False,
     outdim_parallel: bool = True,
 ) -> Data:
-    r"""Perform the :math:`y=M@m` operation,
+    r"""Perform the :math:`y=M@B` operation,
     where :math:`M` is just-in-time randomly generated with a scalar `weight` at each position.
     This operator support ``jit()``, ``vmap()``, ``grad()`` and ``pmap()`` etc. transformations
     on CPU and GPU devices.
@@ -338,7 +338,7 @@ def _jitc_csr_matmat_homo(
         This API may change in the future.
     In this operation, :math:`M` is the random matrix with a connection probability
     `conn_prob`, and at each connection the value is the same scalar `weight`.
-    When ``transpose=True``, we perform an operation of :math:`y=M^T@m`.
+    When ``transpose=True``, we perform an operation of :math:`y=M^T@B`.
     .. note::
         Note that the just-in-time generated :math:`M` (`transpose=False`) is
         different from the generated :math:`M^T` (`transpose=True`).
@@ -351,7 +351,7 @@ def _jitc_csr_matmat_homo(
         The value of the random matrix.
     conn_prob: float
         The connection probability.
-    m: Array, ndarray
+    B: Array, ndarray
         The matrix.
     seed: int
         The random number generation seed.
@@ -366,14 +366,42 @@ def _jitc_csr_matmat_homo(
     Returns
     -------
     out: Array, ndarray
-        The output of :math:`y = M @ m`.
+        The output of :math:`y = M @ B`.
     """
-    ...
+    conn_len = jnp.ceil(1.0 / conn_prob) * 2 - 1
+    clen = jnp.asarray(jnp.atleast_1d(conn_len), dtype=jnp.int32)
+    if seed is None:
+        with jax.ensure_compile_time_eval():
+            seed = np.random.randint(0, int(1e8), 1)
+    seed = jnp.asarray(seed, dtype=jnp.int32)
+    seed = jnp.atleast_1d(seed)
+    return _raw_jitc_csr_matmat_homo(
+        weight, clen, B, seed,
+        shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
+    )
+
+def _raw_jitc_csr_matmat_homo(
+    weight: Data | float,
+    clen: Data,
+    B: Data,
+    seed: Data,
+    *,
+    shape: Tuple[int, int],
+    transpose: bool = False,
+    outdim_parallel: bool = True,
+) -> Data:
+    weight, unitd = u.split_mantissa_unit(weight)
+    B, unitB = u.split_mantissa_unit(B)
+    res = jitc_csrmm_homo_p_call(
+        weight, clen, B, seed,
+        shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
+    )[0]
+    return u.maybe_decimal(res * unitd * unitB)
 
 
 def _jitc_csr_matmat_uniform(
-    w_low: float,
-    w_high: float,
+    w_low: Data | float,
+    w_high: Data | float,
     conn_prob: float,
     B: Data,
     seed: Optional[int] = None,
@@ -422,12 +450,43 @@ def _jitc_csr_matmat_uniform(
     out: Array, ndarray
         The output of :math:`y = M @ m`.
     """
-    ...
+    conn_len = jnp.ceil(1.0 / conn_prob) * 2 - 1
+    clen = jnp.asarray(jnp.atleast_1d(conn_len), dtype=jnp.int32)
+    if seed is None:
+        with jax.ensure_compile_time_eval():
+            seed = np.random.randint(0, int(1e8), 1)
+    seed = jnp.asarray(seed, dtype=jnp.int32)
+    seed = jnp.atleast_1d(seed)
+    return _raw_jitc_csr_matmat_uniform(
+        w_low, w_high, clen, B, seed,
+        shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
+    )
+
+def _raw_jitc_csr_matmat_uniform(
+    w_low: Data | float,
+    w_high: Data | float,
+    clen: Data,
+    B: Data,
+    seed: Data,
+    *,
+    shape: Tuple[int, int],
+    transpose: bool = False,
+    outdim_parallel: bool = True,
+) -> Data:
+    u.fail_for_dimension_mismatch(w_low, w_high, "w_low and w_high must have the same dimension.")
+    w_low, unit_w_low = u.split_mantissa_unit(w_low)
+    w_high, unit_w_high = u.split_mantissa_unit(w_high.in_unit(unit_w_low) if isinstance(w_high, u.Quantity) else w_high)
+    B, unitB = u.split_mantissa_unit(B)
+    res = jitc_csrmm_uniform_p_call(
+        w_low, w_high, clen, B, seed,
+        shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
+    )[0]
+    return u.maybe_decimal(res * unit_w_low * unitB)
 
 
 def _jitc_csr_matmat_normal(
-    w_mu: float,
-    w_sigma: float,
+    w_mu: Data | float,
+    w_sigma: Data | float,
     conn_prob: float,
     B: Data,
     seed: Optional[int] = None,
@@ -476,7 +535,38 @@ def _jitc_csr_matmat_normal(
     out: Array, ndarray
         The output of :math:`y = M @ m`.
     """
-    ...
+    conn_len = jnp.ceil(1.0 / conn_prob) * 2 - 1
+    clen = jnp.asarray(jnp.atleast_1d(conn_len), dtype=jnp.int32)
+    if seed is None:
+        with jax.ensure_compile_time_eval():
+            seed = np.random.randint(0, int(1e8), 1)
+    seed = jnp.asarray(seed, dtype=jnp.int32)
+    seed = jnp.atleast_1d(seed)
+    return _raw_jitc_csr_matmat_normal(
+        w_mu, w_sigma, clen, B, seed,
+        shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
+    )
+
+def _raw_jitc_csr_matmat_normal(
+    w_mu: Data | float,
+    w_sigma: Data | float,
+    clen: Data,
+    B: Data,
+    seed: Data,
+    *,
+    shape: Tuple[int, int],
+    transpose: bool = False,
+    outdim_parallel: bool = True,
+) -> Data:
+    u.fail_for_dimension_mismatch(w_mu, w_sigma, "w_low and w_high must have the same dimension.")
+    w_mu, unit_w_mu = u.split_mantissa_unit(w_mu)
+    w_sigma, unit_w_sigma = u.split_mantissa_unit(w_sigma.in_unit(unit_w_mu) if isinstance(w_mu, u.Quantity) else w_sigma)
+    B, unitB = u.split_mantissa_unit(B)
+    res = jitc_csrmm_normal_p_call(
+        w_mu, w_sigma, clen, B, seed,
+        shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
+    )[0]
+    return u.maybe_decimal(res * unit_w_mu * unitB)
 
 
 # Kernel generators for JIT connection SPMV
@@ -1640,11 +1730,9 @@ jitc_csrmv_normal_p.def_batching_rule(jitc_csrmv_normal_batching)
 # jitc csrmm homo
 
 def jitc_csrmm_homo_cpu_kernel_generator(
-    weight: Data,
-    clen: float,
-    shape: Tuple[int, int],
     transpose: bool = False,
     outdim_parallel: bool = True,
+    **kwargs
 ) -> Kernel:
     r"""Generate the CPU kernel for the :func:`_jitc_csr_matmat_homo` operation.
     Parameters
@@ -1666,15 +1754,58 @@ def jitc_csrmm_homo_cpu_kernel_generator(
     kernel: Kernel
         The CPU kernel.
     """
-    ...
+    import numba    # pylint: disable=import-outside-toplevel
+
+    if outdim_parallel:
+        # outdim_parallel=True
+        def kernel(weight, clen, B, seed, _, posts):
+            num_rows, num_cols = posts.shape
+            weight0 = weight[0]
+            clen0 = clen[0]
+            seed0 = seed[0]
+            np.random.seed(seed0)
+
+            for i_row in range(num_rows):
+                for i_col in range(num_cols):
+                    r = 0.0
+                    cursor = np.random.randint(0, clen0 - 1)
+                    while cursor < num_cols:
+                        r += B[i_row, cursor]
+                        cursor += np.random.randint(1, clen0)
+
+                    posts[i_row, i_col] = r * weight0
+
+    else:
+        # outdim_parallel=False
+        # TODO: more checks on this kernel (random generation method)
+        def kernel(weight, clen, B, seed, _, posts):
+            num_rows, num_cols = posts.shape
+            weight0 = weight[0]
+            clen0 = clen[0]
+            seed0 = seed[0]
+            np.random.seed(seed0)
+
+            for i_col in range(num_cols):
+                for i_row in range(num_rows):
+                    cursor = np.random.randint(0, clen0 - 1)
+                    r = B[i_row, :] * weight0
+                    while cursor < num_rows:
+                        posts[cursor, :] += r
+                        cursor += np.random.randint(1, clen0)
+
+    kernel = numba.njit(**numba_environ.setting)(kernel)
+    return kernel
 
 
 def jitc_csrmm_homo_gpu_kernel_generator(
-    weight: Data,
-    clen: float,
+    weight_info: jax.ShapeDtypeStruct,
+    clen_info: jax.ShapeDtypeStruct,
+    B_info: jax.ShapeDtypeStruct,
+    seed_info: jax.ShapeDtypeStruct,
     shape: Tuple[int, int],
     transpose: bool = False,
     outdim_parallel: bool = True,
+    **kwargs
 ) -> Kernel:
     r"""Generate the GPU kernel for the :func:`_jitc_csr_matmat_homo` operation.
     Parameters
@@ -1696,10 +1827,69 @@ def jitc_csrmm_homo_gpu_kernel_generator(
     kernel: Kernel
         The GPU kernel.
     """
-    ...
+    import warp
+
+    weight_dtype = dtype_to_warp_type(weight_info.dtype)
+    clen_dtype = dtype_to_warp_type(clen_info.dtype)
+    B_dtype = dtype_to_warp_type(B_info.dtype)
+    seed_dtype = dtype_to_warp_type(seed_info.dtype)
+
+    if outdim_parallel:
+        # outdim_parallel=True
+        def kernel(
+            weight: warp.array1d(dtype=weight_dtype),
+            clen: warp.array1d(dtype=clen_dtype),
+            B: warp.array2d(dtype=B_dtype),
+            seed: warp.array1d(dtype=seed_dtype),
+            _: warp.array1d(dtype=weight_dtype),
+            posts: warp.array2d(dtype=weight_dtype),
+        ):
+            num_rows, num_cols = posts.shape
+            weight0 = weight[0]
+            clen0 = clen[0]
+            seed0 = seed[0]
+
+            i_row, i_col = warp.tid()
+
+            r = 0.0
+            state = warp.rand_init(seed0 + i_row * num_cols + i_col)
+
+            cursor = warp.randi(state, 1, clen0)
+
+            while cursor < num_cols:
+                r += B[i_row, cursor]
+                cursor += warp.randi(state, 1, clen0)
+            posts[i_row, i_col] = r * weight0
+    else:
+        # outdim_parallel=False
+        def kernel(
+            weight: warp.array1d(dtype=weight_dtype),
+            clen: warp.array1d(dtype=clen_dtype),
+            B: warp.array2d(dtype=B_dtype),
+            seed: warp.array1d(dtype=seed_dtype),
+            _: warp.array1d(dtype=weight_dtype),
+            posts: warp.array2d(dtype=weight_dtype),
+        ):
+            num_rows, num_cols = posts.shape
+            weight0 = weight[0]
+            clen0 = clen[0]
+            seed0 = seed[0]
+
+            i_row, i_col = warp.tid()
+
+            state = warp.rand_init(seed0 + i_row * num_cols + i_col)
+
+            cursor = warp.randi(state, 1, clen0)
+            r = B[i_row, :] * weight0
+            while cursor < num_cols:
+                posts[cursor, :] += r
+                cursor += warp.randi(state, 1, clen0)
+
+    kernel = warp.kernel(kernel)
+    return kernel
 
 
-def jitc_csrmm_homo_jvp_left(
+def jitc_csrmm_homo_jvp_w(
     w_dot,
     weight,
     clen,
@@ -1709,12 +1899,21 @@ def jitc_csrmm_homo_jvp_left(
     *,
     shape,
     transpose,
-    outdim_parallel
+    outdim_parallel,
+    **kwargs
 ):
-    ...
+    return jitc_csrmm_homo_p_call(
+        w_dot,
+        clen,
+        B,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        outdim_parallel=outdim_parallel,
+    )
 
 
-def jitc_csrmm_homo_jvp_right(
+def jitc_csrmm_homo_jvp_B(
     B_dot,
     weight,
     clen,
@@ -1724,9 +1923,20 @@ def jitc_csrmm_homo_jvp_right(
     *,
     shape,
     transpose,
-    outdim_parallel
+    outdim_parallel,
+    **kwargs
 ):
-    ...
+    return [
+        _raw_jitc_csr_matmat_homo(
+            weight,
+            clen,
+            B_dot,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            outdim_parallel=outdim_parallel,
+        )
+    ]
 
 
 def jitc_csrmm_homo_transpose_rules(
@@ -1739,9 +1949,25 @@ def jitc_csrmm_homo_transpose_rules(
     *,
     shape,
     transpose,
-    outdim_parallel
+    outdim_parallel,
+    **kwargs
 ):
-    ...
+    assert not ad.is_undefined_primal(weight)
+    assert not ad.is_undefined_primal(clen)
+    assert not ad.is_undefined_primal(seed)
+    assert ad.is_undefined_primal(B)
+
+    r = jitc_csrmv_homo_p_call(
+        weight,
+        clen,
+        ct,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        outdim_parallel=outdim_parallel,
+    )[0]
+
+    return weight, clen, r, seed, _
 
 
 def jitc_csrmm_homo_batching(
@@ -1749,20 +1975,90 @@ def jitc_csrmm_homo_batching(
     axes,
     **kwargs
 ):
-    ...
+    if tuple(axes) == (None, None, 0, None, None):
+        assert args[2].ndim == 3, 'Batching axis 0 requires 3D input.'
+        batch_size, m, n = args[2].shape
+        B = jnp.transpose(args[2], (1, 0, 2)).reshape(m, batch_size * n)
+        r = jitc_csrmm_homo_p_call(
+            args[0],
+            args[1],
+            B,
+            args[3],
+            shape=kwargs['shape'],
+            transpose=kwargs['transpose'],
+            outdim_parallel=kwargs['outdim_parallel'],
+        )
+        r = jnp.reshape(r[0], [r[0].shape[0], batch_size, n])
+        return [r], [1]
+    elif tuple(axes) == (None, None, 1, None, None):
+        assert args[2].ndim == 3, 'Batching axis 0 requires 3D input.'
+        batch_size, m, n = args[2].shape
+        B = args[3].reshape(m, batch_size * n)
+        r = jitc_csrmm_homo_p_call(
+            args[0],
+            args[1],
+            args[2],
+            B,
+            shape=kwargs['shape'],
+            transpose=kwargs['transpose'],
+            outdim_parallel=kwargs['outdim_parallel'],
+        )
+        r = jnp.reshape(r[0], [r[0].shape[0], batch_size, n])
+        return [r], [1]
+    elif tuple(axes) == (None, None, 1, None, None):
+        assert args[2].ndim == 3, 'Batching axis 0 requires 3D input.'
+        batch_size, m, n = args[2].shape
+        B = args[3].reshape(m, batch_size * n)
+        r = jitc_csrmm_homo_p_call(
+            args[0],
+            args[1],
+            B,
+            args[3],
+            shape=kwargs['shape'],
+            transpose=kwargs['transpose'],
+            outdim_parallel=kwargs['outdim_parallel'],
+        )
+        r = jnp.reshape(r[0], [r[0].shape, batch_size, n])
+        return [r], [2]
+
+    else:
+        raise NotImplementedError(f"Batching axes {axes} not implemented for JIT connection CSR matrix-matrix product")
 
 
 def jitc_csrmm_homo_p_call(
     weight,
     clen,
-    v,
+    B,
     seed,
     *,
     shape: Sequence[int],
     transpose: bool,
     outdim_parallel: bool,
 ):
-    ...
+    weight = jnp.atleast_1d(weight)
+
+    out_info = (
+        jax.ShapeDtypeStruct([shape[1], B.shape[1]], weight.dtype)
+        if transpose else
+        jax.ShapeDtypeStruct([shape[0], B.shape[1]], weight.dtype)
+    )
+
+    return jitc_csrmm_homo_p(
+        weight,
+        clen,
+        B,
+        seed,
+        jnp.zeros(out_info.shape, out_info.dtype),
+        outs=[out_info],
+        weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
+        clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
+        B_info=jax.ShapeDtypeStruct(B.shape, B.dtype),
+        seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
+        out_info=out_info,
+        shape=shape,
+        transpose=transpose,
+        outdim_parallel=outdim_parallel,
+    )
 
 
 jitc_csrmm_homo_p = XLACustomKernel(
@@ -1770,13 +2066,14 @@ jitc_csrmm_homo_p = XLACustomKernel(
     cpu_kernel=NumbaKernelGenerator(jitc_csrmm_homo_cpu_kernel_generator, input_output_aliases={4: 0}),
     gpu_kernel=WarpKernelGenerator(
         jitc_csrmm_homo_gpu_kernel_generator,
-        # TODO: dim number
-        # dim=lambda
+        dim=lambda out_info, **kwargs: (
+            out_info.shape[0], out_info.shape[1]
+        ),
         input_output_aliases={4: 0}
     )
 )
 
-jitc_csrmm_homo_p.defjvp(jitc_csrmm_homo_jvp_left, None, None, jitc_csrmm_homo_jvp_right)
+jitc_csrmm_homo_p.defjvp(jitc_csrmm_homo_jvp_w, None, None, jitc_csrmm_homo_jvp_B)
 jitc_csrmm_homo_p.def_transpose_rule(jitc_csrmm_homo_transpose_rules)
 jitc_csrmm_homo_p.def_batching_rule(jitc_csrmm_homo_batching)
 
