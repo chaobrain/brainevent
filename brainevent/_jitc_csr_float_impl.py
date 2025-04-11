@@ -1239,7 +1239,10 @@ jitc_csrmv_uniform_p = XLACustomKernel(
     )
 )
 
-jitc_csrmv_uniform_p.defjvp(_jitc_csrmv_uniform_jvp_w_low, _jitc_csrmv_uniform_jvp_w_high, None, _jitc_csrmv_uniform_jvp_v)
+jitc_csrmv_uniform_p.defjvp(_jitc_csrmv_uniform_jvp_w_low,
+                            _jitc_csrmv_uniform_jvp_w_high,
+                            None,
+                            _jitc_csrmv_uniform_jvp_v)
 jitc_csrmv_uniform_p.def_transpose_rule(_jitc_csrmv_uniform_transpose_rules)
 jitc_csrmv_uniform_p.def_batching_rule(_jitc_csrmv_uniform_batching)
 
@@ -1601,7 +1604,10 @@ jitc_csrmv_normal_p = XLACustomKernel(
     )
 )
 
-jitc_csrmv_normal_p.defjvp(_jitc_csrmv_normal_jvp_w_mu, _jitc_csrmv_normal_jvp_w_sigma, None, _jitc_csrmv_normal_jvp_v,
+jitc_csrmv_normal_p.defjvp(_jitc_csrmv_normal_jvp_w_mu,
+                           _jitc_csrmv_normal_jvp_w_sigma,
+                           None,
+                           _jitc_csrmv_normal_jvp_v,
                            None)
 jitc_csrmv_normal_p.def_transpose_rule(_jitc_csrmv_normal_transpose_rules)
 jitc_csrmv_normal_p.def_batching_rule(_jitc_csrmv_normal_batching)
@@ -1636,7 +1642,6 @@ def _jitc_csrmm_homo_cpu_kernel_generator(
                     while cursor < num_cols:
                         r += B[i_row, cursor]
                         cursor += np.random.randint(1, clen0)
-
                     posts[i_row, i_col] = r * weight0
 
     else:
@@ -2291,7 +2296,10 @@ jitc_csrmm_uniform_p = XLACustomKernel(
     )
 )
 
-jitc_csrmm_uniform_p.defjvp(_jitc_csrmm_uniform_jvp_w_low, _jitc_csrmm_uniform_jvp_w_high, None, _jitc_csrmm_uniform_jvp_B)
+jitc_csrmm_uniform_p.defjvp(_jitc_csrmm_uniform_jvp_w_low,
+                            _jitc_csrmm_uniform_jvp_w_high,
+                            None,
+                            _jitc_csrmm_uniform_jvp_B)
 jitc_csrmm_uniform_p.def_transpose_rule(_jitc_csrmm_uniform_transpose_rules)
 jitc_csrmm_uniform_p.def_batching_rule(_jitc_csrmm_uniform_batching)
 
@@ -2655,6 +2663,9 @@ jitc_csrmm_normal_p = XLACustomKernel(
     )
 )
 
-jitc_csrmm_normal_p.defjvp(_jitc_csrmm_normal_jvp_w_mu, _jitc_csrmm_normal_jvp_w_sigma, None, _jitc_csrmm_normal_jvp_B)
+jitc_csrmm_normal_p.defjvp(_jitc_csrmm_normal_jvp_w_mu,
+                           _jitc_csrmm_normal_jvp_w_sigma,
+                           None,
+                           _jitc_csrmm_normal_jvp_B)
 jitc_csrmm_normal_p.def_transpose_rule(_jitc_csrmm_normal_transpose_rules)
 jitc_csrmm_normal_p.def_batching_rule(_jitc_csrmm_normal_batching)
