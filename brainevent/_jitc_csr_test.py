@@ -33,6 +33,10 @@ from brainevent._jitc_csr_float_impl import (
 
 # jax.config.update('jax_default_device', jax.devices('cpu')[0])
 
+def equal(a, b):
+    return a == b
+
+
 
 class TestJitcCsrMatvecHomo:
 
@@ -340,7 +344,7 @@ class TestJitcCsrMatmatHomo:
 
                                 # Check output shape
                                 expected_shape = (shape[1], batch_size) if transpose else (shape[0], batch_size)
-                                self.assertEqual(r1.shape, expected_shape)
+                                assert equal(r1.shape, expected_shape)
 
     def _test_jvp(self, weight, prob, transpose, outdim_parallel):
         seed = 1234
@@ -373,8 +377,8 @@ class TestJitcCsrMatmatHomo:
 
         # Check output shapes
         expected_shape = (shape[1], batch_size) if transpose else (shape[0], batch_size)
-        self.assertEqual(out1.shape, expected_shape)
-        self.assertEqual(jvp_x1.shape, expected_shape)
+        assert equal(out1.shape, expected_shape)
+        assert equal(jvp_x1.shape, expected_shape)
 
     def test_jvp(self):
         for weight in [-1., 1.]:
@@ -444,7 +448,7 @@ class TestJitcCsrMatmatUniform:
 
                             # Check output shape
                             expected_shape = (shape[1], batch_size) if transpose else (shape[0], batch_size)
-                            self.assertEqual(r1.shape, expected_shape)
+                            assert equal(r1.shape, expected_shape)
 
     def _test_jvp(self, prob, transpose, outdim_parallel):
         seed = 1234
@@ -476,8 +480,8 @@ class TestJitcCsrMatmatUniform:
 
         # Check output shapes
         expected_shape = (shape[1], batch_size) if transpose else (shape[0], batch_size)
-        self.assertEqual(out1.shape, expected_shape)
-        self.assertEqual(jvp_x1.shape, expected_shape)
+        assert equal(out1.shape, expected_shape)
+        assert equal(jvp_x1.shape, expected_shape)
 
     def test_jvp(self):
         for prob in [0.5]:
@@ -540,7 +544,7 @@ class TestJitcCsrMatmatNormal:
 
                             # Check output shape
                             expected_shape = (shape[1], batch_size) if transpose else (shape[0], batch_size)
-                            self.assertEqual(r1.shape, expected_shape)
+                            assert equal(r1.shape, expected_shape)
 
     def _test_jvp(self, prob, transpose, outdim_parallel):
         seed = 1234
@@ -572,8 +576,8 @@ class TestJitcCsrMatmatNormal:
 
         # Check output shapes
         expected_shape = (shape[1], batch_size) if transpose else (shape[0], batch_size)
-        self.assertEqual(out1.shape, expected_shape)
-        self.assertEqual(jvp_x1.shape, expected_shape)
+        assert equal(out1.shape, expected_shape)
+        assert equal(jvp_x1.shape, expected_shape)
 
     def test_jvp(self):
         for prob in [0.5]:
