@@ -72,8 +72,6 @@ class COO(u.sparse.SparseMatrix):
     --------
     fromdense(cls, mat, *, nse=None, index_dtype=np.int32)
         Create a COO matrix from a dense matrix.
-    _sort_indices()
-        Return a copy of the COO matrix with sorted indices.
     with_data(data)
         Create a new COO matrix with the same structure but different data.
     todense()
