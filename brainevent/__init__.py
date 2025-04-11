@@ -21,7 +21,7 @@ from ._coo import COO
 from ._csr import CSR, CSC
 from ._event import EventArray
 from ._fixed_conn_num import FixedPostNumConn, FixedPreNumConn
-from ._jitc_csr import JITC_CSR, JITC_CSC
+from ._jitc import JITC_CSR, JITC_CSC
 from ._xla_custom_op import XLACustomKernel, defjvp
 from ._xla_custom_op_numba import NumbaKernelGenerator, set_numba_environ
 from ._xla_custom_op_pallas import PallasKernelGenerator
