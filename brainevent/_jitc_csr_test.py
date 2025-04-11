@@ -15,6 +15,7 @@
 
 
 import unittest
+from pickle import FALSE
 
 import jax
 import jax.numpy as jnp
@@ -40,25 +41,9 @@ def equal(a, b):
 
 class TestJitcCsrMatvecHomo:
 
-    def test_zero_weight(self):
-        weight = 0.0
-        conn_prob = 0.5
-        v = jnp.array([1.0, 2.0, 3.0])
-        shape = (2, 3)
-        seed = 1234
-        for transpose in [True, False]:
-            for outdim_parallel in [True, False]:
-                result = _jitc_csr_matvec_homo(weight, conn_prob, v,
-                                               seed=seed,
-                                               shape=shape,
-                                               transpose=transpose,
-                                               outdim_parallel=outdim_parallel)
-                expected = jnp.zeros(shape[1]) if transpose else jnp.zeros(shape[0])
-                assert (jnp.allclose(result, expected))
-
     @pytest.mark.parametrize('transpose', [True, False])
     @pytest.mark.parametrize('outdim_parallel', [True, False])
-    def test_zero_weight2(self, transpose, outdim_parallel):
+    def test_zero_weight(self, transpose, outdim_parallel):
         weight = 0.0
         conn_prob = 0.5
         v = jnp.array([1.0, 2.0, 3.0])
@@ -72,28 +57,31 @@ class TestJitcCsrMatvecHomo:
         expected = jnp.zeros(shape[1]) if transpose else jnp.zeros(shape[0])
         assert (jnp.allclose(result, expected))
 
-    def test_random_connectivity(self):
+    @pytest.mark.parametrize('shape', [(100, 200), (20, 100), (100, 20)])
+    @pytest.mark.parametrize('weight', [-1., 1.])
+    @pytest.mark.parametrize('prob', [0.3, 0.5])
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('outdim_parallel', [True, False])
+    def test_random_connectivity(self, shape, weight, prob, transpose, outdim_parallel):
         seed = 1234
-        shapes = [(100, 200), (20, 100), (100, 20)]
-        for shape in shapes:
-            for weight in [-1., 1.]:
-                for prob in [0.3, 0.5]:
-                    for transpose in [True, False]:
-                        for outdim_parallel in [True, False]:
-                            vector = jnp.asarray(np.random.random(shape[0] if transpose else shape[1]))
-                            r1 = _jitc_csr_matvec_homo(weight, prob, vector,
-                                                       seed=seed,
-                                                       shape=shape,
-                                                       transpose=transpose,
-                                                       outdim_parallel=outdim_parallel)
-                            r2 = _jitc_csr_matvec_homo(weight, prob, vector,
-                                                       seed=seed,
-                                                       shape=shape,
-                                                       transpose=transpose,
-                                                       outdim_parallel=outdim_parallel)
-                            assert (jnp.allclose(r1, r2, atol=1e-6))
+        vector = jnp.asarray(np.random.random(shape[0] if transpose else shape[1]))
+        r1 = _jitc_csr_matvec_homo(weight, prob, vector,
+                                   seed=seed,
+                                   shape=shape,
+                                   transpose=transpose,
+                                   outdim_parallel=outdim_parallel)
+        r2 = _jitc_csr_matvec_homo(weight, prob, vector,
+                                   seed=seed,
+                                   shape=shape,
+                                   transpose=transpose,
+                                   outdim_parallel=outdim_parallel)
+        assert (jnp.allclose(r1, r2, atol=1e-6))
 
-    def _test_jvp(self, weight, prob, transpose, outdim_parallel):
+    @pytest.mark.parametrize('weight', [-1., 1.])
+    @pytest.mark.parametrize('prob', [0.3, 0.5])
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('outdim_parallel', [True, False])
+    def test_jvp(self, weight, prob, transpose, outdim_parallel):
         seed = 1234
         n_in = 200
         n_out = 300
@@ -117,62 +105,53 @@ class TestJitcCsrMatvecHomo:
         assert (jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
         assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-5, atol=1e-5))
 
-    def test_jvp(self):
-        for weight in [-1., 1.]:
-            for prob in [0.5]:
-                for transpose in [True, False]:
-                    for outdim_parallel in [True, False]:
-                        print(f'prob = {prob}, '
-                              f'transpose = {transpose}, '
-                              f'outdim_parallel = {outdim_parallel}, '
-                              f'weight = {weight}')
-                        self._test_jvp(weight=weight,
-                                       prob=prob,
-                                       transpose=transpose,
-                                       outdim_parallel=outdim_parallel)
-
 
 class TestJitcCsrMatvecUniform:
 
-    def test_zero_weight(self):
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('outdim_parallel', [True, False])
+    def test_zero_weight(self, transpose, outdim_parallel):
         w_low = 0.0
         w_high = 0.0
         conn_prob = 0.5
         v = jnp.array([1.0, 2.0, 3.0])
         shape = (2, 3)
         seed = 1234
-        for transpose in [True, False]:
-            for outdim_parallel in [True, False]:
-                result = _jitc_csr_matvec_uniform(w_low, w_high, conn_prob, v,
-                                                  seed=seed,
-                                                  shape=shape,
-                                                  transpose=transpose,
-                                                  outdim_parallel=outdim_parallel)
-                expected = jnp.zeros(shape[1]) if transpose else jnp.zeros(shape[0])
-                assert (jnp.allclose(result, expected))
 
-    def test_random_connectivity(self):
+        result = _jitc_csr_matvec_uniform(w_low, w_high, conn_prob, v,
+                                          seed=seed,
+                                          shape=shape,
+                                          transpose=transpose,
+                                          outdim_parallel=outdim_parallel)
+        expected = jnp.zeros(shape[1]) if transpose else jnp.zeros(shape[0])
+        assert (jnp.allclose(result, expected))
+
+    @pytest.mark.parametrize('shape', [(100, 200), (20, 100), (100, 20)])
+    @pytest.mark.parametrize('prob', [0.3, 0.5])
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('outdim_parallel', [True, False])
+    def test_random_connectivity(self, shape, prob, transpose, outdim_parallel):
         seed = 1234
         shapes = [(100, 200), (20, 100), (100, 20)]
         w_low = 1.0
         w_high = 2.0
-        for shape in shapes:
-            for prob in [0.3, 0.5]:
-                for transpose in [True, False]:
-                    for outdim_parallel in [True, False]:
-                        vector = jnp.asarray(np.random.random(shape[0] if transpose else shape[1]))
-                        r1 = _jitc_csr_matvec_uniform(w_low, w_high, prob, vector,
-                                                      seed=seed,
-                                                      shape=shape,
-                                                      transpose=transpose,
-                                                      outdim_parallel=outdim_parallel)
-                        r2 = _jitc_csr_matvec_uniform(w_low, w_high, prob, vector,
-                                                      seed=seed,
-                                                      shape=shape,
-                                                      transpose=transpose,
-                                                      outdim_parallel=outdim_parallel)
-                        assert (jnp.allclose(r1, r2, atol=1e-6))
 
+        vector = jnp.asarray(np.random.random(shape[0] if transpose else shape[1]))
+        r1 = _jitc_csr_matvec_uniform(w_low, w_high, prob, vector,
+                                      seed=seed,
+                                      shape=shape,
+                                      transpose=transpose,
+                                      outdim_parallel=outdim_parallel)
+        r2 = _jitc_csr_matvec_uniform(w_low, w_high, prob, vector,
+                                      seed=seed,
+                                      shape=shape,
+                                      transpose=transpose,
+                                      outdim_parallel=outdim_parallel)
+        assert (jnp.allclose(r1, r2, atol=1e-6))
+
+    @pytest.mark.parametrize('prob', [0.3, 0.5])
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('outdim_parallel', [True, False])
     def _test_jvp(self, prob, transpose, outdim_parallel):
         seed = 1234
         n_in = 200
@@ -199,59 +178,56 @@ class TestJitcCsrMatvecUniform:
         assert (jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
         assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-5, atol=1e-5))
 
-    def test_jvp(self):
-        for prob in [0.5]:
-            for transpose in [True, False]:
-                for outdim_parallel in [True, False]:
-                    print(
-                        f'prob = {prob}, transpose = {transpose}, outdim_parallel = {outdim_parallel}')
-                    self._test_jvp(prob=prob, transpose=transpose, outdim_parallel=outdim_parallel)
-
 
 class TestJitcCsrMatvecNormal:
 
-    def test_zero_weight(self):
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('outdim_parallel', [True, False])
+    def test_zero_weight(self, transpose, outdim_parallel):
         w_mu = 0.0
         w_sigma = 0.0
         conn_prob = 0.5
         v = jnp.array([1.0, 2.0, 3.0])
         shape = (2, 3)
         seed = 1234
-        for transpose in [True, False]:
-            for outdim_parallel in [True, False]:
-                result = _jitc_csr_matvec_normal(w_mu, w_sigma, conn_prob, v,
-                                                 seed=seed,
-                                                 shape=shape,
-                                                 transpose=transpose,
-                                                 outdim_parallel=outdim_parallel)
-                expected = jnp.zeros(shape[1]) if transpose else jnp.zeros(shape[0])
-                assert (jnp.allclose(result, expected))
 
-    def test_random_connectivity(self):
+        result = _jitc_csr_matvec_normal(w_mu, w_sigma, conn_prob, v,
+                                         seed=seed,
+                                         shape=shape,
+                                         transpose=transpose,
+                                         outdim_parallel=outdim_parallel)
+        expected = jnp.zeros(shape[1]) if transpose else jnp.zeros(shape[0])
+        assert (jnp.allclose(result, expected))
+
+    @pytest.mark.parametrize('shape', [(100, 200), (20, 100), (100, 20)])
+    @pytest.mark.parametrize('prob', [0.3, 0.5])
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('outdim_parallel', [True, False])
+    def test_random_connectivity(self, shape, prob, transpose, outdim_parallel):
         seed = 1234
         shapes = [(100, 200), (20, 100), (100, 20)]
         w_mu = 1.0
         w_sigma = 2.0
-        for shape in shapes:
-            for prob in [0.3, 0.5]:
-                for transpose in [True, False]:
-                    for outdim_parallel in [True, False]:
-                        vector = jnp.asarray(np.random.random(shape[0] if transpose else shape[1]))
-                        r1 = _jitc_csr_matvec_normal(w_mu, w_sigma, prob, vector,
-                                                     seed=seed,
-                                                     shape=shape,
-                                                     transpose=transpose,
-                                                     outdim_parallel=outdim_parallel)
-                        r2 = _jitc_csr_matvec_normal(w_mu, w_sigma, prob, vector,
-                                                     seed=seed,
-                                                     shape=shape,
-                                                     transpose=transpose,
-                                                     outdim_parallel=outdim_parallel)
-                        # print(f'transpose: {transpose}, outdim_parallel: {outdim_parallel}')
-                        # print(r1)
-                        assert (jnp.allclose(r1, r2, atol=1e-6))
 
-    def _test_jvp(self, prob, transpose, outdim_parallel):
+        vector = jnp.asarray(np.random.random(shape[0] if transpose else shape[1]))
+        r1 = _jitc_csr_matvec_normal(w_mu, w_sigma, prob, vector,
+                                     seed=seed,
+                                     shape=shape,
+                                     transpose=transpose,
+                                     outdim_parallel=outdim_parallel)
+        r2 = _jitc_csr_matvec_normal(w_mu, w_sigma, prob, vector,
+                                     seed=seed,
+                                     shape=shape,
+                                     transpose=transpose,
+                                     outdim_parallel=outdim_parallel)
+        # print(f'transpose: {transpose}, outdim_parallel: {outdim_parallel}')
+        # print(r1)
+        assert (jnp.allclose(r1, r2, atol=1e-6))
+
+    @pytest.mark.parametrize('prob', [0.3, 0.5])
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('outdim_parallel', [True, False])
+    def test_jvp(self, prob, transpose, outdim_parallel):
         seed = 1234
         n_in = 200
         n_out = 300
@@ -277,76 +253,67 @@ class TestJitcCsrMatvecNormal:
         assert (jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
         assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-5, atol=1e-5))
 
-    def test_jvp(self):
-        for prob in [0.5]:
-            for transpose in [True, False]:
-                for outdim_parallel in [True, False]:
-                    print(
-                        f'prob = {prob}, transpose = {transpose}, outdim_parallel = {outdim_parallel}')
-                    self._test_jvp(prob=prob, transpose=transpose, outdim_parallel=outdim_parallel)
-
 
 class TestJitcCsrMatmatHomo:
 
-    def test_zero_weight(self):
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('outdim_parallel', [True, False])
+    def test_zero_weight(self, transpose, outdim_parallel):
         weight = 0.0
         conn_prob = 0.5
         B = jnp.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])  # 3x2 matrix
         shape = (2, 3)
         seed = 1234
-        for transpose in [True, False]:
-            for outdim_parallel in [True, False]:
-                result = _jitc_csr_matmat_homo(weight, conn_prob, B,
-                                               seed=seed,
-                                               shape=shape,
-                                               transpose=transpose,
-                                               outdim_parallel=outdim_parallel)
-                # Expected shape depends on transpose operation
-                expected_shape = (shape[1], B.shape[1]) if transpose else (shape[0], B.shape[1])
-                expected = jnp.zeros(expected_shape)
-                assert (jnp.allclose(result, expected))
 
-    def test_random_connectivity(self):
+        result = _jitc_csr_matmat_homo(weight, conn_prob, B,
+                                       seed=seed,
+                                       shape=shape,
+                                       transpose=transpose,
+                                       outdim_parallel=outdim_parallel)
+        # Expected shape depends on transpose operation
+        expected_shape = (shape[1], B.shape[1]) if transpose else (shape[0], B.shape[1])
+        expected = jnp.zeros(expected_shape)
+        assert (jnp.allclose(result, expected))
+
+    @pytest.mark.parametrize('shape', [(100, 200), (20, 100), (100, 20)])
+    @pytest.mark.parametrize('batch_size', [10, 20])
+    @pytest.mark.parametrize('weight', [-1., 1.])
+    @pytest.mark.parametrize('prob', [0.3, 0.5])
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('outdim_parallel', [True, False])
+    def test_random_connectivity(self, shape, batch_size, weight, prob, transpose, outdim_parallel):
         seed = 1234
-        shapes = [
-            (100, 200),
-            (20, 100),
-            (100, 20)
-        ]
-        batch_sizes = [10, 20]  # Batch dimension (second dimension of B matrix)
 
-        for shape in shapes:
-            for batch_size in batch_sizes:
-                for weight in [-1., 1.]:
-                    for prob in [0.3, 0.5]:
-                        for transpose in [True, False]:
-                            for outdim_parallel in [True, False]:
-                                print(f'shape: {shape}, batch_size: {batch_size}, weight: {weight}, prob: {prob}, '
-                                      f'transpose: {transpose}, outdim_parallel: {outdim_parallel}')
-                                # Input matrix B
-                                B_shape = (shape[0] if transpose else shape[1], batch_size)
-                                B = jnp.asarray(np.random.random(B_shape))
+        print(f'shape: {shape}, batch_size: {batch_size}, weight: {weight}, prob: {prob}, '
+              f'transpose: {transpose}, outdim_parallel: {outdim_parallel}')
+        # Input matrix B
+        B_shape = (shape[0] if transpose else shape[1], batch_size)
+        B = jnp.asarray(np.random.random(B_shape))
 
-                                r1 = _jitc_csr_matmat_homo(weight, prob, B,
-                                                           seed=seed,
-                                                           shape=shape,
-                                                           transpose=transpose,
-                                                           outdim_parallel=outdim_parallel)
-                                r2 = _jitc_csr_matmat_homo(weight, prob, B,
-                                                           seed=seed,
-                                                           shape=shape,
-                                                           transpose=transpose,
-                                                           outdim_parallel=outdim_parallel)
-                                # Results should be deterministic for same seed
-                                # print(jnp.sum(r1 - r2))
-                                # print(r1 - r2)
-                                assert (jnp.allclose(r1, r2, atol=1e-6, equal_nan=True))
+        r1 = _jitc_csr_matmat_homo(weight, prob, B,
+                                   seed=seed,
+                                   shape=shape,
+                                   transpose=transpose,
+                                   outdim_parallel=outdim_parallel)
+        r2 = _jitc_csr_matmat_homo(weight, prob, B,
+                                   seed=seed,
+                                   shape=shape,
+                                   transpose=transpose,
+                                   outdim_parallel=outdim_parallel)
+        # Results should be deterministic for same seed
+        # print(jnp.sum(r1 - r2))
+        # print(r1 - r2)
+        assert (jnp.allclose(r1, r2, atol=1e-6, equal_nan=True))
 
-                                # Check output shape
-                                expected_shape = (shape[1], batch_size) if transpose else (shape[0], batch_size)
-                                assert equal(r1.shape, expected_shape)
+        # Check output shape
+        expected_shape = (shape[1], batch_size) if transpose else (shape[0], batch_size)
+        assert equal(r1.shape, expected_shape)
 
-    def _test_jvp(self, weight, prob, transpose, outdim_parallel):
+    @pytest.mark.parametrize('weight', [-1., 1.])
+    @pytest.mark.parametrize('prob', [0.3, 0.5])
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('outdim_parallel', [True, False])
+    def test_jvp(self, weight, prob, transpose, outdim_parallel):
         seed = 1234
         n_in = 200
         n_out = 300
@@ -380,38 +347,35 @@ class TestJitcCsrMatmatHomo:
         assert equal(out1.shape, expected_shape)
         assert equal(jvp_x1.shape, expected_shape)
 
-    def test_jvp(self):
-        for weight in [-1., 1.]:
-            for prob in [0.5]:
-                for transpose in [True, False]:
-                    for outdim_parallel in [True, False]:
-                        print(
-                            f'prob = {prob}, transpose = {transpose}, outdim_parallel = {outdim_parallel}, weight = {weight}')
-                        self._test_jvp(weight=weight, prob=prob, transpose=transpose, outdim_parallel=outdim_parallel)
-
 
 class TestJitcCsrMatmatUniform:
 
-    def test_zero_weight(self):
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('outdim_parallel', [True, False])
+    def test_zero_weight(self, transpose, outdim_parallel):
         w_low = 0.0
         w_high = 0.0
         conn_prob = 0.5
         B = jnp.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])  # 3x2 matrix
         shape = (2, 3)
         seed = 1234
-        for transpose in [True, False]:
-            for outdim_parallel in [True, False]:
-                result = _jitc_csr_matmat_uniform(w_low, w_high, conn_prob, B,
-                                                  seed=seed,
-                                                  shape=shape,
-                                                  transpose=transpose,
-                                                  outdim_parallel=outdim_parallel)
-                # Expected shape depends on transpose operation
-                expected_shape = (shape[1], B.shape[1]) if transpose else (shape[0], B.shape[1])
-                expected = jnp.zeros(expected_shape)
-                assert (jnp.allclose(result, expected))
 
-    def test_random_connectivity(self):
+        result = _jitc_csr_matmat_uniform(w_low, w_high, conn_prob, B,
+                                          seed=seed,
+                                          shape=shape,
+                                          transpose=transpose,
+                                          outdim_parallel=outdim_parallel)
+        # Expected shape depends on transpose operation
+        expected_shape = (shape[1], B.shape[1]) if transpose else (shape[0], B.shape[1])
+        expected = jnp.zeros(expected_shape)
+        assert (jnp.allclose(result, expected))
+
+    @pytest.mark.parametrize('shape', [(100, 200), (20, 100), (100, 20)])
+    @pytest.mark.parametrize('batch_size', [10, 20])
+    @pytest.mark.parametrize('prob', [0.3, 0.5])
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('outdim_parallel', [True, False])
+    def test_random_connectivity(self, shape, batch_size, prob, transpose, outdim_parallel):
         seed = 1234
         shapes = [
             (100, 200),
@@ -422,34 +386,32 @@ class TestJitcCsrMatmatUniform:
         w_low = 0.0
         w_high = 1.0
 
-        for shape in shapes:
-            for batch_size in batch_sizes:
-                for prob in [0.3, 0.5]:
-                    for transpose in [True, False]:
-                        for outdim_parallel in [True, False]:
-                            # Input matrix B
-                            B_shape = (shape[0] if transpose else shape[1], batch_size)
-                            B = jnp.asarray(np.random.random(B_shape))
+        # Input matrix B
+        B_shape = (shape[0] if transpose else shape[1], batch_size)
+        B = jnp.asarray(np.random.random(B_shape))
 
-                            r1 = _jitc_csr_matmat_uniform(w_low, w_high, prob, B,
-                                                          seed=seed,
-                                                          shape=shape,
-                                                          transpose=transpose,
-                                                          outdim_parallel=outdim_parallel)
-                            r2 = _jitc_csr_matmat_uniform(w_low, w_high, prob, B,
-                                                          seed=seed,
-                                                          shape=shape,
-                                                          transpose=transpose,
-                                                          outdim_parallel=outdim_parallel)
-                            # Results should be deterministic for same seed
-                            # print(jnp.sum(r1 - r2))
-                            # print(r1 - r2)
-                            assert (jnp.allclose(r1, r2, atol=1e-6, equal_nan=True))
+        r1 = _jitc_csr_matmat_uniform(w_low, w_high, prob, B,
+                                      seed=seed,
+                                      shape=shape,
+                                      transpose=transpose,
+                                      outdim_parallel=outdim_parallel)
+        r2 = _jitc_csr_matmat_uniform(w_low, w_high, prob, B,
+                                      seed=seed,
+                                      shape=shape,
+                                      transpose=transpose,
+                                      outdim_parallel=outdim_parallel)
+        # Results should be deterministic for same seed
+        # print(jnp.sum(r1 - r2))
+        # print(r1 - r2)
+        assert (jnp.allclose(r1, r2, atol=1e-6, equal_nan=True))
 
-                            # Check output shape
-                            expected_shape = (shape[1], batch_size) if transpose else (shape[0], batch_size)
-                            assert equal(r1.shape, expected_shape)
+        # Check output shape
+        expected_shape = (shape[1], batch_size) if transpose else (shape[0], batch_size)
+        assert equal(r1.shape, expected_shape)
 
+    @pytest.mark.parametrize('prob', [0.3, 0.5])
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('outdim_parallel', [True, False])
     def _test_jvp(self, prob, transpose, outdim_parallel):
         seed = 1234
         n_in = 200
@@ -483,35 +445,33 @@ class TestJitcCsrMatmatUniform:
         assert equal(out1.shape, expected_shape)
         assert equal(jvp_x1.shape, expected_shape)
 
-    def test_jvp(self):
-        for prob in [0.5]:
-            for transpose in [True, False]:
-                for outdim_parallel in [True, False]:
-                    print(
-                        f'prob = {prob}, transpose = {transpose}, outdim_parallel = {outdim_parallel}')
-                    self._test_jvp(prob=prob, transpose=transpose, outdim_parallel=outdim_parallel)
-
 
 class TestJitcCsrMatmatNormal:
 
-    def test_zero_weight(self):
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('outdim_parallel', [True, False])
+    def test_zero_weight(self, transpose, outdim_parallel):
         w_mu = 0.0
         w_sigma = 0.0
         conn_prob = 0.5
         B = jnp.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])  # 3x2 matrix
         shape = (2, 3)
         seed = 1234
-        for transpose in [True, False]:
-            for outdim_parallel in [True, False]:
-                result = _jitc_csr_matmat_normal(w_mu, w_sigma, conn_prob, B, seed=seed, shape=shape,
-                                                 transpose=transpose,
-                                                 outdim_parallel=outdim_parallel)
-                # Expected shape depends on transpose operation
-                expected_shape = (shape[1], B.shape[1]) if transpose else (shape[0], B.shape[1])
-                expected = jnp.zeros(expected_shape)
-                assert (jnp.allclose(result, expected))
 
-    def test_random_connectivity(self):
+        result = _jitc_csr_matmat_normal(w_mu, w_sigma, conn_prob, B, seed=seed, shape=shape,
+                                         transpose=transpose,
+                                         outdim_parallel=outdim_parallel)
+        # Expected shape depends on transpose operation
+        expected_shape = (shape[1], B.shape[1]) if transpose else (shape[0], B.shape[1])
+        expected = jnp.zeros(expected_shape)
+        assert (jnp.allclose(result, expected))
+
+    @pytest.mark.parametrize('shape', [(100, 200), (20, 100), (100, 20)])
+    @pytest.mark.parametrize('batch_size', [10, 20])
+    @pytest.mark.parametrize('prob', [0.3, 0.5])
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('outdim_parallel', [True, False])
+    def test_random_connectivity(self, shape, batch_size, prob, transpose, outdim_parallel):
         seed = 1234
         shapes = [
             (100, 200),
@@ -522,30 +482,28 @@ class TestJitcCsrMatmatNormal:
         w_mu = 0.0
         w_sigma = 1.0
 
-        for shape in shapes:
-            for batch_size in batch_sizes:
-                for prob in [0.3, 0.5]:
-                    for transpose in [True, False]:
-                        for outdim_parallel in [True, False]:
-                            # Input matrix B
-                            B_shape = (shape[0] if transpose else shape[1], batch_size)
-                            B = jnp.asarray(np.random.random(B_shape))
+        # Input matrix B
+        B_shape = (shape[0] if transpose else shape[1], batch_size)
+        B = jnp.asarray(np.random.random(B_shape))
 
-                            r1 = _jitc_csr_matmat_normal(w_mu, w_sigma, prob, B, seed=seed, shape=shape,
-                                                         transpose=transpose,
-                                                         outdim_parallel=outdim_parallel)
-                            r2 = _jitc_csr_matmat_normal(w_mu, w_sigma, prob, B, seed=seed, shape=shape,
-                                                         transpose=transpose,
-                                                         outdim_parallel=outdim_parallel)
-                            # Results should be deterministic for same seed
-                            # print(jnp.sum(r1 - r2))
-                            # print(r1 - r2)
-                            assert (jnp.allclose(r1, r2, atol=1e-6, equal_nan=True))
+        r1 = _jitc_csr_matmat_normal(w_mu, w_sigma, prob, B, seed=seed, shape=shape,
+                                     transpose=transpose,
+                                     outdim_parallel=outdim_parallel)
+        r2 = _jitc_csr_matmat_normal(w_mu, w_sigma, prob, B, seed=seed, shape=shape,
+                                     transpose=transpose,
+                                     outdim_parallel=outdim_parallel)
+        # Results should be deterministic for same seed
+        # print(jnp.sum(r1 - r2))
+        # print(r1 - r2)
+        assert (jnp.allclose(r1, r2, atol=1e-6, equal_nan=True))
 
-                            # Check output shape
-                            expected_shape = (shape[1], batch_size) if transpose else (shape[0], batch_size)
-                            assert equal(r1.shape, expected_shape)
+        # Check output shape
+        expected_shape = (shape[1], batch_size) if transpose else (shape[0], batch_size)
+        assert equal(r1.shape, expected_shape)
 
+    @pytest.mark.parametrize('prob', [0.3, 0.5])
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('outdim_parallel', [True, False])
     def _test_jvp(self, prob, transpose, outdim_parallel):
         seed = 1234
         n_in = 200
@@ -578,14 +536,6 @@ class TestJitcCsrMatmatNormal:
         expected_shape = (shape[1], batch_size) if transpose else (shape[0], batch_size)
         assert equal(out1.shape, expected_shape)
         assert equal(jvp_x1.shape, expected_shape)
-
-    def test_jvp(self):
-        for prob in [0.5]:
-            for transpose in [True, False]:
-                for outdim_parallel in [True, False]:
-                    print(
-                        f'prob = {prob}, transpose = {transpose}, outdim_parallel = {outdim_parallel}')
-                    self._test_jvp(prob=prob, transpose=transpose, outdim_parallel=outdim_parallel)
 
 
 if __name__ == '__main__':
