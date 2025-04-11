@@ -19,8 +19,7 @@ import unittest
 import jax
 import jax.numpy as jnp
 import numpy as np
-
-jax.config.update('jax_default_device', jax.devices('cpu')[0])
+import pytest
 
 from brainevent._jitc_csr_float_impl import (
     _jitc_csr_matvec_homo,
@@ -32,7 +31,11 @@ from brainevent._jitc_csr_float_impl import (
 )
 
 
+# jax.config.update('jax_default_device', jax.devices('cpu')[0])
+
+
 class TestJitcCsrMatvecHomo:
+
     def test_zero_weight(self):
         weight = 0.0
         conn_prob = 0.5
@@ -48,6 +51,22 @@ class TestJitcCsrMatvecHomo:
                                                outdim_parallel=outdim_parallel)
                 expected = jnp.zeros(shape[1]) if transpose else jnp.zeros(shape[0])
                 assert (jnp.allclose(result, expected))
+
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('outdim_parallel', [True, False])
+    def test_zero_weight2(self, transpose, outdim_parallel):
+        weight = 0.0
+        conn_prob = 0.5
+        v = jnp.array([1.0, 2.0, 3.0])
+        shape = (2, 3)
+        seed = 1234
+        result = _jitc_csr_matvec_homo(weight, conn_prob, v,
+                                       seed=seed,
+                                       shape=shape,
+                                       transpose=transpose,
+                                       outdim_parallel=outdim_parallel)
+        expected = jnp.zeros(shape[1]) if transpose else jnp.zeros(shape[0])
+        assert (jnp.allclose(result, expected))
 
     def test_random_connectivity(self):
         seed = 1234
