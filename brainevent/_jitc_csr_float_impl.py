@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
+# -*- coding: utf-8 -*-
+
 from typing import Optional, Tuple, Sequence
 
 import brainunit as u
@@ -25,7 +27,6 @@ from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 
-# -*- coding: utf-8 -*-
 
 __all__ = [
     "_jitc_csr_matvec_homo",
@@ -568,7 +569,7 @@ def _raw_jitc_csr_matmat_normal(
 
 # jitc csrmv homo
 
-def jitc_csrmv_homo_cpu_kernel_generator(
+def _jitc_csrmv_homo_cpu_kernel_generator(
     transpose: bool = False,
     outdim_parallel: bool = True,
     **kwargs
@@ -618,7 +619,7 @@ def jitc_csrmv_homo_cpu_kernel_generator(
     return kernel
 
 
-def jitc_csrmv_homo_gpu_kernel_generator(
+def _jitc_csrmv_homo_gpu_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
     v_info: jax.ShapeDtypeStruct,
@@ -714,7 +715,7 @@ def jitc_csrmv_homo_gpu_kernel_generator(
     return kernel
 
 
-def jitc_csrmv_homo_jvp_v(
+def _jitc_csrmv_homo_jvp_v(
     v_dot,
     weight,
     clen,
@@ -740,7 +741,7 @@ def jitc_csrmv_homo_jvp_v(
     ]
 
 
-def jitc_csrmv_homo_jvp_weights(
+def _jitc_csrmv_homo_jvp_weights(
     w_dot,
     weight,
     clen,
@@ -764,7 +765,7 @@ def jitc_csrmv_homo_jvp_weights(
     )
 
 
-def jitc_csrmv_homo_transpose_rules(
+def _jitc_csrmv_homo_transpose_rules(
     ct,
     weight,
     clen,
@@ -795,7 +796,7 @@ def jitc_csrmv_homo_transpose_rules(
     return weight, clen, r, seed, _
 
 
-def jitc_csrmv_homo_batching(
+def _jitc_csrmv_homo_batching(
     args,
     axes,
     **kwargs
@@ -865,9 +866,9 @@ def jitc_csrmv_homo_p_call(
 
 jitc_csrmv_homo_p = XLACustomKernel(
     'jitc_csrmv_homo',
-    cpu_kernel=NumbaKernelGenerator(jitc_csrmv_homo_cpu_kernel_generator, input_output_aliases={4: 0}),
+    cpu_kernel=NumbaKernelGenerator(_jitc_csrmv_homo_cpu_kernel_generator, input_output_aliases={4: 0}),
     gpu_kernel=WarpKernelGenerator(
-        jitc_csrmv_homo_gpu_kernel_generator,
+        _jitc_csrmv_homo_gpu_kernel_generator,
         dim=lambda v_info, out_info, outdim_parallel, **kwargs: (
             out_info.shape[0] * 32 if outdim_parallel else
             v_info.shape[0] * 32
@@ -876,14 +877,14 @@ jitc_csrmv_homo_p = XLACustomKernel(
     )
 )
 
-jitc_csrmv_homo_p.defjvp(jitc_csrmv_homo_jvp_weights, None, jitc_csrmv_homo_jvp_v)
-jitc_csrmv_homo_p.def_transpose_rule(jitc_csrmv_homo_transpose_rules)
-jitc_csrmv_homo_p.def_batching_rule(jitc_csrmv_homo_batching)
+jitc_csrmv_homo_p.defjvp(_jitc_csrmv_homo_jvp_weights, None, _jitc_csrmv_homo_jvp_v)
+jitc_csrmv_homo_p.def_transpose_rule(_jitc_csrmv_homo_transpose_rules)
+jitc_csrmv_homo_p.def_batching_rule(_jitc_csrmv_homo_batching)
 
 
 # jitc csrmv uniform
 
-def jitc_csrmv_uniform_cpu_kernel_generator(
+def _jitc_csrmv_uniform_cpu_kernel_generator(
     transpose: bool = False,
     outdim_parallel: bool = True,
     **kwargs
@@ -937,7 +938,7 @@ def jitc_csrmv_uniform_cpu_kernel_generator(
     return kernel
 
 
-def jitc_csrmv_uniform_gpu_kernel_generator(
+def _jitc_csrmv_uniform_gpu_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
     v_info: jax.ShapeDtypeStruct,
@@ -1039,7 +1040,7 @@ def jitc_csrmv_uniform_gpu_kernel_generator(
     return kernel
 
 
-def jitc_csrmv_uniform_jvp_v(
+def _jitc_csrmv_uniform_jvp_v(
     v_dot,
     w_low,
     w_high,
@@ -1067,7 +1068,7 @@ def jitc_csrmv_uniform_jvp_v(
     ]
 
 
-def jitc_csrmv_uniform_jvp_w_low(
+def _jitc_csrmv_uniform_jvp_w_low(
     w_low_dot,
     w_low,
     w_high,
@@ -1093,7 +1094,7 @@ def jitc_csrmv_uniform_jvp_w_low(
     )
 
 
-def jitc_csrmv_uniform_jvp_w_high(
+def _jitc_csrmv_uniform_jvp_w_high(
     w_high_dot,
     w_low,
     w_high,
@@ -1119,7 +1120,7 @@ def jitc_csrmv_uniform_jvp_w_high(
     )
 
 
-def jitc_csrmv_uniform_transpose_rules(
+def _jitc_csrmv_uniform_transpose_rules(
     ct,
     w_low,
     w_high,
@@ -1152,7 +1153,7 @@ def jitc_csrmv_uniform_transpose_rules(
     return w_low, w_high, clen, r, seed, _
 
 
-def jitc_csrmv_uniform_batching(
+def _jitc_csrmv_uniform_batching(
     args,
     axes,
     **kwargs
@@ -1227,9 +1228,9 @@ def jitc_csrmv_uniform_p_call(
 
 jitc_csrmv_uniform_p = XLACustomKernel(
     'jitc_csrmv_uniform',
-    cpu_kernel=NumbaKernelGenerator(jitc_csrmv_uniform_cpu_kernel_generator, input_output_aliases={5: 0}),
+    cpu_kernel=NumbaKernelGenerator(_jitc_csrmv_uniform_cpu_kernel_generator, input_output_aliases={5: 0}),
     gpu_kernel=WarpKernelGenerator(
-        jitc_csrmv_uniform_gpu_kernel_generator,
+        _jitc_csrmv_uniform_gpu_kernel_generator,
         dim=lambda v_info, out_info, outdim_parallel, **kwargs: (
             out_info.shape[0] * 32 if outdim_parallel else
             v_info.shape[0] * 32
@@ -1238,14 +1239,14 @@ jitc_csrmv_uniform_p = XLACustomKernel(
     )
 )
 
-jitc_csrmv_uniform_p.defjvp(jitc_csrmv_uniform_jvp_w_low, jitc_csrmv_uniform_jvp_w_high, None, jitc_csrmv_uniform_jvp_v)
-jitc_csrmv_uniform_p.def_transpose_rule(jitc_csrmv_uniform_transpose_rules)
-jitc_csrmv_uniform_p.def_batching_rule(jitc_csrmv_uniform_batching)
+jitc_csrmv_uniform_p.defjvp(_jitc_csrmv_uniform_jvp_w_low, _jitc_csrmv_uniform_jvp_w_high, None, _jitc_csrmv_uniform_jvp_v)
+jitc_csrmv_uniform_p.def_transpose_rule(_jitc_csrmv_uniform_transpose_rules)
+jitc_csrmv_uniform_p.def_batching_rule(_jitc_csrmv_uniform_batching)
 
 
 # jitc csrmv normal
 
-def jitc_csrmv_normal_cpu_kernel_generator(
+def _jitc_csrmv_normal_cpu_kernel_generator(
     transpose: bool = False,
     outdim_parallel: bool = True,
     **kwargs
@@ -1299,7 +1300,7 @@ def jitc_csrmv_normal_cpu_kernel_generator(
     return kernel
 
 
-def jitc_csrmv_normal_gpu_kernel_generator(
+def _jitc_csrmv_normal_gpu_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
     v_info: jax.ShapeDtypeStruct,
@@ -1401,7 +1402,7 @@ def jitc_csrmv_normal_gpu_kernel_generator(
     return kernel
 
 
-def jitc_csrmv_normal_jvp_v(
+def _jitc_csrmv_normal_jvp_v(
     v_dot,
     w_mu,
     w_sigma,
@@ -1429,7 +1430,7 @@ def jitc_csrmv_normal_jvp_v(
     ]
 
 
-def jitc_csrmv_normal_jvp_w_mu(
+def _jitc_csrmv_normal_jvp_w_mu(
     w_mu_dot,
     w_mu,
     w_sigma,
@@ -1455,7 +1456,7 @@ def jitc_csrmv_normal_jvp_w_mu(
     )
 
 
-def jitc_csrmv_normal_jvp_w_sigma(
+def _jitc_csrmv_normal_jvp_w_sigma(
     w_sigma_dot,
     w_mu,
     w_sigma,
@@ -1481,7 +1482,7 @@ def jitc_csrmv_normal_jvp_w_sigma(
     )
 
 
-def jitc_csrmv_normal_transpose_rules(
+def _jitc_csrmv_normal_transpose_rules(
     ct,
     w_mu,
     w_sigma,
@@ -1514,7 +1515,7 @@ def jitc_csrmv_normal_transpose_rules(
     return w_mu, w_sigma, clen, r, seed, _
 
 
-def jitc_csrmv_normal_batching(
+def _jitc_csrmv_normal_batching(
     args,
     axes,
     **kwargs
@@ -1589,9 +1590,9 @@ def jitc_csrmv_normal_p_call(
 
 jitc_csrmv_normal_p = XLACustomKernel(
     'jitc_csrmv_normal',
-    cpu_kernel=NumbaKernelGenerator(jitc_csrmv_normal_cpu_kernel_generator, input_output_aliases={5: 0}),
+    cpu_kernel=NumbaKernelGenerator(_jitc_csrmv_normal_cpu_kernel_generator, input_output_aliases={5: 0}),
     gpu_kernel=WarpKernelGenerator(
-        jitc_csrmv_normal_gpu_kernel_generator,
+        _jitc_csrmv_normal_gpu_kernel_generator,
         dim=lambda v_info, out_info, outdim_parallel, **kwargs: (
             out_info.shape[0] * 32 if outdim_parallel else
             v_info.shape[0] * 32
@@ -1600,17 +1601,17 @@ jitc_csrmv_normal_p = XLACustomKernel(
     )
 )
 
-jitc_csrmv_normal_p.defjvp(jitc_csrmv_normal_jvp_w_mu, jitc_csrmv_normal_jvp_w_sigma, None, jitc_csrmv_normal_jvp_v,
+jitc_csrmv_normal_p.defjvp(_jitc_csrmv_normal_jvp_w_mu, _jitc_csrmv_normal_jvp_w_sigma, None, _jitc_csrmv_normal_jvp_v,
                            None)
-jitc_csrmv_normal_p.def_transpose_rule(jitc_csrmv_normal_transpose_rules)
-jitc_csrmv_normal_p.def_batching_rule(jitc_csrmv_normal_batching)
+jitc_csrmv_normal_p.def_transpose_rule(_jitc_csrmv_normal_transpose_rules)
+jitc_csrmv_normal_p.def_batching_rule(_jitc_csrmv_normal_batching)
 
 
 # Kernel generators for JIT connection SPMM
 
 # jitc csrmm homo
 
-def jitc_csrmm_homo_cpu_kernel_generator(
+def _jitc_csrmm_homo_cpu_kernel_generator(
     transpose: bool = False,
     outdim_parallel: bool = True,
     **kwargs
@@ -1660,7 +1661,7 @@ def jitc_csrmm_homo_cpu_kernel_generator(
     return kernel
 
 
-def jitc_csrmm_homo_gpu_kernel_generator(
+def _jitc_csrmm_homo_gpu_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
     B_info: jax.ShapeDtypeStruct,
@@ -1740,7 +1741,7 @@ def jitc_csrmm_homo_gpu_kernel_generator(
     return kernel
 
 
-def jitc_csrmm_homo_jvp_w(
+def _jitc_csrmm_homo_jvp_w(
     w_dot,
     weight,
     clen,
@@ -1764,7 +1765,7 @@ def jitc_csrmm_homo_jvp_w(
     )
 
 
-def jitc_csrmm_homo_jvp_B(
+def _jitc_csrmm_homo_jvp_B(
     B_dot,
     weight,
     clen,
@@ -1790,7 +1791,7 @@ def jitc_csrmm_homo_jvp_B(
     ]
 
 
-def jitc_csrmm_homo_transpose_rules(
+def _jitc_csrmm_homo_transpose_rules(
     ct,
     weight,
     clen,
@@ -1821,7 +1822,7 @@ def jitc_csrmm_homo_transpose_rules(
     return weight, clen, r, seed, _
 
 
-def jitc_csrmm_homo_batching(
+def _jitc_csrmm_homo_batching(
     args,
     axes,
     **kwargs
@@ -1914,9 +1915,9 @@ def jitc_csrmm_homo_p_call(
 
 jitc_csrmm_homo_p = XLACustomKernel(
     'jitc_csrmm_homo',
-    cpu_kernel=NumbaKernelGenerator(jitc_csrmm_homo_cpu_kernel_generator, input_output_aliases={4: 0}),
+    cpu_kernel=NumbaKernelGenerator(_jitc_csrmm_homo_cpu_kernel_generator, input_output_aliases={4: 0}),
     gpu_kernel=WarpKernelGenerator(
-        jitc_csrmm_homo_gpu_kernel_generator,
+        _jitc_csrmm_homo_gpu_kernel_generator,
         dim=lambda out_info, **kwargs: (
             out_info.shape[0], out_info.shape[1]
         ),
@@ -1924,14 +1925,14 @@ jitc_csrmm_homo_p = XLACustomKernel(
     )
 )
 
-jitc_csrmm_homo_p.defjvp(jitc_csrmm_homo_jvp_w, None, None, jitc_csrmm_homo_jvp_B)
-jitc_csrmm_homo_p.def_transpose_rule(jitc_csrmm_homo_transpose_rules)
-jitc_csrmm_homo_p.def_batching_rule(jitc_csrmm_homo_batching)
+jitc_csrmm_homo_p.defjvp(_jitc_csrmm_homo_jvp_w, None, None, _jitc_csrmm_homo_jvp_B)
+jitc_csrmm_homo_p.def_transpose_rule(_jitc_csrmm_homo_transpose_rules)
+jitc_csrmm_homo_p.def_batching_rule(_jitc_csrmm_homo_batching)
 
 
 # jitc csrmm uniform
 
-def jitc_csrmm_uniform_cpu_kernel_generator(
+def _jitc_csrmm_uniform_cpu_kernel_generator(
     transpose: bool = False,
     outdim_parallel: bool = True,
     **kwargs
@@ -1985,7 +1986,7 @@ def jitc_csrmm_uniform_cpu_kernel_generator(
     return kernel
 
 
-def jitc_csrmm_uniform_gpu_kernel_generator(
+def _jitc_csrmm_uniform_gpu_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
     B_info: jax.ShapeDtypeStruct,
@@ -2067,7 +2068,7 @@ def jitc_csrmm_uniform_gpu_kernel_generator(
     return kernel
 
 
-def jitc_csrmm_uniform_jvp_w_low(
+def _jitc_csrmm_uniform_jvp_w_low(
     w_low_dot,
     w_low,
     w_high,
@@ -2093,7 +2094,7 @@ def jitc_csrmm_uniform_jvp_w_low(
     )
 
 
-def jitc_csrmm_uniform_jvp_w_high(
+def _jitc_csrmm_uniform_jvp_w_high(
     w_high_dot,
     w_low,
     w_high,
@@ -2119,7 +2120,7 @@ def jitc_csrmm_uniform_jvp_w_high(
     )
 
 
-def jitc_csrmm_uniform_jvp_B(
+def _jitc_csrmm_uniform_jvp_B(
     B_dot,
     w_low,
     w_high,
@@ -2147,7 +2148,7 @@ def jitc_csrmm_uniform_jvp_B(
     ]
 
 
-def jitc_csrmm_uniform_transpose_rules(
+def _jitc_csrmm_uniform_transpose_rules(
     ct,
     w_low,
     w_high,
@@ -2181,7 +2182,7 @@ def jitc_csrmm_uniform_transpose_rules(
     return w_low, w_high, clen, r, seed, _
 
 
-def jitc_csrmm_uniform_batching(
+def _jitc_csrmm_uniform_batching(
     args,
     axes,
     **kwargs
@@ -2280,9 +2281,9 @@ def jitc_csrmm_uniform_p_call(
 
 jitc_csrmm_uniform_p = XLACustomKernel(
     'jitc_csrmm_uniform',
-    cpu_kernel=NumbaKernelGenerator(jitc_csrmm_uniform_cpu_kernel_generator, input_output_aliases={5: 0}),
+    cpu_kernel=NumbaKernelGenerator(_jitc_csrmm_uniform_cpu_kernel_generator, input_output_aliases={5: 0}),
     gpu_kernel=WarpKernelGenerator(
-        jitc_csrmm_uniform_gpu_kernel_generator,
+        _jitc_csrmm_uniform_gpu_kernel_generator,
         dim=lambda out_info, **kwargs: (
             out_info.shape[0], out_info.shape[1]
         ),
@@ -2290,14 +2291,14 @@ jitc_csrmm_uniform_p = XLACustomKernel(
     )
 )
 
-jitc_csrmm_uniform_p.defjvp(jitc_csrmm_uniform_jvp_w_low, jitc_csrmm_uniform_jvp_w_high, None, jitc_csrmm_uniform_jvp_B)
-jitc_csrmm_uniform_p.def_transpose_rule(jitc_csrmm_uniform_transpose_rules)
-jitc_csrmm_uniform_p.def_batching_rule(jitc_csrmm_uniform_batching)
+jitc_csrmm_uniform_p.defjvp(_jitc_csrmm_uniform_jvp_w_low, _jitc_csrmm_uniform_jvp_w_high, None, _jitc_csrmm_uniform_jvp_B)
+jitc_csrmm_uniform_p.def_transpose_rule(_jitc_csrmm_uniform_transpose_rules)
+jitc_csrmm_uniform_p.def_batching_rule(_jitc_csrmm_uniform_batching)
 
 
 # jitc csrmm normal
 
-def jitc_csrmm_normal_cpu_kernel_generator(
+def _jitc_csrmm_normal_cpu_kernel_generator(
     transpose: bool = False,
     outdim_parallel: bool = True,
     **kwargs
@@ -2351,7 +2352,7 @@ def jitc_csrmm_normal_cpu_kernel_generator(
     return kernel
 
 
-def jitc_csrmm_normal_gpu_kernel_generator(
+def _jitc_csrmm_normal_gpu_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
     B_info: jax.ShapeDtypeStruct,
@@ -2433,7 +2434,7 @@ def jitc_csrmm_normal_gpu_kernel_generator(
     return kernel
 
 
-def jitc_csrmm_normal_jvp_w_mu(
+def _jitc_csrmm_normal_jvp_w_mu(
     w_mu_dot,
     w_mu,
     w_sigma,
@@ -2458,7 +2459,7 @@ def jitc_csrmm_normal_jvp_w_mu(
     )
 
 
-def jitc_csrmm_normal_jvp_w_sigma(
+def _jitc_csrmm_normal_jvp_w_sigma(
     w_sigma_dot,
     w_mu,
     w_sigma,
@@ -2484,7 +2485,7 @@ def jitc_csrmm_normal_jvp_w_sigma(
     )
 
 
-def jitc_csrmm_normal_jvp_B(
+def _jitc_csrmm_normal_jvp_B(
     B_dot,
     w_mu,
     w_sigma,
@@ -2512,7 +2513,7 @@ def jitc_csrmm_normal_jvp_B(
     ]
 
 
-def jitc_csrmm_normal_transpose_rules(
+def _jitc_csrmm_normal_transpose_rules(
     ct,
     w_mu,
     w_sigma,
@@ -2545,7 +2546,7 @@ def jitc_csrmm_normal_transpose_rules(
     return w_mu, w_sigma, clen, r, seed, _
 
 
-def jitc_csrmm_normal_batching(
+def _jitc_csrmm_normal_batching(
     args,
     axes,
     **kwargs
@@ -2644,9 +2645,9 @@ def jitc_csrmm_normal_p_call(
 
 jitc_csrmm_normal_p = XLACustomKernel(
     'jitc_csrmm_normal',
-    cpu_kernel=NumbaKernelGenerator(jitc_csrmm_normal_cpu_kernel_generator, input_output_aliases={5: 0}),
+    cpu_kernel=NumbaKernelGenerator(_jitc_csrmm_normal_cpu_kernel_generator, input_output_aliases={5: 0}),
     gpu_kernel=WarpKernelGenerator(
-        jitc_csrmm_normal_gpu_kernel_generator,
+        _jitc_csrmm_normal_gpu_kernel_generator,
         dim=lambda out_info, **kwargs: (
             out_info.shape[0], out_info.shape[1]
         ),
@@ -2654,6 +2655,6 @@ jitc_csrmm_normal_p = XLACustomKernel(
     )
 )
 
-jitc_csrmm_normal_p.defjvp(jitc_csrmm_normal_jvp_w_mu, jitc_csrmm_normal_jvp_w_sigma, None, jitc_csrmm_normal_jvp_B)
-jitc_csrmm_normal_p.def_transpose_rule(jitc_csrmm_normal_transpose_rules)
-jitc_csrmm_normal_p.def_batching_rule(jitc_csrmm_normal_batching)
+jitc_csrmm_normal_p.defjvp(_jitc_csrmm_normal_jvp_w_mu, _jitc_csrmm_normal_jvp_w_sigma, None, _jitc_csrmm_normal_jvp_B)
+jitc_csrmm_normal_p.def_transpose_rule(_jitc_csrmm_normal_transpose_rules)
+jitc_csrmm_normal_p.def_batching_rule(_jitc_csrmm_normal_batching)
