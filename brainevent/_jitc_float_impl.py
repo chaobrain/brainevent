@@ -46,12 +46,6 @@ def _initialize_seed(seed=None):
     return jnp.asarray(jnp.atleast_1d(seed), dtype=jnp.int32)
 
 
-def _binomial_n1(state: warp.uint32, p: float) -> int:
-    """
-    Draw samples from a binomial distribution.
-    """
-    return 1 if warp.randf(state) < p else 0
-
 def _jitc_matvec_homo(
     weight: Data | float,
     conn_prob: float,
@@ -521,7 +515,12 @@ def _jitc_mv_homo_gpu_kernel_generator(
     """
     import warp
 
-    _binomial_n1 = warp.func(_binomial_n1)
+    @warp.func
+    def _binomial_n1(state: warp.uint32, p: float) -> int:
+        """
+        Draw samples from a binomial distribution.
+        """
+        return 1 if warp.randf(state) < p else 0
 
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
     clen_dtype = dtype_to_warp_type(clen_info.dtype)
@@ -816,7 +815,12 @@ def _jitc_mv_uniform_gpu_kernel_generator(
     """
     import warp
 
-    _binomial_n1 = warp.func(_binomial_n1)
+    @warp.func
+    def _binomial_n1(state: warp.uint32, p: float) -> int:
+        """
+        Draw samples from a binomial distribution.
+        """
+        return 1 if warp.randf(state) < p else 0
 
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
     clen_dtype = dtype_to_warp_type(clen_info.dtype)
@@ -1159,7 +1163,12 @@ def _jitc_mv_normal_gpu_kernel_generator(
     """
     import warp
 
-    _binomial_n1 = warp.func(_binomial_n1)
+    @warp.func
+    def _binomial_n1(state: warp.uint32, p: float) -> int:
+        """
+        Draw samples from a binomial distribution.
+        """
+        return 1 if warp.randf(state) < p else 0
 
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
     clen_dtype = dtype_to_warp_type(clen_info.dtype)
@@ -1508,7 +1517,12 @@ def _jitc_mm_homo_gpu_kernel_generator(
     """
     import warp
 
-    _binomial_n1 = warp.func(_binomial_n1)
+    @warp.func
+    def _binomial_n1(state: warp.uint32, p: float) -> int:
+        """
+        Draw samples from a binomial distribution.
+        """
+        return 1 if warp.randf(state) < p else 0
 
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
     clen_dtype = dtype_to_warp_type(clen_info.dtype)
@@ -1834,7 +1848,12 @@ def _jitc_mm_uniform_gpu_kernel_generator(
     """
     import warp
 
-    _binomial_n1 = warp.func(_binomial_n1)
+    @warp.func
+    def _binomial_n1(state: warp.uint32, p: float) -> int:
+        """
+        Draw samples from a binomial distribution.
+        """
+        return 1 if warp.randf(state) < p else 0
 
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
     clen_dtype = dtype_to_warp_type(clen_info.dtype)
@@ -2205,7 +2224,12 @@ def _jitc_mm_normal_gpu_kernel_generator(
     """
     import warp
 
-    _binomial_n1 = warp.func(_binomial_n1)
+    @warp.func
+    def _binomial_n1(state: warp.uint32, p: float) -> int:
+        """
+        Draw samples from a binomial distribution.
+        """
+        return 1 if warp.randf(state) < p else 0
 
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
     clen_dtype = dtype_to_warp_type(clen_info.dtype)
