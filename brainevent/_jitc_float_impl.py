@@ -45,7 +45,7 @@ def _initialize_seed(seed=None):
             seed = np.random.randint(0, int(1e8), 1)
     return jnp.asarray(jnp.atleast_1d(seed), dtype=jnp.int32)
 
-@warp.func
+
 def _binomial_n1(state: warp.uint32, p: float) -> int:
     """
     Draw samples from a binomial distribution.
@@ -521,6 +521,8 @@ def _jitc_mv_homo_gpu_kernel_generator(
     """
     import warp
 
+    _binomial_n1 = warp.func(_binomial_n1)
+
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
     clen_dtype = dtype_to_warp_type(clen_info.dtype)
     v_dtype = dtype_to_warp_type(v_info.dtype)
@@ -813,6 +815,8 @@ def _jitc_mv_uniform_gpu_kernel_generator(
     r"""Generate the GPU kernel for the :func:`_jitc_matvec_uniform` operation.
     """
     import warp
+
+    _binomial_n1 = warp.func(_binomial_n1)
 
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
     clen_dtype = dtype_to_warp_type(clen_info.dtype)
@@ -1154,6 +1158,8 @@ def _jitc_mv_normal_gpu_kernel_generator(
     r"""Generate the GPU kernel for the :func:`_jitc_matvec_normal` operation.
     """
     import warp
+
+    _binomial_n1 = warp.func(_binomial_n1)
 
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
     clen_dtype = dtype_to_warp_type(clen_info.dtype)
@@ -1502,6 +1508,8 @@ def _jitc_mm_homo_gpu_kernel_generator(
     """
     import warp
 
+    _binomial_n1 = warp.func(_binomial_n1)
+
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
     clen_dtype = dtype_to_warp_type(clen_info.dtype)
     B_dtype = dtype_to_warp_type(B_info.dtype)
@@ -1825,6 +1833,8 @@ def _jitc_mm_uniform_gpu_kernel_generator(
     r"""Generate the GPU kernel for the :func:`_jitc_matmat_uniform` operation.
     """
     import warp
+
+    _binomial_n1 = warp.func(_binomial_n1)
 
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
     clen_dtype = dtype_to_warp_type(clen_info.dtype)
@@ -2194,6 +2204,8 @@ def _jitc_mm_normal_gpu_kernel_generator(
     r"""Generate the GPU kernel for the :func:`_jitc_matmat_normal` operation.
     """
     import warp
+
+    _binomial_n1 = warp.func(_binomial_n1)
 
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
     clen_dtype = dtype_to_warp_type(clen_info.dtype)
