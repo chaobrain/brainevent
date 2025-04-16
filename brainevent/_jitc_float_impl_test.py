@@ -22,12 +22,12 @@ import numpy as np
 import pytest
 
 from brainevent._jitc_float_impl import (
-    _jitc_csr_matvec_homo,
-    _jitc_csr_matvec_uniform,
-    _jitc_csr_matvec_normal,
-    _jitc_csr_matmat_homo,
-    _jitc_csr_matmat_uniform,
-    _jitc_csr_matmat_normal,
+    _jitc_matvec_homo,
+    _jitc_matvec_uniform,
+    _jitc_matvec_normal,
+    _jitc_matmat_homo,
+    _jitc_matmat_uniform,
+    _jitc_matmat_normal,
 )
 
 
@@ -47,7 +47,7 @@ class TestJitcCsrMatvecHomo:
         v = jnp.array([1.0, 2.0, 3.0])
         shape = (2, 3)
         seed = 1234
-        result = _jitc_csr_matvec_homo(weight,
+        result = _jitc_matvec_homo(weight,
                                        conn_prob,
                                        v,
                                        seed=seed,
@@ -65,14 +65,14 @@ class TestJitcCsrMatvecHomo:
     def test_random_connectivity(self, shape, weight, prob, transpose, outdim_parallel):
         seed = 1234
         vector = jnp.asarray(np.random.random(shape[0] if transpose else shape[1]))
-        r1 = _jitc_csr_matvec_homo(weight,
+        r1 = _jitc_matvec_homo(weight,
                                    prob,
                                    vector,
                                    seed=seed,
                                    shape=shape,
                                    transpose=transpose,
                                    outdim_parallel=outdim_parallel)
-        r2 = _jitc_csr_matvec_homo(weight,
+        r2 = _jitc_matvec_homo(weight,
                                    prob,
                                    vector,
                                    seed=seed,
@@ -94,7 +94,7 @@ class TestJitcCsrMatvecHomo:
         x = jnp.asarray(np.random.random(n_in if transpose else n_out))
 
         def f_brainevent(x, w):
-            return _jitc_csr_matvec_homo(w,
+            return _jitc_matvec_homo(w,
                                          prob,
                                          x,
                                          seed=seed,
@@ -126,7 +126,7 @@ class TestJitcCsrMatvecUniform:
         shape = (2, 3)
         seed = 1234
 
-        result = _jitc_csr_matvec_uniform(w_low,
+        result = _jitc_matvec_uniform(w_low,
                                           w_high,
                                           conn_prob,
                                           v,
@@ -148,7 +148,7 @@ class TestJitcCsrMatvecUniform:
         w_high = 2.0
 
         vector = jnp.asarray(np.random.random(shape[0] if transpose else shape[1]))
-        r1 = _jitc_csr_matvec_uniform(w_low,
+        r1 = _jitc_matvec_uniform(w_low,
                                       w_high,
                                       prob,
                                       vector,
@@ -156,7 +156,7 @@ class TestJitcCsrMatvecUniform:
                                       shape=shape,
                                       transpose=transpose,
                                       outdim_parallel=outdim_parallel)
-        r2 = _jitc_csr_matvec_uniform(w_low, w_high, prob, vector,
+        r2 = _jitc_matvec_uniform(w_low, w_high, prob, vector,
                                       seed=seed,
                                       shape=shape,
                                       transpose=transpose,
@@ -177,7 +177,7 @@ class TestJitcCsrMatvecUniform:
         x = jnp.asarray(np.random.random(n_in if transpose else n_out))
 
         def f_brainevent(x, w_low, w_high):
-            return _jitc_csr_matvec_uniform(w_low,
+            return _jitc_matvec_uniform(w_low,
                                             w_high,
                                             prob,
                                             x,
@@ -210,7 +210,7 @@ class TestJitcCsrMatvecNormal:
         shape = (2, 3)
         seed = 1234
 
-        result = _jitc_csr_matvec_normal(w_mu,
+        result = _jitc_matvec_normal(w_mu,
                                          w_sigma,
                                          conn_prob,
                                          v,
@@ -232,7 +232,7 @@ class TestJitcCsrMatvecNormal:
         w_sigma = 2.0
 
         vector = jnp.asarray(np.random.random(shape[0] if transpose else shape[1]))
-        r1 = _jitc_csr_matvec_normal(w_mu,
+        r1 = _jitc_matvec_normal(w_mu,
                                      w_sigma,
                                      prob,
                                      vector,
@@ -240,7 +240,7 @@ class TestJitcCsrMatvecNormal:
                                      shape=shape,
                                      transpose=transpose,
                                      outdim_parallel=outdim_parallel)
-        r2 = _jitc_csr_matvec_normal(w_mu,
+        r2 = _jitc_matvec_normal(w_mu,
                                      w_sigma,
                                      prob,
                                      vector,
@@ -266,7 +266,7 @@ class TestJitcCsrMatvecNormal:
         x = jnp.asarray(np.random.random(n_in if transpose else n_out))
 
         def f_brainevent(x, w_mu, w_sigma):
-            return _jitc_csr_matvec_uniform(w_mu,
+            return _jitc_matvec_uniform(w_mu,
                                             w_sigma,
                                             prob,
                                             x,
@@ -298,7 +298,7 @@ class TestJitcCsrMatmatHomo:
         shape = (2, 3)
         seed = 1234
 
-        result = _jitc_csr_matmat_homo(weight,
+        result = _jitc_matmat_homo(weight,
                                        conn_prob,
                                        B,
                                        seed=seed,
@@ -325,14 +325,14 @@ class TestJitcCsrMatmatHomo:
         B_shape = (shape[0] if transpose else shape[1], batch_size)
         B = jnp.asarray(np.random.random(B_shape))
 
-        r1 = _jitc_csr_matmat_homo(weight,
+        r1 = _jitc_matmat_homo(weight,
                                    prob,
                                    B,
                                    seed=seed,
                                    shape=shape,
                                    transpose=transpose,
                                    outdim_parallel=outdim_parallel)
-        r2 = _jitc_csr_matmat_homo(weight, prob, B,
+        r2 = _jitc_matmat_homo(weight, prob, B,
                                    seed=seed,
                                    shape=shape,
                                    transpose=transpose,
@@ -362,7 +362,7 @@ class TestJitcCsrMatmatHomo:
         X = jnp.asarray(np.random.random(X_shape))
 
         def f_brainevent(X, w):
-            return _jitc_csr_matmat_homo(w,
+            return _jitc_matmat_homo(w,
                                          prob,
                                          X,
                                          seed=seed,
@@ -401,7 +401,7 @@ class TestJitcCsrMatmatUniform:
         shape = (2, 3)
         seed = 1234
 
-        result = _jitc_csr_matmat_uniform(w_low,
+        result = _jitc_matmat_uniform(w_low,
                                           w_high,
                                           conn_prob,
                                           B,
@@ -434,12 +434,12 @@ class TestJitcCsrMatmatUniform:
         B_shape = (shape[0] if transpose else shape[1], batch_size)
         B = jnp.asarray(np.random.random(B_shape))
 
-        r1 = _jitc_csr_matmat_uniform(w_low, w_high, prob, B,
+        r1 = _jitc_matmat_uniform(w_low, w_high, prob, B,
                                       seed=seed,
                                       shape=shape,
                                       transpose=transpose,
                                       outdim_parallel=outdim_parallel)
-        r2 = _jitc_csr_matmat_uniform(w_low, w_high, prob, B,
+        r2 = _jitc_matmat_uniform(w_low, w_high, prob, B,
                                       seed=seed,
                                       shape=shape,
                                       transpose=transpose,
@@ -470,7 +470,7 @@ class TestJitcCsrMatmatUniform:
         X = jnp.asarray(np.random.random(X_shape))
 
         def f_brainevent(X, w_low, w_high):
-            return _jitc_csr_matmat_uniform(w_low,
+            return _jitc_matmat_uniform(w_low,
                                             w_high,
                                             prob,
                                             X,
@@ -510,7 +510,7 @@ class TestJitcCsrMatmatNormal:
         shape = (2, 3)
         seed = 1234
 
-        result = _jitc_csr_matmat_normal(w_mu,
+        result = _jitc_matmat_normal(w_mu,
                                          w_sigma,
                                          conn_prob,
                                          B,
@@ -543,12 +543,12 @@ class TestJitcCsrMatmatNormal:
         B_shape = (shape[0] if transpose else shape[1], batch_size)
         B = jnp.asarray(np.random.random(B_shape))
 
-        r1 = _jitc_csr_matmat_normal(w_mu, w_sigma, prob, B,
+        r1 = _jitc_matmat_normal(w_mu, w_sigma, prob, B,
                                      seed=seed,
                                      shape=shape,
                                      transpose=transpose,
                                      outdim_parallel=outdim_parallel)
-        r2 = _jitc_csr_matmat_normal(w_mu, w_sigma, prob, B,
+        r2 = _jitc_matmat_normal(w_mu, w_sigma, prob, B,
                                      seed=seed,
                                      shape=shape,
                                      transpose=transpose,
@@ -579,7 +579,7 @@ class TestJitcCsrMatmatNormal:
         X = jnp.asarray(np.random.random(X_shape))
 
         def f_brainevent(X, w_mu, w_sigma):
-            return _jitc_csr_matmat_normal(w_mu,
+            return _jitc_matmat_normal(w_mu,
                                            w_sigma,
                                            prob,
                                            X,

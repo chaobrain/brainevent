@@ -45,12 +45,12 @@ def _initialize_seed(seed=None):
             seed = np.random.randint(0, int(1e8), 1)
     return jnp.asarray(jnp.atleast_1d(seed), dtype=jnp.int32)
 
-
-def _calculate_conn_len(conn_prob):
-    """Calculate connection length from connection probability."""
-    conn_len = jnp.ceil(1.0 / conn_prob) * 2 - 1
-    return jnp.asarray(jnp.atleast_1d(conn_len), dtype=jnp.int32)
-
+@warp.func
+def _binomial_n1(state: warp.uint32, p: float) -> int:
+    """
+    Draw samples from a binomial distribution.
+    """
+    return 1 if warp.randf(state) < p else 0
 
 def _jitc_matvec_homo(
     weight: Data | float,
@@ -111,27 +111,10 @@ def _jitc_matvec_homo(
         The output of :math:`y = M @ v`.
     """
     seed = _initialize_seed(seed)
-    clen = _calculate_conn_len(conn_prob)
-    return _raw_jitc_matvec_homo(
-        weight, clen, v, seed,
-        shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
-    )
-
-
-def _raw_jitc_matvec_homo(
-    weight: Data | float,
-    clen: Data,
-    v: Data,
-    seed: Data,
-    *,
-    shape: Tuple[int, int],
-    transpose: bool = False,
-    outdim_parallel: bool = True,
-) -> Data:
     weight, unitd = u.split_mantissa_unit(weight)
     v, unitv = u.split_mantissa_unit(v)
     res = jitc_mv_homo_p_call(
-        weight, clen, v, seed,
+        weight, conn_prob, v, seed,
         shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
     )[0]
     return u.maybe_decimal(res * unitd * unitv)
@@ -200,31 +183,13 @@ def _jitc_matvec_uniform(
         The output of :math:`y = M @ v`.
     """
     seed = _initialize_seed(seed)
-    clen = _calculate_conn_len(conn_prob)
-    return _raw_jitc_matvec_uniform(
-        w_low, w_high, clen, v, seed,
-        shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
-    )
-
-
-def _raw_jitc_matvec_uniform(
-    w_low: Data | float,
-    w_high: Data | float,
-    clen: Data,
-    v: Data,
-    seed: Data,
-    *,
-    shape: Tuple[int, int],
-    transpose: bool = False,
-    outdim_parallel: bool = True,
-) -> Data:
     u.fail_for_dimension_mismatch(w_low, w_high, "w_low and w_high must have the same dimension.")
     w_low, unit_w_low = u.split_mantissa_unit(w_low)
     w_high, unit_w_high = u.split_mantissa_unit(
         w_high.in_unit(unit_w_low) if isinstance(w_high, u.Quantity) else w_high)
     v, unitv = u.split_mantissa_unit(v)
     res = jitc_mv_uniform_p_call(
-        w_low, w_high, clen, v, seed,
+        w_low, w_high, conn_prob, v, seed,
         shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
     )[0]
     return u.maybe_decimal(res * unit_w_low * unitv)
@@ -294,31 +259,13 @@ def _jitc_matvec_normal(
         The output of :math:`y = M @ v`.
     """
     seed = _initialize_seed(seed)
-    clen = _calculate_conn_len(conn_prob)
-    return _raw_jitc_matvec_normal(
-        w_mu, w_sigma, clen, v, seed,
-        shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
-    )
-
-
-def _raw_jitc_matvec_normal(
-    w_mu: Data | float,
-    w_sigma: Data | float,
-    clen: Data,
-    v: Data,
-    seed: Data,
-    *,
-    shape: Tuple[int, int],
-    transpose: bool = False,
-    outdim_parallel: bool = True,
-) -> Data:
     u.fail_for_dimension_mismatch(w_mu, w_sigma, "w_low and w_high must have the same dimension.")
     w_mu, unit_w_mu = u.split_mantissa_unit(w_mu)
     w_sigma, unit_w_sigma = u.split_mantissa_unit(
         w_sigma.in_unit(unit_w_mu) if isinstance(w_mu, u.Quantity) else w_sigma)
     v, unitv = u.split_mantissa_unit(v)
     res = jitc_mv_normal_p_call(
-        w_mu, w_sigma, clen, v, seed,
+        w_mu, w_sigma, conn_prob, v, seed,
         shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
     )[0]
     return u.maybe_decimal(res * unit_w_mu * unitv)
@@ -373,27 +320,10 @@ def _jitc_matmat_homo(
         The output of :math:`y = M @ B`.
     """
     seed = _initialize_seed(seed)
-    clen = _calculate_conn_len(conn_prob)
-#     return _raw_jitc_matmat_homo(
-#         weight, clen, B, seed,
-#         shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
-#     )
-#
-#
-# def _raw_jitc_matmat_homo(
-#     weight: Data | float,
-#     clen: Data,
-#     B: Data,
-#     seed: Data,
-#     *,
-#     shape: Tuple[int, int],
-#     transpose: bool = False,
-#     outdim_parallel: bool = True,
-# ) -> Data:
     weight, unitd = u.split_mantissa_unit(weight)
     B, unitB = u.split_mantissa_unit(B)
     res = jitc_mm_homo_p_call(
-        weight, clen, B, seed,
+        weight, conn_prob, B, seed,
         shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
     )[0]
     return u.maybe_decimal(res * unitd * unitB)
@@ -452,31 +382,13 @@ def _jitc_matmat_uniform(
         The output of :math:`y = M @ B`.
     """
     seed = _initialize_seed(seed)
-    clen = _calculate_conn_len(conn_prob)
-    return _raw_jitc_matmat_uniform(
-        w_low, w_high, clen, B, seed,
-        shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
-    )
-
-
-def _raw_jitc_matmat_uniform(
-    w_low: Data | float,
-    w_high: Data | float,
-    clen: Data,
-    B: Data,
-    seed: Data,
-    *,
-    shape: Tuple[int, int],
-    transpose: bool = False,
-    outdim_parallel: bool = True,
-) -> Data:
     u.fail_for_dimension_mismatch(w_low, w_high, "w_low and w_high must have the same dimension.")
     w_low, unit_w_low = u.split_mantissa_unit(w_low)
     w_high, unit_w_high = u.split_mantissa_unit(
         w_high.in_unit(unit_w_low) if isinstance(w_high, u.Quantity) else w_high)
     B, unitB = u.split_mantissa_unit(B)
     res = jitc_mm_uniform_p_call(
-        w_low, w_high, clen, B, seed,
+        w_low, w_high, conn_prob, B, seed,
         shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
     )[0]
     return u.maybe_decimal(res * unit_w_low * unitB)
@@ -535,31 +447,13 @@ def _jitc_matmat_normal(
         The output of :math:`y = M @ m`.
     """
     seed = _initialize_seed(seed)
-    clen = _calculate_conn_len(conn_prob)
-    return _raw_jitc_matmat_normal(
-        w_mu, w_sigma, clen, B, seed,
-        shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
-    )
-
-
-def _raw_jitc_matmat_normal(
-    w_mu: Data | float,
-    w_sigma: Data | float,
-    clen: Data,
-    B: Data,
-    seed: Data,
-    *,
-    shape: Tuple[int, int],
-    transpose: bool = False,
-    outdim_parallel: bool = True,
-) -> Data:
     u.fail_for_dimension_mismatch(w_mu, w_sigma, "w_low and w_high must have the same dimension.")
     w_mu, unit_w_mu = u.split_mantissa_unit(w_mu)
     w_sigma, unit_w_sigma = u.split_mantissa_unit(
         w_sigma.in_unit(unit_w_mu) if isinstance(w_mu, u.Quantity) else w_sigma)
     B, unitB = u.split_mantissa_unit(B)
     res = jitc_mm_normal_p_call(
-        w_mu, w_sigma, clen, B, seed,
+        w_mu, w_sigma, conn_prob, B, seed,
         shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
     )[0]
     return u.maybe_decimal(res * unit_w_mu * unitB)
@@ -580,40 +474,34 @@ def _jitc_mv_homo_cpu_kernel_generator(
 
     if outdim_parallel:
         # outdim_parallel=True
-        def kernel(weight, clen, v, seed, _, posts):
+        def kernel(weight, conn_prob, v, seed, _, posts):
             num_row = posts.shape[0]
             num_col = v.shape[0]
             weight0 = weight[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
             np.random.seed(seed0)
 
             for i_row in range(num_row):
-                r = 0.0
-                i_col = np.random.randint(0, clen0 - 1)
-
-                while i_col < num_col:
-                    r += v[i_col]
-                    i_col += np.random.randint(1, clen0)
+                connections = np.random.binomial(1, conn_prob0, num_col)
+                r = np.sum(v * connections)
 
                 posts[i_row] = r * weight0
     else:
         # outdim_parallel=False
-        def kernel(weight, clen, v, seed, _, posts):
+        def kernel(weight, conn_prob, v, seed, _, posts):
             num_row = posts.shape[0]
             num_col = v.shape[0]
             weight0 = weight[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
             np.random.seed(seed0)
 
             for i_col in range(num_col):
-                i_row = np.random.randint(0, clen0 - 1)
-
                 r = v[i_col] * weight0
-                while i_row < num_row:
-                    posts[i_row] += r
-                    i_row += np.random.randint(1, clen0)
+                connections = np.random.binomial(1, conn_prob0, num_row)
+
+                posts += connections * r
 
     kernel = numba.njit(**numba_environ.setting)(kernel)
     return kernel
@@ -642,7 +530,7 @@ def _jitc_mv_homo_gpu_kernel_generator(
         # outdim_parallel=True
         def kernel(
             weight: warp.array1d(dtype=weight_dtype),
-            clen: warp.array1d(dtype=clen_dtype),
+            conn_prob: warp.array1d(dtype=clen_dtype),
             v: warp.array1d(dtype=v_dtype),
             seed: warp.array1d(dtype=seed_dtype),
             _: warp.array1d(dtype=weight_dtype),
@@ -651,35 +539,25 @@ def _jitc_mv_homo_gpu_kernel_generator(
             num_row = posts.shape[0]
             num_col = v.shape[0]
             weight0 = weight[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
 
-            step = warp.max(warp.int32((num_row + 1) >> 5), 1)
-
-            tid = warp.tid()
-
-            i_row = tid >> 5
-            i_thread = tid & 31
-
-            i_col = warp.int32(step * i_thread - 1)
-            end_col = warp.min(i_col + step, num_col)
+            i_row = warp.tid()
 
             r = float(0.0)
             state = warp.rand_init(seed0 + tid)
+            i_col = int(0)
 
-            inc = warp.randi(state, 1, clen0)
-            i_col += inc
+            while i_col < num_col:
+                if _binomial_n1(state, conn_prob0) == 1:
+                    r += v[i_col]
+                i_col += 1
 
-            while i_col < end_col:
-                r += v[i_col]
-                inc = warp.randi(state, 1, clen0)
-                i_col += inc
-
-            posts[i_row] += r * weight0
+            posts[i_row] = r * weight0
     else:
         def kernel(
             weight: warp.array1d(dtype=weight_dtype),
-            clen: warp.array1d(dtype=clen_dtype),
+            conn_prob: warp.array1d(dtype=clen_dtype),
             v: warp.array1d(dtype=v_dtype),
             seed: warp.array1d(dtype=seed_dtype),
             _: warp.array1d(dtype=weight_dtype),
@@ -688,28 +566,19 @@ def _jitc_mv_homo_gpu_kernel_generator(
             num_row = posts.shape[0]
             num_col = v.shape[0]
             weight0 = weight[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
 
-            step = warp.max(warp.int32((num_row + 1) >> 5), 1)
+            i_col = warp.tid()
 
-            tid = warp.tid()
-            i_col = tid >> 5
-            index = tid & 31
-
-            col_v = v[i_col]
-            i_row = warp.int32(step * index - 1)
-            end = warp.min(i_row + step, num_row)
-
+            col_v = v[i_col] * weight0
             state = warp.rand_init(seed0 + tid)
+            i_row = int(0)
 
-            inc = warp.randi(state, 1, clen0)
-            i_row += inc
-
-            while i_row < end:
-                posts[i_row] += col_v * weight0
-                inc = warp.randi(state, 1, clen0)
-                i_row += inc
+            for i_row in range(num_row):
+                if _binomial_n1(state, conn_prob0) == 1:
+                    posts[i_row] += col_v
+                i_row += 1
 
     kernel = warp.kernel(kernel)
     return kernel
@@ -718,7 +587,7 @@ def _jitc_mv_homo_gpu_kernel_generator(
 def _jitc_mv_homo_jvp_v(
     v_dot,
     weight,
-    clen,
+    conn_prob,
     v,
     seed,
     _,
@@ -729,9 +598,9 @@ def _jitc_mv_homo_jvp_v(
     **kwargs
 ):
     return [
-        _raw_jitc_matvec_homo(
+        _jitc_matvec_homo(
             weight,
-            clen,
+            conn_prob,
             v_dot,
             seed,
             shape=shape,
@@ -744,7 +613,7 @@ def _jitc_mv_homo_jvp_v(
 def _jitc_mv_homo_jvp_weights(
     w_dot,
     weight,
-    clen,
+    conn_prob,
     v,
     seed,
     _,
@@ -756,7 +625,7 @@ def _jitc_mv_homo_jvp_weights(
 ):
     return jitc_mv_homo_p_call(
         w_dot,
-        clen,
+        conn_prob,
         v,
         seed,
         shape=shape,
@@ -768,7 +637,7 @@ def _jitc_mv_homo_jvp_weights(
 def _jitc_mv_homo_transpose_rules(
     ct,
     weight,
-    clen,
+    conn_prob,
     v,
     seed,
     _,
@@ -779,13 +648,13 @@ def _jitc_mv_homo_transpose_rules(
     **kwargs
 ):
     assert not ad.is_undefined_primal(weight)
-    assert not ad.is_undefined_primal(clen)
+    assert not ad.is_undefined_primal(conn_prob)
     assert not ad.is_undefined_primal(seed)
     assert ad.is_undefined_primal(v)
 
     r = jitc_mv_homo_p_call(
         weight,
-        clen,
+        conn_prob,
         ct,
         seed,
         shape=shape,
@@ -793,7 +662,7 @@ def _jitc_mv_homo_transpose_rules(
         outdim_parallel=outdim_parallel
     )[0]
 
-    return weight, clen, r, seed, _
+    return weight, conn_prob, r, seed, _
 
 
 def _jitc_mv_homo_batching(
@@ -830,7 +699,7 @@ def _jitc_mv_homo_batching(
 
 def jitc_mv_homo_p_call(
     weight,
-    clen,
+    conn_prob,
     v,
     seed,
     *,
@@ -839,6 +708,7 @@ def jitc_mv_homo_p_call(
     outdim_parallel: bool,
 ):
     weight = jnp.atleast_1d(weight)
+    conn_prob = jnp.atleast_1d(conn_prob)
 
     out_info = (
         jax.ShapeDtypeStruct([shape[1]], weight.dtype)
@@ -848,13 +718,13 @@ def jitc_mv_homo_p_call(
 
     return jitc_mv_homo_p(
         weight,
-        clen,
+        conn_prob,
         v,
         seed,
         jnp.zeros(out_info.shape, out_info.dtype),
         outs=[out_info],
         weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
-        clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
+        conn_prob_info=jax.ShapeDtypeStruct(conn_prob.shape, conn_prob.dtype),
         v_info=jax.ShapeDtypeStruct(v.shape, v.dtype),
         seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
         out_info=out_info,
@@ -870,8 +740,8 @@ jitc_mv_homo_p = XLACustomKernel(
     gpu_kernel=WarpKernelGenerator(
         _jitc_mv_homo_gpu_kernel_generator,
         dim=lambda v_info, out_info, outdim_parallel, **kwargs: (
-            out_info.shape[0] * 32 if outdim_parallel else
-            v_info.shape[0] * 32
+            out_info.shape[0] if outdim_parallel else
+            v_info.shape[0]
         ),
         input_output_aliases={4: 0}
     )
@@ -895,44 +765,36 @@ def _jitc_mv_uniform_cpu_kernel_generator(
 
     if outdim_parallel:
         # outdim_parallel=True
-        def kernel(w_low, w_high, clen, v, seed, _, posts):
+        def kernel(w_low, w_high, conn_prob, v, seed, _, posts):
             num_row = posts.shape[0]
             num_col = v.shape[0]
             w_low0 = w_low[0]
             w_high0 = w_high[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
             np.random.seed(seed0)
 
             for i_row in range(num_row):
-                total = 0.0
-                i_col = np.random.randint(0, clen0 - 1)
+                connections = np.random.binomial(1, conn_prob0, num_col)
+                random_weights = np.random.uniform(w_low0, w_high0, num_col)
 
-                while i_col < num_col:
-                    raw_v = np.random.uniform(w_low0, w_high0)
-                    total += v[i_col] * raw_v
-                    i_col += np.random.randint(1, clen0)
-
-                posts[i_row] = total
+                posts[i_row] = np.sum(v * random_weights * connections)
     else:
         # outdim_parallel=False
-        def kernel(w_low, w_high, clen, v, seed, _, posts):
+        def kernel(w_low, w_high, conn_prob, v, seed, _, posts):
             num_row = posts.shape[0]
             num_col = v.shape[0]
             w_low0 = w_low[0]
             w_high0 = w_high[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
             np.random.seed(seed0)
 
             for i_col in range(num_col):
-                col_v = v[i_col]
-                i_row = np.random.randint(0, clen0 - 1)
+                connections = np.random.binomial(1, conn_prob0, num_row)
+                random_weights = np.random.uniform(w_low0, w_high0, num_row)
 
-                while i_row < num_row:
-                    raw_v = np.random.uniform(w_low0, w_high0)
-                    posts[i_row] += col_v * raw_v
-                    i_row += np.random.randint(1, clen0)
+                posts += connections * random_weights * v[i_col]
 
     kernel = numba.njit(**numba_environ.setting)(kernel)
     return kernel
@@ -962,7 +824,7 @@ def _jitc_mv_uniform_gpu_kernel_generator(
         def kernel(
             w_low: warp.array1d(dtype=weight_dtype),
             w_high: warp.array1d(dtype=weight_dtype),
-            clen: warp.array1d(dtype=clen_dtype),
+            conn_prob: warp.array1d(dtype=clen_dtype),
             v: warp.array1d(dtype=v_dtype),
             seed: warp.array1d(dtype=seed_dtype),
             _: warp.array1d(dtype=weight_dtype),
@@ -972,37 +834,27 @@ def _jitc_mv_uniform_gpu_kernel_generator(
             num_col = v.shape[0]
             w_low0 = w_low[0]
             w_high0 = w_high[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
 
-            step = warp.max(warp.int32((num_row + 1) >> 5), 1)
-
-            tid = warp.tid()
-
-            i_row = tid >> 5
-            i_thread = tid & 31
-
-            i_col = warp.int32(step * i_thread - 1)
-            end_col = warp.min(i_col + step, num_col)
+            i_row = warp.tid()
 
             r = float(0.0)
             state = warp.rand_init(seed0 + tid)
+            i_col = int(0)
 
-            inc = warp.randi(state, 1, clen0)
-            i_col += inc
+            while i_col < num_col:
+                if _binomial_n1(state, conn_prob0) == 1:
+                    raw_v = warp.randf(state, w_low0, w_high0)
+                    r += v[i_col] * raw_v
+                i_col += 1
 
-            while i_col < end_col:
-                raw_v = warp.randf(state, w_low0, w_high0)
-                r += v[i_col] * raw_v
-                inc = warp.randi(state, 1, clen0)
-                i_col += inc
-
-            posts[i_row] += r
+            posts[i_row] = r * weight0
     else:
         def kernel(
             w_low: warp.array1d(dtype=weight_dtype),
             w_high: warp.array1d(dtype=weight_dtype),
-            clen: warp.array1d(dtype=clen_dtype),
+            conn_prob: warp.array1d(dtype=clen_dtype),
             v: warp.array1d(dtype=v_dtype),
             seed: warp.array1d(dtype=seed_dtype),
             _: warp.array1d(dtype=weight_dtype),
@@ -1012,29 +864,22 @@ def _jitc_mv_uniform_gpu_kernel_generator(
             num_col = v.shape[0]
             w_low0 = w_low[0]
             w_high0 = w_high[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
 
             step = warp.max(warp.int32((num_row + 1) >> 5), 1)
 
-            tid = warp.tid()
-            i_col = tid >> 5
-            index = tid & 31
+            i_col = warp.tid()
 
-            col_v = v[i_col]
-            i_row = warp.int32(step * index - 1)
-            end = warp.min(i_row + step, num_row)
-
+            col_v = v[i_col] * weight0
             state = warp.rand_init(seed0 + tid)
+            i_row = int(0)
 
-            inc = warp.randi(state, 1, clen0)
-            i_row += inc
-
-            while i_row < end:
-                raw_v = warp.randf(state, w_low0, w_high0)
-                posts[i_row] += col_v * raw_v
-                inc = warp.randi(state, 1, clen0)
-                i_row += inc
+            for i_row in range(num_row):
+                if _binomial_n1(state, conn_prob0) == 1:
+                    raw_v = warp.randf(state, w_low0, w_high0)
+                    posts[i_row] += col_v * raw_v
+                i_row += 1
 
     kernel = warp.kernel(kernel)
     return kernel
@@ -1044,7 +889,7 @@ def _jitc_mv_uniform_jvp_v(
     v_dot,
     w_low,
     w_high,
-    clen,
+    conn_prob,
     v,
     seed,
     _,
@@ -1055,10 +900,10 @@ def _jitc_mv_uniform_jvp_v(
     **kwargs
 ):
     return [
-        _raw_jitc_matvec_uniform(
+        _jitc_matvec_uniform(
             w_low,
             w_high,
-            clen,
+            conn_prob,
             v_dot,
             seed,
             shape=shape,
@@ -1072,7 +917,7 @@ def _jitc_mv_uniform_jvp_w_low(
     w_low_dot,
     w_low,
     w_high,
-    clen,
+    conn_prob,
     v,
     seed,
     _,
@@ -1085,7 +930,7 @@ def _jitc_mv_uniform_jvp_w_low(
     return jitc_mv_uniform_p_call(
         w_low_dot,
         w_high,
-        clen,
+        conn_prob,
         v,
         seed,
         shape=shape,
@@ -1098,7 +943,7 @@ def _jitc_mv_uniform_jvp_w_high(
     w_high_dot,
     w_low,
     w_high,
-    clen,
+    conn_prob,
     v,
     seed,
     _,
@@ -1111,7 +956,7 @@ def _jitc_mv_uniform_jvp_w_high(
     return jitc_mv_uniform_p_call(
         w_high_dot,
         w_high,
-        clen,
+        conn_prob,
         v,
         seed,
         shape=shape,
@@ -1124,7 +969,7 @@ def _jitc_mv_uniform_transpose_rules(
     ct,
     w_low,
     w_high,
-    clen,
+    conn_prob,
     v,
     seed,
     _,
@@ -1135,14 +980,14 @@ def _jitc_mv_uniform_transpose_rules(
 ):
     assert not ad.is_undefined_primal(w_low)
     assert not ad.is_undefined_primal(w_high)
-    assert not ad.is_undefined_primal(clen)
+    assert not ad.is_undefined_primal(conn_prob)
     assert not ad.is_undefined_primal(seed)
     assert ad.is_undefined_primal(v)
 
     r = jitc_mv_uniform_p_call(
         w_low,
         w_high,
-        clen,
+        conn_prob,
         ct[0],
         seed,
         shape=shape,
@@ -1150,7 +995,7 @@ def _jitc_mv_uniform_transpose_rules(
         outdim_parallel=outdim_parallel
     )[0]
 
-    return w_low, w_high, clen, r, seed, _
+    return w_low, w_high, conn_prob, r, seed, _
 
 
 def _jitc_mv_uniform_batching(
@@ -1190,7 +1035,7 @@ def _jitc_mv_uniform_batching(
 def jitc_mv_uniform_p_call(
     w_low,
     w_high,
-    clen,
+    conn_prob,
     v,
     seed,
     *,
@@ -1200,6 +1045,7 @@ def jitc_mv_uniform_p_call(
 ):
     w_low = jnp.atleast_1d(w_low)
     w_high = jnp.atleast_1d(w_high)
+    conn_prob = jnp.atleast_1d(conn_prob)
 
     out_info = (
         jax.ShapeDtypeStruct([shape[1]], w_low.dtype)
@@ -1210,13 +1056,13 @@ def jitc_mv_uniform_p_call(
     return jitc_mv_uniform_p(
         w_low,
         w_high,
-        clen,
+        conn_prob,
         v,
         seed,
         jnp.zeros(out_info.shape, out_info.dtype),
         outs=[out_info],
         weight_info=jax.ShapeDtypeStruct(w_low.shape, w_low.dtype),
-        clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
+        conn_prob_info=jax.ShapeDtypeStruct(conn_prob.shape, conn_prob.dtype),
         v_info=jax.ShapeDtypeStruct(v.shape, v.dtype),
         seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
         out_info=out_info,
@@ -1232,8 +1078,8 @@ jitc_mv_uniform_p = XLACustomKernel(
     gpu_kernel=WarpKernelGenerator(
         _jitc_mv_uniform_gpu_kernel_generator,
         dim=lambda v_info, out_info, outdim_parallel, **kwargs: (
-            out_info.shape[0] * 32 if outdim_parallel else
-            v_info.shape[0] * 32
+            out_info.shape[0] if outdim_parallel else
+            v_info.shape[0]
         ),
         input_output_aliases={5: 0}
     )
@@ -1260,44 +1106,36 @@ def _jitc_mv_normal_cpu_kernel_generator(
 
     if outdim_parallel:
         # outdim_parallel=True
-        def kernel(w_mu, w_sigma, clen, v, seed, _, posts):
+        def kernel(w_mu, w_sigma, conn_prob, v, seed, _, posts):
             num_row = posts.shape[0]
             num_col = v.shape[0]
             w_mu0 = w_mu[0]
             w_sigma0 = w_sigma[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
             np.random.seed(seed0)
 
             for i_row in range(num_row):
-                total = 0.0
-                i_col = np.random.randint(0, clen0 - 1)
+                connections = np.random.binomial(1, conn_prob0, num_col)
+                random_weights = np.random.normal(w_mu0, w_sigma0, num_col)
 
-                while i_col < num_col:
-                    raw_v = np.random.normal(w_mu0, w_sigma0)
-                    total += v[i_col] * raw_v
-                    i_col += np.random.randint(1, clen0)
-
-                posts[i_row] = total
+                posts[i_row] = np.sum(v * random_weights * connections)
     else:
         # outdim_parallel=False
-        def kernel(w_mu, w_sigma, clen, v, seed, _, posts):
+        def kernel(w_mu, w_sigma, conn_prob, v, seed, _, posts):
             num_row = posts.shape[0]
             num_col = v.shape[0]
             w_mu0 = w_mu[0]
             w_sigma0 = w_sigma[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
             np.random.seed(seed0)
 
             for i_col in range(num_col):
-                col_v = v[i_col]
-                i_row = np.random.randint(0, clen0 - 1)
+                connections = np.random.binomial(1, conn_prob0, num_row)
+                random_weights = np.random.normal(w_mu0, w_sigma0, num_row)
 
-                while i_row < num_row:
-                    raw_v = np.random.normal(w_mu0, w_sigma0)
-                    posts[i_row] += col_v * raw_v
-                    i_row += np.random.randint(1, clen0)
+                posts += connections * random_weights * v[i_col]
 
     kernel = numba.njit(**numba_environ.setting)(kernel)
     return kernel
@@ -1327,7 +1165,7 @@ def _jitc_mv_normal_gpu_kernel_generator(
         def kernel(
             w_mu: warp.array1d(dtype=weight_dtype),
             w_sigma: warp.array1d(dtype=weight_dtype),
-            clen: warp.array1d(dtype=clen_dtype),
+            conn_prob: warp.array1d(dtype=clen_dtype),
             v: warp.array1d(dtype=v_dtype),
             seed: warp.array1d(dtype=seed_dtype),
             _: warp.array1d(dtype=weight_dtype),
@@ -1337,37 +1175,30 @@ def _jitc_mv_normal_gpu_kernel_generator(
             num_col = v.shape[0]
             w_mu0 = w_mu[0]
             w_sigma0 = w_sigma[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
 
             step = warp.max(warp.int32((num_row + 1) >> 5), 1)
 
-            tid = warp.tid()
-
-            i_row = tid >> 5
-            i_thread = tid & 31
-
-            i_col = warp.int32(step * i_thread - 1)
-            end_col = warp.min(i_col + step, num_col)
+            i_row = warp.tid()
 
             r = float(0.0)
             state = warp.rand_init(seed0 + tid)
+            i_col = int(0)
 
-            inc = warp.randi(state, 1, clen0)
-            i_col += inc
+            while i_col < num_col:
+                if _binomial_n1(state, conn_prob0) == 1:
+                    raw_v = w_mu0 + w_sigma0 * warp.randn(state)
+                    r += v[i_col] * raw_v
+                i_col += 1
 
-            while i_col < end_col:
-                raw_v = w_mu0 + w_sigma0 * warp.randn(state)
-                r += v[i_col] * raw_v
-                inc = warp.randi(state, 1, clen0)
-                i_col += inc
+            posts[i_row] = r * weight0
 
-            posts[i_row] += r
     else:
         def kernel(
             w_mu: warp.array1d(dtype=weight_dtype),
             w_sigma: warp.array1d(dtype=weight_dtype),
-            clen: warp.array1d(dtype=clen_dtype),
+            conn_prob: warp.array1d(dtype=clen_dtype),
             v: warp.array1d(dtype=v_dtype),
             seed: warp.array1d(dtype=seed_dtype),
             _: warp.array1d(dtype=weight_dtype),
@@ -1377,29 +1208,22 @@ def _jitc_mv_normal_gpu_kernel_generator(
             num_col = v.shape[0]
             w_mu0 = w_mu[0]
             w_sigma0 = w_sigma[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
 
             step = warp.max(warp.int32((num_row + 1) >> 5), 1)
 
-            tid = warp.tid()
-            i_col = tid >> 5
-            index = tid & 31
+            i_col = warp.tid()
 
-            col_v = v[i_col]
-            i_row = warp.int32(step * index - 1)
-            end = warp.min(i_row + step, num_row)
-
+            col_v = v[i_col] * weight0
             state = warp.rand_init(seed0 + tid)
+            i_row = int(0)
 
-            inc = warp.randi(state, 1, clen0)
-            i_row += inc
-
-            while i_row < end:
-                raw_v = w_mu0 + w_sigma0 * warp.randn(state)
-                posts[i_row] += col_v * raw_v
-                inc = warp.randi(state, 1, clen0)
-                i_row += inc
+            for i_row in range(num_row):
+                if _binomial_n1(state, conn_prob0) == 1:
+                    raw_v = w_mu0 + w_sigma0 * warp.randn(state)
+                    posts[i_row] += col_v * raw_v
+                i_row += 1
 
     kernel = warp.kernel(kernel)
     return kernel
@@ -1409,7 +1233,7 @@ def _jitc_mv_normal_jvp_v(
     v_dot,
     w_mu,
     w_sigma,
-    clen,
+    conn_prob,
     v,
     seed,
     _,
@@ -1420,10 +1244,10 @@ def _jitc_mv_normal_jvp_v(
     **kwargs
 ):
     return [
-        _raw_jitc_matvec_normal(
+        _jitc_matvec_normal(
             w_mu,
             w_sigma,
-            clen,
+            conn_prob,
             v_dot,
             seed,
             shape=shape,
@@ -1437,7 +1261,7 @@ def _jitc_mv_normal_jvp_w_mu(
     w_mu_dot,
     w_mu,
     w_sigma,
-    clen,
+    conn_prob,
     v,
     seed,
     _,
@@ -1450,7 +1274,7 @@ def _jitc_mv_normal_jvp_w_mu(
     return jitc_mv_uniform_p_call(
         w_mu_dot,
         w_sigma,
-        clen,
+        conn_prob,
         v,
         seed,
         shape=shape,
@@ -1463,7 +1287,7 @@ def _jitc_mv_normal_jvp_w_sigma(
     w_sigma_dot,
     w_mu,
     w_sigma,
-    clen,
+    conn_prob,
     v,
     seed,
     _,
@@ -1476,7 +1300,7 @@ def _jitc_mv_normal_jvp_w_sigma(
     return jitc_mv_uniform_p_call(
         w_mu,
         w_sigma_dot,
-        clen,
+        conn_prob,
         v,
         seed,
         shape=shape,
@@ -1489,7 +1313,7 @@ def _jitc_mv_normal_transpose_rules(
     ct,
     w_mu,
     w_sigma,
-    clen,
+    conn_prob,
     v,
     seed,
     _,
@@ -1500,14 +1324,14 @@ def _jitc_mv_normal_transpose_rules(
 ):
     assert not ad.is_undefined_primal(w_mu)
     assert not ad.is_undefined_primal(w_sigma)
-    assert not ad.is_undefined_primal(clen)
+    assert not ad.is_undefined_primal(conn_prob)
     assert not ad.is_undefined_primal(seed)
     assert ad.is_undefined_primal(v)
 
     r = jitc_mv_uniform_p_call(
         w_mu,
         w_sigma,
-        clen,
+        conn_prob,
         ct[0],
         seed,
         shape=shape,
@@ -1515,7 +1339,7 @@ def _jitc_mv_normal_transpose_rules(
         outdim_parallel=outdim_parallel
     )[0]
 
-    return w_mu, w_sigma, clen, r, seed, _
+    return w_mu, w_sigma, conn_prob, r, seed, _
 
 
 def _jitc_mv_normal_batching(
@@ -1555,7 +1379,7 @@ def _jitc_mv_normal_batching(
 def jitc_mv_normal_p_call(
     w_mu,
     w_sigma,
-    clen,
+    conn_prob,
     v,
     seed,
     *,
@@ -1565,6 +1389,7 @@ def jitc_mv_normal_p_call(
 ):
     w_mu = jnp.atleast_1d(w_mu)
     w_sigma = jnp.atleast_1d(w_sigma)
+    conn_prob = jnp.atleast_1d(conn_prob)
 
     out_info = (
         jax.ShapeDtypeStruct([shape[1]], w_mu.dtype)
@@ -1575,13 +1400,13 @@ def jitc_mv_normal_p_call(
     return jitc_mv_uniform_p(
         w_mu,
         w_sigma,
-        clen,
+        conn_prob,
         v,
         seed,
         jnp.zeros(out_info.shape, out_info.dtype),
         outs=[out_info],
         weight_info=jax.ShapeDtypeStruct(w_mu.shape, w_mu.dtype),
-        clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
+        conn_prob_info=jax.ShapeDtypeStruct(conn_prob.shape, conn_prob.dtype),
         v_info=jax.ShapeDtypeStruct(v.shape, v.dtype),
         seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
         out_info=out_info,
@@ -1597,8 +1422,8 @@ jitc_mv_normal_p = XLACustomKernel(
     gpu_kernel=WarpKernelGenerator(
         _jitc_mv_normal_gpu_kernel_generator,
         dim=lambda v_info, out_info, outdim_parallel, **kwargs: (
-            out_info.shape[0] * 32 if outdim_parallel else
-            v_info.shape[0] * 32
+            out_info.shape[0] if outdim_parallel else
+            v_info.shape[0]
         ),
         input_output_aliases={5: 0}
     )
@@ -1628,39 +1453,36 @@ def _jitc_mm_homo_cpu_kernel_generator(
 
     if outdim_parallel:
         # outdim_parallel=True
-        def kernel(weight, clen, B, seed, _, posts):
+        def kernel(weight, conn_prob, B, seed, _, posts):
             num_rows, num_cols = posts.shape
             weight0 = weight[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
             np.random.seed(seed0)
 
             for i_row in range(num_rows):
                 for i_col in range(num_cols):
-                    r = 0.0
-                    cursor = np.random.randint(0, clen0 - 1)
-                    while cursor < num_cols:
-                        r += B[i_row, cursor]
-                        cursor += np.random.randint(1, clen0)
+                    connections = np.random.binomial(1, conn_prob0, num_cols)
+
+                    r = np.sum(B[i_row, :] * connections)
                     posts[i_row, i_col] = r * weight0
 
     else:
         # outdim_parallel=False
         # TODO: more checks on this kernel (random generation method)
-        def kernel(weight, clen, B, seed, _, posts):
+        def kernel(weight, conn_prob, B, seed, _, posts):
             num_rows, num_cols = posts.shape
             weight0 = weight[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
             np.random.seed(seed0)
 
             for i_col in range(num_cols):
                 for i_row in range(num_rows):
-                    cursor = np.random.randint(0, clen0 - 1)
                     r = B[i_row, :] * weight0
-                    while cursor < num_rows:
-                        posts[cursor, :] += r
-                        cursor += np.random.randint(1, clen0)
+                    connections = np.random.binomial(1, conn_prob0, num_cols)
+
+                    posts += connections[:, np.newaxis] * r
 
     kernel = numba.njit(**numba_environ.setting)(kernel)
     return kernel
@@ -1689,7 +1511,7 @@ def _jitc_mm_homo_gpu_kernel_generator(
         # outdim_parallel=True
         def kernel(
             weight: warp.array1d(dtype=weight_dtype),
-            clen: warp.array1d(dtype=clen_dtype),
+            conn_prob: warp.array1d(dtype=clen_dtype),
             B: warp.array2d(dtype=B_dtype),
             seed: warp.array1d(dtype=seed_dtype),
             _: warp.array1d(dtype=weight_dtype),
@@ -1699,7 +1521,7 @@ def _jitc_mm_homo_gpu_kernel_generator(
             num_cols = posts.shape[1]
             # num_rows, num_cols = posts.shape
             weight0 = weight[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
 
             i_row, i_col = warp.tid()
@@ -1707,17 +1529,18 @@ def _jitc_mm_homo_gpu_kernel_generator(
             r = float(0.0)
             state = warp.rand_init(seed0 + i_row * num_cols + i_col)
 
-            cursor = warp.randi(state, 1, clen0)
+            cursor = int(0)
 
             while cursor < num_cols:
-                r += B[i_row, cursor]
-                cursor += warp.randi(state, 1, clen0)
+                if _binomial_n1(state, conn_prob0) == 1:
+                    r += B[i_row, cursor]
+                cursor += 1
             posts[i_row, i_col] = r * weight0
     else:
         # outdim_parallel=False
         def kernel(
             weight: warp.array1d(dtype=weight_dtype),
-            clen: warp.array1d(dtype=clen_dtype),
+            conn_prob: warp.array1d(dtype=clen_dtype),
             B: warp.array2d(dtype=B_dtype),
             seed: warp.array1d(dtype=seed_dtype),
             _: warp.array1d(dtype=weight_dtype),
@@ -1726,21 +1549,21 @@ def _jitc_mm_homo_gpu_kernel_generator(
             num_rows = posts.shape[0]
             num_cols = posts.shape[1]
             weight0 = weight[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
 
             i_row, i_col = warp.tid()
 
             state = warp.rand_init(seed0 + i_row * num_cols + i_col)
 
-            cursor = warp.randi(state, 1, clen0)
-            # warp doesn't support slicing
-            # r = B[i_row, :] * weight0
+            cursor = int(0)
+
             while cursor < num_cols:
                 # posts[cursor, :] += r
-                for j in range(posts.shape[1]):
-                    posts[cursor, j] += B[i_row, j] * weight0
-                cursor += warp.randi(state, 1, clen0)
+                if _binomial_n1(state, conn_prob0) == 1:
+                    for j in range(posts.shape[1]):
+                        posts[cursor, j] += B[i_row, j] * weight0
+                cursor += 1
 
     kernel = warp.kernel(kernel)
     return kernel
@@ -1749,7 +1572,7 @@ def _jitc_mm_homo_gpu_kernel_generator(
 def _jitc_mm_homo_jvp_w(
     w_dot,
     weight,
-    clen,
+    conn_prob,
     B,
     seed,
     _,
@@ -1761,7 +1584,7 @@ def _jitc_mm_homo_jvp_w(
 ):
     return jitc_mm_homo_p_call(
         w_dot,
-        clen,
+        conn_prob,
         B,
         seed,
         shape=shape,
@@ -1773,7 +1596,7 @@ def _jitc_mm_homo_jvp_w(
 def _jitc_mm_homo_jvp_B(
     B_dot,
     weight,
-    clen,
+    conn_prob,
     B,
     seed,
     _,
@@ -1784,9 +1607,9 @@ def _jitc_mm_homo_jvp_B(
     **kwargs
 ):
     return [
-        _raw_jitc_matmat_homo(
+        _jitc_matmat_homo(
             weight,
-            clen,
+            conn_prob,
             B_dot,
             seed,
             shape=shape,
@@ -1799,7 +1622,7 @@ def _jitc_mm_homo_jvp_B(
 def _jitc_mm_homo_transpose_rules(
     ct,
     weight,
-    clen,
+    conn_prob,
     B,
     seed,
     _,
@@ -1810,13 +1633,13 @@ def _jitc_mm_homo_transpose_rules(
     **kwargs
 ):
     assert not ad.is_undefined_primal(weight)
-    assert not ad.is_undefined_primal(clen)
+    assert not ad.is_undefined_primal(conn_prob)
     assert not ad.is_undefined_primal(seed)
     assert ad.is_undefined_primal(B)
 
     r = jitc_mv_homo_p_call(
         weight,
-        clen,
+        conn_prob,
         ct,
         seed,
         shape=shape,
@@ -1824,7 +1647,7 @@ def _jitc_mm_homo_transpose_rules(
         outdim_parallel=outdim_parallel,
     )[0]
 
-    return weight, clen, r, seed, _
+    return weight, conn_prob, r, seed, _
 
 
 def _jitc_mm_homo_batching(
@@ -1884,7 +1707,7 @@ def _jitc_mm_homo_batching(
 
 def jitc_mm_homo_p_call(
     weight,
-    clen,
+    conn_prob,
     B,
     seed,
     *,
@@ -1893,6 +1716,7 @@ def jitc_mm_homo_p_call(
     outdim_parallel: bool,
 ):
     weight = jnp.atleast_1d(weight)
+    conn_prob = jnp.atleast_1d(conn_prob)
 
     out_info = (
         jax.ShapeDtypeStruct([shape[1], B.shape[1]], weight.dtype)
@@ -1902,13 +1726,13 @@ def jitc_mm_homo_p_call(
 
     return jitc_mm_homo_p(
         weight,
-        clen,
+        conn_prob,
         B,
         seed,
         jnp.zeros(out_info.shape, out_info.dtype),
         outs=[out_info],
         weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
-        clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
+        clen_info=jax.ShapeDtypeStruct(conn_prob.shape, conn_prob.dtype),
         B_info=jax.ShapeDtypeStruct(B.shape, B.dtype),
         seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
         out_info=out_info,
@@ -1948,44 +1772,41 @@ def _jitc_mm_uniform_cpu_kernel_generator(
 
     if outdim_parallel:
         # outdim_parallel=True
-        def kernel(w_low, w_high, clen, B, seed, _, posts):
+        def kernel(w_low, w_high, conn_prob, B, seed, _, posts):
             num_rows, num_cols = posts.shape
             w_low0 = w_low[0]
             w_high0 = w_high[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
             np.random.seed(seed0)
 
             for i_row in range(num_rows):
                 for i_col in range(num_cols):
-                    r = 0.0
-                    cursor = np.random.randint(0, clen0 - 1)
-                    while cursor < num_cols:
-                        raw_v = np.random.uniform(w_low0, w_high0)
-                        r += B[i_row, cursor] * raw_v
-                        cursor += np.random.randint(1, clen0)
+                    connections = np.random.binomial(1, conn_prob0, num_cols)
+                    random_weights = np.random.uniform(w_low0, w_high0, num_cols)
 
-                    posts[i_row, i_col] = r
+                    posts[i_row, i_col] = np.sum(B[i_row, :] * random_weights * connections)
 
     else:
         # outdim_parallel=False
         # TODO: more checks on this kernel (random generation method)
-        def kernel(w_low, w_high, clen, B, seed, _, posts):
+        def kernel(w_low, w_high, conn_prob, B, seed, _, posts):
             num_rows, num_cols = posts.shape
             w_low0 = w_low[0]
             w_high0 = w_high[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
             np.random.seed(seed0)
 
             for i_col in range(num_cols):
                 for i_row in range(num_rows):
-                    cursor = np.random.randint(0, clen0 - 1)
                     r = B[i_row, :]
-                    while cursor < num_rows:
-                        raw_v = np.random.uniform(w_low0, w_high0)
-                        posts[cursor, :] += r * raw_v
-                        cursor += np.random.randint(1, clen0)
+
+                    connections = np.random.binomial(1, conn_prob0, num_rows)
+                    random_weights = np.random.uniform(w_low0, w_high0, num_rows)
+                    effective_weights = connections * random_weights
+
+                    posts += effective_weights[:, np.newaxis] * r
 
     kernel = numba.njit(**numba_environ.setting)(kernel)
     return kernel
@@ -2015,7 +1836,7 @@ def _jitc_mm_uniform_gpu_kernel_generator(
         def kernel(
             w_low: warp.array1d(dtype=weight_dtype),
             w_high: warp.array1d(dtype=weight_dtype),
-            clen: warp.array1d(dtype=clen_dtype),
+            conn_prob: warp.array1d(dtype=clen_dtype),
             B: warp.array2d(dtype=B_dtype),
             seed: warp.array1d(dtype=seed_dtype),
             _: warp.array1d(dtype=weight_dtype),
@@ -2025,7 +1846,7 @@ def _jitc_mm_uniform_gpu_kernel_generator(
             num_cols = posts.shape[1]
             w_low0 = w_low[0]
             w_high0 = w_high[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
 
             i_row, i_col = warp.tid()
@@ -2033,19 +1854,20 @@ def _jitc_mm_uniform_gpu_kernel_generator(
             r = float(0.0)
             state = warp.rand_init(seed0 + i_row * num_cols + i_col)
 
-            cursor = warp.randi(state, 1, clen0)
+            cursor = int(0)
 
             while cursor < num_cols:
-                raw_v = warp.randf(state, w_low0, w_high0)
-                r += B[i_row, cursor] * raw_v
-                cursor += warp.randi(state, 1, clen0)
+                if _binomial_n1(state, conn_prob0) == 1:
+                    raw_v = warp.randf(state, w_low0, w_high0)
+                    r += B[i_row, cursor] * raw_v
+                cursor += 1
             posts[i_row, i_col] = r
     else:
         # outdim_parallel=False
         def kernel(
             w_low: warp.array1d(dtype=weight_dtype),
             w_high: warp.array1d(dtype=weight_dtype),
-            clen: warp.array1d(dtype=clen_dtype),
+            conn_prob: warp.array1d(dtype=clen_dtype),
             B: warp.array2d(dtype=B_dtype),
             seed: warp.array1d(dtype=seed_dtype),
             _: warp.array1d(dtype=weight_dtype),
@@ -2055,19 +1877,20 @@ def _jitc_mm_uniform_gpu_kernel_generator(
             num_cols = posts.shape[1]
             w_low0 = w_low[0]
             w_high0 = w_high[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
 
             i_row, i_col = warp.tid()
 
             state = warp.rand_init(seed0 + i_row * num_cols + i_col)
 
-            cursor = warp.randi(state, 1, clen0)
+            cursor = int(0)
             while cursor < num_cols:
-                for j in range(posts.shape[1]):
-                    raw_v = warp.randf(state, w_low0, w_high0)
-                    posts[cursor, j] += B[i_row, j] * raw_v
-                cursor += warp.randi(state, 1, clen0)
+                if _binomial_n1(state, conn_prob0) == 1:
+                    for j in range(posts.shape[1]):
+                        raw_v = warp.randf(state, w_low0, w_high0)
+                        posts[cursor, j] += B[i_row, j] * raw_v
+                cursor += 1
 
     kernel = warp.kernel(kernel)
     return kernel
@@ -2077,7 +1900,7 @@ def _jitc_mm_uniform_jvp_w_low(
     w_low_dot,
     w_low,
     w_high,
-    clen,
+    conn_prob,
     B,
     seed,
     _,
@@ -2090,7 +1913,7 @@ def _jitc_mm_uniform_jvp_w_low(
     return jitc_mm_uniform_p_call(
         w_low_dot,
         w_high,
-        clen,
+        conn_prob,
         B,
         seed,
         shape=shape,
@@ -2103,7 +1926,7 @@ def _jitc_mm_uniform_jvp_w_high(
     w_high_dot,
     w_low,
     w_high,
-    clen,
+    conn_prob,
     B,
     seed,
     _,
@@ -2116,7 +1939,7 @@ def _jitc_mm_uniform_jvp_w_high(
     return jitc_mm_uniform_p_call(
         w_low,
         w_high_dot,
-        clen,
+        conn_prob,
         B,
         seed,
         shape=shape,
@@ -2129,7 +1952,7 @@ def _jitc_mm_uniform_jvp_B(
     B_dot,
     w_low,
     w_high,
-    clen,
+    conn_prob,
     B,
     seed,
     _,
@@ -2140,10 +1963,10 @@ def _jitc_mm_uniform_jvp_B(
     **kwargs
 ):
     return [
-        _raw_jitc_matmat_uniform(
+        _jitc_matmat_uniform(
             w_low,
             w_high,
-            clen,
+            conn_prob,
             B_dot,
             seed,
             shape=shape,
@@ -2157,7 +1980,7 @@ def _jitc_mm_uniform_transpose_rules(
     ct,
     w_low,
     w_high,
-    clen,
+    conn_prob,
     B,
     seed,
     _,
@@ -2169,14 +1992,14 @@ def _jitc_mm_uniform_transpose_rules(
 ):
     assert not ad.is_undefined_primal(w_low)
     assert not ad.is_undefined_primal(w_high)
-    assert not ad.is_undefined_primal(clen)
+    assert not ad.is_undefined_primal(conn_prob)
     assert not ad.is_undefined_primal(seed)
     assert ad.is_undefined_primal(B)
 
     r = jitc_mm_uniform_p_call(
         w_low,
         w_high,
-        clen,
+        conn_prob,
         ct,
         seed,
         shape=shape,
@@ -2184,7 +2007,7 @@ def _jitc_mm_uniform_transpose_rules(
         outdim_parallel=outdim_parallel
     )[0]
 
-    return w_low, w_high, clen, r, seed, _
+    return w_low, w_high, conn_prob, r, seed, _
 
 
 def _jitc_mm_uniform_batching(
@@ -2248,7 +2071,7 @@ def _jitc_mm_uniform_batching(
 def jitc_mm_uniform_p_call(
     w_low,
     w_high,
-    clen,
+    conn_prob,
     B,
     seed,
     *,
@@ -2258,6 +2081,7 @@ def jitc_mm_uniform_p_call(
 ):
     w_low = jnp.atleast_1d(w_low)
     w_high = jnp.atleast_1d(w_high)
+    conn_prob = jnp.atleast_1d(conn_prob)
 
     out_info = (
         jax.ShapeDtypeStruct([shape[1], B.shape[1]], w_low.dtype)
@@ -2268,13 +2092,13 @@ def jitc_mm_uniform_p_call(
     return jitc_mm_uniform_p(
         w_low,
         w_high,
-        clen,
+        conn_prob,
         B,
         seed,
         jnp.zeros(out_info.shape, out_info.dtype),
         outs=[out_info],
         weight_info=jax.ShapeDtypeStruct(w_low.shape, w_low.dtype),
-        clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
+        conn_prob_info=jax.ShapeDtypeStruct(conn_prob.shape, conn_prob.dtype),
         B_info=jax.ShapeDtypeStruct(B.shape, B.dtype),
         seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
         out_info=out_info,
@@ -2317,44 +2141,41 @@ def _jitc_mm_normal_cpu_kernel_generator(
 
     if outdim_parallel:
         # outdim_parallel=True
-        def kernel(w_mu, w_sigma, clen, B, seed, _, posts):
+        def kernel(w_mu, w_sigma, conn_prob, B, seed, _, posts):
             num_rows, num_cols = posts.shape
             w_mu0 = w_mu[0]
             w_sigma0 = w_sigma[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
             np.random.seed(seed0)
 
             for i_row in range(num_rows):
                 for i_col in range(num_cols):
-                    r = 0.0
-                    cursor = np.random.randint(0, clen0 - 1)
-                    while cursor < num_cols:
-                        raw_v = np.random.normal(w_mu0, w_sigma0)
-                        r += B[i_row, cursor] * raw_v
-                        cursor += np.random.randint(1, clen0)
+                    connections = np.random.binomial(1, conn_prob0, num_cols)
+                    random_weights = np.random.normal(w_mu0, w_sigma0, num_cols)
 
-                    posts[i_row, i_col] = r
+                    posts[i_row, i_col] = np.sum(B[i_row, :] * random_weights * connections)
 
     else:
         # outdim_parallel=False
         # TODO: more checks on this kernel (random generation method)
-        def kernel(w_mu, w_sigma, clen, B, seed, _, posts):
+        def kernel(w_mu, w_sigma, conn_prob, B, seed, _, posts):
             num_rows, num_cols = posts.shape
             w_mu0 = w_mu[0]
             w_sigma0 = w_sigma[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
             np.random.seed(seed0)
 
             for i_col in range(num_cols):
                 for i_row in range(num_rows):
-                    cursor = np.random.randint(0, clen0 - 1)
                     r = B[i_row, :]
-                    while cursor < num_rows:
-                        raw_v = np.random.normal(w_mu0, w_sigma0)
-                        posts[cursor, :] += r * raw_v
-                        cursor += np.random.randint(1, clen0)
+
+                    connections = np.random.binomial(1, conn_prob0, num_rows)
+                    random_weights = np.random.normal(w_mu0, w_sigma0, num_rows)
+                    effective_weights = connections * random_weights
+
+                    posts += effective_weights[:, np.newaxis] * r
 
     kernel = numba.njit(**numba_environ.setting)(kernel)
     return kernel
@@ -2384,7 +2205,7 @@ def _jitc_mm_normal_gpu_kernel_generator(
         def kernel(
             w_mu: warp.array1d(dtype=weight_dtype),
             w_sigma: warp.array1d(dtype=weight_dtype),
-            clen: warp.array1d(dtype=clen_dtype),
+            conn_prob: warp.array1d(dtype=clen_dtype),
             B: warp.array2d(dtype=B_dtype),
             seed: warp.array1d(dtype=seed_dtype),
             _: warp.array1d(dtype=weight_dtype),
@@ -2394,7 +2215,7 @@ def _jitc_mm_normal_gpu_kernel_generator(
             num_cols = posts.shape[1]
             w_mu0 = w_mu[0]
             w_sigma0 = w_sigma[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
 
             i_row, i_col = warp.tid()
@@ -2402,19 +2223,20 @@ def _jitc_mm_normal_gpu_kernel_generator(
             r = float(0.0)
             state = warp.rand_init(seed0 + i_row * num_cols + i_col)
 
-            cursor = warp.randi(state, 1, clen0)
+            cursor = int(0)
 
             while cursor < num_cols:
-                raw_v = w_mu0 + w_sigma0 * warp.randf(state)
-                r += B[i_row, cursor] * raw_v
-                cursor += warp.randi(state, 1, clen0)
+                if _binomial_n1(state, conn_prob0) == 1:
+                    raw_v = w_mu0 + w_sigma0 * warp.randf(state)
+                    r += B[i_row, cursor] * raw_v
+                cursor += 1
             posts[i_row, i_col] = r
     else:
         # outdim_parallel=False
         def kernel(
             w_mu: warp.array1d(dtype=weight_dtype),
             w_sigma: warp.array1d(dtype=weight_dtype),
-            clen: warp.array1d(dtype=clen_dtype),
+            conn_prob: warp.array1d(dtype=clen_dtype),
             B: warp.array2d(dtype=B_dtype),
             seed: warp.array1d(dtype=seed_dtype),
             _: warp.array1d(dtype=weight_dtype),
@@ -2424,19 +2246,20 @@ def _jitc_mm_normal_gpu_kernel_generator(
             num_cols = posts.shape[1]
             w_mu0 = w_mu[0]
             w_sigma0 = w_sigma[0]
-            clen0 = clen[0]
+            conn_prob0 = conn_prob[0]
             seed0 = seed[0]
 
             i_row, i_col = warp.tid()
 
             state = warp.rand_init(seed0 + i_row * num_cols + i_col)
 
-            cursor = warp.randi(state, 1, clen0)
+            cursor = int(0)
             while cursor < num_cols:
-                for j in range(posts.shape[1]):
-                    raw_v = w_mu0 + w_sigma0 * warp.randf(state)
-                    posts[cursor, j] += B[i_row, j] * raw_v
-                cursor += warp.randi(state, 1, clen0)
+                if _binomial_n1(state, conn_prob0) == 1:
+                    for j in range(posts.shape[1]):
+                        raw_v = w_mu0 + w_sigma0 * warp.randf(state)
+                        posts[cursor, j] += B[i_row, j] * raw_v
+                cursor += 1
 
     kernel = warp.kernel(kernel)
     return kernel
@@ -2446,7 +2269,7 @@ def _jitc_mm_normal_jvp_w_mu(
     w_mu_dot,
     w_mu,
     w_sigma,
-    clen,
+    conn_prob,
     B,
     seed,
     _,
@@ -2458,7 +2281,7 @@ def _jitc_mm_normal_jvp_w_mu(
     return jitc_mm_normal_p_call(
         w_mu_dot,
         w_sigma,
-        clen,
+        conn_prob,
         B,
         seed,
         shape=shape,
@@ -2471,7 +2294,7 @@ def _jitc_mm_normal_jvp_w_sigma(
     w_sigma_dot,
     w_mu,
     w_sigma,
-    clen,
+    conn_prob,
     B,
     seed,
     _,
@@ -2484,7 +2307,7 @@ def _jitc_mm_normal_jvp_w_sigma(
     return jitc_mm_normal_p_call(
         w_mu,
         w_sigma_dot,
-        clen,
+        conn_prob,
         B,
         seed,
         shape=shape,
@@ -2497,7 +2320,7 @@ def _jitc_mm_normal_jvp_B(
     B_dot,
     w_mu,
     w_sigma,
-    clen,
+    conn_prob,
     B,
     seed,
     _,
@@ -2508,10 +2331,10 @@ def _jitc_mm_normal_jvp_B(
     **kwargs
 ):
     return [
-        _raw_jitc_matmat_normal(
+        _jitc_matmat_normal(
             w_mu,
             w_sigma,
-            clen,
+            conn_prob,
             B_dot,
             seed,
             shape=shape,
@@ -2525,7 +2348,7 @@ def _jitc_mm_normal_transpose_rules(
     ct,
     w_mu,
     w_sigma,
-    clen,
+    conn_prob,
     B,
     seed,
     _,
@@ -2536,14 +2359,14 @@ def _jitc_mm_normal_transpose_rules(
 ):
     assert not ad.is_undefined_primal(w_mu)
     assert not ad.is_undefined_primal(w_sigma)
-    assert not ad.is_undefined_primal(clen)
+    assert not ad.is_undefined_primal(conn_prob)
     assert not ad.is_undefined_primal(seed)
     assert ad.is_undefined_primal(B)
 
     r = jitc_mm_normal_p_call(
         w_mu,
         w_sigma,
-        clen,
+        conn_prob,
         ct,
         seed,
         shape=shape,
@@ -2551,7 +2374,7 @@ def _jitc_mm_normal_transpose_rules(
         outdim_parallel=outdim_parallel
     )[0]
 
-    return w_mu, w_sigma, clen, r, seed, _
+    return w_mu, w_sigma, conn_prob, r, seed, _
 
 
 def _jitc_mm_normal_batching(
@@ -2615,7 +2438,7 @@ def _jitc_mm_normal_batching(
 def jitc_mm_normal_p_call(
     w_mu,
     w_sigma,
-    clen,
+    conn_prob,
     B,
     seed,
     *,
@@ -2625,6 +2448,7 @@ def jitc_mm_normal_p_call(
 ):
     w_mu = jnp.atleast_1d(w_mu)
     w_sigma = jnp.atleast_1d(w_sigma)
+    conn_prob = jnp.atleast_1d(conn_prob)
 
     out_info = (
         jax.ShapeDtypeStruct([shape[1], B.shape[1]], w_mu.dtype)
@@ -2635,13 +2459,13 @@ def jitc_mm_normal_p_call(
     return jitc_mm_uniform_p(
         w_mu,
         w_sigma,
-        clen,
+        conn_prob,
         B,
         seed,
         jnp.zeros(out_info.shape, out_info.dtype),
         outs=[out_info],
         weight_info=jax.ShapeDtypeStruct(w_mu.shape, w_mu.dtype),
-        clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
+        conn_prob_info=jax.ShapeDtypeStruct(conn_prob.shape, conn_prob.dtype),
         B_info=jax.ShapeDtypeStruct(B.shape, B.dtype),
         seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
         out_info=out_info,
