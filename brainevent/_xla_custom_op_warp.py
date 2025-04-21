@@ -25,9 +25,8 @@ import jax
 import numpy as np
 from jax.interpreters import mlir
 from jax.interpreters.mlir import ir
-from jaxlib.hlo_helpers import custom_call
 
-from ._compatible_import import Primitive, register_custom_call
+from ._compatible_import import Primitive, register_custom_call, custom_call
 
 __all__ = [
     'WarpKernelGenerator',
