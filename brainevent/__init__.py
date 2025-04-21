@@ -15,7 +15,6 @@
 
 __version__ = "0.0.1"
 
-from . import nn
 from ._block_csr import BlockCSR
 from ._block_ell import BlockELL
 from ._coo import COO
@@ -30,8 +29,6 @@ from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type
 
 __all__ = [
-    'nn',
-
     # events
     'EventArray',
 
