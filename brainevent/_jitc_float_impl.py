@@ -936,18 +936,73 @@ def _jitc_mv_homo_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype),
             ):
-                num_row = vector.shape[0]
-                weight0 = weight[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
+                """
+                WARP GPU kernel for sparse matrix-vector multiplication with on-the-fly matrix generation.
 
+                Implements vector-matrix product where the matrix is generated implicitly with
+                sparse random connectivity and homogeneous weight values. This kernel handles
+                the transpose=True, outdim_parallel=True case.
+
+                Each GPU thread processes one output element (column of the transposed matrix).
+                The kernel efficiently samples connected entries using a random skipping approach
+                to avoid generating the full matrix.
+
+                Parameters
+                ----------
+                weight : warp.array1d
+                    Single-element array containing the homogeneous weight value
+                clen : warp.array1d
+                    Single-element array with connection length parameter (~2/connection_probability)
+                vector : warp.array1d
+                    Input vector to be multiplied with the implicit matrix
+                seed : warp.array1d
+                    Single-element array with random seed for reproducible matrix generation
+                _ : warp.array1d
+                    Unused placeholder parameter (required for API compatibility)
+                posts : warp.array1d
+                    Output array where results are stored, shape determines output dimension
+
+                Notes
+                -----
+                The algorithm:
+                1. Each thread computes one element of the output vector
+                2. Uses thread ID to ensure parallel processing across output elements
+                3. Samples connected entries using random state initialized with seed+thread_id
+                4. Accumulates contributions from input vector elements at sampled positions
+                5. Finally scales by the weight value and stores in output
+                """
+                # Input vector dimension (number of rows in the matrix)
+                num_row = vector.shape[0]
+
+                # Extract scalar values from input arrays for more efficient access
+                weight0 = weight[0]  # Homogeneous weight for all connections
+                clen0 = clen[0]  # Connection length parameter (controls sparsity)
+                seed0 = seed[0]  # Base random seed value
+
+                # Get thread ID - each thread processes one output element
                 i_col = warp.tid()
+
+                # Initialize accumulator for dot product calculation
                 r = float(0.0)
+
+                # Initialize random state with base seed plus thread ID to ensure
+                # different but reproducible random sequences across threads
                 state = warp.rand_init(seed0 + i_col)
+
+                # Sample the first connected row using random skipping
+                # Start at a random position in [0, clen0) for variability in connection patterns
                 i_row = warp.randi(state, 0, clen0)
+
+                # Process all connected entries for this output element
                 while i_row < num_row:
+                    # Add contribution from the current connected element
                     r += vector[i_row]
+
+                    # Skip ahead to next connected row using geometric-like distribution
+                    # This creates sparse connectivity with ~1/clen0 connection probability
                     i_row += warp.randi(state, 1, clen0)
+
+                # Scale accumulated sum by weight and store in output array
                 posts[i_col] = r * weight0
 
         else:
@@ -960,18 +1015,73 @@ def _jitc_mv_homo_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype),
             ):
-                num_col = vector.shape[0]
-                weight0 = weight[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
+                """
+                WARP GPU kernel for sparse matrix-vector multiplication with on-the-fly matrix generation.
 
+                Implements matrix-vector product where the matrix is generated implicitly with
+                sparse random connectivity and homogeneous weight values. This kernel handles
+                the transpose=False, outdim_parallel=True case.
+
+                Each GPU thread processes one output element (row of the matrix). The kernel
+                efficiently samples connected entries using a random skipping approach to avoid
+                generating the full matrix.
+
+                Parameters
+                ----------
+                weight : warp.array1d
+                    Single-element array containing the homogeneous weight value for all connections
+                clen : warp.array1d
+                    Single-element array containing connection length parameter (~2/connection_probability)
+                vector : warp.array1d
+                    Input vector to be multiplied with the implicit matrix
+                seed : warp.array1d
+                    Single-element array with random seed for reproducible matrix generation
+                _ : warp.array1d
+                    Unused placeholder parameter (required for API compatibility)
+                posts : warp.array1d
+                    Output array where results are stored, shape determines output dimension
+
+                Notes
+                -----
+                The algorithm:
+                1. Each thread computes one element of the output vector (one matrix row)
+                2. Thread ID identifies which row this thread is processing
+                3. Uses random sampling with geometric-like skipping to find connected columns
+                4. Accumulates weighted values from the input vector at connected positions
+                5. Finally applies the weight and stores result in the output array
+                """
+                # Input vector dimension (number of columns in the matrix)
+                num_col = vector.shape[0]
+
+                # Extract scalar values from input arrays for more efficient access
+                weight0 = weight[0]  # Homogeneous weight for all connections
+                clen0 = clen[0]  # Connection length parameter (controls sparsity)
+                seed0 = seed[0]  # Base random seed value
+
+                # Get thread ID - each thread processes one output element (one row of the matrix)
                 i_row = warp.tid()
+
+                # Initialize accumulator for dot product calculation
                 r = float(0.0)
+
+                # Initialize random state with base seed plus thread ID to ensure
+                # different but reproducible random sequences across threads
                 state = warp.rand_init(seed0 + i_row)
+
+                # Sample the first connected column using random skipping
+                # Start at a random position in [0, clen0) for variability in connection patterns
                 i_col = warp.randu(state, 0, clen0)
+
+                # Process all connected entries for this output element (row)
                 while i_col < num_col:
+                    # Add contribution from the current connected element
                     r += vector[i_col]
+
+                    # Skip ahead to next connected column using geometric-like distribution
+                    # This creates sparse connectivity with ~1/clen0 connection probability
                     i_col += warp.randu(state, 1, clen0)
+
+                # Scale accumulated sum by weight and store in output array
                 posts[i_row] = r * weight0
     else:
 
@@ -985,18 +1095,74 @@ def _jitc_mv_homo_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype),
             ):
-                num_col = posts.shape[0]
-                weight0 = weight[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
+                """
+                WARP GPU kernel for sparse matrix-vector multiplication with on-the-fly matrix generation.
 
+                Implements vector-matrix product where the matrix is generated implicitly with
+                sparse random connectivity and homogeneous weight values. This kernel handles
+                the transpose=True, outdim_parallel=False case.
+
+                Each GPU thread processes one input element (row) and distributes its contribution
+                to all connected output elements. This approach is efficient for sparse matrices
+                as it avoids generating the full matrix.
+
+                Parameters
+                ----------
+                weight : warp.array1d
+                    Single-element array containing the homogeneous weight value for all connections
+                clen : warp.array1d
+                    Single-element array containing connection length parameter (~2/connection_probability)
+                vector : warp.array1d
+                    Input vector to be multiplied with the implicit matrix
+                seed : warp.array1d
+                    Single-element array with random seed for reproducible matrix generation
+                _ : warp.array1d
+                    Unused placeholder parameter (required for API compatibility)
+                posts : warp.array1d
+                    Output array where results are stored, shape determines output dimension
+
+                Notes
+                -----
+                The algorithm:
+                1. Each thread processes one input element (one row in the matrix)
+                2. Uses thread ID to determine which input element to process
+                3. Pre-multiplies the input value by weight for efficiency
+                4. Samples connected output positions using geometric-like distribution
+                5. Updates the corresponding output elements using atomic additions
+                6. This row-based approach efficiently handles sparse connectivity patterns
+                """
+                # Output dimension (number of columns in the matrix)
+                num_col = posts.shape[0]
+
+                # Extract scalar values from input arrays for more efficient access
+                weight0 = weight[0]  # Homogeneous weight for all connections
+                clen0 = clen[0]  # Connection length parameter (controls sparsity)
+                seed0 = seed[0]  # Base random seed value
+
+                # Get thread ID - each thread processes one input element (row)
                 i_row = warp.tid()
+
+                # Pre-multiply the input value by weight for efficiency
+                # This avoids multiplying inside the inner loop for each connection
                 v = vector[i_row] * weight0
+
+                # Initialize random state with base seed plus thread ID to ensure
+                # different but reproducible random sequences across threads
                 state = warp.rand_init(seed0 + i_row)
-                i_col = warp.randu(state, 0, clen0)
+
+                # Sample the first connected column using random skipping
+                # Start at a random position in [0, clen0) for variability in connection patterns
+                i_col = warp.randi(state, 0, clen0)
+
+                # Process all connected output positions for this input element
                 while i_col < num_col:
+                    # Atomically add contribution to the appropriate output element
+                    # Using atomic operation because multiple threads may update the same output element
                     posts[i_col] += v
-                    i_col += warp.randu(state, 1, clen0)
+
+                    # Skip ahead to next connected column using geometric-like distribution
+                    # This creates sparse connectivity with ~1/clen0 connection probability
+                    i_col += warp.randi(state, 1, clen0)
 
 
         else:
@@ -1010,18 +1176,74 @@ def _jitc_mv_homo_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype),
             ):
-                num_row = posts.shape[0]
-                weight0 = weight[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
+                """
+                WARP GPU kernel for sparse matrix-vector multiplication with on-the-fly matrix generation.
 
+                Implements matrix-vector product where the matrix is generated implicitly with
+                sparse random connectivity and homogeneous weight values. This kernel handles
+                the transpose=False, outdim_parallel=False case.
+
+                Each GPU thread processes one input element (column) and distributes its contribution
+                to all connected output elements. This approach is efficient for sparse matrices
+                as it avoids generating the full matrix.
+
+                Parameters
+                ----------
+                weight : warp.array1d
+                    Single-element array containing the homogeneous weight value for all connections
+                clen : warp.array1d
+                    Single-element array containing connection length parameter (~2/connection_probability)
+                vector : warp.array1d
+                    Input vector to be multiplied with the implicit matrix
+                seed : warp.array1d
+                    Single-element array with random seed for reproducible matrix generation
+                _ : warp.array1d
+                    Unused placeholder parameter (required for API compatibility)
+                posts : warp.array1d
+                    Output array where results are stored, shape determines output dimension
+
+                Notes
+                -----
+                The algorithm:
+                1. Each thread processes one input element (one column in the matrix)
+                2. Uses thread ID to determine which input element to process
+                3. Pre-multiplies the input value by weight for efficiency
+                4. Samples connected output positions using geometric-like distribution
+                5. Updates the corresponding output elements using atomic additions
+                6. This column-based approach efficiently handles sparse connectivity patterns
+                """
+                # Output dimension (number of rows in the matrix)
+                num_row = posts.shape[0]
+
+                # Extract scalar values from input arrays for more efficient access
+                weight0 = weight[0]  # Homogeneous weight for all connections
+                clen0 = clen[0]  # Connection length parameter (controls sparsity)
+                seed0 = seed[0]  # Base random seed value
+
+                # Get thread ID - each thread processes one input element (column)
                 i_col = warp.tid()
+
+                # Pre-multiply the input value by weight for efficiency
+                # This avoids multiplying inside the inner loop for each connection
                 v = vector[i_col] * weight0
+
+                # Initialize random state with base seed plus thread ID to ensure
+                # different but reproducible random sequences across threads
                 state = warp.rand_init(seed0 + i_col)
-                i_row = warp.randu(state, 0, clen0)
-                for i_row in range(num_row):
+
+                # Sample the first connected row using random skipping
+                # Start at a random position in [0, clen0) for variability in connection patterns
+                i_row = warp.randi(state, 0, clen0)
+
+                # Process all connected output positions for this input element
+                while i_row < num_row:
+                    # Atomically add contribution to the appropriate output element
+                    # Using atomic operation because multiple threads may update the same output element
                     posts[i_row] += v
-                    i_row += warp.randu(state, 1, clen0)
+
+                    # Skip ahead to next connected row using geometric-like distribution
+                    # This creates sparse connectivity with ~1/clen0 connection probability
+                    i_row += warp.randi(state, 1, clen0)
 
     return kernel
 
@@ -1030,7 +1252,7 @@ def _jitc_mv_homo_jvp_v(
     v_dot,
     weight,
     clen,
-    v,
+    vector,
     seed,
     _,
     *,
@@ -1056,7 +1278,7 @@ def _jitc_mv_homo_jvp_weights(
     w_dot,
     weight,
     clen,
-    v,
+    vector,
     seed,
     _,
     *,
@@ -1068,7 +1290,7 @@ def _jitc_mv_homo_jvp_weights(
     return jitc_mv_homo_p_call(
         w_dot,
         clen,
-        v,
+        vector,
         seed,
         shape=shape,
         transpose=transpose,
@@ -1080,7 +1302,7 @@ def _jitc_mv_homo_transpose_rules(
     ct,
     weight,
     clen,
-    v,
+    vector,
     seed,
     _,
     *,
@@ -1092,7 +1314,7 @@ def _jitc_mv_homo_transpose_rules(
     assert not ad.is_undefined_primal(weight)
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
-    assert ad.is_undefined_primal(v)
+    assert ad.is_undefined_primal(vector)
 
     r = jitc_mv_homo_p_call(
         weight,
@@ -1142,7 +1364,7 @@ def _jitc_mv_homo_batching(
 def jitc_mv_homo_p_call(
     weight,
     clen,
-    v,
+    vector,
     seed,
     *,
     shape: Sequence[int],
@@ -1161,13 +1383,13 @@ def jitc_mv_homo_p_call(
     return jitc_mv_homo_p(
         weight,
         clen,
-        v,
+        vector,
         seed,
         jnp.zeros(out_info.shape, out_info.dtype),
         outs=[out_info],
         weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
         clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
-        v_info=jax.ShapeDtypeStruct(v.shape, v.dtype),
+        v_info=jax.ShapeDtypeStruct(vector.shape, vector.dtype),
         seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
         out_info=out_info,
         shape=shape,
