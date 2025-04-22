@@ -1,13 +1,21 @@
-``brainstate.event`` for event-driven computation
-=================================================
+``brainevent`` module
+=====================
 
-.. currentmodule:: brainstate.event 
-.. automodule:: brainstate.event 
+.. currentmodule:: brainevent
+.. automodule:: brainevent
 
 
+Data Structures representing Events
+-----------------------------------
 
-Event-driven Data Structures
-----------------------------
+.. autosummary::
+   :toctree: generated/
+
+   EventArray
+
+
+Data Structures interoperable with ``EventArray``
+-------------------------------------------------
 
 .. autosummary::
    :toctree: generated/
@@ -16,22 +24,8 @@ Event-driven Data Structures
    CSC
 
 
-
-Event-driven Modules
---------------------
-
-
-.. autosummary::
-   :toctree: generated/
-
-
-   FixedProb
-   Linear
-
-
-
-Event-driven Operation Customization
-------------------------------------
+Operation Customization Routines
+--------------------------------
 
 
 .. autosummary::
