@@ -1,5 +1,5 @@
-Data Structures interoperable with ``EventArray``
-=================================================
+Data Structures Interoperable with Events
+=========================================
 
 .. currentmodule:: brainevent
 .. automodule:: brainevent
