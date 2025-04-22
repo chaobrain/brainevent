@@ -17,13 +17,13 @@ import time
 
 import jax
 import jax.numpy as jnp
-import scipy.io
+from scipy.io import mmread
 from scipy.sparse import csr_matrix, coo_matrix
 
 import brainevent
-import brainstate as bst
+import brainstate
 
-bst.environ.set(platform='cpu')
+brainstate.environ.set(platform='cpu')
 # brainstate.environ.set(platform='gpu')
 
 
@@ -42,7 +42,7 @@ files = [
 csr_matrices = dict()
 for filename in files:
     print(f'Loading {filename} ...')
-    mat = scipy.io.mmread(filename)
+    mat = mmread(filename)
     if isinstance(mat, coo_matrix):
         csr_matrices[filename] = mat.tocsr()
     if isinstance(mat, csr_matrix):
@@ -330,7 +330,7 @@ def compare_spmv_performance(
     indices = jnp.asarray(scipy_csr.indices)
     indptr = jnp.asarray(scipy_csr.indptr)
 
-    csr = brainevent.CSR([data, indices, indptr], shape=scipy_csr.shape)
+    csr = brainevent.CSR((data, indices, indptr), shape=scipy_csr.shape)
 
     @jax.jit
     def f_csr(v):
@@ -340,7 +340,7 @@ def compare_spmv_performance(
     def f_event_csr(v):
         return csr @ brainevent.EventArray(v)
 
-    vector = jax.block_until_ready((bst.random.rand(scipy_csr.shape[1]) < spike_prob).astype(float))
+    vector = jax.block_until_ready((brainstate.random.rand(scipy_csr.shape[1]) < spike_prob).astype(float))
 
     r1 = jax.block_until_ready(f_csr(vector))
     r2 = jax.block_until_ready(f_event_csr(vector))
@@ -369,7 +369,7 @@ def compare_spmv_performance(
     def f_event_transpose(v):
         return brainevent.EventArray(v) @ csr
 
-    vector = jax.block_until_ready((bst.random.rand(scipy_csr.shape[1]) < spike_prob).astype(float))
+    vector = jax.block_until_ready((brainstate.random.rand(scipy_csr.shape[1]) < spike_prob).astype(float))
 
     r1 = jax.block_until_ready(f_csr_transpose(vector))
     r2 = jax.block_until_ready(f_event_transpose(vector))
@@ -401,7 +401,7 @@ def compare_spmm_performance(
     indices = jnp.asarray(scipy_csr.indices)
     indptr = jnp.asarray(scipy_csr.indptr)
 
-    csr = brainevent.CSR([data, indices, indptr], shape=scipy_csr.shape)
+    csr = brainevent.CSR((data, indices, indptr), shape=scipy_csr.shape)
 
     @jax.jit
     def f_csr(v):
@@ -411,7 +411,7 @@ def compare_spmm_performance(
     def f_event_csr(v):
         return csr @ brainevent.EventArray(v)
 
-    vector = jax.block_until_ready((bst.random.rand(scipy_csr.shape[1], batch_size) < spike_prob).astype(float))
+    vector = jax.block_until_ready((brainstate.random.rand(scipy_csr.shape[1], batch_size) < spike_prob).astype(float))
 
     r1 = jax.block_until_ready(f_csr(vector))
     r2 = jax.block_until_ready(f_event_csr(vector))
@@ -440,7 +440,7 @@ def compare_spmm_performance(
     def f_event_transpose(v):
         return brainevent.EventArray(v) @ csr
 
-    vector = jax.block_until_ready((bst.random.rand(batch_size, scipy_csr.shape[1]) < spike_prob).astype(float))
+    vector = jax.block_until_ready((brainstate.random.rand(batch_size, scipy_csr.shape[1]) < spike_prob).astype(float))
 
     r1 = jax.block_until_ready(f_csr_transpose(vector))
     r2 = jax.block_until_ready(f_event_transpose(vector))
@@ -465,7 +465,7 @@ def compare_spmm_performance(
 for filename in files:
     compare_spmv_performance(
         csr_matrices[filename],
-        n_run=3 if bst.environ.get_platform() == 'cpu' else 30,
+        n_run=3 if brainstate.environ.get_platform() == 'cpu' else 30,
         spike_prob=0.01
     )
 

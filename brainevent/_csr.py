@@ -84,7 +84,7 @@ class CSR(u.sparse.SparseMatrix):
 
     def __init__(
         self,
-        args: Tuple[Data, Index, Index],
+        args: Tuple[Data, Index, Indptr],
         *,
         shape: MatrixShape
     ):
@@ -551,7 +551,7 @@ class CSC(u.sparse.SparseMatrix):
 
     def __init__(
         self,
-        args: Tuple[Data, Index, Index],
+        args: Tuple[Data, Index, Indptr],
         *,
         shape: MatrixShape
     ):
