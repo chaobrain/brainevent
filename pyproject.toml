@@ -5,8 +5,15 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 exclude = [
-    "docs*", "tests*", "examples*", "experiments*", "benchmark*", "build*", "dist*",
-    "brainevent.egg-info*", "brainevent/__pycache__*",
+    "docs*",
+    "tests*",
+    "examples*",
+    "experiments*",
+    "benchmark*",
+    "build*",
+    "dist*",
+    "brainevent.egg-info*",
+    "brainevent/__pycache__*",
     "brainevent/__init__.py"
 ]
 
@@ -53,8 +60,7 @@ dependencies = [
     'jax',
     'jaxlib',
     'numpy',
-    'brainunit>=0.0.4',
-    'brainstate',
+    'brainunit>=0.0.8',
 ]
 
 dynamic = ['version']

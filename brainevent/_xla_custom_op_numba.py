@@ -24,9 +24,8 @@ from contextlib import contextmanager
 from typing import Callable, Dict, Union
 
 from jax.interpreters import mlir
-from jaxlib.hlo_helpers import custom_call
 
-from ._compatible_import import register_custom_call, Primitive
+from ._compatible_import import register_custom_call, Primitive, custom_call
 
 __all__ = [
     'NumbaKernelGenerator',
