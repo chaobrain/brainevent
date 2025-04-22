@@ -87,7 +87,7 @@ class EventArray(object):
         return self._value
 
     @property
-    def data(self):
+    def data(self) -> Union[jax.Array, u.Quantity]:
         """
         Get the array value.
 
@@ -97,7 +97,8 @@ class EventArray(object):
         return self._value
 
     @property
-    def value(self):
+    def value(self) -> Union[jax.Array, u.Quantity]:
+        # return the value
         """
         Return the value of the array.
 
@@ -1023,32 +1024,7 @@ class EventArray(object):
         return self.value.at
 
     def block_until_ready(self):
-        """
-        Block until the array is ready.
-
-        Returns:
-            The array after it is ready.
-        """
-        return self.value.block_until_ready()
-
-    def device(self):
-        """
-        Get the device on which the array is located.
-
-        Returns:
-            The device on which the array is located.
-        """
-        return self.value.device()
-
-    @property
-    def device_buffer(self):
-        """
-        Get the device buffer of the array.
-
-        Returns:
-            The device buffer of the array.
-        """
-        return self.value.device_buffer
+        return jax.block_until_ready(self.value)
 
     # ----------------------- #
     #      NumPy methods      #
@@ -1105,26 +1081,26 @@ class EventArray(object):
     def choose(self, choices, mode='raise'):
         """
         Use an index array to construct a new array from a set of choices.
-    
+
         This method uses the index array (self) to select elements from the choices array.
-    
+
         Parameters
         ----------
         choices : sequence of arrays
             The arrays from which to choose. Each array in the sequence must be of the same shape as self,
             or broadcastable to that shape.
-    
+
         mode : {'raise', 'wrap', 'clip'}, optional
             Specifies how indices outside the valid range should be handled:
             - 'raise' : raise an error (default)
             - 'wrap' : wrap around
             - 'clip' : clip to the range
-    
+
         Returns
         -------
         ndarray
             The merged result, with elements chosen from `choices` based on the index array.
-    
+
         Raises
         ------
         ValueError
@@ -1135,11 +1111,11 @@ class EventArray(object):
     def clip(self, min=None, max=None, out=None):
         """
         Return an array with its values clipped to be within the specified range [min, max].
-    
+
         This method limits the values in the array to be within the given range. Values smaller
         than the minimum are set to the minimum, and values larger than the maximum are set to
         the maximum.
-    
+
         Parameters
         ----------
         min : scalar or array_like, optional
@@ -1151,13 +1127,13 @@ class EventArray(object):
         out : ndarray, optional
             The results will be placed in this array. It may be the input array for in-place clipping.
             Out must be of the right shape to hold the output. Its type is preserved.
-    
+
         Returns
         -------
         ndarray
             An array with the elements of self, but where values < min are replaced with min,
             and those > max with max.
-    
+
         Note
         ----
         At least one of max or min must be given.
@@ -1201,10 +1177,10 @@ class EventArray(object):
     def conj(self):
         """
         Compute the complex conjugate of all elements in the array.
-    
+
         This method returns a new array with the complex conjugate of each element
         in the original array. For real numbers, this operation has no effect.
-    
+
         Returns
         -------
         ndarray
@@ -1215,11 +1191,11 @@ class EventArray(object):
     def conjugate(self):
         """
         Compute the complex conjugate of all elements in the array, element-wise.
-    
+
         This method returns a new array with the complex conjugate of each element
         in the original array. For real numbers, this operation has no effect.
         This method is identical to the `conj` method.
-    
+
         Returns
         -------
         ndarray
@@ -1230,9 +1206,9 @@ class EventArray(object):
     def copy(self):
         """
         Return a copy of the array.
-    
+
         This method creates and returns a new array with a copy of the data from the original array.
-    
+
         Returns:
             ndarray: A new array object with a copy of the data from the original array.
         """
@@ -1241,14 +1217,14 @@ class EventArray(object):
     def cumprod(self, axis=None, dtype=None):
         """
         Return the cumulative product of the elements along the given axis.
-    
+
         Parameters:
             axis (int, optional): Axis along which the cumulative product is computed.
                 If None (default), the cumulative product of the flattened array is computed.
             dtype (data-type, optional): Type of the returned array and of the accumulator
                 in which the elements are multiplied. If dtype is not specified, it defaults
                 to the dtype of the input array.
-    
+
         Returns:
             ndarray: An array of the same shape as the input array, containing the cumulative
             product of the elements along the specified axis.
@@ -1258,14 +1234,14 @@ class EventArray(object):
     def cumsum(self, axis=None, dtype=None):
         """
         Return the cumulative sum of the elements along the given axis.
-    
+
         Parameters:
             axis (int, optional): Axis along which the cumulative sum is computed.
                 If None (default), the cumulative sum of the flattened array is computed.
             dtype (data-type, optional): Type of the returned array and of the accumulator
                 in which the elements are summed. If dtype is not specified, it defaults
                 to the dtype of the input array.
-    
+
         Returns:
             ndarray: An array of the same shape as the input array, containing the cumulative
             sum of the elements along the specified axis.
@@ -1275,7 +1251,7 @@ class EventArray(object):
     def diagonal(self, offset=0, axis1=0, axis2=1):
         """
         Return specified diagonals of the array.
-    
+
         Parameters:
             offset (int, optional): Offset of the diagonal from the main diagonal.
                 Can be positive or negative. Defaults to 0 (main diagonal).
@@ -1283,7 +1259,7 @@ class EventArray(object):
                 from which the diagonals should be taken. Defaults to 0.
             axis2 (int, optional): Axis to be used as the second axis of the 2-D sub-arrays
                 from which the diagonals should be taken. Defaults to 1.
-    
+
         Returns:
             ndarray: An array containing the diagonal elements. If the dimension of the input
             array is greater than 2, then the result is a 1-D array if offset is specified,
@@ -1349,10 +1325,10 @@ class EventArray(object):
 
     def item(self, *args):
         """Copy an element of an array to a standard Python scalar and return it.
-    
+
         Args:
             *args: Index or indices of the element to be extracted. If not provided, the first element is returned.
-    
+
         Returns:
             scalar: The extracted element as a standard Python scalar.
         """
@@ -1360,13 +1336,13 @@ class EventArray(object):
 
     def max(self, axis=None, keepdims=False, *args, **kwargs):
         """Return the maximum value along a given axis.
-    
+
         Args:
             axis (int or tuple of ints, optional): Axis or axes along which to operate. By default, flattened input is used.
             keepdims (bool, optional): If True, the axes which are reduced are left in the result as dimensions with size one.
             *args: Additional positional arguments to be passed to the underlying max function.
             **kwargs: Additional keyword arguments to be passed to the underlying max function.
-    
+
         Returns:
             ndarray or scalar: Maximum of array elements along the given axis.
         """
@@ -1375,14 +1351,14 @@ class EventArray(object):
 
     def mean(self, axis=None, dtype=None, keepdims=False, *args, **kwargs):
         """Calculate the arithmetic mean along the specified axis.
-    
+
         Args:
             axis (int or tuple of ints, optional): Axis or axes along which the mean is computed. The default is to compute the mean of the flattened array.
             dtype (data-type, optional): Type to use in computing the mean.
             keepdims (bool, optional): If True, the axes which are reduced are left in the result as dimensions with size one.
             *args: Additional positional arguments to be passed to the underlying mean function.
             **kwargs: Additional keyword arguments to be passed to the underlying mean function.
-    
+
         Returns:
             ndarray or scalar: Array containing the mean values.
         """
@@ -1391,13 +1367,13 @@ class EventArray(object):
 
     def min(self, axis=None, keepdims=False, *args, **kwargs):
         """Return the minimum value along a given axis.
-    
+
         Args:
             axis (int or tuple of ints, optional): Axis or axes along which to operate. By default, flattened input is used.
             keepdims (bool, optional): If True, the axes which are reduced are left in the result as dimensions with size one.
             *args: Additional positional arguments to be passed to the underlying min function.
             **kwargs: Additional keyword arguments to be passed to the underlying min function.
-    
+
         Returns:
             ndarray or scalar: Minimum of array elements along the given axis.
         """
@@ -1406,7 +1382,7 @@ class EventArray(object):
 
     def nonzero(self):
         """Return the indices of the elements that are non-zero.
-    
+
         Returns:
             tuple of arrays: Indices of elements that are non-zero.
         """
@@ -1414,14 +1390,14 @@ class EventArray(object):
 
     def prod(self, axis=None, dtype=None, keepdims=False, initial=1, where=True):
         """Return the product of the array elements over the given axis.
-    
+
         Args:
             axis (int or tuple of ints, optional): Axis or axes along which a product is performed.
             dtype (data-type, optional): The data-type of the returned array and of the accumulator in which the elements are multiplied.
             keepdims (bool, optional): If True, the axes which are reduced are left in the result as dimensions with size one.
             initial (scalar, optional): The starting value for the product.
             where (array_like of bool, optional): Elements to include in the product.
-    
+
         Returns:
             ndarray or scalar: Product of array elements over the given axis.
         """
@@ -1430,11 +1406,11 @@ class EventArray(object):
 
     def ptp(self, axis=None, keepdims=False):
         """Range of values (maximum - minimum) along an axis.
-    
+
         Args:
             axis (int or tuple of ints, optional): Axis along which to find the peak-to-peak value. By default, flatten the array.
             keepdims (bool, optional): If True, the axes which are reduced are left in the result as dimensions with size one.
-    
+
         Returns:
             ndarray or scalar: Peak-to-peak (maximum - minimum) value along the given axis.
         """
@@ -1443,7 +1419,7 @@ class EventArray(object):
 
     def put(self, indices, values):
         """Replaces specified elements of an array with given values.
-    
+
         Args:
             indices (array_like): Target indices, interpreted as integers.
             values (array_like): Values to place in the array at target indices.
@@ -1452,10 +1428,10 @@ class EventArray(object):
 
     def ravel(self, order=None):
         """Return a flattened array.
-    
+
         Args:
             order (str, optional): The elements of 'a' are read using this index order. 'C' means to index the elements in C-like order, 'F' means to index the elements in Fortran-like order, 'A' means to read the elements in Fortran-like order if 'a' is Fortran contiguous in memory, C-like order otherwise. 'K' means to read the elements in the order they occur in memory.
-    
+
         Returns:
             ndarray: A 1-D array containing the same elements as the input array.
         """
@@ -1463,11 +1439,11 @@ class EventArray(object):
 
     def repeat(self, repeats, axis=None):
         """Repeat elements of an array.
-    
+
         Args:
             repeats (int or array of ints): The number of repetitions for each element.
             axis (int, optional): The axis along which to repeat values.
-    
+
         Returns:
             ndarray: Output array which has the same shape as input array, except along the given axis.
         """
@@ -1475,11 +1451,11 @@ class EventArray(object):
 
     def reshape(self, *shape, order='C'):
         """Returns an array containing the same data with a new shape.
-    
+
         Args:
             *shape (int or tuple of ints): The new shape should be compatible with the original shape.
             order (str, optional): Read the elements using this index order. 'C' means to read the elements in C-like order, 'F' means to read the elements in Fortran-like order, 'A' means to read the elements in Fortran-like order if a is Fortran contiguous in memory, C-like order otherwise.
-    
+
         Returns:
             ndarray: Array with the same data as the input array, but with a new shape.
         """
@@ -1487,7 +1463,7 @@ class EventArray(object):
 
     def resize(self, new_shape):
         """Change shape and size of array in-place.
-    
+
         Args:
             new_shape (int or tuple of ints): Shape of resized array.
         """
@@ -1495,11 +1471,11 @@ class EventArray(object):
 
     def round(self, decimals=0):
         """Return the array with each element rounded to the given number of decimals.
-    
+
         Args:
             decimals (int, optional): Number of decimal places to round to (default: 0).
                 If decimals is negative, it specifies the number of positions to the left of the decimal point.
-    
+
         Returns:
             ndarray: An array with the same shape as the input array, but with the elements rounded.
         """
@@ -1562,16 +1538,16 @@ class EventArray(object):
     def squeeze(self, axis=None):
         """
         Remove axes of length one from the array.
-    
+
         This function removes single-dimensional entries from the shape of the array.
-    
+
         Parameters
         ----------
         axis : int or tuple of ints, optional
             Selects a subset of the single-dimensional entries in the shape.
             If an axis is selected with shape entry greater than one, an error is raised.
             If None (default), all single-dimensional entries will be removed from the shape.
-    
+
         Returns
         -------
         ndarray
@@ -1879,7 +1855,7 @@ class EventArray(object):
         beta: float = 1.0,
         alpha: float = 1.0,
         out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         r"""Performs the outer-product of vectors ``vec1`` and ``vec2`` and adds it to the matrix ``input``.
 
         Optional values beta and alpha are scaling factors on the outer product
@@ -1929,7 +1905,7 @@ class EventArray(object):
 
     def abs(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         r = u.math.abs(self.value)
         if out is None:
             return r
@@ -1991,7 +1967,7 @@ class EventArray(object):
 
     def sin(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         r = u.math.sin(self.value)
         if out is None:
             return r
@@ -2009,7 +1985,7 @@ class EventArray(object):
 
     def cos(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         r = u.math.cos(self.value)
         if out is None:
             return r
@@ -2023,7 +1999,7 @@ class EventArray(object):
 
     def tan(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         r = u.math.tan(self.value)
         if out is None:
             return r
@@ -2037,7 +2013,7 @@ class EventArray(object):
 
     def sinh(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         r = u.math.sinh(self.value)
         if out is None:
             return r
@@ -2051,7 +2027,7 @@ class EventArray(object):
 
     def cosh(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         r = u.math.cosh(self.value)
         if out is None:
             return r
@@ -2065,7 +2041,7 @@ class EventArray(object):
 
     def tanh(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         r = u.math.tanh(self.value)
         if out is None:
             return r
@@ -2079,7 +2055,7 @@ class EventArray(object):
 
     def arcsin(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         r = u.math.arcsin(self.value)
         if out is None:
             return r
@@ -2093,7 +2069,7 @@ class EventArray(object):
 
     def arccos(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         r = u.math.arccos(self.value)
         if out is None:
             return r
@@ -2107,7 +2083,7 @@ class EventArray(object):
 
     def arctan(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         r = u.math.arctan(self.value)
         if out is None:
             return r
@@ -2121,7 +2097,7 @@ class EventArray(object):
         max_value: Optional[Union['EventArray', ArrayLike]] = None,
         *,
         out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> Union[u.Quantity, jax.Array, None]:
         """
         return the value between min_value and max_value,
         if min_value is None, then no lower bound,
@@ -2174,7 +2150,7 @@ class EventArray(object):
         bias: bool = False,
         fweights: Union['EventArray', ArrayLike] = None,
         aweights: Union['EventArray', ArrayLike] = None
-    ) -> 'EventArray':
+    ) -> Union[jax.Array, u.Quantity]:
         y = _as_array(y)
         fweights = _as_array(fweights)
         aweights = _as_array(aweights)

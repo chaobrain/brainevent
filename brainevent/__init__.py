@@ -45,7 +45,7 @@ __all__ = [
 
     # kernels
     'XLACustomKernel', 'defjvp',
-    'NumbaKernelGenerator', 'set_numba_environ',
+    'NumbaKernelGenerator', 'numba_environ_context',
     'WarpKernelGenerator',
     'PallasKernelGenerator',
     'dtype_to_warp_type',

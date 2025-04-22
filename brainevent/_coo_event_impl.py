@@ -92,6 +92,7 @@ def event_coomv_cpu_kernel_generator(
                 for i in numba.prange(row.shape[0]):
                     if v[row[i]]:
                         posts[col[i]] += w
+
         case (True, 1, _, True):
             # float_as_event
             def mv(weights, row, col, v, _, posts):
@@ -99,6 +100,7 @@ def event_coomv_cpu_kernel_generator(
                 for i in numba.prange(row.shape[0]):
                     if v[row[i]] != 0.:
                         posts[col[i]] += w
+
         case (True, 1, _, False):
             # other
             def mv(weights, row, col, v, _, posts):
@@ -114,12 +116,14 @@ def event_coomv_cpu_kernel_generator(
                 for i in numba.prange(row.shape[0]):
                     if v[row[i]]:
                         posts[col[i]] += weights[i]
+
         case (True, _, _, True):
             # float_as_event
             def mv(weights, row, col, v, _, posts):
                 for i in numba.prange(row.shape[0]):
                     if v[row[i]] != 0.:
                         posts[col[i]] += weights[i]
+
         case (True, _, _, False):
             # other
             def mv(weights, row, col, v, _, posts):
@@ -135,6 +139,7 @@ def event_coomv_cpu_kernel_generator(
                 for i in numba.prange(row.shape[0]):
                     if v[col[i]]:
                         posts[row[i]] += w
+
         case (False, 1, _, True):
             # float_as_event
             def mv(weights, row, col, v, _, posts):
@@ -142,6 +147,7 @@ def event_coomv_cpu_kernel_generator(
                 for i in numba.prange(row.shape[0]):
                     if v[col[i]] != 0.:
                         posts[row[i]] += w
+
         case (False, 1, _, False):
             # other
             def mv(weights, row, col, v, _, posts):
@@ -157,12 +163,14 @@ def event_coomv_cpu_kernel_generator(
                 for i in numba.prange(row.shape[0]):
                     if v[col[i]]:
                         posts[row[i]] += weights[i]
+
         case (False, _, _, True):
             # float_as_event
             def mv(weights, row, col, v, _, posts):
                 for i in numba.prange(row.shape[0]):
                     if v[col[i]] != 0.:
                         posts[row[i]] += weights[i]
+
         case (False, _, _, False):
             # other
             def mv(weights, row, col, v, _, posts):
@@ -209,6 +217,7 @@ def event_coomv_gpu_kernel_generator(
                 w = weights[0]
                 if v[row[i]]:
                     posts[col[i]] += w
+
         case (True, 1, _, True):
             # float_as_event
             def mv(
@@ -223,6 +232,7 @@ def event_coomv_gpu_kernel_generator(
                 w = weights[0]
                 if v[row[i]] != 0.:
                     posts[col[i]] += w
+
         case (True, 1, _, False):
             # other
             def mv(
@@ -252,6 +262,7 @@ def event_coomv_gpu_kernel_generator(
                 i = warp.tid()
                 if v[row[i]]:
                     posts[col[i]] += weights[i]
+
         case (True, _, _, True):
             # float_as_event
             def mv(
@@ -265,6 +276,7 @@ def event_coomv_gpu_kernel_generator(
                 i = warp.tid()
                 if v[row[i]] != 0.:
                     posts[col[i]] += weights[i]
+
         case (True, _, _, False):
             # other
             def mv(
@@ -294,6 +306,7 @@ def event_coomv_gpu_kernel_generator(
                 w = weights[0]
                 if v[col[i]]:
                     posts[row[i]] += w
+
         case (False, 1, _, True):
             # float_as_event
             def mv(
@@ -308,6 +321,7 @@ def event_coomv_gpu_kernel_generator(
                 w = weights[0]
                 if v[col[i]] != 0.:
                     posts[row[i]] += w
+
         case (False, 1, _, False):
             # other
             def mv(
@@ -337,6 +351,7 @@ def event_coomv_gpu_kernel_generator(
                 i = warp.tid()
                 if v[col[i]]:
                     posts[row[i]] += weights[i]
+
         case (False, _, _, True):
             # float_as_event
             def mv(
@@ -350,6 +365,7 @@ def event_coomv_gpu_kernel_generator(
                 i = warp.tid()
                 if v[col[i]] != 0.:
                     posts[row[i]] += weights[i]
+
         case (False, _, _, False):
             # other
             def mv(
@@ -363,6 +379,7 @@ def event_coomv_gpu_kernel_generator(
                 i = warp.tid()
                 if v[col[i]] != 0.:
                     posts[row[i]] += weights[i] * v[col[i]]
+
     mv = warp.kernel(mv)
     return mv
 
@@ -509,6 +526,7 @@ def event_coomv_p_call(
     shape: Sequence[int],
     transpose: bool,
     float_as_event: bool,
+    **kwargs
 ):
     """
     Perform a custom sparse matrix-vector multiplication operation.
@@ -579,9 +597,7 @@ event_coomv_p = XLACustomKernel(
     cpu_kernel=NumbaKernelGenerator(event_coomv_cpu_kernel_generator, input_output_aliases={4: 0}),
     gpu_kernel=WarpKernelGenerator(
         event_coomv_gpu_kernel_generator,
-        dim=lambda row_info, **kwargs: (
-            row_info.shape[0]
-        ),
+        dim=lambda row_info, **kwargs: row_info.shape[0],
         input_output_aliases={4: 0}
     ),
 )
@@ -738,6 +754,7 @@ def event_coomm_gpu_kernel_generator(
                 w = weights[0]
                 if B[row[i], j]:
                     posts[col[i], :] += w
+
         case (True, 1, _, True):
             # float_as_event
             def mm(
@@ -752,6 +769,7 @@ def event_coomm_gpu_kernel_generator(
                 w = weights[0]
                 if B[row[i], j] != 0.:
                     posts[col[i], :] += w
+
         case (True, 1, _, False):
             # other
             def mm(
@@ -781,6 +799,7 @@ def event_coomm_gpu_kernel_generator(
                 i, j = warp.tid()
                 if B[row[i], j]:
                     posts[col[i], :] += weights[i]
+
         case (True, _, _, True):
             # float_as_event
             def mm(
@@ -794,6 +813,7 @@ def event_coomm_gpu_kernel_generator(
                 i, j = warp.tid()
                 if B[row[i], j] != 0.:
                     posts[col[i], :] += weights[i]
+
         case (True, _, _, False):
             # other
             def mm(
@@ -823,6 +843,7 @@ def event_coomm_gpu_kernel_generator(
                 w = weights[0]
                 if B[col[i], j]:
                     posts[row[i], :] += w
+
         case (False, 1, _, True):
             # float_as_event
             def mm(
@@ -837,6 +858,7 @@ def event_coomm_gpu_kernel_generator(
                 w = weights[0]
                 if B[col[i], j] != 0.:
                     posts[row[i], :] += w
+
         case (False, 1, _, False):
             # other
             def mm(
@@ -866,6 +888,7 @@ def event_coomm_gpu_kernel_generator(
                 i, j = warp.tid()
                 if B[col[i], j]:
                     posts[row[i], :] += weights[i]
+
         case (False, _, _, True):
             # float_as_event
             def mm(
@@ -879,6 +902,7 @@ def event_coomm_gpu_kernel_generator(
                 i, j = warp.tid()
                 if B[col[i], j] != 0.:
                     posts[row[i], :] += weights[i]
+
         case (False, _, _, False):
             # other
             def mm(
@@ -1035,6 +1059,7 @@ def event_coomm_p_call(
     shape: Sequence[int],
     transpose: bool,
     float_as_event: bool,
+    **kwargs
 ):
     """
     Perform a custom sparse matrix-matrix multiplication operation.
@@ -1096,15 +1121,10 @@ def event_coomm_p_call(
 
 event_coomm_p = XLACustomKernel(
     'event_coomm',
-    cpu_kernel=NumbaKernelGenerator(
-        event_coomm_cpu_kernel_generator,
-        input_output_aliases={4: 0}
-    ),
+    cpu_kernel=NumbaKernelGenerator(event_coomm_cpu_kernel_generator, input_output_aliases={4: 0}),
     gpu_kernel=WarpKernelGenerator(
         event_coomm_gpu_kernel_generator,
-        dim=lambda matrix_info, row_info, transpose, **kwargs: (
-            row_info.shape[0], matrix_info.shape[1]
-        ),
+        dim=lambda matrix_info, row_info, transpose, **kwargs: (row_info.shape[0], matrix_info.shape[1]),
         input_output_aliases={4: 0}
     )
 )

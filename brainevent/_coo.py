@@ -46,7 +46,7 @@ class COO(u.sparse.SparseMatrix):
     elements are stored as triplets (row, column, value).
 
     Attributes
-    -----------
+    ----------
     data : jax.Array, Quantity
         Array of the non-zero values in the matrix.
     row : jax.Array
@@ -119,7 +119,7 @@ class COO(u.sparse.SparseMatrix):
         Initialize a COO matrix.
 
         Parameters
-        -----------
+        ----------
         args : Tuple[jax.Array | u.Quantity, jax.Array, jax.Array]
             Tuple containing (data, row indices, column indices).
         shape : Shape
@@ -148,7 +148,7 @@ class COO(u.sparse.SparseMatrix):
         This method converts a dense matrix to a sparse COO representation.
 
         Parameters
-        -----------
+        ----------
         mat : jax.Array
             The dense matrix to be converted to COO format.
         nse : int | None, optional
@@ -196,7 +196,7 @@ class COO(u.sparse.SparseMatrix):
         as the current matrix, but with new data values.
 
         Parameters
-        -----------
+        ----------
         data : jax.Array | u.Quantity
             The new data to be used in the COO matrix. Must have the same shape,
             dtype, and unit as the current matrix's data.
@@ -246,7 +246,7 @@ class COO(u.sparse.SparseMatrix):
         Transpose the COO matrix.
 
         Parameters
-        -----------
+        ----------
         axes : Tuple[int, ...] | None, optional
             The axes to transpose over. Currently not implemented and will
             raise a NotImplementedError if provided.
@@ -298,7 +298,7 @@ class COO(u.sparse.SparseMatrix):
         This class method is used by JAX to deserialize the COO matrix object.
 
         Parameters
-        -----------
+        ----------
         aux_data : dict
             Auxiliary data containing shape, sorting information, and row and column indices.
         children : tuple
@@ -453,7 +453,7 @@ class COO(u.sparse.SparseMatrix):
         multiplication operator.
 
         Parameters
-        -----------
+        ----------
         other : jax.Array | u.Quantity
             The object to be multiplied with the COO matrix.
 
@@ -472,7 +472,7 @@ class COO(u.sparse.SparseMatrix):
         multiplication operator.
 
         Parameters
-        -----------
+        ----------
         other : jax.Array | u.Quantity
             The object to be multiplied with the COO matrix.
 
@@ -491,7 +491,7 @@ class COO(u.sparse.SparseMatrix):
         division operator.
 
         Parameters
-        -----------
+        ----------
         other : jax.Array | u.Quantity
             The object to divide the COO matrix by.
 
@@ -510,7 +510,7 @@ class COO(u.sparse.SparseMatrix):
         division operator.
 
         Parameters
-        -----------
+        ----------
         other : jax.Array | u.Quantity
             The object to divide the COO matrix by.
 
@@ -528,7 +528,7 @@ class COO(u.sparse.SparseMatrix):
         This method is an alias for __div__.
 
         Parameters
-        -----------
+        ----------
         other : jax.Array | u.Quantity
             The object to divide the COO matrix by.
 
@@ -546,7 +546,7 @@ class COO(u.sparse.SparseMatrix):
         This method is an alias for __rdiv__.
 
         Parameters
-        -----------
+        ----------
         other : jax.Array | u.Quantity
             The object to divide the COO matrix by.
 
@@ -565,7 +565,7 @@ class COO(u.sparse.SparseMatrix):
         addition operator.
 
         Parameters
-        -----------
+        ----------
         other : jax.Array | u.Quantity
             The object to be added to the COO matrix.
 
@@ -584,7 +584,7 @@ class COO(u.sparse.SparseMatrix):
         addition operator.
 
         Parameters
-        -----------
+        ----------
         other : jax.Array | u.Quantity
             The object to be added to the COO matrix.
 
@@ -603,7 +603,7 @@ class COO(u.sparse.SparseMatrix):
         subtraction operator.
 
         Parameters
-        -----------
+        ----------
         other : jax.Array | u.Quantity
             The object to be subtracted from the COO matrix.
 
@@ -622,7 +622,7 @@ class COO(u.sparse.SparseMatrix):
         subtraction operator.
 
         Parameters
-        -----------
+        ----------
         other : jax.Array | u.Quantity
             The object to subtract the COO matrix from.
 
@@ -641,7 +641,7 @@ class COO(u.sparse.SparseMatrix):
         modulo operator.
 
         Parameters
-        -----------
+        ----------
         other : jax.Array | u.Quantity
             The object to perform the modulo operation with the COO matrix.
 
@@ -660,7 +660,7 @@ class COO(u.sparse.SparseMatrix):
         modulo operator.
 
         Parameters
-        -----------
+        ----------
         other : jax.Array | u.Quantity
             The object to perform the modulo operation with the COO matrix.
 
@@ -671,7 +671,7 @@ class COO(u.sparse.SparseMatrix):
         """
         return self._binary_rop(other, operator.mod)
 
-    def __matmul__(self, other: Data) -> jax.Array | u.Quantity:
+    def __matmul__(self, other: Data) -> Data:
         """
         Perform matrix multiplication (coo @ other).
 
@@ -679,7 +679,7 @@ class COO(u.sparse.SparseMatrix):
         matrix multiplication operator.
 
         Parameters
-        -----------
+        ----------
         other : jax.typing.ArrayLike
             The object to be multiplied with the COO matrix.
 
@@ -697,6 +697,7 @@ class COO(u.sparse.SparseMatrix):
         if isinstance(other, JAXSparse):
             # Raise an error if attempting matrix multiplication between two sparse objects
             raise NotImplementedError("matmul between two sparse objects.")
+
         # Get the data of the COO matrix
         data = self.data
 
@@ -751,7 +752,7 @@ class COO(u.sparse.SparseMatrix):
                 # Raise an error if the shape of the other object is unsupported
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
-    def __rmatmul__(self, other: Data) -> jax.Array | u.Quantity:
+    def __rmatmul__(self, other: Data) -> Data:
         """
         Perform right matrix multiplication (other @ coo).
 
@@ -759,7 +760,7 @@ class COO(u.sparse.SparseMatrix):
         matrix multiplication operator.
 
         Parameters
-        -----------
+        ----------
         other : jax.typing.ArrayLike
             The object to be multiplied with the COO matrix.
 

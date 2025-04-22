@@ -13,8 +13,10 @@
 # limitations under the License.
 # ==============================================================================
 
-import time
+
 import sys
+import time
+
 sys.path.append('..')
 
 import brainstate
@@ -22,7 +24,7 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
-from jax.experimental.sparse import CSR
+from jax.experimental.sparse import COO
 from scipy.io import mmread
 from scipy.sparse import csr_matrix, coo_matrix
 
@@ -43,14 +45,14 @@ files = [
     'matrices/suitesparse/Williams/pdb1HYS/pdb1HYS.mtx',
 ]
 
-csr_matrices = dict()
+coo_matrices = dict()
 for filename in files:
     print(f'Loading {filename} ...')
     mat = mmread(filename)
     if isinstance(mat, coo_matrix):
-        csr_matrices[filename] = mat.tocsr()
+        coo_matrices[filename] = mat
     if isinstance(mat, csr_matrix):
-        csr_matrices[filename] = mat
+        coo_matrices[filename] = mat.tocoo()
 print()
 
 
@@ -68,23 +70,24 @@ def visualization(results, title: str):
     plt.show()
 
 
-def compare_spmv_performance(scipy_csr, n_run: int = 10):
-    data = jnp.asarray(scipy_csr.data)
-    indices = jnp.asarray(scipy_csr.indices)
-    indptr = jnp.asarray(scipy_csr.indptr)
+def _compare_spmv_performance(filename, n_run: int = 10):
+    scipy_coo = coo_matrices[filename]
+    data = jnp.asarray(scipy_coo.data)
+    row = jnp.asarray(scipy_coo.row)
+    col = jnp.asarray(scipy_coo.col)
 
-    jax_csr = CSR((data, indices, indptr), shape=scipy_csr.shape)
-    brainevent_csr = brainevent.CSR((data, indices, indptr), shape=scipy_csr.shape)
+    jax_coo = COO((data, row, col), shape=scipy_coo.shape)
+    brainevent_coo = brainevent.COO((data, row, col), shape=scipy_coo.shape)
 
     @jax.jit
     def f_jax(v):
-        return jax_csr @ v
+        return jax_coo @ v
 
     @jax.jit
     def f_brainevent(v):
-        return brainevent_csr @ v
+        return brainevent_coo @ v
 
-    vector = jax.block_until_ready(jnp.ones(scipy_csr.shape[1]))
+    vector = jax.block_until_ready(jnp.ones(scipy_coo.shape[1]))
 
     r1 = jax.block_until_ready(f_jax(vector))
     r2 = jax.block_until_ready(f_brainevent(vector))
@@ -94,26 +97,26 @@ def compare_spmv_performance(scipy_csr, n_run: int = 10):
         jax.block_until_ready(f_jax(vector))
     t1 = time.time()
     t_jax_csr_vector = (t1 - t0) / n_run
-    print(f"{filename}, JAX  CSR @ Vector:       {t_jax_csr_vector:.6f} seconds")
+    print(f"{filename}, JAX  COO @ Vector:       {t_jax_csr_vector:.6f} seconds")
 
     t0 = time.time()
     for _ in range(n_run):
         jax.block_until_ready(f_brainevent(vector))
     t1 = time.time()
     t_be_csr_vector = (t1 - t0) / n_run
-    print(f"{filename}, BrainEvent CSR @ Vector: {t_be_csr_vector:.6f} seconds")
+    print(f"{filename}, BrainEvent COO @ Vector: {t_be_csr_vector:.6f} seconds")
     print(f'JAX / BrainEvent: {t_jax_csr_vector / t_be_csr_vector}, max value diff: {jnp.max(jnp.abs(r1 - r2))}')
     print()
 
     @jax.jit
     def f_jax(v):
-        return jax_csr.T @ v
+        return jax_coo.T @ v
 
     @jax.jit
     def f_brainevent(v):
-        return v @ brainevent_csr
+        return v @ brainevent_coo
 
-    vector = jax.block_until_ready(jnp.ones(scipy_csr.shape[0]))
+    vector = jax.block_until_ready(jnp.ones(scipy_coo.shape[0]))
 
     r1 = jax.block_until_ready(f_jax(vector))
     r2 = jax.block_until_ready(f_brainevent(vector))
@@ -123,86 +126,14 @@ def compare_spmv_performance(scipy_csr, n_run: int = 10):
         jax.block_until_ready(f_jax(vector))
     t1 = time.time()
     t_jax_vector_csr = (t1 - t0) / n_run
-    print(f"{filename},    JAX  Vector @ CSR :   {t_jax_vector_csr:.6f} seconds")
+    print(f"{filename},    JAX  Vector @ COO :   {t_jax_vector_csr:.6f} seconds")
 
     t0 = time.time()
     for _ in range(n_run):
         jax.block_until_ready(f_brainevent(vector))
     t1 = time.time()
     t_be_vector_csr = (t1 - t0) / n_run
-    print(f"{filename}, BrainEvent Vector @ CSR: {t_be_vector_csr:.6f} seconds")
-    print(f'JAX / BrainEvent: {t_jax_vector_csr / t_be_vector_csr}, max value diff: {jnp.max(jnp.abs(r1 - r2))}')
-    print()
-    return t_jax_vector_csr / t_be_vector_csr
-
-
-def compare_spmm_performance(
-    scipy_csr: csr_matrix,
-    n_run: int = 10,
-    batch_size: int = 100
-):
-    data = jnp.asarray(scipy_csr.data)
-    indices = jnp.asarray(scipy_csr.indices)
-    indptr = jnp.asarray(scipy_csr.indptr)
-
-    jax_csr = CSR((data, indices, indptr), shape=scipy_csr.shape)
-    brainevent_csr = brainevent.CSR((data, indices, indptr), shape=scipy_csr.shape)
-
-    @jax.jit
-    def f_jax(v):
-        return jax_csr @ v
-
-    @jax.jit
-    def f_brainevent(v):
-        return brainevent_csr @ v
-
-    matrix = jax.block_until_ready(brainstate.random.randn(scipy_csr.shape[1], batch_size))
-
-    r1 = jax.block_until_ready(f_jax(matrix))
-    r2 = jax.block_until_ready(f_brainevent(matrix))
-
-    t0 = time.time()
-    for _ in range(n_run):
-        jax.block_until_ready(f_jax(matrix))
-    t1 = time.time()
-    t_jax_csr_vector = (t1 - t0) / n_run
-    print(f"{filename}, JAX  CSR @ Vector:       {t_jax_csr_vector:.6f} seconds")
-
-    t0 = time.time()
-    for _ in range(n_run):
-        jax.block_until_ready(f_brainevent(matrix))
-    t1 = time.time()
-    t_be_csr_vector = (t1 - t0) / n_run
-    print(f"{filename}, BrainEvent CSR @ Vector: {t_be_csr_vector:.6f} seconds")
-    print(f'JAX / BrainEvent: {t_jax_csr_vector / t_be_csr_vector}, max value diff: {jnp.max(jnp.abs(r1 - r2))}')
-    print()
-
-    @jax.jit
-    def f_jax(v):
-        return (jax_csr.T @ v.T).T
-
-    @jax.jit
-    def f_brainevent(v):
-        return v @ brainevent_csr
-
-    matrix = jax.block_until_ready(brainstate.random.randn(batch_size, scipy_csr.shape[0]))
-
-    r1 = jax.block_until_ready(f_jax(matrix))
-    r2 = jax.block_until_ready(f_brainevent(matrix))
-
-    t0 = time.time()
-    for _ in range(n_run):
-        jax.block_until_ready(f_jax(matrix))
-    t1 = time.time()
-    t_jax_vector_csr = (t1 - t0) / n_run
-    print(f"{filename},    JAX  Vector @ CSR :   {t_jax_vector_csr:.6f} seconds")
-
-    t0 = time.time()
-    for _ in range(n_run):
-        jax.block_until_ready(f_brainevent(matrix))
-    t1 = time.time()
-    t_be_vector_csr = (t1 - t0) / n_run
-    print(f"{filename}, BrainEvent Vector @ CSR: {t_be_vector_csr:.6f} seconds")
+    print(f"{filename}, BrainEvent Vector @ COO: {t_be_vector_csr:.6f} seconds")
     print(f'JAX / BrainEvent: {t_jax_vector_csr / t_be_vector_csr}, max value diff: {jnp.max(jnp.abs(r1 - r2))}')
     print()
 
@@ -212,23 +143,95 @@ def compare_spmm_performance(
 def evaluate_spmv_performance():
     results = dict()
     for filename in files:
-        results[filename] = compare_spmv_performance(
-            csr_matrices[filename], n_run=3 if brainstate.environ.get_platform() == 'cpu' else 30
+        results[filename] = _compare_spmv_performance(
+            filename, n_run=3 if brainstate.environ.get_platform() == 'cpu' else 30
         )
-    title = 'Intel-i9-12900H-SpMV-CSR' if brainstate.environ.get_platform() == 'cpu' else 'RTX-3080Ti-SpMV-CSR'
+    title = 'Intel-i9-12900H-SpMV-COO' if brainstate.environ.get_platform() == 'cpu' else 'RTX-3080Ti-SpMV-COO'
     visualization(results, title=title)
+
+
+def compare_spmm_performance(
+    scipy_coo: coo_matrix,
+    n_run: int = 10,
+    batch_size: int = 100
+):
+    data = jnp.asarray(scipy_coo.data)
+    row = jnp.asarray(scipy_coo.row)
+    col = jnp.asarray(scipy_coo.col)
+
+    jax_coo = COO((data, row, col), shape=scipy_coo.shape)
+    brainevent_coo = brainevent.COO((data, row, col), shape=scipy_coo.shape)
+
+    @jax.jit
+    def f_jax(v):
+        return jax_coo @ v
+
+    @jax.jit
+    def f_brainevent(v):
+        return brainevent_coo @ v
+
+    matrix = jax.block_until_ready(brainstate.random.randn(scipy_coo.shape[1], batch_size))
+
+    r1 = jax.block_until_ready(f_jax(matrix))
+    r2 = jax.block_until_ready(f_brainevent(matrix))
+
+    t0 = time.time()
+    for _ in range(n_run):
+        jax.block_until_ready(f_jax(matrix))
+    t1 = time.time()
+    t_jax_csr_vector = (t1 - t0) / n_run
+    print(f"{filename}, JAX  COO @ Vector:       {t_jax_csr_vector:.6f} seconds")
+
+    t0 = time.time()
+    for _ in range(n_run):
+        jax.block_until_ready(f_brainevent(matrix))
+    t1 = time.time()
+    t_be_csr_vector = (t1 - t0) / n_run
+    print(f"{filename}, BrainEvent COO @ Vector: {t_be_csr_vector:.6f} seconds")
+    print(f'JAX / BrainEvent: {t_jax_csr_vector / t_be_csr_vector}, max value diff: {jnp.max(jnp.abs(r1 - r2))}')
+    print()
+
+    @jax.jit
+    def f_jax(v):
+        return (jax_coo.T @ v.T).T
+
+    @jax.jit
+    def f_brainevent(v):
+        return v @ brainevent_coo
+
+    matrix = jax.block_until_ready(brainstate.random.randn(batch_size, scipy_coo.shape[0]))
+
+    r1 = jax.block_until_ready(f_jax(matrix))
+    r2 = jax.block_until_ready(f_brainevent(matrix))
+
+    t0 = time.time()
+    for _ in range(n_run):
+        jax.block_until_ready(f_jax(matrix))
+    t1 = time.time()
+    t_jax_vector_csr = (t1 - t0) / n_run
+    print(f"{filename},    JAX  Vector @ COO :   {t_jax_vector_csr:.6f} seconds")
+
+    t0 = time.time()
+    for _ in range(n_run):
+        jax.block_until_ready(f_brainevent(matrix))
+    t1 = time.time()
+    t_be_vector_csr = (t1 - t0) / n_run
+    print(f"{filename}, BrainEvent Vector @ COO: {t_be_vector_csr:.6f} seconds")
+    print(f'JAX / BrainEvent: {t_jax_vector_csr / t_be_vector_csr}, max value diff: {jnp.max(jnp.abs(r1 - r2))}')
+    print()
+
+    return t_jax_vector_csr / t_be_vector_csr
 
 
 def evaluate_spmm_performance():
     results = dict()
     for filename in files:
         results[filename] = compare_spmm_performance(
-            csr_matrices[filename], n_run=3 if brainstate.environ.get_platform() == 'cpu' else 30
+            coo_matrices[filename], n_run=3 if brainstate.environ.get_platform() == 'cpu' else 30
         )
-    title = 'Intel-i9-12900H-SpMM-CSR' if brainstate.environ.get_platform() == 'cpu' else 'RTX-3080Ti-SpMM-CSR'
+    title = 'Intel-i9-12900H-SpMM-COO' if brainstate.environ.get_platform() == 'cpu' else 'RTX-3080Ti-SpMM-COO'
     visualization(results, title=title)
 
 
-if __name__ == '__main__':
-    evaluate_spmv_performance()
-    evaluate_spmm_performance()
+evaluate_spmv_performance()
+evaluate_spmm_performance()
