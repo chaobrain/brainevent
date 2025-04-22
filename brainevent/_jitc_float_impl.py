@@ -911,7 +911,6 @@ def _jitc_mv_homo_gpu_kernel_generator(
     clen_info: jax.ShapeDtypeStruct,
     v_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
-    shape: MatrixShape,
     transpose: bool = False,
     outdim_parallel: bool = True,
     **kwargs
@@ -920,73 +919,110 @@ def _jitc_mv_homo_gpu_kernel_generator(
     """
     import warp
 
-    @warp.func
-    def _binomial_n1(state: warp.uint32, p: float) -> int:
-        """
-        Draw samples from a binomial distribution.
-        """
-        return 1 if warp.randf(state) < p else 0
-
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
     clen_dtype = dtype_to_warp_type(clen_info.dtype)
     v_dtype = dtype_to_warp_type(v_info.dtype)
     seed_dtype = dtype_to_warp_type(seed_info.dtype)
 
     if outdim_parallel:
-        # outdim_parallel=True
-        def kernel(
-            weight: warp.array1d(dtype=weight_dtype),
-            clen: warp.array1d(dtype=clen_dtype),
-            v: warp.array1d(dtype=v_dtype),
-            seed: warp.array1d(dtype=seed_dtype),
-            _: warp.array1d(dtype=weight_dtype),
-            posts: warp.array1d(dtype=weight_dtype),
-        ):
-            num_row = posts.shape[0]
-            num_col = v.shape[0]
-            weight0 = weight[0]
-            clen0 = clen[0]
-            seed0 = seed[0]
 
-            i_row = warp.tid()
+        if transpose:
+            @warp.kernel
+            def kernel(
+                weight: warp.array1d(dtype=weight_dtype),
+                clen: warp.array1d(dtype=clen_dtype),
+                vector: warp.array1d(dtype=v_dtype),
+                seed: warp.array1d(dtype=seed_dtype),
+                _: warp.array1d(dtype=weight_dtype),
+                posts: warp.array1d(dtype=weight_dtype),
+            ):
+                num_row = vector.shape[0]
+                weight0 = weight[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
 
-            r = float(0.0)
-            state = warp.rand_init(seed0 + tid)
-            i_col = int(0)
+                i_col = warp.tid()
+                r = float(0.0)
+                state = warp.rand_init(seed0 + i_col)
+                i_row = warp.randi(state, 0, clen0)
+                while i_row < num_row:
+                    r += vector[i_row]
+                    i_row += warp.randi(state, 1, clen0)
+                posts[i_col] = r * weight0
 
-            while i_col < num_col:
-                if _binomial_n1(state, clen0) == 1:
-                    r += v[i_col]
-                i_col += 1
+        else:
+            @warp.kernel
+            def kernel(
+                weight: warp.array1d(dtype=weight_dtype),
+                clen: warp.array1d(dtype=clen_dtype),
+                vector: warp.array1d(dtype=v_dtype),
+                seed: warp.array1d(dtype=seed_dtype),
+                _: warp.array1d(dtype=weight_dtype),
+                posts: warp.array1d(dtype=weight_dtype),
+            ):
+                num_col = vector.shape[0]
+                weight0 = weight[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
 
-            posts[i_row] = r * weight0
+                i_row = warp.tid()
+                r = float(0.0)
+                state = warp.rand_init(seed0 + i_row)
+                i_col = warp.randu(state, 0, clen0)
+                while i_col < num_col:
+                    r += vector[i_col]
+                    i_col += warp.randu(state, 1, clen0)
+                posts[i_row] = r * weight0
     else:
-        def kernel(
-            weight: warp.array1d(dtype=weight_dtype),
-            clen: warp.array1d(dtype=clen_dtype),
-            v: warp.array1d(dtype=v_dtype),
-            seed: warp.array1d(dtype=seed_dtype),
-            _: warp.array1d(dtype=weight_dtype),
-            posts: warp.array1d(dtype=weight_dtype),
-        ):
-            num_row = posts.shape[0]
-            num_col = v.shape[0]
-            weight0 = weight[0]
-            clen0 = clen[0]
-            seed0 = seed[0]
 
-            i_col = warp.tid()
+        if transpose:
+            @warp.kernel
+            def kernel(
+                weight: warp.array1d(dtype=weight_dtype),
+                clen: warp.array1d(dtype=clen_dtype),
+                vector: warp.array1d(dtype=v_dtype),
+                seed: warp.array1d(dtype=seed_dtype),
+                _: warp.array1d(dtype=weight_dtype),
+                posts: warp.array1d(dtype=weight_dtype),
+            ):
+                num_col = posts.shape[0]
+                weight0 = weight[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
 
-            col_v = v[i_col] * weight0
-            state = warp.rand_init(seed0 + tid)
-            i_row = int(0)
+                i_row = warp.tid()
+                v = vector[i_row] * weight0
+                state = warp.rand_init(seed0 + i_row)
+                i_col = warp.randu(state, 0, clen0)
+                while i_col < num_col:
+                    posts[i_col] += v
+                    i_col += warp.randu(state, 1, clen0)
 
-            for i_row in range(num_row):
-                if _binomial_n1(state, clen0) == 1:
-                    posts[i_row] += col_v
-                i_row += 1
 
-    kernel = warp.kernel(kernel)
+        else:
+
+            @warp.kernel
+            def kernel(
+                weight: warp.array1d(dtype=weight_dtype),
+                clen: warp.array1d(dtype=clen_dtype),
+                vector: warp.array1d(dtype=v_dtype),
+                seed: warp.array1d(dtype=seed_dtype),
+                _: warp.array1d(dtype=weight_dtype),
+                posts: warp.array1d(dtype=weight_dtype),
+            ):
+                num_row = posts.shape[0]
+                weight0 = weight[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
+
+                i_col = warp.tid()
+                v = vector[i_col] * weight0
+                state = warp.rand_init(seed0 + i_col)
+                i_row = warp.randu(state, 0, clen0)
+                for i_row in range(num_row):
+                    posts[i_row] += v
+                    i_row += warp.randu(state, 1, clen0)
+
     return kernel
 
 
