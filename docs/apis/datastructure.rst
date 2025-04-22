@@ -40,7 +40,7 @@ Coordinate Format matrix
 
 
 
-Fixed Number of Connection matrix
+Fixed Number of Connections matrix
 ---------------------------------
 
 .. autosummary::
