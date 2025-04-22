@@ -21,7 +21,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from brainevent._jitc_float_impl import (
+from brainevent._jitc_float_normal_impl import (
     jitc_matvec_homo,
     jitc_matvec_uniform,
     jitc_matvec_normal,
