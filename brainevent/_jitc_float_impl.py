@@ -28,12 +28,12 @@ from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 
 __all__ = [
-    "_jitc_matvec_homo",
-    "_jitc_matvec_uniform",
-    "_jitc_matvec_normal",
-    "_jitc_matmat_homo",
-    "_jitc_matmat_uniform",
-    "_jitc_matmat_normal",
+    "jitc_matvec_homo",
+    "jitc_matvec_uniform",
+    "jitc_matvec_normal",
+    "jitc_matmat_homo",
+    "jitc_matmat_uniform",
+    "jitc_matmat_normal",
 ]
 
 
@@ -68,7 +68,43 @@ def _initialize_seed(seed=None):
     return jnp.asarray(jnp.atleast_1d(seed), dtype=jnp.int32)
 
 
-def _jitc_matvec_homo(
+def _initialize_conn_length(conn_prob: float):
+    """
+    Convert connection probability to connection length parameter for sparse matrix generation.
+
+    This function transforms a connection probability (proportion of non-zero entries)
+    into a connection length parameter used by the sparse sampling algorithms.
+    The connection length is approximately the inverse of the connection probability,
+    scaled by a factor of 2 to ensure adequate sparsity in the generated matrices.
+
+    The function ensures the calculation happens at compile time when used in JIT-compiled
+    functions by using JAX's compile_time_eval context.
+
+    Parameters
+    ----------
+    conn_prob : float
+        The connection probability (between 0 and 1) representing the fraction
+        of non-zero entries in the randomly generated matrix.
+
+    Returns
+    -------
+    jax.Array
+        A JAX array containing the connection length value as an int32,
+        which is approximately 2/conn_prob.
+
+    Notes
+    -----
+    The connection length parameter is used in the kernels to determine the
+    average distance between sampled connections when generating sparse matrices.
+    Larger values result in sparser matrices (fewer connections).
+    """
+    with jax.ensure_compile_time_eval():
+        clen = jnp.ceil(1 / conn_prob) * 2
+        clen = jnp.asarray(clen, dtype=jnp.int32)
+    return clen
+
+
+def jitc_matvec_homo(
     weight: Data,
     conn_prob: float,
     v: Data,
@@ -129,7 +165,7 @@ def _jitc_matvec_homo(
     seed = _initialize_seed(seed)
     weight, unitd = u.split_mantissa_unit(weight)
     v, unitv = u.split_mantissa_unit(v)
-    clen = jnp.ceil(1 / conn_prob) * 2
+    clen = _initialize_conn_length(conn_prob)
     res = jitc_mv_homo_p_call(
         weight,
         clen,
@@ -142,7 +178,7 @@ def _jitc_matvec_homo(
     return u.maybe_decimal(res * unitd * unitv)
 
 
-def _jitc_matvec_uniform(
+def jitc_matvec_uniform(
     w_low: Data,
     w_high: Data,
     conn_prob: float,
@@ -209,7 +245,7 @@ def _jitc_matvec_uniform(
     w_low, unit_w_low = u.split_mantissa_unit(w_low)
     w_high = u.Quantity(w_high).to(unit_w_low).mantissa
     v, unitv = u.split_mantissa_unit(v)
-    clen = jnp.ceil(1 / conn_prob) * 2
+    clen = _initialize_conn_length(conn_prob)
     res = jitc_mv_uniform_p_call(
         w_low,
         w_high,
@@ -223,7 +259,7 @@ def _jitc_matvec_uniform(
     return u.maybe_decimal(res * unit_w_low * unitv)
 
 
-def _jitc_matvec_normal(
+def jitc_matvec_normal(
     w_mu: Data,
     w_sigma: Data,
     conn_prob: float,
@@ -290,7 +326,7 @@ def _jitc_matvec_normal(
     w_mu, unit_w_mu = u.split_mantissa_unit(w_mu)
     w_sigma = u.Quantity(w_sigma).to(unit_w_mu).mantissa
     v, unitv = u.split_mantissa_unit(v)
-    clen = jnp.ceil(1 / conn_prob) * 2
+    clen = _initialize_conn_length(conn_prob)
     res = jitc_mv_normal_p_call(
         w_mu,
         w_sigma,
@@ -304,7 +340,7 @@ def _jitc_matvec_normal(
     return u.maybe_decimal(res * unit_w_mu * unitv)
 
 
-def _jitc_matmat_homo(
+def jitc_matmat_homo(
     weight: Data,
     conn_prob: float,
     B: Data,
@@ -355,7 +391,7 @@ def _jitc_matmat_homo(
     seed = _initialize_seed(seed)
     weight, unitd = u.split_mantissa_unit(weight)
     B, unitB = u.split_mantissa_unit(B)
-    clen = jnp.ceil(1 / conn_prob) * 2
+    clen = _initialize_conn_length(conn_prob)
     res = jitc_mm_homo_p_call(
         weight,
         clen,
@@ -368,7 +404,7 @@ def _jitc_matmat_homo(
     return u.maybe_decimal(res * unitd * unitB)
 
 
-def _jitc_matmat_uniform(
+def jitc_matmat_uniform(
     w_low: Data,
     w_high: Data,
     conn_prob: float,
@@ -425,7 +461,7 @@ def _jitc_matmat_uniform(
     w_low, unit_w_low = u.split_mantissa_unit(w_low)
     w_high = u.Quantity(w_high).to(unit_w_low).mantissa
     B, unitB = u.split_mantissa_unit(B)
-    clen = jnp.ceil(1 / conn_prob) * 2
+    clen = _initialize_conn_length(conn_prob)
     res = jitc_mm_uniform_p_call(
         w_low,
         w_high,
@@ -439,7 +475,7 @@ def _jitc_matmat_uniform(
     return u.maybe_decimal(res * unit_w_low * unitB)
 
 
-def _jitc_matmat_normal(
+def jitc_matmat_normal(
     w_mu: Data,
     w_sigma: Data,
     conn_prob: float,
@@ -496,7 +532,7 @@ def _jitc_matmat_normal(
     w_mu, unit_w_mu = u.split_mantissa_unit(w_mu)
     w_sigma = u.Quantity(w_sigma).to(unit_w_mu).mantissa
     B, unitB = u.split_mantissa_unit(B)
-    clen = jnp.ceil(1 / conn_prob) * 2
+    clen = _initialize_conn_length(conn_prob)
     res = jitc_mm_normal_p_call(
         w_mu,
         w_sigma,
@@ -545,6 +581,7 @@ def _jitc_mv_homo_cpu_kernel_generator(
                     for all connections in the matrix.
                 clen : ndarray
                     A scalar value stored as a single-element array, representing the connection probability.
+                    The value is approximately 2/p where p is the connection probability.
                 vector : ndarray
                     The input vector to be multiplied with the randomly generated matrix.
                 seed : ndarray
@@ -560,6 +597,12 @@ def _jitc_mv_homo_cpu_kernel_generator(
                 1. For each output column, it samples connected rows using binomial distribution
                 2. Only the connected entries contribute to the output sum
                 3. The final result is scaled by the weight value
+
+                Implementation details:
+                - The algorithm performs sparse matrix operations by randomly determining which entries contribute
+                - For efficiency, we don't explicitly generate the matrix but directly sample connections
+                - Each output element is computed by summing only the connected input vector elements
+                - The algorithm uses a skip-ahead random sampling approach to find connected elements
                 """
                 # Output vector dimension = number of columns in the matrix
                 n_col = posts.shape[0]
@@ -568,17 +611,33 @@ def _jitc_mv_homo_cpu_kernel_generator(
 
                 # Extract scalar values from input arrays
                 weight0 = weight[0]  # Homogeneous weight value
-                n_conn = int(n_row * conn_prob[0])
+                clen0 = clen[0]  # Connection length (inverse of connection probability)
                 seed0 = seed[0]  # Random seed
 
                 # Initialize the random number generator with the provided seed
+                # This ensures reproducibility for the same seed value
                 np.random.seed(seed0)
 
-                # Process each output element
+                # Process each output element (column in the matrix)
                 for i_col in range(n_col):
-                    i_rows = np.random.choice(n_row, size=n_conn, replace=False)
-                    out = np.sum(vector[i_rows]) * weight0
-                    # Store the result for this output element, scaled by the weight
+                    # Generate first row index randomly - this determines where to start sampling
+                    i_row = np.random.randint(0, clen0)
+
+                    # Initialize accumulator for this output element with proper dtype
+                    out = np.asarray(0., dtype=vector.dtype)
+
+                    # Process all connected entries for this column
+                    while i_row < n_row:
+                        # Add contribution from the current connected element
+                        out += vector[i_row]
+
+                        # Skip ahead to next connected row (sparse sampling)
+                        # The random skip ensures proper connection probability
+                        # Each skip distance is randomly determined to maintain the sparse pattern
+                        i_row += np.random.randint(1, clen0)
+
+                    # Scale accumulated sum by weight and store in output array
+                    # All connections have the same homogeneous weight value
                     posts[i_col] = out * weight0
 
         else:
@@ -602,42 +661,75 @@ def _jitc_mv_homo_cpu_kernel_generator(
                     for all connections in the matrix.
                 clen : ndarray
                     A scalar value stored as a single-element array, representing the connection probability.
+                    It's approximately 2/p where p is the connection probability, determining how sparse the matrix is.
                 vector : ndarray
                     The input vector to be multiplied with the randomly generated matrix.
                 seed : ndarray
-                    A scalar value stored as a single-element array, used as a seed for random number generation.
+                    A scalar value stored as a single-element array, used as a seed for random number generation
+                    to ensure reproducibility.
                 _ : ndarray
-                    Placeholder parameter (not used).
+                    Placeholder parameter (not used in this implementation).
                 posts : ndarray
-                    Output array where the result will be stored.
+                    Output array where the result will be stored. Its shape determines the number of rows
+                    in the implicit matrix.
 
                 Notes
                 -----
                 The algorithm uses a sparse sampling approach to avoid explicitly generating the entire matrix:
-                1. For each output row, it samples connected columns using binomial distribution
+                1. For each output row, it samples connected columns using random skipping
                 2. Only the connected entries contribute to the output sum
                 3. The final result is scaled by the weight value
+
+                Implementation details:
+                - Connection probability is controlled by clen - larger values produce sparser matrices
+                - The sampling approach avoids storing the matrix which would require O(rows×cols) memory
+                - Time complexity is O(rows × average_connections_per_row), which is much more efficient
+                  for very sparse matrices than the O(rows × cols) of standard matrix multiplication
+                - This algorithm can be viewed as stochastic matrix generation with fixed weight values
                 """
                 # Output vector dimension = number of rows in the matrix
+                # Each row in the matrix will produce one element in the output vector
                 num_row = posts.shape[0]
+
                 # Input vector dimension = number of columns in the matrix
+                # The input vector must match the number of columns in our implicit matrix
                 num_col = vector.shape[0]
 
-                # Extract scalar values from input arrays
-                weight0 = weight[0]  # Homogeneous weight value
-                seed0 = seed[0]  # Random seed
-                n_conn = int(num_col * clen[0])
+                # Extract scalar values from input arrays for more efficient access in loops
+                weight0 = weight[0]  # Homogeneous weight value for all non-zero connections
+                seed0 = seed[0]  # Random seed for reproducible matrix generation
+                clen0 = clen[0]  # Connection length parameter (controls sparsity)
 
                 # Initialize the random number generator with the provided seed
+                # This ensures the "random" matrix is reproducible for the same seed value
                 np.random.seed(seed0)
 
                 # Process each output element (each row of the matrix)
                 for i_row in range(num_row):
-                    # Sample the first connected column using binomial distribution
-                    # This efficiently skips over initial zeros in the sparse matrix
-                    i_cols = np.random.choice(num_col, size=n_conn, replace=False)
-                    out = np.sum(vector[i_cols]) * weight0
-                    posts[i_row] = out
+                    # Randomly determine the first column where this row has a connection
+                    # This implements efficient sampling of a sparse pattern
+                    i_col = np.random.randint(0, clen0)
+
+                    # Initialize accumulator for the dot product result for this row
+                    # Using input vector's dtype ensures proper numerical precision
+                    out = np.asarray(0., dtype=vector.dtype)
+
+                    # Process all connected entries for this row by skipping through columns
+                    # This is the core sparse sampling algorithm - we only process columns
+                    # that have connections rather than checking every possible column
+                    while i_col < num_col:
+                        # Add contribution from the current connected element
+                        # For connected positions, we add the corresponding vector element
+                        out += vector[i_col]
+
+                        # Skip ahead to next connected column using geometric-like distribution
+                        # The random skip distance models the sparse connectivity pattern
+                        # where each position has approximately 1/clen0 probability of connection
+                        i_col += np.random.randint(1, clen0)
+
+                    # Scale accumulated sum by weight and store in output array
+                    # All connections share the same homogeneous weight value
+                    posts[i_row] = out * weight0
 
     else:
         # This means that the for loop is parallelized along the dimension of the vector: ``vector.shape[0]``.
@@ -650,11 +742,12 @@ def _jitc_mv_homo_cpu_kernel_generator(
                 is generated on-the-fly with homogeneous weights.
 
                 This kernel implements a vector-matrix multiplication where the matrix has a homogeneous weight
-                value and is sparsely connected with probability `clen`. Instead of generating the entire
-                matrix, connections are sampled using binomial distribution to identify non-zero entries.
+                value and is sparsely connected with probability ~1/clen. Instead of generating the entire
+                matrix, connections are sampled using random skipping to efficiently identify non-zero entries.
 
                 The kernel is optimized for the case where `transpose=True` and `outdim_parallel=False`, meaning
                 it processes the input vector elements one by one, accumulating their contributions to the output vector.
+                This approach is particularly efficient for very sparse matrices.
 
                 Parameters
                 ----------
@@ -662,60 +755,69 @@ def _jitc_mv_homo_cpu_kernel_generator(
                     A scalar value stored as a single-element array, representing the homogeneous weight
                     for all connections in the matrix.
                 clen : ndarray
-                    A scalar value stored as a single-element array, representing the connection probability.
+                    A scalar value stored as a single-element array, representing the inverse of connection probability.
+                    Larger values result in sparser matrices (~1/clen is the connection probability).
                 vector : ndarray
                     The input vector to be multiplied with the randomly generated matrix.
                 seed : ndarray
-                    A scalar value stored as a single-element array, used as a seed for random number generation.
+                    A scalar value stored as a single-element array, used as a seed for random number generation
+                    to ensure reproducible results.
                 _ : ndarray
-                    Placeholder parameter (not used).
+                    Placeholder parameter (not used in this implementation).
                 posts : ndarray
-                    Output array where the result will be stored.
+                    Output array where the result will be stored. Its length determines the number of columns
+                    in the implicit matrix.
 
                 Notes
                 -----
                 The algorithm uses a row-based approach for vector @ matrix multiplication:
                 1. For each input row (vector element), it applies the weight and samples connected columns
                 2. Each row contributes to multiple columns based on the sparse connectivity pattern
-                3. The algorithm efficiently skips zeros in the matrix using geometric distribution approximation
+                3. The algorithm efficiently skips zeros in the matrix using geometric-like distribution sampling
+
+                Time complexity is O(num_rows × average_connections_per_row) rather than O(num_rows × num_cols)
+                of standard matrix multiplication, making this approach much more efficient for sparse matrices.
                 """
                 # Output vector dimension = number of columns in the matrix
+                # This is the dimension of the result vector in the vector @ matrix operation
                 num_col = posts.shape[0]
+
                 # Input vector dimension = number of rows in the matrix
+                # The vector elements are processed one by one, with each contributing to multiple output elements
                 num_row = vector.shape[0]
 
-                # Extract scalar values from input arrays
-                weight0 = weight[0]  # Homogeneous weight value
-                step_prob = 1.0 - clen[0]  # Probability to skip elements (complement of connection probability)
-                seed0 = seed[0]  # Random seed
+                # Extract scalar values from input arrays for more efficient repeated access
+                weight0 = weight[0]  # Homogeneous weight value applied to all connections
+                clen0 = clen[0]  # Controls sparsity - higher values mean fewer connections
+                seed0 = seed[0]  # Random seed for reproducible matrix generation
 
                 # Initialize the random number generator with the provided seed
+                # This ensures the "random" matrix is reproducible for the same seed value
                 np.random.seed(seed0)
 
-                # Process each input row (vector element)
+                # Process each input row (vector element) and distribute its value to connected columns
+                # This implements the vector @ matrix operation one row at a time
                 for i_row in range(num_row):
                     # Pre-multiply the input value by weight for efficiency
+                    # This avoids multiplying inside the inner loop for each connection
                     v = vector[i_row] * weight0
 
-                    # Sample the first connected column using binomial distribution
-                    # This efficiently skips over initial zeros in the sparse matrix
-                    i_col = np.random.binomial(num_col, step_prob)
+                    # Sample the first connected column using random skipping
+                    # This implements the sparse sampling - each row connects to ~num_col/clen0 columns on average
+                    # Starting from a random position in [0,clen0) creates variability in connection patterns
+                    i_col = np.random.randint(0, clen0)
 
                     # Continue sampling and accumulating while we haven't exceeded output dimension
+                    # This loop processes all columns this particular row connects to
                     while i_col < num_col:
                         # Add this connection's contribution to the appropriate output element
+                        # The output is accumulated as we process each input element's contributions
                         posts[i_col] += v
 
-                        # Sample the number of columns to skip until the next connection
-                        # This uses the memoryless property of geometric distribution
-                        # (implemented via binomial as a convenient approximation)
-                        i_col_inc = np.random.binomial(num_col, step_prob)
-
-                        # Ensure we always advance at least one position to avoid infinite loops
-                        i_col_inc = 1 if i_col_inc == 0 else i_col_inc
-
-                        # Move to the next connected column
-                        i_col += i_col_inc
+                        # Move to the next connected column using geometric-like skipping
+                        # Each next connection is approximately clen0 positions away on average
+                        # This creates a sparse pattern where only ~1/clen0 of all possible connections exist
+                        i_col += np.random.randint(1, clen0)
 
         else:
             @numba.njit(**numba_environ.setting)
@@ -725,11 +827,12 @@ def _jitc_mv_homo_cpu_kernel_generator(
                 is generated on-the-fly with homogeneous weights.
 
                 This kernel implements a matrix-vector multiplication where the matrix has a homogeneous weight
-                value and is sparsely connected with probability `clen`. Instead of generating the entire
-                matrix, connections are sampled using binomial distribution to identify non-zero entries.
+                value and is sparsely connected with probability ~1/clen. Instead of generating the entire
+                matrix, connections are sampled using random skipping to efficiently identify non-zero entries.
 
                 The kernel is optimized for the case where `transpose=False` and `outdim_parallel=False`, meaning
-                it processes the input vector by columns, which is more efficient for certain sparse matrix patterns.
+                it processes each input vector element (column) separately and accumulates its contributions to
+                all connected rows in the output vector. This is particularly efficient for sparse matrices.
 
                 Parameters
                 ----------
@@ -737,61 +840,69 @@ def _jitc_mv_homo_cpu_kernel_generator(
                     A scalar value stored as a single-element array, representing the homogeneous weight
                     for all connections in the matrix.
                 clen : ndarray
-                    A scalar value stored as a single-element array, representing the connection probability.
+                    A scalar value stored as a single-element array, representing the inverse of connection probability.
+                    Larger values result in sparser matrices (~1/clen is the connection probability).
                 vector : ndarray
                     The input vector to be multiplied with the randomly generated matrix.
                 seed : ndarray
-                    A scalar value stored as a single-element array, used as a seed for random number generation.
+                    A scalar value stored as a single-element array, used as a seed for random number generation
+                    to ensure reproducible results.
                 _ : ndarray
-                    Placeholder parameter (not used).
+                    Placeholder parameter (not used in this implementation).
                 posts : ndarray
-                    Output array where the result will be stored.
+                    Output array where the result will be stored. Its shape determines the number of rows
+                    in the implicit matrix.
 
                 Notes
                 -----
-                The algorithm uses a column-based sampling approach:
-                1. For each input column (vector element), it applies the weight and samples connected rows
+                The algorithm uses a column-centric approach for matrix @ vector multiplication:
+                1. For each input element, it pre-multiplies by weight and samples connected rows
                 2. Each column contributes to multiple rows based on the sparse connectivity pattern
-                3. The algorithm efficiently skips zeros in the matrix using geometric distribution approximation
+                3. The algorithm efficiently skips zeros in the matrix using geometric-like distribution sampling
+
+                Time complexity is O(num_cols × average_connections_per_col) rather than O(num_rows × num_cols)
+                of standard matrix multiplication, making this approach much more efficient for sparse matrices.
                 """
                 # Output vector dimension = number of rows in the matrix
+                # This represents the first dimension of the matrix and the result vector's size
                 num_row = posts.shape[0]
+
                 # Input vector dimension = number of columns in the matrix
+                # Each element of the input vector corresponds to a column in the matrix
                 num_col = vector.shape[0]
 
-                # Extract scalar values from input arrays
-                weight0 = weight[0]  # Homogeneous weight value
-                step_prob = 1.0 - clen[0]  # Probability to skip elements (complement of connection probability)
-                seed0 = seed[0]  # Random seed
+                # Extract scalar values from input arrays for more efficient access in loops
+                weight0 = weight[0]  # Homogeneous weight value applied to all connections
+                clen0 = clen[0]  # Controls sparsity - higher values mean fewer connections
+                seed0 = seed[0]  # Random seed for reproducible matrix generation
 
                 # Initialize the random number generator with the provided seed
+                # This ensures the "random" matrix is reproducible for the same seed value
                 np.random.seed(seed0)
 
                 # Process each input element (each column of the matrix)
+                # This implements the matrix @ vector operation one column at a time
                 for i_col in range(num_col):
                     # Pre-multiply the input value by weight for efficiency
+                    # This avoids multiplying inside the inner loop for each connection
                     v = vector[i_col] * weight0
 
-                    # Sample the first connected row using binomial distribution
-                    # This efficiently skips over initial zeros in the sparse matrix
-                    i_row = np.random.binomial(num_row, step_prob)
+                    # Sample the first connected row using random skipping
+                    # This implements the sparse sampling - each column connects to ~num_row/clen0 rows on average
+                    # Starting from a random position in [0,clen0) creates variability in connection patterns
+                    i_row = np.random.randint(0, clen0)
 
                     # Continue sampling and accumulating while we haven't exceeded output dimension
+                    # This loop processes all rows this particular column connects to
                     while i_row < num_row:
                         # Add this connection's contribution to the appropriate output element
+                        # The output is accumulated as we process each column's contributions
                         posts[i_row] += v
 
-                        # Sample the number of rows to skip until the next connection
-                        # This uses the memoryless property of geometric distribution
-                        # (implemented via binomial as a convenient approximation)
-                        i_row_inc = np.random.binomial(num_row, step_prob)
-
-                        # Ensure we always advance at least one position to avoid infinite loops
-                        i_row_inc = 1 if i_row_inc == 0 else i_row_inc
-
-                        # Move to the next connected row
-                        i_row += i_row_inc
-
+                        # Move to the next connected row using geometric-like skipping
+                        # Each next connection is approximately clen0 positions away on average
+                        # This creates a sparse pattern where only ~1/clen0 of all possible connections exist
+                        i_row += np.random.randint(1, clen0)
     return kernel
 
 
@@ -893,7 +1004,7 @@ def _jitc_mv_homo_jvp_v(
     **kwargs
 ):
     return [
-        _jitc_matvec_homo(
+        jitc_matvec_homo(
             weight,
             clen,
             v_dot,
@@ -1202,7 +1313,7 @@ def _jitc_mv_uniform_jvp_v(
     **kwargs
 ):
     return [
-        _jitc_matvec_uniform(
+        jitc_matvec_uniform(
             w_low,
             w_high,
             clen,
@@ -1553,7 +1664,7 @@ def _jitc_mv_normal_jvp_v(
     **kwargs
 ):
     return [
-        _jitc_matvec_normal(
+        jitc_matvec_normal(
             w_mu,
             w_sigma,
             clen,
@@ -1923,7 +2034,7 @@ def _jitc_mm_homo_jvp_B(
     **kwargs
 ):
     return [
-        _jitc_matmat_homo(
+        jitc_matmat_homo(
             weight,
             clen,
             B_dot,
@@ -2286,7 +2397,7 @@ def _jitc_mm_uniform_jvp_B(
     **kwargs
 ):
     return [
-        _jitc_matmat_uniform(
+        jitc_matmat_uniform(
             w_low,
             w_high,
             clen,
@@ -2661,7 +2772,7 @@ def _jitc_mm_normal_jvp_B(
     **kwargs
 ):
     return [
-        _jitc_matmat_normal(
+        jitc_matmat_normal(
             w_mu,
             w_sigma,
             clen,
