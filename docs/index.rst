@@ -52,5 +52,7 @@ We are building the `Brain Modeling ecosystem <https://brainmodeling.readthedocs
    :caption: API Reference
 
    changelog.md
-   apis/brianevent.rst
+   apis/eventarray.rst
+   apis/datastructure.rst
+   apis/operator.rst
 
