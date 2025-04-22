@@ -65,20 +65,25 @@ class TestJitcCsrMatvecHomo:
     def test_random_connectivity(self, shape, weight, prob, transpose, outdim_parallel):
         seed = 1234
         vector = jnp.asarray(np.random.random(shape[0] if transpose else shape[1]))
-        r1 = _jitc_matvec_homo(weight,
-                               prob,
-                               vector,
-                               seed=seed,
-                               shape=shape,
-                               transpose=transpose,
-                               outdim_parallel=outdim_parallel)
-        r2 = _jitc_matvec_homo(weight,
-                               prob,
-                               vector,
-                               seed=seed,
-                               shape=shape,
-                               transpose=transpose,
-                               outdim_parallel=outdim_parallel)
+        r1 = _jitc_matvec_homo(
+            weight,
+            prob,
+            vector,
+            seed=seed,
+            shape=shape,
+            transpose=transpose,
+            outdim_parallel=outdim_parallel
+        )
+        r2 = _jitc_matvec_homo(
+            weight,
+            prob,
+            vector,
+            seed=seed,
+            shape=shape,
+            transpose=transpose,
+            outdim_parallel=outdim_parallel
+        )
+        print(r1)
         assert (jnp.allclose(r1, r2, atol=1e-6))
 
     @pytest.mark.parametrize('weight', [-1., 1.])
@@ -94,21 +99,27 @@ class TestJitcCsrMatvecHomo:
         x = jnp.asarray(np.random.random(n_in if transpose else n_out))
 
         def f_brainevent(x, w):
-            return _jitc_matvec_homo(w,
-                                     prob,
-                                     x,
-                                     seed=seed,
-                                     shape=shape,
-                                     transpose=transpose,
-                                     outdim_parallel=outdim_parallel)
+            return _jitc_matvec_homo(
+                w,
+                prob,
+                x,
+                seed=seed,
+                shape=shape,
+                transpose=transpose,
+                outdim_parallel=outdim_parallel
+            )
 
-        out1, jvp_x1 = jax.jvp(f_brainevent,
-                               (x, jnp.array(weight)),
-                               (jnp.ones_like(x), jnp.array(1.0)))
+        out1, jvp_x1 = jax.jvp(
+            f_brainevent,
+            (x, jnp.array(weight)),
+            (jnp.ones_like(x), jnp.array(1.0))
+        )
 
-        out2, jvp_x2 = jax.jvp(f_brainevent,
-                               (x, jnp.array(weight)),
-                               (jnp.ones_like(x), jnp.array(1.0)))
+        out2, jvp_x2 = jax.jvp(
+            f_brainevent,
+            (x, jnp.array(weight)),
+            (jnp.ones_like(x), jnp.array(1.0))
+        )
 
         assert (jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
         assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-5, atol=1e-5))
