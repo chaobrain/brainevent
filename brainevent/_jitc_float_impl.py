@@ -14,7 +14,7 @@
 # ==============================================================================
 # -*- coding: utf-8 -*-
 
-from typing import Optional, Tuple, Sequence
+from typing import Optional, Sequence
 
 import brainunit as u
 import jax
@@ -519,7 +519,7 @@ def _jitc_mv_homo_cpu_kernel_generator(
     import numba  # pylint: disable=import-outside-toplevel
 
     if outdim_parallel:
-        # outdim_parallel=True
+        @numba.njit(**numba_environ.setting)
         def kernel(weight, conn_prob, v, seed, _, posts):
             num_row = posts.shape[0]
             num_col = v.shape[0]
@@ -533,7 +533,7 @@ def _jitc_mv_homo_cpu_kernel_generator(
                 r = np.sum(v * connections)
                 posts[i_row] = r * weight0
     else:
-        # outdim_parallel=False
+        @numba.njit(**numba_environ.setting)
         def kernel(weight, conn_prob, v, seed, _, posts):
             num_row = posts.shape[0]
             num_col = v.shape[0]
@@ -547,7 +547,6 @@ def _jitc_mv_homo_cpu_kernel_generator(
                 connections = np.random.binomial(1, conn_prob0, num_row)
                 posts += connections * r
 
-    kernel = numba.njit(**numba_environ.setting)(kernel)
     return kernel
 
 
