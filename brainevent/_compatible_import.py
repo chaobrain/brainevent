@@ -113,7 +113,8 @@ def _mk_result_types_and_shapes(
     result_shapes: list[ir.Value] = []
     has_dynamic_shapes = any(
         any(not isinstance(d, int) for d in rshape)
-        for rshape, _ in shape_type_pairs)
+        for rshape, _ in shape_type_pairs
+    )
     for (rshape, rtype) in shape_type_pairs:
         if has_dynamic_shapes:
             result_shapes.append(shape_tensor(rshape))
@@ -121,9 +122,10 @@ def _mk_result_types_and_shapes(
             ir.RankedTensorType.get(
                 [d if isinstance(d, int) else ir.ShapedType.get_dynamic_size()
                  for d in rshape],
-                rtype))
-    return (result_types,
-            result_shapes if has_dynamic_shapes else None)
+                rtype
+            )
+        )
+    return (result_types, result_shapes if has_dynamic_shapes else None)
 
 
 def _hlo_const(x: np.ndarray) -> ir.Value:
@@ -227,23 +229,25 @@ def custom_call(
         call_target_name=ir.StringAttr.get(call_target_name),
         has_side_effect=ir.BoolAttr.get(has_side_effect),
         backend_config=backend_config_attr,
-        api_version=ir.IntegerAttr.get(
-            ir.IntegerType.get_signless(32), api_version),
+        api_version=ir.IntegerAttr.get(ir.IntegerType.get_signless(32), api_version),
         called_computations=ir.ArrayAttr.get(
-            [ir.FlatSymbolRefAttr.get(name) for name in called_computations]
+            [ir.FlatSymbolRefAttr.get(name)
+             for name in called_computations]
         ),
     )
     if operand_output_aliases is not None:
-        attributes["output_operand_aliases"] = ir.ArrayAttr.get([
-            hlo.OutputOperandAlias.get(
-                # if len(result_types) == 1 then the aliasing refers implicitly to
-                # the only output.
-                output_tuple_indices=[output_idx] if len(result_types) > 1 else [],
-                operand_index=input_idx,
-                operand_tuple_indices=[],
-            )
-            for input_idx, output_idx in (operand_output_aliases.items() or ())
-        ])
+        attributes["output_operand_aliases"] = ir.ArrayAttr.get(
+            [
+                hlo.OutputOperandAlias.get(
+                    # if len(result_types) == 1 then the aliasing refers implicitly to
+                    # the only output.
+                    output_tuple_indices=[output_idx] if len(result_types) > 1 else [],
+                    operand_index=input_idx,
+                    operand_tuple_indices=[],
+                )
+                for input_idx, output_idx in (operand_output_aliases.items() or ())
+            ]
+        )
 
     if extra_attributes is not None:
         attributes.update(extra_attributes)
@@ -254,29 +258,37 @@ def custom_call(
         # accepted by the CustomCall constructor, so we use build_generic
         attributes["indices_of_shape_operands"] = ir.DenseIntElementsAttr.get(
             np.asarray(list(range(len(operands), len(operands) + len(result_shapes))),
-                       dtype=np.int64))
+                       dtype=np.int64)
+        )
         if operand_layouts is not None:
             assert len(operand_layouts) == len(operands), (operand_layouts, operands)
             operand_layouts = list(operand_layouts) + [(0,)] * len(result_shapes)
         operands = list(operands) + list(result_shapes)
 
     if operand_layouts is not None:
-        attributes["operand_layouts"] = ir.ArrayAttr.get([
-            ir.DenseIntElementsAttr.get(
-                np.atleast_1d(np.asarray(l, dtype=np.int64)),
-                type=ir.IndexType.get()) for l in operand_layouts
-        ])
+        attributes["operand_layouts"] = ir.ArrayAttr.get(
+            [
+                ir.DenseIntElementsAttr.get(
+                    np.atleast_1d(np.asarray(l, dtype=np.int64)),
+                    type=ir.IndexType.get())
+                for l in operand_layouts
+            ]
+        )
     if result_layouts is not None:
         assert result_layouts is not None
-        assert len(result_layouts) == len(result_types), (
-            result_layouts, result_types)
-        attributes["result_layouts"] = ir.ArrayAttr.get([
-            ir.DenseIntElementsAttr.get(
-                np.atleast_1d(np.asarray(l, dtype=np.int64)),
-                type=ir.IndexType.get()) for l in result_layouts
-        ])
+        assert len(result_layouts) == len(result_types), (result_layouts, result_types)
+        attributes["result_layouts"] = ir.ArrayAttr.get(
+            [
+                ir.DenseIntElementsAttr.get(
+                    np.atleast_1d(np.asarray(l, dtype=np.int64)),
+                    type=ir.IndexType.get()
+                )
+                for l in result_layouts
+            ]
+        )
 
-    op = hlo.CustomCallOp.build_generic(results=result_types, operands=operands,
+    op = hlo.CustomCallOp.build_generic(results=result_types,
+                                        operands=operands,
                                         attributes=attributes)
     if isinstance(backend_config, dict):
         backend_config_attr = ir.DictAttr.get(backend_config)
