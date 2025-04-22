@@ -23,8 +23,9 @@ from ._csrlb import CSR_LB, CSC_LB
 from ._event import EventArray
 from ._fixed_conn_num import FixedPostNumConn, FixedPreNumConn
 from ._jitc_csr import JITC_CSR, JITC_CSC
-from ._xla_custom_op import XLACustomKernel, defjvp
-from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ_context
+from ._xla_custom_op import XLACustomKernel
+from ._xla_custom_op_jvp import defjvp
+from ._xla_custom_op_numba import NumbaKernelGenerator, set_numba_environ
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type
 
