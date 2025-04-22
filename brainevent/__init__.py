@@ -22,7 +22,7 @@ from ._csr import CSR, CSC
 from ._csrlb import CSR_LB, CSC_LB
 from ._event import EventArray
 from ._fixed_conn_num import FixedPostNumConn, FixedPreNumConn
-from ._jitc_csr import JITC_CSR, JITC_CSC
+from ._jitc import JITC_CSR, JITC_CSC
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_jvp import defjvp
 from ._xla_custom_op_numba import NumbaKernelGenerator, set_numba_environ
@@ -30,59 +30,40 @@ from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type
 
 __all__ = [
-    # events
+
+    # --- data representing events --- #
     'EventArray',
 
-    # data structures
+    # --- data interoperable with events --- #
     'COO',
-    'CSR', 'CSC',
-    'CSR_LB', 'CSC_LB',
-    'JITC_CSR', 'JITC_CSC',
+    'CSR',
+    'CSC',
+    'CSR_LB',
+    'CSC_LB',
+    'JITC_CSR',
+    'JITC_CSC',
     'BlockCSR',
     'BlockELL',
     'FixedPreNumConn',
     'FixedPostNumConn',
 
-    # kernels
-    'XLACustomKernel', 'defjvp',
+    # --- operator customization routines --- #
+
+    # 1. Custom kernel
+    'XLACustomKernel',
+
+    # 2. define JVP
+    'defjvp',
+
+    # 3. Numba kernel
     'NumbaKernelGenerator', 'set_numba_environ',
+
+    # 4. Warp kernel
     'WarpKernelGenerator',
-    'PallasKernelGenerator',
     'dtype_to_warp_type',
+
+    # 5. Pallas kernel
+    'PallasKernelGenerator',
+
 ]
 
-# def __getattr(name):
-#     """
-#     Custom attribute lookup function for lazy-loading modules.
-#
-#     This function implements lazy loading for the 'nn' submodule. When the
-#     'nn' attribute is accessed for the first time, this function dynamically
-#     imports the module and returns it, avoiding unnecessary imports at startup.
-#
-#     Parameters
-#     ----------
-#     name : str
-#         Name of the attribute being accessed.
-#
-#     Returns
-#     -------
-#     module
-#         The requested module if it exists.
-#
-#     Raises
-#     ------
-#     AttributeError
-#         If the requested attribute does not exist in the brainevent package.
-#     """
-#     if name == 'nn':
-#         # Import the module directly from its actual location
-#         # instead of from the brainevent package
-#         import brainevent.nn as nn
-#         return nn
-#     raise AttributeError(f"brainevent has no attribute {name!r}")
-#
-#
-# # Register the getattr function as the module's __getattr__ hook
-# # This enables Python's attribute lookup mechanism to call our custom function
-# # when an undefined attribute is accessed
-# __getattr__ = __getattr

@@ -22,11 +22,10 @@ import numpy as np
 from jax import numpy as jnp
 from jax.interpreters import ad
 
-from ._typing import Kernel, Data
+from ._typing import Kernel, Data, MatrixShape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
-
 
 __all__ = [
     "_jitc_matvec_homo",
@@ -39,20 +38,43 @@ __all__ = [
 
 
 def _initialize_seed(seed=None):
-    """Initialize random seed if not provided."""
+    """Initialize a random seed for JAX operations.
+
+    This function ensures a consistent format for random seeds used in JAX operations.
+    If no seed is provided, it generates a random integer between 0 and 10^8 at compile time,
+    ensuring reproducibility within compiled functions.
+
+    Parameters
+    ----------
+    seed : int or array-like, optional
+        The random seed to use. If None, a random seed is generated.
+
+    Returns
+    -------
+    jax.Array
+        A JAX array containing the seed value(s) with int32 dtype, ensuring it's
+        in a format compatible with JAX random operations.
+
+    Notes
+    -----
+    The function uses `jax.ensure_compile_time_eval()` to guarantee that random 
+    seed generation happens during compilation rather than during execution when 
+    no seed is provided, which helps maintain consistency across multiple calls
+    to a JIT-compiled function.
+    """
     if seed is None:
         with jax.ensure_compile_time_eval():
-            seed = np.random.randint(0, int(1e8), 1)
+            seed = np.random.randint(0, int(1e8), (1,))
     return jnp.asarray(jnp.atleast_1d(seed), dtype=jnp.int32)
 
 
 def _jitc_matvec_homo(
-    weight: Data | float,
+    weight: Data,
     conn_prob: float,
     v: Data,
     seed: Optional[int] = None,
     *,
-    shape: Tuple[int, int],
+    shape: MatrixShape,
     transpose: bool = False,
     outdim_parallel: bool = True,
 ) -> Data:
@@ -108,20 +130,25 @@ def _jitc_matvec_homo(
     weight, unitd = u.split_mantissa_unit(weight)
     v, unitv = u.split_mantissa_unit(v)
     res = jitc_mv_homo_p_call(
-        weight, conn_prob, v, seed,
-        shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
+        weight,
+        conn_prob,
+        v,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        outdim_parallel=outdim_parallel
     )[0]
     return u.maybe_decimal(res * unitd * unitv)
 
 
 def _jitc_matvec_uniform(
-    w_low: Data | float,
-    w_high: Data | float,
+    w_low: Data,
+    w_high: Data,
     conn_prob: float,
     v: Data,
     seed: Optional[int] = None,
     *,
-    shape: Tuple[int, int],
+    shape: MatrixShape,
     transpose: bool = False,
     outdim_parallel: bool = True,
 ) -> Data:
@@ -179,24 +206,29 @@ def _jitc_matvec_uniform(
     seed = _initialize_seed(seed)
     u.fail_for_dimension_mismatch(w_low, w_high, "w_low and w_high must have the same dimension.")
     w_low, unit_w_low = u.split_mantissa_unit(w_low)
-    w_high, unit_w_high = u.split_mantissa_unit(
-        w_high.in_unit(unit_w_low) if isinstance(w_high, u.Quantity) else w_high)
+    w_high = u.Quantity(w_high).to(unit_w_low).mantissa
     v, unitv = u.split_mantissa_unit(v)
     res = jitc_mv_uniform_p_call(
-        w_low, w_high, conn_prob, v, seed,
-        shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
+        w_low,
+        w_high,
+        conn_prob,
+        v,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        outdim_parallel=outdim_parallel
     )[0]
     return u.maybe_decimal(res * unit_w_low * unitv)
 
 
 def _jitc_matvec_normal(
-    w_mu: Data | float,
-    w_sigma: Data | float,
+    w_mu: Data,
+    w_sigma: Data,
     conn_prob: float,
     v: Data,
     seed: Optional[int] = None,
     *,
-    shape: Tuple[int, int],
+    shape: MatrixShape,
     transpose: bool = False,
     outdim_parallel: bool = True,
 ) -> Data:
@@ -255,23 +287,28 @@ def _jitc_matvec_normal(
     seed = _initialize_seed(seed)
     u.fail_for_dimension_mismatch(w_mu, w_sigma, "w_low and w_high must have the same dimension.")
     w_mu, unit_w_mu = u.split_mantissa_unit(w_mu)
-    w_sigma, unit_w_sigma = u.split_mantissa_unit(
-        w_sigma.in_unit(unit_w_mu) if isinstance(w_mu, u.Quantity) else w_sigma)
+    w_sigma = u.Quantity(w_sigma).to(unit_w_mu).mantissa
     v, unitv = u.split_mantissa_unit(v)
     res = jitc_mv_normal_p_call(
-        w_mu, w_sigma, conn_prob, v, seed,
-        shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
+        w_mu,
+        w_sigma,
+        conn_prob,
+        v,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        outdim_parallel=outdim_parallel
     )[0]
     return u.maybe_decimal(res * unit_w_mu * unitv)
 
 
 def _jitc_matmat_homo(
-    weight: Data | float,
+    weight: Data,
     conn_prob: float,
     B: Data,
     seed: Optional[int] = None,
     *,
-    shape: Tuple[int, int],
+    shape: MatrixShape,
     transpose: bool = False,
     outdim_parallel: bool = True,
 ) -> Data:
@@ -317,20 +354,25 @@ def _jitc_matmat_homo(
     weight, unitd = u.split_mantissa_unit(weight)
     B, unitB = u.split_mantissa_unit(B)
     res = jitc_mm_homo_p_call(
-        weight, conn_prob, B, seed,
-        shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
+        weight,
+        conn_prob,
+        B,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        outdim_parallel=outdim_parallel
     )[0]
     return u.maybe_decimal(res * unitd * unitB)
 
 
 def _jitc_matmat_uniform(
-    w_low: Data | float,
-    w_high: Data | float,
+    w_low: Data,
+    w_high: Data,
     conn_prob: float,
     B: Data,
     seed: Optional[int] = None,
     *,
-    shape: Tuple[int, int],
+    shape: MatrixShape,
     transpose: bool = False,
     outdim_parallel: bool = True,
 ) -> Data:
@@ -378,24 +420,29 @@ def _jitc_matmat_uniform(
     seed = _initialize_seed(seed)
     u.fail_for_dimension_mismatch(w_low, w_high, "w_low and w_high must have the same dimension.")
     w_low, unit_w_low = u.split_mantissa_unit(w_low)
-    w_high, unit_w_high = u.split_mantissa_unit(
-        w_high.in_unit(unit_w_low) if isinstance(w_high, u.Quantity) else w_high)
+    w_high = u.Quantity(w_high).to(unit_w_low).mantissa
     B, unitB = u.split_mantissa_unit(B)
     res = jitc_mm_uniform_p_call(
-        w_low, w_high, conn_prob, B, seed,
-        shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
+        w_low,
+        w_high,
+        conn_prob,
+        B,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        outdim_parallel=outdim_parallel
     )[0]
     return u.maybe_decimal(res * unit_w_low * unitB)
 
 
 def _jitc_matmat_normal(
-    w_mu: Data | float,
-    w_sigma: Data | float,
+    w_mu: Data,
+    w_sigma: Data,
     conn_prob: float,
     B: Data,
     seed: Optional[int] = None,
     *,
-    shape: Tuple[int, int],
+    shape: MatrixShape,
     transpose: bool = False,
     outdim_parallel: bool = True,
 ) -> Data:
@@ -443,12 +490,17 @@ def _jitc_matmat_normal(
     seed = _initialize_seed(seed)
     u.fail_for_dimension_mismatch(w_mu, w_sigma, "w_low and w_high must have the same dimension.")
     w_mu, unit_w_mu = u.split_mantissa_unit(w_mu)
-    w_sigma, unit_w_sigma = u.split_mantissa_unit(
-        w_sigma.in_unit(unit_w_mu) if isinstance(w_mu, u.Quantity) else w_sigma)
+    w_sigma = u.Quantity(w_sigma).to(unit_w_mu).mantissa
     B, unitB = u.split_mantissa_unit(B)
     res = jitc_mm_normal_p_call(
-        w_mu, w_sigma, conn_prob, B, seed,
-        shape=shape, transpose=transpose, outdim_parallel=outdim_parallel
+        w_mu,
+        w_sigma,
+        conn_prob,
+        B,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        outdim_parallel=outdim_parallel
     )[0]
     return u.maybe_decimal(res * unit_w_mu * unitB)
 
@@ -479,7 +531,6 @@ def _jitc_mv_homo_cpu_kernel_generator(
             for i_row in range(num_row):
                 connections = np.random.binomial(1, conn_prob0, num_col)
                 r = np.sum(v * connections)
-
                 posts[i_row] = r * weight0
     else:
         # outdim_parallel=False
@@ -494,7 +545,6 @@ def _jitc_mv_homo_cpu_kernel_generator(
             for i_col in range(num_col):
                 r = v[i_col] * weight0
                 connections = np.random.binomial(1, conn_prob0, num_row)
-
                 posts += connections * r
 
     kernel = numba.njit(**numba_environ.setting)(kernel)
@@ -506,7 +556,7 @@ def _jitc_mv_homo_gpu_kernel_generator(
     clen_info: jax.ShapeDtypeStruct,
     v_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
-    shape: Tuple[int, int],
+    shape: MatrixShape,
     transpose: bool = False,
     outdim_parallel: bool = True,
     **kwargs
@@ -806,7 +856,7 @@ def _jitc_mv_uniform_gpu_kernel_generator(
     clen_info: jax.ShapeDtypeStruct,
     v_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
-    shape: Tuple[int, int],
+    shape: MatrixShape,
     transpose: bool = False,
     outdim_parallel: bool = True,
     **kwargs
@@ -1094,9 +1144,9 @@ jitc_mv_uniform_p = XLACustomKernel(
 )
 
 jitc_mv_uniform_p.defjvp(_jitc_mv_uniform_jvp_w_low,
-                            _jitc_mv_uniform_jvp_w_high,
-                            None,
-                            _jitc_mv_uniform_jvp_v)
+                         _jitc_mv_uniform_jvp_w_high,
+                         None,
+                         _jitc_mv_uniform_jvp_v)
 jitc_mv_uniform_p.def_transpose_rule(_jitc_mv_uniform_transpose_rules)
 jitc_mv_uniform_p.def_batching_rule(_jitc_mv_uniform_batching)
 
@@ -1154,7 +1204,7 @@ def _jitc_mv_normal_gpu_kernel_generator(
     clen_info: jax.ShapeDtypeStruct,
     v_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
-    shape: Tuple[int, int],
+    shape: MatrixShape,
     transpose: bool = False,
     outdim_parallel: bool = True,
     **kwargs
@@ -1445,10 +1495,10 @@ jitc_mv_normal_p = XLACustomKernel(
 )
 
 jitc_mv_normal_p.defjvp(_jitc_mv_normal_jvp_w_mu,
-                           _jitc_mv_normal_jvp_w_sigma,
-                           None,
-                           _jitc_mv_normal_jvp_v,
-                           None)
+                        _jitc_mv_normal_jvp_w_sigma,
+                        None,
+                        _jitc_mv_normal_jvp_v,
+                        None)
 jitc_mv_normal_p.def_transpose_rule(_jitc_mv_normal_transpose_rules)
 jitc_mv_normal_p.def_batching_rule(_jitc_mv_normal_batching)
 
@@ -1508,7 +1558,7 @@ def _jitc_mm_homo_gpu_kernel_generator(
     clen_info: jax.ShapeDtypeStruct,
     B_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
-    shape: Tuple[int, int],
+    shape: MatrixShape,
     transpose: bool = False,
     outdim_parallel: bool = True,
     **kwargs
@@ -1839,7 +1889,7 @@ def _jitc_mm_uniform_gpu_kernel_generator(
     clen_info: jax.ShapeDtypeStruct,
     B_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
-    shape: Tuple[int, int],
+    shape: MatrixShape,
     transpose: bool = False,
     outdim_parallel: bool = True,
     **kwargs
@@ -2150,9 +2200,9 @@ jitc_mm_uniform_p = XLACustomKernel(
 )
 
 jitc_mm_uniform_p.defjvp(_jitc_mm_uniform_jvp_w_low,
-                            _jitc_mm_uniform_jvp_w_high,
-                            None,
-                            _jitc_mm_uniform_jvp_B)
+                         _jitc_mm_uniform_jvp_w_high,
+                         None,
+                         _jitc_mm_uniform_jvp_B)
 jitc_mm_uniform_p.def_transpose_rule(_jitc_mm_uniform_transpose_rules)
 jitc_mm_uniform_p.def_batching_rule(_jitc_mm_uniform_batching)
 
@@ -2215,7 +2265,7 @@ def _jitc_mm_normal_gpu_kernel_generator(
     clen_info: jax.ShapeDtypeStruct,
     B_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
-    shape: Tuple[int, int],
+    shape: MatrixShape,
     transpose: bool = False,
     outdim_parallel: bool = True,
     **kwargs
@@ -2524,8 +2574,8 @@ jitc_mm_normal_p = XLACustomKernel(
 )
 
 jitc_mm_normal_p.defjvp(_jitc_mm_normal_jvp_w_mu,
-                           _jitc_mm_normal_jvp_w_sigma,
-                           None,
-                           _jitc_mm_normal_jvp_B)
+                        _jitc_mm_normal_jvp_w_sigma,
+                        None,
+                        _jitc_mm_normal_jvp_B)
 jitc_mm_normal_p.def_transpose_rule(_jitc_mm_normal_transpose_rules)
 jitc_mm_normal_p.def_batching_rule(_jitc_mm_normal_batching)
