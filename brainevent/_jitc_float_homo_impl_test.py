@@ -19,7 +19,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from brainevent._jitc_float_normal_impl import (
+from brainevent._jitc_float_homo_impl import (
     jitc_matvec_homo,
     jitc_matmat_homo,
 )
@@ -41,19 +41,21 @@ class TestJitcCsrMatvecHomo:
         v = jnp.array([1.0, 2.0, 3.0])
         shape = (2, 3)
         seed = 1234
-        result = jitc_matvec_homo(weight,
-                                  conn_prob,
-                                  v,
-                                  seed=seed,
-                                  shape=shape,
-                                  transpose=transpose,
-                                  outdim_parallel=outdim_parallel)
+        result = jitc_matvec_homo(
+            weight,
+            conn_prob,
+            v,
+            seed=seed,
+            shape=shape,
+            transpose=transpose,
+            outdim_parallel=outdim_parallel
+        )
         expected = jnp.zeros(shape[1]) if transpose else jnp.zeros(shape[0])
         assert (jnp.allclose(result, expected))
 
     @pytest.mark.parametrize('shape', [(100, 200), (20, 100), (100, 20)])
     @pytest.mark.parametrize('weight', [-1., 1.])
-    @pytest.mark.parametrize('prob', [0.3, 0.5])
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('transpose', [True, False])
     @pytest.mark.parametrize('outdim_parallel', [True, False])
     def test_random_connectivity(self, shape, weight, prob, transpose, outdim_parallel):
@@ -81,7 +83,7 @@ class TestJitcCsrMatvecHomo:
         assert (jnp.allclose(r1, r2, atol=1e-6))
 
     @pytest.mark.parametrize('weight', [-1., 1.])
-    @pytest.mark.parametrize('prob', [0.3, 0.5])
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('transpose', [True, False])
     @pytest.mark.parametrize('outdim_parallel', [True, False])
     def test_jvp(self, weight, prob, transpose, outdim_parallel):
@@ -120,7 +122,6 @@ class TestJitcCsrMatvecHomo:
 
 
 class TestJitcCsrMatmatHomo:
-
     @pytest.mark.parametrize('transpose', [True, False])
     @pytest.mark.parametrize('outdim_parallel', [True, False])
     def test_zero_weight(self, transpose, outdim_parallel):
@@ -147,7 +148,7 @@ class TestJitcCsrMatmatHomo:
     @pytest.mark.parametrize('shape', [(100, 200), (20, 100), (100, 20)])
     @pytest.mark.parametrize('batch_size', [10, 20])
     @pytest.mark.parametrize('weight', [-1., 1.])
-    @pytest.mark.parametrize('prob', [0.3, 0.5])
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('transpose', [True, False])
     @pytest.mark.parametrize('outdim_parallel', [True, False])
     def test_random_connectivity(self, shape, batch_size, weight, prob, transpose, outdim_parallel):
@@ -166,20 +167,24 @@ class TestJitcCsrMatmatHomo:
         B_shape = (shape[0] if transpose else shape[1], batch_size)
         B = jnp.asarray(np.random.random(B_shape))
 
-        r1 = jitc_matmat_homo(weight,
-                              prob,
-                              B,
-                              seed=seed,
-                              shape=shape,
-                              transpose=transpose,
-                              outdim_parallel=outdim_parallel)
-        r2 = jitc_matmat_homo(weight,
-                              prob,
-                              B,
-                              seed=seed,
-                              shape=shape,
-                              transpose=transpose,
-                              outdim_parallel=outdim_parallel)
+        r1 = jitc_matmat_homo(
+            weight,
+            prob,
+            B,
+            seed=seed,
+            shape=shape,
+            transpose=transpose,
+            outdim_parallel=outdim_parallel
+        )
+        r2 = jitc_matmat_homo(
+            weight,
+            prob,
+            B,
+            seed=seed,
+            shape=shape,
+            transpose=transpose,
+            outdim_parallel=outdim_parallel
+        )
         # Results should be deterministic for same seed
         # print(jnp.sum(r1 - r2))
         print(r1)
@@ -206,13 +211,15 @@ class TestJitcCsrMatmatHomo:
         X = jnp.asarray(np.random.random(X_shape))
 
         def f_brainevent(X, w):
-            return jitc_matmat_homo(w,
-                                    prob,
-                                    X,
-                                    seed=seed,
-                                    shape=shape,
-                                    transpose=transpose,
-                                    outdim_parallel=outdim_parallel)
+            return jitc_matmat_homo(
+                w,
+                prob,
+                X,
+                seed=seed,
+                shape=shape,
+                transpose=transpose,
+                outdim_parallel=outdim_parallel
+            )
 
         # Test JVP for both input matrix X and weight w
         out1, jvp_x1 = jax.jvp(f_brainevent,

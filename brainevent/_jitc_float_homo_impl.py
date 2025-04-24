@@ -26,6 +26,7 @@ from ._jitc_util import _initialize_seed, _initialize_conn_length
 from ._typing import Kernel, Data, MatrixShape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
+from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 
 __all__ = [
@@ -535,25 +536,25 @@ def _jitc_mv_homo_cpu_kernel_generator(
 def _jitc_mv_homo_gpu_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
-    v_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
     transpose: bool = False,
     outdim_parallel: bool = True,
     **kwargs
 ) -> Kernel:
-    r"""Generate the GPU kernel for the :func:`_jitc_matvec_homo` operation.
+    r"""
+    Generate the GPU kernel for the :func:`_jitc_matvec_homo` operation.
     """
     import warp
 
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
     clen_dtype = dtype_to_warp_type(clen_info.dtype)
-    v_dtype = dtype_to_warp_type(v_info.dtype)
+    v_dtype = dtype_to_warp_type(vector_info.dtype)
     seed_dtype = dtype_to_warp_type(seed_info.dtype)
 
     if outdim_parallel:
 
         if transpose:
-            @warp.kernel
             def kernel(
                 weight: warp.array1d(dtype=weight_dtype),
                 clen: warp.array1d(dtype=clen_dtype),
@@ -632,7 +633,6 @@ def _jitc_mv_homo_gpu_kernel_generator(
                 posts[i_col] = r * weight0
 
         else:
-            @warp.kernel
             def kernel(
                 weight: warp.array1d(dtype=weight_dtype),
                 clen: warp.array1d(dtype=clen_dtype),
@@ -712,7 +712,6 @@ def _jitc_mv_homo_gpu_kernel_generator(
     else:
 
         if transpose:
-            @warp.kernel
             def kernel(
                 weight: warp.array1d(dtype=weight_dtype),
                 clen: warp.array1d(dtype=clen_dtype),
@@ -793,7 +792,6 @@ def _jitc_mv_homo_gpu_kernel_generator(
 
         else:
 
-            @warp.kernel
             def kernel(
                 weight: warp.array1d(dtype=weight_dtype),
                 clen: warp.array1d(dtype=clen_dtype),
@@ -871,7 +869,7 @@ def _jitc_mv_homo_gpu_kernel_generator(
                     # This creates sparse connectivity with ~1/clen0 connection probability
                     i_row += warp.randi(state, 1, clen0)
 
-    return kernel
+    return warp.kernel(kernel)
 
 
 def _jitc_mv_homo_jvp_v(
@@ -887,17 +885,15 @@ def _jitc_mv_homo_jvp_v(
     outdim_parallel,
     **kwargs
 ):
-    return [
-        jitc_matvec_homo(
-            weight,
-            clen,
-            v_dot,
-            seed,
-            shape=shape,
-            transpose=transpose,
-            outdim_parallel=outdim_parallel
-        )
-    ]
+    return jitc_mv_homo_p_call(
+        weight,
+        clen,
+        v_dot,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        outdim_parallel=outdim_parallel
+    )
 
 
 def _jitc_mv_homo_jvp_weights(
@@ -937,22 +933,38 @@ def _jitc_mv_homo_transpose_rules(
     outdim_parallel,
     **kwargs
 ):
-    assert not ad.is_undefined_primal(weight)
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
-    assert ad.is_undefined_primal(vector)
 
-    r = jitc_mv_homo_p_call(
-        weight,
-        clen,
-        ct,
-        seed,
-        shape=shape,
-        transpose=transpose,
-        outdim_parallel=outdim_parallel
-    )[0]
-
-    return weight, clen, r, seed, _
+    ct = ct[0]
+    if ad.is_undefined_primal(vector):
+        r = jitc_mv_homo_p_call(
+            weight,
+            clen,
+            ct,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            outdim_parallel=outdim_parallel
+        )[0]
+        return weight, clen, r, seed, _
+    elif ad.is_undefined_primal(weight):
+        row = jitc_mv_homo_p_call(
+            jnp.ones((1,), dtype=ct.dtype),
+            clen,
+            ct,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            outdim_parallel=outdim_parallel
+        )[0]
+        dw = jnp.sum(row * vector, keepdims=True)
+        return dw, clen, vector, seed, _
+    else:
+        raise NotImplementedError(
+            f"Transpose rule for {ct} not implemented "
+            f"for event-driven COO matrix-vector product."
+        )
 
 
 def _jitc_mv_homo_batching(
@@ -969,7 +981,7 @@ def _jitc_mv_homo_batching(
             args[3],
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
-            outdim_parallel=kwargs['outdim_parallel1']
+            outdim_parallel=kwargs['outdim_parallel1'],
         )
         return r, [1]
     elif tuple(axes) == (None, None, 1, None, None):
@@ -980,11 +992,16 @@ def _jitc_mv_homo_batching(
             args[3],
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
-            outdim_parallel=kwargs['outdim_parallel1']
+            outdim_parallel=kwargs['outdim_parallel1'],
         )
         return r, [1]
     else:
-        raise NotImplementedError(f"Batching axes {axes} not implemented for event-driven COO matrix-vector product.")
+        return general_batching_rule(
+            jitc_mv_homo_p,
+            args,
+            axes,
+            **kwargs,
+        )
 
 
 def jitc_mv_homo_p_call(
@@ -997,6 +1014,58 @@ def jitc_mv_homo_p_call(
     transpose: bool,
     outdim_parallel: bool,
 ):
+    r"""
+    Low-level implementation function for just-in-time generated sparse matrix-vector multiplication
+    with homogeneous weight values.
+
+    This function prepares inputs and calls the XLA custom kernel primitive for matrix-vector
+    multiplication with a sparsely connected matrix that is generated on-the-fly during execution.
+    It handles necessary type conversions and array formatting before passing to the underlying
+    primitive operation.
+
+    Parameters
+    ----------
+    weight : Array, float
+        Scalar weight value for non-zero connections in the randomly generated matrix.
+        Will be converted to at least 1D array internally.
+    clen : Array, float
+        Connection length parameter (approximately 2/connection_probability).
+        Controls the sparsity of the generated matrix.
+    vector : Array
+        Input vector for multiplication. Shape must be compatible with the matrix shape.
+    seed : int, Array
+        Random seed for reproducible matrix generation.
+    shape : Sequence[int]
+        The shape of the implicit matrix as a tuple (num_rows, num_cols).
+    transpose : bool, default=False
+        If True, perform ``y = M^T @ vector`` instead of ``y = M @ vector``.
+    outdim_parallel : bool, default=True
+        Controls the parallelization strategy:
+        - True: Parallelize along output dimension (typically faster)
+        - False: Parallelize along input dimension (ensures reproducibility between
+                 transposed operations, but may be slower)
+
+    Returns
+    -------
+    tuple
+        A tuple containing the output array from the primitive operation.
+        The output shape is determined by the matrix shape and transpose flag:
+        - If ``transpose=False``: output shape is (shape[0],)
+        - If ``transpose=True``: output shape is (shape[1],)
+
+    Notes
+    -----
+    This function is intended as an internal implementation detail and is used by the
+    higher-level `jitc_matvec_homo` function, which properly handles units and provides
+    a more user-friendly interface.
+
+    The operation is implemented as an XLA custom kernel to achieve high performance on
+    both CPU and GPU. The primitive supports JAX transformations including grad, vmap, and jit.
+
+    When using ``outdim_parallel=True`` (default), the generated matrix $M$ when ``transpose=False``
+    will generally be different from the implicitly generated $M^T$ when ``transpose=True``.
+    Set ``outdim_parallel=False`` if exact correspondence between $M$ and $M^T$ is required.
+    """
     weight = jnp.atleast_1d(weight)
     clen = jnp.atleast_1d(clen)
 
@@ -1015,7 +1084,7 @@ def jitc_mv_homo_p_call(
         outs=[out_info],
         weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
         clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
-        v_info=jax.ShapeDtypeStruct(vector.shape, vector.dtype),
+        vector_info=jax.ShapeDtypeStruct(vector.shape, vector.dtype),
         seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
         out_info=out_info,
         shape=shape,
@@ -1029,15 +1098,22 @@ jitc_mv_homo_p = XLACustomKernel(
     cpu_kernel=NumbaKernelGenerator(_jitc_mv_homo_cpu_kernel_generator, input_output_aliases={4: 0}),
     gpu_kernel=WarpKernelGenerator(
         _jitc_mv_homo_gpu_kernel_generator,
-        dim=lambda v_info, out_info, outdim_parallel, **kwargs: (
-            out_info.shape[0] if outdim_parallel else
-            v_info.shape[0]
+        dim=lambda vector_info, out_info, outdim_parallel, **kwargs: (
+            out_info.shape[0]
+            if outdim_parallel else
+            vector_info.shape[0]
         ),
         input_output_aliases={4: 0}
     )
 )
 
-jitc_mv_homo_p.defjvp(_jitc_mv_homo_jvp_weights, None, _jitc_mv_homo_jvp_v)
+jitc_mv_homo_p.defjvp(
+    _jitc_mv_homo_jvp_weights,
+    None,
+    _jitc_mv_homo_jvp_v,
+    None,
+    None
+)
 jitc_mv_homo_p.def_transpose_rule(_jitc_mv_homo_transpose_rules)
 jitc_mv_homo_p.def_batching_rule(_jitc_mv_homo_batching)
 
@@ -1051,42 +1127,314 @@ def _jitc_mm_homo_cpu_kernel_generator(
     outdim_parallel: bool = True,
     **kwargs
 ) -> Kernel:
-    r"""Generate the CPU kernel for the :func:`_jitc_matmat_homo` operation.
+    r"""
+    Generate the CPU kernel for the :func:`_jitc_matmat_homo` operation.
     """
     import numba  # pylint: disable=import-outside-toplevel
 
     if outdim_parallel:
-        # outdim_parallel=True
-        def kernel(weight, clen, B, seed, _, posts):
-            num_rows, num_cols = posts.shape
-            weight0 = weight[0]
-            clen0 = clen[0]
-            seed0 = seed[0]
-            np.random.seed(seed0)
 
-            for i_row in range(num_rows):
-                for i_col in range(num_cols):
-                    connections = np.random.binomial(1, clen0, num_cols)
+        if transpose:
+            # JIT Matrix.T @ B
+            #
+            # - JIT matrix: [k, m]
+            # - B: [k, n]
 
-                    r = np.sum(B[i_row, :] * connections)
-                    posts[i_row, i_col] = r * weight0
+            def kernel(weight, clen, B, seed, _, posts):
+                """
+                Numba kernel for sparse matrix-matrix multiplication with on-the-fly matrix generation.
+
+                Implements the operation M^T @ B where M is a sparse matrix with homogeneous weight values
+                generated just-in-time during computation. Instead of storing the full matrix, this function
+                uses a probabilistic approach to sample connections for each output row.
+
+                This kernel handles the transpose=True, outdim_parallel=True case, processing each output row
+                in sequence. This design enables efficient multiplication with very large sparse matrices
+                that would be impractical to store in memory.
+
+                The mathematical operation performed is:
+
+                y_ij = \sum_{k} M_{ki} * B_{kj}
+
+                Where M is implicitly defined with connection probability ~1/clen0.
+
+                Parameters
+                ----------
+                weight : array_like
+                    Single-element array containing the homogeneous weight value for all connections
+                clen : array_like
+                    Single-element array containing the connection length parameter (~2/connection_probability)
+                B : ndarray
+                    Input matrix to multiply with the transposed implicit sparse matrix, shape (k, n)
+                seed : array_like
+                    Single-element array with random seed for reproducible matrix generation
+                _ : ndarray
+                    Unused placeholder parameter (required for API compatibility)
+                posts : ndarray
+                    Output array where results are stored, shape (m, n)
+
+                Notes
+                -----
+                The algorithm:
+                1. For each output row i_m, initialize a zero vector of length n
+                2. Sample connections to input rows (i_k) using geometric-like skipping
+                3. For each sampled connection, add the corresponding row of B to the output
+                4. Finally scale the accumulated sum by the weight value
+                5. This row-wise approach is memory efficient for sparse connectivity patterns
+                """
+                m = posts.shape[0]  # Number of rows in output matrix (columns in M)
+                n = posts.shape[1]  # Number of columns in output matrix (columns in B)
+                k = B.shape[0]  # Number of rows in B (rows in M)
+
+                weight0 = weight[0]  # Homogeneous weight value for all non-zero connections
+                seed0 = seed[0]  # Random seed for reproducible matrix generation
+                clen0 = clen[0]  # Connection length parameter (controls sparsity)
+                np.random.seed(seed0)
+
+                for i_m in range(m):
+                    # Start at a random position in [0, clen0) for variability in connection patterns
+                    i_k = np.random.randint(0, clen0)
+
+                    # Initialize accumulator for this output row with proper dtype
+                    out = np.zeros(n, dtype=B.dtype)
+
+                    # Process all connected entries for this output row
+                    while i_k < k:
+                        # Add contribution from the current connected input row
+                        out += B[i_k]
+
+                        # Skip ahead to next connected row using geometric-like distribution
+                        # This creates sparse connectivity with ~1/clen0 connection probability
+                        i_k += np.random.randint(1, clen0)
+
+                    # Scale accumulated sum by weight and store in output array
+                    posts[i_m] = out * weight0
+
+        else:
+            # JIT Matrix @ B
+            #
+            # - JIT matrix: [m, k]
+            # - B: [k, n]
+
+            def kernel(weight, clen, B, seed, _, posts):
+                """
+                Numba kernel for sparse matrix-matrix multiplication with on-the-fly matrix generation.
+
+                Implements the operation M @ B where M is a sparse matrix with homogeneous weight values
+                generated just-in-time during computation. Instead of storing the full matrix, this function
+                uses a probabilistic approach to sample connections for each output row.
+
+                This kernel handles the transpose=False, outdim_parallel=True case, processing each output row
+                in sequence. This design enables efficient multiplication with very large sparse matrices
+                that would be impractical to store in memory.
+
+                The mathematical operation performed is:
+
+                y_ij = \sum_{k} M_{ik} * B_{kj}
+
+                Where M is implicitly defined with connection probability ~1/clen0.
+
+                Parameters
+                ----------
+                weight : array_like
+                    Single-element array containing the homogeneous weight value for all connections
+                clen : array_like
+                    Single-element array containing the connection length parameter (~2/connection_probability)
+                B : ndarray
+                    Input matrix to multiply with the implicit sparse matrix, shape (k, n)
+                seed : array_like
+                    Single-element array with random seed for reproducible matrix generation
+                _ : ndarray
+                    Unused placeholder parameter (required for API compatibility)
+                posts : ndarray
+                    Output array where results are stored, shape (m, n)
+
+                Notes
+                -----
+                The algorithm:
+                1. For each output row i_m, initialize a zero vector of length n
+                2. Sample connections to input rows (i_k) using geometric-like skipping
+                3. For each sampled connection, add the corresponding row of B to the output
+                4. Finally scale the accumulated sum by the weight value
+                5. This row-wise approach is memory efficient for sparse connectivity patterns
+                """
+                m = posts.shape[0]  # Number of rows in output matrix (rows in M)
+                n = posts.shape[1]  # Number of columns in output matrix (columns in B)
+                k = B.shape[0]  # Number of rows in B (columns in M)
+
+                weight0 = weight[0]  # Homogeneous weight value for all non-zero connections
+                seed0 = seed[0]  # Random seed for reproducible matrix generation
+                clen0 = clen[0]  # Connection length parameter (controls sparsity)
+                np.random.seed(seed0)  # Initialize random number generator with seed for reproducibility
+
+                for i_m in range(m):
+                    # Start at a random position in [0, clen0) for variability in connection patterns
+                    i_k = np.random.randint(0, clen0)
+
+                    # Initialize accumulator for this output row with proper dtype
+                    out = np.zeros(n, dtype=B.dtype)
+
+                    # Process all connected entries for this output row
+                    while i_k < k:
+                        # Add contribution from the current connected input row
+                        out += B[i_k]
+
+                        # Skip ahead to next connected row using geometric-like distribution
+                        # This creates sparse connectivity with ~1/clen0 connection probability
+                        i_k += np.random.randint(1, clen0)
+
+                    # Scale accumulated sum by weight and store in output array
+                    posts[i_m] = out * weight0
 
     else:
-        # outdim_parallel=False
-        # TODO: more checks on this kernel (random generation method)
-        def kernel(weight, clen, B, seed, _, posts):
-            num_rows, num_cols = posts.shape
-            weight0 = weight[0]
-            clen0 = clen[0]
-            seed0 = seed[0]
-            np.random.seed(seed0)
+        if transpose:
+            # JIT Matrix.T @ B
+            #
+            # - JIT matrix: [k, m]
+            # - B: [k, n]
 
-            for i_col in range(num_cols):
-                for i_row in range(num_rows):
-                    r = B[i_row, :] * weight0
-                    connections = np.random.binomial(1, clen0, num_cols)
+            def kernel(weight, clen, B, seed, _, posts):
+                """
+                Numba kernel for sparse matrix-matrix multiplication with on-the-fly matrix generation.
 
-                    posts += connections[:, np.newaxis] * r
+                Implements the operation M^T @ B where M is a sparse matrix with homogeneous weight values
+                generated just-in-time during computation. Instead of storing the full matrix, this function
+                uses a probabilistic approach to sample connections for each input row.
+
+                This kernel handles the transpose=True, outdim_parallel=False case, processing each input row
+                in sequence. This approach ensures that the generated M^T is consistent with the M that would
+                be generated with transpose=False, at the potential cost of reduced parallelism.
+
+                The mathematical operation performed is:
+
+                y_ij = \sum_{k} M_{ki} * B_{kj}
+
+                Where M is implicitly defined with connection probability ~1/clen0.
+
+                Parameters
+                ----------
+                weight : array_like
+                    Single-element array containing the homogeneous weight value for all connections
+                clen : array_like
+                    Single-element array containing the connection length parameter (~2/connection_probability)
+                B : ndarray
+                    Input matrix to multiply with the transposed implicit sparse matrix, shape (k, n)
+                seed : array_like
+                    Single-element array with random seed for reproducible matrix generation
+                _ : ndarray
+                    Unused placeholder parameter (required for API compatibility)
+                posts : ndarray
+                    Output array where results are stored, shape (m, n)
+
+                Notes
+                -----
+                The algorithm:
+                1. For each input row i_k, pre-scale the row from B by the weight value
+                2. Sample connections to output rows (i_m) using geometric-like skipping
+                3. For each sampled connection, add the weighted row to the corresponding output row
+                4. This transpose-compatible approach ensures consistency between M and M^T operations
+                """
+                m = posts.shape[0]  # Number of rows in output matrix (columns in M)
+                k = B.shape[0]  # Number of rows in B (rows in M)
+
+                weight0 = weight[0]  # Homogeneous weight value for all non-zero connections
+                seed0 = seed[0]  # Random seed for reproducible matrix generation
+                clen0 = clen[0]  # Connection length parameter (controls sparsity)
+                np.random.seed(seed0)  # Initialize random number generator with seed
+
+                # Process each input row sequentially
+                for i_k in range(k):
+                    # Pre-multiply the current row by weight for efficiency
+                    out = B[i_k] * weight0
+
+                    # Sample the first connected output row using random skipping
+                    # Start at a random position in [0, clen0) for variability in connection patterns
+                    i_m = np.random.randint(0, clen0)
+
+                    # Process all connected output rows for this input row
+                    while i_m < m:
+                        # Add contribution to the connected output row
+                        # Using += to accumulate results across all input rows
+                        posts[i_m] += out
+
+                        # Skip ahead to next connected output row using geometric-like distribution
+                        # This creates sparse connectivity with ~1/clen0 connection probability
+                        i_m += np.random.randint(1, clen0)
+
+        else:
+            # JIT Matrix @ B
+            #
+            # - JIT matrix: [m, k]
+            # - B: [k, n]
+
+            def kernel(weight, clen, B, seed, _, posts):
+                """
+                Numba kernel for sparse matrix-matrix multiplication with on-the-fly matrix generation.
+
+                Implements the operation M @ B where M is a sparse matrix with homogeneous weight values
+                generated just-in-time during computation. Instead of storing the full matrix, this function
+                uses a probabilistic approach to sample connections for each input column.
+
+                This kernel handles the transpose=False, outdim_parallel=False case, processing each input
+                column in sequence. This approach ensures that the generated matrix is consistent with its
+                transpose when using transpose=True, improving reproducibility at the potential cost of
+                reduced parallelism.
+
+                The mathematical operation performed is:
+
+                y_ij = \sum_{k} M_{ik} * B_{kj}
+
+                Where M is implicitly defined with connection probability ~1/clen0.
+
+                Parameters
+                ----------
+                weight : array_like
+                    Single-element array containing the homogeneous weight value for all connections
+                clen : array_like
+                    Single-element array containing the connection length parameter (~2/connection_probability)
+                B : ndarray
+                    Input matrix to multiply with the implicit sparse matrix, shape (k, n)
+                seed : array_like
+                    Single-element array with random seed for reproducible matrix generation
+                _ : ndarray
+                    Unused placeholder parameter (required for API compatibility)
+                posts : ndarray
+                    Output array where results are stored, shape (m, n)
+
+                Notes
+                -----
+                The algorithm:
+                1. For each input column i_k, pre-scale the row from B by the weight value
+                2. Sample connections to output rows (i_m) using geometric-like skipping
+                3. For each sampled connection, add the weighted input to the corresponding output row
+                4. This approach processes inputs sequentially and distributes each to multiple outputs
+                """
+                m = posts.shape[0]  # Number of rows in output matrix (rows in M)
+                k = B.shape[0]  # Number of rows in B (columns in M)
+
+                weight0 = weight[0]  # Homogeneous weight value for all non-zero connections
+                seed0 = seed[0]  # Random seed for reproducible matrix generation
+                clen0 = clen[0]  # Connection length parameter (controls sparsity)
+                np.random.seed(seed0)  # Initialize random number generator with seed
+
+                # Process each input column sequentially
+                for i_k in range(k):
+                    # Pre-multiply the current row by weight for efficiency
+                    out = B[i_k] * weight0
+
+                    # Sample the first connected output row using random skipping
+                    # Start at a random position in [0, clen0) for variability in connection patterns
+                    i_m = np.random.randint(0, clen0)
+
+                    # Process all connected output rows for this input column
+                    while i_m < m:
+                        # Add contribution to the connected output row
+                        # Using += to accumulate results across all input columns
+                        posts[i_m] += out
+
+                        # Skip ahead to next connected output row using geometric-like distribution
+                        # This creates sparse connectivity with ~1/clen0 connection probability
+                        i_m += np.random.randint(1, clen0)
 
     kernel = numba.njit(**numba_environ.setting)(kernel)
     return kernel
@@ -1102,16 +1450,10 @@ def _jitc_mm_homo_gpu_kernel_generator(
     outdim_parallel: bool = True,
     **kwargs
 ) -> Kernel:
-    r"""Generate the GPU kernel for the :func:`_jitc_matmat_homo` operation.
+    r"""
+    Generate the GPU kernel for the :func:`_jitc_matmat_homo` operation.
     """
     import warp
-
-    @warp.func
-    def _binomial_n1(state: warp.uint32, p: float) -> int:
-        """
-        Draw samples from a binomial distribution.
-        """
-        return 1 if warp.randf(state) < p else 0
 
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
     clen_dtype = dtype_to_warp_type(clen_info.dtype)
@@ -1168,7 +1510,6 @@ def _jitc_mm_homo_gpu_kernel_generator(
             state = warp.rand_init(seed0 + i_row * num_cols + i_col)
 
             cursor = int(0)
-
             while cursor < num_cols:
                 # posts[cursor, :] += r
                 if _binomial_n1(state, clen0) == 1:
@@ -1217,17 +1558,15 @@ def _jitc_mm_homo_jvp_B(
     outdim_parallel,
     **kwargs
 ):
-    return [
-        jitc_matmat_homo(
-            weight,
-            clen,
-            B_dot,
-            seed,
-            shape=shape,
-            transpose=transpose,
-            outdim_parallel=outdim_parallel,
-        )
-    ]
+    return jitc_mm_homo_p_call(
+        weight,
+        clen,
+        B_dot,
+        seed,
+        shape=shape,
+        transpose=transpose,
+        outdim_parallel=outdim_parallel,
+    )
 
 
 def _jitc_mm_homo_transpose_rules(
@@ -1243,22 +1582,40 @@ def _jitc_mm_homo_transpose_rules(
     outdim_parallel,
     **kwargs
 ):
-    assert not ad.is_undefined_primal(weight)
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
-    assert ad.is_undefined_primal(B)
 
-    r = jitc_mv_homo_p_call(
-        weight,
-        clen,
-        ct,
-        seed,
-        shape=shape,
-        transpose=transpose,
-        outdim_parallel=outdim_parallel,
-    )[0]
+    if ad.is_undefined_primal(B):
+        r = jitc_mv_homo_p_call(
+            weight,
+            clen,
+            ct,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            outdim_parallel=outdim_parallel,
+        )[0]
 
-    return weight, clen, r, seed, _
+        return weight, clen, r, seed, _
+
+    elif ad.is_undefined_primal(weight):
+        r = jitc_mv_homo_p_call(
+            jnp.ones((1,), dtype=ct.dtype),
+            clen,
+            ct,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            outdim_parallel=outdim_parallel
+        )[0]
+        dw = jnp.sum(r * B, keepdims=True)
+        return dw, clen, B, seed, _
+
+    else:
+        raise NotImplementedError(
+            'Transpose rules for jitc_matmat_homo not implemented for '
+            'non-undefined primals.'
+        )
 
 
 def _jitc_mm_homo_batching(
@@ -1313,7 +1670,12 @@ def _jitc_mm_homo_batching(
         return [r], [2]
 
     else:
-        raise NotImplementedError(f"Batching axes {axes} not implemented for JIT connection CSR matrix-matrix product")
+        return general_batching_rule(
+            jitc_mm_homo_p,
+            args,
+            axes,
+            **kwargs,
+        )
 
 
 def jitc_mm_homo_p_call(
@@ -1322,7 +1684,7 @@ def jitc_mm_homo_p_call(
     B,
     seed,
     *,
-    shape: Sequence[int],
+    shape: MatrixShape,
     transpose: bool,
     outdim_parallel: bool,
 ):
@@ -1355,7 +1717,10 @@ def jitc_mm_homo_p_call(
 
 jitc_mm_homo_p = XLACustomKernel(
     'jitc_mm_homo',
-    cpu_kernel=NumbaKernelGenerator(_jitc_mm_homo_cpu_kernel_generator, input_output_aliases={4: 0}),
+    cpu_kernel=NumbaKernelGenerator(
+        _jitc_mm_homo_cpu_kernel_generator,
+        input_output_aliases={4: 0}
+    ),
     gpu_kernel=WarpKernelGenerator(
         _jitc_mm_homo_gpu_kernel_generator,
         dim=lambda out_info, **kwargs: (
@@ -1365,6 +1730,12 @@ jitc_mm_homo_p = XLACustomKernel(
     )
 )
 
-jitc_mm_homo_p.defjvp(_jitc_mm_homo_jvp_w, None, None, _jitc_mm_homo_jvp_B)
+jitc_mm_homo_p.defjvp(
+    _jitc_mm_homo_jvp_w,
+    None,
+    _jitc_mm_homo_jvp_B,
+    None,
+    None
+)
 jitc_mm_homo_p.def_transpose_rule(_jitc_mm_homo_transpose_rules)
 jitc_mm_homo_p.def_batching_rule(_jitc_mm_homo_batching)

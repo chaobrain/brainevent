@@ -91,7 +91,7 @@ def _initialize_conn_length(conn_prob: float):
     Larger values result in sparser matrices (fewer connections).
     """
     with jax.ensure_compile_time_eval():
-        clen = jnp.ceil(1 / conn_prob) * 2
+        clen = jnp.ceil(2 / conn_prob)
         clen = jnp.asarray(clen, dtype=jnp.int32)
     return clen
 

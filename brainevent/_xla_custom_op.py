@@ -23,8 +23,6 @@ import numpy as np
 from jax.interpreters import xla, mlir, batching, ad
 
 from ._compatible_import import Primitive
-from ._misc import general_batching_rule
-from ._xla_custom_op_jvp import defjvp
 from ._xla_custom_op_numba import (
     NumbaKernelGenerator,
     register_numba_cpu_translatione
@@ -33,6 +31,10 @@ from ._xla_custom_op_pallas import (
     PallasKernelGenerator,
     register_pallas_gpu_translation,
     register_pallas_tpu_translation
+)
+from ._xla_custom_op_util import (
+    general_batching_rule,
+    defjvp,
 )
 from ._xla_custom_op_warp import (
     WarpKernelGenerator,
