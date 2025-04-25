@@ -22,11 +22,13 @@ from ._csr import CSR, CSC
 from ._csrlb import CSR_LB, CSC_LB
 from ._event import EventArray
 from ._fixed_conn_num import FixedPostNumConn, FixedPreNumConn
-from ._jitc import JITC_CSR, JITC_CSC
+from ._jitc_homo import JITRHomo, JITCHomo
+from ._jitc_normal import JITRNormal, JITCNormal
+from ._jitc_uniform import JITRUniform, JITCUniform
 from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_util import defjvp
 from ._xla_custom_op_numba import NumbaKernelGenerator, set_numba_environ, numba_environ_context
 from ._xla_custom_op_pallas import PallasKernelGenerator
+from ._xla_custom_op_util import defjvp, general_batching_rule
 from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type
 
 __all__ = [
@@ -40,8 +42,16 @@ __all__ = [
     'CSC',
     'CSR_LB',
     'CSC_LB',
-    'JITC_CSR',
-    'JITC_CSC',
+
+    # Just-In-Time Connectivity matrix
+    'JITRHomo',  # row-oriented
+    'JITCHomo',  # column-oriented
+    'JITRNormal',  # row-oriented
+    'JITCNormal',  # column-oriented
+    'JITRUniform',  # row-oriented
+    'JITCUniform',  # column-oriented
+
+    # --- block data --- #
     'BlockCSR',
     'BlockELL',
     'FixedPreNumConn',
@@ -52,8 +62,9 @@ __all__ = [
     # 1. Custom kernel
     'XLACustomKernel',
 
-    # 2. define JVP
+    # 2. utilities
     'defjvp',
+    'general_batching_rule',
 
     # 3. Numba kernel
     'NumbaKernelGenerator',
@@ -68,4 +79,3 @@ __all__ = [
     'PallasKernelGenerator',
 
 ]
-

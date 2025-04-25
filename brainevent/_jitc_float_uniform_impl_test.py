@@ -14,8 +14,6 @@
 # ==============================================================================
 
 
-import unittest
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -24,10 +22,8 @@ import pytest
 from brainevent._jitc_float_normal_impl import (
     jitc_matvec_homo,
     jitc_matvec_uniform,
-    jitc_matvec_normal,
     jitc_matmat_homo,
     jitc_matmat_uniform,
-    jitc_matmat_normal,
 )
 
 
@@ -49,14 +45,16 @@ class TestJitcCsrMatvecUniform:
         shape = (2, 3)
         seed = 1234
 
-        result = jitc_matvec_uniform(w_low,
-                                     w_high,
-                                     conn_prob,
-                                     v,
-                                     seed=seed,
-                                     shape=shape,
-                                     transpose=transpose,
-                                     outdim_parallel=outdim_parallel)
+        result = jitc_matvec_uniform(
+            w_low,
+            w_high,
+            conn_prob,
+            v,
+            seed=seed,
+            shape=shape,
+            transpose=transpose,
+            outdim_parallel=outdim_parallel
+        )
         expected = jnp.zeros(shape[1]) if transpose else jnp.zeros(shape[0])
         assert (jnp.allclose(result, expected))
 
@@ -71,19 +69,26 @@ class TestJitcCsrMatvecUniform:
         w_high = 2.0
 
         vector = jnp.asarray(np.random.random(shape[0] if transpose else shape[1]))
-        r1 = jitc_matvec_uniform(w_low,
-                                 w_high,
-                                 prob,
-                                 vector,
-                                 seed=seed,
-                                 shape=shape,
-                                 transpose=transpose,
-                                 outdim_parallel=outdim_parallel)
-        r2 = jitc_matvec_uniform(w_low, w_high, prob, vector,
-                                 seed=seed,
-                                 shape=shape,
-                                 transpose=transpose,
-                                 outdim_parallel=outdim_parallel)
+        r1 = jitc_matvec_uniform(
+            w_low,
+            w_high,
+            prob,
+            vector,
+            seed=seed,
+            shape=shape,
+            transpose=transpose,
+            outdim_parallel=outdim_parallel
+        )
+        r2 = jitc_matvec_uniform(
+            w_low,
+            w_high,
+            prob,
+            vector,
+            seed=seed,
+            shape=shape,
+            transpose=transpose,
+            outdim_parallel=outdim_parallel
+        )
         assert (jnp.allclose(r1, r2, atol=1e-6))
 
     @pytest.mark.parametrize('prob', [0.3, 0.5])
@@ -100,22 +105,28 @@ class TestJitcCsrMatvecUniform:
         x = jnp.asarray(np.random.random(n_in if transpose else n_out))
 
         def f_brainevent(x, w_low, w_high):
-            return jitc_matvec_uniform(w_low,
-                                       w_high,
-                                       prob,
-                                       x,
-                                       seed=seed,
-                                       shape=shape,
-                                       transpose=transpose,
-                                       outdim_parallel=outdim_parallel)
+            return jitc_matvec_uniform(
+                w_low,
+                w_high,
+                prob,
+                x,
+                seed=seed,
+                shape=shape,
+                transpose=transpose,
+                outdim_parallel=outdim_parallel
+            )
 
-        out1, jvp_x1 = jax.jvp(f_brainevent,
-                               (x, jnp.array(w_low), jnp.array(w_high)),
-                               (jnp.ones_like(x), jnp.array(1.0), jnp.array(1.0)))
+        out1, jvp_x1 = jax.jvp(
+            f_brainevent,
+            (x, jnp.array(w_low), jnp.array(w_high)),
+            (jnp.ones_like(x), jnp.array(1.0), jnp.array(1.0))
+        )
 
-        out2, jvp_x2 = jax.jvp(f_brainevent,
-                               (x, jnp.array(w_low), jnp.array(w_high)),
-                               (jnp.ones_like(x), jnp.array(1.0), jnp.array(1.0)))
+        out2, jvp_x2 = jax.jvp(
+            f_brainevent,
+            (x, jnp.array(w_low), jnp.array(w_high)),
+            (jnp.ones_like(x), jnp.array(1.0), jnp.array(1.0))
+        )
 
         assert (jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
         assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-5, atol=1e-5))
@@ -133,14 +144,16 @@ class TestJitcCsrMatmatUniform:
         shape = (2, 3)
         seed = 1234
 
-        result = jitc_matmat_uniform(w_low,
-                                     w_high,
-                                     conn_prob,
-                                     B,
-                                     seed=seed,
-                                     shape=shape,
-                                     transpose=transpose,
-                                     outdim_parallel=outdim_parallel)
+        result = jitc_matmat_uniform(
+            w_low,
+            w_high,
+            conn_prob,
+            B,
+            seed=seed,
+            shape=shape,
+            transpose=transpose,
+            outdim_parallel=outdim_parallel
+        )
         # Expected shape depends on transpose operation
         expected_shape = (shape[1], B.shape[1]) if transpose else (shape[0], B.shape[1])
         expected = jnp.zeros(expected_shape)
@@ -212,14 +225,16 @@ class TestJitcCsrMatmatUniform:
         X = jnp.asarray(np.random.random(X_shape))
 
         def f_brainevent(X, w_low, w_high):
-            return jitc_matmat_uniform(w_low,
-                                       w_high,
-                                       prob,
-                                       X,
-                                       seed=seed,
-                                       shape=shape,
-                                       transpose=transpose,
-                                       outdim_parallel=outdim_parallel)
+            return jitc_matmat_uniform(
+                w_low,
+                w_high,
+                prob,
+                X,
+                seed=seed,
+                shape=shape,
+                transpose=transpose,
+                outdim_parallel=outdim_parallel
+            )
 
         # Test JVP for both input matrix X and weight w
         out1, jvp_x1 = jax.jvp(f_brainevent,
