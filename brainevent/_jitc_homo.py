@@ -16,18 +16,19 @@
 # -*- coding: utf-8 -*-
 
 
+import numbers
 import operator
-from typing import Union
+from typing import Union, Tuple
 
 import brainunit as u
 import jax
+import numpy as np
 
 from ._compatible_import import JAXSparse
 from ._csr_event_impl import _event_csr_matvec, _event_csr_matmat
 from ._csr_float_impl import _csr_matvec, _csr_matmat
 from ._event import EventArray
-from ._jitc import JITCMatrix
-from ._misc import _csr_to_coo
+from ._jitc_base import JITCMatrix
 from ._typing import MatrixShape
 
 __all__ = [
@@ -35,28 +36,37 @@ __all__ = [
     'JITCHomo',
 ]
 
+Weight = Union[numbers.Number, np.ndarray, jax.Array, u.Quantity]
+Prob = Union[float, np.ndarray, jax.Array]
+Seed = Union[int, np.ndarray, jax.Array]
+
 
 class JITHomo(JITCMatrix):
-    data: Union[jax.Array, u.Quantity]
+    weight: Union[jax.Array, u.Quantity]
+    prob: Union[float, jax.Array]
+    seed: Union[int, jax.Array]
     shape: MatrixShape
     dtype = property(lambda self: self.data.dtype)
 
     def __init__(
         self,
-        data: Union[jax.typing.ArrayLike, u.Quantity],
-        seed: Union[int, jax.Array],
+        data: Tuple[Weight, Prob, Seed],
         *,
         shape: MatrixShape
     ):
-        super().__init__((), shape=shape)
-        self.data = u.math.asarray(data)
-        self.seed = seed
+        weight, self.prob, self.seed = data
+        self.weight = u.math.asarray(weight)
+        super().__init__(data, shape=shape)
 
-    def with_data(self, data: Union[jax.typing.ArrayLike, u.Quantity]):
-        assert data.shape == self.data.shape
-        assert data.dtype == self.data.dtype
-        assert u.get_unit(data) == u.get_unit(self.data)
-        return type(self)(data, self.seed, shape=self.shape)
+    @property
+    def data(self) -> Tuple[Weight, Prob, Seed]:
+        return self.weight, self.prob, self.seed
+
+    def with_data(self, data: Tuple[Weight, Prob, Seed]):
+        weight, prob, seed = data
+        assert weight.shape == self.weight.shape
+        assert u.get_unit(weight) == u.get_unit(self.weight)
+        return type(self)(data, shape=self.shape)
 
     def tree_flatten(self):
         """
@@ -71,7 +81,7 @@ class JITHomo(JITCMatrix):
                 - A tuple of JAX-traceable arrays (only self.data in this case)
                 - A dictionary of auxiliary data (shape, indices, and indptr)
         """
-        return (self.data, self.seed), {"shape": self.shape, }
+        return (self.weight, self.prob, self.seed), {"shape": self.shape, }
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
@@ -93,7 +103,7 @@ class JITHomo(JITCMatrix):
             ValueError: If the aux_data dictionary doesn't contain the expected keys
         """
         obj = object.__new__(cls)
-        obj.data, obj.seed = children
+        obj.weight, obj.prob, obj.seed = children
         if aux_data.keys() != {'shape', }:
             raise ValueError("aux_data must contain 'shape', keys. But got: "
                              f"{aux_data.keys()}")
@@ -115,10 +125,10 @@ class JITHomo(JITCMatrix):
     def _binary_op(self, other, op):
         raise NotImplementedError("binary operation not implemented.")
 
-    def __mul__(self, other: Union[jax.Array, u.Quantity]):
+    def __mul__(self, other: Union[jax.typing.ArrayLike, u.Quantity]):
         return self._binary_op(other, operator.mul)
 
-    def __div__(self, other: Union[jax.Array, u.Quantity]):
+    def __div__(self, other: Union[jax.typing.ArrayLike, u.Quantity]):
         return self._binary_op(other, operator.truediv)
 
     def __truediv__(self, other):
@@ -136,10 +146,10 @@ class JITHomo(JITCMatrix):
     def _binary_rop(self, other, op):
         raise NotImplementedError("binary operation not implemented.")
 
-    def __rmul__(self, other: Union[jax.Array, u.Quantity]):
+    def __rmul__(self, other: Union[jax.typing.ArrayLike, u.Quantity]):
         return self._binary_rop(other, operator.mul)
 
-    def __rdiv__(self, other: Union[jax.Array, u.Quantity]):
+    def __rdiv__(self, other: Union[jax.typing.ArrayLike, u.Quantity]):
         return self._binary_rop(other, operator.truediv)
 
     def __rtruediv__(self, other):
@@ -160,16 +170,17 @@ class JITRHomo(JITHomo):
     """
     Just-In-Time connectivity Row-oriented Homogeneous matrix representation.
 
-    This class represents a row-oriented homogeneous sparse matrix optimized for just-in-time
-    connectivity. It stores a single homogeneous value that applies to all non-zero elements
-    in the sparse matrix, along with indexing information to specify where these non-zero
-    elements are located.
+    This class represents a row-oriented homogeneous sparse matrix optimized for JAX-based
+    transformations. It follows the Compressed Sparse Row (CSR) format, storing a uniform value
+    for all non-zero elements in the matrix, along with probability and seed information to
+    determine the sparse structure.
 
-    The row-oriented structure follows the CSR (Compressed Sparse Row) format, making row-based
-    operations more efficient than column-based ones.
+    The class is designed for efficient neural network connectivity patterns where weights
+    are homogeneous but connectivity is sparse and stochastic.
 
     Attributes:
-        data (Union[jax.Array, u.Quantity]): The single value used for all non-zero elements
+        weight (Union[jax.Array, u.Quantity]): The homogeneous value used for all non-zero elements
+        prob (Union[float, jax.Array]): Probability for each potential connection
         seed (Union[int, jax.Array]): Random seed used for initialization of the sparse structure
         shape (MatrixShape): The shape of the matrix as a tuple (rows, cols)
         dtype: The data type of the matrix elements (property inherited from parent)
@@ -179,8 +190,8 @@ class JITRHomo(JITHomo):
         >>> import brainunit as u
         >>> from brainevent import JITRHomo
         >>>
-        >>> # Create a homogeneous matrix with value 0.5 for all non-zero elements
-        >>> homo_matrix = JITRHomo(0.5, seed=42, shape=(10, 10))
+        >>> # Create a homogeneous matrix with value 1.5, probability 0.1, and seed 42
+        >>> homo_matrix = JITRHomo((1.5, 0.1, 42), shape=(10, 10))
         >>>
         >>> # Perform matrix-vector multiplication
         >>> vec = jax.numpy.ones(10)
@@ -188,84 +199,52 @@ class JITRHomo(JITHomo):
         >>>
         >>> # Apply scalar operation
         >>> scaled = homo_matrix * 2.0
+        >>>
+        >>> # Convert to dense representation
+        >>> dense_matrix = homo_matrix.todense()
+        >>>
+        >>> # Transpose operation returns a JITCHomo instance
+        >>> col_matrix = homo_matrix.transpose()
 
     Notes:
+        - JAX PyTree compatible for use with JAX transformations (jit, grad, vmap)
         - More memory-efficient than dense matrices for sparse connectivity patterns
-        - Compatible with JAX transformations (jit, grad, vmap, etc.)
         - Well-suited for neural network connectivity matrices with uniform weights
+        - Optimized for matrix-vector operations common in neural simulations
     """
 
     def _unitary_op(self, op) -> 'JITRHomo':
-        return JITRHomo(op(self.data), self.seed, shape=self.shape)
+        return JITRHomo((op(self.weight), self.prob, self.seed), shape=self.shape)
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
-        return _jitr_homo_todense(self.data, self.indices, self.indptr, shape=self.shape)
+        return _jitr_homo_todense(self.weight, self.prob, self.seed, shape=self.shape, transpose=False)
 
     def transpose(self, axes=None) -> 'JITCHomo':
         assert axes is None, "transpose does not support axes argument."
-        return JITC_CSC((self.data, self.indices, self.indptr), shape=self.shape[::-1])
+        return JITCHomo((self.weight, self.prob, self.seed), shape=(self.shape[1], self.shape[0]))
 
     def _binary_op(self, other, op) -> 'JITRHomo':
-        if isinstance(other, JITRHomo):
-            if id(other.indices) == id(self.indices) and id(other.indptr) == id(self.indptr):
-                return JITRHomo(
-                    (op(self.data, other.data),
-                     self.indices,
-                     self.indptr),
-                    shape=self.shape
-                )
+        if isinstance(other, JITRHomo) and id(other.seed) == id(self.seed):
+            return JITRHomo((op(self.weight, other.weight), self.prob, self.seed), shape=self.shape)
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return JITRHomo(
-                (op(self.data, other), self.indices, self.indptr),
-                shape=self.shape
-            )
-
-        elif other.ndim == 2 and other.shape == self.shape:
-            rows, cols = _csr_to_coo(self.indices, self.indptr)
-            other = other[rows, cols]
-            return JITRHomo(
-                (op(self.data, other),
-                 self.indices,
-                 self.indptr),
-                shape=self.shape
-            )
+            return JITRHomo((op(self.weight, other), self.prob, self.seed), shape=self.shape)
 
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
     def _binary_rop(self, other, op) -> 'JITRHomo':
-        if isinstance(other, JITRHomo):
-            if id(other.indices) == id(self.indices) and id(other.indptr) == id(self.indptr):
-                return JITRHomo(
-                    (op(other.data, self.data),
-                     self.indices,
-                     self.indptr),
-                    shape=self.shape
-                )
+        if isinstance(other, JITRHomo) and id(other.seed) == id(self.seed):
+            return JITRHomo((op(other.weight, self.weight), self.prob, self.seed), shape=self.shape)
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return JITRHomo(
-                (op(other, self.data),
-                 self.indices,
-                 self.indptr),
-                shape=self.shape
-            )
-        elif other.ndim == 2 and other.shape == self.shape:
-            rows, cols = _csr_to_coo(self.indices, self.indptr)
-            other = other[rows, cols]
-            return JITRHomo(
-                (op(other, self.data),
-                 self.indices,
-                 self.indptr),
-                shape=self.shape
-            )
+            return JITRHomo((op(other, self.weight), self.prob, self.seed), shape=self.shape)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
@@ -273,23 +252,23 @@ class JITRHomo(JITHomo):
         # csr @ other
         if isinstance(other, JAXSparse):
             raise NotImplementedError("matmul between two sparse objects.")
-        data = self.data
+        weight = self.weight
 
         if isinstance(other, EventArray):
             other = other.data
             if other.ndim == 1:
                 return _event_csr_matvec(
-                    data,
-                    self.indices,
-                    self.indptr,
+                    weight,
+                    self.prob,
+                    self.seed,
                     other,
                     shape=self.shape
                 )
             elif other.ndim == 2:
                 return _event_csr_matmat(
-                    data,
-                    self.indices,
-                    self.indptr,
+                    weight,
+                    self.prob,
+                    self.seed,
                     other,
                     shape=self.shape
                 )
@@ -298,20 +277,20 @@ class JITRHomo(JITHomo):
 
         else:
             other = u.math.asarray(other)
-            data, other = u.math.promote_dtypes(self.data, other)
+            weight, other = u.math.promote_dtypes(self.weight, other)
             if other.ndim == 1:
                 return _csr_matvec(
-                    data,
-                    self.indices,
-                    self.indptr,
+                    weight,
+                    self.prob,
+                    self.seed,
                     other,
                     shape=self.shape
                 )
             elif other.ndim == 2:
                 return _csr_matmat(
-                    data,
-                    self.indices,
-                    self.indptr,
+                    weight,
+                    self.prob,
+                    self.seed,
                     other,
                     shape=self.shape
                 )
@@ -322,15 +301,15 @@ class JITRHomo(JITHomo):
         # other @ csr
         if isinstance(other, JAXSparse):
             raise NotImplementedError("matmul between two sparse objects.")
-        data = self.data
+        weight = self.weight
 
         if isinstance(other, EventArray):
             other = other.data
             if other.ndim == 1:
                 return _event_csr_matvec(
-                    data,
-                    self.indices,
-                    self.indptr,
+                    weight,
+                    self.prob,
+                    self.seed,
                     other,
                     shape=self.shape,
                     transpose=True
@@ -338,9 +317,9 @@ class JITRHomo(JITHomo):
             elif other.ndim == 2:
                 other = other.T
                 r = _event_csr_matmat(
-                    data,
-                    self.indices,
-                    self.indptr,
+                    weight,
+                    self.prob,
+                    self.seed,
                     other,
                     shape=self.shape,
                     transpose=True
@@ -351,12 +330,12 @@ class JITRHomo(JITHomo):
 
         else:
             other = u.math.asarray(other)
-            data, other = u.math.promote_dtypes(self.data, other)
+            weight, other = u.math.promote_dtypes(self.weight, other)
             if other.ndim == 1:
                 return _csr_matvec(
-                    data,
-                    self.indices,
-                    self.indptr,
+                    weight,
+                    self.prob,
+                    self.seed,
                     other,
                     shape=self.shape,
                     transpose=True
@@ -364,9 +343,9 @@ class JITRHomo(JITHomo):
             elif other.ndim == 2:
                 other = other.T
                 r = _csr_matmat(
-                    data,
-                    self.indices,
-                    self.indptr,
+                    weight,
+                    self.prob,
+                    self.seed,
                     other,
                     shape=self.shape,
                     transpose=True
@@ -377,21 +356,22 @@ class JITRHomo(JITHomo):
 
 
 @jax.tree_util.register_pytree_node_class
+@jax.tree_util.register_pytree_node_class
 class JITCHomo(JITHomo):
     """
     Just-In-Time connectivity Column-oriented Homogeneous matrix representation.
 
     This class represents a column-oriented homogeneous sparse matrix optimized for JAX-based
-    transformations. It stores a single homogeneous value that applies to all non-zero elements
-    in the sparse matrix, along with indexing information to specify where these non-zero
-    elements are located.
+    transformations. It follows the Compressed Sparse Column (CSC) format, storing a uniform value
+    for all non-zero elements in the matrix, along with probability and seed information to
+    determine the sparse structure.
 
-    The column-oriented structure follows the CSC (Compressed Sparse Column) format, making
-    column-based operations more efficient than row-based ones. This is the transpose-oriented
-    counterpart to :class:`JITRHomo`.
+    The column-oriented structure makes column-based operations more efficient than row-based ones,
+    making this class the transpose-oriented counterpart to JITRHomo.
 
     Attributes:
-        data (Union[jax.Array, u.Quantity]): The single value used for all non-zero elements
+        weight (Union[jax.Array, u.Quantity]): The homogeneous value used for all non-zero elements
+        prob (Union[float, jax.Array]): Probability for each potential connection
         seed (Union[int, jax.Array]): Random seed used for initialization of the sparse structure
         shape (MatrixShape): The shape of the matrix as a tuple (rows, cols)
         dtype: The data type of the matrix elements (property inherited from parent)
@@ -401,8 +381,8 @@ class JITCHomo(JITHomo):
         >>> import brainunit as u
         >>> from brainevent import JITCHomo
         >>>
-        >>> # Create a homogeneous matrix with value 0.5 for all non-zero elements
-        >>> homo_matrix = JITCHomo(0.5, seed=42, shape=(10, 10))
+        >>> # Create a homogeneous matrix with value 1.5, probability 0.1, and seed 42
+        >>> homo_matrix = JITCHomo((1.5, 0.1, 42), shape=(10, 10))
         >>>
         >>> # Perform matrix-vector multiplication
         >>> vec = jax.numpy.ones(10)
@@ -413,85 +393,51 @@ class JITCHomo(JITHomo):
         >>>
         >>> # Transpose to get a row-oriented matrix
         >>> row_matrix = homo_matrix.transpose()
+        >>>
+        >>> # Convert to dense representation
+        >>> dense_matrix = homo_matrix.todense()
+
 
     Notes:
-        - Registered as a JAX pytree node for compatibility with JAX transformations
+        - Registered as a JAX pytree node for compatibility with JAX transformations (jit, grad, vmap)
         - More efficient than JITRHomo for column slicing operations
         - Compatible with all standard mathematical operations
         - Well-suited for neural network connectivity matrices with uniform weights
+        - Optimized for neural simulations with sparse connectivity patterns
     """
 
     def _unitary_op(self, op) -> 'JITCHomo':
-        return JITCHomo(op(self.data), self.seed, shape=self.shape)
+        return JITCHomo((op(self.weight), self.prob, self.seed), shape=self.shape)
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
-        return _jitr_homo_todense(self.data, self.indices, self.indptr, shape=self.shape)
+        return _jitr_homo_todense(self.weight, self.prob, self.seed, shape=self.shape, transpose=True)
 
     def transpose(self, axes=None) -> 'JITRHomo':
         assert axes is None, "transpose does not support axes argument."
-        return JITRHomo((self.data, self.indices, self.indptr), shape=self.shape[::-1])
+        return JITRHomo((self.weight, self.prob, self.seed), shape=(self.shape[1], self.shape[0]))
 
     def _binary_op(self, other, op) -> 'JITCHomo':
-        if isinstance(other, JITRHomo):
-            if id(other.indices) == id(self.indices) and id(other.indptr) == id(self.indptr):
-                return JITRHomo(
-                    (op(self.data, other.data),
-                     self.indices,
-                     self.indptr),
-                    shape=self.shape
-                )
+        if isinstance(other, JITCHomo) and id(other.seed) == id(self.seed):
+            return JITCHomo((op(self.weight, other.weight), self.prob, self.seed), shape=self.shape)
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return JITRHomo(
-                (op(self.data, other), self.indices, self.indptr),
-                shape=self.shape
-            )
-
-        elif other.ndim == 2 and other.shape == self.shape:
-            rows, cols = _csr_to_coo(self.indices, self.indptr)
-            other = other[rows, cols]
-            return JITRHomo(
-                (op(self.data, other),
-                 self.indices,
-                 self.indptr),
-                shape=self.shape
-            )
+            return JITCHomo((op(self.weight, other), self.prob, self.seed), shape=self.shape)
 
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
     def _binary_rop(self, other, op) -> 'JITCHomo':
-        if isinstance(other, JITRHomo):
-            if id(other.indices) == id(self.indices) and id(other.indptr) == id(self.indptr):
-                return JITRHomo(
-                    (op(other.data, self.data),
-                     self.indices,
-                     self.indptr),
-                    shape=self.shape
-                )
+        if isinstance(other, JITCHomo) and id(other.seed) == id(self.seed):
+            return JITCHomo((op(other.weight, self.weight), self.prob, self.seed), shape=self.shape)
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return JITRHomo(
-                (op(other, self.data),
-                 self.indices,
-                 self.indptr),
-                shape=self.shape
-            )
-        elif other.ndim == 2 and other.shape == self.shape:
-            rows, cols = _csr_to_coo(self.indices, self.indptr)
-            other = other[rows, cols]
-            return JITRHomo(
-                (op(other, self.data),
-                 self.indices,
-                 self.indptr),
-                shape=self.shape
-            )
+            return JITCHomo((op(other, self.weight), self.prob, self.seed), shape=self.shape)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
@@ -499,23 +445,23 @@ class JITCHomo(JITHomo):
         # csr @ other
         if isinstance(other, JAXSparse):
             raise NotImplementedError("matmul between two sparse objects.")
-        data = self.data
+        weight = self.weight
 
         if isinstance(other, EventArray):
             other = other.data
             if other.ndim == 1:
                 return _event_csr_matvec(
-                    data,
-                    self.indices,
-                    self.indptr,
+                    weight,
+                    self.prob,
+                    self.seed,
                     other,
                     shape=self.shape
                 )
             elif other.ndim == 2:
                 return _event_csr_matmat(
-                    data,
-                    self.indices,
-                    self.indptr,
+                    weight,
+                    self.prob,
+                    self.seed,
                     other,
                     shape=self.shape
                 )
@@ -524,20 +470,20 @@ class JITCHomo(JITHomo):
 
         else:
             other = u.math.asarray(other)
-            data, other = u.math.promote_dtypes(self.data, other)
+            weight, other = u.math.promote_dtypes(self.weight, other)
             if other.ndim == 1:
                 return _csr_matvec(
-                    data,
-                    self.indices,
-                    self.indptr,
+                    weight,
+                    self.prob,
+                    self.seed,
                     other,
                     shape=self.shape
                 )
             elif other.ndim == 2:
                 return _csr_matmat(
-                    data,
-                    self.indices,
-                    self.indptr,
+                    weight,
+                    self.prob,
+                    self.seed,
                     other,
                     shape=self.shape
                 )
@@ -548,15 +494,15 @@ class JITCHomo(JITHomo):
         # other @ csr
         if isinstance(other, JAXSparse):
             raise NotImplementedError("matmul between two sparse objects.")
-        data = self.data
+        weight = self.weight
 
         if isinstance(other, EventArray):
             other = other.data
             if other.ndim == 1:
                 return _event_csr_matvec(
-                    data,
-                    self.indices,
-                    self.indptr,
+                    weight,
+                    self.prob,
+                    self.seed,
                     other,
                     shape=self.shape,
                     transpose=True
@@ -564,9 +510,9 @@ class JITCHomo(JITHomo):
             elif other.ndim == 2:
                 other = other.T
                 r = _event_csr_matmat(
-                    data,
-                    self.indices,
-                    self.indptr,
+                    weight,
+                    self.prob,
+                    self.seed,
                     other,
                     shape=self.shape,
                     transpose=True
@@ -577,12 +523,12 @@ class JITCHomo(JITHomo):
 
         else:
             other = u.math.asarray(other)
-            data, other = u.math.promote_dtypes(self.data, other)
+            weight, other = u.math.promote_dtypes(self.weight, other)
             if other.ndim == 1:
                 return _csr_matvec(
-                    data,
-                    self.indices,
-                    self.indptr,
+                    weight,
+                    self.prob,
+                    self.seed,
                     other,
                     shape=self.shape,
                     transpose=True
@@ -590,9 +536,9 @@ class JITCHomo(JITHomo):
             elif other.ndim == 2:
                 other = other.T
                 r = _csr_matmat(
-                    data,
-                    self.indices,
-                    self.indptr,
+                    weight,
+                    self.prob,
+                    self.seed,
                     other,
                     shape=self.shape,
                     transpose=True

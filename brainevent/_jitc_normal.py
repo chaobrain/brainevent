@@ -21,7 +21,7 @@ from typing import Union, Sequence
 import brainunit as u
 import jax
 
-from ._jitc import JITCMatrix
+from ._jitc_base import JITCMatrix
 from ._typing import MatrixShape
 
 __all__ = [
