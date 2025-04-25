@@ -20,8 +20,7 @@ import numpy as np
 import pytest
 
 from brainevent._jitc_float_homo_impl import (
-    jitc_matvec_homo,
-    jitc_matmat_homo,
+    jitc_homo_matvec, jitc_homo_matmat,
 )
 
 
@@ -41,7 +40,7 @@ class TestJitcCsrMatvecHomo:
         v = jnp.array([1.0, 2.0, 3.0])
         shape = (2, 3)
         seed = 1234
-        result = jitc_matvec_homo(
+        result = jitc_homo_matvec(
             weight,
             conn_prob,
             v,
@@ -61,7 +60,7 @@ class TestJitcCsrMatvecHomo:
     def test_random_connectivity(self, shape, weight, prob, transpose, outdim_parallel):
         seed = 1234
         vector = jnp.asarray(np.random.random(shape[0] if transpose else shape[1]))
-        r1 = jitc_matvec_homo(
+        r1 = jitc_homo_matvec(
             weight,
             prob,
             vector,
@@ -70,7 +69,7 @@ class TestJitcCsrMatvecHomo:
             transpose=transpose,
             outdim_parallel=outdim_parallel
         )
-        r2 = jitc_matvec_homo(
+        r2 = jitc_homo_matvec(
             weight,
             prob,
             vector,
@@ -95,7 +94,7 @@ class TestJitcCsrMatvecHomo:
         x = jnp.asarray(np.random.random(n_in if transpose else n_out))
 
         def f_brainevent(x, w):
-            return jitc_matvec_homo(
+            return jitc_homo_matvec(
                 w,
                 prob,
                 x,
@@ -131,7 +130,7 @@ class TestJitcCsrMatmatHomo:
         shape = (2, 3)
         seed = 1234
 
-        result = jitc_matmat_homo(
+        result = jitc_homo_matmat(
             weight,
             conn_prob,
             B,
@@ -167,7 +166,7 @@ class TestJitcCsrMatmatHomo:
         B_shape = (shape[0] if transpose else shape[1], batch_size)
         B = jnp.asarray(np.random.random(B_shape))
 
-        r1 = jitc_matmat_homo(
+        r1 = jitc_homo_matmat(
             weight,
             prob,
             B,
@@ -176,7 +175,7 @@ class TestJitcCsrMatmatHomo:
             transpose=transpose,
             outdim_parallel=outdim_parallel
         )
-        r2 = jitc_matmat_homo(
+        r2 = jitc_homo_matmat(
             weight,
             prob,
             B,
@@ -211,7 +210,7 @@ class TestJitcCsrMatmatHomo:
         X = jnp.asarray(np.random.random(X_shape))
 
         def f_brainevent(X, w):
-            return jitc_matmat_homo(
+            return jitc_homo_matmat(
                 w,
                 prob,
                 X,

@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 
 from brainevent._jitc_float_normal_impl import (
-    jitc_matvec_normal, jitc_matmat_normal,
+    jitc_normal_matvec, jitc_normal_matmat,
 )
 
 
@@ -44,7 +44,7 @@ class TestJitcCsrMatvecNormal:
         shape = (2, 3)
         seed = 1234
 
-        result = jitc_matvec_normal(w_mu,
+        result = jitc_normal_matvec(w_mu,
                                     w_sigma,
                                     conn_prob,
                                     v,
@@ -66,7 +66,7 @@ class TestJitcCsrMatvecNormal:
         w_sigma = 2.0
 
         vector = jnp.asarray(np.random.random(shape[0] if transpose else shape[1]))
-        r1 = jitc_matvec_normal(w_mu,
+        r1 = jitc_normal_matvec(w_mu,
                                 w_sigma,
                                 prob,
                                 vector,
@@ -74,7 +74,7 @@ class TestJitcCsrMatvecNormal:
                                 shape=shape,
                                 transpose=transpose,
                                 outdim_parallel=outdim_parallel)
-        r2 = jitc_matvec_normal(w_mu,
+        r2 = jitc_normal_matvec(w_mu,
                                 w_sigma,
                                 prob,
                                 vector,
@@ -133,7 +133,7 @@ class TestJitcCsrMatmatNormal:
         shape = (2, 3)
         seed = 1234
 
-        result = jitc_matmat_normal(w_mu,
+        result = jitc_normal_matmat(w_mu,
                                     w_sigma,
                                     conn_prob,
                                     B,
@@ -166,12 +166,12 @@ class TestJitcCsrMatmatNormal:
         B_shape = (shape[0] if transpose else shape[1], batch_size)
         B = jnp.asarray(np.random.random(B_shape))
 
-        r1 = jitc_matmat_normal(w_mu, w_sigma, prob, B,
+        r1 = jitc_normal_matmat(w_mu, w_sigma, prob, B,
                                 seed=seed,
                                 shape=shape,
                                 transpose=transpose,
                                 outdim_parallel=outdim_parallel)
-        r2 = jitc_matmat_normal(w_mu, w_sigma, prob, B,
+        r2 = jitc_normal_matmat(w_mu, w_sigma, prob, B,
                                 seed=seed,
                                 shape=shape,
                                 transpose=transpose,
@@ -202,7 +202,7 @@ class TestJitcCsrMatmatNormal:
         X = jnp.asarray(np.random.random(X_shape))
 
         def f_brainevent(X, w_mu, w_sigma):
-            return jitc_matmat_normal(w_mu,
+            return jitc_normal_matmat(w_mu,
                                       w_sigma,
                                       prob,
                                       X,

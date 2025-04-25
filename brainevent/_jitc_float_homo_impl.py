@@ -31,8 +31,8 @@ from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 
 __all__ = [
     "jitc_homo_matrix",
-    "jitc_matvec_homo",
-    "jitc_matmat_homo",
+    "jitc_homo_matvec",
+    "jitc_homo_matmat",
 ]
 
 
@@ -58,7 +58,7 @@ def jitc_homo_matrix(
     return u.maybe_decimal(res * unitd)
 
 
-def jitc_matvec_homo(
+def jitc_homo_matvec(
     weight: Data,
     conn_prob: float,
     v: Data,
@@ -132,7 +132,7 @@ def jitc_matvec_homo(
     return u.maybe_decimal(res * unitd * unitv)
 
 
-def jitc_matmat_homo(
+def jitc_homo_matmat(
     weight: Data,
     conn_prob: float,
     B: Data,

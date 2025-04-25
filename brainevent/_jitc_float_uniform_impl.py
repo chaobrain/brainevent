@@ -29,12 +29,12 @@ from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 
 __all__ = [
-    "jitc_matvec_uniform",
-    "jitc_matmat_uniform",
+    "jitc_uniform_matvec",
+    "jitc_uniform_matmat",
 ]
 
 
-def jitc_matvec_uniform(
+def jitc_uniform_matvec(
     w_low: Data,
     w_high: Data,
     conn_prob: float,
@@ -115,7 +115,7 @@ def jitc_matvec_uniform(
     return u.maybe_decimal(res * unit_w_low * unitv)
 
 
-def jitc_matmat_uniform(
+def jitc_uniform_matmat(
     w_low: Data,
     w_high: Data,
     conn_prob: float,
@@ -341,7 +341,7 @@ def _jitc_mv_uniform_jvp_v(
     **kwargs
 ):
     return [
-        jitc_matvec_uniform(
+        jitc_uniform_matvec(
             w_low,
             w_high,
             clen,
@@ -743,7 +743,7 @@ def _jitc_mm_uniform_jvp_B(
     **kwargs
 ):
     return [
-        jitc_matmat_uniform(
+        jitc_uniform_matmat(
             w_low,
             w_high,
             clen,
