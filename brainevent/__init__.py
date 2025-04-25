@@ -22,9 +22,9 @@ from ._csr import CSR, CSC
 from ._csrlb import CSR_LB, CSC_LB
 from ._event import EventArray
 from ._fixed_conn_num import FixedPostNumConn, FixedPreNumConn
-from ._jitc_homo import JITRHomo, JITCHomo
-from ._jitc_normal import JITRNormal, JITCNormal
-from ._jitc_uniform import JITRUniform, JITCUniform
+from ._jitc_homo import JITCHomoR, JITCHomoC
+from ._jitc_normal import JITCNormalR, JITCNormalC
+from ._jitc_uniform import JITCUniformR, JITCUniformC
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, set_numba_environ, numba_environ_context
 from ._xla_custom_op_pallas import PallasKernelGenerator
@@ -44,12 +44,12 @@ __all__ = [
     'CSC_LB',
 
     # Just-In-Time Connectivity matrix
-    'JITRHomo',  # row-oriented
-    'JITCHomo',  # column-oriented
-    'JITRNormal',  # row-oriented
-    'JITCNormal',  # column-oriented
-    'JITRUniform',  # row-oriented
-    'JITCUniform',  # column-oriented
+    'JITCHomoR',  # row-oriented
+    'JITCHomoC',  # column-oriented
+    'JITCNormalR',  # row-oriented
+    'JITCNormalC',  # column-oriented
+    'JITCUniformR',  # row-oriented
+    'JITCUniformC',  # column-oriented
 
     # --- block data --- #
     'BlockCSR',

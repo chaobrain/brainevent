@@ -25,13 +25,13 @@ from ._jitc_base import JITCMatrix
 from ._typing import MatrixShape
 
 __all__ = [
-    'JITRNormal',
-    'JITCNormal',
+    'JITCNormalR',
+    'JITCNormalC',
 ]
 
 
 @jax.tree_util.register_pytree_node_class
-class JITRNormal(JITCMatrix):
+class JITCNormalR(JITCMatrix):
     """
     """
     data: Union[jax.Array, u.Quantity]
@@ -51,15 +51,15 @@ class JITRNormal(JITCMatrix):
         self.scale = u.math.asarray(data[1])
         self.seed = seed
 
-    def with_data(self, data: Union[jax.typing.ArrayLike, u.Quantity]) -> 'JITCNormal':
+    def with_data(self, data: Union[jax.typing.ArrayLike, u.Quantity]) -> 'JITCNormalC':
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
-        return JITCNormal(data, self.seed, shape=self.shape)
+        return JITCNormalC(data, self.seed, shape=self.shape)
 
 
 @jax.tree_util.register_pytree_node_class
-class JITCNormal(JITCMatrix):
+class JITCNormalC(JITCMatrix):
     """
     Just-in-time Connectivity (JITC) Matrix with normally distributed connection weights in CSC format.
 
@@ -75,7 +75,7 @@ class JITCNormal(JITCMatrix):
     --------
     >>> import jax
     >>> import jax.numpy as jnp
-    >>> from brainevent import JITCNormal
+    >>> from brainevent import JITCNormalC
 
     >>> # Create a 5x5 matrix with normally distributed weights
     >>> shape = (5, 5)
@@ -83,7 +83,7 @@ class JITCNormal(JITCMatrix):
     >>> mean = 0.0
     >>> std = 1.0
     >>> data = [mean, std]
-    >>> matrix = JITCNormal(data, seed, shape=shape)
+    >>> matrix = JITCNormalC(data, seed, shape=shape)
 
     >>> # Perform matrix-vector multiplication
     >>> vec = jnp.ones(shape[0])
@@ -125,8 +125,8 @@ class JITCNormal(JITCMatrix):
         self.scale = u.math.asarray(data[1])
         self.seed = seed
 
-    def with_data(self, data: Union[jax.typing.ArrayLike, u.Quantity]) -> 'JITRNormal':
+    def with_data(self, data: Union[jax.typing.ArrayLike, u.Quantity]) -> 'JITCNormalR':
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
-        return JITRNormal(data, self.seed, shape=self.shape)
+        return JITCNormalR(data, self.seed, shape=self.shape)

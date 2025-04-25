@@ -32,8 +32,8 @@ from ._jitc_base import JITCMatrix
 from ._typing import MatrixShape
 
 __all__ = [
-    'JITRHomo',
-    'JITCHomo',
+    'JITCHomoR',
+    'JITCHomoC',
 ]
 
 Weight = Union[numbers.Number, np.ndarray, jax.Array, u.Quantity]
@@ -97,7 +97,7 @@ class JITHomo(JITCMatrix):
             children (tuple): Tuple of JAX arrays that were transformed (contains only data)
 
         Returns:
-            JITRHomo: Reconstructed JITHomo object
+            JITCHomoR: Reconstructed JITHomo object
 
         Raises:
             ValueError: If the aux_data dictionary doesn't contain the expected keys
@@ -166,7 +166,7 @@ class JITHomo(JITCMatrix):
 
 
 @jax.tree_util.register_pytree_node_class
-class JITRHomo(JITHomo):
+class JITCHomoR(JITHomo):
     """
     Just-In-Time connectivity Row-oriented Homogeneous matrix representation.
 
@@ -188,10 +188,10 @@ class JITRHomo(JITHomo):
     Examples:
         >>> import jax
         >>> import brainunit as u
-        >>> from brainevent import JITRHomo
+        >>> from brainevent import JITCHomoR
         >>>
         >>> # Create a homogeneous matrix with value 1.5, probability 0.1, and seed 42
-        >>> homo_matrix = JITRHomo((1.5, 0.1, 42), shape=(10, 10))
+        >>> homo_matrix = JITCHomoR((1.5, 0.1, 42), shape=(10, 10))
         >>>
         >>> # Perform matrix-vector multiplication
         >>> vec = jax.numpy.ones(10)
@@ -213,38 +213,38 @@ class JITRHomo(JITHomo):
         - Optimized for matrix-vector operations common in neural simulations
     """
 
-    def _unitary_op(self, op) -> 'JITRHomo':
-        return JITRHomo((op(self.weight), self.prob, self.seed), shape=self.shape)
+    def _unitary_op(self, op) -> 'JITCHomoR':
+        return JITCHomoR((op(self.weight), self.prob, self.seed), shape=self.shape)
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         return _jitr_homo_todense(self.weight, self.prob, self.seed, shape=self.shape, transpose=False)
 
-    def transpose(self, axes=None) -> 'JITCHomo':
+    def transpose(self, axes=None) -> 'JITCHomoC':
         assert axes is None, "transpose does not support axes argument."
-        return JITCHomo((self.weight, self.prob, self.seed), shape=(self.shape[1], self.shape[0]))
+        return JITCHomoC((self.weight, self.prob, self.seed), shape=(self.shape[1], self.shape[0]))
 
-    def _binary_op(self, other, op) -> 'JITRHomo':
-        if isinstance(other, JITRHomo) and id(other.seed) == id(self.seed):
-            return JITRHomo((op(self.weight, other.weight), self.prob, self.seed), shape=self.shape)
+    def _binary_op(self, other, op) -> 'JITCHomoR':
+        if isinstance(other, JITCHomoR) and id(other.seed) == id(self.seed):
+            return JITCHomoR((op(self.weight, other.weight), self.prob, self.seed), shape=self.shape)
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return JITRHomo((op(self.weight, other), self.prob, self.seed), shape=self.shape)
+            return JITCHomoR((op(self.weight, other), self.prob, self.seed), shape=self.shape)
 
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
-    def _binary_rop(self, other, op) -> 'JITRHomo':
-        if isinstance(other, JITRHomo) and id(other.seed) == id(self.seed):
-            return JITRHomo((op(other.weight, self.weight), self.prob, self.seed), shape=self.shape)
+    def _binary_rop(self, other, op) -> 'JITCHomoR':
+        if isinstance(other, JITCHomoR) and id(other.seed) == id(self.seed):
+            return JITCHomoR((op(other.weight, self.weight), self.prob, self.seed), shape=self.shape)
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return JITRHomo((op(other, self.weight), self.prob, self.seed), shape=self.shape)
+            return JITCHomoR((op(other, self.weight), self.prob, self.seed), shape=self.shape)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
@@ -357,7 +357,7 @@ class JITRHomo(JITHomo):
 
 @jax.tree_util.register_pytree_node_class
 @jax.tree_util.register_pytree_node_class
-class JITCHomo(JITHomo):
+class JITCHomoC(JITHomo):
     """
     Just-In-Time connectivity Column-oriented Homogeneous matrix representation.
 
@@ -379,10 +379,10 @@ class JITCHomo(JITHomo):
     Examples:
         >>> import jax
         >>> import brainunit as u
-        >>> from brainevent import JITCHomo
+        >>> from brainevent import JITCHomoC
         >>>
         >>> # Create a homogeneous matrix with value 1.5, probability 0.1, and seed 42
-        >>> homo_matrix = JITCHomo((1.5, 0.1, 42), shape=(10, 10))
+        >>> homo_matrix = JITCHomoC((1.5, 0.1, 42), shape=(10, 10))
         >>>
         >>> # Perform matrix-vector multiplication
         >>> vec = jax.numpy.ones(10)
@@ -406,38 +406,38 @@ class JITCHomo(JITHomo):
         - Optimized for neural simulations with sparse connectivity patterns
     """
 
-    def _unitary_op(self, op) -> 'JITCHomo':
-        return JITCHomo((op(self.weight), self.prob, self.seed), shape=self.shape)
+    def _unitary_op(self, op) -> 'JITCHomoC':
+        return JITCHomoC((op(self.weight), self.prob, self.seed), shape=self.shape)
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         return _jitr_homo_todense(self.weight, self.prob, self.seed, shape=self.shape, transpose=True)
 
-    def transpose(self, axes=None) -> 'JITRHomo':
+    def transpose(self, axes=None) -> 'JITCHomoR':
         assert axes is None, "transpose does not support axes argument."
-        return JITRHomo((self.weight, self.prob, self.seed), shape=(self.shape[1], self.shape[0]))
+        return JITCHomoR((self.weight, self.prob, self.seed), shape=(self.shape[1], self.shape[0]))
 
-    def _binary_op(self, other, op) -> 'JITCHomo':
-        if isinstance(other, JITCHomo) and id(other.seed) == id(self.seed):
-            return JITCHomo((op(self.weight, other.weight), self.prob, self.seed), shape=self.shape)
+    def _binary_op(self, other, op) -> 'JITCHomoC':
+        if isinstance(other, JITCHomoC) and id(other.seed) == id(self.seed):
+            return JITCHomoC((op(self.weight, other.weight), self.prob, self.seed), shape=self.shape)
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return JITCHomo((op(self.weight, other), self.prob, self.seed), shape=self.shape)
+            return JITCHomoC((op(self.weight, other), self.prob, self.seed), shape=self.shape)
 
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
-    def _binary_rop(self, other, op) -> 'JITCHomo':
-        if isinstance(other, JITCHomo) and id(other.seed) == id(self.seed):
-            return JITCHomo((op(other.weight, self.weight), self.prob, self.seed), shape=self.shape)
+    def _binary_rop(self, other, op) -> 'JITCHomoC':
+        if isinstance(other, JITCHomoC) and id(other.seed) == id(self.seed):
+            return JITCHomoC((op(other.weight, self.weight), self.prob, self.seed), shape=self.shape)
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return JITCHomo((op(other, self.weight), self.prob, self.seed), shape=self.shape)
+            return JITCHomoC((op(other, self.weight), self.prob, self.seed), shape=self.shape)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 

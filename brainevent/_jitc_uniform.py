@@ -25,13 +25,13 @@ from ._jitc_base import JITCMatrix
 from ._typing import MatrixShape
 
 __all__ = [
-    'JITRUniform',
-    'JITCUniform',
+    'JITCUniformR',
+    'JITCUniformC',
 ]
 
 
 @jax.tree_util.register_pytree_node_class
-class JITRUniform(JITCMatrix):
+class JITCUniformR(JITCMatrix):
     """
     """
     data: Union[jax.Array, u.Quantity]
@@ -57,7 +57,7 @@ class JITRUniform(JITCMatrix):
 
 
 @jax.tree_util.register_pytree_node_class
-class JITCUniform(JITCMatrix):
+class JITCUniformC(JITCMatrix):
     """
     """
     data: Union[jax.Array, u.Quantity]
