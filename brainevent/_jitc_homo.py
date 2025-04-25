@@ -27,9 +27,9 @@ import numpy as np
 from ._compatible_import import JAXSparse
 from ._csr_event_impl import _event_csr_matvec, _event_csr_matmat
 from ._csr_float_impl import _csr_matvec, _csr_matmat
-from ._jitc_float_homo_impl import jitc_homo_matrix
 from ._event import EventArray
 from ._jitc_base import JITCMatrix
+from ._jitc_float_homo_impl import jitc_homo_matrix
 from ._typing import MatrixShape
 
 __all__ = [
@@ -47,7 +47,7 @@ class JITHomo(JITCMatrix):
     prob: Union[float, jax.Array]
     seed: Union[int, jax.Array]
     shape: MatrixShape
-    dtype = property(lambda self: self.data.dtype)
+    dtype = property(lambda self: self.weight.dtype)
 
     def __init__(
         self,
@@ -58,6 +58,14 @@ class JITHomo(JITCMatrix):
         weight, self.prob, self.seed = data
         self.weight = u.math.asarray(weight)
         super().__init__(data, shape=shape)
+
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}("
+            f"shape={self.shape}, dtype={self.dtype}, "
+            f"weight={self.weight}, prob={self.prob}, "
+            f"seed={self.seed})"
+        )
 
     @property
     def data(self) -> Tuple[Weight, Prob, Seed]:
@@ -179,39 +187,45 @@ class JITCHomoR(JITHomo):
     The class is designed for efficient neural network connectivity patterns where weights
     are homogeneous but connectivity is sparse and stochastic.
 
-    Attributes:
-        weight (Union[jax.Array, u.Quantity]): The homogeneous value used for all non-zero elements
-        prob (Union[float, jax.Array]): Probability for each potential connection
-        seed (Union[int, jax.Array]): Random seed used for initialization of the sparse structure
-        shape (MatrixShape): The shape of the matrix as a tuple (rows, cols)
-        dtype: The data type of the matrix elements (property inherited from parent)
+    Attributes
+    ----------
+    weight (Union[jax.Array, u.Quantity]): The homogeneous value used for all non-zero elements
+    prob (Union[float, jax.Array]): Probability for each potential connection
+    seed (Union[int, jax.Array]): Random seed used for initialization of the sparse structure
+    shape (MatrixShape): The shape of the matrix as a tuple (rows, cols)
+    dtype: The data type of the matrix elements (property inherited from parent)
 
-    Examples:
-        >>> import jax
-        >>> import brainunit as u
-        >>> from brainevent import JITCHomoR
-        >>>
-        >>> # Create a homogeneous matrix with value 1.5, probability 0.1, and seed 42
-        >>> homo_matrix = JITCHomoR((1.5, 0.1, 42), shape=(10, 10))
-        >>>
-        >>> # Perform matrix-vector multiplication
-        >>> vec = jax.numpy.ones(10)
-        >>> result = homo_matrix @ vec
-        >>>
-        >>> # Apply scalar operation
-        >>> scaled = homo_matrix * 2.0
-        >>>
-        >>> # Convert to dense representation
-        >>> dense_matrix = homo_matrix.todense()
-        >>>
-        >>> # Transpose operation returns a JITCHomo instance
-        >>> col_matrix = homo_matrix.transpose()
+    Examples
+    --------
 
-    Notes:
-        - JAX PyTree compatible for use with JAX transformations (jit, grad, vmap)
-        - More memory-efficient than dense matrices for sparse connectivity patterns
-        - Well-suited for neural network connectivity matrices with uniform weights
-        - Optimized for matrix-vector operations common in neural simulations
+    >>> import jax
+    >>> import brainunit as u
+    >>> from brainevent import JITCHomoR
+
+    # Create a homogeneous matrix with value 1.5, probability 0.1, and seed 42
+    >>> homo_matrix = JITCHomoR((1.5, 0.1, 42), shape=(10, 10))
+    >>> homo_matrix
+    JITCHomoR(shape=(10, 10), dtype=float32, weight=1.5, prob=0.1, seed=42)
+
+    >>> # Perform matrix-vector multiplication
+    >>> vec = jax.numpy.ones(10)
+    >>> result = homo_matrix @ vec
+
+    >>> # Apply scalar operation
+    >>> scaled = homo_matrix * 2.0
+    >>>
+    >>> # Convert to dense representation
+    >>> dense_matrix = homo_matrix.todense()
+    >>>
+    >>> # Transpose operation returns a JITCHomo instance
+    >>> col_matrix = homo_matrix.transpose()
+
+    Notes
+    -----
+    - JAX PyTree compatible for use with JAX transformations (jit, grad, vmap)
+    - More memory-efficient than dense matrices for sparse connectivity patterns
+    - Well-suited for neural network connectivity matrices with uniform weights
+    - Optimized for matrix-vector operations common in neural simulations
     """
 
     def _unitary_op(self, op) -> 'JITCHomoR':
@@ -356,7 +370,6 @@ class JITCHomoR(JITHomo):
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
 
-@jax.tree_util.register_pytree_node_class
 @jax.tree_util.register_pytree_node_class
 class JITCHomoC(JITHomo):
     """
