@@ -27,6 +27,7 @@ import numpy as np
 from ._compatible_import import JAXSparse
 from ._csr_event_impl import _event_csr_matvec, _event_csr_matmat
 from ._csr_float_impl import _csr_matvec, _csr_matmat
+from ._jitc_float_homo_impl import jitc_homo_matrix
 from ._event import EventArray
 from ._jitc_base import JITCMatrix
 from ._typing import MatrixShape
@@ -217,7 +218,7 @@ class JITCHomoR(JITHomo):
         return JITCHomoR((op(self.weight), self.prob, self.seed), shape=self.shape)
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
-        return _jitr_homo_todense(self.weight, self.prob, self.seed, shape=self.shape, transpose=False)
+        return jitc_homo_matrix(self.weight, self.prob, self.seed, shape=self.shape, transpose=False)
 
     def transpose(self, axes=None) -> 'JITCHomoC':
         assert axes is None, "transpose does not support axes argument."
@@ -410,7 +411,7 @@ class JITCHomoC(JITHomo):
         return JITCHomoC((op(self.weight), self.prob, self.seed), shape=self.shape)
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
-        return _jitr_homo_todense(self.weight, self.prob, self.seed, shape=self.shape, transpose=True)
+        return jitc_homo_matrix(self.weight, self.prob, self.seed, shape=self.shape, transpose=True)
 
     def transpose(self, axes=None) -> 'JITCHomoR':
         assert axes is None, "transpose does not support axes argument."
