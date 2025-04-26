@@ -997,11 +997,7 @@ jitc_homo_matrix_p = XLACustomKernel(
     ),
     gpu_kernel=WarpKernelGenerator(
         _jitc_homo_matrix_gpu_kernel_generator,
-        dim=lambda out_info, corder, **kwargs: (
-            out_info.shape[0]
-            if corder else
-            out_info.shape[1]
-        ),
+        dim=lambda out_info, corder, **kwargs: out_info.shape[0] if corder else out_info.shape[1],
         input_output_aliases={3: 0}
     )
 )
@@ -1068,6 +1064,7 @@ def _jitc_mv_homo_cpu_kernel_generator(
                 """
                 # Output vector dimension = number of columns in the matrix
                 n_col = posts.shape[0]
+
                 # Input vector dimension = number of rows in the matrix
                 n_row = vector.shape[0]
 
@@ -1943,14 +1940,13 @@ def jitc_mv_homo_p_call(
 
 jitc_mv_homo_p = XLACustomKernel(
     'jitc_mv_homo',
-    cpu_kernel=NumbaKernelGenerator(_jitc_mv_homo_cpu_kernel_generator, input_output_aliases={4: 0}),
+    cpu_kernel=NumbaKernelGenerator(
+        _jitc_mv_homo_cpu_kernel_generator,
+        input_output_aliases={4: 0}
+    ),
     gpu_kernel=WarpKernelGenerator(
         _jitc_mv_homo_gpu_kernel_generator,
-        dim=lambda vector_info, out_info, corder, **kwargs: (
-            out_info.shape[0]
-            if corder else
-            vector_info.shape[0]
-        ),
+        dim=lambda out_info, vector_info, corder, **kwargs: (out_info.shape[0] if corder else vector_info.shape[0]),
         input_output_aliases={4: 0}
     )
 )
@@ -2293,8 +2289,7 @@ def _jitc_mm_homo_gpu_kernel_generator(
     clen_info: jax.ShapeDtypeStruct,
     B_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
-    shape: MatrixShape,
-    block_dim: int,
+    TITLE_SIZE: int,
     transpose: bool = False,
     corder: bool = True,
     **kwargs
@@ -2328,10 +2323,10 @@ def _jitc_mm_homo_gpu_kernel_generator(
                 i_m = warp.tid()
                 state = warp.rand_init(seed0, i_m)
 
-                out = warp.tile_zeros(block_dim, dtype=weight.dtype)
+                out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
                 i_k = warp.randi(state, 0, clen0)
                 while i_k < k:
-                    out += warp.tile_load(B[i_k], block_dim)
+                    out += warp.tile_load(B[i_k], TITLE_SIZE)
                     i_k += warp.randi(state, 1, clen0)
                 warp.tile_store(posts[i_m], out * weight0)
 
@@ -2353,10 +2348,10 @@ def _jitc_mm_homo_gpu_kernel_generator(
                 i_m = warp.tid()
                 state = warp.rand_init(seed0, i_m)
 
-                out = warp.tile_zeros(block_dim, dtype=weight.dtype)
+                out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
                 i_k = warp.randi(state, 0, clen0)
                 while i_k < k:
-                    out += warp.tile_load(B[i_k], block_dim)
+                    out += warp.tile_load(B[i_k], TITLE_SIZE)
                     i_k += warp.randi(state, 1, clen0)
                 warp.tile_store(posts[i_m], out * weight0)
 
@@ -2379,10 +2374,10 @@ def _jitc_mm_homo_gpu_kernel_generator(
                 i_k = warp.tid()
                 state = warp.rand_init(seed0, i_k)
 
-                out = warp.tile_load(B[i_k], block_dim) * weight0
+                out = warp.tile_load(B[i_k], TITLE_SIZE) * weight0
                 i_m = warp.randi(state, 0, clen0)
                 while i_m < m:
-                    warp.tile_atomic_add(posts[i_k], out)
+                    warp.tile_atomic_add(posts[i_m], out)
                     i_m += warp.randi(state, 1, clen0)
 
 
@@ -2404,10 +2399,10 @@ def _jitc_mm_homo_gpu_kernel_generator(
                 i_k = warp.tid()
                 state = warp.rand_init(seed0, i_k)
 
-                out = warp.tile_load(B[i_k], block_dim) * weight0
+                out = warp.tile_load(B[i_k], TITLE_SIZE) * weight0
                 i_m = warp.randi(state, 0, clen0)
                 while i_m < m:
-                    warp.tile_atomic_add(posts[i_k], out)
+                    warp.tile_atomic_add(posts[i_m], out)
                     i_m += warp.randi(state, 1, clen0)
 
     kernel = warp.kernel(kernel)
@@ -2605,6 +2600,7 @@ def jitc_mm_homo_p_call(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        TITLE_SIZE=B.shape[1],
     )
 
 
@@ -2616,8 +2612,8 @@ jitc_mm_homo_p = XLACustomKernel(
     ),
     gpu_kernel=WarpKernelGenerator(
         _jitc_mm_homo_gpu_kernel_generator,
-        tile=lambda shape, corder, **kwargs: (shape[0] if corder else shape[1]),
-        block_dim=lambda B_info, **kwargs: B_info.shape[1],
+        tile=lambda out_info, B_info, corder, **kwargs: (out_info.shape[0] if corder else B_info.shape[0]),
+        block_dim=256,
         input_output_aliases={4: 0}
     )
 )
