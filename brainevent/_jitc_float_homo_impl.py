@@ -2433,8 +2433,9 @@ def _jitc_mm_homo_transpose_rules(
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
 
+    ct = ct[0]
     if ad.is_undefined_primal(B):
-        r = jitc_mv_homo_p_call(
+        r = jitc_mm_homo_p_call(
             weight,
             clen,
             ct,
@@ -2447,7 +2448,7 @@ def _jitc_mm_homo_transpose_rules(
         return weight, clen, r, seed, _
 
     elif ad.is_undefined_primal(weight):
-        r = jitc_mv_homo_p_call(
+        r = jitc_mm_homo_p_call(
             jnp.ones((1,), dtype=ct.dtype),
             clen,
             ct,
