@@ -600,10 +600,10 @@ def _jitc_homo_matrix_gpu_kernel_generator(
                 """
                 GPU kernel function for generating a sparse random matrix with homogeneous weights.
 
-                This function implements the matrix generation when transpose=True and corder=True
+                This function implements the matrix generation when ``transpose=True`` and ``corder=True``
                 for GPU execution using Warp. It creates a sparse matrix where non-zero entries have
-                the same value (weight0) and are randomly distributed with an approximate probability
-                of 1/clen0.
+                the same value (``weight0``) and are randomly distributed with an approximate probability
+                of ``1/clen0``.
 
                 The sparse matrix generation uses a thread-parallel approach where each CUDA thread
                 handles one column of the transposed matrix. Instead of explicitly storing all values,
@@ -616,7 +616,7 @@ def _jitc_homo_matrix_gpu_kernel_generator(
                         3. Skip ahead by a random interval in [1, clen0)
                         4. Repeat until i_row >= m
 
-                This creates a sparse matrix with approximately 1/clen0 connection probability.
+                This creates a sparse matrix with approximately ``1/clen0`` connection probability.
 
                 Parameters
                 ----------
@@ -2440,8 +2440,8 @@ def _jitc_mm_homo_transpose_rules(
             ct,
             seed,
             shape=shape,
-            transpose=transpose,
-            corder=corder,
+            transpose=not transpose,
+            corder=not corder,
         )[0]
 
         return weight, clen, r, seed, _
@@ -2453,8 +2453,8 @@ def _jitc_mm_homo_transpose_rules(
             ct,
             seed,
             shape=shape,
-            transpose=transpose,
-            corder=corder
+            transpose=not transpose,
+            corder=not corder
         )[0]
         dw = jnp.sum(r * B, keepdims=True)
         return dw, clen, B, seed, _
