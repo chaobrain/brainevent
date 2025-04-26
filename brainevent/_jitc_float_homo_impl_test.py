@@ -378,6 +378,51 @@ class Test_JITCHomoR:
         out2 = matrix @ jitc.todense()
         assert u.math.allclose(out1, out2)
 
+    def test_todense_weight_batching(self):
+        def f(weight):
+            jitc = brainevent.JITCHomoR((weight, 0.1, 123), shape=(100, 50))
+            return jitc.todense()
+
+        weights = brainstate.random.rand(10)
+
+        matrices = jax.vmap(f)(weights)
+        assert matrices.shape == (10, 100, 50)
+
+        matrices_loop = brainstate.transform.for_loop(f, weights)
+        assert matrices_loop.shape == (10, 100, 50)
+
+        assert u.math.allclose(matrices, matrices_loop)
+
+    def test_todense_prob_batching(self):
+        def f(prob):
+            jitc = brainevent.JITCHomoR((1.5, prob, 123), shape=(100, 50))
+            return jitc.todense()
+
+        probs = brainstate.random.rand(10)
+
+        matrices = jax.vmap(f)(probs)
+        assert matrices.shape == (10, 100, 50)
+
+        matrices_loop = brainstate.transform.for_loop(f, probs)
+        assert matrices_loop.shape == (10, 100, 50)
+
+        assert u.math.allclose(matrices, matrices_loop)
+
+    def test_todense_seed_batching(self):
+        def f(seed):
+            jitc = brainevent.JITCHomoR((1.5, 0.1, seed), shape=(100, 50))
+            return jitc.todense()
+
+        seeds = brainstate.random.randint(0, 100000, 10)
+
+        matrices = jax.vmap(f)(seeds)
+        assert matrices.shape == (10, 100, 50)
+
+        matrices_loop = brainstate.transform.for_loop(f, seeds)
+        assert matrices_loop.shape == (10, 100, 50)
+
+        assert u.math.allclose(matrices, matrices_loop)
+
 
 class Test_JITCHomoR_Transpose:
     @pytest.mark.parametrize('prob', [0.1, 0.2])
@@ -465,6 +510,51 @@ class Test_JITCHomoC:
         out1 = matrix @ jitc
         out2 = matrix @ jitc.todense()
         assert u.math.allclose(out1, out2)
+
+    def test_todense_weight_batching(self):
+        def f(weight):
+            jitc = brainevent.JITCHomoC((weight, 0.1, 123), shape=(100, 50))
+            return jitc.todense()
+
+        weights = brainstate.random.rand(10)
+
+        matrices = jax.vmap(f)(weights)
+        assert matrices.shape == (10, 100, 50)
+
+        matrices_loop = brainstate.transform.for_loop(f, weights)
+        assert matrices_loop.shape == (10, 100, 50)
+
+        assert u.math.allclose(matrices, matrices_loop)
+
+    def test_todense_prob_batching(self):
+        def f(prob):
+            jitc = brainevent.JITCHomoC((1.5, prob, 123), shape=(100, 50))
+            return jitc.todense()
+
+        probs = brainstate.random.rand(10)
+
+        matrices = jax.vmap(f)(probs)
+        assert matrices.shape == (10, 100, 50)
+
+        matrices_loop = brainstate.transform.for_loop(f, probs)
+        assert matrices_loop.shape == (10, 100, 50)
+
+        assert u.math.allclose(matrices, matrices_loop)
+
+    def test_todense_seed_batching(self):
+        def f(seed):
+            jitc = brainevent.JITCHomoC((1.5, 0.1, seed), shape=(100, 50))
+            return jitc.todense()
+
+        seeds = brainstate.random.randint(0, 100000, 10)
+
+        matrices = jax.vmap(f)(seeds)
+        assert matrices.shape == (10, 100, 50)
+
+        matrices_loop = brainstate.transform.for_loop(f, seeds)
+        assert matrices_loop.shape == (10, 100, 50)
+
+        assert u.math.allclose(matrices, matrices_loop)
 
 
 class Test_JITCHomoC_Transpose:
