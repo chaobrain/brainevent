@@ -17,6 +17,7 @@ from __future__ import annotations
 
 __all__ = [
     'Primitive',
+    'Tracer',
     'register_custom_call',
     'pallas',
     'JAXSparse',
@@ -42,6 +43,8 @@ if jax.__version_info__ < (0, 4, 35):
     from jax.lib import xla_client
 else:
     import jax.extend as je
+
+from jax.core import Tracer
 
 
 def register_custom_call(target_name, capsule, backend: str):

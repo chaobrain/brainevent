@@ -14,31 +14,78 @@
 # ==============================================================================
 
 
+import brainstate
+import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+import brainevent
 from brainevent._jitc_float_homo_impl import (
-    jitc_homo_matvec, jitc_homo_matmat,
+    jitc_homo_matvec,
+    jitc_homo_matmat,
+    jitc_homo_matrix
 )
 
-
-# jax.config.update('jax_default_device', jax.devices('cpu')[0])
 
 def equal(a, b):
     return a == b
 
 
 class TestJitcCsrMatvecHomo:
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_jitc_homo_matrix(self, transpose, corder):
+        out1 = jitc_homo_matrix(
+            1.5,
+            0.1,
+            123,
+            shape=(100, 50),
+            transpose=transpose,
+            corder=corder
+        )
+        out2 = jitc_homo_matrix(
+            1.5,
+            0.1,
+            123,
+            shape=(100, 50),
+            transpose=not transpose,
+            corder=not corder
+        )
+        out2t = out2.T
+        assert jnp.allclose(out1, out2t)
+
+    @pytest.mark.parametrize('shape', [(20, 20), (100, 50)])
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_todense(self, shape, transpose, corder):
+        jitc = brainevent.JITCHomoR(
+            (1.5, 0.1, 123),
+            shape=shape,
+            corder=corder
+        )
+        if transpose:
+            jitc = jitc.T
+        out1 = jitc.todense()
+
+        out2 = jitc_homo_matrix(
+            1.5,
+            0.1,
+            123,
+            shape=shape,
+            transpose=transpose,
+            corder=(not corder) if transpose else corder,
+        )
+        assert jnp.allclose(out1, out2)
 
     @pytest.mark.parametrize('transpose', [True, False])
-    @pytest.mark.parametrize('outdim_parallel', [True, False])
-    def test_zero_weight(self, transpose, outdim_parallel):
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_zero_weight(self, transpose, corder):
         weight = 0.0
         conn_prob = 0.5
-        v = jnp.array([1.0, 2.0, 3.0])
         shape = (2, 3)
+        v = brainstate.random.random(shape[0]) if transpose else brainstate.random.random(shape[1])
         seed = 1234
         result = jitc_homo_matvec(
             weight,
@@ -47,7 +94,7 @@ class TestJitcCsrMatvecHomo:
             seed=seed,
             shape=shape,
             transpose=transpose,
-            outdim_parallel=outdim_parallel
+            corder=corder
         )
         expected = jnp.zeros(shape[1]) if transpose else jnp.zeros(shape[0])
         assert (jnp.allclose(result, expected))
@@ -56,8 +103,8 @@ class TestJitcCsrMatvecHomo:
     @pytest.mark.parametrize('weight', [-1., 1.])
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('transpose', [True, False])
-    @pytest.mark.parametrize('outdim_parallel', [True, False])
-    def test_random_connectivity(self, shape, weight, prob, transpose, outdim_parallel):
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_random_connectivity(self, shape, weight, prob, transpose, corder):
         seed = 1234
         vector = jnp.asarray(np.random.random(shape[0] if transpose else shape[1]))
         r1 = jitc_homo_matvec(
@@ -67,7 +114,7 @@ class TestJitcCsrMatvecHomo:
             seed=seed,
             shape=shape,
             transpose=transpose,
-            outdim_parallel=outdim_parallel
+            corder=corder
         )
         r2 = jitc_homo_matvec(
             weight,
@@ -76,7 +123,7 @@ class TestJitcCsrMatvecHomo:
             seed=seed,
             shape=shape,
             transpose=transpose,
-            outdim_parallel=outdim_parallel
+            corder=corder
         )
         print(r1)
         assert (jnp.allclose(r1, r2, atol=1e-6))
@@ -84,8 +131,8 @@ class TestJitcCsrMatvecHomo:
     @pytest.mark.parametrize('weight', [-1., 1.])
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('transpose', [True, False])
-    @pytest.mark.parametrize('outdim_parallel', [True, False])
-    def test_jvp(self, weight, prob, transpose, outdim_parallel):
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_jvp(self, weight, prob, transpose, corder):
         seed = 1234
         n_in = 200
         n_out = 300
@@ -101,7 +148,7 @@ class TestJitcCsrMatvecHomo:
                 seed=seed,
                 shape=shape,
                 transpose=transpose,
-                outdim_parallel=outdim_parallel
+                corder=corder
             )
 
         out1, jvp_x1 = jax.jvp(
@@ -121,36 +168,13 @@ class TestJitcCsrMatvecHomo:
 
 
 class TestJitcCsrMatmatHomo:
-    @pytest.mark.parametrize('transpose', [True, False])
-    @pytest.mark.parametrize('outdim_parallel', [True, False])
-    def test_zero_weight(self, transpose, outdim_parallel):
-        weight = 0.0
-        conn_prob = 0.5
-        B = jnp.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])  # 3x2 matrix
-        shape = (2, 3)
-        seed = 1234
-
-        result = jitc_homo_matmat(
-            weight,
-            conn_prob,
-            B,
-            seed=seed,
-            shape=shape,
-            transpose=transpose,
-            outdim_parallel=outdim_parallel
-        )
-        # Expected shape depends on transpose operation
-        expected_shape = (shape[1], B.shape[1]) if transpose else (shape[0], B.shape[1])
-        expected = jnp.zeros(expected_shape)
-        assert (jnp.allclose(result, expected))
-
     @pytest.mark.parametrize('shape', [(100, 200), (20, 100), (100, 20)])
     @pytest.mark.parametrize('batch_size', [10, 20])
     @pytest.mark.parametrize('weight', [-1., 1.])
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('transpose', [True, False])
-    @pytest.mark.parametrize('outdim_parallel', [True, False])
-    def test_random_connectivity(self, shape, batch_size, weight, prob, transpose, outdim_parallel):
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_random_connectivity(self, shape, batch_size, weight, prob, transpose, corder):
         seed = 1234
 
         print(
@@ -159,7 +183,7 @@ class TestJitcCsrMatmatHomo:
             f'weight: {weight}, \n'
             f'prob: {prob}, \n'
             f'transpose: {transpose}, \n'
-            f'outdim_parallel: {outdim_parallel}'
+            f'corder: {corder}'
         )
 
         # Input matrix B
@@ -173,7 +197,7 @@ class TestJitcCsrMatmatHomo:
             seed=seed,
             shape=shape,
             transpose=transpose,
-            outdim_parallel=outdim_parallel
+            corder=corder
         )
         r2 = jitc_homo_matmat(
             weight,
@@ -182,7 +206,7 @@ class TestJitcCsrMatmatHomo:
             seed=seed,
             shape=shape,
             transpose=transpose,
-            outdim_parallel=outdim_parallel
+            corder=corder
         )
         # Results should be deterministic for same seed
         # print(jnp.sum(r1 - r2))
@@ -197,8 +221,8 @@ class TestJitcCsrMatmatHomo:
     @pytest.mark.parametrize('weight', [-1., 1.])
     @pytest.mark.parametrize('prob', [0.3, 0.5])
     @pytest.mark.parametrize('transpose', [True, False])
-    @pytest.mark.parametrize('outdim_parallel', [True, False])
-    def test_jvp(self, weight, prob, transpose, outdim_parallel):
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_jvp(self, weight, prob, transpose, corder):
         seed = 1234
         n_in = 200
         n_out = 300
@@ -217,17 +241,21 @@ class TestJitcCsrMatmatHomo:
                 seed=seed,
                 shape=shape,
                 transpose=transpose,
-                outdim_parallel=outdim_parallel
+                corder=corder
             )
 
         # Test JVP for both input matrix X and weight w
-        out1, jvp_x1 = jax.jvp(f_brainevent,
-                               (X, jnp.array(weight)),
-                               (jnp.ones_like(X), jnp.array(1.0)))
+        out1, jvp_x1 = jax.jvp(
+            f_brainevent,
+            (X, jnp.array(weight)),
+            (jnp.ones_like(X), jnp.array(1.0))
+        )
 
-        out2, jvp_x2 = jax.jvp(f_brainevent,
-                               (X, jnp.array(weight)),
-                               (jnp.ones_like(X), jnp.array(1.0)))
+        out2, jvp_x2 = jax.jvp(
+            f_brainevent,
+            (X, jnp.array(weight)),
+            (jnp.ones_like(X), jnp.array(1.0))
+        )
 
         # Results should be consistent
         assert (jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5, equal_nan=True))
@@ -237,3 +265,116 @@ class TestJitcCsrMatmatHomo:
         expected_shape = (shape[1], batch_size) if transpose else (shape[0], batch_size)
         assert equal(out1.shape, expected_shape)
         assert equal(jvp_x1.shape, expected_shape)
+
+
+class Test_JITC_RC_Conversion:
+
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_todense(self, shape, transpose, corder):
+        jitcr = brainevent.JITCHomoR((1.5, 0.1, 123), shape=shape, corder=corder)
+        jitcc = jitcr.T
+
+        out1 = jitcr.todense()
+        out2 = jitcc.todense().T
+        out3 = jitcr.T.todense().T
+        out4 = jitcc.T.todense()
+        assert jnp.allclose(out1, out2)
+        assert jnp.allclose(out1, out3)
+        assert jnp.allclose(out1, out4)
+
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_matvec(self, shape, corder):
+        jitcr = brainevent.JITCHomoR((1.5, 0.1, 123), shape=shape, corder=corder)
+        jitcc = jitcr.T
+
+        vector = jnp.asarray(np.random.random(shape[1]))
+
+        out1 = jitcr @ vector
+        out2 = vector @ jitcc
+        assert jnp.allclose(out1, out2)
+
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_vecmat(self, shape, corder):
+        jitcr = brainevent.JITCHomoR((1.5, 0.1, 123), shape=shape, corder=corder)
+        jitcc = jitcr.T
+
+        vector = jnp.asarray(np.random.random(shape[0]))
+
+        out1 = vector @ jitcr
+        out2 = jitcc @ vector
+        assert jnp.allclose(out1, out2)
+
+    @pytest.mark.parametrize('k', [10, 20])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_jitmat(self, k, shape, corder):
+        jitcr = brainevent.JITCHomoR((1.5, 0.1, 123), shape=shape, corder=corder)
+        jitcc = jitcr.T
+
+        matrix = jnp.asarray(np.random.rand(shape[1], k))
+
+        out1 = jitcr @ matrix
+        out2 = (matrix.T @ jitcc).T
+        assert jnp.allclose(out1, out2)
+
+    @pytest.mark.parametrize('k', [10, 20])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_matjit(self, k, shape, corder):
+        jitcr = brainevent.JITCHomoR((1.5, 0.1, 123), shape=shape, corder=corder)
+        jitcc = jitcr.T
+
+        matrix = jnp.asarray(np.random.rand(k, shape[0]))
+
+        out1 = matrix @ jitcr
+        out2 = (jitcc @ matrix.T).T
+        assert jnp.allclose(out1, out2)
+
+
+class Test_JITCHomoR:
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_matvec(self, prob, weight, shape):
+        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape)
+        vector = jnp.asarray(np.random.random(shape[1]))
+        out1 = jitc @ vector
+        out2 = jitc.todense() @ vector
+        assert u.math.allclose(out1, out2)
+
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_vecmat(self, prob, weight, shape):
+        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape)
+        vector = jnp.asarray(np.random.random(shape[0]))
+        out1 = vector @ jitc
+        out2 = vector @ jitc.todense()
+        assert u.math.allclose(out1, out2)
+
+    @pytest.mark.parametrize('k', [10, 20])
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_jitmat(self, prob, weight, shape, k):
+        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape)
+        matrix = jnp.asarray(np.random.rand(shape[1], k))
+        out1 = jitc @ matrix
+        out2 = jitc.todense() @ matrix
+        assert u.math.allclose(out1, out2)
+
+    @pytest.mark.parametrize('k', [10, 20])
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_matjit(self, k, prob, weight, shape):
+        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape)
+        matrix = jnp.asarray(np.random.rand(k, shape[0]))
+        out1 = matrix @ jitc
+        out2 = matrix @ jitc.todense()
+        assert u.math.allclose(out1, out2)
+
