@@ -418,10 +418,6 @@ def _warp_gpu_lowering(
         raise ImportError('Warp is required to compile the GPU kernel for the custom operator.')
     _warp_gpu_register_capsule()
 
-    wp_kernel: warp.context.Kernel = kernel_generator.generate_kernel(**kwargs)
-    assert isinstance(wp_kernel, warp.context.Kernel), f'The kernel should be a Warp kernel. But we got {wp_kernel}'
-
-    kernel_id = _register_warp_kernel(wp_kernel)
 
     # ------------------
     # block dimensions
@@ -438,6 +434,14 @@ def _warp_gpu_lowering(
             f"Invalid block dimensions, expected "
             f"int, got {block_dim}"
         )
+
+    # ------------------
+    # kernels
+    # ------------------
+    wp_kernel: warp.context.Kernel = kernel_generator.generate_kernel(**kwargs, block_dim=block_dim)
+    assert isinstance(wp_kernel, warp.context.Kernel), f'The kernel should be a Warp kernel. But we got {wp_kernel}'
+
+    kernel_id = _register_warp_kernel(wp_kernel)
 
     # ------------------
     # launch dimensions
