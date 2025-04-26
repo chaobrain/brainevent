@@ -17,7 +17,6 @@
 
 
 import numbers
-import operator
 from typing import Union, Tuple
 
 import brainunit as u
@@ -162,60 +161,6 @@ class JITHomoMatrix(JITCMatrix):
             )
         obj.__dict__.update(**aux_data)
         return obj
-
-    def _unitary_op(self, op):
-        raise NotImplementedError("unitary operation not implemented.")
-
-    def __abs__(self):
-        return self._unitary_op(operator.abs)
-
-    def __neg__(self):
-        return self._unitary_op(operator.neg)
-
-    def __pos__(self):
-        return self._unitary_op(operator.pos)
-
-    def _binary_op(self, other, op):
-        raise NotImplementedError("binary operation not implemented.")
-
-    def __mul__(self, other: Union[jax.typing.ArrayLike, u.Quantity]):
-        return self._binary_op(other, operator.mul)
-
-    def __div__(self, other: Union[jax.typing.ArrayLike, u.Quantity]):
-        return self._binary_op(other, operator.truediv)
-
-    def __truediv__(self, other):
-        return self.__div__(other)
-
-    def __add__(self, other):
-        return self._binary_op(other, operator.add)
-
-    def __sub__(self, other):
-        return self._binary_op(other, operator.sub)
-
-    def __mod__(self, other):
-        return self._binary_op(other, operator.mod)
-
-    def _binary_rop(self, other, op):
-        raise NotImplementedError("binary operation not implemented.")
-
-    def __rmul__(self, other: Union[jax.typing.ArrayLike, u.Quantity]):
-        return self._binary_rop(other, operator.mul)
-
-    def __rdiv__(self, other: Union[jax.typing.ArrayLike, u.Quantity]):
-        return self._binary_rop(other, operator.truediv)
-
-    def __rtruediv__(self, other):
-        return self.__rdiv__(other)
-
-    def __radd__(self, other):
-        return self._binary_rop(other, operator.add)
-
-    def __rsub__(self, other):
-        return self._binary_rop(other, operator.sub)
-
-    def __rmod__(self, other):
-        return self._binary_rop(other, operator.mod)
 
     def _check(self, other, op):
         if not (isinstance(other.seed, Tracer) and isinstance(self.seed, Tracer)):
