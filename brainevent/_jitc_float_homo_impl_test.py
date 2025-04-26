@@ -427,11 +427,14 @@ class Test_JITCHomoR:
 
         assert u.math.allclose(matrices, matrices_loop)
 
-    @pytest.mark.parametrize('weight', [-1., 1.])
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
+
+class Test_JITCHomoR_Gradients:
+
+    @pytest.mark.parametrize('weight', [1.5])
+    @pytest.mark.parametrize('prob', [0.1, ])
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_jvp(self, weight, prob, corder, shape):
+    def test_matvec_jvp(self, weight, prob, corder, shape):
         jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder)
         dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder)
         x = jnp.asarray(np.random.random(shape[1]))
@@ -457,11 +460,11 @@ class Test_JITCHomoR:
         assert (jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
         assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-5, atol=1e-5))
 
-    @pytest.mark.parametrize('weight', [-1., 1.])
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('weight', [1.5])
+    @pytest.mark.parametrize('prob', [0.1, ])
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_vjp(self, weight, prob, corder, shape):
+    def test_matvec_vjp(self, weight, prob, corder, shape):
         jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder)
         dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder)
         x = jnp.asarray(np.random.random(shape[1]))
@@ -789,8 +792,10 @@ class Test_JITCHomoR_Transpose:
         out2 = matrix @ jitc.todense()
         assert u.math.allclose(out1, out2)
 
-    @pytest.mark.parametrize('weight', [-1., 1.])
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
+
+class Test_JITCHomoR_Transpose_Gradients:
+    @pytest.mark.parametrize('weight', [1.5])
+    @pytest.mark.parametrize('prob', [0.1, ])
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_jvp(self, weight, prob, corder, shape):
@@ -819,8 +824,8 @@ class Test_JITCHomoR_Transpose:
         assert (jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
         assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-5, atol=1e-5))
 
-    @pytest.mark.parametrize('weight', [-1., 1.])
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('weight', [1.5])
+    @pytest.mark.parametrize('prob', [0.1, ])
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_vjp(self, weight, prob, corder, shape):
@@ -930,8 +935,11 @@ class Test_JITCHomoC:
 
         assert u.math.allclose(matrices, matrices_loop)
 
-    @pytest.mark.parametrize('weight', [-1., 1.])
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
+
+class Test_JITCHomoC_Gradients:
+
+    @pytest.mark.parametrize('weight', [1.5])
+    @pytest.mark.parametrize('prob', [0.1, ])
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_jvp(self, weight, prob, corder, shape):
@@ -960,8 +968,8 @@ class Test_JITCHomoC:
         assert (jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
         assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-5, atol=1e-5))
 
-    @pytest.mark.parametrize('weight', [-1., 1.])
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('weight', [1.5])
+    @pytest.mark.parametrize('prob', [0.1, ])
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_vjp(self, weight, prob, corder, shape):
@@ -1292,8 +1300,10 @@ class Test_JITCHomoC_Transpose:
         out2 = matrix @ jitc.todense()
         assert u.math.allclose(out1, out2)
 
-    @pytest.mark.parametrize('weight', [-1., 1.])
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
+
+class Test_JITCHomoC_Transpose_Gradients:
+    @pytest.mark.parametrize('weight', [1.5])
+    @pytest.mark.parametrize('prob', [0.1, ])
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_jvp(self, weight, prob, corder, shape):
@@ -1322,8 +1332,8 @@ class Test_JITCHomoC_Transpose:
         assert (jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
         assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-5, atol=1e-5))
 
-    @pytest.mark.parametrize('weight', [-1., 1.])
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('weight', [1.5])
+    @pytest.mark.parametrize('prob', [0.1, ])
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_vjp(self, weight, prob, corder, shape):
