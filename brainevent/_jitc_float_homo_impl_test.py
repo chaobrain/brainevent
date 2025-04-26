@@ -14,6 +14,10 @@
 # ==============================================================================
 
 
+import os
+
+os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
+
 import brainstate
 import brainunit as u
 import jax
@@ -423,6 +427,58 @@ class Test_JITCHomoR:
 
         assert u.math.allclose(matrices, matrices_loop)
 
+    @pytest.mark.parametrize('weight', [-1., 1.])
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('corder', [True, False])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_jvp(self, weight, prob, corder, shape):
+        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder)
+        dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder)
+        x = jnp.asarray(np.random.random(shape[1]))
+
+        def f_brainevent(x, w):
+            return (jitc.with_data(w) @ x).sum()
+
+        def f_dense(x, w):
+            return ((dense * w) @ x).sum()
+
+        out1, jvp_x1 = jax.jvp(
+            f_brainevent,
+            (x, jnp.array(weight)),
+            (jnp.ones_like(x), jnp.array(1.0))
+        )
+
+        out2, jvp_x2 = jax.jvp(
+            f_dense,
+            (x, jnp.array(weight)),
+            (jnp.ones_like(x), jnp.array(1.0))
+        )
+
+        assert (jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
+        assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-5, atol=1e-5))
+
+    @pytest.mark.parametrize('weight', [-1., 1.])
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('corder', [True, False])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_vjp(self, weight, prob, corder, shape):
+        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder)
+        dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder)
+        x = jnp.asarray(np.random.random(shape[1]))
+
+        def f_brainevent(x, w):
+            return (jitc.with_data(w) @ x).sum()
+
+        def f_dense(x, w):
+            return ((dense * w) @ x).sum()
+
+        out1, (vjp_x1, vjp_w1) = jax.value_and_grad(f_brainevent, argnums=(0, 1))(x, jnp.array(weight))
+        out2, (vjp_x2, vjp_w2) = jax.value_and_grad(f_dense, argnums=(0, 1))(x, jnp.array(weight))
+
+        assert (jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
+        assert (jnp.allclose(vjp_x1, vjp_x2, rtol=1e-5, atol=1e-5))
+        assert (jnp.allclose(vjp_w1, vjp_w2, rtol=1e-5, atol=1e-5))
+
 
 class Test_JITCHomoR_Transpose:
     @pytest.mark.parametrize('prob', [0.1, 0.2])
@@ -466,6 +522,60 @@ class Test_JITCHomoR_Transpose:
         out1 = matrix @ jitc
         out2 = matrix @ jitc.todense()
         assert u.math.allclose(out1, out2)
+
+
+    @pytest.mark.parametrize('weight', [-1., 1.])
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('corder', [True, False])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_jvp(self, weight, prob, corder, shape):
+        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder).T
+        dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder).T
+        x = jnp.asarray(np.random.random(shape[0]))
+
+        def f_brainevent(x, w):
+            return (jitc.with_data(w) @ x).sum()
+
+        def f_dense(x, w):
+            return ((dense * w) @ x).sum()
+
+        out1, jvp_x1 = jax.jvp(
+            f_brainevent,
+            (x, jnp.array(weight)),
+            (jnp.ones_like(x), jnp.array(1.0))
+        )
+
+        out2, jvp_x2 = jax.jvp(
+            f_dense,
+            (x, jnp.array(weight)),
+            (jnp.ones_like(x), jnp.array(1.0))
+        )
+
+        assert (jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
+        assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-5, atol=1e-5))
+
+    @pytest.mark.parametrize('weight', [-1., 1.])
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('corder', [True, False])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_vjp(self, weight, prob, corder, shape):
+        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder).T
+        dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder).T
+        x = jnp.asarray(np.random.random(shape[0]))
+
+        def f_brainevent(x, w):
+            return (jitc.with_data(w) @ x).sum()
+
+        def f_dense(x, w):
+            return ((dense * w) @ x).sum()
+
+        out1, (vjp_x1, vjp_w1) = jax.value_and_grad(f_brainevent, argnums=(0, 1))(x, jnp.array(weight))
+        out2, (vjp_x2, vjp_w2) = jax.value_and_grad(f_dense, argnums=(0, 1))(x, jnp.array(weight))
+
+        assert (jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
+        assert (jnp.allclose(vjp_x1, vjp_x2, rtol=1e-5, atol=1e-5))
+        assert (jnp.allclose(vjp_w1, vjp_w2, rtol=1e-5, atol=1e-5))
+
 
 
 class Test_JITCHomoC:
@@ -556,6 +666,59 @@ class Test_JITCHomoC:
 
         assert u.math.allclose(matrices, matrices_loop)
 
+    @pytest.mark.parametrize('weight', [-1., 1.])
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('corder', [True, False])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_jvp(self, weight, prob, corder, shape):
+        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder)
+        dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder)
+        x = jnp.asarray(np.random.random(shape[1]))
+
+        def f_brainevent(x, w):
+            return (jitc.with_data(w) @ x).sum()
+
+        def f_dense(x, w):
+            return ((dense * w) @ x).sum()
+
+        out1, jvp_x1 = jax.jvp(
+            f_brainevent,
+            (x, jnp.array(weight)),
+            (jnp.ones_like(x), jnp.array(1.0))
+        )
+
+        out2, jvp_x2 = jax.jvp(
+            f_dense,
+            (x, jnp.array(weight)),
+            (jnp.ones_like(x), jnp.array(1.0))
+        )
+
+        assert (jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
+        assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-5, atol=1e-5))
+
+    @pytest.mark.parametrize('weight', [-1., 1.])
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('corder', [True, False])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_vjp(self, weight, prob, corder, shape):
+        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder)
+        dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder)
+        x = jnp.asarray(np.random.random(shape[1]))
+
+        def f_brainevent(x, w):
+            return (jitc.with_data(w) @ x).sum()
+
+        def f_dense(x, w):
+            return ((dense * w) @ x).sum()
+
+        out1, (vjp_x1, vjp_w1) = jax.value_and_grad(f_brainevent, argnums=(0, 1))(x, jnp.array(weight))
+        out2, (vjp_x2, vjp_w2) = jax.value_and_grad(f_dense, argnums=(0, 1))(x, jnp.array(weight))
+
+        assert (jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
+        assert (jnp.allclose(vjp_x1, vjp_x2, rtol=1e-5, atol=1e-5))
+        assert (jnp.allclose(vjp_w1, vjp_w2, rtol=1e-5, atol=1e-5))
+
+
 
 class Test_JITCHomoC_Transpose:
     @pytest.mark.parametrize('prob', [0.1, 0.2])
@@ -599,3 +762,56 @@ class Test_JITCHomoC_Transpose:
         out1 = matrix @ jitc
         out2 = matrix @ jitc.todense()
         assert u.math.allclose(out1, out2)
+
+    @pytest.mark.parametrize('weight', [-1., 1.])
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('corder', [True, False])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_jvp(self, weight, prob, corder, shape):
+        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder).T
+        dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder).T
+        x = jnp.asarray(np.random.random(shape[0]))
+
+        def f_brainevent(x, w):
+            return (jitc.with_data(w) @ x).sum()
+
+        def f_dense(x, w):
+            return ((dense * w) @ x).sum()
+
+        out1, jvp_x1 = jax.jvp(
+            f_brainevent,
+            (x, jnp.array(weight)),
+            (jnp.ones_like(x), jnp.array(1.0))
+        )
+
+        out2, jvp_x2 = jax.jvp(
+            f_dense,
+            (x, jnp.array(weight)),
+            (jnp.ones_like(x), jnp.array(1.0))
+        )
+
+        assert (jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
+        assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-5, atol=1e-5))
+
+    @pytest.mark.parametrize('weight', [-1., 1.])
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('corder', [True, False])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_vjp(self, weight, prob, corder, shape):
+        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder).T
+        dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder).T
+        x = jnp.asarray(np.random.random(shape[0]))
+
+        def f_brainevent(x, w):
+            return (jitc.with_data(w) @ x).sum()
+
+        def f_dense(x, w):
+            return ((dense * w) @ x).sum()
+
+        out1, (vjp_x1, vjp_w1) = jax.value_and_grad(f_brainevent, argnums=(0, 1))(x, jnp.array(weight))
+        out2, (vjp_x2, vjp_w2) = jax.value_and_grad(f_dense, argnums=(0, 1))(x, jnp.array(weight))
+
+        assert (jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
+        assert (jnp.allclose(vjp_x1, vjp_x2, rtol=1e-5, atol=1e-5))
+        assert (jnp.allclose(vjp_w1, vjp_w2, rtol=1e-5, atol=1e-5))
+
