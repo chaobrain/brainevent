@@ -378,3 +378,134 @@ class Test_JITCHomoR:
         out2 = matrix @ jitc.todense()
         assert u.math.allclose(out1, out2)
 
+
+class Test_JITCHomoR_Transpose:
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_matvec(self, prob, weight, shape):
+        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape).T
+        vector = jnp.asarray(np.random.random(shape[0]))
+        out1 = jitc @ vector
+        out2 = jitc.todense() @ vector
+        assert u.math.allclose(out1, out2)
+
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_vecmat(self, prob, weight, shape):
+        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape).T
+        vector = jnp.asarray(np.random.random(shape[1]))
+        out1 = vector @ jitc
+        out2 = vector @ jitc.todense()
+        assert u.math.allclose(out1, out2)
+
+    @pytest.mark.parametrize('k', [10, 20])
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_jitmat(self, prob, weight, shape, k):
+        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape).T
+        matrix = jnp.asarray(np.random.rand(shape[0], k))
+        out1 = jitc @ matrix
+        out2 = jitc.todense() @ matrix
+        assert u.math.allclose(out1, out2)
+
+    @pytest.mark.parametrize('k', [10, 20])
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_matjit(self, k, prob, weight, shape):
+        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape).T
+        matrix = jnp.asarray(np.random.rand(k, shape[1]))
+        out1 = matrix @ jitc
+        out2 = matrix @ jitc.todense()
+        assert u.math.allclose(out1, out2)
+
+
+class Test_JITCHomoC:
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_matvec(self, prob, weight, shape):
+        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape)
+        vector = jnp.asarray(np.random.random(shape[1]))
+        out1 = jitc @ vector
+        out2 = jitc.todense() @ vector
+        assert u.math.allclose(out1, out2)
+
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_vecmat(self, prob, weight, shape):
+        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape)
+        vector = jnp.asarray(np.random.random(shape[0]))
+        out1 = vector @ jitc
+        out2 = vector @ jitc.todense()
+        assert u.math.allclose(out1, out2)
+
+    @pytest.mark.parametrize('k', [10, 20])
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_jitmat(self, prob, weight, shape, k):
+        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape)
+        matrix = jnp.asarray(np.random.rand(shape[1], k))
+        out1 = jitc @ matrix
+        out2 = jitc.todense() @ matrix
+        assert u.math.allclose(out1, out2)
+
+    @pytest.mark.parametrize('k', [10, 20])
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_matjit(self, k, prob, weight, shape):
+        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape)
+        matrix = jnp.asarray(np.random.rand(k, shape[0]))
+        out1 = matrix @ jitc
+        out2 = matrix @ jitc.todense()
+        assert u.math.allclose(out1, out2)
+
+
+class Test_JITCHomoC_Transpose:
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_matvec(self, prob, weight, shape):
+        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape).T
+        vector = jnp.asarray(np.random.random(shape[0]))
+        out1 = jitc @ vector
+        out2 = jitc.todense() @ vector
+        assert u.math.allclose(out1, out2)
+
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_vecmat(self, prob, weight, shape):
+        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape).T
+        vector = jnp.asarray(np.random.random(shape[1]))
+        out1 = vector @ jitc
+        out2 = vector @ jitc.todense()
+        assert u.math.allclose(out1, out2)
+
+    @pytest.mark.parametrize('k', [10, 20])
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_jitmat(self, prob, weight, shape, k):
+        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape).T
+        matrix = jnp.asarray(np.random.rand(shape[0], k))
+        out1 = jitc @ matrix
+        out2 = jitc.todense() @ matrix
+        assert u.math.allclose(out1, out2)
+
+    @pytest.mark.parametrize('k', [10, 20])
+    @pytest.mark.parametrize('prob', [0.1, 0.2])
+    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_matjit(self, k, prob, weight, shape):
+        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape).T
+        matrix = jnp.asarray(np.random.rand(k, shape[1]))
+        out1 = matrix @ jitc
+        out2 = matrix @ jitc.todense()
+        assert u.math.allclose(out1, out2)
