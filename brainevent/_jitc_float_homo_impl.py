@@ -650,7 +650,7 @@ def _jitc_homo_matrix_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0 + i_row)
+                state = warp.rand_init(seed0, i_row)
 
                 # Sample the first connected row using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -732,11 +732,11 @@ def _jitc_homo_matrix_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0 + i_row)
+                state = warp.rand_init(seed0, i_row)
 
                 # Sample the first connected column using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
-                i_col = warp.randu(state, 0, clen0)
+                i_col = warp.randi(state, 0, clen0)
 
                 # Process all connected entries for this output element (row)
                 while i_col < n:
@@ -745,7 +745,7 @@ def _jitc_homo_matrix_gpu_kernel_generator(
 
                     # Skip ahead to next connected column using geometric-like distribution
                     # This creates sparse connectivity with ~1/clen0 connection probability
-                    i_col += warp.randu(state, 1, clen0)
+                    i_col += warp.randi(state, 1, clen0)
 
     else:
 
@@ -820,7 +820,7 @@ def _jitc_homo_matrix_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0 + i_col)
+                state = warp.rand_init(seed0, i_col)
 
                 # Sample the first connected row using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -908,7 +908,7 @@ def _jitc_homo_matrix_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0 + i_col)
+                state = warp.rand_init(seed0, i_col)
 
                 # Sample the first connected row using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -997,10 +997,10 @@ jitc_homo_matrix_p = XLACustomKernel(
     ),
     gpu_kernel=WarpKernelGenerator(
         _jitc_homo_matrix_gpu_kernel_generator,
-        dim=lambda vector_info, out_info, corder, **kwargs: (
+        dim=lambda out_info, corder, **kwargs: (
             out_info.shape[0]
             if corder else
-            vector_info.shape[0]
+            out_info.shape[1]
         ),
         input_output_aliases={3: 0}
     )
@@ -1449,7 +1449,7 @@ def _jitc_mv_homo_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0 + i_col)
+                state = warp.rand_init(seed0, i_col)
 
                 # Sample the first connected row using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -1527,11 +1527,11 @@ def _jitc_mv_homo_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0 + i_row)
+                state = warp.rand_init(seed0, i_row)
 
                 # Sample the first connected column using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
-                i_col = warp.randu(state, 0, clen0)
+                i_col = warp.randi(state, 0, clen0)
 
                 # Process all connected entries for this output element (row)
                 while i_col < num_col:
@@ -1540,7 +1540,7 @@ def _jitc_mv_homo_gpu_kernel_generator(
 
                     # Skip ahead to next connected column using geometric-like distribution
                     # This creates sparse connectivity with ~1/clen0 connection probability
-                    i_col += warp.randu(state, 1, clen0)
+                    i_col += warp.randi(state, 1, clen0)
 
                 # Scale accumulated sum by weight and store in output array
                 posts[i_row] = r * weight0
@@ -1608,7 +1608,7 @@ def _jitc_mv_homo_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0 + i_row)
+                state = warp.rand_init(seed0, i_row)
 
                 # Sample the first connected column using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -1688,7 +1688,7 @@ def _jitc_mv_homo_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0 + i_col)
+                state = warp.rand_init(seed0, i_col)
 
                 # Sample the first connected row using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -2294,6 +2294,7 @@ def _jitc_mm_homo_gpu_kernel_generator(
     B_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
     shape: MatrixShape,
+    block_dim: int,
     transpose: bool = False,
     corder: bool = True,
     **kwargs
@@ -2309,61 +2310,105 @@ def _jitc_mm_homo_gpu_kernel_generator(
     seed_dtype = dtype_to_warp_type(seed_info.dtype)
 
     if corder:
-        # corder=True
-        def kernel(
-            weight: warp.array1d(dtype=weight_dtype),
-            clen: warp.array1d(dtype=clen_dtype),
-            B: warp.array2d(dtype=B_dtype),
-            seed: warp.array1d(dtype=seed_dtype),
-            _: warp.array2d(dtype=weight_dtype),
-            posts: warp.array2d(dtype=weight_dtype),
-        ):
-            num_rows = posts.shape[0]
-            num_cols = posts.shape[1]
-            # num_rows, num_cols = posts.shape
-            weight0 = weight[0]
-            clen0 = clen[0]
-            seed0 = seed[0]
+        if transpose:
+            # JIT Matrix.T @ B
+            def kernel(
+                weight: warp.array1d(dtype=weight_dtype),
+                clen: warp.array1d(dtype=clen_dtype),
+                B: warp.array2d(dtype=B_dtype),
+                seed: warp.array1d(dtype=seed_dtype),
+                _: warp.array2d(dtype=weight_dtype),
+                posts: warp.array2d(dtype=weight_dtype),
+            ):
+                k = B.shape[0]
+                weight0 = weight[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
 
-            i_row, i_col = warp.tid()
+                i_m = warp.tid()
+                state = warp.rand_init(seed0, i_m)
 
-            r = float(0.0)
-            state = warp.rand_init(seed0 + i_row * num_cols + i_col)
+                out = warp.tile_zeros(block_dim, dtype=weight.dtype)
+                i_k = warp.randi(state, 0, clen0)
+                while i_k < k:
+                    out += warp.tile_load(B[i_k], block_dim)
+                    i_k += warp.randi(state, 1, clen0)
+                warp.tile_store(posts[i_m], out * weight0)
 
-            cursor = int(0)
+        else:
+            # JIT Matrix @ B
+            def kernel(
+                weight: warp.array1d(dtype=weight_dtype),
+                clen: warp.array1d(dtype=clen_dtype),
+                B: warp.array2d(dtype=B_dtype),
+                seed: warp.array1d(dtype=seed_dtype),
+                _: warp.array2d(dtype=weight_dtype),
+                posts: warp.array2d(dtype=weight_dtype),
+            ):
+                k = B.shape[0]
+                weight0 = weight[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
 
-            while cursor < num_cols:
-                if _binomial_n1(state, clen0) == 1:
-                    r += B[i_row, cursor]
-                cursor += 1
-            posts[i_row, i_col] = r * weight0
+                i_m = warp.tid()
+                state = warp.rand_init(seed0, i_m)
+
+                out = warp.tile_zeros(block_dim, dtype=weight.dtype)
+                i_k = warp.randi(state, 0, clen0)
+                while i_k < k:
+                    out += warp.tile_load(B[i_k], block_dim)
+                    i_k += warp.randi(state, 1, clen0)
+                warp.tile_store(posts[i_m], out * weight0)
+
     else:
-        # corder=False
-        def kernel(
-            weight: warp.array1d(dtype=weight_dtype),
-            clen: warp.array1d(dtype=clen_dtype),
-            B: warp.array2d(dtype=B_dtype),
-            seed: warp.array1d(dtype=seed_dtype),
-            _: warp.array2d(dtype=weight_dtype),
-            posts: warp.array2d(dtype=weight_dtype),
-        ):
-            num_rows = posts.shape[0]
-            num_cols = posts.shape[1]
-            weight0 = weight[0]
-            clen0 = clen[0]
-            seed0 = seed[0]
+        if transpose:
+            # JIT Matrix.T @ B
+            def kernel(
+                weight: warp.array1d(dtype=weight_dtype),
+                clen: warp.array1d(dtype=clen_dtype),
+                B: warp.array2d(dtype=B_dtype),
+                seed: warp.array1d(dtype=seed_dtype),
+                _: warp.array2d(dtype=weight_dtype),
+                posts: warp.array2d(dtype=weight_dtype),
+            ):
+                m = posts.shape[0]
+                weight0 = weight[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
 
-            i_row, i_col = warp.tid()
+                i_k = warp.tid()
+                state = warp.rand_init(seed0, i_k)
 
-            state = warp.rand_init(seed0 + i_row * num_cols + i_col)
+                out = warp.tile_load(B[i_k], block_dim) * weight0
+                i_m = warp.randi(state, 0, clen0)
+                while i_m < m:
+                    warp.tile_atomic_add(posts[i_k], out)
+                    i_m += warp.randi(state, 1, clen0)
 
-            cursor = int(0)
-            while cursor < num_cols:
-                # posts[cursor, :] += r
-                if _binomial_n1(state, clen0) == 1:
-                    for j in range(posts.shape[1]):
-                        posts[cursor, j] += B[i_row, j] * weight0
-                cursor += 1
+
+        else:
+            # JIT Matrix @ B
+            def kernel(
+                weight: warp.array1d(dtype=weight_dtype),
+                clen: warp.array1d(dtype=clen_dtype),
+                B: warp.array2d(dtype=B_dtype),
+                seed: warp.array1d(dtype=seed_dtype),
+                _: warp.array2d(dtype=weight_dtype),
+                posts: warp.array2d(dtype=weight_dtype),
+            ):
+                m = posts.shape[0]
+                weight0 = weight[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
+
+                i_k = warp.tid()
+                state = warp.rand_init(seed0, i_k)
+
+                out = warp.tile_load(B[i_k], block_dim) * weight0
+                i_m = warp.randi(state, 0, clen0)
+                while i_m < m:
+                    warp.tile_atomic_add(posts[i_k], out)
+                    i_m += warp.randi(state, 1, clen0)
 
     kernel = warp.kernel(kernel)
     return kernel
@@ -2571,9 +2616,8 @@ jitc_mm_homo_p = XLACustomKernel(
     ),
     gpu_kernel=WarpKernelGenerator(
         _jitc_mm_homo_gpu_kernel_generator,
-        dim=lambda out_info, **kwargs: (
-            out_info.shape[0], out_info.shape[1]
-        ),
+        tile=lambda shape, corder, **kwargs: (shape[0] if corder else shape[1]),
+        block_dim=lambda B_info, **kwargs: B_info.shape[1],
         input_output_aliases={4: 0}
     )
 )
