@@ -1808,7 +1808,7 @@ def _jitc_mv_homo_batching(
     **kwargs
 ):
     if tuple(axes) == (None, None, 0, None, None):
-        assert args[3].ndim == 2, 'Batching axis 0 requires 2D input.'
+        assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
         r = jitc_mm_homo_p_call(
             args[0],
             args[1],
@@ -1820,6 +1820,7 @@ def _jitc_mv_homo_batching(
         )
         return r, [1]
     elif tuple(axes) == (None, None, 1, None, None):
+        assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
         r = jitc_mm_homo_p_call(
             args[0],
             args[1],
