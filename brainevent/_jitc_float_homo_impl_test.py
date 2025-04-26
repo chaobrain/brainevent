@@ -480,6 +480,272 @@ class Test_JITCHomoR:
         assert (jnp.allclose(vjp_w1, vjp_w2, rtol=1e-5, atol=1e-5))
 
 
+class Test_JITCHomoR_Batching:
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_matvec_batching_vector(self, batch_size, shape, corder):
+        vectors = brainstate.random.rand(batch_size, shape[1])
+
+        def f(vector):
+            jitc = brainevent.JITCHomoR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            return jitc @ vector
+
+        matrices = jax.vmap(f)(vectors)
+        assert matrices.shape == (batch_size, shape[0])
+
+        matrices_loop = brainstate.transform.for_loop(f, vectors)
+        assert matrices_loop.shape == (batch_size, shape[0])
+
+        assert u.math.allclose(matrices, matrices_loop)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_matvec_batching_vector_axis1(self, batch_size, shape, corder):
+        vectors = brainstate.random.rand(shape[1], batch_size)
+
+        def f(vector):
+            jitc = brainevent.JITCHomoR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            return jitc @ vector
+
+        matrices = jax.vmap(f, in_axes=1, out_axes=1)(vectors)
+        assert matrices.shape == (shape[0], batch_size)
+
+        matrices_loop = brainstate.transform.for_loop(f, vectors.T)
+        assert matrices_loop.shape == (batch_size, shape[0])
+
+        assert u.math.allclose(matrices, matrices_loop.T)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_matvec_batching_weight(self, batch_size, shape, corder):
+        weights = brainstate.random.rand(batch_size)
+        vector = brainstate.random.rand(shape[1], )
+
+        def f(w):
+            jitc = brainevent.JITCHomoR((w, 0.1, 123), shape=shape, corder=corder)
+            return jitc @ vector
+
+        matrices = jax.vmap(f)(weights)
+        assert matrices.shape == (batch_size, shape[0])
+
+        matrices_loop = brainstate.transform.for_loop(f, weights)
+        assert matrices_loop.shape == (batch_size, shape[0])
+
+        assert u.math.allclose(matrices, matrices_loop)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_vecmat_batching_vector(self, batch_size, shape, corder):
+        vectors = brainstate.random.rand(batch_size, shape[0])
+
+        def f(vector):
+            jitc = brainevent.JITCHomoR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            return vector @ jitc
+
+        matrices = jax.vmap(f)(vectors)
+        assert matrices.shape == (batch_size, shape[1])
+
+        matrices_loop = brainstate.transform.for_loop(f, vectors)
+        assert matrices_loop.shape == (batch_size, shape[1])
+
+        assert u.math.allclose(matrices, matrices_loop)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_vecmat_batching_vector_axis1(self, batch_size, shape, corder):
+        vectors = brainstate.random.rand(shape[0], batch_size)
+
+        def f(vector):
+            jitc = brainevent.JITCHomoR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            return vector @ jitc
+
+        matrices = jax.vmap(f, in_axes=1, out_axes=1)(vectors)
+        assert matrices.shape == (shape[1], batch_size)
+
+        matrices_loop = brainstate.transform.for_loop(f, vectors.T)
+        assert matrices_loop.shape == (batch_size, shape[1])
+
+        assert u.math.allclose(matrices, matrices_loop.T)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_vecmat_batching_weight(self, batch_size, shape, corder):
+        weights = brainstate.random.rand(batch_size)
+        vector = brainstate.random.rand(shape[0], )
+
+        def f(w):
+            jitc = brainevent.JITCHomoR((w, 0.1, 123), shape=shape, corder=corder)
+            return vector @ jitc
+
+        matrices = jax.vmap(f)(weights)
+        assert matrices.shape == (batch_size, shape[1])
+
+        matrices_loop = brainstate.transform.for_loop(f, weights)
+        assert matrices_loop.shape == (batch_size, shape[1])
+
+        assert u.math.allclose(matrices, matrices_loop)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('k', [5])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_jitmat_batching_matrix(self, batch_size, k, shape, corder):
+        matrices = brainstate.random.rand(batch_size, shape[1], k)
+
+        def f(mat):
+            jitc = brainevent.JITCHomoR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            return jitc @ mat
+
+        outs = jax.vmap(f)(matrices)
+        assert outs.shape == (batch_size, shape[0], k)
+
+        outs_loop = brainstate.transform.for_loop(f, matrices)
+        assert outs_loop.shape == (batch_size, shape[0], k)
+
+        assert u.math.allclose(outs, outs_loop)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('k', [5])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_jitmat_batching_matrix_axis1(self, batch_size, k, shape, corder):
+        matrices = brainstate.random.rand(shape[1], batch_size, k)
+
+        def f(mat):
+            jitc = brainevent.JITCHomoR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            return jitc @ mat
+
+        outs = jax.vmap(f, in_axes=1)(matrices)
+        assert outs.shape == (batch_size, shape[0], k)
+
+        matrices_loop = brainstate.transform.for_loop(f, jnp.transpose(matrices, axes=(1, 0, 2)))
+        assert matrices_loop.shape == (batch_size, shape[0], k)
+
+        assert u.math.allclose(outs, matrices_loop)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('k', [5])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_jitmat_batching_matrix_axis2(self, batch_size, k, shape, corder):
+        matrices = brainstate.random.rand(shape[1], k, batch_size, )
+
+        def f(mat):
+            jitc = brainevent.JITCHomoR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            return jitc @ mat
+
+        outs = jax.vmap(f, in_axes=2)(matrices)
+        assert outs.shape == (batch_size, shape[0], k)
+
+        matrices_loop = brainstate.transform.for_loop(f, jnp.transpose(matrices, axes=(2, 0, 1)))
+        assert matrices_loop.shape == (batch_size, shape[0], k)
+
+        assert u.math.allclose(outs, matrices_loop)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('k', [5])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_jitmat_batching_weight(self, batch_size, k, shape, corder):
+        weights = brainstate.random.rand(batch_size)
+        matrix = brainstate.random.rand(shape[1], k)
+
+        def f(w):
+            jitc = brainevent.JITCHomoR((w, 0.1, 123), shape=shape, corder=corder)
+            return jitc @ matrix
+
+        matrices = jax.vmap(f)(weights)
+        assert matrices.shape == (batch_size, shape[0], k)
+
+        matrices_loop = brainstate.transform.for_loop(f, weights)
+        assert matrices_loop.shape == (batch_size, shape[0], k)
+
+        assert u.math.allclose(matrices, matrices_loop)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('k', [5])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_matjit_batching_matrix(self, batch_size, k, shape, corder):
+        matrix = brainstate.random.rand(batch_size, k, shape[0])
+
+        def f(mat):
+            jitc = brainevent.JITCHomoR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            return mat @ jitc
+
+        matrices = jax.vmap(f)(matrix)
+        assert matrices.shape == (batch_size, k, shape[1])
+
+        matrices_loop = brainstate.transform.for_loop(f, matrix)
+        assert matrices_loop.shape == (batch_size, k, shape[1])
+
+        assert u.math.allclose(matrices, matrices_loop)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('k', [5])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_matjit_batching_matrix_axis1(self, batch_size, k, shape, corder):
+        matrix = brainstate.random.rand(k, batch_size, shape[0])
+
+        def f(mat):
+            jitc = brainevent.JITCHomoR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            return mat @ jitc
+
+        matrices = jax.vmap(f, in_axes=1)(matrix)
+        assert matrices.shape == (batch_size, k, shape[1])
+
+        matrices_loop = brainstate.transform.for_loop(f, jnp.transpose(matrix, (1, 0, 2)))
+        assert matrices_loop.shape == (batch_size, k, shape[1])
+
+        assert u.math.allclose(matrices, matrices_loop)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('k', [5])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_matjit_batching_matrix_axis2(self, batch_size, k, shape, corder):
+        matrix = brainstate.random.rand(k, shape[0], batch_size)
+
+        def f(mat):
+            jitc = brainevent.JITCHomoR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            return mat @ jitc
+
+        matrices = jax.vmap(f, in_axes=2)(matrix)
+        assert matrices.shape == (batch_size, k, shape[1],)
+
+        matrices_loop = brainstate.transform.for_loop(f, jnp.transpose(matrix, (2, 0, 1)))
+        assert matrices_loop.shape == (batch_size, k, shape[1])
+
+        assert u.math.allclose(matrices, matrices_loop)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('k', [5])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_matjit_batching_weight(self, batch_size, k, shape, corder):
+        weights = brainstate.random.rand(batch_size)
+        mat = brainstate.random.rand(k, shape[0], )
+
+        def f(w):
+            jitc = brainevent.JITCHomoR((w, 0.1, 123), shape=shape, corder=corder)
+            return mat @ jitc
+
+        matrices = jax.vmap(f)(weights)
+        assert matrices.shape == (batch_size, k, shape[1])
+
+        matrices_loop = brainstate.transform.for_loop(f, weights)
+        assert matrices_loop.shape == (batch_size, k, shape[1])
+
+        assert u.math.allclose(matrices, matrices_loop)
+
+
 class Test_JITCHomoR_Transpose:
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
@@ -522,7 +788,6 @@ class Test_JITCHomoR_Transpose:
         out1 = matrix @ jitc
         out2 = matrix @ jitc.todense()
         assert u.math.allclose(out1, out2)
-
 
     @pytest.mark.parametrize('weight', [-1., 1.])
     @pytest.mark.parametrize('prob', [0.1, 0.2])
@@ -575,7 +840,6 @@ class Test_JITCHomoR_Transpose:
         assert (jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
         assert (jnp.allclose(vjp_x1, vjp_x2, rtol=1e-5, atol=1e-5))
         assert (jnp.allclose(vjp_w1, vjp_w2, rtol=1e-5, atol=1e-5))
-
 
 
 class Test_JITCHomoC:
@@ -719,6 +983,271 @@ class Test_JITCHomoC:
         assert (jnp.allclose(vjp_w1, vjp_w2, rtol=1e-5, atol=1e-5))
 
 
+class Test_JITCHomoC_Batching:
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_matvec_batching_vector(self, batch_size, shape, corder):
+        vectors = brainstate.random.rand(batch_size, shape[1])
+
+        def f(vector):
+            jitc = brainevent.JITCHomoC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            return jitc @ vector
+
+        matrices = jax.vmap(f)(vectors)
+        assert matrices.shape == (batch_size, shape[0])
+
+        matrices_loop = brainstate.transform.for_loop(f, vectors)
+        assert matrices_loop.shape == (batch_size, shape[0])
+
+        assert u.math.allclose(matrices, matrices_loop)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_matvec_batching_vector_axis1(self, batch_size, shape, corder):
+        vectors = brainstate.random.rand(shape[1], batch_size)
+
+        def f(vector):
+            jitc = brainevent.JITCHomoC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            return jitc @ vector
+
+        matrices = jax.vmap(f, in_axes=1, out_axes=1)(vectors)
+        assert matrices.shape == (shape[0], batch_size)
+
+        matrices_loop = brainstate.transform.for_loop(f, vectors.T)
+        assert matrices_loop.shape == (batch_size, shape[0])
+
+        assert u.math.allclose(matrices, matrices_loop.T)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_matvec_batching_weight(self, batch_size, shape, corder):
+        weights = brainstate.random.rand(batch_size)
+        vector = brainstate.random.rand(shape[1], )
+
+        def f(w):
+            jitc = brainevent.JITCHomoC((w, 0.1, 123), shape=shape, corder=corder)
+            return jitc @ vector
+
+        matrices = jax.vmap(f)(weights)
+        assert matrices.shape == (batch_size, shape[0])
+
+        matrices_loop = brainstate.transform.for_loop(f, weights)
+        assert matrices_loop.shape == (batch_size, shape[0])
+
+        assert u.math.allclose(matrices, matrices_loop)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_vecmat_batching_vector(self, batch_size, shape, corder):
+        vectors = brainstate.random.rand(batch_size, shape[0])
+
+        def f(vector):
+            jitc = brainevent.JITCHomoC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            return vector @ jitc
+
+        matrices = jax.vmap(f)(vectors)
+        assert matrices.shape == (batch_size, shape[1])
+
+        matrices_loop = brainstate.transform.for_loop(f, vectors)
+        assert matrices_loop.shape == (batch_size, shape[1])
+
+        assert u.math.allclose(matrices, matrices_loop)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_vecmat_batching_vector_axis1(self, batch_size, shape, corder):
+        vectors = brainstate.random.rand(shape[0], batch_size)
+
+        def f(vector):
+            jitc = brainevent.JITCHomoC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            return vector @ jitc
+
+        matrices = jax.vmap(f, in_axes=1, out_axes=1)(vectors)
+        assert matrices.shape == (shape[1], batch_size)
+
+        matrices_loop = brainstate.transform.for_loop(f, vectors.T)
+        assert matrices_loop.shape == (batch_size, shape[1])
+
+        assert u.math.allclose(matrices, matrices_loop.T)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_vecmat_batching_weight(self, batch_size, shape, corder):
+        weights = brainstate.random.rand(batch_size)
+        vector = brainstate.random.rand(shape[0], )
+
+        def f(w):
+            jitc = brainevent.JITCHomoC((w, 0.1, 123), shape=shape, corder=corder)
+            return vector @ jitc
+
+        matrices = jax.vmap(f)(weights)
+        assert matrices.shape == (batch_size, shape[1])
+
+        matrices_loop = brainstate.transform.for_loop(f, weights)
+        assert matrices_loop.shape == (batch_size, shape[1])
+
+        assert u.math.allclose(matrices, matrices_loop)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('k', [5])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_jitmat_batching_matrix(self, batch_size, k, shape, corder):
+        matrices = brainstate.random.rand(batch_size, shape[1], k)
+
+        def f(mat):
+            jitc = brainevent.JITCHomoC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            return jitc @ mat
+
+        outs = jax.vmap(f)(matrices)
+        assert outs.shape == (batch_size, shape[0], k)
+
+        outs_loop = brainstate.transform.for_loop(f, matrices)
+        assert outs_loop.shape == (batch_size, shape[0], k)
+
+        assert u.math.allclose(outs, outs_loop)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('k', [5])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_jitmat_batching_matrix_axis1(self, batch_size, k, shape, corder):
+        matrices = brainstate.random.rand(shape[1], batch_size, k)
+
+        def f(mat):
+            jitc = brainevent.JITCHomoC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            return jitc @ mat
+
+        outs = jax.vmap(f, in_axes=1)(matrices)
+        assert outs.shape == (batch_size, shape[0], k)
+
+        matrices_loop = brainstate.transform.for_loop(f, jnp.transpose(matrices, axes=(1, 0, 2)))
+        assert matrices_loop.shape == (batch_size, shape[0], k)
+
+        assert u.math.allclose(outs, matrices_loop)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('k', [5])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_jitmat_batching_matrix_axis2(self, batch_size, k, shape, corder):
+        matrices = brainstate.random.rand(shape[1], k, batch_size, )
+
+        def f(mat):
+            jitc = brainevent.JITCHomoC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            return jitc @ mat
+
+        outs = jax.vmap(f, in_axes=2)(matrices)
+        assert outs.shape == (batch_size, shape[0], k)
+
+        matrices_loop = brainstate.transform.for_loop(f, jnp.transpose(matrices, axes=(2, 0, 1)))
+        assert matrices_loop.shape == (batch_size, shape[0], k)
+
+        assert u.math.allclose(outs, matrices_loop)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('k', [5])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_jitmat_batching_weight(self, batch_size, k, shape, corder):
+        weights = brainstate.random.rand(batch_size)
+        matrix = brainstate.random.rand(shape[1], k)
+
+        def f(w):
+            jitc = brainevent.JITCHomoC((w, 0.1, 123), shape=shape, corder=corder)
+            return jitc @ matrix
+
+        matrices = jax.vmap(f)(weights)
+        assert matrices.shape == (batch_size, shape[0], k)
+
+        matrices_loop = brainstate.transform.for_loop(f, weights)
+        assert matrices_loop.shape == (batch_size, shape[0], k)
+
+        assert u.math.allclose(matrices, matrices_loop)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('k', [5])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_matjit_batching_matrix(self, batch_size, k, shape, corder):
+        matrix = brainstate.random.rand(batch_size, k, shape[0])
+
+        def f(mat):
+            jitc = brainevent.JITCHomoC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            return mat @ jitc
+
+        matrices = jax.vmap(f)(matrix)
+        assert matrices.shape == (batch_size, k, shape[1])
+
+        matrices_loop = brainstate.transform.for_loop(f, matrix)
+        assert matrices_loop.shape == (batch_size, k, shape[1])
+
+        assert u.math.allclose(matrices, matrices_loop)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('k', [5])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_matjit_batching_matrix_axis1(self, batch_size, k, shape, corder):
+        matrix = brainstate.random.rand(k, batch_size, shape[0])
+
+        def f(mat):
+            jitc = brainevent.JITCHomoC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            return mat @ jitc
+
+        matrices = jax.vmap(f, in_axes=1)(matrix)
+        assert matrices.shape == (batch_size, k, shape[1])
+
+        matrices_loop = brainstate.transform.for_loop(f, jnp.transpose(matrix, (1, 0, 2)))
+        assert matrices_loop.shape == (batch_size, k, shape[1])
+
+        assert u.math.allclose(matrices, matrices_loop)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('k', [5])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_matjit_batching_matrix_axis2(self, batch_size, k, shape, corder):
+        matrix = brainstate.random.rand(k, shape[0], batch_size)
+
+        def f(mat):
+            jitc = brainevent.JITCHomoC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            return mat @ jitc
+
+        matrices = jax.vmap(f, in_axes=2)(matrix)
+        assert matrices.shape == (batch_size, k, shape[1],)
+
+        matrices_loop = brainstate.transform.for_loop(f, jnp.transpose(matrix, (2, 0, 1)))
+        assert matrices_loop.shape == (batch_size, k, shape[1])
+
+        assert u.math.allclose(matrices, matrices_loop)
+
+    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('k', [5])
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_matjit_batching_weight(self, batch_size, k, shape, corder):
+        weights = brainstate.random.rand(batch_size)
+        mat = brainstate.random.rand(k, shape[0], )
+
+        def f(w):
+            jitc = brainevent.JITCHomoC((w, 0.1, 123), shape=shape, corder=corder)
+            return mat @ jitc
+
+        matrices = jax.vmap(f)(weights)
+        assert matrices.shape == (batch_size, k, shape[1])
+
+        matrices_loop = brainstate.transform.for_loop(f, weights)
+        assert matrices_loop.shape == (batch_size, k, shape[1])
+
+        assert u.math.allclose(matrices, matrices_loop)
+
 
 class Test_JITCHomoC_Transpose:
     @pytest.mark.parametrize('prob', [0.1, 0.2])
@@ -814,4 +1343,3 @@ class Test_JITCHomoC_Transpose:
         assert (jnp.allclose(out1, out2, rtol=1e-5, atol=1e-5))
         assert (jnp.allclose(vjp_x1, vjp_x2, rtol=1e-5, atol=1e-5))
         assert (jnp.allclose(vjp_w1, vjp_w2, rtol=1e-5, atol=1e-5))
-

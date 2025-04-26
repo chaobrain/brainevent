@@ -2460,56 +2460,42 @@ def _jitc_mm_homo_transpose_rules(
         )
 
 
+def _batching_axis0(args, axes, **kwargs):
+    assert args[2].ndim == 3, 'Batching axis 0 requires 3D input.'
+    batch_size, m, n = args[2].shape
+    B = jnp.transpose(args[2], (1, 0, 2)).reshape(m, batch_size * n)
+    r = jitc_mm_homo_p_call(
+        args[0],
+        args[1],
+        B,
+        args[3],
+        shape=kwargs['shape'],
+        transpose=kwargs['transpose'],
+        corder=kwargs['corder'],
+    )
+    r = jnp.reshape(r[0], [r[0].shape[0], batch_size, n])
+    return [r], [1]
+
+
 def _jitc_mm_homo_batching(
     args,
     axes,
     **kwargs
 ):
     if tuple(axes) == (None, None, 0, None, None):
-        assert args[2].ndim == 3, 'Batching axis 0 requires 3D input.'
-        batch_size, m, n = args[2].shape
-        B = jnp.transpose(args[2], (1, 0, 2)).reshape(m, batch_size * n)
-        r = jitc_mm_homo_p_call(
-            args[0],
-            args[1],
-            B,
-            args[3],
-            shape=kwargs['shape'],
-            transpose=kwargs['transpose'],
-            corder=kwargs['corder'],
-        )
-        r = jnp.reshape(r[0], [r[0].shape[0], batch_size, n])
-        return [r], [1]
+        return _batching_axis0(args, axes, **kwargs)
+
     elif tuple(axes) == (None, None, 1, None, None):
         assert args[2].ndim == 3, 'Batching axis 0 requires 3D input.'
-        batch_size, m, n = args[2].shape
-        B = args[2].reshape(m, batch_size * n)
-        r = jitc_mm_homo_p_call(
-            args[0],
-            args[1],
-            B,
-            args[3],
-            shape=kwargs['shape'],
-            transpose=kwargs['transpose'],
-            corder=kwargs['corder'],
-        )
-        r = jnp.reshape(r[0], [r[0].shape[0], batch_size, n])
-        return [r], [1]
+        args = list(args)
+        args[2] = jnp.transpose(args[2], (1, 0, 2))
+        return _batching_axis0(args, axes, **kwargs)
+
     elif tuple(axes) == (None, None, 1, None, None):
         assert args[2].ndim == 3, 'Batching axis 0 requires 3D input.'
-        batch_size, m, n = args[2].shape
-        B = args[2].reshape(m, batch_size * n)
-        r = jitc_mm_homo_p_call(
-            args[0],
-            args[1],
-            B,
-            args[3],
-            shape=kwargs['shape'],
-            transpose=kwargs['transpose'],
-            corder=kwargs['corder'],
-        )
-        r = jnp.reshape(r[0], [r[0].shape, batch_size, n])
-        return [r], [2]
+        args = list(args)
+        args[2] = jnp.transpose(args[2], (2, 0, 1))
+        return _batching_axis0(args, axes, **kwargs)
 
     else:
         return general_batching_rule(
@@ -2530,14 +2516,21 @@ def jitc_mm_homo_p_call(
     transpose: bool,
     corder: bool,
 ):
+    weight = jnp.atleast_1d(weight)
+    clen = jnp.atleast_1d(clen)
+
     assert len(shape) == 2, "The matrix shape should be a tuple of two integers."
+    assert B.ndim == 2, "The input matrix B should be a 2D array."
+    assert seed.ndim == 1, "The seed should be a 1D array."
+    assert weight.ndim == 1, "The weight should be a 1D array."
+    assert clen.ndim == 1, "The clen should be a 1D array."
+    assert weight.shape == (1,), "The weight should be a scalar."
+    assert clen.shape == (1,), "The clen should be a scalar."
+    assert seed.shape == (1,), "The seed should be a scalar."
     if transpose:
         assert shape[0] == B.shape[0], f"The matrix shape and B shape do not match. {B.shape} @ {shape}"
     else:
         assert shape[1] == B.shape[0], f"The matrix shape and B shape do not match. {shape} @ {B.shape}"
-
-    weight = jnp.atleast_1d(weight)
-    clen = jnp.atleast_1d(clen)
 
     out_info = (
         jax.ShapeDtypeStruct([shape[1], B.shape[1]], weight.dtype)
