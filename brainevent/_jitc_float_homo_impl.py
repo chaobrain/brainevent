@@ -1779,8 +1779,8 @@ def _jitc_mv_homo_transpose_rules(
             ct,
             seed,
             shape=shape,
-            transpose=transpose,
-            corder=corder
+            transpose=not transpose,
+            corder=not corder
         )[0]
         return weight, clen, r, seed, _
     elif ad.is_undefined_primal(weight):
@@ -1790,8 +1790,8 @@ def _jitc_mv_homo_transpose_rules(
             ct,
             seed,
             shape=shape,
-            transpose=transpose,
-            corder=corder
+            transpose=not transpose,
+            corder=not corder
         )[0]
         dw = jnp.sum(row * vector, keepdims=True)
         return dw, clen, vector, seed, _
