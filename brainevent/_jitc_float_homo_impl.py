@@ -1902,14 +1902,20 @@ def jitc_mv_homo_p_call(
     will generally be different from the implicitly generated $M^T$ when ``transpose=True``.
     Set ``corder=False`` if exact correspondence between $M$ and $M^T$ is required.
     """
+
+    weight = jnp.atleast_1d(weight)
+    clen = jnp.atleast_1d(clen)
+
     assert len(shape) == 2, "The matrix shape should be a tuple of two integers."
+    assert weight.shape == (1,), f"The weight shape should be (1,), but got {weight.shape}."
+    assert clen.shape == (1,), f"The clen shape should be (1,), but got {clen.shape}."
+    assert vector.ndim == 1, f"The vector should be a 1D array, but got {vector.ndim}D."
+    assert seed.shape == (1,), f"The seed shape should be (1,), but got {seed.shape}."
+
     if transpose:
         assert shape[0] == len(vector), f"The matrix shape and vector length do not match. {vector.shape} @ {shape}"
     else:
         assert shape[1] == len(vector), f"The matrix shape and vector length do not match. {shape} @ {vector.shape}"
-
-    weight = jnp.atleast_1d(weight)
-    clen = jnp.atleast_1d(clen)
 
     out_info = (
         jax.ShapeDtypeStruct([shape[1]], weight.dtype)
