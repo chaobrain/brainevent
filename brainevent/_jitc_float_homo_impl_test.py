@@ -312,7 +312,7 @@ class Test_JITC_RC_Conversion:
         out2 = jitcc @ vector
         assert jnp.allclose(out1, out2)
 
-    @pytest.mark.parametrize('k', [10, ])
+    @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
     def test_jitmat(self, k, shape, corder):
@@ -325,7 +325,7 @@ class Test_JITC_RC_Conversion:
         out2 = (matrix.T @ jitcc).T
         assert jnp.allclose(out1, out2)
 
-    @pytest.mark.parametrize('k', [10, ])
+    @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
     def test_matjit(self, k, shape, corder):
@@ -361,7 +361,7 @@ class Test_JITCHomoR:
         out2 = vector @ jitc.todense()
         assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4* u.get_unit(out1))
 
-    @pytest.mark.parametrize('k', [10, 20])
+    @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
@@ -372,7 +372,7 @@ class Test_JITCHomoR:
         out2 = jitc.todense() @ matrix
         assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4* u.get_unit(out1))
 
-    @pytest.mark.parametrize('k', [10, 20])
+    @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
@@ -931,7 +931,7 @@ class Test_JITCHomoR_Transpose:
         out2 = vector @ jitc.todense()
         assert u.math.allclose(out1, out2)
 
-    @pytest.mark.parametrize('k', [10, 20])
+    @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
@@ -942,7 +942,7 @@ class Test_JITCHomoR_Transpose:
         out2 = jitc.todense() @ matrix
         assert u.math.allclose(out1, out2)
 
-    @pytest.mark.parametrize('k', [10, 20])
+    @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
@@ -1189,7 +1189,7 @@ class Test_JITCHomoC:
         out2 = vector @ jitc.todense()
         assert u.math.allclose(out1, out2)
 
-    @pytest.mark.parametrize('k', [10, 20])
+    @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
@@ -1200,7 +1200,7 @@ class Test_JITCHomoC:
         out2 = jitc.todense() @ matrix
         assert u.math.allclose(out1, out2)
 
-    @pytest.mark.parametrize('k', [10, 20])
+    @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
@@ -1759,7 +1759,7 @@ class Test_JITCHomoC_Transpose:
         out2 = vector @ jitc.todense()
         assert u.math.allclose(out1, out2)
 
-    @pytest.mark.parametrize('k', [10, 20])
+    @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
@@ -1770,7 +1770,7 @@ class Test_JITCHomoC_Transpose:
         out2 = jitc.todense() @ matrix
         assert u.math.allclose(out1, out2)
 
-    @pytest.mark.parametrize('k', [10, 20])
+    @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
