@@ -16,12 +16,10 @@
 # -*- coding: utf-8 -*-
 
 
-import numbers
 from typing import Union, Tuple
 
 import brainunit as u
 import jax
-import numpy as np
 
 from ._compatible_import import JAXSparse, Tracer
 from ._event import EventArray
@@ -35,16 +33,12 @@ from ._jitc_float_homo_impl import (
     float_jitc_homo_matvec,
     float_jitc_homo_matmat,
 )
-from ._typing import MatrixShape
+from ._typing import MatrixShape, Weight, Prob, Seed
 
 __all__ = [
     'JITCHomoR',
     'JITCHomoC',
 ]
-
-Weight = Union[numbers.Number, np.ndarray, jax.Array, u.Quantity]
-Prob = Union[float, np.ndarray, jax.Array]
-Seed = Union[int, np.ndarray, jax.Array]
 
 
 class JITHomoMatrix(JITCMatrix):

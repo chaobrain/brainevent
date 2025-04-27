@@ -359,6 +359,18 @@ class Test_JITCHomoR:
 
         assert u.math.allclose(matrices, matrices_loop)
 
+    @pytest.mark.skipif(
+        brainstate.environ.get_platform() == 'cpu',
+        reason="CPU no need to test large matrix."
+    )
+    def test_large_matrix(self):
+        m = 10000
+        jitc = brainevent.JITCHomoR((1.5, 0.1, 123), shape=(m, m))
+        vector = jnp.asarray(np.random.rand(m))
+        out1 = jitc @ vector
+        out2 = jitc.todense() @ vector
+        assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4 * u.get_unit(out1))
+
 
 class Test_JITCHomoR_Gradients:
 
@@ -1186,6 +1198,18 @@ class Test_JITCHomoC:
         assert matrices_loop.shape == (10, 100, 50)
 
         assert u.math.allclose(matrices, matrices_loop)
+
+    @pytest.mark.skipif(
+        brainstate.environ.get_platform() == 'cpu',
+        reason="CPU no need to test large matrix."
+    )
+    def test_large_matrix(self):
+        m = 10000
+        jitc = brainevent.JITCHomoC((1.5, 0.1, 123), shape=(m, m))
+        vector = jnp.asarray(np.random.rand(m))
+        out1 = jitc @ vector
+        out2 = jitc.todense() @ vector
+        assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4 * u.get_unit(out1))
 
 
 class Test_JITCHomoC_Gradients:

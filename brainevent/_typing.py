@@ -53,3 +53,7 @@ Indptr = Index
 
 # A callable type, representing a function or method.
 Kernel = Callable
+
+Weight = Union[numbers.Number, np.ndarray, jax.Array, u.Quantity]
+Prob = Union[float, np.ndarray, jax.Array]
+Seed = Union[int, np.ndarray, jax.Array]

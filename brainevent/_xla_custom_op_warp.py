@@ -45,6 +45,7 @@ if warp_installed:
     import warp.context  # pylint: disable=import-error, import-outside-toplevel
     import warp.types  # pylint: disable=import-error, import-outside-toplevel
 
+    warp.config.enable_backward = False
 
 def _shape_to_layout(shape):
     return tuple(range(len(shape) - 1, -1, -1))

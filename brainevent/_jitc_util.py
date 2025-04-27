@@ -15,18 +15,9 @@
 
 # -*- coding: utf-8 -*-
 
-from typing import Optional, Sequence
-
-import brainunit as u
 import jax
 import numpy as np
 from jax import numpy as jnp
-from jax.interpreters import ad
-
-from ._typing import Kernel, Data, MatrixShape
-from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
-from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 
 
 def _initialize_seed(seed=None):
@@ -94,5 +85,3 @@ def _initialize_conn_length(conn_prob: float):
         clen = jnp.ceil(2 / conn_prob)
         clen = jnp.asarray(clen, dtype=jnp.int32)
     return clen
-
-

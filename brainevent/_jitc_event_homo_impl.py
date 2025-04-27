@@ -859,106 +859,212 @@ def _jitc_mm_homo_gpu_kernel_generator(
     B_dtype = dtype_to_warp_type(B_info.dtype)
     seed_dtype = dtype_to_warp_type(seed_info.dtype)
 
+    @warp.func
+    def where(s: bool):
+        return warp.where(s, 1., 0.)
+
     if corder:
         if transpose:
             # JIT Matrix.T @ B
-            def kernel(
-                weight: warp.array1d(dtype=weight_dtype),
-                clen: warp.array1d(dtype=clen_dtype),
-                B: warp.array2d(dtype=B_dtype),
-                seed: warp.array1d(dtype=seed_dtype),
-                _: warp.array2d(dtype=weight_dtype),
-                posts: warp.array2d(dtype=weight_dtype),
-            ):
-                k = B.shape[0]
-                weight0 = weight[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
 
-                i_m = warp.tid()
-                state = warp.rand_init(seed0, i_m)
+            if B_info.dtype == jnp.bool_:
+                def kernel(
+                    weight: warp.array1d(dtype=weight_dtype),
+                    clen: warp.array1d(dtype=clen_dtype),
+                    B: warp.array2d(dtype=B_dtype),
+                    seed: warp.array1d(dtype=seed_dtype),
+                    _: warp.array2d(dtype=weight_dtype),
+                    posts: warp.array2d(dtype=weight_dtype),
+                ):
+                    k = B.shape[0]
+                    weight0 = weight[0]
+                    clen0 = clen[0]
+                    seed0 = seed[0]
+                    B = warp.array(B, dtype=weight_dtype)
 
-                out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
-                i_k = warp.randi(state, 0, clen0)
-                while i_k < k:
-                    out += warp.tile_load(B[i_k], TITLE_SIZE)
-                    i_k += warp.randi(state, 1, clen0)
-                warp.tile_store(posts[i_m], out * weight0)
+                    i_m = warp.tid()
+                    state = warp.rand_init(seed0, i_m)
+
+                    out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
+                    i_k = warp.randi(state, 0, clen0)
+                    while i_k < k:
+                        # out += warp.tile_load(B[i_k], TITLE_SIZE)
+                        out += warp.tile_map(where, warp.tile_load(B[i_k], TITLE_SIZE))
+                        i_k += warp.randi(state, 1, clen0)
+                    warp.tile_store(posts[i_m], out * weight0)
+            else:
+                def kernel(
+                    weight: warp.array1d(dtype=weight_dtype),
+                    clen: warp.array1d(dtype=clen_dtype),
+                    B: warp.array2d(dtype=B_dtype),
+                    seed: warp.array1d(dtype=seed_dtype),
+                    _: warp.array2d(dtype=weight_dtype),
+                    posts: warp.array2d(dtype=weight_dtype),
+                ):
+                    k = B.shape[0]
+                    weight0 = weight[0]
+                    clen0 = clen[0]
+                    seed0 = seed[0]
+
+                    i_m = warp.tid()
+                    state = warp.rand_init(seed0, i_m)
+
+                    out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
+                    i_k = warp.randi(state, 0, clen0)
+                    while i_k < k:
+                        out += warp.tile_load(B[i_k], TITLE_SIZE)
+                        i_k += warp.randi(state, 1, clen0)
+                    warp.tile_store(posts[i_m], out * weight0)
 
         else:
             # JIT Matrix @ B
-            def kernel(
-                weight: warp.array1d(dtype=weight_dtype),
-                clen: warp.array1d(dtype=clen_dtype),
-                B: warp.array2d(dtype=B_dtype),
-                seed: warp.array1d(dtype=seed_dtype),
-                _: warp.array2d(dtype=weight_dtype),
-                posts: warp.array2d(dtype=weight_dtype),
-            ):
-                k = B.shape[0]
-                weight0 = weight[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
+            if B_info.dtype == jnp.bool_:
+                def kernel(
+                    weight: warp.array1d(dtype=weight_dtype),
+                    clen: warp.array1d(dtype=clen_dtype),
+                    B: warp.array2d(dtype=B_dtype),
+                    seed: warp.array1d(dtype=seed_dtype),
+                    _: warp.array2d(dtype=weight_dtype),
+                    posts: warp.array2d(dtype=weight_dtype),
+                ):
+                    k = B.shape[0]
+                    weight0 = weight[0]
+                    clen0 = clen[0]
+                    seed0 = seed[0]
 
-                i_m = warp.tid()
-                state = warp.rand_init(seed0, i_m)
+                    i_m = warp.tid()
+                    state = warp.rand_init(seed0, i_m)
 
-                out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
-                i_k = warp.randi(state, 0, clen0)
-                while i_k < k:
-                    out += warp.tile_load(B[i_k], TITLE_SIZE)
-                    i_k += warp.randi(state, 1, clen0)
-                warp.tile_store(posts[i_m], out * weight0)
+                    out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
+                    i_k = warp.randi(state, 0, clen0)
+                    while i_k < k:
+                        # out += warp.tile_load(B[i_k], TITLE_SIZE)
+                        out += warp.tile_map(where, warp.tile_load(B[i_k], TITLE_SIZE))
+                        i_k += warp.randi(state, 1, clen0)
+                    warp.tile_store(posts[i_m], out * weight0)
+            else:
+                def kernel(
+                    weight: warp.array1d(dtype=weight_dtype),
+                    clen: warp.array1d(dtype=clen_dtype),
+                    B: warp.array2d(dtype=B_dtype),
+                    seed: warp.array1d(dtype=seed_dtype),
+                    _: warp.array2d(dtype=weight_dtype),
+                    posts: warp.array2d(dtype=weight_dtype),
+                ):
+                    k = B.shape[0]
+                    weight0 = weight[0]
+                    clen0 = clen[0]
+                    seed0 = seed[0]
+
+                    i_m = warp.tid()
+                    state = warp.rand_init(seed0, i_m)
+
+                    out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
+                    i_k = warp.randi(state, 0, clen0)
+                    while i_k < k:
+                        out += warp.tile_load(B[i_k], TITLE_SIZE)
+                        i_k += warp.randi(state, 1, clen0)
+                    warp.tile_store(posts[i_m], out * weight0)
 
     else:
         if transpose:
             # JIT Matrix.T @ B
-            def kernel(
-                weight: warp.array1d(dtype=weight_dtype),
-                clen: warp.array1d(dtype=clen_dtype),
-                B: warp.array2d(dtype=B_dtype),
-                seed: warp.array1d(dtype=seed_dtype),
-                _: warp.array2d(dtype=weight_dtype),
-                posts: warp.array2d(dtype=weight_dtype),
-            ):
-                m = posts.shape[0]
-                weight0 = weight[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
+            if B_info.dtype == jnp.bool_:
+                def kernel(
+                    weight: warp.array1d(dtype=weight_dtype),
+                    clen: warp.array1d(dtype=clen_dtype),
+                    B: warp.array2d(dtype=B_dtype),
+                    seed: warp.array1d(dtype=seed_dtype),
+                    _: warp.array2d(dtype=weight_dtype),
+                    posts: warp.array2d(dtype=weight_dtype),
+                ):
+                    m = posts.shape[0]
+                    weight0 = weight[0]
+                    clen0 = clen[0]
+                    seed0 = seed[0]
 
-                i_k = warp.tid()
-                state = warp.rand_init(seed0, i_k)
+                    i_k = warp.tid()
+                    state = warp.rand_init(seed0, i_k)
 
-                out = warp.tile_load(B[i_k], TITLE_SIZE) * weight0
-                i_m = warp.randi(state, 0, clen0)
-                while i_m < m:
-                    warp.tile_atomic_add(posts[i_m], out)
-                    i_m += warp.randi(state, 1, clen0)
+                    # out = warp.where(warp.tile_load(B[i_k], TITLE_SIZE), weight0, 0.)
+                    # out = warp.tile_load(B[i_k], TITLE_SIZE) * weight0
+                    out = warp.tile_map(where, warp.tile_load(B[i_k], TITLE_SIZE)) * weight0
+                    i_m = warp.randi(state, 0, clen0)
+                    while i_m < m:
+                        warp.tile_atomic_add(posts[i_m], out)
+                        i_m += warp.randi(state, 1, clen0)
+            else:
+                def kernel(
+                    weight: warp.array1d(dtype=weight_dtype),
+                    clen: warp.array1d(dtype=clen_dtype),
+                    B: warp.array2d(dtype=B_dtype),
+                    seed: warp.array1d(dtype=seed_dtype),
+                    _: warp.array2d(dtype=weight_dtype),
+                    posts: warp.array2d(dtype=weight_dtype),
+                ):
+                    m = posts.shape[0]
+                    weight0 = weight[0]
+                    clen0 = clen[0]
+                    seed0 = seed[0]
+
+                    i_k = warp.tid()
+                    state = warp.rand_init(seed0, i_k)
+
+                    out = warp.tile_load(B[i_k], TITLE_SIZE) * weight0
+                    i_m = warp.randi(state, 0, clen0)
+                    while i_m < m:
+                        warp.tile_atomic_add(posts[i_m], out)
+                        i_m += warp.randi(state, 1, clen0)
 
 
         else:
             # JIT Matrix @ B
-            def kernel(
-                weight: warp.array1d(dtype=weight_dtype),
-                clen: warp.array1d(dtype=clen_dtype),
-                B: warp.array2d(dtype=B_dtype),
-                seed: warp.array1d(dtype=seed_dtype),
-                _: warp.array2d(dtype=weight_dtype),
-                posts: warp.array2d(dtype=weight_dtype),
-            ):
-                m = posts.shape[0]
-                weight0 = weight[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
+            if B_info.dtype == jnp.bool_:
+                def kernel(
+                    weight: warp.array1d(dtype=weight_dtype),
+                    clen: warp.array1d(dtype=clen_dtype),
+                    B: warp.array2d(dtype=B_dtype),
+                    seed: warp.array1d(dtype=seed_dtype),
+                    _: warp.array2d(dtype=weight_dtype),
+                    posts: warp.array2d(dtype=weight_dtype),
+                ):
+                    m = posts.shape[0]
+                    weight0 = weight[0]
+                    clen0 = clen[0]
+                    seed0 = seed[0]
 
-                i_k = warp.tid()
-                state = warp.rand_init(seed0, i_k)
+                    i_k = warp.tid()
+                    state = warp.rand_init(seed0, i_k)
 
-                out = warp.tile_load(B[i_k], TITLE_SIZE) * weight0
-                i_m = warp.randi(state, 0, clen0)
-                while i_m < m:
-                    warp.tile_atomic_add(posts[i_m], out)
-                    i_m += warp.randi(state, 1, clen0)
+                    # out = warp.where(warp.tile_load(B[i_k], TITLE_SIZE), weight0, 0.)
+                    out = warp.tile_map(where, warp.tile_load(B[i_k], TITLE_SIZE)) * weight0
+                    i_m = warp.randi(state, 0, clen0)
+                    while i_m < m:
+                        warp.tile_atomic_add(posts[i_m], out)
+                        i_m += warp.randi(state, 1, clen0)
+
+            else:
+                def kernel(
+                    weight: warp.array1d(dtype=weight_dtype),
+                    clen: warp.array1d(dtype=clen_dtype),
+                    B: warp.array2d(dtype=B_dtype),
+                    seed: warp.array1d(dtype=seed_dtype),
+                    _: warp.array2d(dtype=weight_dtype),
+                    posts: warp.array2d(dtype=weight_dtype),
+                ):
+                    m = posts.shape[0]
+                    weight0 = weight[0]
+                    clen0 = clen[0]
+                    seed0 = seed[0]
+
+                    i_k = warp.tid()
+                    state = warp.rand_init(seed0, i_k)
+
+                    out = warp.tile_load(B[i_k], TITLE_SIZE) * weight0
+                    i_m = warp.randi(state, 0, clen0)
+                    while i_m < m:
+                        warp.tile_atomic_add(posts[i_m], out)
+                        i_m += warp.randi(state, 1, clen0)
 
     kernel = warp.kernel(kernel)
     return kernel
