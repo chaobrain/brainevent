@@ -96,7 +96,7 @@ class JITUniformMatrix(JITCMatrix):
         """
         return self.wlow, self.whigh, self.prob, self.seed
 
-    def with_data(self, loc: Weight, scale: Weight):
+    def with_data(self, low: Weight, high: Weight):
         """
         Create a new matrix instance with updated weight data but preserving other properties.
 
@@ -105,14 +105,14 @@ class JITUniformMatrix(JITCMatrix):
         It's useful for updating weights without changing the connectivity pattern.
 
         """
-        loc = u.math.asarray(loc)
-        scale = u.math.asarray(scale)
-        assert loc.shape == self.wlow.shape
-        assert scale.shape == self.whigh.shape
-        assert u.get_unit(loc) == u.get_unit(self.wlow)
-        assert u.get_unit(scale) == u.get_unit(self.whigh)
+        low = u.math.asarray(low)
+        high = u.math.asarray(high)
+        assert low.shape == self.wlow.shape
+        assert high.shape == self.whigh.shape
+        assert u.get_unit(low) == u.get_unit(self.wlow)
+        assert u.get_unit(high) == u.get_unit(self.whigh)
         return type(self)(
-            (loc, scale, self.prob, self.seed),
+            (low, high, self.prob, self.seed),
             shape=self.shape,
             corder=self.corder
         )
@@ -323,11 +323,11 @@ class JITCUniformR(JITUniformMatrix):
             corder=not self.corder
         )
 
-    def _new_mat(self, loc, scale, prob=None, seed=None):
+    def _new_mat(self, wlow, whigh, prob=None, seed=None):
         return JITCUniformR(
             (
-                loc,
-                scale,
+                wlow,
+                whigh,
                 self.prob if prob is None else prob,
                 self.seed if seed is None else seed
             ),
@@ -336,7 +336,7 @@ class JITCUniformR(JITUniformMatrix):
         )
 
     def _unitary_op(self, op) -> 'JITCUniformR':
-        return self._new_mat(op(self.wlow), self.whigh)
+        return self._new_mat(op(self.wlow), op(self.whigh))
 
     def _binary_op(self, other, op) -> 'JITCUniformR':
         if isinstance(other, JAXSparse):
@@ -344,7 +344,7 @@ class JITCUniformR(JITUniformMatrix):
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return self._new_mat(op(self.wlow, other), self.whigh)
+            return self._new_mat(op(self.wlow, other), op(self.whigh, other))
 
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
@@ -355,7 +355,7 @@ class JITCUniformR(JITUniformMatrix):
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return self._new_mat(op(other, self.wlow), self.whigh)
+            return self._new_mat(op(other, self.wlow), op(other, self.whigh))
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
@@ -644,11 +644,11 @@ class JITCUniformC(JITUniformMatrix):
             corder=not self.corder
         )
 
-    def _new_mat(self, loc, scale, prob=None, seed=None):
+    def _new_mat(self, wlow, whigh, prob=None, seed=None):
         return JITCUniformC(
             (
-                loc,
-                scale,
+                wlow,
+                whigh,
                 self.prob if prob is None else prob,
                 self.seed if seed is None else seed
             ),
@@ -657,7 +657,7 @@ class JITCUniformC(JITUniformMatrix):
         )
 
     def _unitary_op(self, op) -> 'JITCUniformC':
-        return self._new_mat(op(self.wlow), self.whigh)
+        return self._new_mat(op(self.wlow), op(self.whigh))
 
     def _binary_op(self, other, op) -> 'JITCUniformC':
         if isinstance(other, JAXSparse):
@@ -665,7 +665,7 @@ class JITCUniformC(JITUniformMatrix):
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return self._new_mat(op(self.wlow, other), self.whigh)
+            return self._new_mat(op(self.wlow, other), op(self.whigh, other))
 
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
@@ -676,7 +676,7 @@ class JITCUniformC(JITUniformMatrix):
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return self._new_mat(op(other, self.wlow), self.whigh)
+            return self._new_mat(op(other, self.wlow), op(other, self.whigh))
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
