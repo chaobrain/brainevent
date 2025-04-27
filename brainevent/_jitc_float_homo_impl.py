@@ -1984,7 +1984,7 @@ def _jitc_mm_homo_cpu_kernel_generator(
             # - B: [k, n]
 
             def kernel(weight, clen, B, seed, _, posts):
-                """
+                r"""
                 Numba kernel for sparse matrix-matrix multiplication with on-the-fly matrix generation.
 
                 Implements the operation M^T @ B where M is a sparse matrix with homogeneous weight values
@@ -2060,7 +2060,7 @@ def _jitc_mm_homo_cpu_kernel_generator(
             # - B: [k, n]
 
             def kernel(weight, clen, B, seed, _, posts):
-                """
+                r"""
                 Numba kernel for sparse matrix-matrix multiplication with on-the-fly matrix generation.
 
                 Implements the operation M @ B where M is a sparse matrix with homogeneous weight values
@@ -2137,7 +2137,7 @@ def _jitc_mm_homo_cpu_kernel_generator(
             # - B: [k, n]
 
             def kernel(weight, clen, B, seed, _, posts):
-                """
+                r"""
                 Numba kernel for sparse matrix-matrix multiplication with on-the-fly matrix generation.
 
                 Implements the operation M^T @ B where M is a sparse matrix with homogeneous weight values
@@ -2211,7 +2211,7 @@ def _jitc_mm_homo_cpu_kernel_generator(
             # - B: [k, n]
 
             def kernel(weight, clen, B, seed, _, posts):
-                """
+                r"""
                 Numba kernel for sparse matrix-matrix multiplication with on-the-fly matrix generation.
 
                 Implements the operation M @ B where M is a sparse matrix with homogeneous weight values
