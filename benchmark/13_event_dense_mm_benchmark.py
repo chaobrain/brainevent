@@ -16,35 +16,45 @@
 import os
 import time
 
+import brainevent
+
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
 import jax
 import sys
+
 sys.path.append('../')
 
 import numpy as np
 import brainstate
-import brainevent
 import matplotlib.pyplot as plt
 
 
 # brainstate.environ.set(platform='cpu')
 
 
-def forward(n_pre, n_post, spk_prob, as_float: bool):
-    linear = brainevent.nn.Linear(n_pre, n_post, weight=brainstate.init.KaimingUniform())
-    spike = (brainstate.random.rand(n_pre) < spk_prob)
+def forward(n_pre, n_post, spk_prob, as_float: bool, transpose: bool = False):
+    weight = brainstate.init.KaimingUniform()((n_pre, n_post))
+    spike = (brainstate.random.rand(n_pre if transpose else n_post) < spk_prob)
 
     if as_float:
         spike = spike.astype(float)
 
     @jax.jit
     def f1(spike):
-        return linear(spike)
+        return (
+            (brainevent.EventArray(spike) @ weight)
+            if transpose else
+            (weight @ brainevent.EventArray(spike))
+        )
 
     @jax.jit
     def f2(spike):
-        return spike @ linear.weight.value
+        return (
+            (spike @ weight)
+            if transpose else
+            (weight @ spike)
+        )
 
     y1 = jax.block_until_ready(f1(spike))
     y2 = jax.block_until_ready(f2(spike))
@@ -103,20 +113,27 @@ def visualize(results, title='Acceleration Ratio', filename=None):
 
 
 def benchmark_forward(prob=0.1):
-    results = {}
-    for n_pre, n_post in [
-        # (1000, 1000),
-        (1000, 10000),
-        (10000, 1000),
-        (10000, 10000),
-        (20000, 10000),
-        (10000, 20000),
-        (20000, 20000),
-        # (10000, 100000),
-    ]:
-        results[f'{n_pre}x{n_post}'] = forward(n_pre, n_post, prob, False)
+    platform = brainstate.environ.get_platform()
 
-    visualize(results, title=f'Acceleration Ratio (p={prob})', filename=f'results/event-mv-prob={prob}.pdf')
+    results = {}
+    for transpose in [False, True]:
+        for n_pre, n_post in [
+            # (1000, 1000),
+            (1000, 10000),
+            (10000, 1000),
+            (10000, 10000),
+            (20000, 10000),
+            (10000, 20000),
+            (20000, 20000),
+            # (10000, 100000),
+        ]:
+            results[f'{n_pre}x{n_post}x{transpose}'] = forward(n_pre, n_post, prob, True, transpose)
+
+    visualize(
+        results,
+        title=f'Acceleration Ratio (p={prob})',
+        filename=f'results/event-mv-{transpose}-prob={prob}-{platform}.pdf'
+    )
 
 
 if __name__ == '__main__':

@@ -23,7 +23,7 @@ from jax.dtypes import canonicalize_dtype
 from jax.tree_util import register_pytree_node_class
 
 from ._error import MathError
-from ._event_vector_impl import event_mv
+from ._event_vector_impl import event_dense_mv
 
 __all__ = [
     'EventArray',
@@ -779,7 +779,7 @@ class EventArray(object):
             if self.ndim == 0:
                 return self.value @ oc
             elif self.ndim == 1:
-                return event_mv(oc, self.value, transpose=True)
+                return event_dense_mv(oc, self.value, transpose=True)
             elif self.ndim == 2:
                 return event_mm(oc, self.value.T, transpose=True).T
             else:
@@ -805,7 +805,7 @@ class EventArray(object):
             if self.ndim == 0:
                 return oc @ self.value
             elif self.ndim == 1:
-                return event_mv(oc, self.value, transpose=False)
+                return event_dense_mv(oc, self.value, transpose=False)
             elif self.ndim == 2:
                 return event_mm(oc, self.value, transpose=False)
             else:

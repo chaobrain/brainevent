@@ -21,13 +21,14 @@ import jax.numpy as jnp
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
+from ._misc import cdiv
 from ._typing import Kernel
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import numba_environ, NumbaKernelGenerator
 from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type
 
 
-def event_mv(
+def event_dense_mv(
     weights,
     spikes,
     *,
@@ -35,24 +36,52 @@ def event_mv(
     transpose: bool = False,
 ):
     r"""
-    Multiply event by matrix, $\mathrm{matrix} @ \mathrm{spikes}$.
+    Multiply event vector by matrix, computing either weights @ spikes or weights.T @ spikes.
+
+    This function is optimized for sparse event vectors, where most elements are zero or false.
+    The implementation uses custom kernels for efficient computation on CPU/GPU hardware.
+
+    For matrix-vector multiplication: y = W @ x (or y = W.T @ x when transpose=True)
+
+    Mathematical formulations:
+    - Standard mode (transpose=False): output[i] = sum_j(weights[i,j] * spikes[j])
+    - Transpose mode (transpose=True): output[j] = sum_i(weights[i,j] * spikes[i])
+
+    The function handles three types of event vectors:
+    1. Boolean events (spikes is a boolean array): Only indices where spikes[i]=True contribute
+    2. Float events treated as events (float_as_event=True): Only non-zero values contribute
+    3. Float events treated as values (float_as_event=False): Non-zero values are scaled by their value
 
     Args:
-        weights: The matrix.
-        spikes: The event.
-        float_as_event: If True, treat the event as a float.
-        transpose: If True, transpose the matrix.
+        weights: A matrix of shape (M, N) representing synaptic weights or connection strengths
+        spikes: An event vector of shape (N,) for standard mode or (M,) for transpose mode
+        float_as_event: If True, treat non-zero float values as binary events.
+                        If False, use the actual float values for scaling. Default: True.
+        transpose: If True, compute weights.T @ spikes instead of weights @ spikes. Default: False.
+
+    Returns:
+        An array representing the result of the matrix-vector product, with shape (M,) for
+        standard mode or (N,) for transpose mode. Preserves units from the input arrays.
+
+    Note:
+        The function leverages custom XLA kernels for efficient sparse computation and
+        handles unit management through the brainunit library.
     """
     with jax.ensure_compile_time_eval():
         weights = u.math.asarray(weights)
         spikes = u.math.asarray(spikes)
-    weight_val, weight_unit = u.split_mantissa_unit(weights)
-    spk_val, spk_unit = u.split_mantissa_unit(spikes)
-    r = event_liner_p_call(weight_val, spk_val, float_as_event=float_as_event, transpose=transpose)
-    return u.maybe_decimal(r[0] * weight_unit * spk_unit)
+    weight_val, wunit = u.split_mantissa_unit(weights)
+    spk_val, spkunit = u.split_mantissa_unit(spikes)
+    r = event_dense_mv_p_call(
+        weight_val,
+        spk_val,
+        float_as_event=float_as_event,
+        transpose=transpose
+    )
+    return u.maybe_decimal(r[0] * wunit * spkunit)
 
 
-def mv_cpu_kernel_generator(
+def _mv_cpu_kernel_generator(
     float_as_event: bool,
     transpose: bool,
     spk_info: jax.ShapeDtypeStruct,
@@ -62,7 +91,6 @@ def mv_cpu_kernel_generator(
 
     if transpose:
         if spk_info.dtype == jnp.bool_:
-            @numba.njit(**numba_environ.setting)
             def _kernel(weights, spikes, posts):
                 posts[:] = 0.
                 for i in range(spikes.shape[0]):
@@ -70,7 +98,6 @@ def mv_cpu_kernel_generator(
                         posts += weights[i]
 
         elif float_as_event:
-            @numba.njit(**numba_environ.setting)
             def _kernel(weights, spikes, posts):
                 posts[:] = 0.
                 for i in range(spikes.shape[0]):
@@ -78,7 +105,6 @@ def mv_cpu_kernel_generator(
                         posts += weights[i]
 
         else:
-            @numba.njit(**numba_environ.setting)
             def _kernel(weights, spikes, posts):
                 posts[:] = 0.
                 for i in range(spikes.shape[0]):
@@ -88,7 +114,6 @@ def mv_cpu_kernel_generator(
 
     else:
         if spk_info.dtype == jnp.bool_:
-            @numba.njit(**numba_environ.setting)
             def _kernel(weights, spikes, posts):
                 posts[:] = 0.
                 for i in range(spikes.shape[0]):
@@ -96,7 +121,6 @@ def mv_cpu_kernel_generator(
                         posts += weights[:, i]
 
         elif float_as_event:
-            @numba.njit(**numba_environ.setting)
             def _kernel(weights, spikes, posts):
                 posts[:] = 0.
                 for i in range(spikes.shape[0]):
@@ -104,7 +128,6 @@ def mv_cpu_kernel_generator(
                         posts += weights[:, i]
 
         else:
-            @numba.njit(**numba_environ.setting)
             def _kernel(weights, spikes, posts):
                 posts[:] = 0.
                 for i in range(spikes.shape[0]):
@@ -112,15 +135,16 @@ def mv_cpu_kernel_generator(
                     if sp != 0.:
                         posts += weights[:, i] * sp
 
-    return _kernel
+    return numba.njit(**numba_environ.setting)(_kernel)
 
 
-def mv_gpu_kernel_generator(
+def _mv_gpu_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     spk_info: jax.ShapeDtypeStruct,
     transpose: bool,
     float_as_event: bool,
     TILE_SIZE: int,
+    block_dim: int,
     **kwargs
 ) -> Kernel:
     import warp  # pylint: disable=import-outside-toplevel
@@ -130,141 +154,99 @@ def mv_gpu_kernel_generator(
 
     if transpose:
         if spk_info.dtype == jnp.bool_:
-            @warp.kernel
             def kernel(
-                weights: warp.array2d(dtype=weight_dtype),
-                spikes: warp.array1d(dtype=spike_dtype),
-                out: warp.array1d(dtype=weight_dtype),
+                weight_ref: warp.array2d(dtype=weight_dtype),
+                spike_ref: warp.array1d(dtype=spike_dtype),
+                out_ref: warp.array1d(dtype=weight_dtype),
             ):
-                # i_col = warp.tid()
-                # temp = weights.dtype(0.)
-                # for i_row in range(0, spikes.shape[0]):
-                #     if spikes[i_row]:
-                #         temp += weights[i_row, i_col]
-                # out[i_col] = temp
-
-                i_tile = warp.tid()
-                temp = warp.tile_zeros(shape=(TILE_SIZE,), dtype=weight_dtype)
-                for i_row in range(0, spikes.shape[0], TILE_SIZE):
-                    spk = warp.tile_load(spikes, shape=(TILE_SIZE,), offset=(i_row,))
-                    for j in range(min(TILE_SIZE, spikes.shape[0] - i_row)):
-                        if spk[j]:
-                            temp += warp.tile_load(weights[i_row + j], shape=(TILE_SIZE,), offset=(i_tile * TILE_SIZE,))
-                warp.tile_store(out, temp, offset=(i_tile * TILE_SIZE,))
-
-                # i_tile = warp.tid()
-                # i_load = 0
-                # temp = warp.tile_zeros(shape=(TILE_SIZE, TILE_SIZE), dtype=weight_dtype)
-                # res = warp.tile_zeros(shape=(TILE_SIZE,), dtype=weight_dtype)
-                # for i_row in range(0, spikes.shape[0], TILE_SIZE):
-                #     spk = warp.tile_load(spikes, shape=(TILE_SIZE,), offset=(i_row,))
-                #     for j in range(min(TILE_SIZE, spikes.shape[0] - i_row)):
-                #         if spk[j]:
-                #             temp[i_load, :] = warp.tile_load(weights[i_row + j], shape=(TILE_SIZE,),
-                #                                              offset=(i_tile * TILE_SIZE,))
-                #             i_load += 1
-                #             if i_load == TILE_SIZE:
-                #                 res += warp.tile_sum(temp, axis=0)
-                # warp.tile_store(out, temp, offset=(i_tile * TILE_SIZE,))
+                i_col = warp.tid()
+                spikes = warp.tile_load(spike_ref, shape=(TILE_SIZE,))
+                temp = warp.tile_zeros(shape=(block_dim,), dtype=weight_dtype)
+                for j in range(TILE_SIZE):
+                    if spikes[j]:
+                        temp += warp.tile_load(weight_ref[j], shape=(block_dim,), offset=(i_col * block_dim,))
+                warp.tile_store(out_ref, temp, offset=(i_col * block_dim,))
 
         elif float_as_event:
-            @warp.kernel
             def kernel(
-                weights: warp.array2d(dtype=weight_dtype),
-                spikes: warp.array1d(dtype=spike_dtype),
-                out: warp.array1d(dtype=weight_dtype),
+                weight_ref: warp.array2d(dtype=weight_dtype),
+                spike_ref: warp.array1d(dtype=spike_dtype),
+                out_ref: warp.array1d(dtype=weight_dtype),
             ):
-                # i_col = warp.tid()
-                # temp = weights.dtype(0.)
-                # for i_row in range(0, spikes.shape[0]):
-                #     if spikes[i_row] != 0.:
-                #         temp += weights[i_row, i_col]
-                # out[i_col] = temp
-
-                i_tile = warp.tid()
-                temp = warp.tile_zeros(shape=(TILE_SIZE,), dtype=weight_dtype)
-                for i_row in range(0, spikes.shape[0], TILE_SIZE):
-                    spk = warp.tile_load(spikes, shape=(TILE_SIZE,), offset=(i_row,))
-                    for j in range(min(TILE_SIZE, spikes.shape[0] - i_row)):
-                        if spk[j] != 0.:
-                            temp += warp.tile_load(weights[i_row + j], shape=(TILE_SIZE,), offset=(i_tile * TILE_SIZE,))
-                warp.tile_store(out, temp, offset=(i_tile * TILE_SIZE,))
+                i_col = warp.tid()
+                spikes = warp.tile_load(spike_ref, shape=(TILE_SIZE,))
+                temp = warp.tile_zeros(shape=(block_dim,), dtype=weight_dtype)
+                for j in range(TILE_SIZE):
+                    if spikes[j] != 0.:
+                        temp += warp.tile_load(weight_ref[j], shape=(block_dim,), offset=(i_col * block_dim,))
+                warp.tile_store(out_ref, temp, offset=(i_col * block_dim,))
 
         else:
-            @warp.kernel
             def kernel(
-                weights: warp.array2d(dtype=weight_dtype),
-                spikes: warp.array1d(dtype=spike_dtype),
-                out: warp.array1d(dtype=weight_dtype),
+                weight_ref: warp.array2d(dtype=weight_dtype),
+                spike_ref: warp.array1d(dtype=spike_dtype),
+                out_ref: warp.array1d(dtype=weight_dtype),
             ):
-                # i_col = warp.tid()
-                # temp = weights.dtype(0.)
-                # for i_row in range(0, spikes.shape[0]):
-                #     spk = spikes[i_row]
-                #     if spk != 0.:
-                #         temp += weights[i_row, i_col] * spk
-                # out[i_col] = temp
-
-                i_tile = warp.tid()
-                temp = warp.tile_zeros(shape=(TILE_SIZE,), dtype=weight_dtype)
-                for i_row in range(0, spikes.shape[0], TILE_SIZE):
-                    spk = warp.tile_load(spikes, shape=(TILE_SIZE,), offset=(i_row,))
-                    for j in range(min(TILE_SIZE, spikes.shape[0] - i_row)):
-                        s = spk[j]
-                        if s != 0.:
-                            w = warp.tile_load(weights[i_row + j], shape=(TILE_SIZE,), offset=(i_tile * TILE_SIZE,))
-                            temp += w * s
-                warp.tile_store(out, temp, offset=(i_tile * TILE_SIZE,))
+                i_col = warp.tid()
+                spikes = warp.tile_load(spike_ref, shape=(TILE_SIZE,))
+                temp = warp.tile_zeros(shape=(block_dim,), dtype=weight_dtype)
+                for j in range(TILE_SIZE):
+                    s = spikes[j]
+                    if s != 0.:
+                        temp += warp.tile_load(weight_ref[j], shape=(block_dim,), offset=(i_col * block_dim,)) * s
+                warp.tile_store(out_ref, temp, offset=(i_col * block_dim,))
 
     else:
-        raise ValueError
-        # if spk_info.dtype == jnp.bool_:
-        #     @warp.kernel
-        #     def kernel(
-        #         weights: warp.array2d(dtype=weight_dtype),
-        #         spikes: warp.array1d(dtype=spike_dtype),
-        #         out: warp.array1d(dtype=weight_dtype),
-        #     ):
-        #         i_row = warp.tid()
-        #         temp = weights.dtype(0.)
-        #         for i_col in range(0, spikes.shape[0]):
-        #             if spikes[i_col]:
-        #                 temp += weights[i_row, i_col]
-        #         out[i_row] = temp
-        #
-        # elif float_as_event:
-        #     @warp.kernel
-        #     def kernel(
-        #         weights: warp.array2d(dtype=weight_dtype),
-        #         spikes: warp.array1d(dtype=spike_dtype),
-        #         out: warp.array1d(dtype=weight_dtype),
-        #     ):
-        #         i_row = warp.tid()
-        #         temp = weights.dtype(0.)
-        #         for i_col in range(0, spikes.shape[0]):
-        #             if spikes[i_col] != 0.:
-        #                 temp += weights[i_row, i_col]
-        #         out[i_row] = temp
-        #
-        # else:
-        #     @warp.kernel
-        #     def kernel(
-        #         weights: warp.array2d(dtype=weight_dtype),
-        #         spikes: warp.array1d(dtype=spike_dtype),
-        #         out: warp.array1d(dtype=weight_dtype),
-        #     ):
-        #         i_row = warp.tid()
-        #         temp = weights.dtype(0.)
-        #         for i_col in range(0, spikes.shape[0]):
-        #             spk = spikes[i_col]
-        #             if spk != 0.:
-        #                 temp += weights[i_row, i_col] * spk
-        #         out[i_row] = temp
+        if spk_info.dtype == jnp.bool_:
+            def kernel(
+                weight_ref: warp.array2d(dtype=weight_dtype),
+                spike_ref: warp.array1d(dtype=spike_dtype),
+                out_ref: warp.array1d(dtype=weight_dtype),
+            ):
+                i_col = warp.tid()
+                spikes = warp.tile_load(spike_ref, shape=(TILE_SIZE,))
+                temp = warp.tile_zeros(shape=(block_dim,), dtype=weight_dtype)
+                for j in range(TILE_SIZE):
+                    if spikes[j]:
+                        data = warp.tile_load(weight_ref, shape=(block_dim, 1), offset=(i_col * block_dim, j))
+                        temp += data[:, 0]  # TODO
+                warp.tile_store(out_ref, temp, offset=(i_col * block_dim,))
 
-    return kernel
+        elif float_as_event:
+            def kernel(
+                weight_ref: warp.array2d(dtype=weight_dtype),
+                spike_ref: warp.array1d(dtype=spike_dtype),
+                out_ref: warp.array1d(dtype=weight_dtype),
+            ):
+                i_col = warp.tid()
+                spikes = warp.tile_load(spike_ref, shape=(TILE_SIZE,))
+                temp = warp.tile_zeros(shape=(block_dim,), dtype=weight_dtype)
+                for j in range(TILE_SIZE):
+                    if spikes[j] != 0.:
+                        data = warp.tile_load(weight_ref, shape=(block_dim, 1), offset=(i_col * block_dim, j))
+                        temp += data[:, 0]  # TODO
+                warp.tile_store(out_ref, temp, offset=(i_col * block_dim,))
+
+        else:
+            def kernel(
+                weight_ref: warp.array2d(dtype=weight_dtype),
+                spike_ref: warp.array1d(dtype=spike_dtype),
+                out_ref: warp.array1d(dtype=weight_dtype),
+            ):
+                i_col = warp.tid()
+                spikes = warp.tile_load(spike_ref, shape=(TILE_SIZE,))
+                temp = warp.tile_zeros(shape=(block_dim,), dtype=weight_dtype)
+                for j in range(TILE_SIZE):
+                    s = spikes[j]
+                    if s != 0.:
+                        data = warp.tile_load(weight_ref, shape=(block_dim, 1), offset=(i_col * block_dim, j))
+                        temp += data[:, 0] * s
+                warp.tile_store(out_ref, temp, offset=(i_col * block_dim,))
+
+    return warp.kernel(kernel)
 
 
-def pallas_kernel_generator(
+def _mv_tpu_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     spk_info: jax.ShapeDtypeStruct,
     transpose: bool,
@@ -317,8 +299,8 @@ def pallas_kernel_generator(
     return kernel
 
 
-def jvp_weights(w_dot, weights, spikes, *, float_as_event, transpose, **kwargs):
-    return event_liner_p_call(
+def _mv_jvp_weights(w_dot, weights, spikes, *, float_as_event, transpose, **kwargs):
+    return event_dense_mv_p_call(
         w_dot,
         spikes,
         transpose=transpose,
@@ -326,14 +308,14 @@ def jvp_weights(w_dot, weights, spikes, *, float_as_event, transpose, **kwargs):
     )
 
 
-def jvp_spikes(spk_dot, weights, spikes, *, transpose, **kwargs):
+def _mv_jvp_spikes(spk_dot, weights, spikes, *, transpose, **kwargs):
     if transpose:
         return [spk_dot @ weights]
     else:
         return [weights @ spk_dot]
 
 
-def transpose_rule(
+def _mv_transpose_rule(
     ct,
     weights,
     spikes,
@@ -349,18 +331,6 @@ def transpose_rule(
         return weights, (ad.Zero(spikes) if type(ct[0]) is ad.Zero else ct_events)
 
     else:
-        # def map_fn(sp):
-        #     if spikes.dtype == jnp.bool_:
-        #         d_gmax = jnp.where(sp, ct[0], jnp.zeros_like(ct[0]))
-        #     else:
-        #         if float_as_event:
-        #             d_gmax = jnp.where(sp == 0., jnp.zeros_like(ct[0]), ct[0])
-        #         else:
-        #             # d_gmax = jnp.where(sp == 0., jnp.zeros_like(ct[0]), ct[0] * sp)
-        #             d_gmax = jax.lax.cond(sp == 0., lambda: jnp.zeros_like(ct[0]), lambda: ct[0] * sp)
-        #     return d_gmax
-        # ct_weights = jax.vmap(map_fn)(spikes)
-
         if transpose:
             ct_weights = jnp.outer(spikes, ct[0])
         else:
@@ -369,7 +339,7 @@ def transpose_rule(
         return (ad.Zero(weights) if type(ct[0]) is ad.Zero else ct_weights), spikes
 
 
-def event_liner_p_call(
+def event_dense_mv_p_call(
     weights,
     spikes,
     *,
@@ -381,7 +351,7 @@ def event_liner_p_call(
     else:
         out = jax.ShapeDtypeStruct([weights.shape[0]], weights.dtype)
 
-    return event_linear_p(
+    return event_dense_mv_p(
         weights,
         spikes,
         outs=[out],
@@ -389,19 +359,26 @@ def event_liner_p_call(
         transpose=transpose,
         spk_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
-        TILE_SIZE=256,
+        TILE_SIZE=spikes.shape[0],
     )
 
 
-def _get_dim(transpose, weight_info, TILE_SIZE, **kwargs):
-    m = weight_info.shape[1] if transpose else weight_info.shape[0]
-    return ((m + TILE_SIZE - 1) // TILE_SIZE, TILE_SIZE)
+
+N_THREAD = 256
 
 
-event_linear_p = XLACustomKernel(
-    'event_linear',
-    cpu_kernel=NumbaKernelGenerator(mv_cpu_kernel_generator),
-    gpu_kernel=WarpKernelGenerator(mv_gpu_kernel_generator, dim=_get_dim),
+event_dense_mv_p = XLACustomKernel(
+    'event_dense_mv',
+    cpu_kernel=NumbaKernelGenerator(_mv_cpu_kernel_generator),
+    gpu_kernel=WarpKernelGenerator(
+        _mv_gpu_kernel_generator,
+        tile=lambda weight_info, transpose, **kwargs: (
+            cdiv(weight_info.shape[1], N_THREAD)
+            if transpose else
+            cdiv(weight_info.shape[0], N_THREAD)
+        ),
+        block_dim=N_THREAD,
+    ),
 )
-event_linear_p.defjvp(jvp_weights, jvp_spikes)
-event_linear_p.def_transpose_rule(transpose_rule)
+event_dense_mv_p.defjvp(_mv_jvp_weights, _mv_jvp_spikes)
+event_dense_mv_p.def_transpose_rule(_mv_transpose_rule)

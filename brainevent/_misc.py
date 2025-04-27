@@ -98,3 +98,27 @@ def _csr_todense(
     data, unit = u.split_mantissa_unit(data)
     mat = csr_todense_p.bind(data, indices, indptr, shape=shape)
     return u.maybe_decimal(mat * unit)
+
+
+def cdiv(m: int, n: int) -> int:
+    """
+    Calculate ceiling division of m by n (division rounded up to nearest integer).
+
+    This is equivalent to math.ceil(m/n) but avoids floating-point operations.
+
+    Args:
+        m: Dividend (numerator)
+        n: Divisor (denominator), must be positive
+
+    Returns:
+        The smallest integer k such that k ≥ m/n
+
+    Examples:
+        >>> cdiv(10, 3)  # 10/3 = 3.33... -> 4
+        4
+        >>> cdiv(9, 3)   # 9/3 = 3 -> 3
+        3
+    """
+    if n <= 0:
+        raise ValueError("Divisor must be positive")
+    return (m + n - 1) // n
