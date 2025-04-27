@@ -42,6 +42,34 @@ __all__ = [
 
 
 class JITHomoMatrix(JITCMatrix):
+    """
+    Base class for Just-In-Time Connectivity Homogeneous matrices.
+
+    This abstract class serves as the foundation for sparse matrix representations
+    that use homogeneous weights with stochastic connectivity patterns. It stores
+    a single weight value applied to all non-zero elements, along with connectivity
+    probability and a random seed that determines the sparse structure.
+
+    Designed for efficient representation of neural connectivity matrices where all
+    connections have the same strength (weight) but are sparsely distributed.
+
+    Attributes
+    ----------
+    weight : Union[jax.Array, u.Quantity]
+        The homogeneous weight value applied to all non-zero elements in the matrix.
+        Can be a plain JAX array or a quantity with units.
+    prob : Union[float, jax.Array]
+        Connection probability determining the sparsity of the matrix.
+        Values range from 0 (no connections) to 1 (fully connected).
+    seed : Union[int, jax.Array]
+        Random seed controlling the specific pattern of connections.
+        Using the same seed produces identical connectivity patterns.
+    shape : MatrixShape
+        Tuple specifying the dimensions of the matrix as (rows, columns).
+    corder : bool
+        Flag indicating the memory layout order of the matrix.
+        False (default) for Fortran-order (column-major), True for C-order (row-major).
+    """
     weight: Union[jax.Array, u.Quantity]
     prob: Union[float, jax.Array]
     seed: Union[int, jax.Array]
@@ -55,12 +83,50 @@ class JITHomoMatrix(JITCMatrix):
         shape: MatrixShape,
         corder: bool = False,
     ):
+        """
+        Initialize a homogeneous sparse just-in-time connectivity matrix.
+
+        Parameters
+        ----------
+        data : Tuple[WeightScalar, Prob, Seed]
+            A tuple containing three elements:
+            - weight: Homogeneous weight value for all non-zero elements
+            - prob: Connection probability determining matrix sparsity
+            - seed: Random seed for reproducible sparse structure generation
+        shape : MatrixShape
+            The shape of the matrix as a tuple (rows, columns).
+        corder : bool, optional
+            Memory layout order flag, by default False.
+            - False: Fortran-order (column-major)
+            - True: C-order (row-major)
+
+        Notes
+        -----
+        The constructor extracts the components from the data tuple and sets them
+        as instance attributes. The weight is converted to a JAX array if it's not
+        already one, preserving any attached units.
+        """
         weight, self.prob, self.seed = data
         self.weight = u.math.asarray(weight)
         self.corder = corder
         super().__init__(data, shape=shape)
 
     def __repr__(self):
+        """
+        Return a string representation of the homogeneous matrix.
+
+        Returns
+        -------
+        str
+            A string showing the class name, shape, weight value, probability,
+            seed, and corder flag of the matrix instance.
+
+        Examples
+        --------
+        >>> matrix = JITHomoMatrix((0.5, 0.1, 42), shape=(10, 10))
+        >>> repr(matrix)
+        'JITHomoMatrix(shape=(10, 10), weight=0.5, prob=0.1, seed=42, corder=False)'
+        """
         return (
             f"{self.__class__.__name__}("
             f"shape={self.shape}, "
@@ -72,6 +138,19 @@ class JITHomoMatrix(JITCMatrix):
 
     @property
     def dtype(self):
+        """
+        Get the data type of the matrix elements.
+
+        Returns
+        -------
+        dtype
+            The data type of the weight values in the matrix.
+
+        Notes
+        -----
+        This property inherits the dtype directly from the weight attribute,
+        ensuring consistent data typing throughout operations involving this matrix.
+        """
         return self.weight.dtype
 
     @property
@@ -189,24 +268,35 @@ class JITCHomoR(JITHomoMatrix):
     Just-In-Time Connectivity Homogeneous matrix with Row-oriented representation.
 
     This class represents a row-oriented homogeneous sparse matrix optimized for JAX-based
-    transformations. It follows the Compressed Sparse Row (CSR) format, storing a uniform value
-    for all non-zero elements in the matrix, along with probability and seed information to
-    determine the sparse structure.
+    transformations. It follows the Compressed Sparse Row (CSR) format conceptually, storing
+    a uniform weight value for all non-zero elements in the matrix, along with probability
+    and seed information to determine the sparse structure.
 
     The class is designed for efficient neural network connectivity patterns where weights
-    are homogeneous but connectivity is sparse and stochastic.
+    are homogeneous (identical) but connectivity is sparse and stochastically determined.
+    The row-oriented structure makes row-based operations more efficient than column-based ones.
 
     Attributes
     ----------
-    weight (Union[jax.Array, u.Quantity]): The homogeneous value used for all non-zero elements
-    prob (Union[float, jax.Array]): Probability for each potential connection
-    seed (Union[int, jax.Array]): Random seed used for initialization of the sparse structure
-    shape (MatrixShape): The shape of the matrix as a tuple (rows, cols)
-    dtype: The data type of the matrix elements (property inherited from parent)
+    weight : Union[jax.Array, u.Quantity]
+        The homogeneous value used for all non-zero elements in the matrix.
+        Can be a plain JAX array or a quantity with units.
+    prob : Union[float, jax.Array]
+        Probability for each potential connection. Controls the sparsity level
+        with 0.0 meaning no connections and 1.0 meaning all possible connections.
+    seed : Union[int, jax.Array]
+        Random seed used for initialization of the sparse structure.
+        Using the same seed produces identical connectivity patterns.
+    shape : MatrixShape
+        The shape of the matrix as a tuple (rows, cols).
+    corder : bool
+        Flag indicating the memory layout order of the matrix.
+        False (default) for Fortran-order (column-major), True for C-order (row-major).
+    dtype
+        The data type of the matrix elements (property inherited from parent).
 
     Examples
     --------
-
     >>> import jax
     >>> import brainunit as u
     >>> from brainevent import JITCHomoR
@@ -214,20 +304,34 @@ class JITCHomoR(JITHomoMatrix):
     # Create a homogeneous matrix with value 1.5, probability 0.1, and seed 42
     >>> homo_matrix = JITCHomoR((1.5, 0.1, 42), shape=(10, 10))
     >>> homo_matrix
-    JITCHomoR(shape=(10, 10), dtype=float32, weight=1.5, prob=0.1, seed=42)
+    JITCHomoR(shape=(10, 10), weight=1.5, prob=0.1, seed=42, corder=False)
 
-    >>> # Perform matrix-vector multiplication
+    # Create a matrix with units
+    >>> weighted_matrix = JITCHomoR((1.5 * u.mV, 0.1, 42), shape=(10, 10))
+    >>> weighted_matrix
+    JITCHomoR(shape=(10, 10), weight=1.5 mV, prob=0.1, seed=42, corder=False)
+
+    # Perform matrix-vector multiplication
     >>> vec = jax.numpy.ones(10)
     >>> result = homo_matrix @ vec
+    >>> result.shape  # (10,)
 
-    >>> # Apply scalar operation
+    # Apply scalar operations
     >>> scaled = homo_matrix * 2.0
-    >>>
-    >>> # Convert to dense representation
+    >>> scaled.weight  # 3.0
+
+    # Arithmetic operations maintain the sparse structure
+    >>> neg_matrix = -homo_matrix
+    >>> neg_matrix.weight  # -1.5
+
+    # Convert to dense representation
     >>> dense_matrix = homo_matrix.todense()
-    >>>
-    >>> # Transpose operation returns a JITCHomo instance
+    >>> dense_matrix.shape  # (10, 10)
+
+    # Transpose operation returns a column-oriented matrix
     >>> col_matrix = homo_matrix.transpose()
+    >>> isinstance(col_matrix, JITCHomoC)  # True
+    >>> col_matrix.shape  # (10, 10)
 
     Notes
     -----
@@ -235,6 +339,9 @@ class JITCHomoR(JITHomoMatrix):
     - More memory-efficient than dense matrices for sparse connectivity patterns
     - Well-suited for neural network connectivity matrices with uniform weights
     - Optimized for matrix-vector operations common in neural simulations
+    - The matrix is implicitly constructed based on the probability and seed;
+      the actual sparse structure is materialized only when needed
+    - When used with units (e.g., u.mV), units are preserved through operations
     """
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
@@ -512,48 +619,80 @@ class JITCHomoC(JITHomoMatrix):
     Just-In-Time Connectivity Homogeneous matrix with Column-oriented representation.
 
     This class represents a column-oriented homogeneous sparse matrix optimized for JAX-based
-    transformations. It follows the Compressed Sparse Column (CSC) format, storing a uniform value
-    for all non-zero elements in the matrix, along with probability and seed information to
-    determine the sparse structure.
+    transformations. It follows the Compressed Sparse Column (CSC) format conceptually, storing
+    a uniform weight value for all non-zero elements in the matrix, along with probability
+    and seed information to determine the sparse structure.
 
-    The column-oriented structure makes column-based operations more efficient than row-based ones,
-    making this class the transpose-oriented counterpart to JITRHomo.
+    The column-oriented structure makes column-based operations more efficient than row-based
+    ones, making this class the transpose-oriented counterpart to JITCHomoR.
 
-    Attributes:
-        weight (Union[jax.Array, u.Quantity]): The homogeneous value used for all non-zero elements
-        prob (Union[float, jax.Array]): Probability for each potential connection
-        seed (Union[int, jax.Array]): Random seed used for initialization of the sparse structure
-        shape (MatrixShape): The shape of the matrix as a tuple (rows, cols)
-        dtype: The data type of the matrix elements (property inherited from parent)
+    Attributes
+    ----------
+    weight : Union[jax.Array, u.Quantity]
+        The homogeneous value used for all non-zero elements in the matrix.
+        Can be a plain JAX array or a quantity with units.
+    prob : Union[float, jax.Array]
+        Probability for each potential connection. Controls the sparsity level
+        with 0.0 meaning no connections and 1.0 meaning all possible connections.
+    seed : Union[int, jax.Array]
+        Random seed used for initialization of the sparse structure.
+        Using the same seed produces identical connectivity patterns.
+    shape : MatrixShape
+        The shape of the matrix as a tuple (rows, cols).
+    corder : bool
+        Flag indicating the memory layout order of the matrix.
+        False (default) for Fortran-order (column-major), True for C-order (row-major).
+    dtype
+        The data type of the matrix elements (property inherited from parent).
 
-    Examples:
-        >>> import jax
-        >>> import brainunit as u
-        >>> from brainevent import JITCHomoC
-        >>>
-        >>> # Create a homogeneous matrix with value 1.5, probability 0.1, and seed 42
-        >>> homo_matrix = JITCHomoC((1.5, 0.1, 42), shape=(10, 10))
-        >>>
-        >>> # Perform matrix-vector multiplication
-        >>> vec = jax.numpy.ones(10)
-        >>> result = homo_matrix @ vec
-        >>>
-        >>> # Apply scalar operation
-        >>> scaled = homo_matrix * 2.0
-        >>>
-        >>> # Transpose to get a row-oriented matrix
-        >>> row_matrix = homo_matrix.transpose()
-        >>>
-        >>> # Convert to dense representation
-        >>> dense_matrix = homo_matrix.todense()
+    Examples
+    --------
+    >>> import jax
+    >>> import brainunit as u
+    >>> from brainevent import JITCHomoC
 
+    # Create a homogeneous matrix with value 1.5, probability 0.1, and seed 42
+    >>> homo_matrix = JITCHomoC((1.5, 0.1, 42), shape=(10, 10))
+    >>> homo_matrix
+    JITCHomoC(shape=(10, 10), weight=1.5, prob=0.1, seed=42, corder=False)
 
-    Notes:
-        - Registered as a JAX pytree node for compatibility with JAX transformations (jit, grad, vmap)
-        - More efficient than JITRHomo for column slicing operations
-        - Compatible with all standard mathematical operations
-        - Well-suited for neural network connectivity matrices with uniform weights
-        - Optimized for neural simulations with sparse connectivity patterns
+    # Create a matrix with units
+    >>> weighted_matrix = JITCHomoC((1.5 * u.mV, 0.1, 42), shape=(10, 10))
+    >>> weighted_matrix
+    JITCHomoC(shape=(10, 10), weight=1.5 mV, prob=0.1, seed=42, corder=False)
+
+    # Perform matrix-vector multiplication
+    >>> vec = jax.numpy.ones(10)
+    >>> result = homo_matrix @ vec
+    >>> result.shape  # (10,)
+
+    # Apply scalar operations
+    >>> scaled = homo_matrix * 2.0
+    >>> scaled.weight  # 3.0
+
+    # Arithmetic operations maintain the sparse structure
+    >>> neg_matrix = -homo_matrix
+    >>> neg_matrix.weight  # -1.5
+
+    # Convert to dense representation
+    >>> dense_matrix = homo_matrix.todense()
+    >>> dense_matrix.shape  # (10, 10)
+
+    # Transpose operation returns a row-oriented matrix
+    >>> row_matrix = homo_matrix.transpose()
+    >>> isinstance(row_matrix, JITCHomoR)  # True
+    >>> row_matrix.shape  # (10, 10)
+
+    Notes
+    -----
+    - JAX PyTree compatible for use with JAX transformations (jit, grad, vmap)
+    - More memory-efficient than dense matrices for sparse connectivity patterns
+    - More efficient than JITCHomoR for column-based operations
+    - Well-suited for neural network connectivity matrices with uniform weights
+    - Optimized for matrix-vector operations common in neural simulations
+    - The matrix is implicitly constructed based on the probability and seed;
+      the actual sparse structure is materialized only when needed
+    - When used with units (e.g., u.mV), units are preserved through operations
     """
 
     def todense(self) -> Union[jax.Array, u.Quantity]:

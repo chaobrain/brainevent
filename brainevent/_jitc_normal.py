@@ -42,8 +42,40 @@ __all__ = [
 
 
 class JITNormalMatrix(JITCMatrix):
-    loc: Union[jax.Array, u.Quantity]
-    scale: Union[jax.Array, u.Quantity]
+    """
+    Base class for Just-In-Time Connectivity Normal Distribution matrices.
+
+    This abstract class serves as the foundation for sparse matrix representations
+    that use normally distributed weights with stochastic connectivity patterns.
+    It stores location (mean) and scale (standard deviation) parameters for the
+    normal distribution, along with connectivity probability and a random seed
+    that determines the sparse structure.
+
+    Designed for efficient representation of neural connectivity matrices where
+    connections follow a normal distribution but are sparsely distributed.
+
+    Attributes
+    ----------
+    wloc : Union[jax.Array, u.Quantity]
+        The location (mean) parameter of the normal distribution for non-zero elements.
+        Can be a plain JAX array or a quantity with units.
+    wscale : Union[jax.Array, u.Quantity]
+        The scale (standard deviation) parameter of the normal distribution for non-zero elements.
+        Can be a plain JAX array or a quantity with units.
+    prob : Union[float, jax.Array]
+        Connection probability determining the sparsity of the matrix.
+        Values range from 0 (no connections) to 1 (fully connected).
+    seed : Union[int, jax.Array]
+        Random seed controlling the specific pattern of connections.
+        Using the same seed produces identical connectivity patterns.
+    shape : MatrixShape
+        Tuple specifying the dimensions of the matrix as (rows, columns).
+    corder : bool
+        Flag indicating the memory layout order of the matrix.
+        False (default) for Fortran-order (column-major), True for C-order (row-major).
+    """
+    wloc: Union[jax.Array, u.Quantity]
+    wscale: Union[jax.Array, u.Quantity]
     prob: Union[float, jax.Array]
     seed: Union[int, jax.Array]
     shape: MatrixShape
@@ -56,20 +88,60 @@ class JITNormalMatrix(JITCMatrix):
         shape: MatrixShape,
         corder: bool = False,
     ):
+        """
+        Initialize a normal distribution sparse matrix.
+
+        Parameters
+        ----------
+        data : Tuple[WeightScalar, WeightScalar, Prob, Seed]
+            A tuple containing four elements:
+            - loc: Location (mean) parameter of the normal distribution
+            - scale: Scale (standard deviation) parameter of the normal distribution
+            - prob: Connection probability determining matrix sparsity
+            - seed: Random seed for reproducible sparse structure generation
+        shape : MatrixShape
+            The shape of the matrix as a tuple (rows, columns).
+        corder : bool, optional
+            Memory layout order flag, by default False.
+            - False: Fortran-order (column-major)
+            - True: C-order (row-major)
+
+        Notes
+        -----
+        The constructor extracts the components from the data tuple and sets them
+        as instance attributes. The weight parameters are promoted to have compatible
+        dtypes and are verified to have matching dimensions before being converted
+        to JAX arrays, preserving any attached units.
+        """
         loc, scale, self.prob, self.seed = data
         loc, scale = u.math.promote_dtypes(loc, scale)
         u.fail_for_dimension_mismatch(loc, scale, "loc and scale must have the same dimension.")
-        self.loc = u.math.asarray(loc)
-        self.scale = u.math.asarray(scale)
+        self.wloc = u.math.asarray(loc)
+        self.wscale = u.math.asarray(scale)
         self.corder = corder
         super().__init__(data, shape=shape)
 
     def __repr__(self):
+        """
+        Return a string representation of the normal distribution matrix.
+
+        Returns
+        -------
+        str
+            A string showing the class name, shape, location (mean), scale (standard deviation),
+            probability, seed, and corder flag of the matrix instance.
+
+        Examples
+        --------
+        >>> matrix = JITNormalMatrix((0.5, 0.1, 0.2, 42), shape=(10, 10))
+        >>> repr(matrix)
+        'JITNormalMatrix(shape=(10, 10), wloc=0.5, wscale=0.1, prob=0.2, seed=42, corder=False)'
+        """
         return (
             f"{self.__class__.__name__}("
             f"shape={self.shape}, "
-            f"loc={self.loc}, "
-            f"scale={self.scale}, "
+            f"wloc={self.wloc}, "
+            f"wscale={self.wscale}, "
             f"prob={self.prob}, "
             f"seed={self.seed}, "
             f"corder={self.corder})"
@@ -77,7 +149,20 @@ class JITNormalMatrix(JITCMatrix):
 
     @property
     def dtype(self):
-        return self.loc.dtype
+        """
+        Get the data type of the matrix elements.
+
+        Returns
+        -------
+        dtype
+            The data type of the location (mean) values in the matrix.
+
+        Notes
+        -----
+        This property inherits the dtype directly from the wloc attribute,
+        ensuring consistent data typing throughout operations involving this matrix.
+        """
+        return self.wloc.dtype
 
     @property
     def data(self) -> Tuple[WeightScalar, WeightScalar, Prob, Seed]:
@@ -98,7 +183,7 @@ class JITNormalMatrix(JITCMatrix):
             - prob: Connection probability for the sparse structure
             - seed: Random seed used for generating the sparse connectivity pattern
         """
-        return self.loc, self.scale, self.prob, self.seed
+        return self.wloc, self.wscale, self.prob, self.seed
 
     def with_data(self, loc: WeightScalar, scale: WeightScalar):
         """
@@ -111,10 +196,10 @@ class JITNormalMatrix(JITCMatrix):
         """
         loc = u.math.asarray(loc)
         scale = u.math.asarray(scale)
-        assert loc.shape == self.loc.shape
-        assert scale.shape == self.scale.shape
-        assert u.get_unit(loc) == u.get_unit(self.loc)
-        assert u.get_unit(scale) == u.get_unit(self.scale)
+        assert loc.shape == self.wloc.shape
+        assert scale.shape == self.wscale.shape
+        assert u.get_unit(loc) == u.get_unit(self.wloc)
+        assert u.get_unit(scale) == u.get_unit(self.wscale)
         return type(self)(
             (loc, scale, self.prob, self.seed),
             shape=self.shape,
@@ -134,7 +219,7 @@ class JITNormalMatrix(JITCMatrix):
                 - A tuple of JAX-traceable arrays (only self.data in this case)
                 - A dictionary of auxiliary data (shape, indices, and indptr)
         """
-        return (self.loc, self.scale, self.prob, self.seed), {"shape": self.shape, 'corder': self.corder}
+        return (self.wloc, self.wscale, self.prob, self.seed), {"shape": self.shape, 'corder': self.corder}
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
@@ -156,7 +241,7 @@ class JITNormalMatrix(JITCMatrix):
             ValueError: If the aux_data dictionary doesn't contain the expected keys
         """
         obj = object.__new__(cls)
-        obj.loc, obj.scale, obj.prob, obj.seed = children
+        obj.wloc, obj.wscale, obj.prob, obj.seed = children
         if aux_data.keys() != {'shape', 'corder'}:
             raise ValueError(
                 "aux_data must contain 'shape', 'corder' keys. "
@@ -190,35 +275,45 @@ class JITNormalMatrix(JITCMatrix):
 @jax.tree_util.register_pytree_node_class
 class JITCNormalR(JITNormalMatrix):
     """
-    Just-In-Time Connectivity Homogeneous matrix with Row-oriented representation.
+    Just-In-Time Connectivity Normal distribution matrix with Row-oriented representation.
 
-    This class represents a row-oriented homogeneous sparse matrix optimized for JAX-based
-    transformations. It follows the Compressed Sparse Row (CSR) format, storing a uniform value
-    for all non-zero elements in the matrix, along with probability and seed information to
-    determine the sparse structure.
+    This class represents a row-oriented sparse matrix optimized for JAX-based
+    transformations where non-zero elements follow a normal distribution. It follows
+    the Compressed Sparse Row (CSR) format conceptually, storing location (mean) and
+    scale (standard deviation) parameters for the normal distribution, along with
+    probability and seed information to determine the sparse structure.
 
     The class is designed for efficient neural network connectivity patterns where weights
-    are homogeneous but connectivity is sparse and stochastic.
+    follow a normal distribution but connectivity is sparse and stochastic.
 
     Attributes
     ----------
-    weight (Union[jax.Array, u.Quantity]): The homogeneous value used for all non-zero elements
-    prob (Union[float, jax.Array]): Probability for each potential connection
-    seed (Union[int, jax.Array]): Random seed used for initialization of the sparse structure
-    shape (MatrixShape): The shape of the matrix as a tuple (rows, cols)
-    dtype: The data type of the matrix elements (property inherited from parent)
+    wloc : Union[jax.Array, u.Quantity]
+        The location (mean) parameter of the normal distribution for non-zero elements.
+    wscale : Union[jax.Array, u.Quantity]
+        The scale (standard deviation) parameter of the normal distribution for non-zero elements.
+    prob : Union[float, jax.Array]
+        Probability for each potential connection.
+    seed : Union[int, jax.Array]
+        Random seed used for initialization of the sparse structure.
+    shape : MatrixShape
+        The shape of the matrix as a tuple (rows, cols).
+    corder : bool
+        Flag indicating the memory layout order of the matrix.
+        False (default) for Fortran-order (column-major), True for C-order (row-major).
+    dtype
+        The data type of the matrix elements (property inherited from parent).
 
     Examples
     --------
-
     >>> import jax
     >>> import brainunit as u
-    >>> from brainevent import JITCHomoR
+    >>> from brainevent import JITCNormalR
 
-    # Create a homogeneous matrix with value 1.5, probability 0.1, and seed 42
-    >>> normal_matrix = JITCHomoR((1.5, 0.1, 42), shape=(10, 10))
+    # Create a normal distribution matrix with mean 1.5, std 0.2, probability 0.1, and seed 42
+    >>> normal_matrix = JITCNormalR((1.5, 0.2, 0.1, 42), shape=(10, 10))
     >>> normal_matrix
-    JITCHomoR(shape=(10, 10), dtype=float32, weight=1.5, prob=0.1, seed=42)
+    JITCNormalR(shape=(10, 10), wloc=1.5, wscale=0.2, prob=0.1, seed=42, corder=False)
 
     >>> # Perform matrix-vector multiplication
     >>> vec = jax.numpy.ones(10)
@@ -226,18 +321,18 @@ class JITCNormalR(JITNormalMatrix):
 
     >>> # Apply scalar operation
     >>> scaled = normal_matrix * 2.0
-    >>>
+
     >>> # Convert to dense representation
     >>> dense_matrix = normal_matrix.todense()
-    >>>
-    >>> # Transpose operation returns a JITCHomo instance
+
+    >>> # Transpose operation returns a JITCNormalC instance
     >>> col_matrix = normal_matrix.transpose()
 
     Notes
     -----
     - JAX PyTree compatible for use with JAX transformations (jit, grad, vmap)
     - More memory-efficient than dense matrices for sparse connectivity patterns
-    - Well-suited for neural network connectivity matrices with uniform weights
+    - Well-suited for neural network connectivity matrices with normally distributed weights
     - Optimized for matrix-vector operations common in neural simulations
     """
 
@@ -271,8 +366,8 @@ class JITCNormalR(JITNormalMatrix):
         >>> print(dense_matrix.shape)  # (10, 4)
         """
         return float_jitc_normal_matrix(
-            self.loc,
-            self.scale,
+            self.wloc,
+            self.wscale,
             self.prob,
             self.seed,
             shape=self.shape,
@@ -322,7 +417,7 @@ class JITCNormalR(JITNormalMatrix):
         """
         assert axes is None, "transpose does not support axes argument."
         return JITCNormalC(
-            (self.loc, self.scale, self.prob, self.seed),
+            (self.wloc, self.wscale, self.prob, self.seed),
             shape=(self.shape[1], self.shape[0]),
             corder=not self.corder
         )
@@ -340,7 +435,7 @@ class JITCNormalR(JITNormalMatrix):
         )
 
     def _unitary_op(self, op) -> 'JITCNormalR':
-        return self._new_mat(op(self.loc), self.scale)
+        return self._new_mat(op(self.wloc), self.wscale)
 
     def _binary_op(self, other, op) -> 'JITCNormalR':
         if isinstance(other, JAXSparse):
@@ -348,7 +443,7 @@ class JITCNormalR(JITNormalMatrix):
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return self._new_mat(op(self.loc, other), self.scale)
+            return self._new_mat(op(self.wloc, other), self.wscale)
 
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
@@ -359,7 +454,7 @@ class JITCNormalR(JITNormalMatrix):
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return self._new_mat(op(other, self.loc), self.scale)
+            return self._new_mat(op(other, self.wloc), self.wscale)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
@@ -373,8 +468,8 @@ class JITCNormalR(JITNormalMatrix):
             if other.ndim == 1:
                 # JIT matrix @ events
                 return event_jitc_normal_matvec(
-                    self.loc,
-                    self.scale,
+                    self.wloc,
+                    self.wscale,
                     self.prob,
                     other,
                     self.seed,
@@ -385,8 +480,8 @@ class JITCNormalR(JITNormalMatrix):
             elif other.ndim == 2:
                 # JIT matrix @ events
                 return event_jitc_normal_matmat(
-                    self.loc,
-                    self.scale,
+                    self.wloc,
+                    self.wscale,
                     self.prob,
                     other,
                     self.seed,
@@ -399,8 +494,8 @@ class JITCNormalR(JITNormalMatrix):
 
         else:
             other = u.math.asarray(other)
-            loc, other = u.math.promote_dtypes(self.loc, other)
-            scale, other = u.math.promote_dtypes(self.scale, other)
+            loc, other = u.math.promote_dtypes(self.wloc, other)
+            scale, other = u.math.promote_dtypes(self.wscale, other)
             if other.ndim == 1:
                 # JIT matrix @ vector
                 return float_jitc_normal_matvec(
@@ -442,8 +537,8 @@ class JITCNormalR(JITNormalMatrix):
                 # JIT matrix.T @ vector
                 #
                 return event_jitc_normal_matvec(
-                    self.loc,
-                    self.scale,
+                    self.wloc,
+                    self.wscale,
                     self.prob,
                     other,
                     self.seed,
@@ -458,8 +553,8 @@ class JITCNormalR(JITNormalMatrix):
                 # (JIT matrix.T @ matrix.T).T
                 #
                 r = event_jitc_normal_matmat(
-                    self.loc,
-                    self.scale,
+                    self.wloc,
+                    self.wscale,
                     self.prob,
                     other.T,
                     self.seed,
@@ -473,8 +568,8 @@ class JITCNormalR(JITNormalMatrix):
 
         else:
             other = u.math.asarray(other)
-            loc, other = u.math.promote_dtypes(self.loc, other)
-            scale, other = u.math.promote_dtypes(self.scale, other)
+            loc, other = u.math.promote_dtypes(self.wloc, other)
+            scale, other = u.math.promote_dtypes(self.wscale, other)
             if other.ndim == 1:
                 #
                 # vector @ JIT matrix
@@ -515,51 +610,66 @@ class JITCNormalR(JITNormalMatrix):
 @jax.tree_util.register_pytree_node_class
 class JITCNormalC(JITNormalMatrix):
     """
-    Just-In-Time Connectivity Homogeneous matrix with Column-oriented representation.
+    Just-In-Time Connectivity Normal distribution matrix with Column-oriented representation.
 
-    This class represents a column-oriented homogeneous sparse matrix optimized for JAX-based
-    transformations. It follows the Compressed Sparse Column (CSC) format, storing a uniform value
-    for all non-zero elements in the matrix, along with probability and seed information to
-    determine the sparse structure.
+    This class represents a column-oriented sparse matrix optimized for JAX-based
+    transformations where non-zero elements follow a normal distribution. It follows
+    the Compressed Sparse Column (CSC) format conceptually, storing location (mean) and
+    scale (standard deviation) parameters for the normal distribution, along with
+    probability and seed information to determine the sparse structure.
 
-    The column-oriented structure makes column-based operations more efficient than row-based ones,
-    making this class the transpose-oriented counterpart to JITRHomo.
+    The column-oriented structure makes column-based operations more efficient than row-based
+    ones, making this class the transpose-oriented counterpart to JITCNormalR.
 
-    Attributes:
-        weight (Union[jax.Array, u.Quantity]): The homogeneous value used for all non-zero elements
-        prob (Union[float, jax.Array]): Probability for each potential connection
-        seed (Union[int, jax.Array]): Random seed used for initialization of the sparse structure
-        shape (MatrixShape): The shape of the matrix as a tuple (rows, cols)
-        dtype: The data type of the matrix elements (property inherited from parent)
+    Attributes
+    ----------
+    wloc : Union[jax.Array, u.Quantity]
+        The location (mean) parameter of the normal distribution for non-zero elements.
+    wscale : Union[jax.Array, u.Quantity]
+        The scale (standard deviation) parameter of the normal distribution for non-zero elements.
+    prob : Union[float, jax.Array]
+        Probability for each potential connection.
+    seed : Union[int, jax.Array]
+        Random seed used for initialization of the sparse structure.
+    shape : MatrixShape
+        The shape of the matrix as a tuple (rows, cols).
+    corder : bool
+        Flag indicating the memory layout order of the matrix.
+        False (default) for Fortran-order (column-major), True for C-order (row-major).
+    dtype
+        The data type of the matrix elements (property inherited from parent).
 
-    Examples:
-        >>> import jax
-        >>> import brainunit as u
-        >>> from brainevent import JITCHomoC
-        >>>
-        >>> # Create a homogeneous matrix with value 1.5, probability 0.1, and seed 42
-        >>> normal_matrix = JITCHomoC((1.5, 0.1, 42), shape=(10, 10))
-        >>>
-        >>> # Perform matrix-vector multiplication
-        >>> vec = jax.numpy.ones(10)
-        >>> result = normal_matrix @ vec
-        >>>
-        >>> # Apply scalar operation
-        >>> scaled = normal_matrix * 2.0
-        >>>
-        >>> # Transpose to get a row-oriented matrix
-        >>> row_matrix = normal_matrix.transpose()
-        >>>
-        >>> # Convert to dense representation
-        >>> dense_matrix = normal_matrix.todense()
+    Examples
+    --------
+    >>> import jax
+    >>> import brainunit as u
+    >>> from brainevent import JITCNormalC
 
+    # Create a normal distribution matrix with mean 1.5, std 0.2, probability 0.1, and seed 42
+    >>> normal_matrix = JITCNormalC((1.5, 0.2, 0.1, 42), shape=(10, 10))
+    >>> normal_matrix
+    JITCNormalC(shape=(10, 10), wloc=1.5, wscale=0.2, prob=0.1, seed=42, corder=False)
 
-    Notes:
-        - Registered as a JAX pytree node for compatibility with JAX transformations (jit, grad, vmap)
-        - More efficient than JITRHomo for column slicing operations
-        - Compatible with all standard mathematical operations
-        - Well-suited for neural network connectivity matrices with uniform weights
-        - Optimized for neural simulations with sparse connectivity patterns
+    >>> # Perform matrix-vector multiplication
+    >>> vec = jax.numpy.ones(10)
+    >>> result = normal_matrix @ vec
+
+    >>> # Apply scalar operation
+    >>> scaled = normal_matrix * 2.0
+
+    >>> # Convert to dense representation
+    >>> dense_matrix = normal_matrix.todense()
+
+    >>> # Transpose operation returns a JITCNormalR instance
+    >>> row_matrix = normal_matrix.transpose()
+
+    Notes
+    -----
+    - JAX PyTree compatible for use with JAX transformations (jit, grad, vmap)
+    - More memory-efficient than dense matrices for sparse connectivity patterns
+    - More efficient than JITCNormalR for column-based operations
+    - Well-suited for neural network connectivity matrices with normally distributed weights
+    - Optimized for matrix-vector operations common in neural simulations
     """
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
@@ -592,8 +702,8 @@ class JITCNormalC(JITNormalMatrix):
         >>> print(dense_matrix.shape)  # (3, 10)
         """
         return float_jitc_normal_matrix(
-            self.loc,
-            self.scale,
+            self.wloc,
+            self.wscale,
             self.prob,
             self.seed,
             shape=self.shape,
@@ -643,7 +753,7 @@ class JITCNormalC(JITNormalMatrix):
         """
         assert axes is None, "transpose does not support axes argument."
         return JITCNormalR(
-            (self.loc, self.scale, self.prob, self.seed),
+            (self.wloc, self.wscale, self.prob, self.seed),
             shape=(self.shape[1], self.shape[0]),
             corder=not self.corder
         )
@@ -661,7 +771,7 @@ class JITCNormalC(JITNormalMatrix):
         )
 
     def _unitary_op(self, op) -> 'JITCNormalC':
-        return self._new_mat(op(self.loc), self.scale)
+        return self._new_mat(op(self.wloc), self.wscale)
 
     def _binary_op(self, other, op) -> 'JITCNormalC':
         if isinstance(other, JAXSparse):
@@ -669,7 +779,7 @@ class JITCNormalC(JITNormalMatrix):
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return self._new_mat(op(self.loc, other), self.scale)
+            return self._new_mat(op(self.wloc, other), self.wscale)
 
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
@@ -680,7 +790,7 @@ class JITCNormalC(JITNormalMatrix):
 
         other = u.math.asarray(other)
         if other.size == 1:
-            return self._new_mat(op(other, self.loc), self.scale)
+            return self._new_mat(op(other, self.wloc), self.wscale)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
@@ -696,8 +806,8 @@ class JITCNormalC(JITNormalMatrix):
                 # ==
                 # vector @ JITC_R matrix
                 return event_jitc_normal_matvec(
-                    self.loc,
-                    self.scale,
+                    self.wloc,
+                    self.wscale,
                     self.prob,
                     other,
                     self.seed,
@@ -710,8 +820,8 @@ class JITCNormalC(JITNormalMatrix):
                 # ==
                 # (matrix.T @ JITC_R matrix).T
                 return event_jitc_normal_matmat(
-                    self.loc,
-                    self.scale,
+                    self.wloc,
+                    self.wscale,
                     self.prob,
                     other,
                     self.seed,
@@ -724,8 +834,8 @@ class JITCNormalC(JITNormalMatrix):
 
         else:
             other = u.math.asarray(other)
-            loc, other = u.math.promote_dtypes(self.loc, other)
-            scale, other = u.math.promote_dtypes(self.scale, other)
+            loc, other = u.math.promote_dtypes(self.wloc, other)
+            scale, other = u.math.promote_dtypes(self.wscale, other)
             if other.ndim == 1:
                 # JITC_R matrix.T @ vector
                 # ==
@@ -770,8 +880,8 @@ class JITCNormalC(JITNormalMatrix):
                 # JITC_R matrix @ vector
                 #
                 return event_jitc_normal_matvec(
-                    self.loc,
-                    self.scale,
+                    self.wloc,
+                    self.wscale,
                     self.prob,
                     other,
                     self.seed,
@@ -786,8 +896,8 @@ class JITCNormalC(JITNormalMatrix):
                 # (JITC_R matrix @ matrix.T).T
                 #
                 r = event_jitc_normal_matmat(
-                    self.loc,
-                    self.scale,
+                    self.wloc,
+                    self.wscale,
                     self.prob,
                     other.T,
                     self.seed,
@@ -801,8 +911,8 @@ class JITCNormalC(JITNormalMatrix):
 
         else:
             other = u.math.asarray(other)
-            loc, other = u.math.promote_dtypes(self.loc, other)
-            scale, other = u.math.promote_dtypes(self.scale, other)
+            loc, other = u.math.promote_dtypes(self.wloc, other)
+            scale, other = u.math.promote_dtypes(self.wscale, other)
             if other.ndim == 1:
                 #
                 # vector @ JITC_R matrix.T

@@ -42,6 +42,37 @@ __all__ = [
 
 
 class JITUniformMatrix(JITCMatrix):
+    """
+    Base class for Just-In-Time Connectivity Uniform Distribution matrices.
+
+    This abstract class serves as the foundation for sparse matrix representations
+    that use uniformly distributed weights with stochastic connectivity patterns.
+    It stores lower and upper bounds for the uniform distribution, along with
+    connectivity probability and a random seed that determines the sparse structure.
+
+    Designed for efficient representation of neural connectivity matrices where
+    connections follow a uniform distribution but are sparsely distributed.
+
+    Attributes
+    ----------
+    wlow : Union[jax.Array, u.Quantity]
+        The lower bound of the uniform distribution for non-zero elements.
+        Can be a plain JAX array or a quantity with units.
+    whigh : Union[jax.Array, u.Quantity]
+        The upper bound of the uniform distribution for non-zero elements.
+        Can be a plain JAX array or a quantity with units.
+    prob : Union[float, jax.Array]
+        Connection probability determining the sparsity of the matrix.
+        Values range from 0 (no connections) to 1 (fully connected).
+    seed : Union[int, jax.Array]
+        Random seed controlling the specific pattern of connections.
+        Using the same seed produces identical connectivity patterns.
+    shape : MatrixShape
+        Tuple specifying the dimensions of the matrix as (rows, columns).
+    corder : bool
+        Flag indicating the memory layout order of the matrix.
+        False (default) for Fortran-order (column-major), True for C-order (row-major).
+    """
     wlow: Union[jax.Array, u.Quantity]
     whigh: Union[jax.Array, u.Quantity]
     prob: Union[float, jax.Array]
@@ -56,6 +87,31 @@ class JITUniformMatrix(JITCMatrix):
         shape: MatrixShape,
         corder: bool = False,
     ):
+        """
+        Initialize a uniform distribution sparse matrix.
+
+        Parameters
+        ----------
+        data : Tuple[WeightScalar, WeightScalar, Prob, Seed]
+            A tuple containing four elements:
+            - low: Lower bound of the uniform distribution
+            - high: Upper bound of the uniform distribution
+            - prob: Connection probability determining matrix sparsity
+            - seed: Random seed for reproducible sparse structure generation
+        shape : MatrixShape
+            The shape of the matrix as a tuple (rows, columns).
+        corder : bool, optional
+            Memory layout order flag, by default False.
+            - False: Fortran-order (column-major)
+            - True: C-order (row-major)
+
+        Notes
+        -----
+        The constructor extracts the components from the data tuple and sets them
+        as instance attributes. The weight parameters are promoted to have compatible
+        dtypes and are verified to have matching dimensions before being converted
+        to JAX arrays, preserving any attached units.
+        """
         low, high, self.prob, self.seed = data
         low, high = u.math.promote_dtypes(low, high)
         u.fail_for_dimension_mismatch(low, high, "loc and scale must have the same dimension.")
@@ -65,6 +121,21 @@ class JITUniformMatrix(JITCMatrix):
         super().__init__(data, shape=shape)
 
     def __repr__(self):
+        """
+        Return a string representation of the uniform distribution matrix.
+
+        Returns
+        -------
+        str
+            A string showing the class name, shape, lower bound, upper bound,
+            probability, seed, and corder flag of the matrix instance.
+
+        Examples
+        --------
+        >>> matrix = JITUniformMatrix((0.1, 0.5, 0.2, 42), shape=(10, 10))
+        >>> repr(matrix)
+        'JITUniformMatrix(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42, corder=False)'
+        """
         return (
             f"{self.__class__.__name__}("
             f"shape={self.shape}, "
@@ -77,6 +148,19 @@ class JITUniformMatrix(JITCMatrix):
 
     @property
     def dtype(self):
+        """
+        Get the data type of the matrix elements.
+
+        Returns
+        -------
+        dtype
+            The data type of the lower bound values in the matrix.
+
+        Notes
+        -----
+        This property inherits the dtype directly from the wlow attribute,
+        ensuring consistent data typing throughout operations involving this matrix.
+        """
         return self.wlow.dtype
 
     @property
@@ -104,10 +188,48 @@ class JITUniformMatrix(JITCMatrix):
         """
         Create a new matrix instance with updated weight data but preserving other properties.
 
-        This method returns a new instance of the same class with the provided weight value,
-        while keeping the same probability, seed, shape, and other configuration parameters.
-        It's useful for updating weights without changing the connectivity pattern.
+        This method returns a new instance of the same class with the provided lower and
+        upper bound values, while keeping the same probability, seed, shape, and other
+        configuration parameters. It's useful for updating weight bounds without changing
+        the connectivity pattern.
 
+        Parameters
+        ----------
+        low : WeightScalar
+            New lower bound value for the uniform distribution. Must have the same shape
+            and units as the original lower bound.
+        high : WeightScalar
+            New upper bound value for the uniform distribution. Must have the same shape
+            and units as the original upper bound.
+
+        Returns
+        -------
+        JITUniformMatrix
+            A new matrix instance of the same type as the original, with updated
+            lower and upper bounds but identical connectivity structure.
+
+        Raises
+        ------
+        AssertionError
+            If the shapes of the provided bounds don't match the shapes of the original bounds,
+            or if the units of the provided bounds don't match the units of the original bounds.
+
+        Examples
+        --------
+        >>> import jax
+        >>> import brainunit as u
+        >>> from brainevent import JITCUniformR
+        >>>
+        >>> # Create original matrix
+        >>> original = JITCUniformR((0.1, 0.5, 0.2, 42), shape=(10, 10))
+        >>>
+        >>> # Create new matrix with updated bounds
+        >>> updated = original.with_data(0.2, 0.8)
+        >>> print(updated.wlow, updated.whigh)  # 0.2 0.8
+        >>>
+        >>> # With units
+        >>> original_units = JITCUniformR((0.1 * u.mV, 0.5 * u.mV, 0.2, 42), shape=(10, 10))
+        >>> updated_units = original_units.with_data(0.2 * u.mV, 0.8 * u.mV)
         """
         low = u.math.asarray(low)
         high = u.math.asarray(high)
@@ -190,55 +312,90 @@ class JITUniformMatrix(JITCMatrix):
 @jax.tree_util.register_pytree_node_class
 class JITCUniformR(JITUniformMatrix):
     """
-    Just-In-Time Connectivity Homogeneous matrix with Row-oriented representation.
+    Just-In-Time Connectivity matrix with Row-oriented representation for uniform weight distributions.
 
-    This class represents a row-oriented homogeneous sparse matrix optimized for JAX-based
-    transformations. It follows the Compressed Sparse Row (CSR) format, storing a uniform value
-    for all non-zero elements in the matrix, along with probability and seed information to
+    This class implements a row-oriented sparse matrix optimized for JAX-based transformations,
+    following the Compressed Sparse Row (CSR) format conceptually. Instead of storing all non-zero
+    elements explicitly, it uses a uniform distribution with lower and upper bounds (wlow, whigh)
+    to generate weights for connections, along with probability and seed information to
     determine the sparse structure.
 
     The class is designed for efficient neural network connectivity patterns where weights
-    are homogeneous but connectivity is sparse and stochastic.
+    follow a uniform distribution but connectivity is sparse and stochastic. The actual sparse
+    structure and uniform weight values are generated just-in-time during operations.
 
     Attributes
     ----------
-    weight (Union[jax.Array, u.Quantity]): The homogeneous value used for all non-zero elements
-    prob (Union[float, jax.Array]): Probability for each potential connection
-    seed (Union[int, jax.Array]): Random seed used for initialization of the sparse structure
-    shape (MatrixShape): The shape of the matrix as a tuple (rows, cols)
-    dtype: The data type of the matrix elements (property inherited from parent)
+    wlow : Union[jax.Array, u.Quantity]
+        The lower bound of the uniform distribution for non-zero elements.
+        Can be a plain JAX array or a quantity with units.
+    whigh : Union[jax.Array, u.Quantity]
+        The upper bound of the uniform distribution for non-zero elements.
+        Can be a plain JAX array or a quantity with units.
+    prob : Union[float, jax.Array]
+        Connection probability determining the sparsity of the matrix.
+        Values range from 0 (no connections) to 1 (fully connected).
+    seed : Union[int, jax.Array]
+        Random seed controlling the specific pattern of connections.
+        Using the same seed produces identical connectivity patterns.
+    shape : MatrixShape
+        Tuple specifying the dimensions of the matrix as (rows, columns).
+    corder : bool
+        Flag indicating the memory layout order of the matrix.
+        False (default) for Fortran-order (column-major), True for C-order (row-major).
+    dtype
+        The data type of the matrix elements (property inherited from parent).
 
     Examples
     --------
-
     >>> import jax
     >>> import brainunit as u
-    >>> from brainevent import JITCHomoR
+    >>> from brainevent import JITCUniformR
 
-    # Create a homogeneous matrix with value 1.5, probability 0.1, and seed 42
-    >>> uniform_matrix = JITCHomoR((1.5, 0.1, 42), shape=(10, 10))
+    # Create a uniform matrix with bounds [0.1, 0.5], probability 0.2, and seed 42
+    >>> uniform_matrix = JITCUniformR((0.1, 0.5, 0.2, 42), shape=(10, 10))
     >>> uniform_matrix
-    JITCHomoR(shape=(10, 10), dtype=float32, weight=1.5, prob=0.1, seed=42)
+    JITCUniformR(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42, corder=False)
 
-    >>> # Perform matrix-vector multiplication
+    # Create a uniform matrix with units
+    >>> uniform_matrix_mv = JITCUniformR((0.1 * u.mV, 0.5 * u.mV, 0.2, 42), shape=(10, 10))
+
+    # Perform matrix-vector multiplication
     >>> vec = jax.numpy.ones(10)
     >>> result = uniform_matrix @ vec
+    >>> # Each element in result is a weighted sum using uniformly distributed weights
 
-    >>> # Apply scalar operation
+    # Apply scalar operation (scales both lower and upper bounds)
     >>> scaled = uniform_matrix * 2.0
-    >>>
-    >>> # Convert to dense representation
+    >>> print(scaled.wlow, scaled.whigh)  # 0.2 1.0
+
+    # Convert to dense representation
     >>> dense_matrix = uniform_matrix.todense()
-    >>>
-    >>> # Transpose operation returns a JITCHomo instance
+    >>> # dense_matrix has shape (10, 10) with ~20% non-zero elements
+    >>> # each non-zero element is uniformly distributed between 0.1 and 0.5
+
+    # Transpose operation returns a JITCUniformC instance
     >>> col_matrix = uniform_matrix.transpose()
+    >>> isinstance(col_matrix, JITCUniformC)  # True
+
+    # Update bounds while preserving connectivity pattern
+    >>> updated = uniform_matrix.with_data(0.2, 0.8)
+    >>> print(updated.wlow, updated.whigh)  # 0.2 0.8
+
+    # Use with JAX transformations
+    >>> @jax.jit
+    ... def matrix_vector_product(mat, vec):
+    ...     return mat @ vec
+    >>> result_jit = matrix_vector_product(uniform_matrix, vec)
 
     Notes
     -----
     - JAX PyTree compatible for use with JAX transformations (jit, grad, vmap)
     - More memory-efficient than dense matrices for sparse connectivity patterns
-    - Well-suited for neural network connectivity matrices with uniform weights
+    - Well-suited for neural network connectivity matrices with uniformly distributed weights
     - Optimized for matrix-vector operations common in neural simulations
+    - The actual matrix elements are never explicitly stored, only generated during operations
+    - Using the same seed always produces the same random connectivity pattern and weights
     """
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
@@ -515,53 +672,103 @@ class JITCUniformR(JITUniformMatrix):
 @jax.tree_util.register_pytree_node_class
 class JITCUniformC(JITUniformMatrix):
     """
-    Just-In-Time Connectivity Homogeneous matrix with Column-oriented representation.
+    Just-In-Time Connectivity matrix with Column-oriented representation for uniform weight distributions.
 
-    This class represents a column-oriented homogeneous sparse matrix optimized for JAX-based
-    transformations. It follows the Compressed Sparse Column (CSC) format, storing a uniform value
-    for all non-zero elements in the matrix, along with probability and seed information to
+    This class implements a column-oriented sparse matrix optimized for JAX-based transformations,
+    following the Compressed Sparse Column (CSC) format conceptually. Instead of storing all non-zero
+    elements explicitly, it uses a uniform distribution with lower and upper bounds (wlow, whigh)
+    to generate weights for connections, along with probability and seed information to
     determine the sparse structure.
 
-    The column-oriented structure makes column-based operations more efficient than row-based ones,
-    making this class the transpose-oriented counterpart to JITRHomo.
+    The class is designed for efficient neural network connectivity patterns where weights
+    follow a uniform distribution but connectivity is sparse and stochastic. The column-oriented
+    structure makes column-based operations more efficient than row-based ones, making this class
+    the transpose-oriented counterpart to JITCUniformR.
 
-    Attributes:
-        weight (Union[jax.Array, u.Quantity]): The homogeneous value used for all non-zero elements
-        prob (Union[float, jax.Array]): Probability for each potential connection
-        seed (Union[int, jax.Array]): Random seed used for initialization of the sparse structure
-        shape (MatrixShape): The shape of the matrix as a tuple (rows, cols)
-        dtype: The data type of the matrix elements (property inherited from parent)
+    Attributes
+    ----------
+    wlow : Union[jax.Array, u.Quantity]
+        The lower bound of the uniform distribution for non-zero elements.
+        Can be a plain JAX array or a quantity with units.
+    whigh : Union[jax.Array, u.Quantity]
+        The upper bound of the uniform distribution for non-zero elements.
+        Can be a plain JAX array or a quantity with units.
+    prob : Union[float, jax.Array]
+        Connection probability determining the sparsity of the matrix.
+        Values range from 0 (no connections) to 1 (fully connected).
+    seed : Union[int, jax.Array]
+        Random seed controlling the specific pattern of connections.
+        Using the same seed produces identical connectivity patterns.
+    shape : MatrixShape
+        Tuple specifying the dimensions of the matrix as (rows, columns).
+    corder : bool
+        Flag indicating the memory layout order of the matrix.
+        False (default) for Fortran-order (column-major), True for C-order (row-major).
+    dtype
+        The data type of the matrix elements (property inherited from parent).
 
-    Examples:
-        >>> import jax
-        >>> import brainunit as u
-        >>> from brainevent import JITCHomoC
-        >>>
-        >>> # Create a homogeneous matrix with value 1.5, probability 0.1, and seed 42
-        >>> uniform_matrix = JITCHomoC((1.5, 0.1, 42), shape=(10, 10))
-        >>>
-        >>> # Perform matrix-vector multiplication
-        >>> vec = jax.numpy.ones(10)
-        >>> result = uniform_matrix @ vec
-        >>>
-        >>> # Apply scalar operation
-        >>> scaled = uniform_matrix * 2.0
-        >>>
-        >>> # Transpose to get a row-oriented matrix
-        >>> row_matrix = uniform_matrix.transpose()
-        >>>
-        >>> # Convert to dense representation
-        >>> dense_matrix = uniform_matrix.todense()
+    Examples
+    --------
+    >>> import jax
+    >>> import brainunit as u
+    >>> from brainevent import JITCUniformC
 
+    # Create a uniform matrix with bounds [0.1, 0.5], probability 0.2, and seed 42
+    >>> uniform_matrix = JITCUniformC((0.1, 0.5, 0.2, 42), shape=(10, 10))
+    >>> uniform_matrix
+    JITCUniformC(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42, corder=False)
 
-    Notes:
-        - Registered as a JAX pytree node for compatibility with JAX transformations (jit, grad, vmap)
-        - More efficient than JITRHomo for column slicing operations
-        - Compatible with all standard mathematical operations
-        - Well-suited for neural network connectivity matrices with uniform weights
-        - Optimized for neural simulations with sparse connectivity patterns
+    # Create a uniform matrix with units
+    >>> uniform_matrix_mv = JITCUniformC((0.1 * u.mV, 0.5 * u.mV, 0.2, 42), shape=(10, 10))
+
+    # Perform matrix-vector multiplication
+    >>> vec = jax.numpy.ones(10)
+    >>> result = uniform_matrix @ vec
+    >>> # Each element in result is a weighted sum using uniformly distributed weights
+
+    # Apply scalar operation (scales both lower and upper bounds)
+    >>> scaled = uniform_matrix * 2.0
+    >>> print(scaled.wlow, scaled.whigh)  # 0.2 1.0
+
+    # Convert to dense representation
+    >>> dense_matrix = uniform_matrix.todense()
+    >>> # dense_matrix has shape (10, 10) with ~20% non-zero elements
+    >>> # each non-zero element is uniformly distributed between 0.1 and 0.5
+
+    # Transpose operation returns a JITCUniformR instance
+    >>> row_matrix = uniform_matrix.transpose()
+    >>> isinstance(row_matrix, JITCUniformR)  # True
+
+    # Update bounds while preserving connectivity pattern
+    >>> updated = uniform_matrix.with_data(0.2, 0.8)
+    >>> print(updated.wlow, updated.whigh)  # 0.2 0.8
+
+    # Use with JAX transformations
+    >>> @jax.jit
+    ... def matrix_vector_product(mat, vec):
+    ...     return mat @ vec
+    >>> result_jit = matrix_vector_product(uniform_matrix, vec)
+
+    # Matrix-matrix multiplication
+    >>> mat = jax.numpy.ones((10, 5))
+    >>> result_mat = uniform_matrix @ mat
+    >>> result_mat.shape  # (10, 5)
+
+    # Right matrix multiplication
+    >>> mat = jax.numpy.ones((5, 10))
+    >>> result_rmat = mat @ uniform_matrix
+    >>> result_rmat.shape  # (5, 10)
+
+    Notes
+    -----
+    - JAX PyTree compatible for use with JAX transformations (jit, grad, vmap)
+    - More memory-efficient than dense matrices for sparse connectivity patterns
+    - Well-suited for neural network connectivity matrices with uniformly distributed weights
+    - The column-oriented structure makes column-slicing operations more efficient
+    - Optimized for matrix-vector operations common in neural simulations
+    - The actual matrix elements are never explicitly stored, only generated during operations
+    - Using the same seed always produces the same random connectivity pattern and weights
     """
-
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """
         Converts the sparse column-oriented homogeneous matrix to dense format.
