@@ -383,7 +383,8 @@ class CSR(u.sparse.SparseMatrix):
                     self.indices,
                     self.indptr,
                     other,
-                    shape=self.shape
+                    shape=self.shape,
+                    transpose=False
                 )
             elif other.ndim == 2:
                 return _csr_matmat(
@@ -391,7 +392,8 @@ class CSR(u.sparse.SparseMatrix):
                     self.indices,
                     self.indptr,
                     other,
-                    shape=self.shape
+                    shape=self.shape,
+                    transpose=False
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")

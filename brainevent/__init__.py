@@ -22,67 +22,60 @@ from ._csr import CSR, CSC
 from ._csrlb import CSR_LB, CSC_LB
 from ._event import EventArray
 from ._fixed_conn_num import FixedPostNumConn, FixedPreNumConn
-from ._jitc_csr import JITC_CSR, JITC_CSC
+from ._jitc_homo import JITCHomoR, JITCHomoC
+from ._jitc_normal import JITCNormalR, JITCNormalC
+from ._jitc_uniform import JITCUniformR, JITCUniformC
 from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_jvp import defjvp
-from ._xla_custom_op_numba import NumbaKernelGenerator, set_numba_environ
+from ._xla_custom_op_numba import NumbaKernelGenerator, set_numba_environ, numba_environ_context
 from ._xla_custom_op_pallas import PallasKernelGenerator
+from ._xla_custom_op_util import defjvp, general_batching_rule
 from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type
 
 __all__ = [
-    # events
+
+    # --- data representing events --- #
     'EventArray',
 
-    # data structures
+    # --- data interoperable with events --- #
     'COO',
-    'CSR', 'CSC',
-    'CSR_LB', 'CSC_LB',
-    'JITC_CSR', 'JITC_CSC',
+    'CSR',
+    'CSC',
+    'CSR_LB',
+    'CSC_LB',
+
+    # Just-In-Time Connectivity matrix
+    'JITCHomoR',  # row-oriented
+    'JITCHomoC',  # column-oriented
+    'JITCNormalR',  # row-oriented
+    'JITCNormalC',  # column-oriented
+    'JITCUniformR',  # row-oriented
+    'JITCUniformC',  # column-oriented
+
+    # --- block data --- #
     'BlockCSR',
     'BlockELL',
     'FixedPreNumConn',
     'FixedPostNumConn',
 
-    # kernels
-    'XLACustomKernel', 'defjvp',
-    'NumbaKernelGenerator', 'numba_environ_context',
-    'WarpKernelGenerator',
-    'PallasKernelGenerator',
-    'dtype_to_warp_type',
-]
+    # --- operator customization routines --- #
 
-# def __getattr(name):
-#     """
-#     Custom attribute lookup function for lazy-loading modules.
-#
-#     This function implements lazy loading for the 'nn' submodule. When the
-#     'nn' attribute is accessed for the first time, this function dynamically
-#     imports the module and returns it, avoiding unnecessary imports at startup.
-#
-#     Parameters
-#     ----------
-#     name : str
-#         Name of the attribute being accessed.
-#
-#     Returns
-#     -------
-#     module
-#         The requested module if it exists.
-#
-#     Raises
-#     ------
-#     AttributeError
-#         If the requested attribute does not exist in the brainevent package.
-#     """
-#     if name == 'nn':
-#         # Import the module directly from its actual location
-#         # instead of from the brainevent package
-#         import brainevent.nn as nn
-#         return nn
-#     raise AttributeError(f"brainevent has no attribute {name!r}")
-#
-#
-# # Register the getattr function as the module's __getattr__ hook
-# # This enables Python's attribute lookup mechanism to call our custom function
-# # when an undefined attribute is accessed
-# __getattr__ = __getattr
+    # 1. Custom kernel
+    'XLACustomKernel',
+
+    # 2. utilities
+    'defjvp',
+    'general_batching_rule',
+
+    # 3. Numba kernel
+    'NumbaKernelGenerator',
+    'set_numba_environ',
+    'numba_environ_context',
+
+    # 4. Warp kernel
+    'WarpKernelGenerator',
+    'dtype_to_warp_type',
+
+    # 5. Pallas kernel
+    'PallasKernelGenerator',
+
+]

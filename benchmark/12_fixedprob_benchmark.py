@@ -63,15 +63,14 @@ import jax
 # jax.config.update('jax_cpu_enable_async_dispatch', False)
 
 import time
-import brainstate as bst
-import brainevent
+import brainstate
 
 # brainstate.environ.set(platform='cpu')
 
 
 def forward(n_pre, n_post, conn_prob, spk_prob, as_float: bool):
-    linear = brainevent.FixedProb(n_pre, n_post, prob=conn_prob, weight=bst.init.Normal())
-    spike = (bst.random.rand(n_pre) < spk_prob)
+    linear = brainstate.nn.EventFixedProb(n_pre, n_post, conn_num=conn_prob, conn_weight=brainstate.init.Normal())
+    spike = (brainstate.random.rand(n_pre) < spk_prob)
 
     if as_float:
         spike = spike.astype(float)
@@ -80,7 +79,7 @@ def forward(n_pre, n_post, conn_prob, spk_prob, as_float: bool):
     def f1(spike):
         return linear(spike)
 
-    weight = bst.init.Normal()([n_pre, n_post])
+    weight = brainstate.init.Normal()([n_pre, n_post])
 
     @jax.jit
     def f2(spike):
@@ -105,7 +104,7 @@ def forward(n_pre, n_post, conn_prob, spk_prob, as_float: bool):
     print('Acceleration ratio:', r2 / r1 - 1.)
 
     print()
-    bst.util.clear_buffer_memory()
+    brainstate.util.clear_buffer_memory()
 
 
 def benchmark_forward():
