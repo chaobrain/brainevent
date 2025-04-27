@@ -23,6 +23,7 @@ from jax.dtypes import canonicalize_dtype
 from jax.tree_util import register_pytree_node_class
 
 from ._error import MathError
+from ._event_vector_impl import event_mv
 
 __all__ = [
     'EventArray',
@@ -47,7 +48,7 @@ def _as_array(obj):
 
 
 def _known_type(x):
-    return isinstance(x, (u.Quantity, jax.Array, np.ndarray))
+    return isinstance(x, (u.Quantity, jax.Array, np.ndarray, EventArray))
 
 
 ArrayLike = Union[jax.Array, np.ndarray, u.Quantity]
@@ -173,6 +174,7 @@ class EventArray(object):
         """
         self.value = value
 
+    @property
     def ndim(self):
         """Return the number of dimensions (rank) of the array.
 
@@ -187,6 +189,7 @@ class EventArray(object):
         """
         return self.value.ndim
 
+    @property
     def dtype(self):
         """Return the data type of the array's elements.
 
@@ -199,6 +202,7 @@ class EventArray(object):
         """
         return _get_dtype(self._value)
 
+    @property
     def shape(self):
         """Return the dimensions of the array as a tuple.
 
@@ -771,7 +775,18 @@ class EventArray(object):
             The result of the matrix multiplication.
         """
         if _known_type(oc):
-            return self.value @ _as_array(oc)
+            oc = _as_array(oc)
+            if self.ndim == 0:
+                return self.value @ oc
+            elif self.ndim == 1:
+                return event_mv(oc, self.value, transpose=True)
+            elif self.ndim == 2:
+                return event_mm(oc, self.value.T, transpose=True).T
+            else:
+                raise MathError(
+                    f"Matrix multiplication is only supported for 1D and 2D arrays. "
+                    f"Got {self.ndim}D array."
+                )
         else:
             return oc.__rmatmul__(self)
 
@@ -786,7 +801,18 @@ class EventArray(object):
             The result of the matrix multiplication.
         """
         if _known_type(oc):
-            return _as_array(oc) @ self.value
+            oc = _as_array(oc)
+            if self.ndim == 0:
+                return oc @ self.value
+            elif self.ndim == 1:
+                return event_mv(oc, self.value, transpose=False)
+            elif self.ndim == 2:
+                return event_mm(oc, self.value, transpose=False)
+            else:
+                raise MathError(
+                    f"Matrix multiplication is only supported for 1D and 2D arrays. "
+                    f"Got {self.ndim}D array."
+                )
         else:
             return oc.__matmul__(self)
 
@@ -802,7 +828,7 @@ class EventArray(object):
         """
         # a @= b
         if _known_type(oc):
-            self.value = self.value @ _as_array(oc)
+            self.value = self.__matmul__(oc)
         else:
             self.value = oc.__rmatmul__(self)
         return self

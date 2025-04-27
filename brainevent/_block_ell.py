@@ -75,7 +75,7 @@ class BlockELL(u.sparse.SparseMatrix):
         return _sdd_todense(self)
 
     @classmethod
-    def fromdense(cls, dense: jax.Array, *, block_size) -> 'BlockCSR':
+    def fromdense(cls, dense: jax.Array, *, block_size) -> 'BlockELL':
         nrows, ncols = dense.shape
         n, m = block_size
         assert nrows % n == 0
@@ -217,7 +217,11 @@ def native_sdd_matmul(
 
 
 def sample_sparse_matrix(
-    m, n, bm, bn, *,
+    m,
+    n,
+    bm,
+    bn,
+    *,
     sparse_prob=0.2,
     dtype=jnp.float32
 ) -> BlockELL:
