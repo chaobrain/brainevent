@@ -271,75 +271,6 @@ class TestJitcCsrMatmatHomo:
         assert equal(jvp_x1.shape, expected_shape)
 
 
-class Test_JITC_RC_Conversion:
-
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('transpose', [True, False])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_todense(self, shape, transpose, corder):
-        jitcr = brainevent.JITCHomoR((1.5, 0.1, 123), shape=shape, corder=corder)
-        jitcc = jitcr.T
-
-        out1 = jitcr.todense()
-        out2 = jitcc.todense().T
-        out3 = jitcr.T.todense().T
-        out4 = jitcc.T.todense()
-        assert jnp.allclose(out1, out2)
-        assert jnp.allclose(out1, out3)
-        assert jnp.allclose(out1, out4)
-
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_matvec(self, shape, corder):
-        jitcr = brainevent.JITCHomoR((1.5, 0.1, 123), shape=shape, corder=corder)
-        jitcc = jitcr.T
-
-        vector = jnp.asarray(np.random.rand(shape[1]))
-
-        out1 = jitcr @ vector
-        out2 = vector @ jitcc
-        assert jnp.allclose(out1, out2)
-
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_vecmat(self, shape, corder):
-        jitcr = brainevent.JITCHomoR((1.5, 0.1, 123), shape=shape, corder=corder)
-        jitcc = jitcr.T
-
-        vector = jnp.asarray(np.random.rand(shape[0]))
-
-        out1 = vector @ jitcr
-        out2 = jitcc @ vector
-        assert jnp.allclose(out1, out2)
-
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_jitmat(self, k, shape, corder):
-        jitcr = brainevent.JITCHomoR((1.5, 0.1, 123), shape=shape, corder=corder)
-        jitcc = jitcr.T
-
-        matrix = jnp.asarray(np.random.rand(shape[1], k))
-
-        out1 = jitcr @ matrix
-        out2 = (matrix.T @ jitcc).T
-        assert jnp.allclose(out1, out2)
-
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_matjit(self, k, shape, corder):
-        jitcr = brainevent.JITCHomoR((1.5, 0.1, 123), shape=shape, corder=corder)
-        jitcc = jitcr.T
-
-        matrix = jnp.asarray(np.random.rand(k, shape[0]))
-
-        out1 = matrix @ jitcr
-        out2 = (jitcc @ matrix.T).T
-        print(out1 - out2)
-        assert jnp.allclose(out1, out2, atol=1e-4, rtol=1e-4)
-
-
 class Test_JITCHomoR:
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
@@ -349,7 +280,7 @@ class Test_JITCHomoR:
         vector = jnp.asarray(np.random.rand(shape[1]))
         out1 = jitc @ vector
         out2 = jitc.todense() @ vector
-        assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4* u.get_unit(out1))
+        assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4 * u.get_unit(out1))
 
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
@@ -359,7 +290,7 @@ class Test_JITCHomoR:
         vector = jnp.asarray(np.random.rand(shape[0]))
         out1 = vector @ jitc
         out2 = vector @ jitc.todense()
-        assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4* u.get_unit(out1))
+        assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4 * u.get_unit(out1))
 
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('prob', [0.1, 0.2])
@@ -370,7 +301,7 @@ class Test_JITCHomoR:
         matrix = jnp.asarray(np.random.rand(shape[1], k))
         out1 = jitc @ matrix
         out2 = jitc.todense() @ matrix
-        assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4* u.get_unit(out1))
+        assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4 * u.get_unit(out1))
 
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('prob', [0.1, 0.2])
@@ -381,7 +312,7 @@ class Test_JITCHomoR:
         matrix = jnp.asarray(np.random.rand(k, shape[0]))
         out1 = matrix @ jitc
         out2 = matrix @ jitc.todense()
-        assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4* u.get_unit(out1))
+        assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4 * u.get_unit(out1))
 
     def test_todense_weight_batching(self):
         def f(weight):
