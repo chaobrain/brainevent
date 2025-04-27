@@ -64,8 +64,8 @@ class JITUniformMatrix(JITCMatrix):
         return (
             f"{self.__class__.__name__}("
             f"shape={self.shape}, "
-            f"loc={self.wlow}, "
-            f"scale={self.whigh}, "
+            f"wlow={self.wlow}, "
+            f"whigh={self.whigh}, "
             f"prob={self.prob}, "
             f"seed={self.seed}, "
             f"corder={self.corder})"

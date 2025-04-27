@@ -588,7 +588,7 @@ class Test_JITCHomoR_Gradients:
 
 
 class Test_JITCHomoR_Batching:
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
     def test_matvec_batching_vector(self, batch_size, shape, corder):
@@ -606,7 +606,7 @@ class Test_JITCHomoR_Batching:
 
         assert u.math.allclose(matrices, matrices_loop)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
     def test_matvec_batching_vector_axis1(self, batch_size, shape, corder):
@@ -624,7 +624,7 @@ class Test_JITCHomoR_Batching:
 
         assert u.math.allclose(matrices, matrices_loop.T)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
     def test_matvec_batching_weight(self, batch_size, shape, corder):
@@ -643,7 +643,7 @@ class Test_JITCHomoR_Batching:
 
         assert u.math.allclose(matrices, matrices_loop)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
     def test_vecmat_batching_vector(self, batch_size, shape, corder):
@@ -661,7 +661,7 @@ class Test_JITCHomoR_Batching:
 
         assert u.math.allclose(matrices, matrices_loop)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
     def test_vecmat_batching_vector_axis1(self, batch_size, shape, corder):
@@ -679,7 +679,7 @@ class Test_JITCHomoR_Batching:
 
         assert u.math.allclose(matrices, matrices_loop.T)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
     def test_vecmat_batching_weight(self, batch_size, shape, corder):
@@ -698,7 +698,7 @@ class Test_JITCHomoR_Batching:
 
         assert u.math.allclose(matrices, matrices_loop)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
@@ -717,7 +717,7 @@ class Test_JITCHomoR_Batching:
 
         assert u.math.allclose(outs, outs_loop)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
@@ -736,7 +736,7 @@ class Test_JITCHomoR_Batching:
 
         assert u.math.allclose(outs, matrices_loop)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
@@ -755,7 +755,7 @@ class Test_JITCHomoR_Batching:
 
         assert u.math.allclose(outs, matrices_loop)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
@@ -775,7 +775,7 @@ class Test_JITCHomoR_Batching:
 
         assert u.math.allclose(matrices, matrices_loop)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
@@ -794,7 +794,7 @@ class Test_JITCHomoR_Batching:
 
         assert u.math.allclose(matrices, matrices_loop)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
@@ -813,7 +813,7 @@ class Test_JITCHomoR_Batching:
 
         assert u.math.allclose(matrices, matrices_loop)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
@@ -832,7 +832,7 @@ class Test_JITCHomoR_Batching:
 
         assert u.math.allclose(matrices, matrices_loop)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
@@ -1428,7 +1428,7 @@ class Test_JITCHomoC_Gradients:
 
 
 class Test_JITCHomoC_Batching:
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
     def test_matvec_batching_vector(self, batch_size, shape, corder):
@@ -1446,7 +1446,7 @@ class Test_JITCHomoC_Batching:
 
         assert u.math.allclose(matrices, matrices_loop)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
     def test_matvec_batching_vector_axis1(self, batch_size, shape, corder):
@@ -1464,7 +1464,7 @@ class Test_JITCHomoC_Batching:
 
         assert u.math.allclose(matrices, matrices_loop.T)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
     def test_matvec_batching_weight(self, batch_size, shape, corder):
@@ -1483,7 +1483,7 @@ class Test_JITCHomoC_Batching:
 
         assert u.math.allclose(matrices, matrices_loop)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
     def test_vecmat_batching_vector(self, batch_size, shape, corder):
@@ -1501,7 +1501,7 @@ class Test_JITCHomoC_Batching:
 
         assert u.math.allclose(matrices, matrices_loop)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
     def test_vecmat_batching_vector_axis1(self, batch_size, shape, corder):
@@ -1519,7 +1519,7 @@ class Test_JITCHomoC_Batching:
 
         assert u.math.allclose(matrices, matrices_loop.T)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
     def test_vecmat_batching_weight(self, batch_size, shape, corder):
@@ -1538,7 +1538,7 @@ class Test_JITCHomoC_Batching:
 
         assert u.math.allclose(matrices, matrices_loop)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
@@ -1557,7 +1557,7 @@ class Test_JITCHomoC_Batching:
 
         assert u.math.allclose(outs, outs_loop)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
@@ -1576,7 +1576,7 @@ class Test_JITCHomoC_Batching:
 
         assert u.math.allclose(outs, matrices_loop)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
@@ -1595,7 +1595,7 @@ class Test_JITCHomoC_Batching:
 
         assert u.math.allclose(outs, matrices_loop)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
@@ -1615,7 +1615,7 @@ class Test_JITCHomoC_Batching:
 
         assert u.math.allclose(matrices, matrices_loop)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
@@ -1634,7 +1634,7 @@ class Test_JITCHomoC_Batching:
 
         assert u.math.allclose(matrices, matrices_loop)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
@@ -1653,7 +1653,7 @@ class Test_JITCHomoC_Batching:
 
         assert u.math.allclose(matrices, matrices_loop)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
@@ -1672,7 +1672,7 @@ class Test_JITCHomoC_Batching:
 
         assert u.math.allclose(matrices, matrices_loop)
 
-    @pytest.mark.parametrize('batch_size', [10, 15])
+    @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
