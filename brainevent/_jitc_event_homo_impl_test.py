@@ -18,13 +18,12 @@ import os
 
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
+import brainevent
 import brainstate
 import brainunit as u
 import jax
 import jax.numpy as jnp
 import pytest
-
-import brainevent
 
 
 def gen_events(shape, prob=0.5, asbool=True):
@@ -38,11 +37,11 @@ def ones_like(x):
     return jax.tree.map(jnp.ones_like, x)
 
 
-
 def allclose(x, y, rtol=1e-4, atol=1e-4):
     x = x.data if isinstance(x, brainevent.EventArray) else x
     y = y.data if isinstance(y, brainevent.EventArray) else y
     return jnp.allclose(x, y, rtol=rtol, atol=atol)
+
 
 class Test_JITC_RC_Conversion:
 
@@ -776,7 +775,7 @@ class Test_JITCHomoR_Transpose_Gradients:
     def test_vecmat_jvp(self, weight, prob, corder, shape):
         jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder).T
         dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder).T
-        x = gen_events([shape[1]])
+        x = gen_events([shape[1]], asbool=False)
 
         def f_brainevent(x, w):
             return (x @ jitc.with_data(w)).sum()
@@ -883,7 +882,7 @@ class Test_JITCHomoR_Transpose_Gradients:
     def test_matjit_jvp(self, weight, prob, corder, k, shape):
         jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder).T
         dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder).T
-        x = gen_events([k, shape[0]], asbool=False)
+        x = gen_events([k, shape[1]], asbool=False)
 
         def f_brainevent(x, w):
             return (x @ jitc.with_data(w)).sum()
@@ -914,7 +913,7 @@ class Test_JITCHomoR_Transpose_Gradients:
     def test_matjit_vjp(self, weight, prob, corder, k, shape):
         jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder).T
         dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder).T
-        x = gen_events([k, shape[0]], asbool=False)
+        x = gen_events([k, shape[1]], asbool=False)
 
         def f_brainevent(x, w):
             return (x @ jitc.with_data(w)).sum()
@@ -1133,7 +1132,7 @@ class Test_JITCHomoC_Gradients:
     def test_jitmat_jvp(self, weight, prob, corder, k, shape):
         jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder)
         dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder)
-        x = gen_events([shape[1], k])
+        x = gen_events([shape[1], k], asbool=False)
 
         def f_brainevent(x, w):
             return (jitc.with_data(w) @ x).sum()
@@ -1164,7 +1163,7 @@ class Test_JITCHomoC_Gradients:
     def test_jitmat_vjp(self, weight, prob, corder, k, shape):
         jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder)
         dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder)
-        x = gen_events([shape[1], k])
+        x = gen_events([shape[1], k], asbool=False)
 
         def f_brainevent(x, w):
             return (jitc.with_data(w) @ x).sum()
