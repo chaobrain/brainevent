@@ -1710,7 +1710,7 @@ class Test_JITCHomoC_Transpose_Gradients:
     def test_matjit_jvp(self, weight, prob, corder, k, shape):
         jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder).T
         dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder).T
-        x = gen_events([k, shape[0]], asbool=False)
+        x = gen_events([k, shape[1]], asbool=False)
 
         def f_brainevent(x, w):
             return (x @ jitc.with_data(w)).sum()
@@ -1741,7 +1741,7 @@ class Test_JITCHomoC_Transpose_Gradients:
     def test_matjit_vjp(self, weight, prob, corder, k, shape):
         jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder).T
         dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder).T
-        x = gen_events([k, shape[0]], asbool=False)
+        x = gen_events([k, shape[1]], asbool=False)
 
         def f_brainevent(x, w):
             return (x @ jitc.with_data(w)).sum()
