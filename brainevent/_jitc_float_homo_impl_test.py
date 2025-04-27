@@ -31,6 +31,7 @@ from brainevent._jitc_float_homo_impl import (
     float_jitc_homo_matmat,
     float_jitc_homo_matrix
 )
+from brainevent._typing import MatrixShape
 
 
 def equal(a, b):
@@ -63,7 +64,7 @@ class TestJitcCsrMatvecHomo:
     @pytest.mark.parametrize('shape', [(20, 20), (100, 50)])
     @pytest.mark.parametrize('transpose', [True, False])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_todense(self, shape, transpose, corder):
+    def test_todense(self, shape: MatrixShape,  transpose, corder):
         jitc = brainevent.JITCHomoR(
             (1.5, 0.1, 123),
             shape=shape,
@@ -108,7 +109,7 @@ class TestJitcCsrMatvecHomo:
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('transpose', [True, False])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_random_connectivity(self, shape, weight, prob, transpose, corder):
+    def test_random_connectivity(self, shape: MatrixShape,  weight, prob, transpose, corder):
         seed = 1234
         vector = jnp.asarray(np.random.rand(shape[0] if transpose else shape[1]))
         r1 = float_jitc_homo_matvec(
@@ -178,7 +179,7 @@ class TestJitcCsrMatmatHomo:
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('transpose', [True, False])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_random_connectivity(self, shape, batch_size, weight, prob, transpose, corder):
+    def test_random_connectivity(self, shape: MatrixShape,  batch_size, weight, prob, transpose, corder):
         seed = 1234
 
         print(
@@ -296,7 +297,7 @@ class Test_JITCHomoR:
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_jitmat(self, prob, weight, shape, k):
+    def test_jitmat(self, prob, weight, shape: MatrixShape,  k):
         jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape)
         matrix = jnp.asarray(np.random.rand(shape[1], k))
         out1 = jitc @ matrix
@@ -591,7 +592,7 @@ class Test_JITCHomoR_Batching:
     @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matvec_batching_vector(self, batch_size, shape, corder):
+    def test_matvec_batching_vector(self, batch_size, shape: MatrixShape,  corder):
         vectors = brainstate.random.rand(batch_size, shape[1])
 
         def f(vector):
@@ -609,7 +610,7 @@ class Test_JITCHomoR_Batching:
     @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matvec_batching_vector_axis1(self, batch_size, shape, corder):
+    def test_matvec_batching_vector_axis1(self, batch_size, shape: MatrixShape,  corder):
         vectors = brainstate.random.rand(shape[1], batch_size)
 
         def f(vector):
@@ -627,7 +628,7 @@ class Test_JITCHomoR_Batching:
     @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matvec_batching_weight(self, batch_size, shape, corder):
+    def test_matvec_batching_weight(self, batch_size, shape: MatrixShape,  corder):
         weights = brainstate.random.rand(batch_size)
         vector = brainstate.random.rand(shape[1], )
 
@@ -646,7 +647,7 @@ class Test_JITCHomoR_Batching:
     @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_vecmat_batching_vector(self, batch_size, shape, corder):
+    def test_vecmat_batching_vector(self, batch_size, shape: MatrixShape,  corder):
         vectors = brainstate.random.rand(batch_size, shape[0])
 
         def f(vector):
@@ -664,7 +665,7 @@ class Test_JITCHomoR_Batching:
     @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_vecmat_batching_vector_axis1(self, batch_size, shape, corder):
+    def test_vecmat_batching_vector_axis1(self, batch_size, shape: MatrixShape,  corder):
         vectors = brainstate.random.rand(shape[0], batch_size)
 
         def f(vector):
@@ -682,7 +683,7 @@ class Test_JITCHomoR_Batching:
     @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_vecmat_batching_weight(self, batch_size, shape, corder):
+    def test_vecmat_batching_weight(self, batch_size, shape: MatrixShape,  corder):
         weights = brainstate.random.rand(batch_size)
         vector = brainstate.random.rand(shape[0], )
 
@@ -702,7 +703,7 @@ class Test_JITCHomoR_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_jitmat_batching_matrix(self, batch_size, k, shape, corder):
+    def test_jitmat_batching_matrix(self, batch_size, k, shape: MatrixShape,  corder):
         matrices = brainstate.random.rand(batch_size, shape[1], k)
 
         def f(mat):
@@ -721,7 +722,7 @@ class Test_JITCHomoR_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_jitmat_batching_matrix_axis1(self, batch_size, k, shape, corder):
+    def test_jitmat_batching_matrix_axis1(self, batch_size, k, shape: MatrixShape,  corder):
         matrices = brainstate.random.rand(shape[1], batch_size, k)
 
         def f(mat):
@@ -740,7 +741,7 @@ class Test_JITCHomoR_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_jitmat_batching_matrix_axis2(self, batch_size, k, shape, corder):
+    def test_jitmat_batching_matrix_axis2(self, batch_size, k, shape: MatrixShape,  corder):
         matrices = brainstate.random.rand(shape[1], k, batch_size, )
 
         def f(mat):
@@ -759,7 +760,7 @@ class Test_JITCHomoR_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_jitmat_batching_weight(self, batch_size, k, shape, corder):
+    def test_jitmat_batching_weight(self, batch_size, k, shape: MatrixShape,  corder):
         weights = brainstate.random.rand(batch_size)
         matrix = brainstate.random.rand(shape[1], k)
 
@@ -779,7 +780,7 @@ class Test_JITCHomoR_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matjit_batching_matrix(self, batch_size, k, shape, corder):
+    def test_matjit_batching_matrix(self, batch_size, k, shape: MatrixShape,  corder):
         matrix = brainstate.random.rand(batch_size, k, shape[0])
 
         def f(mat):
@@ -798,7 +799,7 @@ class Test_JITCHomoR_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matjit_batching_matrix_axis1(self, batch_size, k, shape, corder):
+    def test_matjit_batching_matrix_axis1(self, batch_size, k, shape: MatrixShape,  corder):
         matrix = brainstate.random.rand(k, batch_size, shape[0])
 
         def f(mat):
@@ -817,7 +818,7 @@ class Test_JITCHomoR_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matjit_batching_matrix_axis2(self, batch_size, k, shape, corder):
+    def test_matjit_batching_matrix_axis2(self, batch_size, k, shape: MatrixShape,  corder):
         matrix = brainstate.random.rand(k, shape[0], batch_size)
 
         def f(mat):
@@ -836,7 +837,7 @@ class Test_JITCHomoR_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matjit_batching_weight(self, batch_size, k, shape, corder):
+    def test_matjit_batching_weight(self, batch_size, k, shape: MatrixShape,  corder):
         weights = brainstate.random.rand(batch_size)
         mat = brainstate.random.rand(k, shape[0], )
 
@@ -878,7 +879,7 @@ class Test_JITCHomoR_Transpose:
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_jitmat(self, prob, weight, shape, k):
+    def test_jitmat(self, prob, weight, shape: MatrixShape,  k):
         jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape).T
         matrix = jnp.asarray(np.random.rand(shape[0], k))
         out1 = jitc @ matrix
@@ -1136,7 +1137,7 @@ class Test_JITCHomoC:
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_jitmat(self, prob, weight, shape, k):
+    def test_jitmat(self, prob, weight, shape: MatrixShape,  k):
         jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape)
         matrix = jnp.asarray(np.random.rand(shape[1], k))
         out1 = jitc @ matrix
@@ -1431,7 +1432,7 @@ class Test_JITCHomoC_Batching:
     @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matvec_batching_vector(self, batch_size, shape, corder):
+    def test_matvec_batching_vector(self, batch_size, shape: MatrixShape,  corder):
         vectors = brainstate.random.rand(batch_size, shape[1])
 
         def f(vector):
@@ -1449,7 +1450,7 @@ class Test_JITCHomoC_Batching:
     @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matvec_batching_vector_axis1(self, batch_size, shape, corder):
+    def test_matvec_batching_vector_axis1(self, batch_size, shape: MatrixShape,  corder):
         vectors = brainstate.random.rand(shape[1], batch_size)
 
         def f(vector):
@@ -1467,7 +1468,7 @@ class Test_JITCHomoC_Batching:
     @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matvec_batching_weight(self, batch_size, shape, corder):
+    def test_matvec_batching_weight(self, batch_size, shape: MatrixShape,  corder):
         weights = brainstate.random.rand(batch_size)
         vector = brainstate.random.rand(shape[1], )
 
@@ -1486,7 +1487,7 @@ class Test_JITCHomoC_Batching:
     @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_vecmat_batching_vector(self, batch_size, shape, corder):
+    def test_vecmat_batching_vector(self, batch_size, shape: MatrixShape,  corder):
         vectors = brainstate.random.rand(batch_size, shape[0])
 
         def f(vector):
@@ -1504,7 +1505,7 @@ class Test_JITCHomoC_Batching:
     @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_vecmat_batching_vector_axis1(self, batch_size, shape, corder):
+    def test_vecmat_batching_vector_axis1(self, batch_size, shape: MatrixShape,  corder):
         vectors = brainstate.random.rand(shape[0], batch_size)
 
         def f(vector):
@@ -1522,7 +1523,7 @@ class Test_JITCHomoC_Batching:
     @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_vecmat_batching_weight(self, batch_size, shape, corder):
+    def test_vecmat_batching_weight(self, batch_size, shape: MatrixShape,  corder):
         weights = brainstate.random.rand(batch_size)
         vector = brainstate.random.rand(shape[0], )
 
@@ -1542,7 +1543,7 @@ class Test_JITCHomoC_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_jitmat_batching_matrix(self, batch_size, k, shape, corder):
+    def test_jitmat_batching_matrix(self, batch_size, k, shape: MatrixShape,  corder):
         matrices = brainstate.random.rand(batch_size, shape[1], k)
 
         def f(mat):
@@ -1561,7 +1562,7 @@ class Test_JITCHomoC_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_jitmat_batching_matrix_axis1(self, batch_size, k, shape, corder):
+    def test_jitmat_batching_matrix_axis1(self, batch_size, k, shape: MatrixShape,  corder):
         matrices = brainstate.random.rand(shape[1], batch_size, k)
 
         def f(mat):
@@ -1580,7 +1581,7 @@ class Test_JITCHomoC_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_jitmat_batching_matrix_axis2(self, batch_size, k, shape, corder):
+    def test_jitmat_batching_matrix_axis2(self, batch_size, k, shape: MatrixShape,  corder):
         matrices = brainstate.random.rand(shape[1], k, batch_size, )
 
         def f(mat):
@@ -1599,7 +1600,7 @@ class Test_JITCHomoC_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_jitmat_batching_weight(self, batch_size, k, shape, corder):
+    def test_jitmat_batching_weight(self, batch_size, k, shape: MatrixShape,  corder):
         weights = brainstate.random.rand(batch_size)
         matrix = brainstate.random.rand(shape[1], k)
 
@@ -1619,7 +1620,7 @@ class Test_JITCHomoC_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matjit_batching_matrix(self, batch_size, k, shape, corder):
+    def test_matjit_batching_matrix(self, batch_size, k, shape: MatrixShape,  corder):
         matrix = brainstate.random.rand(batch_size, k, shape[0])
 
         def f(mat):
@@ -1638,7 +1639,7 @@ class Test_JITCHomoC_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matjit_batching_matrix_axis1(self, batch_size, k, shape, corder):
+    def test_matjit_batching_matrix_axis1(self, batch_size, k, shape: MatrixShape,  corder):
         matrix = brainstate.random.rand(k, batch_size, shape[0])
 
         def f(mat):
@@ -1657,7 +1658,7 @@ class Test_JITCHomoC_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matjit_batching_matrix_axis2(self, batch_size, k, shape, corder):
+    def test_matjit_batching_matrix_axis2(self, batch_size, k, shape: MatrixShape,  corder):
         matrix = brainstate.random.rand(k, shape[0], batch_size)
 
         def f(mat):
@@ -1676,7 +1677,7 @@ class Test_JITCHomoC_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matjit_batching_weight(self, batch_size, k, shape, corder):
+    def test_matjit_batching_weight(self, batch_size, k, shape: MatrixShape,  corder):
         weights = brainstate.random.rand(batch_size)
         mat = brainstate.random.rand(k, shape[0], )
 
@@ -1718,7 +1719,7 @@ class Test_JITCHomoC_Transpose:
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_jitmat(self, prob, weight, shape, k):
+    def test_jitmat(self, prob, weight, shape: MatrixShape,  k):
         jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape).T
         matrix = jnp.asarray(np.random.rand(shape[0], k))
         out1 = jitc @ matrix
