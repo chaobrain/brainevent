@@ -49,9 +49,10 @@ class Test_JITCNormalR:
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matvec(self, prob, weight, shape: Tuple[int, int], ):
+    @pytest.mark.parametrize('asbool', [True, False])
+    def test_matvec(self, prob, weight, shape: Tuple[int, int], asbool):
         jitc = brainevent.JITCNormalR((weight, weight * 0.01, prob, 123), shape=shape)
-        vector = gen_events(shape[1])
+        vector = gen_events(shape[1], asbool=asbool)
         out1 = jitc @ vector
         out2 = jitc.todense() @ vector
         assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4 * u.get_unit(out1))
@@ -59,9 +60,10 @@ class Test_JITCNormalR:
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_vecmat(self, prob, weight, shape: Tuple[int, int], ):
+    @pytest.mark.parametrize('asbool', [True, False])
+    def test_vecmat(self, prob, weight, shape: Tuple[int, int], asbool):
         jitc = brainevent.JITCNormalR((weight, weight * 0.01, prob, 123), shape=shape)
-        vector = gen_events(shape[0])
+        vector = gen_events(shape[0], asbool=asbool)
         out1 = vector @ jitc
         out2 = vector @ jitc.todense()
         assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4 * u.get_unit(out1))
@@ -70,9 +72,10 @@ class Test_JITCNormalR:
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_jitmat(self, prob, weight, shape: Tuple[int, int], k):
+    @pytest.mark.parametrize('asbool', [True, False])
+    def test_jitmat(self, prob, weight, shape: Tuple[int, int], k, asbool):
         jitc = brainevent.JITCNormalR((weight, weight * 0.01, prob, 123), shape=shape)
-        matrix = gen_events((shape[1], k))
+        matrix = gen_events((shape[1], k), asbool=asbool)
         out1 = jitc @ matrix
         out2 = jitc.todense() @ matrix
         assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4 * u.get_unit(out1))
@@ -81,9 +84,10 @@ class Test_JITCNormalR:
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matjit(self, k, prob, weight, shape: Tuple[int, int], ):
+    @pytest.mark.parametrize('asbool', [True, False])
+    def test_matjit(self, k, prob, weight, shape: Tuple[int, int], asbool):
         jitc = brainevent.JITCNormalR((weight, weight * 0.01, prob, 123), shape=shape)
-        matrix = gen_events((k, shape[0]))
+        matrix = gen_events((k, shape[0]), asbool=asbool)
         out1 = matrix @ jitc
         out2 = matrix @ jitc.todense()
         assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4 * u.get_unit(out1))
@@ -283,8 +287,9 @@ class Test_JITCNormalR_Batching:
     @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matvec_batching_vector(self, batch_size, shape: Tuple[int, int], corder):
-        vectors = gen_events([batch_size, shape[1]])
+    @pytest.mark.parametrize('asbool', [True, False])
+    def test_matvec_batching_vector(self, batch_size, shape: Tuple[int, int], corder, asbool):
+        vectors = gen_events([batch_size, shape[1]], asbool=asbool)
 
         def f(vector):
             jitc = brainevent.JITCNormalR((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
@@ -301,8 +306,9 @@ class Test_JITCNormalR_Batching:
     @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matvec_batching_vector_axis1(self, batch_size, shape: Tuple[int, int], corder):
-        vectors = gen_events([shape[1], batch_size])
+    @pytest.mark.parametrize('asbool', [True, False])
+    def test_matvec_batching_vector_axis1(self, batch_size, shape: Tuple[int, int], corder, asbool):
+        vectors = gen_events([shape[1], batch_size], asbool=asbool)
 
         def f(vector):
             jitc = brainevent.JITCNormalR((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
@@ -319,9 +325,10 @@ class Test_JITCNormalR_Batching:
     @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matvec_batching_weight(self, batch_size, shape: Tuple[int, int], corder):
+    @pytest.mark.parametrize('asbool', [True, False])
+    def test_matvec_batching_weight(self, batch_size, shape: Tuple[int, int], corder, asbool):
         weights = brainstate.random.rand(batch_size)
-        vector = gen_events(shape[1], )
+        vector = gen_events(shape[1], asbool=asbool)
 
         def f(w):
             jitc = brainevent.JITCNormalR((w, 0.1, 0.1, 123), shape=shape, corder=corder)
@@ -338,8 +345,9 @@ class Test_JITCNormalR_Batching:
     @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_vecmat_batching_vector(self, batch_size, shape: Tuple[int, int], corder):
-        vectors = gen_events([batch_size, shape[0]])
+    @pytest.mark.parametrize('asbool', [True, False])
+    def test_vecmat_batching_vector(self, batch_size, shape: Tuple[int, int], corder, asbool):
+        vectors = gen_events([batch_size, shape[0]], asbool=asbool)
 
         def f(vector):
             jitc = brainevent.JITCNormalR((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
@@ -356,8 +364,9 @@ class Test_JITCNormalR_Batching:
     @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_vecmat_batching_vector_axis1(self, batch_size, shape: Tuple[int, int], corder):
-        vectors = gen_events([shape[0], batch_size])
+    @pytest.mark.parametrize('asbool', [True, False])
+    def test_vecmat_batching_vector_axis1(self, batch_size, shape: Tuple[int, int], corder, asbool):
+        vectors = gen_events([shape[0], batch_size], asbool=asbool)
 
         def f(vector):
             jitc = brainevent.JITCNormalR((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
@@ -374,9 +383,10 @@ class Test_JITCNormalR_Batching:
     @pytest.mark.parametrize('batch_size', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_vecmat_batching_weight(self, batch_size, shape: Tuple[int, int], corder):
+    @pytest.mark.parametrize('asbool', [True, False])
+    def test_vecmat_batching_weight(self, batch_size, shape: Tuple[int, int], corder, asbool):
         weights = brainstate.random.rand(batch_size)
-        vector = gen_events(shape[0], )
+        vector = gen_events(shape[0], asbool=asbool)
 
         def f(w):
             jitc = brainevent.JITCNormalR((w, 0.1, 0.1, 123), shape=shape, corder=corder)
@@ -394,8 +404,9 @@ class Test_JITCNormalR_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_jitmat_batching_matrix(self, batch_size, k, shape: Tuple[int, int], corder):
-        matrices = gen_events([batch_size, shape[1], k])
+    @pytest.mark.parametrize('asbool', [True, False])
+    def test_jitmat_batching_matrix(self, batch_size, k, shape: Tuple[int, int], corder, asbool):
+        matrices = gen_events([batch_size, shape[1], k], asbool=asbool)
 
         def f(mat):
             jitc = brainevent.JITCNormalR((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
@@ -413,8 +424,9 @@ class Test_JITCNormalR_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_jitmat_batching_matrix_axis1(self, batch_size, k, shape: Tuple[int, int], corder):
-        matrices = gen_events([shape[1], batch_size, k])
+    @pytest.mark.parametrize('asbool', [True, False])
+    def test_jitmat_batching_matrix_axis1(self, batch_size, k, shape: Tuple[int, int], corder, asbool):
+        matrices = gen_events([shape[1], batch_size, k], asbool=asbool)
 
         def f(mat):
             jitc = brainevent.JITCNormalR((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
@@ -432,8 +444,9 @@ class Test_JITCNormalR_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_jitmat_batching_matrix_axis2(self, batch_size, k, shape: Tuple[int, int], corder):
-        matrices = gen_events([shape[1], k, batch_size, ])
+    @pytest.mark.parametrize('asbool', [True, False])
+    def test_jitmat_batching_matrix_axis2(self, batch_size, k, shape: Tuple[int, int], corder, asbool):
+        matrices = gen_events([shape[1], k, batch_size, ], asbool=asbool)
 
         def f(mat):
             jitc = brainevent.JITCNormalR((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
@@ -451,9 +464,10 @@ class Test_JITCNormalR_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_jitmat_batching_weight(self, batch_size, k, shape: Tuple[int, int], corder):
+    @pytest.mark.parametrize('asbool', [True, False])
+    def test_jitmat_batching_weight(self, batch_size, k, shape: Tuple[int, int], corder, asbool):
         weights = brainstate.random.rand(batch_size)
-        matrix = gen_events([shape[1], k])
+        matrix = gen_events([shape[1], k], asbool=asbool)
 
         def f(w):
             jitc = brainevent.JITCNormalR((w, 0.1, 0.1, 123), shape=shape, corder=corder)
@@ -471,8 +485,9 @@ class Test_JITCNormalR_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matjit_batching_matrix(self, batch_size, k, shape: Tuple[int, int], corder):
-        matrix = gen_events([batch_size, k, shape[0]])
+    @pytest.mark.parametrize('asbool', [True, False])
+    def test_matjit_batching_matrix(self, batch_size, k, shape: Tuple[int, int], corder, asbool):
+        matrix = gen_events([batch_size, k, shape[0]], asbool=asbool)
 
         def f(mat):
             jitc = brainevent.JITCNormalR((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
@@ -490,8 +505,9 @@ class Test_JITCNormalR_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matjit_batching_matrix_axis1(self, batch_size, k, shape: Tuple[int, int], corder):
-        matrix = gen_events([k, batch_size, shape[0]])
+    @pytest.mark.parametrize('asbool', [True, False])
+    def test_matjit_batching_matrix_axis1(self, batch_size, k, shape: Tuple[int, int], corder, asbool):
+        matrix = gen_events([k, batch_size, shape[0]], asbool=asbool)
 
         def f(mat):
             jitc = brainevent.JITCNormalR((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
@@ -509,8 +525,9 @@ class Test_JITCNormalR_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matjit_batching_matrix_axis2(self, batch_size, k, shape: Tuple[int, int], corder):
-        matrix = gen_events([k, shape[0], batch_size])
+    @pytest.mark.parametrize('asbool', [True, False])
+    def test_matjit_batching_matrix_axis2(self, batch_size, k, shape: Tuple[int, int], corder, asbool):
+        matrix = gen_events([k, shape[0], batch_size], asbool=asbool)
 
         def f(mat):
             jitc = brainevent.JITCNormalR((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
@@ -528,9 +545,10 @@ class Test_JITCNormalR_Batching:
     @pytest.mark.parametrize('k', [5])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matjit_batching_weight(self, batch_size, k, shape: Tuple[int, int], corder):
+    @pytest.mark.parametrize('asbool', [True, False])
+    def test_matjit_batching_weight(self, batch_size, k, shape: Tuple[int, int], corder, asbool):
         weights = brainstate.random.rand(batch_size)
-        mat = gen_events([k, shape[0], ])
+        mat = gen_events([k, shape[0], ], asbool=asbool)
 
         def f(w):
             jitc = brainevent.JITCNormalR((w, 0.1, 0.1, 123), shape=shape, corder=corder)

@@ -15,14 +15,13 @@
 
 # -*- coding: utf-8 -*-
 
-import jax
-import numpy as np
-from jax import numpy as jnp
 import operator
 from typing import Union
 
 import brainunit as u
 import jax
+import numpy as np
+from jax import numpy as jnp
 
 
 class JITCMatrix(u.sparse.SparseMatrix):
@@ -218,6 +217,8 @@ class JITCMatrix(u.sparse.SparseMatrix):
             other: The value to use as the left operand in the modulo operation
         """
         return self._binary_rop(other, operator.mod)
+
+
 def _initialize_seed(seed=None):
     """Initialize a random seed for JAX operations.
 
