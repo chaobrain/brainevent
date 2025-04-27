@@ -54,6 +54,7 @@ class JITNormalMatrix(JITCMatrix):
     ):
         loc, scale, self.prob, self.seed = data
         loc, scale = u.math.promote_dtypes(loc, scale)
+        u.fail_for_dimension_mismatch(loc, scale, "loc and scale must have the same dimension.")
         self.loc = u.math.asarray(loc)
         self.scale = u.math.asarray(scale)
         self.corder = corder

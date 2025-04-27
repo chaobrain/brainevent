@@ -46,6 +46,7 @@ def float_jitc_normal_matrix(
     transpose: bool = False,
     corder: bool = True,
 ) -> Data:
+    u.fail_for_dimension_mismatch(w_loc, w_scale, "w_loc and w_scale must have the same dimension.")
     w_loc, unitd = u.split_mantissa_unit(w_loc)
     w_scale = u.Quantity(w_scale).to(unitd).mantissa
     clen = _initialize_conn_length(prob)
@@ -72,6 +73,7 @@ def float_jitc_normal_matvec(
     transpose: bool = False,
     corder: bool = True,
 ) -> Data:
+    u.fail_for_dimension_mismatch(w_loc, w_scale, "w_loc and w_scale must have the same dimension.")
     seed = _initialize_seed(seed)
     w_loc, unitd = u.split_mantissa_unit(w_loc)
     w_scale = u.Quantity(w_scale).to(unitd).mantissa
@@ -101,6 +103,7 @@ def float_jitc_normal_matmat(
     transpose: bool = False,
     corder: bool = True,
 ) -> Data:
+    u.fail_for_dimension_mismatch(w_loc, w_scale, "w_loc and w_scale must have the same dimension.")
     seed = _initialize_seed(seed)
     w_loc, unitd = u.split_mantissa_unit(w_loc)
     w_scale = u.Quantity(w_scale).to(unitd).mantissa
@@ -461,26 +464,12 @@ def _jitc_normal_matrix_batching(
     axes,
     **kwargs
 ):
-    if tuple(axes)[2:] == (None, None, None):
-        # vmap on weight data
-        r = float_jitc_normal_matrix_p_call(
-            jnp.asarray([1.], dtype=args[0].dtype),
-            jnp.asarray([1.], dtype=args[0].dtype),
-            args[1],
-            args[2],
-            shape=kwargs['shape'],
-            transpose=kwargs['transpose'],
-            corder=kwargs['corder'],
-        )[0]
-        r = jax.vmap(lambda l, s: r * s + l, in_axes=(axes[0], axes[1]))(args[0], args[1])
-        return [r], [0]
-    else:
-        return general_batching_rule(
-            float_jitc_normal_matrix_p,
-            args,
-            axes,
-            **kwargs,
-        )
+    return general_batching_rule(
+        float_jitc_normal_matrix_p,
+        args,
+        axes,
+        **kwargs,
+    )
 
 
 def float_jitc_normal_matrix_p_call(
