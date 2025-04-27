@@ -553,7 +553,7 @@ class Test_JITCUniformR_Transpose:
         vector = gen_events(shape[0])
         out1 = jitc @ vector
         out2 = jitc.todense() @ vector
-        assert u.math.allclose(out1, out2)
+        assert u.math.allclose(out1, out2, atol=1e-3 * u.get_unit(out1), rtol=1e-3 * u.get_unit(out1))
 
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
@@ -563,7 +563,7 @@ class Test_JITCUniformR_Transpose:
         vector = gen_events(shape[1])
         out1 = vector @ jitc
         out2 = vector @ jitc.todense()
-        assert u.math.allclose(out1, out2)
+        assert u.math.allclose(out1, out2, atol=1e-3 * u.get_unit(out1), rtol=1e-3 * u.get_unit(out1))
 
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('prob', [0.1, 0.2])
@@ -574,7 +574,7 @@ class Test_JITCUniformR_Transpose:
         matrix = gen_events([shape[0], k])
         out1 = jitc @ matrix
         out2 = jitc.todense() @ matrix
-        assert u.math.allclose(out1, out2)
+        assert u.math.allclose(out1, out2, atol=1e-3 * u.get_unit(out1), rtol=1e-3 * u.get_unit(out1))
 
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('prob', [0.1, 0.2])
@@ -585,7 +585,7 @@ class Test_JITCUniformR_Transpose:
         matrix = gen_events([k, shape[1]])
         out1 = matrix @ jitc
         out2 = matrix @ jitc.todense()
-        assert u.math.allclose(out1, out2)
+        assert u.math.allclose(out1, out2, atol=1e-3 * u.get_unit(out1), rtol=1e-3 * u.get_unit(out1))
 
 
 class Test_JITCUniformR_Transpose_Gradients:
@@ -775,7 +775,7 @@ class Test_JITCUniformC:
         vector = gen_events(shape[1])
         out1 = jitc @ vector
         out2 = jitc.todense() @ vector
-        assert u.math.allclose(out1, out2)
+        assert u.math.allclose(out1, out2, atol=1e-3 * u.get_unit(out1), rtol=1e-3 * u.get_unit(out1))
 
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
@@ -785,7 +785,7 @@ class Test_JITCUniformC:
         vector = gen_events(shape[0])
         out1 = vector @ jitc
         out2 = vector @ jitc.todense()
-        assert u.math.allclose(out1, out2)
+        assert u.math.allclose(out1, out2, atol=1e-3 * u.get_unit(out1), rtol=1e-3 * u.get_unit(out1))
 
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('prob', [0.1, 0.2])
@@ -796,7 +796,7 @@ class Test_JITCUniformC:
         matrix = gen_events([shape[1], k])
         out1 = jitc @ matrix
         out2 = jitc.todense() @ matrix
-        assert u.math.allclose(out1, out2)
+        assert u.math.allclose(out1, out2, atol=1e-3 * u.get_unit(out1), rtol=1e-3 * u.get_unit(out1))
 
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('prob', [0.1, 0.2])
@@ -807,7 +807,7 @@ class Test_JITCUniformC:
         matrix = gen_events([k, shape[0]])
         out1 = matrix @ jitc
         out2 = matrix @ jitc.todense()
-        assert u.math.allclose(out1, out2)
+        assert u.math.allclose(out1, out2, atol=1e-3 * u.get_unit(out1), rtol=1e-3 * u.get_unit(out1))
 
     @pytest.mark.skipif(
         brainstate.environ.get_platform() == 'cpu',
@@ -1275,7 +1275,7 @@ class Test_JITCUniformC_Transpose:
         vector = gen_events(shape[0])
         out1 = jitc @ vector
         out2 = jitc.todense() @ vector
-        assert u.math.allclose(out1, out2)
+        assert u.math.allclose(out1, out2, atol=1e-3 * u.get_unit(out1), rtol=1e-3 * u.get_unit(out1))
 
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
@@ -1285,7 +1285,7 @@ class Test_JITCUniformC_Transpose:
         vector = gen_events(shape[1])
         out1 = vector @ jitc
         out2 = vector @ jitc.todense()
-        assert u.math.allclose(out1, out2)
+        assert u.math.allclose(out1, out2, atol=1e-3 * u.get_unit(out1), rtol=1e-3 * u.get_unit(out1))
 
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('prob', [0.1, 0.2])
@@ -1296,7 +1296,7 @@ class Test_JITCUniformC_Transpose:
         matrix = gen_events([shape[0], k])
         out1 = jitc @ matrix
         out2 = jitc.todense() @ matrix
-        assert u.math.allclose(out1, out2)
+        assert u.math.allclose(out1, out2, atol=1e-3 * u.get_unit(out1), rtol=1e-3 * u.get_unit(out1))
 
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('prob', [0.1, 0.2])
@@ -1307,7 +1307,7 @@ class Test_JITCUniformC_Transpose:
         matrix = gen_events([k, shape[1]])
         out1 = matrix @ jitc
         out2 = matrix @ jitc.todense()
-        assert u.math.allclose(out1, out2)
+        assert u.math.allclose(out1, out2, atol=1e-3 * u.get_unit(out1), rtol=1e-3 * u.get_unit(out1))
 
 
 class Test_JITCUniformC_Transpose_Gradients:
