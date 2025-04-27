@@ -212,7 +212,11 @@ def native_sdd_matmul(
 
 
 def sample_sparse_matrix(
-    m, n, bm, bn, *,
+    m,
+    n,
+    bm,
+    bn,
+    *,
     sparse_prob=0.2,
     dtype=jnp.float32
 ) -> BlockCSR:
