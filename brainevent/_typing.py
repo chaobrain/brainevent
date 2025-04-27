@@ -26,6 +26,7 @@ Type Aliases:
     Kernel: A callable type, representing a function or method.
 """
 
+import numbers
 from typing import Union, Tuple, Callable
 
 import brainunit as u
@@ -36,7 +37,7 @@ import numpy as np
 MatrixShape = Tuple[int, int]
 
 # A union type that can be a jax.Array, numpy.ndarray, or brainunit.Quantity.
-Data = Union[jax.Array, np.ndarray, u.Quantity]
+Data = Union[jax.Array, np.ndarray, u.Quantity, numbers.Number]
 
 # A union type that can be either a jax.Array or numpy.ndarray.
 Index = Union[jax.Array, np.ndarray]
@@ -52,3 +53,7 @@ Indptr = Index
 
 # A callable type, representing a function or method.
 Kernel = Callable
+
+WeightScalar = Union[numbers.Number, np.ndarray, jax.Array, u.Quantity]
+Prob = Union[float, np.ndarray, jax.Array]
+Seed = Union[int, np.ndarray, jax.Array]

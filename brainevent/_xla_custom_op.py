@@ -23,8 +23,6 @@ import numpy as np
 from jax.interpreters import xla, mlir, batching, ad
 
 from ._compatible_import import Primitive
-from ._misc import general_batching_rule
-from ._xla_custom_op_jvp import defjvp
 from ._xla_custom_op_numba import (
     NumbaKernelGenerator,
     register_numba_cpu_translatione
@@ -33,6 +31,10 @@ from ._xla_custom_op_pallas import (
     PallasKernelGenerator,
     register_pallas_gpu_translation,
     register_pallas_tpu_translation
+)
+from ._xla_custom_op_util import (
+    general_batching_rule,
+    defjvp,
 )
 from ._xla_custom_op_warp import (
     WarpKernelGenerator,
@@ -122,16 +124,31 @@ class XLACustomKernel:
         # batching rule
         register_general_batching(self.primitive)
 
-    def _abstract_eval(self, *ins, outs: Sequence[jax.core.ShapedArray], **kwargs):
+    def _abstract_eval(
+        self,
+        *ins,
+        outs: Sequence[jax.core.ShapedArray],
+        **kwargs
+    ):
         return tuple(outs)
 
-    def call(self, *ins, outs: Union[ShapeDtype, Sequence[ShapeDtype]], **kwargs, ):
+    def call(
+        self,
+        *ins,
+        outs: Union[ShapeDtype, Sequence[ShapeDtype]],
+        **kwargs,
+    ):
         """
         Call the custom operator.
         """
         return self.__call__(*ins, outs=outs, **kwargs, )
 
-    def bind(self, *ins, outs: Union[ShapeDtype, Sequence[ShapeDtype]], **kwargs, ):
+    def bind(
+        self,
+        *ins,
+        outs: Union[ShapeDtype, Sequence[ShapeDtype]],
+        **kwargs,
+    ):
         """
         Call the custom operator.
         """
@@ -156,17 +173,29 @@ class XLACustomKernel:
         assert len(r) == len(outs), 'The number of outputs does not match the expected.'
         return tree_def.unflatten(r)
 
-    def def_cpu_kernel(self, kernel_generator: NumbaKernelGenerator):
+    def def_cpu_kernel(
+        self,
+        kernel_generator: NumbaKernelGenerator
+    ):
         """
         Define the CPU kernel using Numba.
+
+        Args:
+            kernel_generator: NumbaKernelGenerator. The function to generate the Numba jitted kernel.
         """
         if not isinstance(kernel_generator, NumbaKernelGenerator):
             raise TypeError('The `kernel_generator` should be an instance of `NumbaKernel`.')
         register_numba_cpu_translatione(self.primitive, kernel_generator)
 
-    def def_gpu_kernel(self, kernel_generator: Union[PallasKernelGenerator, WarpKernelGenerator]):
+    def def_gpu_kernel(
+        self,
+        kernel_generator: Union[PallasKernelGenerator, WarpKernelGenerator]
+    ):
         """
         Define the GPU kernel using the JAX Pallas or Warp.
+
+        Args:
+            kernel_generator: Union[PallasKernelGenerator, WarpKernelGenerator]. The function to generate the JAX Pallas kernel.
         """
 
         if isinstance(kernel_generator, PallasKernelGenerator):
@@ -178,25 +207,31 @@ class XLACustomKernel:
         else:
             raise TypeError('The `kernel_generator` should be an instance of `PallasKernel` or `WarpKernel`.')
 
-    def def_tpu_kernel(self, kernel_generator: PallasKernelGenerator):
+    def def_tpu_kernel(
+        self,
+        kernel_generator: PallasKernelGenerator
+    ):
         """
         Define the TPU kernel using the JAX Pallas.
+
+        Args:
+            kernel_generator: PallasKernelGenerator. The function to generate the JAX Pallas kernel.
         """
         register_pallas_tpu_translation(self.primitive, kernel_generator)
 
-    def def_batching_rule(self, fun):
+    def def_batching_rule(self, fun: Callable):
         """Define the batching rule.
 
         Args:
-          fun: The batching rule.
+            fun: The batching rule.
         """
         batching.primitive_batchers[self.primitive] = fun
 
-    def def_jvp_rule(self, fun):
+    def def_jvp_rule(self, fun: Callable):
         """Define the JVP rule.
 
         Args:
-          fun: The JVP rule.
+            fun: The JVP rule.
         """
         ad.primitive_jvps[self.primitive] = fun
 
@@ -206,34 +241,34 @@ class XLACustomKernel:
         but supports the Primitive with multiple results.
 
         Args:
-          jvp_rules: The JVP rules.
+            jvp_rules: The JVP rules.
         """
         defjvp(self.primitive, *jvp_rules)
 
-    def def_transpose_rule(self, fun):
+    def def_transpose_rule(self, fun: Callable):
         """Define the transpose rule.
 
         Args:
-          fun: The transpose rule.
+            fun: The transpose rule.
         """
         ad.primitive_transposes[self.primitive] = fun
 
-    def def_xla_translation(self, platform, fun):
+    def def_xla_translation(self, platform: str, fun: Callable):
         """Define the XLA translation rule.
 
         Args:
-          platform: str. The computing platform.
-          fun: The XLA translation rule.
+            platform: str. The computing platform.
+            fun: The XLA translation rule.
         """
         xla.backend_specific_translations[platform][self.primitive] = fun
 
-    def def_mlir_lowering(self, platform, fun):
+    def def_mlir_lowering(self, platform: str, fun: Callable):
         """
         Define the MLIR lowering rule.
 
         Args:
-          platform: str. The computing platform.
-          fun: The lowering rule.
+            platform: str. The computing platform.
+            fun: The lowering rule.
         """
         mlir.register_lowering(self.primitive, fun, platform)
 

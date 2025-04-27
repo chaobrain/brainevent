@@ -32,7 +32,7 @@ Installation
 
        .. code-block:: bash
 
-          pip install -U brainevent[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+          pip install -U brainevent[tpu]
 
 ----
 

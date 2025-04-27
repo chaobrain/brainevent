@@ -17,6 +17,7 @@ Compressed Sparse Row matrix
    CSC_LB
 
 
+
 Block Sparse Row matrix
 -----------------------
 
@@ -39,7 +40,6 @@ Coordinate Format matrix
 
 
 
-
 Fixed Number of Connections matrix
 ---------------------------------
 
@@ -50,4 +50,17 @@ Fixed Number of Connections matrix
    FixedPreNumConn
 
 
+
+Just-In-Time Connectivity matrix
+--------------------------------
+
+.. autosummary::
+   :toctree: generated/
+
+   JITCHomoR
+   JITCHomoC
+   JITCNormalR
+   JITCNormalC
+   JITCUniformR
+   JITCUniformC
 
