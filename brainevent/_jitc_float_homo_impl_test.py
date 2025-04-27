@@ -27,9 +27,9 @@ import pytest
 
 import brainevent
 from brainevent._jitc_float_homo_impl import (
-    jitc_homo_matvec,
-    jitc_homo_matmat,
-    jitc_homo_matrix
+    float_jitc_homo_matvec,
+    float_jitc_homo_matmat,
+    float_jitc_homo_matrix
 )
 
 
@@ -41,7 +41,7 @@ class TestJitcCsrMatvecHomo:
     @pytest.mark.parametrize('transpose', [True, False])
     @pytest.mark.parametrize('corder', [True, False])
     def test_jitc_homo_matrix(self, transpose, corder):
-        out1 = jitc_homo_matrix(
+        out1 = float_jitc_homo_matrix(
             1.5,
             0.1,
             123,
@@ -49,7 +49,7 @@ class TestJitcCsrMatvecHomo:
             transpose=transpose,
             corder=corder
         )
-        out2 = jitc_homo_matrix(
+        out2 = float_jitc_homo_matrix(
             1.5,
             0.1,
             123,
@@ -73,7 +73,7 @@ class TestJitcCsrMatvecHomo:
             jitc = jitc.T
         out1 = jitc.todense()
 
-        out2 = jitc_homo_matrix(
+        out2 = float_jitc_homo_matrix(
             1.5,
             0.1,
             123,
@@ -91,7 +91,7 @@ class TestJitcCsrMatvecHomo:
         shape = (2, 3)
         v = brainstate.random.rand(shape[0]) if transpose else brainstate.random.rand(shape[1])
         seed = 1234
-        result = jitc_homo_matvec(
+        result = float_jitc_homo_matvec(
             weight,
             conn_prob,
             v,
@@ -111,7 +111,7 @@ class TestJitcCsrMatvecHomo:
     def test_random_connectivity(self, shape, weight, prob, transpose, corder):
         seed = 1234
         vector = jnp.asarray(np.random.rand(shape[0] if transpose else shape[1]))
-        r1 = jitc_homo_matvec(
+        r1 = float_jitc_homo_matvec(
             weight,
             prob,
             vector,
@@ -120,7 +120,7 @@ class TestJitcCsrMatvecHomo:
             transpose=transpose,
             corder=corder
         )
-        r2 = jitc_homo_matvec(
+        r2 = float_jitc_homo_matvec(
             weight,
             prob,
             vector,
@@ -145,7 +145,7 @@ class TestJitcCsrMatvecHomo:
         x = jnp.asarray(np.random.rand(n_in if transpose else n_out))
 
         def f_brainevent(x, w):
-            return jitc_homo_matvec(
+            return float_jitc_homo_matvec(
                 w,
                 prob,
                 x,
@@ -194,7 +194,7 @@ class TestJitcCsrMatmatHomo:
         B_shape = (shape[0] if transpose else shape[1], batch_size)
         B = jnp.asarray(np.random.rand(*B_shape))
 
-        r1 = jitc_homo_matmat(
+        r1 = float_jitc_homo_matmat(
             weight,
             prob,
             B,
@@ -203,7 +203,7 @@ class TestJitcCsrMatmatHomo:
             transpose=transpose,
             corder=corder
         )
-        r2 = jitc_homo_matmat(
+        r2 = float_jitc_homo_matmat(
             weight,
             prob,
             B,
@@ -238,7 +238,7 @@ class TestJitcCsrMatmatHomo:
         X = jnp.asarray(np.random.rand(*X_shape))
 
         def f_brainevent(X, w):
-            return jitc_homo_matmat(
+            return float_jitc_homo_matmat(
                 w,
                 prob,
                 X,

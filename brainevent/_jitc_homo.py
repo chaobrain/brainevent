@@ -26,7 +26,7 @@ import numpy as np
 from ._compatible_import import JAXSparse, Tracer
 from ._event import EventArray
 from ._jitc_base import JITCMatrix
-from ._jitc_float_homo_impl import jitc_homo_matrix, jitc_homo_matvec, jitc_homo_matmat
+from ._jitc_float_homo_impl import float_jitc_homo_matrix, float_jitc_homo_matvec, float_jitc_homo_matmat
 from ._typing import MatrixShape
 
 __all__ = [
@@ -264,7 +264,7 @@ class JITCHomoR(JITHomoMatrix):
         >>> dense_matrix = sparse_matrix.todense()
         >>> print(dense_matrix.shape)  # (10, 4)
         """
-        return jitc_homo_matrix(
+        return float_jitc_homo_matrix(
             self.weight,
             self.prob,
             self.seed,
@@ -373,7 +373,7 @@ class JITCHomoR(JITHomoMatrix):
             other = other.data
             if other.ndim == 1:
                 # JIT matrix @ events
-                return jitc_homo_matvec(
+                return float_jitc_homo_matvec(
                     weight,
                     self.prob,
                     other,
@@ -384,7 +384,7 @@ class JITCHomoR(JITHomoMatrix):
                 )
             elif other.ndim == 2:
                 # JIT matrix @ events
-                return jitc_homo_matmat(
+                return float_jitc_homo_matmat(
                     weight,
                     self.prob,
                     other,
@@ -401,7 +401,7 @@ class JITCHomoR(JITHomoMatrix):
             weight, other = u.math.promote_dtypes(self.weight, other)
             if other.ndim == 1:
                 # JIT matrix @ vector
-                return jitc_homo_matvec(
+                return float_jitc_homo_matvec(
                     weight,
                     self.prob,
                     other,
@@ -412,7 +412,7 @@ class JITCHomoR(JITHomoMatrix):
                 )
             elif other.ndim == 2:
                 # JIT matrix @ matrix
-                return jitc_homo_matmat(
+                return float_jitc_homo_matmat(
                     weight,
                     self.prob,
                     other,
@@ -438,7 +438,7 @@ class JITCHomoR(JITHomoMatrix):
                 # ==
                 # JIT matrix.T @ vector
                 #
-                return jitc_homo_matvec(
+                return float_jitc_homo_matvec(
                     weight,
                     self.prob,
                     other,
@@ -453,7 +453,7 @@ class JITCHomoR(JITHomoMatrix):
                 # ==
                 # (JIT matrix.T @ matrix.T).T
                 #
-                r = jitc_homo_matmat(
+                r = float_jitc_homo_matmat(
                     weight,
                     self.prob,
                     other.T,
@@ -475,7 +475,7 @@ class JITCHomoR(JITHomoMatrix):
                 # ==
                 # JIT matrix.T @ vector
                 #
-                return jitc_homo_matvec(
+                return float_jitc_homo_matvec(
                     weight,
                     self.prob,
                     other,
@@ -490,7 +490,7 @@ class JITCHomoR(JITHomoMatrix):
                 # ==
                 # (JIT matrix.T @ matrix.T).T
                 #
-                r = jitc_homo_matmat(
+                r = float_jitc_homo_matmat(
                     weight,
                     self.prob,
                     other.T,
@@ -583,7 +583,7 @@ class JITCHomoC(JITHomoMatrix):
         >>> dense_matrix = sparse_matrix.todense()
         >>> print(dense_matrix.shape)  # (3, 10)
         """
-        return jitc_homo_matrix(
+        return float_jitc_homo_matrix(
             self.weight,
             self.prob,
             self.seed,
@@ -716,7 +716,7 @@ class JITCHomoC(JITHomoMatrix):
                 # JITC_R matrix.T @ vector
                 # ==
                 # vector @ JITC_R matrix
-                return jitc_homo_matvec(
+                return float_jitc_homo_matvec(
                     weight,
                     self.prob,
                     other,
@@ -729,7 +729,7 @@ class JITCHomoC(JITHomoMatrix):
                 # JITC_R matrix.T @ matrix
                 # ==
                 # (matrix.T @ JITC_R matrix).T
-                return jitc_homo_matmat(
+                return float_jitc_homo_matmat(
                     weight,
                     self.prob,
                     other,
@@ -781,7 +781,7 @@ class JITCHomoC(JITHomoMatrix):
                 # ==
                 # JITC_R matrix @ vector
                 #
-                return jitc_homo_matvec(
+                return float_jitc_homo_matvec(
                     weight,
                     self.prob,
                     other,
@@ -796,7 +796,7 @@ class JITCHomoC(JITHomoMatrix):
                 # ==
                 # (JITC_R matrix @ matrix.T).T
                 #
-                r = jitc_homo_matmat(
+                r = float_jitc_homo_matmat(
                     weight,
                     self.prob,
                     other.T,
