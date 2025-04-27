@@ -26,7 +26,15 @@ import numpy as np
 from ._compatible_import import JAXSparse, Tracer
 from ._event import EventArray
 from ._jitc_base import JITCMatrix
-from ._jitc_float_homo_impl import float_jitc_homo_matrix, float_jitc_homo_matvec, float_jitc_homo_matmat
+from ._jitc_event_homo_impl import (
+    event_jitc_homo_matvec,
+    event_jitc_homo_matmat,
+)
+from ._jitc_float_homo_impl import (
+    float_jitc_homo_matrix,
+    float_jitc_homo_matvec,
+    float_jitc_homo_matmat,
+)
 from ._typing import MatrixShape
 
 __all__ = [
@@ -373,7 +381,7 @@ class JITCHomoR(JITHomoMatrix):
             other = other.data
             if other.ndim == 1:
                 # JIT matrix @ events
-                return float_jitc_homo_matvec(
+                return event_jitc_homo_matvec(
                     weight,
                     self.prob,
                     other,
@@ -384,7 +392,7 @@ class JITCHomoR(JITHomoMatrix):
                 )
             elif other.ndim == 2:
                 # JIT matrix @ events
-                return float_jitc_homo_matmat(
+                return event_jitc_homo_matmat(
                     weight,
                     self.prob,
                     other,
@@ -438,7 +446,7 @@ class JITCHomoR(JITHomoMatrix):
                 # ==
                 # JIT matrix.T @ vector
                 #
-                return float_jitc_homo_matvec(
+                return event_jitc_homo_matvec(
                     weight,
                     self.prob,
                     other,
@@ -453,7 +461,7 @@ class JITCHomoR(JITHomoMatrix):
                 # ==
                 # (JIT matrix.T @ matrix.T).T
                 #
-                r = float_jitc_homo_matmat(
+                r = event_jitc_homo_matmat(
                     weight,
                     self.prob,
                     other.T,
@@ -691,20 +699,30 @@ class JITCHomoC(JITHomoMatrix):
         if isinstance(other, EventArray):
             other = other.data
             if other.ndim == 1:
-                return _event_csr_matvec(
+                # JITC_R matrix.T @ vector
+                # ==
+                # vector @ JITC_R matrix
+                return event_jitc_homo_matvec(
                     weight,
                     self.prob,
-                    self.seed,
                     other,
-                    shape=self.shape
+                    self.seed,
+                    shape=self.shape[::-1],
+                    transpose=True,
+                    corder=self.corder,
                 )
             elif other.ndim == 2:
-                return _event_csr_matmat(
+                # JITC_R matrix.T @ matrix
+                # ==
+                # (matrix.T @ JITC_R matrix).T
+                return event_jitc_homo_matmat(
                     weight,
                     self.prob,
-                    self.seed,
                     other,
-                    shape=self.shape
+                    self.seed,
+                    shape=self.shape[::-1],
+                    transpose=True,
+                    corder=self.corder,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -750,23 +768,34 @@ class JITCHomoC(JITHomoMatrix):
         if isinstance(other, EventArray):
             other = other.data
             if other.ndim == 1:
-                return _event_csr_matvec(
+                #
+                # vector @ JITC_R matrix.T
+                # ==
+                # JITC_R matrix @ vector
+                #
+                return event_jitc_homo_matvec(
                     weight,
                     self.prob,
-                    self.seed,
                     other,
-                    shape=self.shape,
-                    transpose=True
+                    self.seed,
+                    shape=self.shape[::-1],
+                    transpose=False,
+                    corder=not self.corder,
                 )
             elif other.ndim == 2:
-                other = other.T
-                r = _event_csr_matmat(
+                #
+                # matrix @ JITC_R matrix.T
+                # ==
+                # (JITC_R matrix @ matrix.T).T
+                #
+                r = event_jitc_homo_matmat(
                     weight,
                     self.prob,
+                    other.T,
                     self.seed,
-                    other,
-                    shape=self.shape,
-                    transpose=True
+                    shape=self.shape[::-1],
+                    transpose=False,
+                    corder=not self.corder,
                 )
                 return r.T
             else:
