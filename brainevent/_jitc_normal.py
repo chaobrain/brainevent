@@ -23,13 +23,17 @@ import jax
 
 from ._compatible_import import JAXSparse, Tracer
 from ._event import EventArray
-from ._jitc_base import JITCMatrix
+from ._jitc_event_normal_impl import (
+    event_jitc_normal_matvec,
+    event_jitc_normal_matmat,
+)
 from ._jitc_float_normal_impl import (
     float_jitc_normal_matrix,
     float_jitc_normal_matvec,
     float_jitc_normal_matmat,
 )
-from ._typing import MatrixShape, Weight, Prob, Seed
+from ._jitc_util import JITCMatrix
+from ._typing import MatrixShape, WeightScalar, Prob, Seed
 
 __all__ = [
     'JITCNormalR',
@@ -47,7 +51,7 @@ class JITNormalMatrix(JITCMatrix):
 
     def __init__(
         self,
-        data: Tuple[Weight, Weight, Prob, Seed],
+        data: Tuple[WeightScalar, WeightScalar, Prob, Seed],
         *,
         shape: MatrixShape,
         corder: bool = False,
@@ -76,7 +80,7 @@ class JITNormalMatrix(JITCMatrix):
         return self.loc.dtype
 
     @property
-    def data(self) -> Tuple[Weight, Weight, Prob, Seed]:
+    def data(self) -> Tuple[WeightScalar, WeightScalar, Prob, Seed]:
         """
         Returns the core data components of the homogeneous matrix.
 
@@ -96,7 +100,7 @@ class JITNormalMatrix(JITCMatrix):
         """
         return self.loc, self.scale, self.prob, self.seed
 
-    def with_data(self, loc: Weight, scale: Weight):
+    def with_data(self, loc: WeightScalar, scale: WeightScalar):
         """
         Create a new matrix instance with updated weight data but preserving other properties.
 

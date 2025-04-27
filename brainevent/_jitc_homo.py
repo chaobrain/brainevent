@@ -23,7 +23,6 @@ import jax
 
 from ._compatible_import import JAXSparse, Tracer
 from ._event import EventArray
-from ._jitc_base import JITCMatrix
 from ._jitc_event_homo_impl import (
     event_jitc_homo_matvec,
     event_jitc_homo_matmat,
@@ -33,7 +32,8 @@ from ._jitc_float_homo_impl import (
     float_jitc_homo_matvec,
     float_jitc_homo_matmat,
 )
-from ._typing import MatrixShape, Weight, Prob, Seed
+from ._jitc_util import JITCMatrix
+from ._typing import MatrixShape, WeightScalar, Prob, Seed
 
 __all__ = [
     'JITCHomoR',
@@ -50,7 +50,7 @@ class JITHomoMatrix(JITCMatrix):
 
     def __init__(
         self,
-        data: Tuple[Weight, Prob, Seed],
+        data: Tuple[WeightScalar, Prob, Seed],
         *,
         shape: MatrixShape,
         corder: bool = False,
@@ -75,7 +75,7 @@ class JITHomoMatrix(JITCMatrix):
         return self.weight.dtype
 
     @property
-    def data(self) -> Tuple[Weight, Prob, Seed]:
+    def data(self) -> Tuple[WeightScalar, Prob, Seed]:
         """
         Returns the core data components of the homogeneous matrix.
 
@@ -94,7 +94,7 @@ class JITHomoMatrix(JITCMatrix):
         """
         return self.weight, self.prob, self.seed
 
-    def with_data(self, weight: Weight):
+    def with_data(self, weight: WeightScalar):
         """
         Create a new matrix instance with updated weight data but preserving other properties.
 

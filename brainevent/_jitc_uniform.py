@@ -23,13 +23,17 @@ import jax
 
 from ._compatible_import import JAXSparse, Tracer
 from ._event import EventArray
-from ._jitc_base import JITCMatrix
+from ._jitc_event_uniform_impl import (
+    event_jitc_uniform_matvec,
+    event_jitc_uniform_matmat,
+)
 from ._jitc_float_uniform_impl import (
     float_jitc_uniform_matrix,
     float_jitc_uniform_matvec,
     float_jitc_uniform_matmat,
 )
-from ._typing import MatrixShape, Weight, Prob, Seed
+from ._jitc_util import JITCMatrix
+from ._typing import MatrixShape, WeightScalar, Prob, Seed
 
 __all__ = [
     'JITCUniformR',
@@ -47,7 +51,7 @@ class JITUniformMatrix(JITCMatrix):
 
     def __init__(
         self,
-        data: Tuple[Weight, Weight, Prob, Seed],
+        data: Tuple[WeightScalar, WeightScalar, Prob, Seed],
         *,
         shape: MatrixShape,
         corder: bool = False,
@@ -76,7 +80,7 @@ class JITUniformMatrix(JITCMatrix):
         return self.wlow.dtype
 
     @property
-    def data(self) -> Tuple[Weight, Weight, Prob, Seed]:
+    def data(self) -> Tuple[WeightScalar, WeightScalar, Prob, Seed]:
         """
         Returns the core data components of the homogeneous matrix.
 
@@ -96,7 +100,7 @@ class JITUniformMatrix(JITCMatrix):
         """
         return self.wlow, self.whigh, self.prob, self.seed
 
-    def with_data(self, low: Weight, high: Weight):
+    def with_data(self, low: WeightScalar, high: WeightScalar):
         """
         Create a new matrix instance with updated weight data but preserving other properties.
 
