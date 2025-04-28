@@ -33,25 +33,49 @@ def defjvp(primitive, *jvp_rules):
     """
     Define JVP rules for any JAX primitive.
 
-    This function is similar to ``jax.interpreters.ad.defjvp``.
-    However, the JAX one only supports primitive with ``multiple_results=False``.
-    ``brainevent.defjvp`` enables to define the independent JVP rule for
-    each input parameter no matter ``multiple_results=False/True``.
+    This function allows defining Jacobian-vector product (JVP) rules for JAX primitives,
+    extending the functionality of ``jax.interpreters.ad.defjvp``. While the standard
+    JAX function primarily supports primitives that return a single result
+    (``multiple_results=False``), this implementation supports defining independent
+    JVP rules for each input parameter regardless of whether the primitive returns
+    single or multiple results.
 
-    For examples, please see ``test_ad_support.py``.
+    This is particularly useful for custom operations or primitives where different
+    inputs might have different differentiation rules or where the primitive naturally
+    produces multiple outputs that need distinct handling in automatic differentiation.
+
+    For concrete usage examples, refer to the test file ``test_ad_support.py``.
 
     Args:
-      primitive: Primitive, XLACustomOp.
-      *jvp_rules: The JVP translation rule for each primal.
+        primitive: The JAX ``Primitive`` object or an ``XLACustomKernel`` instance
+            for which the JVP rule is being defined. If an ``XLACustomKernel`` is
+            provided, its underlying ``Primitive`` is extracted.
+        *jvp_rules: A variable number of functions, each representing the JVP rule
+            corresponding to a primal input argument of the primitive. Each rule
+            function should accept the tangent vector for its corresponding primal input,
+            followed by all the primal inputs, and any keyword arguments passed to the
+            primitive. It should return the tangent vector(s) corresponding to the
+            primitive's output(s). If a rule is ``None``, it implies the JVP for that
+            input is zero.
     """
+    # Import XLACustomKernel locally to avoid circular dependencies.
     from ._xla_custom_op import XLACustomKernel
 
+    # If the input is an XLACustomKernel, extract the underlying JAX primitive.
     if isinstance(primitive, XLACustomKernel):
         primitive = primitive.primitive
+    # Ensure that the 'primitive' argument is indeed a JAX Primitive object.
     assert isinstance(primitive, Primitive), f'The primitive should be a JAX primitive. But we got {primitive}'
+
+    # Check if the primitive returns multiple results.
     if primitive.multiple_results:
+        # If yes, use the custom _standard_jvp function designed to handle multiple results.
+        # ad.primitive_jvps is the JAX registry for JVP rules.
+        # functools.partial pre-fills the jvp_rules and primitive arguments for _standard_jvp.
         ad.primitive_jvps[primitive] = functools.partial(_standard_jvp, jvp_rules, primitive)
     else:
+        # If no (single result), use the standard JAX JVP handler (ad.standard_jvp).
+        # This maintains compatibility with standard JAX behavior for single-result primitives.
         ad.primitive_jvps[primitive] = functools.partial(ad.standard_jvp, jvp_rules, primitive)
 
 
