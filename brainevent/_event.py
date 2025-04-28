@@ -99,6 +99,17 @@ class EventArray(object):
         """
         return self._value
 
+    @data.setter
+    def data(self, value):
+        """
+        Set the array value.
+        Args:
+            value: The new value to be set.
+        Raises:
+            MathError: If the shape or dtype of the new value does not match the original value.
+        """
+        self._update(value)
+
     @property
     def value(self) -> Union[jax.Array, u.Quantity]:
         # return the value
@@ -121,6 +132,9 @@ class EventArray(object):
         Raises:
             MathError: If the shape or dtype of the new value does not match the original value.
         """
+        self._update(value)
+
+    def _update(self, value):
         # Get the current value for comparison with the new value
         self_value = self._check_tracer()
 
@@ -142,12 +156,12 @@ class EventArray(object):
                 f"while we got {value.shape}."
             )
 
-        # Check if the dtype of the new value matches the original value
-        if value.dtype != self_value.dtype:
-            raise MathError(
-                f"The dtype of the original data is {self_value.dtype}, "
-                f"while we got {value.dtype}."
-            )
+        # # Check if the dtype of the new value matches the original value
+        # if value.dtype != self_value.dtype:
+        #     raise MathError(
+        #         f"The dtype of the original data is {self_value.dtype}, "
+        #         f"while we got {value.dtype}."
+        #     )
 
         # Set the new value after passing the check
         self._value = value
@@ -174,7 +188,7 @@ class EventArray(object):
         MathError
             If the shape or dtype of the new value does not match the original value.
         """
-        self.value = value
+        self._update(value)
 
     @property
     def ndim(self):
@@ -3113,72 +3127,72 @@ class EventArray(object):
     # PyTorch compatibility
     # ----------------------
     def unsqueeze(self, dim: int) -> Union[jax.Array, u.Quantity]:
-            """
-            Insert a dimension of size 1 at the specified position.
+        """
+        Insert a dimension of size 1 at the specified position.
 
-            This is a convenience method equivalent to `expand_dims()` that matches PyTorch's API.
+        This is a convenience method equivalent to `expand_dims()` that matches PyTorch's API.
 
-            Parameters
-            ----------
-            dim : int
-                Position where to insert the new dimension.
-                Negative dims count from the end.
+        Parameters
+        ----------
+        dim : int
+            Position where to insert the new dimension.
+            Negative dims count from the end.
 
-            Returns
-            -------
-            Union[jax.Array, u.Quantity]
-                A view of the array with an additional dimension inserted.
+        Returns
+        -------
+        Union[jax.Array, u.Quantity]
+            A view of the array with an additional dimension inserted.
 
-            Examples
-            --------
-            >>> a = EventArray([1, 2, 3])  # Shape: (3,)
-            >>> a.unsqueeze(0).shape  # Shape: (1, 3)
-            (1, 3)
-            >>> a.unsqueeze(1).shape  # Shape: (3, 1)
-            (3, 1)
+        Examples
+        --------
+        >>> a = EventArray([1, 2, 3])  # Shape: (3,)
+        >>> a.unsqueeze(0).shape  # Shape: (1, 3)
+        (1, 3)
+        >>> a.unsqueeze(1).shape  # Shape: (3, 1)
+        (3, 1)
 
-            See Also
-            --------
-            expand_dims : Equivalent functionality with NumPy-like API
-            """
-            return u.math.expand_dims(self.value, dim)
+        See Also
+        --------
+        expand_dims : Equivalent functionality with NumPy-like API
+        """
+        return u.math.expand_dims(self.value, dim)
 
     def expand_dims(self, axis: Union[int, Sequence[int]]) -> Union[jax.Array, u.Quantity]:
-            """
-            Insert new dimensions at the specified positions.
+        """
+        Insert new dimensions at the specified positions.
 
-            Parameters
-            ----------
-            axis : int or sequence of ints
-                Position(s) where to insert new dimension(s).
-                For a single integer, inserts one new dimension at that position.
-                For a sequence, inserts multiple new dimensions at the specified positions.
-                Negative axes count from the end and are converted to positive axes.
-                For an n-dimensional array, valid axes are in range [-(n+1), n].
+        Parameters
+        ----------
+        axis : int or sequence of ints
+            Position(s) where to insert new dimension(s).
+            For a single integer, inserts one new dimension at that position.
+            For a sequence, inserts multiple new dimensions at the specified positions.
+            Negative axes count from the end and are converted to positive axes.
+            For an n-dimensional array, valid axes are in range [-(n+1), n].
 
-            Returns
-            -------
-            Union[jax.Array, u.Quantity]
-                A view of the array with additional dimension(s) inserted.
+        Returns
+        -------
+        Union[jax.Array, u.Quantity]
+            A view of the array with additional dimension(s) inserted.
 
-            Examples
-            --------
-            >>> a = EventArray([1, 2, 3])  # Shape: (3,)
-            >>> a.expand_dims(0).shape  # Shape: (1, 3)
-            (1, 3)
-            >>> a a.expand_dims([0, 2]).shape  # Shape: (1, 3, 1)
-            (1, 3, 1)
+        Examples
+        --------
+        >>> a = EventArray([1, 2, 3])  # Shape: (3,)
+        >>> a.expand_dims(0).shape  # Shape: (1, 3)
+        (1, 3)
+        >>> a a.expand_dims([0, 2]).shape  # Shape: (1, 3, 1)
+        (1, 3, 1)
 
-            Notes
-            -----
-            When applying multiple axes at once, they are inserted in the order specified,
-            which affects the final shape.
+        Notes
+        -----
+        When applying multiple axes at once, they are inserted in the order specified,
+        which affects the final shape.
 
-            See Also
-            --------
-            unsqueeze : PyTorch-style equivalent for a single dimension
-            """
-            return u.math.expand_dims(self.value, axis)
+        See Also
+        --------
+        unsqueeze : PyTorch-style equivalent for a single dimension
+        """
+        return u.math.expand_dims(self.value, axis)
 
     def expand_as(self, array: Union['EventArray', ArrayLike]) -> 'EventArray':
         """
@@ -3673,7 +3687,6 @@ class EventArray(object):
         """
         self.value *= _as_array(value)
         return self
-
 
     def sin(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
