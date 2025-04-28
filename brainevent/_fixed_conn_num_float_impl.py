@@ -31,7 +31,7 @@ from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type
 
 
-def fixed_post_num_mv_numba_kernel_generator(
+def _fixed_post_num_mv_numba_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs
@@ -75,7 +75,7 @@ def fixed_post_num_mv_numba_kernel_generator(
     return ell_mv
 
 
-def fixed_post_num_mv_warp_kernel_generator(
+def _fixed_post_num_mv_warp_kernel_generator(
     transpose: bool,
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
@@ -155,7 +155,7 @@ def fixed_post_num_mv_warp_kernel_generator(
     return ell_mv
 
 
-def fixed_post_num_mv_pallas_kernel_generator(
+def _fixed_post_num_mv_pallas_kernel_generator(
     block_dim: int,
     shape: Sequence[int],
     transpose: bool,
@@ -263,7 +263,7 @@ def fixed_post_num_mv_pallas_kernel_generator(
         raise NotImplementedError
 
 
-def fixed_post_num_mv_jvp_vector(
+def _fixed_post_num_mv_jvp_vector(
     spk_dot,
     weights,
     indices,
@@ -283,7 +283,7 @@ def fixed_post_num_mv_jvp_vector(
     )
 
 
-def fixed_post_num_mv_jvp_weights(
+def _fixed_post_num_mv_jvp_weights(
     w_dot,
     weights,
     indices,
@@ -303,7 +303,7 @@ def fixed_post_num_mv_jvp_weights(
     )
 
 
-def fixed_post_num_mv_transpose_rule(
+def _fixed_post_num_mv_transpose_rule(
     ct,
     weights,
     indices,
@@ -364,6 +364,7 @@ def _warp_fixed_post_num_mv_call(
     shape: Tuple[int, int],
     transpose: bool,
 ) -> Tuple[Union[jax.Array, u.Quantity]]:
+    assert transpose, "Warp backend does not support non-transpose mode."
     out, weights, n_pre, n_post = check_shape(weights, indices, vector, shape, transpose)
     weights, w_unit = u.split_mantissa_unit(weights)
     vector, v_unit = u.split_mantissa_unit(vector)
@@ -432,11 +433,11 @@ def fixed_post_num_mv_p_call(
 fixed_post_num_mv_p = XLACustomKernel(
     'fixed_post_num_mv',
     cpu_kernel=NumbaKernelGenerator(
-        fixed_post_num_mv_numba_kernel_generator,
+        _fixed_post_num_mv_numba_kernel_generator,
         input_output_aliases={3: 0}
     ),
     gpu_kernel=WarpKernelGenerator(
-        fixed_post_num_mv_warp_kernel_generator,
+        _fixed_post_num_mv_warp_kernel_generator,
         dim=lambda transpose, indices_info, vecto_infor, **kwargs: (
             vecto_infor.shape[0]
             if transpose else
@@ -445,15 +446,15 @@ fixed_post_num_mv_p = XLACustomKernel(
         input_output_aliases={3: 0}
     ),
     tpu_kernel=PallasKernelGenerator(
-        fixed_post_num_mv_pallas_kernel_generator,
+        _fixed_post_num_mv_pallas_kernel_generator,
         block_dim=generate_block_dim,
         input_output_aliases={3: 0}
     ),
 )
 fixed_post_num_mv_p.defjvp(
-    fixed_post_num_mv_jvp_weights,
+    _fixed_post_num_mv_jvp_weights,
     None,
-    fixed_post_num_mv_jvp_vector,
+    _fixed_post_num_mv_jvp_vector,
     None,
 )
-fixed_post_num_mv_p.def_transpose_rule(fixed_post_num_mv_transpose_rule)
+fixed_post_num_mv_p.def_transpose_rule(_fixed_post_num_mv_transpose_rule)

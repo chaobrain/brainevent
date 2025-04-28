@@ -32,7 +32,7 @@ from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type
 
 
-def event_fixed_post_num_mv_numba_kernel_generator(
+def _event_fixed_post_num_mv_cpu_kernel_generator(
     float_as_event: bool,
     weight_info: jax.ShapeDtypeStruct,
     spike_info: jax.ShapeDtypeStruct,
@@ -176,7 +176,7 @@ def event_fixed_post_num_mv_numba_kernel_generator(
     return ell_mv
 
 
-def event_fixed_post_num_mv_warp_kernel_generator(
+def _event_fixed_post_num_mv_gpu_kernel_generator(
     float_as_event: bool,
     transpose: bool,
     weight_info: jax.ShapeDtypeStruct,
@@ -398,7 +398,7 @@ def event_fixed_post_num_mv_warp_kernel_generator(
     return ell_mv
 
 
-def event_fixed_post_num_mv_pallas_kernel_generator(
+def _event_fixed_post_num_mv_tpu_kernel_generator(
     block_dim: int,
     transpose: int,
     shape: Tuple[int, int],
@@ -540,7 +540,7 @@ def event_fixed_post_num_mv_pallas_kernel_generator(
         raise NotImplementedError
 
 
-def event_fixed_post_num_mv_jvp_spikes(
+def _event_fixed_post_num_mv_jvp_spikes(
     spk_dot,
     weights,
     indices,
@@ -560,7 +560,7 @@ def event_fixed_post_num_mv_jvp_spikes(
     )
 
 
-def event_fixed_post_num_mv_jvp_weights(
+def _event_fixed_post_num_mv_jvp_weights(
     w_dot,
     weights,
     indices,
@@ -582,7 +582,7 @@ def event_fixed_post_num_mv_jvp_weights(
     )
 
 
-def event_fixed_post_num_mv_transpose_rule(
+def _event_fixed_post_num_mv_transpose_rule(
     ct,
     weights,
     indices,
@@ -599,7 +599,6 @@ def event_fixed_post_num_mv_transpose_rule(
         raise ValueError("Cannot transpose with respect to sparse indices.")
 
     ct = ct[0]
-    n_conn = indices.shape[1]
 
     # ∂L/∂spk = ∂L/∂y * ∂y/∂spk
     homo = weight_info.size == 1
@@ -670,11 +669,11 @@ def event_fixed_post_num_mv_p_call(
 event_fixed_post_num_mv_p = XLACustomKernel(
     'event_fixed_post_num_mv',
     cpu_kernel=NumbaKernelGenerator(
-        event_fixed_post_num_mv_numba_kernel_generator,
+        _event_fixed_post_num_mv_cpu_kernel_generator,
         input_output_aliases={3: 0}
     ),
     gpu_kernel=WarpKernelGenerator(
-        event_fixed_post_num_mv_warp_kernel_generator,
+        _event_fixed_post_num_mv_gpu_kernel_generator,
         dim=lambda transpose, indices_info, spike_info, **kwargs: (
             spike_info.shape[0]
             if transpose else
@@ -683,17 +682,17 @@ event_fixed_post_num_mv_p = XLACustomKernel(
         input_output_aliases={3: 0}
     ),
     tpu_kernel=PallasKernelGenerator(
-        event_fixed_post_num_mv_pallas_kernel_generator,
+        _event_fixed_post_num_mv_tpu_kernel_generator,
         block_dim=generate_block_dim,
         input_output_aliases={3: 0}
     ),
 )
 event_fixed_post_num_mv_p.defjvp(
-    event_fixed_post_num_mv_jvp_weights,
+    _event_fixed_post_num_mv_jvp_weights,
     None,
-    event_fixed_post_num_mv_jvp_spikes,
+    _event_fixed_post_num_mv_jvp_spikes,
     None,
 )
 event_fixed_post_num_mv_p.def_transpose_rule(
-    event_fixed_post_num_mv_transpose_rule
+    _event_fixed_post_num_mv_transpose_rule
 )
