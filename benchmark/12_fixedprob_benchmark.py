@@ -64,12 +64,18 @@ import jax
 
 import time
 import brainstate
+from utils import visualize
 
 # brainstate.environ.set(platform='cpu')
 
 
-def forward(n_pre, n_post, conn_prob, spk_prob, as_float: bool):
-    linear = brainstate.nn.EventFixedProb(n_pre, n_post, conn_num=conn_prob, conn_weight=brainstate.init.Normal())
+def event_matrix(n_pre, n_post, conn_prob, spk_prob, as_float: bool):
+    linear = brainstate.nn.EventFixedProb(
+        n_pre,
+        n_post,
+        conn_num=conn_prob,
+        conn_weight=brainstate.init.Normal()
+    )
     spike = (brainstate.random.rand(n_pre) < spk_prob)
 
     if as_float:
@@ -101,13 +107,16 @@ def forward(n_pre, n_post, conn_prob, spk_prob, as_float: bool):
         jax.block_until_ready(f2(spike))
     r2 = time.time() - t0
     print(f"n_pre: {n_pre}, n_post: {n_post}, conn_prob: {conn_prob}, spk_prob: {spk_prob}, Matmul: {r2} s")
-    print('Acceleration ratio:', r2 / r1 - 1.)
 
+    ratio = (r2 / r1 - 1.) if r2 > r1 else -(r1 / r2 - 1.)
+    print('Acceleration ratio:', ratio)
     print()
-    brainstate.util.clear_buffer_memory()
+    return ratio
 
 
-def benchmark_forward():
+def benchmark_event_matrix(conn_prob=0.01, spk_prob=0.01):
+    platform = brainstate.environ.get_platform()
+    results = {}
     for n_pre, n_post in [
         (1000, 1000),
         (1000, 10000),
@@ -119,12 +128,16 @@ def benchmark_forward():
         (20000, 30000),
         (30000, 20000),
     ]:
-        forward(n_pre, n_post, 0.01, 0.01, False)
+        r = event_matrix(n_pre, n_post, conn_prob, spk_prob, False)
+        results[f'{n_pre}x{n_post}'] = r
 
+    visualize(
+        results,
+        title=f'Acceleration Ratio (cp={spk_prob}, sp={spk_prob})',
+        filename=f'results/fixed_num_conn-conn_prob={spk_prob}-spk_prob={spk_prob}-{platform}.pdf'
+    )
 
 if __name__ == '__main__':
     pass
-    # forward(1000, 6400, 0.01, 0.01, False)
-    # forward(10000, 12800, 0.01, 0.01, False)
 
-    benchmark_forward()
+    benchmark_event_matrix()
