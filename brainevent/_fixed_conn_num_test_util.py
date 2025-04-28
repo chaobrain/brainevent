@@ -20,7 +20,13 @@ import brainstate as bst
 import jax.numpy as jnp
 
 
-def generate_data(n_pre: int, n_post: int, n_conn: int, replace: bool = True, rng=bst.random.DEFAULT):
+def generate_data(
+    n_pre: int,
+    n_post: int,
+    n_conn: int,
+    replace: bool = True,
+    rng=bst.random.DEFAULT
+):
     if replace:
         indices = rng.randint(0, n_post, (n_pre, n_conn))
     else:

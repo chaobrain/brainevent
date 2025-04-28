@@ -75,6 +75,8 @@ class CSR(u.sparse.SparseMatrix):
     The class also supports various arithmetic operations (+, -, *, /, @) with
     other CSR matrices, dense arrays, and scalars.
     """
+    __module__ = 'brainevent'
+
     data: Data
     indices: Index
     indptr: Indptr
@@ -544,6 +546,8 @@ class CSC(u.sparse.SparseMatrix):
     The class also supports various arithmetic operations (+, -, *, /, @) with
     other CSC matrices, dense arrays, and scalars.
     """
+    __module__ = 'brainevent'
+
     data: Data
     indices: Index
     indptr: Indptr

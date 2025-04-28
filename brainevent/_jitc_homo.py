@@ -70,6 +70,8 @@ class JITHomoMatrix(JITCMatrix):
         Flag indicating the memory layout order of the matrix.
         False (default) for Fortran-order (column-major), True for C-order (row-major).
     """
+    __module__ = 'brainevent'
+
     weight: Union[jax.Array, u.Quantity]
     prob: Union[float, jax.Array]
     seed: Union[int, jax.Array]
@@ -297,41 +299,44 @@ class JITCHomoR(JITHomoMatrix):
 
     Examples
     --------
-    >>> import jax
-    >>> import brainunit as u
-    >>> from brainevent import JITCHomoR
 
-    # Create a homogeneous matrix with value 1.5, probability 0.1, and seed 42
-    >>> homo_matrix = JITCHomoR((1.5, 0.1, 42), shape=(10, 10))
-    >>> homo_matrix
-    JITCHomoR(shape=(10, 10), weight=1.5, prob=0.1, seed=42, corder=False)
+    .. code-block:: python
 
-    # Create a matrix with units
-    >>> weighted_matrix = JITCHomoR((1.5 * u.mV, 0.1, 42), shape=(10, 10))
-    >>> weighted_matrix
-    JITCHomoR(shape=(10, 10), weight=1.5 mV, prob=0.1, seed=42, corder=False)
+        >>> import jax
+        >>> import brainunit as u
+        >>> from brainevent import JITCHomoR
 
-    # Perform matrix-vector multiplication
-    >>> vec = jax.numpy.ones(10)
-    >>> result = homo_matrix @ vec
-    >>> result.shape  # (10,)
+        # Create a homogeneous matrix with value 1.5, probability 0.1, and seed 42
+        >>> homo_matrix = JITCHomoR((1.5, 0.1, 42), shape=(10, 10))
+        >>> homo_matrix
+        JITCHomoR(shape=(10, 10), weight=1.5, prob=0.1, seed=42, corder=False)
 
-    # Apply scalar operations
-    >>> scaled = homo_matrix * 2.0
-    >>> scaled.weight  # 3.0
+        # Create a matrix with units
+        >>> weighted_matrix = JITCHomoR((1.5 * u.mV, 0.1, 42), shape=(10, 10))
+        >>> weighted_matrix
+        JITCHomoR(shape=(10, 10), weight=1.5 mV, prob=0.1, seed=42, corder=False)
 
-    # Arithmetic operations maintain the sparse structure
-    >>> neg_matrix = -homo_matrix
-    >>> neg_matrix.weight  # -1.5
+        # Perform matrix-vector multiplication
+        >>> vec = jax.numpy.ones(10)
+        >>> result = homo_matrix @ vec
+        >>> result.shape  # (10,)
 
-    # Convert to dense representation
-    >>> dense_matrix = homo_matrix.todense()
-    >>> dense_matrix.shape  # (10, 10)
+        # Apply scalar operations
+        >>> scaled = homo_matrix * 2.0
+        >>> scaled.weight  # 3.0
 
-    # Transpose operation returns a column-oriented matrix
-    >>> col_matrix = homo_matrix.transpose()
-    >>> isinstance(col_matrix, JITCHomoC)  # True
-    >>> col_matrix.shape  # (10, 10)
+        # Arithmetic operations maintain the sparse structure
+        >>> neg_matrix = -homo_matrix
+        >>> neg_matrix.weight  # -1.5
+
+        # Convert to dense representation
+        >>> dense_matrix = homo_matrix.todense()
+        >>> dense_matrix.shape  # (10, 10)
+
+        # Transpose operation returns a column-oriented matrix
+        >>> col_matrix = homo_matrix.transpose()
+        >>> isinstance(col_matrix, JITCHomoC)  # True
+        >>> col_matrix.shape  # (10, 10)
 
     Notes
     -----
@@ -343,6 +348,7 @@ class JITCHomoR(JITHomoMatrix):
       the actual sparse structure is materialized only when needed
     - When used with units (e.g., u.mV), units are preserved through operations
     """
+    __module__ = 'brainevent'
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """
@@ -647,41 +653,44 @@ class JITCHomoC(JITHomoMatrix):
 
     Examples
     --------
-    >>> import jax
-    >>> import brainunit as u
-    >>> from brainevent import JITCHomoC
 
-    # Create a homogeneous matrix with value 1.5, probability 0.1, and seed 42
-    >>> homo_matrix = JITCHomoC((1.5, 0.1, 42), shape=(10, 10))
-    >>> homo_matrix
-    JITCHomoC(shape=(10, 10), weight=1.5, prob=0.1, seed=42, corder=False)
+    .. code-block:: python
 
-    # Create a matrix with units
-    >>> weighted_matrix = JITCHomoC((1.5 * u.mV, 0.1, 42), shape=(10, 10))
-    >>> weighted_matrix
-    JITCHomoC(shape=(10, 10), weight=1.5 mV, prob=0.1, seed=42, corder=False)
+        >>> import jax
+        >>> import brainunit as u
+        >>> from brainevent import JITCHomoC
 
-    # Perform matrix-vector multiplication
-    >>> vec = jax.numpy.ones(10)
-    >>> result = homo_matrix @ vec
-    >>> result.shape  # (10,)
+        # Create a homogeneous matrix with value 1.5, probability 0.1, and seed 42
+        >>> homo_matrix = JITCHomoC((1.5, 0.1, 42), shape=(10, 10))
+        >>> homo_matrix
+        JITCHomoC(shape=(10, 10), weight=1.5, prob=0.1, seed=42, corder=False)
 
-    # Apply scalar operations
-    >>> scaled = homo_matrix * 2.0
-    >>> scaled.weight  # 3.0
+        # Create a matrix with units
+        >>> weighted_matrix = JITCHomoC((1.5 * u.mV, 0.1, 42), shape=(10, 10))
+        >>> weighted_matrix
+        JITCHomoC(shape=(10, 10), weight=1.5 mV, prob=0.1, seed=42, corder=False)
 
-    # Arithmetic operations maintain the sparse structure
-    >>> neg_matrix = -homo_matrix
-    >>> neg_matrix.weight  # -1.5
+        # Perform matrix-vector multiplication
+        >>> vec = jax.numpy.ones(10)
+        >>> result = homo_matrix @ vec
+        >>> result.shape  # (10,)
 
-    # Convert to dense representation
-    >>> dense_matrix = homo_matrix.todense()
-    >>> dense_matrix.shape  # (10, 10)
+        # Apply scalar operations
+        >>> scaled = homo_matrix * 2.0
+        >>> scaled.weight  # 3.0
 
-    # Transpose operation returns a row-oriented matrix
-    >>> row_matrix = homo_matrix.transpose()
-    >>> isinstance(row_matrix, JITCHomoR)  # True
-    >>> row_matrix.shape  # (10, 10)
+        # Arithmetic operations maintain the sparse structure
+        >>> neg_matrix = -homo_matrix
+        >>> neg_matrix.weight  # -1.5
+
+        # Convert to dense representation
+        >>> dense_matrix = homo_matrix.todense()
+        >>> dense_matrix.shape  # (10, 10)
+
+        # Transpose operation returns a row-oriented matrix
+        >>> row_matrix = homo_matrix.transpose()
+        >>> isinstance(row_matrix, JITCHomoR)  # True
+        >>> row_matrix.shape  # (10, 10)
 
     Notes
     -----
@@ -694,6 +703,7 @@ class JITCHomoC(JITHomoMatrix):
       the actual sparse structure is materialized only when needed
     - When used with units (e.g., u.mV), units are preserved through operations
     """
+    __module__ = 'brainevent'
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """
