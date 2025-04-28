@@ -74,6 +74,8 @@ class JITNormalMatrix(JITCMatrix):
         Flag indicating the memory layout order of the matrix.
         False (default) for Fortran-order (column-major), True for C-order (row-major).
     """
+    __module__ = 'brainevent'
+
     wloc: Union[jax.Array, u.Quantity]
     wscale: Union[jax.Array, u.Quantity]
     prob: Union[float, jax.Array]
@@ -306,27 +308,30 @@ class JITCNormalR(JITNormalMatrix):
 
     Examples
     --------
-    >>> import jax
-    >>> import brainunit as u
-    >>> from brainevent import JITCNormalR
 
-    # Create a normal distribution matrix with mean 1.5, std 0.2, probability 0.1, and seed 42
-    >>> normal_matrix = JITCNormalR((1.5, 0.2, 0.1, 42), shape=(10, 10))
-    >>> normal_matrix
-    JITCNormalR(shape=(10, 10), wloc=1.5, wscale=0.2, prob=0.1, seed=42, corder=False)
+    .. code-block:: python
 
-    >>> # Perform matrix-vector multiplication
-    >>> vec = jax.numpy.ones(10)
-    >>> result = normal_matrix @ vec
+        >>> import jax
+        >>> import brainunit as u
+        >>> from brainevent import JITCNormalR
 
-    >>> # Apply scalar operation
-    >>> scaled = normal_matrix * 2.0
+        # Create a normal distribution matrix with mean 1.5, std 0.2, probability 0.1, and seed 42
+        >>> normal_matrix = JITCNormalR((1.5, 0.2, 0.1, 42), shape=(10, 10))
+        >>> normal_matrix
+        JITCNormalR(shape=(10, 10), wloc=1.5, wscale=0.2, prob=0.1, seed=42, corder=False)
 
-    >>> # Convert to dense representation
-    >>> dense_matrix = normal_matrix.todense()
+        >>> # Perform matrix-vector multiplication
+        >>> vec = jax.numpy.ones(10)
+        >>> result = normal_matrix @ vec
 
-    >>> # Transpose operation returns a JITCNormalC instance
-    >>> col_matrix = normal_matrix.transpose()
+        >>> # Apply scalar operation
+        >>> scaled = normal_matrix * 2.0
+
+        >>> # Convert to dense representation
+        >>> dense_matrix = normal_matrix.todense()
+
+        >>> # Transpose operation returns a JITCNormalC instance
+        >>> col_matrix = normal_matrix.transpose()
 
     Notes
     -----
@@ -335,6 +340,7 @@ class JITCNormalR(JITNormalMatrix):
     - Well-suited for neural network connectivity matrices with normally distributed weights
     - Optimized for matrix-vector operations common in neural simulations
     """
+    __module__ = 'brainevent'
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """
@@ -641,27 +647,30 @@ class JITCNormalC(JITNormalMatrix):
 
     Examples
     --------
-    >>> import jax
-    >>> import brainunit as u
-    >>> from brainevent import JITCNormalC
 
-    # Create a normal distribution matrix with mean 1.5, std 0.2, probability 0.1, and seed 42
-    >>> normal_matrix = JITCNormalC((1.5, 0.2, 0.1, 42), shape=(10, 10))
-    >>> normal_matrix
-    JITCNormalC(shape=(10, 10), wloc=1.5, wscale=0.2, prob=0.1, seed=42, corder=False)
+    .. code-block:: python
 
-    >>> # Perform matrix-vector multiplication
-    >>> vec = jax.numpy.ones(10)
-    >>> result = normal_matrix @ vec
+        >>> import jax
+        >>> import brainunit as u
+        >>> from brainevent import JITCNormalC
 
-    >>> # Apply scalar operation
-    >>> scaled = normal_matrix * 2.0
+        # Create a normal distribution matrix with mean 1.5, std 0.2, probability 0.1, and seed 42
+        >>> normal_matrix = JITCNormalC((1.5, 0.2, 0.1, 42), shape=(10, 10))
+        >>> normal_matrix
+        JITCNormalC(shape=(10, 10), wloc=1.5, wscale=0.2, prob=0.1, seed=42, corder=False)
 
-    >>> # Convert to dense representation
-    >>> dense_matrix = normal_matrix.todense()
+        >>> # Perform matrix-vector multiplication
+        >>> vec = jax.numpy.ones(10)
+        >>> result = normal_matrix @ vec
 
-    >>> # Transpose operation returns a JITCNormalR instance
-    >>> row_matrix = normal_matrix.transpose()
+        >>> # Apply scalar operation
+        >>> scaled = normal_matrix * 2.0
+
+        >>> # Convert to dense representation
+        >>> dense_matrix = normal_matrix.todense()
+
+        >>> # Transpose operation returns a JITCNormalR instance
+        >>> row_matrix = normal_matrix.transpose()
 
     Notes
     -----
@@ -671,6 +680,7 @@ class JITCNormalC(JITNormalMatrix):
     - Well-suited for neural network connectivity matrices with normally distributed weights
     - Optimized for matrix-vector operations common in neural simulations
     """
+    __module__ = 'brainevent'
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """

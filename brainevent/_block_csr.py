@@ -33,6 +33,8 @@ class BlockCSR(u.sparse.SparseMatrix):
     """
     Unit-aware Block-CSR sparse matrix.
     """
+    __module__ = 'brainevent'
+
     data: Union[jax.Array, u.Quantity]  # float32[n_blocks, *block_size]
     indptr: jax.Array  # int32[n_block_rows + 1]
     indices: jax.Array  # int32[n_blocks]

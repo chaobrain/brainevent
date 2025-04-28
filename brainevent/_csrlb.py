@@ -81,6 +81,8 @@ class CSR_LB(CSR):
     dtype : dtype
         Data type of the matrix values.
     """
+    __module__ = 'brainevent'
+
     data: Union[jax.Array, u.Quantity]
     indices: jax.Array
     indptr: jax.Array
@@ -454,6 +456,8 @@ class CSC_LB(CSC):
     dtype : dtype
         Data type of the matrix values.
     """
+    __module__ = 'brainevent'
+
     data: Union[jax.Array, u.Quantity]
     indices: jax.Array
     indptr: jax.Array

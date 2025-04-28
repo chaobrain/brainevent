@@ -73,6 +73,8 @@ class JITUniformMatrix(JITCMatrix):
         Flag indicating the memory layout order of the matrix.
         False (default) for Fortran-order (column-major), True for C-order (row-major).
     """
+    __module__ = 'brainevent'
+
     wlow: Union[jax.Array, u.Quantity]
     whigh: Union[jax.Array, u.Quantity]
     prob: Union[float, jax.Array]
@@ -348,45 +350,48 @@ class JITCUniformR(JITUniformMatrix):
 
     Examples
     --------
-    >>> import jax
-    >>> import brainunit as u
-    >>> from brainevent import JITCUniformR
 
-    # Create a uniform matrix with bounds [0.1, 0.5], probability 0.2, and seed 42
-    >>> uniform_matrix = JITCUniformR((0.1, 0.5, 0.2, 42), shape=(10, 10))
-    >>> uniform_matrix
-    JITCUniformR(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42, corder=False)
+    .. code-block:: python
 
-    # Create a uniform matrix with units
-    >>> uniform_matrix_mv = JITCUniformR((0.1 * u.mV, 0.5 * u.mV, 0.2, 42), shape=(10, 10))
+        >>> import jax
+        >>> import brainunit as u
+        >>> from brainevent import JITCUniformR
 
-    # Perform matrix-vector multiplication
-    >>> vec = jax.numpy.ones(10)
-    >>> result = uniform_matrix @ vec
-    >>> # Each element in result is a weighted sum using uniformly distributed weights
+        # Create a uniform matrix with bounds [0.1, 0.5], probability 0.2, and seed 42
+        >>> uniform_matrix = JITCUniformR((0.1, 0.5, 0.2, 42), shape=(10, 10))
+        >>> uniform_matrix
+        JITCUniformR(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42, corder=False)
 
-    # Apply scalar operation (scales both lower and upper bounds)
-    >>> scaled = uniform_matrix * 2.0
-    >>> print(scaled.wlow, scaled.whigh)  # 0.2 1.0
+        # Create a uniform matrix with units
+        >>> uniform_matrix_mv = JITCUniformR((0.1 * u.mV, 0.5 * u.mV, 0.2, 42), shape=(10, 10))
 
-    # Convert to dense representation
-    >>> dense_matrix = uniform_matrix.todense()
-    >>> # dense_matrix has shape (10, 10) with ~20% non-zero elements
-    >>> # each non-zero element is uniformly distributed between 0.1 and 0.5
+        # Perform matrix-vector multiplication
+        >>> vec = jax.numpy.ones(10)
+        >>> result = uniform_matrix @ vec
+        >>> # Each element in result is a weighted sum using uniformly distributed weights
 
-    # Transpose operation returns a JITCUniformC instance
-    >>> col_matrix = uniform_matrix.transpose()
-    >>> isinstance(col_matrix, JITCUniformC)  # True
+        # Apply scalar operation (scales both lower and upper bounds)
+        >>> scaled = uniform_matrix * 2.0
+        >>> print(scaled.wlow, scaled.whigh)  # 0.2 1.0
 
-    # Update bounds while preserving connectivity pattern
-    >>> updated = uniform_matrix.with_data(0.2, 0.8)
-    >>> print(updated.wlow, updated.whigh)  # 0.2 0.8
+        # Convert to dense representation
+        >>> dense_matrix = uniform_matrix.todense()
+        >>> # dense_matrix has shape (10, 10) with ~20% non-zero elements
+        >>> # each non-zero element is uniformly distributed between 0.1 and 0.5
 
-    # Use with JAX transformations
-    >>> @jax.jit
-    ... def matrix_vector_product(mat, vec):
-    ...     return mat @ vec
-    >>> result_jit = matrix_vector_product(uniform_matrix, vec)
+        # Transpose operation returns a JITCUniformC instance
+        >>> col_matrix = uniform_matrix.transpose()
+        >>> isinstance(col_matrix, JITCUniformC)  # True
+
+        # Update bounds while preserving connectivity pattern
+        >>> updated = uniform_matrix.with_data(0.2, 0.8)
+        >>> print(updated.wlow, updated.whigh)  # 0.2 0.8
+
+        # Use with JAX transformations
+        >>> @jax.jit
+        ... def matrix_vector_product(mat, vec):
+        ...     return mat @ vec
+        >>> result_jit = matrix_vector_product(uniform_matrix, vec)
 
     Notes
     -----
@@ -397,6 +402,7 @@ class JITCUniformR(JITUniformMatrix):
     - The actual matrix elements are never explicitly stored, only generated during operations
     - Using the same seed always produces the same random connectivity pattern and weights
     """
+    __module__ = 'brainevent'
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """
@@ -709,55 +715,58 @@ class JITCUniformC(JITUniformMatrix):
 
     Examples
     --------
-    >>> import jax
-    >>> import brainunit as u
-    >>> from brainevent import JITCUniformC
 
-    # Create a uniform matrix with bounds [0.1, 0.5], probability 0.2, and seed 42
-    >>> uniform_matrix = JITCUniformC((0.1, 0.5, 0.2, 42), shape=(10, 10))
-    >>> uniform_matrix
-    JITCUniformC(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42, corder=False)
+    .. code-block:: python
 
-    # Create a uniform matrix with units
-    >>> uniform_matrix_mv = JITCUniformC((0.1 * u.mV, 0.5 * u.mV, 0.2, 42), shape=(10, 10))
+        >>> import jax
+        >>> import brainunit as u
+        >>> from brainevent import JITCUniformC
 
-    # Perform matrix-vector multiplication
-    >>> vec = jax.numpy.ones(10)
-    >>> result = uniform_matrix @ vec
-    >>> # Each element in result is a weighted sum using uniformly distributed weights
+        # Create a uniform matrix with bounds [0.1, 0.5], probability 0.2, and seed 42
+        >>> uniform_matrix = JITCUniformC((0.1, 0.5, 0.2, 42), shape=(10, 10))
+        >>> uniform_matrix
+        JITCUniformC(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42, corder=False)
 
-    # Apply scalar operation (scales both lower and upper bounds)
-    >>> scaled = uniform_matrix * 2.0
-    >>> print(scaled.wlow, scaled.whigh)  # 0.2 1.0
+        # Create a uniform matrix with units
+        >>> uniform_matrix_mv = JITCUniformC((0.1 * u.mV, 0.5 * u.mV, 0.2, 42), shape=(10, 10))
 
-    # Convert to dense representation
-    >>> dense_matrix = uniform_matrix.todense()
-    >>> # dense_matrix has shape (10, 10) with ~20% non-zero elements
-    >>> # each non-zero element is uniformly distributed between 0.1 and 0.5
+        # Perform matrix-vector multiplication
+        >>> vec = jax.numpy.ones(10)
+        >>> result = uniform_matrix @ vec
+        >>> # Each element in result is a weighted sum using uniformly distributed weights
 
-    # Transpose operation returns a JITCUniformR instance
-    >>> row_matrix = uniform_matrix.transpose()
-    >>> isinstance(row_matrix, JITCUniformR)  # True
+        # Apply scalar operation (scales both lower and upper bounds)
+        >>> scaled = uniform_matrix * 2.0
+        >>> print(scaled.wlow, scaled.whigh)  # 0.2 1.0
 
-    # Update bounds while preserving connectivity pattern
-    >>> updated = uniform_matrix.with_data(0.2, 0.8)
-    >>> print(updated.wlow, updated.whigh)  # 0.2 0.8
+        # Convert to dense representation
+        >>> dense_matrix = uniform_matrix.todense()
+        >>> # dense_matrix has shape (10, 10) with ~20% non-zero elements
+        >>> # each non-zero element is uniformly distributed between 0.1 and 0.5
 
-    # Use with JAX transformations
-    >>> @jax.jit
-    ... def matrix_vector_product(mat, vec):
-    ...     return mat @ vec
-    >>> result_jit = matrix_vector_product(uniform_matrix, vec)
+        # Transpose operation returns a JITCUniformR instance
+        >>> row_matrix = uniform_matrix.transpose()
+        >>> isinstance(row_matrix, JITCUniformR)  # True
 
-    # Matrix-matrix multiplication
-    >>> mat = jax.numpy.ones((10, 5))
-    >>> result_mat = uniform_matrix @ mat
-    >>> result_mat.shape  # (10, 5)
+        # Update bounds while preserving connectivity pattern
+        >>> updated = uniform_matrix.with_data(0.2, 0.8)
+        >>> print(updated.wlow, updated.whigh)  # 0.2 0.8
 
-    # Right matrix multiplication
-    >>> mat = jax.numpy.ones((5, 10))
-    >>> result_rmat = mat @ uniform_matrix
-    >>> result_rmat.shape  # (5, 10)
+        # Use with JAX transformations
+        >>> @jax.jit
+        ... def matrix_vector_product(mat, vec):
+        ...     return mat @ vec
+        >>> result_jit = matrix_vector_product(uniform_matrix, vec)
+
+        # Matrix-matrix multiplication
+        >>> mat = jax.numpy.ones((10, 5))
+        >>> result_mat = uniform_matrix @ mat
+        >>> result_mat.shape  # (10, 5)
+
+        # Right matrix multiplication
+        >>> mat = jax.numpy.ones((5, 10))
+        >>> result_rmat = mat @ uniform_matrix
+        >>> result_rmat.shape  # (5, 10)
 
     Notes
     -----
@@ -769,6 +778,8 @@ class JITCUniformC(JITUniformMatrix):
     - The actual matrix elements are never explicitly stored, only generated during operations
     - Using the same seed always produces the same random connectivity pattern and weights
     """
+    __module__ = 'brainevent'
+
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """
         Converts the sparse column-oriented homogeneous matrix to dense format.
