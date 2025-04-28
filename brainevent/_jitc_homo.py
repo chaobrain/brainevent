@@ -70,6 +70,8 @@ class JITHomoMatrix(JITCMatrix):
         Flag indicating the memory layout order of the matrix.
         False (default) for Fortran-order (column-major), True for C-order (row-major).
     """
+    __module__ = 'brainevent'
+
     weight: Union[jax.Array, u.Quantity]
     prob: Union[float, jax.Array]
     seed: Union[int, jax.Array]
@@ -346,6 +348,7 @@ class JITCHomoR(JITHomoMatrix):
       the actual sparse structure is materialized only when needed
     - When used with units (e.g., u.mV), units are preserved through operations
     """
+    __module__ = 'brainevent'
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """
@@ -700,6 +703,7 @@ class JITCHomoC(JITHomoMatrix):
       the actual sparse structure is materialized only when needed
     - When used with units (e.g., u.mV), units are preserved through operations
     """
+    __module__ = 'brainevent'
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """

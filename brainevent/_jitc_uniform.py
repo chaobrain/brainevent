@@ -73,6 +73,8 @@ class JITUniformMatrix(JITCMatrix):
         Flag indicating the memory layout order of the matrix.
         False (default) for Fortran-order (column-major), True for C-order (row-major).
     """
+    __module__ = 'brainevent'
+
     wlow: Union[jax.Array, u.Quantity]
     whigh: Union[jax.Array, u.Quantity]
     prob: Union[float, jax.Array]
@@ -400,6 +402,7 @@ class JITCUniformR(JITUniformMatrix):
     - The actual matrix elements are never explicitly stored, only generated during operations
     - Using the same seed always produces the same random connectivity pattern and weights
     """
+    __module__ = 'brainevent'
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """
@@ -775,6 +778,8 @@ class JITCUniformC(JITUniformMatrix):
     - The actual matrix elements are never explicitly stored, only generated during operations
     - Using the same seed always produces the same random connectivity pattern and weights
     """
+    __module__ = 'brainevent'
+
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """
         Converts the sparse column-oriented homogeneous matrix to dense format.

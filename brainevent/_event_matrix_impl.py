@@ -202,11 +202,10 @@ matrix_event_mm_p.def_transpose_rule(_matrix_event_mm_transpose_rule)
 
 
 def event_matrix_mm(
-    weights,
     spikes,
+    weights,
     *,
     float_as_event: bool = True,
-    transpose: bool = False,
 ):
     with jax.ensure_compile_time_eval():
         weights = u.math.asarray(weights)
@@ -214,10 +213,9 @@ def event_matrix_mm(
     weight_val, wunit = u.split_mantissa_unit(weights)
     spk_val, spkunit = u.split_mantissa_unit(spikes)
     r = event_matrix_mm_p_call(
-        weight_val,
         spk_val,
+        weight_val,
         float_as_event=float_as_event,
-        transpose=transpose
     )
     return u.maybe_decimal(r[0] * wunit * spkunit)
 
@@ -235,7 +233,7 @@ def _event_matrix_mm_cpu_kernel_generator(
         # spikes: [k, n]
 
         if spk_info.dtype == jnp.bool_:
-            def _kernel(weights, spikes, posts):
+            def _kernel(spikes, weights, posts):
                 posts[:] = 0.
                 for i_k in range(spikes.shape[0]):
                     col = weights[i_k]
@@ -244,7 +242,7 @@ def _event_matrix_mm_cpu_kernel_generator(
                             posts[i_n] += col
 
         elif float_as_event:
-            def _kernel(weights, spikes, posts):
+            def _kernel(spikes, weights, posts):
                 posts[:] = 0.
                 for i_k in range(spikes.shape[0]):
                     col = weights[i_k]
@@ -253,7 +251,7 @@ def _event_matrix_mm_cpu_kernel_generator(
                             posts[i_n] += col
 
         else:
-            def _kernel(weights, spikes, posts):
+            def _kernel(spikes, weights, posts):
                 posts[:] = 0.
                 for i_k in range(spikes.shape[0]):
                     col = weights[i_k]
@@ -267,7 +265,7 @@ def _event_matrix_mm_cpu_kernel_generator(
         # spikes: [k, n]
 
         if spk_info.dtype == jnp.bool_:
-            def _kernel(weights, spikes, posts):
+            def _kernel(spikes, weights, posts):
                 posts[:] = 0.
                 for i_k in range(spikes.shape[0]):
                     col = weights[:, i_k]
@@ -276,7 +274,7 @@ def _event_matrix_mm_cpu_kernel_generator(
                             posts[:, i_n] += col
 
         elif float_as_event:
-            def _kernel(weights, spikes, posts):
+            def _kernel(spikes, weights, posts):
                 posts[:] = 0.
                 for i_k in range(spikes.shape[0]):
                     col = weights[:, i_k]
@@ -285,7 +283,7 @@ def _event_matrix_mm_cpu_kernel_generator(
                             posts[:, i_n] += col
 
         else:
-            def _kernel(weights, spikes, posts):
+            def _kernel(spikes, weights, posts):
                 posts[:] = 0.
                 for i_k in range(spikes.shape[0]):
                     col = weights[:, i_k]
@@ -316,8 +314,8 @@ def _event_matrix_mm_gpu_kernel_generator(
     if transpose:
         if spk_info.dtype == jnp.bool_:
             def kernel(
-                weight_ref: warp.array2d(dtype=weight_dtype),
                 spike_ref: warp.array1d(dtype=spike_dtype),
+                weight_ref: warp.array2d(dtype=weight_dtype),
                 out_ref: warp.array1d(dtype=weight_dtype),
             ):
                 i_col = warp.tid()
@@ -330,8 +328,8 @@ def _event_matrix_mm_gpu_kernel_generator(
 
         elif float_as_event:
             def kernel(
-                weight_ref: warp.array2d(dtype=weight_dtype),
                 spike_ref: warp.array1d(dtype=spike_dtype),
+                weight_ref: warp.array2d(dtype=weight_dtype),
                 out_ref: warp.array1d(dtype=weight_dtype),
             ):
                 i_col = warp.tid()
@@ -344,8 +342,8 @@ def _event_matrix_mm_gpu_kernel_generator(
 
         else:
             def kernel(
-                weight_ref: warp.array2d(dtype=weight_dtype),
                 spike_ref: warp.array1d(dtype=spike_dtype),
+                weight_ref: warp.array2d(dtype=weight_dtype),
                 out_ref: warp.array1d(dtype=weight_dtype),
             ):
                 i_col = warp.tid()
@@ -360,9 +358,9 @@ def _event_matrix_mm_gpu_kernel_generator(
     else:
         if spk_info.dtype == jnp.bool_:
             def kernel(
+                spike_ref: warp.array1d(dtype=spike_dtype),
                 weight_ref: warp.array2d(dtype=weight_dtype),
-                spike_ref: warp.array2d(dtype=spike_dtype),
-                out_ref: warp.array2d(dtype=weight_dtype)
+                out_ref: warp.array1d(dtype=weight_dtype),
             ):
                 # output tile index
                 i, j = warp.tid()
@@ -380,8 +378,8 @@ def _event_matrix_mm_gpu_kernel_generator(
 
         elif float_as_event:
             def kernel(
-                weight_ref: warp.array2d(dtype=weight_dtype),
                 spike_ref: warp.array1d(dtype=spike_dtype),
+                weight_ref: warp.array2d(dtype=weight_dtype),
                 out_ref: warp.array1d(dtype=weight_dtype),
             ):
                 i_col = warp.tid()
@@ -395,8 +393,8 @@ def _event_matrix_mm_gpu_kernel_generator(
 
         else:
             def kernel(
-                weight_ref: warp.array2d(dtype=weight_dtype),
                 spike_ref: warp.array1d(dtype=spike_dtype),
+                weight_ref: warp.array2d(dtype=weight_dtype),
                 out_ref: warp.array1d(dtype=weight_dtype),
             ):
                 i_col = warp.tid()
@@ -412,18 +410,18 @@ def _event_matrix_mm_gpu_kernel_generator(
     return warp.kernel(kernel)
 
 
-def _event_matrix_mm_jvp_weights(w_dot, weights, spikes, *, float_as_event, transpose, **kwargs):
-    return event_matrix_mm_p_call(w_dot, spikes, transpose=transpose, float_as_event=float_as_event)
+def _event_matrix_mm_jvp_weights(w_dot, spikes, weights, *, float_as_event, **kwargs):
+    return event_matrix_mm_p_call(spikes, w_dot, float_as_event=float_as_event)
 
 
-def _event_matrix_mm_jvp_spikes(spk_dot, weights, spikes, *, transpose, **kwargs):
+def _event_matrix_mm_jvp_spikes(spk_dot, spikes, weights, **kwargs):
     if transpose:
         return [spk_dot @ weights]
     else:
         return [weights @ spk_dot]
 
 
-def _event_matrix_mm_transpose_rule(ct, weights, spikes, *, transpose, **kwargs):
+def _event_matrix_mm_transpose_rule(ct, spikes, weights, **kwargs):
     if ad.is_undefined_primal(spikes):
         if transpose:
             ct_events = jnp.matmul(weights, ct[0])
@@ -440,18 +438,17 @@ def _event_matrix_mm_transpose_rule(ct, weights, spikes, *, transpose, **kwargs)
         return (ad.Zero(weights) if type(ct[0]) is ad.Zero else ct_weights), spikes
 
 
-def event_matrix_mm_p_call(weights, spikes, *, transpose: bool, float_as_event: bool):
+def event_matrix_mm_p_call(spikes, weights, *, float_as_event: bool):
     if transpose:
         out = jax.ShapeDtypeStruct([weights.shape[1]], weights.dtype)
     else:
         out = jax.ShapeDtypeStruct([weights.shape[0]], weights.dtype)
 
     return event_matrix_mm_p(
-        weights,
         spikes,
+        weights,
         outs=[out],
         float_as_event=float_as_event,
-        transpose=transpose,
         spk_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         TILE_SIZE=spikes.shape[0],
@@ -463,13 +460,9 @@ event_matrix_mm_p = XLACustomKernel(
     cpu_kernel=NumbaKernelGenerator(_event_matrix_mm_cpu_kernel_generator),
     gpu_kernel=WarpKernelGenerator(
         _event_matrix_mm_gpu_kernel_generator,
-        tile=lambda weight_info, transpose, **kwargs: (
-            cdiv(weight_info.shape[1], N_THREAD)
-            if transpose else
-            cdiv(weight_info.shape[0], N_THREAD)
-        ),
+        tile=lambda weight_info, transpose, **kwargs: cdiv(weight_info.shape[1], N_THREAD),
         block_dim=N_THREAD,
     ),
 )
-event_matrix_mm_p.defjvp(_event_matrix_mm_jvp_weights, _event_matrix_mm_jvp_spikes)
+event_matrix_mm_p.defjvp(_event_matrix_mm_jvp_spikes, _event_matrix_mm_jvp_weights, )
 event_matrix_mm_p.def_transpose_rule(_event_matrix_mm_transpose_rule)

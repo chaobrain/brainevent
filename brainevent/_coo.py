@@ -91,6 +91,8 @@ class COO(u.sparse.SparseMatrix):
     This class is registered as a PyTree node for JAX, allowing it to be used
     with JAX transformations and compiled functions.
     """
+    __module__ = 'brainevent'
+
     data: Data
     row: Index
     col: Index

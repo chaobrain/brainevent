@@ -61,6 +61,7 @@ class EventArray(object):
     The base array class for representing events.
     """
     __slots__ = ('_value',)
+    __module__ = 'brainevent'
 
     def __init__(self, value, dtype: Any = None):
         """

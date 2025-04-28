@@ -74,6 +74,8 @@ class JITNormalMatrix(JITCMatrix):
         Flag indicating the memory layout order of the matrix.
         False (default) for Fortran-order (column-major), True for C-order (row-major).
     """
+    __module__ = 'brainevent'
+
     wloc: Union[jax.Array, u.Quantity]
     wscale: Union[jax.Array, u.Quantity]
     prob: Union[float, jax.Array]
@@ -338,6 +340,7 @@ class JITCNormalR(JITNormalMatrix):
     - Well-suited for neural network connectivity matrices with normally distributed weights
     - Optimized for matrix-vector operations common in neural simulations
     """
+    __module__ = 'brainevent'
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """
@@ -677,6 +680,7 @@ class JITCNormalC(JITNormalMatrix):
     - Well-suited for neural network connectivity matrices with normally distributed weights
     - Optimized for matrix-vector operations common in neural simulations
     """
+    __module__ = 'brainevent'
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """

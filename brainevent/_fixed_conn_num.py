@@ -41,6 +41,8 @@ class FixedPostNumConn(u.sparse.SparseMatrix):
     """
     Fixed total number of postsynaptic neurons.
     """
+    __module__ = 'brainevent'
+
     data: Data
     indices: Index
     shape: MatrixShape
@@ -314,6 +316,8 @@ class FixedPreNumConn(u.sparse.SparseMatrix):
     """
     Fixed total number of pre-synaptic neurons.
     """
+    __module__ = 'brainevent'
+
     data: Data
     indices: Index
     shape: MatrixShape

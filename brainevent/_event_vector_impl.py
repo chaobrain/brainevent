@@ -42,37 +42,6 @@ def matrix_event_mv(
     *,
     float_as_event: bool = True,
 ):
-    r"""
-    Multiply event vector by matrix, computing either weights @ spikes or weights.T @ spikes.
-
-    This function is optimized for sparse event vectors, where most elements are zero or false.
-    The implementation uses custom kernels for efficient computation on CPU/GPU hardware.
-
-    For matrix-vector multiplication: y = W @ x (or y = W.T @ x when transpose=True)
-
-    Mathematical formulations:
-    - Standard mode (transpose=False): output[i] = sum_j(weights[i,j] * spikes[j])
-    - Transpose mode (transpose=True): output[j] = sum_i(weights[i,j] * spikes[i])
-
-    The function handles three types of event vectors:
-    1. Boolean events (spikes is a boolean array): Only indices where spikes[i]=True contribute
-    2. Float events treated as events (float_as_event=True): Only non-zero values contribute
-    3. Float events treated as values (float_as_event=False): Non-zero values are scaled by their value
-
-    Args:
-        weights: A matrix of shape (M, N) representing synaptic weights or connection strengths
-        spikes: An event vector of shape (N,) for standard mode or (M,) for transpose mode
-        float_as_event: If True, treat non-zero float values as binary events.
-                        If False, use the actual float values for scaling. Default: True.
-
-    Returns:
-        An array representing the result of the matrix-vector product, with shape (M,) for
-        standard mode or (N,) for transpose mode. Preserves units from the input arrays.
-
-    Note:
-        The function leverages custom XLA kernels for efficient sparse computation and
-        handles unit management through the brainunit library.
-    """
     with jax.ensure_compile_time_eval():
         weights = u.math.asarray(weights)
         spikes = u.math.asarray(spikes)
@@ -137,14 +106,14 @@ def _matrix_event_mv_gpu_kernel_generator(
             spike_ref: warp.array1d(dtype=spike_dtype),
             out_ref: warp.array1d(dtype=weight_dtype),
         ):
-            i_col = warp.tid()
+            i_row = warp.tid()
             spikes = warp.tile_load(spike_ref, shape=(TILE_SIZE,))
             temp = warp.tile_zeros(shape=(block_dim,), dtype=weight_dtype)
             for j in range(TILE_SIZE):
                 if spikes[j]:
-                    data = warp.tile_load(weight_ref, shape=(block_dim, 1), offset=(i_col * block_dim, j))
+                    data = warp.tile_load(weight_ref, shape=(block_dim, 1), offset=(i_row * block_dim, j))
                     temp += data[:, 0]  # TODO
-            warp.tile_store(out_ref, temp, offset=(i_col * block_dim,))
+            warp.tile_store(out_ref, temp, offset=(i_row * block_dim,))
 
     elif float_as_event:
         def kernel(
@@ -209,6 +178,9 @@ def _matrix_event_batching(args, axes, **kwargs):
 
 
 def matrix_event_mv_p_call(weights, spikes, *, float_as_event: bool):
+    assert spikes.shape[0] == weights.shape[1], (
+        f"spikes shape {spikes.shape} and weights shape {weights.shape} are not compatible"
+    )
     out = jax.ShapeDtypeStruct([weights.shape[0]], weights.dtype)
     return matrix_event_mv_p(
         weights,
@@ -256,7 +228,6 @@ def event_matrix_mv(
 
 def _event_matrix_mv_cpu_kernel_generator(
     float_as_event: bool,
-    transpose: bool,
     spk_info: jax.ShapeDtypeStruct,
     **kwargs
 ) -> Kernel:
@@ -290,7 +261,6 @@ def _event_matrix_mv_cpu_kernel_generator(
 def _event_matrix_mv_gpu_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     spk_info: jax.ShapeDtypeStruct,
-    transpose: bool,
     float_as_event: bool,
     TILE_SIZE: int,
     block_dim: int,
@@ -377,6 +347,10 @@ def _event_matrix_batching(args, axes, **kwargs):
 
 
 def event_matrix_mv_p_call(spikes, weights, *, float_as_event: bool):
+    assert spikes.shape[0] == weights.shape[0], (
+        f"shapes {spikes.shape} and {weights.shape} not aligned: "
+        f"{spikes.shape[0]} (dim 0) != {weights.shape[0]} (dim 0)"
+    )
     out = jax.ShapeDtypeStruct([weights.shape[1]], weights.dtype)
     return event_matrix_mv_p(
         spikes,
