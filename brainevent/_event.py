@@ -837,7 +837,7 @@ class EventArray(object):
             else:  # self.ndim == 2
                 return event_matrix_mm(self.value, oc, )
         else:
-            return oc.__matmul__(self)
+            return oc.__rmatmul__(self)
 
     def __rmatmul__(self, oc):
         """
