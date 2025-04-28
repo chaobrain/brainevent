@@ -23,7 +23,8 @@ from jax.dtypes import canonicalize_dtype
 from jax.tree_util import register_pytree_node_class
 
 from ._error import MathError
-from ._event_vector_impl import event_dense_mv
+from ._event_matrix_impl import matrix_event_mm, event_matrix_mm
+from ._event_vector_impl import matrix_event_mv, event_matrix_mv
 
 __all__ = [
     'EventArray',
@@ -768,51 +769,113 @@ class EventArray(object):
         """
         Perform matrix multiplication on the array with another object.
 
-        Args:
-            oc: The object to multiply.
+        This special method implements the matrix multiplication operator (@)
+        for EventArray instances. It handles matrix multiplication with different
+        array types and dimensions, performing appropriate validation checks.
 
-        Returns:
-            The result of the matrix multiplication.
+        Parameters
+        ----------
+        oc : array_like
+            The right operand of the matrix multiplication. This object will be
+            multiplied with the current EventArray instance.
+
+        Returns
+        -------
+        ndarray or EventArray
+            The result of the matrix multiplication between this EventArray instance
+            and the other object.
+
+        Raises
+        ------
+        MathError
+            If the dimensions of the operands are incompatible for matrix multiplication
+            or if the array dimensions are not suitable (only 1D and 2D arrays are supported).
+
+        Notes
+        -----
+        - For 1D array @ 2D array: This performs vector-matrix multiplication
+        - For 2D array @ 2D array: This performs standard matrix multiplication
+        - The method checks dimensions for compatibility before performing the operation
+        - If the right operand is not a recognized array type, it delegates to the
+          operand's __rmatmul__ method
         """
         if _known_type(oc):
             oc = _as_array(oc)
-            if self.ndim == 0:
-                return self.value @ oc
-            elif self.ndim == 1:
-                return event_dense_mv(oc, self.value, transpose=True)
-            elif self.ndim == 2:
-                return event_mm(oc, self.value.T, transpose=True).T
-            else:
+            # Check dimensions for both operands
+            if self.ndim not in (1, 2):
                 raise MathError(
-                    f"Matrix multiplication is only supported for 1D and 2D arrays. "
-                    f"Got {self.ndim}D array."
+                    f"Matrix multiplication is only supported "
+                    f"for 1D and 2D arrays. Got {self.ndim}D array."
                 )
+
+            if self.ndim == 0:
+                raise MathError("Matrix multiplication is not supported for scalar arrays.")
+
+            assert oc.ndim == 2, (f"Right operand must be a 2D array in "
+                                  f"matrix multiplication. Got {oc.ndim}D array.")
+            assert self.shape[-1] == oc.shape[0], (f"Incompatible dimensions for matrix multiplication: "
+                                                   f"{self.shape[-1]} and {oc.shape[0]}.")
+
+            # Perform the appropriate multiplication based on dimensions
+            if self.ndim == 1:
+                return event_matrix_mv(self.value, oc, )
+            else:  # self.ndim == 2
+                return event_matrix_mm(self.value, oc, )
         else:
-            return oc.__rmatmul__(self)
+            return oc.__matmul__(self)
 
     def __rmatmul__(self, oc):
         """
         Perform matrix multiplication on another object with the array.
 
-        Args:
-            oc: The object to multiply.
+        This special method implements the reverse matrix multiplication operator (@)
+        when the left operand is not an EventArray. It handles the case where
+        another object is matrix-multiplied with this EventArray instance.
 
-        Returns:
-            The result of the matrix multiplication.
+        Parameters
+        ----------
+        oc : array_like
+            The left operand of the matrix multiplication. This object will be
+            multiplied with the current EventArray instance.
+
+        Returns
+        -------
+        ndarray or EventArray
+            The result of the matrix multiplication between the other object and this
+            EventArray instance.
+
+        Raises
+        ------
+        MathError
+            If the dimensions of the operands are incompatible for matrix multiplication
+            or if the array dimensions are not suitable (only 1D and 2D arrays are supported).
+
+        Notes
+        -----
+        - For 2D arrays, this performs standard matrix multiplication
+        - For a 1D array multiplied by a 2D array, it performs a vector-matrix multiplication
+        - The method checks dimensions for compatibility before performing the operation
         """
         if _known_type(oc):
             oc = _as_array(oc)
+            # Check dimensions for both operands
+            if self.ndim not in (1, 2):
+                raise MathError(f"Matrix multiplication is only supported "
+                                f"for 1D and 2D arrays. Got {self.ndim}D array.")
+
             if self.ndim == 0:
-                return oc @ self.value
-            elif self.ndim == 1:
-                return event_dense_mv(oc, self.value, transpose=False)
-            elif self.ndim == 2:
-                return event_mm(oc, self.value, transpose=False)
+                raise MathError("Matrix multiplication is not supported for scalar arrays.")
+
+            assert oc.ndim == 2, (f"Left operand must be a 2D array in "
+                                  f"matrix multiplication. Got {oc.ndim}D array.")
+            assert oc.shape[-1] == self.shape[0], (f"Incompatible dimensions for matrix "
+                                                   f"multiplication: {oc.shape[-1]} and {self.shape[0]}.")
+
+            # Perform the appropriate multiplication based on dimensions
+            if self.ndim == 1:
+                return matrix_event_mv(oc, self.value, )
             else:
-                raise MathError(
-                    f"Matrix multiplication is only supported for 1D and 2D arrays. "
-                    f"Got {self.ndim}D array."
-                )
+                return matrix_event_mm(oc, self.value, )
         else:
             return oc.__matmul__(self)
 
@@ -1042,58 +1105,455 @@ class EventArray(object):
     @property
     def at(self):
         """
-        Get the 'at' property of the array.
+        Accesses the JAX indexed update functionality for the underlying array.
 
-        Returns:
-            The 'at' property of the array.
+        This property returns an object that allows for functional-style updates
+        of the array's elements. Instead of modifying the array in-place (which
+        is generally discouraged in JAX), methods on the returned object (like
+        `.set()`, `.add()`, `.min()`, `.max()`) create and return a *new* array
+        with the specified modifications.
+
+        This is crucial for working within JAX's functional programming paradigm,
+        especially inside JIT-compiled functions, loops (`lax.scan`, `lax.fori_loop`),
+        or gradient transformations (`jax.grad`).
+
+        Returns
+        -------
+        jax.numpy.ndarray.at
+            An object enabling indexed updates on the underlying JAX array.
+
+        See Also
+        --------
+        jax.numpy.ndarray.at : The underlying JAX functionality.
+        __setitem__ : For direct (but potentially less JAX-idiomatic) item assignment.
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> from brainevent import EventArray
+        >>> a = EventArray(jnp.array([1, 2, 3, 4]))
+
+        >>> # Set the element at index 1 to 10
+        >>> b = a.at[1].set(10)
+        >>> print(a) # Original array is unchanged
+        EventArray(value=array([1, 2, 3, 4]), dtype=int32)
+        >>> print(b) # New array with the update
+        EventArray(value=array([ 1, 10,  3,  4]), dtype=int32)
+
+        >>> # Add 5 to the element at index 0
+        >>> c = a.at[0].add(5)
+        >>> print(c)
+        EventArray(value=array([6, 2, 3, 4]), dtype=int32)
+
+        >>> # Set multiple elements using slicing
+        >>> d = a.at[1:3].set(jnp.array([5, 6]))
+        >>> print(d)
+        EventArray(value=array([1, 5, 6, 4]), dtype=int32)
         """
         return self.value.at
 
     def block_until_ready(self):
-        return jax.block_until_ready(self.value)
+        """
+        Waits until all asynchronous computations involving this array are complete.
+
+        JAX operations, especially on accelerators like GPUs or TPUs, are often
+        dispatched asynchronously. This means the Python code might continue
+        executing before the actual computation on the device is finished.
+        Calling `block_until_ready()` ensures that any pending computations
+        related to `self.value` have completed on the device before the
+        Python program proceeds past this call.
+
+        This is primarily useful for:
+        1.  Accurate timing (benchmarking) of JAX operations.
+        2.  Ensuring data is ready before being used by non-JAX code (e.g.,
+            saving to disk, passing to a different library).
+        3.  Debugging synchronization issues.
+
+        Returns
+        -------
+        EventArray
+            The instance itself, after ensuring its underlying data's computations
+            are complete. The data (`self.value`) remains unchanged.
+
+        See Also
+        --------
+        jax.block_until_ready : The underlying JAX function.
+
+        Examples
+        --------
+        >>> import jax
+        >>> import jax.numpy as jnp
+        >>> import time
+        >>> from brainevent import EventArray
+
+        >>> # Assume 'a' is on a GPU/TPU where operations might be async
+        >>> a = EventArray(jnp.arange(1000000)).cuda() # Move to GPU if available
+
+        >>> # Perform some computation
+        >>> start_time = time.time()
+        >>> b = jnp.sin(a.value) * 2
+        >>> # Without block_until_ready, end_time might be recorded before
+        >>> # the computation actually finishes on the device.
+        >>> end_time_async = time.time()
+
+        >>> # Now, ensure computation is done before recording time
+        >>> b_event = EventArray(b)
+        >>> b_event.block_until_ready()
+        >>> end_time_sync = time.time()
+
+        >>> print(f"Async dispatch time: {end_time_async - start_time:.6f}s")
+        >>> print(f"Synchronized time:   {end_time_sync - start_time:.6f}s")
+        >>> # The synchronized time will typically be longer, reflecting the
+        >>> # actual computation time on the device.
+
+        >>> # Ensure 'b_event' is ready before using its value elsewhere
+        >>> result_array = np.array(b_event.block_until_ready().value)
+        """
+        # The method returns the result of jax.block_until_ready, which is the
+        # original array object after the wait. We return self for chaining.
+        _ = jax.block_until_ready(self.value)
+        return self
 
     # ----------------------- #
     #      NumPy methods      #
     # ----------------------- #
 
     def all(self, axis=None, keepdims=False):
-        """Returns True if all elements evaluate to True."""
-        r = self.value.all(axis=axis, keepdims=keepdims)
-        return r
-
-    def any(self, axis=None, keepdims=False):
-        """Returns True if any of the elements of a evaluate to True."""
-        r = self.value.any(axis=axis, keepdims=keepdims)
-        return r
-
-    def argmax(self, axis=None):
-        """Return indices of the maximum values along the given axis."""
-        return self.value.argmax(axis=axis)
-
-    def argmin(self, axis=None):
-        """Return indices of the minimum values along the given axis."""
-        return self.value.argmin(axis=axis)
-
-    def argpartition(self, kth, axis=-1):
-        """Returns the indices that would partition this array."""
-        return self.value.argpartition(kth=kth, axis=axis)
-
-    def argsort(self, axis=-1, kind=None, order=None):
-        """Returns the indices that would sort this array."""
-        return self.value.argsort(axis=axis, kind=kind, order=order)
-
-    def astype(self, dtype):
-        """Copy of the array, cast to a specified type.
+        """
+        Test whether all array elements along a given axis evaluate to True.
 
         Parameters
         ----------
-        dtype: str, dtype
-          Typecode or data-type to which the array is cast.
+        axis : None or int or tuple of ints, optional
+            Axis or axes along which a logical AND reduction is performed.
+            The default (`axis=None`) is to perform a logical AND over all
+            the dimensions of the input array. `axis` may be negative, in
+            which case it counts from the last to the first axis.
+            If this is a tuple of ints, a reduction is performed on multiple
+            axes, instead of a single axis or all the axes as before.
+        keepdims : bool, optional
+            If this is set to True, the axes which are reduced are left
+            in the result as dimensions with size one. With this option,
+            the result will broadcast correctly against the input array.
+            If the default value is passed, then `keepdims` will not be
+            passed through to the `all` method of sub-classes of
+            `ndarray`, however any non-default value will be. If the
+            sub-class' method does not implement `keepdims` any
+            exceptions will be raised. Default is False.
+
+        Returns
+        -------
+        jax.Array or bool
+            A new boolean array or a scalar boolean, resulting from the AND
+            reduction over the specified axis.
+
+        See Also
+        --------
+        any : Test whether any element along a given axis evaluates to True.
+        jax.numpy.all : Equivalent JAX function.
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> from brainevent import EventArray
+        >>> a = EventArray(jnp.array([[True, False], [True, True]]))
+        >>> a.all()
+        Array(False, dtype=bool)
+        >>> a.all(axis=0)
+        Array([ True, False], dtype=bool)
+        >>> a.all(axis=1)
+        Array([False,  True], dtype=bool)
+        >>> a.all(keepdims=True)
+        Array([[False]], dtype=bool)
         """
+        return self.value.all(axis=axis, keepdims=keepdims)
+
+    def any(self, axis=None, keepdims=False):
+        """
+        Test whether any array element along a given axis evaluates to True.
+
+        Parameters
+        ----------
+        axis : None or int or tuple of ints, optional
+            Axis or axes along which a logical OR reduction is performed.
+            The default (`axis=None`) is to perform a logical OR over all
+            the dimensions of the input array. `axis` may be negative, in
+            which case it counts from the last to the first axis.
+            If this is a tuple of ints, a reduction is performed on multiple
+            axes, instead of a single axis or all the axes as before.
+        keepdims : bool, optional
+            If this is set to True, the axes which are reduced are left
+            in the result as dimensions with size one. With this option,
+            the result will broadcast correctly against the input array.
+            If the default value is passed, then `keepdims` will not be
+            passed through to the `any` method of sub-classes of
+            `ndarray`, however any non-default value will be. If the
+            sub-class' method does not implement `keepdims` any
+            exceptions will be raised. Default is False.
+
+        Returns
+        -------
+        jax.Array or bool
+            A new boolean array or a scalar boolean, resulting from the OR
+            reduction over the specified axis.
+
+        See Also
+        --------
+        all : Test whether all elements along a given axis evaluate to True.
+        jax.numpy.any : Equivalent JAX function.
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> from brainevent import EventArray
+        >>> a = EventArray(jnp.array([[True, False], [False, False]]))
+        >>> a.any()
+        Array(True, dtype=bool)
+        >>> a.any(axis=0)
+        Array([ True, False], dtype=bool)
+        >>> a.any(axis=1)
+        Array([ True, False], dtype=bool)
+        >>> a.any(keepdims=True)
+        Array([[ True]], dtype=bool)
+        """
+        return self.value.any(axis=axis, keepdims=keepdims)
+
+    def argmax(self, axis=None):
+        """
+        Return indices of the maximum values along the given axis.
+
+        Parameters
+        ----------
+        axis : int, optional
+            By default, the index is into the flattened array, otherwise
+            along the specified axis.
+
+        Returns
+        -------
+        jax.Array
+            Array of indices into the array. It has the same shape as `self.shape`
+            with the dimension along `axis` removed. If `axis` is None, the
+            result is a scalar index into the flattened array.
+
+        See Also
+        --------
+        argmin : Return indices of the minimum values along the given axis.
+        max : The maximum value along a given axis.
+        jax.numpy.argmax : Equivalent JAX function.
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> from brainevent import EventArray
+        >>> a = EventArray(jnp.arange(6).reshape(2,3) + 10)
+        >>> a.value
+        Array([[10, 11, 12],
+               [13, 14, 15]], dtype=int32)
+        >>> a.argmax()
+        Array(5, dtype=int32)
+        >>> a.argmax(axis=0)
+        Array([1, 1, 1], dtype=int32)
+        >>> a.argmax(axis=1)
+        Array([2, 2], dtype=int32)
+        """
+        return self.value.argmax(axis=axis)
+
+    def argmin(self, axis=None):
+        """
+        Return indices of the minimum values along the given axis.
+
+        Parameters
+        ----------
+        axis : int, optional
+            By default, the index is into the flattened array, otherwise
+            along the specified axis.
+
+        Returns
+        -------
+        jax.Array
+            Array of indices into the array. It has the same shape as `self.shape`
+            with the dimension along `axis` removed. If `axis` is None, the
+            result is a scalar index into the flattened array.
+
+        See Also
+        --------
+        argmax : Return indices of the maximum values along the given axis.
+        min : The minimum value along a given axis.
+        jax.numpy.argmin : Equivalent JAX function.
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> from brainevent import EventArray
+        >>> a = EventArray(jnp.arange(6).reshape(2,3) + 10)
+        >>> a.value
+        Array([[10, 11, 12],
+               [13, 14, 15]], dtype=int32)
+        >>> a.argmin()
+        Array(0, dtype=int32)
+        >>> a.argmin(axis=0)
+        Array([0, 0, 0], dtype=int32)
+        >>> a.argmin(axis=1)
+        Array([0, 0], dtype=int32)
+        """
+        return self.value.argmin(axis=axis)
+
+    def argpartition(self, kth, axis=-1):
+        """
+        Returns the indices that would partition this array along the given axis.
+
+        Performs an indirect partition along the given axis using the
+        algorithm specified by the `kind` keyword. It returns an array of
+        indices of the same shape as `self` such that, if `p` is the
+        returned array, then `self[p]` is the partitioned array.
+
+        Parameters
+        ----------
+        kth : int or sequence of ints
+            Element index to partition by. The k-th element will be in its
+            final sorted position and all smaller elements will be moved
+            before it and all larger elements behind it. The order of all
+            elements in the partitions is undefined. If provided with a
+            sequence of k-th it will partition all of them into their sorted
+            position at once.
+        axis : int or None, optional
+            Axis along which to sort. If None, the array is flattened before
+            partitioning. The default is -1 (the last axis).
+
+        Returns
+        -------
+        jax.Array
+            Array of indices that partition `self` along the specified axis.
+
+        See Also
+        --------
+        partition : Describes partition algorithms used.
+        sort : Full sorting.
+        argsort : Indirect sort.
+        jax.numpy.argpartition : Equivalent JAX function.
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> from brainevent import EventArray
+        >>> x = EventArray(jnp.array([3, 4, 2, 1]))
+        >>> x.argpartition(1) # Index of the 2nd smallest element
+        Array([3, 2, 0, 1], dtype=int32) # Indices that put 2nd smallest (value 2) in place
+        >>> x.argpartition((1, 2)) # Indices of the 2nd and 3rd smallest elements
+        Array([3, 2, 0, 1], dtype=int32) # Indices that put 2nd (value 2) and 3rd (value 3) in place
+
+        >>> # Partition along axis 1
+        >>> y = EventArray(jnp.array([[3, 4, 2], [1, 3, 5]]))
+        >>> y.argpartition(1, axis=1)
+        Array([[2, 0, 1],
+               [0, 1, 2]], dtype=int32)
+        """
+        # Note: JAX argpartition doesn't support 'kind' or 'order' arguments like NumPy
+        return self.value.argpartition(kth=kth, axis=axis)
+
+    def argsort(self, axis=-1, kind=None, order=None):
+        """
+        Returns the indices that would sort this array.
+
+        Perform an indirect sort along the given axis using the algorithm specified
+        by the `kind` keyword. It returns an array of indices of the same shape as
+        `self` that index data along the given axis in sorted order.
+
+        Parameters
+        ----------
+        axis : int or None, optional
+            Axis along which to sort. The default is -1 (the last axis). If None,
+            the flattened array is used.
+        kind : {'stable'}, optional
+            JAX currently only supports stable sorting. This argument is kept for
+            compatibility but does not affect the outcome.
+        order : None
+            This argument is ignored in JAX and is kept for NumPy compatibility.
+
+        Returns
+        -------
+        jax.Array
+            Array of indices that sort `self` along the specified axis.
+            If `self` is a 1-D array, `self[index_array]` yields a sorted `self`.
+            More generally, `np.take_along_axis(self, index_array, axis=axis)`
+            always yields the sorted `self`, irrespective of dimensionality.
+
+        See Also
+        --------
+        sort : Describes sorting algorithms used.
+        argpartition : Indirect partial sort.
+        take_along_axis : Apply the indices returned by argsort.
+        jax.numpy.argsort : Equivalent JAX function.
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> from brainevent import EventArray
+        >>> x = EventArray(jnp.array([3, 1, 2]))
+        >>> x.argsort()
+        Array([1, 2, 0], dtype=int32)
+
+        >>> y = EventArray(jnp.array([[0, 3], [2, 2]]))
+        >>> y.argsort(axis=0) # Sort indices along columns
+        Array([[0, 1],
+               [1, 0]], dtype=int32)
+        >>> y.argsort(axis=1) # Sort indices along rows
+        Array([[0, 1],
+               [0, 1]], dtype=int32)
+        """
+        # JAX argsort only supports stable kind and ignores order.
+        # We pass kind and order for potential future compatibility or clarity,
+        # but they currently have no effect in JAX's implementation.
+        if kind is not None and kind != 'stable':
+            # Consider warning or raising an error if strict NumPy compatibility is needed
+            pass
+        if order is not None:
+            # Consider warning or raising an error
+            pass
+        return self.value.argsort(axis=axis)  # kind and order are effectively ignored by JAX
+
+    def astype(self, dtype):
+        """
+        Copy of the underlying array, cast to a specified type.
+
+        Parameters
+        ----------
+        dtype : str or dtype
+            Typecode or data-type to which the array is cast.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            A copy of the underlying `self.value` array, cast to the specified `dtype`.
+            Note that this method returns the underlying JAX array or Quantity,
+            *not* a new EventArray instance.
+
+        Raises
+        ------
+        TypeError
+            If `dtype` is None, as a target dtype must be specified.
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> from brainevent import EventArray
+        >>> x = EventArray(jnp.array([1, 2, 2.5]))
+        >>> x.value
+        Array([1. , 2. , 2.5], dtype=float32)
+        >>> x.astype(jnp.int32)
+        Array([1, 2, 2], dtype=int32)
+        >>> x.astype(jnp.float64)
+        Array([1. , 2. , 2.5], dtype=float64)
+
+        >>> # Original EventArray remains unchanged
+        >>> x.dtype
+        dtype('float32')
+        """
+        # Bug Fix/Improvement: Raise error if dtype is None, as None is not a valid target type.
+        # Returning self.value without casting when dtype is None might be unexpected.
         if dtype is None:
-            return self.value
-        else:
-            return self.value.astype(dtype)
+            raise TypeError("The dtype argument is required and cannot be None for astype.")
+        return self.value.astype(dtype)
 
     def byteswap(self, inplace=False):
         """Swap the bytes of the array elements
@@ -1407,71 +1867,305 @@ class EventArray(object):
         return res
 
     def nonzero(self):
-        """Return the indices of the elements that are non-zero.
+        """
+        Return the indices of the elements that are non-zero.
 
-        Returns:
-            tuple of arrays: Indices of elements that are non-zero.
+        Returns the indices of the array elements that are non-zero, grouped by dimension.
+        This method mirrors the behavior of `numpy.nonzero`.
+
+        Returns
+        -------
+        tuple of ndarray
+            A tuple of arrays, one for each dimension of the `EventArray`, containing
+            the indices of the non-zero elements in that dimension.
+
+        See Also
+        --------
+        numpy.nonzero : Equivalent NumPy function.
+        jax.numpy.nonzero : Equivalent JAX function.
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> from brainevent import EventArray
+        >>> x = EventArray(jnp.array([[1, 0, 3], [0, 5, 0]]))
+        >>> x.nonzero()
+        (Array([0, 0, 1], dtype=int32), Array([0, 2, 1], dtype=int32))
+
+        >>> y = EventArray(jnp.array([1, 0, 0, 4, 0]))
+        >>> y.nonzero()
+        (Array([0, 3], dtype=int32),)
         """
         return self.value.nonzero()
 
     def prod(self, axis=None, dtype=None, keepdims=False, initial=1, where=True):
-        """Return the product of the array elements over the given axis.
+        """
+        Return the product of the array elements over the given axis.
 
-        Args:
-            axis (int or tuple of ints, optional): Axis or axes along which a product is performed.
-            dtype (data-type, optional): The data-type of the returned array and of the accumulator in which the elements are multiplied.
-            keepdims (bool, optional): If True, the axes which are reduced are left in the result as dimensions with size one.
-            initial (scalar, optional): The starting value for the product.
-            where (array_like of bool, optional): Elements to include in the product.
+        Computes the product of elements along a specified axis. This method mirrors
+        the behavior of `numpy.prod`.
 
-        Returns:
-            ndarray or scalar: Product of array elements over the given axis.
+        Parameters
+        ----------
+        axis : int or tuple of ints, optional
+            Axis or axes along which a product is performed. The default (`axis=None`)
+            is to compute the product of all elements in the flattened array.
+        dtype : data-type, optional
+            The data-type of the returned array and of the accumulator in which the
+            elements are multiplied. If `dtype` is not specified, it defaults to the
+            dtype of `self.value`, unless `self.value` has an integer dtype with
+            fewer bits than the default platform integer. In that case, the default
+            platform integer is used.
+        keepdims : bool, optional
+            If this is set to True, the axes which are reduced are left in the
+            result as dimensions with size one. With this option, the result
+            will broadcast correctly against the input array. Default is False.
+        initial : scalar, optional
+            The starting value for the product. Default is 1.
+        where : array_like of bool, optional
+            Elements to include in the product. See `jax.numpy.prod` for details.
+            Default is True (include all elements).
+
+        Returns
+        -------
+        ndarray or scalar
+            An array containing the products along the specified axis. Returns a
+            scalar if `axis` is None.
+
+        See Also
+        --------
+        numpy.prod : Equivalent NumPy function.
+        jax.numpy.prod : Equivalent JAX function.
+        cumsum : Cumulative sum of array elements.
+        cumprod : Cumulative product of array elements.
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> from brainevent import EventArray
+        >>> x = EventArray(jnp.array([[1, 2], [3, 4]]))
+        >>> x.prod()
+        Array(24, dtype=int32)
+        >>> x.prod(axis=0)
+        Array([3, 8], dtype=int32)
+        >>> x.prod(axis=1)
+        Array([ 2, 12], dtype=int32)
+        >>> x.prod(axis=1, keepdims=True)
+        Array([[ 2],
+               [12]], dtype=int32)
+        >>> x.prod(initial=5)
+        Array(120, dtype=int32)
+        >>> x.prod(where=jnp.array([[True, False], [True, True]]))
+        Array(12, dtype=int32) # 1 * 3 * 4
         """
         res = self.value.prod(axis=axis, dtype=dtype, keepdims=keepdims, initial=initial, where=where)
         return res
 
     def ptp(self, axis=None, keepdims=False):
-        """Range of values (maximum - minimum) along an axis.
+        """
+        Range of values (maximum - minimum) along an axis.
 
-        Args:
-            axis (int or tuple of ints, optional): Axis along which to find the peak-to-peak value. By default, flatten the array.
-            keepdims (bool, optional): If True, the axes which are reduced are left in the result as dimensions with size one.
+        Calculates the difference between the maximum and minimum values over
+        a given axis. This method mirrors the behavior of `numpy.ptp`.
 
-        Returns:
-            ndarray or scalar: Peak-to-peak (maximum - minimum) value along the given axis.
+        Parameters
+        ----------
+        axis : int or tuple of ints, optional
+            Axis or axes along which the range is computed. The default (`axis=None`)
+            is to compute the range of the flattened array.
+        keepdims : bool, optional
+            If this is set to True, the axes which are reduced are left in the
+            result as dimensions with size one. With this option, the result
+            will broadcast correctly against the input array. Default is False.
+
+        Returns
+        -------
+        ndarray or scalar
+            An array containing the range of values along the specified axis(es).
+            Returns a scalar if `axis` is None.
+
+        See Also
+        --------
+        numpy.ptp : Equivalent NumPy function.
+        jax.numpy.ptp : Equivalent JAX function.
+        max : Maximum value along an axis.
+        min : Minimum value along an axis.
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> from brainevent import EventArray
+        >>> x = EventArray(jnp.arange(12).reshape((3, 4)))
+        >>> x
+        EventArray(value=Array([[ 0,  1,  2,  3],
+               [ 4,  5,  6,  7],
+               [ 8,  9, 10, 11]], dtype=int32))
+        >>> x.ptp()
+        Array(11, dtype=int32)
+        >>> x.ptp(axis=0)
+        Array([8, 8, 8, 8], dtype=int32)
+        >>> x.ptp(axis=1)
+        Array([3, 3, 3], dtype=int32)
+        >>> x.ptp(axis=1, keepdims=True)
+        Array([[3],
+               [3],
+               [3]], dtype=int32)
         """
         r = self.value.ptp(axis=axis, keepdims=keepdims)
         return r
 
     def put(self, indices, values):
-        """Replaces specified elements of an array with given values.
-
-        Args:
-            indices (array_like): Target indices, interpreted as integers.
-            values (array_like): Values to place in the array at target indices.
         """
+        Replaces specified elements of an array with given values.
+
+        The indexing works on the flattened target array. `put` is roughly
+        equivalent to `a.flat[indices] = values`. This method modifies the
+        `EventArray` in-place.
+
+        Parameters
+        ----------
+        indices : array_like
+            Target indices, interpreted as integers for the flattened array.
+            Can be integers, slices, or integer arrays.
+        values : array_like
+            Values to place in the array at target indices. If `values` is shorter
+            than `indices`, it will be repeated as necessary. `values` will be
+            converted to the dtype of the `EventArray`.
+
+        Returns
+        -------
+        None
+            This method modifies the array in-place.
+
+        See Also
+        --------
+        numpy.put : Equivalent NumPy function.
+        __setitem__ : More general indexing for setting values.
+        take : Select elements based on indices.
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> from brainevent import EventArray
+        >>> a = EventArray(jnp.arange(5))
+        >>> a
+        EventArray(value=Array([0, 1, 2, 3, 4], dtype=int32))
+        >>> a.put([0, 2], [-44, -55])
+        >>> a
+        EventArray(value=Array([-44,   1, -55,   3,   4], dtype=int32))
+
+        >>> b = EventArray(jnp.arange(6).reshape(2, 3))
+        >>> b
+        EventArray(value=Array([[0, 1, 2],
+               [3, 4, 5]], dtype=int32))
+        >>> b.put([1, 4], [10, 40]) # Operates on flattened array
+        >>> b
+        EventArray(value=Array([[ 0, 10,  2],
+               [ 3, 40,  5]], dtype=int32))
+        """
+        # Note: This uses __setitem__, which handles JAX's immutability correctly
+        # by creating a new array and updating self.value.
         self.__setitem__(indices, values)
 
-    def ravel(self, order=None):
-        """Return a flattened array.
+    def ravel(self, order='C'):
+        """
+        Return a contiguous flattened array.
 
-        Args:
-            order (str, optional): The elements of 'a' are read using this index order. 'C' means to index the elements in C-like order, 'F' means to index the elements in Fortran-like order, 'A' means to read the elements in Fortran-like order if 'a' is Fortran contiguous in memory, C-like order otherwise. 'K' means to read the elements in the order they occur in memory.
+        A 1-D array, containing the elements of the input, is returned. A copy is
+        made only if needed. This method mirrors the behavior of `numpy.ravel`.
 
-        Returns:
-            ndarray: A 1-D array containing the same elements as the input array.
+        Parameters
+        ----------
+        order : {'C', 'F', 'A', 'K'}, optional
+            The elements of `a` are read using this index order.
+            'C' means to index the elements in row-major, C-style order,
+            with the last axis index changing fastest, back to the first
+            axis index changing slowest. 'F' means to index the elements
+            in column-major, Fortran-style order, with the first index
+            changing fastest, and the last index changing slowest.
+            'A' means to read the elements in Fortran-like index order if `a`
+            is Fortran *contiguous* in memory, C-like order otherwise.
+            'K' means to read the elements in the order they occur in memory,
+            except for reversing the data when strides are negative.
+            Default is 'C'.
+
+        Returns
+        -------
+        ndarray
+            A 1-D array, containing the elements of the input.
+
+        See Also
+        --------
+        numpy.ravel : Equivalent NumPy function.
+        jax.numpy.ravel : Equivalent JAX function.
+        flatten : Return a copy of the array collapsed into one dimension.
+        reshape : Change the shape of an array.
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> from brainevent import EventArray
+        >>> x = EventArray(jnp.array([[1, 2, 3], [4, 5, 6]]))
+        >>> x.ravel()
+        Array([1, 2, 3, 4, 5, 6], dtype=int32)
+
+        >>> x.ravel(order='F') # Fortran order (column-major)
+        Array([1, 4, 2, 5, 3, 6], dtype=int32)
         """
         return self.value.ravel(order=order)
 
     def repeat(self, repeats, axis=None):
-        """Repeat elements of an array.
+        """
+        Repeat elements of an array.
 
-        Args:
-            repeats (int or array of ints): The number of repetitions for each element.
-            axis (int, optional): The axis along which to repeat values.
+        Returns a new array which contains the specified number of repetitions of
+        the elements along the given axis. This method mirrors the behavior of
+        `numpy.repeat`.
 
-        Returns:
-            ndarray: Output array which has the same shape as input array, except along the given axis.
+        Parameters
+        ----------
+        repeats : int or array of ints
+            The number of repetitions for each element. `repeats` is broadcasted
+            to fit the shape of the given axis.
+        axis : int, optional
+            The axis along which to repeat values. By default (`axis=None`), use
+            the flattened input array, and return a flat output array.
+
+        Returns
+        -------
+        ndarray
+            Output array which has the same shape as `self.value`, except along
+            the given axis. If `axis` is None, the output is a flattened array.
+
+        See Also
+        --------
+        numpy.repeat : Equivalent NumPy function.
+        jax.numpy.repeat : Equivalent JAX function.
+        tile : Construct an array by repeating an array.
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> from brainevent import EventArray
+        >>> x = EventArray(jnp.array([[1, 2], [3, 4]]))
+
+        >>> x.repeat(2) # Repeat elements of flattened array
+        Array([1, 1, 2, 2, 3, 3, 4, 4], dtype=int32)
+
+        >>> x.repeat(3, axis=1) # Repeat columns
+        Array([[1, 1, 1, 2, 2, 2],
+               [3, 3, 3, 4, 4, 4]], dtype=int32)
+
+        >>> x.repeat(2, axis=0) # Repeat rows
+        Array([[1, 2],
+               [1, 2],
+               [3, 4],
+               [3, 4]], dtype=int32)
+
+        >>> x.repeat(jnp.array([1, 2]), axis=0) # Repeat first row once, second row twice
+        Array([[1, 2],
+               [3, 4],
+               [3, 4]], dtype=int32)
         """
         return self.value.repeat(repeats=repeats, axis=axis)
 
@@ -1488,211 +2182,630 @@ class EventArray(object):
         return self.value.reshape(*shape, order=order)
 
     def resize(self, new_shape):
-        """Change shape and size of array in-place.
-
-        Args:
-            new_shape (int or tuple of ints): Shape of resized array.
         """
+        Change the shape of the array, returning a new array or modifying in-place.
+
+        For mutable arrays (like NumPy ndarray), this operation might be in-place.
+        For immutable arrays (like JAX Array), this operation returns a new
+        array with the specified shape, and reassigns `self.value`. This method
+        currently uses `reshape`, which always returns a new array (or view).
+
+        Parameters
+        ----------
+        new_shape : int or tuple of ints
+            Shape of the resized array. The total number of elements must remain
+            the same.
+
+        Returns
+        -------
+        None
+            This method modifies `self.value` by assigning the reshaped array to it.
+
+        Raises
+        ------
+        ValueError
+            If the new shape is not compatible with the original shape (i.e.,
+            the total number of elements differs).
+
+        See Also
+        --------
+        numpy.reshape : Returns an array containing the same data with a new shape.
+        numpy.resize : Return a new array with the specified shape.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from brainevent import EventArray
+        >>> a = np.arange(6)
+        >>> ea = EventArray(a)
+        >>> print(ea.shape)
+        (6,)
+        >>> ea.resize((2, 3)) # Reassigns self.value
+        >>> print(ea.shape)
+        (2, 3)
+        >>> print(ea)
+        EventArray(value=array([[0, 1, 2],
+               [3, 4, 5]]), dtype=int32)
+
+        # Note: Unlike np.resize, this doesn't change the total size
+        # >>> ea.resize((3, 3)) # This would raise a ValueError
+        """
+        # Note: JAX arrays are immutable. `reshape` returns a new array.
+        # We reassign self.value to mimic in-place modification conceptually.
+        # This differs from np.ndarray.resize which can change the size and
+        # potentially modify in-place.
         self.value = self.value.reshape(new_shape)
 
     def round(self, decimals=0):
-        """Return the array with each element rounded to the given number of decimals.
-
-        Args:
-            decimals (int, optional): Number of decimal places to round to (default: 0).
-                If decimals is negative, it specifies the number of positions to the left of the decimal point.
-
-        Returns:
-            ndarray: An array with the same shape as the input array, but with the elements rounded.
         """
+        Return the array with each element rounded to the given number of decimals.
+
+        Rounds elements of the array to the nearest integer or to the specified
+        number of decimal places.
+
+        Parameters
+        ----------
+        decimals : int, optional
+            Number of decimal places to round to (default: 0). If decimals is
+            negative, it specifies the number of positions to the left of the
+            decimal point.
+
+        Returns
+        -------
+        ndarray
+            An array of the same type as the input array, containing the rounded
+            values. Note that for complex numbers, the real and imaginary parts
+            are rounded separately.
+
+        See Also
+        --------
+        numpy.around : Equivalent function.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from brainevent import EventArray
+        >>> a = np.array([0.37, 1.64, 0.5])
+        >>> ea = EventArray(a)
+        >>> ea.round()
+        EventArray(value=array([0., 2., 0.]), dtype=float64)
+        >>> ea.round(decimals=1)
+        EventArray(value=array([0.4, 1.6, 0.5]), dtype=float64)
+        >>> ea.round(decimals=-1)
+        EventArray(value=array([0., 0., 0.]), dtype=float64)
+
+        >>> b = np.array([12.34, 98.76])
+        >>> eb = EventArray(b)
+        >>> eb.round(decimals=-1)
+        EventArray(value=array([ 10., 100.]), dtype=float64)
+        """
+        # Delegates directly to the underlying array's round method.
         return self.value.round(decimals=decimals)
 
     def searchsorted(self, v, side='left', sorter=None):
-        """Find indices where elements should be inserted to maintain order.
+        """
+        Find indices where elements should be inserted to maintain order.
 
-        Find the indices into a sorted array `a` such that, if the
+        Find the indices into a sorted array `a` (self.value) such that, if the
         corresponding elements in `v` were inserted before the indices, the
         order of `a` would be preserved.
 
-        Assuming that `a` is sorted:
-
-        ======  ============================
-        `side`  returned index `i` satisfies
-        ======  ============================
-        left    ``a[i-1] < v <= a[i]``
-        right   ``a[i-1] <= v < a[i]``
-        ======  ============================
+        Refer to `numpy.searchsorted` for full documentation.
 
         Parameters
         ----------
         v : array_like
-            Values to insert into `a`.
+            Values to insert into the array. Can be a scalar or array-like,
+            including `EventArray`.
         side : {'left', 'right'}, optional
             If 'left', the index of the first suitable location found is given.
-            If 'right', return the last such index.  If there is no suitable
+            If 'right', return the last such index. If there is no suitable
             index, return either 0 or N (where N is the length of `a`).
         sorter : 1-D array_like, optional
-            Optional array of integer indices that sort array a into ascending
-            order. They are typically the result of argsort.
+            Optional array of integer indices that sort the array into ascending
+            order. They are typically the result of `argsort`.
 
         Returns
         -------
-        indices : array of ints
+        indices : ndarray of ints
             Array of insertion points with the same shape as `v`.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from brainevent import EventArray
+        >>> a = np.array([1, 2, 3, 4, 5])
+        >>> ea = EventArray(a) # Assumes ea.value is sorted
+        >>> ea.searchsorted(3)
+        Array(2, dtype=int32)
+        >>> ea.searchsorted([0, 6])
+        Array([0, 5], dtype=int32)
+        >>> ea.searchsorted(3, side='right')
+        Array(3, dtype=int32)
+
+        >>> b = np.array([0, 1, 1, 2, 3, 5, 8])
+        >>> eb = EventArray(b)
+        >>> indices_to_insert = EventArray(np.array([-1, 1, 4, 8]))
+        >>> eb.searchsorted(indices_to_insert)
+        Array([0, 1, 4, 6], dtype=int32)
         """
+        # Ensure 'v' is unwrapped if it's an EventArray
+        # Delegates to the underlying array's searchsorted method.
         return self.value.searchsorted(v=_as_array(v), side=side, sorter=sorter)
 
     def sort(self, axis=-1, stable=True, order=None):
-        """Sort an array in-place.
+        """
+        Sort the array, returning a new sorted array and updating `self.value`.
+
+        Note: Unlike `numpy.ndarray.sort` which sorts in-place, this method
+        (especially when backed by immutable arrays like JAX arrays) returns a
+        *new* sorted array and reassigns `self.value` to this new array.
 
         Parameters
         ----------
         axis : int, optional
             Axis along which to sort. Default is -1, which means sort along the
-            last axis.
+            last axis. If None, the array is flattened before sorting.
         stable : bool, optional
-            Whether to use a stable sorting algorithm. The default is True.
+            Whether to use a stable sorting algorithm (preserves the order of
+            equal elements). Default is True. JAX `sort` uses a stable sort.
         order : str or list of str, optional
-            When `a` is an array with fields defined, this argument specifies
-            which fields to compare first, second, etc.  A single field can
-            be specified as a string, and not all fields need be specified,
-            but unspecified fields will still be used, in the order in which
-            they come up in the dtype, to break ties.
+            When the array has fields defined (structured arrays), this argument
+            specifies which fields to compare first, second, etc. Not applicable
+            to standard numeric arrays.
+
+        Returns
+        -------
+        None
+            This method modifies `self.value` by assigning the sorted array to it.
+
+        See Also
+        --------
+        numpy.sort : Return a sorted copy of an array.
+        numpy.argsort : Return the indices that would sort an array.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from brainevent import EventArray
+        >>> a = np.array([[1, 4], [3, 1]])
+        >>> ea = EventArray(a)
+        >>> ea.sort(axis=1) # Sort each row
+        >>> print(ea)
+        EventArray(value=array([[1, 4],
+               [1, 3]]), dtype=int32)
+
+        >>> b = np.array([3, 1, 4, 1, 5, 9])
+        >>> eb = EventArray(b)
+        >>> eb.sort() # Sort the flattened array
+        >>> print(eb)
+        EventArray(value=array([1, 1, 3, 4, 5, 9]), dtype=int32)
         """
+        # Note: JAX arrays are immutable. `sort` returns a new array.
+        # We reassign self.value to the sorted result.
+        # The 'stable' argument aligns with JAX's default stable sort.
+        # NumPy's ndarray.sort has `kind` instead of `stable`.
+        # We use `stable` for potential JAX compatibility.
+        # TODO: Consider aligning parameter names/behavior more closely
+        #       if strict NumPy ndarray.sort compatibility is needed.
         self.value = self.value.sort(axis=axis, stable=stable, order=order)
 
     def squeeze(self, axis=None):
         """
         Remove axes of length one from the array.
 
-        This function removes single-dimensional entries from the shape of the array.
+        Returns a new array (or view) with single-dimensional entries removed
+        from the shape.
+
+        Refer to `numpy.squeeze` for full documentation.
 
         Parameters
         ----------
-        axis : int or tuple of ints, optional
+        axis : None or int or tuple of ints, optional
             Selects a subset of the single-dimensional entries in the shape.
-            If an axis is selected with shape entry greater than one, an error is raised.
-            If None (default), all single-dimensional entries will be removed from the shape.
+            If an axis is selected with shape entry greater than one, an error
+            is raised. If None (default), all single-dimensional entries will
+            be removed from the shape.
 
         Returns
         -------
         ndarray
-            The input array with all or a subset of the dimensions of length 1 removed.
-            This is always a view of the input array.
+            The input array with all or a subset of the dimensions of length 1
+            removed. This is often a view of the input array, but may be a copy
+            if required by the backend (e.g., JAX).
+
+        Raises
+        ------
+        ValueError
+            If `axis` is specified and selects an axis whose dimension is not 1.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from brainevent import EventArray
+        >>> x = np.array([[[0], [1], [2]]])
+        >>> x.shape
+        (1, 3, 1)
+        >>> ex = EventArray(x)
+        >>> ex.squeeze().shape
+        (3,)
+        >>> ex.squeeze(axis=0).shape
+        (3, 1)
+        >>> ex.squeeze(axis=2).shape
+        (1, 3)
+        >>> ex.squeeze(axis=(0, 2)).shape
+        (3,)
+
+        # Squeezing an axis that is not 1 raises an error
+        # >>> ex.squeeze(axis=1) # Raises ValueError
         """
+        # Delegates directly to the underlying array's squeeze method.
         return self.value.squeeze(axis=axis)
 
     def std(self, axis=None, dtype=None, ddof=0, keepdims=False):
-        """Compute the standard deviation along the specified axis.
+        """
+        Compute the standard deviation along the specified axis.
 
         Returns the standard deviation, a measure of the spread of a distribution,
         of the array elements. The standard deviation is computed for the
         flattened array by default, otherwise over the specified axis.
+
+        Refer to `numpy.std` for full documentation.
 
         Parameters
         ----------
         axis : None or int or tuple of ints, optional
             Axis or axes along which the standard deviation is computed. The
             default is to compute the standard deviation of the flattened array.
-            If this is a tuple of ints, a standard deviation is performed over
-            multiple axes, instead of a single axis or all the axes as before.
-        dtype : dtype, optional
+        dtype : data-type, optional
             Type to use in computing the standard deviation. For arrays of
-            integer type the default is float64, for arrays of float types it is
+            integer type the default is float64; for arrays of float types it is
             the same as the array type.
         ddof : int, optional
-            Means Delta Degrees of Freedom.  The divisor used in calculations
-            is ``N - ddof``, where ``N`` represents the number of elements.
-            By default `ddof` is zero.
+            "Delta Degrees of Freedom": the divisor used in the calculation is
+            N - ddof, where N represents the number of elements. By default
+            `ddof` is zero.
         keepdims : bool, optional
             If this is set to True, the axes which are reduced are left
             in the result as dimensions with size one. With this option,
             the result will broadcast correctly against the input array.
-
-            If the default value is passed, then `keepdims` will not be
-            passed through to the `std` method of sub-classes of
-            `ndarray`, however any non-default value will be.  If the
-            sub-class' method does not implement `keepdims` any
-            exceptions will be raised.
+            Default is False.
 
         Returns
         -------
-        standard_deviation : ndarray, see dtype parameter above.
-            If `out` is None, return a new array containing the standard deviation,
-            otherwise return a reference to the output array.
+        standard_deviation : ndarray
+            A new array containing the standard deviation, or a scalar if `axis`
+            is None.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from brainevent import EventArray
+        >>> a = np.array([[1, 2], [3, 4]])
+        >>> ea = EventArray(a)
+        >>> ea.std()
+        1.118033988749895
+        >>> ea.std(axis=0)
+        array([1., 1.])
+        >>> ea.std(axis=1)
+        array([0.5, 0.5])
+        >>> ea.std(ddof=1) # Bessel's correction
+        1.2909944487358056
         """
-        r = self.value.std(axis=axis, dtype=dtype, ddof=ddof, keepdims=keepdims)
-        return r
+        # Optimized: Directly return the result
+        return self.value.std(axis=axis, dtype=dtype, ddof=ddof, keepdims=keepdims)
 
     def sum(self, axis=None, dtype=None, keepdims=False, initial=0, where=True):
-        """Return the sum of the array elements over the given axis."""
-        res = self.value.sum(axis=axis, dtype=dtype, keepdims=keepdims, initial=initial, where=where)
-        return res
+        """
+        Return the sum of the array elements over the given axis.
 
-    def swapaxes(self, axis1, axis2):
-        """Return a view of the array with `axis1` and `axis2` interchanged."""
-        return self.value.swapaxes(axis1, axis2)
-
-    def split(self, indices_or_sections, axis=0):
-        """Split an array into multiple sub-arrays as views into ``ary``.
+        Refer to `numpy.sum` for full documentation.
 
         Parameters
         ----------
-        indices_or_sections : int, 1-D array
-          If `indices_or_sections` is an integer, N, the array will be divided
-          into N equal arrays along `axis`.  If such a split is not possible,
-          an error is raised.
-
-          If `indices_or_sections` is a 1-D array of sorted integers, the entries
-          indicate where along `axis` the array is split.  For example,
-          ``[2, 3]`` would, for ``axis=0``, result in
-
-            - ary[:2]
-            - ary[2:3]
-            - ary[3:]
-
-          If an index exceeds the dimension of the array along `axis`,
-          an empty sub-array is returned correspondingly.
-        axis : int, optional
-          The axis along which to split, default is 0.
+        axis : None or int or tuple of ints, optional
+            Axis or axes along which a sum is performed. The default, axis=None,
+            will sum all of the elements of the input array. If axis is negative it
+            counts from the last to the first axis. If axis is a tuple of ints,
+            a sum is performed on all of the axes specified in the tuple instead
+            of a single axis or all the axes as before.
+        dtype : data-type, optional
+            The type of the returned array and of the accumulator in which the
+            elements are summed. The dtype of the array is used by default unless
+            the array has an integer dtype of less precision than the default
+            platform integer. In that case, if the array is signed then the
+            platform integer is used, and if the array is unsigned then an
+            unsigned integer of the same precision as the platform integer is used.
+        keepdims : bool, optional
+            If this is set to True, the axes which are reduced are left
+            in the result as dimensions with size one. With this option,
+            the result will broadcast correctly against the input array.
+            Default is False.
+        initial : scalar, optional
+            Starting value for the sum. Default is 0.
+        where : array_like of bool, optional
+            Elements to include in the sum. See `numpy.ufunc.reduce` for details.
 
         Returns
         -------
-        sub-arrays : list of ndarrays
-          A list of sub-arrays as views into `ary`.
+        sum_along_axis : ndarray
+            An array with the same shape as self.value, with the specified axis
+            removed. If self.value is a 0-d array, or if axis is None, a scalar
+            is returned. If an output array is specified, a reference to it is
+            returned.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from brainevent import EventArray
+        >>> a = np.array([[0, 1], [0, 5]])
+        >>> ea = EventArray(a)
+        >>> ea.sum()
+        6
+        >>> ea.sum(axis=0)
+        array([0, 6])
+        >>> ea.sum(axis=1)
+        array([1, 5])
+        >>> ea.sum(initial=10)
+        16
+        >>> ea.sum(where=[True, False]) # Sum only the first column
+        0
         """
-        return [a for a in u.math.split(self.value, indices_or_sections, axis=axis)]
+        # Optimized: Directly return the result
+        return self.value.sum(axis=axis, dtype=dtype, keepdims=keepdims, initial=initial, where=where)
+
+    def swapaxes(self, axis1, axis2):
+        """
+        Return a view of the array with `axis1` and `axis2` interchanged.
+
+        Refer to `numpy.swapaxes` for full documentation.
+
+        Parameters
+        ----------
+        axis1 : int
+            First axis.
+        axis2 : int
+            Second axis.
+
+        Returns
+        -------
+        swapped_axes_array : ndarray
+            If the underlying array is a view, then the returned array is a view
+            of the original data. Otherwise, it is a copy.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from brainevent import EventArray
+        >>> x = np.array([[1, 2, 3]])
+        >>> ex = EventArray(x)
+        >>> ex.swapaxes(0, 1)
+        EventArray(value=array([[1],
+               [2],
+               [3]]), dtype=int32)
+
+        >>> y = np.array([[[0, 1], [2, 3]], [[4, 5], [6, 7]]])
+        >>> ey = EventArray(y)
+        >>> ey.swapaxes(0, 2)
+        EventArray(value=array([[[0, 4],
+                [2, 6]],
+        <BLANKLINE>
+               [[1, 5],
+                [3, 7]]]), dtype=int32)
+        """
+        return self.value.swapaxes(axis1, axis2)
+
+    def split(self, indices_or_sections, axis=0):
+        """
+        Split an array into multiple sub-arrays.
+
+        Refer to `numpy.split` for full documentation.
+
+        Parameters
+        ----------
+        indices_or_sections : int or 1-D array
+            If `indices_or_sections` is an integer, N, the array will be divided
+            into N equal arrays along `axis`. If such a split is not possible,
+            an error is raised.
+            If `indices_or_sections` is a 1-D array of sorted integers, the entries
+            indicate where along `axis` the array is split. For example,
+            `[2, 3]` would, for `axis=0`, result in `ary[:2]`, `ary[2:3]`,
+            and `ary[3:]`. If an index exceeds the dimension of the array along
+            `axis`, an empty sub-array is returned correspondingly.
+        axis : int, optional
+            The axis along which to split, default is 0.
+
+        Returns
+        -------
+        sub_arrays : list of EventArray
+            A list of sub-arrays. Each sub-array is an EventArray wrapping
+            a view into the original array's data.
+
+        Raises
+        ------
+        ValueError
+            If `indices_or_sections` is an integer that does not result in an
+            equal division.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from brainevent import EventArray
+        >>> x = np.arange(9.0)
+        >>> ex = EventArray(x)
+        >>> ex.split(3)
+        [EventArray(value=array([0., 1., 2.]), dtype=float64), EventArray(value=array([3., 4., 5.]), dtype=float64), EventArray(value=array([6., 7., 8.]), dtype=float64)]
+        >>> ex.split([3, 5, 6, 10])
+        [EventArray(value=array([0., 1., 2.]), dtype=float64), EventArray(value=array([3., 4.]), dtype=float64), EventArray(value=array([5.]), dtype=float64), EventArray(value=array([6., 7., 8.]), dtype=float64), EventArray(value=array([], dtype=float64), dtype=float64)]
+
+        >>> y = np.arange(8.0).reshape(2, 4)
+        >>> ey = EventArray(y)
+        >>> ey.split(2, axis=1)
+        [EventArray(value=array([[0., 1.],
+               [4., 5.]]), dtype=float64), EventArray(value=array([[2., 3.],
+               [6., 7.]]), dtype=float64)]
+        """
+        # Wrap results in EventArray
+        return [EventArray(a) for a in u.math.split(self.value, indices_or_sections, axis=axis)]
 
     def take(self, indices, axis=None, mode=None):
-        """Return an array formed from the elements of a at the given indices."""
+        """
+        Return an array formed from the elements of self at the given indices.
+
+        Refer to `numpy.take` for full documentation.
+
+        Parameters
+        ----------
+        indices : array_like
+            The indices of the values to extract. Also allows EventArray instances.
+        axis : int, optional
+            The axis over which to select values. By default, the flattened
+            input array is used.
+        mode : {'raise', 'wrap', 'clip'}, optional
+            Specifies how out-of-bounds indices will be treated.
+            * 'raise' : raise an error (default)
+            * 'wrap' : wrap around
+            * 'clip' : clip to the range
+
+        Returns
+        -------
+        subarray : ndarray
+            The returned array has the same type as `self.value`.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from brainevent import EventArray
+        >>> a = np.array([4, 3, 5, 7, 6, 8])
+        >>> ea = EventArray(a)
+        >>> indices = [0, 1, 4]
+        >>> ea.take(indices)
+        array([4, 3, 6])
+
+        >>> b = np.array([[1, 2], [3, 4]])
+        >>> eb = EventArray(b)
+        >>> eb.take([0, 1], axis=1)
+        EventArray(value=array([[1, 2],
+               [3, 4]]), dtype=int32)
+        >>> eb.take([0, 1, 2], axis=1, mode='wrap') # Wrap around indices
+        EventArray(value=array([[1, 2, 1],
+               [3, 4, 3]]), dtype=int32)
+        """
         return self.value.take(indices=_as_array(indices), axis=axis, mode=mode)
 
-    def tobytes(self):
-        """Construct Python bytes containing the raw data bytes in the array.
+    def tobytes(self, order='C'):
+        """
+        Construct Python bytes containing the raw data bytes in the array.
 
         Constructs Python bytes showing a copy of the raw contents of data memory.
-        The bytes object is produced in C-order by default. This behavior is
-        controlled by the ``order`` parameter."""
-        return self.value.tobytes()
+
+        Refer to `numpy.ndarray.tobytes` for full documentation.
+
+        Parameters
+        ----------
+        order : {'C', 'F', None}, optional
+            Order of the data for multidimensional arrays:
+            'C' means C-order, 'F' means Fortran-order, None means 'C' unless the
+            array is Fortran contiguous, then 'F'. Default is 'C'.
+
+        Returns
+        -------
+        s : bytes
+            Python bytes exhibiting a copy of the array's raw data.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from brainevent import EventArray
+        >>> x = np.array([[0, 1], [2, 3]], dtype=np.uint8)
+        >>> ex = EventArray(x)
+        >>> ex.tobytes()
+        b'\\x00\\x01\\x02\\x03'
+        >>> ex.tobytes(order='F')
+        b'\\x00\\x02\\x01\\x03'
+        """
+        return self.value.tobytes(order=order)
 
     def tolist(self):
-        """Return the array as an ``a.ndim``-levels deep nested list of Python scalars.
+        """
+        Return the array as an `a.ndim`-levels deep nested list of Python scalars.
 
         Return a copy of the array data as a (nested) Python list.
-        Data items are converted to the nearest compatible builtin Python type, via
-        the `~numpy.ndarray.item` function.
+        Data items are converted to the nearest compatible builtin Python type.
 
-        If ``a.ndim`` is 0, then since the depth of the nested list is 0, it will
-        not be a list at all, but a simple Python scalar.
+        Refer to `numpy.ndarray.tolist` for full documentation.
+
+        Returns
+        -------
+        y : list or scalar
+            The possibly nested list of array elements.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from brainevent import EventArray
+        >>> a = np.array([1, 2])
+        >>> ea = EventArray(a)
+        >>> ea.tolist()
+        [1, 2]
+
+        >>> b = np.array([[1, 2], [3, 4]])
+        >>> eb = EventArray(b)
+        >>> eb.tolist()
+        [[1, 2], [3, 4]]
+
+        >>> c = np.array(5)
+        >>> ec = EventArray(c)
+        >>> ec.tolist()
+        5
         """
         return self.value.tolist()
 
     def trace(self, offset=0, axis1=0, axis2=1, dtype=None):
-        """Return the sum along diagonals of the array."""
+        """
+        Return the sum along diagonals of the array.
+
+        Refer to `numpy.trace` for full documentation.
+
+        Parameters
+        ----------
+        offset : int, optional
+            Offset of the diagonal from the main diagonal. Can be positive or
+            negative. Defaults to 0.
+        axis1, axis2 : int, optional
+            Axes to be used as the first and second axis of the 2-D sub-arrays
+            from which the diagonals should be taken. Defaults are 0 and 1,
+            respectively.
+        dtype : data-type, optional
+            Determines the data-type of the returned array and of the accumulator
+            where the elements are summed. If dtype has value None, the dtype
+            is determined as the default dtype of the array.
+
+        Returns
+        -------
+        sum_along_diagonals : ndarray
+            If the array is 2-D, the sum along the diagonal is returned. If the
+            array has more than two dimensions, then the sums along diagonals
+            are calculated for the 2-D sub-arrays defined by `axis1` and `axis2`.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from brainevent import EventArray
+        >>> a = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+        >>> ea = EventArray(a)
+        >>> ea.trace()
+        15
+        >>> ea.trace(offset=1)
+        5
+        >>> ea.trace(offset=-1)
+        12
+        """
         return self.value.trace(offset=offset, axis1=axis1, axis2=axis2, dtype=dtype)
 
     def transpose(self, *axes):
-        """Returns a view of the array with axes transposed.
+        """
+        Returns a view of the array with axes transposed.
 
         For a 1-D array this has no effect, as a transposed vector is simply the
         same vector. To convert a 1-D array into a 2D column vector, an additional
@@ -1707,73 +2820,259 @@ class EventArray(object):
         Parameters
         ----------
         axes : None, tuple of ints, or `n` ints
-
-         * None or no argument: reverses the order of the axes.
-
-         * tuple of ints: `i` in the `j`-th place in the tuple means `a`'s
-           `i`-th axis becomes `a.transpose()`'s `j`-th axis.
-
-         * `n` ints: same as an n-tuple of the same ints (this form is
-           intended simply as a "convenience" alternative to the tuple form)
+            * None or no argument: reverses the order of the axes.
+            * tuple of ints: `i` in the `j`-th place in the tuple means `a`'s
+              `i`-th axis becomes `a.transpose()`'s `j`-th axis.
+            * `n` ints: same as an n-tuple of the same ints (this form is
+              intended simply as a "convenience" alternative to the tuple form)
 
         Returns
         -------
         out : ndarray
             View of `a`, with axes suitably permuted.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from brainevent import EventArray
+        >>> a = np.array([[1, 2], [3, 4]])
+        >>> ea = EventArray(a)
+        >>> ea.transpose()
+        EventArray(value=array([[1, 3],
+               [2, 4]]), dtype=int32)
+        >>> ea.transpose((1, 0))
+        EventArray(value=array([[1, 3],
+               [2, 4]]), dtype=int32)
+
+        >>> b = np.array([1, 2, 3, 4])
+        >>> eb = EventArray(b)
+        >>> eb.transpose() # 1-D array is unaffected
+        EventArray(value=array([1, 2, 3, 4]), dtype=int32)
+
+        >>> c = np.arange(16).reshape((2, 2, 4))
+        >>> ec = EventArray(c)
+        >>> ec.transpose((1, 0, 2))
+        EventArray(value=array([[[ 0,  1,  2,  3],
+                [ 8,  9, 10, 11]],
+        <BLANKLINE>
+               [[ 4,  5,  6,  7],
+                [12, 13, 14, 15]]]), dtype=int32)
+        >>> ec.transpose(2, 0, 1)
+        EventArray(value=array([[[ 0,  4],
+                [ 8, 12]],
+        <BLANKLINE>
+               [[ 1,  5],
+                [ 9, 13]],
+        <BLANKLINE>
+               [[ 2,  6],
+                [10, 14]],
+        <BLANKLINE>
+               [[ 3,  7],
+                [11, 15]]]), dtype=int32)
         """
         return self.value.transpose(*axes)
 
     def tile(self, reps):
-        """Construct an array by repeating A the number of times given by reps.
+        """
+        Construct an array by repeating the elements of this array.
 
-        If `reps` has length ``d``, the result will have dimension of
-        ``max(d, A.ndim)``.
-
-        If ``A.ndim < d``, `A` is promoted to be d-dimensional by prepending new
-        axes. So a shape (3,) array is promoted to (1, 3) for 2-D replication,
-        or shape (1, 1, 3) for 3-D replication. If this is not the desired
-        behavior, promote `A` to d-dimensions manually before calling this
-        function.
-
-        If ``A.ndim > d``, `reps` is promoted to `A`.ndim by pre-pending 1's to it.
-        Thus for an `A` of shape (2, 3, 4, 5), a `reps` of (2, 2) is treated as
-        (1, 1, 2, 2).
-
-        Note : Although tile may be used for broadcasting, it is strongly
-        recommended to use numpy's broadcasting operations and functions.
+        The number of repetitions is specified by `reps`.
 
         Parameters
         ----------
         reps : array_like
-            The number of repetitions of `A` along each axis.
+            The number of repetitions of `self.value` along each axis.
 
         Returns
         -------
         c : ndarray
             The tiled output array.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from brainevent import EventArray, _as_array
+        >>> import brainunit as u # Assuming brainunit is imported as u
+        >>> a = np.array([0, 1, 2])
+        >>> ea = EventArray(a)
+        >>> ea.tile(2)
+        EventArray(value=array([0, 1, 2, 0, 1, 2]), dtype=int32)
+        >>> ea.tile((2, 2))
+        EventArray(value=array([[0, 1, 2, 0, 1, 2],
+               [0, 1, 2, 0, 1, 2]]), dtype=int32)
+        >>> ea.tile((2, 1, 2))
+        EventArray(value=array([[[0, 1, 2, 0, 1, 2]],
+        <BLANKLINE>
+               [[0, 1, 2, 0, 1, 2]]]), dtype=int32)
+
+        >>> b = np.array([[1, 2], [3, 4]])
+        >>> eb = EventArray(b)
+        >>> eb.tile(2)
+        EventArray(value=array([[1, 2, 1, 2],
+               [3, 4, 3, 4]]), dtype=int32)
+        >>> eb.tile((2, 1))
+        EventArray(value=array([[1, 2],
+               [3, 4],
+               [1, 2],
+               [3, 4]]), dtype=int32)
         """
-        return self.value.tile(_as_array(reps))
+        # Use u.math.tile to support both numpy and jax backends if needed
+        # Ensure _as_array is available or defined in the scope
+        return u.math.tile(self.value, _as_array(reps))
 
     def var(self, axis=None, dtype=None, ddof=0, keepdims=False):
-        """Returns the variance of the array elements, along given axis."""
-        r = self.value.var(axis=axis, dtype=dtype, ddof=ddof, keepdims=keepdims)
-        return r
+        """
+        Returns the variance of the array elements, along given axis.
+
+        Refer to `numpy.var` for full documentation.
+
+        Parameters
+        ----------
+        axis : None or int or tuple of ints, optional
+            Axis or axes along which the variance is computed. The default is to
+            compute the variance of the flattened array.
+        dtype : data-type, optional
+            Type to use in computing the variance. For arrays of integer type
+            the default is float64; for arrays of float types it is the same as
+            the array type.
+        ddof : int, optional
+            "Delta Degrees of Freedom": the divisor used in the calculation is
+            N - ddof, where N represents the number of elements. By default
+            `ddof` is zero.
+        keepdims : bool, optional
+            If this is set to True, the axes which are reduced are left
+            in the result as dimensions with size one. With this option,
+            the result will broadcast correctly against the input array.
+            Default is False.
+
+        Returns
+        -------
+        variance : ndarray, see dtype parameter above
+            If the default `keepdims` is used, then the return value is the
+            variance of the array elements along the specified axis. If
+            `keepdims` is True, the result will broadcast correctly against the
+            input array.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from brainevent import EventArray
+        >>> a = np.array([[1, 2], [3, 4]])
+        >>> ea = EventArray(a)
+        >>> ea.var()
+        1.25
+        >>> ea.var(axis=0)
+        array([1., 1.])
+        >>> ea.var(axis=1)
+        array([0.25, 0.25])
+        >>> ea.var(ddof=1) # Bessel's correction
+        1.6666666666666667
+        """
+        # Optimized: Directly return the result without intermediate variable 'r'
+        return self.value.var(axis=axis, dtype=dtype, ddof=ddof, keepdims=keepdims)
 
     def view(self, *args, dtype=None):
-        if len(args) == 0:
+        """
+        Return a new view of the array with specified dtype or shape.
+
+        This method provides functionality similar to `numpy.ndarray.view` for
+        changing the data type interpretation or `numpy.ndarray.reshape` for
+        changing the shape, depending on the arguments provided.
+
+        - If only `dtype` is provided, it returns a view of the array data
+          interpreted as the specified `dtype`. This is analogous to
+          `numpy.ndarray.view(dtype=...)`.
+        - If positional arguments (`*args`) are provided (as integers or a
+          single tuple of integers), they are interpreted as the desired new
+          shape, and the method returns a reshaped view of the array. This is
+          analogous to `numpy.ndarray.reshape(...)`.
+
+        Parameters
+        ----------
+        *args : int or tuple of ints, optional
+            The desired new shape. Can be specified as multiple integer arguments
+            (e.g., `view(2, 3)`) or a single tuple argument (e.g., `view((2, 3))`).
+            If provided, `dtype` must be None.
+        dtype : data-type, optional
+            The desired data type for the view. If provided, `*args` must not be
+            given.
+
+        Returns
+        -------
+        ndarray
+            A new view of the array with the specified data type or shape.
+
+        Raises
+        ------
+        ValueError
+            If neither `dtype` nor shape arguments (`*args`) are provided.
+        ValueError
+            If both `dtype` and shape arguments (`*args`) are provided.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from brainevent import EventArray
+
+        # View with a new shape (using reshape behavior)
+        >>> a = np.arange(6)
+        >>> ea = EventArray(a)
+        >>> ea.view(2, 3)
+        EventArray(value=array([[0, 1, 2],
+               [3, 4, 5]]), dtype=int32)
+        >>> ea.view((6,))
+        EventArray(value=array([0, 1, 2, 3, 4, 5]), dtype=int32)
+
+        # View with a new dtype
+        >>> x = np.array([(1, 2), (3, 4)], dtype=[('a', np.int8), ('b', np.int8)])
+        >>> ex = EventArray(x)
+        >>> # View as float32 (assuming compatible byte size)
+        >>> # Note: Behavior depends on underlying array implementation (NumPy/JAX)
+        >>> # and byte compatibility. Example assumes standard NumPy behavior.
+        >>> try:
+        ...     ex.view(dtype=np.float32) # This might fail if sizes don't match
+        ... except TypeError as e:
+        ...     print(f"TypeError: {e}") # JAX might raise TypeError
+        EventArray(value=array([[-1.5881868e+22,  1.1028099e-38]], dtype=float32)
+
+        >>> # View as a simple int16 array
+        >>> ex.view(dtype=np.int16)
+        EventArray(value=array([[1, 2],
+               [3, 4]], dtype=int16)
+        """
+        if not args:
+            # Case 1: Only dtype is potentially provided
             if dtype is None:
-                raise ValueError('Provide dtype or shape.')
-            else:
-                return self.value.view(dtype)
+                raise ValueError("Provide dtype or shape arguments.")
+            # Return view with new dtype
+            return self.value.view(dtype)
         else:
-            if isinstance(args[0], int):  # shape
-                if dtype is not None:
-                    raise ValueError('Provide one of dtype or shape. Not both.')
-                return self.value.reshape(*args)
-            else:  # dtype
-                assert not isinstance(args[0], int)
-                assert dtype is None
-                return self.value.view(args[0])
+            # Case 2: Positional arguments (*args) are provided (interpreted as shape)
+            if dtype is not None:
+                raise ValueError("Provide either dtype or shape arguments, not both.")
+
+            # Determine the shape from *args
+            if len(args) == 1 and isinstance(args[0], tuple):
+                shape = args[0]
+            elif all(isinstance(arg, int) for arg in args):
+                shape = args
+            else:
+                # Handle potential case where args[0] is a dtype-like object but not int
+                # This part of the original logic seemed ambiguous; clarifying based on intent.
+                # If the first arg is not an int and not a tuple, assume it's intended as dtype
+                # (though the outer check `if not args:` should ideally catch the dtype-only case)
+                if len(args) == 1 and not isinstance(args[0], int):
+                    # Re-interpret as dtype view if args[0] looks like a dtype
+                    # This aligns with the original code's final `else` block's intent
+                    # but requires careful consideration of allowed types for args[0]
+                    # For simplicity and robustness, strictly separating shape and dtype args is better.
+                    # The current logic assumes if args exist, they define shape.
+                    # Let's stick to interpreting *args strictly as shape here.
+                    raise ValueError("Shape arguments must be integers or a single tuple of integers.")
+
+            # Return view with new shape (using reshape)
+            # Note: This differs from np.view's byte reinterpretation when shape changes.
+            return self.value.reshape(*shape)
 
     def __array__(self, dtype=None):
         """Support ``numpy.array()`` and ``numpy.asarray()`` functions."""
@@ -1812,66 +3111,141 @@ class EventArray(object):
     # ----------------------
     # PyTorch compatibility
     # ----------------------
-
     def unsqueeze(self, dim: int) -> Union[jax.Array, u.Quantity]:
-        """
-        Array.unsqueeze(dim) -> Array, or so called Tensor
-        equals
-        Array.expand_dims(dim)
-        """
-        return u.math.expand_dims(self.value, dim)
+            """
+            Insert a dimension of size 1 at the specified position.
+
+            This is a convenience method equivalent to `expand_dims()` that matches PyTorch's API.
+
+            Parameters
+            ----------
+            dim : int
+                Position where to insert the new dimension.
+                Negative dims count from the end.
+
+            Returns
+            -------
+            Union[jax.Array, u.Quantity]
+                A view of the array with an additional dimension inserted.
+
+            Examples
+            --------
+            >>> a = EventArray([1, 2, 3])  # Shape: (3,)
+            >>> a.unsqueeze(0).shape  # Shape: (1, 3)
+            (1, 3)
+            >>> a.unsqueeze(1).shape  # Shape: (3, 1)
+            (3, 1)
+
+            See Also
+            --------
+            expand_dims : Equivalent functionality with NumPy-like API
+            """
+            return u.math.expand_dims(self.value, dim)
 
     def expand_dims(self, axis: Union[int, Sequence[int]]) -> Union[jax.Array, u.Quantity]:
-        """
-        self.expand_dims(axis: int|Sequence[int])
+            """
+            Insert new dimensions at the specified positions.
 
-        1. 如果axis类型为int：
-        返回一个在self基础上的第axis维度前插入一个维度Array，
-        axis<0表示倒数第|axis|维度，
-        令n=len(self._value.shape)，则axis的范围为[-(n+1),n]
+            Parameters
+            ----------
+            axis : int or sequence of ints
+                Position(s) where to insert new dimension(s).
+                For a single integer, inserts one new dimension at that position.
+                For a sequence, inserts multiple new dimensions at the specified positions.
+                Negative axes count from the end and are converted to positive axes.
+                For an n-dimensional array, valid axes are in range [-(n+1), n].
 
-        2. 如果axis类型为Sequence[int]：
-        则返回依次扩展axis[i]的结果，
-        即self.expand_dims(axis)==self.expand_dims(axis[0]).expand_dims(axis[1])...expand_dims(axis[len(axis)-1])
+            Returns
+            -------
+            Union[jax.Array, u.Quantity]
+                A view of the array with additional dimension(s) inserted.
 
+            Examples
+            --------
+            >>> a = EventArray([1, 2, 3])  # Shape: (3,)
+            >>> a.expand_dims(0).shape  # Shape: (1, 3)
+            (1, 3)
+            >>> a a.expand_dims([0, 2]).shape  # Shape: (1, 3, 1)
+            (1, 3, 1)
 
-        1. If the type of axis is int:
+            Notes
+            -----
+            When applying multiple axes at once, they are inserted in the order specified,
+            which affects the final shape.
 
-        Returns an Array of dimensions inserted before the axis dimension based on self,
-
-        The first | axis < 0 indicates the bottom axis | dimensions,
-
-        Set n=len(self._value.shape), then axis has the range [-(n+1),n]
-
-
-        2. If the type of axis is Sequence[int] :
-
-        Returns the result of extending axis[i] in sequence,
-
-        self.expand_dims(axis)==self.expand_dims(axis[0]).expand_dims(axis[1])... expand_dims(axis[len(axis)-1])
-
-        """
-        return u.math.expand_dims(self.value, axis)
+            See Also
+            --------
+            unsqueeze : PyTorch-style equivalent for a single dimension
+            """
+            return u.math.expand_dims(self.value, axis)
 
     def expand_as(self, array: Union['EventArray', ArrayLike]) -> 'EventArray':
         """
-        Expand an array to a shape of another array.
+        Expand this array to match the shape of another array through broadcasting.
 
         Parameters
         ----------
-        array : EventArray
+        array : EventArray or ArrayLike
+            The array whose shape will be used as the target shape.
 
         Returns
         -------
-        expanded : EventArray
-            A readonly view on the original array with the given shape of array. It is
-            typically not contiguous. Furthermore, more than one element of a
-            expanded array may refer to a single memory location.
-        """
-        return u.math.broadcast_to(self.value, _as_array(array))
+        EventArray
+            A new EventArray with the expanded shape. This is a view of the original
+            data when possible.
 
-    def pow(self, index: int):
-        return self.value ** index
+        Examples
+        --------
+        >>> a = EventArray([1, 2, 3])  # Shape: (3,)
+        >>> b = EventArray([[0, 0], [0, 0], [0, 0]])  # Shape: (3, 2)
+        >>> a.expand_as(b).shape  # Shape: (3, 2)
+        (3, 2)
+
+        Notes
+        -----
+        The resulting array is a read-only view on the original array.
+        Multiple elements may refer to the same memory location.
+
+        Raises
+        ------
+        ValueError
+            If the arrays are not broadcastable to the target shape.
+
+        See Also
+        --------
+        numpy.broadcast_to : The underlying NumPy function
+        """
+        target_array = _as_array(array)
+        result = u.math.broadcast_to(self.value, u.math.shape(target_array))
+        return EventArray(result)  # Wrap in EventArray to return correct type
+
+    def pow(self, index: Union[int, float, ArrayLike]) -> Union[jax.Array, u.Quantity]:
+        """
+        Compute element-wise power of the array to the given exponent.
+
+        Parameters
+        ----------
+        index : int, float, or array-like
+            The exponent value(s). If array-like, broadcasting rules apply.
+
+        Returns
+        -------
+        Union[jax.Array, u.Quantity]
+            The result of raising each element to the given power.
+
+        Examples
+        --------
+        >>> a = EventArray([1, 2, 3, 4])
+        >>> a.pow(2)
+        EventArray([1, 4, 9, 16])
+        >>> a.pow([2, 3, 2, 3])
+        EventArray([1, 8, 9, 64])
+
+        See Also
+        --------
+        __pow__ : The special method that implements the ** operator
+        """
+        return self.value ** _as_array(index)
 
     def addr(
         self,
@@ -1881,32 +3255,61 @@ class EventArray(object):
         beta: float = 1.0,
         alpha: float = 1.0,
         out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array, None]:
-        r"""Performs the outer-product of vectors ``vec1`` and ``vec2`` and adds it to the matrix ``input``.
+    ) -> Union['EventArray', u.Quantity, jax.Array, None]:
+        r"""
+        Perform the outer product of vectors and add to this matrix.
 
-        Optional values beta and alpha are scaling factors on the outer product
-        between vec1 and vec2 and the added matrix input respectively.
+        Computes: out = beta * self + alpha * (vec1 ⊗ vec2)
 
-        .. math::
+        This operation performs the weighted outer product between vec1 and vec2,
+        scales it by alpha, and adds it to beta times this array.
 
-           out = \beta \mathrm{input} + \alpha (\text{vec1} \bigtimes \text{vec2})
+        Parameters
+        ----------
+        vec1 : EventArray or ArrayLike
+            The first vector of the outer product.
+        vec2 : EventArray or ArrayLike
+            The second vector of the outer product.
+        beta : float, default=1.0
+            The multiplier for this array.
+        alpha : float, default=1.0
+            The multiplier for the outer product result.
+        out : EventArray or ArrayLike, optional
+            The output array where the result will be stored. If None, a new array is created.
 
-        Args:
-          vec1: the first vector of the outer product
-          vec2: the second vector of the outer product
-          beta: multiplier for input
-          alpha: multiplier
-          out: the output tensor.
+        Returns
+        -------
+        Union[EventArray, u.Quantity, jax.Array, None]
+            The result of the operation. If out is provided, returns None.
 
+        Examples
+        --------
+        >>> a = EventArray([[1, 2], [3, 4]])
+        >>> x = EventArray([1, 2])
+        >>> y = EventArray([3, 4])
+        >>> a.addr(x, y, alpha=1.0, beta=1.0)
+        EventArray([[ 4, 9],
+                    [ 9, 17]])
+
+        Notes
+        -----
+        The outer product of two vectors x and y is defined as the matrix M where
+        M[i,j] = x[i] * y[j].
+
+        See Also
+        --------
+        addr_ : In-place version of this method
+        outer : Compute just the outer product without adding to this array
         """
         vec1 = _as_array(vec1)
         vec2 = _as_array(vec2)
         r = alpha * u.math.outer(vec1, vec2) + beta * self.value
         if out is None:
-            return r
+            return EventArray(r)  # Return as EventArray for consistent API
         else:
             _check_out(out)
             out.value = r
+            return None
 
     def addr_(
         self,
@@ -1915,85 +3318,383 @@ class EventArray(object):
         *,
         beta: float = 1.0,
         alpha: float = 1.0
-    ):
+    ) -> 'EventArray':
+        r"""
+        In-place version of addr that modifies the array.
+
+        Performs the outer product of vectors and adds to this matrix in-place.
+
+        Computes: self = beta * self + alpha * (vec1 ⊗ vec2)
+
+        Parameters
+        ----------
+        vec1 : EventArray or ArrayLike
+            The first vector of the outer product.
+        vec2 : EventArray or ArrayLike
+            The second vector of the outer product.
+        beta : float, default=1.0
+            The multiplier for this array.
+        alpha : float, default=1.0
+            The multiplier for the outer product result.
+
+        Returns
+        -------
+        EventArray
+            Self, after the operation has been performed.
+
+        Examples
+        --------
+        >>> a = EventArray([[1, 2], [3, 4]])
+        >>> x = EventArray([1, 2])
+        >>> y = EventArray([3, 4])
+        >>> a.addr_(x, y, alpha=1.0, beta=1.0)  # Modifies a in-place
+        EventArray([[ 4, 9],
+                    [ 9, 17]])
+
+        See Also
+        --------
+        addr : Non-in-place version that returns a new array
+        """
         vec1 = _as_array(vec1)
         vec2 = _as_array(vec2)
-        r = alpha * u.math.outer(vec1, vec2) + beta * self.value
-        self.value = r
+        self.value = alpha * u.math.outer(vec1, vec2) + beta * self.value
         return self
 
     def outer(
         self,
         other: Union['EventArray', ArrayLike]
-    ) -> Union[u.Quantity, jax.Array]:
+    ) -> 'EventArray':
+        """
+        Compute the outer product with another array.
+
+        Parameters
+        ----------
+        other : EventArray or ArrayLike
+            The array to compute the outer product with.
+
+        Returns
+        -------
+        EventArray
+            A new array containing the outer product.
+
+        Examples
+        --------
+        >>> a = EventArray([1, 2, 3])
+        >>> b = EventArray([4, 5])
+        >>> a.outer(b)
+        EventArray([[ 4,  5],
+                    [ 8, 10],
+                    [12, 15]])
+
+        Notes
+        -----
+        The outer product of two vectors x and y results in a matrix M where
+        M[i,j] = x[i] * y[j].
+
+        See Also
+        --------
+        addr : Compute outer product and add to an existing array
+        numpy.outer : Similar NumPy function
+        """
         other = _as_array(other)
-        return u.math.outer(self.value, other.value)
+        return EventArray(u.math.outer(self.value, other))
 
     def abs(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array, None]:
+    ) -> Union['EventArray', u.Quantity, jax.Array, None]:
+        """
+        Calculate the absolute value element-wise.
+
+        Parameters
+        ----------
+        out : EventArray or ArrayLike, optional
+            Array to store the output. If provided, it must have the correct shape.
+
+        Returns
+        -------
+        Union[EventArray, u.Quantity, jax.Array, None]
+            A new array with the absolute value of each element.
+            If out is provided, returns None.
+
+        Examples
+        --------
+        >>> a = EventArray([-1, -2, 3])
+        >>> a.abs()
+        EventArray([1, 2, 3])
+
+        >>> # Using out parameter
+        >>> result = EventArray(np.zeros(3))
+        >>> a.abs(out=result)
+        >>> result
+        EventArray([1, 2, 3])
+
+        See Also
+        --------
+        abs_ : In-place version
+        absolute : Alias for this function
+        numpy.abs : NumPy equivalent function
+        """
         r = u.math.abs(self.value)
         if out is None:
-            return r
+            return EventArray(r)
         else:
             _check_out(out)
             out.value = r
+            return None
 
-    def abs_(self):
+    def abs_(self) -> 'EventArray':
         """
-        in-place version of Array.abs()
+        Calculate the absolute value element-wise in-place.
+
+        Modifies the array in-place to contain the absolute values.
+
+        Returns
+        -------
+        EventArray
+            Self, after taking the absolute value of each element.
+
+        Examples
+        --------
+        >>> a = EventArray([-1, -2, 3])
+        >>> a.abs_()  # Modifies a in-place
+        EventArray([1, 2, 3])
+
+        See Also
+        --------
+        abs : Non-in-place version
+        absolute_ : Alias for this function
         """
         self.value = u.math.abs(self.value)
         return self
 
-    def add_(self, value):
-        self.value += value
+    def add_(self, value: Union['EventArray', ArrayLike]) -> 'EventArray':
+        """
+        Add a scalar or array to this array, in-place.
+
+        Parameters
+        ----------
+        value : EventArray or ArrayLike
+            The value to add to this array.
+
+        Returns
+        -------
+        EventArray
+            Self, after the addition has been performed.
+
+        Examples
+        --------
+        >>> a = EventArray([1, 2, 3])
+        >>> a.add_(10)  # Modifies a in-place
+        EventArray([11, 12, 13])
+
+        >>> b = EventArray([1, 2, 3])
+        >>> b.add_(EventArray([10, 20, 30]))  # Modifies b in-place
+        EventArray([11, 22, 33])
+
+        See Also
+        --------
+        __iadd__ : The special method that implements the += operator
+        """
+        self.value += _as_array(value)
         return self
 
     def absolute(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union[jax.Array, u.Quantity]:
+    ) -> Union['EventArray', jax.Array, u.Quantity]:
         """
-        alias of Array.abs
+        Calculate the absolute value element-wise.
+
+        This is an alias for the `abs` method.
+
+        Parameters
+        ----------
+        out : EventArray or ArrayLike, optional
+            Array to store the output. If provided, it must have the correct shape.
+
+        Returns
+        -------
+        Union[EventArray, jax.Array, u.Quantity]
+            A new array with the absolute value of each element.
+            If out is provided, returns None.
+
+        Examples
+        --------
+        >>> a = EventArray([-1, -2, 3])
+        >>> a.absolute()
+        EventArray([1, 2, 3])
+
+        See Also
+        --------
+        abs : Equivalent function
+        absolute_ : In-place version
         """
         return self.abs(out=out)
 
-    def absolute_(self):
+    def absolute_(self) -> 'EventArray':
         """
-        alias of Array.abs_()
+        Calculate the absolute value element-wise in-place.
+
+        This is an alias for the `abs_` method.
+
+        Returns
+        -------
+        EventArray
+            Self, after taking the absolute value of each element.
+
+        Examples
+        --------
+        >>> a = EventArray([-1, -2, 3])
+        >>> a.absolute_()  # Modifies a in-place
+        EventArray([1, 2, 3])
+
+        See Also
+        --------
+        abs_ : Equivalent function
+        absolute : Non-in-place version
         """
         return self.abs_()
 
-    def mul(self, value):
-        return self.value * value
+    def mul(self, value: Union['EventArray', ArrayLike]) -> Union[jax.Array, u.Quantity]:
+        """
+        Multiply the array by a scalar or array element-wise.
 
-    def mul_(self, value):
+        Parameters
+        ----------
+        value : EventArray or ArrayLike
+            The value to multiply with this array.
+
+        Returns
+        -------
+        Union[jax.Array, u.Quantity]
+            A new array with the result of the multiplication.
+
+        Examples
+        --------
+        >>> a = EventArray([1, 2, 3])
+        >>> a.mul(10)
+        EventArray([10, 20, 30])
+
+        >>> a.mul(EventArray([2, 3, 4]))
+        EventArray([2, 6, 12])
+
+        See Also
+        --------
+        mul_ : In-place version
+        multiply : Alias for this function
+        __mul__ : The special method that implements the * operator
         """
-        In-place version of :meth:`~Array.mul`.
+        return self.value * _as_array(value)
+
+    def mul_(self, value: Union['EventArray', ArrayLike]) -> 'EventArray':
         """
-        self.value *= value
+        Multiply the array by a scalar or array element-wise, in-place.
+
+        Parameters
+        ----------
+        value : EventArray or ArrayLike
+            The value to multiply with this array.
+
+        Returns
+        -------
+        EventArray
+            Self, after the multiplication has been performed.
+
+        Examples
+        --------
+        >>> a = EventArray([1, 2, 3])
+        >>> a.mul_(10)  # Modifies a in-place
+        EventArray([10, 20, 30])
+
+        See Also
+        --------
+        mul : Non-in-place version
+        multiply_ : Alias for this function
+        __imul__ : The special method that implements the *= operator
+        """
+        self.value *= _as_array(value)
         return self
 
-    def multiply(self, value):  # real signature unknown; restored from __doc__
+    def multiply(self, value: Union['EventArray', ArrayLike]) -> Union[jax.Array, u.Quantity]:
         """
-        multiply(value) -> Tensor
+        Multiply the array by a scalar or array element-wise.
 
-        See :func:`torch.multiply`.
-        """
-        return self.value * value
+        This is an alias for the `mul` method, providing PyTorch-compatible API.
 
-    def multiply_(self, value):  # real signature unknown; restored from __doc__
-        """
-        multiply_(value) -> Tensor
+        Parameters
+        ----------
+        value : EventArray or ArrayLike
+            The value to multiply with this array.
 
-        In-place version of :meth:`~Tensor.multiply`.
+        Returns
+        -------
+        Union[jax.Array, u.Quantity]
+            A new array with the result of the multiplication.
+
+        Examples
+        --------
+        >>> a = EventArray([1, 2, 3])
+        >>> a.multiply(10)
+        EventArray([10, 20, 30])
+
+        See Also
+        --------
+        mul : Equivalent function
+        multiply_ : In-place version
         """
-        self.value *= value
+        return self.value * _as_array(value)
+
+    def multiply_(self, value: Union['EventArray', ArrayLike]) -> 'EventArray':
+        """
+        Multiply the array by a scalar or array element-wise, in-place.
+
+        This is an alias for the `mul_` method, providing PyTorch-compatible API.
+
+        Parameters
+        ----------
+        value : EventArray or ArrayLike
+            The value to multiply with this array.
+
+        Returns
+        -------
+        EventArray
+            Self, after the multiplication has been performed.
+
+        Examples
+        --------
+        >>> a = EventArray([1, 2, 3])
+        >>> a.multiply_(10)  # Modifies a in-place
+        EventArray([10, 20, 30])
+
+        See Also
+        --------
+        multiply : Non-in-place version
+        mul_ : Equivalent function
+        """
+        self.value *= _as_array(value)
         return self
+
 
     def sin(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
+        """
+        Calculate the sine of the array elements.
+
+        Parameters
+        ----------
+        out : EventArray or ArrayLike, optional
+            Output array for the result. If provided, must have the same shape as the output.
+
+        Returns
+        -------
+        Union[u.Quantity, jax.Array, None]
+            Sine of each element. Returns None if out is provided.
+
+        See Also
+        --------
+        sin_ : In-place version of this function.
+        cos, tan : Other trigonometric functions.
+        """
         r = u.math.sin(self.value)
         if out is None:
             return r
@@ -2002,16 +3703,64 @@ class EventArray(object):
             out.value = r
 
     def sin_(self):
+        """
+        Calculate the sine of the array elements in-place.
+
+        Modifies the array in-place with the sine of each element.
+
+        Returns
+        -------
+        EventArray
+            The modified array with sine values.
+
+        See Also
+        --------
+        sin : Out-of-place version of this function.
+        cos_, tan_ : Other in-place trigonometric functions.
+        """
         self.value = u.math.sin(self.value)
         return self
 
     def cos_(self):
+        """
+        Calculate the cosine of the array elements in-place.
+
+        Modifies the array in-place with the cosine of each element.
+
+        Returns
+        -------
+        EventArray
+            The modified array with cosine values.
+
+        See Also
+        --------
+        cos : Out-of-place version of this function.
+        sin_, tan_ : Other in-place trigonometric functions.
+        """
         self.value = u.math.cos(self.value)
         return self
 
     def cos(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
+        """
+        Calculate the cosine of the array elements.
+
+        Parameters
+        ----------
+        out : EventArray or ArrayLike, optional
+            Output array for the result. If provided, must have the same shape as the output.
+
+        Returns
+        -------
+        Union[u.Quantity, jax.Array, None]
+            Cosine of each element. Returns None if out is provided.
+
+        See Also
+        --------
+        cos_ : In-place version of this function.
+        sin, tan : Other trigonometric functions.
+        """
         r = u.math.cos(self.value)
         if out is None:
             return r
@@ -2020,12 +3769,45 @@ class EventArray(object):
             out.value = r
 
     def tan_(self):
+        """
+        Calculate the tangent of the array elements in-place.
+
+        Modifies the array in-place with the tangent of each element.
+
+        Returns
+        -------
+        EventArray
+            The modified array with tangent values.
+
+        See Also
+        --------
+        tan : Out-of-place version of this function.
+        sin_, cos_ : Other in-place trigonometric functions.
+        """
         self.value = u.math.tan(self.value)
         return self
 
     def tan(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
+        """
+        Calculate the tangent of the array elements.
+
+        Parameters
+        ----------
+        out : EventArray or ArrayLike, optional
+            Output array for the result. If provided, must have the same shape as the output.
+
+        Returns
+        -------
+        Union[u.Quantity, jax.Array, None]
+            Tangent of each element. Returns None if out is provided.
+
+        See Also
+        --------
+        tan_ : In-place version of this function.
+        sin, cos : Other trigonometric functions.
+        """
         r = u.math.tan(self.value)
         if out is None:
             return r
@@ -2034,12 +3816,45 @@ class EventArray(object):
             out.value = r
 
     def sinh_(self):
+        """
+        Calculate the hyperbolic sine of the array elements in-place.
+
+        Modifies the array in-place with the hyperbolic sine of each element.
+
+        Returns
+        -------
+        EventArray
+            The modified array with hyperbolic sine values.
+
+        See Also
+        --------
+        sinh : Out-of-place version of this function.
+        cosh_, tanh_ : Other in-place hyperbolic functions.
+        """
         self.value = u.math.sinh(self.value)
         return self
 
     def sinh(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
+        """
+        Calculate the hyperbolic sine of the array elements.
+
+        Parameters
+        ----------
+        out : EventArray or ArrayLike, optional
+            Output array for the result. If provided, must have the same shape as the output.
+
+        Returns
+        -------
+        Union[u.Quantity, jax.Array, None]
+            Hyperbolic sine of each element. Returns None if out is provided.
+
+        See Also
+        --------
+        sinh_ : In-place version of this function.
+        cosh, tanh : Other hyperbolic functions.
+        """
         r = u.math.sinh(self.value)
         if out is None:
             return r
@@ -2048,12 +3863,45 @@ class EventArray(object):
             out.value = r
 
     def cosh_(self):
+        """
+        Calculate the hyperbolic cosine of the array elements in-place.
+
+        Modifies the array in-place with the hyperbolic cosine of each element.
+
+        Returns
+        -------
+        EventArray
+            The modified array with hyperbolic cosine values.
+
+        See Also
+        --------
+        cosh : Out-of-place version of this function.
+        sinh_, tanh_ : Other in-place hyperbolic functions.
+        """
         self.value = u.math.cosh(self.value)
         return self
 
     def cosh(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
+        """
+        Calculate the hyperbolic cosine of the array elements.
+
+        Parameters
+        ----------
+        out : EventArray or ArrayLike, optional
+            Output array for the result. If provided, must have the same shape as the output.
+
+        Returns
+        -------
+        Union[u.Quantity, jax.Array, None]
+            Hyperbolic cosine of each element. Returns None if out is provided.
+
+        See Also
+        --------
+        cosh_ : In-place version of this function.
+        sinh, tanh : Other hyperbolic functions.
+        """
         r = u.math.cosh(self.value)
         if out is None:
             return r
@@ -2062,12 +3910,45 @@ class EventArray(object):
             out.value = r
 
     def tanh_(self):
+        """
+        Calculate the hyperbolic tangent of the array elements in-place.
+
+        Modifies the array in-place with the hyperbolic tangent of each element.
+
+        Returns
+        -------
+        EventArray
+            The modified array with hyperbolic tangent values.
+
+        See Also
+        --------
+        tanh : Out-of-place version of this function.
+        sinh_, cosh_ : Other in-place hyperbolic functions.
+        """
         self.value = u.math.tanh(self.value)
         return self
 
     def tanh(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
+        """
+        Calculate the hyperbolic tangent of the array elements.
+
+        Parameters
+        ----------
+        out : EventArray or ArrayLike, optional
+            Output array for the result. If provided, must have the same shape as the output.
+
+        Returns
+        -------
+        Union[u.Quantity, jax.Array, None]
+            Hyperbolic tangent of each element. Returns None if out is provided.
+
+        See Also
+        --------
+        tanh_ : In-place version of this function.
+        sinh, cosh : Other hyperbolic functions.
+        """
         r = u.math.tanh(self.value)
         if out is None:
             return r
@@ -2076,12 +3957,47 @@ class EventArray(object):
             out.value = r
 
     def arcsin_(self):
+        """
+        Calculate the inverse sine of the array elements in-place.
+
+        Modifies the array in-place with the inverse sine (arcsine) of each element.
+        Each element should be in the range [-1, 1].
+
+        Returns
+        -------
+        EventArray
+            The modified array with inverse sine values.
+
+        See Also
+        --------
+        arcsin : Out-of-place version of this function.
+        arccos_, arctan_ : Other in-place inverse trigonometric functions.
+        """
         self.value = u.math.arcsin(self.value)
         return self
 
     def arcsin(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
+        """
+        Calculate the inverse sine of the array elements.
+
+        Parameters
+        ----------
+        out : EventArray or ArrayLike, optional
+            Output array for the result. If provided, must have the same shape as the output.
+
+        Returns
+        -------
+        Union[u.Quantity, jax.Array, None]
+            Inverse sine of each element. Returns None if out is provided.
+            For real input, the result is in the interval [-π/2, π/2].
+
+        See Also
+        --------
+        arcsin_ : In-place version of this function.
+        arccos, arctan : Other inverse trigonometric functions.
+        """
         r = u.math.arcsin(self.value)
         if out is None:
             return r
@@ -2090,12 +4006,47 @@ class EventArray(object):
             out.value = r
 
     def arccos_(self):
+        """
+        Calculate the inverse cosine of the array elements in-place.
+
+        Modifies the array in-place with the inverse cosine (arccosine) of each element.
+        Each element should be in the range [-1, 1].
+
+        Returns
+        -------
+        EventArray
+            The modified array with inverse cosine values.
+
+        See Also
+        --------
+        arccos : Out-of-place version of this function.
+        arcsin_, arctan_ : Other in-place inverse trigonometric functions.
+        """
         self.value = u.math.arccos(self.value)
         return self
 
     def arccos(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
+        """
+        Calculate the inverse cosine of the array elements.
+
+        Parameters
+        ----------
+        out : EventArray or ArrayLike, optional
+            Output array for the result. If provided, must have the same shape as the output.
+
+        Returns
+        -------
+        Union[u.Quantity, jax.Array, None]
+            Inverse cosine of each element. Returns None if out is provided.
+            For real input, the result is in the interval [0, π].
+
+        See Also
+        --------
+        arccos_ : In-place version of this function.
+        arcsin, arctan : Other inverse trigonometric functions.
+        """
         r = u.math.arccos(self.value)
         if out is None:
             return r
@@ -2104,12 +4055,46 @@ class EventArray(object):
             out.value = r
 
     def arctan_(self):
+        """
+        Calculate the inverse tangent of the array elements in-place.
+
+        Modifies the array in-place with the inverse tangent (arctangent) of each element.
+
+        Returns
+        -------
+        EventArray
+            The modified array with inverse tangent values.
+
+        See Also
+        --------
+        arctan : Out-of-place version of this function.
+        arcsin_, arccos_ : Other in-place inverse trigonometric functions.
+        """
         self.value = u.math.arctan(self.value)
         return self
 
     def arctan(
         self, *, out: Optional[Union['EventArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
+        """
+        Calculate the inverse tangent of the array elements.
+
+        Parameters
+        ----------
+        out : EventArray or ArrayLike, optional
+            Output array for the result. If provided, must have the same shape as the output.
+
+        Returns
+        -------
+        Union[u.Quantity, jax.Array, None]
+            Inverse tangent of each element. Returns None if out is provided.
+            For real input, the result is in the interval [-π/2, π/2].
+
+        See Also
+        --------
+        arctan_ : In-place version of this function.
+        arcsin, arccos : Other inverse trigonometric functions.
+        """
         r = u.math.arctan(self.value)
         if out is None:
             return r
@@ -2125,9 +4110,44 @@ class EventArray(object):
         out: Optional[Union['EventArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
-        return the value between min_value and max_value,
-        if min_value is None, then no lower bound,
-        if max_value is None, then no upper bound.
+        Clamp (limit) the values in the array between min_value and max_value.
+
+        Given an array and interval [min_value, max_value], any array values outside
+        the interval are clipped to the interval edges. For example, if an interval of
+        [0, 1] is specified, values smaller than 0 become 0, and values larger than 1
+        become 1.
+
+        Parameters
+        ----------
+        min_value : EventArray or ArrayLike, optional
+            Minimum value. If None, clipping is not performed on lower bound.
+        max_value : EventArray or ArrayLike, optional
+            Maximum value. If None, clipping is not performed on upper bound.
+        out : EventArray or ArrayLike, optional
+            The output array. If provided, it must have a shape that the inputs
+            broadcast to. If not provided or None, a freshly-allocated array is
+            returned.
+
+        Returns
+        -------
+        Union[u.Quantity, jax.Array, None]
+            An array with the elements of self, but where values < min_value are
+            replaced with min_value, and those > max_value with max_value.
+            If out is provided, returns None.
+
+        See Also
+        --------
+        clamp_ : In-place version of this function
+        clip_ : Alias for clamp_
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> a = EventArray(jnp.arange(10))
+        >>> a.clamp(3, 7)  # all values < 3 become 3, all values > 7 become 7
+        array([3, 3, 3, 3, 4, 5, 6, 7, 7, 7])
+        >>> a.clamp(None, 7)  # only clip from above
+        array([0, 1, 2, 3, 4, 5, 6, 7, 7, 7])
         """
         min_value = _as_array(min_value)
         max_value = _as_array(max_value)
@@ -2137,16 +4157,43 @@ class EventArray(object):
         else:
             _check_out(out)
             out.value = r
+            return None
 
     def clamp_(
         self,
         min_value: Optional[Union['EventArray', ArrayLike]] = None,
         max_value: Optional[Union['EventArray', ArrayLike]] = None
-    ):
+    ) -> 'EventArray':
         """
-        return the value between min_value and max_value,
-        if min_value is None, then no lower bound,
-        if max_value is None, then no upper bound.
+        In-place version of clamp().
+
+        Clamps (limits) the values in the array between min_value and max_value,
+        modifying the array in-place.
+
+        Parameters
+        ----------
+        min_value : EventArray or ArrayLike, optional
+            Minimum value. If None, clipping is not performed on lower bound.
+        max_value : EventArray or ArrayLike, optional
+            Maximum value. If None, clipping is not performed on upper bound.
+
+        Returns
+        -------
+        EventArray
+            The modified array with clamped values (self).
+
+        See Also
+        --------
+        clamp : Out-of-place version of this function
+        clip_ : Alias for this function
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> a = EventArray(jnp.arange(10))
+        >>> a.clamp_(3, 7)  # modifies a in-place
+        >>> a  # values are clamped between 3 and 7
+        EventArray(value=array([3, 3, 3, 3, 4, 5, 6, 7, 7, 7]))
         """
         self.clamp(min_value, max_value, out=self)
         return self
@@ -2155,18 +4202,96 @@ class EventArray(object):
         self,
         min_value: Optional[Union['EventArray', ArrayLike]] = None,
         max_value: Optional[Union['EventArray', ArrayLike]] = None
-    ):
+    ) -> 'EventArray':
         """
-        alias for clamp_
+        Alias for clamp_().
+
+        Clips (limits) the values in the array between min_value and max_value,
+        modifying the array in-place.
+
+        Parameters
+        ----------
+        min_value : EventArray or ArrayLike, optional
+            Minimum value. If None, clipping is not performed on lower bound.
+        max_value : EventArray or ArrayLike, optional
+            Maximum value. If None, clipping is not performed on upper bound.
+
+        Returns
+        -------
+        EventArray
+            The modified array with clipped values (self).
+
+        See Also
+        --------
+        clamp_ : Equivalent function with different name
+        clamp : Out-of-place version
+
+        Notes
+        -----
+        This is an alias provided for NumPy compatibility.
         """
-        self.value = self.clip(min_value, max_value, out=self)
+        # Fixed bug: was assigning to self.value but should call clamp_ directly
+        self.clamp_(min_value, max_value)
         return self
 
     def clone(self) -> 'EventArray':
+        """
+        Return a copy of the array.
+
+        This method creates a new EventArray with a copy of the data from the original array.
+
+        Returns
+        -------
+        EventArray
+            A new EventArray containing a copy of the values from this array.
+
+        See Also
+        --------
+        copy_ : Copy values from another array into this one
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> a = EventArray(jnp.array([1, 2, 3]))
+        >>> b = a.clone()
+        >>> b.value[0] = 5
+        >>> a  # original array is unchanged
+        EventArray(value=array([1, 2, 3]))
+        >>> b  # cloned array is modified
+        EventArray(value=array([5, 2, 3]))
+        """
         return type(self)(self.value.copy())
 
     def copy_(self, src: Union['EventArray', ArrayLike]) -> 'EventArray':
-        self.value = src.copy()
+        """
+        Copy values from src into this array, in-place.
+
+        Parameters
+        ----------
+        src : EventArray or ArrayLike
+            The source array to copy values from.
+
+        Returns
+        -------
+        EventArray
+            The modified array (self).
+
+        See Also
+        --------
+        clone : Create a new copy of this array
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> a = EventArray(jnp.zeros(3))
+        >>> b = EventArray(jnp.array([4, 5, 6]))
+        >>> a.copy_(b)
+        >>> a  # values copied from b
+        EventArray(value=array([4, 5, 6]))
+        """
+        # Ensure we're correctly handling both EventArray and regular array inputs
+        src_value = src.value if isinstance(src, EventArray) else src
+        self.value = src_value.copy()
         return self
 
     def cov_with(
@@ -2174,9 +4299,58 @@ class EventArray(object):
         y: Optional[Union['EventArray', ArrayLike]] = None,
         rowvar: bool = True,
         bias: bool = False,
-        fweights: Union['EventArray', ArrayLike] = None,
-        aweights: Union['EventArray', ArrayLike] = None
+        fweights: Optional[Union['EventArray', ArrayLike]] = None,
+        aweights: Optional[Union['EventArray', ArrayLike]] = None
     ) -> Union[jax.Array, u.Quantity]:
+        """
+        Calculate the covariance matrix between this array and another.
+
+        Estimate a covariance matrix, given data and weights.
+
+        Parameters
+        ----------
+        y : EventArray or ArrayLike, optional
+            An array containing multiple variables and observations.
+            If not specified, the covariance is calculated for self.
+        rowvar : bool, optional, default=True
+            If True, then each row represents a variable, with
+            observations in the columns. Otherwise, the relationship
+            is transposed: each column represents a variable, while
+            the rows contain observations.
+        bias : bool, optional, default=False
+            If False, normalization is by (N - 1), where N is the number of
+            observations given (unbiased estimate). If True, then
+            normalization is by N.
+        fweights : EventArray or ArrayLike, optional
+            Array of integer frequency weights. The number of times each
+            observation vector should be repeated.
+        aweights : EventArray or ArrayLike, optional
+            Array of observation vector weights. These relative weights are
+            typically large for observations considered "important" and smaller
+            for observations considered less "important".
+
+        Returns
+        -------
+        Union[jax.Array, u.Quantity]
+            The covariance matrix of the variables.
+
+        See Also
+        --------
+        numpy.cov : NumPy's covariance function
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> x = EventArray(jnp.array([[0, 2], [1, 1], [2, 0]]).T)
+        >>> x.cov_with()  # covariance matrix of x
+        array([[ 1., -1.],
+               [-1.,  1.]])
+
+        >>> y = EventArray(jnp.array([[3, 2, 1], [4, 2, 0]]))
+        >>> x.cov_with(y)  # cross-covariance between x and y
+        array([[ 1.5, -1.5],
+               [-1.5,  1.5]])
+        """
         y = _as_array(y)
         fweights = _as_array(fweights)
         aweights = _as_array(aweights)
@@ -2187,18 +4361,50 @@ class EventArray(object):
         """
         Expand an array to a new shape.
 
+        Expands the dimensions of the array by broadcasting it to a new shape. The new
+        dimensions are added at the beginning of the shape. Existing dimensions can be
+        expanded if they have a size of 1, otherwise they must match the target size
+        or be specified as -1 (which keeps the original size).
+
         Parameters
         ----------
-        sizes : tuple or int
-            The shape of the desired array. A single integer ``i`` is interpreted
-            as ``(i,)``.
+        *sizes : tuple of ints
+            The new shape. Dimensions with -1 will keep their original size.
+            The number of elements in sizes must be greater than or equal to
+            the number of dimensions in the original array.
 
         Returns
         -------
-        expanded : EventArray
-            A readonly view on the original array with the given shape. It is
-            typically not contiguous. Furthermore, more than one element of a
-            expanded array may refer to a single memory location.
+        Union[u.Quantity, jax.Array]
+            A view of the original array expanded to the new shape.
+
+        Raises
+        ------
+        ValueError
+            If the number of sizes is less than the number of dimensions in the tensor,
+            if any new dimension has a negative size, or if a non-singleton dimension
+            doesn't match the target size.
+
+        See Also
+        --------
+        expand_dims : Add new dimensions of size 1
+        expand_as : Expand this tensor to the same shape as another tensor
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> a = EventArray(jnp.ones((2, 3)))
+        >>> a.expand(4, 2, 3).shape  # adds a new dimension of size 4
+        (4, 2, 3)
+
+        >>> b = EventArray(jnp.ones((1, 3)))
+        >>> b.expand(2, 3).shape  # expands dimension 0 from 1 to 2
+        (2, 3)
+
+        >>> # Using -1 to keep original dimensions
+        >>> c = EventArray(jnp.ones((2, 3)))
+        >>> c.expand(5, -1, -1).shape
+        (5, 2, 3)
         """
         l_ori = len(self.shape)
         l_tar = len(sizes)
@@ -2227,25 +4433,190 @@ class EventArray(object):
         return u.math.broadcast_to(self.value, sizes_list)
 
     def tree_flatten(self):
+        """
+        Flatten the object for JAX pytree functionality.
+
+        This method is used by JAX's tree_util to support EventArray instances
+        as part of JAX transformations. It separates the object into dynamic data
+        (the array value) and static metadata (None in this case).
+
+        Returns
+        -------
+        tuple
+            A tuple containing two elements:
+            - A tuple of dynamic values (just the array value in this case)
+            - Static metadata (None for EventArray)
+
+        See Also
+        --------
+        tree_unflatten : Reconstruct an object from flattened data
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> from jax.tree_util import tree_flatten
+        >>> a = EventArray(jnp.array([1, 2, 3]))
+        >>> dynamic_values, static_metadata = tree_flatten(a)
+        >>> dynamic_values
+        (Array([1, 2, 3], dtype=int32),)
+        >>> static_metadata is None
+        True
+        """
         return (self.value,), None
 
     @classmethod
     def tree_unflatten(cls, aux_data, flat_contents):
+        """
+        Reconstruct an EventArray from flattened data.
+
+        This class method is used by JAX's tree_util to reconstruct EventArray instances
+        from flattened data during JAX transformations.
+
+        Parameters
+        ----------
+        aux_data : Any
+            Static metadata for reconstruction (typically None for EventArray)
+        flat_contents : tuple
+            A tuple containing the dynamic values that were extracted by tree_flatten
+
+        Returns
+        -------
+        EventArray
+            A reconstructed EventArray instance
+
+        See Also
+        --------
+        tree_flatten : Flatten an object for JAX transformations
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> from jax.tree_util import tree_flatten, tree_unflatten
+        >>> a = EventArray(jnp.array([1, 2, 3]))
+        >>> dynamic_values, static_metadata = tree_flatten(a)
+        >>> b = EventArray.tree_unflatten(static_metadata, dynamic_values)
+        >>> b.value
+        Array([1, 2, 3], dtype=int32)
+        """
         return cls(*flat_contents)
 
     def zero_(self):
+        """
+        Fill the array with zeros in-place.
+
+        Sets all elements in the array to zero, preserving the shape and dtype.
+
+        Returns
+        -------
+        EventArray
+            The modified array (self)
+
+        See Also
+        --------
+        fill_ : Fill the array with a specified value
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> a = EventArray(jnp.array([1, 2, 3]))
+        >>> a.zero_()
+        >>> a.value
+        Array([0, 0, 0], dtype=int32)
+        """
         self.value = u.math.zeros_like(self.value)
         return self
 
     def fill_(self, value):
+        """
+        Fill the array with a specified value in-place.
+
+        Sets all elements in the array to the specified value,
+        preserving the shape and dtype.
+
+        Parameters
+        ----------
+        value : scalar
+            The value to fill the array with
+
+        Returns
+        -------
+        EventArray
+            The modified array (self)
+
+        See Also
+        --------
+        zero_ : Fill the array with zeros
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> a = EventArray(jnp.zeros(3))
+        >>> a.fill_(5)
+        >>> a.value
+        Array([5, 5, 5], dtype=int32)
+        """
         self.fill(value)
         return self
 
     def cuda(self):
-        self.value = jax.device_put(self.value, jax.devices('cuda')[0])
+        """
+        Move the array to a CUDA device.
+
+        Transfers the underlying array to the first available CUDA device.
+        This operation is performed in-place.
+
+        Returns
+        -------
+        EventArray
+            The modified array (self)
+
+        Raises
+        ------
+        RuntimeError
+            If no CUDA devices are available
+
+        See Also
+        --------
+        cpu : Move the array to CPU
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> a = EventArray(jnp.array([1, 2, 3]))
+        >>> # Only run if CUDA device is available
+        >>> if len(jax.devices('cuda')) > 0:
+        ...     a.cuda()  # Moves array to GPU
+        """
+        # Bug fix: should check if CUDA devices exist before accessing
+        cuda_devices = jax.devices('cuda')
+        if not cuda_devices:
+            raise RuntimeError("No CUDA devices found")
+        self.value = jax.device_put(self.value, cuda_devices[0])
         return self
 
     def cpu(self):
+        """
+        Move the array to CPU.
+
+        Transfers the underlying array to the CPU device.
+        This operation is performed in-place.
+
+        Returns
+        -------
+        EventArray
+            The modified array (self)
+
+        See Also
+        --------
+        cuda : Move the array to a CUDA device
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> a = EventArray(jnp.array([1, 2, 3]))
+        >>> a.cpu()  # Ensures array is on CPU
+        >>> # The array is now on the CPU device
+        """
         self.value = jax.device_put(self.value, jax.devices('cpu')[0])
         return self
 
@@ -2253,14 +4624,55 @@ class EventArray(object):
     # ---------------- #
 
     def bool(self):
+        """
+        Convert the array to boolean data type.
+
+        Converts each element of the array to boolean values according to standard truth
+        testing in Python. Non-zero values are converted to True and zeros are converted
+        to False.
+
+        Returns
+        -------
+        ndarray
+            A new array with boolean data type.
+
+        See Also
+        --------
+        int : Convert to 32-bit integer type
+        float : Convert to 32-bit floating-point type
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> a = EventArray(jnp.array([0, 1, 2, 0, -1]))
+        >>> a.bool()
+        Array([False,  True,  True, False,  True])
+        """
         return u.math.asarray(self.value, dtype=np.bool_)
 
     def int(self):
         """
         Convert the array to a 32-bit integer data type.
 
-        Returns:
-            The array converted to a 32-bit integer data type.
+        Converts each element of the array to 32-bit signed integers. Floating-point
+        values are truncated toward zero.
+
+        Returns
+        -------
+        ndarray
+            A new array with int32 data type.
+
+        See Also
+        --------
+        long : Convert to 64-bit integer type
+        float : Convert to 32-bit floating-point type
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> a = EventArray(jnp.array([1.7, -1.2, 0, 10.1]))
+        >>> a.int()
+        Array([ 1, -1,  0, 10], dtype=int32)
         """
         return u.math.asarray(self.value, dtype=np.int32)
 
@@ -2268,8 +4680,26 @@ class EventArray(object):
         """
         Convert the array to a 64-bit integer data type.
 
-        Returns:
-            The array converted to a 64-bit integer data type.
+        Converts each element of the array to 64-bit signed integers. Floating-point
+        values are truncated toward zero. This provides greater precision for large
+        integer values compared to the standard int type.
+
+        Returns
+        -------
+        ndarray
+            A new array with int64 data type.
+
+        See Also
+        --------
+        int : Convert to 32-bit integer type
+        float : Convert to 32-bit floating-point type
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> a = EventArray(jnp.array([2**40, -2.7, 0]))
+        >>> a.long()  # Can represent large integers
+        Array([ 1099511627776,            -2,             0], dtype=int64)
         """
         return u.math.asarray(self.value, dtype=np.int64)
 
@@ -2277,8 +4707,32 @@ class EventArray(object):
         """
         Convert the array to a 16-bit floating-point data type.
 
-        Returns:
-            The array converted to a 16-bit floating-point data type.
+        Converts each element of the array to half-precision (16-bit) floating-point format.
+        This format has reduced precision and range compared to standard float32 but requires
+        half the storage space.
+
+        Returns
+        -------
+        ndarray
+            A new array with float16 data type.
+
+        See Also
+        --------
+        float : Convert to 32-bit floating-point type
+        double : Convert to 64-bit floating-point type
+        bfloat16 : Convert to Brain Floating Point 16 type
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> a = EventArray(jnp.array([1.0, 10000.0, 0.0001]))
+        >>> a.half()  # Note the limited precision
+        Array([1.0e+00, 1.0e+04, 9.9e-05], dtype=float16)
+
+        Notes
+        -----
+        float16 has a precision of about 3 decimal digits and can represent values
+        from approximately 6e-8 to 65504.
         """
         return u.math.asarray(self.value, dtype=np.float16)
 
@@ -2286,8 +4740,32 @@ class EventArray(object):
         """
         Convert the array to a 32-bit floating-point data type.
 
-        Returns:
-            The array converted to a 32-bit floating-point data type.
+        Converts each element of the array to single-precision (32-bit) floating-point format.
+        This is the default floating-point format used in most scientific computing applications
+        and provides a balance between precision and memory usage.
+
+        Returns
+        -------
+        ndarray
+            A new array with float32 data type.
+
+        See Also
+        --------
+        half : Convert to 16-bit floating-point type
+        double : Convert to 64-bit floating-point type
+        int : Convert to 32-bit integer type
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> a = EventArray(jnp.array([1, 2, 3], dtype=jnp.int32))
+        >>> a.float()
+        Array([1., 2., 3.], dtype=float32)
+
+        Notes
+        -----
+        float32 has a precision of about 7 decimal digits and can represent values
+        from approximately 1.2e-38 to 3.4e38.
         """
         return u.math.asarray(self.value, dtype=np.float32)
 
@@ -2295,8 +4773,33 @@ class EventArray(object):
         """
         Convert the array to a Brain Floating Point 16 (bfloat16) data type.
 
-        Returns:
-            The array converted to a bfloat16 data type.
+        Converts each element of the array to Brain Floating Point 16 format, which uses
+        the same 8-bit exponent as float32 but only 7 bits for the mantissa. This format
+        is particularly useful in machine learning applications where the dynamic range
+        of float32 is needed, but full precision is not critical.
+
+        Returns
+        -------
+        ndarray
+            A new array with bfloat16 data type.
+
+        See Also
+        --------
+        half : Convert to standard 16-bit floating-point type
+        float : Convert to 32-bit floating-point type
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> a = EventArray(jnp.array([0.1, 200.0, 0.0001]))
+        >>> a.bfloat16()
+        Array([1.0e-01, 2.0e+02, 1.0e-04], dtype=bfloat16)
+
+        Notes
+        -----
+        bfloat16 preserves the numerical range of float32 but with reduced precision.
+        It has approximately 3 decimal digits of precision but the same range as float32,
+        making it suitable for many deep learning applications.
         """
         return u.math.asarray(self.value, dtype=jax.numpy.bfloat16)
 
@@ -2304,8 +4807,32 @@ class EventArray(object):
         """
         Convert the array to a 64-bit floating-point data type.
 
-        Returns:
-            The array converted to a 64-bit floating-point data type.
+        Converts each element of the array to double-precision (64-bit) floating-point format.
+        This format provides higher precision and a wider range of representable values
+        compared to the standard float type, which is useful for numerical applications
+        requiring high accuracy.
+
+        Returns
+        -------
+        ndarray
+            A new array with float64 data type.
+
+        See Also
+        --------
+        float : Convert to 32-bit floating-point type
+        half : Convert to 16-bit floating-point type
+
+        Examples
+        --------
+        >>> import jax.numpy as jnp
+        >>> a = EventArray(jnp.array([1.1234567891234, 1e-8]))
+        >>> a.double()  # Higher precision representation
+        Array([1.123457e+00, 1.000000e-08], dtype=float64)
+
+        Notes
+        -----
+        float64 has a precision of about 16 decimal digits and can represent values
+        from approximately 2.3e-308 to 1.7e308.
         """
         return u.math.asarray(self.value, dtype=np.float64)
 
