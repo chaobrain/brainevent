@@ -242,15 +242,15 @@ def _matrix_event_mm_jvp_weights(w_dot, weights, spikes, *, float_as_event, **kw
 
 
 def _matrix_event_mm_jvp_spikes(spk_dot, weights, spikes, **kwargs):
-    return [spk_dot @ weights]
+    return [weights @ spk_dot]
 
 
 def _matrix_event_mm_transpose_rule(ct, weights, spikes, **kwargs):
     if ad.is_undefined_primal(spikes):
-        ct_events = jnp.matmul(ct[0], weights)
+        ct_events = weights.T @ ct[0]
         return weights, (ad.Zero(spikes) if type(ct[0]) is ad.Zero else ct_events)
     else:
-        ct_weights = jnp.outer(ct[0], spikes)
+        ct_weights = ct[0] @ spikes.T
         return (ad.Zero(weights) if type(ct[0]) is ad.Zero else ct_weights), spikes
 
 
@@ -488,12 +488,12 @@ def _event_matrix_mm_jvp_spikes(spk_dot, spikes, weights, **kwargs):
 
 def _event_matrix_mm_transpose_rule(ct, spikes, weights, **kwargs):
     if ad.is_undefined_primal(spikes):
-        ct_events = jnp.matmul(weights, ct[0])
-        return weights, (ad.Zero(spikes) if type(ct[0]) is ad.Zero else ct_events)
+        ct_events = ct[0] @ weights.T
+        return (ad.Zero(spikes) if type(ct[0]) is ad.Zero else ct_events), weights
 
     else:
-        ct_weights = jnp.outer(spikes, ct[0])
-        return (ad.Zero(weights) if type(ct[0]) is ad.Zero else ct_weights), spikes
+        ct_weights = spikes.T @ ct[0]
+        return spikes, (ad.Zero(weights) if type(ct[0]) is ad.Zero else ct_weights)
 
 
 def _event_matrix_mm_batching_axis0(args, axes, **kwargs):
