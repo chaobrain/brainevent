@@ -31,6 +31,8 @@ from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type
 
+TILE_THREADS = 128
+
 
 def _event_fixed_post_num_mv_cpu_kernel_generator(
     float_as_event: bool,
@@ -179,6 +181,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
 def _event_fixed_post_num_mv_gpu_kernel_generator(
     float_as_event: bool,
     transpose: bool,
+    TILE_SIZE: int,
     weight_info: jax.ShapeDtypeStruct,
     spike_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
@@ -193,7 +196,6 @@ def _event_fixed_post_num_mv_gpu_kernel_generator(
     if transpose:
         if weight_info.size == 1:
             if spike_info.dtype == jnp.bool_:
-                @warp.kernel
                 def ell_mv(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -205,11 +207,11 @@ def _event_fixed_post_num_mv_gpu_kernel_generator(
                     w = weights[0]
                     if spikes[i]:
                         for j in range(indices.shape[1]):
-                            posts[indices[i, j]] += w
-                            # posts[indices[i, j]] += weights
+                            index = warp.tile_load(indices[i], TILE_SIZE)
+                            warp.tile_atomic_add(posts, w, index, )
+                            # posts[indices[i, j]] += w
 
             elif float_as_event:
-                @warp.kernel
                 def ell_mv(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -221,10 +223,14 @@ def _event_fixed_post_num_mv_gpu_kernel_generator(
                     w = weights[0]
                     if spikes[i] != 0.:
                         for j in range(indices.shape[1]):
-                            posts[indices[i, j]] += w
+                            index = warp.tile_load(indices[i], TILE_SIZE)
+                            warp.tile_atomic_add(posts, w, index, )
+                        # for j in range(indices.shape[1]):
+                        #     posts[indices[i, j]] += w
 
             else:
-                @warp.kernel
+                raise NotImplementedError
+
                 def ell_mv(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -242,7 +248,6 @@ def _event_fixed_post_num_mv_gpu_kernel_generator(
 
         else:
             if spike_info.dtype == jnp.bool_:
-                @warp.kernel
                 def ell_mv(
                     weights: warp.array2d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -253,10 +258,14 @@ def _event_fixed_post_num_mv_gpu_kernel_generator(
                     i = warp.tid()
                     if spikes[i]:
                         for j in range(indices.shape[1]):
-                            posts[indices[i, j]] += weights[i, j]
+                            index = warp.tile_load(indices[i], TILE_SIZE)
+                            w = warp.tile_load(weights[i], TILE_SIZE)
+
+                            index = warp.untile(index)
+                            w = warp.untile(w)
+                            posts[index] += w
 
             elif float_as_event:
-                @warp.kernel
                 def ell_mv(
                     weights: warp.array2d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -267,10 +276,13 @@ def _event_fixed_post_num_mv_gpu_kernel_generator(
                     i = warp.tid()
                     if spikes[i] != 0.:
                         for j in range(indices.shape[1]):
-                            posts[indices[i, j]] += weights[i, j]
+                            index = warp.tile_load(indices[i], TILE_SIZE)
+                            w = warp.tile_load(weights[i], TILE_SIZE)
+                            warp.tile_atomic_add(posts, w, index)
 
             else:
-                @warp.kernel
+                raise NotImplementedError
+
                 def ell_mv(
                     weights: warp.array2d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -285,9 +297,9 @@ def _event_fixed_post_num_mv_gpu_kernel_generator(
                             posts[indices[i, j]] += weights[i, j] * sp
 
     else:
+        raise NotImplementedError
         if weight_info.size == 1:
             if spike_info.dtype == jnp.bool_:
-                @warp.kernel
                 def ell_mv(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -305,7 +317,6 @@ def _event_fixed_post_num_mv_gpu_kernel_generator(
                     posts[i] = r
 
             elif float_as_event:
-                @warp.kernel
                 def ell_mv(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -324,7 +335,6 @@ def _event_fixed_post_num_mv_gpu_kernel_generator(
 
 
             else:
-                @warp.kernel
                 def ell_mv(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -344,7 +354,6 @@ def _event_fixed_post_num_mv_gpu_kernel_generator(
 
         else:
             if spike_info.dtype == jnp.bool_:
-                @warp.kernel
                 def ell_mv(
                     weights: warp.array2d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -361,7 +370,6 @@ def _event_fixed_post_num_mv_gpu_kernel_generator(
                     posts[i] = r
 
             elif float_as_event:
-                @warp.kernel
                 def ell_mv(
                     weights: warp.array2d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -378,7 +386,6 @@ def _event_fixed_post_num_mv_gpu_kernel_generator(
                     posts[i] = r
 
             else:
-                @warp.kernel
                 def ell_mv(
                     weights: warp.array2d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -395,7 +402,7 @@ def _event_fixed_post_num_mv_gpu_kernel_generator(
                             r += weights[i, j] * sp
                     posts[i] = r
 
-    return ell_mv
+    return warp.kernel(ell_mv)
 
 
 def _event_fixed_post_num_mv_tpu_kernel_generator(
@@ -415,12 +422,6 @@ def _event_fixed_post_num_mv_tpu_kernel_generator(
     homo = jnp.size(weight_info) == 1
 
     if transpose:
-        # 对于具有形状 [n_event] 的 spikes 向量，以及形状 [n_event, n_conn] 的 indices 和 weights 矩阵，
-        # 这个算子的计算逻辑为：
-        #
-        # - 每个block处理 [block_size] 个事件，每个事件对应一个 pre-synaptic neuron
-        # - 每个block处理 [block_size, block_size] 个 indices 和 weights
-
         if homo:
             def _ell_mv_kernel_homo(
                 sp_ref,  # [block_size]
@@ -440,7 +441,6 @@ def _event_fixed_post_num_mv_tpu_kernel_generator(
                             pl.atomic_add(y_ref, ind, jnp.ones(block_dim, dtype=weight_info.dtype), mask=mask)
 
                         jax.lax.cond(sp_ref[j], true_fn, lambda: None)
-
 
                     else:
                         def true_fn(sp):
@@ -473,10 +473,7 @@ def _event_fixed_post_num_mv_tpu_kernel_generator(
                 input_output_aliases={2: 0},
                 interpret=False
             )
-            return (
-                lambda weight, indices, spikes, _:
-                [kernel(spikes, indices, jnp.zeros(n_post, dtype=weight.dtype))[0] * weight]
-            )
+            return lambda weight, indices, spikes, _: [kernel(spikes, indices, _)[0] * weight]
 
         else:
             def _ell_mv_kernel_heter(
@@ -531,10 +528,7 @@ def _event_fixed_post_num_mv_tpu_kernel_generator(
                 input_output_aliases={3: 0},
                 interpret=False
             )
-            return (
-                lambda weight, indices, spikes, _:
-                kernel(spikes, indices, weight, jnp.zeros(n_post, dtype=weight_info.dtype))
-            )
+            return lambda weight, indices, spikes, _: kernel(spikes, indices, weight, _)
 
     else:
         raise NotImplementedError
@@ -650,6 +644,7 @@ def event_fixed_post_num_mv_p_call(
     weights, w_unit = u.split_mantissa_unit(weights)
     spikes, v_unit = u.split_mantissa_unit(spikes)
 
+    TILE_SIZE = indices.shape[0] if transpose else indices.shape[1]
     r = event_fixed_post_num_mv_p(
         weights,
         indices,
@@ -658,6 +653,7 @@ def event_fixed_post_num_mv_p_call(
         outs=out,
         shape=shape,
         transpose=transpose,
+        TILE_SIZE=TILE_SIZE,
         float_as_event=float_as_event,
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
@@ -674,11 +670,12 @@ event_fixed_post_num_mv_p = XLACustomKernel(
     ),
     gpu_kernel=WarpKernelGenerator(
         _event_fixed_post_num_mv_gpu_kernel_generator,
-        dim=lambda transpose, indices_info, spike_info, **kwargs: (
+        tile=lambda transpose, indices_info, spike_info, **kwargs: (
             spike_info.shape[0]
             if transpose else
             indices_info.shape[0]
         ),
+        block_dim=TILE_THREADS,
         input_output_aliases={3: 0}
     ),
     tpu_kernel=PallasKernelGenerator(
