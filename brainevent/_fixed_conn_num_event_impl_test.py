@@ -44,7 +44,7 @@ class TestVector(unittest.TestCase):
             for homo_w in [True, False]:
                 print(f'replace = {replace}, homo_w = {homo_w}')
                 data = 1.5 if homo_w else rng.randn(*indices.shape)
-                csr = brainevent.FixedPostNumConn([data, indices], shape=(m, n))
+                csr = brainevent.FixedPostConnNum([data, indices], shape=(m, n))
                 y = brainevent.EventArray(x) @ csr
                 print(y)
 
@@ -56,7 +56,7 @@ class TestVector(unittest.TestCase):
             for homo_w in [True, False]:
                 print(f'replace = {replace}, homo_w = {homo_w}')
                 data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
-                csr = brainevent.FixedPostNumConn([data, indices], shape=(m, n))
+                csr = brainevent.FixedPostConnNum([data, indices], shape=(m, n))
                 y = brainevent.EventArray(x) @ csr
                 y2 = vector_csr(x, csr.data, indices, shape=[m, n])
                 self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
@@ -70,7 +70,7 @@ class TestVector(unittest.TestCase):
             for homo_w in [True, False]:
                 print(f'replace = {replace}, homo_w = {homo_w}')
                 data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
-                csr = brainevent.FixedPostNumConn([data, indices], shape=(m, n))
+                csr = brainevent.FixedPostConnNum([data, indices], shape=(m, n))
                 y = csr @ brainevent.EventArray(v)
                 y2 = csr_vector(v, csr.data, indices, [m, n])
                 # print(y)
@@ -101,7 +101,7 @@ class TestVector(unittest.TestCase):
 
         indices = generate_data(n_in, n_out, 8, replace=replace)
         w = 1.5 if homo_w else bst.init.Normal()(indices.shape)
-        csr = brainevent.FixedPostNumConn([w, indices], shape=shape)
+        csr = brainevent.FixedPostConnNum([w, indices], shape=shape)
 
         def f_brainevent(x, w):
             if transpose:
@@ -143,7 +143,7 @@ class TestVector(unittest.TestCase):
 
         indices = generate_data(n_in, n_out, 8, replace=replace)
         w = 1.5 if homo_w else bst.init.Normal()(indices.shape)
-        csr = brainevent.FixedPostNumConn([w, indices], shape=shape)
+        csr = brainevent.FixedPostConnNum([w, indices], shape=shape)
 
         def f_brainevent(x, w):
             if transpose:

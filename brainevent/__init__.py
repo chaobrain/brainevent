@@ -21,7 +21,7 @@ from ._coo import COO
 from ._csr import CSR, CSC
 from ._csrlb import CSR_LB, CSC_LB
 from ._event import EventArray
-from ._fixed_conn_num import FixedPostNumConn, FixedPreNumConn
+from ._fixed_conn_num import FixedPostConnNum, FixedPreConnNum
 from ._jitc_homo import JITCHomoR, JITCHomoC
 from ._jitc_normal import JITCNormalR, JITCNormalC
 from ._jitc_uniform import JITCUniformR, JITCUniformC
@@ -54,8 +54,8 @@ __all__ = [
     # --- block data --- #
     'BlockCSR',
     'BlockELL',
-    'FixedPreNumConn',
-    'FixedPostNumConn',
+    'FixedPreConnNum',
+    'FixedPostConnNum',
 
     # --- operator customization routines --- #
 
