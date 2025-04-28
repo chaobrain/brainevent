@@ -17,4 +17,4 @@
 
 
 class MathError(Exception):
-    pass
+    __module__ = 'brainevent'

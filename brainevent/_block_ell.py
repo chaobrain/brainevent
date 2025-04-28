@@ -35,6 +35,8 @@ class BlockELL(u.sparse.SparseMatrix):
     """
     Unit-aware Block-ELL sparse matrix.
     """
+    __module__ = 'brainevent'
+
     data: Union[jax.Array, u.Quantity]  # float32[n_blocks, *block_size]
     blocks_per_row: jax.Array  # int32[n_rows]
     indices: jax.Array  # int32[n_rows, max_num_blocks_per_row, 2]

@@ -218,6 +218,8 @@ class FixedPostConnNum(FixedConnNum):
         Transposed indices (reinterpreted): [[0 1]
          [1 2]]
     """
+    __module__ = 'brainevent'
+
     data: Data
     indices: Index
     shape: MatrixShape
@@ -610,6 +612,8 @@ class FixedPreConnNum(FixedConnNum):
          [1 0]
          [0 2]]
     """
+    __module__ = 'brainevent'
+
     data: Data
     indices: Index
     shape: MatrixShape
