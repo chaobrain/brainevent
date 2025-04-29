@@ -29,7 +29,8 @@ def check_shape(
     transpose: bool,
     require_scalar_weight: bool = False
 ) -> Tuple[jax.ShapeDtypeStruct, jax.Array, int, int]:
-    """Checks the shapes and dtypes of inputs for sparse operations.
+    """
+    Checks the shapes and dtypes of inputs for sparse operations.
 
     Validates the dimensions and consistency of weights, indices, and a vector
     involved in a sparse matrix operation (like SpMV or SpM^T V). It adjusts
@@ -184,8 +185,8 @@ def generate_block_dim(
         block_size = 64
     elif n_conn <= 128:
         block_size = 128
-    elif n_conn <= 256:
-        block_size = 256
+    # elif n_conn <= 256:
+    #     block_size = 256
     else:
         block_size = 128
 

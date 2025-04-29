@@ -28,7 +28,7 @@ from ._fixed_conn_num_misc import generate_block_dim, check_shape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
 from ._xla_custom_op_pallas import PallasKernelGenerator
-from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type
+from ._xla_custom_op_warp import dtype_to_warp_type
 
 
 def _fixed_post_num_mv_numba_kernel_generator(
@@ -163,104 +163,73 @@ def _fixed_post_num_mv_pallas_kernel_generator(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    if transpose:
-        n_pre, n_post = shape
-    else:
-        n_post, n_pre = shape
+    assert transpose, "TPU backend does not support fixed post connection number"
+    if len(shape) != 2:
+        raise ValueError("shape must be a tuple of length 2")
+    n_pre, n_post = shape
     n_conn = indices_info.shape[1]
-
     homo = jnp.size(weight_info) == 1
 
-    if transpose:
-        if homo:
-            def _kernel(ind_ref, vec_ref, _, out_ref):
-                # 每个block 处理 [block_size] 大小的vector
-                # 每个block 处理 [block_size, block_size] 大小的indices 和 weights
+    if homo:
+        def _ell_mv_kernel_homo(
+            vector_ref,  # [n_pre]
+            index_ref,  # [n_pre, n_conn]
+            _,
+            out_ref,  # [n_post]
+        ):
+            i_row = pl.program_id(0)
+            vector = vector_ref[i_row]
 
-                # -------------------------------
-                # vec_ref: [block_size]
-                # ind_ref: [block_size, block_size]
-                # out_ref: [n_post]
+            def loop_fn(i, _):
+                i = i * block_dim
+                mask = i + jnp.arange(block_dim) < n_conn
+                ind = pl.load(index_ref, (i_row, pl.dslice(i, block_dim)), mask=mask)
+                data = jnp.ones(block_dim, dtype=weight_info.dtype) * vector
+                pl.atomic_add(out_ref, ind, data, mask=mask)
 
-                r_pid = pl.program_id(0)
-                c_start = pl.program_id(1) * block_dim
-                mask = jnp.arange(block_dim) + c_start
-                row_length = jnp.minimum(n_pre - r_pid * block_dim, block_dim)
+            jax.lax.fori_loop(0, pl.cdiv(n_conn, block_dim), loop_fn, None)
 
-                def body_fn(j, _):
-                    y = vec_ref[j] * jnp.ones(block_dim, dtype=weight_info.dtype)
-                    ind = pl.load(ind_ref, (j, pl.dslice(None)), mask=mask)
-                    pl.atomic_add(out_ref, ind, y, mask=mask)
-
-                jax.lax.fori_loop(0, row_length, body_fn, None)
-
-            # heterogeneous weights
-            kernel = pl.pallas_call(
-                _kernel,
-                out_shape=[
-                    jax.ShapeDtypeStruct((n_post,), weight_info.dtype),
-                ],
-                in_specs=[
-                    pl.BlockSpec((block_dim, block_dim), lambda i, j: (i, j)),  # ind_ref
-                    pl.BlockSpec((block_dim,), lambda i, j: i),  # vec_ref
-                    pl.BlockSpec((n_post,), lambda i, j: 0),  # out_ref
-                ],
-                grid=(
-                    pl.cdiv(n_pre, block_dim),
-                    pl.cdiv(n_conn, block_dim),
-                ),
+        # homogenous weights
+        def kernel(weight, indices, spikes, out):
+            fn = pl.pallas_call(
+                _ell_mv_kernel_homo,
+                out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
+                grid=(n_pre,),
                 input_output_aliases={2: 0},
-                interpret=False
             )
-            return lambda weight, indices, vector, _: kernel(vector, indices, _) * weight
-
-        else:
-            def _kernel(w_ref, ind_ref, vec_ref, _, out_ref):
-                # 每个block 处理 [block_size] 大小的vector
-                # 每个block 处理 [block_size, n_conn] 大小的indices 和 weights
-
-                # -------------------------------
-                # vec_ref: [block_size]
-                # ind_ref: [block_size, block_size]
-                # w_ref: [block_size, block_size]
-                # out_ref: [n_post]
-
-                r_pid = pl.program_id(0)
-                c_start = pl.program_id(1) * block_dim
-                mask = jnp.arange(block_dim) + c_start
-                row_length = jnp.minimum(n_pre - r_pid * block_dim, block_dim)
-
-                def body_fn(j, _):
-                    w = pl.load(w_ref, (j, pl.dslice(None)), mask=mask)
-                    y = w * vec_ref[j]
-                    ind = pl.load(ind_ref, (j, pl.dslice(None)), mask=mask)
-                    pl.atomic_add(out_ref, ind, y, mask=mask)
-
-                jax.lax.fori_loop(0, row_length, body_fn, None)
-
-            # heterogeneous weights
-            kernel = pl.pallas_call(
-                _kernel,
-                out_shape=[
-                    jax.ShapeDtypeStruct((n_post,), weight_info.dtype),
-                ],
-                in_specs=[
-                    pl.BlockSpec((block_dim, block_dim), lambda i, j: (i, j)),  # w_ref
-                    pl.BlockSpec((block_dim, block_dim), lambda i, j: (i, j)),  # ind_ref
-                    pl.BlockSpec((block_dim,), lambda i, j: i),  # vec_ref
-                    pl.BlockSpec((n_post,), lambda i: 0)  # out_ref
-                ],
-                grid=(
-                    pl.cdiv(n_pre, block_dim),
-                    pl.cdiv(n_conn, block_dim),
-                ),
-                input_output_aliases={3: 0},
-                interpret=False
-            )
-            return lambda weight, indices, vector, _: kernel(vector, indices, weight, _)
+            return [fn(spikes, indices, out) * weight]
 
     else:
-        raise NotImplementedError
+        def _ell_mv_kernel_heter(
+            vector_ref,  # [n_pre]
+            index_ref,  # [n_pre, n_conn]
+            weight_ref,  # [n_pre, n_conn]
+            _,
+            out_ref,  # [n_post]
+        ):
+            i_row = pl.program_id(0)
+            vector = vector_ref[i_row]
+
+            def loop_fn(i, _):
+                i = i * block_dim
+                mask = i + jnp.arange(block_dim) < n_conn
+                ind = pl.load(index_ref, (i_row, pl.dslice(i, block_dim)), mask=mask)
+                weight = pl.load(weight_ref, (i_row, pl.dslice(i, block_dim)), mask=mask) * vector
+                pl.atomic_add(out_ref, ind, weight, mask=mask)
+
+            jax.lax.fori_loop(0, pl.cdiv(n_conn, block_dim), loop_fn, None)
+
+        # heterogeneous weights
+        def kernel(weight, indices, spikes, out):
+            fn = pl.pallas_call(
+                _ell_mv_kernel_heter,
+                out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
+                grid=(n_pre,),
+                input_output_aliases={3: 0},
+            )
+            return [fn(spikes, indices, weight, out)]
+
+    return kernel
 
 
 def _fixed_post_num_mv_jvp_vector(
@@ -436,13 +405,18 @@ fixed_post_num_mv_p = XLACustomKernel(
         _fixed_post_num_mv_numba_kernel_generator,
         input_output_aliases={3: 0}
     ),
-    gpu_kernel=WarpKernelGenerator(
-        _fixed_post_num_mv_warp_kernel_generator,
-        dim=lambda transpose, indices_info, vecto_infor, **kwargs: (
-            vecto_infor.shape[0]
-            if transpose else
-            indices_info.shape[0]
-        ),
+    # gpu_kernel=WarpKernelGenerator(
+    #     _fixed_post_num_mv_warp_kernel_generator,
+    #     dim=lambda transpose, indices_info, vector_info, **kwargs: (
+    #         vector_info.shape[0]
+    #         if transpose else
+    #         indices_info.shape[0]
+    #     ),
+    #     input_output_aliases={3: 0}
+    # ),
+    gpu_kernel=PallasKernelGenerator(
+        _fixed_post_num_mv_pallas_kernel_generator,
+        block_dim=generate_block_dim,
         input_output_aliases={3: 0}
     ),
     tpu_kernel=PallasKernelGenerator(
