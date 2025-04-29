@@ -26,7 +26,7 @@ from ._compatible_import import JAXSparse
 from ._coo import COO
 from ._event import EventArray
 from ._fixed_conn_num_event_impl import event_fixed_post_num_mv_p_call
-from ._fixed_conn_num_float_impl import fixed_post_num_mv_p_call
+from ._fixed_conn_num_float_impl import fixed_post_num_mv_p_call, fixed_post_num_mm_p_call
 from ._misc import _coo_todense, COOInfo
 from ._typing import Data, MatrixShape, Index
 
@@ -233,6 +233,10 @@ class FixedPostNumConn(FixedNumConn):
         self.data, self.indices = map(u.math.asarray, args)
         assert self.indices.shape[0] == shape[0], \
             f'Pre-synaptic neuron number mismatch. {self.indices.shape[0]} != {shape[0]}'
+        if self.data.size != 1:
+            assert self.data.shape == self.indices.shape, \
+                (f"Data shape {self.data.shape} must match indices shape {self.indices.shape}. "
+                 f"But got {self.data.shape} != {self.indices.shape}")
         super().__init__(args, shape=shape)
 
     def with_data(self, data: Data) -> 'FixedPostNumConn':
@@ -450,13 +454,13 @@ class FixedPostNumConn(FixedNumConn):
                     transpose=False,
                 )[0]
             elif other.ndim == 2:
-                return _perfect_ellmm(
+                return fixed_post_num_mm_p_call(
                     data,
                     self.indices,
                     other,
                     shape=self.shape,
                     transpose=False,
-                )
+                )[0]
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -502,13 +506,13 @@ class FixedPostNumConn(FixedNumConn):
                 )[0]
             elif other.ndim == 2:
                 other = other.T
-                r = _perfect_ellmm(
+                r = fixed_post_num_mm_p_call(
                     data,
                     self.indices,
                     other,
                     shape=self.shape,
                     transpose=True,
-                )
+                )[0]
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -626,6 +630,10 @@ class FixedPreNumConn(FixedNumConn):
     def __init__(self, args: Tuple[Data, Index], *, shape: MatrixShape):
         self.data, self.indices = map(u.math.asarray, args)
         assert self.indices.shape[0] == shape[1], 'Post-synaptic neuron number mismatch.'
+        if self.data.size != 1:
+            assert self.data.shape == self.indices.shape, \
+                (f"Data shape {self.data.shape} must match indices shape {self.indices.shape}. "
+                 f"But got {self.data.shape} != {self.indices.shape}")
         super().__init__(args, shape=shape)
 
     def with_data(self, data: Data) -> 'FixedPreNumConn':
@@ -659,6 +667,9 @@ class FixedPreNumConn(FixedNumConn):
             jax.numpy.ndarray: The dense matrix representation.
 
         Examples:
+
+        .. code-block:: python
+
             >>> import jax.numpy as jnp
             >>> from brainevent import FixedPreNumConn
             >>>
@@ -691,6 +702,9 @@ class FixedPreNumConn(FixedNumConn):
             COO: A COO sparse matrix object representing the same matrix.
 
         Examples:
+
+        .. code-block:: python
+
             >>> import jax.numpy as jnp
             >>> from brainevent import FixedPreNumConn
             >>>
@@ -735,6 +749,9 @@ class FixedPreNumConn(FixedNumConn):
             AssertionError: If `axes` is not None.
 
         Examples:
+
+        .. code-block:: python
+
             >>> import jax.numpy as jnp
             >>> from brainevent import FixedPreNumConn, FixedPostNumConn
             >>>
@@ -839,21 +856,21 @@ class FixedPreNumConn(FixedNumConn):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
-                return _perfect_ellmv(
+                return fixed_post_num_mv_p_call(
                     data,
                     self.indices,
                     other,
                     shape=self.shape,
                     transpose=False,
-                )
+                )[0]
             elif other.ndim == 2:
-                return _perfect_ellmm(
+                return fixed_post_num_mm_p_call(
                     data,
                     self.indices,
                     other,
                     shape=self.shape,
                     transpose=False,
-                )
+                )[0]
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -890,22 +907,22 @@ class FixedPreNumConn(FixedNumConn):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
-                return _perfect_ellmv(
+                return fixed_post_num_mv_p_call(
                     data,
                     self.indices,
                     other,
                     shape=self.shape,
                     transpose=True,
-                )
+                )[0]
             elif other.ndim == 2:
                 other = other.T
-                r = _perfect_ellmm(
+                r = fixed_post_num_mm_p_call(
                     data,
                     self.indices,
                     other,
                     shape=self.shape,
                     transpose=True,
-                )
+                )[0]
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
