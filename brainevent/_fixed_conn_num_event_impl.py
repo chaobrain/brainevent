@@ -25,7 +25,7 @@ from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
 from ._fixed_conn_num_float_impl import fixed_post_num_mv_p_call
-from ._fixed_conn_num_misc import check_shape, generate_block_dim
+from ._misc import generate_block_dim, check_fixed_conn_num_shape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import numba_environ, NumbaKernelGenerator
 from ._xla_custom_op_pallas import PallasKernelGenerator
@@ -681,7 +681,7 @@ def event_fixed_post_num_mv_p_call(
     transpose: bool = False,
     float_as_event: bool = True,
 ) -> Tuple[Union[jax.Array, u.Quantity]]:
-    out, weights, n_pre, n_post = check_shape(weights, indices, spikes, shape, transpose)
+    out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, spikes, shape, transpose)
     weights, w_unit = u.split_mantissa_unit(weights)
     spikes, v_unit = u.split_mantissa_unit(spikes)
 
@@ -721,13 +721,13 @@ event_fixed_post_num_mv_p = XLACustomKernel(
     # ),
     gpu_kernel=PallasKernelGenerator(
         _event_fixed_post_num_mv_pallas_kernel_generator,
-        block_dim=generate_block_dim,
-        input_output_aliases={3: 0}
+        block_dim=lambda **kwargs: generate_block_dim(kwargs['indices_info'].shape[1]),
+        input_output_aliases={3: 0},
     ),
     tpu_kernel=PallasKernelGenerator(
         _event_fixed_post_num_mv_pallas_kernel_generator,
-        block_dim=generate_block_dim,
-        input_output_aliases={3: 0}
+        block_dim=lambda **kwargs: generate_block_dim(kwargs['indices_info'].shape[1]),
+        input_output_aliases={3: 0},
     ),
 )
 event_fixed_post_num_mv_p.defjvp(
