@@ -96,6 +96,7 @@ def _matrix_event_mv_gpu_kernel_generator(
     **kwargs
 ) -> Kernel:
     import warp  # pylint: disable=import-outside-toplevel
+    assert warp.__version__ >= '1.8.0', "warp version >= 1.8.0 is required"
 
     spike_dtype = dtype_to_warp_type(spk_info.dtype)
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
@@ -112,7 +113,7 @@ def _matrix_event_mv_gpu_kernel_generator(
             for j in range(TILE_SIZE):
                 if spikes[j]:
                     data = warp.tile_load(weight_ref, shape=(block_dim, 1), offset=(i_row * block_dim, j))
-                    temp += data[:, 0]  # TODO
+                    temp += warp.tile_squeeze(data)  # need warp>=1.8.0
             warp.tile_store(out_ref, temp, offset=(i_row * block_dim,))
 
     elif float_as_event:
@@ -127,7 +128,7 @@ def _matrix_event_mv_gpu_kernel_generator(
             for j in range(TILE_SIZE):
                 if spikes[j] != 0.:
                     data = warp.tile_load(weight_ref, shape=(block_dim, 1), offset=(i_col * block_dim, j))
-                    temp += data[:, 0]  # TODO
+                    temp += warp.tile_squeeze(data)   # need warp>=1.8.0
             warp.tile_store(out_ref, temp, offset=(i_col * block_dim,))
 
     else:
@@ -143,7 +144,7 @@ def _matrix_event_mv_gpu_kernel_generator(
                 s = spikes[j]
                 if s != 0.:
                     data = warp.tile_load(weight_ref, shape=(block_dim, 1), offset=(i_col * block_dim, j))
-                    temp += data[:, 0] * s
+                    temp += warp.tile_squeeze(data) * s  # need warp>=1.8.0
             warp.tile_store(out_ref, temp, offset=(i_col * block_dim,))
 
     return warp.kernel(kernel)
