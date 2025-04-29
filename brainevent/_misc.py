@@ -122,3 +122,35 @@ def cdiv(m: int, n: int) -> int:
     if n <= 0:
         raise ValueError("Divisor must be positive")
     return (m + n - 1) // n
+
+
+def generate_block_dim(n_conn: int) -> int:
+    """
+    Determines an appropriate block dimension based on the number of connections.
+
+    This function selects a block size, typically a power of 2, based on the
+    input `n_conn`. It seems intended for optimizing operations possibly
+    related to parallel processing or memory access patterns where block
+    sizes like 32, 64, 128, or 256 are common.
+
+    Args:
+        n_conn: An integer representing the number of connections or a similar
+                metric influencing the desired block size.
+
+    Returns:
+        An integer representing the calculated block dimension. Returns 32, 64,
+        128, or 256 based on `n_conn`, defaulting to 128 if `n_conn` exceeds 256.
+    """
+    if n_conn <= 32:
+        block_size = 32
+    elif n_conn <= 64:
+        block_size = 64
+    elif n_conn <= 128:
+        block_size = 128
+    elif n_conn <= 256:
+        block_size = 256
+    else:
+        # Default or fallback block size for larger numbers of connections
+        block_size = 128
+
+    return block_size
