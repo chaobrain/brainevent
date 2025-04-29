@@ -105,8 +105,8 @@ class XLACustomKernel:
     rules like batching, JVP (forward-mode AD), and transpose (reverse-mode AD).
 
     The core idea is to define the computation logic once for each relevant
-    backend using specialized kernel generators (`NumbaKernelGenerator`,
-    `PallasKernelGenerator`, `WarpKernelGenerator`) and then use this class
+    backend using specialized kernel generators (:class:`NumbaKernelGenerator`,
+    :class:`PallasKernelGenerator`, :class:`WarpKernelGenerator`) and then use this class
     to bind everything together into a callable JAX operation.
 
     Attributes:

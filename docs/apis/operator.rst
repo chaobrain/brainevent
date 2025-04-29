@@ -10,6 +10,7 @@ Define JAX Primitive
 
 .. autosummary::
    :toctree: generated/
+   :nosignatures:
    :template: classtemplate.rst
 
     XLACustomKernel
@@ -21,6 +22,7 @@ Define JAX Kernel on CPU/GPU/TPU
 
 .. autosummary::
    :toctree: generated/
+   :nosignatures:
    :template: classtemplate.rst
 
     NumbaKernelGenerator

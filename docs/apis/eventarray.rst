@@ -7,6 +7,7 @@ Data Structures Representing Events
 
 .. autosummary::
    :toctree: generated/
+   :nosignatures:
    :template: classtemplate.rst
 
    EventArray
