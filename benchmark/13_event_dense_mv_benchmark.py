@@ -104,7 +104,7 @@ def benchmark_forward(prob=0.1):
     visualize(
         results,
         title=f'Acceleration Ratio (p={prob})',
-        filename=f'results/event-mv-{transpose}-prob={prob}-{platform}.pdf'
+        filename=f'results/event-mv-transpose={transpose}-prob={prob}-{platform}.pdf'
     )
 
 
