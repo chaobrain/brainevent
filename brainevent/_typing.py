@@ -54,6 +54,11 @@ Indptr = Index
 # A callable type, representing a function or method.
 Kernel = Callable
 
+# Represents a scalar weight value, which can be a number, NumPy array, JAX array, or BrainUnit quantity.
 WeightScalar = Union[numbers.Number, np.ndarray, jax.Array, u.Quantity]
+
+# Represents a probability value, which can be a float, NumPy array, or JAX array.
 Prob = Union[float, np.ndarray, jax.Array]
+
+# Represents a seed value for random number generation, which can be an integer, NumPy array, or JAX array.
 Seed = Union[int, np.ndarray, jax.Array]
