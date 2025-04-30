@@ -281,6 +281,7 @@ class LFSR88(LFSRBase):
     Source:
         https://github.com/cmcqueen/simplerandom/blob/main/c/lecuyer/lfsr88.c
     """
+    __module__ = 'brainevent'
 
     def generate_key(self, seed: int) -> PallasRandomKey:
         """
@@ -437,6 +438,7 @@ class LFSR113(LFSRBase):
     Source:
         https://github.com/cmcqueen/simplerandom/blob/main/c/lecuyer/lfsr113.c
     """
+    __module__ = 'brainevent'
 
     def generate_key(self, seed: int) -> PallasRandomKey:
         """Initialize the random key of the LFSR113 algorithm.
@@ -480,14 +482,14 @@ class LFSR113(LFSRBase):
         z2 = key[1]
         z3 = key[2]
         z4 = key[3]
-        b = ((z1 << 6) ^ z1) >> 13
-        z1 = jnp.asarray(((z1 & jnp.asarray(4294967294, dtype=jnp.uint64)) << 18) ^ b, dtype=jnp.uint32)
-        b = ((z2 << 2) ^ z2) >> 27
-        z2 = jnp.asarray(((z2 & jnp.asarray(4294967288, dtype=jnp.uint64)) << 2) ^ b, dtype=jnp.uint32)
-        b = ((z3 << 13) ^ z3) >> 21
-        z3 = jnp.asarray(((z3 & jnp.asarray(4294967280, dtype=jnp.uint64)) << 7) ^ b, dtype=jnp.uint32)
-        b = ((z4 << 3) ^ z4) >> 12
-        z4 = jnp.asarray(((z4 & jnp.asarray(4294967168, dtype=jnp.uint64)) << 13) ^ b, dtype=jnp.uint32)
+        b1 = ((z1 << 6) ^ z1) >> 13
+        z1 = jnp.asarray(((z1 & jnp.asarray(4294967294, dtype=jnp.uint64)) << 18) ^ b1, dtype=jnp.uint32)
+        b2 = ((z2 << 2) ^ z2) >> 27
+        z2 = jnp.asarray(((z2 & jnp.asarray(4294967288, dtype=jnp.uint64)) << 2) ^ b2, dtype=jnp.uint32)
+        b3 = ((z3 << 13) ^ z3) >> 21
+        z3 = jnp.asarray(((z3 & jnp.asarray(4294967280, dtype=jnp.uint64)) << 7) ^ b3, dtype=jnp.uint32)
+        b4 = ((z4 << 3) ^ z4) >> 12
+        z4 = jnp.asarray(((z4 & jnp.asarray(4294967168, dtype=jnp.uint64)) << 13) ^ b4, dtype=jnp.uint32)
         new_key = (
             jnp.asarray(z1, dtype=jnp.uint32),
             jnp.asarray(z2, dtype=jnp.uint32),
@@ -585,6 +587,7 @@ class LFSR128(LFSRBase):
         >>> norm_val = rng.normal(0, 1)  # Generate a random value from N(0,1)
         >>> unif_val = rng.uniform(5.0, 10.0)  # Generate a random float between 5 and 10
     """
+    __module__ = 'brainevent'
 
     def generate_key(self, seed: int) -> PallasRandomKey:
         """Initialize the random key of the LFSR128 algorithm.

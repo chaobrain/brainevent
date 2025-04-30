@@ -23,7 +23,7 @@ from jax import numpy as jnp
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
-from ._jitc_pallas_random import LFSR88
+from ._pallas_random import LFSR88
 from ._jitc_util import _initialize_seed, _initialize_conn_length
 from ._misc import Config
 from ._typing import Kernel, Data, MatrixShape
@@ -1186,7 +1186,6 @@ float_jitc_homo_matrix_p.def_tpu_kernel(
         input_output_aliases={3: 0}
     ),
 )
-
 float_jitc_homo_matrix_p.def_batching_rule(_jitc_homo_matrix_batching)
 
 
@@ -2132,7 +2131,7 @@ float_jitc_mv_homo_p = XLACustomKernel(
     ),
 )
 if Config.gpu_kernel_use_warp:
-    float_jitc_homo_matrix_p.def_gpu_kernel(
+    float_jitc_mv_homo_p.def_gpu_kernel(
         WarpKernelGenerator(
             _jitc_mv_homo_gpu_kernel_generator,
             dim=lambda out_info, vector_info, corder, **kwargs: (out_info.shape[0] if corder else vector_info.shape[0]),

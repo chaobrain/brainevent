@@ -25,6 +25,7 @@ from ._fixed_conn_num import FixedPostNumConn, FixedPreNumConn
 from ._jitc_homo import JITCHomoR, JITCHomoC
 from ._jitc_normal import JITCNormalR, JITCNormalC
 from ._jitc_uniform import JITCUniformR, JITCUniformC
+from ._pallas_random import LFSR88, LFSR113, LFSR128
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, set_numba_environ, numba_environ_context
 from ._xla_custom_op_pallas import PallasKernelGenerator
@@ -44,12 +45,12 @@ __all__ = [
     'CSC_LB',
 
     # Just-In-Time Connectivity matrix
-    'JITCHomoR',  # row-oriented
-    'JITCHomoC',  # column-oriented
-    'JITCNormalR',  # row-oriented
-    'JITCNormalC',  # column-oriented
-    'JITCUniformR',  # row-oriented
-    'JITCUniformC',  # column-oriented
+    'JITCHomoR',  # row-oriented JITC matrix with homogeneous weight
+    'JITCHomoC',  # column-oriented JITC matrix with homogeneous weight
+    'JITCNormalR',  # row-oriented JITC matrix with normal weight
+    'JITCNormalC',  # column-oriented JITC matrix with normal weight
+    'JITCUniformR',  # row-oriented JITC matrix with uniform weight
+    'JITCUniformC',  # column-oriented JITC matrix with uniform weight
 
     # --- block data --- #
     'BlockCSR',
@@ -77,5 +78,8 @@ __all__ = [
 
     # 5. Pallas kernel
     'PallasKernelGenerator',
+    'LFSR88',
+    'LFSR113',
+    'LFSR128',
 
 ]

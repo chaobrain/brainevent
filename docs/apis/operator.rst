@@ -10,7 +10,6 @@ Define JAX Primitive
 
 .. autosummary::
    :toctree: generated/
-   :nosignatures:
    :template: classtemplate.rst
 
     XLACustomKernel
@@ -22,7 +21,6 @@ Define JAX Kernel on CPU/GPU/TPU
 
 .. autosummary::
    :toctree: generated/
-   :nosignatures:
    :template: classtemplate.rst
 
     NumbaKernelGenerator
@@ -58,4 +56,16 @@ Warp Kernel Helper
    :toctree: generated/
 
     dtype_to_warp_type
+
+
+Pallas Kernel Helper
+-------------------
+
+.. autosummary::
+   :toctree: generated/
+   :template: classtemplate.rst
+
+    LFSR88
+    LFSR113
+    LFSR128
 

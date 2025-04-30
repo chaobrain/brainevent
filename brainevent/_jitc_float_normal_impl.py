@@ -23,7 +23,7 @@ from jax import numpy as jnp
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
-from ._jitc_pallas_random import LFSR88
+from ._pallas_random import LFSR88
 from ._jitc_util import _initialize_seed, _initialize_conn_length
 from ._misc import Config
 from ._typing import Kernel, Data, MatrixShape
