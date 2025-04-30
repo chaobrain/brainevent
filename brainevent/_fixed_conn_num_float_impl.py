@@ -663,6 +663,8 @@ def _fixed_num_mm_pallas_kernel_generator(
     n_conn = indices_info.shape[1]
     homo = jnp.size(weight_info) == 1
 
+    raise NotImplementedError
+
     if transpose:
 
         #
@@ -680,13 +682,14 @@ def _fixed_num_mm_pallas_kernel_generator(
                 _,
                 out_ref,  # [n_post, k]
             ):
-                i_row = pl.program_id(0)
-                vector = matrix_ref[i_row]
+                i_conn = pl.program_id(0)
+                i_n = pl.program_id(1)
+                vector = matrix_ref[i_conn]
 
                 def loop_fn(i, _):
                     i = i * block_dim
                     mask = i + jnp.arange(block_dim) < n_conn
-                    ind = pl.load(index_ref, (i_row, pl.dslice(i, block_dim)), mask=mask)
+                    ind = pl.load(index_ref, (i_conn, pl.dslice(i, block_dim)), mask=mask)
                     data = jnp.ones(block_dim, dtype=weight_info.dtype) * vector
                     pl.atomic_add(out_ref, ind, data, mask=mask)
 
@@ -749,13 +752,14 @@ def _fixed_num_mm_pallas_kernel_generator(
                 _,
                 out_ref,  # [n_pre, n]
             ):
-                i_row = pl.program_id(0)
-                vector = matrix_ref[i_row]
+                i_m = pl.program_id(0)
+                i_n = pl.program_id(1)
+                vector = matrix_ref[i_m]
 
                 def loop_fn(i, _):
                     i = i * block_dim
                     mask = i + jnp.arange(block_dim) < n_conn
-                    ind = pl.load(index_ref, (i_row, pl.dslice(i, block_dim)), mask=mask)
+                    ind = pl.load(index_ref, (i_m, pl.dslice(i, block_dim)), mask=mask)
                     data = jnp.ones(block_dim, dtype=weight_info.dtype) * vector
                     pl.atomic_add(out_ref, ind, data, mask=mask)
 
