@@ -25,6 +25,10 @@ from jax.experimental.sparse import csr_todense_p, coo_todense_p
 from ._typing import MatrixShape, Data, Index
 
 
+class Config(NamedTuple):
+    gpu_kernel_use_warp = True
+
+
 class COOInfo(NamedTuple):
     """
     A named tuple containing metadata for COO (Coordinate) format sparse matrices.

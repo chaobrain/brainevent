@@ -17,6 +17,7 @@ import abc
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from ._typing import PallasRandomKey
 
@@ -72,22 +73,23 @@ class LFSRBase(abc.ABC):
     def key(self, value: PallasRandomKey):
         """Set the random state key.
 
-        Validates that the provided key is a jax.Array with the correct shape
-        and type before setting it as the current state.
+        Validates that the provided key is a tuple of 4 jax.Array elements, each with
+        the correct type before setting it as the current state.
 
         Args:
             value: The new state to set for the random number generator.
 
         Raises:
-            TypeError: If the key is not a jax.Array.
-            ValueError: If the key doesn't have shape (4,) or isn't of type uint32.
+            TypeError: If the key is not a tuple of 4 jax.Arrays.
+            ValueError: If any element of the key isn't of type uint32.
         """
-        if not isinstance(value, jax.Array):
-            raise TypeError("Key must be a jnp.ndarray")
-        if value.shape != (4,):
-            raise ValueError("Key must have shape (4,)")
-        if value.dtype != jnp.uint32:
-            raise ValueError("Key must be of type jnp.uint32")
+        if not isinstance(value, tuple) or len(value) != 4:
+            raise TypeError("Key must be a tuple of length 4")
+        for i, val in enumerate(value):
+            if not isinstance(val, (jax.Array, np.ndarray)):
+                raise TypeError(f"Key element {i} must be a jnp.ndarray")
+            if val.dtype != jnp.uint32:
+                raise ValueError(f"Key element {i} must be of type jnp.uint32")
         self._key = value
 
     @abc.abstractmethod
@@ -299,7 +301,12 @@ class LFSR88(LFSRBase):
             This method adds these values to the provided seed to ensure validity.
             The 4th element is set to 0 as it's not used in the original algorithm.
         """
-        return jnp.asarray([seed + 1, seed + 7, seed + 15, 0], dtype=jnp.uint32)
+        return (
+            jnp.asarray(seed + 1, dtype=jnp.uint32),
+            jnp.asarray(seed + 7, dtype=jnp.uint32),
+            jnp.asarray(seed + 15, dtype=jnp.uint32),
+            jnp.asarray(0, dtype=jnp.uint32)
+        )
 
     def generate_next_key(self) -> PallasRandomKey:
         """
@@ -326,7 +333,12 @@ class LFSR88(LFSRBase):
         s3 = ((key[2] & jnp.asarray(4294967280, dtype=jnp.uint32)) << 17) ^ b
         # The original C code doesn't use the 4th element for generation,
         # but we store 'b' there for potential future use or consistency.
-        new_key = jnp.asarray([s1, s2, s3, b], dtype=jnp.uint32)
+        new_key = (
+            jnp.asarray(s1, dtype=jnp.uint32),
+            jnp.asarray(s2, dtype=jnp.uint32),
+            jnp.asarray(s3, dtype=jnp.uint32),
+            jnp.asarray(b, dtype=jnp.uint32)
+        )
         self.key = new_key
         return new_key
 
@@ -443,7 +455,12 @@ class LFSR113(LFSRBase):
             The initial seeds MUST be larger than 1, 7, 15, and 127 respectively.
             This method adds these values to the provided seed to ensure validity.
         """
-        return jnp.asarray([seed + 1, seed + 7, seed + 15, seed + 127], dtype=jnp.uint32)
+        return (
+            jnp.asarray(seed + 1, dtype=jnp.uint32),
+            jnp.asarray(seed + 7, dtype=jnp.uint32),
+            jnp.asarray(seed + 15, dtype=jnp.uint32),
+            jnp.asarray(seed + 127, dtype=jnp.uint32)
+        )
 
     def generate_next_key(self) -> PallasRandomKey:
         """Generate the next random key and update the internal state.
@@ -471,7 +488,12 @@ class LFSR113(LFSRBase):
         z3 = jnp.asarray(((z3 & jnp.asarray(4294967280, dtype=jnp.uint64)) << 7) ^ b, dtype=jnp.uint32)
         b = ((z4 << 3) ^ z4) >> 12
         z4 = jnp.asarray(((z4 & jnp.asarray(4294967168, dtype=jnp.uint64)) << 13) ^ b, dtype=jnp.uint32)
-        new_key = jnp.asarray([z1, z2, z3, z4], dtype=jnp.uint32)
+        new_key = (
+            jnp.asarray(z1, dtype=jnp.uint32),
+            jnp.asarray(z2, dtype=jnp.uint32),
+            jnp.asarray(z3, dtype=jnp.uint32),
+            jnp.asarray(z4, dtype=jnp.uint32)
+        )
         self.key = new_key
         return new_key
 
@@ -586,7 +608,12 @@ class LFSR128(LFSRBase):
         s2 = seed ^ 0xfedc7890
         s3 = (seed << 3) + 0x1a2b3c4d
         s4 = ~(seed + 0x5f6e7d8c)
-        return jnp.asarray([s1, s2, s3, s4], dtype=jnp.uint32)
+        return (
+            jnp.asarray(s1, dtype=jnp.uint32),
+            jnp.asarray(s2, dtype=jnp.uint32),
+            jnp.asarray(s3, dtype=jnp.uint32),
+            jnp.asarray(s4, dtype=jnp.uint32)
+        )
 
     def generate_next_key(self) -> PallasRandomKey:
         """Generate the next random key and update the internal state.
@@ -620,7 +647,12 @@ class LFSR128(LFSRBase):
         b4 = ((z4 << 13) ^ z4) >> 7
         z4 = jnp.asarray(((z4 & jnp.asarray(4294967264, dtype=jnp.uint64)) << 10) ^ b4, dtype=jnp.uint32)
 
-        new_key = jnp.asarray([z1, z2, z3, z4], dtype=jnp.uint32)
+        new_key = (
+            jnp.asarray(z1, dtype=jnp.uint32),
+            jnp.asarray(z2, dtype=jnp.uint32),
+            jnp.asarray(z3, dtype=jnp.uint32),
+            jnp.asarray(z4, dtype=jnp.uint32)
+        )
         self.key = new_key
         return new_key
 

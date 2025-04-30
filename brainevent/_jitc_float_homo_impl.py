@@ -23,11 +23,13 @@ from jax import numpy as jnp
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
-from ._jitc_util import _initialize_seed, _initialize_conn_length
 from ._jitc_pallas_random import LFSR88
+from ._jitc_util import _initialize_seed, _initialize_conn_length
+from ._misc import Config
 from ._typing import Kernel, Data, MatrixShape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
+from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 
@@ -929,6 +931,7 @@ def _jitc_homo_matrix_gpu_kernel_generator(
 
 
 def _jitc_homo_matrix_pallas_kernel_generator(
+    out_info: jax.ShapeDtypeStruct,
     transpose: bool = False,
     corder: bool = True,
     **kwargs
@@ -1076,7 +1079,18 @@ def _jitc_homo_matrix_pallas_kernel_generator(
                 #     post_ref[i_row, i_col] = weight0
                 #     i_row += rng.random_integers(0, clen0)
 
-    return _raw_kernel
+    dim = out_info.shape[0] if corder else out_info.shape[1]
+
+    def kernel(weight, clen, seed, out):
+        fn = pl.pallas_call(
+            _raw_kernel,
+            out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
+            grid=(dim,),
+            input_output_aliases={3: 0},
+        )
+        return [fn(weight, clen, seed, out)]
+
+    return kernel
 
 
 def _jitc_homo_matrix_batching(
@@ -1148,12 +1162,31 @@ float_jitc_homo_matrix_p = XLACustomKernel(
         _jitc_homo_matrix_cpu_kernel_generator,
         input_output_aliases={3: 0}
     ),
-    gpu_kernel=WarpKernelGenerator(
-        _jitc_homo_matrix_gpu_kernel_generator,
-        dim=lambda out_info, corder, **kwargs: out_info.shape[0] if corder else out_info.shape[1],
-        input_output_aliases={3: 0}
-    )
 )
+if Config.gpu_kernel_use_warp:
+    float_jitc_homo_matrix_p.def_gpu_kernel(
+        WarpKernelGenerator(
+            _jitc_homo_matrix_gpu_kernel_generator,
+            dim=lambda out_info, corder, **kwargs: out_info.shape[0] if corder else out_info.shape[1],
+            input_output_aliases={3: 0}
+        ),
+    )
+else:
+    float_jitc_homo_matrix_p.def_gpu_kernel(
+        PallasKernelGenerator(
+            _jitc_homo_matrix_pallas_kernel_generator,
+            block_dim=1,
+            input_output_aliases={3: 0}
+        ),
+    )
+float_jitc_homo_matrix_p.def_tpu_kernel(
+    PallasKernelGenerator(
+        _jitc_homo_matrix_pallas_kernel_generator,
+        block_dim=1,
+        input_output_aliases={3: 0}
+    ),
+)
+
 float_jitc_homo_matrix_p.def_batching_rule(_jitc_homo_matrix_batching)
 
 
@@ -2097,12 +2130,16 @@ float_jitc_mv_homo_p = XLACustomKernel(
         _jitc_mv_homo_cpu_kernel_generator,
         input_output_aliases={4: 0}
     ),
-    gpu_kernel=WarpKernelGenerator(
-        _jitc_mv_homo_gpu_kernel_generator,
-        dim=lambda out_info, vector_info, corder, **kwargs: (out_info.shape[0] if corder else vector_info.shape[0]),
-        input_output_aliases={4: 0}
-    )
 )
+if Config.gpu_kernel_use_warp:
+    float_jitc_homo_matrix_p.def_gpu_kernel(
+        WarpKernelGenerator(
+            _jitc_mv_homo_gpu_kernel_generator,
+            dim=lambda out_info, vector_info, corder, **kwargs: (out_info.shape[0] if corder else vector_info.shape[0]),
+            input_output_aliases={4: 0}
+        )
+    )
+
 float_jitc_mv_homo_p.defjvp(
     _jitc_mv_homo_jvp_weights,
     None,
@@ -2762,13 +2799,16 @@ float_jitc_mm_homo_p = XLACustomKernel(
         _jitc_mm_homo_cpu_kernel_generator,
         input_output_aliases={4: 0}
     ),
-    gpu_kernel=WarpKernelGenerator(
-        _jitc_mm_homo_gpu_kernel_generator,
-        tile=lambda out_info, B_info, corder, **kwargs: (out_info.shape[0] if corder else B_info.shape[0]),
-        block_dim=256,
-        input_output_aliases={4: 0}
-    )
 )
+if Config.gpu_kernel_use_warp:
+    float_jitc_mm_homo_p.def_gpu_kernel(
+        WarpKernelGenerator(
+            _jitc_mm_homo_gpu_kernel_generator,
+            tile=lambda out_info, B_info, corder, **kwargs: (out_info.shape[0] if corder else B_info.shape[0]),
+            block_dim=256,
+            input_output_aliases={4: 0}
+        )
+    )
 float_jitc_mm_homo_p.defjvp(
     _jitc_mm_homo_jvp_w,
     None,
