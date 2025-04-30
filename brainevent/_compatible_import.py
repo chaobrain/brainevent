@@ -132,7 +132,8 @@ def _mk_result_types_and_shapes(
 def _hlo_const(x: np.ndarray) -> ir.Value:
     assert isinstance(x, np.ndarray)
     return hlo.constant(
-        ir.DenseElementsAttr.get(x, type=_dtype_to_ir_type(x.dtype)))
+        ir.DenseElementsAttr.get(x, type=_dtype_to_ir_type(x.dtype))
+    )
 
 
 def _hlo_u8(x: int):
@@ -258,8 +259,10 @@ def custom_call(
         # the indices_of_output_operands attribute. This attribute is not yet
         # accepted by the CustomCall constructor, so we use build_generic
         attributes["indices_of_shape_operands"] = ir.DenseIntElementsAttr.get(
-            np.asarray(list(range(len(operands), len(operands) + len(result_shapes))),
-                       dtype=np.int64)
+            np.asarray(
+                list(range(len(operands), len(operands) + len(result_shapes))),
+                dtype=np.int64
+            )
         )
         if operand_layouts is not None:
             assert len(operand_layouts) == len(operands), (operand_layouts, operands)
@@ -271,7 +274,8 @@ def custom_call(
             [
                 ir.DenseIntElementsAttr.get(
                     np.atleast_1d(np.asarray(l, dtype=np.int64)),
-                    type=ir.IndexType.get())
+                    type=ir.IndexType.get()
+                )
                 for l in operand_layouts
             ]
         )
@@ -288,9 +292,11 @@ def custom_call(
             ]
         )
 
-    op = hlo.CustomCallOp.build_generic(results=result_types,
-                                        operands=operands,
-                                        attributes=attributes)
+    op = hlo.CustomCallOp.build_generic(
+        results=result_types,
+        operands=operands,
+        attributes=attributes
+    )
     if isinstance(backend_config, dict):
         backend_config_attr = ir.DictAttr.get(backend_config)
         op.operation.attributes["mhlo.backend_config"] = backend_config_attr

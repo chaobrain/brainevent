@@ -27,7 +27,13 @@ import jax.numpy as jnp
 import pytest
 
 import brainevent
-from brainevent._fixed_conn_num_test_util import generate_data, vector_csr, matrix_csr, csr_vector, csr_matrix
+from brainevent._fixed_conn_num_test_util import (
+    generate_data,
+    vector_csr,
+    matrix_csr,
+    csr_vector,
+    csr_matrix,
+)
 
 
 # brainstate.environ.set(platform='cpu')
@@ -42,7 +48,7 @@ class TestVector(unittest.TestCase):
             for homo_w in [True, False]:
                 print(f'replace = {replace}, homo_w = {homo_w}')
                 data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
-                csr = brainevent.FixedPostNumConn([data, indices], shape=(m, n))
+                csr = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
                 y = x @ csr
                 y2 = vector_csr(x, csr.data, indices, shape=[m, n])
                 self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
@@ -56,7 +62,7 @@ class TestVector(unittest.TestCase):
             for homo_w in [True, False]:
                 print(f'replace = {replace}, homo_w = {homo_w}')
                 data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
-                csr = brainevent.FixedPostNumConn([data, indices], shape=(m, n))
+                csr = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
                 y = csr @ v
                 y2 = csr_vector(v, csr.data, indices, [m, n])
                 # print(y)
@@ -86,7 +92,7 @@ class TestVector(unittest.TestCase):
 
         indices = generate_data(n_in, n_out, 8, replace=replace)
         w = 1.5 if homo_w else bst.init.Normal()(indices.shape)
-        csr = brainevent.FixedPostNumConn([w, indices], shape=shape)
+        csr = brainevent.FixedPostNumConn((w, indices), shape=shape)
 
         def f_brainevent(x, w):
             if transpose:
@@ -127,7 +133,7 @@ class TestVector(unittest.TestCase):
 
         indices = generate_data(n_in, n_out, 8, replace=replace)
         w = 1.5 if homo_w else bst.init.Normal()(indices.shape)
-        csr = brainevent.FixedPostNumConn([w, indices], shape=shape)
+        csr = brainevent.FixedPostNumConn((w, indices), shape=shape)
 
         def f_brainevent(x, w):
             if transpose:
@@ -172,7 +178,7 @@ class TestMatrix(unittest.TestCase):
             for homo_w in [True, False]:
                 print(f'replace = {replace}, homo_w = {homo_w}')
                 data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
-                csr = brainevent.FixedPostNumConn([data, indices], shape=(m, n))
+                csr = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
                 y = x @ csr
                 y2 = matrix_csr(x, csr.data, indices, [m, n])
                 self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
@@ -187,7 +193,7 @@ class TestMatrix(unittest.TestCase):
             for homo_w in [True, False]:
                 print(f'replace = {replace}, homo_w = {homo_w}')
                 data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
-                csr = brainevent.FixedPostNumConn([data, indices], shape=(m, n))
+                csr = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
                 y = csr @ matrix
                 y2 = csr_matrix(matrix, csr.data, indices, [m, n])
                 self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))

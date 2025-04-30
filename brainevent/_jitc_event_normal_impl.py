@@ -22,11 +22,12 @@ import numpy as np
 from jax import numpy as jnp
 from jax.interpreters import ad
 
+from ._config import numba_environ
 from ._jitc_float_normal_impl import float_jitc_mv_normal_p_call, float_jitc_mm_normal_p_call
 from ._jitc_util import _initialize_seed, _initialize_conn_length
 from ._typing import Kernel, Data, MatrixShape
 from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
+from ._xla_custom_op_numba import NumbaKernelGenerator
 from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 
@@ -363,7 +364,7 @@ def _jitc_mv_normal_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0, i_col)
+                state = warp.rand_init(seed0 + i_col)
 
                 # Sample the first connected row using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -407,7 +408,7 @@ def _jitc_mv_normal_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0, i_row)
+                state = warp.rand_init(seed0 + i_row)
 
                 # Sample the first connected column using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -453,7 +454,7 @@ def _jitc_mv_normal_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0, i_row)
+                state = warp.rand_init(seed0 + i_row)
 
                 # Sample the first connected column using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -498,7 +499,7 @@ def _jitc_mv_normal_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0, i_col)
+                state = warp.rand_init(seed0 + i_col)
 
                 # Sample the first connected row using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -994,7 +995,7 @@ def _jitc_mm_normal_gpu_kernel_generator(
                 seed0 = seed[0]
 
                 i_m = warp.tid()
-                state = warp.rand_init(seed0, i_m)
+                state = warp.rand_init(seed0 + i_m)
 
                 out = warp.tile_zeros(TITLE_SIZE, dtype=w_loc_dtype)
                 i_k = warp.randi(state, 0, clen0)
@@ -1022,7 +1023,7 @@ def _jitc_mm_normal_gpu_kernel_generator(
                 seed0 = seed[0]
 
                 i_m = warp.tid()
-                state = warp.rand_init(seed0, i_m)
+                state = warp.rand_init(seed0 + i_m)
 
                 out = warp.tile_zeros(TITLE_SIZE, dtype=w_loc_dtype)
                 i_k = warp.randi(state, 0, clen0)
@@ -1051,7 +1052,7 @@ def _jitc_mm_normal_gpu_kernel_generator(
                 seed0 = seed[0]
 
                 i_k = warp.tid()
-                state = warp.rand_init(seed0, i_k)
+                state = warp.rand_init(seed0 + i_k)
 
                 out = warp.tile_load(B[i_k], TITLE_SIZE)
                 i_m = warp.randi(state, 0, clen0)
@@ -1079,7 +1080,7 @@ def _jitc_mm_normal_gpu_kernel_generator(
                 seed0 = seed[0]
 
                 i_k = warp.tid()
-                state = warp.rand_init(seed0, i_k)
+                state = warp.rand_init(seed0 + i_k)
 
                 out = warp.tile_load(B[i_k], TITLE_SIZE)
                 i_m = warp.randi(state, 0, clen0)

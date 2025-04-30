@@ -47,6 +47,7 @@ if warp_installed:
 
     warp.config.enable_backward = False
 
+
 def _shape_to_layout(shape):
     return tuple(range(len(shape) - 1, -1, -1))
 
@@ -418,7 +419,6 @@ def _warp_gpu_lowering(
     if not warp_installed:
         raise ImportError('Warp is required to compile the GPU kernel for the custom operator.')
     _warp_gpu_register_capsule()
-
 
     # ------------------
     # block dimensions

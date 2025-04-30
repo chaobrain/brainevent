@@ -21,9 +21,10 @@ import jax
 import jax.numpy as jnp
 from jax.interpreters import ad
 
+from ._config import numba_environ
 from ._misc import _csr_to_coo
 from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
+from ._xla_custom_op_numba import NumbaKernelGenerator
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 
 Kernel = Callable
@@ -456,7 +457,7 @@ csrmv_p = XLACustomKernel(
     gpu_kernel=WarpKernelGenerator(
         csrmv_gpu_kernel_generator,
         dim=lambda id_info, **kwargs: (
-                id_info.shape[0] - 1
+            id_info.shape[0] - 1
         ),
         input_output_aliases={5: 0}
     ),
