@@ -1021,7 +1021,7 @@ def _jitc_homo_matrix_pallas_kernel_generator(
                 def body(data):
                     i_row, rng_ = data
                     post_ref[i_row, i_col] = weight0
-                    i_row += rng_.random_integers(0, clen0)
+                    i_row = i_row + rng_.random_integers(0, clen0)
                     return i_row, rng_
 
                 rng = LFSR88(seed0 + i_col)
@@ -1060,7 +1060,7 @@ def _jitc_homo_matrix_pallas_kernel_generator(
                 def body(data):
                     i_row, rng_ = data
                     post_ref[i_row, i_col] = weight0
-                    i_row += rng_.random_integers(0, clen0)
+                    i_row = i_row + rng_.random_integers(0, clen0)
                     return i_row, rng_
 
                 rng = LFSR88(seed0 + i_col)
