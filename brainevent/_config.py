@@ -16,13 +16,126 @@
 # -*- coding: utf-8 -*-
 
 
+import json
+import pathlib
 import threading
 from contextlib import contextmanager
-from typing import NamedTuple, Union
+from typing import Dict, Any, Optional, Union
+from typing import NamedTuple
+
+__all__ = [
+    'load_config',
+    'save_config',
+    'set_environ',
+    'set_numba_environ',
+    'numba_environ_context',
+]
 
 
 class Config(NamedTuple):
     gpu_kernel_use_warp = True
+
+
+# Config singleton
+config = dict()
+
+# Default configuration path
+DEFAULT_CONFIG_PATH = pathlib.Path.home() / '.brainevent' / 'config.json'
+
+
+def load_config(config_path: Optional[Union[str, pathlib.Path]] = None) -> Dict[str, Any]:
+    """
+    Load configuration from a JSON file in the user's home directory.
+
+    Parameters
+    ----------
+    config_path : Optional[Union[str, pathlib.Path]], optional
+        Path to the configuration file. If None, uses the default path.
+
+    Returns
+    -------
+    Dict[str, Any]
+        The loaded configuration dictionary.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    else:
+        config_path = pathlib.Path(config_path)
+
+    # Create default config directory if it doesn't exist
+    config_dir = config_path.parent
+    if not config_dir.exists():
+        config_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load config if it exists, otherwise return empty dict
+    if config_path.exists():
+        with open(config_path, 'r') as f:
+            return json.load(f)
+    return {}
+
+
+def save_config(
+    config_dict: Dict[str, Any],
+    config_path: Optional[Union[str, pathlib.Path]] = None
+) -> None:
+    """
+    Save configuration to a JSON file in the user's home directory.
+
+    Parameters
+    ----------
+    config_dict : Dict[str, Any]
+        Configuration dictionary to save.
+    config_path : Optional[Union[str, pathlib.Path]], optional
+        Path to the configuration file. If None, uses the default path.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    else:
+        config_path = pathlib.Path(config_path)
+
+    # Create directory if it doesn't exist
+    config_dir = config_path.parent
+    if not config_dir.exists():
+        config_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(config_path, 'w') as f:
+        json.dump(config_dict, f, indent=2)
+
+
+def set_environ(**kwargs) -> None:
+    """
+    Set a global environment setting and save it to the configuration file.
+    """
+    global config
+
+    # Load existing config
+    config_dict = load_config()
+
+    # Update the setting
+    config_dict.update(**kwargs)
+
+    # Save the updated config
+    save_config(config_dict)
+
+
+def initialize_config():
+    """
+    Initialize configuration from saved file if it exists.
+    Should be called during package initialization.
+    """
+    global config
+
+    # Load saved config
+    config_dict = load_config()
+
+    # Update global config object with saved values
+    update_dict = {}
+    for field in config._fields:
+        if field in config_dict:
+            update_dict[field] = config_dict[field]
+
+    if update_dict:
+        config = config._replace(**update_dict)
 
 
 class NumbaEnvironment(threading.local):
