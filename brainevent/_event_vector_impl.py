@@ -19,7 +19,7 @@ import brainunit as u
 import jax
 import jax.numpy as jnp
 from jax.interpreters import ad
-
+from ._compatible_import import pallas as pl
 from ._event_matrix_impl import matrix_event_mm, event_matrix_mm
 from ._misc import cdiv
 from ._typing import Kernel
@@ -55,7 +55,7 @@ def matrix_event_mv(
     return u.maybe_decimal(r[0] * wunit * spkunit)
 
 
-def _matrix_event_mv_cpu_kernel_generator(
+def _matrix_event_numba_cpu_kernel_generator(
     float_as_event: bool,
     spk_info: jax.ShapeDtypeStruct,
     **kwargs
@@ -87,7 +87,7 @@ def _matrix_event_mv_cpu_kernel_generator(
     return numba.njit(**numba_environ.setting)(_kernel)
 
 
-def _matrix_event_mv_gpu_kernel_generator(
+def _matrix_event_mv_warp_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     spk_info: jax.ShapeDtypeStruct,
     float_as_event: bool,
@@ -196,9 +196,9 @@ def matrix_event_mv_p_call(weights, spikes, *, float_as_event: bool):
 
 matrix_event_mv_p = XLACustomKernel(
     'matrix_event_mv_op',
-    cpu_kernel=NumbaKernelGenerator(_matrix_event_mv_cpu_kernel_generator),
+    cpu_kernel=NumbaKernelGenerator(_matrix_event_numba_cpu_kernel_generator),
     gpu_kernel=WarpKernelGenerator(
-        _matrix_event_mv_gpu_kernel_generator,
+        _matrix_event_mv_warp_kernel_generator,
         tile=lambda weight_info, **kwargs: cdiv(weight_info.shape[0], TILE_THREAD),
         block_dim=TILE_THREAD,
     ),
@@ -227,7 +227,7 @@ def event_matrix_mv(
     return u.maybe_decimal(r[0] * wunit * spkunit)
 
 
-def _event_matrix_mv_cpu_kernel_generator(
+def _event_matrix_mv_numba_kernel_generator(
     float_as_event: bool,
     spk_info: jax.ShapeDtypeStruct,
     **kwargs
@@ -259,7 +259,7 @@ def _event_matrix_mv_cpu_kernel_generator(
     return numba.njit(**numba_environ.setting)(_kernel)
 
 
-def _event_matrix_mv_gpu_kernel_generator(
+def _event_matrix_mv_warp_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     spk_info: jax.ShapeDtypeStruct,
     float_as_event: bool,
@@ -271,6 +271,100 @@ def _event_matrix_mv_gpu_kernel_generator(
 
     spike_dtype = dtype_to_warp_type(spk_info.dtype)
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
+
+    if spk_info.dtype == jnp.bool_:
+        def kernel(
+            spike_ref: warp.array1d(dtype=spike_dtype),
+            weight_ref: warp.array2d(dtype=weight_dtype),
+            out_ref: warp.array1d(dtype=weight_dtype),
+        ):
+            i_col = warp.tid()
+            spikes = warp.tile_load(spike_ref, shape=(TILE_SIZE,))
+            temp = warp.tile_zeros(shape=(block_dim,), dtype=weight_dtype)
+            for j in range(TILE_SIZE):
+                if spikes[j]:
+                    temp += warp.tile_load(weight_ref[j], shape=(block_dim,), offset=(i_col * block_dim,))
+            warp.tile_store(out_ref, temp, offset=(i_col * block_dim,))
+
+    elif float_as_event:
+        def kernel(
+            spike_ref: warp.array1d(dtype=spike_dtype),
+            weight_ref: warp.array2d(dtype=weight_dtype),
+            out_ref: warp.array1d(dtype=weight_dtype),
+        ):
+            i_col = warp.tid()
+            spikes = warp.tile_load(spike_ref, shape=(TILE_SIZE,))
+            temp = warp.tile_zeros(shape=(block_dim,), dtype=weight_dtype)
+            for j in range(TILE_SIZE):
+                if spikes[j] != 0.:
+                    temp += warp.tile_load(weight_ref[j], shape=(block_dim,), offset=(i_col * block_dim,))
+            warp.tile_store(out_ref, temp, offset=(i_col * block_dim,))
+
+    else:
+        def kernel(
+            spike_ref: warp.array1d(dtype=spike_dtype),
+            weight_ref: warp.array2d(dtype=weight_dtype),
+            out_ref: warp.array1d(dtype=weight_dtype),
+        ):
+            i_col = warp.tid()
+            spikes = warp.tile_load(spike_ref, shape=(TILE_SIZE,))
+            temp = warp.tile_zeros(shape=(block_dim,), dtype=weight_dtype)
+            for j in range(TILE_SIZE):
+                s = spikes[j]
+                if s != 0.:
+                    temp += warp.tile_load(weight_ref[j], shape=(block_dim,), offset=(i_col * block_dim,)) * s
+            warp.tile_store(out_ref, temp, offset=(i_col * block_dim,))
+
+    return warp.kernel(kernel)
+
+
+
+def _event_matrix_mv_pallas_kernel_generator(
+    weight_info: jax.ShapeDtypeStruct,
+    spk_info: jax.ShapeDtypeStruct,
+    float_as_event: bool,
+    TILE_SIZE: int,
+    block_dim: int,
+    **kwargs
+) -> Kernel:
+    n_pre = spk_info.shape[0]
+    n_post = weight_info.shape[1]
+
+    def _raw_kernel(
+        spike_ref,  # [n_pre]
+        weight_ref,  # [n_pre, n_post]
+        _,
+        out_ref,  # [n_post]
+    ):
+        i_row = pl.program_id(0)
+        spike = spike_ref[i_row]
+
+        def true_fn():
+            def loop_fn(i, _):
+                i = i * block_dim
+                mask = i + jnp.arange(block_dim) < n_post
+                weight = pl.load(weight_ref, (i_row, pl.dslice(i, block_dim)), mask=mask)
+                if spike_ref.dtype != jnp.bool_ and not float_as_event:
+                    weight2 = weight * spike
+                else:
+                    weight2 = weight
+                pl.atomic_add(out_ref, ind, weight2, mask=mask)
+
+            jax.lax.fori_loop(0, pl.cdiv(n_conn, block_dim), loop_fn, None)
+
+        jax.lax.cond(spike if spike_ref.dtype == jnp.bool_ else (spike != 0.), true_fn, lambda: None)
+
+    # homogenous weights
+    def kernel(weight, indices, spikes, out):
+        fn = pl.pallas_call(
+            _raw_kernel,
+            out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
+            grid=(n_pre,),
+            input_output_aliases={2: 0},
+        )
+        return [fn(spikes, indices, out) * weight]
+
+
 
     if spk_info.dtype == jnp.bool_:
         def kernel(
@@ -366,9 +460,9 @@ def event_matrix_mv_p_call(spikes, weights, *, float_as_event: bool):
 
 event_matrix_mv_p = XLACustomKernel(
     'event_matrix_mv_op',
-    cpu_kernel=NumbaKernelGenerator(_event_matrix_mv_cpu_kernel_generator),
+    cpu_kernel=NumbaKernelGenerator(_event_matrix_mv_numba_kernel_generator),
     gpu_kernel=WarpKernelGenerator(
-        _event_matrix_mv_gpu_kernel_generator,
+        _event_matrix_mv_warp_kernel_generator,
         tile=lambda weight_info, **kwargs: cdiv(weight_info.shape[1], TILE_THREAD),
         block_dim=TILE_THREAD,
     ),
