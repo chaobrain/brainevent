@@ -62,3 +62,7 @@ Prob = Union[float, np.ndarray, jax.Array]
 
 # Represents a seed value for random number generation, which can be an integer, NumPy array, or JAX array.
 Seed = Union[int, np.ndarray, jax.Array]
+
+
+PallasRandomKey = jax.Array  # uint32, 4
+
