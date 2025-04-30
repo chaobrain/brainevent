@@ -124,7 +124,10 @@ def cdiv(m: int, n: int) -> int:
     return (m + n - 1) // n
 
 
-def generate_block_dim(n_conn: int) -> int:
+def generate_block_dim(
+    n_conn: int,
+    maximum: int = 256
+) -> int:
     """
     Determines an appropriate block dimension based on the number of connections.
 
@@ -136,22 +139,23 @@ def generate_block_dim(n_conn: int) -> int:
     Args:
         n_conn: An integer representing the number of connections or a similar
                 metric influencing the desired block size.
+        maximum: An optional integer specifying the maximum allowed block size.
 
     Returns:
         An integer representing the calculated block dimension. Returns 32, 64,
         128, or 256 based on `n_conn`, defaulting to 128 if `n_conn` exceeds 256.
     """
-    if n_conn <= 32:
+    if n_conn <= 32 and maximum >= 32:
         block_size = 32
-    elif n_conn <= 64:
+    elif n_conn <= 64 and maximum >= 64:
         block_size = 64
-    elif n_conn <= 128:
+    elif n_conn <= 128 and maximum >= 128:
         block_size = 128
-    elif n_conn <= 256:
+    elif n_conn <= 256 and maximum >= 256:
         block_size = 256
     else:
         # Default or fallback block size for larger numbers of connections
-        block_size = 128
+        block_size = maximum
 
     return block_size
 
