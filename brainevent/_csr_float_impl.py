@@ -111,7 +111,6 @@ def csrmv_cpu_kernel_generator(
 
     if weight_info.size == 1:
         if transpose:
-            @numba.njit(**numba_environ.setting)
             def mv(weights, indices, indptr, v, _, posts):
                 w = weights[0]
                 for i in range(v.shape[0]):
@@ -121,7 +120,6 @@ def csrmv_cpu_kernel_generator(
 
 
         else:
-            @numba.njit(**numba_environ.setting)
             def mv(weights, indices, indptr, v, _, posts):
                 w = weights[0]
                 for i in range(indptr.shape[0] - 1):
@@ -132,7 +130,6 @@ def csrmv_cpu_kernel_generator(
 
     else:
         if transpose:
-            @numba.njit(**numba_environ.setting)
             def mv(weights, indices, indptr, v, _, posts):
                 for i in range(v.shape[0]):
                     sp = v[i]
@@ -140,7 +137,6 @@ def csrmv_cpu_kernel_generator(
                         posts[indices[j]] += weights[j] * sp
 
         else:
-            @numba.njit(**numba_environ.setting)
             def mv(weights, indices, indptr, v, _, posts):
                 for i in range(indptr.shape[0] - 1):
                     r = 0.
@@ -148,7 +144,7 @@ def csrmv_cpu_kernel_generator(
                         r += weights[j] * v[indices[j]]
                     posts[i] = r
 
-    return mv
+    return numba.njit(**numba_environ.setting)(mv)
 
 
 def csrmv_gpu_kernel_generator(
@@ -168,7 +164,6 @@ def csrmv_gpu_kernel_generator(
 
     if weight_info.size == 1:
         if transpose:
-            @warp.kernel
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
                 indices: warp.array1d(dtype=indices_dtype),
@@ -184,7 +179,6 @@ def csrmv_gpu_kernel_generator(
                     posts[indices[j]] += wsp
 
         else:
-            @warp.kernel
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
                 indices: warp.array1d(dtype=indices_dtype),
@@ -202,7 +196,6 @@ def csrmv_gpu_kernel_generator(
 
     else:
         if transpose:
-            @warp.kernel
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
                 indices: warp.array1d(dtype=indices_dtype),
@@ -217,7 +210,6 @@ def csrmv_gpu_kernel_generator(
                     posts[indices[j]] += weights[j] * sp
 
         else:
-            @warp.kernel
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
                 indices: warp.array1d(dtype=indices_dtype),
@@ -233,7 +225,7 @@ def csrmv_gpu_kernel_generator(
                     r += weights[j] * c
                 posts[i] = r
 
-    return mv
+    return warp.kernel(mv)
 
 
 def csrmv_jvp_v(
@@ -422,7 +414,6 @@ def csrmm_cpu_kernel_generator(
     if weight_info.size == 1:
         if transpose:
             # csr.T @ B
-            @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
             def mm(weights, indices, indptr, B, _, posts):
                 w = weights[0]
                 for k in numba.prange(B.shape[1]):
@@ -433,7 +424,6 @@ def csrmm_cpu_kernel_generator(
 
         else:
             # csr @ B
-            @numba.njit(**numba_environ.setting)
             def mm(weights, indices, indptr, B, _, posts):
                 w = weights[0]
                 for i in range(indptr.shape[0] - 1):
@@ -446,7 +436,6 @@ def csrmm_cpu_kernel_generator(
     else:
         if transpose:
             # csr.T @ B
-            @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
             def mm(weights, indices, indptr, B, _, posts):
                 for k in numba.prange(B.shape[1]):
                     for i in range(B.shape[0]):
@@ -455,7 +444,6 @@ def csrmm_cpu_kernel_generator(
 
         else:
             # csr @ B
-            @numba.njit(**numba_environ.setting)
             def mm(weights, indices, indptr, B, _, posts):
                 for i in range(indptr.shape[0] - 1):
                     for k in range(B.shape[1]):
@@ -464,7 +452,7 @@ def csrmm_cpu_kernel_generator(
                             r += weights[j] * B[indices[j], k]
                         posts[i, k] = r
 
-    return mm
+    return numba.njit(**numba_environ.setting)(mm)
 
 
 def csrmm_gpu_kernel_generator(
@@ -485,7 +473,6 @@ def csrmm_gpu_kernel_generator(
     if weight_info.size == 1:
         if transpose:
             # csr.T @ B
-            @warp.kernel
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
                 indices: warp.array1d(dtype=indices_dtype),
@@ -502,7 +489,6 @@ def csrmm_gpu_kernel_generator(
 
         else:
             # csr @ B
-            @warp.kernel
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
                 indices: warp.array1d(dtype=indices_dtype),
@@ -522,7 +508,6 @@ def csrmm_gpu_kernel_generator(
     else:
         if transpose:
             # csr.T @ B
-            @warp.kernel
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
                 indices: warp.array1d(dtype=indices_dtype),
@@ -538,8 +523,6 @@ def csrmm_gpu_kernel_generator(
 
         else:
             # csr @ B
-
-            @warp.kernel
             def mm(
                 weights: warp.array1d(dtype=weight_dtype),
                 indices: warp.array1d(dtype=indices_dtype),
@@ -555,7 +538,9 @@ def csrmm_gpu_kernel_generator(
                     r += weights[j] * B[index, k]
                 posts[i, k] = r
 
-    return mm
+    return warp.kernel(mm)
+
+
 
 
 def csrmm_jvp_left(
