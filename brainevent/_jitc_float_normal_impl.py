@@ -22,10 +22,14 @@ import numpy as np
 from jax import numpy as jnp
 from jax.interpreters import ad
 
+from ._compatible_import import pallas as pl
+from ._config import Config, numba_environ
 from ._jitc_util import _initialize_seed, _initialize_conn_length
+from ._pallas_random import LFSR88RNG
 from ._typing import Kernel, Data, MatrixShape
 from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
+from ._xla_custom_op_numba import NumbaKernelGenerator
+from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 
@@ -311,7 +315,7 @@ def _jitc_normal_matrix_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0, i_row)
+                state = warp.rand_init(seed0 + i_row)
 
                 # Sample the first connected row using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -353,7 +357,7 @@ def _jitc_normal_matrix_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0, i_row)
+                state = warp.rand_init(seed0 + i_row)
 
                 # Sample the first connected column using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -397,7 +401,7 @@ def _jitc_normal_matrix_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0, i_col)
+                state = warp.rand_init(seed0 + i_col)
 
                 # Sample the first connected row using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -441,7 +445,7 @@ def _jitc_normal_matrix_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0, i_col)
+                state = warp.rand_init(seed0 + i_col)
 
                 # Sample the first connected row using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -457,6 +461,177 @@ def _jitc_normal_matrix_gpu_kernel_generator(
                     i_row += warp.randi(state, 1, clen0)
 
     return warp.kernel(kernel)
+
+
+def _jitc_normal_matrix_pallas_kernel_generator(
+    out_info: jax.ShapeDtypeStruct,
+    transpose: bool = False,
+    corder: bool = True,
+    **kwargs
+) -> Kernel:
+    if corder:
+        if transpose:
+            # JIT matrix.T
+            #
+            # - JIT matrix shape = [m, n]
+            #
+
+            def _raw_kernel(
+                w_loc_ref,
+                w_scale_ref,
+                clen_ref,
+                seed_ref,
+                _,
+                post_ref,
+            ):
+                m = post_ref.shape[1]
+                w_loc0 = w_loc_ref[0]
+                w_scale0 = w_scale_ref[0]
+                clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
+                seed0 = seed_ref[0]  # Base random seed value
+                i_row = pl.program_id(0)
+
+                def body(data):
+                    i, rng_ = data
+                    post_ref[i_row, i] = rng_.normal(w_loc0, w_scale0)
+                    i = i + rng_.random_integers(1, clen0)
+                    return i, rng_
+
+                rng = LFSR88RNG(seed0 + i_row)
+                jax.lax.while_loop(
+                    lambda data: data[0] < m,
+                    body,
+                    (rng.random_integers(0, clen0), rng)
+                )
+
+        else:
+            # JIT matrix
+            #
+            # - JIT matrix shape = [m, n]
+            #
+
+            def _raw_kernel(
+                w_loc_ref,
+                w_scale_ref,
+                clen_ref,
+                seed_ref,
+                _,
+                post_ref,
+            ):
+                n = post_ref.shape[1]  # Get number of columns in the output matrix
+                w_loc0 = w_loc_ref[0]
+                w_scale0 = w_scale_ref[0]
+                clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
+                seed0 = seed_ref[0]  # Base random seed value
+                i_row = pl.program_id(0)
+
+                def body(data):
+                    i_col, rng_ = data
+                    post_ref[i_row, i_col] = rng_.normal(w_loc0, w_scale0)
+                    i_col = i_col + rng_.random_integers(1, clen0)
+                    return i_col, rng_
+
+                rng = LFSR88RNG(seed0 + i_row)
+                jax.lax.while_loop(
+                    lambda data: data[0] < n,
+                    body,
+                    (rng.random_integers(0, clen0), rng)
+                )
+
+    else:
+        if transpose:
+            # JIT matrix.T
+            #
+            # - JIT matrix shape = [m, n]
+            #
+
+            def _raw_kernel(
+                w_loc_ref,
+                w_scale_ref,
+                clen_ref,
+                seed_ref,
+                _,
+                post_ref,
+            ):
+                n = post_ref.shape[0]
+                w_loc0 = w_loc_ref[0]
+                w_scale0 = w_scale_ref[0]
+                clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
+                seed0 = seed_ref[0]  # Base random seed value
+                i_col = pl.program_id(0)
+
+                def body(data):
+                    i_row, rng_ = data
+                    post_ref[i_row, i_col] = rng_.normal(w_loc0, w_scale0)
+                    i_row = i_row + rng_.random_integers(0, clen0)
+                    return i_row, rng_
+
+                rng = LFSR88RNG(seed0 + i_col)
+                jax.lax.while_loop(
+                    lambda data: data[0] < n,
+                    body,
+                    (rng.random_integers(0, clen0), rng)
+                )
+
+                # rng = LFSR88(seed0 + i_col)
+                # i_row = rng.random_integers(0, clen0)
+                # while i_row < n:
+                #     post_ref[i_row, i_col] = weight0
+                #     i_row += rng.random_integers(0, clen0)
+
+
+        else:
+            # JIT matrix
+            #
+            # - JIT matrix shape = [m, n]
+            #
+
+            def _raw_kernel(
+                w_loc_ref,
+                w_scale_ref,
+                clen_ref,
+                seed_ref,
+                _,
+                post_ref,
+            ):
+                m = post_ref.shape[0]
+                w_loc0 = w_loc_ref[0]
+                w_scale0 = w_scale_ref[0]
+                clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
+                seed0 = seed_ref[0]  # Base random seed value
+                i_col = pl.program_id(0)
+
+                def body(data):
+                    i_row, rng_ = data
+                    post_ref[i_row, i_col] = rng_.normal(w_loc0, w_scale0)
+                    i_row = i_row + rng_.random_integers(0, clen0)
+                    return i_row, rng_
+
+                rng = LFSR88RNG(seed0 + i_col)
+                jax.lax.while_loop(
+                    lambda data: data[0] < m,
+                    body,
+                    (rng.random_integers(0, clen0), rng)
+                )
+
+                # rng = LFSR88(seed0 + i_col)
+                # i_row = rng.random_integers(0, clen0)
+                # while i_row < m:
+                #     post_ref[i_row, i_col] = weight0
+                #     i_row += rng.random_integers(0, clen0)
+
+    dim = out_info.shape[0] if corder else out_info.shape[1]
+
+    def kernel(w_loc, w_scale, clen, seed, out):
+        fn = pl.pallas_call(
+            _raw_kernel,
+            out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
+            grid=(dim,),
+            input_output_aliases={4: 0},
+        )
+        return [fn(w_loc, w_scale, clen, seed, out)]
+
+    return kernel
 
 
 def _jitc_normal_matrix_batching(
@@ -517,11 +692,30 @@ float_jitc_normal_matrix_p = XLACustomKernel(
         _jitc_normal_matrix_cpu_kernel_generator,
         input_output_aliases={4: 0}
     ),
-    gpu_kernel=WarpKernelGenerator(
-        _jitc_normal_matrix_gpu_kernel_generator,
-        dim=lambda out_info, corder, **kwargs: out_info.shape[0] if corder else out_info.shape[1],
-        input_output_aliases={4: 0}
+
+)
+if Config.gpu_kernel_use_warp:
+    float_jitc_normal_matrix_p.def_gpu_kernel(
+        WarpKernelGenerator(
+            _jitc_normal_matrix_gpu_kernel_generator,
+            dim=lambda out_info, corder, **kwargs: out_info.shape[0] if corder else out_info.shape[1],
+            input_output_aliases={4: 0}
+        )
     )
+else:
+    float_jitc_normal_matrix_p.def_gpu_kernel(
+        PallasKernelGenerator(
+            _jitc_normal_matrix_pallas_kernel_generator,
+            block_dim=1,
+            input_output_aliases={4: 0}
+        ),
+    )
+float_jitc_normal_matrix_p.def_tpu_kernel(
+    PallasKernelGenerator(
+        _jitc_normal_matrix_pallas_kernel_generator,
+        block_dim=1,
+        input_output_aliases={4: 0}
+    ),
 )
 float_jitc_normal_matrix_p.def_batching_rule(_jitc_normal_matrix_batching)
 
@@ -762,7 +956,7 @@ def _jitc_mv_normal_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0, i_col)
+                state = warp.rand_init(seed0 + i_col)
 
                 # Sample the first connected row using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -806,7 +1000,7 @@ def _jitc_mv_normal_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0, i_row)
+                state = warp.rand_init(seed0 + i_row)
 
                 # Sample the first connected column using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -852,7 +1046,7 @@ def _jitc_mv_normal_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0, i_row)
+                state = warp.rand_init(seed0 + i_row)
 
                 # Sample the first connected column using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -897,7 +1091,7 @@ def _jitc_mv_normal_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0, i_col)
+                state = warp.rand_init(seed0 + i_col)
 
                 # Sample the first connected row using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -1347,7 +1541,7 @@ def _jitc_mm_normal_gpu_kernel_generator(
                 seed0 = seed[0]
 
                 i_m = warp.tid()
-                state = warp.rand_init(seed0, i_m)
+                state = warp.rand_init(seed0 + i_m)
 
                 out = warp.tile_zeros(TITLE_SIZE, dtype=w_loc_dtype)
                 i_k = warp.randi(state, 0, clen0)
@@ -1375,7 +1569,7 @@ def _jitc_mm_normal_gpu_kernel_generator(
                 seed0 = seed[0]
 
                 i_m = warp.tid()
-                state = warp.rand_init(seed0, i_m)
+                state = warp.rand_init(seed0 + i_m)
 
                 out = warp.tile_zeros(TITLE_SIZE, dtype=w_loc_dtype)
                 i_k = warp.randi(state, 0, clen0)
@@ -1404,7 +1598,7 @@ def _jitc_mm_normal_gpu_kernel_generator(
                 seed0 = seed[0]
 
                 i_k = warp.tid()
-                state = warp.rand_init(seed0, i_k)
+                state = warp.rand_init(seed0 + i_k)
 
                 out = warp.tile_load(B[i_k], TITLE_SIZE)
                 i_m = warp.randi(state, 0, clen0)
@@ -1432,7 +1626,7 @@ def _jitc_mm_normal_gpu_kernel_generator(
                 seed0 = seed[0]
 
                 i_k = warp.tid()
-                state = warp.rand_init(seed0, i_k)
+                state = warp.rand_init(seed0 + i_k)
 
                 out = warp.tile_load(B[i_k], TITLE_SIZE)
                 i_m = warp.randi(state, 0, clen0)

@@ -44,6 +44,9 @@ class CSR(u.sparse.SparseMatrix):
     row-wise operations and matrix-vector multiplications. It is compatible with
     JAX's tree utilities and supports unit-aware computations.
 
+    The class also supports various arithmetic operations (+, -, *, /, @) with
+    other CSR matrices, dense arrays, and scalars.
+
     Attributes
     -----------
     data : Data
@@ -58,22 +61,6 @@ class CSR(u.sparse.SparseMatrix):
         Number of stored elements (non-zero entries).
     dtype : dtype
         Data type of the matrix values.
-
-    Methods
-    --------
-    fromdense(cls, mat, *, nse=None, index_dtype=jnp.int32)
-        Create a CSR matrix from a dense matrix.
-    _empty(cls, shape, *, dtype=None, index_dtype='int32')
-        Create an empty CSR matrix with the specified shape and data types.
-    with_data(self, data)
-        Create a new CSR matrix with updated data while keeping the same structure.
-    todense(self)
-        Convert the CSR matrix to a dense matrix.
-    transpose(self, axes=None)
-        Transpose the CSR matrix.
-
-    The class also supports various arithmetic operations (+, -, *, /, @) with
-    other CSR matrices, dense arrays, and scalars.
     """
     __module__ = 'brainevent'
 
@@ -505,7 +492,6 @@ class CSR(u.sparse.SparseMatrix):
         pass
 
 
-
 @jax.tree_util.register_pytree_node_class
 class CSC(u.sparse.SparseMatrix):
     """
@@ -514,6 +500,9 @@ class CSC(u.sparse.SparseMatrix):
     This class represents a sparse matrix in CSC format, which is efficient for
     column-wise operations. It is compatible with JAX's tree utilities and
     supports unit-aware computations.
+
+    The class also supports various arithmetic operations (+, -, *, /, @) with
+    other CSC matrices, dense arrays, and scalars.
 
     Attributes
     -----------
@@ -530,21 +519,6 @@ class CSC(u.sparse.SparseMatrix):
     dtype : dtype
         Data type of the matrix values.
 
-    Methods
-    --------
-    fromdense(cls, mat, *, nse=None, index_dtype=jnp.int32)
-        Create a CSC matrix from a dense matrix.
-    _empty(cls, shape, *, dtype=None, index_dtype='int32')
-        Create an empty CSC matrix with the specified shape and data types.
-    with_data(self, data)
-        Create a new CSC matrix with updated data while keeping the same structure.
-    todense(self)
-        Convert the CSC matrix to a dense matrix.
-    transpose(self, axes=None)
-        Transpose the CSC matrix (returns a CSR matrix).
-
-    The class also supports various arithmetic operations (+, -, *, /, @) with
-    other CSC matrices, dense arrays, and scalars.
     """
     __module__ = 'brainevent'
 

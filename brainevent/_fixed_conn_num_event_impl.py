@@ -24,15 +24,18 @@ import jax.numpy as jnp
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
-from ._fixed_conn_num_float_impl import fixed_post_num_mv_p_call
-from ._fixed_conn_num_misc import generate_block_dim, check_shape
+from ._config import numba_environ
+from ._fixed_conn_num_float_impl import fixed_num_mv_p_call
+from ._misc import generate_block_dim, check_fixed_conn_num_shape
 from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
+from ._xla_custom_op_numba import NumbaKernelGenerator
 from ._xla_custom_op_pallas import PallasKernelGenerator
-from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type
+from ._xla_custom_op_warp import dtype_to_warp_type
+
+TILE_THREADS = 128
 
 
-def event_fixed_post_num_mv_numba_kernel_generator(
+def _event_fixed_post_num_mv_cpu_kernel_generator(
     float_as_event: bool,
     weight_info: jax.ShapeDtypeStruct,
     spike_info: jax.ShapeDtypeStruct,
@@ -176,9 +179,10 @@ def event_fixed_post_num_mv_numba_kernel_generator(
     return ell_mv
 
 
-def event_fixed_post_num_mv_warp_kernel_generator(
+def _event_fixed_post_num_mv_warp_kernel_generator(
     float_as_event: bool,
     transpose: bool,
+    block_dim: int,
     weight_info: jax.ShapeDtypeStruct,
     spike_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
@@ -193,7 +197,6 @@ def event_fixed_post_num_mv_warp_kernel_generator(
     if transpose:
         if weight_info.size == 1:
             if spike_info.dtype == jnp.bool_:
-                @warp.kernel
                 def ell_mv(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -204,12 +207,15 @@ def event_fixed_post_num_mv_warp_kernel_generator(
                     i = warp.tid()
                     w = weights[0]
                     if spikes[i]:
-                        for j in range(indices.shape[1]):
-                            posts[indices[i, j]] += w
-                            # posts[indices[i, j]] += weights
+                        # index = warp.tile_load(indices[i])
+                        # warp.tile_atomic_add(posts, w, index)
+
+                        for j in range(0, indices.shape[1], block_dim):
+                            index = warp.tile_load(indices[i], block_dim, j)
+                            index_thread = warp.untile(index)
+                            warp.atomic_add(posts, index_thread, w)
 
             elif float_as_event:
-                @warp.kernel
                 def ell_mv(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -220,11 +226,16 @@ def event_fixed_post_num_mv_warp_kernel_generator(
                     i = warp.tid()
                     w = weights[0]
                     if spikes[i] != 0.:
-                        for j in range(indices.shape[1]):
-                            posts[indices[i, j]] += w
+                        # index = warp.tile_load(indices[i])
+                        # warp.tile_atomic_add(posts, w, index)
+
+                        for j in range(0, indices.shape[1], block_dim):
+                            index = warp.tile_load(indices[i], block_dim, j)
+                            index_thread = warp.untile(index)
+                            warp.atomic_add(posts, index_thread, w)
 
             else:
-                @warp.kernel
+
                 def ell_mv(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -237,12 +248,16 @@ def event_fixed_post_num_mv_warp_kernel_generator(
                     sp = spikes[i]
                     if sp != 0.:
                         wsp = w * sp
-                        for j in range(indices.shape[1]):
-                            posts[indices[i, j]] += wsp
+                        # index = warp.tile_load(indices[i])
+                        # warp.tile_atomic_add(posts, wsp, index)
+
+                        for j in range(0, indices.shape[1], block_dim):
+                            index = warp.tile_load(indices[i], block_dim, j)
+                            index_thread = warp.untile(index)
+                            warp.atomic_add(posts, index_thread, wsp)
 
         else:
             if spike_info.dtype == jnp.bool_:
-                @warp.kernel
                 def ell_mv(
                     weights: warp.array2d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -252,11 +267,14 @@ def event_fixed_post_num_mv_warp_kernel_generator(
                 ):
                     i = warp.tid()
                     if spikes[i]:
-                        for j in range(indices.shape[1]):
-                            posts[indices[i, j]] += weights[i, j]
+                        for j in range(0, indices.shape[1], block_dim):
+                            index = warp.tile_load(indices[i], block_dim, j)
+                            weight = warp.tile_load(weights[i], block_dim, j)
+                            index_thread = warp.untile(index)
+                            weight_thread = warp.untile(weight)
+                            warp.atomic_add(posts, index_thread, weight_thread)
 
             elif float_as_event:
-                @warp.kernel
                 def ell_mv(
                     weights: warp.array2d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -266,11 +284,14 @@ def event_fixed_post_num_mv_warp_kernel_generator(
                 ):
                     i = warp.tid()
                     if spikes[i] != 0.:
-                        for j in range(indices.shape[1]):
-                            posts[indices[i, j]] += weights[i, j]
+                        for j in range(0, indices.shape[1], block_dim):
+                            index = warp.tile_load(indices[i], block_dim, j)
+                            weight = warp.tile_load(weights[i], block_dim, j)
+                            index_thread = warp.untile(index)
+                            weight_thread = warp.untile(weight)
+                            warp.atomic_add(posts, index_thread, weight_thread)
 
             else:
-                @warp.kernel
                 def ell_mv(
                     weights: warp.array2d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -281,13 +302,17 @@ def event_fixed_post_num_mv_warp_kernel_generator(
                     i = warp.tid()
                     sp = spikes[i]
                     if sp != 0.:
-                        for j in range(indices.shape[1]):
-                            posts[indices[i, j]] += weights[i, j] * sp
+                        for j in range(0, indices.shape[1], block_dim):
+                            index = warp.tile_load(indices[i], block_dim, j)
+                            weight = warp.tile_load(weights[i], block_dim, j) * sp
+                            index_thread = warp.untile(index)
+                            weight_thread = warp.untile(weight)
+                            warp.atomic_add(posts, index_thread, weight_thread)
 
     else:
+        raise NotImplementedError
         if weight_info.size == 1:
             if spike_info.dtype == jnp.bool_:
-                @warp.kernel
                 def ell_mv(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -305,7 +330,6 @@ def event_fixed_post_num_mv_warp_kernel_generator(
                     posts[i] = r
 
             elif float_as_event:
-                @warp.kernel
                 def ell_mv(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -324,7 +348,6 @@ def event_fixed_post_num_mv_warp_kernel_generator(
 
 
             else:
-                @warp.kernel
                 def ell_mv(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -344,7 +367,6 @@ def event_fixed_post_num_mv_warp_kernel_generator(
 
         else:
             if spike_info.dtype == jnp.bool_:
-                @warp.kernel
                 def ell_mv(
                     weights: warp.array2d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -361,7 +383,6 @@ def event_fixed_post_num_mv_warp_kernel_generator(
                     posts[i] = r
 
             elif float_as_event:
-                @warp.kernel
                 def ell_mv(
                     weights: warp.array2d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -378,7 +399,6 @@ def event_fixed_post_num_mv_warp_kernel_generator(
                     posts[i] = r
 
             else:
-                @warp.kernel
                 def ell_mv(
                     weights: warp.array2d(dtype=weight_dtype),
                     indices: warp.array2d(dtype=indices_dtype),
@@ -395,10 +415,10 @@ def event_fixed_post_num_mv_warp_kernel_generator(
                             r += weights[i, j] * sp
                     posts[i] = r
 
-    return ell_mv
+    return warp.kernel(ell_mv)
 
 
-def event_fixed_post_num_mv_pallas_kernel_generator(
+def _event_fixed_post_num_mv_pallas_kernel_generator(
     block_dim: int,
     transpose: int,
     shape: Tuple[int, int],
@@ -407,140 +427,156 @@ def event_fixed_post_num_mv_pallas_kernel_generator(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    if transpose:
-        n_pre, n_post = shape
-    else:
-        n_post, n_pre = shape
+    n_pre, n_post = shape
     n_conn = indices_info.shape[1]
     homo = jnp.size(weight_info) == 1
 
     if transpose:
-        # 对于具有形状 [n_event] 的 spikes 向量，以及形状 [n_event, n_conn] 的 indices 和 weights 矩阵，
-        # 这个算子的计算逻辑为：
-        #
-        # - 每个block处理 [block_size] 个事件，每个事件对应一个 pre-synaptic neuron
-        # - 每个block处理 [block_size, block_size] 个 indices 和 weights
-
         if homo:
             def _ell_mv_kernel_homo(
-                sp_ref,  # [block_size]
-                ind_ref,  # [block_size, block_size]
+                spike_ref,  # [n_pre]
+                index_ref,  # [n_pre, n_conn]
                 _,
-                y_ref,  # [n_post]
+                out_ref,  # [n_post]
             ):
-                r_pid = pl.program_id(0)
-                c_start = pl.program_id(1) * block_dim
-                row_length = jnp.minimum(n_pre - r_pid * block_dim, block_dim)
-                mask = jnp.arange(block_dim) + c_start < n_conn
+                i_row = pl.program_id(0)
+                spike = spike_ref[i_row]
 
-                def body_fn(j, _):
-                    if sp_ref.dtype == jnp.bool_:
-                        def true_fn():
-                            ind = pl.load(ind_ref, (j, pl.dslice(None)), mask=mask)
-                            pl.atomic_add(y_ref, ind, jnp.ones(block_dim, dtype=weight_info.dtype), mask=mask)
+                def true_fn():
+                    def loop_fn(i, _):
+                        i = i * block_dim
+                        mask = i + jnp.arange(block_dim) < n_conn
+                        ind = pl.load(index_ref, (i_row, pl.dslice(i, block_dim)), mask=mask)
+                        data = jnp.ones(block_dim, dtype=weight_info.dtype)
+                        if spike_ref.dtype != jnp.bool_ and not float_as_event:
+                            data2 = data * spike
+                        else:
+                            data2 = data
+                        pl.atomic_add(out_ref, ind, data2, mask=mask)
 
-                        jax.lax.cond(sp_ref[j], true_fn, lambda: None)
+                    jax.lax.fori_loop(0, pl.cdiv(n_conn, block_dim), loop_fn, None)
 
-
-                    else:
-                        def true_fn(sp):
-                            ind = pl.load(ind_ref, (j, pl.dslice(None)), mask=mask)
-                            if float_as_event:
-                                pl.atomic_add(y_ref, ind, jnp.ones(block_dim, dtype=weight_info.dtype), mask=mask)
-                            else:
-                                pl.atomic_add(y_ref, ind, jnp.ones(block_dim, dtype=weight_info.dtype) * sp, mask=mask)
-
-                        sp_ = sp_ref[j]
-                        jax.lax.cond(sp_ != 0., true_fn, lambda _: None, sp_)
-
-                jax.lax.fori_loop(0, row_length, body_fn, None)
+                jax.lax.cond(spike if spike_ref.dtype == jnp.bool_ else (spike != 0.), true_fn, lambda: None)
 
             # homogenous weights
-            kernel = pl.pallas_call(
-                _ell_mv_kernel_homo,
-                out_shape=[
-                    jax.ShapeDtypeStruct((n_post,), weight_info.dtype),
-                ],
-                in_specs=[
-                    pl.BlockSpec((block_dim,), lambda i, j: i),
-                    pl.BlockSpec((block_dim, block_dim), lambda i, j: (i, j)),
-                    pl.BlockSpec((n_post,), lambda i, j: 0)
-                ],
-                grid=(
-                    pl.cdiv(n_pre, block_dim),
-                    pl.cdiv(n_conn, block_dim),
-                ),
-                input_output_aliases={2: 0},
-                interpret=False
-            )
-            return (
-                lambda weight, indices, spikes, _:
-                [kernel(spikes, indices, jnp.zeros(n_post, dtype=weight.dtype))[0] * weight]
-            )
+            def kernel(weight, indices, spikes, out):
+                fn = pl.pallas_call(
+                    _ell_mv_kernel_homo,
+                    out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
+                    grid=(n_pre,),
+                    input_output_aliases={2: 0},
+                )
+                return [fn(spikes, indices, out) * weight]
 
         else:
             def _ell_mv_kernel_heter(
-                sp_ref,  # [block_size]
-                ind_ref,  # [block_size, block_size]
-                w_ref,  # [block_size, block_size]
+                spike_ref,  # [n_pre]
+                index_ref,  # [n_pre, n_conn]
+                weight_ref,  # [n_pre, n_conn]
                 _,
-                y_ref,  # [n_post]
+                out_ref,  # [n_post]
             ):
-                r_pid = pl.program_id(0)
-                c_start = pl.program_id(1) * block_dim
-                row_length = jnp.minimum(n_pre - r_pid * block_dim, block_dim)
-                mask = jnp.arange(block_dim) + c_start < n_conn
+                i_row = pl.program_id(0)
+                spike = spike_ref[i_row]
 
-                def body_fn(j, _):
-                    if sp_ref.dtype == jnp.bool_:
-                        def true_fn():
-                            ind = pl.load(ind_ref, (j, pl.dslice(None)), mask=mask)
-                            w = pl.load(w_ref, (j, pl.dslice(None)), mask=mask)
-                            pl.atomic_add(y_ref, ind, w, mask=mask)
+                def true_fn():
+                    def loop_fn(i, _):
+                        i = i * block_dim
+                        mask = i + jnp.arange(block_dim) < n_conn
+                        ind = pl.load(index_ref, (i_row, pl.dslice(i, block_dim)), mask=mask)
+                        weight = pl.load(weight_ref, (i_row, pl.dslice(i, block_dim)), mask=mask)
+                        if spike_ref.dtype != jnp.bool_ and not float_as_event:
+                            weight2 = weight * spike
+                        else:
+                            weight2 = weight
+                        pl.atomic_add(out_ref, ind, weight2, mask=mask)
 
-                        jax.lax.cond(sp_ref[j], true_fn, lambda: None)
-                    else:
-                        def true_fn(spk):
-                            ind = pl.load(ind_ref, (j, pl.dslice(None)), mask=mask)
-                            w = pl.load(w_ref, (j, pl.dslice(None)), mask=mask)
-                            if not float_as_event:
-                                w = w * spk
-                            pl.atomic_add(y_ref, ind, w, mask=mask)
+                    jax.lax.fori_loop(0, pl.cdiv(n_conn, block_dim), loop_fn, None)
 
-                        sp_ = sp_ref[j]
-                        jax.lax.cond(sp_ != 0., true_fn, lambda _: None, sp_)
-
-                jax.lax.fori_loop(0, row_length, body_fn, None)
+                jax.lax.cond(spike if spike_ref.dtype == jnp.bool_ else (spike != 0.), true_fn, lambda: None)
 
             # heterogeneous weights
-            kernel = pl.pallas_call(
-                _ell_mv_kernel_heter,
-                out_shape=[
-                    jax.ShapeDtypeStruct((n_post,), weight_info.dtype),
-                ],
-                in_specs=[
-                    pl.BlockSpec((block_dim,), lambda i, j: i),  # sp_ref
-                    pl.BlockSpec((block_dim, block_dim), lambda i, j: (i, j)),  # ind_ref
-                    pl.BlockSpec((block_dim, block_dim), lambda i, j: (i, j)),  # w_ref,
-                    pl.BlockSpec((n_post,), lambda i, j: 0)
-                ],
-                grid=(
-                    pl.cdiv(n_pre, block_dim),
-                    pl.cdiv(n_conn, block_dim),
-                ),
-                input_output_aliases={3: 0},
-                interpret=False
-            )
-            return (
-                lambda weight, indices, spikes, _:
-                kernel(spikes, indices, weight, jnp.zeros(n_post, dtype=weight_info.dtype))
-            )
+            def kernel(weight, indices, spikes, out):
+                fn = pl.pallas_call(
+                    _ell_mv_kernel_heter,
+                    out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
+                    grid=(n_pre,),
+                    input_output_aliases={3: 0},
+                )
+                return [fn(spikes, indices, weight, out)]
 
     else:
-        raise NotImplementedError
+        if homo:
+            def _ell_mv_kernel_homo(
+                spike_ref,  # [n_post]
+                index_ref,  # [n_pre, n_conn]
+                _,  # [n_pre]
+                out_ref,  # [n_pre]
+            ):
+                i_row = pl.program_id(0)
+
+                def loop_fn(i, sum_):
+                    i = i * block_dim
+                    mask = i + jnp.arange(block_dim) < n_conn
+                    ind = pl.load(index_ref, (i_row, pl.dslice(i, block_dim)), mask=mask)
+                    spk = spike_ref[ind]
+                    if spike_ref.dtype == jnp.bool_:
+                        data = jnp.where(spk, 1., 0.).sum()
+                    else:
+                        data = jnp.sum(spk)
+                    return sum_ + data
+
+                i_row_sum = jax.lax.fori_loop(0, pl.cdiv(n_conn, block_dim), loop_fn, 0.)
+                pl.store(out_ref, i_row, i_row_sum)
+
+            # homogenous weights
+            def kernel(weight, indices, spikes, out):
+                fn = pl.pallas_call(
+                    _ell_mv_kernel_homo,
+                    out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
+                    grid=(n_pre,),
+                    input_output_aliases={2: 0}
+                )
+                return [fn(spikes, indices, out) * weight]
+
+        else:
+            def _ell_mv_kernel_heter(
+                spike_ref,  # [n_post]
+                index_ref,  # [n_pre, n_conn]
+                weight_ref,  # [n_pre, n_conn]
+                _,  # [n_pre]
+                out_ref,  # [n_pre]
+            ):
+                i_row = pl.program_id(0)
+
+                def loop_fn(i, sum_):
+                    i = i * block_dim
+                    mask = i + jnp.arange(block_dim) < n_conn
+                    ind = pl.load(index_ref, (i_row, pl.dslice(i, block_dim)), mask=mask)
+                    w = pl.load(weight_ref, (i_row, pl.dslice(i, block_dim)), mask=mask)
+                    if spike_ref.dtype == jnp.bool_:
+                        data = jnp.where(spike_ref[ind], w, 0.)
+                    else:
+                        data = spike_ref[ind] * w
+                    return sum_ + jnp.sum(data)
+
+                i_row_sum = jax.lax.fori_loop(0, pl.cdiv(n_conn, block_dim), loop_fn, 0.)
+                pl.store(out_ref, i_row, i_row_sum)
+
+            # heterogeneous weights
+            def kernel(weight, indices, spikes, out):
+                fn = pl.pallas_call(
+                    _ell_mv_kernel_heter,
+                    out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
+                    grid=(n_pre,),
+                    input_output_aliases={3: 0}
+                )
+                return [fn(spikes, indices, weight, out)]
+
+    return kernel
 
 
-def event_fixed_post_num_mv_jvp_spikes(
+def _event_fixed_post_num_mv_jvp_spikes(
     spk_dot,
     weights,
     indices,
@@ -551,7 +587,7 @@ def event_fixed_post_num_mv_jvp_spikes(
     transpose,
     **kwargs
 ):
-    return fixed_post_num_mv_p_call(
+    return fixed_num_mv_p_call(
         weights,
         indices,
         spk_dot,
@@ -560,7 +596,7 @@ def event_fixed_post_num_mv_jvp_spikes(
     )
 
 
-def event_fixed_post_num_mv_jvp_weights(
+def _event_fixed_post_num_mv_jvp_weights(
     w_dot,
     weights,
     indices,
@@ -582,7 +618,7 @@ def event_fixed_post_num_mv_jvp_weights(
     )
 
 
-def event_fixed_post_num_mv_transpose_rule(
+def _event_fixed_post_num_mv_transpose_rule(
     ct,
     weights,
     indices,
@@ -599,7 +635,6 @@ def event_fixed_post_num_mv_transpose_rule(
         raise ValueError("Cannot transpose with respect to sparse indices.")
 
     ct = ct[0]
-    n_conn = indices.shape[1]
 
     # ∂L/∂spk = ∂L/∂y * ∂y/∂spk
     homo = weight_info.size == 1
@@ -647,10 +682,11 @@ def event_fixed_post_num_mv_p_call(
     transpose: bool = False,
     float_as_event: bool = True,
 ) -> Tuple[Union[jax.Array, u.Quantity]]:
-    out, weights, n_pre, n_post = check_shape(weights, indices, spikes, shape, transpose)
+    out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, spikes, shape, transpose)
     weights, w_unit = u.split_mantissa_unit(weights)
     spikes, v_unit = u.split_mantissa_unit(spikes)
 
+    TILE_SIZE = indices.shape[0] if transpose else indices.shape[1]  # for warp
     r = event_fixed_post_num_mv_p(
         weights,
         indices,
@@ -659,6 +695,7 @@ def event_fixed_post_num_mv_p_call(
         outs=out,
         shape=shape,
         transpose=transpose,
+        TILE_SIZE=TILE_SIZE,
         float_as_event=float_as_event,
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
@@ -670,30 +707,36 @@ def event_fixed_post_num_mv_p_call(
 event_fixed_post_num_mv_p = XLACustomKernel(
     'event_fixed_post_num_mv',
     cpu_kernel=NumbaKernelGenerator(
-        event_fixed_post_num_mv_numba_kernel_generator,
+        _event_fixed_post_num_mv_cpu_kernel_generator,
         input_output_aliases={3: 0}
     ),
-    gpu_kernel=WarpKernelGenerator(
-        event_fixed_post_num_mv_warp_kernel_generator,
-        dim=lambda transpose, indices_info, spike_info, **kwargs: (
-            spike_info.shape[0]
-            if transpose else
-            indices_info.shape[0]
-        ),
-        input_output_aliases={3: 0}
+    # gpu_kernel=WarpKernelGenerator(
+    #     _event_fixed_post_num_mv_gpu_kernel_generator,
+    #     tile=lambda transpose, indices_info, spike_info, **kwargs: (
+    #         spike_info.shape[0]
+    #         if transpose else
+    #         indices_info.shape[0]
+    #     ),
+    #     block_dim=TILE_THREADS,
+    #     input_output_aliases={3: 0}
+    # ),
+    gpu_kernel=PallasKernelGenerator(
+        _event_fixed_post_num_mv_pallas_kernel_generator,
+        block_dim=lambda **kwargs: generate_block_dim(kwargs['indices_info'].shape[1]),
+        input_output_aliases={3: 0},
     ),
     tpu_kernel=PallasKernelGenerator(
-        event_fixed_post_num_mv_pallas_kernel_generator,
-        block_dim=generate_block_dim,
-        input_output_aliases={3: 0}
+        _event_fixed_post_num_mv_pallas_kernel_generator,
+        block_dim=lambda **kwargs: generate_block_dim(kwargs['indices_info'].shape[1]),
+        input_output_aliases={3: 0},
     ),
 )
 event_fixed_post_num_mv_p.defjvp(
-    event_fixed_post_num_mv_jvp_weights,
+    _event_fixed_post_num_mv_jvp_weights,
     None,
-    event_fixed_post_num_mv_jvp_spikes,
+    _event_fixed_post_num_mv_jvp_spikes,
     None,
 )
 event_fixed_post_num_mv_p.def_transpose_rule(
-    event_fixed_post_num_mv_transpose_rule
+    _event_fixed_post_num_mv_transpose_rule
 )

@@ -25,9 +25,8 @@ import sys
 
 sys.path.append('../')
 
-import numpy as np
 import brainstate
-import matplotlib.pyplot as plt
+from utils import visualize
 
 
 # brainstate.environ.set(platform='cpu')
@@ -79,39 +78,6 @@ def forward(n_pre, n_post, spk_prob, as_float: bool, transpose: bool = False):
     return ratio
 
 
-def visualize(results, title='Acceleration Ratio', filename=None):
-    labels = list(results.keys())
-    ratio = list(results.values())
-
-    x = np.arange(len(labels))  # x轴的位置
-    width = 0.35  # 条形的宽度
-
-    fig, ax = plt.subplots()
-    bars = ax.bar(x, ratio, width, label='Ratio')
-
-    # 添加标签
-    ax.set_xlabel('Configurations')
-    ax.set_ylabel('Acceleration Ratio')
-    ax.set_title(title)
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=45, ha='right')
-
-    # 在每个条形上添加数值标签
-    for bar in bars:
-        height = bar.get_height()
-        ax.annotate(f'{height:.2f}',  # 格式化数值
-                    xy=(bar.get_x() + bar.get_width() / 2, height),  # 标签位置
-                    xytext=(0, 3),  # 偏移量
-                    textcoords="offset points",
-                    ha='center',
-                    va='bottom')
-
-    fig.tight_layout()
-    if filename is not None:
-        plt.savefig(filename)
-    plt.show()
-
-
 def benchmark_forward(prob=0.1):
     platform = brainstate.environ.get_platform()
 
@@ -129,7 +95,7 @@ def benchmark_forward(prob=0.1):
             # (1000, 1000),
             (1000, 10000),
             (2000, 20000),
-            (4000 , 40000),
+            (4000, 40000),
             (10000, 20000),
             # (10000, 100000),
         ]:
@@ -138,7 +104,7 @@ def benchmark_forward(prob=0.1):
     visualize(
         results,
         title=f'Acceleration Ratio (p={prob})',
-        filename=f'results/event-mv-{transpose}-prob={prob}-{platform}.pdf'
+        filename=f'results/event-mv-transpose={transpose}-prob={prob}-{platform}.pdf'
     )
 
 

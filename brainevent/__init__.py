@@ -17,6 +17,7 @@ __version__ = "0.0.1"
 
 from ._block_csr import BlockCSR
 from ._block_ell import BlockELL
+from ._config import set_numba_environ, numba_environ_context
 from ._coo import COO
 from ._csr import CSR, CSC
 from ._csrlb import CSR_LB, CSC_LB
@@ -25,8 +26,9 @@ from ._fixed_conn_num import FixedPostNumConn, FixedPreNumConn
 from ._jitc_homo import JITCHomoR, JITCHomoC
 from ._jitc_normal import JITCNormalR, JITCNormalC
 from ._jitc_uniform import JITCUniformR, JITCUniformC
+from ._pallas_random import LFSR88RNG, LFSR113RNG, LFSR128RNG
 from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_numba import NumbaKernelGenerator, set_numba_environ, numba_environ_context
+from ._xla_custom_op_numba import NumbaKernelGenerator
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_util import defjvp, general_batching_rule
 from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type
@@ -44,12 +46,12 @@ __all__ = [
     'CSC_LB',
 
     # Just-In-Time Connectivity matrix
-    'JITCHomoR',  # row-oriented
-    'JITCHomoC',  # column-oriented
-    'JITCNormalR',  # row-oriented
-    'JITCNormalC',  # column-oriented
-    'JITCUniformR',  # row-oriented
-    'JITCUniformC',  # column-oriented
+    'JITCHomoR',  # row-oriented JITC matrix with homogeneous weight
+    'JITCHomoC',  # column-oriented JITC matrix with homogeneous weight
+    'JITCNormalR',  # row-oriented JITC matrix with normal weight
+    'JITCNormalC',  # column-oriented JITC matrix with normal weight
+    'JITCUniformR',  # row-oriented JITC matrix with uniform weight
+    'JITCUniformC',  # column-oriented JITC matrix with uniform weight
 
     # --- block data --- #
     'BlockCSR',
@@ -77,5 +79,8 @@ __all__ = [
 
     # 5. Pallas kernel
     'PallasKernelGenerator',
+    'LFSR88RNG',
+    'LFSR113RNG',
+    'LFSR128RNG',
 
 ]

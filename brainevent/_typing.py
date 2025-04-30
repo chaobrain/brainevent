@@ -31,6 +31,7 @@ from typing import Union, Tuple, Callable
 
 import brainunit as u
 import jax
+import jax.numpy as jnp
 import numpy as np
 
 # A tuple representing the shape of a matrix, with two integers.
@@ -54,6 +55,14 @@ Indptr = Index
 # A callable type, representing a function or method.
 Kernel = Callable
 
+# Represents a scalar weight value, which can be a number, NumPy array, JAX array, or BrainUnit quantity.
 WeightScalar = Union[numbers.Number, np.ndarray, jax.Array, u.Quantity]
+
+# Represents a probability value, which can be a float, NumPy array, or JAX array.
 Prob = Union[float, np.ndarray, jax.Array]
+
+# Represents a seed value for random number generation, which can be an integer, NumPy array, or JAX array.
 Seed = Union[int, np.ndarray, jax.Array]
+
+# Represents a random key for Pallas, which is a tuple of four uint32 values.
+PallasRandomKey = Tuple[jnp.uint32, jnp.uint32, jnp.uint32, jnp.uint32]  # uint32, 4

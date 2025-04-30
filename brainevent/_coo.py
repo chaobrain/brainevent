@@ -45,6 +45,9 @@ class COO(u.sparse.SparseMatrix):
     This class represents a sparse matrix in coordinate format, where non-zero
     elements are stored as triplets (row, column, value).
 
+    The class also supports various arithmetic operations (+, -, *, /, @, etc.)
+    and comparisons with other COO matrices, dense arrays, and scalars.
+
     Attributes
     ----------
     data : jax.Array, Quantity
@@ -67,24 +70,6 @@ class COO(u.sparse.SparseMatrix):
         Whether row indices are sorted.
     _cols_sorted : bool
         Whether column indices are sorted within each row.
-
-    Methods
-    --------
-    fromdense(cls, mat, *, nse=None, index_dtype=np.int32)
-        Create a COO matrix from a dense matrix.
-    with_data(data)
-        Create a new COO matrix with the same structure but different data.
-    todense()
-        Convert the COO matrix to a dense array.
-    transpose(axes=None)
-        Transpose the COO matrix.
-    tree_flatten()
-        Flatten the COO matrix for JAX transformations.
-    tree_unflatten(cls, aux_data, children)
-        Reconstruct a COO matrix from flattened data.
-
-    The class also supports various arithmetic operations (+, -, *, /, @, etc.)
-    and comparisons with other COO matrices, dense arrays, and scalars.
 
     Note
     -----

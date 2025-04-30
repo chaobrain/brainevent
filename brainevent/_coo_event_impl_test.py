@@ -95,7 +95,7 @@ class TestCOO(unittest.TestCase):
 
 
 class TestVectorCOO(unittest.TestCase):
-    def test_vector_coo(self,):
+    def test_vector_coo(self, ):
         m, n = 20, 40
         x = bst.random.rand(m) < 0.1
         row, col = _get_coo(m, n, 0.1)
@@ -215,6 +215,7 @@ class TestVectorCOO(unittest.TestCase):
                     print(f'replace = {replace}, transpose = {transpose}, homo_w = {homo_w}')
                     self._test_jvp(homo_w=homo_w, replace=replace, transpose=transpose)
 
+
 class TestMatrixCOO(unittest.TestCase):
     def test_matrix_coo(self):
         k, m, n = 10, 20, 40
@@ -239,5 +240,3 @@ class TestMatrixCOO(unittest.TestCase):
             y = coo @ brainevent.EventArray(matrix)
             y2 = coo_matrix(matrix.astype(float), coo.data, row, col, [m, n])
             self.assertTrue(jnp.allclose(y, y2))
-
-

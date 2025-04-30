@@ -107,8 +107,6 @@ def test_T_property():
     assert np.array_equal(event_array.T, np.array([[1, 3], [2, 4]]))
 
 
-
-
 # Test __getitem__ method
 def test_getitem_method():
     value = np.array([1, 2, 3])
@@ -155,7 +153,6 @@ def test_abs_method():
     event_array = EventArray(value)
     abs_event_array = abs(event_array)
     assert np.array_equal(abs_event_array, np.array([1, 2, 3]))
-
 
 
 #
@@ -296,6 +293,7 @@ def test_truediv_method():
     other_value = np.array([1, 2, 3])
     result = event_array / other_value
     assert np.array_equal(result, np.array([4, 2.5, 2]))
+
 
 #
 # # Test __rtruediv__ method
