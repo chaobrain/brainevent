@@ -20,8 +20,7 @@ import json
 import pathlib
 import threading
 from contextlib import contextmanager
-from typing import Dict, Any, Optional, Union
-from typing import NamedTuple
+from typing import Dict, Any, Optional, Union, NamedTuple
 
 __all__ = [
     'load_config',

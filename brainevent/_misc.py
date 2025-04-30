@@ -291,18 +291,44 @@ def check_fixed_conn_num_shape(
     )
 
     if transpose:
-        # Operation: vector (n_pre) * Matrix (n_pre, n_post) -> out (n_post)
-        out_struct = jax.ShapeDtypeStruct((n_post,), weights.dtype)
-        assert vector.shape == (n_pre,), (
-            f'When transpose=True, vector shape should be ({n_pre},), '
-            f'got {vector.shape}'
-        )
+        if vector.ndim == 1:
+            # Operation: vector (n_pre) * Matrix (n_pre, n_post) -> out (n_post)
+            assert vector.shape == (n_pre,), (
+                f'When transpose=True, vector shape should be ({n_pre},), '
+                f'got {vector.shape}'
+            )
+            out_struct = jax.ShapeDtypeStruct((n_post,), weights.dtype)
+        else:
+            # Operation: Matrix (n_post, n_pre) * matrix (n_pre, k) -> out (n_post, k)
+
+            # If vector is not 1D, it should be a 2D matrix with shape (n_pre, 1)
+            assert vector.ndim == 2, (
+                f'When transpose=True, vector should be 1D or 2D, '
+                f'got {vector.ndim}D'
+            )
+            assert vector.shape[0] == n_pre, (
+                f'When transpose=True, matrix shape should be (xx, {n_pre}), '
+                f'got {vector.shape}'
+            )
+            out_struct = jax.ShapeDtypeStruct((n_post, vector.shape[1]), weights.dtype)
     else:
-        # Operation: Matrix (n_pre, n_post) * vector (n_post) -> out (n_pre)
-        out_struct = jax.ShapeDtypeStruct((n_pre,), weights.dtype)
-        assert vector.shape == (n_post,), (
-            f'When transpose=False, vector shape should be ({n_post},), '
-            f'got {vector.shape}'
-        )
+        if vector.ndim == 1:
+            # Operation: Matrix (n_pre, n_post) * vector (n_post) -> out (n_pre)
+            assert vector.shape == (n_post,), (
+                f'When transpose=False, vector shape should be ({n_post},), '
+                f'got {vector.shape}'
+            )
+            out_struct = jax.ShapeDtypeStruct((n_pre,), weights.dtype)
+        else:
+            # Operation: Matrix (n_pre, n_post) * matrix (n_post, k) -> out (n_pre, k)
+            assert vector.ndim == 2, (
+                f'When transpose=False, vector should be 1D or 2D, '
+                f'got {vector.ndim}D'
+            )
+            assert vector.shape[0] == n_post, (
+                f'When transpose=False, matrix shape should be (xx, ({n_post}), '
+                f'got {vector.shape}'
+            )
+            out_struct = jax.ShapeDtypeStruct((n_pre, vector.shape[1]), weights.dtype)
 
     return out_struct, weights, n_pre, n_post

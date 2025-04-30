@@ -25,7 +25,7 @@ from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
 from ._config import numba_environ
-from ._fixed_conn_num_float_impl import fixed_post_num_mv_p_call
+from ._fixed_conn_num_float_impl import fixed_num_mv_p_call
 from ._misc import generate_block_dim, check_fixed_conn_num_shape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator
@@ -587,7 +587,7 @@ def _event_fixed_post_num_mv_jvp_spikes(
     transpose,
     **kwargs
 ):
-    return fixed_post_num_mv_p_call(
+    return fixed_num_mv_p_call(
         weights,
         indices,
         spk_dot,
