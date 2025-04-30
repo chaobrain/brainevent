@@ -25,7 +25,7 @@ from ._fixed_conn_num import FixedPostNumConn, FixedPreNumConn
 from ._jitc_homo import JITCHomoR, JITCHomoC
 from ._jitc_normal import JITCNormalR, JITCNormalC
 from ._jitc_uniform import JITCUniformR, JITCUniformC
-from ._pallas_random import LFSR88, LFSR113, LFSR128
+from ._pallas_random import LFSR88RNG, LFSR113RNG, LFSR128RNG
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, set_numba_environ, numba_environ_context
 from ._xla_custom_op_pallas import PallasKernelGenerator
@@ -78,8 +78,8 @@ __all__ = [
 
     # 5. Pallas kernel
     'PallasKernelGenerator',
-    'LFSR88',
-    'LFSR113',
-    'LFSR128',
+    'LFSR88RNG',
+    'LFSR113RNG',
+    'LFSR128RNG',
 
 ]

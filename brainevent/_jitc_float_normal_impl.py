@@ -23,7 +23,7 @@ from jax import numpy as jnp
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
-from ._pallas_random import LFSR88
+from ._pallas_random import LFSR88RNG
 from ._jitc_util import _initialize_seed, _initialize_conn_length
 from ._misc import Config
 from ._typing import Kernel, Data, MatrixShape
@@ -497,7 +497,7 @@ def _jitc_normal_matrix_pallas_kernel_generator(
                     i = i + rng_.random_integers(1, clen0)
                     return i, rng_
 
-                rng = LFSR88(seed0 + i_row)
+                rng = LFSR88RNG(seed0 + i_row)
                 jax.lax.while_loop(
                     lambda data: data[0] < m,
                     body,
@@ -531,7 +531,7 @@ def _jitc_normal_matrix_pallas_kernel_generator(
                     i_col = i_col + rng_.random_integers(1, clen0)
                     return i_col, rng_
 
-                rng = LFSR88(seed0 + i_row)
+                rng = LFSR88RNG(seed0 + i_row)
                 jax.lax.while_loop(
                     lambda data: data[0] < n,
                     body,
@@ -566,7 +566,7 @@ def _jitc_normal_matrix_pallas_kernel_generator(
                     i_row = i_row + rng_.random_integers(0, clen0)
                     return i_row, rng_
 
-                rng = LFSR88(seed0 + i_col)
+                rng = LFSR88RNG(seed0 + i_col)
                 jax.lax.while_loop(
                     lambda data: data[0] < n,
                     body,
@@ -607,7 +607,7 @@ def _jitc_normal_matrix_pallas_kernel_generator(
                     i_row = i_row + rng_.random_integers(0, clen0)
                     return i_row, rng_
 
-                rng = LFSR88(seed0 + i_col)
+                rng = LFSR88RNG(seed0 + i_col)
                 jax.lax.while_loop(
                     lambda data: data[0] < m,
                     body,

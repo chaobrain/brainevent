@@ -65,7 +65,7 @@ Pallas Kernel Helper
    :toctree: generated/
    :template: classtemplate.rst
 
-    LFSR88
-    LFSR113
-    LFSR128
+    LFSR88RNG
+    LFSR113RNG
+    LFSR128RNG
 
