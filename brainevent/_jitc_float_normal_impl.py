@@ -311,7 +311,7 @@ def _jitc_normal_matrix_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0, i_row)
+                state = warp.rand_init(seed0 + i_row)
 
                 # Sample the first connected row using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -353,7 +353,7 @@ def _jitc_normal_matrix_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0, i_row)
+                state = warp.rand_init(seed0 + i_row)
 
                 # Sample the first connected column using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -397,7 +397,7 @@ def _jitc_normal_matrix_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0, i_col)
+                state = warp.rand_init(seed0 + i_col)
 
                 # Sample the first connected row using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -441,7 +441,7 @@ def _jitc_normal_matrix_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0, i_col)
+                state = warp.rand_init(seed0 + i_col)
 
                 # Sample the first connected row using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -762,7 +762,7 @@ def _jitc_mv_normal_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0, i_col)
+                state = warp.rand_init(seed0 + i_col)
 
                 # Sample the first connected row using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -806,7 +806,7 @@ def _jitc_mv_normal_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0, i_row)
+                state = warp.rand_init(seed0 + i_row)
 
                 # Sample the first connected column using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -852,7 +852,7 @@ def _jitc_mv_normal_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0, i_row)
+                state = warp.rand_init(seed0 + i_row)
 
                 # Sample the first connected column using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -897,7 +897,7 @@ def _jitc_mv_normal_gpu_kernel_generator(
 
                 # Initialize random state with base seed plus thread ID to ensure
                 # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0, i_col)
+                state = warp.rand_init(seed0 + i_col)
 
                 # Sample the first connected row using random skipping
                 # Start at a random position in [0, clen0) for variability in connection patterns
@@ -1347,7 +1347,7 @@ def _jitc_mm_normal_gpu_kernel_generator(
                 seed0 = seed[0]
 
                 i_m = warp.tid()
-                state = warp.rand_init(seed0, i_m)
+                state = warp.rand_init(seed0 + i_m)
 
                 out = warp.tile_zeros(TITLE_SIZE, dtype=w_loc_dtype)
                 i_k = warp.randi(state, 0, clen0)
@@ -1375,7 +1375,7 @@ def _jitc_mm_normal_gpu_kernel_generator(
                 seed0 = seed[0]
 
                 i_m = warp.tid()
-                state = warp.rand_init(seed0, i_m)
+                state = warp.rand_init(seed0 + i_m)
 
                 out = warp.tile_zeros(TITLE_SIZE, dtype=w_loc_dtype)
                 i_k = warp.randi(state, 0, clen0)
@@ -1404,7 +1404,7 @@ def _jitc_mm_normal_gpu_kernel_generator(
                 seed0 = seed[0]
 
                 i_k = warp.tid()
-                state = warp.rand_init(seed0, i_k)
+                state = warp.rand_init(seed0 + i_k)
 
                 out = warp.tile_load(B[i_k], TITLE_SIZE)
                 i_m = warp.randi(state, 0, clen0)
@@ -1432,7 +1432,7 @@ def _jitc_mm_normal_gpu_kernel_generator(
                 seed0 = seed[0]
 
                 i_k = warp.tid()
-                state = warp.rand_init(seed0, i_k)
+                state = warp.rand_init(seed0 + i_k)
 
                 out = warp.tile_load(B[i_k], TITLE_SIZE)
                 i_m = warp.randi(state, 0, clen0)

@@ -296,7 +296,7 @@ def _jitc_mv_uniform_gpu_kernel_generator(
                     seed0 = seed[0]  # Base random seed value
                     i_col = warp.tid()
                     r = float(0.0)
-                    state = warp.rand_init(seed0, i_col)
+                    state = warp.rand_init(seed0 + i_col)
                     i_row = warp.randi(state, 0, clen0)
                     while i_row < num_row:
                         w = warp.randf(state) * w_diff + w_low0
@@ -322,7 +322,7 @@ def _jitc_mv_uniform_gpu_kernel_generator(
                     seed0 = seed[0]  # Base random seed value
                     i_col = warp.tid()
                     r = float(0.0)
-                    state = warp.rand_init(seed0, i_col)
+                    state = warp.rand_init(seed0 + i_col)
                     i_row = warp.randi(state, 0, clen0)
                     while i_row < num_row:
                         w = warp.randf(state) * w_diff + w_low0
@@ -350,7 +350,7 @@ def _jitc_mv_uniform_gpu_kernel_generator(
                     seed0 = seed[0]  # Base random seed value
                     i_row = warp.tid()
                     r = float(0.0)
-                    state = warp.rand_init(seed0, i_row)
+                    state = warp.rand_init(seed0 + i_row)
                     i_col = warp.randi(state, 0, clen0)
                     while i_col < num_col:
                         w = (warp.randf(state) * w_diff + w_low0)
@@ -376,7 +376,7 @@ def _jitc_mv_uniform_gpu_kernel_generator(
                     seed0 = seed[0]  # Base random seed value
                     i_row = warp.tid()
                     r = float(0.0)
-                    state = warp.rand_init(seed0, i_row)
+                    state = warp.rand_init(seed0 + i_row)
                     i_col = warp.randi(state, 0, clen0)
                     while i_col < num_col:
                         w = (warp.randf(state) * w_diff + w_low0)
@@ -404,7 +404,7 @@ def _jitc_mv_uniform_gpu_kernel_generator(
                     seed0 = seed[0]  # Base random seed value
                     i_row = warp.tid()
                     v = vector[i_row]
-                    state = warp.rand_init(seed0, i_row)
+                    state = warp.rand_init(seed0 + i_row)
                     i_col = warp.randi(state, 0, clen0)
                     while i_col < num_col:
                         w = warp.randf(state) * w_diff + w_low0
@@ -429,7 +429,7 @@ def _jitc_mv_uniform_gpu_kernel_generator(
                     seed0 = seed[0]  # Base random seed value
                     i_row = warp.tid()
                     v = vector[i_row] != 0.
-                    state = warp.rand_init(seed0, i_row)
+                    state = warp.rand_init(seed0 + i_row)
                     i_col = warp.randi(state, 0, clen0)
                     while i_col < num_col:
                         w = warp.randf(state) * w_diff + w_low0
@@ -456,7 +456,7 @@ def _jitc_mv_uniform_gpu_kernel_generator(
                     seed0 = seed[0]  # Base random seed value
                     i_col = warp.tid()
                     v = vector[i_col]
-                    state = warp.rand_init(seed0, i_col)
+                    state = warp.rand_init(seed0 + i_col)
                     i_row = warp.randi(state, 0, clen0)
                     while i_row < num_row:
                         w = warp.randf(state) * w_diff + w_low0
@@ -481,7 +481,7 @@ def _jitc_mv_uniform_gpu_kernel_generator(
                     seed0 = seed[0]  # Base random seed value
                     i_col = warp.tid()
                     v = vector[i_col] != 0.
-                    state = warp.rand_init(seed0, i_col)
+                    state = warp.rand_init(seed0 + i_col)
                     i_row = warp.randi(state, 0, clen0)
                     while i_row < num_row:
                         w = warp.randf(state) * w_diff + w_low0
@@ -952,7 +952,7 @@ def _jitc_mm_uniform_gpu_kernel_generator(
                 seed0 = seed[0]
 
                 i_m = warp.tid()
-                state = warp.rand_init(seed0, i_m)
+                state = warp.rand_init(seed0 + i_m)
 
                 out = warp.tile_zeros(TITLE_SIZE, dtype=w_low_dtype)
                 i_k = warp.randi(state, 0, clen0)
@@ -981,7 +981,7 @@ def _jitc_mm_uniform_gpu_kernel_generator(
                 seed0 = seed[0]
 
                 i_m = warp.tid()
-                state = warp.rand_init(seed0, i_m)
+                state = warp.rand_init(seed0 + i_m)
 
                 out = warp.tile_zeros(TITLE_SIZE, dtype=w_low_dtype)
                 i_k = warp.randi(state, 0, clen0)
@@ -1011,7 +1011,7 @@ def _jitc_mm_uniform_gpu_kernel_generator(
                 seed0 = seed[0]
 
                 i_k = warp.tid()
-                state = warp.rand_init(seed0, i_k)
+                state = warp.rand_init(seed0 + i_k)
 
                 out = warp.tile_load(B[i_k], TITLE_SIZE)
                 i_m = warp.randi(state, 0, clen0)
@@ -1040,7 +1040,7 @@ def _jitc_mm_uniform_gpu_kernel_generator(
                 seed0 = seed[0]
 
                 i_k = warp.tid()
-                state = warp.rand_init(seed0, i_k)
+                state = warp.rand_init(seed0 + i_k)
 
                 out = warp.tile_load(B[i_k], TITLE_SIZE)
                 i_m = warp.randi(state, 0, clen0)
