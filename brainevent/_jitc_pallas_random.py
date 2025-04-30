@@ -206,11 +206,53 @@ class LFSRBase(abc.ABC):
         val = self.randint()
         return val % (high + 1 - low) + low
 
+    def tree_flatten(self):
+        """
+        Flatten the CSR matrix for JAX's tree utilities.
+
+        This method is used by JAX's tree utilities to flatten the CSR matrix
+        into a form suitable for transformation and reconstruction.
+
+        Returns
+        --------
+        tuple
+            A tuple containing two elements:
+            - A tuple with the CSR matrix's data as the only element.
+            - A tuple with the CSR matrix's indices, indptr, and shape.
+        """
+        return (self.key,), ()
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        """
+        Reconstruct a CSR matrix from flattened data.
+
+        This class method is used by JAX's tree utilities to reconstruct
+        a CSR matrix from its flattened representation.
+
+        Parameters
+        -----------
+        aux_data : tuple
+            A tuple containing the CSR matrix's indices, indptr, and shape.
+        children : tuple
+            A tuple containing the CSR matrix's data as its only element.
+
+        Returns
+        --------
+        CSR
+            A new CSR matrix instance reconstructed from the flattened data.
+        """
+        obj = object.__new__(cls)
+        key, = children
+        obj.key = key
+        return obj
+
 
 #############################################
 # Random Number Generator: LFSR88 algorithm #
 #############################################
 
+@jax.tree_util.register_pytree_node_class
 class LFSR88(LFSRBase):
     """Combined LFSR random number generator by L'Ecuyer (LFSR88).
 
@@ -357,6 +399,7 @@ class LFSR88(LFSRBase):
 # Random Number Generator: LFSR113 algorithm #
 ##############################################
 
+@jax.tree_util.register_pytree_node_class
 class LFSR113(LFSRBase):
     """Combined LFSR random number generator by L'Ecuyer (LFSR113).
 
@@ -496,6 +539,11 @@ class LFSR113(LFSRBase):
         return z2
 
 
+##############################################
+# Random Number Generator: LFSR128 algorithm #
+##############################################
+
+@jax.tree_util.register_pytree_node_class
 class LFSR128(LFSRBase):
     """Combined LFSR random number generator (LFSR128).
 
@@ -505,7 +553,7 @@ class LFSR128(LFSRBase):
     with a very long period (approximately 2^128).
 
     Attributes:
-        _key (PallasRandomKey): The current state of the random number generator,
+        key (PallasRandomKey): The current state of the random number generator,
             represented as an array of 4 unsigned 32-bit integers.
 
     Example:
@@ -610,7 +658,8 @@ class LFSR128(LFSRBase):
         return jnp.asarray(key[0] ^ key[1] ^ key[2] ^ key[3], dtype=jnp.uint32)
 
     def randn(self, epsilon: float = 1e-10) -> jax.Array:
-        """Generate a random number from the standard normal distribution N(0, 1).
+        """
+        Generate a random number from the standard normal distribution N(0, 1).
 
         Uses the Box-Muller transform to convert uniform random numbers to normally
         distributed random numbers.

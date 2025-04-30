@@ -22,7 +22,9 @@ import numpy as np
 from jax import numpy as jnp
 from jax.interpreters import ad
 
+from ._compatible_import import pallas as pl
 from ._jitc_util import _initialize_seed, _initialize_conn_length
+from ._jitc_pallas_random import LFSR88
 from ._typing import Kernel, Data, MatrixShape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
@@ -924,6 +926,157 @@ def _jitc_homo_matrix_gpu_kernel_generator(
                     i_row += warp.randi(state, 1, clen0)
 
     return warp.kernel(kernel)
+
+
+def _jitc_homo_matrix_pallas_kernel_generator(
+    transpose: bool = False,
+    corder: bool = True,
+    **kwargs
+) -> Kernel:
+    if corder:
+        if transpose:
+            # JIT matrix.T
+            #
+            # - JIT matrix shape = [m, n]
+            #
+
+            def _raw_kernel(
+                weight_ref,
+                clen_ref,
+                seed_ref,
+                _,
+                post_ref,
+            ):
+                m = post_ref.shape[1]
+                weight0 = weight_ref[0]  # Homogeneous weight for all connections
+                clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
+                seed0 = seed_ref[0]  # Base random seed value
+                i_row = pl.program_id(0)
+
+                def body(data):
+                    i, rng_ = data
+                    post_ref[i_row, i] = weight0
+                    i = i + rng_.random_integers(1, clen0)
+                    return i, rng_
+
+                rng = LFSR88(seed0 + i_row)
+                jax.lax.while_loop(
+                    lambda data: data[0] < m,
+                    body,
+                    (rng.random_integers(0, clen0), rng)
+                )
+
+        else:
+            # JIT matrix
+            #
+            # - JIT matrix shape = [m, n]
+            #
+
+            def _raw_kernel(
+                weight_ref,
+                clen_ref,
+                seed_ref,
+                _,
+                post_ref,
+            ):
+                n = post_ref.shape[1]  # Get number of columns in the output matrix
+                weight0 = weight_ref[0]  # Homogeneous weight for all connections
+                clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
+                seed0 = seed_ref[0]  # Base random seed value
+                i_row = pl.program_id(0)
+
+                def body(data):
+                    i_col, rng_ = data
+                    post_ref[i_row, i_col] = weight0
+                    i_col = i_col + rng_.random_integers(1, clen0)
+                    return i_col, rng_
+
+                rng = LFSR88(seed0 + i_row)
+                jax.lax.while_loop(
+                    lambda data: data[0] < n,
+                    body,
+                    (rng.random_integers(0, clen0), rng)
+                )
+
+    else:
+        if transpose:
+            # JIT matrix.T
+            #
+            # - JIT matrix shape = [m, n]
+            #
+
+            def _raw_kernel(
+                weight_ref,
+                clen_ref,
+                seed_ref,
+                _,
+                post_ref,
+            ):
+                n = post_ref.shape[0]
+                weight0 = weight_ref[0]  # Homogeneous weight for all connections
+                clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
+                seed0 = seed_ref[0]  # Base random seed value
+                i_col = pl.program_id(0)
+
+                def body(data):
+                    i_row, rng_ = data
+                    post_ref[i_row, i_col] = weight0
+                    i_row += rng_.random_integers(0, clen0)
+                    return i_row, rng_
+
+                rng = LFSR88(seed0 + i_col)
+                jax.lax.while_loop(
+                    lambda data: data[0] < n,
+                    body,
+                    (rng.random_integers(0, clen0), rng)
+                )
+
+                # rng = LFSR88(seed0 + i_col)
+                # i_row = rng.random_integers(0, clen0)
+                # while i_row < n:
+                #     post_ref[i_row, i_col] = weight0
+                #     i_row += rng.random_integers(0, clen0)
+
+
+        else:
+            # JIT matrix
+            #
+            # - JIT matrix shape = [m, n]
+            #
+
+            def _raw_kernel(
+                weight_ref,
+                clen_ref,
+                seed_ref,
+                _,
+                post_ref,
+            ):
+                m = post_ref.shape[0]
+                weight0 = weight_ref[0]  # Homogeneous weight for all connections
+                clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
+                seed0 = seed_ref[0]  # Base random seed value
+                i_col = pl.program_id(0)
+
+                def body(data):
+                    i_row, rng_ = data
+                    post_ref[i_row, i_col] = weight0
+                    i_row += rng_.random_integers(0, clen0)
+                    return i_row, rng_
+
+                rng = LFSR88(seed0 + i_col)
+                jax.lax.while_loop(
+                    lambda data: data[0] < m,
+                    body,
+                    (rng.random_integers(0, clen0), rng)
+                )
+
+                # rng = LFSR88(seed0 + i_col)
+                # i_row = rng.random_integers(0, clen0)
+                # while i_row < m:
+                #     post_ref[i_row, i_col] = weight0
+                #     i_row += rng.random_integers(0, clen0)
+
+    return _raw_kernel
 
 
 def _jitc_homo_matrix_batching(
