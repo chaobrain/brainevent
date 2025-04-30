@@ -19,12 +19,14 @@ import brainunit as u
 import jax
 import jax.numpy as jnp
 from jax.interpreters import ad
+
 from ._compatible_import import pallas as pl
+from ._config import numba_environ
 from ._event_matrix_impl import matrix_event_mm, event_matrix_mm
 from ._misc import cdiv
 from ._typing import Kernel
 from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_numba import numba_environ, NumbaKernelGenerator
+from ._xla_custom_op_numba import NumbaKernelGenerator
 from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type
 
@@ -128,7 +130,7 @@ def _matrix_event_mv_warp_kernel_generator(
             for j in range(TILE_SIZE):
                 if spikes[j] != 0.:
                     data = warp.tile_load(weight_ref, shape=(block_dim, 1), offset=(i_col * block_dim, j))
-                    temp += warp.tile_squeeze(data)   # need warp>=1.8.0
+                    temp += warp.tile_squeeze(data)  # need warp>=1.8.0
             warp.tile_store(out_ref, temp, offset=(i_col * block_dim,))
 
     else:
@@ -318,7 +320,6 @@ def _event_matrix_mv_warp_kernel_generator(
     return warp.kernel(kernel)
 
 
-
 def _event_matrix_mv_pallas_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     spk_info: jax.ShapeDtypeStruct,
@@ -363,8 +364,6 @@ def _event_matrix_mv_pallas_kernel_generator(
             input_output_aliases={2: 0},
         )
         return [fn(spikes, indices, out) * weight]
-
-
 
     if spk_info.dtype == jnp.bool_:
         def kernel(

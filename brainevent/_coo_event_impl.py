@@ -23,11 +23,12 @@ import jax
 import jax.numpy as jnp
 from jax.interpreters import ad
 
+from ._config import numba_environ
 from ._coo_float_impl import _coo_matvec, _coo_matmat
-from ._xla_custom_op_util import general_batching_rule
 from ._typing import Kernel, Data, Row, Col, MatrixShape
 from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
+from ._xla_custom_op_numba import NumbaKernelGenerator
+from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 
 

@@ -243,4 +243,3 @@ def register_pallas_tpu_translation(
     # Register the lowered MLIR function (`lower`) as the translation rule for
     # the given `primitive` specifically when targeting the 'tpu' platform.
     mlir.register_lowering(primitive, lower, platform='tpu')
-

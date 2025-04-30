@@ -22,11 +22,12 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
+from ._config import numba_environ
 from ._jitc_float_homo_impl import float_jitc_mv_homo_p_call, float_jitc_mm_homo_p_call
 from ._jitc_util import _initialize_seed, _initialize_conn_length
 from ._typing import Kernel, Data, MatrixShape
 from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
+from ._xla_custom_op_numba import NumbaKernelGenerator
 from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 

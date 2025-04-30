@@ -24,10 +24,11 @@ import jax.numpy as jnp
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
+from ._config import numba_environ
 from ._fixed_conn_num_float_impl import fixed_post_num_mv_p_call
 from ._misc import generate_block_dim, check_fixed_conn_num_shape
 from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_numba import numba_environ, NumbaKernelGenerator
+from ._xla_custom_op_numba import NumbaKernelGenerator
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_warp import dtype_to_warp_type
 

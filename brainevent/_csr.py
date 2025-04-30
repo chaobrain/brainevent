@@ -505,7 +505,6 @@ class CSR(u.sparse.SparseMatrix):
         pass
 
 
-
 @jax.tree_util.register_pytree_node_class
 class CSC(u.sparse.SparseMatrix):
     """

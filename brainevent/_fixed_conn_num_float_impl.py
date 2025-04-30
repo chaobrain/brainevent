@@ -24,9 +24,10 @@ import numpy as np
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
+from ._config import numba_environ
 from ._misc import generate_block_dim, check_fixed_conn_num_shape
 from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
+from ._xla_custom_op_numba import NumbaKernelGenerator
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_warp import dtype_to_warp_type
 

@@ -22,10 +22,11 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
+from ._config import numba_environ
 from ._csr_float_impl import _csr_matvec, _csr_matmat
 from ._misc import _csr_to_coo
 from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_numba import NumbaKernelGenerator, numba_environ
+from ._xla_custom_op_numba import NumbaKernelGenerator
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 
 
