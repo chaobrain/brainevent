@@ -285,7 +285,7 @@ def _jitc_mv_homo_gpu_kernel_generator(
                 seed0 = seed[0]  # Base random seed value
                 i_col = warp.tid()
                 r = float(0.0)
-                state = warp.rand_init(seed0, i_col)
+                state = warp.rand_init(seed0 + i_col)
                 i_row = warp.randi(state, 0, clen0)
                 while i_row < num_row:
                     if vector[i_row]:
@@ -308,7 +308,7 @@ def _jitc_mv_homo_gpu_kernel_generator(
                 seed0 = seed[0]  # Base random seed value
                 i_col = warp.tid()
                 r = float(0.0)
-                state = warp.rand_init(seed0, i_col)
+                state = warp.rand_init(seed0 + i_col)
                 i_row = warp.randi(state, 0, clen0)
                 while i_row < num_row:
                     if vector[i_row] != 0.:
@@ -332,7 +332,7 @@ def _jitc_mv_homo_gpu_kernel_generator(
                 seed0 = seed[0]  # Base random seed value
                 i_row = warp.tid()
                 if vector[i_row]:
-                    state = warp.rand_init(seed0, i_row)
+                    state = warp.rand_init(seed0 + i_row)
                     i_col = warp.randi(state, 0, clen0)
                     while i_col < num_col:
                         posts[i_col] += weight0
@@ -354,7 +354,7 @@ def _jitc_mv_homo_gpu_kernel_generator(
                 seed0 = seed[0]  # Base random seed value
                 i_row = warp.tid()
                 if vector[i_row] != 0.:
-                    state = warp.rand_init(seed0, i_row)
+                    state = warp.rand_init(seed0 + i_row)
                     i_col = warp.randi(state, 0, clen0)
                     while i_col < num_col:
                         posts[i_col] += weight0
@@ -879,7 +879,7 @@ def _jitc_mm_homo_gpu_kernel_generator(
                     B = warp.array(B, dtype=weight_dtype)
 
                     i_m = warp.tid()
-                    state = warp.rand_init(seed0, i_m)
+                    state = warp.rand_init(seed0 + i_m)
 
                     out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
                     i_k = warp.randi(state, 0, clen0)
@@ -904,7 +904,7 @@ def _jitc_mm_homo_gpu_kernel_generator(
                     seed0 = seed[0]
 
                     i_m = warp.tid()
-                    state = warp.rand_init(seed0, i_m)
+                    state = warp.rand_init(seed0 + i_m)
 
                     out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
                     i_k = warp.randi(state, 0, clen0)
@@ -930,7 +930,7 @@ def _jitc_mm_homo_gpu_kernel_generator(
                     seed0 = seed[0]
 
                     i_m = warp.tid()
-                    state = warp.rand_init(seed0, i_m)
+                    state = warp.rand_init(seed0 + i_m)
 
                     out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
                     i_k = warp.randi(state, 0, clen0)
@@ -955,7 +955,7 @@ def _jitc_mm_homo_gpu_kernel_generator(
                     seed0 = seed[0]
 
                     i_m = warp.tid()
-                    state = warp.rand_init(seed0, i_m)
+                    state = warp.rand_init(seed0 + i_m)
 
                     out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
                     i_k = warp.randi(state, 0, clen0)
@@ -982,7 +982,7 @@ def _jitc_mm_homo_gpu_kernel_generator(
                     seed0 = seed[0]
 
                     i_k = warp.tid()
-                    state = warp.rand_init(seed0, i_k)
+                    state = warp.rand_init(seed0 + i_k)
 
                     # out = warp.where(warp.tile_load(B[i_k], TITLE_SIZE), weight0, 0.)
                     # out = warp.tile_load(B[i_k], TITLE_SIZE) * weight0
@@ -1007,7 +1007,7 @@ def _jitc_mm_homo_gpu_kernel_generator(
                     seed0 = seed[0]
 
                     i_k = warp.tid()
-                    state = warp.rand_init(seed0, i_k)
+                    state = warp.rand_init(seed0 + i_k)
 
                     out = warp.tile_load(B[i_k], TITLE_SIZE) * weight0
                     i_m = warp.randi(state, 0, clen0)
@@ -1033,7 +1033,7 @@ def _jitc_mm_homo_gpu_kernel_generator(
                     seed0 = seed[0]
 
                     i_k = warp.tid()
-                    state = warp.rand_init(seed0, i_k)
+                    state = warp.rand_init(seed0 + i_k)
 
                     # out = warp.where(warp.tile_load(B[i_k], TITLE_SIZE), weight0, 0.)
                     out = warp.tile_map(where, warp.tile_load(B[i_k], TITLE_SIZE)) * weight0
@@ -1057,7 +1057,7 @@ def _jitc_mm_homo_gpu_kernel_generator(
                     seed0 = seed[0]
 
                     i_k = warp.tid()
-                    state = warp.rand_init(seed0, i_k)
+                    state = warp.rand_init(seed0 + i_k)
 
                     out = warp.tile_load(B[i_k], TITLE_SIZE) * weight0
                     i_m = warp.randi(state, 0, clen0)
