@@ -941,7 +941,7 @@ def _csrmm_pallas_kernel1(
     def kernel(data, indices, indptr, B, placeholder):
         fn = pl.pallas_call(
             mm,
-            out_shape=jax.ShapeDtypeStruct([m, n], weight_info.dtype),
+            out_shape=jax.ShapeDtypeStruct([k if transpose else m, n], weight_info.dtype),
             grid=(k if transpose else m, pl.cdiv(n, block_dim_n)),
             input_output_aliases={4: 0},
         )

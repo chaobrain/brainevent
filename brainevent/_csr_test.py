@@ -105,6 +105,7 @@ class Test_CSC_CSR_Conversion:
         out2 = (matrix.T @ csc).T
         assert jnp.allclose(out1, out2)
 
+    # TODO: GPU bug
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_mat_csr(self, k, shape):
@@ -116,7 +117,6 @@ class Test_CSC_CSR_Conversion:
 
         out1 = matrix @ csr
         out2 = (csc @ matrix.T).T
-        print(out1 - out2)
         assert jnp.allclose(out1, out2, atol=1e-4, rtol=1e-4)
 
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
@@ -156,6 +156,7 @@ class Test_CSC_CSR_Conversion:
         out2 = (matrix.T @ csc).T
         assert jnp.allclose(out1, out2)
 
+    # TODO: GPU test error
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_mat_csr_event(self, k, shape):
@@ -167,7 +168,6 @@ class Test_CSC_CSR_Conversion:
 
         out1 = matrix @ csr
         out2 = (csc @ matrix.T).T
-        print(out1 - out2)
         assert jnp.allclose(out1, out2, atol=1e-4, rtol=1e-4)
 
 
@@ -188,6 +188,7 @@ class Test_CSR:
         dense = csr.todense()
         assert jnp.allclose(matrix, dense)
 
+    # TODO: GPU test error
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('transpose', [True, False])
