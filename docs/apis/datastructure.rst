@@ -15,8 +15,6 @@ Compressed Sparse Row matrix
 
    CSR
    CSC
-   CSR_LB
-   CSC_LB
 
 
 

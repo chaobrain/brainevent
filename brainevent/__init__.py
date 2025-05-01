@@ -20,7 +20,6 @@ from ._block_ell import BlockELL
 from ._config import set_numba_environ, numba_environ_context
 from ._coo import COO
 from ._csr import CSR, CSC
-from ._csrlb import CSR_LB, CSC_LB
 from ._event import EventArray
 from ._fixed_conn_num import FixedPostNumConn, FixedPreNumConn
 from ._jitc_homo import JITCHomoR, JITCHomoC
@@ -42,8 +41,6 @@ __all__ = [
     'COO',
     'CSR',
     'CSC',
-    'CSR_LB',
-    'CSC_LB',
 
     # Just-In-Time Connectivity matrix
     'JITCHomoR',  # row-oriented JITC matrix with homogeneous weight
