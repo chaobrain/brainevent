@@ -120,7 +120,6 @@ def _csrmv_numba_kernel_generator(
                     for j in range(indptr[i], indptr[i + 1]):
                         posts[indices[j]] += wsp
 
-
         else:
             def mv(weights, indices, indptr, v, _, posts):
                 w = weights[0]
@@ -527,11 +526,21 @@ def csrmv_p_call(
     weights,
     indices,
     indptr,
-    v,
+    vector,
     *,
     shape: Sequence[int],
     transpose: bool,
 ):
+    assert indices.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indices must be int32 or int64."
+    assert indptr.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indptr must be int32 or int64."
+    assert indptr.ndim == 1, "Indptr must be 1D."
+    assert indices.ndim == 1, "Indices must be 1D."
+    assert indptr.dtype == indices.dtype, "Indices and indptr must have the same dtype."
+    if transpose:
+        assert shape[0] == vector.shape[0], "Shape mismatch for transpose operation."
+    else:
+        assert shape[1] == vector.shape[0], "Shape mismatch for non-transpose operation."
+
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
 
@@ -544,7 +553,7 @@ def csrmv_p_call(
         weights,
         indices,
         indptr,
-        v,
+        vector,
         jnp.zeros(out_info.shape, out_info.dtype),
         outs=[out_info],
         shape=shape,
@@ -552,7 +561,7 @@ def csrmv_p_call(
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
-        vector_info=jax.ShapeDtypeStruct(v.shape, v.dtype),
+        vector_info=jax.ShapeDtypeStruct(vector.shape, vector.dtype),
     )
 
 
@@ -1225,6 +1234,16 @@ def csrmm_p_call(
     shape: Sequence[int],
     transpose: bool,
 ):
+    assert indices.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indices must be int32 or int64."
+    assert indptr.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indptr must be int32 or int64."
+    assert indptr.ndim == 1, "Indptr must be 1D."
+    assert indices.ndim == 1, "Indices must be 1D."
+    assert indptr.dtype == indices.dtype, "Indices and indptr must have the same dtype."
+    if transpose:
+        assert shape[1] == B.shape[0], "Shape mismatch for transpose operation."
+    else:
+        assert shape[0] == B.shape[0], "Shape mismatch for non-transpose operation."
+
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
 

@@ -619,7 +619,7 @@ def event_csrmv_p_call(
     weights,
     indices,
     indptr,
-    v,
+    vector,
     *,
     shape: MatrixShape,
     transpose: bool,
@@ -635,7 +635,7 @@ def event_csrmv_p_call(
         weights (jax.Array): Non-zero elements of the CSR sparse matrix.
         indices (jax.Array): Column indices of non-zero elements in the CSR sparse matrix.
         indptr (jax.Array): Index pointers of the CSR sparse matrix, indicating the start of each row.
-        v (jax.Array): The dense vector to be multiplied with the sparse matrix.
+        vector (jax.Array): The dense vector to be multiplied with the sparse matrix.
         shape (Sequence[int]): A sequence of length 2, representing the shape of the sparse matrix.
         transpose (bool): Whether to transpose the sparse matrix before multiplication.
         float_as_event (bool): Whether to treat floating-point numbers as events.
@@ -643,6 +643,16 @@ def event_csrmv_p_call(
     Returns:
         jax.Array: The result of the matrix-vector multiplication.
     """
+    assert indices.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indices must be int32 or int64."
+    assert indptr.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indptr must be int32 or int64."
+    assert indptr.ndim == 1, "Indptr must be 1D."
+    assert indices.ndim == 1, "Indices must be 1D."
+    assert indptr.dtype == indices.dtype, "Indices and indptr must have the same dtype."
+    if transpose:
+        assert shape[0] == vector.shape[0], "Shape mismatch for transpose operation."
+    else:
+        assert shape[1] == vector.shape[0], "Shape mismatch for non-transpose operation."
+
     # Check if weights is a scalar. If so, convert it to a one-dimensional array.
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
@@ -660,7 +670,7 @@ def event_csrmv_p_call(
         weights,
         indices,
         indptr,
-        v,
+        vector,
         # Initialize a zero vector with the output shape and data type.
         jnp.zeros(out_info.shape, out_info.dtype),
         outs=[out_info],
@@ -674,7 +684,7 @@ def event_csrmv_p_call(
         # Provide shape and data type information for weights.
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         # Provide shape and data type information for v.
-        vector_info=jax.ShapeDtypeStruct(v.shape, v.dtype),
+        vector_info=jax.ShapeDtypeStruct(vector.shape, vector.dtype),
     )
 
 
@@ -1261,6 +1271,16 @@ def event_csrmm_p_call(
     Returns:
         jax.Array: The result of the matrix-matrix multiplication.
     """
+    assert indices.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indices must be int32 or int64."
+    assert indptr.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indptr must be int32 or int64."
+    assert indptr.ndim == 1, "Indptr must be 1D."
+    assert indices.ndim == 1, "Indices must be 1D."
+    assert indptr.dtype == indices.dtype, "Indices and indptr must have the same dtype."
+    if transpose:
+        assert shape[1] == B.shape[0], "Shape mismatch for transpose operation."
+    else:
+        assert shape[0] == B.shape[0], "Shape mismatch for non-transpose operation."
+
     # Check if weights is a scalar. If so, convert it to a one-dimensional array.
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
