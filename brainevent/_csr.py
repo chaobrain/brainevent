@@ -24,7 +24,7 @@ import numpy as np
 
 from ._compatible_import import JAXSparse
 from ._csr_event_impl import _event_csr_matvec, _event_csr_matmat
-from ._csr_float_impl import _csr_matvec, _csr_matmat
+from ._csr_float_impl import csr_matvec, csr_matmat
 from ._event import EventArray
 from ._misc import _csr_to_coo, _csr_todense
 from ._typing import Data, Indptr, Index, MatrixShape
@@ -367,7 +367,7 @@ class CSR(u.sparse.SparseMatrix):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
-                return _csr_matvec(
+                return csr_matvec(
                     data,
                     self.indices,
                     self.indptr,
@@ -376,7 +376,7 @@ class CSR(u.sparse.SparseMatrix):
                     transpose=False
                 )
             elif other.ndim == 2:
-                return _csr_matmat(
+                return csr_matmat(
                     data,
                     self.indices,
                     self.indptr,
@@ -422,7 +422,7 @@ class CSR(u.sparse.SparseMatrix):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
-                return _csr_matvec(
+                return csr_matvec(
                     data,
                     self.indices,
                     self.indptr,
@@ -432,7 +432,7 @@ class CSR(u.sparse.SparseMatrix):
                 )
             elif other.ndim == 2:
                 other = other.T
-                r = _csr_matmat(
+                r = csr_matmat(
                     data,
                     self.indices,
                     self.indptr,
@@ -859,7 +859,7 @@ class CSC(u.sparse.SparseMatrix):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(data, other)
             if other.ndim == 1:
-                return _csr_matvec(
+                return csr_matvec(
                     data,
                     self.indices,
                     self.indptr,
@@ -868,7 +868,7 @@ class CSC(u.sparse.SparseMatrix):
                     transpose=True
                 )
             elif other.ndim == 2:
-                return _csr_matmat(
+                return csr_matmat(
                     data,
                     self.indices,
                     self.indptr,
@@ -912,7 +912,7 @@ class CSC(u.sparse.SparseMatrix):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(data, other)
             if other.ndim == 1:
-                return _csr_matvec(
+                return csr_matvec(
                     data,
                     self.indices,
                     self.indptr,
@@ -922,7 +922,7 @@ class CSC(u.sparse.SparseMatrix):
                 )
             elif other.ndim == 2:
                 other = other.T
-                r = _csr_matmat(
+                r = csr_matmat(
                     data,
                     self.indices,
                     self.indptr, other,

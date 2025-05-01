@@ -23,7 +23,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from ._config import numba_environ
-from ._csr_float_impl import _csr_matvec, _csr_matmat
+from ._csr_float_impl import csr_matvec, csr_matmat
 from ._misc import _csr_to_coo
 from ._typing import Data, Indptr, Index, MatrixShape
 from ._xla_custom_op import XLACustomKernel
@@ -495,7 +495,7 @@ def event_csrmv_jvp_v(
     **kwargs
 ):
     return [
-        _csr_matvec(
+        csr_matvec(
             data,
             indices,
             indptr,
@@ -554,7 +554,7 @@ def event_csrmv_transpose_rule(
         if type(ct) is ad.Zero:
             ct_events = ad.Zero(events)
         else:
-            ct_events = _csr_matvec(
+            ct_events = csr_matvec(
                 data,
                 indices,
                 indptr,
@@ -1110,7 +1110,7 @@ def csrmm_jvp_left(
     **kwargs
 ):
     return [
-        _csr_matmat(
+        csr_matmat(
             data_dot,
             indices,
             indptr,
@@ -1134,7 +1134,7 @@ def csrmm_jvp_right(
     **kwargs
 ):
     return [
-        _csr_matmat(
+        csr_matmat(
             data,
             indices,
             indptr,
@@ -1162,7 +1162,7 @@ def csrmm_transpose_rule(
     assert not ad.is_undefined_primal(indptr)
 
     if ad.is_undefined_primal(B):
-        dB = _csr_matmat(data, indices, indptr, ct, shape=shape, transpose=not transpose)
+        dB = csr_matmat(data, indices, indptr, ct, shape=shape, transpose=not transpose)
         return data, indices, indptr, dB, _
     else:
         B = jnp.asarray(B)
