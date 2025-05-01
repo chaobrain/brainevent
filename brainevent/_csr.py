@@ -35,8 +35,146 @@ __all__ = [
 ]
 
 
+class BaseCLS(u.sparse.SparseMatrix):
+    data: Data
+    indices: Index
+    indptr: Indptr
+    shape: MatrixShape
+    nse = property(lambda self: self.indices.size)
+    dtype = property(lambda self: self.data.dtype)
+
+    def __init__(
+        self,
+        args: Tuple[Data, Index, Indptr],
+        *,
+        shape: MatrixShape
+    ):
+        """
+        Initialize a :class:`CSC` / :class:`CSR` matrix.
+
+        This constructor creates a :class:`CSC` / :class:`CSR` matrix from the given arguments and shape.
+
+        Parameters
+        ----------
+        args : Sequence[Union[jax.Array, np.ndarray, u.Quantity]]
+            A sequence of three arrays representing the CSC matrix:
+            - data: Contains the non-zero values of the matrix.
+            - indices: Contains the row indices for each non-zero element.
+            - indptr: Contains the column pointers indicating where each column starts in the data and indices arrays.
+
+        shape : Tuple[int, int]
+            The shape of the matrix as a tuple of (num_rows, num_columns).
+        """
+        # Convert each element in args to a jax array using u.math.asarray
+        self.data, self.indices, self.indptr = map(u.math.asarray, args)
+
+        # Call the constructor of the superclass to initialize the object with the given args and shape
+        super().__init__(args, shape=shape)
+
+    def tree_flatten(self):
+        """
+        Flatten the CSC matrix for JAX's tree utilities.
+
+        This method is used by JAX's tree utilities to flatten the CSC matrix
+        into a form suitable for transformation and reconstruction.
+
+        Returns
+        --------
+        tuple
+            A tuple containing two elements:
+            - A tuple with the CSC matrix's data as the only element.
+            - A tuple with the CSC matrix's indices, indptr, and shape.
+        """
+        return (self.data,), (self.indices, self.indptr, self.shape)
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        """
+        Reconstruct a CSC matrix from flattened data.
+
+        This class method is used by JAX's tree utilities to reconstruct
+        a CSC matrix from its flattened representation.
+
+        Parameters
+        -----------
+        aux_data : tuple
+            A tuple containing the CSC matrix's indices, indptr, and shape.
+        children : tuple
+            A tuple containing the CSC matrix's data as its only element.
+
+        Returns
+        --------
+        CSC
+            A new CSC matrix instance reconstructed from the flattened data.
+        """
+        data, = children
+        indices, indptr, shape = aux_data
+        return CSC((data, indices, indptr), shape=shape)
+
+    def _unitary_op(self, op):
+        raise NotImplementedError
+
+    def __abs__(self):
+        return self._unitary_op(operator.abs)
+
+    def __neg__(self):
+        return self._unitary_op(operator.neg)
+
+    def __pos__(self):
+        return self._unitary_op(operator.pos)
+
+    def _binary_op(self, other, op):
+        raise NotImplementedError
+
+    def __mul__(self, other: Data):
+        return self._binary_op(other, operator.mul)
+
+    def __div__(self, other: Data):
+        return self._binary_op(other, operator.truediv)
+
+    def __truediv__(self, other):
+        return self.__div__(other)
+
+    def __add__(self, other):
+        return self._binary_op(other, operator.add)
+
+    def __sub__(self, other):
+        return self._binary_op(other, operator.sub)
+
+    def __mod__(self, other):
+        return self._binary_op(other, operator.mod)
+
+    def _binary_rop(self, other, op):
+        raise NotImplementedError
+
+    def __rmul__(self, other: Data):
+        return self._binary_rop(other, operator.mul)
+
+    def __rdiv__(self, other: Data):
+        return self._binary_rop(other, operator.truediv)
+
+    def __rtruediv__(self, other):
+        return self.__rdiv__(other)
+
+    def __radd__(self, other):
+        return self._binary_rop(other, operator.add)
+
+    def __rsub__(self, other):
+        return self._binary_rop(other, operator.sub)
+
+    def __rmod__(self, other):
+        return self._binary_rop(other, operator.mod)
+
+    def yw_to_w(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity]
+    ) -> Union[jax.Array, u.Quantity]:
+        raise NotImplementedError
+
+
 @jax.tree_util.register_pytree_node_class
-class CSR(u.sparse.SparseMatrix):
+class CSR(BaseCLS):
     """
     Event-driven and Unit-aware Compressed Sparse Row (CSR) matrix.
 
@@ -63,43 +201,6 @@ class CSR(u.sparse.SparseMatrix):
         Data type of the matrix values.
     """
     __module__ = 'brainevent'
-
-    data: Data
-    indices: Index
-    indptr: Indptr
-    shape: MatrixShape
-    nse = property(lambda self: self.indices.size)
-    dtype = property(lambda self: self.data.dtype)
-
-    def __init__(
-        self,
-        args: Tuple[Data, Index, Indptr],
-        *,
-        shape: MatrixShape
-    ):
-        """
-        Initialize a CSR (Compressed Sparse Row) matrix.
-
-        This constructor creates a CSR matrix from the given arguments and shape.
-
-        Parameters
-        -----------
-        args : Sequence[Union[jax.Array, np.ndarray, u.Quantity]]
-            A sequence of three arrays representing the CSR matrix:
-            - data: Contains the non-zero values of the matrix.
-            - indices: Contains the column indices for each non-zero element.
-            - indptr: Contains the row pointers indicating where each row starts in the data and indices arrays.
-
-        shape : Tuple[int, int]
-            The shape of the matrix as a tuple of (num_rows, num_columns).
-
-        Returns
-        --------
-        None
-            This method initializes the CSR matrix object but does not return a value.
-        """
-        self.data, self.indices, self.indptr = map(u.math.asarray, args)
-        super().__init__(args, shape=shape)
 
     @classmethod
     def fromdense(cls, mat, *, nse=None, index_dtype=jnp.int32) -> 'CSR':
@@ -156,7 +257,7 @@ class CSR(u.sparse.SparseMatrix):
         assert u.get_unit(data) == u.get_unit(self.data)
         return CSR((data, self.indices, self.indptr), shape=self.shape)
 
-    def todense(self):
+    def todense(self) -> Union[jax.Array, u.Quantity]:
         """
         Convert the CSR matrix to a dense matrix.
     
@@ -170,21 +271,7 @@ class CSR(u.sparse.SparseMatrix):
         """
         return _csr_todense(self.data, self.indices, self.indptr, shape=self.shape)
 
-    @property
-    def T(self):
-        """
-        Get the transpose of the CSR matrix.
-    
-        This property returns the transpose of the matrix without copying the data.
-    
-        Returns
-        --------
-        CSC
-            The transpose of the CSR matrix as a CSC (Compressed Sparse Column) matrix.
-        """
-        return self.transpose()
-
-    def transpose(self, axes=None):
+    def transpose(self, axes=None) -> 'CSC':
         """
         Transpose the CSR matrix.
     
@@ -209,7 +296,7 @@ class CSR(u.sparse.SparseMatrix):
         assert axes is None, "transpose does not support axes argument."
         return CSC((self.data, self.indices, self.indptr), shape=self.shape[::-1])
 
-    def _unitary_op(self, op):
+    def _unitary_op(self, op) -> 'CSR':
         """
         Apply a unary operation to the data of the CSR matrix.
 
@@ -227,16 +314,7 @@ class CSR(u.sparse.SparseMatrix):
         """
         return CSR((op(self.data), self.indices, self.indptr), shape=self.shape)
 
-    def __abs__(self):
-        return self._unitary_op(operator.abs)
-
-    def __neg__(self):
-        return self._unitary_op(operator.neg)
-
-    def __pos__(self):
-        return self._unitary_op(operator.pos)
-
-    def _binary_op(self, other, op):
+    def _binary_op(self, other, op) -> 'CSR':
         if isinstance(other, CSR):
             if id(other.indices) == id(self.indices) and id(other.indptr) == id(self.indptr):
                 return CSR(
@@ -268,7 +346,7 @@ class CSR(u.sparse.SparseMatrix):
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
-    def _binary_rop(self, other, op):
+    def _binary_rop(self, other, op) -> 'CSR':
         if isinstance(other, CSR):
             if id(other.indices) == id(self.indices) and id(other.indptr) == id(self.indptr):
                 return CSR(
@@ -299,42 +377,6 @@ class CSR(u.sparse.SparseMatrix):
             )
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
-
-    def __mul__(self, other: Data) -> 'CSR':
-        return self._binary_op(other, operator.mul)
-
-    def __rmul__(self, other: Data) -> 'CSR':
-        return self._binary_rop(other, operator.mul)
-
-    def __div__(self, other: Data) -> 'CSR':
-        return self._binary_op(other, operator.truediv)
-
-    def __rdiv__(self, other: Data) -> 'CSR':
-        return self._binary_rop(other, operator.truediv)
-
-    def __truediv__(self, other) -> 'CSR':
-        return self.__div__(other)
-
-    def __rtruediv__(self, other) -> 'CSR':
-        return self.__rdiv__(other)
-
-    def __add__(self, other) -> 'CSR':
-        return self._binary_op(other, operator.add)
-
-    def __radd__(self, other) -> 'CSR':
-        return self._binary_rop(other, operator.add)
-
-    def __sub__(self, other) -> 'CSR':
-        return self._binary_op(other, operator.sub)
-
-    def __rsub__(self, other) -> 'CSR':
-        return self._binary_rop(other, operator.sub)
-
-    def __mod__(self, other) -> 'CSR':
-        return self._binary_op(other, operator.mod)
-
-    def __rmod__(self, other) -> 'CSR':
-        return self._binary_rop(other, operator.mod)
 
     def __matmul__(self, other):
         # csr @ other
@@ -444,56 +486,9 @@ class CSR(u.sparse.SparseMatrix):
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
-    def tree_flatten(self):
-        """
-        Flatten the CSR matrix for JAX's tree utilities.
-    
-        This method is used by JAX's tree utilities to flatten the CSR matrix
-        into a form suitable for transformation and reconstruction.
-    
-        Returns
-        --------
-        tuple
-            A tuple containing two elements:
-            - A tuple with the CSR matrix's data as the only element.
-            - A tuple with the CSR matrix's indices, indptr, and shape.
-        """
-        return (self.data,), (self.indices, self.indptr, self.shape)
-
-    @classmethod
-    def tree_unflatten(cls, aux_data, children):
-        """
-        Reconstruct a CSR matrix from flattened data.
-    
-        This class method is used by JAX's tree utilities to reconstruct
-        a CSR matrix from its flattened representation.
-    
-        Parameters
-        -----------
-        aux_data : tuple
-            A tuple containing the CSR matrix's indices, indptr, and shape.
-        children : tuple
-            A tuple containing the CSR matrix's data as its only element.
-    
-        Returns
-        --------
-        CSR
-            A new CSR matrix instance reconstructed from the flattened data.
-        """
-        data, = children
-        indices, indptr, shape = aux_data
-        return CSR([data, indices, indptr], shape=shape)
-
-    def yw_to_w(
-        self,
-        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
-        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity]
-    ) -> Union[jax.Array, u.Quantity]:
-        pass
-
 
 @jax.tree_util.register_pytree_node_class
-class CSC(u.sparse.SparseMatrix):
+class CSC(BaseCLS):
     """
     Event-driven and Unit-aware Compressed Sparse Column (CSC) matrix.
 
@@ -521,40 +516,6 @@ class CSC(u.sparse.SparseMatrix):
 
     """
     __module__ = 'brainevent'
-
-    data: Data
-    indices: Index
-    indptr: Indptr
-    shape: MatrixShape
-    nse = property(lambda self: self.indices.size)
-    dtype = property(lambda self: self.data.dtype)
-
-    def __init__(
-        self,
-        args: Tuple[Data, Index, Indptr],
-        *,
-        shape: MatrixShape
-    ):
-        """
-        Initialize a CSC (Compressed Sparse Column) matrix.
-
-        This constructor creates a CSC matrix from the given arguments and shape.
-
-        Parameters
-        ----------
-        args : Sequence[Union[jax.Array, np.ndarray, u.Quantity]]
-            A sequence of three arrays representing the CSC matrix:
-            - data: Contains the non-zero values of the matrix.
-            - indices: Contains the row indices for each non-zero element.
-            - indptr: Contains the column pointers indicating where each column starts in the data and indices arrays.
-
-        shape : Tuple[int, int]
-            The shape of the matrix as a tuple of (num_rows, num_columns).
-        """
-        # Convert each element in args to a jax array using u.math.asarray
-        self.data, self.indices, self.indptr = map(u.math.asarray, args)
-        # Call the constructor of the superclass to initialize the object with the given args and shape
-        super().__init__(args, shape=shape)
 
     @classmethod
     def fromdense(cls, mat, *, nse=None, index_dtype=jnp.int32) -> 'CSC':
@@ -584,40 +545,6 @@ class CSC(u.sparse.SparseMatrix):
         csc = u.sparse.csr_fromdense(mat.T, nse=nse, index_dtype=index_dtype).T
         return CSC((csc.data, csc.indices, csc.indptr), shape=csc.shape)
 
-    @classmethod
-    def _empty(cls, shape, *, dtype=None, index_dtype='int32'):
-        """
-        Create an empty CSC instance. Public method is sparse.empty().
-    
-        This method initializes an empty CSC matrix with the specified shape and data types.
-    
-        Parameters
-        -----------
-        shape : tuple
-            The shape of the matrix as a tuple (rows, columns).
-        dtype : dtype, optional
-            The data type for the matrix values. If None, the default dtype is used.
-        index_dtype : dtype, optional
-            The data type for index arrays (default is 'int32').
-    
-        Returns
-        --------
-        CSC
-            An empty CSC matrix instance with the specified shape and data types.
-    
-        Raises
-        -------
-        ValueError
-            If the provided shape does not represent a 2-dimensional matrix.
-        """
-        shape = tuple(shape)
-        if len(shape) != 2:
-            raise ValueError(f"CSC must have ndim=2; got {shape=}")
-        data = jnp.empty(0, dtype)
-        indices = jnp.empty(0, index_dtype)
-        indptr = jnp.zeros(shape[1] + 1, index_dtype)
-        return cls((data, indices, indptr), shape=shape)
-
     def with_data(self, data: Data) -> 'CSC':
         """
         Create a new CSC matrix with updated data while keeping the same structure.
@@ -646,7 +573,7 @@ class CSC(u.sparse.SparseMatrix):
         assert u.get_unit(data) == u.get_unit(self.data)
         return CSC((data, self.indices, self.indptr), shape=self.shape)
 
-    def todense(self):
+    def todense(self) -> Union[jax.Array, u.Quantity]:
         """
         Convert the CSC matrix to a dense matrix.
     
@@ -660,21 +587,7 @@ class CSC(u.sparse.SparseMatrix):
         """
         return self.T.todense().T
 
-    @property
-    def T(self):
-        """
-        Get the transpose of the CSC matrix.
-    
-        This property returns the transpose of the matrix without copying the data.
-    
-        Returns
-        --------
-        CSR
-            The transpose of the CSC matrix as a CSR (Compressed Sparse Row) matrix.
-        """
-        return self.transpose()
-
-    def transpose(self, axes=None):
+    def transpose(self, axes=None) -> 'CSR':
         """
         Transpose the CSC matrix.
     
@@ -699,7 +612,7 @@ class CSC(u.sparse.SparseMatrix):
         assert axes is None
         return CSR((self.data, self.indices, self.indptr), shape=self.shape[::-1])
 
-    def _unitary_op(self, op):
+    def _unitary_op(self, op) -> 'CSC':
         """
         Apply a unary operation to the data of the CSC matrix.
 
@@ -717,16 +630,7 @@ class CSC(u.sparse.SparseMatrix):
         """
         return CSC((op(self.data), self.indices, self.indptr), shape=self.shape)
 
-    def __abs__(self):
-        return self._unitary_op(operator.abs)
-
-    def __neg__(self):
-        return self._unitary_op(operator.neg)
-
-    def __pos__(self):
-        return self._unitary_op(operator.pos)
-
-    def _binary_op(self, other, op):
+    def _binary_op(self, other, op) -> 'CSC':
         if isinstance(other, CSC):
             if id(other.indices) == id(self.indices) and id(other.indptr) == id(self.indptr):
                 return CSC(
@@ -758,7 +662,7 @@ class CSC(u.sparse.SparseMatrix):
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
-    def _binary_rop(self, other, op):
+    def _binary_rop(self, other, op) -> 'CSC':
         if isinstance(other, CSC):
             if id(other.indices) == id(self.indices) and id(other.indptr) == id(self.indptr):
                 return CSC(
@@ -789,42 +693,6 @@ class CSC(u.sparse.SparseMatrix):
             )
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
-
-    def __mul__(self, other: Data) -> 'CSC':
-        return self._binary_op(other, operator.mul)
-
-    def __rmul__(self, other: Data) -> 'CSC':
-        return self._binary_rop(other, operator.mul)
-
-    def __div__(self, other: Data) -> 'CSC':
-        return self._binary_op(other, operator.truediv)
-
-    def __rdiv__(self, other: Data) -> 'CSC':
-        return self._binary_rop(other, operator.truediv)
-
-    def __truediv__(self, other) -> 'CSC':
-        return self.__div__(other)
-
-    def __rtruediv__(self, other) -> 'CSC':
-        return self.__rdiv__(other)
-
-    def __add__(self, other) -> 'CSC':
-        return self._binary_op(other, operator.add)
-
-    def __radd__(self, other) -> 'CSC':
-        return self._binary_rop(other, operator.add)
-
-    def __sub__(self, other) -> 'CSC':
-        return self._binary_op(other, operator.sub)
-
-    def __rsub__(self, other) -> 'CSC':
-        return self._binary_rop(other, operator.sub)
-
-    def __mod__(self, other) -> 'CSC':
-        return self._binary_op(other, operator.mod)
-
-    def __rmod__(self, other) -> 'CSC':
-        return self._binary_rop(other, operator.mod)
 
     def __matmul__(self, other):
         if isinstance(other, JAXSparse):
@@ -932,43 +800,3 @@ class CSC(u.sparse.SparseMatrix):
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
-
-    def tree_flatten(self):
-        """
-        Flatten the CSC matrix for JAX's tree utilities.
-
-        This method is used by JAX's tree utilities to flatten the CSC matrix
-        into a form suitable for transformation and reconstruction.
-
-        Returns
-        --------
-        tuple
-            A tuple containing two elements:
-            - A tuple with the CSC matrix's data as the only element.
-            - A tuple with the CSC matrix's indices, indptr, and shape.
-        """
-        return (self.data,), (self.indices, self.indptr, self.shape)
-
-    @classmethod
-    def tree_unflatten(cls, aux_data, children):
-        """
-        Reconstruct a CSC matrix from flattened data.
-
-        This class method is used by JAX's tree utilities to reconstruct
-        a CSC matrix from its flattened representation.
-
-        Parameters
-        -----------
-        aux_data : tuple
-            A tuple containing the CSC matrix's indices, indptr, and shape.
-        children : tuple
-            A tuple containing the CSC matrix's data as its only element.
-
-        Returns
-        --------
-        CSC
-            A new CSC matrix instance reconstructed from the flattened data.
-        """
-        data, = children
-        indices, indptr, shape = aux_data
-        return CSC([data, indices, indptr], shape=shape)

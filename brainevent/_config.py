@@ -28,6 +28,7 @@ __all__ = [
     'set_environ',
     'set_numba_environ',
     'numba_environ_context',
+    'numba_environ',
 ]
 
 
