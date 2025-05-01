@@ -106,7 +106,7 @@ class TestVectorCSR(unittest.TestCase):
         for homo_w in [True, False]:
             print(f'homo_w = {homo_w}')
             data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
-            csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
+            csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
             y = brainevent.EventArray(x) @ csr
             y2 = vector_csr(x, csr.data, indices, indptr, [m, n])
             self.assertTrue(jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
@@ -118,7 +118,7 @@ class TestVectorCSR(unittest.TestCase):
 
         for homo_w in [True, False]:
             data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
-            csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
+            csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
             y = jax.vmap(lambda x: brainevent.EventArray(x) @ csr)(xs)
             y2 = jax.vmap(lambda x: vector_csr(x, csr.data, indices, indptr, [m, n]))(xs)
             self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
@@ -130,7 +130,7 @@ class TestVectorCSR(unittest.TestCase):
 
         for homo_w in [True, False]:
             data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
-            csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
+            csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
             y = csr @ brainevent.EventArray(v)
             y2 = csr_vector(v, csr.data, indices, indptr, [m, n])
             self.assertTrue(jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
@@ -221,7 +221,7 @@ class TestVectorCSR(unittest.TestCase):
 
 class TestBatchingVectorCSR:
     def _run(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
-        csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
+        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         if transpose:
             y1 = brainevent.EventArray(x) @ csr
             y2 = vector_csr(x, csr.data, indices, indptr, [m, n])
@@ -263,7 +263,7 @@ class TestBatchingVectorCSR:
 
     def _run_vjp(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
         x = x.astype(float)
-        csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
+        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
 
         def f_brainevent(x, w):
             if transpose:
@@ -324,7 +324,7 @@ class TestBatchingVectorCSR:
 
     def _run_jvp(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
         x = x.astype(float)
-        csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
+        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
 
         def f_brainevent(x, w):
             if transpose:
@@ -392,7 +392,7 @@ class TestMatrixCSR(unittest.TestCase):
 
         for homo_w in [True, False]:
             data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
-            csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
+            csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
             y = brainevent.EventArray(x) @ csr
             y2 = matrix_csr(x, csr.data, indices, indptr, [m, n])
             self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
@@ -404,7 +404,7 @@ class TestMatrixCSR(unittest.TestCase):
 
         for homo_w in [True, False]:
             data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
-            csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
+            csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
             y = csr @ brainevent.EventArray(matrix)
             y2 = csr_matrix(matrix, csr.data, indices, indptr, [m, n])
             self.assertTrue(jnp.allclose(y, y2))
@@ -412,7 +412,7 @@ class TestMatrixCSR(unittest.TestCase):
 
 class TestBatchingMatrixCSR:
     def _run(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
-        csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
+        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         if transpose:
             y1 = brainevent.EventArray(x) @ csr
             y2 = matrix_csr(x, csr.data, indices, indptr, [m, n])
@@ -454,7 +454,7 @@ class TestBatchingMatrixCSR:
 
     def _run_vjp(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
         x = x.astype(float)
-        csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
+        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
 
         def f_brainevent(x, w):
             if transpose:
@@ -518,7 +518,7 @@ class TestBatchingMatrixCSR:
 
     def _run_jvp(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
         x = x.astype(float)
-        csr = brainevent.CSR([data, indices, indptr], shape=(m, n))
+        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
 
         def f_brainevent(x, w):
             if transpose:

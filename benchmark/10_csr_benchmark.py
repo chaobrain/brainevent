@@ -40,7 +40,6 @@ files = [
     'matrices/suitesparse/Bova/rma10/rma10.mtx',
     'matrices/suitesparse/DNVS/shipsec1/shipsec1.mtx',
     'matrices/suitesparse/IBM_EDA/dc2/dc2.mtx',
-    # 'matrices/suitesparse/QCD/conf5_4-8x8-05/conf5_4-8x8-05.mtx',
     'matrices/suitesparse/Williams/cant/cant.mtx',
     'matrices/suitesparse/Williams/consph/consph.mtx',
     'matrices/suitesparse/Williams/cop20k_A/cop20k_A.mtx',
@@ -60,16 +59,24 @@ print()
 
 def visualization(results, title: str):
     filenames = list(results.keys())
-    ratios = np.asarray(list(results.values())) - 1.0
+    ratios = np.asarray(list(results.values()))
 
     plt.figure(figsize=(10, 6))
     plt.barh(filenames, ratios, color='skyblue')
-    plt.xlabel('BrainEvent / JAX Accleration Ratio')
+    plt.xlabel('BrainEvent Accleration Ratio')
     plt.title(title)
     plt.grid(axis='x', linestyle='--', alpha=0.7)
     plt.xticks(rotation=45)  # 显示x轴刻度并旋转45度
     plt.tight_layout()
     plt.show()
+
+
+def get_device_memory():
+    mem = jax.pure_callback(
+        lambda: jax.devices()[0].memory_stats()['bytes_in_use'] / 1024 / 1024 / 1024,
+        jax.ShapeDtypeStruct((), brainstate.environ.dftype())
+    )
+    return mem
 
 
 def compare_spmv_performance(scipy_csr, n_run: int = 10, transpose=False):
@@ -104,14 +111,20 @@ def compare_spmv_performance(scipy_csr, n_run: int = 10, transpose=False):
         jax.block_until_ready(f_jax(vector))
     t1 = time.time()
     t_jax_csr_vector = (t1 - t0) / n_run
-    print(f"{filename}, transpose={transpose}, JAX  CSR @ Vector:       {t_jax_csr_vector:.6f} seconds")
+    if transpose:
+        print(f"{filename}, JAX  CSR.T @ Vector:       {t_jax_csr_vector:.6f} seconds")
+    else:
+        print(f"{filename}, JAX  CSR @ Vector:       {t_jax_csr_vector:.6f} seconds")
 
     t0 = time.time()
     for _ in range(n_run):
         jax.block_until_ready(f_brainevent(vector))
     t1 = time.time()
     t_be_csr_vector = (t1 - t0) / n_run
-    print(f"{filename}, transpose={transpose}, BrainEvent CSR @ Vector: {t_be_csr_vector:.6f} seconds")
+    if transpose:
+        print(f"{filename}, BrainEvent CSR.T @ Vector: {t_be_csr_vector:.6f} seconds")
+    else:
+        print(f"{filename}, BrainEvent CSR @ Vector: {t_be_csr_vector:.6f} seconds")
     print(f'JAX / BrainEvent: {t_jax_csr_vector / t_be_csr_vector}, max value diff: {jnp.max(jnp.abs(r1 - r2))}')
     print()
 
@@ -176,16 +189,21 @@ def compare_spmm_performance(
         jax.block_until_ready(f_jax(matrix))
     t1 = time.time()
     t_jax_csr_vector = (t1 - t0) / n_run
-    print(f"{filename}, transpose={transpose}, JAX  CSR @ Vector:       {t_jax_csr_vector:.6f} seconds")
+    if transpose:
+        print(f"{filename}, JAX  CSR.T @ Matrix:       {t_jax_csr_vector:.6f} seconds")
+    else:
+        print(f"{filename}, JAX  CSR @ Matrix:       {t_jax_csr_vector:.6f} seconds")
 
     t0 = time.time()
     for _ in range(n_run):
         jax.block_until_ready(f_brainevent(matrix))
     t1 = time.time()
     t_be_csr_vector = (t1 - t0) / n_run
-    print(f"{filename}, transpose={transpose}, BrainEvent CSR @ Vector: {t_be_csr_vector:.6f} seconds")
-    print(f'JAX / BrainEvent: {t_jax_csr_vector / t_be_csr_vector}, max value diff: {jnp.max(jnp.abs(r1 - r2))}')
-    print()
+    if transpose:
+        print(f"{filename}, BrainEvent CSR.T @ Matrix: {t_be_csr_vector:.6f} seconds")
+    else:
+        print(f"{filename}, BrainEvent CSR @ Matrix: {t_be_csr_vector:.6f} seconds")
+    print(f'max value diff: {jnp.max(jnp.abs(r1 - r2))}')
 
     ratio = (
         (t_jax_csr_vector / t_be_csr_vector - 1.)
@@ -213,5 +231,5 @@ def evaluate_spmm_performance(transpose):
 if __name__ == '__main__':
     evaluate_spmv_performance(True)
     evaluate_spmv_performance(False)
-    evaluate_spmm_performance(transpose=True)
-    evaluate_spmm_performance(transpose=False)
+    evaluate_spmm_performance(True)
+    evaluate_spmm_performance(False)

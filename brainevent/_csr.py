@@ -23,7 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from ._compatible_import import JAXSparse
-from ._csr_event_impl import _event_csr_matvec, _event_csr_matmat
+from ._csr_event_impl import event_csr_matvec, event_csr_matmat
 from ._csr_float_impl import csr_matvec, csr_matmat
 from ._event import EventArray
 from ._misc import _csr_to_coo, _csr_todense
@@ -345,7 +345,7 @@ class CSR(u.sparse.SparseMatrix):
         if isinstance(other, EventArray):
             other = other.data
             if other.ndim == 1:
-                return _event_csr_matvec(
+                return event_csr_matvec(
                     data,
                     self.indices,
                     self.indptr,
@@ -353,7 +353,7 @@ class CSR(u.sparse.SparseMatrix):
                     shape=self.shape
                 )
             elif other.ndim == 2:
-                return _event_csr_matmat(
+                return event_csr_matmat(
                     data,
                     self.indices,
                     self.indptr,
@@ -396,7 +396,7 @@ class CSR(u.sparse.SparseMatrix):
         if isinstance(other, EventArray):
             other = other.data
             if other.ndim == 1:
-                return _event_csr_matvec(
+                return event_csr_matvec(
                     data,
                     self.indices,
                     self.indptr,
@@ -406,7 +406,7 @@ class CSR(u.sparse.SparseMatrix):
                 )
             elif other.ndim == 2:
                 other = other.T
-                r = _event_csr_matmat(
+                r = event_csr_matmat(
                     data,
                     self.indices,
                     self.indptr,
@@ -834,7 +834,7 @@ class CSC(u.sparse.SparseMatrix):
         if isinstance(other, EventArray):
             other = other.value
             if other.ndim == 1:
-                return _event_csr_matvec(
+                return event_csr_matvec(
                     data,
                     self.indices,
                     self.indptr,
@@ -843,7 +843,7 @@ class CSC(u.sparse.SparseMatrix):
                     transpose=True
                 )
             elif other.ndim == 2:
-                return _event_csr_matmat(
+                return event_csr_matmat(
                     data,
                     self.indices,
                     self.indptr,
@@ -887,7 +887,7 @@ class CSC(u.sparse.SparseMatrix):
         if isinstance(other, EventArray):
             other = other.value
             if other.ndim == 1:
-                return _event_csr_matvec(
+                return event_csr_matvec(
                     data,
                     self.indices,
                     self.indptr,
@@ -897,7 +897,7 @@ class CSC(u.sparse.SparseMatrix):
                 )
             elif other.ndim == 2:
                 other = other.T
-                r = _event_csr_matmat(
+                r = event_csr_matmat(
                     data,
                     self.indices,
                     self.indptr, other,
