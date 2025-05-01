@@ -1184,10 +1184,15 @@ def _csrmm_transpose_rule(
                 shape=shape,
                 transpose=transpose
             )[0]
-            return jnp.sum(r * ct), indices, indptr, B, _
+            return jnp.expand_dims(jnp.sum(r * ct), axis=0), indices, indptr, B, _
         else:
             row, col = _csr_to_coo(indices, indptr)
-            d_data = (ct[row] * B[col]).sum(axis=1)
+            if transpose:
+                dCSR = B @ ct.T
+                d_data = dCSR[row, col]
+            else:
+                dCSR = B @ ct.T
+                d_data = dCSR[col, row]
             return d_data, indices, indptr, B, _
 
 

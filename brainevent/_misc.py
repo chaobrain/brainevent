@@ -66,6 +66,8 @@ def _coo_todense(
       mat : array with specified shape and dtype matching ``data``
     """
     data, unit = u.split_mantissa_unit(data)
+    if data.size == 1:
+        data = jnp.ones(row.shape, dtype=data.dtype) * data
     r = coo_todense_p.bind(data, row, col, spinfo=spinfo)
     return u.maybe_decimal(r * unit)
 
