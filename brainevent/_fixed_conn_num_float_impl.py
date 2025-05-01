@@ -69,7 +69,7 @@ def _fixed_num_mv_numba_kernel_generator(
                 for i in range(indices.shape[0]):
                     posts[i] = np.sum(weights[i] * vector[indices[i]])
 
-    return numba.njit(**numba_environ.setting)(ell_mv)
+    return numba_environ.jit_fn(ell_mv)
 
 
 def _fixed_num_mv_warp_kernel_generator(
@@ -595,7 +595,7 @@ def _fixed_num_mm_numba_kernel_generator(
                 for i_m in range(indices.shape[0]):
                     posts[i_m] = weights[i_m] @ matrix[indices[i_m]]
 
-    return numba.njit(**numba_environ.setting)(ell_mv)
+    return numba_environ.jit_fn(ell_mv)
 
 
 def _fixed_num_mm_warp_kernel_generator(

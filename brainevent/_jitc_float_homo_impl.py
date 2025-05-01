@@ -1204,7 +1204,7 @@ def _jitc_mv_homo_cpu_kernel_generator(
         # This means that the for loop is parallelized along the dimension of the output vector: ``post.shape[0]``.
 
         if transpose:
-            @numba.njit(**numba_environ.setting)
+            @numba_environ.jit_fn
             def kernel(weight, clen, vector, seed, _, posts):
                 """
                 Numba kernel implementation for matrix-vector multiplication where the matrix
@@ -1285,7 +1285,7 @@ def _jitc_mv_homo_cpu_kernel_generator(
                     posts[i_col] = out * weight0
 
         else:
-            @numba.njit(**numba_environ.setting)
+            @numba_environ.jit_fn
             def kernel(weight, clen, vector, seed, _, posts):
                 """
                 Numba kernel implementation for matrix-vector multiplication where the matrix
@@ -1379,7 +1379,7 @@ def _jitc_mv_homo_cpu_kernel_generator(
         # This means that the for loop is parallelized along the dimension of the vector: ``vector.shape[0]``.
 
         if transpose:
-            @numba.njit(**numba_environ.setting)
+            @numba_environ.jit_fn
             def kernel(weight, clen, vector, seed, _, posts):
                 """
                 Numba kernel implementation for matrix-vector multiplication where the matrix
@@ -1464,7 +1464,7 @@ def _jitc_mv_homo_cpu_kernel_generator(
                         i_col += np.random.randint(1, clen0)
 
         else:
-            @numba.njit(**numba_environ.setting)
+            @numba_environ.jit_fn
             def kernel(weight, clen, vector, seed, _, posts):
                 """
                 Numba kernel implementation for matrix-vector multiplication where the matrix
@@ -2468,8 +2468,7 @@ def _jitc_mm_homo_cpu_kernel_generator(
                         # This creates sparse connectivity with ~1/clen0 connection probability
                         i_m += np.random.randint(1, clen0)
 
-    kernel = numba.njit(**numba_environ.setting)(kernel)
-    return kernel
+    return numba_environ.jit_fn(kernel)
 
 
 def _jitc_mm_homo_gpu_kernel_generator(

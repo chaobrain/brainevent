@@ -180,7 +180,7 @@ def event_coomv_cpu_kernel_generator(
                         posts[row[i]] += weights[i] * v[col[i]]
 
     # 统一添加装饰器
-    mv = numba.njit(**numba_environ.setting)(mv)
+    mv = numba_environ.jit_fn(mv)
 
     return mv
 
@@ -717,7 +717,7 @@ def event_coomm_cpu_kernel_generator(
                             posts[row[i], j] += weights[i] * B[col[i], j]
 
     # 统一添加装饰器
-    mm = numba.njit(**numba_environ.setting)(mm)
+    mm = numba_environ.jit_fn(mm)
 
     return mm
 

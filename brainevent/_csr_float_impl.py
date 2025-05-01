@@ -605,7 +605,7 @@ def _csrmm_numba_kernel_generator(
             # CSR: [k, m]
             # B: [k, n]
             #
-            @numba.njit(**numba_environ.setting)
+            @numba_environ.jit_fn
             def mm(weights, indices, indptr, B, _, posts):
                 w = weights[0]
                 for i in range(B.shape[0]):
@@ -619,7 +619,7 @@ def _csrmm_numba_kernel_generator(
             # CSR: [m, k]
             # B: [k, n]
             #
-            @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
+            @numba_environ.pjit_fn
             def mm(weights, indices, indptr, B, _, posts):
                 w = weights[0]
                 for i in numba.prange(indptr.shape[0] - 1):
@@ -635,7 +635,7 @@ def _csrmm_numba_kernel_generator(
             # CSR: [k, m]
             # B: [k, n]
             #
-            @numba.njit(**numba_environ.setting)
+            @numba_environ.jit_fn
             def mm(weights, indices, indptr, B, _, posts):
                 for i in range(B.shape[0]):
                     for j in range(indptr[i], indptr[i + 1]):
@@ -647,7 +647,7 @@ def _csrmm_numba_kernel_generator(
             # CSR: [m, k]
             # B: [k, n]
             #
-            @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
+            @numba_environ.pjit_fn
             def mm(weights, indices, indptr, B, _, posts):
                 for i in numba.prange(indptr.shape[0] - 1):
                     r = np.zeros(B.shape[1], dtype=posts.dtype)

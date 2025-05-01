@@ -86,7 +86,7 @@ def _matrix_event_numba_cpu_kernel_generator(
                 if sp != 0.:
                     posts += weights[:, i] * sp
 
-    return numba.njit(**numba_environ.setting)(_kernel)
+    return numba_environ.jit_fn(_kernel)
 
 
 def _matrix_event_mv_warp_kernel_generator(
@@ -258,7 +258,7 @@ def _event_matrix_mv_numba_kernel_generator(
                 if sp != 0.:
                     posts += weights[i] * sp
 
-    return numba.njit(**numba_environ.setting)(_kernel)
+    return numba_environ.jit_fn(_kernel)
 
 
 def _event_matrix_mv_warp_kernel_generator(

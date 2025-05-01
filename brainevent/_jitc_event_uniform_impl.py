@@ -256,7 +256,7 @@ def _jitc_mv_uniform_cpu_kernel_generator(
                             if v:
                                 posts[i_row] += w
                             i_row += np.random.randint(1, clen0)
-    return numba.njit(**numba_environ.setting)(kernel)
+    return numba_environ.jit_fn(kernel)
 
 
 def _jitc_mv_uniform_gpu_kernel_generator(
@@ -910,8 +910,7 @@ def _jitc_mm_uniform_cpu_kernel_generator(
                             posts[i_m, indices] += w
                             i_m += np.random.randint(1, clen0)
 
-    kernel = numba.njit(**numba_environ.setting)(kernel)
-    return kernel
+    return numba_environ.jit_fn(kernel)
 
 
 def _jitc_mm_uniform_gpu_kernel_generator(

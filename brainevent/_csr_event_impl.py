@@ -123,8 +123,6 @@ def _event_csrmv_numba_kernel_generator(
     transpose: bool,
     **kwargs
 ) -> Kernel:
-    import numba  # pylint: disable=import-outside-toplevel
-
     if weight_info.size == 1:
         if transpose:
             if vector_info.dtype == jnp.bool_:
@@ -238,7 +236,7 @@ def _event_csrmv_numba_kernel_generator(
                                 r += weights[j] * c
                         posts[i] = r
 
-    return numba.njit(**numba_environ.setting)(mv)
+    return numba_environ.jit_fn(mv)
 
 
 def _event_csrmv_warp_kernel_generator(
@@ -881,7 +879,7 @@ def _event_csrmm_numba_kernel_generator(
             # csr.T @ B
 
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
+                @numba_environ.pjit_fn
                 def mv(weights, indices, indptr, B, _, posts):
                     w = weights[0]
                     for k in numba.prange(B.shape[1]):
@@ -891,7 +889,7 @@ def _event_csrmm_numba_kernel_generator(
                                     posts[indices[j], k] += w
 
             elif float_as_event:
-                @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
+                @numba_environ.pjit_fn
                 def mv(weights, indices, indptr, B, _, posts):
                     B = B != 0.
                     w = weights[0]
@@ -902,7 +900,7 @@ def _event_csrmm_numba_kernel_generator(
                                     posts[indices[j], k] += w
 
             else:
-                @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
+                @numba_environ.pjit_fn
                 def mv(weights, indices, indptr, B, _, posts):
                     w = weights[0]
                     for k in numba.prange(B.shape[1]):
@@ -916,7 +914,7 @@ def _event_csrmm_numba_kernel_generator(
         else:
             # csr @ B
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def mv(weights, indices, indptr, B, _, posts):
                     w = weights[0]
                     for i in range(indptr.shape[0] - 1):
@@ -929,7 +927,7 @@ def _event_csrmm_numba_kernel_generator(
                         posts[i] = r
 
             elif float_as_event:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def mv(weights, indices, indptr, B, _, posts):
                     w = weights[0]
                     B = B != 0.
@@ -943,7 +941,7 @@ def _event_csrmm_numba_kernel_generator(
                         posts[i] = r
 
             else:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def mv(weights, indices, indptr, B, _, posts):
                     w = weights[0]
                     for i in range(indptr.shape[0] - 1):
@@ -960,7 +958,7 @@ def _event_csrmm_numba_kernel_generator(
             # csr.T @ B
 
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
+                @numba_environ.pjit_fn
                 def mv(weights, indices, indptr, B, _, posts):
                     for k in numba.prange(B.shape[1]):
                         for i in range(B.shape[0]):
@@ -969,7 +967,7 @@ def _event_csrmm_numba_kernel_generator(
                                     posts[indices[j], k] += weights[j]
 
             elif float_as_event:
-                @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
+                @numba_environ.pjit_fn
                 def mv(weights, indices, indptr, B, _, posts):
                     B = B != 0.
                     for k in numba.prange(B.shape[1]):
@@ -979,7 +977,7 @@ def _event_csrmm_numba_kernel_generator(
                                     posts[indices[j], k] += weights[j]
 
             else:
-                @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
+                @numba_environ.pjit_fn
                 def mv(weights, indices, indptr, B, _, posts):
                     for k in numba.prange(B.shape[1]):
                         for i in range(B.shape[0]):
@@ -992,7 +990,7 @@ def _event_csrmm_numba_kernel_generator(
             # csr @ B
 
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def mv(weights, indices, indptr, B, _, posts):
                     for i in range(indptr.shape[0] - 1):
                         for k in range(B.shape[1]):
@@ -1003,7 +1001,7 @@ def _event_csrmm_numba_kernel_generator(
                             posts[i, k] = r
 
             elif float_as_event:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def mv(weights, indices, indptr, B, _, posts):
                     B = B != 0.
                     for i in range(indptr.shape[0] - 1):
@@ -1015,7 +1013,7 @@ def _event_csrmm_numba_kernel_generator(
                             posts[i, k] = r
 
             else:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def mv(weights, indices, indptr, B, _, posts):
                     for i in range(indptr.shape[0] - 1):
                         for k in range(B.shape[1]):

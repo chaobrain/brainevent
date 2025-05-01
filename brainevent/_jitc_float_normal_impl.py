@@ -268,7 +268,7 @@ def _jitc_normal_matrix_cpu_kernel_generator(
                         # The random skip ensures proper connection probability
                         i_row += np.random.randint(1, clen0)
 
-    return numba.njit(kernel, **numba_environ.setting)
+    return numba_environ.jit_fn(kernel)
 
 
 def _jitc_normal_matrix_gpu_kernel_generator(
@@ -735,7 +735,7 @@ def _jitc_mv_normal_cpu_kernel_generator(
         # This means that the for loop is parallelized along the dimension of the output vector: ``post.shape[0]``.
 
         if transpose:
-            @numba.njit(**numba_environ.setting)
+            @numba_environ.jit_fn
             def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
                 # Output vector dimension = number of columns in the matrix
                 n_col = posts.shape[0]
@@ -773,7 +773,7 @@ def _jitc_mv_normal_cpu_kernel_generator(
                     posts[i_col] = out
 
         else:
-            @numba.njit(**numba_environ.setting)
+            @numba_environ.jit_fn
             def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
                 # Output vector dimension = number of rows in the matrix
                 # Each row in the matrix will produce one element in the output vector
@@ -822,7 +822,7 @@ def _jitc_mv_normal_cpu_kernel_generator(
         # This means that the for loop is parallelized along the dimension of the vector: ``vector.shape[0]``.
 
         if transpose:
-            @numba.njit(**numba_environ.setting)
+            @numba_environ.jit_fn
             def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
                 # Output vector dimension = number of columns in the matrix
                 # This is the dimension of the result vector in the vector @ matrix operation
@@ -864,7 +864,7 @@ def _jitc_mv_normal_cpu_kernel_generator(
                         i_col += np.random.randint(1, clen0)
 
         else:
-            @numba.njit(**numba_environ.setting)
+            @numba_environ.jit_fn
             def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
                 # Output vector dimension = number of rows in the matrix
                 # This represents the first dimension of the matrix and the result vector's size
@@ -1499,8 +1499,7 @@ def _jitc_mm_normal_cpu_kernel_generator(
                         # This creates sparse connectivity with ~1/clen0 connection probability
                         i_m += np.random.randint(1, clen0)
 
-    kernel = numba.njit(**numba_environ.setting)(kernel)
-    return kernel
+    return numba_environ.jit_fn(kernel)
 
 
 def _jitc_mm_normal_gpu_kernel_generator(

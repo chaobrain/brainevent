@@ -166,7 +166,7 @@ def _matrix_event_mm_cpu_kernel_generator(
                     if sp != 0.:
                         posts[:, i_n] += col * sp
 
-    return numba.njit(**numba_environ.setting)(_kernel)
+    return numba_environ.jit_fn(_kernel)
 
 
 def _matrix_event_mm_gpu_kernel_generator(
@@ -430,7 +430,7 @@ def _event_matrix_mm_cpu_kernel_generator(
                     if s != 0.:
                         posts[i_m] += row * s
 
-    return numba.njit(**numba_environ.setting)(_kernel)
+    return numba_environ.jit_fn(_kernel)
 
 
 def _event_matrix_mm_gpu_kernel_generator(

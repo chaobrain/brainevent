@@ -112,7 +112,7 @@ def _jitc_mv_normal_cpu_kernel_generator(
 
         if transpose:
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
                     # Output vector dimension = number of columns in the matrix
                     n_col = posts.shape[0]
@@ -151,7 +151,7 @@ def _jitc_mv_normal_cpu_kernel_generator(
 
                         posts[i_col] = out
             else:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
                     # Output vector dimension = number of columns in the matrix
                     n_col = posts.shape[0]
@@ -192,7 +192,7 @@ def _jitc_mv_normal_cpu_kernel_generator(
 
         else:
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
                     # Output vector dimension = number of rows in the matrix
                     # Each row in the matrix will produce one element in the output vector
@@ -213,7 +213,7 @@ def _jitc_mv_normal_cpu_kernel_generator(
                             i_col += np.random.randint(1, clen0)
                         posts[i_row] = out
             else:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
                     # Output vector dimension = number of rows in the matrix
                     # Each row in the matrix will produce one element in the output vector
@@ -237,7 +237,7 @@ def _jitc_mv_normal_cpu_kernel_generator(
     else:
         if transpose:
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
                     num_col = posts.shape[0]
                     num_row = vector.shape[0]
@@ -255,7 +255,7 @@ def _jitc_mv_normal_cpu_kernel_generator(
                                 posts[i_col] += w
                             i_col += np.random.randint(1, clen0)
             else:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
                     num_col = posts.shape[0]
                     num_row = vector.shape[0]
@@ -275,7 +275,7 @@ def _jitc_mv_normal_cpu_kernel_generator(
 
         else:
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
                     num_row = posts.shape[0]
                     num_col = vector.shape[0]
@@ -294,7 +294,7 @@ def _jitc_mv_normal_cpu_kernel_generator(
                                 posts[i_row] += w
                             i_row += np.random.randint(1, clen0)
             else:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
                     num_row = posts.shape[0]
                     num_col = vector.shape[0]
@@ -953,8 +953,7 @@ def _jitc_mm_normal_cpu_kernel_generator(
                             posts[i_m, indices] += w
                             i_m += np.random.randint(1, clen0)
 
-    kernel = numba.njit(**numba_environ.setting)(kernel)
-    return kernel
+    return numba_environ.jit_fn(kernel)
 
 
 def _jitc_mm_normal_gpu_kernel_generator(

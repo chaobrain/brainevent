@@ -20,7 +20,7 @@ import json
 import pathlib
 import threading
 from contextlib import contextmanager
-from typing import Dict, Any, Optional, Union, NamedTuple
+from typing import Dict, Any, Optional, Union, NamedTuple, Callable
 
 __all__ = [
     'load_config',
@@ -138,11 +138,65 @@ def initialize_config():
 
 
 class NumbaEnvironment(threading.local):
+    """
+    Thread-local environment for managing Numba configuration settings.
+
+    This class provides a thread-safe way to configure Numba JIT compilation
+    parameters. It inherits from threading.local to ensure that each thread
+    has its own independent configuration.
+
+    Attributes
+    ----------
+    parallel : bool
+        Flag to enable or disable parallel execution in Numba.
+        Defaults to True.
+    setting : dict
+        Dictionary of Numba JIT compilation parameters.
+        Defaults to {'nogil': True, 'fastmath': True}.
+    """
     def __init__(self, *args, **kwargs):
         # default environment settings
         super().__init__(*args, **kwargs)
         self.parallel: bool = True
         self.setting: dict = dict(nogil=True, fastmath=True)
+
+    def jit_fn(self, fn: Callable):
+        """
+        Apply standard Numba JIT compilation to a function.
+
+        Parameters
+        ----------
+        fn : Callable
+            The function to be JIT compiled.
+
+        Returns
+        -------
+        Callable
+            The compiled function with applied JIT optimizations.
+        """
+        import numba
+        return numba.njit(fn, **self.setting)
+
+    def pjit_fn(self, fn: Callable):
+        """
+        Apply parallel Numba JIT compilation to a function.
+
+        This uses the current parallel setting to determine whether
+        to enable parallel execution.
+
+        Parameters
+        ----------
+        fn : Callable
+            The function to be JIT compiled with parallel support.
+
+        Returns
+        -------
+        Callable
+            The compiled function with applied JIT optimizations and
+            parallel execution if enabled.
+        """
+        import numba
+        return numba.njit(fn, **self.setting, parallel=self.parallel)
 
 
 numba_environ = NumbaEnvironment()

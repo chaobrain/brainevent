@@ -47,7 +47,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
     if transpose:
         if weight_info.size == 1:
             if spike_info.dtype == jnp.bool_:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def ell_mv(weights, indices, spikes, _, posts):
                     w = weights[0]
                     for i in range(spikes.shape[0]):
@@ -56,7 +56,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
                                 posts[indices[i, j]] += w
 
             elif float_as_event:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def ell_mv(weights, indices, spikes, _, posts):
                     w = weights[0]
                     for i in range(spikes.shape[0]):
@@ -65,7 +65,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
                                 posts[indices[i, j]] += w
 
             else:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def ell_mv(weights, indices, spikes, _, posts):
                     w = weights[0]
                     for i in range(spikes.shape[0]):
@@ -77,7 +77,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
 
         else:
             if spike_info.dtype == jnp.bool_:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def ell_mv(weights, indices, spikes, _, posts):
                     for i in range(spikes.shape[0]):
                         if spikes[i]:
@@ -85,7 +85,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
                                 posts[indices[i, j]] += weights[i, j]
 
             elif float_as_event:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def ell_mv(weights, indices, spikes, _, posts):
                     for i in range(spikes.shape[0]):
                         if spikes[i] != 0.:
@@ -93,7 +93,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
                                 posts[indices[i, j]] += weights[i, j]
 
             else:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def ell_mv(weights, indices, spikes, _, posts):
                     for i in range(spikes.shape[0]):
                         sp = spikes[i]
@@ -104,7 +104,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
     else:
         if weight_info.size == 1:
             if spike_info.dtype == jnp.bool_:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def ell_mv(weights, indices, spikes, _, posts):
                     w = weights[0]
                     for i in range(indices.shape[0]):  # n_pre
@@ -116,7 +116,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
                         posts[i] = r
 
             elif float_as_event:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def ell_mv(weights, indices, spikes, _, posts):
                     w = weights[0]
                     for i in range(indices.shape[0]):  # n_pre
@@ -129,7 +129,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
 
 
             else:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def ell_mv(weights, indices, spikes, _, posts):
                     w = weights[0]
                     for i in range(indices.shape[0]):  # n_pre
@@ -143,7 +143,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
 
         else:
             if spike_info.dtype == jnp.bool_:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def ell_mv(weights, indices, spikes, _, posts):
                     for i in range(indices.shape[0]):  # n_pre
                         r = 0.
@@ -154,7 +154,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
                         posts[i] = r
 
             elif float_as_event:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def ell_mv(weights, indices, spikes, _, posts):
                     for i in range(indices.shape[0]):  # n_pre
                         r = 0.
@@ -165,7 +165,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
                         posts[i] = r
 
             else:
-                @numba.njit(**numba_environ.setting)
+                @numba_environ.jit_fn
                 def ell_mv(weights, indices, spikes, _, posts):
                     for i in range(indices.shape[0]):  # n_pre
                         r = 0.

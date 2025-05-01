@@ -251,7 +251,7 @@ def _jitc_mv_homo_cpu_kernel_generator(
                             posts[i_col] += weight0
                         i_col += np.random.randint(1, clen0)
 
-    return numba.njit(**numba_environ.setting)(kernel)
+    return numba_environ.jit_fn(kernel)
 
 
 def _jitc_mv_homo_gpu_kernel_generator(
@@ -835,8 +835,7 @@ def _jitc_mm_homo_cpu_kernel_generator(
                         #     posts[i_m] += out
                         #     i_m += np.random.randint(1, clen0)
 
-    kernel = numba.njit(**numba_environ.setting)(kernel)
-    return kernel
+    return numba_environ.jit_fn(kernel)
 
 
 def _jitc_mm_homo_gpu_kernel_generator(

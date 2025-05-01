@@ -99,7 +99,7 @@ def coomv_cpu_kernel_generator(
                 for i in numba.prange(row.shape[0]):
                     posts[row[i]] += weights[i] * v[col[i]]
 
-    mv = numba.njit(**numba_environ.setting)(mv)
+    mv = numba_environ.jit_fn(mv)
     return mv
 
 
@@ -394,7 +394,7 @@ def coomm_cpu_kernel_generator(
                 for i in numba.prange(row.shape[0]):
                     posts[row[i], :] += weights[i] * B[col[i], :]
 
-    mm = numba.njit(**numba_environ.setting)(mm)
+    mm = numba_environ.jit_fn(mm)
     return mm
 
 
