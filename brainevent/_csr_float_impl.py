@@ -1256,9 +1256,9 @@ def csrmm_p_call(
     assert indices.ndim == 1, "Indices must be 1D."
     assert indptr.dtype == indices.dtype, "Indices and indptr must have the same dtype."
     if transpose:
-        assert shape[1] == B.shape[0], "Shape mismatch for transpose operation."
-    else:
         assert shape[0] == B.shape[0], "Shape mismatch for non-transpose operation."
+    else:
+        assert shape[1] == B.shape[0], "Shape mismatch for transpose operation."
 
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])

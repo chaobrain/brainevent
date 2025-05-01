@@ -1639,9 +1639,9 @@ def event_csrmm_p_call(
     assert indices.ndim == 1, "Indices must be 1D."
     assert indptr.dtype == indices.dtype, "Indices and indptr must have the same dtype."
     if transpose:
-        assert shape[1] == B.shape[0], "Shape mismatch for transpose operation."
-    else:
         assert shape[0] == B.shape[0], "Shape mismatch for non-transpose operation."
+    else:
+        assert shape[1] == B.shape[0], "Shape mismatch for transpose operation."
 
     # Check if weights is a scalar. If so, convert it to a one-dimensional array.
     if jnp.ndim(weights) == 0:
