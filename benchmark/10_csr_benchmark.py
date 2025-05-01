@@ -33,7 +33,7 @@ from scipy.sparse import csr_matrix, coo_matrix
 import brainevent
 
 # brainstate.environ.set(platform='cpu')
-brainstate.environ.set(platform='gpu')
+# brainstate.environ.set(platform='gpu')
 
 files = [
     'matrices/suitesparse/Andrianov/mip1/mip1.mtx',
@@ -115,35 +115,14 @@ def compare_spmv_performance(scipy_csr, n_run: int = 10, transpose=False):
     print(f'JAX / BrainEvent: {t_jax_csr_vector / t_be_csr_vector}, max value diff: {jnp.max(jnp.abs(r1 - r2))}')
     print()
 
-    # @jax.jit
-    # def f_jax(v):
-    #     return jax_csr.T @ v
-    #
-    # @jax.jit
-    # def f_brainevent(v):
-    #     return v @ brainevent_csr
-    #
-    # vector = jax.block_until_ready(jnp.ones(scipy_csr.shape[0]))
-    #
-    # r1 = jax.block_until_ready(f_jax(vector))
-    # r2 = jax.block_until_ready(f_brainevent(vector))
-    #
-    # t0 = time.time()
-    # for _ in range(n_run):
-    #     jax.block_until_ready(f_jax(vector))
-    # t1 = time.time()
-    # t_jax_vector_csr = (t1 - t0) / n_run
-    # print(f"{filename},    JAX  Vector @ CSR :   {t_jax_vector_csr:.6f} seconds")
-    #
-    # t0 = time.time()
-    # for _ in range(n_run):
-    #     jax.block_until_ready(f_brainevent(vector))
-    # t1 = time.time()
-    # t_be_vector_csr = (t1 - t0) / n_run
-    # print(f"{filename}, BrainEvent Vector @ CSR: {t_be_vector_csr:.6f} seconds")
-    # print(f'JAX / BrainEvent: {t_jax_vector_csr / t_be_vector_csr}, max value diff: {jnp.max(jnp.abs(r1 - r2))}')
-    # print()
-    # return t_jax_vector_csr / t_be_vector_csr
+    ratio = (
+        (t_jax_csr_vector / t_be_csr_vector - 1.)
+        if t_jax_csr_vector > t_be_csr_vector else
+        -(t_be_csr_vector / t_jax_csr_vector - 1.)
+    )
+    print('Acceleration ratio:', ratio)
+    print()
+    return ratio
 
 
 def evaluate_spmv_performance(transpose):
@@ -153,8 +132,8 @@ def evaluate_spmv_performance(transpose):
             csr_matrices[filename], n_run=3 if brainstate.environ.get_platform() == 'cpu' else 30,
             transpose=transpose
         )
-    # title = 'Intel-i9-12900H-SpMV-CSR' if brainstate.environ.get_platform() == 'cpu' else 'RTX-3080Ti-SpMV-CSR'
-    # visualization(results, title=title)
+    title = 'Intel-i9-12900H-SpMV-CSR' if brainstate.environ.get_platform() == 'cpu' else 'RTX-3080Ti-SpMV-CSR'
+    visualization(results, title=title)
 
 
 def compare_spmm_performance(
@@ -208,7 +187,14 @@ def compare_spmm_performance(
     print(f'JAX / BrainEvent: {t_jax_csr_vector / t_be_csr_vector}, max value diff: {jnp.max(jnp.abs(r1 - r2))}')
     print()
 
-    # return t_jax_vector_csr / t_be_vector_csr
+    ratio = (
+        (t_jax_csr_vector / t_be_csr_vector - 1.)
+        if t_jax_csr_vector > t_be_csr_vector else
+        -(t_be_csr_vector / t_jax_csr_vector - 1.)
+    )
+    print('Acceleration ratio:', ratio)
+    print()
+    return ratio
 
 
 def evaluate_spmm_performance(transpose):
@@ -220,13 +206,12 @@ def evaluate_spmm_performance(transpose):
             batch_size=512,
             transpose=transpose,
         )
-    # title = 'Intel-i9-12900H-SpMM-CSR' if brainstate.environ.get_platform() == 'cpu' else 'RTX-3080Ti-SpMM-CSR'
-    # visualization(results, title=title)
+    title = 'Intel-i9-12900H-SpMM-CSR' if brainstate.environ.get_platform() == 'cpu' else 'RTX-3080Ti-SpMM-CSR'
+    visualization(results, title=title)
 
 
 if __name__ == '__main__':
     evaluate_spmv_performance(True)
     evaluate_spmv_performance(False)
-
     evaluate_spmm_performance(transpose=True)
     evaluate_spmm_performance(transpose=False)

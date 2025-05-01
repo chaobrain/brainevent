@@ -141,7 +141,7 @@ class NumbaEnvironment(threading.local):
     def __init__(self, *args, **kwargs):
         # default environment settings
         super().__init__(*args, **kwargs)
-        self.parallel: bool = False
+        self.parallel: bool = True
         self.setting: dict = dict(nogil=True, fastmath=True)
 
 

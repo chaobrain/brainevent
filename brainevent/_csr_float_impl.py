@@ -113,6 +113,7 @@ def _csrmv_numba_kernel_generator(
 
     if weight_info.size == 1:
         if transpose:
+            @numba.njit(**numba_environ.setting)
             def mv(weights, indices, indptr, v, _, posts):
                 w = weights[0]
                 for i in range(v.shape[0]):
@@ -121,9 +122,10 @@ def _csrmv_numba_kernel_generator(
                         posts[indices[j]] += wsp
 
         else:
+            @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
             def mv(weights, indices, indptr, v, _, posts):
                 w = weights[0]
-                for i in range(indptr.shape[0] - 1):
+                for i in numba.prange(indptr.shape[0] - 1):
                     r = 0.
                     for j in range(indptr[i], indptr[i + 1]):
                         r += w * v[indices[j]]
@@ -131,6 +133,7 @@ def _csrmv_numba_kernel_generator(
 
     else:
         if transpose:
+            @numba.njit(**numba_environ.setting)
             def mv(weights, indices, indptr, v, _, posts):
                 for i in range(v.shape[0]):
                     sp = v[i]
@@ -138,14 +141,15 @@ def _csrmv_numba_kernel_generator(
                         posts[indices[j]] += weights[j] * sp
 
         else:
+            @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
             def mv(weights, indices, indptr, v, _, posts):
                 for i in range(indptr.shape[0] - 1):
                     r = 0.
-                    for j in range(indptr[i], indptr[i + 1]):
+                    for j in numba.prange(indptr[i], indptr[i + 1]):
                         r += weights[j] * v[indices[j]]
                     posts[i] = r
 
-    return numba.njit(**numba_environ.setting)(mv)
+    return mv
 
 
 def _csrmv_warp_kernel_generator(
@@ -601,45 +605,61 @@ def _csrmm_numba_kernel_generator(
     if weight_info.size == 1:
         if transpose:
             # csr.T @ B
+            #
+            # CSR: [k, m]
+            # B: [k, n]
+            #
+            @numba.njit(**numba_environ.setting)
             def mm(weights, indices, indptr, B, _, posts):
                 w = weights[0]
-                for k in numba.prange(B.shape[1]):
-                    for i in range(B.shape[0]):
-                        wsp = w * B[i, k]
-                        for j in range(indptr[i], indptr[i + 1]):
-                            posts[indices[j], k] += wsp
+                for i in range(B.shape[0]):
+                    wsp = w * B[i]
+                    for j in range(indptr[i], indptr[i + 1]):
+                        posts[indices[j]] += wsp
 
         else:
             # csr @ B
+            #
+            # CSR: [m, k]
+            # B: [k, n]
+            #
+            @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
             def mm(weights, indices, indptr, B, _, posts):
                 w = weights[0]
-                for i in range(indptr.shape[0] - 1):
-                    for k in range(B.shape[1]):
-                        r = np.zeros((), dtype=posts.dtype)
-                        for j in range(indptr[i], indptr[i + 1]):
-                            r += w * B[indices[j], k]
-                        posts[i, k] = r
+                for i in numba.prange(indptr.shape[0] - 1):
+                    r = np.zeros(B.shape[1], dtype=posts.dtype)
+                    for j in range(indptr[i], indptr[i + 1]):
+                        r += w * B[indices[j]]
+                    posts[i] = r
 
     else:
         if transpose:
             # csr.T @ B
+            #
+            # CSR: [k, m]
+            # B: [k, n]
+            #
+            @numba.njit(**numba_environ.setting)
             def mm(weights, indices, indptr, B, _, posts):
-                for k in numba.prange(B.shape[1]):
-                    for i in range(B.shape[0]):
-                        for j in range(indptr[i], indptr[i + 1]):
-                            posts[indices[j], k] += weights[j] * B[i, k]
+                for i in range(B.shape[0]):
+                    for j in range(indptr[i], indptr[i + 1]):
+                        posts[indices[j]] += weights[j] * B[i]
 
         else:
             # csr @ B
+            #
+            # CSR: [m, k]
+            # B: [k, n]
+            #
+            @numba.njit(**numba_environ.setting, parallel=numba_environ.parallel)
             def mm(weights, indices, indptr, B, _, posts):
-                for i in range(indptr.shape[0] - 1):
-                    for k in range(B.shape[1]):
-                        r = np.zeros((), dtype=posts.dtype)
-                        for j in range(indptr[i], indptr[i + 1]):
-                            r += weights[j] * B[indices[j], k]
-                        posts[i, k] = r
+                for i in numba.prange(indptr.shape[0] - 1):
+                    r = np.zeros(B.shape[1], dtype=posts.dtype)
+                    for j in range(indptr[i], indptr[i + 1]):
+                        r += weights[j] * B[indices[j]]
+                    posts[i] = r
 
-    return numba.njit(**numba_environ.setting)(mm)
+    return mm
 
 
 def _csrmm_warp_kernel_generator(
