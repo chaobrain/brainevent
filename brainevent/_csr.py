@@ -172,6 +172,19 @@ class BaseCLS(u.sparse.SparseMatrix):
     ) -> Union[jax.Array, u.Quantity]:
         raise NotImplementedError
 
+    @classmethod
+    def fromdense(cls, mat, *, nse=None, index_dtype=jnp.int32):
+        raise NotImplementedError
+
+    def with_data(self, data: Data):
+        raise NotImplementedError
+
+    def todense(self) -> Union[jax.Array, u.Quantity]:
+        raise NotImplementedError
+
+    def tocoo(self):
+        raise NotImplementedError
+
 
 @jax.tree_util.register_pytree_node_class
 class CSR(BaseCLS):
@@ -270,6 +283,32 @@ class CSR(BaseCLS):
             A dense matrix representation of the CSR matrix.
         """
         return _csr_todense(self.data, self.indices, self.indptr, shape=self.shape)
+
+    def tocoo(self):
+        """
+        Convert the CSR matrix to COO (Coordinate) format.
+
+        This method transforms the Compressed Sparse Row (CSR) matrix into a COO matrix,
+        which stores sparse data as a collection of (row, column, value) triplets.
+
+        Returns
+        -------
+        COO
+            A COO matrix containing the same data as the original CSR matrix.
+
+        See Also
+        --------
+        _csr_to_coo : Internal function that converts CSR row/column indices to COO format
+        COO : The Coordinate sparse matrix class
+
+        Examples
+        --------
+        >>> csr_matrix = CSR((data, indices, indptr), shape=(3, 4))
+        >>> coo_matrix = csr_matrix.tocoo()
+        """
+        from ._coo import COO
+        pre_ids, post_ids = _csr_to_coo(self.indices, self.indptr)
+        return COO((self.data, pre_ids, post_ids), shape=self.shape)
 
     def transpose(self, axes=None) -> 'CSC':
         """
@@ -586,6 +625,32 @@ class CSC(BaseCLS):
             A dense matrix representation of the CSC matrix.
         """
         return self.T.todense().T
+
+    def tocoo(self):
+        """
+        Convert the CSC matrix to COO (Coordinate) format.
+
+        This method transforms the Compressed Sparse Column (CSC) matrix into a COO matrix,
+        which stores sparse data as a collection of (row, column, value) triplets.
+
+        Returns
+        -------
+        COO
+            A COO matrix containing the same data as the original CSC matrix.
+
+        See Also
+        --------
+        _csr_to_coo : Internal function that converts CSC column/row indices to COO format
+        COO : The Coordinate sparse matrix class
+
+        Examples
+        --------
+        >>> csc_matrix = CSC((data, indices, indptr), shape=(3, 4))
+        >>> coo_matrix = csc_matrix.tocoo()
+        """
+        from ._coo import COO
+        post_ids, pre_ids = _csr_to_coo(self.indices, self.indptr)
+        return COO((self.data, pre_ids, post_ids), shape=self.shape)
 
     def transpose(self, axes=None) -> 'CSR':
         """

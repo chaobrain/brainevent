@@ -1469,7 +1469,7 @@ def _event_csrmm_pallas_kernel_generator(
     return kernel
 
 
-def _csrmm_jvp_left(
+def _csrmm_jvp_data(
     data_dot,
     data,
     indices,
@@ -1493,7 +1493,7 @@ def _csrmm_jvp_left(
     ]
 
 
-def _csrmm_jvp_right(
+def _csrmm_jvp_B(
     B_dot,
     data,
     indices,
@@ -1568,8 +1568,8 @@ def _event_csrmm_batching(args, axes, **kwargs):
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             float_as_event=kwargs['float_as_event']
-        )
-        r = jnp.reshape(r[0], [r[0].shape[0], batch_size, n])
+        )[0]
+        r = jnp.reshape(r, [r.shape[0], batch_size, n])
         return [r], [1]
 
     elif tuple(axes) == (None, None, None, 1, None):
@@ -1584,8 +1584,8 @@ def _event_csrmm_batching(args, axes, **kwargs):
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             float_as_event=kwargs['float_as_event']
-        )
-        r = jnp.reshape(r[0], [r[0].shape[0], batch_size, n])
+        )[0]
+        r = jnp.reshape(r, [r.shape[0], batch_size, n])
         return [r], [1]
 
     elif tuple(axes) == (None, None, None, 2, None):
@@ -1600,8 +1600,8 @@ def _event_csrmm_batching(args, axes, **kwargs):
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             float_as_event=kwargs['float_as_event']
-        )
-        r = jnp.reshape(r[0], [r[0].shape[0], n, batch_size])
+        )[0]
+        r = jnp.reshape(r, [r.shape[0], n, batch_size])
         return [r], [2]
 
     else:
@@ -1704,6 +1704,6 @@ else:
 event_csrmm_p.def_tpu_kernel(
     PallasKernelGenerator(_event_csrmm_pallas_kernel_generator, input_output_aliases={4: 0}),
 )
-event_csrmm_p.defjvp(_csrmm_jvp_left, None, None, _csrmm_jvp_right)
+event_csrmm_p.defjvp(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 event_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 event_csrmm_p.def_batching_rule(_event_csrmm_batching)

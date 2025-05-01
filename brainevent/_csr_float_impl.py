@@ -1106,7 +1106,7 @@ def _csrmm_pallas_kernel_generator(**kwargs) -> Kernel:
         raise ValueError(f'Unknown version: {version}')
 
 
-def _csrmm_jvp_left(
+def _csrmm_jvp_data(
     data_dot,
     data,
     indices,
@@ -1130,7 +1130,7 @@ def _csrmm_jvp_left(
     ]
 
 
-def _csrmm_jvp_right(
+def _csrmm_jvp_B(
     B_dot,
     data,
     indices,
@@ -1203,8 +1203,8 @@ def _csrmm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
-        )
-        r = jnp.reshape(r[0], [r[0].shape[0], batch_size, n])
+        )[0]
+        r = jnp.reshape(r, [r.shape[0], batch_size, n])
         return [r], [1]
 
     elif tuple(axes) == (None, None, None, 1, None):
@@ -1218,8 +1218,8 @@ def _csrmm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
-        )
-        r = jnp.reshape(r[0], [r[0].shape[0], batch_size, n])
+        )[0]
+        r = jnp.reshape(r, [r.shape[0], batch_size, n])
         return [r], [1]
 
     elif tuple(axes) == (None, None, None, 2, None):
@@ -1233,8 +1233,8 @@ def _csrmm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
-        )
-        r = jnp.reshape(r[0], [r[0].shape[0], n, batch_size])
+        )[0]
+        r = jnp.reshape(r, [r.shape[0], n, batch_size])
         return [r], [2]
 
     else:
@@ -1286,10 +1286,7 @@ def csrmm_p_call(
 
 csrmm_p = XLACustomKernel(
     'csrmm',
-    cpu_kernel=NumbaKernelGenerator(
-        _csrmm_numba_kernel_generator,
-        input_output_aliases={4: 0}
-    ),
+    cpu_kernel=NumbaKernelGenerator(_csrmm_numba_kernel_generator, input_output_aliases={4: 0}),
 )
 # if Config.gpu_kernel_use_warp:
 if False:
@@ -1304,18 +1301,8 @@ if False:
         ),
     )
 else:
-    csrmm_p.def_gpu_kernel(
-        PallasKernelGenerator(
-            _csrmm_pallas_kernel_generator,
-            input_output_aliases={4: 0}
-        )
-    )
-csrmm_p.def_tpu_kernel(
-    PallasKernelGenerator(
-        _csrmm_pallas_kernel_generator,
-        input_output_aliases={4: 0}
-    )
-)
-csrmm_p.defjvp(_csrmm_jvp_left, None, None, _csrmm_jvp_right)
+    csrmm_p.def_gpu_kernel(PallasKernelGenerator(_csrmm_pallas_kernel_generator, input_output_aliases={4: 0}))
+csrmm_p.def_tpu_kernel(PallasKernelGenerator(_csrmm_pallas_kernel_generator, input_output_aliases={4: 0}))
+csrmm_p.defjvp(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 csrmm_p.def_batching_rule(_csrmm_batching)

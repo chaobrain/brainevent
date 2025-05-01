@@ -19,54 +19,55 @@ import unittest
 import brainstate as bst
 import jax
 import jax.numpy as jnp
+import pytest
 
 import brainevent
 from brainevent._csr_event_impl_test import TestBatchingVectorCSR, TestBatchingMatrixCSR
-from brainevent._csr_test_util import _get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
+from brainevent._csr_test_util import get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
 
 
 # brainstate.environ.set(platform='cpu')
 
 
-class TestVectorCSR(unittest.TestCase):
-    def test_vector_csr(self, ):
+class TestVectorCSR:
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_vector_csr(self, homo_w):
         m, n = 20, 40
         x = bst.random.rand(m)
-        indptr, indices = _get_csr(m, n, 0.1)
+        indptr, indices = get_csr(m, n, 0.1)
 
-        for homo_w in [True, False]:
-            print(f'homo_w = {homo_w}')
-            data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
-            csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-            y = x @ csr
-            y2 = vector_csr(x, csr.data, indices, indptr, [m, n])
-            self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+        print(f'homo_w = {homo_w}')
+        data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
+        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
+        y = x @ csr
+        y2 = vector_csr(x, csr.data, indices, indptr, [m, n])
+        assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
-    def test_csr_vector(self):
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_csr_vector(self, homo_w):
         m, n = 20, 40
         v = bst.random.rand(n)
-        indptr, indices = _get_csr(m, n, 0.1)
+        indptr, indices = get_csr(m, n, 0.1)
 
-        for homo_w in [True, False]:
-            data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
-            csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-            y = csr @ v
-            y2 = csr_vector(v, csr.data, indices, indptr, [m, n])
-            self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+        data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
+        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
+        y = csr @ v
+        y2 = csr_vector(v, csr.data, indices, indptr, [m, n])
+        assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
-    def test_vector_csr_vmap_vector(self):
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_vector_csr_vmap_vector(self, homo_w):
         n_batch, m, n = 10, 20, 40
         xs = bst.random.rand(n_batch, m)
-        indptr, indices = _get_csr(m, n, 0.1)
+        indptr, indices = get_csr(m, n, 0.1)
 
-        for homo_w in [True, False]:
-            data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
-            csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-            y = jax.vmap(lambda x: x @ csr)(xs)
-            y2 = jax.vmap(lambda x: vector_csr(x, csr.data, indices, indptr, [m, n]))(xs)
+        data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
+        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
+        y = jax.vmap(lambda x: x @ csr)(xs)
+        y2 = jax.vmap(lambda x: vector_csr(x, csr.data, indices, indptr, [m, n]))(xs)
 
-            print(y.shape, y2.shape)
-            self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+        print(y.shape, y2.shape)
+        assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
     def _test_vjp(self, homo_w, replace, transpose):
         n_in = 20
@@ -74,7 +75,7 @@ class TestVectorCSR(unittest.TestCase):
         shape = [n_in, n_out]
         x = bst.random.rand(n_in) if transpose else bst.random.rand(n_out)
 
-        indptr, indices = _get_csr(n_in, n_out, 0.2, replace=replace)
+        indptr, indices = get_csr(n_in, n_out, 0.2, replace=replace)
         w = 1.5 if homo_w else bst.init.Normal()(indices.shape)
         csr = brainevent.CSR((w, indices, indptr), shape=shape)
 
@@ -98,22 +99,22 @@ class TestVectorCSR(unittest.TestCase):
             return r.sum()
 
         r2 = jax.grad(f_jax, argnums=(0, 1))(x, w)
-        self.assertTrue(jnp.allclose(r[0], r2[0], rtol=1e-3, atol=1e-3))
-        self.assertTrue(jnp.allclose(r[1], r2[1], rtol=1e-3, atol=1e-3))
+        assert (jnp.allclose(r[0], r2[0], rtol=1e-3, atol=1e-3))
+        assert (jnp.allclose(r[1], r2[1], rtol=1e-3, atol=1e-3))
 
-    def test_vjp(self):
-        for replace in [True, False]:
-            for transpose in [True, False]:
-                for homo_w in [True, False]:
-                    print(f'replace = {replace}, transpose = {transpose}, homo_w = {homo_w}')
-                    self._test_vjp(homo_w=homo_w, replace=replace, transpose=transpose)
+    @pytest.mark.parametrize('homo_w', [True, False])
+    @pytest.mark.parametrize('replace', [True, False])
+    @pytest.mark.parametrize('transpose', [True, False])
+    def test_vjp(self, homo_w, replace, transpose):
+        print(f'replace = {replace}, transpose = {transpose}, homo_w = {homo_w}')
+        self._test_vjp(homo_w=homo_w, replace=replace, transpose=transpose)
 
     def _test_jvp(self, homo_w, replace, transpose):
         n_in = 20
         n_out = 30
         shape = [n_in, n_out]
         x = bst.random.rand(n_in if transpose else n_out)
-        indptr, indices = _get_csr(n_in, n_out, 0.1, replace=replace)
+        indptr, indices = get_csr(n_in, n_out, 0.1, replace=replace)
 
         w = 1.5 if homo_w else bst.init.Normal()(indices.shape)
         csr = brainevent.CSR((w, indices, indptr), shape=shape)
@@ -138,15 +139,15 @@ class TestVectorCSR(unittest.TestCase):
             return r
 
         o2, r2 = jax.jvp(f_jax, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
-        self.assertTrue(jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3))
-        self.assertTrue(jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3))
+        assert (jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3))
+        assert (jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3))
 
-    def test_jvp(self):
-        for replace in [True, False]:
-            for transpose in [True, False]:
-                for homo_w in [True, False]:
-                    print(f'replace = {replace}, transpose = {transpose}, homo_w = {homo_w}')
-                    self._test_jvp(homo_w=homo_w, replace=replace, transpose=transpose)
+    @pytest.mark.parametrize('homo_w', [True, False])
+    @pytest.mark.parametrize('replace', [True, False])
+    @pytest.mark.parametrize('transpose', [True, False])
+    def test_jvp(self, homo_w, replace, transpose):
+        print(f'replace = {replace}, transpose = {transpose}, homo_w = {homo_w}')
+        self._test_jvp(homo_w=homo_w, replace=replace, transpose=transpose)
 
 
 class TestBatchingVectorCSRFloat(TestBatchingVectorCSR):
@@ -209,30 +210,30 @@ class TestBatchingVectorCSRFloat(TestBatchingVectorCSR):
         return r1, r2
 
 
-class TestMatrixCSR(unittest.TestCase):
-    def test_matrix_csr(self):
+class TestMatrixCSR:
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_matrix_csr(self, homo_w):
         k, m, n = 10, 20, 40
         x = bst.random.rand(k, m)
-        indptr, indices = _get_csr(m, n, 0.1)
+        indptr, indices = get_csr(m, n, 0.1)
 
-        for homo_w in [True, False]:
-            data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
-            csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-            y = x @ csr
-            y2 = matrix_csr(x, csr.data, indices, indptr, [m, n])
-            self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+        data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
+        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
+        y = x @ csr
+        y2 = matrix_csr(x, csr.data, indices, indptr, [m, n])
+        assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
-    def test_csr_matrix(self):
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_csr_matrix(self, homo_w):
         m, n, k = 20, 40, 10
         matrix = bst.random.rand(n, k)
-        indptr, indices = _get_csr(m, n, 0.1)
+        indptr, indices = get_csr(m, n, 0.1)
 
-        for homo_w in [True, False]:
-            data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
-            csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-            y = csr @ matrix
-            y2 = csr_matrix(matrix, csr.data, indices, indptr, [m, n])
-            self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+        data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
+        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
+        y = csr @ matrix
+        y2 = csr_matrix(matrix, csr.data, indices, indptr, [m, n])
+        assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
     # @parameterized.product(
     #     bool_x=[True, False],
@@ -263,8 +264,8 @@ class TestMatrixCSR(unittest.TestCase):
     #         return true_fn(x, w, indices, indptr, n_out).sum()
     #
     #     r2 = jax.grad(f2, argnums=(0, 1))(x, w)
-    #     self.assertTrue(jnp.allclose(r[0], r2[0]))
-    #     self.assertTrue(jnp.allclose(r[1], r2[1]))
+    #     assert (jnp.allclose(r[0], r2[0]))
+    #     assert (jnp.allclose(r[1], r2[1]))
     #
     # @parameterized.product(
     #     bool_x=[True, False],
@@ -296,8 +297,8 @@ class TestMatrixCSR(unittest.TestCase):
     #         return true_fn(x, w, indices, indptr, n_out)
     #
     #     o2, r2 = jax.jvp(f2, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
-    #     self.assertTrue(jnp.allclose(r1, r2))
-    #     self.assertTrue(jnp.allclose(o1, o2))
+    #     assert (jnp.allclose(r1, r2))
+    #     assert (jnp.allclose(o1, o2))
 
 
 class TestBatchingMatrixCSRFloat(TestBatchingMatrixCSR):

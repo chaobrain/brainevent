@@ -96,6 +96,8 @@ def _csr_todense(
       mat : array with specified shape and dtype matching ``data``
     """
     data, unit = u.split_mantissa_unit(data)
+    if data.size == 1:
+        data = jnp.ones(indices.shape, dtype=data.dtype) * data
     mat = csr_todense_p.bind(data, indices, indptr, shape=shape)
     return u.maybe_decimal(mat * unit)
 
