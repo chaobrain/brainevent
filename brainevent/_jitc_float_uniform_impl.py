@@ -25,7 +25,7 @@ from jax.interpreters import ad
 from ._compatible_import import pallas as pl
 from ._jitc_util import _initialize_seed, _initialize_conn_length
 from ._pallas_random import LFSR88RNG
-from ._typing import Kernel, Data, MatrixShape
+from ._typing import Data, MatrixShape
 from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_pallas import PallasKernelGenerator
@@ -129,7 +129,7 @@ def _jitc_uniform_matrix_cpu_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     if corder:
         if transpose:
             # JIT matrix.T
@@ -276,7 +276,7 @@ def _jitc_uniform_matrix_gpu_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     import warp
 
     w_low_dtype = dtype_to_warp_type(w_low_info.dtype)
@@ -469,7 +469,7 @@ def _jitc_uniform_matrix_pallas_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     if corder:
         if transpose:
             # JIT matrix.T
@@ -688,12 +688,7 @@ def float_jitc_uniform_matrix_p_call(
 
 
 float_jitc_uniform_matrix_p = XLACustomKernel('float_jitc_uniform_matrix')
-float_jitc_uniform_matrix_p.def_cpu_kernel(
-    NumbaKernelGenerator(
-        _jitc_uniform_matrix_cpu_kernel_generator,
-        input_output_aliases={4: 0}
-    )
-)
+float_jitc_uniform_matrix_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_uniform_matrix_cpu_kernel_generator))
 float_jitc_uniform_matrix_p.def_gpu_kernel(
     GPUKernelChoice(
         default='warp',
@@ -702,20 +697,10 @@ float_jitc_uniform_matrix_p.def_gpu_kernel(
             dim=lambda out_info, corder, **kwargs: out_info.shape[0] if corder else out_info.shape[1],
             input_output_aliases={4: 0}
         ),
-        pallas_kernel=PallasKernelGenerator(
-            _jitc_uniform_matrix_pallas_kernel_generator,
-            block_dim=1,
-            input_output_aliases={4: 0}
-        ),
+        pallas_kernel=PallasKernelGenerator(_jitc_uniform_matrix_pallas_kernel_generator),
     )
 )
-float_jitc_uniform_matrix_p.def_tpu_kernel(
-    PallasKernelGenerator(
-        _jitc_uniform_matrix_pallas_kernel_generator,
-        block_dim=1,
-        input_output_aliases={4: 0}
-    ),
-)
+float_jitc_uniform_matrix_p.def_tpu_kernel(PallasKernelGenerator(_jitc_uniform_matrix_pallas_kernel_generator))
 float_jitc_uniform_matrix_p.def_batching_rule(_jitc_uniform_matrix_batching)
 
 
@@ -911,7 +896,7 @@ def _jitc_mv_uniform_gpu_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     import warp
 
     w_low_dtype = dtype_to_warp_type(w_low_info.dtype)
@@ -1500,7 +1485,7 @@ def _jitc_mm_uniform_gpu_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     import warp
 
     w_low_dtype = dtype_to_warp_type(w_low_info.dtype)

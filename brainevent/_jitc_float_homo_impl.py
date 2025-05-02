@@ -1165,20 +1165,10 @@ float_jitc_homo_matrix_p.def_gpu_kernel(
             dim=lambda out_info, corder, **kwargs: out_info.shape[0] if corder else out_info.shape[1],
             input_output_aliases={3: 0}
         ),
-        pallas_kernel=PallasKernelGenerator(
-            _jitc_homo_matrix_pallas_kernel_generator,
-            block_dim=1,
-            input_output_aliases={3: 0}
-        )
+        pallas_kernel=PallasKernelGenerator(_jitc_homo_matrix_pallas_kernel_generator)
     )
 )
-float_jitc_homo_matrix_p.def_tpu_kernel(
-    PallasKernelGenerator(
-        _jitc_homo_matrix_pallas_kernel_generator,
-        block_dim=1,
-        input_output_aliases={3: 0}
-    ),
-)
+float_jitc_homo_matrix_p.def_tpu_kernel(PallasKernelGenerator(_jitc_homo_matrix_pallas_kernel_generator))
 float_jitc_homo_matrix_p.def_batching_rule(_jitc_homo_matrix_batching)
 
 

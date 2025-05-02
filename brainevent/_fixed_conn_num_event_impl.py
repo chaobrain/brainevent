@@ -416,7 +416,6 @@ def _event_fixed_post_num_mv_warp_kernel_generator(
 
 
 def _event_fixed_post_num_mv_pallas_kernel_generator(
-    block_dim: int,
     transpose: int,
     shape: Tuple[int, int],
     float_as_event: bool,
@@ -427,6 +426,7 @@ def _event_fixed_post_num_mv_pallas_kernel_generator(
     n_pre, n_post = shape
     n_conn = indices_info.shape[1]
     homo = jnp.size(weight_info) == 1
+    block_dim = generate_block_dim(kwargs['indices_info'].shape[1])
 
     if transpose:
         if homo:
@@ -716,20 +716,10 @@ event_fixed_post_num_mv_p.def_gpu_kernel(
             block_dim=TILE_THREADS,
             input_output_aliases={3: 0}
         ),
-        pallas_kernel=PallasKernelGenerator(
-            _event_fixed_post_num_mv_pallas_kernel_generator,
-            block_dim=lambda **kwargs: generate_block_dim(kwargs['indices_info'].shape[1]),
-            input_output_aliases={3: 0},
-        )
+        pallas_kernel=PallasKernelGenerator(_event_fixed_post_num_mv_pallas_kernel_generator)
     )
 )
-event_fixed_post_num_mv_p.def_tpu_kernel(
-    PallasKernelGenerator(
-        _event_fixed_post_num_mv_pallas_kernel_generator,
-        block_dim=lambda **kwargs: generate_block_dim(kwargs['indices_info'].shape[1]),
-        input_output_aliases={3: 0},
-    )
-)
+event_fixed_post_num_mv_p.def_tpu_kernel(PallasKernelGenerator(_event_fixed_post_num_mv_pallas_kernel_generator))
 event_fixed_post_num_mv_p.def_jvp_rule2(
     _event_fixed_post_num_mv_jvp_weights,
     None,

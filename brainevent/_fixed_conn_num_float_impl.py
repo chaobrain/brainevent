@@ -171,7 +171,6 @@ def _fixed_num_mv_warp_kernel_generator(
 
 
 def _fixed_num_mv_pallas_kernel_generator(
-    block_dim: int,
     shape: Sequence[int],
     transpose: bool,
     weight_info: jax.ShapeDtypeStruct,
@@ -183,6 +182,7 @@ def _fixed_num_mv_pallas_kernel_generator(
     n_pre, n_post = shape
     n_conn = indices_info.shape[1]
     homo = jnp.size(weight_info) == 1
+    block_dim = generate_block_dim(indices_info.shape[1])
 
     if transpose:
 
@@ -520,20 +520,10 @@ fixed_num_mv_p.def_gpu_kernel(
             ),
             input_output_aliases={3: 0}
         ),
-        pallas_kernel=PallasKernelGenerator(
-            _fixed_num_mv_pallas_kernel_generator,
-            block_dim=lambda indices_info, **kwargs: generate_block_dim(indices_info.shape[1]),
-            input_output_aliases={3: 0}
-        ),
+        pallas_kernel=PallasKernelGenerator(_fixed_num_mv_pallas_kernel_generator),
     )
 )
-fixed_num_mv_p.def_tpu_kernel(
-    PallasKernelGenerator(
-        _fixed_num_mv_pallas_kernel_generator,
-        block_dim=lambda indices_info, **kwargs: generate_block_dim(indices_info.shape[1]),
-        input_output_aliases={3: 0}
-    )
-)
+fixed_num_mv_p.def_tpu_kernel(PallasKernelGenerator(_fixed_num_mv_pallas_kernel_generator))
 fixed_num_mv_p.def_jvp_rule2(_fixed_num_mv_jvp_weights, None, _fixed_num_mv_jvp_vector, None)
 fixed_num_mv_p.def_transpose_rule(_fixed_num_mv_transpose_rule)
 
@@ -638,7 +628,6 @@ def _fixed_num_mm_warp_kernel_generator(
 
 
 def _fixed_num_mm_pallas_kernel_generator(
-    block_dim: int,
     shape: Sequence[int],
     transpose: bool,
     weight_info: jax.ShapeDtypeStruct,
@@ -650,6 +639,7 @@ def _fixed_num_mm_pallas_kernel_generator(
     n_pre, n_post = shape
     n_conn = indices_info.shape[1]
     homo = jnp.size(weight_info) == 1
+    block_dim = generate_block_dim(indices_info.shape[1])
 
     raise NotImplementedError
 
@@ -1003,19 +993,9 @@ fixed_num_mm_p.def_gpu_kernel(
             ),
             input_output_aliases={3: 0}
         ),
-        pallas_kernel=PallasKernelGenerator(
-            _fixed_num_mm_pallas_kernel_generator,
-            block_dim=lambda indices_info, **kwargs: generate_block_dim(indices_info.shape[1]),
-            input_output_aliases={3: 0}
-        )
+        pallas_kernel=PallasKernelGenerator(_fixed_num_mm_pallas_kernel_generator)
     )
 )
-fixed_num_mm_p.def_tpu_kernel(
-    PallasKernelGenerator(
-        _fixed_num_mm_pallas_kernel_generator,
-        block_dim=lambda indices_info, **kwargs: generate_block_dim(indices_info.shape[1]),
-        input_output_aliases={3: 0}
-    )
-)
+fixed_num_mm_p.def_tpu_kernel(PallasKernelGenerator(_fixed_num_mm_pallas_kernel_generator))
 fixed_num_mm_p.def_jvp_rule2(_fixed_num_mm_jvp_weights, None, _fixed_num_mm_jvp_matrix, None)
 fixed_num_mm_p.def_transpose_rule(_fixed_num_mm_transpose_rule)

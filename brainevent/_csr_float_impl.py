@@ -580,16 +580,10 @@ csrmv_p.def_gpu_kernel(
             ),
             input_output_aliases={4: 0}
         ),
-        pallas_kernel=PallasKernelGenerator(
-            _csrmv_pallas_tiled_kernel_generator,
-            input_output_aliases={4: 0}
-        )
+        pallas_kernel=PallasKernelGenerator(_csrmv_pallas_tiled_kernel_generator)
     )
 )
-csrmv_p.def_tpu_kernel(
-    PallasKernelGenerator(_csrmv_pallas_tiled_kernel_generator,
-                          input_output_aliases={4: 0})
-)
+csrmv_p.def_tpu_kernel(PallasKernelGenerator(_csrmv_pallas_tiled_kernel_generator))
 csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
 csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
 csrmv_p.def_batching_rule(_csrmv_batching)
