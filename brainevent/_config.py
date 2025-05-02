@@ -20,23 +20,63 @@ import json
 import pathlib
 import threading
 from contextlib import contextmanager
-from typing import Dict, Any, Optional, Union, NamedTuple
+from typing import Dict, Any, Optional, Union, Callable
 
 __all__ = [
+    'config',
     'load_config',
-    'save_config',
+    'set_config',
     'set_environ',
     'set_numba_environ',
     'numba_environ_context',
+    'numba_environ',
 ]
 
 
-class Config(NamedTuple):
-    gpu_kernel_use_warp = True
+class Config:
+    """
+    A named tuple that stores configuration settings for the brainevent package.
+
+    This class provides a typed, immutable container for configuration settings
+    that affect the behavior of the library, particularly regarding GPU kernel backends.
+
+    Attributes
+    ----------
+    gpu_kernel_backend : str, default 'default'
+        The backend to use for GPU kernel operations.
+        Valid values are 'default', 'warp', and 'pallas'.
+    """
+    gpu_kernel_backend = 'default'
+
+    def set_gpu_backend(self, backend: str) -> None:
+        """
+        Set the GPU kernel backend.
+
+        Parameters
+        ----------
+        backend : str
+            The backend to set. Can be 'default', 'jax', or 'torch'.
+        """
+        if backend not in ['default', 'warp', 'pallas']:
+            raise ValueError(
+                f'Invalid backend: {backend}, must be one of {["default", "warp", "pallas"]}'
+            )
+        self.gpu_kernel_backend = backend
+
+    def get_gpu_backend(self) -> str:
+        """
+        Get the current GPU kernel backend.
+
+        Returns
+        -------
+        str
+            The current backend.
+        """
+        return self.gpu_kernel_backend
 
 
 # Config singleton
-config = dict()
+config = Config()
 
 # Default configuration path
 DEFAULT_CONFIG_PATH = pathlib.Path.home() / '.brainevent' / 'config.json'
@@ -73,7 +113,7 @@ def load_config(config_path: Optional[Union[str, pathlib.Path]] = None) -> Dict[
     return {}
 
 
-def save_config(
+def set_config(
     config_dict: Dict[str, Any],
     config_path: Optional[Union[str, pathlib.Path]] = None
 ) -> None:
@@ -114,7 +154,7 @@ def set_environ(**kwargs) -> None:
     config_dict.update(**kwargs)
 
     # Save the updated config
-    save_config(config_dict)
+    set_config(config_dict)
 
 
 def initialize_config():
@@ -138,11 +178,66 @@ def initialize_config():
 
 
 class NumbaEnvironment(threading.local):
+    """
+    Thread-local environment for managing Numba configuration settings.
+
+    This class provides a thread-safe way to configure Numba JIT compilation
+    parameters. It inherits from threading.local to ensure that each thread
+    has its own independent configuration.
+
+    Attributes
+    ----------
+    parallel : bool
+        Flag to enable or disable parallel execution in Numba.
+        Defaults to True.
+    setting : dict
+        Dictionary of Numba JIT compilation parameters.
+        Defaults to {'nogil': True, 'fastmath': True}.
+    """
+
     def __init__(self, *args, **kwargs):
         # default environment settings
         super().__init__(*args, **kwargs)
-        self.parallel: bool = False
+        self.parallel: bool = True
         self.setting: dict = dict(nogil=True, fastmath=True)
+
+    def jit_fn(self, fn: Callable):
+        """
+        Apply standard Numba JIT compilation to a function.
+
+        Parameters
+        ----------
+        fn : Callable
+            The function to be JIT compiled.
+
+        Returns
+        -------
+        Callable
+            The compiled function with applied JIT optimizations.
+        """
+        import numba
+        return numba.njit(fn, **self.setting)
+
+    def pjit_fn(self, fn: Callable):
+        """
+        Apply parallel Numba JIT compilation to a function.
+
+        This uses the current parallel setting to determine whether
+        to enable parallel execution.
+
+        Parameters
+        ----------
+        fn : Callable
+            The function to be JIT compiled with parallel support.
+
+        Returns
+        -------
+        Callable
+            The compiled function with applied JIT optimizations and
+            parallel execution if enabled.
+        """
+        import numba
+        return numba.njit(fn, **self.setting, parallel=self.parallel)
 
 
 numba_environ = NumbaEnvironment()

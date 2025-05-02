@@ -22,54 +22,56 @@ import pytest
 import brainevent
 from brainevent._coo_test_util import _get_coo, vector_coo, matrix_coo, coo_vector, coo_matrix
 
+pytest.mark.skipif(brainstate.environ.get_platform() != 'cpu', allow_module_level=True)
+
 
 class TestVectorCOO:
     @pytest.mark.parametrize('parallel', [True, False])
     @pytest.mark.parametrize('replace', [True, False])
-    def test_vector_coo(self, parallel, replace):
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_vector_coo(self, parallel, replace, homo_w):
         with brainevent.numba_environ_context(parallel_if_possible=parallel):
             m, n = 20, 40
             x = brainstate.random.rand(m)
             row, col = _get_coo(m, n, 0.1, replace=replace)
 
-            for homo_w in [True, False]:
-                print(f'homo_w = {homo_w}')
-                data = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
-                coo = brainevent.COO((data, row, col), shape=(m, n))
-                y = x @ coo
-                y2 = vector_coo(x, coo.data, row, col, [m, n])
-                assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+            print(f'homo_w = {homo_w}')
+            data = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
+            coo = brainevent.COO((data, row, col), shape=(m, n))
+            y = x @ coo
+            y2 = vector_coo(x, coo.data, row, col, [m, n])
+            assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
     @pytest.mark.parametrize('parallel', [True, False])
     @pytest.mark.parametrize('replace', [True, False])
-    def test_coo_vector(self, parallel, replace):
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_coo_vector(self, parallel, replace, homo_w):
         with brainevent.numba_environ_context(parallel_if_possible=parallel):
             m, n = 20, 40
             v = brainstate.random.rand(n)
             row, col = _get_coo(m, n, 0.1, replace=replace)
 
-            for homo_w in [True, False]:
-                data = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
-                coo = brainevent.COO((data, row, col), shape=(m, n))
-                y = coo @ v
-                y2 = coo_vector(v, coo.data, row, col, [m, n])
-                assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+            data = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
+            coo = brainevent.COO((data, row, col), shape=(m, n))
+            y = coo @ v
+            y2 = coo_vector(v, coo.data, row, col, [m, n])
+            assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
     @pytest.mark.parametrize('parallel', [True, False])
     @pytest.mark.parametrize('replace', [True, False])
-    def test_vector_coo_vmap_vector(self, parallel, replace):
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_vector_coo_vmap_vector(self, parallel, replace, homo_w):
         with brainevent.numba_environ_context(parallel_if_possible=parallel):
             n_batch, m, n = 10, 20, 40
             xs = brainstate.random.rand(n_batch, m)
             row, col = _get_coo(m, n, 0.1, replace=replace)
 
-            for homo_w in [True, False]:
-                data = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
-                coo = brainevent.COO((data, row, col), shape=(m, n))
-                y = jax.vmap(lambda x: x @ coo)(xs)
-                y2 = jax.vmap(lambda x: vector_coo(x, coo.data, row, col, [m, n]))(xs)
+            data = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
+            coo = brainevent.COO((data, row, col), shape=(m, n))
+            y = jax.vmap(lambda x: x @ coo)(xs)
+            y2 = jax.vmap(lambda x: vector_coo(x, coo.data, row, col, [m, n]))(xs)
 
-                assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+            assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
     def _test_vjp(self, homo_w, replace, transpose):
         with brainevent.numba_environ_context(parallel_if_possible=True):
@@ -103,12 +105,12 @@ class TestVectorCOO:
             assert (jnp.allclose(r[0], r2[0], rtol=1e-3, atol=1e-3))
             assert (jnp.allclose(r[1], r2[1], rtol=1e-3, atol=1e-3))
 
-    def test_vjp(self):
-        for replace in [True, False]:
-            for transpose in [True, False]:
-                for homo_w in [True, False]:
-                    print(f'replcae = {replace}, transpose = {transpose}, homo_w = {homo_w}')
-                    self._test_vjp(homo_w=homo_w, replace=replace, transpose=transpose)
+    @pytest.mark.parametrize('homo_w', [True, False])
+    @pytest.mark.parametrize('replace', [True, False])
+    @pytest.mark.parametrize('transpose', [True, False])
+    def test_vjp(self, transpose, replace, homo_w):
+        print(f'replcae = {replace}, transpose = {transpose}, homo_w = {homo_w}')
+        self._test_vjp(homo_w=homo_w, replace=replace, transpose=transpose)
 
     def _test_jvp(self, homo_w, replace, transpose):
         with brainevent.numba_environ_context(parallel_if_possible=True):
@@ -144,39 +146,39 @@ class TestVectorCOO:
             assert (jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3))
             assert (jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3))
 
-    def test_jvp(self):
-        for replace in [True, False]:
-            for transpose in [True, False]:
-                for homo_w in [True, False]:
-                    print(f'replace = {replace}, transpose = {transpose}, homo_w = {homo_w}')
-                    self._test_jvp(homo_w=homo_w, replace=replace, transpose=transpose)
+    @pytest.mark.parametrize('homo_w', [True, False])
+    @pytest.mark.parametrize('replace', [True, False])
+    @pytest.mark.parametrize('transpose', [True, False])
+    def test_jvp(self, transpose, replace, homo_w):
+        print(f'replace = {replace}, transpose = {transpose}, homo_w = {homo_w}')
+        self._test_jvp(homo_w=homo_w, replace=replace, transpose=transpose)
 
 
 class TestMatrixCOO:
     @pytest.mark.parametrize('parallel', [True, False])
-    def test_matrix_coo(self, parallel):
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_matrix_coo(self, parallel, homo_w):
         with brainevent.numba_environ_context(parallel_if_possible=parallel):
             k, m, n = 10, 20, 40
             x = brainstate.random.rand(k, m)
             row, col = _get_coo(m, n, 0.1)
 
-            for homo_w in [True, False]:
-                data = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
-                coo = brainevent.COO((data, row, col), shape=(m, n))
-                y = x @ coo
-                y2 = matrix_coo(x, coo.data, row, col, [m, n])
-                assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+            data = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
+            coo = brainevent.COO((data, row, col), shape=(m, n))
+            y = x @ coo
+            y2 = matrix_coo(x, coo.data, row, col, [m, n])
+            assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
     @pytest.mark.parametrize('parallel', [True, False])
-    def test_coo_matrix(self, parallel):
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_coo_matrix(self, parallel, homo_w):
         with brainevent.numba_environ_context(parallel_if_possible=parallel):
             m, n, k = 20, 40, 10
             x = brainstate.random.rand(n, k)
             row, col = _get_coo(m, n, 0.1)
 
-            for homo_w in [True, False]:
-                data = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
-                coo = brainevent.COO((data, row, col), shape=(m, n))
-                y = coo @ x
-                y2 = coo_matrix(x, coo.data, row, col, [m, n])
-                assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+            data = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
+            coo = brainevent.COO((data, row, col), shape=(m, n))
+            y = coo @ x
+            y2 = coo_matrix(x, coo.data, row, col, [m, n])
+            assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))

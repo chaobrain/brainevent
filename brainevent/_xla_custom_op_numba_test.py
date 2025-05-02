@@ -38,7 +38,7 @@ class TestNumbaCPU(unittest.TestCase):
             o_ref[...] = x + y
 
         def cpu_kernel(**kwargs):
-            @numba.njit
+            @brainevent.numba_kernel
             def add_kernel_numba(x, y, out):
                 out[...] = x + y
 

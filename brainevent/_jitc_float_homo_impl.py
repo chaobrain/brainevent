@@ -23,15 +23,15 @@ from jax import numpy as jnp
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
-from ._config import Config, numba_environ
+from ._config import numba_environ
 from ._jitc_util import _initialize_seed, _initialize_conn_length
 from ._pallas_random import LFSR88RNG
-from ._typing import Kernel, Data, MatrixShape
-from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_numba import NumbaKernelGenerator
+from ._typing import Data, MatrixShape
+from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
+from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_util import general_batching_rule
-from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
+from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator, warp_kernel
 
 __all__ = [
     "float_jitc_homo_matrix",
@@ -263,12 +263,7 @@ def _jitc_homo_matrix_cpu_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
-    r"""
-    Generate the CPU kernel for the :func:`_jitc_matvec_homo` operation.
-    """
-    import numba  # pylint: disable=import-outside-toplevel
-
+):
     if corder:
         # This means that the for loop is parallelized along the dimension of the output vector: ``post.shape[0]``.
 
@@ -279,45 +274,6 @@ def _jitc_homo_matrix_cpu_kernel_generator(
             #
 
             def kernel(weight, clen, seed, _, posts):
-                """
-                CPU kernel function for generating a sparse random matrix with homogeneous weights.
-
-                This function implements the matrix generation when transpose=True and corder=True.
-                It creates a sparse matrix where non-zero entries have the same value (weight0) and
-                are randomly distributed with an approximate probability of 1/clen0.
-
-                The matrix is generated using a random sampling approach rather than explicitly storing
-                all values. For each row in the output matrix, it determines the positions of non-zero
-                entries using random skipping, which provides an efficient way to sample sparse connections.
-
-                Mathematical model:
-                    For each row i_row:
-                        1. Start at a random column position i_col ∈ [0, clen0)
-                        2. Set posts[i_row, i_col] = weight0
-                        3. Skip ahead by a random interval in [1, clen0)
-                        4. Repeat until i_col >= m
-
-                This creates a sparse matrix with approximately 1/clen0 connection probability.
-
-                Parameters
-                ----------
-                weight : ndarray
-                    Single-element array containing the homogeneous weight value for connections
-                clen : ndarray
-                    Single-element array containing the connection length parameter (~1/connection_probability)
-                seed : ndarray
-                    Single-element array containing the random seed for reproducible matrix generation
-                _ : ndarray
-                    Unused placeholder parameter (required for API compatibility)
-                posts : ndarray
-                    Output array to store the generated matrix, shape (n, m)
-
-                Notes
-                -----
-                - The matrix is generated row by row, with each row containing approximately m/clen0 non-zero entries
-                - This transpose=True variant means we're generating the transpose of the regular matrix
-                - When transpose=True and corder=True, we're generating rows of the transposed matrix
-                """
                 m = posts.shape[1]
                 n = posts.shape[0]
 
@@ -351,45 +307,6 @@ def _jitc_homo_matrix_cpu_kernel_generator(
             #
 
             def kernel(weight, clen, seed, _, posts):
-                """
-                CPU kernel function for generating a sparse random matrix with homogeneous weights.
-
-                This function implements the matrix generation when transpose=False and corder=True.
-                It creates a sparse matrix where non-zero entries have the same value (weight0) and
-                are randomly distributed with an approximate probability of 1/clen0.
-
-                The matrix is generated using a random sampling approach rather than explicitly storing
-                all values. For each row in the output matrix, it determines the positions of non-zero
-                entries using random skipping, which provides an efficient way to sample sparse connections.
-
-                Mathematical model:
-                    For each row i_row:
-                        1. Start at a random column position i_col ∈ [0, clen0)
-                        2. Set posts[i_row, i_col] = weight0
-                        3. Skip ahead by a random interval in [1, clen0)
-                        4. Repeat until i_col >= n
-
-                This creates a sparse matrix with approximately 1/clen0 connection probability.
-
-                Parameters
-                ----------
-                weight : ndarray
-                    Single-element array containing the homogeneous weight value for connections
-                clen : ndarray
-                    Single-element array containing the connection length parameter (~1/connection_probability)
-                seed : ndarray
-                    Single-element array containing the random seed for reproducible matrix generation
-                _ : ndarray
-                    Unused placeholder parameter (required for API compatibility)
-                posts : ndarray
-                    Output array to store the generated matrix, shape (m, n)
-
-                Notes
-                -----
-                - The matrix is generated row by row, with each row containing approximately n/clen0 non-zero entries
-                - When transpose=False and corder=True, we're generating rows of the matrix directly
-                - The sparsity pattern is determined by the random seed, ensuring reproducibility
-                """
                 m = posts.shape[0]
                 n = posts.shape[1]
 
@@ -426,46 +343,6 @@ def _jitc_homo_matrix_cpu_kernel_generator(
             #
 
             def kernel(weight, clen, seed, _, posts):
-                """
-                CPU kernel function for generating a sparse random matrix with homogeneous weights.
-
-                This function implements the matrix generation when transpose=True and corder=False.
-                It creates a sparse matrix where non-zero entries have the same value (weight0) and
-                are randomly distributed with an approximate probability of 1/clen0.
-
-                The matrix is generated using a column-major approach where each column is processed
-                sequentially, and non-zero entries within each column are determined using random skipping.
-                This approach ensures consistency between this matrix and its transpose when generated
-                with transpose=False and corder=False.
-
-                Mathematical model:
-                    For each column i_col:
-                        1. Start at a random row position i_row ∈ [0, clen0)
-                        2. Set posts[i_row, i_col] = weight0
-                        3. Skip ahead by a random interval in [1, clen0)
-                        4. Repeat until i_row >= n
-
-                This creates a sparse matrix with approximately 1/clen0 connection probability.
-
-                Parameters
-                ----------
-                weight : ndarray
-                    Single-element array containing the homogeneous weight value for connections
-                clen : ndarray
-                    Single-element array containing the connection length parameter (~1/connection_probability)
-                seed : ndarray
-                    Single-element array containing the random seed for reproducible matrix generation
-                _ : ndarray
-                    Unused placeholder parameter (required for API compatibility)
-                posts : ndarray
-                    Output array to store the generated matrix, shape (n, m)
-
-                Notes
-                -----
-                - The matrix is generated column by column, with each column containing approximately n/clen0 non-zero entries
-                - When transpose=True and corder=False, we're generating columns of the transposed matrix
-                - This algorithm is complementary to the row-major approach used when corder=True
-                """
                 m = posts.shape[1]
                 n = posts.shape[0]
 
@@ -499,47 +376,6 @@ def _jitc_homo_matrix_cpu_kernel_generator(
             #
 
             def kernel(weight, clen, seed, _, posts):
-                """
-                CPU kernel function for generating a sparse random matrix with homogeneous weights.
-
-                This function implements the matrix generation when transpose=False and corder=False.
-                It creates a sparse matrix where non-zero entries have the same value (weight0) and
-                are randomly distributed with an approximate probability of 1/clen0.
-
-                The matrix is generated using a column-major approach where each column is processed
-                sequentially, and non-zero entries within each column are determined using random skipping.
-                This provides an efficient way to generate a sparse connectivity pattern and ensures
-                consistency between this matrix and its transpose when generated with appropriate parameters.
-
-                Mathematical model:
-                    For each column i_col:
-                        1. Start at a random row position i_row ∈ [0, clen0)
-                        2. Set posts[i_row, i_col] = weight0
-                        3. Skip ahead by a random interval in [1, clen0)
-                        4. Repeat until i_row >= m
-
-                This creates a sparse matrix with approximately 1/clen0 connection probability.
-
-                Parameters
-                ----------
-                weight : ndarray
-                    Single-element array containing the homogeneous weight value for connections
-                clen : ndarray
-                    Single-element array containing the connection length parameter (~1/connection_probability)
-                seed : ndarray
-                    Single-element array containing the random seed for reproducible matrix generation
-                _ : ndarray
-                    Unused placeholder parameter (required for API compatibility)
-                posts : ndarray
-                    Output array to store the generated matrix, shape (m, n)
-
-                Notes
-                -----
-                - The matrix is generated column by column, with each column containing approximately m/clen0 non-zero entries
-                - When transpose=False and corder=False, we're generating columns of the matrix directly
-                - This approach ensures that the generated matrix is consistent with its transpose
-                  when using transpose=True and corder=False
-                """
                 m = posts.shape[0]  # Number of rows in the output matrix
                 n = posts.shape[1]  # Number of columns in the output matrix
 
@@ -566,17 +402,18 @@ def _jitc_homo_matrix_cpu_kernel_generator(
                         # The random skip ensures proper connection probability
                         i_row += np.random.randint(1, clen0)
 
-    return numba.njit(kernel, **numba_environ.setting)
+    return numba_kernel(kernel, parallel=False, input_output_aliases={3: 0})
 
 
 def _jitc_homo_matrix_gpu_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
+    out_info: jax.ShapeDtypeStruct,
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     r"""
     Generate the GPU kernel for the :func:`_jitc_matvec_homo` operation.
     """
@@ -601,47 +438,6 @@ def _jitc_homo_matrix_gpu_kernel_generator(
                 _: warp.array2d(dtype=weight_dtype),
                 posts: warp.array2d(dtype=weight_dtype),
             ):
-                """
-                GPU kernel function for generating a sparse random matrix with homogeneous weights.
-
-                This function implements the matrix generation when ``transpose=True`` and ``corder=True``
-                for GPU execution using Warp. It creates a sparse matrix where non-zero entries have
-                the same value (``weight0``) and are randomly distributed with an approximate probability
-                of ``1/clen0``.
-
-                The sparse matrix generation uses a thread-parallel approach where each CUDA thread
-                handles one column of the transposed matrix. Instead of explicitly storing all values,
-                it uses random skipping to efficiently sample non-zero positions.
-
-                Mathematical model:
-                    For each column i_col (thread):
-                        1. Start at a random row position i_row ∈ [0, clen0)
-                        2. Set posts[i_col, i_row] = weight0
-                        3. Skip ahead by a random interval in [1, clen0)
-                        4. Repeat until i_row >= m
-
-                This creates a sparse matrix with approximately ``1/clen0`` connection probability.
-
-                Parameters
-                ----------
-                weight : warp.array1d
-                    Single-element array containing the homogeneous weight value for connections
-                clen : warp.array1d
-                    Single-element array containing the connection length parameter (~1/connection_probability)
-                seed : warp.array1d
-                    Single-element array containing the random seed for reproducible matrix generation
-                _ : warp.array2d
-                    Unused placeholder parameter (required for API compatibility)
-                posts : warp.array1d
-                    Output array to store the generated matrix, shape (n, m) where n is implicit from threads
-
-                Notes
-                -----
-                - Each CUDA thread processes one column (i_col) of the output matrix in parallel
-                - The random state is initialized with the base seed plus thread ID to ensure
-                  different but reproducible random sequences for each column
-                - The sparsity pattern follows a geometric-like distribution for connection intervals
-                """
                 m = posts.shape[1]
 
                 # Extract scalar values from input arrays for more efficient access
@@ -682,48 +478,6 @@ def _jitc_homo_matrix_gpu_kernel_generator(
                 _: warp.array2d(dtype=weight_dtype),
                 posts: warp.array2d(dtype=weight_dtype),
             ):
-                """
-                GPU kernel function for generating a sparse random matrix with homogeneous weights.
-
-                This function implements a sparse matrix generation algorithm for GPU execution using Warp.
-                It creates a matrix where non-zero entries all have the same value (weight0) and are randomly
-                distributed with connection probability approximately 1/clen0.
-
-                The matrix is generated using a row-wise parallel approach where each CUDA thread
-                processes one row of the output matrix. Each thread uses a deterministic random
-                sampling method to determine which columns in its row should contain the weight value.
-
-                Mathematical model:
-                    For each row i_row (thread):
-                        1. Initialize random state using seed0 + i_row
-                        2. Start at a random column position i_col ∈ [0, clen0)
-                        3. Set posts[i_row, i_col] = weight0
-                        4. Skip ahead by a random interval in [1, clen0)
-                        5. Repeat until i_col >= n
-
-                This creates a sparse matrix with approximately 1/clen0 connection probability.
-
-                Parameters
-                ----------
-                weight : warp.array1d
-                    Single-element array containing the homogeneous weight value for connections
-                clen : warp.array1d
-                    Single-element array containing the connection length parameter (~1/connection_probability)
-                seed : warp.array1d
-                    Single-element array containing the random seed for reproducible matrix generation
-                _ : warp.array2d
-                    Unused placeholder parameter (required for API compatibility)
-                posts : warp.array1d
-                    Output array to store the generated matrix
-
-                Notes
-                -----
-                - Each CUDA thread processes one row of the output matrix in parallel
-                - The random state is initialized with the base seed plus thread ID to ensure
-                  different but reproducible random sequences for each row
-                - The sparsity pattern follows a geometric-like distribution for connection intervals
-                - When using many threads, this approach efficiently generates large sparse matrices
-                """
                 n = posts.shape[1]  # Get number of columns in the output matrix
 
                 # Extract scalar values from input arrays for more efficient access
@@ -766,52 +520,6 @@ def _jitc_homo_matrix_gpu_kernel_generator(
                 _: warp.array2d(dtype=weight_dtype),
                 posts: warp.array2d(dtype=weight_dtype),
             ):
-                """
-                GPU kernel function for generating a sparse random matrix with homogeneous weights.
-
-                This function implements the matrix generation when transpose=True and corder=False
-                for GPU execution using Warp. It creates a sparse matrix where non-zero entries have
-                the same value (weight0) and are randomly distributed with an approximate probability
-                of 1/clen0.
-
-                The sparse matrix is generated using a column-wise parallel approach where each CUDA
-                thread processes one column of the matrix. Each thread uses a deterministic random
-                sampling method to determine which rows in its column should receive the weight value.
-
-                Mathematical model:
-                    For each column i_col (thread):
-                        1. Initialize random state using seed0 + i_col
-                        2. Start at a random row position i_row ∈ [0, clen0)
-                        3. Set posts[i_row, i_col] = weight0
-                        4. Skip ahead by a random interval in [1, clen0)
-                        5. Repeat until i_row >= n
-
-                This creates a sparse matrix with approximately 1/clen0 connection probability and
-                ensures consistency between this matrix and its transpose when appropriate parameters
-                are used.
-
-                Parameters
-                ----------
-                weight : warp.array1d
-                    Single-element array containing the homogeneous weight value for connections
-                clen : warp.array1d
-                    Single-element array containing the connection length parameter (~1/connection_probability)
-                seed : warp.array1d
-                    Single-element array containing the random seed for reproducible matrix generation
-                _ : warp.array2d
-                    Unused placeholder parameter (required for API compatibility)
-                posts : warp.array2d
-                    Output array to store the generated matrix
-
-                Notes
-                -----
-                - Each CUDA thread processes one column of the output matrix in parallel
-                - The random state is initialized with the base seed plus thread ID to ensure
-                  different but reproducible random sequences for each column
-                - When transpose=True and corder=False, this kernel generates columns of the transposed matrix
-                - This approach ensures that the generated matrix is consistent with its transpose
-                  when using appropriate flags, improving reproducibility across operations
-                """
                 n = posts.shape[0]
 
                 # Extract scalar values from input arrays for more efficient access
@@ -854,52 +562,6 @@ def _jitc_homo_matrix_gpu_kernel_generator(
                 _: warp.array2d(dtype=weight_dtype),
                 posts: warp.array2d(dtype=weight_dtype),
             ):
-                """
-                GPU kernel function for generating a sparse random matrix with homogeneous weights.
-
-                This function implements the matrix generation when transpose=False and corder=False
-                for GPU execution using Warp. It creates a sparse matrix where non-zero entries have
-                the same value (weight0) and are randomly distributed with an approximate probability
-                of 1/clen0.
-
-                The matrix is generated using a column-wise parallel approach where each CUDA thread
-                processes one column of the matrix. Each thread uses a deterministic random sampling
-                method to determine which rows in its column should receive the weight value.
-
-                Mathematical model:
-                    For each column i_col (thread):
-                        1. Initialize random state using seed0 + i_col
-                        2. Start at a random row position i_row ∈ [0, clen0)
-                        3. Set posts[i_row, i_col] = weight0
-                        4. Skip ahead by a random interval in [1, clen0)
-                        5. Repeat until i_row >= m
-
-                This creates a sparse matrix with approximately 1/clen0 connection probability and
-                ensures consistency between this matrix and its transpose when appropriate parameters
-                are used.
-
-                Parameters
-                ----------
-                weight : warp.array1d
-                    Single-element array containing the homogeneous weight value for connections
-                clen : warp.array1d
-                    Single-element array containing the connection length parameter (~1/connection_probability)
-                seed : warp.array1d
-                    Single-element array containing the random seed for reproducible matrix generation
-                _ : warp.array2d
-                    Unused placeholder parameter (required for API compatibility)
-                posts : warp.array2d
-                    Output array to store the generated matrix
-
-                Notes
-                -----
-                - Each CUDA thread processes one column of the output matrix in parallel
-                - The random state is initialized with the base seed plus thread ID to ensure
-                  different but reproducible random sequences for each column
-                - When corder=False, this approach ensures that the generated matrix is consistent with
-                  its transpose when using transpose=True, improving reproducibility across operations
-                - This implementation optimizes memory access patterns for GPU execution
-                """
                 m = posts.shape[0]
 
                 # Extract scalar values from input arrays for more efficient access
@@ -927,7 +589,8 @@ def _jitc_homo_matrix_gpu_kernel_generator(
                     # This creates sparse connectivity with ~1/clen0 connection probability
                     i_row += warp.randi(state, 1, clen0)
 
-    return warp.kernel(kernel)
+    dim = out_info.shape[0] if corder else out_info.shape[1]
+    return warp_kernel(kernel, dim=dim, input_output_aliases={3: 0})
 
 
 def _jitc_homo_matrix_pallas_kernel_generator(
@@ -935,7 +598,7 @@ def _jitc_homo_matrix_pallas_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     if corder:
         if transpose:
             # JIT matrix.T
@@ -1156,36 +819,16 @@ def float_jitc_homo_matrix_p_call(
     )
 
 
-float_jitc_homo_matrix_p = XLACustomKernel(
-    'float_jitc_homo_matrix',
-    cpu_kernel=NumbaKernelGenerator(
-        _jitc_homo_matrix_cpu_kernel_generator,
-        input_output_aliases={3: 0}
-    ),
-)
-if Config.gpu_kernel_use_warp:
-    float_jitc_homo_matrix_p.def_gpu_kernel(
-        WarpKernelGenerator(
-            _jitc_homo_matrix_gpu_kernel_generator,
-            dim=lambda out_info, corder, **kwargs: out_info.shape[0] if corder else out_info.shape[1],
-            input_output_aliases={3: 0}
-        ),
+float_jitc_homo_matrix_p = XLACustomKernel('float_jitc_homo_matrix')
+float_jitc_homo_matrix_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_homo_matrix_cpu_kernel_generator))
+float_jitc_homo_matrix_p.def_gpu_kernel(
+    GPUKernelChoice(
+        default='warp',
+        warp_kernel=WarpKernelGenerator(_jitc_homo_matrix_gpu_kernel_generator),
+        pallas_kernel=PallasKernelGenerator(_jitc_homo_matrix_pallas_kernel_generator)
     )
-else:
-    float_jitc_homo_matrix_p.def_gpu_kernel(
-        PallasKernelGenerator(
-            _jitc_homo_matrix_pallas_kernel_generator,
-            block_dim=1,
-            input_output_aliases={3: 0}
-        ),
-    )
-float_jitc_homo_matrix_p.def_tpu_kernel(
-    PallasKernelGenerator(
-        _jitc_homo_matrix_pallas_kernel_generator,
-        block_dim=1,
-        input_output_aliases={3: 0}
-    ),
 )
+float_jitc_homo_matrix_p.def_tpu_kernel(PallasKernelGenerator(_jitc_homo_matrix_pallas_kernel_generator))
 float_jitc_homo_matrix_p.def_batching_rule(_jitc_homo_matrix_batching)
 
 
@@ -1195,58 +838,15 @@ def _jitc_mv_homo_cpu_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     r"""Generate the CPU kernel for the :func:`_jitc_matvec_homo` operation.
     """
-    import numba  # pylint: disable=import-outside-toplevel
 
     if corder:
         # This means that the for loop is parallelized along the dimension of the output vector: ``post.shape[0]``.
 
         if transpose:
-            @numba.njit(**numba_environ.setting)
             def kernel(weight, clen, vector, seed, _, posts):
-                """
-                Numba kernel implementation for matrix-vector multiplication where the matrix
-                is generated on-the-fly with homogeneous weights.
-
-                This kernel implements a vector-matrix multiplication where the matrix has a homogeneous weight
-                value and is sparsely connected with probability `clen`. Instead of generating the entire
-                matrix, connections are sampled using binomial distribution to identify non-zero entries.
-
-                The kernel is optimized for the case where `transpose=True` and `corder=True`, meaning
-                it represents the operation: vector @ matrix (or matrix.T @ vector if we consider the original matrix).
-
-                Parameters
-                ----------
-                weight : ndarray
-                    A scalar value stored as a single-element array, representing the homogeneous weight
-                    for all connections in the matrix.
-                clen : ndarray
-                    A scalar value stored as a single-element array, representing the connection probability.
-                    The value is approximately 2/p where p is the connection probability.
-                vector : ndarray
-                    The input vector to be multiplied with the randomly generated matrix.
-                seed : ndarray
-                    A scalar value stored as a single-element array, used as a seed for random number generation.
-                _ : ndarray
-                    Placeholder parameter (not used).
-                posts : ndarray
-                    Output array where the result will be stored.
-
-                Notes
-                -----
-                The algorithm uses a sparse sampling approach to avoid explicitly generating the entire matrix:
-                1. For each output column, it samples connected rows using binomial distribution
-                2. Only the connected entries contribute to the output sum
-                3. The final result is scaled by the weight value
-
-                Implementation details:
-                - The algorithm performs sparse matrix operations by randomly determining which entries contribute
-                - For efficiency, we don't explicitly generate the matrix but directly sample connections
-                - Each output element is computed by summing only the connected input vector elements
-                - The algorithm uses a skip-ahead random sampling approach to find connected elements
-                """
                 # Output vector dimension = number of columns in the matrix
                 n_col = posts.shape[0]
 
@@ -1285,52 +885,7 @@ def _jitc_mv_homo_cpu_kernel_generator(
                     posts[i_col] = out * weight0
 
         else:
-            @numba.njit(**numba_environ.setting)
             def kernel(weight, clen, vector, seed, _, posts):
-                """
-                Numba kernel implementation for matrix-vector multiplication where the matrix
-                is generated on-the-fly with homogeneous weights.
-
-                This kernel implements a matrix-vector multiplication where the matrix has a homogeneous weight
-                value and is sparsely connected with probability `clen`. Instead of generating the entire
-                matrix, connections are sampled using binomial distribution to identify non-zero entries.
-
-                The kernel is optimized for the case where `transpose=False` and `corder=True`, meaning
-                it represents the operation: matrix @ vector (standard matrix-vector product).
-
-                Parameters
-                ----------
-                weight : ndarray
-                    A scalar value stored as a single-element array, representing the homogeneous weight
-                    for all connections in the matrix.
-                clen : ndarray
-                    A scalar value stored as a single-element array, representing the connection probability.
-                    It's approximately 2/p where p is the connection probability, determining how sparse the matrix is.
-                vector : ndarray
-                    The input vector to be multiplied with the randomly generated matrix.
-                seed : ndarray
-                    A scalar value stored as a single-element array, used as a seed for random number generation
-                    to ensure reproducibility.
-                _ : ndarray
-                    Placeholder parameter (not used in this implementation).
-                posts : ndarray
-                    Output array where the result will be stored. Its shape determines the number of rows
-                    in the implicit matrix.
-
-                Notes
-                -----
-                The algorithm uses a sparse sampling approach to avoid explicitly generating the entire matrix:
-                1. For each output row, it samples connected columns using random skipping
-                2. Only the connected entries contribute to the output sum
-                3. The final result is scaled by the weight value
-
-                Implementation details:
-                - Connection probability is controlled by clen - larger values produce sparser matrices
-                - The sampling approach avoids storing the matrix which would require O(rows×cols) memory
-                - Time complexity is O(rows × average_connections_per_row), which is much more efficient
-                  for very sparse matrices than the O(rows × cols) of standard matrix multiplication
-                - This algorithm can be viewed as stochastic matrix generation with fixed weight values
-                """
                 # Output vector dimension = number of rows in the matrix
                 # Each row in the matrix will produce one element in the output vector
                 num_row = posts.shape[0]
@@ -1379,49 +934,7 @@ def _jitc_mv_homo_cpu_kernel_generator(
         # This means that the for loop is parallelized along the dimension of the vector: ``vector.shape[0]``.
 
         if transpose:
-            @numba.njit(**numba_environ.setting)
             def kernel(weight, clen, vector, seed, _, posts):
-                """
-                Numba kernel implementation for matrix-vector multiplication where the matrix
-                is generated on-the-fly with homogeneous weights.
-
-                This kernel implements a vector-matrix multiplication where the matrix has a homogeneous weight
-                value and is sparsely connected with probability ~1/clen. Instead of generating the entire
-                matrix, connections are sampled using random skipping to efficiently identify non-zero entries.
-
-                The kernel is optimized for the case where `transpose=True` and `corder=False`, meaning
-                it processes the input vector elements one by one, accumulating their contributions to the output vector.
-                This approach is particularly efficient for very sparse matrices.
-
-                Parameters
-                ----------
-                weight : ndarray
-                    A scalar value stored as a single-element array, representing the homogeneous weight
-                    for all connections in the matrix.
-                clen : ndarray
-                    A scalar value stored as a single-element array, representing the inverse of connection probability.
-                    Larger values result in sparser matrices (~1/clen is the connection probability).
-                vector : ndarray
-                    The input vector to be multiplied with the randomly generated matrix.
-                seed : ndarray
-                    A scalar value stored as a single-element array, used as a seed for random number generation
-                    to ensure reproducible results.
-                _ : ndarray
-                    Placeholder parameter (not used in this implementation).
-                posts : ndarray
-                    Output array where the result will be stored. Its length determines the number of columns
-                    in the implicit matrix.
-
-                Notes
-                -----
-                The algorithm uses a row-based approach for vector @ matrix multiplication:
-                1. For each input row (vector element), it applies the weight and samples connected columns
-                2. Each row contributes to multiple columns based on the sparse connectivity pattern
-                3. The algorithm efficiently skips zeros in the matrix using geometric-like distribution sampling
-
-                Time complexity is O(num_rows × average_connections_per_row) rather than O(num_rows × num_cols)
-                of standard matrix multiplication, making this approach much more efficient for sparse matrices.
-                """
                 # Output vector dimension = number of columns in the matrix
                 # This is the dimension of the result vector in the vector @ matrix operation
                 num_col = posts.shape[0]
@@ -1464,49 +977,7 @@ def _jitc_mv_homo_cpu_kernel_generator(
                         i_col += np.random.randint(1, clen0)
 
         else:
-            @numba.njit(**numba_environ.setting)
             def kernel(weight, clen, vector, seed, _, posts):
-                """
-                Numba kernel implementation for matrix-vector multiplication where the matrix
-                is generated on-the-fly with homogeneous weights.
-
-                This kernel implements a matrix-vector multiplication where the matrix has a homogeneous weight
-                value and is sparsely connected with probability ~1/clen. Instead of generating the entire
-                matrix, connections are sampled using random skipping to efficiently identify non-zero entries.
-
-                The kernel is optimized for the case where `transpose=False` and `corder=False`, meaning
-                it processes each input vector element (column) separately and accumulates its contributions to
-                all connected rows in the output vector. This is particularly efficient for sparse matrices.
-
-                Parameters
-                ----------
-                weight : ndarray
-                    A scalar value stored as a single-element array, representing the homogeneous weight
-                    for all connections in the matrix.
-                clen : ndarray
-                    A scalar value stored as a single-element array, representing the inverse of connection probability.
-                    Larger values result in sparser matrices (~1/clen is the connection probability).
-                vector : ndarray
-                    The input vector to be multiplied with the randomly generated matrix.
-                seed : ndarray
-                    A scalar value stored as a single-element array, used as a seed for random number generation
-                    to ensure reproducible results.
-                _ : ndarray
-                    Placeholder parameter (not used in this implementation).
-                posts : ndarray
-                    Output array where the result will be stored. Its shape determines the number of rows
-                    in the implicit matrix.
-
-                Notes
-                -----
-                The algorithm uses a column-centric approach for matrix @ vector multiplication:
-                1. For each input element, it pre-multiplies by weight and samples connected rows
-                2. Each column contributes to multiple rows based on the sparse connectivity pattern
-                3. The algorithm efficiently skips zeros in the matrix using geometric-like distribution sampling
-
-                Time complexity is O(num_cols × average_connections_per_col) rather than O(num_rows × num_cols)
-                of standard matrix multiplication, making this approach much more efficient for sparse matrices.
-                """
                 # Output vector dimension = number of rows in the matrix
                 # This represents the first dimension of the matrix and the result vector's size
                 num_row = posts.shape[0]
@@ -1547,7 +1018,8 @@ def _jitc_mv_homo_cpu_kernel_generator(
                         # Each next connection is approximately clen0 positions away on average
                         # This creates a sparse pattern where only ~1/clen0 of all possible connections exist
                         i_row += np.random.randint(1, clen0)
-    return kernel
+
+    return numba_kernel(kernel, parallel=False, input_output_aliases={4: 0})
 
 
 def _jitc_mv_homo_gpu_kernel_generator(
@@ -1555,10 +1027,11 @@ def _jitc_mv_homo_gpu_kernel_generator(
     clen_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
+    out_info: jax.ShapeDtypeStruct,
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     r"""
     Generate the GPU kernel for the :func:`_jitc_matvec_homo` operation.
     """
@@ -1568,6 +1041,8 @@ def _jitc_mv_homo_gpu_kernel_generator(
     clen_dtype = dtype_to_warp_type(clen_info.dtype)
     v_dtype = dtype_to_warp_type(vector_info.dtype)
     seed_dtype = dtype_to_warp_type(seed_info.dtype)
+
+    dim = (out_info.shape[0] if corder else vector_info.shape[0])
 
     if corder:
 
@@ -1580,41 +1055,6 @@ def _jitc_mv_homo_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype),
             ):
-                """
-                WARP GPU kernel for sparse matrix-vector multiplication with on-the-fly matrix generation.
-
-                Implements vector-matrix product where the matrix is generated implicitly with
-                sparse random connectivity and homogeneous weight values. This kernel handles
-                the transpose=True, corder=True case.
-
-                Each GPU thread processes one output element (column of the transposed matrix).
-                The kernel efficiently samples connected entries using a random skipping approach
-                to avoid generating the full matrix.
-
-                Parameters
-                ----------
-                weight : warp.array1d
-                    Single-element array containing the homogeneous weight value
-                clen : warp.array1d
-                    Single-element array with connection length parameter (~2/connection_probability)
-                vector : warp.array1d
-                    Input vector to be multiplied with the implicit matrix
-                seed : warp.array1d
-                    Single-element array with random seed for reproducible matrix generation
-                _ : warp.array1d
-                    Unused placeholder parameter (required for API compatibility)
-                posts : warp.array1d
-                    Output array where results are stored, shape determines output dimension
-
-                Notes
-                -----
-                The algorithm:
-                1. Each thread computes one element of the output vector
-                2. Uses thread ID to ensure parallel processing across output elements
-                3. Samples connected entries using random state initialized with seed+thread_id
-                4. Accumulates contributions from input vector elements at sampled positions
-                5. Finally scales by the weight value and stores in output
-                """
                 # Input vector dimension (number of rows in the matrix)
                 num_row = vector.shape[0]
 
@@ -1658,41 +1098,6 @@ def _jitc_mv_homo_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype),
             ):
-                """
-                WARP GPU kernel for sparse matrix-vector multiplication with on-the-fly matrix generation.
-
-                Implements matrix-vector product where the matrix is generated implicitly with
-                sparse random connectivity and homogeneous weight values. This kernel handles
-                the transpose=False, corder=True case.
-
-                Each GPU thread processes one output element (row of the matrix). The kernel
-                efficiently samples connected entries using a random skipping approach to avoid
-                generating the full matrix.
-
-                Parameters
-                ----------
-                weight : warp.array1d
-                    Single-element array containing the homogeneous weight value for all connections
-                clen : warp.array1d
-                    Single-element array containing connection length parameter (~2/connection_probability)
-                vector : warp.array1d
-                    Input vector to be multiplied with the implicit matrix
-                seed : warp.array1d
-                    Single-element array with random seed for reproducible matrix generation
-                _ : warp.array1d
-                    Unused placeholder parameter (required for API compatibility)
-                posts : warp.array1d
-                    Output array where results are stored, shape determines output dimension
-
-                Notes
-                -----
-                The algorithm:
-                1. Each thread computes one element of the output vector (one matrix row)
-                2. Thread ID identifies which row this thread is processing
-                3. Uses random sampling with geometric-like skipping to find connected columns
-                4. Accumulates weighted values from the input vector at connected positions
-                5. Finally applies the weight and stores result in the output array
-                """
                 # Input vector dimension (number of columns in the matrix)
                 num_col = vector.shape[0]
 
@@ -1737,42 +1142,6 @@ def _jitc_mv_homo_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype),
             ):
-                """
-                WARP GPU kernel for sparse matrix-vector multiplication with on-the-fly matrix generation.
-
-                Implements vector-matrix product where the matrix is generated implicitly with
-                sparse random connectivity and homogeneous weight values. This kernel handles
-                the transpose=True, corder=False case.
-
-                Each GPU thread processes one input element (row) and distributes its contribution
-                to all connected output elements. This approach is efficient for sparse matrices
-                as it avoids generating the full matrix.
-
-                Parameters
-                ----------
-                weight : warp.array1d
-                    Single-element array containing the homogeneous weight value for all connections
-                clen : warp.array1d
-                    Single-element array containing connection length parameter (~2/connection_probability)
-                vector : warp.array1d
-                    Input vector to be multiplied with the implicit matrix
-                seed : warp.array1d
-                    Single-element array with random seed for reproducible matrix generation
-                _ : warp.array1d
-                    Unused placeholder parameter (required for API compatibility)
-                posts : warp.array1d
-                    Output array where results are stored, shape determines output dimension
-
-                Notes
-                -----
-                The algorithm:
-                1. Each thread processes one input element (one row in the matrix)
-                2. Uses thread ID to determine which input element to process
-                3. Pre-multiplies the input value by weight for efficiency
-                4. Samples connected output positions using geometric-like distribution
-                5. Updates the corresponding output elements using atomic additions
-                6. This row-based approach efficiently handles sparse connectivity patterns
-                """
                 # Output dimension (number of columns in the matrix)
                 num_col = posts.shape[0]
 
@@ -1817,42 +1186,6 @@ def _jitc_mv_homo_gpu_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype),
             ):
-                """
-                WARP GPU kernel for sparse matrix-vector multiplication with on-the-fly matrix generation.
-
-                Implements matrix-vector product where the matrix is generated implicitly with
-                sparse random connectivity and homogeneous weight values. This kernel handles
-                the transpose=False, corder=False case.
-
-                Each GPU thread processes one input element (column) and distributes its contribution
-                to all connected output elements. This approach is efficient for sparse matrices
-                as it avoids generating the full matrix.
-
-                Parameters
-                ----------
-                weight : warp.array1d
-                    Single-element array containing the homogeneous weight value for all connections
-                clen : warp.array1d
-                    Single-element array containing connection length parameter (~2/connection_probability)
-                vector : warp.array1d
-                    Input vector to be multiplied with the implicit matrix
-                seed : warp.array1d
-                    Single-element array with random seed for reproducible matrix generation
-                _ : warp.array1d
-                    Unused placeholder parameter (required for API compatibility)
-                posts : warp.array1d
-                    Output array where results are stored, shape determines output dimension
-
-                Notes
-                -----
-                The algorithm:
-                1. Each thread processes one input element (one column in the matrix)
-                2. Uses thread ID to determine which input element to process
-                3. Pre-multiplies the input value by weight for efficiency
-                4. Samples connected output positions using geometric-like distribution
-                5. Updates the corresponding output elements using atomic additions
-                6. This column-based approach efficiently handles sparse connectivity patterns
-                """
                 # Output dimension (number of rows in the matrix)
                 num_row = posts.shape[0]
 
@@ -1886,7 +1219,7 @@ def _jitc_mv_homo_gpu_kernel_generator(
                     # This creates sparse connectivity with ~1/clen0 connection probability
                     i_row += warp.randi(state, 1, clen0)
 
-    return warp.kernel(kernel)
+    return warp_kernel(kernel, input_output_aliases={4: 0}, dim=dim)
 
 
 def _jitc_mv_homo_jvp_v(
@@ -2123,23 +1456,19 @@ def float_jitc_mv_homo_p_call(
     )
 
 
-float_jitc_mv_homo_p = XLACustomKernel(
-    'float_jitc_mv_homo',
-    cpu_kernel=NumbaKernelGenerator(
-        _jitc_mv_homo_cpu_kernel_generator,
-        input_output_aliases={4: 0}
-    ),
-)
-if Config.gpu_kernel_use_warp:
-    float_jitc_mv_homo_p.def_gpu_kernel(
-        WarpKernelGenerator(
-            _jitc_mv_homo_gpu_kernel_generator,
-            dim=lambda out_info, vector_info, corder, **kwargs: (out_info.shape[0] if corder else vector_info.shape[0]),
-            input_output_aliases={4: 0}
-        )
-    )
+def _mv_gpu_kernel():
+    return
 
-float_jitc_mv_homo_p.defjvp(
+
+float_jitc_mv_homo_p = XLACustomKernel('float_jitc_mv_homo')
+float_jitc_mv_homo_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mv_homo_cpu_kernel_generator))
+float_jitc_mv_homo_p.def_gpu_kernel(
+    GPUKernelChoice(
+        default='warp',
+        warp_kernel=WarpKernelGenerator(_jitc_mv_homo_gpu_kernel_generator)
+    )
+)
+float_jitc_mv_homo_p.def_jvp_rule2(
     _jitc_mv_homo_jvp_weights,
     None,
     _jitc_mv_homo_jvp_v,
@@ -2158,12 +1487,7 @@ def _jitc_mm_homo_cpu_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
-    r"""
-    Generate the CPU kernel for the :func:`_jitc_matmat_homo` operation.
-    """
-    import numba  # pylint: disable=import-outside-toplevel
-
+):
     if corder:
 
         if transpose:
@@ -2173,47 +1497,6 @@ def _jitc_mm_homo_cpu_kernel_generator(
             # - B: [k, n]
 
             def kernel(weight, clen, B, seed, _, posts):
-                r"""
-                Numba kernel for sparse matrix-matrix multiplication with on-the-fly matrix generation.
-
-                Implements the operation M^T @ B where M is a sparse matrix with homogeneous weight values
-                generated just-in-time during computation. Instead of storing the full matrix, this function
-                uses a probabilistic approach to sample connections for each output row.
-
-                This kernel handles the transpose=True, corder=True case, processing each output row
-                in sequence. This design enables efficient multiplication with very large sparse matrices
-                that would be impractical to store in memory.
-
-                The mathematical operation performed is:
-
-                y_ij = \sum_{k} M_{ki} * B_{kj}
-
-                Where M is implicitly defined with connection probability ~1/clen0.
-
-                Parameters
-                ----------
-                weight : array_like
-                    Single-element array containing the homogeneous weight value for all connections
-                clen : array_like
-                    Single-element array containing the connection length parameter (~2/connection_probability)
-                B : ndarray
-                    Input matrix to multiply with the transposed implicit sparse matrix, shape (k, n)
-                seed : array_like
-                    Single-element array with random seed for reproducible matrix generation
-                _ : ndarray
-                    Unused placeholder parameter (required for API compatibility)
-                posts : ndarray
-                    Output array where results are stored, shape (m, n)
-
-                Notes
-                -----
-                The algorithm:
-                1. For each output row i_m, initialize a zero vector of length n
-                2. Sample connections to input rows (i_k) using geometric-like skipping
-                3. For each sampled connection, add the corresponding row of B to the output
-                4. Finally scale the accumulated sum by the weight value
-                5. This row-wise approach is memory efficient for sparse connectivity patterns
-                """
                 m = posts.shape[0]  # Number of rows in output matrix (columns in M)
                 n = posts.shape[1]  # Number of columns in output matrix (columns in B)
                 k = B.shape[0]  # Number of rows in B (rows in M)
@@ -2249,47 +1532,6 @@ def _jitc_mm_homo_cpu_kernel_generator(
             # - B: [k, n]
 
             def kernel(weight, clen, B, seed, _, posts):
-                r"""
-                Numba kernel for sparse matrix-matrix multiplication with on-the-fly matrix generation.
-
-                Implements the operation M @ B where M is a sparse matrix with homogeneous weight values
-                generated just-in-time during computation. Instead of storing the full matrix, this function
-                uses a probabilistic approach to sample connections for each output row.
-
-                This kernel handles the transpose=False, corder=True case, processing each output row
-                in sequence. This design enables efficient multiplication with very large sparse matrices
-                that would be impractical to store in memory.
-
-                The mathematical operation performed is:
-
-                y_ij = \sum_{k} M_{ik} * B_{kj}
-
-                Where M is implicitly defined with connection probability ~1/clen0.
-
-                Parameters
-                ----------
-                weight : array_like
-                    Single-element array containing the homogeneous weight value for all connections
-                clen : array_like
-                    Single-element array containing the connection length parameter (~2/connection_probability)
-                B : ndarray
-                    Input matrix to multiply with the implicit sparse matrix, shape (k, n)
-                seed : array_like
-                    Single-element array with random seed for reproducible matrix generation
-                _ : ndarray
-                    Unused placeholder parameter (required for API compatibility)
-                posts : ndarray
-                    Output array where results are stored, shape (m, n)
-
-                Notes
-                -----
-                The algorithm:
-                1. For each output row i_m, initialize a zero vector of length n
-                2. Sample connections to input rows (i_k) using geometric-like skipping
-                3. For each sampled connection, add the corresponding row of B to the output
-                4. Finally scale the accumulated sum by the weight value
-                5. This row-wise approach is memory efficient for sparse connectivity patterns
-                """
                 m = posts.shape[0]  # Number of rows in output matrix (rows in M)
                 n = posts.shape[1]  # Number of columns in output matrix (columns in B)
                 k = B.shape[0]  # Number of rows in B (columns in M)
@@ -2326,46 +1568,6 @@ def _jitc_mm_homo_cpu_kernel_generator(
             # - B: [k, n]
 
             def kernel(weight, clen, B, seed, _, posts):
-                r"""
-                Numba kernel for sparse matrix-matrix multiplication with on-the-fly matrix generation.
-
-                Implements the operation M^T @ B where M is a sparse matrix with homogeneous weight values
-                generated just-in-time during computation. Instead of storing the full matrix, this function
-                uses a probabilistic approach to sample connections for each input row.
-
-                This kernel handles the transpose=True, corder=False case, processing each input row
-                in sequence. This approach ensures that the generated M^T is consistent with the M that would
-                be generated with transpose=False, at the potential cost of reduced parallelism.
-
-                The mathematical operation performed is:
-
-                y_ij = \sum_{k} M_{ki} * B_{kj}
-
-                Where M is implicitly defined with connection probability ~1/clen0.
-
-                Parameters
-                ----------
-                weight : array_like
-                    Single-element array containing the homogeneous weight value for all connections
-                clen : array_like
-                    Single-element array containing the connection length parameter (~2/connection_probability)
-                B : ndarray
-                    Input matrix to multiply with the transposed implicit sparse matrix, shape (k, n)
-                seed : array_like
-                    Single-element array with random seed for reproducible matrix generation
-                _ : ndarray
-                    Unused placeholder parameter (required for API compatibility)
-                posts : ndarray
-                    Output array where results are stored, shape (m, n)
-
-                Notes
-                -----
-                The algorithm:
-                1. For each input row i_k, pre-scale the row from B by the weight value
-                2. Sample connections to output rows (i_m) using geometric-like skipping
-                3. For each sampled connection, add the weighted row to the corresponding output row
-                4. This transpose-compatible approach ensures consistency between M and M^T operations
-                """
                 m = posts.shape[0]  # Number of rows in output matrix (columns in M)
                 k = B.shape[0]  # Number of rows in B (rows in M)
 
@@ -2400,47 +1602,6 @@ def _jitc_mm_homo_cpu_kernel_generator(
             # - B: [k, n]
 
             def kernel(weight, clen, B, seed, _, posts):
-                r"""
-                Numba kernel for sparse matrix-matrix multiplication with on-the-fly matrix generation.
-
-                Implements the operation M @ B where M is a sparse matrix with homogeneous weight values
-                generated just-in-time during computation. Instead of storing the full matrix, this function
-                uses a probabilistic approach to sample connections for each input column.
-
-                This kernel handles the transpose=False, corder=False case, processing each input
-                column in sequence. This approach ensures that the generated matrix is consistent with its
-                transpose when using transpose=True, improving reproducibility at the potential cost of
-                reduced parallelism.
-
-                The mathematical operation performed is:
-
-                y_ij = \sum_{k} M_{ik} * B_{kj}
-
-                Where M is implicitly defined with connection probability ~1/clen0.
-
-                Parameters
-                ----------
-                weight : array_like
-                    Single-element array containing the homogeneous weight value for all connections
-                clen : array_like
-                    Single-element array containing the connection length parameter (~2/connection_probability)
-                B : ndarray
-                    Input matrix to multiply with the implicit sparse matrix, shape (k, n)
-                seed : array_like
-                    Single-element array with random seed for reproducible matrix generation
-                _ : ndarray
-                    Unused placeholder parameter (required for API compatibility)
-                posts : ndarray
-                    Output array where results are stored, shape (m, n)
-
-                Notes
-                -----
-                The algorithm:
-                1. For each input column i_k, pre-scale the row from B by the weight value
-                2. Sample connections to output rows (i_m) using geometric-like skipping
-                3. For each sampled connection, add the weighted input to the corresponding output row
-                4. This approach processes inputs sequentially and distributes each to multiple outputs
-                """
                 m = posts.shape[0]  # Number of rows in output matrix (rows in M)
                 k = B.shape[0]  # Number of rows in B (columns in M)
 
@@ -2468,8 +1629,7 @@ def _jitc_mm_homo_cpu_kernel_generator(
                         # This creates sparse connectivity with ~1/clen0 connection probability
                         i_m += np.random.randint(1, clen0)
 
-    kernel = numba.njit(**numba_environ.setting)(kernel)
-    return kernel
+    return numba_kernel(kernel, parallel=False, input_output_aliases={4: 0})
 
 
 def _jitc_mm_homo_gpu_kernel_generator(
@@ -2477,14 +1637,12 @@ def _jitc_mm_homo_gpu_kernel_generator(
     clen_info: jax.ShapeDtypeStruct,
     B_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
+    out_info: jax.ShapeDtypeStruct,
     TITLE_SIZE: int,
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
-    r"""
-    Generate the GPU kernel for the :func:`_jitc_matmat_homo` operation.
-    """
+):
     import warp
 
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
@@ -2593,7 +1751,8 @@ def _jitc_mm_homo_gpu_kernel_generator(
                     warp.tile_atomic_add(posts[i_m], out)
                     i_m += warp.randi(state, 1, clen0)
 
-    kernel = warp.kernel(kernel)
+    tile = (out_info.shape[0] if corder else B_info.shape[0])
+    kernel = warp_kernel(kernel, tile=tile, block_dim=256, input_output_aliases={4: 0})
     return kernel
 
 
@@ -2792,23 +1951,15 @@ def float_jitc_mm_homo_p_call(
     )
 
 
-float_jitc_mm_homo_p = XLACustomKernel(
-    'float_jitc_mm_homo',
-    cpu_kernel=NumbaKernelGenerator(
-        _jitc_mm_homo_cpu_kernel_generator,
-        input_output_aliases={4: 0}
-    ),
-)
-if Config.gpu_kernel_use_warp:
-    float_jitc_mm_homo_p.def_gpu_kernel(
-        WarpKernelGenerator(
-            _jitc_mm_homo_gpu_kernel_generator,
-            tile=lambda out_info, B_info, corder, **kwargs: (out_info.shape[0] if corder else B_info.shape[0]),
-            block_dim=256,
-            input_output_aliases={4: 0}
-        )
+float_jitc_mm_homo_p = XLACustomKernel('float_jitc_mm_homo')
+float_jitc_mm_homo_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mm_homo_cpu_kernel_generator))
+float_jitc_mm_homo_p.def_gpu_kernel(
+    GPUKernelChoice(
+        default='warp',
+        warp_kernel=WarpKernelGenerator(_jitc_mm_homo_gpu_kernel_generator),
     )
-float_jitc_mm_homo_p.defjvp(
+)
+float_jitc_mm_homo_p.def_jvp_rule2(
     _jitc_mm_homo_jvp_w,
     None,
     _jitc_mm_homo_jvp_B,

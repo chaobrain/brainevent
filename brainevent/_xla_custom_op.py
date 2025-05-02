@@ -23,9 +23,10 @@ import numpy as np
 from jax.interpreters import xla, mlir, batching, ad
 
 from ._compatible_import import Primitive
+from ._config import config
 from ._xla_custom_op_numba import (
     NumbaKernelGenerator,
-    register_numba_cpu_translatione
+    register_numba_cpu_translation
 )
 from ._xla_custom_op_pallas import (
     PallasKernelGenerator,
@@ -43,6 +44,7 @@ from ._xla_custom_op_warp import (
 
 __all__ = [
     'XLACustomKernel',
+    'GPUKernelChoice',
 ]
 
 
@@ -92,6 +94,84 @@ class ShapeDtype(Protocol):
     def dtype(self) -> np.dtype:
         """The data type of the tensor elements (e.g., np.float32)."""
         ...
+
+
+class GPUKernelChoice:
+    """A class to dynamically select between different GPU kernel implementations.
+
+    This class provides a mechanism to choose between Warp and Pallas kernel
+    implementations for GPU execution. It allows specifying a default kernel type
+    and dynamically selecting the appropriate kernel at runtime based on
+    configuration settings.
+
+    Attributes:
+        default (str): The default kernel backend to use ('warp' or 'pallas').
+        warp_kernel (Optional[WarpKernelGenerator]): The Warp kernel implementation.
+        pallas_kernel (Optional[PallasKernelGenerator]): The Pallas kernel implementation.
+        _all_kernels (dict): Dictionary mapping backend names to kernel implementations.
+    """
+
+    def __init__(
+        self,
+        default: str,
+        warp_kernel: Optional[WarpKernelGenerator] = None,
+        pallas_kernel: Optional[PallasKernelGenerator] = None,
+    ):
+        """Initialize a GPU kernel choice with Warp and/or Pallas implementations.
+
+        Args:
+            default (str): The default kernel type to use. Must be either 'warp' or 'pallas',
+                and the corresponding kernel must be provided.
+            warp_kernel (Optional[WarpKernelGenerator]): The Warp kernel implementation.
+                Defaults to None.
+            pallas_kernel (Optional[PallasKernelGenerator]): The Pallas kernel implementation.
+                Defaults to None.
+
+        Raises:
+            ValueError: If neither warp_kernel nor pallas_kernel is provided.
+            AssertionError: If default is not 'warp' or 'pallas', or if the specified
+                default doesn't have a corresponding kernel implementation.
+        """
+        self.default = default
+        assert default in ['warp', 'pallas'], (
+            "default must be either 'warp' or 'pallas'."
+        )
+        self.warp_kernel = warp_kernel
+        self.pallas_kernel = pallas_kernel
+        if warp_kernel is None and pallas_kernel is None:
+            raise ValueError(
+                "At least one of warp_kernel or pallas_kernel must be provided."
+            )
+        self._all_kernels = {}
+        if warp_kernel is not None:
+            self._all_kernels['warp'] = warp_kernel
+        if pallas_kernel is not None:
+            self._all_kernels['pallas'] = pallas_kernel
+        assert default in self._all_kernels, (
+            f"default must be one of {list(self._all_kernels.keys())}."
+        )
+
+    def __call__(self, *args, **kwargs):
+        """Select and return the appropriate kernel implementation based on configuration.
+
+        This method allows the GPUKernelChoice instance to be called like a function.
+        It selects the appropriate kernel implementation based on the current
+        configuration settings.
+
+        Args:
+            *args: Variable positional arguments passed to the kernel implementation.
+            **kwargs: Variable keyword arguments passed to the kernel implementation.
+
+        Returns:
+            Union[WarpKernelGenerator, PallasKernelGenerator]: The selected kernel implementation.
+        """
+        if config.gpu_kernel_backend == 'default':
+            backend = self.default
+        elif config.gpu_kernel_backend in self._all_kernels:
+            backend = config.gpu_kernel_backend
+        else:
+            backend = self.default
+        return self._all_kernels[backend]
 
 
 class XLACustomKernel:
@@ -202,7 +282,7 @@ class XLACustomKernel:
         self,
         name: str,
         cpu_kernel: Optional[NumbaKernelGenerator] = None,
-        gpu_kernel: Optional[Union[PallasKernelGenerator, WarpKernelGenerator]] = None,
+        gpu_kernel: Optional[Union[PallasKernelGenerator, WarpKernelGenerator, GPUKernelChoice]] = None,
         tpu_kernel: Optional[PallasKernelGenerator] = None,
         batching_translation: Callable = None,
         jvp_translation: Callable = None,
@@ -221,6 +301,7 @@ class XLACustomKernel:
             self.def_cpu_kernel(cpu_kernel)
 
         # gpu kernel
+        self._gpu_kernel_choice = None
         if gpu_kernel is not None:
             self.def_gpu_kernel(gpu_kernel)
 
@@ -353,6 +434,8 @@ class XLACustomKernel:
                             does not match the number of expected outputs defined
                             by `outs`.
         """
+        self.ready_to_call()
+
         outs = jax.tree.map(_transform_to_shapedarray, outs)
         outs, tree_def = jax.tree.flatten(outs)
         r = self.primitive.bind(
@@ -362,6 +445,10 @@ class XLACustomKernel:
         )
         assert len(r) == len(outs), 'The number of outputs does not match the expected.'
         return tree_def.unflatten(r)
+
+    def ready_to_call(self):
+        if self._gpu_kernel_choice is not None:
+            self.def_gpu_kernel(self._gpu_kernel_choice())
 
     def def_cpu_kernel(
         self,
@@ -384,11 +471,11 @@ class XLACustomKernel:
         """
         if not isinstance(kernel_generator, NumbaKernelGenerator):
             raise TypeError('The `kernel_generator` should be an instance of `NumbaKernel`.')
-        register_numba_cpu_translatione(self.primitive, kernel_generator)
+        register_numba_cpu_translation(self.primitive, kernel_generator)
 
     def def_gpu_kernel(
         self,
-        kernel_generator: Union[PallasKernelGenerator, WarpKernelGenerator]
+        kernel_generator: Union[PallasKernelGenerator, WarpKernelGenerator, GPUKernelChoice]
     ):
         """
         Defines and registers the GPU kernel implementation using JAX Pallas or Warp.
@@ -406,12 +493,14 @@ class XLACustomKernel:
             TypeError: If `kernel_generator` is not an instance of
                        `PallasKernelGenerator` or `WarpKernelGenerator`.
         """
-
         if isinstance(kernel_generator, PallasKernelGenerator):
             register_pallas_gpu_translation(self.primitive, kernel_generator)
 
         elif isinstance(kernel_generator, WarpKernelGenerator):
             register_warp_gpu_translation(self.primitive, kernel_generator)
+
+        elif isinstance(kernel_generator, GPUKernelChoice):
+            self._gpu_kernel_choice = kernel_generator
 
         else:
             raise TypeError('The `kernel_generator` should be an instance of `PallasKernel` or `WarpKernel`.')
@@ -461,7 +550,7 @@ class XLACustomKernel:
         """
         ad.primitive_jvps[self.primitive] = fun
 
-    def defjvp(self, *jvp_rules):
+    def def_jvp_rule2(self, *jvp_rules):
         """
         Defines the JVP (Jacobian-vector product) rules for the primitive.
 

@@ -20,7 +20,7 @@ import jax.numpy as jnp
 import numpy as np
 
 
-def _get_csr(n_pre, n_post, prob, replace=True):
+def get_csr(n_pre, n_post, prob, replace=True):
     n_conn = int(n_post * prob)
     indptr = np.arange(n_pre + 1) * n_conn
     if replace:

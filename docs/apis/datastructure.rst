@@ -15,8 +15,6 @@ Compressed Sparse Row matrix
 
    CSR
    CSC
-   CSR_LB
-   CSC_LB
 
 
 
@@ -47,7 +45,7 @@ Coordinate Format matrix
 
 
 Fixed Number of Connections matrix
----------------------------------
+----------------------------------
 
 .. autosummary::
    :toctree: generated/
