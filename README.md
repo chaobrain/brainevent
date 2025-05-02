@@ -17,6 +17,7 @@
     <a href="https://badge.fury.io/py/brainevent"><img alt="PyPI version" src="https://badge.fury.io/py/brainevent.svg"></a>
     <a href="https://github.com/chaobrain/brainevent/actions/workflows/CI.yml"><img alt="Continuous Integration" src="https://github.com/chaobrain/brainevent/actions/workflows/CI.yml/badge.svg"></a>
     <a href="https://pepy.tech/projects/brainevent"><img src="https://static.pepy.tech/badge/brainevent" alt="PyPI Downloads"></a>
+    <a href="https://doi.org/10.5281/zenodo.15324450"><img src="https://zenodo.org/badge/921610544.svg" alt="DOI"></a>
 </p>
 
 
@@ -61,7 +62,7 @@ import brainevent
 event_array = brainevent.EventArray(your_array)
 ```
 
-Then, the matrix multiplication with the following data structures, $\mathrm{event\_array} @ \mathrm{data}$,
+Then, the matrix multiplication with the following data structures, $\mathrm{event\ array} @ \mathrm{data}$,
 will take advantage of event-driven computations:
 
 - Sparse data structures provided by ``brainevent``, like:
