@@ -15,18 +15,17 @@
 # -*- coding: utf-8 -*-
 
 
-import unittest
-
 import brainstate as bst
 import brainunit as u
 import jax
 import jax.numpy as jnp
+import pytest
 
 import brainevent
 from brainevent._coo_test_util import _get_coo, vector_coo, matrix_coo, coo_vector, coo_matrix
 
 
-class TestCOO(unittest.TestCase):
+class TestCOO:
     def test_event_homo_bool(self):
         for dat in [1., 2., 3.]:
             mask = (bst.random.rand(10, 20) < 0.1).astype(float) * dat
@@ -34,7 +33,7 @@ class TestCOO(unittest.TestCase):
             coo = brainevent.COO((dat, coo.row, coo.col), shape=mask.shape)
 
             v = brainevent.EventArray(bst.random.rand(20) < 0.5)
-            self.assertTrue(
+            assert (
                 u.math.allclose(
                     mask.astype(float) @ v.data.astype(float),
                     coo @ v
@@ -42,7 +41,7 @@ class TestCOO(unittest.TestCase):
             )
 
             v = brainevent.EventArray(bst.random.rand(10) < 0.5)
-            self.assertTrue(
+            assert (
                 u.math.allclose(
                     v.data.astype(float) @ mask.astype(float),
                     v @ coo
@@ -56,7 +55,7 @@ class TestCOO(unittest.TestCase):
         coo = brainevent.COO((coo.data, coo.row, coo.col), shape=mask.shape)
 
         v = brainevent.EventArray((bst.random.rand(20) < 0.5).astype(float))
-        self.assertTrue(
+        assert (
             u.math.allclose(
                 mask.astype(float) @ v.data.astype(float),
                 coo @ v
@@ -64,7 +63,7 @@ class TestCOO(unittest.TestCase):
         )
 
         v = brainevent.EventArray((bst.random.rand(10) < 0.5).astype(float))
-        self.assertTrue(
+        assert (
             u.math.allclose(
                 v.data.astype(float) @ mask.astype(float),
                 v @ coo
@@ -78,7 +77,7 @@ class TestCOO(unittest.TestCase):
         coo = brainevent.COO((coo.data, coo.row, coo.col), shape=mask.shape)
 
         v = brainevent.EventArray(bst.random.rand(20) < 0.5)
-        self.assertTrue(
+        assert (
             u.math.allclose(
                 mask.astype(float) @ v.data.astype(float),
                 coo @ v
@@ -86,7 +85,7 @@ class TestCOO(unittest.TestCase):
         )
 
         v = brainevent.EventArray(bst.random.rand(10) < 0.5)
-        self.assertTrue(
+        assert (
             u.math.allclose(
                 v.data.astype(float) @ mask.astype(float),
                 v @ coo
@@ -94,43 +93,43 @@ class TestCOO(unittest.TestCase):
         )
 
 
-class TestVectorCOO(unittest.TestCase):
-    def test_vector_coo(self, ):
+class TestVectorCOO:
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_vector_coo(self, homo_w):
         m, n = 20, 40
         x = bst.random.rand(m) < 0.1
         row, col = _get_coo(m, n, 0.1)
 
-        for homo_w in [True, False]:
-            print(f'homo_w = {homo_w}')
-            data = 1.5 if homo_w else bst.init.Normal()(row.shape)
-            coo = brainevent.COO([data, row, col], shape=(m, n))
-            y = brainevent.EventArray(x) @ coo
-            y2 = vector_coo(x, coo.data, row, col, [m, n])
-            self.assertTrue(jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
+        print(f'homo_w = {homo_w}')
+        data = 1.5 if homo_w else bst.init.Normal()(row.shape)
+        coo = brainevent.COO([data, row, col], shape=(m, n))
+        y = brainevent.EventArray(x) @ coo
+        y2 = vector_coo(x, coo.data, row, col, [m, n])
+        assert (jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
 
-    def test_vector_coo_vmap_vector(self):
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_vector_coo_vmap_vector(self, homo_w):
         n_batch, m, n = 10, 20, 40
         xs = bst.random.rand(n_batch, m) < 0.1
         row, col = _get_coo(m, n, 0.1)
 
-        for homo_w in [True, False]:
-            data = 1.5 if homo_w else bst.init.Normal()(row.shape)
-            coo = brainevent.COO([data, row, col], shape=(m, n))
-            y = jax.vmap(lambda x: brainevent.EventArray(x) @ coo)(xs)
-            y2 = jax.vmap(lambda x: vector_coo(x, coo.data, row, col, [m, n]))(xs)
-            self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+        data = 1.5 if homo_w else bst.init.Normal()(row.shape)
+        coo = brainevent.COO([data, row, col], shape=(m, n))
+        y = jax.vmap(lambda x: brainevent.EventArray(x) @ coo)(xs)
+        y2 = jax.vmap(lambda x: vector_coo(x, coo.data, row, col, [m, n]))(xs)
+        assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
-    def test_coo_vector(self):
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_coo_vector(self, homo_w):
         m, n = 20, 40
         v = bst.random.rand(n) < 0.1
         row, col = _get_coo(m, n, 0.2)
 
-        for homo_w in [True, False]:
-            data = 1.5 if homo_w else bst.init.Normal()(row.shape)
-            coo = brainevent.COO([data, row, col], shape=(m, n))
-            y = coo @ brainevent.EventArray(v)
-            y2 = coo_vector(v, coo.data, row, col, [m, n])
-            self.assertTrue(jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
+        data = 1.5 if homo_w else bst.init.Normal()(row.shape)
+        coo = brainevent.COO([data, row, col], shape=(m, n))
+        y = coo @ brainevent.EventArray(v)
+        y2 = coo_vector(v, coo.data, row, col, [m, n])
+        assert (jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
 
     def _test_vjp(self, homo_w, replace, transpose):
         n_in = 20
@@ -163,15 +162,15 @@ class TestVectorCOO(unittest.TestCase):
             return r.sum()
 
         r2 = jax.grad(f_jax, argnums=(0, 1))(x, w)
-        self.assertTrue(jnp.allclose(r[0], r2[0], rtol=1e-3, atol=1e-3))
-        self.assertTrue(jnp.allclose(r[1], r2[1], rtol=1e-3, atol=1e-3))
+        assert (jnp.allclose(r[0], r2[0], rtol=1e-3, atol=1e-3))
+        assert (jnp.allclose(r[1], r2[1], rtol=1e-3, atol=1e-3))
 
-    def test_vjp(self):
-        for replace in [True, False]:
-            for transpose in [True, False]:
-                for homo_w in [True, False]:
-                    print(f'replace = {replace}, transpose = {transpose}, homo_w = {homo_w}')
-                    self._test_vjp(homo_w=homo_w, replace=replace, transpose=transpose)
+    @pytest.mark.parametrize('homo_w', [True, False])
+    @pytest.mark.parametrize('replace', [True, False])
+    @pytest.mark.parametrize('transpose', [True, False])
+    def test_vjp(self, transpose, replace, homo_w):
+        print(f'replace = {replace}, transpose = {transpose}, homo_w = {homo_w}')
+        self._test_vjp(homo_w=homo_w, replace=replace, transpose=transpose)
 
     def _test_jvp(self, homo_w, replace, transpose):
         n_in = 20
@@ -205,18 +204,18 @@ class TestVectorCOO(unittest.TestCase):
             return r
 
         o2, r2 = jax.jvp(f_jax, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
-        self.assertTrue(jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3))
-        self.assertTrue(jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3))
+        assert (jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3))
+        assert (jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3))
 
-    def test_jvp(self):
-        for replace in [True, False]:
-            for transpose in [True, False]:
-                for homo_w in [True, False]:
-                    print(f'replace = {replace}, transpose = {transpose}, homo_w = {homo_w}')
-                    self._test_jvp(homo_w=homo_w, replace=replace, transpose=transpose)
+    @pytest.mark.parametrize('homo_w', [True, False])
+    @pytest.mark.parametrize('replace', [True, False])
+    @pytest.mark.parametrize('transpose', [True, False])
+    def test_jvp(self, transpose, replace, homo_w):
+        print(f'replace = {replace}, transpose = {transpose}, homo_w = {homo_w}')
+        self._test_jvp(homo_w=homo_w, replace=replace, transpose=transpose)
 
 
-class TestMatrixCOO(unittest.TestCase):
+class TestMatrixCOO:
     def test_matrix_coo(self):
         k, m, n = 10, 20, 40
         x = bst.random.rand(k, m) < 0.1
@@ -227,16 +226,16 @@ class TestMatrixCOO(unittest.TestCase):
             coo = brainevent.COO([data, row, col], shape=(m, n))
             y = brainevent.EventArray(x) @ coo
             y2 = matrix_coo(x.astype(float), coo.data, row, col, [m, n])
-            self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+            assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
-    def test_coo_matrix(self):
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_coo_matrix(self, homo_w):
         m, n, k = 20, 40, 10
         matrix = bst.random.rand(n, k) < 0.1
         row, col = _get_coo(m, n, 0.1)
 
-        for homo_w in [True, False]:
-            data = 1.5 if homo_w else bst.init.Normal()(row.shape)
-            coo = brainevent.COO([data, row, col], shape=(m, n))
-            y = coo @ brainevent.EventArray(matrix)
-            y2 = coo_matrix(matrix.astype(float), coo.data, row, col, [m, n])
-            self.assertTrue(jnp.allclose(y, y2))
+        data = 1.5 if homo_w else bst.init.Normal()(row.shape)
+        coo = brainevent.COO([data, row, col], shape=(m, n))
+        y = coo @ brainevent.EventArray(matrix)
+        y2 = coo_matrix(matrix.astype(float), coo.data, row, col, [m, n])
+        assert (jnp.allclose(y, y2))

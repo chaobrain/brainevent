@@ -431,7 +431,7 @@ def _event_fixed_num_mv_pallas_kernel_generator(
     n_pre, n_post = shape
     n_conn = indices_info.shape[1]
     homo = jnp.size(weight_info) == 1
-    block_dim = generate_block_dim(kwargs['indices_info'].shape[1])
+    block_dim = generate_block_dim(indices_info.shape[1])
 
     if transpose:
         if homo:

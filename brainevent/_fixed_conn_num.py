@@ -25,7 +25,7 @@ import jax.numpy as jnp
 from ._compatible_import import JAXSparse
 from ._coo import COO
 from ._event import EventArray
-from ._fixed_conn_num_event_impl import event_fixed_post_num_mv_p_call
+from ._fixed_conn_num_event_impl import event_fixed_num_mv_p_call
 from ._fixed_conn_num_float_impl import fixed_num_mv_p_call, fixed_num_mm_p_call
 from ._misc import _coo_todense, COOInfo
 from ._typing import Data, MatrixShape, Index
@@ -423,7 +423,7 @@ class FixedPostNumConn(FixedNumConn):
         if isinstance(other, EventArray):
             other = other.data
             if other.ndim == 1:
-                return event_fixed_post_num_mv_p_call(
+                return event_fixed_num_mv_p_call(
                     data,
                     self.indices,
                     other,
@@ -473,7 +473,7 @@ class FixedPostNumConn(FixedNumConn):
         if isinstance(other, EventArray):
             other = other.data
             if other.ndim == 1:
-                return event_fixed_post_num_mv_p_call(
+                return event_fixed_num_mv_p_call(
                     data,
                     self.indices,
                     other,
