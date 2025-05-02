@@ -362,6 +362,8 @@ class XLACustomKernel:
                             does not match the number of expected outputs defined
                             by `outs`.
         """
+        self.ready_to_call()
+
         outs = jax.tree.map(_transform_to_shapedarray, outs)
         outs, tree_def = jax.tree.flatten(outs)
         r = self.primitive.bind(
@@ -372,7 +374,7 @@ class XLACustomKernel:
         assert len(r) == len(outs), 'The number of outputs does not match the expected.'
         return tree_def.unflatten(r)
 
-    def ready_to_run(self):
+    def ready_to_call(self):
         if self._gpu_kernel_choice is not None:
             self.def_gpu_kernel(self._gpu_kernel_choice())
 

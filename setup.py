@@ -64,7 +64,7 @@ setup(
     author='BrainEvent Developers',
     author_email='chao.brain@qq.com',
     packages=packages,
-    python_requires='>=3.9',
+    python_requires='>=3.10',
     install_requires=['numpy>=1.15', 'jax', 'brainunit>=0.0.8'],
     url='https://github.com/chaobrain/brainevent',
     project_urls={
@@ -87,7 +87,6 @@ setup(
         'Operating System :: OS Independent',
         'Programming Language :: Python',
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.9',
         'Programming Language :: Python :: 3.10',
         'Programming Language :: Python :: 3.11',
         'Programming Language :: Python :: 3.12',
