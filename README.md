@@ -49,6 +49,53 @@ of the above class:
 `BrainEvent` is fully compatible with physical units and unit-aware computations provided in [BrainUnit](https://github.com/chaobrain/brainunit).
 
 
+## Usage
+
+If you want to take advantage of event-driven computations, please take the following steps:
+
+1. Define your data structure:
+
+For sparse data structures, you must use data structures provided by ``brainevent``:
+```python
+import brainevent
+
+data = brainevent.CSR(...)  # CSR structure
+data = brainevent.JITCHomoR(...)  # JIT connectivity
+data = brainevent.FixedPostNumConn(...)  # fixed number of post-synaptic connections
+```
+
+For dense data structures, you can use JAX/NumPy arrays:
+```python
+data = jax.random.rand(...)  # normal dense array
+```
+
+2. Normal float-valued computations:
+
+Matrix multiplication with dense arrays is normal float-valued computations:
+```python
+your_array = jax.random.rand(...)   # vector or matrix
+
+r = your_array @ data
+r = data @ your_array
+```
+
+3. Event-driven computations:
+
+Matrix multiplication with ``brainevent.EventArray`` will take advantage of event-driven computations:
+
+```python
+# wrap your array with EventArray
+event_array = brainevent.EventArray(your_array)
+
+r = event_array @ data
+r = data @ event_array
+```
+
+``brainevent.EventArray`` take aware of diverse data structures, including 
+normal dense arrays (vectors/matrices), and sparse data structures like ``brainevent.CSR`` and 
+``brainevent.JITCHomoR`` provided by ``brainevent``.
+
+
 ## Installation
 
 You can install ``brainevent`` via pip:
