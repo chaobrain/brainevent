@@ -24,8 +24,8 @@
 
 Brain is characterized by the discrete spiking events, which are the fundamental units of computation in the brain.
 
-`BrainEvent` provides a set of data structures and algorithms for such event-driven computation on 
-**CPUs**, **GPUs**, **TPUs**, and maybe more, which can be used to model the brain dynamics in an 
+`BrainEvent` provides a set of data structures and algorithms for such event-driven computation on
+**CPUs**, **GPUs**, **TPUs**, and maybe more, which can be used to model the brain dynamics in an
 efficient and biologically plausible way.
 
 Particularly, it provides the following class to represent binary events in the brain:
@@ -38,63 +38,52 @@ of the above class:
 - ``COO``: a sparse matrix in COO format for sparse and event-driven computation.
 - ``CSR``: a sparse matrix in CSR format for sparse and event-driven computation.
 - ``CSC``: a sparse matrix in CSC format for sparse and event-driven computation.
-- ``JITCHomoR``: a just-in-time connectivity sparse matrix with homogenous weight for sparse and event-driven computation.
-- ``JITCNormalR``: a just-in-time connectivity sparse matrix with normal distribution weight for sparse and event-driven computation.
-- ``JITCUniformR``: a just-in-time connectivity sparse matrix with uniform distribution weight for sparse and event-driven computation.
+- ``JITCHomoR``: a just-in-time connectivity matrix with homogenous weight for sparse and event-driven computation.
+- ``JITCNormalR``: a just-in-time connectivity matrix with normal distribution weight for sparse and event-driven
+  computation.
+- ``JITCUniformR``: a just-in-time connectivity matrix with uniform distribution weight for sparse and event-driven
+  computation.
 - ``FixedPreNumConn``: a fixed number of pre-synaptic connections for sparse and event-driven computation.
 - ``FixedPostNumConn``: a fixed number of post-synaptic connections for sparse and event-driven computation.
 - ...
 
-
-`BrainEvent` is fully compatible with physical units and unit-aware computations provided in [BrainUnit](https://github.com/chaobrain/brainunit).
-
+`BrainEvent` is fully compatible with physical units and unit-aware computations provided
+in [BrainUnit](https://github.com/chaobrain/brainunit).
 
 ## Usage
 
-If you want to take advantage of event-driven computations, please take the following steps:
+If you want to take advantage of event-driven computations, you must warp your data with ``brainevent.EventArray``:
 
-1. Define your data structure.
-
-For sparse data structures, you must use data structures provided by ``brainevent``:
 ```python
 import brainevent
 
+# wrap your array with EventArray
+event_array = brainevent.EventArray(your_array)
+```
+
+Then, the matrix multiplication with the following data structures, $\mathrm{event\_array} @ \mathrm{data}$,
+will take advantage of event-driven computations:
+
+- Sparse data structures provided by ``brainevent``, like:
+    - ``brainevent.CSR``
+    - ``brainevent.JITCHomoR``
+    - ``brainevent.FixedPostNumConn``
+    - ...
+- Dense data structures provided by JAX/NumPy, like:
+    - ``jax.numpy.ndarray``
+    - ``numpy.ndarray``
+
+
+```python
+data = jax.random.rand(...)  # normal dense array
 data = brainevent.CSR(...)  # CSR structure
 data = brainevent.JITCHomoR(...)  # JIT connectivity
 data = brainevent.FixedPostNumConn(...)  # fixed number of post-synaptic connections
-```
 
-For dense data structures, you can use JAX/NumPy arrays:
-```python
-data = jax.random.rand(...)  # normal dense array
-```
-
-2. Normal float-valued computations.
-
-Matrix multiplication with dense arrays is normal float-valued computations:
-```python
-your_array = jax.random.rand(...)   # vector or matrix
-
-r = your_array @ data
-r = data @ your_array
-```
-
-3. Event-driven computations.
-
-Matrix multiplication with ``brainevent.EventArray`` will take advantage of event-driven computations:
-
-```python
-# wrap your array with EventArray
-event_array = brainevent.EventArray(your_array)
-
+# event-driven matrix multiplication
 r = event_array @ data
 r = data @ event_array
 ```
-
-``brainevent.EventArray`` take aware of diverse data structures, including 
-normal dense arrays (vectors/matrices), and sparse data structures like ``brainevent.CSR`` and 
-``brainevent.JITCHomoR`` provided by ``brainevent``.
-
 
 ## Installation
 
@@ -104,11 +93,10 @@ You can install ``brainevent`` via pip:
 pip install brainevent --upgrade
 ```
 
-
 ## Documentation
 
-The official documentation is hosted on Read the Docs: [https://brainevent.readthedocs.io/](https://brainevent.readthedocs.io/)
-
+The official documentation is hosted on Read the
+Docs: [https://brainevent.readthedocs.io/](https://brainevent.readthedocs.io/)
 
 ## See also the brain modeling ecosystem
 

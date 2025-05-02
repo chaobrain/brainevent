@@ -23,11 +23,11 @@ from jax import numpy as jnp
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
-from ._config import Config, numba_environ
+from ._config import numba_environ
 from ._jitc_util import _initialize_seed, _initialize_conn_length
 from ._pallas_random import LFSR88RNG
 from ._typing import Kernel, Data, MatrixShape
-from ._xla_custom_op import XLACustomKernel
+from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
 from ._xla_custom_op_numba import NumbaKernelGenerator
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_util import general_batching_rule
@@ -131,8 +131,6 @@ def _jitc_normal_matrix_cpu_kernel_generator(
     corder: bool = True,
     **kwargs
 ) -> Kernel:
-    import numba  # pylint: disable=import-outside-toplevel
-
     if corder:
         if transpose:
             # JIT matrix.T
@@ -686,30 +684,28 @@ def float_jitc_normal_matrix_p_call(
     )
 
 
-float_jitc_normal_matrix_p = XLACustomKernel(
-    'float_jitc_normal_matrix',
-    cpu_kernel=NumbaKernelGenerator(
+float_jitc_normal_matrix_p = XLACustomKernel('float_jitc_normal_matrix')
+float_jitc_normal_matrix_p.def_cpu_kernel(
+    NumbaKernelGenerator(
         _jitc_normal_matrix_cpu_kernel_generator,
         input_output_aliases={4: 0}
-    ),
-
+    )
 )
-if Config.gpu_kernel_use_warp:
-    float_jitc_normal_matrix_p.def_gpu_kernel(
-        WarpKernelGenerator(
+float_jitc_normal_matrix_p.def_gpu_kernel(
+    GPUKernelChoice(
+        default='warp',
+        warp_kernel=WarpKernelGenerator(
             _jitc_normal_matrix_gpu_kernel_generator,
             dim=lambda out_info, corder, **kwargs: out_info.shape[0] if corder else out_info.shape[1],
             input_output_aliases={4: 0}
-        )
-    )
-else:
-    float_jitc_normal_matrix_p.def_gpu_kernel(
-        PallasKernelGenerator(
+        ),
+        pallas_kernel=PallasKernelGenerator(
             _jitc_normal_matrix_pallas_kernel_generator,
             block_dim=1,
             input_output_aliases={4: 0}
         ),
     )
+)
 float_jitc_normal_matrix_p.def_tpu_kernel(
     PallasKernelGenerator(
         _jitc_normal_matrix_pallas_kernel_generator,
@@ -729,7 +725,6 @@ def _jitc_mv_normal_cpu_kernel_generator(
 ) -> Kernel:
     r"""Generate the CPU kernel for the :func:`_jitc_matvec_normal` operation.
     """
-    import numba  # pylint: disable=import-outside-toplevel
 
     if corder:
         # This means that the for loop is parallelized along the dimension of the output vector: ``post.shape[0]``.
@@ -1352,7 +1347,6 @@ def _jitc_mm_normal_cpu_kernel_generator(
     r"""
     Generate the CPU kernel for the :func:`_jitc_matmat_normal` operation.
     """
-    import numba  # pylint: disable=import-outside-toplevel
 
     if corder:
 
