@@ -19,35 +19,175 @@ import ctypes
 import dataclasses
 import functools
 import importlib.util
-from typing import Callable, Dict
+from typing import Callable, Dict, Optional, NamedTuple, Union
 
 from jax.interpreters import mlir
 
 from ._compatible_import import register_custom_call, Primitive, custom_call
+from ._config import numba_environ
 
 __all__ = [
     'NumbaKernelGenerator',
+    'numba_kernel',
 ]
 
 numba_installed = importlib.util.find_spec('numba') is not None
 
 
+class NumbaKernel(NamedTuple):
+    """
+    A named tuple representing a compiled Numba kernel with optional input-output aliasing information.
+
+    Attributes:
+        kernel: Callable
+            The compiled Numba function that performs the actual computation.
+        input_output_aliases: Optional[Dict[int, int]]
+            A dictionary mapping output indices to input indices, indicating which
+            output buffers can reuse the same memory as input buffers.
+            This enables in-place operations to avoid unnecessary memory allocations.
+            The keys are output indices and the values are the corresponding input indices.
+            If None, no aliasing is performed.
+    """
+    kernel: Callable
+    input_output_aliases: Optional[Dict[int, int]]
+
+
+def numba_kernel(
+    fn: Callable = None,
+    input_output_aliases: Dict[int, int] = None,
+    parallel: bool = False,
+    **kwargs
+) -> Union[NumbaKernel, Callable[..., NumbaKernel]]:
+    """
+    Creates a NumbaKernel by compiling the provided function with Numba.
+
+    This function can be used as a decorator or called directly to compile a Python
+    function into an optimized NumbaKernel. It supports specifying input-output aliases
+    for in-place operations and parallel execution.
+
+    Parameters
+    ----------
+    fn : Callable, optional
+        The function to be compiled with Numba. If None, returns a partial function
+        that can be used as a decorator.
+    input_output_aliases : Dict[int, int], optional
+        A dictionary mapping output indices to input indices, indicating which
+        output buffers can reuse the same memory as input buffers. Enables in-place
+        operations to avoid unnecessary memory allocations.
+    parallel : bool, default=False
+        Whether to enable parallel execution of the Numba kernel. If True, the function
+        is compiled with parallel optimizations using `numba_environ.pjit_fn`.
+    **kwargs
+        Additional keyword arguments to pass to the Numba compiler.
+
+    Returns
+    -------
+    Union[NumbaKernel, Callable[..., NumbaKernel]]
+        If `fn` is provided, returns a NumbaKernel instance containing the compiled function.
+        If `fn` is None, returns a partial function that can be used as a decorator.
+
+    Raises
+    ------
+    ImportError
+        If Numba is not installed but is required to compile the kernel.
+
+    Examples
+    --------
+    # Direct function call
+    >>> kernel = numba_kernel(my_function)
+
+    # As a decorator
+    >>> @numba_kernel(parallel=True)
+    ... def my_function(x, y, out):
+    ...     # function implementation
+    ...     pass
+    """
+    if fn is None:
+        return functools.partial(
+            numba_kernel,
+            input_output_aliases=input_output_aliases,
+            parallel=parallel,
+            **kwargs
+        )
+    else:
+        if not numba_installed:
+            raise ImportError('Numba is required to compile the CPU kernel for the custom operator.')
+
+        if parallel:
+            return NumbaKernel(
+                kernel=numba_environ.pjit_fn(fn),
+                input_output_aliases=input_output_aliases,
+            )
+        else:
+            return NumbaKernel(
+                kernel=numba_environ.jit_fn(fn),
+                input_output_aliases=input_output_aliases,
+            )
+
+
 @dataclasses.dataclass(frozen=True)
 class NumbaKernelGenerator:
     """
-    The Numba kernel generator.
+    A dataclass representing a generator for Numba kernels to be used in custom JAX operations.
 
-    Args:
-        generator: Callable. The function defines the computation on CPU backend.
-            It can be a function to generate the Numba jitted kernel.
-        input_output_aliases: Dict[int, int]. The input-output aliases.
+    This class provides a wrapper around functions that generate NumbaKernel instances
+    for executing optimized code on CPU. It's designed to be used with the custom operation
+    system to provide Numba-accelerated implementations of operations.
+
+    Attributes
+    ----------
+    generator : Callable[..., NumbaKernel]
+        A function that generates a NumbaKernel instance when called with configuration parameters.
+        This function defines the computation to be performed on the CPU backend.
+
+    Examples
+    --------
+    >>> def kernel_gen(**kwargs) -> NumbaKernel:
+    ...     # Define and return a NumbaKernel
+    ...     return numba_kernel(my_function, **kwargs)
+    ...
+    >>> generator = NumbaKernelGenerator(generator=kernel_gen)
+    >>> kernel = generator.generate_kernel(parallel=True)
     """
     __module__ = 'brainevent'
 
-    generator: Callable[..., Callable]
-    input_output_aliases: Dict[int, int] = None
+    generator: Callable[..., NumbaKernel]
 
     def generate_kernel(self, **kwargs):
+        """
+        Generate a NumbaKernel by calling the generator function.
+
+        Parameters
+        ----------
+        **kwargs
+            Keyword arguments passed to the generator function to configure
+            the kernel generation process.
+
+        Returns
+        -------
+        NumbaKernel
+            A compiled Numba kernel ready for execution.
+        """
+        return self.generator(**kwargs)
+
+    def __call__(self, *args, **kwargs):
+        """
+        Make the NumbaKernelGenerator instance callable.
+
+        This method allows using the generator instance directly as a function.
+
+        Parameters
+        ----------
+        *args
+            Positional arguments (ignored, maintained for compatibility).
+        **kwargs
+            Keyword arguments passed to the generator function.
+
+        Returns
+        -------
+        NumbaKernel
+            A compiled Numba kernel ready for execution.
+        """
         return self.generator(**kwargs)
 
 
@@ -66,10 +206,9 @@ def _numba_mlir_cpu_translation_rule(
         raise ImportError('Numba is required to compile the CPU kernel for the custom operator.')
 
     from numba import types, carray, cfunc  # pylint: disable=import-error
-    from numba.core.dispatcher import Dispatcher  # pylint: disable=import-error
 
     kernel = kernel_generator.generate_kernel(**kwargs)
-    assert isinstance(kernel, Dispatcher), f'The kernel should be a Numba dispatcher. But we got {kernel}'
+    assert isinstance(kernel, NumbaKernel), f'The kernel should be of type NumbaKernel, but got {type(kernel)}'
 
     # output information
     outs = ctx.avals_out
@@ -86,7 +225,7 @@ def _numba_mlir_cpu_translation_rule(
 
     # compiling function
     code_scope = dict(
-        func_to_call=kernel,
+        func_to_call=kernel.kernel,
         input_shapes=input_shapes,
         input_dtypes=input_dtypes,
         output_shapes=output_shapes,
@@ -147,11 +286,11 @@ def numba_cpu_custom_call_target(output_ptrs, input_ptrs):
         result_layouts=list(output_layouts),
         result_types=list(result_types),
         has_side_effect=False,
-        operand_output_aliases=kernel_generator.input_output_aliases,
+        operand_output_aliases=kernel.input_output_aliases,
     ).results
 
 
-def register_numba_cpu_translatione(
+def register_numba_cpu_translation(
     primitive: Primitive,
     cpu_kernel: NumbaKernelGenerator,
     debug: bool = False

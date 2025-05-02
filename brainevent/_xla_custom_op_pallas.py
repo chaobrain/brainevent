@@ -17,7 +17,7 @@
 
 
 import dataclasses
-from typing import Callable, Union, Dict
+from typing import Callable
 
 from jax.interpreters import mlir
 
@@ -60,8 +60,6 @@ class PallasKernelGenerator:
     """
     __module__ = 'brainevent'
     generator: Callable[..., Callable]
-    block_dim: Union[int, Callable[..., int]] = None
-    input_output_aliases: Union[Dict[int, int], Callable[..., Dict[int, int]], None] = None
 
     def generate_kernel(self, **kwargs) -> Callable:
         """
@@ -81,36 +79,8 @@ class PallasKernelGenerator:
         """
         return self.generator(**kwargs)
 
-    def get_block_dim(self, **kwargs) -> Union[int, None]:
-        """
-        Determines and returns the block dimension for the kernel.
-
-        This method resolves the `block_dim` attribute based on its type:
-        - If `block_dim` is a callable, it calls the function with `kwargs` and
-          returns the result.
-        - If `block_dim` is an integer, it returns the integer directly.
-        - If `block_dim` is None, it returns None.
-
-        Args:
-            **kwargs: Arbitrary keyword arguments that are passed to the `block_dim`
-                callable if `self.block_dim` is a function.
-
-        Returns:
-            The calculated block dimension as an integer, or None if `self.block_dim`
-            is None.
-
-        Raises:
-            ValueError: If `self.block_dim` is neither callable, an integer, nor None.
-        """
-        if callable(self.block_dim):
-            return self.block_dim(**kwargs)
-        elif isinstance(self.block_dim, int):
-            return self.block_dim
-        elif self.block_dim is None:
-            return None
-        else:
-            # Raise an error for unexpected types of block_dim
-            raise ValueError(f"Invalid block_dim: {self.block_dim}")
+    def __call__(self, *args, **kwargs):
+        return self.generator(**kwargs)
 
 
 def register_pallas_gpu_translation(
@@ -160,11 +130,9 @@ def register_pallas_gpu_translation(
         Returns:
             The result(s) of executing the generated Pallas kernel.
         """
-        # Determine the block dimension, potentially based on kwargs.
-        block_dim = kernel_generator.get_block_dim(**kwargs)
         # Generate the specific Pallas kernel function using the determined
         # block dimension and other relevant kwargs.
-        kernel = kernel_generator.generate_kernel(block_dim=block_dim, **kwargs)
+        kernel = kernel_generator.generate_kernel(**kwargs)
         # Execute the generated Pallas kernel with the input arguments.
         return kernel(*args)
 
@@ -226,11 +194,9 @@ def register_pallas_tpu_translation(
         Returns:
             The result(s) of executing the generated Pallas kernel.
         """
-        # Determine the block dimension, potentially based on kwargs.
-        block_dim = kernel_generator.get_block_dim(**kwargs)
         # Generate the specific Pallas kernel function using the determined
         # block dimension and other relevant kwargs.
-        kernel = kernel_generator.generate_kernel(block_dim=block_dim, **kwargs)
+        kernel = kernel_generator.generate_kernel(**kwargs)
         # Execute the generated Pallas kernel with the input arguments.
         return kernel(*args)
 

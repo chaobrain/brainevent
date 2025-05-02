@@ -24,12 +24,11 @@ import numpy as np
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
-from ._config import numba_environ
 from ._misc import generate_block_dim, check_fixed_conn_num_shape
-from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_numba import NumbaKernelGenerator
+from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
+from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_pallas import PallasKernelGenerator
-from ._xla_custom_op_warp import dtype_to_warp_type
+from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator, warp_kernel
 
 
 def _fixed_num_mv_numba_kernel_generator(
@@ -37,8 +36,6 @@ def _fixed_num_mv_numba_kernel_generator(
     transpose: bool,
     **kwargs
 ):
-    import numba  # pylint: disable=import-outside-toplevel
-
     if transpose:
         # fixed pre connection number
         if jnp.size(weight_info) == 1:
@@ -69,7 +66,7 @@ def _fixed_num_mv_numba_kernel_generator(
                 for i in range(indices.shape[0]):
                     posts[i] = np.sum(weights[i] * vector[indices[i]])
 
-    return numba.njit(**numba_environ.setting)(ell_mv)
+    return numba_kernel(ell_mv, parallel=False, input_output_aliases={3: 0})
 
 
 def _fixed_num_mv_warp_kernel_generator(
@@ -170,11 +167,15 @@ def _fixed_num_mv_warp_kernel_generator(
                     r += weights[i_m, j] * vector[indices[i_m, j]]
                 posts[i_m] = r
 
-    return warp.kernel(ell_mv)
+    dim = (
+        vector_info.shape[0]
+        if transpose else
+        indices_info.shape[0]
+    )
+    return warp_kernel(ell_mv, dim=dim, input_output_aliases={3: 0})
 
 
 def _fixed_num_mv_pallas_kernel_generator(
-    block_dim: int,
     shape: Sequence[int],
     transpose: bool,
     weight_info: jax.ShapeDtypeStruct,
@@ -186,6 +187,7 @@ def _fixed_num_mv_pallas_kernel_generator(
     n_pre, n_post = shape
     n_conn = indices_info.shape[1]
     homo = jnp.size(weight_info) == 1
+    block_dim = generate_block_dim(indices_info.shape[1])
 
     if transpose:
 
@@ -509,42 +511,17 @@ def fixed_num_mv_p_call(
         )
 
 
-fixed_num_mv_p = XLACustomKernel(
-    'fixed_num_mv',
-    cpu_kernel=NumbaKernelGenerator(
-        _fixed_num_mv_numba_kernel_generator,
-        input_output_aliases={3: 0}
-    ),
-)
-if False:
-    # if Config.gpu_kernel_use_warp:
-    fixed_num_mv_p.def_gpu_kernel(
-        WarpKernelGenerator(
-            _fixed_num_mv_warp_kernel_generator,
-            dim=lambda transpose, indices_info, vector_info, **kwargs: (
-                vector_info.shape[0]
-                if transpose else
-                indices_info.shape[0]
-            ),
-            input_output_aliases={3: 0}
-        ),
-    )
-else:
-    fixed_num_mv_p.def_gpu_kernel(
-        PallasKernelGenerator(
-            _fixed_num_mv_pallas_kernel_generator,
-            block_dim=lambda indices_info, **kwargs: generate_block_dim(indices_info.shape[1]),
-            input_output_aliases={3: 0}
-        ),
-    )
-fixed_num_mv_p.def_tpu_kernel(
-    PallasKernelGenerator(
-        _fixed_num_mv_pallas_kernel_generator,
-        block_dim=lambda indices_info, **kwargs: generate_block_dim(indices_info.shape[1]),
-        input_output_aliases={3: 0}
+fixed_num_mv_p = XLACustomKernel('fixed_num_mv')
+fixed_num_mv_p.def_cpu_kernel(NumbaKernelGenerator(_fixed_num_mv_numba_kernel_generator))
+fixed_num_mv_p.def_gpu_kernel(
+    GPUKernelChoice(
+        default='pallas',
+        warp_kernel=WarpKernelGenerator(_fixed_num_mv_warp_kernel_generator),
+        pallas_kernel=PallasKernelGenerator(_fixed_num_mv_pallas_kernel_generator),
     )
 )
-fixed_num_mv_p.defjvp(_fixed_num_mv_jvp_weights, None, _fixed_num_mv_jvp_vector, None)
+fixed_num_mv_p.def_tpu_kernel(PallasKernelGenerator(_fixed_num_mv_pallas_kernel_generator))
+fixed_num_mv_p.def_jvp_rule2(_fixed_num_mv_jvp_weights, None, _fixed_num_mv_jvp_vector, None)
 fixed_num_mv_p.def_transpose_rule(_fixed_num_mv_transpose_rule)
 
 
@@ -553,8 +530,6 @@ def _fixed_num_mm_numba_kernel_generator(
     transpose: bool,
     **kwargs
 ):
-    import numba  # pylint: disable=import-outside-toplevel
-
     if transpose:
 
         # fixed pre connection number
@@ -595,7 +570,7 @@ def _fixed_num_mm_numba_kernel_generator(
                 for i_m in range(indices.shape[0]):
                     posts[i_m] = weights[i_m] @ matrix[indices[i_m]]
 
-    return numba.njit(**numba_environ.setting)(ell_mv)
+    return numba_kernel(ell_mv, parallel=False, input_output_aliases={3: 0})
 
 
 def _fixed_num_mm_warp_kernel_generator(
@@ -645,12 +620,15 @@ def _fixed_num_mm_warp_kernel_generator(
             i = warp.tid()
             for j in range(indices.shape[1]):
                 posts[indices[i, j]] += weights[i, j] * matrix[i]
-
-    return warp.kernel(ell_mv)
+    dim = (
+        vector_info.shape[0]
+        if transpose else
+        indices_info.shape[0]
+    )
+    return warp_kernel(ell_mv, dim=dim, input_output_aliases={3: 0})
 
 
 def _fixed_num_mm_pallas_kernel_generator(
-    block_dim: int,
     shape: Sequence[int],
     transpose: bool,
     weight_info: jax.ShapeDtypeStruct,
@@ -662,6 +640,7 @@ def _fixed_num_mm_pallas_kernel_generator(
     n_pre, n_post = shape
     n_conn = indices_info.shape[1]
     homo = jnp.size(weight_info) == 1
+    block_dim = generate_block_dim(indices_info.shape[1])
 
     raise NotImplementedError
 
@@ -1001,40 +980,15 @@ def fixed_num_mm_p_call(
         )
 
 
-fixed_num_mm_p = XLACustomKernel(
-    'fixed_num_mm',
-    cpu_kernel=NumbaKernelGenerator(
-        _fixed_num_mm_numba_kernel_generator,
-        input_output_aliases={3: 0}
-    ),
-)
-# if Config.gpu_kernel_use_warp:
-if False:
-    fixed_num_mm_p.def_gpu_kernel(
-        WarpKernelGenerator(
-            _fixed_num_mv_warp_kernel_generator,
-            dim=lambda transpose, indices_info, vector_info, **kwargs: (
-                vector_info.shape[0]
-                if transpose else
-                indices_info.shape[0]
-            ),
-            input_output_aliases={3: 0}
-        ),
-    )
-else:
-    fixed_num_mm_p.def_gpu_kernel(
-        PallasKernelGenerator(
-            _fixed_num_mm_pallas_kernel_generator,
-            block_dim=lambda indices_info, **kwargs: generate_block_dim(indices_info.shape[1]),
-            input_output_aliases={3: 0}
-        )
-    )
-fixed_num_mm_p.def_tpu_kernel(
-    PallasKernelGenerator(
-        _fixed_num_mm_pallas_kernel_generator,
-        block_dim=lambda indices_info, **kwargs: generate_block_dim(indices_info.shape[1]),
-        input_output_aliases={3: 0}
+fixed_num_mm_p = XLACustomKernel('fixed_num_mm')
+fixed_num_mm_p.def_cpu_kernel(NumbaKernelGenerator(_fixed_num_mm_numba_kernel_generator))
+fixed_num_mm_p.def_gpu_kernel(
+    GPUKernelChoice(
+        default='pallas',
+        warp_kernel=WarpKernelGenerator(_fixed_num_mv_warp_kernel_generator),
+        pallas_kernel=PallasKernelGenerator(_fixed_num_mm_pallas_kernel_generator)
     )
 )
-fixed_num_mm_p.defjvp(_fixed_num_mm_jvp_weights, None, _fixed_num_mm_jvp_matrix, None)
+fixed_num_mm_p.def_tpu_kernel(PallasKernelGenerator(_fixed_num_mm_pallas_kernel_generator))
+fixed_num_mm_p.def_jvp_rule2(_fixed_num_mm_jvp_weights, None, _fixed_num_mm_jvp_matrix, None)
 fixed_num_mm_p.def_transpose_rule(_fixed_num_mm_transpose_rule)

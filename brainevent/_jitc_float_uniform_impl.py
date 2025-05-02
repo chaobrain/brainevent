@@ -23,15 +23,14 @@ from jax import numpy as jnp
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
-from ._config import Config, numba_environ
 from ._jitc_util import _initialize_seed, _initialize_conn_length
 from ._pallas_random import LFSR88RNG
-from ._typing import Kernel, Data, MatrixShape
-from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_numba import NumbaKernelGenerator
+from ._typing import Data, MatrixShape
+from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
+from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_util import general_batching_rule
-from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
+from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator, warp_kernel
 
 __all__ = [
     "float_jitc_uniform_matrix",
@@ -130,9 +129,7 @@ def _jitc_uniform_matrix_cpu_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
-    import numba  # pylint: disable=import-outside-toplevel
-
+):
     if corder:
         if transpose:
             # JIT matrix.T
@@ -268,7 +265,7 @@ def _jitc_uniform_matrix_cpu_kernel_generator(
                         # The random skip ensures proper connection probability
                         i_row += np.random.randint(1, clen0)
 
-    return numba.njit(kernel, **numba_environ.setting)
+    return numba_kernel(kernel, parallel=False, input_output_aliases={4: 0})
 
 
 def _jitc_uniform_matrix_gpu_kernel_generator(
@@ -276,10 +273,11 @@ def _jitc_uniform_matrix_gpu_kernel_generator(
     w_high_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
+    out_info: jax.ShapeDtypeStruct,
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     import warp
 
     w_low_dtype = dtype_to_warp_type(w_low_info.dtype)
@@ -464,7 +462,8 @@ def _jitc_uniform_matrix_gpu_kernel_generator(
                     # This creates sparse connectivity with ~1/clen0 connection probability
                     i_row += warp.randi(state, 1, clen0)
 
-    return warp.kernel(kernel)
+    dim = out_info.shape[0] if corder else out_info.shape[1]
+    return warp_kernel(kernel, dim=dim, input_output_aliases={4: 0})
 
 
 def _jitc_uniform_matrix_pallas_kernel_generator(
@@ -472,7 +471,7 @@ def _jitc_uniform_matrix_pallas_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     if corder:
         if transpose:
             # JIT matrix.T
@@ -690,36 +689,16 @@ def float_jitc_uniform_matrix_p_call(
     )
 
 
-float_jitc_uniform_matrix_p = XLACustomKernel(
-    'float_jitc_uniform_matrix',
-    cpu_kernel=NumbaKernelGenerator(
-        _jitc_uniform_matrix_cpu_kernel_generator,
-        input_output_aliases={4: 0}
-    ),
-)
-if Config.gpu_kernel_use_warp:
-    float_jitc_uniform_matrix_p.def_gpu_kernel(
-        WarpKernelGenerator(
-            _jitc_uniform_matrix_gpu_kernel_generator,
-            dim=lambda out_info, corder, **kwargs: out_info.shape[0] if corder else out_info.shape[1],
-            input_output_aliases={4: 0}
-        )
+float_jitc_uniform_matrix_p = XLACustomKernel('float_jitc_uniform_matrix')
+float_jitc_uniform_matrix_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_uniform_matrix_cpu_kernel_generator))
+float_jitc_uniform_matrix_p.def_gpu_kernel(
+    GPUKernelChoice(
+        default='warp',
+        warp_kernel=WarpKernelGenerator(_jitc_uniform_matrix_gpu_kernel_generator),
+        pallas_kernel=PallasKernelGenerator(_jitc_uniform_matrix_pallas_kernel_generator),
     )
-else:
-    float_jitc_uniform_matrix_p.def_gpu_kernel(
-        PallasKernelGenerator(
-            _jitc_uniform_matrix_pallas_kernel_generator,
-            block_dim=1,
-            input_output_aliases={4: 0}
-        ),
-    )
-float_jitc_uniform_matrix_p.def_tpu_kernel(
-    PallasKernelGenerator(
-        _jitc_uniform_matrix_pallas_kernel_generator,
-        block_dim=1,
-        input_output_aliases={4: 0}
-    ),
 )
+float_jitc_uniform_matrix_p.def_tpu_kernel(PallasKernelGenerator(_jitc_uniform_matrix_pallas_kernel_generator))
 float_jitc_uniform_matrix_p.def_batching_rule(_jitc_uniform_matrix_batching)
 
 
@@ -729,14 +708,12 @@ def _jitc_mv_uniform_cpu_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
-    import numba  # pylint: disable=import-outside-toplevel
-
+):
     if corder:
         # This means that the for loop is parallelized along the dimension of the output vector: ``post.shape[0]``.
 
         if transpose:
-            @numba.njit(**numba_environ.setting)
+            @numba_kernel(parallel=False, input_output_aliases={5: 0})
             def kernel(w_low, w_high, clen, vector, seed, _, posts):
                 # Output vector dimension = number of columns in the matrix
                 n_col = posts.shape[0]
@@ -774,7 +751,7 @@ def _jitc_mv_uniform_cpu_kernel_generator(
                     posts[i_col] = out
 
         else:
-            @numba.njit(**numba_environ.setting)
+            @numba_kernel(parallel=False, input_output_aliases={5: 0})
             def kernel(w_low, w_high, clen, vector, seed, _, posts):
                 # Output vector dimension = number of rows in the matrix
                 # Each row in the matrix will produce one element in the output vector
@@ -823,7 +800,7 @@ def _jitc_mv_uniform_cpu_kernel_generator(
         # This means that the for loop is parallelized along the dimension of the vector: ``vector.shape[0]``.
 
         if transpose:
-            @numba.njit(**numba_environ.setting)
+            @numba_kernel(parallel=False, input_output_aliases={5: 0})
             def kernel(w_low, w_high, clen, vector, seed, _, posts):
                 # Output vector dimension = number of columns in the matrix
                 # This is the dimension of the result vector in the vector @ matrix operation
@@ -865,7 +842,7 @@ def _jitc_mv_uniform_cpu_kernel_generator(
                         i_col += np.random.randint(1, clen0)
 
         else:
-            @numba.njit(**numba_environ.setting)
+            @numba_kernel(parallel=False, input_output_aliases={5: 0})
             def kernel(w_low, w_high, clen, vector, seed, _, posts):
                 # Output vector dimension = number of rows in the matrix
                 # This represents the first dimension of the matrix and the result vector's size
@@ -914,10 +891,11 @@ def _jitc_mv_uniform_gpu_kernel_generator(
     clen_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
+    out_info: jax.ShapeDtypeStruct,
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     import warp
 
     w_low_dtype = dtype_to_warp_type(w_low_info.dtype)
@@ -1109,7 +1087,8 @@ def _jitc_mv_uniform_gpu_kernel_generator(
                     # This creates sparse connectivity with ~1/clen0 connection probability
                     i_row += warp.randi(state, 1, clen0)
 
-    return warp.kernel(kernel)
+    dim = (out_info.shape[0] if corder else vector_info.shape[0])
+    return warp_kernel(kernel, dim=dim, input_output_aliases={5: 0})
 
 
 def _jitc_mv_uniform_jvp_v(
@@ -1322,19 +1301,10 @@ def float_jitc_mv_uniform_p_call(
     )
 
 
-float_jitc_mv_uniform_p = XLACustomKernel(
-    'float_jitc_mv_uniform',
-    cpu_kernel=NumbaKernelGenerator(
-        _jitc_mv_uniform_cpu_kernel_generator,
-        input_output_aliases={5: 0}
-    ),
-    gpu_kernel=WarpKernelGenerator(
-        _jitc_mv_uniform_gpu_kernel_generator,
-        dim=lambda out_info, vector_info, corder, **kwargs: (out_info.shape[0] if corder else vector_info.shape[0]),
-        input_output_aliases={5: 0}
-    )
-)
-float_jitc_mv_uniform_p.defjvp(
+float_jitc_mv_uniform_p = XLACustomKernel('float_jitc_mv_uniform')
+float_jitc_mv_uniform_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mv_uniform_cpu_kernel_generator))
+float_jitc_mv_uniform_p.def_gpu_kernel(WarpKernelGenerator(_jitc_mv_uniform_gpu_kernel_generator))
+float_jitc_mv_uniform_p.def_jvp_rule2(
     _jitc_mv_uniform_jvp_wloc,
     _jitc_mv_uniform_jvp_wscale,
     None,
@@ -1350,9 +1320,7 @@ def _jitc_mm_uniform_cpu_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
-    import numba  # pylint: disable=import-outside-toplevel
-
+):
     if corder:
 
         if transpose:
@@ -1498,8 +1466,7 @@ def _jitc_mm_uniform_cpu_kernel_generator(
                         # This creates sparse connectivity with ~1/clen0 connection probability
                         i_m += np.random.randint(1, clen0)
 
-    kernel = numba.njit(**numba_environ.setting)(kernel)
-    return kernel
+    return numba_kernel(kernel, parallel=False, input_output_aliases={5: 0})
 
 
 def _jitc_mm_uniform_gpu_kernel_generator(
@@ -1508,11 +1475,12 @@ def _jitc_mm_uniform_gpu_kernel_generator(
     clen_info: jax.ShapeDtypeStruct,
     B_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
+    out_info: jax.ShapeDtypeStruct,
     TITLE_SIZE: int,
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     import warp
 
     w_low_dtype = dtype_to_warp_type(w_low_info.dtype)
@@ -1638,7 +1606,8 @@ def _jitc_mm_uniform_gpu_kernel_generator(
                     warp.tile_atomic_add(posts[i_m], out * w)
                     i_m += warp.randi(state, 1, clen0)
 
-    kernel = warp.kernel(kernel)
+    tile = (out_info.shape[0] if corder else B_info.shape[0])
+    kernel = warp_kernel(kernel, tile=tile, block_dim=256, input_output_aliases={5: 0})
     return kernel
 
 
@@ -1865,20 +1834,10 @@ def float_jitc_mm_uniform_p_call(
     )
 
 
-float_jitc_mm_uniform_p = XLACustomKernel(
-    'float_jitc_mm_uniform',
-    cpu_kernel=NumbaKernelGenerator(
-        _jitc_mm_uniform_cpu_kernel_generator,
-        input_output_aliases={5: 0}
-    ),
-    gpu_kernel=WarpKernelGenerator(
-        _jitc_mm_uniform_gpu_kernel_generator,
-        tile=lambda out_info, B_info, corder, **kwargs: (out_info.shape[0] if corder else B_info.shape[0]),
-        block_dim=256,
-        input_output_aliases={5: 0}
-    )
-)
-float_jitc_mm_uniform_p.defjvp(
+float_jitc_mm_uniform_p = XLACustomKernel('float_jitc_mm_uniform')
+float_jitc_mm_uniform_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mm_uniform_cpu_kernel_generator))
+float_jitc_mm_uniform_p.def_gpu_kernel(WarpKernelGenerator(_jitc_mm_uniform_gpu_kernel_generator))
+float_jitc_mm_uniform_p.def_jvp_rule2(
     _jitc_mm_uniform_jvp_wloc,
     _jitc_mm_uniform_jvp_wscale,
     None,

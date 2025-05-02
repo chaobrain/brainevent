@@ -22,14 +22,13 @@ import numpy as np
 from jax import numpy as jnp
 from jax.interpreters import ad
 
-from ._config import numba_environ
 from ._jitc_float_normal_impl import float_jitc_mv_normal_p_call, float_jitc_mm_normal_p_call
 from ._jitc_util import _initialize_seed, _initialize_conn_length
-from ._typing import Kernel, Data, MatrixShape
+from ._typing import Data, MatrixShape
 from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_numba import NumbaKernelGenerator
+from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_util import general_batching_rule
-from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
+from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator, warp_kernel
 
 __all__ = [
     "event_jitc_normal_matvec",
@@ -102,17 +101,16 @@ def _jitc_mv_normal_cpu_kernel_generator(
     corder: bool,
     vector_info: jax.ShapeDtypeStruct,
     **kwargs
-) -> Kernel:
+):
     r"""Generate the CPU kernel for the :func:`_jitc_matvec_normal` operation.
     """
-    import numba  # pylint: disable=import-outside-toplevel
 
     if corder:
         # This means that the for loop is parallelized along the dimension of the output vector: ``post.shape[0]``.
 
         if transpose:
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(**numba_environ.setting)
+                @numba_kernel(parallel=False, input_output_aliases={5: 0})
                 def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
                     # Output vector dimension = number of columns in the matrix
                     n_col = posts.shape[0]
@@ -151,7 +149,7 @@ def _jitc_mv_normal_cpu_kernel_generator(
 
                         posts[i_col] = out
             else:
-                @numba.njit(**numba_environ.setting)
+                @numba_kernel(parallel=False, input_output_aliases={5: 0})
                 def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
                     # Output vector dimension = number of columns in the matrix
                     n_col = posts.shape[0]
@@ -192,7 +190,7 @@ def _jitc_mv_normal_cpu_kernel_generator(
 
         else:
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(**numba_environ.setting)
+                @numba_kernel(parallel=False, input_output_aliases={5: 0})
                 def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
                     # Output vector dimension = number of rows in the matrix
                     # Each row in the matrix will produce one element in the output vector
@@ -213,7 +211,7 @@ def _jitc_mv_normal_cpu_kernel_generator(
                             i_col += np.random.randint(1, clen0)
                         posts[i_row] = out
             else:
-                @numba.njit(**numba_environ.setting)
+                @numba_kernel(parallel=False, input_output_aliases={5: 0})
                 def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
                     # Output vector dimension = number of rows in the matrix
                     # Each row in the matrix will produce one element in the output vector
@@ -237,7 +235,7 @@ def _jitc_mv_normal_cpu_kernel_generator(
     else:
         if transpose:
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(**numba_environ.setting)
+                @numba_kernel(parallel=False, input_output_aliases={5: 0})
                 def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
                     num_col = posts.shape[0]
                     num_row = vector.shape[0]
@@ -255,7 +253,7 @@ def _jitc_mv_normal_cpu_kernel_generator(
                                 posts[i_col] += w
                             i_col += np.random.randint(1, clen0)
             else:
-                @numba.njit(**numba_environ.setting)
+                @numba_kernel(parallel=False, input_output_aliases={5: 0})
                 def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
                     num_col = posts.shape[0]
                     num_row = vector.shape[0]
@@ -275,7 +273,7 @@ def _jitc_mv_normal_cpu_kernel_generator(
 
         else:
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(**numba_environ.setting)
+                @numba_kernel(parallel=False, input_output_aliases={5: 0})
                 def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
                     num_row = posts.shape[0]
                     num_col = vector.shape[0]
@@ -294,7 +292,7 @@ def _jitc_mv_normal_cpu_kernel_generator(
                                 posts[i_row] += w
                             i_row += np.random.randint(1, clen0)
             else:
-                @numba.njit(**numba_environ.setting)
+                @numba_kernel(parallel=False, input_output_aliases={5: 0})
                 def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
                     num_row = posts.shape[0]
                     num_col = vector.shape[0]
@@ -320,11 +318,12 @@ def _jitc_mv_normal_gpu_kernel_generator(
     w_scale_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
+    out_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     r"""
     Generate the GPU kernel for the :func:`_jitc_matvec_normal` operation.
     """
@@ -515,7 +514,8 @@ def _jitc_mv_normal_gpu_kernel_generator(
                     # This creates sparse connectivity with ~1/clen0 connection probability
                     i_row += warp.randi(state, 1, clen0)
 
-    return warp.kernel(kernel)
+    dim = (out_info.shape[0] if corder else vector_info.shape[0])
+    return warp_kernel(kernel, dim=dim, input_output_aliases={5: 0})
 
 
 def _jitc_mv_normal_jvp_v(
@@ -728,19 +728,10 @@ def event_jitc_mv_normal_p_call(
     )
 
 
-event_jitc_mv_normal_p = XLACustomKernel(
-    'event_jitc_mv_normal',
-    cpu_kernel=NumbaKernelGenerator(
-        _jitc_mv_normal_cpu_kernel_generator,
-        input_output_aliases={5: 0}
-    ),
-    gpu_kernel=WarpKernelGenerator(
-        _jitc_mv_normal_gpu_kernel_generator,
-        dim=lambda out_info, vector_info, corder, **kwargs: (out_info.shape[0] if corder else vector_info.shape[0]),
-        input_output_aliases={5: 0}
-    )
-)
-event_jitc_mv_normal_p.defjvp(
+event_jitc_mv_normal_p = XLACustomKernel('event_jitc_mv_normal')
+event_jitc_mv_normal_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mv_normal_cpu_kernel_generator))
+event_jitc_mv_normal_p.def_gpu_kernel(WarpKernelGenerator(_jitc_mv_normal_gpu_kernel_generator))
+event_jitc_mv_normal_p.def_jvp_rule2(
     _jitc_mv_normal_jvp_wloc,
     _jitc_mv_normal_jvp_wscale,
     None,
@@ -757,11 +748,10 @@ def _jitc_mm_normal_cpu_kernel_generator(
     corder: bool,
     B_info: jax.ShapeDtypeStruct,
     **kwargs
-) -> Kernel:
+):
     r"""
     Generate the CPU kernel for the :func:`_jitc_matmat_normal` operation.
     """
-    import numba  # pylint: disable=import-outside-toplevel
 
     if corder:
         if transpose:
@@ -953,8 +943,7 @@ def _jitc_mm_normal_cpu_kernel_generator(
                             posts[i_m, indices] += w
                             i_m += np.random.randint(1, clen0)
 
-    kernel = numba.njit(**numba_environ.setting)(kernel)
-    return kernel
+    return numba_kernel(kernel, parallel=False, input_output_aliases={5: 0})
 
 
 def _jitc_mm_normal_gpu_kernel_generator(
@@ -963,11 +952,12 @@ def _jitc_mm_normal_gpu_kernel_generator(
     clen_info: jax.ShapeDtypeStruct,
     B_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
+    out_info: jax.ShapeDtypeStruct,
     TITLE_SIZE: int,
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     import warp
 
     w_loc_dtype = dtype_to_warp_type(w_loc_info.dtype)
@@ -1089,7 +1079,8 @@ def _jitc_mm_normal_gpu_kernel_generator(
                     warp.tile_atomic_add(posts[i_m], out * w)
                     i_m += warp.randi(state, 1, clen0)
 
-    kernel = warp.kernel(kernel)
+    tile = (out_info.shape[0] if corder else B_info.shape[0])
+    kernel = warp_kernel(kernel, tile=tile, block_dim=256, input_output_aliases={5: 0})
     return kernel
 
 
@@ -1316,20 +1307,10 @@ def event_jitc_mm_normal_p_call(
     )
 
 
-event_jitc_mm_normal_p = XLACustomKernel(
-    'event_jitc_mm_normal',
-    cpu_kernel=NumbaKernelGenerator(
-        _jitc_mm_normal_cpu_kernel_generator,
-        input_output_aliases={5: 0}
-    ),
-    gpu_kernel=WarpKernelGenerator(
-        _jitc_mm_normal_gpu_kernel_generator,
-        tile=lambda out_info, B_info, corder, **kwargs: (out_info.shape[0] if corder else B_info.shape[0]),
-        block_dim=256,
-        input_output_aliases={5: 0}
-    )
-)
-event_jitc_mm_normal_p.defjvp(
+event_jitc_mm_normal_p = XLACustomKernel('event_jitc_mm_normal')
+event_jitc_mm_normal_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mm_normal_cpu_kernel_generator))
+event_jitc_mm_normal_p.def_gpu_kernel(WarpKernelGenerator(_jitc_mm_normal_gpu_kernel_generator))
+event_jitc_mm_normal_p.def_jvp_rule2(
     _jitc_mm_normal_jvp_wloc,
     _jitc_mm_normal_jvp_wscale,
     None,

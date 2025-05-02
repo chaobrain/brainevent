@@ -22,35 +22,34 @@ import jax
 from jax import numpy as jnp
 from jax.interpreters import ad
 
-from ._config import numba_environ
-from ._typing import Kernel, Data, Row, Col, MatrixShape
+from ._typing import Data, Row, Col, MatrixShape
 from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_numba import NumbaKernelGenerator
+from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_util import general_batching_rule
-from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
+from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator, warp_kernel
 
 __all__ = [
-    "_coo_matvec",
-    "_coo_matmat",
+    "coo_matvec",
+    "coo_matmat",
 ]
 
 
-def _coo_matvec(
+def coo_matvec(
     data: Data,
     row: Row,
     col: Col,
-    v: Data,
+    vector: Data,
     *,
     shape: MatrixShape,
     transpose: bool = False
 ) -> Data:
     data, unitd = u.split_mantissa_unit(data)
-    v, unitv = u.split_mantissa_unit(v)
-    res = coomv_p_call(data, row, col, v, shape=shape, transpose=transpose)[0]
+    vector, unitv = u.split_mantissa_unit(vector)
+    res = coomv_p_call(data, row, col, vector, shape=shape, transpose=transpose)[0]
     return u.maybe_decimal(res * unitd * unitv)
 
 
-def _coo_matmat(
+def coo_matmat(
     data: Data,
     row: Row,
     col: Col,
@@ -65,16 +64,17 @@ def _coo_matmat(
     return u.maybe_decimal(res * (unitd * unitb))
 
 
-def coomv_cpu_kernel_generator(
+def _coomv_numba_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs
-) -> Kernel:
+):
     import numba  # pylint: disable=import-outside-toplevel
 
     match (transpose, weight_info.size):
         # transpose=True, homogeneous
         case (True, 1):
+            @numba_kernel(parallel=False, input_output_aliases={4: 0})
             def mv(weights, row, col, v, _, posts):
                 w = weights[0]
                 for i in numba.prange(row.shape[0]):
@@ -82,12 +82,14 @@ def coomv_cpu_kernel_generator(
 
         # transpose=True, heterogeneous
         case (True, _):
+            @numba_kernel(parallel=False, input_output_aliases={4: 0})
             def mv(weights, row, col, v, _, posts):
                 for i in numba.prange(row.shape[0]):
                     posts[col[i]] += weights[i] * v[row[i]]
 
         # transpose=False, homogeneous
         case (False, 1):
+            @numba_kernel(parallel=False, input_output_aliases={4: 0})
             def mv(weights, row, col, v, _, posts):
                 w = weights[0]
                 for i in numba.prange(row.shape[0]):
@@ -95,22 +97,22 @@ def coomv_cpu_kernel_generator(
 
         # transpose=False, heterogeneous
         case (False, _):
+            @numba_kernel(parallel=False, input_output_aliases={4: 0})
             def mv(weights, row, col, v, _, posts):
                 for i in numba.prange(row.shape[0]):
                     posts[row[i]] += weights[i] * v[col[i]]
 
-    mv = numba.njit(**numba_environ.setting)(mv)
     return mv
 
 
-def coomv_gpu_kernel_generator(
+def _coomv_warp_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     row_info: jax.ShapeDtypeStruct,
     col_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs
-) -> Kernel:
+):
     import warp  # pylint: disable=import-outside-toplevel
 
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
@@ -172,17 +174,16 @@ def coomv_gpu_kernel_generator(
             ):
                 i = warp.tid()
                 posts[row[i]] += weights[i] * v[col[i]]
+    dim = row_info.shape[0]
+    return warp_kernel(mv, dim=dim, input_output_aliases={4: 0})
 
-    mv = warp.kernel(mv)
-    return mv
 
-
-def coomv_jvp_v(
-    v_dot,
+def _coomv_jvp_vector(
+    vector_dot,
     data,
     row,
     col,
-    v,
+    vector,
     _,
     *,
     shape,
@@ -198,23 +199,23 @@ def coomv_jvp_v(
     #     transpose=transpose,
     # )
     return [
-        _coo_matvec(
+        coo_matvec(
             data,
             row,
             col,
-            v_dot,
+            vector_dot,
             shape=shape,
             transpose=transpose
         )
     ]
 
 
-def coomv_jvp_weights(
+def _coomv_jvp_weights(
     data_dot,
     data,
     row,
     col,
-    v,
+    vector,
     _,
     *,
     shape,
@@ -225,13 +226,13 @@ def coomv_jvp_weights(
         data_dot,
         row,
         col,
-        v,
+        vector,
         shape=shape,
         transpose=transpose,
     )
 
 
-def coomv_transpose_rule(
+def _coomv_transpose_rule(
     ct,
     data,
     row,
@@ -251,7 +252,7 @@ def coomv_transpose_rule(
         if type(ct) is ad.Zero:
             ct_events = ad.Zero(v)
         else:
-            ct_events = _coo_matvec(
+            ct_events = coo_matvec(
                 data,
                 row,
                 col,
@@ -277,7 +278,7 @@ def coomv_transpose_rule(
         return ct_values, row, col, v, _
 
 
-def coomv_batching(
+def _coomv_batching(
     args,
     axes,
     **kwargs
@@ -346,30 +347,25 @@ def coomv_p_call(
     )
 
 
-coomv_p = XLACustomKernel(
-    'coomv',
-    cpu_kernel=NumbaKernelGenerator(coomv_cpu_kernel_generator, input_output_aliases={4: 0}),
-    gpu_kernel=WarpKernelGenerator(
-        coomv_gpu_kernel_generator,
-        dim=lambda row_info, **kwargs: row_info.shape[0],
-        input_output_aliases={4: 0}
-    )
-)
-coomv_p.defjvp(coomv_jvp_weights, None, None, coomv_jvp_v)
-coomv_p.def_transpose_rule(coomv_transpose_rule)
-coomv_p.def_batching_rule(coomv_batching)
+coomv_p = XLACustomKernel('coomv')
+coomv_p.def_cpu_kernel(NumbaKernelGenerator(_coomv_numba_kernel_generator))
+coomv_p.def_gpu_kernel(WarpKernelGenerator(_coomv_warp_kernel_generator))
+coomv_p.def_jvp_rule2(_coomv_jvp_weights, None, None, _coomv_jvp_vector)
+coomv_p.def_transpose_rule(_coomv_transpose_rule)
+coomv_p.def_batching_rule(_coomv_batching)
 
 
-def coomm_cpu_kernel_generator(
+def _coomm_numba_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs
-) -> Kernel:
+):
     import numba
 
     match (transpose, weight_info.size):
         # transpose=True, homogeneous
         case (True, 1):
+            @numba_kernel(parallel=False, input_output_aliases={4: 0})
             def mm(weights, row, col, B, _, posts):
                 w = weights[0]
                 for i in numba.prange(row.shape[0]):
@@ -377,12 +373,14 @@ def coomm_cpu_kernel_generator(
 
         # transpose=True, heterogeneous
         case (True, _):
+            @numba_kernel(parallel=False, input_output_aliases={4: 0})
             def mm(weights, row, col, B, _, posts):
                 for i in numba.prange(row.shape[0]):
                     posts[col[i], :] += weights[i] * B[row[i], :]
 
         # transpose=False, homogeneous
         case (False, 1):
+            @numba_kernel(parallel=False, input_output_aliases={4: 0})
             def mm(weights, row, col, B, _, posts):
                 w = weights[0]
                 for i in numba.prange(row.shape[0]):
@@ -390,22 +388,22 @@ def coomm_cpu_kernel_generator(
 
         # transpose=False, heterogeneous
         case (False, _):
+            @numba_kernel(parallel=False, input_output_aliases={4: 0})
             def mm(weights, row, col, B, _, posts):
                 for i in numba.prange(row.shape[0]):
                     posts[row[i], :] += weights[i] * B[col[i], :]
 
-    mm = numba.njit(**numba_environ.setting)(mm)
     return mm
 
 
-def coomm_gpu_kernel_generator(
+def _coomm_warp_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     matrix_info: jax.ShapeDtypeStruct,
     row_info: jax.ShapeDtypeStruct,
     col_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs
-) -> Kernel:
+):
     import warp
 
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
@@ -468,11 +466,11 @@ def coomm_gpu_kernel_generator(
                 i, j = warp.tid()
                 posts[row[i], j] += weights[i] * B[col[i], j]
 
-    mm = warp.kernel(mm)
-    return mm
+    dim = (row_info.shape[0], matrix_info.shape[1])
+    return warp_kernel(mm, dim=dim, input_output_aliases={4: 0})
 
 
-def coomm_jvp_left(
+def _coomm_jvp_left(
     data_dot,
     data,
     row,
@@ -494,7 +492,7 @@ def coomm_jvp_left(
     )
 
 
-def coomm_jvp_right(
+def _coomm_jvp_right(
     B_dot,
     data,
     row,
@@ -516,7 +514,7 @@ def coomm_jvp_right(
     )
 
 
-def coomm_transpose_rule(
+def _coomm_transpose_rule(
     ct,
     data,
     row,
@@ -531,7 +529,7 @@ def coomm_transpose_rule(
     assert not ad.is_undefined_primal(col)
     # TODO: Can optimize transpose rule if data is homogenous?
     if ad.is_undefined_primal(B):
-        dB = _coo_matmat(data, row, col, ct, shape=shape, transpose=not transpose)
+        dB = coo_matmat(data, row, col, ct, shape=shape, transpose=not transpose)
         return data, row, col, dB, _
     else:
         B = jnp.asarray(B)
@@ -627,15 +625,9 @@ def coomm_p_call(
     )
 
 
-coomm_p = XLACustomKernel(
-    'coomm',
-    cpu_kernel=NumbaKernelGenerator(coomm_cpu_kernel_generator, input_output_aliases={4: 0}),
-    gpu_kernel=WarpKernelGenerator(
-        coomm_gpu_kernel_generator,
-        dim=lambda row_info, matrix_info, **kwargs: (row_info.shape[0], matrix_info.shape[1]),
-        input_output_aliases={4: 0}
-    )
-)
-coomm_p.defjvp(coomm_jvp_left, None, None, coomm_jvp_right)
-coomm_p.def_transpose_rule(coomm_transpose_rule)
+coomm_p = XLACustomKernel('coomm')
+coomm_p.def_cpu_kernel(NumbaKernelGenerator(_coomm_numba_kernel_generator))
+coomm_p.def_gpu_kernel(WarpKernelGenerator(_coomm_warp_kernel_generator))
+coomm_p.def_jvp_rule2(_coomm_jvp_left, None, None, _coomm_jvp_right)
+coomm_p.def_transpose_rule(_coomm_transpose_rule)
 coomm_p.def_batching_rule(coomm_batching)

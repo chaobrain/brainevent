@@ -17,23 +17,25 @@ __version__ = "0.0.1"
 
 from ._block_csr import BlockCSR
 from ._block_ell import BlockELL
+from ._config import config
 from ._config import set_numba_environ, numba_environ_context
 from ._coo import COO
 from ._csr import CSR, CSC
-from ._csrlb import CSR_LB, CSC_LB
 from ._event import EventArray
 from ._fixed_conn_num import FixedPostNumConn, FixedPreNumConn
 from ._jitc_homo import JITCHomoR, JITCHomoC
 from ._jitc_normal import JITCNormalR, JITCNormalC
 from ._jitc_uniform import JITCUniformR, JITCUniformC
 from ._pallas_random import LFSR88RNG, LFSR113RNG, LFSR128RNG
-from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_numba import NumbaKernelGenerator
+from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
+from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_util import defjvp, general_batching_rule
-from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type
+from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type, warp_kernel
 
 __all__ = [
+    # --- global configuration --- #
+    'config',
 
     # --- data representing events --- #
     'EventArray',
@@ -42,8 +44,6 @@ __all__ = [
     'COO',
     'CSR',
     'CSC',
-    'CSR_LB',
-    'CSC_LB',
 
     # Just-In-Time Connectivity matrix
     'JITCHomoR',  # row-oriented JITC matrix with homogeneous weight
@@ -63,6 +63,7 @@ __all__ = [
 
     # 1. Custom kernel
     'XLACustomKernel',
+    'GPUKernelChoice',
 
     # 2. utilities
     'defjvp',
@@ -72,10 +73,12 @@ __all__ = [
     'NumbaKernelGenerator',
     'set_numba_environ',
     'numba_environ_context',
+    'numba_kernel',
 
     # 4. Warp kernel
     'WarpKernelGenerator',
     'dtype_to_warp_type',
+    'warp_kernel',
 
     # 5. Pallas kernel
     'PallasKernelGenerator',

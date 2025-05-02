@@ -19,7 +19,7 @@ import ctypes
 import dataclasses
 import functools
 import importlib.util
-from typing import Callable, Sequence, Dict, Union
+from typing import Callable, Sequence, Dict, Union, NamedTuple
 
 import jax
 import numpy as np
@@ -31,6 +31,7 @@ from ._compatible_import import Primitive, register_custom_call, custom_call
 __all__ = [
     'WarpKernelGenerator',
     'dtype_to_warp_type',
+    'warp_kernel',
 ]
 
 # Holder for the custom callback to keep it alive.
@@ -48,24 +49,42 @@ if warp_installed:
     warp.config.enable_backward = False
 
 
-def _shape_to_layout(shape):
-    return tuple(range(len(shape) - 1, -1, -1))
-
-
-@dataclasses.dataclass(frozen=True)
-class WarpKernelGenerator:
+class WarpKernel(NamedTuple):
     """
-    The Warp kernel generator.
+    A named tuple representing a compiled Warp kernel with configuration for GPU execution.
 
-    Args:
-        generator: Callable. The function defines the computation on GPU backend.
-            It can be a function to generate the Warp kernel.
-        input_output_aliases: Dict[int, int]. The input-output aliases.
+    This class encapsulates a Warp kernel along with its execution parameters, such as
+    launch dimensions, tiling configuration, and memory aliasing information.
 
+    Attributes
+    ----------
+    kernel : Callable
+        The compiled Warp function that performs the actual computation on GPU.
+
+    dim : Union[int, Sequence[int], Callable[..., Sequence[int]], Callable[..., int]], optional
+        The launch dimensions of the kernel. This can be:
+        - An integer for 1D launch configuration
+        - A sequence of integers for multi-dimensional launch
+        - A callable that returns dimensions when invoked with kwargs
+        If None, then 'tile' and 'block_dim' must be provided instead.
+
+    tile : Union[int, Sequence[int], Callable[..., Sequence[int]], Callable[..., int]], optional
+        The tile dimensions for tile-based kernel operations. Only used when 'dim' is None.
+        This can be an integer, sequence of integers, or a callable returning dimensions.
+        See: https://nvidia.github.io/warp/modules/tiles.html
+
+    block_dim : Union[int, Callable[..., int], None], optional
+        The number of threads per block for kernel execution. Can be an integer or
+        a callable that returns an integer when invoked with kwargs.
+        Default is None, which uses 256 threads per block if not specified.
+
+    input_output_aliases : Union[Dict[int, int], Callable[..., Dict[int, int]], None], optional
+        A dictionary mapping output indices to input indices, indicating which
+        output buffers can reuse the same memory as input buffers.
+        This enables in-place operations to avoid unnecessary memory allocations.
+        Can also be a callable that returns such a dictionary when invoked with kwargs.
     """
-    __module__ = 'brainevent'
-
-    generator: Callable[..., Callable]
+    kernel: Callable
 
     # "dim" describes the launch dimensions of the kernel.
     dim: Union[int, Sequence[int], Callable[..., Sequence[int]], Callable[..., int]] = None
@@ -79,7 +98,153 @@ class WarpKernelGenerator:
     # input_output_aliases: Dict[int, int]. The input-output aliases.
     input_output_aliases: Union[Dict[int, int], Callable[..., Dict[int, int]], None] = None
 
+
+def warp_kernel(
+    fn: Callable = None,
+    dim: Union[int, Sequence[int], Callable[..., Sequence[int]], Callable[..., int]] = None,
+    tile: Union[int, Sequence[int], Callable[..., Sequence[int]], Callable[..., int]] = None,
+    block_dim: Union[int, Callable[..., int], None] = None,
+    input_output_aliases: Union[Dict[int, int], Callable[..., Dict[int, int]], None] = None
+) -> Union[WarpKernel, Callable[..., WarpKernel]]:
+    """
+    Creates a WarpKernel by compiling the provided function with Warp.
+
+    This function can be used as a decorator or called directly to compile a Python
+    function into an optimized WarpKernel for GPU execution. It supports configuring
+    launch dimensions, tiling, block dimensions, and input-output aliases.
+
+    Parameters
+    ----------
+    fn : Callable, optional
+        The function to be compiled with Warp. If None, returns a partial function
+        that can be used as a decorator.
+    dim : Union[int, Sequence[int], Callable[..., Sequence[int]], Callable[..., int]], optional
+        The launch dimensions for the kernel. Can be an integer, sequence of integers,
+        or a callable that returns dimensions when invoked with kwargs.
+        If None, then 'tile' and 'block_dim' must be provided instead.
+    tile : Union[int, Sequence[int], Callable[..., Sequence[int]], Callable[..., int]], optional
+        The tile dimensions for tile-based kernel operations. Only used when 'dim' is None.
+        Can be an integer, sequence of integers, or a callable returning dimensions.
+    block_dim : Union[int, Callable[..., int], None], optional
+        The number of threads per block for kernel execution. Can be an integer or
+        a callable that returns an integer when invoked with kwargs.
+    input_output_aliases : Union[Dict[int, int], Callable[..., Dict[int, int]], None], optional
+        A dictionary mapping output indices to input indices, indicating which
+        output buffers can reuse the same memory as input buffers.
+        Can also be a callable that returns such a dictionary when invoked with kwargs.
+
+    Returns
+    -------
+    Union[WarpKernel, Callable[..., WarpKernel]]
+        If `fn` is provided, returns a WarpKernel instance containing the compiled function.
+        If `fn` is None, returns a partial function that can be used as a decorator.
+
+    Raises
+    ------
+    ImportError
+        If Warp is not installed but is required to compile the GPU kernel.
+
+    Examples
+    --------
+    # Direct function call
+    >>> kernel = warp_kernel(my_function, dim=(16, 16))
+
+    # As a decorator
+    >>> @warp_kernel(block_dim=256)
+    ... def my_function(x, y, out):
+    ...     # function implementation
+    ...     pass
+
+    # With tile-based operation
+    >>> @warp_kernel(tile=(32, 32), block_dim=128)
+    ... def my_tiled_function(x, y, out):
+    ...     # tiled implementation
+    ...     pass
+    """
+    if fn is None:
+        return functools.partial(
+            warp_kernel,
+            dim=dim,
+            tile=tile,
+            block_dim=block_dim,
+            input_output_aliases=input_output_aliases
+        )
+    else:
+        if not warp_installed:
+            raise ImportError('Warp is required to compile the GPU kernel for the custom operator.')
+
+        return WarpKernel(
+            kernel=warp.kernel(fn),
+            dim=dim,
+            tile=tile,
+            block_dim=block_dim,
+            input_output_aliases=input_output_aliases
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class WarpKernelGenerator:
+    """
+    A dataclass representing a generator for Warp kernels to be used in custom JAX operations.
+
+    This class provides a wrapper around functions that generate WarpKernel instances
+    for executing optimized code on GPU. It's designed to be used with the custom operation
+    system to provide Warp-accelerated implementations of operations.
+
+    Attributes
+    ----------
+    generator : Callable[..., WarpKernel]
+        A function that generates a WarpKernel instance when called with configuration parameters.
+        This function defines the computation to be performed on the GPU backend.
+
+    Examples
+    --------
+    >>> def kernel_gen(**kwargs) -> WarpKernel:
+    ...     # Define and return a WarpKernel
+    ...     return warp_kernel(my_function, **kwargs)
+    ...
+    >>> generator = WarpKernelGenerator(generator=kernel_gen)
+    >>> kernel = generator.generate_kernel(block_dim=256)
+    """
+    __module__ = 'brainevent'
+
+    generator: Callable[..., WarpKernel]
+
     def generate_kernel(self, **kwargs):
+        """
+        Generate a WarpKernel by calling the generator function.
+
+        Parameters
+        ----------
+        **kwargs
+            Keyword arguments passed to the generator function to configure
+            the kernel generation process.
+
+        Returns
+        -------
+        WarpKernel
+            A compiled Warp kernel ready for execution.
+        """
+        return self.generator(**kwargs)
+
+    def __call__(self, *args, **kwargs):
+        """
+        Make the WarpKernelGenerator instance callable.
+
+        This method allows using the generator instance directly as a function.
+
+        Parameters
+        ----------
+        *args
+            Positional arguments (ignored, maintained for compatibility).
+        **kwargs
+            Keyword arguments passed to the generator function.
+
+        Returns
+        -------
+        WarpKernel
+            A compiled Warp kernel ready for execution.
+        """
         return self.generator(**kwargs)
 
 
@@ -126,6 +291,10 @@ def dtype_to_warp_type(dtype):
         return warp.bool
     else:
         raise ValueError(f"Unsupported dtype: {dtype}")
+
+
+def _shape_to_layout(shape):
+    return tuple(range(len(shape) - 1, -1, -1))
 
 
 def _warp_gpu_custom_callback(stream, buffers, opaque, opaque_len):
@@ -421,9 +590,20 @@ def _warp_gpu_lowering(
     _warp_gpu_register_capsule()
 
     # ------------------
+    # kernels
+    # ------------------
+    wp_kernel: WarpKernel = kernel_generator.generate_kernel(**kwargs)
+    assert isinstance(wp_kernel.kernel, warp.context.Kernel), (
+        f'The kernel should be a Warp '
+        f'kernel. But we got {wp_kernel}'
+    )
+
+    kernel_id = _register_warp_kernel(wp_kernel.kernel)
+
+    # ------------------
     # block dimensions
     # ------------------
-    block_dim = kernel_generator.block_dim
+    block_dim = wp_kernel.block_dim
     if callable(block_dim):
         block_dim = block_dim(**kwargs)
     if isinstance(block_dim, int):
@@ -437,24 +617,16 @@ def _warp_gpu_lowering(
         )
 
     # ------------------
-    # kernels
-    # ------------------
-    wp_kernel: warp.context.Kernel = kernel_generator.generate_kernel(**kwargs, block_dim=block_dim)
-    assert isinstance(wp_kernel, warp.context.Kernel), f'The kernel should be a Warp kernel. But we got {wp_kernel}'
-
-    kernel_id = _register_warp_kernel(wp_kernel)
-
-    # ------------------
     # launch dimensions
     # ------------------
-    warp_dims = kernel_generator.dim
+    warp_dims = wp_kernel.dim
     if warp_dims is None:
-        assert kernel_generator.tile is not None, ('The tile dimensions should be provided when '
-                                                   'the launch dimensions are not provided.')
-        assert kernel_generator.block_dim is not None, (
+        assert wp_kernel.tile is not None, ('The tile dimensions should be provided when '
+                                            'the launch dimensions are not provided.')
+        assert wp_kernel.block_dim is not None, (
             'The block dimensions should be provided when the tile dimensions are provided.'
         )
-        warp_dims = kernel_generator.tile
+        warp_dims = wp_kernel.tile
         if callable(warp_dims):
             warp_dims = warp_dims(**kwargs)
         if isinstance(warp_dims, int):
@@ -476,7 +648,7 @@ def _warp_gpu_lowering(
 
     # TODO: This may not be necessary, but it is perhaps better not to be
     #       mucking with kernel loading while already running the workload.
-    module = wp_kernel.module
+    module = wp_kernel.kernel.module
     device = warp.device_from_jax(_get_jax_device())
     if not module.load(device, block_dim):
         raise Exception("Could not load kernel on device")
@@ -487,7 +659,7 @@ def _warp_gpu_lowering(
     # Figure out the types and shapes of the input arrays.
     arg_strings = []
     operand_layouts = []
-    for actual, warg in zip(args, wp_kernel.adj.args):
+    for actual, warg in zip(args, wp_kernel.kernel.adj.args):
         rtt = ir.RankedTensorType(actual.type)
         _warp_strip_vecmat_dimensions(warg, rtt.shape)
         if hasattr(warg.type, 'ndim'):
@@ -516,7 +688,7 @@ def _warp_gpu_lowering(
     # input_output_aliases
     # ---------------------
 
-    input_output_aliases = kernel_generator.input_output_aliases
+    input_output_aliases = wp_kernel.input_output_aliases
     if callable(input_output_aliases):
         input_output_aliases = input_output_aliases(**kwargs)
 
