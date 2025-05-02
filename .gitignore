@@ -228,4 +228,5 @@ cython_debug/
 /.VSCodeCounter/
 /benchmark/matrices/
 /benchmark/results/
-/links.md
+/dev/links.md
+/dev/
