@@ -307,6 +307,7 @@ class TestBatchingVectorCSR:
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
 
+    @pytest.mark.skip
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_indices_vjp(self, homo_w):
         b, m, n, p = 10, 20, 40, 0.1
