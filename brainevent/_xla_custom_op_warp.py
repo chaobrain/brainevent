@@ -19,7 +19,7 @@ import ctypes
 import dataclasses
 import functools
 import importlib.util
-from typing import Callable, Sequence, Dict, Union
+from typing import Callable, Sequence, Dict, Union, NamedTuple
 
 import jax
 import numpy as np
@@ -48,6 +48,50 @@ if warp_installed:
     warp.config.enable_backward = False
 
 
+class WarpKernel(NamedTuple):
+    kernel: Callable
+
+    # "dim" describes the launch dimensions of the kernel.
+    dim: Union[int, Sequence[int], Callable[..., Sequence[int]], Callable[..., int]] = None
+
+    # If "dim" is not provided, "tile" and "block_dim" should be provided.
+    # Then, the kernel is launched with tile-based operation:
+    #    https://nvidia.github.io/warp/modules/tiles.html
+    tile: Union[int, Sequence[int], Callable[..., Sequence[int]], Callable[..., int]] = None
+    block_dim: Union[int, Callable[..., int], None] = None
+
+    # input_output_aliases: Dict[int, int]. The input-output aliases.
+    input_output_aliases: Union[Dict[int, int], Callable[..., Dict[int, int]], None] = None
+
+
+def warp_kernel(
+    fn: Callable = None,
+    dim: Union[int, Sequence[int], Callable[..., Sequence[int]], Callable[..., int]] = None,
+    tile: Union[int, Sequence[int], Callable[..., Sequence[int]], Callable[..., int]] = None,
+    block_dim: Union[int, Callable[..., int], None] = None,
+    input_output_aliases: Union[Dict[int, int], Callable[..., Dict[int, int]], None] = None
+) -> Union[WarpKernel, Callable[..., WarpKernel]]:
+    if fn is None:
+        return functools.partial(
+            warp_kernel,
+            dim=dim,
+            tile=tile,
+            block_dim=block_dim,
+            input_output_aliases=input_output_aliases
+        )
+    else:
+        if not warp_installed:
+            raise ImportError('Warp is required to compile the GPU kernel for the custom operator.')
+
+        return WarpKernel(
+            kernel=warp.kernel(fn),
+            dim=dim,
+            tile=tile,
+            block_dim=block_dim,
+            input_output_aliases=input_output_aliases
+        )
+
+
 def _shape_to_layout(shape):
     return tuple(range(len(shape) - 1, -1, -1))
 
@@ -65,21 +109,12 @@ class WarpKernelGenerator:
     """
     __module__ = 'brainevent'
 
-    generator: Callable[..., Callable]
-
-    # "dim" describes the launch dimensions of the kernel.
-    dim: Union[int, Sequence[int], Callable[..., Sequence[int]], Callable[..., int]] = None
-
-    # If "dim" is not provided, "tile" and "block_dim" should be provided.
-    # Then, the kernel is launched with tile-based operation:
-    #    https://nvidia.github.io/warp/modules/tiles.html
-    tile: Union[int, Sequence[int], Callable[..., Sequence[int]], Callable[..., int]] = None
-    block_dim: Union[int, Callable[..., int], None] = None
-
-    # input_output_aliases: Dict[int, int]. The input-output aliases.
-    input_output_aliases: Union[Dict[int, int], Callable[..., Dict[int, int]], None] = None
+    generator: Callable[..., WarpKernel]
 
     def generate_kernel(self, **kwargs):
+        return self.generator(**kwargs)
+
+    def __call__(self, *args, **kwargs):
         return self.generator(**kwargs)
 
 
@@ -421,9 +456,20 @@ def _warp_gpu_lowering(
     _warp_gpu_register_capsule()
 
     # ------------------
+    # kernels
+    # ------------------
+    wp_kernel: WarpKernel = kernel_generator.generate_kernel(**kwargs)
+    assert isinstance(wp_kernel.kernel, warp.context.Kernel), (
+        f'The kernel should be a Warp '
+        f'kernel. But we got {wp_kernel}'
+    )
+
+    kernel_id = _register_warp_kernel(wp_kernel.kernel)
+
+    # ------------------
     # block dimensions
     # ------------------
-    block_dim = kernel_generator.block_dim
+    block_dim = wp_kernel.block_dim
     if callable(block_dim):
         block_dim = block_dim(**kwargs)
     if isinstance(block_dim, int):
@@ -437,24 +483,16 @@ def _warp_gpu_lowering(
         )
 
     # ------------------
-    # kernels
-    # ------------------
-    wp_kernel: warp.context.Kernel = kernel_generator.generate_kernel(**kwargs, block_dim=block_dim)
-    assert isinstance(wp_kernel, warp.context.Kernel), f'The kernel should be a Warp kernel. But we got {wp_kernel}'
-
-    kernel_id = _register_warp_kernel(wp_kernel)
-
-    # ------------------
     # launch dimensions
     # ------------------
-    warp_dims = kernel_generator.dim
+    warp_dims = wp_kernel.dim
     if warp_dims is None:
-        assert kernel_generator.tile is not None, ('The tile dimensions should be provided when '
-                                                   'the launch dimensions are not provided.')
-        assert kernel_generator.block_dim is not None, (
+        assert wp_kernel.tile is not None, ('The tile dimensions should be provided when '
+                                            'the launch dimensions are not provided.')
+        assert wp_kernel.block_dim is not None, (
             'The block dimensions should be provided when the tile dimensions are provided.'
         )
-        warp_dims = kernel_generator.tile
+        warp_dims = wp_kernel.tile
         if callable(warp_dims):
             warp_dims = warp_dims(**kwargs)
         if isinstance(warp_dims, int):
@@ -476,7 +514,7 @@ def _warp_gpu_lowering(
 
     # TODO: This may not be necessary, but it is perhaps better not to be
     #       mucking with kernel loading while already running the workload.
-    module = wp_kernel.module
+    module = wp_kernel.kernel.module
     device = warp.device_from_jax(_get_jax_device())
     if not module.load(device, block_dim):
         raise Exception("Could not load kernel on device")
@@ -487,7 +525,7 @@ def _warp_gpu_lowering(
     # Figure out the types and shapes of the input arrays.
     arg_strings = []
     operand_layouts = []
-    for actual, warg in zip(args, wp_kernel.adj.args):
+    for actual, warg in zip(args, wp_kernel.kernel.adj.args):
         rtt = ir.RankedTensorType(actual.type)
         _warp_strip_vecmat_dimensions(warg, rtt.shape)
         if hasattr(warg.type, 'ndim'):
@@ -516,7 +554,7 @@ def _warp_gpu_lowering(
     # input_output_aliases
     # ---------------------
 
-    input_output_aliases = kernel_generator.input_output_aliases
+    input_output_aliases = wp_kernel.input_output_aliases
     if callable(input_output_aliases):
         input_output_aliases = input_output_aliases(**kwargs)
 

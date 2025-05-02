@@ -21,13 +21,11 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from ._config import numba_environ
 from ._misc import cdiv
-from ._typing import Kernel
 from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_util import general_batching_rule
-from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type
+from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type, warp_kernel
 
 TILE_THREAD = 256
 
@@ -108,7 +106,7 @@ def _matrix_event_mm_cpu_kernel_generator(
     float_as_event: bool,
     spk_info: jax.ShapeDtypeStruct,
     **kwargs
-) -> Kernel:
+):
     # weights: [m, k]
     # spikes: [k, n]
 
@@ -176,7 +174,9 @@ def _matrix_event_mm_gpu_kernel_generator(
     TILE_M: int,
     block_dim: int,
     **kwargs
-) :
+):
+    block_dim = TILE_THREAD
+
     import warp  # pylint: disable=import-outside-toplevel
 
     spike_dtype = dtype_to_warp_type(spk_info.dtype)
@@ -233,7 +233,8 @@ def _matrix_event_mm_gpu_kernel_generator(
                     temp += data[:, 0] * s
             warp.tile_store(out_ref, temp, offset=(i_col * block_dim,))
 
-    return warp.kernel(kernel)
+    tile = cdiv(weight_info.shape[0], TILE_THREAD)
+    return warp_kernel(kernel, tile=tile, block_dim=TILE_THREAD)
 
 
 def _matrix_event_mm_jvp_weights(w_dot, weights, spikes, *, float_as_event, **kwargs):
@@ -306,11 +307,7 @@ matrix_event_mm_p.def_cpu_kernel(NumbaKernelGenerator(_matrix_event_mm_cpu_kerne
 matrix_event_mm_p.def_gpu_kernel(
     GPUKernelChoice(
         default='warp',
-        warp_kernel=WarpKernelGenerator(
-            _matrix_event_mm_gpu_kernel_generator,
-            tile=lambda weight_info, transpose, **kwargs: cdiv(weight_info.shape[0], TILE_THREAD),
-            block_dim=TILE_THREAD,
-        )
+        warp_kernel=WarpKernelGenerator(_matrix_event_mm_gpu_kernel_generator)
     )
 )
 matrix_event_mm_p.def_jvp_rule2(_matrix_event_mm_jvp_weights, _matrix_event_mm_jvp_spikes)
@@ -397,7 +394,7 @@ def _event_matrix_mm_cpu_kernel_generator(
     float_as_event: bool,
     spk_info: jax.ShapeDtypeStruct,
     **kwargs
-) :
+):
     # spikes: [m, k]
     # weights: [k, n]
 
@@ -441,7 +438,7 @@ def _event_matrix_mm_gpu_kernel_generator(
     TILE_M: int,
     block_dim: int,
     **kwargs
-) :
+):
     import warp  # pylint: disable=import-outside-toplevel
 
     spike_dtype = dtype_to_warp_type(spk_info.dtype)
@@ -475,7 +472,8 @@ def _event_matrix_mm_gpu_kernel_generator(
                     temp += warp.tile_load(weight_ref[j], shape=(block_dim,), offset=(i_col * block_dim,))
             warp.tile_store(out_ref, temp, offset=(i_col * block_dim,))
 
-    return warp.kernel(kernel)
+    tile = cdiv(weight_info.shape[1], TILE_THREAD)
+    return warp_kernel(kernel, tile=tile, block_dim=TILE_THREAD)
 
 
 def _event_matrix_mm_jvp_weights(w_dot, spikes, weights, *, float_as_event, **kwargs):
@@ -542,11 +540,7 @@ event_matrix_mm_p.def_cpu_kernel(NumbaKernelGenerator(_event_matrix_mm_cpu_kerne
 event_matrix_mm_p.def_gpu_kernel(
     GPUKernelChoice(
         default='warp',
-        warp_kernel=WarpKernelGenerator(
-            _event_matrix_mm_gpu_kernel_generator,
-            tile=lambda weight_info, transpose, **kwargs: cdiv(weight_info.shape[1], TILE_THREAD),
-            block_dim=TILE_THREAD,
-        )
+        warp_kernel=WarpKernelGenerator(_event_matrix_mm_gpu_kernel_generator)
     )
 )
 event_matrix_mm_p.def_jvp_rule2(_event_matrix_mm_jvp_spikes, _event_matrix_mm_jvp_weights, )

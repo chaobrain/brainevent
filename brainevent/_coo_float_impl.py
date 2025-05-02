@@ -26,7 +26,7 @@ from ._typing import Data, Row, Col, MatrixShape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_util import general_batching_rule
-from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
+from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator, warp_kernel
 
 __all__ = [
     "_coo_matvec",
@@ -174,9 +174,8 @@ def coomv_gpu_kernel_generator(
             ):
                 i = warp.tid()
                 posts[row[i]] += weights[i] * v[col[i]]
-
-    mv = warp.kernel(mv)
-    return mv
+    dim = row_info.shape[0]
+    return warp_kernel(mv, dim=dim, input_output_aliases={4: 0})
 
 
 def coomv_jvp_v(
@@ -348,15 +347,9 @@ def coomv_p_call(
     )
 
 
-coomv_p = XLACustomKernel(
-    'coomv',
-    gpu_kernel=WarpKernelGenerator(
-        coomv_gpu_kernel_generator,
-        dim=lambda row_info, **kwargs: row_info.shape[0],
-        input_output_aliases={4: 0}
-    )
-)
+coomv_p = XLACustomKernel('coomv')
 coomv_p.def_cpu_kernel(NumbaKernelGenerator(coomv_cpu_kernel_generator))
+coomv_p.def_gpu_kernel(WarpKernelGenerator(coomv_gpu_kernel_generator))
 coomv_p.def_jvp_rule2(coomv_jvp_weights, None, None, coomv_jvp_v)
 coomv_p.def_transpose_rule(coomv_transpose_rule)
 coomv_p.def_batching_rule(coomv_batching)
@@ -473,8 +466,8 @@ def coomm_gpu_kernel_generator(
                 i, j = warp.tid()
                 posts[row[i], j] += weights[i] * B[col[i], j]
 
-    mm = warp.kernel(mm)
-    return mm
+    dim = (row_info.shape[0], matrix_info.shape[1])
+    return warp_kernel(mm, dim=dim, input_output_aliases={4: 0})
 
 
 def coomm_jvp_left(
@@ -632,15 +625,9 @@ def coomm_p_call(
     )
 
 
-coomm_p = XLACustomKernel(
-    'coomm',
-    gpu_kernel=WarpKernelGenerator(
-        coomm_gpu_kernel_generator,
-        dim=lambda row_info, matrix_info, **kwargs: (row_info.shape[0], matrix_info.shape[1]),
-        input_output_aliases={4: 0}
-    )
-)
+coomm_p = XLACustomKernel('coomm')
 coomm_p.def_cpu_kernel(NumbaKernelGenerator(coomm_cpu_kernel_generator))
+coomm_p.def_gpu_kernel(WarpKernelGenerator(coomm_gpu_kernel_generator))
 coomm_p.def_jvp_rule2(coomm_jvp_left, None, None, coomm_jvp_right)
 coomm_p.def_transpose_rule(coomm_transpose_rule)
 coomm_p.def_batching_rule(coomm_batching)

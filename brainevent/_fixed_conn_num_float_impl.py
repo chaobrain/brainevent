@@ -28,7 +28,7 @@ from ._misc import generate_block_dim, check_fixed_conn_num_shape
 from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_pallas import PallasKernelGenerator
-from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
+from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator, warp_kernel
 
 
 def _fixed_num_mv_numba_kernel_generator(
@@ -167,7 +167,12 @@ def _fixed_num_mv_warp_kernel_generator(
                     r += weights[i_m, j] * vector[indices[i_m, j]]
                 posts[i_m] = r
 
-    return warp.kernel(ell_mv)
+    dim = (
+        vector_info.shape[0]
+        if transpose else
+        indices_info.shape[0]
+    )
+    return warp_kernel(ell_mv, dim=dim, input_output_aliases={3: 0})
 
 
 def _fixed_num_mv_pallas_kernel_generator(
@@ -511,15 +516,7 @@ fixed_num_mv_p.def_cpu_kernel(NumbaKernelGenerator(_fixed_num_mv_numba_kernel_ge
 fixed_num_mv_p.def_gpu_kernel(
     GPUKernelChoice(
         default='pallas',
-        warp_kernel=WarpKernelGenerator(
-            _fixed_num_mv_warp_kernel_generator,
-            dim=lambda transpose, indices_info, vector_info, **kwargs: (
-                vector_info.shape[0]
-                if transpose else
-                indices_info.shape[0]
-            ),
-            input_output_aliases={3: 0}
-        ),
+        warp_kernel=WarpKernelGenerator(_fixed_num_mv_warp_kernel_generator),
         pallas_kernel=PallasKernelGenerator(_fixed_num_mv_pallas_kernel_generator),
     )
 )
@@ -623,8 +620,12 @@ def _fixed_num_mm_warp_kernel_generator(
             i = warp.tid()
             for j in range(indices.shape[1]):
                 posts[indices[i, j]] += weights[i, j] * matrix[i]
-
-    return warp.kernel(ell_mv)
+    dim = (
+        vector_info.shape[0]
+        if transpose else
+        indices_info.shape[0]
+    )
+    return warp_kernel(ell_mv, dim=dim, input_output_aliases={3: 0})
 
 
 def _fixed_num_mm_pallas_kernel_generator(
@@ -984,15 +985,7 @@ fixed_num_mm_p.def_cpu_kernel(NumbaKernelGenerator(_fixed_num_mm_numba_kernel_ge
 fixed_num_mm_p.def_gpu_kernel(
     GPUKernelChoice(
         default='pallas',
-        warp_kernel=WarpKernelGenerator(
-            _fixed_num_mv_warp_kernel_generator,
-            dim=lambda transpose, indices_info, vector_info, **kwargs: (
-                vector_info.shape[0]
-                if transpose else
-                indices_info.shape[0]
-            ),
-            input_output_aliases={3: 0}
-        ),
+        warp_kernel=WarpKernelGenerator(_fixed_num_mv_warp_kernel_generator),
         pallas_kernel=PallasKernelGenerator(_fixed_num_mm_pallas_kernel_generator)
     )
 )

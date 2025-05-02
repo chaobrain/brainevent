@@ -15,9 +15,9 @@
 
 __version__ = "0.0.1"
 
-from ._config import config
 from ._block_csr import BlockCSR
 from ._block_ell import BlockELL
+from ._config import config
 from ._config import set_numba_environ, numba_environ_context
 from ._coo import COO
 from ._csr import CSR, CSC

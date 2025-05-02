@@ -28,7 +28,7 @@ from ._typing import Data, MatrixShape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_util import general_batching_rule
-from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
+from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator, warp_kernel
 
 __all__ = [
     "event_jitc_homo_matvec",
@@ -256,6 +256,7 @@ def _jitc_mv_homo_gpu_kernel_generator(
     clen_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
+    out_info: jax.ShapeDtypeStruct,
     transpose: bool = False,
     corder: bool = True,
     **kwargs
@@ -358,7 +359,8 @@ def _jitc_mv_homo_gpu_kernel_generator(
                         posts[i_col] += weight0
                         i_col += warp.randi(state, 1, clen0)
 
-    return warp.kernel(kernel)
+    dim = (out_info.shape[0] if corder else vector_info.shape[0])
+    return warp_kernel(kernel, dim=dim, input_output_aliases={4: 0})
 
 
 def _jitc_mv_homo_jvp_v(
@@ -597,20 +599,8 @@ def event_jitc_mv_homo_p_call(
 
 event_jitc_mv_homo_p = XLACustomKernel('event_jitc_mv_homo')
 event_jitc_mv_homo_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mv_homo_cpu_kernel_generator))
-event_jitc_mv_homo_p.def_gpu_kernel(
-    WarpKernelGenerator(
-        _jitc_mv_homo_gpu_kernel_generator,
-        dim=lambda out_info, vector_info, corder, **kwargs: (out_info.shape[0] if corder else vector_info.shape[0]),
-        input_output_aliases={4: 0}
-    )
-)
-event_jitc_mv_homo_p.def_jvp_rule2(
-    _jitc_mv_homo_jvp_weights,
-    None,
-    _jitc_mv_homo_jvp_v,
-    None,
-    None
-)
+event_jitc_mv_homo_p.def_gpu_kernel(WarpKernelGenerator(_jitc_mv_homo_gpu_kernel_generator))
+event_jitc_mv_homo_p.def_jvp_rule2(_jitc_mv_homo_jvp_weights, None, _jitc_mv_homo_jvp_v, None, None)
 event_jitc_mv_homo_p.def_transpose_rule(_jitc_mv_homo_transpose_rules)
 event_jitc_mv_homo_p.def_batching_rule(_jitc_mv_homo_batching)
 
@@ -834,6 +824,7 @@ def _jitc_mm_homo_gpu_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
     B_info: jax.ShapeDtypeStruct,
+    out_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
     TITLE_SIZE: int,
     transpose: bool = False,
@@ -1057,8 +1048,8 @@ def _jitc_mm_homo_gpu_kernel_generator(
                         warp.tile_atomic_add(posts[i_m], out)
                         i_m += warp.randi(state, 1, clen0)
 
-    kernel = warp.kernel(kernel)
-    return kernel
+    tile = (out_info.shape[0] if corder else B_info.shape[0])
+    return warp_kernel(kernel, tile=tile, input_output_aliases={4: 0}, block_dim=256)
 
 
 def _jitc_mm_homo_jvp_w(
@@ -1258,20 +1249,7 @@ def event_jitc_mm_homo_p_call(
 
 event_jitc_mm_homo_p = XLACustomKernel('event_jitc_mm_homo', )
 event_jitc_mm_homo_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mm_homo_cpu_kernel_generator))
-event_jitc_mm_homo_p.def_gpu_kernel(
-    WarpKernelGenerator(
-        _jitc_mm_homo_gpu_kernel_generator,
-        tile=lambda out_info, B_info, corder, **kwargs: (out_info.shape[0] if corder else B_info.shape[0]),
-        block_dim=256,
-        input_output_aliases={4: 0}
-    )
-)
-event_jitc_mm_homo_p.def_jvp_rule2(
-    _jitc_mm_homo_jvp_w,
-    None,
-    _jitc_mm_homo_jvp_B,
-    None,
-    None
-)
+event_jitc_mm_homo_p.def_gpu_kernel(WarpKernelGenerator(_jitc_mm_homo_gpu_kernel_generator))
+event_jitc_mm_homo_p.def_jvp_rule2(_jitc_mm_homo_jvp_w, None, _jitc_mm_homo_jvp_B, None, None)
 event_jitc_mm_homo_p.def_transpose_rule(_jitc_mm_homo_transpose_rules)
 event_jitc_mm_homo_p.def_batching_rule(_jitc_mm_homo_batching)

@@ -30,7 +30,7 @@ from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_util import general_batching_rule
-from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
+from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator, warp_kernel
 
 
 def event_csr_matvec(
@@ -462,8 +462,10 @@ def _event_csrmv_warp_kernel_generator(
                         if c != 0.:
                             r += weights[j] * c
                     posts[i] = r
-
-    return warp.kernel(mv)
+    dim = (
+        vector_info.shape[0] if transpose else indptr_info.shape[0] - 1
+    )
+    return warp_kernel(mv, dim=dim, input_output_aliases={4: 0})
 
 
 def _event_csrmv_pallas_tiled_kernel_generator(
@@ -855,13 +857,7 @@ event_csrmv_p.def_cpu_kernel(NumbaKernelGenerator(_event_csrmv_numba_kernel_gene
 event_csrmv_p.def_gpu_kernel(
     GPUKernelChoice(
         default='pallas',
-        warp_kernel=WarpKernelGenerator(
-            _event_csrmv_warp_kernel_generator,
-            dim=lambda indptr_info, vector_info, transpose, **kwargs: (
-                vector_info.shape[0] if transpose else indptr_info.shape[0] - 1
-            ),
-            input_output_aliases={4: 0}
-        ),
+        warp_kernel=WarpKernelGenerator(_event_csrmv_warp_kernel_generator),
         pallas_kernel=PallasKernelGenerator(_event_csrmv_pallas_tiled_kernel_generator)
     )
 )
@@ -1054,7 +1050,6 @@ def _event_csrmm_warp_kernel_generator(
             # csr.T @ B
 
             if vector_info.dtype == jnp.bool_:
-                @warp.kernel
                 def mm(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array1d(dtype=indices_dtype),
@@ -1070,7 +1065,6 @@ def _event_csrmm_warp_kernel_generator(
                             posts[indices[j], k] += w
 
             elif float_as_event:
-                @warp.kernel
                 def mm(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array1d(dtype=indices_dtype),
@@ -1086,7 +1080,6 @@ def _event_csrmm_warp_kernel_generator(
                             posts[indices[j], k] += w
 
             else:
-                @warp.kernel
                 def mm(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array1d(dtype=indices_dtype),
@@ -1106,7 +1099,6 @@ def _event_csrmm_warp_kernel_generator(
         else:
             # csr @ B
             if vector_info.dtype == jnp.bool_:
-                @warp.kernel
                 def mm(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array1d(dtype=indices_dtype),
@@ -1125,7 +1117,6 @@ def _event_csrmm_warp_kernel_generator(
                     posts[i, k] = r
 
             elif float_as_event:
-                @warp.kernel
                 def mm(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array1d(dtype=indices_dtype),
@@ -1144,7 +1135,6 @@ def _event_csrmm_warp_kernel_generator(
                     posts[i, k] = r
 
             else:
-                @warp.kernel
                 def mm(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array1d(dtype=indices_dtype),
@@ -1168,7 +1158,6 @@ def _event_csrmm_warp_kernel_generator(
             # csr.T @ B
 
             if vector_info.dtype == jnp.bool_:
-                @warp.kernel
                 def mm(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array1d(dtype=indices_dtype),
@@ -1183,7 +1172,6 @@ def _event_csrmm_warp_kernel_generator(
                             posts[indices[j], k] += weights[j]
 
             elif float_as_event:
-                @warp.kernel
                 def mm(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array1d(dtype=indices_dtype),
@@ -1198,7 +1186,6 @@ def _event_csrmm_warp_kernel_generator(
                             posts[indices[j], k] += weights[j]
 
             else:
-                @warp.kernel
                 def mm(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array1d(dtype=indices_dtype),
@@ -1217,7 +1204,6 @@ def _event_csrmm_warp_kernel_generator(
             # csr @ B
 
             if vector_info.dtype == jnp.bool_:
-                @warp.kernel
                 def mm(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array1d(dtype=indices_dtype),
@@ -1235,7 +1221,6 @@ def _event_csrmm_warp_kernel_generator(
                     posts[i, k] = r
 
             elif float_as_event:
-                @warp.kernel
                 def mm(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array1d(dtype=indices_dtype),
@@ -1253,7 +1238,6 @@ def _event_csrmm_warp_kernel_generator(
                     posts[i, k] = r
 
             else:
-                @warp.kernel
                 def mm(
                     weights: warp.array1d(dtype=weight_dtype),
                     indices: warp.array1d(dtype=indices_dtype),
@@ -1271,7 +1255,12 @@ def _event_csrmm_warp_kernel_generator(
                             r += weights[j] * c
                     posts[i, k] = r
 
-    return mm
+    dim = (
+        tuple(reversed(vector_info.shape)) if transpose else
+        [vector_info.shape[1], indptr_info.shape[0] - 1]
+    ),
+
+    return warp_kernel(mm, input_output_aliases={4: 0}, dim=dim)
 
 
 def _event_csrmm_pallas_kernel_generator(
@@ -1694,14 +1683,7 @@ event_csrmm_p.def_cpu_kernel(NumbaKernelGenerator(_event_csrmm_numba_kernel_gene
 event_csrmm_p.def_gpu_kernel(
     GPUKernelChoice(
         default='pallas',
-        warp_kernel=WarpKernelGenerator(
-            _event_csrmm_warp_kernel_generator,
-            dim=lambda vector_info, indptr_info, transpose, **kwargs: (
-                tuple(reversed(vector_info.shape)) if transpose else
-                [vector_info.shape[1], indptr_info.shape[0] - 1]
-            ),
-            input_output_aliases={4: 0}
-        ),
+        warp_kernel=WarpKernelGenerator(_event_csrmm_warp_kernel_generator),
         pallas_kernel=PallasKernelGenerator(_event_csrmm_pallas_kernel_generator)
     )
 )

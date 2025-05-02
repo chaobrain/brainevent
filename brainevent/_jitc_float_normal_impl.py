@@ -25,12 +25,12 @@ from jax.interpreters import ad
 from ._compatible_import import pallas as pl
 from ._jitc_util import _initialize_seed, _initialize_conn_length
 from ._pallas_random import LFSR88RNG
-from ._typing import Kernel, Data, MatrixShape
+from ._typing import Data, MatrixShape
 from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_util import general_batching_rule
-from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
+from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator, warp_kernel
 
 __all__ = [
     "float_jitc_normal_matrix",
@@ -273,10 +273,11 @@ def _jitc_normal_matrix_gpu_kernel_generator(
     w_scale_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
+    out_info: jax.ShapeDtypeStruct,
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     import warp
 
     w_loc_dtype = dtype_to_warp_type(w_loc_info.dtype)
@@ -457,7 +458,8 @@ def _jitc_normal_matrix_gpu_kernel_generator(
                     # This creates sparse connectivity with ~1/clen0 connection probability
                     i_row += warp.randi(state, 1, clen0)
 
-    return warp.kernel(kernel)
+    dim = out_info.shape[0] if corder else out_info.shape[1]
+    return warp_kernel(kernel, dim=dim, input_output_aliases={4: 0})
 
 
 def _jitc_normal_matrix_pallas_kernel_generator(
@@ -465,7 +467,7 @@ def _jitc_normal_matrix_pallas_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     if corder:
         if transpose:
             # JIT matrix.T
@@ -688,11 +690,7 @@ float_jitc_normal_matrix_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_normal_matr
 float_jitc_normal_matrix_p.def_gpu_kernel(
     GPUKernelChoice(
         default='warp',
-        warp_kernel=WarpKernelGenerator(
-            _jitc_normal_matrix_gpu_kernel_generator,
-            dim=lambda out_info, corder, **kwargs: out_info.shape[0] if corder else out_info.shape[1],
-            input_output_aliases={4: 0}
-        ),
+        warp_kernel=WarpKernelGenerator(_jitc_normal_matrix_gpu_kernel_generator),
         pallas_kernel=PallasKernelGenerator(_jitc_normal_matrix_pallas_kernel_generator),
     )
 )
@@ -892,10 +890,11 @@ def _jitc_mv_normal_gpu_kernel_generator(
     clen_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
+    out_info: jax.ShapeDtypeStruct,
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     r"""
     Generate the GPU kernel for the :func:`_jitc_matvec_normal` operation.
     """
@@ -1086,7 +1085,8 @@ def _jitc_mv_normal_gpu_kernel_generator(
                     # This creates sparse connectivity with ~1/clen0 connection probability
                     i_row += warp.randi(state, 1, clen0)
 
-    return warp.kernel(kernel)
+    dim = (out_info.shape[0] if corder else vector_info.shape[0])
+    return warp_kernel(kernel, dim=dim, input_output_aliases={5: 0}, )
 
 
 def _jitc_mv_normal_jvp_v(
@@ -1299,15 +1299,9 @@ def float_jitc_mv_normal_p_call(
     )
 
 
-float_jitc_mv_normal_p = XLACustomKernel(
-    'float_jitc_mv_normal',
-    gpu_kernel=WarpKernelGenerator(
-        _jitc_mv_normal_gpu_kernel_generator,
-        dim=lambda out_info, vector_info, corder, **kwargs: (out_info.shape[0] if corder else vector_info.shape[0]),
-        input_output_aliases={5: 0}
-    )
-)
+float_jitc_mv_normal_p = XLACustomKernel('float_jitc_mv_normal')
 float_jitc_mv_normal_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mv_normal_cpu_kernel_generator))
+float_jitc_mv_normal_p.def_gpu_kernel(WarpKernelGenerator(_jitc_mv_normal_gpu_kernel_generator))
 float_jitc_mv_normal_p.def_jvp_rule2(
     _jitc_mv_normal_jvp_wloc,
     _jitc_mv_normal_jvp_wscale,
@@ -1325,10 +1319,6 @@ def _jitc_mm_normal_cpu_kernel_generator(
     corder: bool = True,
     **kwargs
 ):
-    r"""
-    Generate the CPU kernel for the :func:`_jitc_matmat_normal` operation.
-    """
-
     if corder:
 
         if transpose:
@@ -1482,12 +1472,13 @@ def _jitc_mm_normal_gpu_kernel_generator(
     w_scale_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
     B_info: jax.ShapeDtypeStruct,
+    out_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
     TITLE_SIZE: int,
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     import warp
 
     w_loc_dtype = dtype_to_warp_type(w_loc_info.dtype)
@@ -1609,7 +1600,8 @@ def _jitc_mm_normal_gpu_kernel_generator(
                     warp.tile_atomic_add(posts[i_m], out * w)
                     i_m += warp.randi(state, 1, clen0)
 
-    kernel = warp.kernel(kernel)
+    tile = (out_info.shape[0] if corder else B_info.shape[0])
+    kernel = warp_kernel(kernel, tile=tile, block_dim=256, input_output_aliases={5: 0})
     return kernel
 
 
@@ -1836,16 +1828,9 @@ def float_jitc_mm_normal_p_call(
     )
 
 
-float_jitc_mm_normal_p = XLACustomKernel(
-    'float_jitc_mm_normal',
-    gpu_kernel=WarpKernelGenerator(
-        _jitc_mm_normal_gpu_kernel_generator,
-        tile=lambda out_info, B_info, corder, **kwargs: (out_info.shape[0] if corder else B_info.shape[0]),
-        block_dim=256,
-        input_output_aliases={5: 0}
-    )
-)
+float_jitc_mm_normal_p = XLACustomKernel('float_jitc_mm_normal')
 float_jitc_mm_normal_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mm_normal_cpu_kernel_generator))
+float_jitc_mm_normal_p.def_gpu_kernel(WarpKernelGenerator(_jitc_mm_normal_gpu_kernel_generator))
 float_jitc_mm_normal_p.def_jvp_rule2(
     _jitc_mm_normal_jvp_wloc,
     _jitc_mm_normal_jvp_wscale,

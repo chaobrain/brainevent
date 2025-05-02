@@ -23,13 +23,12 @@ import jax
 import jax.numpy as jnp
 from jax.interpreters import ad
 
-from ._config import numba_environ
 from ._coo_float_impl import _coo_matvec, _coo_matmat
-from ._typing import Kernel, Data, Row, Col, MatrixShape
+from ._typing import Data, Row, Col, MatrixShape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_util import general_batching_rule
-from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
+from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator, warp_kernel
 
 
 def _event_coo_matvec(
@@ -80,7 +79,7 @@ def event_coomv_cpu_kernel_generator(
     vector_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs
-) -> Kernel:
+):
     import numba  # pylint: disable=import-outside-toplevel
 
     match (transpose, weight_info.size, vector_info.dtype, float_as_event):
@@ -202,7 +201,7 @@ def event_coomv_gpu_kernel_generator(
     col_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs
-) -> Kernel:
+):
     import warp  # pylint: disable=import-outside-toplevel
 
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
@@ -390,8 +389,8 @@ def event_coomv_gpu_kernel_generator(
                 if v[col[i]] != 0.:
                     posts[row[i]] += weights[i] * v[col[i]]
 
-    mv = warp.kernel(mv)
-    return mv
+    dim = row_info.shape[0]
+    return warp_kernel(mv, dim=dim, input_output_aliases={4: 0})
 
 
 def event_coomv_jvp_v(
@@ -602,15 +601,9 @@ def event_coomv_p_call(
     )
 
 
-event_coomv_p = XLACustomKernel(
-    'event_coomv',
-    cpu_kernel=NumbaKernelGenerator(event_coomv_cpu_kernel_generator, input_output_aliases={4: 0}),
-    gpu_kernel=WarpKernelGenerator(
-        event_coomv_gpu_kernel_generator,
-        dim=lambda row_info, **kwargs: row_info.shape[0],
-        input_output_aliases={4: 0}
-    ),
-)
+event_coomv_p = XLACustomKernel('event_coomv')
+event_coomv_p.def_cpu_kernel(NumbaKernelGenerator(event_coomv_cpu_kernel_generator))
+event_coomv_p.def_gpu_kernel(WarpKernelGenerator(event_coomv_gpu_kernel_generator))
 event_coomv_p.def_jvp_rule2(event_coomv_jvp_weights, None, None, event_coomv_jvp_v)
 event_coomv_p.def_transpose_rule(event_coomv_transpose_rule)
 event_coomv_p.def_batching_rule(event_coomv_batching)
@@ -622,7 +615,7 @@ def event_coomm_cpu_kernel_generator(
     matrix_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs
-) -> Kernel:
+):
     import numba  # pylint: disable=import-outside-toplevel
 
     match (transpose, weight_info.size, matrix_info.dtype, float_as_event):
@@ -747,7 +740,7 @@ def event_coomm_gpu_kernel_generator(
     col_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs
-) -> Kernel:
+):
     import warp  # pylint: disable=import-outside-toplevel
 
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
@@ -935,8 +928,8 @@ def event_coomm_gpu_kernel_generator(
                 if B[col[i], j] != 0.:
                     posts[row[i], :] += weights[i] * B[col[i], j]
 
-    mm = warp.kernel(mm)
-    return mm
+    dim = (row_info.shape[0], matrix_info.shape[1])
+    return warp_kernel(mm, dim=dim, input_output_aliases={4: 0})
 
 
 def event_coomm_jvp_left(
@@ -1137,15 +1130,9 @@ def event_coomm_p_call(
     )
 
 
-event_coomm_p = XLACustomKernel(
-    'event_coomm',
-    cpu_kernel=NumbaKernelGenerator(event_coomm_cpu_kernel_generator, input_output_aliases={4: 0}),
-    gpu_kernel=WarpKernelGenerator(
-        event_coomm_gpu_kernel_generator,
-        dim=lambda matrix_info, row_info, transpose, **kwargs: (row_info.shape[0], matrix_info.shape[1]),
-        input_output_aliases={4: 0}
-    )
-)
+event_coomm_p = XLACustomKernel('event_coomm')
+event_coomm_p.def_cpu_kernel(NumbaKernelGenerator(event_coomm_cpu_kernel_generator))
+event_coomm_p.def_gpu_kernel(WarpKernelGenerator(event_coomm_gpu_kernel_generator))
 event_coomm_p.def_jvp_rule2(event_coomm_jvp_left, None, None, event_coomm_jvp_right)
 event_coomm_p.def_transpose_rule(event_coomm_transpose_rule)
 event_coomm_p.def_batching_rule(event_coomm_batching)

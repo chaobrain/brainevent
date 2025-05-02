@@ -28,7 +28,7 @@ from ._typing import Data, MatrixShape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_util import general_batching_rule
-from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
+from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator, warp_kernel
 
 __all__ = [
     "event_jitc_uniform_matvec",
@@ -262,6 +262,7 @@ def _jitc_mv_uniform_gpu_kernel_generator(
     clen_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
+    out_info: jax.ShapeDtypeStruct,
     transpose: bool = False,
     corder: bool = True,
     **kwargs
@@ -487,7 +488,8 @@ def _jitc_mv_uniform_gpu_kernel_generator(
                             posts[i_row] += w
                         i_row += warp.randi(state, 1, clen0)
 
-    return warp.kernel(kernel)
+    dim = (out_info.shape[0] if corder else vector_info.shape[0])
+    return warp_kernel(kernel, dim=dim, input_output_aliases={5: 0})
 
 
 def _jitc_mv_uniform_jvp_v(
@@ -700,15 +702,9 @@ def event_jitc_mv_uniform_p_call(
     )
 
 
-event_jitc_mv_uniform_p = XLACustomKernel(
-    'event_jitc_mv_uniform',
-    gpu_kernel=WarpKernelGenerator(
-        _jitc_mv_uniform_gpu_kernel_generator,
-        dim=lambda out_info, vector_info, corder, **kwargs: (out_info.shape[0] if corder else vector_info.shape[0]),
-        input_output_aliases={5: 0}
-    )
-)
-event_jitc_mv_uniform_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mv_uniform_cpu_kernel_generator, ))
+event_jitc_mv_uniform_p = XLACustomKernel('event_jitc_mv_uniform')
+event_jitc_mv_uniform_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mv_uniform_cpu_kernel_generator))
+event_jitc_mv_uniform_p.def_gpu_kernel(WarpKernelGenerator(_jitc_mv_uniform_gpu_kernel_generator))
 event_jitc_mv_uniform_p.def_jvp_rule2(
     _jitc_mv_uniform_jvp_wloc,
     _jitc_mv_uniform_jvp_wscale,
@@ -910,6 +906,7 @@ def _jitc_mm_uniform_gpu_kernel_generator(
     w_high_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
     B_info: jax.ShapeDtypeStruct,
+    out_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
     TITLE_SIZE: int,
     transpose: bool = False,
@@ -1041,7 +1038,8 @@ def _jitc_mm_uniform_gpu_kernel_generator(
                     warp.tile_atomic_add(posts[i_m], out * w)
                     i_m += warp.randi(state, 1, clen0)
 
-    kernel = warp.kernel(kernel)
+    tile = (out_info.shape[0] if corder else B_info.shape[0])
+    kernel = warp_kernel(kernel, block_dim=256, input_output_aliases={5: 0})
     return kernel
 
 
@@ -1268,16 +1266,9 @@ def event_jitc_mm_uniform_p_call(
     )
 
 
-event_jitc_mm_uniform_p = XLACustomKernel(
-    'event_jitc_mm_uniform',
-    gpu_kernel=WarpKernelGenerator(
-        _jitc_mm_uniform_gpu_kernel_generator,
-        tile=lambda out_info, B_info, corder, **kwargs: (out_info.shape[0] if corder else B_info.shape[0]),
-        block_dim=256,
-        input_output_aliases={5: 0}
-    )
-)
+event_jitc_mm_uniform_p = XLACustomKernel('event_jitc_mm_uniform')
 event_jitc_mm_uniform_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mm_uniform_cpu_kernel_generator))
+event_jitc_mm_uniform_p.def_gpu_kernel(WarpKernelGenerator(_jitc_mm_uniform_gpu_kernel_generator))
 event_jitc_mm_uniform_p.def_jvp_rule2(
     _jitc_mm_uniform_jvp_wloc,
     _jitc_mm_uniform_jvp_wscale,

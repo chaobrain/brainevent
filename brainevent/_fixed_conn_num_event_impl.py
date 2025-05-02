@@ -29,12 +29,12 @@ from ._misc import generate_block_dim, check_fixed_conn_num_shape
 from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_pallas import PallasKernelGenerator
-from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
+from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator, warp_kernel
 
 TILE_THREADS = 128
 
 
-def _event_fixed_post_num_mv_cpu_kernel_generator(
+def _event_fixed_num_mv_cpu_kernel_generator(
     float_as_event: bool,
     weight_info: jax.ShapeDtypeStruct,
     spike_info: jax.ShapeDtypeStruct,
@@ -176,7 +176,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
     return ell_mv
 
 
-def _event_fixed_post_num_mv_warp_kernel_generator(
+def _event_fixed_num_mv_warp_kernel_generator(
     float_as_event: bool,
     transpose: bool,
     block_dim: int,
@@ -412,10 +412,15 @@ def _event_fixed_post_num_mv_warp_kernel_generator(
                             r += weights[i, j] * sp
                     posts[i] = r
 
-    return warp.kernel(ell_mv)
+    tile = (
+        spike_info.shape[0]
+        if transpose else
+        indices_info.shape[0]
+    )
+    return warp_kernel(ell_mv, tile=tile, block_dim=TILE_THREADS, input_output_aliases={3: 0})
 
 
-def _event_fixed_post_num_mv_pallas_kernel_generator(
+def _event_fixed_num_mv_pallas_kernel_generator(
     transpose: int,
     shape: Tuple[int, int],
     float_as_event: bool,
@@ -573,7 +578,7 @@ def _event_fixed_post_num_mv_pallas_kernel_generator(
     return kernel
 
 
-def _event_fixed_post_num_mv_jvp_spikes(
+def _event_fixed_num_mv_jvp_spikes(
     spk_dot,
     weights,
     indices,
@@ -593,7 +598,7 @@ def _event_fixed_post_num_mv_jvp_spikes(
     )
 
 
-def _event_fixed_post_num_mv_jvp_weights(
+def _event_fixed_num_mv_jvp_weights(
     w_dot,
     weights,
     indices,
@@ -605,7 +610,7 @@ def _event_fixed_post_num_mv_jvp_weights(
     transpose,
     **kwargs
 ):
-    return event_fixed_post_num_mv_p_call(
+    return event_fixed_num_mv_p_call(
         w_dot,
         indices,
         spikes,
@@ -615,7 +620,7 @@ def _event_fixed_post_num_mv_jvp_weights(
     )
 
 
-def _event_fixed_post_num_mv_transpose_rule(
+def _event_fixed_num_mv_transpose_rule(
     ct,
     weights,
     indices,
@@ -653,7 +658,7 @@ def _event_fixed_post_num_mv_transpose_rule(
             ct_gmax = ad.Zero(weights)
         elif homo:
             # scalar
-            ct_gmax = event_fixed_post_num_mv_p_call(
+            ct_gmax = event_fixed_num_mv_p_call(
                 jnp.asarray(1., dtype=weight_info.dtype),
                 indices,
                 spikes,
@@ -670,7 +675,7 @@ def _event_fixed_post_num_mv_transpose_rule(
         return ct_gmax, indices, spikes, _
 
 
-def event_fixed_post_num_mv_p_call(
+def event_fixed_num_mv_p_call(
     weights,
     indices,
     spikes,
@@ -684,7 +689,7 @@ def event_fixed_post_num_mv_p_call(
     spikes, v_unit = u.split_mantissa_unit(spikes)
 
     TILE_SIZE = indices.shape[0] if transpose else indices.shape[1]  # for warp
-    r = event_fixed_post_num_mv_p(
+    r = event_fixed_num_mv_p(
         weights,
         indices,
         spikes,
@@ -701,31 +706,18 @@ def event_fixed_post_num_mv_p_call(
     return (u.maybe_decimal(r * v_unit * w_unit),)
 
 
-event_fixed_post_num_mv_p = XLACustomKernel('event_fixed_post_num_mv')
-event_fixed_post_num_mv_p.def_cpu_kernel(NumbaKernelGenerator(_event_fixed_post_num_mv_cpu_kernel_generator))
-event_fixed_post_num_mv_p.def_gpu_kernel(
+event_fixed_num_mv_p = XLACustomKernel('event_fixed_num_mv')
+event_fixed_num_mv_p.def_cpu_kernel(NumbaKernelGenerator(_event_fixed_num_mv_cpu_kernel_generator))
+event_fixed_num_mv_p.def_gpu_kernel(
     GPUKernelChoice(
         default='pallas',
-        warp_kernel=WarpKernelGenerator(
-            _event_fixed_post_num_mv_warp_kernel_generator,
-            tile=lambda transpose, indices_info, spike_info, **kwargs: (
-                spike_info.shape[0]
-                if transpose else
-                indices_info.shape[0]
-            ),
-            block_dim=TILE_THREADS,
-            input_output_aliases={3: 0}
-        ),
-        pallas_kernel=PallasKernelGenerator(_event_fixed_post_num_mv_pallas_kernel_generator)
+        warp_kernel=WarpKernelGenerator(_event_fixed_num_mv_warp_kernel_generator),
+        pallas_kernel=PallasKernelGenerator(_event_fixed_num_mv_pallas_kernel_generator)
     )
 )
-event_fixed_post_num_mv_p.def_tpu_kernel(PallasKernelGenerator(_event_fixed_post_num_mv_pallas_kernel_generator))
-event_fixed_post_num_mv_p.def_jvp_rule2(
-    _event_fixed_post_num_mv_jvp_weights,
-    None,
-    _event_fixed_post_num_mv_jvp_spikes,
-    None,
-)
-event_fixed_post_num_mv_p.def_transpose_rule(
-    _event_fixed_post_num_mv_transpose_rule
+event_fixed_num_mv_p.def_tpu_kernel(PallasKernelGenerator(_event_fixed_num_mv_pallas_kernel_generator))
+event_fixed_num_mv_p.def_jvp_rule2(_event_fixed_num_mv_jvp_weights,
+                                   None, _event_fixed_num_mv_jvp_spikes, None)
+event_fixed_num_mv_p.def_transpose_rule(
+    _event_fixed_num_mv_transpose_rule
 )
