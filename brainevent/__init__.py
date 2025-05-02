@@ -15,6 +15,7 @@
 
 __version__ = "0.0.1"
 
+from ._config import config
 from ._block_csr import BlockCSR
 from ._block_ell import BlockELL
 from ._config import set_numba_environ, numba_environ_context
@@ -33,6 +34,8 @@ from ._xla_custom_op_util import defjvp, general_batching_rule
 from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type
 
 __all__ = [
+
+    'config',
 
     # --- data representing events --- #
     'EventArray',

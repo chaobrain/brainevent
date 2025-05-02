@@ -23,8 +23,9 @@ from contextlib import contextmanager
 from typing import Dict, Any, Optional, Union, NamedTuple, Callable
 
 __all__ = [
+    'config',
     'load_config',
-    'save_config',
+    'set_config',
     'set_environ',
     'set_numba_environ',
     'numba_environ_context',
@@ -37,7 +38,7 @@ class Config(NamedTuple):
 
 
 # Config singleton
-config = dict()
+config = Config()
 
 # Default configuration path
 DEFAULT_CONFIG_PATH = pathlib.Path.home() / '.brainevent' / 'config.json'
@@ -74,7 +75,7 @@ def load_config(config_path: Optional[Union[str, pathlib.Path]] = None) -> Dict[
     return {}
 
 
-def save_config(
+def set_config(
     config_dict: Dict[str, Any],
     config_path: Optional[Union[str, pathlib.Path]] = None
 ) -> None:
@@ -115,7 +116,7 @@ def set_environ(**kwargs) -> None:
     config_dict.update(**kwargs)
 
     # Save the updated config
-    save_config(config_dict)
+    set_config(config_dict)
 
 
 def initialize_config():

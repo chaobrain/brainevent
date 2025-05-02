@@ -94,6 +94,14 @@ class ShapeDtype(Protocol):
         ...
 
 
+class KernelChoice:
+    def __init__(self, choice: Callable):
+        self.choice = choice
+
+    def __call__(self, *args, **kwargs):
+        return self.choice(*args, **kwargs)
+
+
 class XLACustomKernel:
     """Creates and manages a custom JAX primitive for XLA custom calls.
 
@@ -221,6 +229,7 @@ class XLACustomKernel:
             self.def_cpu_kernel(cpu_kernel)
 
         # gpu kernel
+        self._gpu_kernel_choice = None
         if gpu_kernel is not None:
             self.def_gpu_kernel(gpu_kernel)
 
@@ -363,6 +372,10 @@ class XLACustomKernel:
         assert len(r) == len(outs), 'The number of outputs does not match the expected.'
         return tree_def.unflatten(r)
 
+    def ready_to_run(self):
+        if self._gpu_kernel_choice is not None:
+            self.def_gpu_kernel(self._gpu_kernel_choice())
+
     def def_cpu_kernel(
         self,
         kernel_generator: NumbaKernelGenerator
@@ -388,7 +401,7 @@ class XLACustomKernel:
 
     def def_gpu_kernel(
         self,
-        kernel_generator: Union[PallasKernelGenerator, WarpKernelGenerator]
+        kernel_generator: Union[PallasKernelGenerator, WarpKernelGenerator, KernelChoice]
     ):
         """
         Defines and registers the GPU kernel implementation using JAX Pallas or Warp.
@@ -406,12 +419,17 @@ class XLACustomKernel:
             TypeError: If `kernel_generator` is not an instance of
                        `PallasKernelGenerator` or `WarpKernelGenerator`.
         """
-
         if isinstance(kernel_generator, PallasKernelGenerator):
             register_pallas_gpu_translation(self.primitive, kernel_generator)
 
         elif isinstance(kernel_generator, WarpKernelGenerator):
             register_warp_gpu_translation(self.primitive, kernel_generator)
+
+        elif isinstance(kernel_generator, KernelChoice):
+            self._gpu_kernel_choice = kernel_generator
+
+        elif callable(kernel_generator):
+            self._gpu_kernel_choice = kernel_generator
 
         else:
             raise TypeError('The `kernel_generator` should be an instance of `PallasKernel` or `WarpKernel`.')

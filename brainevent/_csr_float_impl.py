@@ -23,14 +23,14 @@ import numpy as np
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
-from ._config import numba_environ
+from ._config import numba_environ, config
 from ._misc import _csr_to_coo, generate_block_dim
 from ._typing import Kernel, Data, Indptr, Index, MatrixShape
-from ._xla_custom_op import XLACustomKernel
+from ._xla_custom_op import XLACustomKernel, KernelChoice
 from ._xla_custom_op_numba import NumbaKernelGenerator
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_util import general_batching_rule
-from ._xla_custom_op_warp import dtype_to_warp_type
+from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 
 
 def csr_matvec(
@@ -565,27 +565,24 @@ def csrmv_p_call(
     )
 
 
-csrmv_p = XLACustomKernel(
-    'csrmv',
-    cpu_kernel=NumbaKernelGenerator(_csrmv_numba_kernel_generator, input_output_aliases={4: 0}),
-)
-if False:
-    csrmv_p.def_gpu_kernel(
-        WarpKernelGenerator(
-            _csrmv_warp_kernel1,
+def _csrmv_gpu_kernel():
+    if config.gpu_kernel_use_warp:
+        return WarpKernelGenerator(
+            _csrmv_warp_kernel_generator,
             dim=lambda indptr_info, vector_info, transpose, **kwargs: (
                 vector_info.shape[0] if transpose else indptr_info.shape[0] - 1
             ),
             input_output_aliases={4: 0}
-        ),
-    )
-else:
-    csrmv_p.def_gpu_kernel(
-        PallasKernelGenerator(_csrmv_pallas_tiled_kernel_generator, input_output_aliases={4: 0}),
-    )
-csrmv_p.def_tpu_kernel(
-    PallasKernelGenerator(_csrmv_pallas_tiled_kernel_generator, input_output_aliases={4: 0}),
-)
+        )
+    else:
+        return PallasKernelGenerator(_csrmv_pallas_tiled_kernel_generator, input_output_aliases={4: 0})
+
+
+csrmv_p = XLACustomKernel('csrmv')
+csrmv_p.def_cpu_kernel(NumbaKernelGenerator(_csrmv_numba_kernel_generator, input_output_aliases={4: 0}))
+csrmv_p.def_gpu_kernel(KernelChoice(_csrmv_gpu_kernel))
+csrmv_p.def_tpu_kernel(PallasKernelGenerator(_csrmv_pallas_tiled_kernel_generator,
+                                             input_output_aliases={4: 0}))
 csrmv_p.defjvp(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
 csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
 csrmv_p.def_batching_rule(_csrmv_batching)
@@ -1289,24 +1286,23 @@ def csrmm_p_call(
     )
 
 
-csrmm_p = XLACustomKernel(
-    'csrmm',
-    cpu_kernel=NumbaKernelGenerator(_csrmm_numba_kernel_generator, input_output_aliases={4: 0}),
-)
-# if Config.gpu_kernel_use_warp:
-if False:
-    csrmm_p.def_gpu_kernel(
-        WarpKernelGenerator(
+def _csrmm_gpu_kernel():
+    if config.gpu_kernel_use_warp:
+        return WarpKernelGenerator(
             _csrmm_warp_kernel_generator,
             tile=lambda shape, transpose, **kwargs: shape[1] if transpose else shape[0],
             block_dim=lambda vector_info, **kwargs: (
                 generate_block_dim(vector_info.shape[1], 1024)
             ),
             input_output_aliases={4: 0}
-        ),
-    )
-else:
-    csrmm_p.def_gpu_kernel(PallasKernelGenerator(_csrmm_pallas_kernel_generator, input_output_aliases={4: 0}))
+        )
+    else:
+        return PallasKernelGenerator(_csrmm_pallas_kernel_generator, input_output_aliases={4: 0})
+
+
+csrmm_p = XLACustomKernel('csrmm')
+csrmm_p.def_cpu_kernel(NumbaKernelGenerator(_csrmm_numba_kernel_generator, input_output_aliases={4: 0}))
+csrmm_p.def_gpu_kernel(KernelChoice(_csrmm_gpu_kernel))
 csrmm_p.def_tpu_kernel(PallasKernelGenerator(_csrmm_pallas_kernel_generator, input_output_aliases={4: 0}))
 csrmm_p.defjvp(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 csrmm_p.def_transpose_rule(_csrmm_transpose_rule)

@@ -23,15 +23,15 @@ import numpy as np
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
-from ._config import numba_environ
+from ._config import numba_environ, config
 from ._csr_float_impl import csr_matvec, csr_matmat
 from ._misc import _csr_to_coo, generate_block_dim
 from ._typing import Data, Indptr, Index, MatrixShape, Kernel
-from ._xla_custom_op import XLACustomKernel
+from ._xla_custom_op import XLACustomKernel, KernelChoice
 from ._xla_custom_op_numba import NumbaKernelGenerator
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_util import general_batching_rule
-from ._xla_custom_op_warp import dtype_to_warp_type
+from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 
 
 def event_csr_matvec(
@@ -839,27 +839,28 @@ def event_csrmv_p_call(
     )
 
 
-event_csrmv_p = XLACustomKernel(
-    'event_csrmv',
-    cpu_kernel=NumbaKernelGenerator(_event_csrmv_numba_kernel_generator, input_output_aliases={4: 0}),
-)
-if False:
-    event_csrmv_p.def_gpu_kernel(
-        WarpKernelGenerator(
+def _event_csrmv_gpu_kernel():
+    if config.gpu_kernel_use_warp:
+        return WarpKernelGenerator(
             _event_csrmv_warp_kernel_generator,
             dim=lambda indptr_info, vector_info, transpose, **kwargs: (
                 vector_info.shape[0] if transpose else indptr_info.shape[0] - 1
             ),
             input_output_aliases={4: 0}
         )
-    )
-else:
-    event_csrmv_p.def_gpu_kernel(
-        PallasKernelGenerator(_event_csrmv_pallas_tiled_kernel_generator, input_output_aliases={4: 0}),
-    )
-event_csrmv_p.def_tpu_kernel(
-    PallasKernelGenerator(_event_csrmv_pallas_tiled_kernel_generator, input_output_aliases={4: 0}),
-)
+    else:
+        return PallasKernelGenerator(
+            _event_csrmv_pallas_tiled_kernel_generator,
+            input_output_aliases={4: 0}
+        )
+
+
+event_csrmv_p = XLACustomKernel('event_csrmv')
+event_csrmv_p.def_cpu_kernel(NumbaKernelGenerator(_event_csrmv_numba_kernel_generator,
+                                                  input_output_aliases={4: 0}))
+event_csrmv_p.def_gpu_kernel(KernelChoice(_event_csrmv_gpu_kernel))
+event_csrmv_p.def_tpu_kernel(PallasKernelGenerator(_event_csrmv_pallas_tiled_kernel_generator,
+                                                   input_output_aliases={4: 0}))
 event_csrmv_p.defjvp(_event_csrmv_jvp_weights, None, None, _event_csrmv_jvp_v)
 event_csrmv_p.def_transpose_rule(_event_csrmv_transpose_rule)
 event_csrmv_p.def_batching_rule(_event_csrmv_batching)
@@ -1683,16 +1684,9 @@ def event_csrmm_p_call(
     )
 
 
-event_csrmm_p = XLACustomKernel(
-    'event_csrmm',
-    cpu_kernel=NumbaKernelGenerator(
-        _event_csrmm_numba_kernel_generator,
-        input_output_aliases={4: 0}
-    ),
-)
-if False:
-    event_csrmm_p.def_gpu_kernel(
-        WarpKernelGenerator(
+def _event_csrmm_gpu_kernel():
+    if config.gpu_kernel_use_warp:
+        return WarpKernelGenerator(
             _event_csrmm_warp_kernel_generator,
             dim=lambda vector_info, indptr_info, transpose, **kwargs: (
                 tuple(reversed(vector_info.shape))
@@ -1700,15 +1694,18 @@ if False:
                 [vector_info.shape[1], indptr_info.shape[0] - 1]
             ),
             input_output_aliases={4: 0}
-        ),
-    )
-else:
-    event_csrmm_p.def_gpu_kernel(
-        PallasKernelGenerator(_event_csrmm_pallas_kernel_generator, input_output_aliases={4: 0}),
-    )
-event_csrmm_p.def_tpu_kernel(
-    PallasKernelGenerator(_event_csrmm_pallas_kernel_generator, input_output_aliases={4: 0}),
-)
+        )
+    else:
+        return PallasKernelGenerator(
+            _event_csrmm_pallas_kernel_generator,
+            input_output_aliases={4: 0}
+        )
+
+
+event_csrmm_p = XLACustomKernel('event_csrmm')
+event_csrmm_p.def_cpu_kernel(NumbaKernelGenerator(_event_csrmm_numba_kernel_generator, input_output_aliases={4: 0}))
+event_csrmm_p.def_gpu_kernel(KernelChoice(_event_csrmm_gpu_kernel))
+event_csrmm_p.def_tpu_kernel(PallasKernelGenerator(_event_csrmm_pallas_kernel_generator, input_output_aliases={4: 0}))
 event_csrmm_p.defjvp(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 event_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 event_csrmm_p.def_batching_rule(_event_csrmm_batching)
