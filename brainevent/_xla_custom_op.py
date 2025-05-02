@@ -97,12 +97,41 @@ class ShapeDtype(Protocol):
 
 
 class GPUKernelChoice:
+    """A class to dynamically select between different GPU kernel implementations.
+
+    This class provides a mechanism to choose between Warp and Pallas kernel
+    implementations for GPU execution. It allows specifying a default kernel type
+    and dynamically selecting the appropriate kernel at runtime based on
+    configuration settings.
+
+    Attributes:
+        default (str): The default kernel backend to use ('warp' or 'pallas').
+        warp_kernel (Optional[WarpKernelGenerator]): The Warp kernel implementation.
+        pallas_kernel (Optional[PallasKernelGenerator]): The Pallas kernel implementation.
+        _all_kernels (dict): Dictionary mapping backend names to kernel implementations.
+    """
+
     def __init__(
         self,
         default: str,
         warp_kernel: Optional[WarpKernelGenerator] = None,
         pallas_kernel: Optional[PallasKernelGenerator] = None,
     ):
+        """Initialize a GPU kernel choice with Warp and/or Pallas implementations.
+
+        Args:
+            default (str): The default kernel type to use. Must be either 'warp' or 'pallas',
+                and the corresponding kernel must be provided.
+            warp_kernel (Optional[WarpKernelGenerator]): The Warp kernel implementation.
+                Defaults to None.
+            pallas_kernel (Optional[PallasKernelGenerator]): The Pallas kernel implementation.
+                Defaults to None.
+
+        Raises:
+            ValueError: If neither warp_kernel nor pallas_kernel is provided.
+            AssertionError: If default is not 'warp' or 'pallas', or if the specified
+                default doesn't have a corresponding kernel implementation.
+        """
         self.default = default
         assert default in ['warp', 'pallas'], (
             "default must be either 'warp' or 'pallas'."
@@ -123,6 +152,19 @@ class GPUKernelChoice:
         )
 
     def __call__(self, *args, **kwargs):
+        """Select and return the appropriate kernel implementation based on configuration.
+
+        This method allows the GPUKernelChoice instance to be called like a function.
+        It selects the appropriate kernel implementation based on the current
+        configuration settings.
+
+        Args:
+            *args: Variable positional arguments passed to the kernel implementation.
+            **kwargs: Variable keyword arguments passed to the kernel implementation.
+
+        Returns:
+            Union[WarpKernelGenerator, PallasKernelGenerator]: The selected kernel implementation.
+        """
         if config.gpu_kernel_backend == 'default':
             backend = self.default
         elif config.gpu_kernel_backend in self._all_kernels:

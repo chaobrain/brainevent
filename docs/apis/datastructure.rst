@@ -45,7 +45,7 @@ Coordinate Format matrix
 
 
 Fixed Number of Connections matrix
----------------------------------
+----------------------------------
 
 .. autosummary::
    :toctree: generated/

@@ -27,7 +27,7 @@ from ._jitc_homo import JITCHomoR, JITCHomoC
 from ._jitc_normal import JITCNormalR, JITCNormalC
 from ._jitc_uniform import JITCUniformR, JITCUniformC
 from ._pallas_random import LFSR88RNG, LFSR113RNG, LFSR128RNG
-from ._xla_custom_op import XLACustomKernel
+from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_util import defjvp, general_batching_rule
@@ -63,6 +63,7 @@ __all__ = [
 
     # 1. Custom kernel
     'XLACustomKernel',
+    'GPUKernelChoice',
 
     # 2. utilities
     'defjvp',
