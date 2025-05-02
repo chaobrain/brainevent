@@ -19,13 +19,13 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+import brainstate
 import brainevent
 from brainevent._csr_event_impl_test import TestBatchingVectorCSR, TestBatchingMatrixCSR
 from brainevent._csr_test_util import get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
 
 
-# brainstate.environ.set(platform='cpu')
-
+pytest.mark.skipif(brainstate.environ.get_platform() != 'cpu', allow_module_level=True)
 
 class TestVectorCSR:
     @pytest.mark.parametrize('homo_w', [True, False])

@@ -15,7 +15,7 @@
 # -*- coding: utf-8 -*-
 
 
-import brainstate as bst
+import brainstate
 import brainunit as u
 import jax
 import jax.numpy as jnp
@@ -24,15 +24,17 @@ import pytest
 import brainevent
 from brainevent._coo_test_util import _get_coo, vector_coo, matrix_coo, coo_vector, coo_matrix
 
+pytest.mark.skipif(brainstate.environ.get_platform() != 'cpu', allow_module_level=True)
+
 
 class TestCOO:
     def test_event_homo_bool(self):
         for dat in [1., 2., 3.]:
-            mask = (bst.random.rand(10, 20) < 0.1).astype(float) * dat
+            mask = (brainstate.random.rand(10, 20) < 0.1).astype(float) * dat
             coo = u.sparse.COO.fromdense(mask)
             coo = brainevent.COO((dat, coo.row, coo.col), shape=mask.shape)
 
-            v = brainevent.EventArray(bst.random.rand(20) < 0.5)
+            v = brainevent.EventArray(brainstate.random.rand(20) < 0.5)
             assert (
                 u.math.allclose(
                     mask.astype(float) @ v.data.astype(float),
@@ -40,7 +42,7 @@ class TestCOO:
                 )
             )
 
-            v = brainevent.EventArray(bst.random.rand(10) < 0.5)
+            v = brainevent.EventArray(brainstate.random.rand(10) < 0.5)
             assert (
                 u.math.allclose(
                     v.data.astype(float) @ mask.astype(float),
@@ -49,12 +51,12 @@ class TestCOO:
             )
 
     def test_event_homo_float_as_bool(self):
-        mat = bst.random.rand(10, 20)
+        mat = brainstate.random.rand(10, 20)
         mask = (mat < 0.1).astype(float) * mat
         coo = u.sparse.COO.fromdense(mask)
         coo = brainevent.COO((coo.data, coo.row, coo.col), shape=mask.shape)
 
-        v = brainevent.EventArray((bst.random.rand(20) < 0.5).astype(float))
+        v = brainevent.EventArray((brainstate.random.rand(20) < 0.5).astype(float))
         assert (
             u.math.allclose(
                 mask.astype(float) @ v.data.astype(float),
@@ -62,7 +64,7 @@ class TestCOO:
             )
         )
 
-        v = brainevent.EventArray((bst.random.rand(10) < 0.5).astype(float))
+        v = brainevent.EventArray((brainstate.random.rand(10) < 0.5).astype(float))
         assert (
             u.math.allclose(
                 v.data.astype(float) @ mask.astype(float),
@@ -71,12 +73,12 @@ class TestCOO:
         )
 
     def test_event_homo_other(self):
-        mat = bst.random.rand(10, 20)
-        mask = (bst.random.rand(10, 20) < 0.1) * mat
+        mat = brainstate.random.rand(10, 20)
+        mask = (brainstate.random.rand(10, 20) < 0.1) * mat
         coo = u.sparse.COO.fromdense(mask)
         coo = brainevent.COO((coo.data, coo.row, coo.col), shape=mask.shape)
 
-        v = brainevent.EventArray(bst.random.rand(20) < 0.5)
+        v = brainevent.EventArray(brainstate.random.rand(20) < 0.5)
         assert (
             u.math.allclose(
                 mask.astype(float) @ v.data.astype(float),
@@ -84,7 +86,7 @@ class TestCOO:
             )
         )
 
-        v = brainevent.EventArray(bst.random.rand(10) < 0.5)
+        v = brainevent.EventArray(brainstate.random.rand(10) < 0.5)
         assert (
             u.math.allclose(
                 v.data.astype(float) @ mask.astype(float),
@@ -97,11 +99,11 @@ class TestVectorCOO:
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vector_coo(self, homo_w):
         m, n = 20, 40
-        x = bst.random.rand(m) < 0.1
+        x = brainstate.random.rand(m) < 0.1
         row, col = _get_coo(m, n, 0.1)
 
         print(f'homo_w = {homo_w}')
-        data = 1.5 if homo_w else bst.init.Normal()(row.shape)
+        data = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
         coo = brainevent.COO([data, row, col], shape=(m, n))
         y = brainevent.EventArray(x) @ coo
         y2 = vector_coo(x, coo.data, row, col, [m, n])
@@ -110,10 +112,10 @@ class TestVectorCOO:
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vector_coo_vmap_vector(self, homo_w):
         n_batch, m, n = 10, 20, 40
-        xs = bst.random.rand(n_batch, m) < 0.1
+        xs = brainstate.random.rand(n_batch, m) < 0.1
         row, col = _get_coo(m, n, 0.1)
 
-        data = 1.5 if homo_w else bst.init.Normal()(row.shape)
+        data = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
         coo = brainevent.COO([data, row, col], shape=(m, n))
         y = jax.vmap(lambda x: brainevent.EventArray(x) @ coo)(xs)
         y2 = jax.vmap(lambda x: vector_coo(x, coo.data, row, col, [m, n]))(xs)
@@ -122,10 +124,10 @@ class TestVectorCOO:
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_coo_vector(self, homo_w):
         m, n = 20, 40
-        v = bst.random.rand(n) < 0.1
+        v = brainstate.random.rand(n) < 0.1
         row, col = _get_coo(m, n, 0.2)
 
-        data = 1.5 if homo_w else bst.init.Normal()(row.shape)
+        data = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
         coo = brainevent.COO([data, row, col], shape=(m, n))
         y = coo @ brainevent.EventArray(v)
         y2 = coo_vector(v, coo.data, row, col, [m, n])
@@ -135,11 +137,11 @@ class TestVectorCOO:
         n_in = 20
         n_out = 30
         shape = [n_in, n_out]
-        x = bst.random.rand(n_in) if transpose else bst.random.rand(n_out)
+        x = brainstate.random.rand(n_in) if transpose else brainstate.random.rand(n_out)
         x = (x < 0.6).astype(float)
 
         row, col = _get_coo(n_in, n_out, 0.2, replace=replace)
-        w = 1.5 if homo_w else bst.init.Normal()(row.shape)
+        w = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
         coo = brainevent.COO((w, row, col), shape=shape)
 
         def f_brainevent(x, w):
@@ -176,12 +178,12 @@ class TestVectorCOO:
         n_in = 20
         n_out = 30
         shape = [n_in, n_out]
-        x = bst.random.rand(n_in if transpose else n_out)
+        x = brainstate.random.rand(n_in if transpose else n_out)
         x = (x < 0.6).astype(float)
 
         row, col = _get_coo(n_in, n_out, 0.1, replace=replace)
 
-        w = 1.5 if homo_w else bst.init.Normal()(row.shape)
+        w = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
         coo = brainevent.COO((w, row, col), shape=shape)
 
         def f_brainevent(x, w):
@@ -218,11 +220,11 @@ class TestVectorCOO:
 class TestMatrixCOO:
     def test_matrix_coo(self):
         k, m, n = 10, 20, 40
-        x = bst.random.rand(k, m) < 0.1
+        x = brainstate.random.rand(k, m) < 0.1
         row, col = _get_coo(m, n, 0.1)
 
         for homo_w in [True, False]:
-            data = 1.5 if homo_w else bst.init.Normal()(row.shape)
+            data = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
             coo = brainevent.COO([data, row, col], shape=(m, n))
             y = brainevent.EventArray(x) @ coo
             y2 = matrix_coo(x.astype(float), coo.data, row, col, [m, n])
@@ -231,10 +233,10 @@ class TestMatrixCOO:
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_coo_matrix(self, homo_w):
         m, n, k = 20, 40, 10
-        matrix = bst.random.rand(n, k) < 0.1
+        matrix = brainstate.random.rand(n, k) < 0.1
         row, col = _get_coo(m, n, 0.1)
 
-        data = 1.5 if homo_w else bst.init.Normal()(row.shape)
+        data = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
         coo = brainevent.COO([data, row, col], shape=(m, n))
         y = coo @ brainevent.EventArray(matrix)
         y2 = coo_matrix(matrix.astype(float), coo.data, row, col, [m, n])

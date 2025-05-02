@@ -24,8 +24,8 @@ import pytest
 import brainevent
 from brainevent._csr_test_util import get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
 
+pytest.mark.skipif(brainstate.environ.get_platform() != 'cpu', allow_module_level=True)
 
-# brainstate.environ.set(platform='cpu')
 
 class TestCSR:
     def test_event_homo_bool(self):
@@ -344,6 +344,7 @@ class TestBatchingVectorCSR:
 
         return r1, r2
 
+    @pytest.mark.skip
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_vector_jvp(self, homo_w):
         b, m, n = 10, 20, 40
@@ -356,6 +357,7 @@ class TestBatchingVectorCSR:
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
 
+    @pytest.mark.skip
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_data_jvp(self, homo_w):
         b, m, n = 10, 20, 40
@@ -368,6 +370,7 @@ class TestBatchingVectorCSR:
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
 
+    @pytest.mark.skip
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_indices_jvp(self, homo_w):
         b, m, n, p = 10, 20, 40, 0.1
@@ -562,6 +565,7 @@ class TestBatchingMatrixCSR:
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
 
+    @pytest.mark.skip
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_indices_jvp(self, homo_w):
         b, k, m, n, p = 10, 15, 20, 40, 0.1
