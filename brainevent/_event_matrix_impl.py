@@ -25,7 +25,7 @@ from ._config import numba_environ
 from ._misc import cdiv
 from ._typing import Kernel
 from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
-from ._xla_custom_op_numba import NumbaKernelGenerator
+from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type
 
@@ -164,7 +164,7 @@ def _matrix_event_mm_cpu_kernel_generator(
                     if sp != 0.:
                         posts[:, i_n] += col * sp
 
-    return numba_environ.jit_fn(_kernel)
+    return numba_kernel(_kernel)
 
 
 def _matrix_event_mm_gpu_kernel_generator(
@@ -176,7 +176,7 @@ def _matrix_event_mm_gpu_kernel_generator(
     TILE_M: int,
     block_dim: int,
     **kwargs
-) -> Kernel:
+) :
     import warp  # pylint: disable=import-outside-toplevel
 
     spike_dtype = dtype_to_warp_type(spk_info.dtype)
@@ -397,7 +397,7 @@ def _event_matrix_mm_cpu_kernel_generator(
     float_as_event: bool,
     spk_info: jax.ShapeDtypeStruct,
     **kwargs
-) -> Kernel:
+) :
     # spikes: [m, k]
     # weights: [k, n]
 
@@ -429,7 +429,7 @@ def _event_matrix_mm_cpu_kernel_generator(
                     if s != 0.:
                         posts[i_m] += row * s
 
-    return numba_environ.jit_fn(_kernel)
+    return numba_kernel(_kernel)
 
 
 def _event_matrix_mm_gpu_kernel_generator(
@@ -441,7 +441,7 @@ def _event_matrix_mm_gpu_kernel_generator(
     TILE_M: int,
     block_dim: int,
     **kwargs
-) -> Kernel:
+) :
     import warp  # pylint: disable=import-outside-toplevel
 
     spike_dtype = dtype_to_warp_type(spk_info.dtype)

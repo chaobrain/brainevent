@@ -22,12 +22,11 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from ._config import numba_environ
 from ._jitc_float_homo_impl import float_jitc_mv_homo_p_call, float_jitc_mm_homo_p_call
 from ._jitc_util import _initialize_seed, _initialize_conn_length
-from ._typing import Kernel, Data, MatrixShape
+from ._typing import Data, MatrixShape
 from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_numba import NumbaKernelGenerator
+from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 
@@ -180,7 +179,7 @@ def _jitc_mv_homo_cpu_kernel_generator(
     corder: bool,
     vector_info: jax.ShapeDtypeStruct,
     **kwargs
-) -> Kernel:
+):
     if corder:
         if vector_info.dtype == jnp.bool_:
             def kernel(weight, clen, vector, seed, _, posts):
@@ -249,7 +248,7 @@ def _jitc_mv_homo_cpu_kernel_generator(
                             posts[i_col] += weight0
                         i_col += np.random.randint(1, clen0)
 
-    return numba_environ.jit_fn(kernel)
+    return numba_kernel(kernel, parallel=False, input_output_aliases={4: 0})
 
 
 def _jitc_mv_homo_gpu_kernel_generator(
@@ -260,7 +259,7 @@ def _jitc_mv_homo_gpu_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     import warp
 
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
@@ -597,12 +596,7 @@ def event_jitc_mv_homo_p_call(
 
 
 event_jitc_mv_homo_p = XLACustomKernel('event_jitc_mv_homo')
-event_jitc_mv_homo_p.def_cpu_kernel(
-    NumbaKernelGenerator(
-        _jitc_mv_homo_cpu_kernel_generator,
-        input_output_aliases={4: 0}
-    )
-)
+event_jitc_mv_homo_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mv_homo_cpu_kernel_generator))
 event_jitc_mv_homo_p.def_gpu_kernel(
     WarpKernelGenerator(
         _jitc_mv_homo_gpu_kernel_generator,
@@ -630,7 +624,7 @@ def _jitc_mm_homo_cpu_kernel_generator(
     corder: bool,
     B_info: jax.ShapeDtypeStruct,
     **kwargs
-) -> Kernel:
+):
     if corder:
 
         if transpose:
@@ -833,7 +827,7 @@ def _jitc_mm_homo_cpu_kernel_generator(
                         #     posts[i_m] += out
                         #     i_m += np.random.randint(1, clen0)
 
-    return numba_environ.jit_fn(kernel)
+    return numba_kernel(kernel, parallel=False, input_output_aliases={4: 0})
 
 
 def _jitc_mm_homo_gpu_kernel_generator(
@@ -845,7 +839,7 @@ def _jitc_mm_homo_gpu_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     import warp
 
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
@@ -1263,12 +1257,7 @@ def event_jitc_mm_homo_p_call(
 
 
 event_jitc_mm_homo_p = XLACustomKernel('event_jitc_mm_homo', )
-event_jitc_mm_homo_p.def_cpu_kernel(
-    NumbaKernelGenerator(
-        _jitc_mm_homo_cpu_kernel_generator,
-        input_output_aliases={4: 0}
-    )
-)
+event_jitc_mm_homo_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mm_homo_cpu_kernel_generator))
 event_jitc_mm_homo_p.def_gpu_kernel(
     WarpKernelGenerator(
         _jitc_mm_homo_gpu_kernel_generator,

@@ -24,10 +24,9 @@ import numpy as np
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
-from ._config import numba_environ
 from ._misc import generate_block_dim, check_fixed_conn_num_shape
 from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
-from ._xla_custom_op_numba import NumbaKernelGenerator
+from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 
@@ -67,7 +66,7 @@ def _fixed_num_mv_numba_kernel_generator(
                 for i in range(indices.shape[0]):
                     posts[i] = np.sum(weights[i] * vector[indices[i]])
 
-    return numba_environ.jit_fn(ell_mv)
+    return numba_kernel(ell_mv, parallel=False, input_output_aliases={3: 0})
 
 
 def _fixed_num_mv_warp_kernel_generator(
@@ -508,9 +507,7 @@ def fixed_num_mv_p_call(
 
 
 fixed_num_mv_p = XLACustomKernel('fixed_num_mv')
-fixed_num_mv_p.def_cpu_kernel(
-    NumbaKernelGenerator(_fixed_num_mv_numba_kernel_generator, input_output_aliases={3: 0})
-)
+fixed_num_mv_p.def_cpu_kernel(NumbaKernelGenerator(_fixed_num_mv_numba_kernel_generator))
 fixed_num_mv_p.def_gpu_kernel(
     GPUKernelChoice(
         default='pallas',
@@ -586,7 +583,7 @@ def _fixed_num_mm_numba_kernel_generator(
                 for i_m in range(indices.shape[0]):
                     posts[i_m] = weights[i_m] @ matrix[indices[i_m]]
 
-    return numba_environ.jit_fn(ell_mv)
+    return numba_kernel(ell_mv, parallel=False, input_output_aliases={3: 0})
 
 
 def _fixed_num_mm_warp_kernel_generator(
@@ -993,12 +990,7 @@ def fixed_num_mm_p_call(
 
 
 fixed_num_mm_p = XLACustomKernel('fixed_num_mm')
-fixed_num_mm_p.def_cpu_kernel(
-    NumbaKernelGenerator(
-        _fixed_num_mm_numba_kernel_generator,
-        input_output_aliases={3: 0}
-    )
-)
+fixed_num_mm_p.def_cpu_kernel(NumbaKernelGenerator(_fixed_num_mm_numba_kernel_generator))
 fixed_num_mm_p.def_gpu_kernel(
     GPUKernelChoice(
         default='pallas',

@@ -23,11 +23,10 @@ import numpy as np
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
-from ._config import numba_environ
 from ._misc import _csr_to_coo, generate_block_dim
-from ._typing import Kernel, Data, Indptr, Index, MatrixShape
+from ._typing import Data, Indptr, Index, MatrixShape
 from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
-from ._xla_custom_op_numba import NumbaKernelGenerator
+from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
@@ -108,11 +107,12 @@ def _csrmv_numba_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs
-) -> Kernel:
+):
     import numba  # pylint: disable=import-outside-toplevel
 
     if weight_info.size == 1:
         if transpose:
+            @numba_kernel(parallel=False, input_output_aliases={4: 0})
             def mv(weights, indices, indptr, v, _, posts):
                 w = weights[0]
                 for i in range(v.shape[0]):
@@ -121,6 +121,7 @@ def _csrmv_numba_kernel_generator(
                         posts[indices[j]] += wsp
 
         else:
+            @numba_kernel(parallel=False, input_output_aliases={4: 0})
             def mv(weights, indices, indptr, v, _, posts):
                 w = weights[0]
                 for i in numba.prange(indptr.shape[0] - 1):
@@ -131,6 +132,7 @@ def _csrmv_numba_kernel_generator(
 
     else:
         if transpose:
+            @numba_kernel(parallel=False, input_output_aliases={4: 0})
             def mv(weights, indices, indptr, v, _, posts):
                 for i in range(v.shape[0]):
                     sp = v[i]
@@ -138,6 +140,7 @@ def _csrmv_numba_kernel_generator(
                         posts[indices[j]] += weights[j] * sp
 
         else:
+            @numba_kernel(parallel=False, input_output_aliases={4: 0})
             def mv(weights, indices, indptr, v, _, posts):
                 for i in range(indptr.shape[0] - 1):
                     r = np.asarray(0., dtype=posts.dtype)
@@ -145,7 +148,7 @@ def _csrmv_numba_kernel_generator(
                         r += weights[j] * v[indices[j]]
                     posts[i] = r
 
-    return numba.njit(**numba_environ.setting)(mv)
+    return mv
 
 
 def _csrmv_warp_kernel_generator(
@@ -566,9 +569,7 @@ def csrmv_p_call(
 
 
 csrmv_p = XLACustomKernel('csrmv')
-csrmv_p.def_cpu_kernel(
-    NumbaKernelGenerator(_csrmv_numba_kernel_generator, input_output_aliases={4: 0})
-)
+csrmv_p.def_cpu_kernel(NumbaKernelGenerator(_csrmv_numba_kernel_generator))
 csrmv_p.def_gpu_kernel(
     GPUKernelChoice(
         default='pallas',
@@ -598,7 +599,7 @@ def _csrmm_numba_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs
-) -> Kernel:
+):
     import numba  # pylint: disable=import-outside-toplevel
 
     if weight_info.size == 1:
@@ -608,7 +609,7 @@ def _csrmm_numba_kernel_generator(
             # CSR: [k, m]
             # B: [k, n]
             #
-            @numba_environ.jit_fn
+            @numba_kernel(parallel=False, input_output_aliases={4: 0})
             def mm(weights, indices, indptr, B, _, posts):
                 w = weights[0]
                 for i in range(B.shape[0]):
@@ -622,7 +623,7 @@ def _csrmm_numba_kernel_generator(
             # CSR: [m, k]
             # B: [k, n]
             #
-            @numba_environ.pjit_fn
+            @numba_kernel(parallel=True, input_output_aliases={4: 0})
             def mm(weights, indices, indptr, B, _, posts):
                 w = weights[0]
                 for i in numba.prange(indptr.shape[0] - 1):
@@ -638,7 +639,7 @@ def _csrmm_numba_kernel_generator(
             # CSR: [k, m]
             # B: [k, n]
             #
-            @numba_environ.jit_fn
+            @numba_kernel(parallel=False, input_output_aliases={4: 0})
             def mm(weights, indices, indptr, B, _, posts):
                 for i in range(B.shape[0]):
                     for j in range(indptr[i], indptr[i + 1]):
@@ -650,7 +651,7 @@ def _csrmm_numba_kernel_generator(
             # CSR: [m, k]
             # B: [k, n]
             #
-            @numba_environ.pjit_fn
+            @numba_kernel(parallel=True, input_output_aliases={4: 0})
             def mm(weights, indices, indptr, B, _, posts):
                 for i in numba.prange(indptr.shape[0] - 1):
                     r = np.zeros(B.shape[1], dtype=posts.dtype)
@@ -668,7 +669,7 @@ def _csrmm_warp_kernel_generator(
     indptr_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs
-) -> Kernel:
+):
     import warp  # pylint: disable=import-outside-toplevel
 
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
@@ -1096,7 +1097,7 @@ def _csrmm_pallas_kernel2(
     return kernel
 
 
-def _csrmm_pallas_kernel_generator(**kwargs) -> Kernel:
+def _csrmm_pallas_kernel_generator(**kwargs):
     version = 1
 
     if version == 1:
@@ -1293,9 +1294,7 @@ def csrmm_p_call(
 
 
 csrmm_p = XLACustomKernel('csrmm')
-csrmm_p.def_cpu_kernel(
-    NumbaKernelGenerator(_csrmm_numba_kernel_generator, input_output_aliases={4: 0})
-)
+csrmm_p.def_cpu_kernel(NumbaKernelGenerator(_csrmm_numba_kernel_generator))
 csrmm_p.def_gpu_kernel(
     GPUKernelChoice(
         default='pallas',
@@ -1305,11 +1304,11 @@ csrmm_p.def_gpu_kernel(
             block_dim=lambda vector_info, **kwargs: generate_block_dim(vector_info.shape[1], 1024),
             input_output_aliases={4: 0}
         ),
-        pallas_kernel=PallasKernelGenerator(_csrmm_pallas_kernel_generator, input_output_aliases={4: 0}),
+        pallas_kernel=PallasKernelGenerator(_csrmm_pallas_kernel_generator),
     )
 )
 csrmm_p.def_tpu_kernel(
-    PallasKernelGenerator(_csrmm_pallas_kernel_generator, input_output_aliases={4: 0})
+    PallasKernelGenerator(_csrmm_pallas_kernel_generator)
 )
 csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 csrmm_p.def_transpose_rule(_csrmm_transpose_rule)

@@ -24,11 +24,10 @@ import jax.numpy as jnp
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
-from ._config import numba_environ
 from ._fixed_conn_num_float_impl import fixed_num_mv_p_call
 from ._misc import generate_block_dim, check_fixed_conn_num_shape
 from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
-from ._xla_custom_op_numba import NumbaKernelGenerator
+from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
 
@@ -45,7 +44,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
     if transpose:
         if weight_info.size == 1:
             if spike_info.dtype == jnp.bool_:
-                @numba_environ.jit_fn
+                @numba_kernel(parallel=False, input_output_aliases={3: 0})
                 def ell_mv(weights, indices, spikes, _, posts):
                     w = weights[0]
                     for i in range(spikes.shape[0]):
@@ -54,7 +53,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
                                 posts[indices[i, j]] += w
 
             elif float_as_event:
-                @numba_environ.jit_fn
+                @numba_kernel(parallel=False, input_output_aliases={3: 0})
                 def ell_mv(weights, indices, spikes, _, posts):
                     w = weights[0]
                     for i in range(spikes.shape[0]):
@@ -63,7 +62,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
                                 posts[indices[i, j]] += w
 
             else:
-                @numba_environ.jit_fn
+                @numba_kernel(parallel=False, input_output_aliases={3: 0})
                 def ell_mv(weights, indices, spikes, _, posts):
                     w = weights[0]
                     for i in range(spikes.shape[0]):
@@ -75,7 +74,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
 
         else:
             if spike_info.dtype == jnp.bool_:
-                @numba_environ.jit_fn
+                @numba_kernel(parallel=False, input_output_aliases={3: 0})
                 def ell_mv(weights, indices, spikes, _, posts):
                     for i in range(spikes.shape[0]):
                         if spikes[i]:
@@ -83,7 +82,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
                                 posts[indices[i, j]] += weights[i, j]
 
             elif float_as_event:
-                @numba_environ.jit_fn
+                @numba_kernel(parallel=False, input_output_aliases={3: 0})
                 def ell_mv(weights, indices, spikes, _, posts):
                     for i in range(spikes.shape[0]):
                         if spikes[i] != 0.:
@@ -91,7 +90,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
                                 posts[indices[i, j]] += weights[i, j]
 
             else:
-                @numba_environ.jit_fn
+                @numba_kernel(parallel=False, input_output_aliases={3: 0})
                 def ell_mv(weights, indices, spikes, _, posts):
                     for i in range(spikes.shape[0]):
                         sp = spikes[i]
@@ -102,7 +101,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
     else:
         if weight_info.size == 1:
             if spike_info.dtype == jnp.bool_:
-                @numba_environ.jit_fn
+                @numba_kernel(parallel=False, input_output_aliases={3: 0})
                 def ell_mv(weights, indices, spikes, _, posts):
                     w = weights[0]
                     for i in range(indices.shape[0]):  # n_pre
@@ -114,7 +113,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
                         posts[i] = r
 
             elif float_as_event:
-                @numba_environ.jit_fn
+                @numba_kernel(parallel=False, input_output_aliases={3: 0})
                 def ell_mv(weights, indices, spikes, _, posts):
                     w = weights[0]
                     for i in range(indices.shape[0]):  # n_pre
@@ -127,7 +126,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
 
 
             else:
-                @numba_environ.jit_fn
+                @numba_kernel(parallel=False, input_output_aliases={3: 0})
                 def ell_mv(weights, indices, spikes, _, posts):
                     w = weights[0]
                     for i in range(indices.shape[0]):  # n_pre
@@ -141,7 +140,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
 
         else:
             if spike_info.dtype == jnp.bool_:
-                @numba_environ.jit_fn
+                @numba_kernel(parallel=False, input_output_aliases={3: 0})
                 def ell_mv(weights, indices, spikes, _, posts):
                     for i in range(indices.shape[0]):  # n_pre
                         r = 0.
@@ -152,7 +151,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
                         posts[i] = r
 
             elif float_as_event:
-                @numba_environ.jit_fn
+                @numba_kernel(parallel=False, input_output_aliases={3: 0})
                 def ell_mv(weights, indices, spikes, _, posts):
                     for i in range(indices.shape[0]):  # n_pre
                         r = 0.
@@ -163,7 +162,7 @@ def _event_fixed_post_num_mv_cpu_kernel_generator(
                         posts[i] = r
 
             else:
-                @numba_environ.jit_fn
+                @numba_kernel(parallel=False, input_output_aliases={3: 0})
                 def ell_mv(weights, indices, spikes, _, posts):
                     for i in range(indices.shape[0]):  # n_pre
                         r = 0.
@@ -703,9 +702,7 @@ def event_fixed_post_num_mv_p_call(
 
 
 event_fixed_post_num_mv_p = XLACustomKernel('event_fixed_post_num_mv')
-event_fixed_post_num_mv_p.def_cpu_kernel(
-    NumbaKernelGenerator(_event_fixed_post_num_mv_cpu_kernel_generator, input_output_aliases={3: 0})
-)
+event_fixed_post_num_mv_p.def_cpu_kernel(NumbaKernelGenerator(_event_fixed_post_num_mv_cpu_kernel_generator))
 event_fixed_post_num_mv_p.def_gpu_kernel(
     GPUKernelChoice(
         default='pallas',

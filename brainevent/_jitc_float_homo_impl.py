@@ -26,9 +26,9 @@ from ._compatible_import import pallas as pl
 from ._config import numba_environ
 from ._jitc_util import _initialize_seed, _initialize_conn_length
 from ._pallas_random import LFSR88RNG
-from ._typing import Kernel, Data, MatrixShape
+from ._typing import Data, MatrixShape
 from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
-from ._xla_custom_op_numba import NumbaKernelGenerator
+from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
@@ -263,11 +263,10 @@ def _jitc_homo_matrix_cpu_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     r"""
     Generate the CPU kernel for the :func:`_jitc_matvec_homo` operation.
     """
-    import numba  # pylint: disable=import-outside-toplevel
 
     if corder:
         # This means that the for loop is parallelized along the dimension of the output vector: ``post.shape[0]``.
@@ -566,7 +565,7 @@ def _jitc_homo_matrix_cpu_kernel_generator(
                         # The random skip ensures proper connection probability
                         i_row += np.random.randint(1, clen0)
 
-    return numba.njit(kernel, **numba_environ.setting)
+    return numba_kernel(kernel, parallel=False, input_output_aliases={3: 0})
 
 
 def _jitc_homo_matrix_gpu_kernel_generator(
@@ -576,7 +575,7 @@ def _jitc_homo_matrix_gpu_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     r"""
     Generate the GPU kernel for the :func:`_jitc_matvec_homo` operation.
     """
@@ -935,7 +934,7 @@ def _jitc_homo_matrix_pallas_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     if corder:
         if transpose:
             # JIT matrix.T
@@ -1157,12 +1156,7 @@ def float_jitc_homo_matrix_p_call(
 
 
 float_jitc_homo_matrix_p = XLACustomKernel('float_jitc_homo_matrix')
-float_jitc_homo_matrix_p.def_cpu_kernel(
-    NumbaKernelGenerator(
-        _jitc_homo_matrix_cpu_kernel_generator,
-        input_output_aliases={3: 0}
-    )
-)
+float_jitc_homo_matrix_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_homo_matrix_cpu_kernel_generator))
 float_jitc_homo_matrix_p.def_gpu_kernel(
     GPUKernelChoice(
         default='warp',
@@ -1194,7 +1188,7 @@ def _jitc_mv_homo_cpu_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     r"""Generate the CPU kernel for the :func:`_jitc_matvec_homo` operation.
     """
 
@@ -1545,7 +1539,7 @@ def _jitc_mv_homo_cpu_kernel_generator(
                         # Each next connection is approximately clen0 positions away on average
                         # This creates a sparse pattern where only ~1/clen0 of all possible connections exist
                         i_row += np.random.randint(1, clen0)
-    return kernel
+    return numba_kernel(kernel, parallel=False, input_output_aliases={4: 0})
 
 
 def _jitc_mv_homo_gpu_kernel_generator(
@@ -1556,7 +1550,7 @@ def _jitc_mv_homo_gpu_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     r"""
     Generate the GPU kernel for the :func:`_jitc_matvec_homo` operation.
     """
@@ -2126,12 +2120,7 @@ def _mv_gpu_kernel():
 
 
 float_jitc_mv_homo_p = XLACustomKernel('float_jitc_mv_homo')
-float_jitc_mv_homo_p.def_cpu_kernel(
-    NumbaKernelGenerator(
-        _jitc_mv_homo_cpu_kernel_generator,
-        input_output_aliases={4: 0}
-    )
-)
+float_jitc_mv_homo_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mv_homo_cpu_kernel_generator))
 float_jitc_mv_homo_p.def_gpu_kernel(
     GPUKernelChoice(
         default='warp',
@@ -2161,7 +2150,7 @@ def _jitc_mm_homo_cpu_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     r"""
     Generate the CPU kernel for the :func:`_jitc_matmat_homo` operation.
     """
@@ -2470,7 +2459,7 @@ def _jitc_mm_homo_cpu_kernel_generator(
                         # This creates sparse connectivity with ~1/clen0 connection probability
                         i_m += np.random.randint(1, clen0)
 
-    return numba_environ.jit_fn(kernel)
+    return numba_kernel(kernel, parallel=False, input_output_aliases={4: 0})
 
 
 def _jitc_mm_homo_gpu_kernel_generator(
@@ -2482,7 +2471,7 @@ def _jitc_mm_homo_gpu_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
-) -> Kernel:
+):
     r"""
     Generate the GPU kernel for the :func:`_jitc_matmat_homo` operation.
     """
@@ -2794,12 +2783,7 @@ def float_jitc_mm_homo_p_call(
 
 
 float_jitc_mm_homo_p = XLACustomKernel('float_jitc_mm_homo')
-float_jitc_mm_homo_p.def_cpu_kernel(
-    NumbaKernelGenerator(
-        _jitc_mm_homo_cpu_kernel_generator,
-        input_output_aliases={4: 0}
-    )
-)
+float_jitc_mm_homo_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mm_homo_cpu_kernel_generator))
 float_jitc_mm_homo_p.def_gpu_kernel(
     GPUKernelChoice(
         default='warp',

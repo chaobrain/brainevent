@@ -21,12 +21,11 @@ import jax.numpy as jnp
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
-from ._config import numba_environ
 from ._event_matrix_impl import matrix_event_mm, event_matrix_mm
 from ._misc import cdiv
 from ._typing import Kernel
 from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
-from ._xla_custom_op_numba import NumbaKernelGenerator
+from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type
 
@@ -84,7 +83,7 @@ def _matrix_event_numba_cpu_kernel_generator(
                 if sp != 0.:
                     posts += weights[:, i] * sp
 
-    return numba_environ.jit_fn(_kernel)
+    return numba_kernel(_kernel)
 
 
 def _matrix_event_mv_warp_kernel_generator(
@@ -94,7 +93,7 @@ def _matrix_event_mv_warp_kernel_generator(
     TILE_SIZE: int,
     block_dim: int,
     **kwargs
-) -> Kernel:
+):
     import warp  # pylint: disable=import-outside-toplevel
     assert warp.__version__ >= '1.8.0', "warp version >= 1.8.0 is required"
 
@@ -234,7 +233,7 @@ def _event_matrix_mv_numba_kernel_generator(
     float_as_event: bool,
     spk_info: jax.ShapeDtypeStruct,
     **kwargs
-) -> Kernel:
+):
     if spk_info.dtype == jnp.bool_:
         def _kernel(spikes, weights, posts):
             posts[:] = 0.
@@ -257,7 +256,7 @@ def _event_matrix_mv_numba_kernel_generator(
                 if sp != 0.:
                     posts += weights[i] * sp
 
-    return numba_environ.jit_fn(_kernel)
+    return numba_kernel(_kernel)
 
 
 def _event_matrix_mv_warp_kernel_generator(
@@ -267,7 +266,7 @@ def _event_matrix_mv_warp_kernel_generator(
     TILE_SIZE: int,
     block_dim: int,
     **kwargs
-) -> Kernel:
+):
     import warp  # pylint: disable=import-outside-toplevel
 
     spike_dtype = dtype_to_warp_type(spk_info.dtype)
@@ -326,7 +325,7 @@ def _event_matrix_mv_pallas_kernel_generator(
     TILE_SIZE: int,
     block_dim: int,
     **kwargs
-) -> Kernel:
+):
     n_pre = spk_info.shape[0]
     n_post = weight_info.shape[1]
 

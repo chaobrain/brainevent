@@ -19,17 +19,52 @@ import ctypes
 import dataclasses
 import functools
 import importlib.util
-from typing import Callable, Dict
+from typing import Callable, Dict, Optional, NamedTuple, Union
 
 from jax.interpreters import mlir
 
 from ._compatible_import import register_custom_call, Primitive, custom_call
+from ._config import numba_environ
 
 __all__ = [
     'NumbaKernelGenerator',
 ]
 
 numba_installed = importlib.util.find_spec('numba') is not None
+
+
+class NumbaKernel(NamedTuple):
+    jit_fn: Callable
+    input_output_aliases: Optional[Dict[int, int]]
+
+
+def numba_kernel(
+    fn: Callable = None,
+    input_output_aliases: Dict[int, int] = None,
+    parallel: bool = False,
+    **kwargs
+) -> Union[NumbaKernel, Callable[..., NumbaKernel]]:
+    if fn is None:
+        return functools.partial(
+            numba_kernel,
+            input_output_aliases=input_output_aliases,
+            parallel=parallel,
+            **kwargs
+        )
+    else:
+        if not numba_installed:
+            raise ImportError('Numba is required to compile the CPU kernel for the custom operator.')
+
+        if parallel:
+            return NumbaKernel(
+                jit_fn=numba_environ.pjit_fn(fn),
+                input_output_aliases=input_output_aliases,
+            )
+        else:
+            return NumbaKernel(
+                jit_fn=numba_environ.jit_fn(fn),
+                input_output_aliases=input_output_aliases,
+            )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -40,14 +75,15 @@ class NumbaKernelGenerator:
     Args:
         generator: Callable. The function defines the computation on CPU backend.
             It can be a function to generate the Numba jitted kernel.
-        input_output_aliases: Dict[int, int]. The input-output aliases.
     """
     __module__ = 'brainevent'
 
-    generator: Callable[..., Callable]
-    input_output_aliases: Dict[int, int] = None
+    generator: Callable[..., NumbaKernel]
 
     def generate_kernel(self, **kwargs):
+        return self.generator(**kwargs)
+
+    def __call__(self, *args, **kwargs):
         return self.generator(**kwargs)
 
 
@@ -66,10 +102,9 @@ def _numba_mlir_cpu_translation_rule(
         raise ImportError('Numba is required to compile the CPU kernel for the custom operator.')
 
     from numba import types, carray, cfunc  # pylint: disable=import-error
-    from numba.core.dispatcher import Dispatcher  # pylint: disable=import-error
 
     kernel = kernel_generator.generate_kernel(**kwargs)
-    assert isinstance(kernel, Dispatcher), f'The kernel should be a Numba dispatcher. But we got {kernel}'
+    assert isinstance(kernel, NumbaKernel), f'The kernel should be of type NumbaKernel, but got {type(kernel)}'
 
     # output information
     outs = ctx.avals_out
@@ -86,7 +121,7 @@ def _numba_mlir_cpu_translation_rule(
 
     # compiling function
     code_scope = dict(
-        func_to_call=kernel,
+        func_to_call=kernel.jit_fn,
         input_shapes=input_shapes,
         input_dtypes=input_dtypes,
         output_shapes=output_shapes,
@@ -147,7 +182,7 @@ def numba_cpu_custom_call_target(output_ptrs, input_ptrs):
         result_layouts=list(output_layouts),
         result_types=list(result_types),
         has_side_effect=False,
-        operand_output_aliases=kernel_generator.input_output_aliases,
+        operand_output_aliases=kernel.input_output_aliases,
     ).results
 
 
