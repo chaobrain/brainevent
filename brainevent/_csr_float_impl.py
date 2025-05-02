@@ -112,40 +112,44 @@ def _csrmv_numba_kernel_generator(
 
     if weight_info.size == 1:
         if transpose:
+            # [m, k].T @ [m]
             @numba_kernel(parallel=False, input_output_aliases={4: 0})
-            def mv(weights, indices, indptr, v, _, posts):
+            def mv(weights, indices, indptr, vector, _, posts):
                 w = weights[0]
-                for i in range(v.shape[0]):
-                    wsp = w * v[i]
+                for i in range(vector.shape[0]):
+                    wsp = w * vector[i]
                     for j in range(indptr[i], indptr[i + 1]):
                         posts[indices[j]] += wsp
 
         else:
+            # [m, k] @ [k]
             @numba_kernel(parallel=False, input_output_aliases={4: 0})
-            def mv(weights, indices, indptr, v, _, posts):
+            def mv(weights, indices, indptr, vector, _, posts):
                 w = weights[0]
-                for i in numba.prange(indptr.shape[0] - 1):
+                for i_m in numba.prange(indptr.shape[0] - 1):
                     r = np.asarray(0., dtype=posts.dtype)
-                    for j in range(indptr[i], indptr[i + 1]):
-                        r += w * v[indices[j]]
-                    posts[i] = r
+                    for j in range(indptr[i_m], indptr[i_m + 1]):
+                        r += w * vector[indices[j]]
+                    posts[i_m] = r
 
     else:
         if transpose:
+            # [m, k].T @ [m]
             @numba_kernel(parallel=False, input_output_aliases={4: 0})
-            def mv(weights, indices, indptr, v, _, posts):
-                for i in range(v.shape[0]):
-                    sp = v[i]
+            def mv(weights, indices, indptr, vector, _, posts):
+                for i in range(vector.shape[0]):
+                    sp = vector[i]
                     for j in range(indptr[i], indptr[i + 1]):
                         posts[indices[j]] += weights[j] * sp
 
         else:
+            # [m, k] @ [k]
             @numba_kernel(parallel=False, input_output_aliases={4: 0})
-            def mv(weights, indices, indptr, v, _, posts):
+            def mv(weights, indices, indptr, vector, _, posts):
                 for i in range(indptr.shape[0] - 1):
                     r = np.asarray(0., dtype=posts.dtype)
                     for j in numba.prange(indptr[i], indptr[i + 1]):
-                        r += weights[j] * v[indices[j]]
+                        r += weights[j] * vector[indices[j]]
                     posts[i] = r
 
     return mv
@@ -168,21 +172,23 @@ def _csrmv_warp_kernel_generator(
 
     if weight_info.size == 1:
         if transpose:
+            # [m, k].T @ [m]
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
                 indices: warp.array1d(dtype=indices_dtype),
                 indptr: warp.array1d(dtype=indptr_dtype),
-                v: warp.array1d(dtype=vector_dtype),
+                vector: warp.array1d(dtype=vector_dtype),
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype),
             ):
                 i = warp.tid()
                 w = weights[0]
-                wsp = w * v[i]
+                wsp = w * vector[i]
                 for j in range(indptr[i], indptr[i + 1]):
                     posts[indices[j]] += wsp
 
         else:
+            # [m, k] @ [k]
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
                 indices: warp.array1d(dtype=indices_dtype),
@@ -191,14 +197,15 @@ def _csrmv_warp_kernel_generator(
                 _: warp.array1d(dtype=weight_dtype),
                 posts: warp.array1d(dtype=weight_dtype),
             ):
-                i = warp.tid()
+                i_m = warp.tid()
                 w = weights[0]
                 r = weights.dtype(0.)
-                for j in range(indptr[i], indptr[i + 1]):
+                for j in range(indptr[i_m], indptr[i_m + 1]):
                     r += w * v[indices[j]]
-                posts[i] = r
+                posts[i_m] = r
 
     else:
+        # [m, k].T @ [m]
         if transpose:
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
@@ -214,6 +221,7 @@ def _csrmv_warp_kernel_generator(
                     posts[indices[j]] += weights[j] * sp
 
         else:
+            # [m, k] @ [k]
             def mv(
                 weights: warp.array1d(dtype=weight_dtype),
                 indices: warp.array1d(dtype=indices_dtype),
@@ -230,9 +238,8 @@ def _csrmv_warp_kernel_generator(
                     w = weights[index]
                     r += w * c
                 posts[i_row] = r
-    dim = (
-        vector_info.shape[0] if transpose else indptr_info.shape[0] - 1
-    )
+
+    dim = vector_info.shape[0] if transpose else indptr_info.shape[0] - 1
     return warp_kernel(mv, dim=dim, input_output_aliases={4: 0})
 
 
@@ -602,10 +609,11 @@ def _csrmm_numba_kernel_generator(
             @numba_kernel(parallel=False, input_output_aliases={4: 0})
             def mm(weights, indices, indptr, B, _, posts):
                 w = weights[0]
-                for i in range(B.shape[0]):
-                    wsp = w * B[i]
-                    for j in range(indptr[i], indptr[i + 1]):
-                        posts[indices[j]] += wsp
+                for i_k in range(B.shape[0]):
+                    wsp = w * B[i_k]
+                    for index in range(indptr[i_k], indptr[i_k + 1]):
+                        i_row = indices[index]
+                        posts[i_row] += wsp
 
         else:
             # csr @ B
@@ -616,11 +624,12 @@ def _csrmm_numba_kernel_generator(
             @numba_kernel(parallel=True, input_output_aliases={4: 0})
             def mm(weights, indices, indptr, B, _, posts):
                 w = weights[0]
-                for i in numba.prange(indptr.shape[0] - 1):
+                for i_m in numba.prange(indptr.shape[0] - 1):
                     r = np.zeros(B.shape[1], dtype=posts.dtype)
-                    for j in range(indptr[i], indptr[i + 1]):
-                        r += w * B[indices[j]]
-                    posts[i] = r
+                    for index in range(indptr[i_m], indptr[i_m + 1]):
+                        i_k = indices[index]
+                        r += w * B[i_k]
+                    posts[i_m] = r
 
     else:
         if transpose:
@@ -631,9 +640,11 @@ def _csrmm_numba_kernel_generator(
             #
             @numba_kernel(parallel=False, input_output_aliases={4: 0})
             def mm(weights, indices, indptr, B, _, posts):
-                for i in range(B.shape[0]):
-                    for j in range(indptr[i], indptr[i + 1]):
-                        posts[indices[j]] += weights[j] * B[i]
+                for i_k in range(B.shape[0]):
+                    B_row = B[i_k]
+                    for index in range(indptr[i_k], indptr[i_k + 1]):
+                        i_row = indices[index]
+                        posts[i_row] += weights[index] * B_row
 
         else:
             # csr @ B
@@ -643,11 +654,12 @@ def _csrmm_numba_kernel_generator(
             #
             @numba_kernel(parallel=True, input_output_aliases={4: 0})
             def mm(weights, indices, indptr, B, _, posts):
-                for i in numba.prange(indptr.shape[0] - 1):
+                for i_m in numba.prange(indptr.shape[0] - 1):
                     r = np.zeros(B.shape[1], dtype=posts.dtype)
-                    for j in range(indptr[i], indptr[i + 1]):
-                        r += weights[j] * B[indices[j]]
-                    posts[i] = r
+                    for index in range(indptr[i_m], indptr[i_m + 1]):
+                        i_k = indices[index]
+                        r += weights[index] * B[i_k]
+                    posts[i_m] = r
 
     return mm
 
@@ -667,10 +679,8 @@ def _csrmm_warp_kernel_generator(
     spike_dtype = dtype_to_warp_type(vector_info.dtype)
     indices_dtype = dtype_to_warp_type(indices_info.dtype)
     indptr_dtype = dtype_to_warp_type(indptr_info.dtype)
-
-    M, K = kwargs['shape']
     TILE_SIZE_N = vector_info.shape[1]
-    TILE_SIZE_M = 8
+    k, n = vector_info.shape
 
     if weight_info.size == 1:
         if transpose:
@@ -684,12 +694,12 @@ def _csrmm_warp_kernel_generator(
                 posts: warp.array2d(dtype=weight_dtype),
             ):
                 i_k = warp.tid()
-                B_row = warp.tile_load(B[i_k], TILE_SIZE_N) * weights[0]
+                wsp = warp.tile_load(B[i_k], TILE_SIZE_N) * weights[0]
                 col_start = indptr[i_k]
                 col_end = indptr[i_k + 1]
                 for index in range(col_start, col_end):
                     i_row = indices[index]
-                    warp.tile_atomic_add(posts[i_row], B_row)
+                    warp.tile_atomic_add(posts[i_row], wsp)
 
         else:
             # csr @ B
@@ -701,13 +711,13 @@ def _csrmm_warp_kernel_generator(
                 _: warp.array2d(dtype=weight_dtype),
                 posts: warp.array2d(dtype=weight_dtype),
             ):
-                i_row = warp.tid()
+                i_m = warp.tid()
                 weight = weights[0]
                 r = warp.tile_zeros(TILE_SIZE_N, dtype=weight_dtype)
-                for index in range(indptr[i_row], indptr[i_row + 1]):
+                for index in range(indptr[i_m], indptr[i_m + 1]):
                     i_k = indices[index]
                     r += weight * warp.tile_load(B[i_k], TILE_SIZE_N)
-                warp.tile_store(posts[i_row], r)
+                warp.tile_store(posts[i_m], r)
 
     else:
         if transpose:
@@ -739,40 +749,32 @@ def _csrmm_warp_kernel_generator(
                 _: warp.array2d(dtype=weight_dtype),
                 posts: warp.array2d(dtype=weight_dtype),
             ):
-                i_row = warp.tid()
+                i_m = warp.tid()
                 r = warp.tile_zeros(TILE_SIZE_N, dtype=weight_dtype)
-                for index in range(indptr[i_row], indptr[i_row + 1]):
+                for index in range(indptr[i_m], indptr[i_m + 1]):
                     i_k = indices[index]
                     weight = weights[index]
                     r += weight * warp.tile_load(B[i_k], TILE_SIZE_N)
-                warp.tile_store(posts[i_row], r)
+                warp.tile_store(posts[i_m], r)
 
-                # i_row = warp.tid()
-                # i_row_start = i_row * TILE_SIZE_M
-                # row_length = warp.min(TILE_SIZE_M, M - i_row_start)
-                # r = warp.tile_zeros(shape=(TILE_SIZE_M, TILE_SIZE_N), dtype=weight_dtype)
-                # for i in range(row_length):
-                #     for index in range(indptr[i + i_row_start], indptr[i + i_row_start + 1]):
-                #         i_k = indices[index]
-                #         weight = weights[index]
-                #         r[i] += weight * warp.tile_load(B[i_k], TILE_SIZE_N)
-                # warp.tile_store(posts, r, (i_row_start, 0))
-
-    tile = shape[1] if transpose else shape[0]
-    block_dim = generate_block_dim(vector_info.shape[1], 1024)
-    return warp_kernel(mm, tile, block_dim=block_dim, input_output_aliases={4: 0})
+    return warp_kernel(
+        mm,
+        tile=k if transpose else (indptr_info.shape[0] - 1),
+        block_dim=generate_block_dim(vector_info.shape[1], 1024),
+        input_output_aliases={4: 0}
+    )
 
 
 def _csrmm_pallas_kernel1(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
+    indptr_info: jax.ShapeDtypeStruct,
     transpose: bool,
     shape,
     **kwargs
 ):
     m, k = shape
     n = vector_info.shape[1]
-
     block_dim_n = generate_block_dim(n, 512)
 
     if weight_info.size == 1:
@@ -791,19 +793,17 @@ def _csrmm_pallas_kernel1(
                 posts_ref,  # [m, n]
             ):
                 i_k = pl.program_id(0)
-                i_n = pl.program_id(1)
-                i_col_start = i_n * block_dim_n
-                col_start = indptr_ref[i_k]
-                col_end = indptr_ref[i_k + 1]
-                mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
-                val_B = pl.load(B_ref, (i_k, pl.dslice(i_col_start, block_dim_n)), mask=mask)
-                val = val_B * data_ref[0]
+                i_n_block = pl.program_id(1)
+                i_n_start = i_n_block * block_dim_n
+                mask = (i_n_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
+                B_row = pl.load(B_ref, (i_k, pl.dslice(i_n_start, block_dim_n)), mask=mask, other=0.0)
+                val = B_row * data_ref[0]
 
                 def loop_fn(index, _):
                     i_row = indices_ref[index]
-                    pl.atomic_add(posts_ref, (i_row, pl.dslice(i_col_start, block_dim_n)), val, mask=mask)
+                    pl.atomic_add(posts_ref, (i_row, pl.dslice(i_n_start, block_dim_n)), val, mask=mask)
 
-                jax.lax.fori_loop(col_start, col_end, loop_fn, None, )
+                jax.lax.fori_loop(indptr_ref[i_k], indptr_ref[i_k + 1], loop_fn, None)
 
         else:
             #
@@ -826,29 +826,27 @@ def _csrmm_pallas_kernel1(
                 posts_ref,  # [m, n]
             ):
                 i_m = pl.program_id(0)
-                i_n = pl.program_id(1)
-                i_col_start = i_n * block_dim_n
-                mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
-                row_start = indptr_ref[i_m]
-                row_end = indptr_ref[i_m + 1]
+                i_n_block = pl.program_id(1)
+                i_n_start = i_n_block * block_dim_n
+                mask = (i_n_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
                 weight = data_ref[0]
 
-                def loop_fn(i_k, sum_):
-                    index = indices_ref[i_k]
-                    val_B = pl.load(B_ref, (index, pl.dslice(i_col_start, block_dim_n)), mask=mask)
-                    sum_ += weight * val_B
-                    return sum_
+                def loop_fn(index, out):
+                    i_k = indices_ref[index]
+                    B_row = pl.load(B_ref, (i_k, pl.dslice(i_n_start, block_dim_n)), mask=mask, other=0.0)
+                    out += weight * B_row
+                    return out
 
-                i_row_sum = jax.lax.fori_loop(
-                    row_start,
-                    row_end,
+                i_row_out = jax.lax.fori_loop(
+                    indptr_ref[i_m],
+                    indptr_ref[i_m + 1],
                     loop_fn,
                     jnp.zeros([block_dim_n], dtype=posts_ref.dtype)
                 )
                 pl.store(
                     posts_ref,
-                    (i_m, pl.dslice(i_col_start, block_dim_n)),
-                    i_row_sum,
+                    (i_m, pl.dslice(i_n_start, block_dim_n)),
+                    i_row_out,
                     mask=mask
                 )
 
@@ -869,23 +867,18 @@ def _csrmm_pallas_kernel1(
                 posts_ref,  # [m, n]
             ):
                 i_k = pl.program_id(0)
-                i_n = pl.program_id(1)
-                i_col_start = i_n * block_dim_n
-
-                mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
-
-                col_start = indptr_ref[i_k]
-                col_end = indptr_ref[i_k + 1]
-
-                val_B = pl.load(B_ref, (i_k, pl.dslice(i_col_start, block_dim_n)), mask=mask, other=0.0)
+                i_n_block = pl.program_id(1)
+                i_n_start = i_n_block * block_dim_n
+                mask = (i_n_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
+                B_row = pl.load(B_ref, (i_k, pl.dslice(i_n_start, block_dim_n)), mask=mask, other=0.0)
 
                 def loop_fn(index, _):
                     i_row = indices_ref[index]
-                    val_A = data_ref[index]
-                    val = val_A * val_B
-                    pl.atomic_add(posts_ref, (i_row, pl.dslice(i_col_start, block_dim_n)), val, mask=mask)
+                    A_val = data_ref[index]
+                    val = A_val * B_row
+                    pl.atomic_add(posts_ref, (i_row, pl.dslice(i_n_start, block_dim_n)), val, mask=mask)
 
-                jax.lax.fori_loop(col_start, col_end, loop_fn, None, )
+                jax.lax.fori_loop(indptr_ref[i_k], indptr_ref[i_k + 1], loop_fn, None, )
 
 
         else:
@@ -909,29 +902,27 @@ def _csrmm_pallas_kernel1(
                 posts_ref,  # [m, n]
             ):
                 i_m = pl.program_id(0)
-                i_n = pl.program_id(1)
-                i_col_start = i_n * block_dim_n
-                mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
-                row_start = indptr_ref[i_m]
-                row_end = indptr_ref[i_m + 1]
+                i_n_block = pl.program_id(1)
+                i_n_start = i_n_block * block_dim_n
+                mask = (i_n_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
 
-                def loop_fn(index, sum_):
+                def loop_fn(index, out):
                     i_col = indices_ref[index]
                     val_A = data_ref[index]
-                    val_B = pl.load(B_ref, (i_col, pl.dslice(i_col_start, block_dim_n)), mask=mask, other=0.0)
-                    sum_ += val_A * val_B
-                    return sum_
+                    val_B = pl.load(B_ref, (i_col, pl.dslice(i_n_start, block_dim_n)), mask=mask, other=0.0)
+                    out += val_A * val_B
+                    return out
 
-                i_row_sum = jax.lax.fori_loop(
-                    row_start,
-                    row_end,
+                i_row_out = jax.lax.fori_loop(
+                    indptr_ref[i_m],
+                    indptr_ref[i_m + 1],
                     loop_fn,
                     jnp.zeros([block_dim_n], dtype=posts_ref.dtype)
                 )
                 pl.store(
                     posts_ref,
-                    (i_m, pl.dslice(i_col_start, block_dim_n)),
-                    i_row_sum,
+                    (i_m, pl.dslice(i_n_start, block_dim_n)),
+                    i_row_out,
                     mask=mask
                 )
 
@@ -939,7 +930,7 @@ def _csrmm_pallas_kernel1(
         fn = pl.pallas_call(
             mm,
             out_shape=jax.ShapeDtypeStruct([k if transpose else m, n], weight_info.dtype),
-            grid=(k if transpose else m, pl.cdiv(n, block_dim_n)),
+            grid=(k if transpose else (indptr_info.shape[0] - 1), pl.cdiv(n, block_dim_n)),
             input_output_aliases={4: 0},
         )
         return [fn(data, indices, indptr, B, placeholder)]
@@ -1092,13 +1083,10 @@ def _csrmm_pallas_kernel2(
 
 def _csrmm_pallas_kernel_generator(**kwargs):
     version = 1
-
     if version == 1:
         return _csrmm_pallas_kernel1(**kwargs)
-
     elif version == 2:
         return _csrmm_pallas_kernel2(**kwargs)
-
     else:
         raise ValueError(f'Unknown version: {version}')
 
@@ -1290,7 +1278,7 @@ csrmm_p = XLACustomKernel('csrmm')
 csrmm_p.def_cpu_kernel(NumbaKernelGenerator(_csrmm_numba_kernel_generator))
 csrmm_p.def_gpu_kernel(
     GPUKernelChoice(
-        default='pallas',
+        default='warp',
         warp_kernel=WarpKernelGenerator(_csrmm_warp_kernel_generator),
         pallas_kernel=PallasKernelGenerator(_csrmm_pallas_kernel_generator),
     )

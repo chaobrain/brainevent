@@ -38,14 +38,14 @@ def coo_matvec(
     data: Data,
     row: Row,
     col: Col,
-    v: Data,
+    vector: Data,
     *,
     shape: MatrixShape,
     transpose: bool = False
 ) -> Data:
     data, unitd = u.split_mantissa_unit(data)
-    v, unitv = u.split_mantissa_unit(v)
-    res = coomv_p_call(data, row, col, v, shape=shape, transpose=transpose)[0]
+    vector, unitv = u.split_mantissa_unit(vector)
+    res = coomv_p_call(data, row, col, vector, shape=shape, transpose=transpose)[0]
     return u.maybe_decimal(res * unitd * unitv)
 
 

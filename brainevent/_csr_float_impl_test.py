@@ -84,7 +84,7 @@ class TestVectorCSR:
                 r = csr.with_data(w) @ x
             return r.sum()
 
-        r = jax.grad(f_brainevent, argnums=(0, 1))(x, w)
+        r = jax.jit(lambda: jax.grad(f_brainevent, argnums=(0, 1))(x, w))()
 
         # -------------------
         # TRUE gradients
@@ -96,7 +96,7 @@ class TestVectorCSR:
                 r = csr_vector(x, w, indices, indptr, shape=shape)
             return r.sum()
 
-        r2 = jax.grad(f_jax, argnums=(0, 1))(x, w)
+        r2 = jax.jit(lambda: jax.grad(f_jax, argnums=(0, 1))(x, w))()
         assert (jnp.allclose(r[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r[1], r2[1], rtol=1e-3, atol=1e-3))
 
@@ -124,7 +124,7 @@ class TestVectorCSR:
                 r = csr.with_data(w) @ x
             return r
 
-        o1, r1 = jax.jvp(f_brainevent, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
+        o1, r1 = jax.jit(lambda: jax.jvp(f_brainevent, (x, w), (jnp.ones_like(x), jnp.ones_like(w))))()
 
         # -------------------
         # TRUE gradients
@@ -136,7 +136,7 @@ class TestVectorCSR:
                 r = csr_vector(x, w, indices, indptr, shape=shape)
             return r
 
-        o2, r2 = jax.jvp(f_jax, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
+        o2, r2 = jax.jit(lambda: jax.jvp(f_jax, (x, w), (jnp.ones_like(x), jnp.ones_like(w))))()
         assert (jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3))
 
@@ -179,7 +179,7 @@ class TestBatchingVectorCSRFloat(TestBatchingVectorCSR):
                 r = csr_vector(x, w, indices, indptr, shape=[m, n])
             return r.sum()
 
-        r2 = jax.grad(f_jax, argnums=(0, 1))(x, csr.data)
+        r2 = jax.jit(lambda: jax.grad(f_jax, argnums=(0, 1))(x, csr.data))()
 
         return r1, r2
 
@@ -203,7 +203,7 @@ class TestBatchingVectorCSRFloat(TestBatchingVectorCSR):
                 r = csr_vector(x, w, indices, indptr, shape=(m, n))
             return r
 
-        r2 = jax.jvp(f_jax, (x, data), (jnp.ones_like(x), jnp.ones_like(data)))
+        r2 = jax.jit(lambda: jax.jvp(f_jax, (x, data), (jnp.ones_like(x), jnp.ones_like(data))))()
 
         return r1, r2
 
@@ -330,7 +330,7 @@ class TestBatchingMatrixCSRFloat(TestBatchingMatrixCSR):
                 r = csr_matrix(x, w, indices, indptr, shape=[m, n])
             return r.sum()
 
-        r2 = jax.grad(f_jax, argnums=(0, 1))(x, csr.data)
+        r2 = jax.jit(lambda: jax.grad(f_jax, argnums=(0, 1))(x, csr.data))()
 
         return r1, r2
 
@@ -354,6 +354,6 @@ class TestBatchingMatrixCSRFloat(TestBatchingMatrixCSR):
                 r = csr_matrix(x, w, indices, indptr, shape=(m, n))
             return r
 
-        r2 = jax.jvp(f_jax, (x, data), (jnp.ones_like(x), jnp.ones_like(data)))
+        r2 = jax.jit(lambda: jax.jvp(f_jax, (x, data), (jnp.ones_like(x), jnp.ones_like(data))))()
 
         return r1, r2

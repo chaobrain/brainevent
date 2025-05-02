@@ -878,8 +878,11 @@ def _event_csrmm_numba_kernel_generator(
 
     if weight_info.size == 1:
         if transpose:
+            #
             # csr.T @ B
-
+            #
+            # [k, m] @ [k, n]
+            #
             if vector_info.dtype == jnp.bool_:
                 @numba_kernel(parallel=True, input_output_aliases={4: 0})
                 def mv(weights, indices, indptr, B, _, posts):
@@ -916,10 +919,10 @@ def _event_csrmm_numba_kernel_generator(
         else:
             # csr @ B
             if vector_info.dtype == jnp.bool_:
-                @numba_kernel(parallel=False, input_output_aliases={4: 0})
+                @numba_kernel(parallel=True, input_output_aliases={4: 0})
                 def mv(weights, indices, indptr, B, _, posts):
                     w = weights[0]
-                    for i in range(indptr.shape[0] - 1):
+                    for i in numba.prange(indptr.shape[0] - 1):
                         r = np.zeros(B.shape[1], dtype=weights.dtype)
                         for j in range(indptr[i], indptr[i + 1]):
                             index = indices[j]
@@ -929,11 +932,11 @@ def _event_csrmm_numba_kernel_generator(
                         posts[i] = r
 
             elif float_as_event:
-                @numba_kernel(parallel=False, input_output_aliases={4: 0})
+                @numba_kernel(parallel=True, input_output_aliases={4: 0})
                 def mv(weights, indices, indptr, B, _, posts):
                     w = weights[0]
                     B = B != 0.
-                    for i in range(indptr.shape[0] - 1):
+                    for i in numba.prange(indptr.shape[0] - 1):
                         r = np.zeros(B.shape[1], dtype=weights.dtype)
                         for j in range(indptr[i], indptr[i + 1]):
                             index = indices[j]
@@ -943,10 +946,10 @@ def _event_csrmm_numba_kernel_generator(
                         posts[i] = r
 
             else:
-                @numba_kernel(parallel=False, input_output_aliases={4: 0})
+                @numba_kernel(parallel=True, input_output_aliases={4: 0})
                 def mv(weights, indices, indptr, B, _, posts):
                     w = weights[0]
-                    for i in range(indptr.shape[0] - 1):
+                    for i in numba.prange(indptr.shape[0] - 1):
                         for k in range(B.shape[1]):
                             r = 0.
                             for j in range(indptr[i], indptr[i + 1]):

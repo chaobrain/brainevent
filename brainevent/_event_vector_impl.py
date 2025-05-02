@@ -89,10 +89,11 @@ def _matrix_event_mv_warp_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     spk_info: jax.ShapeDtypeStruct,
     float_as_event: bool,
-    TILE_SIZE: int,
-    block_dim: int,
     **kwargs
 ):
+    TILE_SIZE = spk_info.shape[0]
+    block_dim = TILE_THREAD
+
     import warp  # pylint: disable=import-outside-toplevel
     assert warp.__version__ >= '1.8.0', "warp version >= 1.8.0 is required"
 
@@ -189,7 +190,6 @@ def matrix_event_mv_p_call(weights, spikes, *, float_as_event: bool):
         float_as_event=float_as_event,
         spk_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
-        TILE_SIZE=spikes.shape[0],
     )
 
 
@@ -259,11 +259,12 @@ def _event_matrix_mv_warp_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     spk_info: jax.ShapeDtypeStruct,
     float_as_event: bool,
-    TILE_SIZE: int,
-    block_dim: int,
     **kwargs
 ):
     import warp  # pylint: disable=import-outside-toplevel
+
+    TILE_SIZE = spk_info.shape[0]
+    block_dim = TILE_THREAD
 
     spike_dtype = dtype_to_warp_type(spk_info.dtype)
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
@@ -449,7 +450,6 @@ def event_matrix_mv_p_call(spikes, weights, *, float_as_event: bool):
         float_as_event=float_as_event,
         spk_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
-        TILE_SIZE=spikes.shape[0],
     )
 
 

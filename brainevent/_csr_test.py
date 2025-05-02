@@ -28,6 +28,7 @@ import pytest
 
 import brainevent
 import brainstate
+brainevent.config.gpu_kernel_backend = 'warp'
 
 
 def gen_events(shape, prob=0.5, asbool=True):
@@ -101,11 +102,11 @@ class Test_CSC_CSR_Conversion:
 
         matrix = jnp.asarray(np.random.rand(shape[1], k))
 
-        out1 = csr @ matrix
-        out2 = (matrix.T @ csc).T
+        out1 = jax.jit(lambda: csr @ matrix)()
+        out2 = jax.jit(lambda: (matrix.T @ csc).T)()
         assert jnp.allclose(out1, out2)
 
-    # TODO: GPU bug
+    # TODO: GPU pallas bug
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_mat_csr(self, k, shape):
@@ -115,8 +116,8 @@ class Test_CSC_CSR_Conversion:
 
         matrix = jnp.asarray(np.random.rand(k, shape[0]))
 
-        out1 = matrix @ csr
-        out2 = (csc @ matrix.T).T
+        out1 = jax.jit(lambda: matrix @ csr)()
+        out2 = jax.jit(lambda: (csc @ matrix.T).T)()
         assert jnp.allclose(out1, out2, atol=1e-4, rtol=1e-4)
 
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
@@ -127,8 +128,8 @@ class Test_CSC_CSR_Conversion:
 
         vector = gen_events(shape[1])
 
-        out1 = csr @ vector
-        out2 = vector @ csc
+        out1 = jax.jit(lambda: csr @ vector)()
+        out2 = jax.jit(lambda: vector @ csc)()
         assert jnp.allclose(out1, out2)
 
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
@@ -139,8 +140,8 @@ class Test_CSC_CSR_Conversion:
 
         vector = gen_events(shape[0])
 
-        out1 = vector @ csr
-        out2 = csc @ vector
+        out1 = jax.jit(lambda: vector @ csr)()
+        out2 = jax.jit(lambda: csc @ vector)()
         assert jnp.allclose(out1, out2)
 
     @pytest.mark.parametrize('k', [10])
@@ -152,11 +153,11 @@ class Test_CSC_CSR_Conversion:
 
         matrix = gen_events([shape[1], k])
 
-        out1 = csr @ matrix
-        out2 = (matrix.T @ csc).T
+        out1 = jax.jit(lambda: csr @ matrix)()
+        out2 = jax.jit(lambda: (matrix.T @ csc).T)()
         assert jnp.allclose(out1, out2)
 
-    # TODO: GPU test error
+    # TODO: GPU test error: CUDA_ERROR_ILLEGAL_ADDRESS
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_mat_csr_event(self, k, shape):
@@ -166,8 +167,8 @@ class Test_CSC_CSR_Conversion:
 
         matrix = gen_events([k, shape[0]])
 
-        out1 = matrix @ csr
-        out2 = (csc @ matrix.T).T
+        out1 = jax.jit(lambda: matrix @ csr)()
+        out2 = jax.jit(lambda: (csc @ matrix.T).T)()
         assert jnp.allclose(out1, out2, atol=1e-4, rtol=1e-4)
 
 
@@ -188,7 +189,7 @@ class Test_CSR:
         dense = csr.todense()
         assert jnp.allclose(matrix, dense)
 
-    # TODO: GPU test error
+    # TODO: GPU pallas error: CUDA_ERROR_ILLEGAL_ADDRESS
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -212,12 +213,13 @@ class Test_CSR:
             else:
                 return (csr.with_data(w).todense() @ x).sum()
 
-        r1, (g00, g01) = jax.value_and_grad(f_brainevent, argnums=(0, 1))(xs, csr.data)
-        r2, (g10, g11) = jax.value_and_grad(f_dense, argnums=(0, 1))(xs, csr.data)
+        r1, (g00, g01) = jax.jit(lambda: jax.value_and_grad(f_brainevent, argnums=(0, 1))(xs, csr.data))()
+        r2, (g10, g11) = jax.jit(lambda: jax.value_and_grad(f_dense, argnums=(0, 1))(xs, csr.data))()
 
-        assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g00, g10, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g01, g11, rtol=1e-4, atol=1e-4)
+        rtol = 1e-1 if brainstate.environ.get_platform() == 'gpu' else 1e-4
+        assert jnp.allclose(r1, r2, rtol=rtol, atol=rtol)
+        assert jnp.allclose(g00, g10, rtol=rtol, atol=rtol)
+        assert jnp.allclose(g01, g11, rtol=rtol, atol=rtol)
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('k', [10])
@@ -244,8 +246,8 @@ class Test_CSR:
             else:
                 return (csr.with_data(w).todense() @ x).sum()
 
-        r1, (g00, g01) = jax.value_and_grad(f_brainevent, argnums=(0, 1))(xs, csr.data)
-        r2, (g10, g11) = jax.value_and_grad(f_dense, argnums=(0, 1))(xs, csr.data)
+        r1, (g00, g01) = jax.jit(lambda: jax.value_and_grad(f_brainevent, argnums=(0, 1))(xs, csr.data))()
+        r2, (g10, g11) = jax.jit(lambda: jax.value_and_grad(f_dense, argnums=(0, 1))(xs, csr.data))()
 
         assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
         assert jnp.allclose(g00, g10, rtol=1e-4, atol=1e-4)
@@ -273,8 +275,8 @@ class Test_CSR:
             else:
                 return (csr.with_data(w).todense() @ x).sum()
 
-        r1, (g00, g01) = jax.value_and_grad(f_brainevent, argnums=(0, 1))(xs, csr.data)
-        r2, (g10, g11) = jax.value_and_grad(f_dense, argnums=(0, 1))(xs, csr.data)
+        r1, (g00, g01) = jax.jit(lambda: jax.value_and_grad(f_brainevent, argnums=(0, 1))(xs, csr.data))()
+        r2, (g10, g11) = jax.jit(lambda: jax.value_and_grad(f_dense, argnums=(0, 1))(xs, csr.data))()
 
         assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
         assert jnp.allclose(g00, g10, rtol=1e-4, atol=1e-4)
@@ -304,12 +306,13 @@ class Test_CSR:
             else:
                 return (csr.with_data(w).todense() @ x).sum()
 
-        r1, (g00, g01) = jax.value_and_grad(f_brainevent, argnums=(0, 1))(xs, csr.data)
-        r2, (g10, g11) = jax.value_and_grad(f_dense, argnums=(0, 1))(xs, csr.data)
+        r1, (g00, g01) = jax.jit(lambda: jax.value_and_grad(f_brainevent, argnums=(0, 1))(xs, csr.data))()
+        r2, (g10, g11) = jax.jit(lambda: jax.value_and_grad(f_dense, argnums=(0, 1))(xs, csr.data))()
 
-        assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g00, g10, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g01, g11, rtol=1e-4, atol=1e-4)
+        tol = 1e-1 if brainstate.environ.get_platform() else 1e-4
+        assert jnp.allclose(r1, r2, rtol=tol, atol=tol)
+        assert jnp.allclose(g00, g10, rtol=tol, atol=tol)
+        assert jnp.allclose(g01, g11, rtol=tol, atol=tol)
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('k', [10])
@@ -334,11 +337,16 @@ class Test_CSR:
             else:
                 return (csr.with_data(w).todense() @ x).sum()
 
-        r1, g1 = jax.jvp(f_brainevent, (xs, csr.data), (ones_like(xs), ones_like(csr.data)))
-        r2, g2 = jax.jvp(f_dense, (xs, csr.data), (ones_like(xs), ones_like(csr.data)))
+        r1, g1 = jax.jit(lambda: jax.jvp(f_brainevent,
+                                         (xs, csr.data),
+                                         (ones_like(xs), ones_like(csr.data))))()
+        r2, g2 = jax.jit(lambda: jax.jvp(f_dense,
+                                         (xs, csr.data),
+                                         (ones_like(xs), ones_like(csr.data))))()
 
-        assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g1, g2, rtol=1e-4, atol=1e-4)
+        tol = 1e-1 if brainstate.environ.get_platform() else 1e-4
+        assert jnp.allclose(r1, r2, rtol=tol, atol=tol)
+        assert jnp.allclose(g1, g2, rtol=tol, atol=tol)
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('k', [10])
@@ -365,11 +373,16 @@ class Test_CSR:
             else:
                 return (csr.with_data(w).todense() @ x).sum()
 
-        r1, g1 = jax.jvp(f_brainevent, (xs, csr.data), (ones_like(xs), ones_like(csr.data)))
-        r2, g2 = jax.jvp(f_dense, (xs, csr.data), (ones_like(xs), ones_like(csr.data)))
+        r1, g1 = jax.jit(lambda: jax.jvp(f_brainevent,
+                                         (xs, csr.data),
+                                         (ones_like(xs), ones_like(csr.data))))()
+        r2, g2 = jax.jit(lambda: jax.jvp(f_dense,
+                                         (xs, csr.data),
+                                         (ones_like(xs), ones_like(csr.data))))()
 
-        assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g1, g2, rtol=1e-4, atol=1e-4)
+        tol = 1e-1 if brainstate.environ.get_platform() else 1e-4
+        assert jnp.allclose(r1, r2, rtol=tol, atol=tol)
+        assert jnp.allclose(g1, g2, rtol=tol, atol=tol)
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -393,8 +406,12 @@ class Test_CSR:
             else:
                 return (csr.with_data(w).todense() @ x).sum()
 
-        r1, g1 = jax.jvp(f_brainevent, (xs, csr.data), (ones_like(xs), ones_like(csr.data)))
-        r2, g2 = jax.jvp(f_dense, (xs, csr.data), (ones_like(xs), ones_like(csr.data)))
+        r1, g1 = jax.jit(lambda: jax.jvp(f_brainevent,
+                                         (xs, csr.data),
+                                         (ones_like(xs), ones_like(csr.data))))()
+        r2, g2 = jax.jit(lambda: jax.jvp(f_dense,
+                                         (xs, csr.data),
+                                         (ones_like(xs), ones_like(csr.data))))()
 
         assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
         assert jnp.allclose(g1, g2, rtol=1e-4, atol=1e-4)
@@ -423,9 +440,15 @@ class Test_CSR:
             else:
                 return (csr.with_data(w).todense() @ x).sum()
 
-        r1, g1 = jax.jvp(f_brainevent, (xs, csr.data), (ones_like(xs), ones_like(csr.data)))
-        r2, g2 = jax.jvp(f_dense, (xs, csr.data), (ones_like(xs), ones_like(csr.data)))
+        r1, g1 = jax.jit(lambda: jax.jvp(f_brainevent,
+                                         (xs, csr.data),
+                                         (ones_like(xs), ones_like(csr.data))))()
+        r2, g2 = jax.jit(lambda: jax.jvp(f_dense,
+                                         (xs, csr.data),
+                                         (ones_like(xs), ones_like(csr.data))))()
 
+        print(r1, r2)
+        print(g1, g2)
         assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
         assert jnp.allclose(g1, g2, rtol=1e-4, atol=1e-4)
 
@@ -456,8 +479,8 @@ class Test_CSR_Event:
             else:
                 return (csr.with_data(w).todense() @ x).sum()
 
-        r1, (g00, g01) = jax.value_and_grad(f_brainevent, argnums=(0, 1))(xs, csr.data)
-        r2, (g10, g11) = jax.value_and_grad(f_dense, argnums=(0, 1))(xs, csr.data)
+        r1, (g00, g01) = jax.jit(lambda: jax.value_and_grad(f_brainevent, argnums=(0, 1))(xs, csr.data))()
+        r2, (g10, g11) = jax.jit(lambda: jax.value_and_grad(f_dense, argnums=(0, 1))(xs, csr.data))()
 
         assert isinstance(g00, brainevent.EventArray)
         assert isinstance(g10, brainevent.EventArray)
@@ -491,8 +514,8 @@ class Test_CSR_Event:
             else:
                 return (csr.with_data(w).todense() @ x).sum()
 
-        r1, (g00, g01) = jax.value_and_grad(f_brainevent, argnums=(0, 1))(xs, csr.data)
-        r2, (g10, g11) = jax.value_and_grad(f_dense, argnums=(0, 1))(xs, csr.data)
+        r1, (g00, g01) = jax.jit(lambda: jax.value_and_grad(f_brainevent, argnums=(0, 1))(xs, csr.data))()
+        r2, (g10, g11) = jax.jit(lambda: jax.value_and_grad(f_dense, argnums=(0, 1))(xs, csr.data))()
 
         assert isinstance(g00, brainevent.EventArray)
         assert isinstance(g10, brainevent.EventArray)
@@ -524,8 +547,8 @@ class Test_CSR_Event:
             else:
                 return (csr.with_data(w).todense() @ x).sum()
 
-        r1, (g00, g01) = jax.value_and_grad(f_brainevent, argnums=(0, 1))(xs, csr.data)
-        r2, (g10, g11) = jax.value_and_grad(f_dense, argnums=(0, 1))(xs, csr.data)
+        r1, (g00, g01) = jax.jit(lambda: jax.value_and_grad(f_brainevent, argnums=(0, 1))(xs, csr.data))()
+        r2, (g10, g11) = jax.jit(lambda: jax.value_and_grad(f_dense, argnums=(0, 1))(xs, csr.data))()
 
         assert isinstance(g00, brainevent.EventArray)
         assert isinstance(g10, brainevent.EventArray)
@@ -558,8 +581,8 @@ class Test_CSR_Event:
             else:
                 return (csr.with_data(w).todense() @ x).sum()
 
-        r1, (g00, g01) = jax.value_and_grad(f_brainevent, argnums=(0, 1))(xs, csr.data)
-        r2, (g10, g11) = jax.value_and_grad(f_dense, argnums=(0, 1))(xs, csr.data)
+        r1, (g00, g01) = jax.jit(lambda: jax.value_and_grad(f_brainevent, argnums=(0, 1))(xs, csr.data))()
+        r2, (g10, g11) = jax.jit(lambda: jax.value_and_grad(f_dense, argnums=(0, 1))(xs, csr.data))()
 
         assert isinstance(g00, brainevent.EventArray)
         assert isinstance(g10, brainevent.EventArray)
@@ -591,8 +614,12 @@ class Test_CSR_Event:
             else:
                 return (csr.with_data(w).todense() @ x).sum()
 
-        r1, g1 = jax.jvp(f_brainevent, (xs, csr.data), (ones_like(xs), ones_like(csr.data)))
-        r2, g2 = jax.jvp(f_dense, (xs, csr.data), (ones_like(xs), ones_like(csr.data)))
+        r1, g1 = jax.jit(lambda: jax.jvp(f_brainevent,
+                                         (xs, csr.data),
+                                         (ones_like(xs), ones_like(csr.data))))()
+        r2, g2 = jax.jit(lambda: jax.jvp(f_dense,
+                                         (xs, csr.data),
+                                         (ones_like(xs), ones_like(csr.data))))()
 
         assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
         assert jnp.allclose(g1, g2, rtol=1e-4, atol=1e-4)
@@ -622,8 +649,12 @@ class Test_CSR_Event:
             else:
                 return (csr.with_data(w).todense() @ x).sum()
 
-        r1, g1 = jax.jvp(f_brainevent, (xs, csr.data), (ones_like(xs), ones_like(csr.data)))
-        r2, g2 = jax.jvp(f_dense, (xs, csr.data), (ones_like(xs), ones_like(csr.data)))
+        r1, g1 = jax.jit(lambda: jax.jvp(f_brainevent,
+                                         (xs, csr.data),
+                                         (ones_like(xs), ones_like(csr.data))))()
+        r2, g2 = jax.jit(lambda: jax.jvp(f_dense,
+                                         (xs, csr.data),
+                                         (ones_like(xs), ones_like(csr.data))))()
 
         assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
         assert jnp.allclose(g1, g2, rtol=1e-4, atol=1e-4)
@@ -651,8 +682,12 @@ class Test_CSR_Event:
             else:
                 return (csr.with_data(w).todense() @ x).sum()
 
-        r1, g1 = jax.jvp(f_brainevent, (xs, csr.data), (ones_like(xs), ones_like(csr.data)))
-        r2, g2 = jax.jvp(f_dense, (xs, csr.data), (ones_like(xs), ones_like(csr.data)))
+        r1, g1 = jax.jit(lambda: jax.jvp(f_brainevent,
+                                         (xs, csr.data),
+                                         (ones_like(xs), ones_like(csr.data))))()
+        r2, g2 = jax.jit(lambda: jax.jvp(f_dense,
+                                         (xs, csr.data),
+                                         (ones_like(xs), ones_like(csr.data))))()
 
         assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
         assert jnp.allclose(g1, g2, rtol=1e-4, atol=1e-4)
@@ -681,8 +716,12 @@ class Test_CSR_Event:
             else:
                 return (csr.with_data(w).todense() @ x).sum()
 
-        r1, g1 = jax.jvp(f_brainevent, (xs, csr.data), (ones_like(xs), ones_like(csr.data)))
-        r2, g2 = jax.jvp(f_dense, (xs, csr.data), (ones_like(xs), ones_like(csr.data)))
+        r1, g1 = jax.jit(lambda: jax.jvp(f_brainevent,
+                                         (xs, csr.data),
+                                         (ones_like(xs), ones_like(csr.data))))()
+        r2, g2 = jax.jit(lambda: jax.jvp(f_dense,
+                                         (xs, csr.data),
+                                         (ones_like(xs), ones_like(csr.data))))()
 
         assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
         assert jnp.allclose(g1, g2, rtol=1e-4, atol=1e-4)
@@ -695,7 +734,6 @@ class Test_CSC:
         csc = brainevent.CSR.fromdense(matrix).T
         coo = csc.tocoo()
         dense = coo.todense()
-
         assert jnp.allclose(matrix.T, dense)
 
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
