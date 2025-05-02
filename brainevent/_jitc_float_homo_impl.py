@@ -1009,49 +1009,7 @@ def _jitc_mv_homo_cpu_kernel_generator(
         # This means that the for loop is parallelized along the dimension of the output vector: ``post.shape[0]``.
 
         if transpose:
-            @numba_environ.jit_fn
             def kernel(weight, clen, vector, seed, _, posts):
-                """
-                Numba kernel implementation for matrix-vector multiplication where the matrix
-                is generated on-the-fly with homogeneous weights.
-
-                This kernel implements a vector-matrix multiplication where the matrix has a homogeneous weight
-                value and is sparsely connected with probability `clen`. Instead of generating the entire
-                matrix, connections are sampled using binomial distribution to identify non-zero entries.
-
-                The kernel is optimized for the case where `transpose=True` and `corder=True`, meaning
-                it represents the operation: vector @ matrix (or matrix.T @ vector if we consider the original matrix).
-
-                Parameters
-                ----------
-                weight : ndarray
-                    A scalar value stored as a single-element array, representing the homogeneous weight
-                    for all connections in the matrix.
-                clen : ndarray
-                    A scalar value stored as a single-element array, representing the connection probability.
-                    The value is approximately 2/p where p is the connection probability.
-                vector : ndarray
-                    The input vector to be multiplied with the randomly generated matrix.
-                seed : ndarray
-                    A scalar value stored as a single-element array, used as a seed for random number generation.
-                _ : ndarray
-                    Placeholder parameter (not used).
-                posts : ndarray
-                    Output array where the result will be stored.
-
-                Notes
-                -----
-                The algorithm uses a sparse sampling approach to avoid explicitly generating the entire matrix:
-                1. For each output column, it samples connected rows using binomial distribution
-                2. Only the connected entries contribute to the output sum
-                3. The final result is scaled by the weight value
-
-                Implementation details:
-                - The algorithm performs sparse matrix operations by randomly determining which entries contribute
-                - For efficiency, we don't explicitly generate the matrix but directly sample connections
-                - Each output element is computed by summing only the connected input vector elements
-                - The algorithm uses a skip-ahead random sampling approach to find connected elements
-                """
                 # Output vector dimension = number of columns in the matrix
                 n_col = posts.shape[0]
 
@@ -1090,52 +1048,7 @@ def _jitc_mv_homo_cpu_kernel_generator(
                     posts[i_col] = out * weight0
 
         else:
-            @numba_environ.jit_fn
             def kernel(weight, clen, vector, seed, _, posts):
-                """
-                Numba kernel implementation for matrix-vector multiplication where the matrix
-                is generated on-the-fly with homogeneous weights.
-
-                This kernel implements a matrix-vector multiplication where the matrix has a homogeneous weight
-                value and is sparsely connected with probability `clen`. Instead of generating the entire
-                matrix, connections are sampled using binomial distribution to identify non-zero entries.
-
-                The kernel is optimized for the case where `transpose=False` and `corder=True`, meaning
-                it represents the operation: matrix @ vector (standard matrix-vector product).
-
-                Parameters
-                ----------
-                weight : ndarray
-                    A scalar value stored as a single-element array, representing the homogeneous weight
-                    for all connections in the matrix.
-                clen : ndarray
-                    A scalar value stored as a single-element array, representing the connection probability.
-                    It's approximately 2/p where p is the connection probability, determining how sparse the matrix is.
-                vector : ndarray
-                    The input vector to be multiplied with the randomly generated matrix.
-                seed : ndarray
-                    A scalar value stored as a single-element array, used as a seed for random number generation
-                    to ensure reproducibility.
-                _ : ndarray
-                    Placeholder parameter (not used in this implementation).
-                posts : ndarray
-                    Output array where the result will be stored. Its shape determines the number of rows
-                    in the implicit matrix.
-
-                Notes
-                -----
-                The algorithm uses a sparse sampling approach to avoid explicitly generating the entire matrix:
-                1. For each output row, it samples connected columns using random skipping
-                2. Only the connected entries contribute to the output sum
-                3. The final result is scaled by the weight value
-
-                Implementation details:
-                - Connection probability is controlled by clen - larger values produce sparser matrices
-                - The sampling approach avoids storing the matrix which would require O(rows×cols) memory
-                - Time complexity is O(rows × average_connections_per_row), which is much more efficient
-                  for very sparse matrices than the O(rows × cols) of standard matrix multiplication
-                - This algorithm can be viewed as stochastic matrix generation with fixed weight values
-                """
                 # Output vector dimension = number of rows in the matrix
                 # Each row in the matrix will produce one element in the output vector
                 num_row = posts.shape[0]
@@ -1184,49 +1097,7 @@ def _jitc_mv_homo_cpu_kernel_generator(
         # This means that the for loop is parallelized along the dimension of the vector: ``vector.shape[0]``.
 
         if transpose:
-            @numba_environ.jit_fn
             def kernel(weight, clen, vector, seed, _, posts):
-                """
-                Numba kernel implementation for matrix-vector multiplication where the matrix
-                is generated on-the-fly with homogeneous weights.
-
-                This kernel implements a vector-matrix multiplication where the matrix has a homogeneous weight
-                value and is sparsely connected with probability ~1/clen. Instead of generating the entire
-                matrix, connections are sampled using random skipping to efficiently identify non-zero entries.
-
-                The kernel is optimized for the case where `transpose=True` and `corder=False`, meaning
-                it processes the input vector elements one by one, accumulating their contributions to the output vector.
-                This approach is particularly efficient for very sparse matrices.
-
-                Parameters
-                ----------
-                weight : ndarray
-                    A scalar value stored as a single-element array, representing the homogeneous weight
-                    for all connections in the matrix.
-                clen : ndarray
-                    A scalar value stored as a single-element array, representing the inverse of connection probability.
-                    Larger values result in sparser matrices (~1/clen is the connection probability).
-                vector : ndarray
-                    The input vector to be multiplied with the randomly generated matrix.
-                seed : ndarray
-                    A scalar value stored as a single-element array, used as a seed for random number generation
-                    to ensure reproducible results.
-                _ : ndarray
-                    Placeholder parameter (not used in this implementation).
-                posts : ndarray
-                    Output array where the result will be stored. Its length determines the number of columns
-                    in the implicit matrix.
-
-                Notes
-                -----
-                The algorithm uses a row-based approach for vector @ matrix multiplication:
-                1. For each input row (vector element), it applies the weight and samples connected columns
-                2. Each row contributes to multiple columns based on the sparse connectivity pattern
-                3. The algorithm efficiently skips zeros in the matrix using geometric-like distribution sampling
-
-                Time complexity is O(num_rows × average_connections_per_row) rather than O(num_rows × num_cols)
-                of standard matrix multiplication, making this approach much more efficient for sparse matrices.
-                """
                 # Output vector dimension = number of columns in the matrix
                 # This is the dimension of the result vector in the vector @ matrix operation
                 num_col = posts.shape[0]
@@ -1269,49 +1140,7 @@ def _jitc_mv_homo_cpu_kernel_generator(
                         i_col += np.random.randint(1, clen0)
 
         else:
-            @numba_environ.jit_fn
             def kernel(weight, clen, vector, seed, _, posts):
-                """
-                Numba kernel implementation for matrix-vector multiplication where the matrix
-                is generated on-the-fly with homogeneous weights.
-
-                This kernel implements a matrix-vector multiplication where the matrix has a homogeneous weight
-                value and is sparsely connected with probability ~1/clen. Instead of generating the entire
-                matrix, connections are sampled using random skipping to efficiently identify non-zero entries.
-
-                The kernel is optimized for the case where `transpose=False` and `corder=False`, meaning
-                it processes each input vector element (column) separately and accumulates its contributions to
-                all connected rows in the output vector. This is particularly efficient for sparse matrices.
-
-                Parameters
-                ----------
-                weight : ndarray
-                    A scalar value stored as a single-element array, representing the homogeneous weight
-                    for all connections in the matrix.
-                clen : ndarray
-                    A scalar value stored as a single-element array, representing the inverse of connection probability.
-                    Larger values result in sparser matrices (~1/clen is the connection probability).
-                vector : ndarray
-                    The input vector to be multiplied with the randomly generated matrix.
-                seed : ndarray
-                    A scalar value stored as a single-element array, used as a seed for random number generation
-                    to ensure reproducible results.
-                _ : ndarray
-                    Placeholder parameter (not used in this implementation).
-                posts : ndarray
-                    Output array where the result will be stored. Its shape determines the number of rows
-                    in the implicit matrix.
-
-                Notes
-                -----
-                The algorithm uses a column-centric approach for matrix @ vector multiplication:
-                1. For each input element, it pre-multiplies by weight and samples connected rows
-                2. Each column contributes to multiple rows based on the sparse connectivity pattern
-                3. The algorithm efficiently skips zeros in the matrix using geometric-like distribution sampling
-
-                Time complexity is O(num_cols × average_connections_per_col) rather than O(num_rows × num_cols)
-                of standard matrix multiplication, making this approach much more efficient for sparse matrices.
-                """
                 # Output vector dimension = number of rows in the matrix
                 # This represents the first dimension of the matrix and the result vector's size
                 num_row = posts.shape[0]
@@ -1352,6 +1181,7 @@ def _jitc_mv_homo_cpu_kernel_generator(
                         # Each next connection is approximately clen0 positions away on average
                         # This creates a sparse pattern where only ~1/clen0 of all possible connections exist
                         i_row += np.random.randint(1, clen0)
+
     return numba_kernel(kernel, parallel=False, input_output_aliases={4: 0})
 
 
@@ -1976,47 +1806,6 @@ def _jitc_mm_homo_cpu_kernel_generator(
             # - B: [k, n]
 
             def kernel(weight, clen, B, seed, _, posts):
-                r"""
-                Numba kernel for sparse matrix-matrix multiplication with on-the-fly matrix generation.
-
-                Implements the operation M^T @ B where M is a sparse matrix with homogeneous weight values
-                generated just-in-time during computation. Instead of storing the full matrix, this function
-                uses a probabilistic approach to sample connections for each output row.
-
-                This kernel handles the transpose=True, corder=True case, processing each output row
-                in sequence. This design enables efficient multiplication with very large sparse matrices
-                that would be impractical to store in memory.
-
-                The mathematical operation performed is:
-
-                y_ij = \sum_{k} M_{ki} * B_{kj}
-
-                Where M is implicitly defined with connection probability ~1/clen0.
-
-                Parameters
-                ----------
-                weight : array_like
-                    Single-element array containing the homogeneous weight value for all connections
-                clen : array_like
-                    Single-element array containing the connection length parameter (~2/connection_probability)
-                B : ndarray
-                    Input matrix to multiply with the transposed implicit sparse matrix, shape (k, n)
-                seed : array_like
-                    Single-element array with random seed for reproducible matrix generation
-                _ : ndarray
-                    Unused placeholder parameter (required for API compatibility)
-                posts : ndarray
-                    Output array where results are stored, shape (m, n)
-
-                Notes
-                -----
-                The algorithm:
-                1. For each output row i_m, initialize a zero vector of length n
-                2. Sample connections to input rows (i_k) using geometric-like skipping
-                3. For each sampled connection, add the corresponding row of B to the output
-                4. Finally scale the accumulated sum by the weight value
-                5. This row-wise approach is memory efficient for sparse connectivity patterns
-                """
                 m = posts.shape[0]  # Number of rows in output matrix (columns in M)
                 n = posts.shape[1]  # Number of columns in output matrix (columns in B)
                 k = B.shape[0]  # Number of rows in B (rows in M)
@@ -2052,47 +1841,6 @@ def _jitc_mm_homo_cpu_kernel_generator(
             # - B: [k, n]
 
             def kernel(weight, clen, B, seed, _, posts):
-                r"""
-                Numba kernel for sparse matrix-matrix multiplication with on-the-fly matrix generation.
-
-                Implements the operation M @ B where M is a sparse matrix with homogeneous weight values
-                generated just-in-time during computation. Instead of storing the full matrix, this function
-                uses a probabilistic approach to sample connections for each output row.
-
-                This kernel handles the transpose=False, corder=True case, processing each output row
-                in sequence. This design enables efficient multiplication with very large sparse matrices
-                that would be impractical to store in memory.
-
-                The mathematical operation performed is:
-
-                y_ij = \sum_{k} M_{ik} * B_{kj}
-
-                Where M is implicitly defined with connection probability ~1/clen0.
-
-                Parameters
-                ----------
-                weight : array_like
-                    Single-element array containing the homogeneous weight value for all connections
-                clen : array_like
-                    Single-element array containing the connection length parameter (~2/connection_probability)
-                B : ndarray
-                    Input matrix to multiply with the implicit sparse matrix, shape (k, n)
-                seed : array_like
-                    Single-element array with random seed for reproducible matrix generation
-                _ : ndarray
-                    Unused placeholder parameter (required for API compatibility)
-                posts : ndarray
-                    Output array where results are stored, shape (m, n)
-
-                Notes
-                -----
-                The algorithm:
-                1. For each output row i_m, initialize a zero vector of length n
-                2. Sample connections to input rows (i_k) using geometric-like skipping
-                3. For each sampled connection, add the corresponding row of B to the output
-                4. Finally scale the accumulated sum by the weight value
-                5. This row-wise approach is memory efficient for sparse connectivity patterns
-                """
                 m = posts.shape[0]  # Number of rows in output matrix (rows in M)
                 n = posts.shape[1]  # Number of columns in output matrix (columns in B)
                 k = B.shape[0]  # Number of rows in B (columns in M)
@@ -2129,46 +1877,6 @@ def _jitc_mm_homo_cpu_kernel_generator(
             # - B: [k, n]
 
             def kernel(weight, clen, B, seed, _, posts):
-                r"""
-                Numba kernel for sparse matrix-matrix multiplication with on-the-fly matrix generation.
-
-                Implements the operation M^T @ B where M is a sparse matrix with homogeneous weight values
-                generated just-in-time during computation. Instead of storing the full matrix, this function
-                uses a probabilistic approach to sample connections for each input row.
-
-                This kernel handles the transpose=True, corder=False case, processing each input row
-                in sequence. This approach ensures that the generated M^T is consistent with the M that would
-                be generated with transpose=False, at the potential cost of reduced parallelism.
-
-                The mathematical operation performed is:
-
-                y_ij = \sum_{k} M_{ki} * B_{kj}
-
-                Where M is implicitly defined with connection probability ~1/clen0.
-
-                Parameters
-                ----------
-                weight : array_like
-                    Single-element array containing the homogeneous weight value for all connections
-                clen : array_like
-                    Single-element array containing the connection length parameter (~2/connection_probability)
-                B : ndarray
-                    Input matrix to multiply with the transposed implicit sparse matrix, shape (k, n)
-                seed : array_like
-                    Single-element array with random seed for reproducible matrix generation
-                _ : ndarray
-                    Unused placeholder parameter (required for API compatibility)
-                posts : ndarray
-                    Output array where results are stored, shape (m, n)
-
-                Notes
-                -----
-                The algorithm:
-                1. For each input row i_k, pre-scale the row from B by the weight value
-                2. Sample connections to output rows (i_m) using geometric-like skipping
-                3. For each sampled connection, add the weighted row to the corresponding output row
-                4. This transpose-compatible approach ensures consistency between M and M^T operations
-                """
                 m = posts.shape[0]  # Number of rows in output matrix (columns in M)
                 k = B.shape[0]  # Number of rows in B (rows in M)
 
@@ -2203,47 +1911,6 @@ def _jitc_mm_homo_cpu_kernel_generator(
             # - B: [k, n]
 
             def kernel(weight, clen, B, seed, _, posts):
-                r"""
-                Numba kernel for sparse matrix-matrix multiplication with on-the-fly matrix generation.
-
-                Implements the operation M @ B where M is a sparse matrix with homogeneous weight values
-                generated just-in-time during computation. Instead of storing the full matrix, this function
-                uses a probabilistic approach to sample connections for each input column.
-
-                This kernel handles the transpose=False, corder=False case, processing each input
-                column in sequence. This approach ensures that the generated matrix is consistent with its
-                transpose when using transpose=True, improving reproducibility at the potential cost of
-                reduced parallelism.
-
-                The mathematical operation performed is:
-
-                y_ij = \sum_{k} M_{ik} * B_{kj}
-
-                Where M is implicitly defined with connection probability ~1/clen0.
-
-                Parameters
-                ----------
-                weight : array_like
-                    Single-element array containing the homogeneous weight value for all connections
-                clen : array_like
-                    Single-element array containing the connection length parameter (~2/connection_probability)
-                B : ndarray
-                    Input matrix to multiply with the implicit sparse matrix, shape (k, n)
-                seed : array_like
-                    Single-element array with random seed for reproducible matrix generation
-                _ : ndarray
-                    Unused placeholder parameter (required for API compatibility)
-                posts : ndarray
-                    Output array where results are stored, shape (m, n)
-
-                Notes
-                -----
-                The algorithm:
-                1. For each input column i_k, pre-scale the row from B by the weight value
-                2. Sample connections to output rows (i_m) using geometric-like skipping
-                3. For each sampled connection, add the weighted input to the corresponding output row
-                4. This approach processes inputs sequentially and distributes each to multiple outputs
-                """
                 m = posts.shape[0]  # Number of rows in output matrix (rows in M)
                 k = B.shape[0]  # Number of rows in B (columns in M)
 

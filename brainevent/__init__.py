@@ -28,13 +28,13 @@ from ._jitc_normal import JITCNormalR, JITCNormalC
 from ._jitc_uniform import JITCUniformR, JITCUniformC
 from ._pallas_random import LFSR88RNG, LFSR113RNG, LFSR128RNG
 from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_numba import NumbaKernelGenerator
+from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_util import defjvp, general_batching_rule
-from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type
+from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type, warp_kernel
 
 __all__ = [
-
+    # --- global configuration --- #
     'config',
 
     # --- data representing events --- #
@@ -72,10 +72,12 @@ __all__ = [
     'NumbaKernelGenerator',
     'set_numba_environ',
     'numba_environ_context',
+    'numba_kernel',
 
     # 4. Warp kernel
     'WarpKernelGenerator',
     'dtype_to_warp_type',
+    'warp_kernel',
 
     # 5. Pallas kernel
     'PallasKernelGenerator',

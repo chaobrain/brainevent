@@ -26,7 +26,7 @@ from ._compatible_import import Primitive
 from ._config import config
 from ._xla_custom_op_numba import (
     NumbaKernelGenerator,
-    register_numba_cpu_translatione
+    register_numba_cpu_translation
 )
 from ._xla_custom_op_pallas import (
     PallasKernelGenerator,
@@ -429,7 +429,7 @@ class XLACustomKernel:
         """
         if not isinstance(kernel_generator, NumbaKernelGenerator):
             raise TypeError('The `kernel_generator` should be an instance of `NumbaKernel`.')
-        register_numba_cpu_translatione(self.primitive, kernel_generator)
+        register_numba_cpu_translation(self.primitive, kernel_generator)
 
     def def_gpu_kernel(
         self,
