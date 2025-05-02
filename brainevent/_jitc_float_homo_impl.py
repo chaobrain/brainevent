@@ -23,11 +23,11 @@ from jax import numpy as jnp
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
-from ._config import numba_environ, config
+from ._config import numba_environ
 from ._jitc_util import _initialize_seed, _initialize_conn_length
 from ._pallas_random import LFSR88RNG
 from ._typing import Kernel, Data, MatrixShape
-from ._xla_custom_op import XLACustomKernel, KernelChoice
+from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
 from ._xla_custom_op_numba import NumbaKernelGenerator
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_util import general_batching_rule
@@ -1156,21 +1156,6 @@ def float_jitc_homo_matrix_p_call(
     )
 
 
-def _matrix_gpu_kernel():
-    if config.gpu_kernel_use_warp:
-        return WarpKernelGenerator(
-            _jitc_homo_matrix_gpu_kernel_generator,
-            dim=lambda out_info, corder, **kwargs: out_info.shape[0] if corder else out_info.shape[1],
-            input_output_aliases={3: 0}
-        )
-    else:
-        return PallasKernelGenerator(
-            _jitc_homo_matrix_pallas_kernel_generator,
-            block_dim=1,
-            input_output_aliases={3: 0}
-        )
-
-
 float_jitc_homo_matrix_p = XLACustomKernel('float_jitc_homo_matrix')
 float_jitc_homo_matrix_p.def_cpu_kernel(
     NumbaKernelGenerator(
@@ -1178,7 +1163,21 @@ float_jitc_homo_matrix_p.def_cpu_kernel(
         input_output_aliases={3: 0}
     )
 )
-float_jitc_homo_matrix_p.def_gpu_kernel(KernelChoice(_matrix_gpu_kernel))
+float_jitc_homo_matrix_p.def_gpu_kernel(
+    GPUKernelChoice(
+        default='warp',
+        warp_kernel=WarpKernelGenerator(
+            _jitc_homo_matrix_gpu_kernel_generator,
+            dim=lambda out_info, corder, **kwargs: out_info.shape[0] if corder else out_info.shape[1],
+            input_output_aliases={3: 0}
+        ),
+        pallas_kernel=PallasKernelGenerator(
+            _jitc_homo_matrix_pallas_kernel_generator,
+            block_dim=1,
+            input_output_aliases={3: 0}
+        )
+    )
+)
 float_jitc_homo_matrix_p.def_tpu_kernel(
     PallasKernelGenerator(
         _jitc_homo_matrix_pallas_kernel_generator,
@@ -2123,11 +2122,7 @@ def float_jitc_mv_homo_p_call(
 
 
 def _mv_gpu_kernel():
-    return WarpKernelGenerator(
-        _jitc_mv_homo_gpu_kernel_generator,
-        dim=lambda out_info, vector_info, corder, **kwargs: (out_info.shape[0] if corder else vector_info.shape[0]),
-        input_output_aliases={4: 0}
-    )
+    return
 
 
 float_jitc_mv_homo_p = XLACustomKernel('float_jitc_mv_homo')
@@ -2137,7 +2132,16 @@ float_jitc_mv_homo_p.def_cpu_kernel(
         input_output_aliases={4: 0}
     )
 )
-float_jitc_mv_homo_p.def_gpu_kernel(KernelChoice(_mv_gpu_kernel))
+float_jitc_mv_homo_p.def_gpu_kernel(
+    GPUKernelChoice(
+        default='warp',
+        warp_kernel=WarpKernelGenerator(
+            _jitc_mv_homo_gpu_kernel_generator,
+            dim=lambda out_info, vector_info, corder, **kwargs: (out_info.shape[0] if corder else vector_info.shape[0]),
+            input_output_aliases={4: 0}
+        )
+    )
+)
 float_jitc_mv_homo_p.defjvp(
     _jitc_mv_homo_jvp_weights,
     None,
@@ -2789,15 +2793,6 @@ def float_jitc_mm_homo_p_call(
     )
 
 
-def _mm_gpu_kernel():
-    return WarpKernelGenerator(
-        _jitc_mm_homo_gpu_kernel_generator,
-        tile=lambda out_info, B_info, corder, **kwargs: (out_info.shape[0] if corder else B_info.shape[0]),
-        block_dim=256,
-        input_output_aliases={4: 0}
-    )
-
-
 float_jitc_mm_homo_p = XLACustomKernel('float_jitc_mm_homo')
 float_jitc_mm_homo_p.def_cpu_kernel(
     NumbaKernelGenerator(
@@ -2805,7 +2800,17 @@ float_jitc_mm_homo_p.def_cpu_kernel(
         input_output_aliases={4: 0}
     )
 )
-float_jitc_mm_homo_p.def_gpu_kernel(KernelChoice(_mm_gpu_kernel))
+float_jitc_mm_homo_p.def_gpu_kernel(
+    GPUKernelChoice(
+        default='warp',
+        warp_kernel=WarpKernelGenerator(
+            _jitc_mm_homo_gpu_kernel_generator,
+            tile=lambda out_info, B_info, corder, **kwargs: (out_info.shape[0] if corder else B_info.shape[0]),
+            block_dim=256,
+            input_output_aliases={4: 0}
+        ),
+    )
+)
 float_jitc_mm_homo_p.defjvp(
     _jitc_mm_homo_jvp_w,
     None,

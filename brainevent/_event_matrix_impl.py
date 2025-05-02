@@ -21,10 +21,10 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from ._config import numba_environ, config
+from ._config import numba_environ
 from ._misc import cdiv
 from ._typing import Kernel
-from ._xla_custom_op import XLACustomKernel, KernelChoice
+from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
 from ._xla_custom_op_numba import NumbaKernelGenerator
 from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type
@@ -301,24 +301,18 @@ def matrix_event_mm_p_call(weights, spikes, *, float_as_event: bool):
     )
 
 
-def _matrix_event_mm_gpu_kernel():
-    if config.gpu_kernel_use_warp:
-        return WarpKernelGenerator(
-            _matrix_event_mm_gpu_kernel_generator,
-            tile=lambda weight_info, transpose, **kwargs: cdiv(weight_info.shape[0], TILE_THREAD),
-            block_dim=TILE_THREAD,
-        )
-    else:
-        return WarpKernelGenerator(
-            _matrix_event_mm_gpu_kernel_generator,
-            tile=lambda weight_info, transpose, **kwargs: cdiv(weight_info.shape[0], TILE_THREAD),
-            block_dim=TILE_THREAD,
-        )
-
-
 matrix_event_mm_p = XLACustomKernel('matrix_event_mm')
 matrix_event_mm_p.def_cpu_kernel(NumbaKernelGenerator(_matrix_event_mm_cpu_kernel_generator))
-matrix_event_mm_p.def_gpu_kernel(KernelChoice(_matrix_event_mm_gpu_kernel))
+matrix_event_mm_p.def_gpu_kernel(
+    GPUKernelChoice(
+        default='warp',
+        warp_kernel=WarpKernelGenerator(
+            _matrix_event_mm_gpu_kernel_generator,
+            tile=lambda weight_info, transpose, **kwargs: cdiv(weight_info.shape[0], TILE_THREAD),
+            block_dim=TILE_THREAD,
+        )
+    )
+)
 matrix_event_mm_p.defjvp(_matrix_event_mm_jvp_weights, _matrix_event_mm_jvp_spikes)
 matrix_event_mm_p.def_transpose_rule(_matrix_event_mm_transpose_rule)
 matrix_event_mm_p.def_batching_rule(_matrix_event_mm_batching)
@@ -543,24 +537,18 @@ def event_matrix_mm_p_call(spikes, weights, *, float_as_event: bool):
     )
 
 
-def _event_matrix_mm_gpu_kernel():
-    if config.gpu_kernel_use_warp:
-        return WarpKernelGenerator(
-            _event_matrix_mm_gpu_kernel_generator,
-            tile=lambda weight_info, transpose, **kwargs: cdiv(weight_info.shape[1], TILE_THREAD),
-            block_dim=TILE_THREAD,
-        )
-    else:
-        return WarpKernelGenerator(
-            _event_matrix_mm_gpu_kernel_generator,
-            tile=lambda weight_info, transpose, **kwargs: cdiv(weight_info.shape[1], TILE_THREAD),
-            block_dim=TILE_THREAD,
-        )
-
-
 event_matrix_mm_p = XLACustomKernel('event_matrix_mm', )
 event_matrix_mm_p.def_cpu_kernel(NumbaKernelGenerator(_event_matrix_mm_cpu_kernel_generator))
-event_matrix_mm_p.def_gpu_kernel(KernelChoice(_event_matrix_mm_gpu_kernel))
+event_matrix_mm_p.def_gpu_kernel(
+    GPUKernelChoice(
+        default='warp',
+        warp_kernel=WarpKernelGenerator(
+            _event_matrix_mm_gpu_kernel_generator,
+            tile=lambda weight_info, transpose, **kwargs: cdiv(weight_info.shape[1], TILE_THREAD),
+            block_dim=TILE_THREAD,
+        )
+    )
+)
 event_matrix_mm_p.defjvp(_event_matrix_mm_jvp_spikes, _event_matrix_mm_jvp_weights, )
 event_matrix_mm_p.def_transpose_rule(_event_matrix_mm_transpose_rule)
 event_matrix_mm_p.def_batching_rule(_event_matrix_mm_batching)

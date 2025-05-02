@@ -34,7 +34,45 @@ __all__ = [
 
 
 class Config(NamedTuple):
-    gpu_kernel_use_warp = True
+    """
+    A named tuple that stores configuration settings for the brainevent package.
+
+    This class provides a typed, immutable container for configuration settings
+    that affect the behavior of the library, particularly regarding GPU kernel backends.
+
+    Attributes
+    ----------
+    gpu_kernel_backend : str, default 'default'
+        The backend to use for GPU kernel operations.
+        Valid values are 'default', 'warp', and 'pallas'.
+    """
+    gpu_kernel_backend = 'default'
+
+    def set_gpu_backend(self, backend: str) -> None:
+        """
+        Set the GPU kernel backend.
+
+        Parameters
+        ----------
+        backend : str
+            The backend to set. Can be 'default', 'jax', or 'torch'.
+        """
+        if backend not in ['default', 'warp', 'pallas']:
+            raise ValueError(
+                f'Invalid backend: {backend}, must be one of {["default", "warp", "pallas"]}'
+            )
+        self.gpu_kernel_backend = backend
+
+    def get_gpu_backend(self) -> str:
+        """
+        Get the current GPU kernel backend.
+
+        Returns
+        -------
+        str
+            The current backend.
+        """
+        return self.gpu_kernel_backend
 
 
 # Config singleton
@@ -156,6 +194,7 @@ class NumbaEnvironment(threading.local):
         Dictionary of Numba JIT compilation parameters.
         Defaults to {'nogil': True, 'fastmath': True}.
     """
+
     def __init__(self, *args, **kwargs):
         # default environment settings
         super().__init__(*args, **kwargs)

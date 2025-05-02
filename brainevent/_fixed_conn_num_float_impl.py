@@ -24,9 +24,9 @@ import numpy as np
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
-from ._config import numba_environ, config
+from ._config import numba_environ
 from ._misc import generate_block_dim, check_fixed_conn_num_shape
-from ._xla_custom_op import XLACustomKernel, KernelChoice
+from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
 from ._xla_custom_op_numba import NumbaKernelGenerator
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator
@@ -507,9 +507,14 @@ def fixed_num_mv_p_call(
         )
 
 
-def _mv_gpu_kernel():
-    if config.gpu_kernel_use_warp:
-        return WarpKernelGenerator(
+fixed_num_mv_p = XLACustomKernel('fixed_num_mv')
+fixed_num_mv_p.def_cpu_kernel(
+    NumbaKernelGenerator(_fixed_num_mv_numba_kernel_generator, input_output_aliases={3: 0})
+)
+fixed_num_mv_p.def_gpu_kernel(
+    GPUKernelChoice(
+        default='pallas',
+        warp_kernel=WarpKernelGenerator(
             _fixed_num_mv_warp_kernel_generator,
             dim=lambda transpose, indices_info, vector_info, **kwargs: (
                 vector_info.shape[0]
@@ -517,18 +522,14 @@ def _mv_gpu_kernel():
                 indices_info.shape[0]
             ),
             input_output_aliases={3: 0}
-        )
-    else:
-        return PallasKernelGenerator(
+        ),
+        pallas_kernel=PallasKernelGenerator(
             _fixed_num_mv_pallas_kernel_generator,
             block_dim=lambda indices_info, **kwargs: generate_block_dim(indices_info.shape[1]),
             input_output_aliases={3: 0}
-        )
-
-
-fixed_num_mv_p = XLACustomKernel('fixed_num_mv')
-fixed_num_mv_p.def_cpu_kernel(NumbaKernelGenerator(_fixed_num_mv_numba_kernel_generator, input_output_aliases={3: 0}))
-fixed_num_mv_p.def_gpu_kernel(KernelChoice(_mv_gpu_kernel))
+        ),
+    )
+)
 fixed_num_mv_p.def_tpu_kernel(
     PallasKernelGenerator(
         _fixed_num_mv_pallas_kernel_generator,
@@ -991,25 +992,6 @@ def fixed_num_mm_p_call(
         )
 
 
-def _mm_gpu_kernel():
-    if config.gpu_kernel_use_warp:
-        return WarpKernelGenerator(
-            _fixed_num_mv_warp_kernel_generator,
-            dim=lambda transpose, indices_info, vector_info, **kwargs: (
-                vector_info.shape[0]
-                if transpose else
-                indices_info.shape[0]
-            ),
-            input_output_aliases={3: 0}
-        )
-    else:
-        return PallasKernelGenerator(
-            _fixed_num_mm_pallas_kernel_generator,
-            block_dim=lambda indices_info, **kwargs: generate_block_dim(indices_info.shape[1]),
-            input_output_aliases={3: 0}
-        )
-
-
 fixed_num_mm_p = XLACustomKernel('fixed_num_mm')
 fixed_num_mm_p.def_cpu_kernel(
     NumbaKernelGenerator(
@@ -1017,7 +999,25 @@ fixed_num_mm_p.def_cpu_kernel(
         input_output_aliases={3: 0}
     )
 )
-fixed_num_mm_p.def_gpu_kernel(KernelChoice(_mm_gpu_kernel))
+fixed_num_mm_p.def_gpu_kernel(
+    GPUKernelChoice(
+        default='pallas',
+        warp_kernel=WarpKernelGenerator(
+            _fixed_num_mv_warp_kernel_generator,
+            dim=lambda transpose, indices_info, vector_info, **kwargs: (
+                vector_info.shape[0]
+                if transpose else
+                indices_info.shape[0]
+            ),
+            input_output_aliases={3: 0}
+        ),
+        pallas_kernel=PallasKernelGenerator(
+            _fixed_num_mm_pallas_kernel_generator,
+            block_dim=lambda indices_info, **kwargs: generate_block_dim(indices_info.shape[1]),
+            input_output_aliases={3: 0}
+        )
+    )
+)
 fixed_num_mm_p.def_tpu_kernel(
     PallasKernelGenerator(
         _fixed_num_mm_pallas_kernel_generator,

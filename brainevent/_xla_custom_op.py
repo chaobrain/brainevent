@@ -23,6 +23,7 @@ import numpy as np
 from jax.interpreters import xla, mlir, batching, ad
 
 from ._compatible_import import Primitive
+from ._config import config
 from ._xla_custom_op_numba import (
     NumbaKernelGenerator,
     register_numba_cpu_translatione
@@ -43,6 +44,7 @@ from ._xla_custom_op_warp import (
 
 __all__ = [
     'XLACustomKernel',
+    'GPUKernelChoice',
 ]
 
 
@@ -94,12 +96,40 @@ class ShapeDtype(Protocol):
         ...
 
 
-class KernelChoice:
-    def __init__(self, choice: Callable):
-        self.choice = choice
+class GPUKernelChoice:
+    def __init__(
+        self,
+        default: str,
+        warp_kernel: Optional[WarpKernelGenerator] = None,
+        pallas_kernel: Optional[PallasKernelGenerator] = None,
+    ):
+        self.default = default
+        assert default in ['warp', 'pallas'], (
+            "default must be either 'warp' or 'pallas'."
+        )
+        self.warp_kernel = warp_kernel
+        self.pallas_kernel = pallas_kernel
+        if warp_kernel is None and pallas_kernel is None:
+            raise ValueError(
+                "At least one of warp_kernel or pallas_kernel must be provided."
+            )
+        self._all_kernels = {}
+        if warp_kernel is not None:
+            self._all_kernels['warp'] = warp_kernel
+        if pallas_kernel is not None:
+            self._all_kernels['pallas'] = pallas_kernel
+        assert default in self._all_kernels, (
+            f"default must be one of {list(self._all_kernels.keys())}."
+        )
 
     def __call__(self, *args, **kwargs):
-        return self.choice(*args, **kwargs)
+        if config.gpu_kernel_backend == 'default':
+            backend = self.default
+        elif config.gpu_kernel_backend in self._all_kernels:
+            backend = config.gpu_kernel_backend
+        else:
+            backend = self.default
+        return self._all_kernels[backend]
 
 
 class XLACustomKernel:
@@ -210,7 +240,7 @@ class XLACustomKernel:
         self,
         name: str,
         cpu_kernel: Optional[NumbaKernelGenerator] = None,
-        gpu_kernel: Optional[Union[PallasKernelGenerator, WarpKernelGenerator]] = None,
+        gpu_kernel: Optional[Union[PallasKernelGenerator, WarpKernelGenerator, GPUKernelChoice]] = None,
         tpu_kernel: Optional[PallasKernelGenerator] = None,
         batching_translation: Callable = None,
         jvp_translation: Callable = None,
@@ -403,7 +433,7 @@ class XLACustomKernel:
 
     def def_gpu_kernel(
         self,
-        kernel_generator: Union[PallasKernelGenerator, WarpKernelGenerator, KernelChoice]
+        kernel_generator: Union[PallasKernelGenerator, WarpKernelGenerator, GPUKernelChoice]
     ):
         """
         Defines and registers the GPU kernel implementation using JAX Pallas or Warp.
@@ -427,10 +457,7 @@ class XLACustomKernel:
         elif isinstance(kernel_generator, WarpKernelGenerator):
             register_warp_gpu_translation(self.primitive, kernel_generator)
 
-        elif isinstance(kernel_generator, KernelChoice):
-            self._gpu_kernel_choice = kernel_generator
-
-        elif callable(kernel_generator):
+        elif isinstance(kernel_generator, GPUKernelChoice):
             self._gpu_kernel_choice = kernel_generator
 
         else:
