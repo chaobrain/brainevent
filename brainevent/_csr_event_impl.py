@@ -864,7 +864,7 @@ event_csrmv_p.def_tpu_kernel(
     PallasKernelGenerator(_event_csrmv_pallas_tiled_kernel_generator,
                           input_output_aliases={4: 0})
 )
-event_csrmv_p.defjvp(_event_csrmv_jvp_weights, None, None, _event_csrmv_jvp_v)
+event_csrmv_p.def_jvp_rule2(_event_csrmv_jvp_weights, None, None, _event_csrmv_jvp_v)
 event_csrmv_p.def_transpose_rule(_event_csrmv_transpose_rule)
 event_csrmv_p.def_batching_rule(_event_csrmv_batching)
 
@@ -1711,6 +1711,6 @@ event_csrmm_p.def_gpu_kernel(
 event_csrmm_p.def_tpu_kernel(
     PallasKernelGenerator(_event_csrmm_pallas_kernel_generator, input_output_aliases={4: 0})
 )
-event_csrmm_p.defjvp(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
+event_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 event_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 event_csrmm_p.def_batching_rule(_event_csrmm_batching)

@@ -733,7 +733,7 @@ event_fixed_post_num_mv_p.def_tpu_kernel(
         input_output_aliases={3: 0},
     )
 )
-event_fixed_post_num_mv_p.defjvp(
+event_fixed_post_num_mv_p.def_jvp_rule2(
     _event_fixed_post_num_mv_jvp_weights,
     None,
     _event_fixed_post_num_mv_jvp_spikes,

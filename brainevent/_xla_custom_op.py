@@ -508,7 +508,7 @@ class XLACustomKernel:
         """
         ad.primitive_jvps[self.primitive] = fun
 
-    def defjvp(self, *jvp_rules):
+    def def_jvp_rule2(self, *jvp_rules):
         """
         Defines the JVP (Jacobian-vector product) rules for the primitive.
 

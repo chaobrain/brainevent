@@ -715,7 +715,7 @@ event_jitc_mv_uniform_p = XLACustomKernel(
         input_output_aliases={5: 0}
     )
 )
-event_jitc_mv_uniform_p.defjvp(
+event_jitc_mv_uniform_p.def_jvp_rule2(
     _jitc_mv_uniform_jvp_wloc,
     _jitc_mv_uniform_jvp_wscale,
     None,
@@ -1289,7 +1289,7 @@ event_jitc_mm_uniform_p = XLACustomKernel(
         input_output_aliases={5: 0}
     )
 )
-event_jitc_mm_uniform_p.defjvp(
+event_jitc_mm_uniform_p.def_jvp_rule2(
     _jitc_mm_uniform_jvp_wloc,
     _jitc_mm_uniform_jvp_wscale,
     None,

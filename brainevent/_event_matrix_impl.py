@@ -313,7 +313,7 @@ matrix_event_mm_p.def_gpu_kernel(
         )
     )
 )
-matrix_event_mm_p.defjvp(_matrix_event_mm_jvp_weights, _matrix_event_mm_jvp_spikes)
+matrix_event_mm_p.def_jvp_rule2(_matrix_event_mm_jvp_weights, _matrix_event_mm_jvp_spikes)
 matrix_event_mm_p.def_transpose_rule(_matrix_event_mm_transpose_rule)
 matrix_event_mm_p.def_batching_rule(_matrix_event_mm_batching)
 
@@ -549,6 +549,6 @@ event_matrix_mm_p.def_gpu_kernel(
         )
     )
 )
-event_matrix_mm_p.defjvp(_event_matrix_mm_jvp_spikes, _event_matrix_mm_jvp_weights, )
+event_matrix_mm_p.def_jvp_rule2(_event_matrix_mm_jvp_spikes, _event_matrix_mm_jvp_weights, )
 event_matrix_mm_p.def_transpose_rule(_event_matrix_mm_transpose_rule)
 event_matrix_mm_p.def_batching_rule(_event_matrix_mm_batching)

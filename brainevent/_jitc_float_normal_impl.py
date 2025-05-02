@@ -1327,7 +1327,7 @@ float_jitc_mv_normal_p = XLACustomKernel(
         input_output_aliases={5: 0}
     )
 )
-float_jitc_mv_normal_p.defjvp(
+float_jitc_mv_normal_p.def_jvp_rule2(
     _jitc_mv_normal_jvp_wloc,
     _jitc_mv_normal_jvp_wscale,
     None,
@@ -1868,7 +1868,7 @@ float_jitc_mm_normal_p = XLACustomKernel(
         input_output_aliases={5: 0}
     )
 )
-float_jitc_mm_normal_p.defjvp(
+float_jitc_mm_normal_p.def_jvp_rule2(
     _jitc_mm_normal_jvp_wloc,
     _jitc_mm_normal_jvp_wscale,
     None,

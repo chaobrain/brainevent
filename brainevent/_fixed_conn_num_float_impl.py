@@ -537,7 +537,7 @@ fixed_num_mv_p.def_tpu_kernel(
         input_output_aliases={3: 0}
     )
 )
-fixed_num_mv_p.defjvp(_fixed_num_mv_jvp_weights, None, _fixed_num_mv_jvp_vector, None)
+fixed_num_mv_p.def_jvp_rule2(_fixed_num_mv_jvp_weights, None, _fixed_num_mv_jvp_vector, None)
 fixed_num_mv_p.def_transpose_rule(_fixed_num_mv_transpose_rule)
 
 
@@ -1025,5 +1025,5 @@ fixed_num_mm_p.def_tpu_kernel(
         input_output_aliases={3: 0}
     )
 )
-fixed_num_mm_p.defjvp(_fixed_num_mm_jvp_weights, None, _fixed_num_mm_jvp_matrix, None)
+fixed_num_mm_p.def_jvp_rule2(_fixed_num_mm_jvp_weights, None, _fixed_num_mm_jvp_matrix, None)
 fixed_num_mm_p.def_transpose_rule(_fixed_num_mm_transpose_rule)

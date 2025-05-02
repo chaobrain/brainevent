@@ -610,7 +610,7 @@ event_jitc_mv_homo_p.def_gpu_kernel(
         input_output_aliases={4: 0}
     )
 )
-event_jitc_mv_homo_p.defjvp(
+event_jitc_mv_homo_p.def_jvp_rule2(
     _jitc_mv_homo_jvp_weights,
     None,
     _jitc_mv_homo_jvp_v,
@@ -1277,7 +1277,7 @@ event_jitc_mm_homo_p.def_gpu_kernel(
         input_output_aliases={4: 0}
     )
 )
-event_jitc_mm_homo_p.defjvp(
+event_jitc_mm_homo_p.def_jvp_rule2(
     _jitc_mm_homo_jvp_w,
     None,
     _jitc_mm_homo_jvp_B,

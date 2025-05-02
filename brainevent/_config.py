@@ -33,7 +33,7 @@ __all__ = [
 ]
 
 
-class Config(NamedTuple):
+class Config:
     """
     A named tuple that stores configuration settings for the brainevent package.
 

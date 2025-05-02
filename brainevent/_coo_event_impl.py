@@ -602,7 +602,7 @@ event_coomv_p = XLACustomKernel(
         input_output_aliases={4: 0}
     ),
 )
-event_coomv_p.defjvp(event_coomv_jvp_weights, None, None, event_coomv_jvp_v)
+event_coomv_p.def_jvp_rule2(event_coomv_jvp_weights, None, None, event_coomv_jvp_v)
 event_coomv_p.def_transpose_rule(event_coomv_transpose_rule)
 event_coomv_p.def_batching_rule(event_coomv_batching)
 
@@ -1129,6 +1129,6 @@ event_coomm_p = XLACustomKernel(
         input_output_aliases={4: 0}
     )
 )
-event_coomm_p.defjvp(event_coomm_jvp_left, None, None, event_coomm_jvp_right)
+event_coomm_p.def_jvp_rule2(event_coomm_jvp_left, None, None, event_coomm_jvp_right)
 event_coomm_p.def_transpose_rule(event_coomm_transpose_rule)
 event_coomm_p.def_batching_rule(event_coomm_batching)

@@ -589,7 +589,7 @@ csrmv_p.def_tpu_kernel(
     PallasKernelGenerator(_csrmv_pallas_tiled_kernel_generator,
                           input_output_aliases={4: 0})
 )
-csrmv_p.defjvp(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
+csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
 csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
 csrmv_p.def_batching_rule(_csrmv_batching)
 
@@ -1302,20 +1302,15 @@ csrmm_p.def_gpu_kernel(
         warp_kernel=WarpKernelGenerator(
             _csrmm_warp_kernel_generator,
             tile=lambda shape, transpose, **kwargs: shape[1] if transpose else shape[0],
-            block_dim=lambda vector_info, **kwargs: (
-                generate_block_dim(vector_info.shape[1], 1024)
-            ),
+            block_dim=lambda vector_info, **kwargs: generate_block_dim(vector_info.shape[1], 1024),
             input_output_aliases={4: 0}
         ),
-        pallas_kernel=PallasKernelGenerator(
-            _csrmm_pallas_kernel_generator,
-            input_output_aliases={4: 0}
-        )
+        pallas_kernel=PallasKernelGenerator(_csrmm_pallas_kernel_generator, input_output_aliases={4: 0}),
     )
 )
 csrmm_p.def_tpu_kernel(
     PallasKernelGenerator(_csrmm_pallas_kernel_generator, input_output_aliases={4: 0})
 )
-csrmm_p.defjvp(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
+csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 csrmm_p.def_batching_rule(_csrmm_batching)

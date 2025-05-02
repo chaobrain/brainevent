@@ -2142,7 +2142,7 @@ float_jitc_mv_homo_p.def_gpu_kernel(
         )
     )
 )
-float_jitc_mv_homo_p.defjvp(
+float_jitc_mv_homo_p.def_jvp_rule2(
     _jitc_mv_homo_jvp_weights,
     None,
     _jitc_mv_homo_jvp_v,
@@ -2811,7 +2811,7 @@ float_jitc_mm_homo_p.def_gpu_kernel(
         ),
     )
 )
-float_jitc_mm_homo_p.defjvp(
+float_jitc_mm_homo_p.def_jvp_rule2(
     _jitc_mm_homo_jvp_w,
     None,
     _jitc_mm_homo_jvp_B,
