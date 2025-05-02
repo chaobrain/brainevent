@@ -29,12 +29,12 @@ from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator, warp_kernel
 
 __all__ = [
-    "_coo_matvec",
-    "_coo_matmat",
+    "coo_matvec",
+    "coo_matmat",
 ]
 
 
-def _coo_matvec(
+def coo_matvec(
     data: Data,
     row: Row,
     col: Col,
@@ -49,7 +49,7 @@ def _coo_matvec(
     return u.maybe_decimal(res * unitd * unitv)
 
 
-def _coo_matmat(
+def coo_matmat(
     data: Data,
     row: Row,
     col: Col,
@@ -64,7 +64,7 @@ def _coo_matmat(
     return u.maybe_decimal(res * (unitd * unitb))
 
 
-def coomv_cpu_kernel_generator(
+def _coomv_numba_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs
@@ -105,7 +105,7 @@ def coomv_cpu_kernel_generator(
     return mv
 
 
-def coomv_gpu_kernel_generator(
+def _coomv_warp_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     row_info: jax.ShapeDtypeStruct,
@@ -178,12 +178,12 @@ def coomv_gpu_kernel_generator(
     return warp_kernel(mv, dim=dim, input_output_aliases={4: 0})
 
 
-def coomv_jvp_v(
-    v_dot,
+def _coomv_jvp_vector(
+    vector_dot,
     data,
     row,
     col,
-    v,
+    vector,
     _,
     *,
     shape,
@@ -199,23 +199,23 @@ def coomv_jvp_v(
     #     transpose=transpose,
     # )
     return [
-        _coo_matvec(
+        coo_matvec(
             data,
             row,
             col,
-            v_dot,
+            vector_dot,
             shape=shape,
             transpose=transpose
         )
     ]
 
 
-def coomv_jvp_weights(
+def _coomv_jvp_weights(
     data_dot,
     data,
     row,
     col,
-    v,
+    vector,
     _,
     *,
     shape,
@@ -226,13 +226,13 @@ def coomv_jvp_weights(
         data_dot,
         row,
         col,
-        v,
+        vector,
         shape=shape,
         transpose=transpose,
     )
 
 
-def coomv_transpose_rule(
+def _coomv_transpose_rule(
     ct,
     data,
     row,
@@ -252,7 +252,7 @@ def coomv_transpose_rule(
         if type(ct) is ad.Zero:
             ct_events = ad.Zero(v)
         else:
-            ct_events = _coo_matvec(
+            ct_events = coo_matvec(
                 data,
                 row,
                 col,
@@ -278,7 +278,7 @@ def coomv_transpose_rule(
         return ct_values, row, col, v, _
 
 
-def coomv_batching(
+def _coomv_batching(
     args,
     axes,
     **kwargs
@@ -348,14 +348,14 @@ def coomv_p_call(
 
 
 coomv_p = XLACustomKernel('coomv')
-coomv_p.def_cpu_kernel(NumbaKernelGenerator(coomv_cpu_kernel_generator))
-coomv_p.def_gpu_kernel(WarpKernelGenerator(coomv_gpu_kernel_generator))
-coomv_p.def_jvp_rule2(coomv_jvp_weights, None, None, coomv_jvp_v)
-coomv_p.def_transpose_rule(coomv_transpose_rule)
-coomv_p.def_batching_rule(coomv_batching)
+coomv_p.def_cpu_kernel(NumbaKernelGenerator(_coomv_numba_kernel_generator))
+coomv_p.def_gpu_kernel(WarpKernelGenerator(_coomv_warp_kernel_generator))
+coomv_p.def_jvp_rule2(_coomv_jvp_weights, None, None, _coomv_jvp_vector)
+coomv_p.def_transpose_rule(_coomv_transpose_rule)
+coomv_p.def_batching_rule(_coomv_batching)
 
 
-def coomm_cpu_kernel_generator(
+def _coomm_numba_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs
@@ -396,7 +396,7 @@ def coomm_cpu_kernel_generator(
     return mm
 
 
-def coomm_gpu_kernel_generator(
+def _coomm_warp_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     matrix_info: jax.ShapeDtypeStruct,
     row_info: jax.ShapeDtypeStruct,
@@ -470,7 +470,7 @@ def coomm_gpu_kernel_generator(
     return warp_kernel(mm, dim=dim, input_output_aliases={4: 0})
 
 
-def coomm_jvp_left(
+def _coomm_jvp_left(
     data_dot,
     data,
     row,
@@ -492,7 +492,7 @@ def coomm_jvp_left(
     )
 
 
-def coomm_jvp_right(
+def _coomm_jvp_right(
     B_dot,
     data,
     row,
@@ -514,7 +514,7 @@ def coomm_jvp_right(
     )
 
 
-def coomm_transpose_rule(
+def _coomm_transpose_rule(
     ct,
     data,
     row,
@@ -529,7 +529,7 @@ def coomm_transpose_rule(
     assert not ad.is_undefined_primal(col)
     # TODO: Can optimize transpose rule if data is homogenous?
     if ad.is_undefined_primal(B):
-        dB = _coo_matmat(data, row, col, ct, shape=shape, transpose=not transpose)
+        dB = coo_matmat(data, row, col, ct, shape=shape, transpose=not transpose)
         return data, row, col, dB, _
     else:
         B = jnp.asarray(B)
@@ -626,8 +626,8 @@ def coomm_p_call(
 
 
 coomm_p = XLACustomKernel('coomm')
-coomm_p.def_cpu_kernel(NumbaKernelGenerator(coomm_cpu_kernel_generator))
-coomm_p.def_gpu_kernel(WarpKernelGenerator(coomm_gpu_kernel_generator))
-coomm_p.def_jvp_rule2(coomm_jvp_left, None, None, coomm_jvp_right)
-coomm_p.def_transpose_rule(coomm_transpose_rule)
+coomm_p.def_cpu_kernel(NumbaKernelGenerator(_coomm_numba_kernel_generator))
+coomm_p.def_gpu_kernel(WarpKernelGenerator(_coomm_warp_kernel_generator))
+coomm_p.def_jvp_rule2(_coomm_jvp_left, None, None, _coomm_jvp_right)
+coomm_p.def_transpose_rule(_coomm_transpose_rule)
 coomm_p.def_batching_rule(coomm_batching)

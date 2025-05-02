@@ -23,7 +23,7 @@ import jax
 import jax.numpy as jnp
 from jax.interpreters import ad
 
-from ._coo_float_impl import _coo_matvec, _coo_matmat
+from ._coo_float_impl import coo_matvec, coo_matmat
 from ._typing import Data, Row, Col, MatrixShape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
@@ -31,7 +31,7 @@ from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator, warp_kernel
 
 
-def _event_coo_matvec(
+def event_coo_matvec(
     data: Data,
     row: Row,
     col: Col,
@@ -52,7 +52,7 @@ def _event_coo_matvec(
     return u.maybe_decimal(res * (unitd * unitv))
 
 
-def _event_coo_matmat(
+def event_coo_matmat(
     data: Data,
     row: Row,
     col: Col,
@@ -73,7 +73,7 @@ def _event_coo_matmat(
     return u.maybe_decimal(res * (unitd * unitb))
 
 
-def event_coomv_cpu_kernel_generator(
+def _event_coomv_numba_kernel_generator(
     float_as_event: bool,
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
@@ -193,7 +193,7 @@ def event_coomv_cpu_kernel_generator(
     return mv
 
 
-def event_coomv_gpu_kernel_generator(
+def _event_coomv_warp_kernel_generator(
     float_as_event: bool,
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
@@ -393,7 +393,7 @@ def event_coomv_gpu_kernel_generator(
     return warp_kernel(mv, dim=dim, input_output_aliases={4: 0})
 
 
-def event_coomv_jvp_v(
+def _event_coomv_jvp_vector(
     v_dot,
     data,
     row,
@@ -406,7 +406,7 @@ def event_coomv_jvp_v(
     **kwargs
 ):
     return [
-        _coo_matvec(
+        coo_matvec(
             data,
             row,
             col,
@@ -417,7 +417,7 @@ def event_coomv_jvp_v(
     ]
 
 
-def event_coomv_jvp_weights(
+def _event_coomv_jvp_weights(
     data_dot,
     data,
     row,
@@ -441,7 +441,7 @@ def event_coomv_jvp_weights(
     )
 
 
-def event_coomv_transpose_rule(
+def _event_coomv_transpose_rule(
     ct,
     data,
     row,
@@ -462,7 +462,7 @@ def event_coomv_transpose_rule(
         if type(ct) is ad.Zero:
             ct_events = ad.Zero(events)
         else:
-            ct_events = _coo_matvec(
+            ct_events = coo_matvec(
                 data,
                 row,
                 col,
@@ -491,7 +491,7 @@ def event_coomv_transpose_rule(
         return ct_values, row, col, events, _
 
 
-def event_coomv_batching(
+def _event_coomv_batching(
     args,
     axes,
     **kwargs
@@ -602,14 +602,14 @@ def event_coomv_p_call(
 
 
 event_coomv_p = XLACustomKernel('event_coomv')
-event_coomv_p.def_cpu_kernel(NumbaKernelGenerator(event_coomv_cpu_kernel_generator))
-event_coomv_p.def_gpu_kernel(WarpKernelGenerator(event_coomv_gpu_kernel_generator))
-event_coomv_p.def_jvp_rule2(event_coomv_jvp_weights, None, None, event_coomv_jvp_v)
-event_coomv_p.def_transpose_rule(event_coomv_transpose_rule)
-event_coomv_p.def_batching_rule(event_coomv_batching)
+event_coomv_p.def_cpu_kernel(NumbaKernelGenerator(_event_coomv_numba_kernel_generator))
+event_coomv_p.def_gpu_kernel(WarpKernelGenerator(_event_coomv_warp_kernel_generator))
+event_coomv_p.def_jvp_rule2(_event_coomv_jvp_weights, None, None, _event_coomv_jvp_vector)
+event_coomv_p.def_transpose_rule(_event_coomv_transpose_rule)
+event_coomv_p.def_batching_rule(_event_coomv_batching)
 
 
-def event_coomm_cpu_kernel_generator(
+def _event_coomm_numba_kernel_generator(
     float_as_event: bool,
     weight_info: jax.ShapeDtypeStruct,
     matrix_info: jax.ShapeDtypeStruct,
@@ -732,7 +732,7 @@ def event_coomm_cpu_kernel_generator(
     return mm
 
 
-def event_coomm_gpu_kernel_generator(
+def _event_coomm_warp_kernel_generator(
     float_as_event: bool,
     weight_info: jax.ShapeDtypeStruct,
     matrix_info: jax.ShapeDtypeStruct,
@@ -932,7 +932,7 @@ def event_coomm_gpu_kernel_generator(
     return warp_kernel(mm, dim=dim, input_output_aliases={4: 0})
 
 
-def event_coomm_jvp_left(
+def _event_coomm_jvp_left(
     data_dot,
     data,
     row,
@@ -945,7 +945,7 @@ def event_coomm_jvp_left(
     **kwargs
 ):
     return [
-        _coo_matmat(
+        coo_matmat(
             data_dot,
             row,
             col,
@@ -956,7 +956,7 @@ def event_coomm_jvp_left(
     ]
 
 
-def event_coomm_jvp_right(
+def _event_coomm_jvp_right(
     B_dot,
     data,
     row,
@@ -969,7 +969,7 @@ def event_coomm_jvp_right(
     **kwargs
 ):
     return [
-        _coo_matmat(
+        coo_matmat(
             data,
             row,
             col,
@@ -980,7 +980,7 @@ def event_coomm_jvp_right(
     ]
 
 
-def event_coomm_transpose_rule(
+def _event_coomm_transpose_rule(
     ct,
     data,
     row,
@@ -996,7 +996,7 @@ def event_coomm_transpose_rule(
     assert not ad.is_undefined_primal(col)
     # TODO: Can optimize transpose rule if data is homogenous?
     if ad.is_undefined_primal(B):
-        dB = _coo_matmat(data, row, col, ct, shape=shape, transpose=not transpose)
+        dB = coo_matmat(data, row, col, ct, shape=shape, transpose=not transpose)
         return data, row, col, dB, _
     else:
         B = jnp.asarray(B)
@@ -1004,7 +1004,7 @@ def event_coomm_transpose_rule(
         return d_data, row, col, B, _
 
 
-def event_coomm_batching(
+def _event_coomm_batching(
     args,
     axes,
     **kwargs
@@ -1131,8 +1131,8 @@ def event_coomm_p_call(
 
 
 event_coomm_p = XLACustomKernel('event_coomm')
-event_coomm_p.def_cpu_kernel(NumbaKernelGenerator(event_coomm_cpu_kernel_generator))
-event_coomm_p.def_gpu_kernel(WarpKernelGenerator(event_coomm_gpu_kernel_generator))
-event_coomm_p.def_jvp_rule2(event_coomm_jvp_left, None, None, event_coomm_jvp_right)
-event_coomm_p.def_transpose_rule(event_coomm_transpose_rule)
-event_coomm_p.def_batching_rule(event_coomm_batching)
+event_coomm_p.def_cpu_kernel(NumbaKernelGenerator(_event_coomm_numba_kernel_generator))
+event_coomm_p.def_gpu_kernel(WarpKernelGenerator(_event_coomm_warp_kernel_generator))
+event_coomm_p.def_jvp_rule2(_event_coomm_jvp_left, None, None, _event_coomm_jvp_right)
+event_coomm_p.def_transpose_rule(_event_coomm_transpose_rule)
+event_coomm_p.def_batching_rule(_event_coomm_batching)
