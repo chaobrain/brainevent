@@ -53,7 +53,7 @@ of the above class:
 
 If you want to take advantage of event-driven computations, please take the following steps:
 
-1. Define your data structure:
+1. Define your data structure.
 
 For sparse data structures, you must use data structures provided by ``brainevent``:
 ```python
@@ -69,7 +69,7 @@ For dense data structures, you can use JAX/NumPy arrays:
 data = jax.random.rand(...)  # normal dense array
 ```
 
-2. Normal float-valued computations:
+2. Normal float-valued computations.
 
 Matrix multiplication with dense arrays is normal float-valued computations:
 ```python
@@ -79,7 +79,7 @@ r = your_array @ data
 r = data @ your_array
 ```
 
-3. Event-driven computations:
+3. Event-driven computations.
 
 Matrix multiplication with ``brainevent.EventArray`` will take advantage of event-driven computations:
 
