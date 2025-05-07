@@ -91,13 +91,20 @@ r = data @ event_array
 You can install ``brainevent`` via pip:
 
 ```bash
-pip install brainevent --upgrade
+pip install brainevent -U
 ```
+
+Alternatively, you can install `BrainX`, which bundles `brainevent` with other compatible packages for a comprehensive brain modeling ecosystem:
+
+```bash
+pip install BrainX -U
+```
+
 
 ## Documentation
 
-The official documentation is hosted on Read the
-Docs: [https://brainevent.readthedocs.io/](https://brainevent.readthedocs.io/)
+The official documentation is hosted on Read the Docs: [https://brainevent.readthedocs.io/](https://brainevent.readthedocs.io/)
+
 
 ## See also the brain modeling ecosystem
 

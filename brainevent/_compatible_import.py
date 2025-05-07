@@ -26,7 +26,7 @@ __all__ = [
 
 from collections.abc import Callable, Sequence
 from functools import partial
-from typing import Union
+from typing import Union, Tuple
 
 import jax
 import jaxlib.mlir.dialects.stablehlo as hlo
@@ -63,6 +63,8 @@ def register_custom_call(target_name, capsule, backend: str):
     """
     if jax.__version_info__ < (0, 4, 35):
         xla_client.register_custom_call_target(target_name, capsule, backend)
+    elif jax.__version_info__ < (0, 5, 0):
+        jax.extend.ffi.register_ffi_target(target_name, capsule, backend, api_version=0)
     else:
         jax.ffi.register_ffi_target(target_name, capsule, backend, api_version=0)
 
@@ -104,12 +106,12 @@ def _shape_dtype_to_ir_type(shape: Sequence[int], dtype) -> ir.Type:
 # result_shapes=None. We first construct for each result a pair with the shape
 # and element type, the shape containing either integer or ir.Value.
 DimensionSize = Union[int, ir.Value]  # an ir.Value if not static dimension
-ShapeTypePair = tuple[Sequence[DimensionSize], ir.Type]
+ShapeTypePair = Tuple[Sequence[DimensionSize], ir.Type]
 
 
 def _mk_result_types_and_shapes(
     shape_type_pairs: Sequence[ShapeTypePair]
-) -> tuple[list[ir.Type], list[ir.Value] | None]:
+) -> Tuple[list[ir.Type], list[ir.Value] | None]:
     result_types: list[ir.Type] = []
     result_shapes: list[ir.Value] = []
     has_dynamic_shapes = any(
