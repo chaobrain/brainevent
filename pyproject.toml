@@ -56,8 +56,6 @@ keywords = [
 ]
 
 dependencies = [
-    'jax',
-    'jaxlib',
     'numpy',
     'brainunit>=0.0.8',
 ]
