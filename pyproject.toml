@@ -58,12 +58,11 @@ keywords = [
 dependencies = [
     'numpy',
     'brainunit>=0.0.8',
+    'absl-py',
 ]
 
 dynamic = ['version']
 
-[tool.flit.module]
-name = "brainevent"
 
 [project.urls]
 homepage = 'http://github.com/chaobrain/brainevent'

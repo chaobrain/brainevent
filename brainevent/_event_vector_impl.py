@@ -416,7 +416,7 @@ def _event_matrix_mv_jvp_spikes(spk_dot, spikes, weights, **kwargs):
     return [spk_dot @ weights]
 
 
-def _event_matrix_mv_transpose_rule(ct, weights, spikes, **kwargs):
+def _event_matrix_mv_transpose_rule(ct, spikes, weights, **kwargs):
     if ad.is_undefined_primal(spikes):
         ct_events = jnp.matmul(weights, ct[0])
         return weights, (ad.Zero(spikes) if type(ct[0]) is ad.Zero else ct_events)
