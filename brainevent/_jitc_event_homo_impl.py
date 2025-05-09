@@ -22,11 +22,15 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
+from ._compatible_import import pallas as pl
 from ._jitc_float_homo_impl import float_jitc_mv_homo_p_call, float_jitc_mm_homo_p_call
 from ._jitc_util import _initialize_seed, _initialize_conn_length
+from ._misc import generate_block_dim
+from ._pallas_random import LFSR88RNG
 from ._typing import Data, MatrixShape
-from ._xla_custom_op import XLACustomKernel
+from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
+from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator, warp_kernel
 
@@ -174,8 +178,7 @@ def event_jitc_homo_matmat(
     return u.maybe_decimal(res * unitd * unitB)
 
 
-# Kernel generators for JIT connection SPMV
-def _jitc_mv_homo_cpu_kernel_generator(
+def _jitc_mv_homo_numba_kernel_generator(
     corder: bool,
     vector_info: jax.ShapeDtypeStruct,
     **kwargs
@@ -251,7 +254,7 @@ def _jitc_mv_homo_cpu_kernel_generator(
     return numba_kernel(kernel, parallel=False, input_output_aliases={4: 0})
 
 
-def _jitc_mv_homo_gpu_kernel_generator(
+def _jitc_mv_homo_warp_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
@@ -287,8 +290,7 @@ def _jitc_mv_homo_gpu_kernel_generator(
                 state = warp.rand_init(seed0 + i_col)
                 i_row = warp.randi(state, 0, clen0)
                 while i_row < num_row:
-                    if vector[i_row]:
-                        r += 1.
+                    r = warp.where(vector[i_row], 1., 0.)
                     i_row += warp.randi(state, 1, clen0)
                 posts[i_col] = r * weight0
 
@@ -310,8 +312,7 @@ def _jitc_mv_homo_gpu_kernel_generator(
                 state = warp.rand_init(seed0 + i_col)
                 i_row = warp.randi(state, 0, clen0)
                 while i_row < num_row:
-                    if vector[i_row] != 0.:
-                        r += 1.0
+                    r += vector[i_row]
                     i_row += warp.randi(state, 1, clen0)
                 posts[i_col] = r * weight0
 
@@ -337,7 +338,6 @@ def _jitc_mv_homo_gpu_kernel_generator(
                         posts[i_col] += weight0
                         i_col += warp.randi(state, 1, clen0)
 
-
         else:
             def kernel(
                 weight: warp.array1d(dtype=weight_dtype),
@@ -361,6 +361,76 @@ def _jitc_mv_homo_gpu_kernel_generator(
 
     dim = (out_info.shape[0] if corder else vector_info.shape[0])
     return warp_kernel(kernel, dim=dim, input_output_aliases={4: 0})
+
+
+def _jitc_mv_homo_pallas_kernel_generator(
+    vector_info: jax.ShapeDtypeStruct,
+    out_info: jax.ShapeDtypeStruct,
+    transpose: bool = False,
+    corder: bool = True,
+    **kwargs
+):
+    if corder:
+        def kernel(weight_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
+            num_row = vector_ref.shape[0]
+            weight = weight_ref[0]
+            clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
+            seed0 = seed_ref[0]  # Base random seed value
+            i_col = pl.program_id(0)
+
+            def body(data):
+                i, rng, res = data
+                if vector_ref.dtype == jnp.bool_:
+                    res = jnp.where(vector_ref[i], res + weight, res)
+                else:
+                    res = jnp.where(vector_ref[i] != 0., res + weight, res)
+                i += rng.random_integers(1, clen0)
+                return i, rng, res
+
+            rng = LFSR88RNG(seed0 + i_col)
+            _, _, r = jax.lax.while_loop(
+                lambda data: data[0] < num_row,
+                body,
+                (rng.random_integers(0, clen0), rng, 0.0)
+            )
+            post_ref[i_col] = r
+
+    else:
+        def kernel(weight_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
+            num_col = post_ref.shape[0]
+            weight = weight_ref[0]
+            clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
+            seed0 = seed_ref[0]  # Base random seed value
+            i_row = pl.program_id(0)
+            v = vector_ref[i_row]
+
+            @pl.when(v if v.dtype == jnp.bool_ else v != 0.)
+            def run():
+                def body(data):
+                    i, rng = data
+                    pl.atomic_add(post_ref, i, weight)
+                    i += rng.random_integers(1, clen0)
+                    return i, rng
+
+                rng = LFSR88RNG(seed0 + i_row)
+                jax.lax.while_loop(
+                    lambda data: data[0] < num_col,
+                    body,
+                    (rng.random_integers(0, clen0), rng)
+                )
+
+    dim = (out_info.shape[0] if corder else vector_info.shape[0])
+
+    def final_kernel(weight, clen, vector, seed, out):
+        fn = pl.pallas_call(
+            kernel,
+            out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
+            grid=(dim,),
+            input_output_aliases={4: 0},
+        )
+        return [fn(weight, clen, vector, seed, out)]
+
+    return final_kernel
 
 
 def _jitc_mv_homo_jvp_v(
@@ -598,18 +668,21 @@ def event_jitc_mv_homo_p_call(
 
 
 event_jitc_mv_homo_p = XLACustomKernel('event_jitc_mv_homo')
-event_jitc_mv_homo_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mv_homo_cpu_kernel_generator))
-event_jitc_mv_homo_p.def_gpu_kernel(WarpKernelGenerator(_jitc_mv_homo_gpu_kernel_generator))
+event_jitc_mv_homo_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mv_homo_numba_kernel_generator))
+event_jitc_mv_homo_p.def_gpu_kernel(
+    GPUKernelChoice(
+        default='warp',
+        warp_kernel=WarpKernelGenerator(_jitc_mv_homo_warp_kernel_generator),
+        pallas_kernel=PallasKernelGenerator(_jitc_mv_homo_pallas_kernel_generator),
+    )
+)
+event_jitc_mv_homo_p.def_tpu_kernel(PallasKernelGenerator(_jitc_mv_homo_pallas_kernel_generator))
 event_jitc_mv_homo_p.def_jvp_rule2(_jitc_mv_homo_jvp_weights, None, _jitc_mv_homo_jvp_v, None, None)
 event_jitc_mv_homo_p.def_transpose_rule(_jitc_mv_homo_transpose_rules)
 event_jitc_mv_homo_p.def_batching_rule(_jitc_mv_homo_batching)
 
 
-# Kernel generators for JIT connection SPMM
-
-# jitc csrmm homo
-
-def _jitc_mm_homo_cpu_kernel_generator(
+def _jitc_mm_homo_numba_kernel_generator(
     transpose: bool,
     corder: bool,
     B_info: jax.ShapeDtypeStruct,
@@ -820,7 +893,7 @@ def _jitc_mm_homo_cpu_kernel_generator(
     return numba_kernel(kernel, parallel=False, input_output_aliases={4: 0})
 
 
-def _jitc_mm_homo_gpu_kernel_generator(
+def _jitc_mm_homo_warp_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
     B_info: jax.ShapeDtypeStruct,
@@ -843,213 +916,197 @@ def _jitc_mm_homo_gpu_kernel_generator(
         return warp.where(s, 1., 0.)
 
     if corder:
-        if transpose:
-            # JIT Matrix.T @ B
+        # JIT Matrix.T @ B
 
-            if B_info.dtype == jnp.bool_:
-                def kernel(
-                    weight: warp.array1d(dtype=weight_dtype),
-                    clen: warp.array1d(dtype=clen_dtype),
-                    B: warp.array2d(dtype=B_dtype),
-                    seed: warp.array1d(dtype=seed_dtype),
-                    _: warp.array2d(dtype=weight_dtype),
-                    posts: warp.array2d(dtype=weight_dtype),
-                ):
-                    k = B.shape[0]
-                    weight0 = weight[0]
-                    clen0 = clen[0]
-                    seed0 = seed[0]
-                    B = warp.array(B, dtype=weight_dtype)
+        if B_info.dtype == jnp.bool_:
+            def kernel(
+                weight: warp.array1d(dtype=weight_dtype),
+                clen: warp.array1d(dtype=clen_dtype),
+                B: warp.array2d(dtype=B_dtype),
+                seed: warp.array1d(dtype=seed_dtype),
+                _: warp.array2d(dtype=weight_dtype),
+                posts: warp.array2d(dtype=weight_dtype),
+            ):
+                k = B.shape[0]
+                weight0 = weight[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
+                B = warp.array(B, dtype=weight_dtype)
 
-                    i_m = warp.tid()
-                    state = warp.rand_init(seed0 + i_m)
+                i_m = warp.tid()
+                state = warp.rand_init(seed0 + i_m)
 
-                    out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
-                    i_k = warp.randi(state, 0, clen0)
-                    while i_k < k:
-                        # out += warp.tile_load(B[i_k], TITLE_SIZE)
-                        out += warp.tile_map(where, warp.tile_load(B[i_k], TITLE_SIZE))
-                        i_k += warp.randi(state, 1, clen0)
-                    warp.tile_store(posts[i_m], out * weight0)
-
-            else:
-                def kernel(
-                    weight: warp.array1d(dtype=weight_dtype),
-                    clen: warp.array1d(dtype=clen_dtype),
-                    B: warp.array2d(dtype=B_dtype),
-                    seed: warp.array1d(dtype=seed_dtype),
-                    _: warp.array2d(dtype=weight_dtype),
-                    posts: warp.array2d(dtype=weight_dtype),
-                ):
-                    k = B.shape[0]
-                    weight0 = weight[0]
-                    clen0 = clen[0]
-                    seed0 = seed[0]
-
-                    i_m = warp.tid()
-                    state = warp.rand_init(seed0 + i_m)
-
-                    out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
-                    i_k = warp.randi(state, 0, clen0)
-                    while i_k < k:
-                        out += warp.tile_load(B[i_k], TITLE_SIZE)
-                        i_k += warp.randi(state, 1, clen0)
-                    warp.tile_store(posts[i_m], out * weight0)
+                out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
+                i_k = warp.randi(state, 0, clen0)
+                while i_k < k:
+                    out += warp.tile_load(B[i_k], TITLE_SIZE)
+                    i_k += warp.randi(state, 1, clen0)
+                warp.tile_store(posts[i_m], out * weight0)
 
         else:
-            # JIT Matrix @ B
-            if B_info.dtype == jnp.bool_:
-                def kernel(
-                    weight: warp.array1d(dtype=weight_dtype),
-                    clen: warp.array1d(dtype=clen_dtype),
-                    B: warp.array2d(dtype=B_dtype),
-                    seed: warp.array1d(dtype=seed_dtype),
-                    _: warp.array2d(dtype=weight_dtype),
-                    posts: warp.array2d(dtype=weight_dtype),
-                ):
-                    k = B.shape[0]
-                    weight0 = weight[0]
-                    clen0 = clen[0]
-                    seed0 = seed[0]
+            def kernel(
+                weight: warp.array1d(dtype=weight_dtype),
+                clen: warp.array1d(dtype=clen_dtype),
+                B: warp.array2d(dtype=B_dtype),
+                seed: warp.array1d(dtype=seed_dtype),
+                _: warp.array2d(dtype=weight_dtype),
+                posts: warp.array2d(dtype=weight_dtype),
+            ):
+                k = B.shape[0]
+                weight0 = weight[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
 
-                    i_m = warp.tid()
-                    state = warp.rand_init(seed0 + i_m)
+                i_m = warp.tid()
+                state = warp.rand_init(seed0 + i_m)
 
-                    out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
-                    i_k = warp.randi(state, 0, clen0)
-                    while i_k < k:
-                        # out += warp.tile_load(B[i_k], TITLE_SIZE)
-                        out += warp.tile_map(where, warp.tile_load(B[i_k], TITLE_SIZE))
-                        i_k += warp.randi(state, 1, clen0)
-                    warp.tile_store(posts[i_m], out * weight0)
+                out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
+                i_k = warp.randi(state, 0, clen0)
+                while i_k < k:
+                    out += warp.tile_load(B[i_k], TITLE_SIZE)
+                    i_k += warp.randi(state, 1, clen0)
+                warp.tile_store(posts[i_m], out * weight0)
 
-            else:
-                def kernel(
-                    weight: warp.array1d(dtype=weight_dtype),
-                    clen: warp.array1d(dtype=clen_dtype),
-                    B: warp.array2d(dtype=B_dtype),
-                    seed: warp.array1d(dtype=seed_dtype),
-                    _: warp.array2d(dtype=weight_dtype),
-                    posts: warp.array2d(dtype=weight_dtype),
-                ):
-                    k = B.shape[0]
-                    weight0 = weight[0]
-                    clen0 = clen[0]
-                    seed0 = seed[0]
-
-                    i_m = warp.tid()
-                    state = warp.rand_init(seed0 + i_m)
-
-                    out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
-                    i_k = warp.randi(state, 0, clen0)
-                    while i_k < k:
-                        out += warp.tile_load(B[i_k], TITLE_SIZE)
-                        i_k += warp.randi(state, 1, clen0)
-                    warp.tile_store(posts[i_m], out * weight0)
 
     else:
-        if transpose:
-            # JIT Matrix.T @ B
-            if B_info.dtype == jnp.bool_:
-                def kernel(
-                    weight: warp.array1d(dtype=weight_dtype),
-                    clen: warp.array1d(dtype=clen_dtype),
-                    B: warp.array2d(dtype=B_dtype),
-                    seed: warp.array1d(dtype=seed_dtype),
-                    _: warp.array2d(dtype=weight_dtype),
-                    posts: warp.array2d(dtype=weight_dtype),
-                ):
-                    m = posts.shape[0]
-                    weight0 = weight[0]
-                    clen0 = clen[0]
-                    seed0 = seed[0]
+        # JIT Matrix.T @ B
+        if B_info.dtype == jnp.bool_:
+            def kernel(
+                weight: warp.array1d(dtype=weight_dtype),
+                clen: warp.array1d(dtype=clen_dtype),
+                B: warp.array2d(dtype=B_dtype),
+                seed: warp.array1d(dtype=seed_dtype),
+                _: warp.array2d(dtype=weight_dtype),
+                posts: warp.array2d(dtype=weight_dtype),
+            ):
+                m = posts.shape[0]
+                weight0 = weight[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
 
-                    i_k = warp.tid()
-                    state = warp.rand_init(seed0 + i_k)
+                i_k = warp.tid()
+                state = warp.rand_init(seed0 + i_k)
 
-                    # out = warp.where(warp.tile_load(B[i_k], TITLE_SIZE), weight0, 0.)
-                    # out = warp.tile_load(B[i_k], TITLE_SIZE) * weight0
-                    out = warp.tile_map(where, warp.tile_load(B[i_k], TITLE_SIZE)) * weight0
-                    i_m = warp.randi(state, 0, clen0)
-                    while i_m < m:
-                        warp.tile_atomic_add(posts[i_m], out)
-                        i_m += warp.randi(state, 1, clen0)
-
-            else:
-                def kernel(
-                    weight: warp.array1d(dtype=weight_dtype),
-                    clen: warp.array1d(dtype=clen_dtype),
-                    B: warp.array2d(dtype=B_dtype),
-                    seed: warp.array1d(dtype=seed_dtype),
-                    _: warp.array2d(dtype=weight_dtype),
-                    posts: warp.array2d(dtype=weight_dtype),
-                ):
-                    m = posts.shape[0]
-                    weight0 = weight[0]
-                    clen0 = clen[0]
-                    seed0 = seed[0]
-
-                    i_k = warp.tid()
-                    state = warp.rand_init(seed0 + i_k)
-
-                    out = warp.tile_load(B[i_k], TITLE_SIZE) * weight0
-                    i_m = warp.randi(state, 0, clen0)
-                    while i_m < m:
-                        warp.tile_atomic_add(posts[i_m], out)
-                        i_m += warp.randi(state, 1, clen0)
-
+                # out = warp.where(warp.tile_load(B[i_k], TITLE_SIZE), weight0, 0.)
+                # out = warp.tile_load(B[i_k], TITLE_SIZE) * weight0
+                out = warp.tile_map(where, warp.tile_load(B[i_k], TITLE_SIZE)) * weight0
+                i_m = warp.randi(state, 0, clen0)
+                while i_m < m:
+                    warp.tile_atomic_add(posts[i_m], out)
+                    i_m += warp.randi(state, 1, clen0)
 
         else:
-            # JIT Matrix @ B
-            if B_info.dtype == jnp.bool_:
-                def kernel(
-                    weight: warp.array1d(dtype=weight_dtype),
-                    clen: warp.array1d(dtype=clen_dtype),
-                    B: warp.array2d(dtype=B_dtype),
-                    seed: warp.array1d(dtype=seed_dtype),
-                    _: warp.array2d(dtype=weight_dtype),
-                    posts: warp.array2d(dtype=weight_dtype),
-                ):
-                    m = posts.shape[0]
-                    weight0 = weight[0]
-                    clen0 = clen[0]
-                    seed0 = seed[0]
+            def kernel(
+                weight: warp.array1d(dtype=weight_dtype),
+                clen: warp.array1d(dtype=clen_dtype),
+                B: warp.array2d(dtype=B_dtype),
+                seed: warp.array1d(dtype=seed_dtype),
+                _: warp.array2d(dtype=weight_dtype),
+                posts: warp.array2d(dtype=weight_dtype),
+            ):
+                m = posts.shape[0]
+                weight0 = weight[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
 
-                    i_k = warp.tid()
-                    state = warp.rand_init(seed0 + i_k)
+                i_k = warp.tid()
+                state = warp.rand_init(seed0 + i_k)
 
-                    # out = warp.where(warp.tile_load(B[i_k], TITLE_SIZE), weight0, 0.)
-                    out = warp.tile_map(where, warp.tile_load(B[i_k], TITLE_SIZE)) * weight0
-                    i_m = warp.randi(state, 0, clen0)
-                    while i_m < m:
-                        warp.tile_atomic_add(posts[i_m], out)
-                        i_m += warp.randi(state, 1, clen0)
-
-            else:
-                def kernel(
-                    weight: warp.array1d(dtype=weight_dtype),
-                    clen: warp.array1d(dtype=clen_dtype),
-                    B: warp.array2d(dtype=B_dtype),
-                    seed: warp.array1d(dtype=seed_dtype),
-                    _: warp.array2d(dtype=weight_dtype),
-                    posts: warp.array2d(dtype=weight_dtype),
-                ):
-                    m = posts.shape[0]
-                    weight0 = weight[0]
-                    clen0 = clen[0]
-                    seed0 = seed[0]
-
-                    i_k = warp.tid()
-                    state = warp.rand_init(seed0 + i_k)
-
-                    out = warp.tile_load(B[i_k], TITLE_SIZE) * weight0
-                    i_m = warp.randi(state, 0, clen0)
-                    while i_m < m:
-                        warp.tile_atomic_add(posts[i_m], out)
-                        i_m += warp.randi(state, 1, clen0)
+                out = warp.tile_load(B[i_k], TITLE_SIZE) * weight0
+                i_m = warp.randi(state, 0, clen0)
+                while i_m < m:
+                    warp.tile_atomic_add(posts[i_m], out)
+                    i_m += warp.randi(state, 1, clen0)
 
     tile = (out_info.shape[0] if corder else B_info.shape[0])
     return warp_kernel(kernel, tile=tile, input_output_aliases={4: 0}, block_dim=256)
+
+
+def _jitc_mm_homo_pallas_kernel_generator(
+    B_info: jax.ShapeDtypeStruct,
+    out_info: jax.ShapeDtypeStruct,
+    transpose: bool = False,
+    corder: bool = True,
+    **kwargs
+):
+    block_dim = generate_block_dim(B_info.shape[1], maximum=1024)
+
+    if corder:
+        # JIT Matrix.T @ B
+        # - JIT matrix: [k, m]
+        # - B: [k, n]
+        def kernel(weight_ref, clen_ref, B_ref, seed_ref, _, post_ref):
+            k = B_ref.shape[0]
+            weight = weight_ref[0]
+            clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
+            seed0 = seed_ref[0]  # Base random seed value
+            i_m = pl.program_id(0)
+            i_n_block = pl.program_id(1)
+            i_n_start = block_dim * i_n_block
+            mask = i_n_start + jnp.arange(block_dim) < B_info.shape[1]
+
+            def body(data):
+                i, rng, out = data
+                events = pl.load(B_ref, (i, pl.dslice(i_n_start, block_dim)), mask=mask)
+                if B_ref.dtype == jnp.bool_:
+                    out = jnp.where(events, out + weight, out)
+                else:
+                    out += events * weight
+                i += rng.random_integers(1, clen0)
+                return i, rng, out
+
+            rng = LFSR88RNG(seed0 + i_m)
+            out = jnp.zeros(block_dim, dtype=post_ref.dtype)
+            _, _, out = jax.lax.while_loop(
+                lambda data: data[0] < k,
+                body,
+                (rng.random_integers(0, clen0), rng, out)
+            )
+            pl.store(post_ref, (i_m, pl.dslice(i_n_start, block_dim)), out, mask=mask)
+
+
+    else:
+        # JIT Matrix.T @ B
+        # - JIT matrix: [k, m]
+        # - B: [k, n]
+        def kernel(weight_ref, clen_ref, B_ref, seed_ref, _, post_ref):
+            m = post_ref.shape[0]
+            weight = weight_ref[0]
+            clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
+            seed0 = seed_ref[0]  # Base random seed value
+            i_k = pl.program_id(0)
+            i_n_block = pl.program_id(1)
+            i_n_start = block_dim * i_n_block
+            mask = i_n_start + jnp.arange(block_dim) < B_info.shape[1]
+
+            B_block = pl.load(B_ref, (i_k, pl.dslice(i_n_start, block_dim)), mask=mask)
+            out = jnp.asarray(B_block, dtype=post_ref.dtype) * weight
+
+            def body(data):
+                i, rng = data
+                pl.atomic_add(post_ref, (i, pl.dslice(i_n_start, block_dim)), out, mask=mask)
+                i += rng.random_integers(1, clen0)
+                return i, rng
+
+            rng = LFSR88RNG(seed0 + i_k)
+            jax.lax.while_loop(
+                lambda data: data[0] < m,
+                body,
+                (rng.random_integers(0, clen0), rng)
+            )
+
+    tile = (out_info.shape[0] if corder else B_info.shape[0])
+
+    def final_kernel(weight, clen, B, seed, out):
+        fn = pl.pallas_call(
+            kernel,
+            grid=(tile, pl.cdiv(B_info.shape[1], block_dim)),
+            input_output_aliases={4: 0},
+            out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
+        )
+        return [fn(weight, clen, B, seed, out)]
+
+    return final_kernel
 
 
 def _jitc_mm_homo_jvp_w(
@@ -1247,9 +1304,16 @@ def event_jitc_mm_homo_p_call(
     )
 
 
-event_jitc_mm_homo_p = XLACustomKernel('event_jitc_mm_homo', )
-event_jitc_mm_homo_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mm_homo_cpu_kernel_generator))
-event_jitc_mm_homo_p.def_gpu_kernel(WarpKernelGenerator(_jitc_mm_homo_gpu_kernel_generator))
+event_jitc_mm_homo_p = XLACustomKernel('event_jitc_mm_homo')
+event_jitc_mm_homo_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mm_homo_numba_kernel_generator))
+event_jitc_mm_homo_p.def_gpu_kernel(
+    GPUKernelChoice(
+        default='warp',
+        warp_kernel=WarpKernelGenerator(_jitc_mm_homo_warp_kernel_generator),
+        pallas_kernel=PallasKernelGenerator(_jitc_mm_homo_pallas_kernel_generator),
+    )
+)
+event_jitc_mm_homo_p.def_tpu_kernel(PallasKernelGenerator(_jitc_mm_homo_pallas_kernel_generator))
 event_jitc_mm_homo_p.def_jvp_rule2(_jitc_mm_homo_jvp_w, None, _jitc_mm_homo_jvp_B, None, None)
 event_jitc_mm_homo_p.def_transpose_rule(_jitc_mm_homo_transpose_rules)
 event_jitc_mm_homo_p.def_batching_rule(_jitc_mm_homo_batching)

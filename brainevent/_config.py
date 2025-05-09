@@ -46,7 +46,31 @@ class Config:
         The backend to use for GPU kernel operations.
         Valid values are 'default', 'warp', and 'pallas'.
     """
-    gpu_kernel_backend = 'default'
+
+    def __init__(self):
+        self._gpu_kernel_backend = 'default'
+
+    @property
+    def gpu_kernel_backend(self) -> str:
+        """
+        The backend to use for GPU kernel operations.
+        Returns
+        -------
+        str
+            The current backend.
+        """
+        return self._gpu_kernel_backend
+
+    @gpu_kernel_backend.setter
+    def gpu_kernel_backend(self, value: str) -> None:
+        """
+        Set the backend to use for GPU kernel operations.
+        Parameters
+        ----------
+        value : str
+            The backend to set. Must be one of 'default', 'warp', or 'pallas'.
+        """
+        self.set_gpu_backend(backend=value)
 
     def set_gpu_backend(self, backend: str) -> None:
         """
@@ -61,7 +85,7 @@ class Config:
             raise ValueError(
                 f'Invalid backend: {backend}, must be one of {["default", "warp", "pallas"]}'
             )
-        self.gpu_kernel_backend = backend
+        self._gpu_kernel_backend = backend
 
     def get_gpu_backend(self) -> str:
         """

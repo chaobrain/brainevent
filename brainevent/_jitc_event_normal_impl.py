@@ -22,11 +22,15 @@ import numpy as np
 from jax import numpy as jnp
 from jax.interpreters import ad
 
+from ._compatible_import import pallas as pl
 from ._jitc_float_normal_impl import float_jitc_mv_normal_p_call, float_jitc_mm_normal_p_call
 from ._jitc_util import _initialize_seed, _initialize_conn_length
+from ._misc import generate_block_dim
+from ._pallas_random import LFSR88RNG
 from ._typing import Data, MatrixShape
-from ._xla_custom_op import XLACustomKernel
+from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
+from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator, warp_kernel
 
@@ -96,7 +100,7 @@ def event_jitc_normal_matmat(
     return u.maybe_decimal(res * unitd * unitB)
 
 
-def _jitc_mv_normal_cpu_kernel_generator(
+def _jitc_mv_normal_numba_kernel_generator(
     transpose: bool,
     corder: bool,
     vector_info: jax.ShapeDtypeStruct,
@@ -313,7 +317,7 @@ def _jitc_mv_normal_cpu_kernel_generator(
     return kernel
 
 
-def _jitc_mv_normal_gpu_kernel_generator(
+def _jitc_mv_normal_warp_kernel_generator(
     w_loc_info: jax.ShapeDtypeStruct,
     w_scale_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
@@ -336,8 +340,7 @@ def _jitc_mv_normal_gpu_kernel_generator(
     seed_dtype = dtype_to_warp_type(seed_info.dtype)
 
     if corder:
-
-        if transpose:
+        if vector_info.dtype == jnp.bool_:
             def kernel(
                 w_loc: warp.array1d(dtype=w_loc_dtype),
                 w_scale: warp.array1d(dtype=w_scale_dtype),
@@ -372,7 +375,8 @@ def _jitc_mv_normal_gpu_kernel_generator(
                 # Process all connected entries for this output element
                 while i_row < num_row:
                     # Add contribution from the current connected element
-                    r += vector[i_row] * (warp.randn(state) * w_scale0 + w_loc0)
+                    w = (warp.randn(state) * w_scale0 + w_loc0)
+                    r = warp.where(vector[i_row], r + w, r)
 
                     # Skip ahead to next connected row using geometric-like distribution
                     # This creates sparse connectivity with ~1/clen0 connection probability
@@ -426,7 +430,7 @@ def _jitc_mv_normal_gpu_kernel_generator(
                 posts[i_row] = r
     else:
 
-        if transpose:
+        if vector_info.dtype == jnp.bool_:
             def kernel(
                 w_loc: warp.array1d(dtype=w_loc_dtype),
                 w_scale: warp.array1d(dtype=w_scale_dtype),
@@ -451,23 +455,24 @@ def _jitc_mv_normal_gpu_kernel_generator(
                 # This avoids multiplying inside the inner loop for each connection
                 v = vector[i_row]
 
-                # Initialize random state with base seed plus thread ID to ensure
-                # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0 + i_row)
+                if v:
+                    # Initialize random state with base seed plus thread ID to ensure
+                    # different but reproducible random sequences across threads
+                    state = warp.rand_init(seed0 + i_row)
 
-                # Sample the first connected column using random skipping
-                # Start at a random position in [0, clen0) for variability in connection patterns
-                i_col = warp.randi(state, 0, clen0)
+                    # Sample the first connected column using random skipping
+                    # Start at a random position in [0, clen0) for variability in connection patterns
+                    i_col = warp.randi(state, 0, clen0)
 
-                # Process all connected output positions for this input element
-                while i_col < num_col:
-                    # Atomically add contribution to the appropriate output element
-                    # Using atomic operation because multiple threads may update the same output element
-                    posts[i_col] += v * (warp.randn(state) * w_scale0 + w_loc0)
+                    # Process all connected output positions for this input element
+                    while i_col < num_col:
+                        # Atomically add contribution to the appropriate output element
+                        # Using atomic operation because multiple threads may update the same output element
+                        posts[i_col] += (warp.randn(state) * w_scale0 + w_loc0)
 
-                    # Skip ahead to next connected column using geometric-like distribution
-                    # This creates sparse connectivity with ~1/clen0 connection probability
-                    i_col += warp.randi(state, 1, clen0)
+                        # Skip ahead to next connected column using geometric-like distribution
+                        # This creates sparse connectivity with ~1/clen0 connection probability
+                        i_col += warp.randi(state, 1, clen0)
 
 
         else:
@@ -496,26 +501,101 @@ def _jitc_mv_normal_gpu_kernel_generator(
                 # This avoids multiplying inside the inner loop for each connection
                 v = vector[i_col]
 
-                # Initialize random state with base seed plus thread ID to ensure
-                # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0 + i_col)
+                if v != 0.:
+                    # Initialize random state with base seed plus thread ID to ensure
+                    # different but reproducible random sequences across threads
+                    state = warp.rand_init(seed0 + i_col)
 
-                # Sample the first connected row using random skipping
-                # Start at a random position in [0, clen0) for variability in connection patterns
-                i_row = warp.randi(state, 0, clen0)
+                    # Sample the first connected row using random skipping
+                    # Start at a random position in [0, clen0) for variability in connection patterns
+                    i_row = warp.randi(state, 0, clen0)
 
-                # Process all connected output positions for this input element
-                while i_row < num_row:
-                    # Atomically add contribution to the appropriate output element
-                    # Using atomic operation because multiple threads may update the same output element
-                    posts[i_row] += v * (warp.randn(state) * w_scale0 + w_loc0)
+                    # Process all connected output positions for this input element
+                    while i_row < num_row:
+                        # Atomically add contribution to the appropriate output element
+                        # Using atomic operation because multiple threads may update the same output element
+                        posts[i_row] += (warp.randn(state) * w_scale0 + w_loc0)
 
-                    # Skip ahead to next connected row using geometric-like distribution
-                    # This creates sparse connectivity with ~1/clen0 connection probability
-                    i_row += warp.randi(state, 1, clen0)
+                        # Skip ahead to next connected row using geometric-like distribution
+                        # This creates sparse connectivity with ~1/clen0 connection probability
+                        i_row += warp.randi(state, 1, clen0)
 
     dim = (out_info.shape[0] if corder else vector_info.shape[0])
     return warp_kernel(kernel, dim=dim, input_output_aliases={5: 0})
+
+
+def _jitc_mv_normal_pallas_kernel_generator(
+    vector_info: jax.ShapeDtypeStruct,
+    out_info: jax.ShapeDtypeStruct,
+    transpose: bool = False,
+    corder: bool = True,
+    **kwargs
+):
+    if corder:
+        def kernel(w_loc_ref, w_scale_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
+            num_row = vector_ref.shape[0]
+            w_loc0 = w_loc_ref[0]
+            w_scale0 = w_scale_ref[0]
+            clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
+            seed0 = seed_ref[0]  # Base random seed value
+            i_col = pl.program_id(0)
+
+            def body(data):
+                i, rng, res = data
+                w = rng.normal(w_loc0, w_scale0)
+                if vector_ref.dtype == jnp.bool_:
+                    res = jnp.where(vector_ref[i], res + w, res)
+                else:
+                    res = jnp.where(vector_ref[i] != 0., res + w, res)
+                i += rng.random_integers(1, clen0)
+                return i, rng, res
+
+            rng = LFSR88RNG(seed0 + i_col)
+            _, _, r = jax.lax.while_loop(
+                lambda data: data[0] < num_row,
+                body,
+                (rng.random_integers(0, clen0), rng, 0.0)
+            )
+            post_ref[i_col] = r
+
+
+    else:
+        def kernel(w_loc_ref, w_scale_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
+            num_col = post_ref.shape[0]
+            w_loc0 = w_loc_ref[0]
+            w_scale0 = w_scale_ref[0]
+            clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
+            seed0 = seed_ref[0]  # Base random seed value
+            i_row = pl.program_id(0)
+            v = vector_ref[i_row]
+
+            @pl.when(v if vector_ref.dtype == jnp.bool_ else v != 0.)
+            def run():
+                def body(data):
+                    i, rng = data
+                    pl.atomic_add(post_ref, i, v * rng.normal(w_loc0, w_scale0))
+                    i += rng.random_integers(1, clen0)
+                    return i, rng
+
+                rng = LFSR88RNG(seed0 + i_row)
+                jax.lax.while_loop(
+                    lambda data: data[0] < num_col,
+                    body,
+                    (rng.random_integers(0, clen0), rng)
+                )
+
+    dim = (out_info.shape[0] if corder else vector_info.shape[0])
+
+    def final_kernel(w_loc, w_scale, clen, vector, seed, out):
+        fn = pl.pallas_call(
+            kernel,
+            out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
+            grid=(dim,),
+            input_output_aliases={5: 0},
+        )
+        return [fn(w_loc, w_scale, clen, vector, seed, out)]
+
+    return final_kernel
 
 
 def _jitc_mv_normal_jvp_v(
@@ -635,11 +715,7 @@ def _jitc_mv_normal_transpose_rules(
         )
 
 
-def _jitc_mv_normal_batching(
-    args,
-    axes,
-    **kwargs
-):
+def _jitc_mv_normal_batching(args, axes, **kwargs):
     if tuple(axes) == (None, None, None, 0, None, None):
         assert args[3].ndim == 2, 'Batching axis 0 requires 2D input.'
         r = event_jitc_mm_normal_p_call(
@@ -729,8 +805,15 @@ def event_jitc_mv_normal_p_call(
 
 
 event_jitc_mv_normal_p = XLACustomKernel('event_jitc_mv_normal')
-event_jitc_mv_normal_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mv_normal_cpu_kernel_generator))
-event_jitc_mv_normal_p.def_gpu_kernel(WarpKernelGenerator(_jitc_mv_normal_gpu_kernel_generator))
+event_jitc_mv_normal_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mv_normal_numba_kernel_generator))
+event_jitc_mv_normal_p.def_gpu_kernel(
+    GPUKernelChoice(
+        default='warp',
+        warp_kernel=WarpKernelGenerator(_jitc_mv_normal_warp_kernel_generator),
+        pallas_kernel=PallasKernelGenerator(_jitc_mv_normal_pallas_kernel_generator),
+    )
+)
+event_jitc_mv_normal_p.def_tpu_kernel(PallasKernelGenerator(_jitc_mv_normal_pallas_kernel_generator))
 event_jitc_mv_normal_p.def_jvp_rule2(
     _jitc_mv_normal_jvp_wloc,
     _jitc_mv_normal_jvp_wscale,
@@ -743,7 +826,7 @@ event_jitc_mv_normal_p.def_transpose_rule(_jitc_mv_normal_transpose_rules)
 event_jitc_mv_normal_p.def_batching_rule(_jitc_mv_normal_batching)
 
 
-def _jitc_mm_normal_cpu_kernel_generator(
+def _jitc_mm_normal_numba_kernel_generator(
     transpose: bool,
     corder: bool,
     B_info: jax.ShapeDtypeStruct,
@@ -946,7 +1029,7 @@ def _jitc_mm_normal_cpu_kernel_generator(
     return numba_kernel(kernel, parallel=False, input_output_aliases={5: 0})
 
 
-def _jitc_mm_normal_gpu_kernel_generator(
+def _jitc_mm_normal_warp_kernel_generator(
     w_loc_info: jax.ShapeDtypeStruct,
     w_scale_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
@@ -967,7 +1050,9 @@ def _jitc_mm_normal_gpu_kernel_generator(
     seed_dtype = dtype_to_warp_type(seed_info.dtype)
 
     if corder:
-        if transpose:
+        if B_info.dtype == jnp.bool_:
+            raise NotImplementedError
+
             # JIT Matrix.T @ B
             def kernel(
                 w_loc: warp.array1d(dtype=w_loc_dtype),
@@ -1024,7 +1109,9 @@ def _jitc_mm_normal_gpu_kernel_generator(
                 warp.tile_store(posts[i_m], out)
 
     else:
-        if transpose:
+        if B_info.dtype == jnp.bool_:
+            raise NotImplementedError
+
             # JIT Matrix.T @ B
             def kernel(
                 w_loc: warp.array1d(dtype=w_loc_dtype),
@@ -1082,6 +1169,96 @@ def _jitc_mm_normal_gpu_kernel_generator(
     tile = (out_info.shape[0] if corder else B_info.shape[0])
     kernel = warp_kernel(kernel, tile=tile, block_dim=256, input_output_aliases={5: 0})
     return kernel
+
+
+def _jitc_mm_normal_pallas_kernel_generator(
+    B_info: jax.ShapeDtypeStruct,
+    out_info: jax.ShapeDtypeStruct,
+    transpose: bool = False,
+    corder: bool = True,
+    **kwargs
+):
+    block_dim = generate_block_dim(B_info.shape[1], maximum=1024)
+
+    if corder:
+        # JIT Matrix.T @ B
+        # - JIT matrix: [k, m]
+        # - B: [k, n]
+        def kernel(w_loc_ref, w_scale_ref, clen_ref, B_ref, seed_ref, _, post_ref):
+            k = B_ref.shape[0]
+            w_loc0 = w_loc_ref[0]
+            w_scale0 = w_scale_ref[0]
+            clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
+            seed0 = seed_ref[0]  # Base random seed value
+            i_m = pl.program_id(0)
+            i_n_block = pl.program_id(1)
+            i_n_start = block_dim * i_n_block
+            mask = i_n_start + jnp.arange(block_dim) < B_info.shape[1]
+
+            def body(data):
+                i, rng, out = data
+                w = rng.normal(w_loc0, w_scale0)
+                events = pl.load(B_ref, (i, pl.dslice(i_n_start, block_dim)), mask=mask)
+                if events.dtype == jnp.bool_:
+                    events = jnp.asarray(events, dtype=out.dtype)
+                out += events * w
+                i += rng.random_integers(1, clen0)
+                return i, rng, out
+
+            rng = LFSR88RNG(seed0 + i_m)
+            out = jnp.zeros(block_dim, dtype=post_ref.dtype)
+            _, _, out = jax.lax.while_loop(
+                lambda data: data[0] < k,
+                body,
+                (rng.random_integers(0, clen0), rng, out)
+            )
+            pl.store(post_ref, (i_m, pl.dslice(i_n_start, block_dim)), out, mask=mask)
+
+
+    else:
+        # JIT Matrix.T @ B
+        # - JIT matrix: [k, m]
+        # - B: [k, n]
+        def kernel(w_loc_ref, w_scale_ref, clen_ref, B_ref, seed_ref, _, post_ref):
+            m = post_ref.shape[0]
+            w_loc0 = w_loc_ref[0]
+            w_scale0 = w_scale_ref[0]
+            clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
+            seed0 = seed_ref[0]  # Base random seed value
+            i_k = pl.program_id(0)
+            i_n_block = pl.program_id(1)
+            i_n_start = block_dim * i_n_block
+            mask = i_n_start + jnp.arange(block_dim) < B_info.shape[1]
+
+            B_block = pl.load(B_ref, (i_k, pl.dslice(i_n_start, block_dim)), mask=mask)
+            B_block = jnp.asarray(B_block, dtype=post_ref.dtype)
+
+            def body(data):
+                i, rng = data
+                w = rng.normal(w_loc0, w_scale0)
+                pl.atomic_add(post_ref, (i, pl.dslice(i_n_start, block_dim)), B_block * w, mask=mask)
+                i += rng.random_integers(1, clen0)
+                return i, rng
+
+            rng = LFSR88RNG(seed0 + i_k)
+            jax.lax.while_loop(
+                lambda data: data[0] < m,
+                body,
+                (rng.random_integers(0, clen0), rng)
+            )
+
+    tile = (out_info.shape[0] if corder else B_info.shape[0])
+
+    def final_kernel(w_loc, w_scale, clen, B, seed, out):
+        fn = pl.pallas_call(
+            kernel,
+            grid=(tile, pl.cdiv(B_info.shape[1], block_dim)),
+            input_output_aliases={5: 0},
+            out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
+        )
+        return [fn(w_loc, w_scale, clen, B, seed, out)]
+
+    return final_kernel
 
 
 def _jitc_mm_normal_jvp_wloc(
@@ -1242,12 +1419,7 @@ def _jitc_mm_normal_batching(
         return _batching_axis0(args, axes, **kwargs)
 
     else:
-        return general_batching_rule(
-            event_jitc_mm_normal_p,
-            args,
-            axes,
-            **kwargs,
-        )
+        return general_batching_rule(event_jitc_mm_normal_p, args, axes, **kwargs)
 
 
 def event_jitc_mm_normal_p_call(
@@ -1308,8 +1480,15 @@ def event_jitc_mm_normal_p_call(
 
 
 event_jitc_mm_normal_p = XLACustomKernel('event_jitc_mm_normal')
-event_jitc_mm_normal_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mm_normal_cpu_kernel_generator))
-event_jitc_mm_normal_p.def_gpu_kernel(WarpKernelGenerator(_jitc_mm_normal_gpu_kernel_generator))
+event_jitc_mm_normal_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mm_normal_numba_kernel_generator))
+event_jitc_mm_normal_p.def_gpu_kernel(
+    GPUKernelChoice(
+        default='warp',
+        warp_kernel=WarpKernelGenerator(_jitc_mm_normal_warp_kernel_generator),
+        pallas_kernel=PallasKernelGenerator(_jitc_mm_normal_pallas_kernel_generator),
+    )
+)
+event_jitc_mm_normal_p.def_tpu_kernel(PallasKernelGenerator(_jitc_mm_normal_pallas_kernel_generator))
 event_jitc_mm_normal_p.def_jvp_rule2(
     _jitc_mm_normal_jvp_wloc,
     _jitc_mm_normal_jvp_wscale,

@@ -27,7 +27,7 @@ import brainevent
 numba_installed = importlib.util.find_spec('numba') is not None
 
 if numba_installed:
-    import numba
+    pass
 
 
 @pytest.mark.skipif(not numba_installed, reason="Numba not installed")
