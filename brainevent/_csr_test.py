@@ -28,6 +28,7 @@ import pytest
 
 import brainevent
 import brainstate
+
 brainevent.config.gpu_kernel_backend = 'warp'
 
 

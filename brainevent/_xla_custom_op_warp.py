@@ -31,6 +31,7 @@ from ._compatible_import import Primitive, register_custom_call, custom_call
 __all__ = [
     'WarpKernelGenerator',
     'dtype_to_warp_type',
+    'jaxinfo_to_warpinfo',
     'warp_kernel',
 ]
 
@@ -291,6 +292,41 @@ def dtype_to_warp_type(dtype):
         return warp.bool
     else:
         raise ValueError(f"Unsupported dtype: {dtype}")
+
+
+def jaxinfo_to_warpinfo(jax_info: jax.ShapeDtypeStruct):
+    """
+    Convert JAX shape and dtype information to a compatible Warp array type.
+
+    This function takes a JAX ShapeDtypeStruct object and creates an appropriate
+    Warp array type with the corresponding data type and dimensionality.
+    This is useful when interfacing between JAX and Warp, allowing JAX arrays
+    to be processed by Warp kernels.
+
+    Parameters
+    ----------
+    jax_info : jax.ShapeDtypeStruct
+        A JAX structure containing shape and dtype information for an array.
+
+    Returns
+    -------
+    warp.types.array
+        A Warp array type with matching data type and dimensionality that can be
+        used in Warp kernel definitions.
+
+    Examples
+    --------
+    >>> array_info = jax.ShapeDtypeStruct(shape=(32, 32), dtype=np.float32)
+    >>> warp_info = jaxinfo_to_warpinfo(array_info)
+    >>> # Use warp_info in kernel definition
+
+    See Also
+    --------
+    dtype_to_warp_type : Function to convert numpy/JAX dtypes to Warp types.
+    """
+    dtype = dtype_to_warp_type(jax_info.dtype)
+    shape = jax_info.shape
+    return warp.array(dtype=dtype, ndim=len(shape))
 
 
 def _shape_to_layout(shape):
