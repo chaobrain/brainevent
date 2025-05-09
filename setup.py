@@ -65,7 +65,7 @@ setup(
     author_email='chao.brain@qq.com',
     packages=packages,
     python_requires='>=3.10',
-    install_requires=['numpy>=1.15', 'brainunit>=0.0.8', 'jax', 'absl-py'],
+    install_requires=['numpy>=1.15', 'brainunit>=0.0.8', 'absl-py'],
     url='https://github.com/chaobrain/brainevent',
     project_urls={
         "Bug Tracker": "https://github.com/chaobrain/brainevent/issues",
@@ -73,9 +73,9 @@ setup(
         "Source Code": "https://github.com/chaobrain/brainevent",
     },
     extras_require={
-        'cpu': ['jax', 'absl-py'],
-        'cuda12': ['jax[cuda12]', 'absl-py'],
-        'tpu': ['jax[tpu]', 'absl-py'],
+        'cpu': ['jax', 'numba'],
+        'cuda12': ['jax[cuda12]', 'warp-lang'],
+        'tpu': ['jax[tpu]'],
     },
     keywords=(
         'computational neuroscience, '

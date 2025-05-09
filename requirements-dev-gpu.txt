@@ -4,4 +4,3 @@ brainstate
 
 # test requirements
 pytest
-absl-py

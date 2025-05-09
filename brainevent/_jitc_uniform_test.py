@@ -53,7 +53,7 @@ class Test_JITC_RC_Conversion:
 
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matvec(self, shape: MatrixShape, corder):
+    def test_jitvec(self, shape: MatrixShape, corder):
         jitcr = brainevent.JITCUniformR((-0.1, 0.1, 0.1, 123), shape=shape, corder=corder)
         jitcc = jitcr.T
 
@@ -65,7 +65,7 @@ class Test_JITC_RC_Conversion:
 
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_vecmat(self, shape: MatrixShape, corder):
+    def test_vecjit(self, shape: MatrixShape, corder):
         jitcr = brainevent.JITCUniformR((-0.1, 0.1, 0.1, 123), shape=shape, corder=corder)
         jitcc = jitcr.T
 
@@ -99,12 +99,11 @@ class Test_JITC_RC_Conversion:
 
         out1 = matrix @ jitcr
         out2 = (jitcc @ matrix.T).T
-        print(out1 - out2)
         assert jnp.allclose(out1, out2, atol=1e-4, rtol=1e-4)
 
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matvec_event(self, shape: MatrixShape, corder):
+    def test_jitvec_event(self, shape: MatrixShape, corder):
         jitcr = brainevent.JITCUniformR((-0.1, 0.1, 0.1, 123), shape=shape, corder=corder)
         jitcc = jitcr.T
 
@@ -116,7 +115,7 @@ class Test_JITC_RC_Conversion:
 
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_vecmat_event(self, shape: MatrixShape, corder):
+    def test_vecjit_event(self, shape: MatrixShape, corder):
         jitcr = brainevent.JITCUniformR((-0.1, 0.1, 0.1, 123), shape=shape, corder=corder)
         jitcc = jitcr.T
 
@@ -129,11 +128,12 @@ class Test_JITC_RC_Conversion:
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_jitmat_event(self, k, shape: MatrixShape, corder):
+    @pytest.mark.parametrize('asbool', [True, False])
+    def test_jitmat_event(self, k, shape: MatrixShape, corder, asbool):
         jitcr = brainevent.JITCUniformR((-0.1, 0.1, 0.1, 123), shape=shape, corder=corder)
         jitcc = jitcr.T
 
-        matrix = gen_events([shape[1], k])
+        matrix = gen_events([shape[1], k], asbool=asbool)
 
         out1 = jitcr @ matrix
         out2 = (matrix.T @ jitcc).T
@@ -142,13 +142,13 @@ class Test_JITC_RC_Conversion:
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
-    def test_matjit_event(self, k, shape: MatrixShape, corder):
+    @pytest.mark.parametrize('asbool', [True, False])
+    def test_matjit_event(self, k, shape: MatrixShape, corder, asbool):
         jitcr = brainevent.JITCUniformR((-0.1, 0.1, 0.1, 123), shape=shape, corder=corder)
         jitcc = jitcr.T
 
-        matrix = gen_events([k, shape[0]])
+        matrix = gen_events([k, shape[0]], asbool=asbool)
 
         out1 = matrix @ jitcr
         out2 = (jitcc @ matrix.T).T
-        print(out1 - out2)
         assert jnp.allclose(out1, out2, atol=1e-4, rtol=1e-4)

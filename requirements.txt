@@ -3,3 +3,4 @@ jax
 jaxlib
 brainunit>=0.0.4
 brainstate
+absl-py
