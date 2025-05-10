@@ -477,6 +477,9 @@ def _jitc_uniform_matrix_pallas_kernel_generator(
     tiled = True
 
     if tiled:
+        # The maximum block size is set to 128 as a trade-off between memory usage and parallelism.
+        # This value is optimized for typical GPU architectures, where 128 threads per block
+        # often provide good performance. Adjusting this value may impact performance.
         block_size = generate_block_dim(dim, maximum=128)
         if corder:
             def _raw_kernel(
