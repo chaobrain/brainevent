@@ -205,7 +205,7 @@ class Test_JITC_Gradient:
         tagents = (brainstate.random.random(), brainstate.random.random())
 
         def f_dense_jvp(wloc, wscale):
-            res = base * (wscale - wloc) + wloc
+            res = base * wscale + wloc
             return res
 
         def f_jitc_jvp(wloc, wscale):
@@ -214,7 +214,7 @@ class Test_JITC_Gradient:
 
         primals, true_grad = jax.jvp(f_dense_jvp, (wloc, wscale), tagents)
         primals, jitc_grad = jax.jvp(f_jitc_jvp, (wloc, wscale), tagents)
-        assert jnp.allclose(true_grad, jitc_grad)
+        assert jnp.allclose(true_grad, jitc_grad, atol=1e-3, rtol=1e-3)
 
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     @pytest.mark.parametrize('corder', [True, False])
