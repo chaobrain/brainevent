@@ -149,13 +149,13 @@ def generate_block_dim(
         An integer representing the calculated block dimension. Returns 32, 64,
         128, or 256 based on `n_conn`, defaulting to 128 if `n_conn` exceeds 256.
     """
-    if n_conn <= 32 and maximum >= 32:
+    if n_conn <= 32 <= maximum:
         block_size = 32
-    elif n_conn <= 64 and maximum >= 64:
+    elif n_conn <= 64 <= maximum:
         block_size = 64
-    elif n_conn <= 128 and maximum >= 128:
+    elif n_conn <= 128 <= maximum:
         block_size = 128
-    elif n_conn <= 256 and maximum >= 256:
+    elif n_conn <= 256 <= maximum:
         block_size = 256
     else:
         # Default or fallback block size for larger numbers of connections
