@@ -744,6 +744,32 @@ def _jitc_homo_matrix_pallas_kernel_generator(
     return kernel
 
 
+def _jitc_homo_matrix_jvp_weight(
+    weight_dot, weight, clen, seed, _, *,
+    shape: Sequence[int], transpose: bool, corder: bool, **kwargs
+):
+    return float_jitc_homo_matrix_p_call(weight_dot, clen, seed, shape=shape, transpose=transpose, corder=corder)
+
+
+def _jitc_homo_matrix_transpose(
+    ct, weight, clen, seed, _, *, shape: Sequence[int], transpose: bool, corder: bool, **kwargs
+):
+    assert not ad.is_undefined_primal(clen)
+    assert not ad.is_undefined_primal(seed)
+    ct = ct[0]
+    if ad.is_undefined_primal(weight):
+        forward = float_jitc_homo_matrix_p_call(
+            1., clen, seed, shape=shape, transpose=transpose, corder=corder
+        )[0]
+        dw = jnp.expand_dims((ct * forward).sum(), axis=0)
+        return (dw, clen, seed, _)
+
+    else:
+        raise NotImplementedError(
+            'JITC matrix transpose is only implemented for the weight arguments.'
+        )
+
+
 def _jitc_homo_matrix_batching(args, axes, **kwargs):
     if tuple(axes)[1:] == (None, None, None):
         # vmap on weight data
@@ -808,6 +834,8 @@ float_jitc_homo_matrix_p.def_gpu_kernel(
     )
 )
 float_jitc_homo_matrix_p.def_tpu_kernel(PallasKernelGenerator(_jitc_homo_matrix_pallas_kernel_generator))
+float_jitc_homo_matrix_p.def_jvp_rule2(_jitc_homo_matrix_jvp_weight, None, None)
+float_jitc_homo_matrix_p.def_transpose_rule(_jitc_homo_matrix_transpose)
 float_jitc_homo_matrix_p.def_batching_rule(_jitc_homo_matrix_batching)
 
 
@@ -2063,7 +2091,7 @@ def _jitc_mm_homo_transpose_rules(
             transpose=not transpose,
             corder=not corder
         )[0]
-        dw = jnp.sum(r * B, keepdims=True)
+        dw = jnp.expand_dims(jnp.sum(r * B), axis=0)
         return dw, clen, B, seed, _
 
     else:

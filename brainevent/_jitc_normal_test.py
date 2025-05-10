@@ -21,6 +21,7 @@ os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 import jax.numpy as jnp
 import numpy as np
 import pytest
+import jax
 
 import brainevent
 import brainstate
@@ -158,3 +159,105 @@ class Test_JITC_RC_Conversion:
         out2 = (jitcc @ matrix.T).T
         print(out1 - out2)
         assert jnp.allclose(out1, out2, atol=1e-4, rtol=1e-4)
+
+
+class Test_JITC_Gradient:
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    @pytest.mark.parametrize('wloc', [-1., 0.])
+    @pytest.mark.parametrize('wscale', [1., 2.])
+    def test_vjp(self, shape, corder, wloc, wscale):
+        base = brainevent.JITCNormalR((0.0, 1.0, 0.1, 123), shape=shape, corder=corder).todense()
+
+        def f_dense_vjp(wloc, wscale):
+            res = base * wscale + wloc
+            return res
+
+        ct = brainstate.random.random(shape)
+        primals, f_vjp = jax.vjp(f_dense_vjp, wloc, wscale)
+        true_wloc_grad, true_wscale_grad = f_vjp(ct)
+
+        expected_wloc_grad = ct.sum()
+        expected_wscale_grad = (ct * base).sum()
+
+        assert jnp.allclose(true_wloc_grad, expected_wloc_grad)
+        assert jnp.allclose(true_wscale_grad, expected_wscale_grad)
+
+        print(true_wloc_grad, true_wscale_grad)
+        print(expected_wloc_grad, expected_wscale_grad)
+
+        def f_jitc_vjp(wloc, wscale):
+            mat = brainevent.JITCNormalR((wloc, wscale, 0.1, 123), shape=shape, corder=corder)
+            return mat.todense()
+
+        primals, f_vjp2 = jax.vjp(f_jitc_vjp, wloc, wscale)
+        jitc_wloc_grad, jitc_wscale_grad = f_vjp2(ct)
+
+        assert jnp.allclose(true_wloc_grad, jitc_wloc_grad)
+        assert jnp.allclose(true_wscale_grad, jitc_wscale_grad)
+
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    @pytest.mark.parametrize('wloc', [-1., 0.])
+    @pytest.mark.parametrize('wscale', [1., 2.])
+    def test_jvp(self, shape, corder, wloc, wscale):
+        base = brainevent.JITCNormalR((0.0, 1.0, 0.1, 123), shape=shape, corder=corder).todense()
+        tagents = (brainstate.random.random(), brainstate.random.random())
+
+        def f_dense_jvp(wloc, wscale):
+            res = base * wscale + wloc
+            return res
+
+        def f_jitc_jvp(wloc, wscale):
+            mat = brainevent.JITCNormalR((wloc, wscale, 0.1, 123), shape=shape, corder=corder)
+            return mat.todense()
+
+        primals, true_grad = jax.jvp(f_dense_jvp, (wloc, wscale), tagents)
+        primals, jitc_grad = jax.jvp(f_jitc_jvp, (wloc, wscale), tagents)
+        assert jnp.allclose(true_grad, jitc_grad, atol=1e-3, rtol=1e-3)
+
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    @pytest.mark.parametrize('wloc', [-1., 0.])
+    @pytest.mark.parametrize('wscale', [1., 2.])
+    @pytest.mark.parametrize('dwloc', [1., 2.])
+    def test_jvp_wloc(self, shape, corder, wloc, wscale, dwloc):
+        base = brainevent.JITCNormalR((0.0, 1.0, 0.1, 123), shape=shape, corder=corder).todense()
+
+        def f_dense_jvp(wloc):
+            res = base * wscale + wloc
+            return res
+
+        primals, true_grad = jax.jvp(f_dense_jvp, (wloc,), (dwloc,))
+        expected_grad = jnp.ones_like(primals) * dwloc
+        assert jnp.allclose(true_grad, expected_grad)
+
+        def f_jitc_jvp(wloc):
+            mat = brainevent.JITCNormalR((wloc, wscale, 0.1, 123), shape=shape, corder=corder)
+            return mat.todense()
+
+        primals, jitc_grad = jax.jvp(f_jitc_jvp, (wloc,), (dwloc,))
+        assert jnp.allclose(true_grad, jitc_grad)
+
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    @pytest.mark.parametrize('wloc', [-1., 0.])
+    @pytest.mark.parametrize('wscale', [1., 2.])
+    @pytest.mark.parametrize('dw_high', [1., 2.])
+    def test_jvp_wscale(self, shape, corder, wloc, wscale, dw_high):
+        base = brainevent.JITCNormalR((0.0, 1.0, 0.1, 123), shape=shape, corder=corder).todense()
+
+        def f_dense_jvp(wscale):
+            res = base * wscale + wloc
+            return res
+
+        primals, true_grad = jax.jvp(f_dense_jvp, (wscale,), (dw_high,))
+        expected_grad = base * dw_high
+        assert jnp.allclose(true_grad, expected_grad)
+
+        def f_jitc_jvp(wscale):
+            mat = brainevent.JITCNormalR((wloc, wscale, 0.1, 123), shape=shape, corder=corder)
+            return mat.todense()
+
+        primals, jitc_grad = jax.jvp(f_jitc_jvp, (wscale,), (dw_high,))
+        assert jnp.allclose(true_grad, jitc_grad)
