@@ -473,13 +473,88 @@ def _jitc_uniform_matrix_pallas_kernel_generator(
     corder: bool = True,
     **kwargs
 ):
-    if corder:
-        if transpose:
-            # JIT matrix.T
-            #
-            # - JIT matrix shape = [m, n]
-            #
+    dim = out_info.shape[0] if corder else out_info.shape[1]
+    tiled = True
 
+    if tiled:
+        block_size = generate_block_dim(dim, maximum=128)
+        if corder:
+            def _raw_kernel(
+                w_low_ref,  # [1]
+                w_high_ref,  # [1]
+                clen_ref,  # [1]
+                seed_ref,  # [1]
+                _,  # [m, n]
+                post_ref,  # [m, n]
+            ):
+                m = post_ref.shape[1]
+                w_low = w_low_ref[0]
+                w_high = w_high_ref[0]
+                clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
+                seed0 = seed_ref[0]  # Base random seed value
+                i_row_block = pl.program_id(0)
+                i_rows = i_row_block * block_size + jnp.arange(block_size)
+                i_row_mask = i_rows < dim
+
+                def body(data):
+                    i_cols, i_col_mask, rng = data
+                    pl.store(post_ref, (i_rows, i_cols), rng.uniform(w_low, w_high), mask=i_row_mask & i_col_mask)
+                    i_cols += rng.random_integers(1, clen0)
+                    return i_cols, i_cols < m, rng
+
+                rng = LFSR88RNG(seed0 + i_rows)
+                i_cols = rng.random_integers(0, clen0)
+                i_col_mask = i_cols < m
+                jax.lax.while_loop(
+                    lambda data: jnp.sum(data[1]) > 0,
+                    body,
+                    (i_cols, i_col_mask, rng)
+                )
+
+        else:
+            def _raw_kernel(
+                w_low_ref,  # [1]
+                w_high_ref,  # [1]
+                clen_ref,  # [1]
+                seed_ref,  # [1]
+                _,  # [m, n]
+                post_ref,  # [m, n]
+            ):
+                n = post_ref.shape[0]
+                w_low = w_low_ref[0]
+                w_high = w_high_ref[0]
+                clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
+                seed0 = seed_ref[0]  # Base random seed value
+                i_col_block = pl.program_id(0)
+                i_cols = i_col_block * block_size + jnp.arange(block_size)
+                i_col_mask = i_cols < dim
+
+                def body(data):
+                    i_rows, i_row_mask, rng = data
+                    pl.store(post_ref, (i_rows, i_cols), rng.uniform(w_low, w_high), mask=i_row_mask & i_col_mask)
+                    i_rows = i_rows + rng.random_integers(1, clen0)
+                    return i_rows, i_rows < n, rng
+
+                rng = LFSR88RNG(seed0 + i_cols)
+                i_rows = rng.random_integers(0, clen0)
+                i_row_mask = i_rows < n
+                jax.lax.while_loop(
+                    lambda data: jnp.sum(data[1]) > 0,
+                    body,
+                    (i_rows, i_row_mask, rng)
+                )
+
+        def kernel(w_low, w_high, clen, seed, out):
+            fn = pl.pallas_call(
+                _raw_kernel,
+                out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
+                grid=(pl.cdiv(dim, block_size),),
+                input_output_aliases={4: 0},
+            )
+            return [fn(w_low, w_high, clen, seed, out)]
+
+    else:
+        if corder:
             def _raw_kernel(
                 w_low_ref,
                 w_high_ref,
@@ -489,66 +564,27 @@ def _jitc_uniform_matrix_pallas_kernel_generator(
                 post_ref,
             ):
                 m = post_ref.shape[1]
-                w_low0 = w_low_ref[0]
-                w_high0 = w_high_ref[0]
-                clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
-                seed0 = seed_ref[0]  # Base random seed value
+                w_low = w_low_ref[0]
+                w_high = w_high_ref[0]
+                clen = clen_ref[0]  # Connection length parameter (controls sparsity)
+                seed = seed_ref[0]  # Base random seed value
                 i_row = pl.program_id(0)
 
                 def body(data):
                     i, rng = data
-                    post_ref[i_row, i] = rng.uniform(w_low0, w_high0)
-                    i += rng.random_integers(1, clen0)
+                    post_ref[i_row, i] = rng.uniform(w_low, w_high)
+                    i += rng.random_integers(1, clen)
                     return i, rng
 
-                rng = LFSR88RNG(seed0 + i_row)
+                rng = LFSR88RNG(seed + i_row)
                 jax.lax.while_loop(
                     lambda data: data[0] < m,
                     body,
-                    (rng.random_integers(0, clen0), rng)
+                    (rng.random_integers(0, clen), rng)
                 )
+
 
         else:
-            # JIT matrix
-            #
-            # - JIT matrix shape = [m, n]
-            #
-
-            def _raw_kernel(
-                w_low_ref,
-                w_high_ref,
-                clen_ref,
-                seed_ref,
-                _,
-                post_ref,
-            ):
-                n = post_ref.shape[1]  # Get number of columns in the output matrix
-                w_low0 = w_low_ref[0]
-                w_high0 = w_high_ref[0]
-                clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
-                seed0 = seed_ref[0]  # Base random seed value
-                i_row = pl.program_id(0)
-
-                def body(data):
-                    i_col, rng = data
-                    post_ref[i_row, i_col] = rng.uniform(w_low0, w_high0)
-                    i_col += rng.random_integers(1, clen0)
-                    return i_col, rng
-
-                rng = LFSR88RNG(seed0 + i_row)
-                jax.lax.while_loop(
-                    lambda data: data[0] < n,
-                    body,
-                    (rng.random_integers(0, clen0), rng)
-                )
-
-    else:
-        if transpose:
-            # JIT matrix.T
-            #
-            # - JIT matrix shape = [m, n]
-            #
-
             def _raw_kernel(
                 w_low_ref,
                 w_high_ref,
@@ -558,68 +594,32 @@ def _jitc_uniform_matrix_pallas_kernel_generator(
                 post_ref,
             ):
                 n = post_ref.shape[0]
-                w_low0 = w_low_ref[0]
-                w_high0 = w_high_ref[0]
-                clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
-                seed0 = seed_ref[0]  # Base random seed value
+                w_low = w_low_ref[0]
+                w_high = w_high_ref[0]
+                clen = clen_ref[0]  # Connection length parameter (controls sparsity)
+                seed = seed_ref[0]  # Base random seed value
                 i_col = pl.program_id(0)
 
                 def body(data):
                     i_row, rng = data
-                    post_ref[i_row, i_col] = rng.uniform(w_low0, w_high0)
-                    i_row += rng.random_integers(1, clen0)
+                    post_ref[i_row, i_col] = rng.uniform(w_low, w_high)
+                    i_row += rng.random_integers(1, clen)
                     return i_row, rng
 
-                rng = LFSR88RNG(seed0 + i_col)
+                rng = LFSR88RNG(seed + i_col)
                 jax.lax.while_loop(
                     lambda data: data[0] < n,
                     body,
-                    (rng.random_integers(0, clen0), rng)
+                    (rng.random_integers(0, clen), rng)
                 )
 
-        else:
-            # JIT matrix
-            #
-            # - JIT matrix shape = [m, n]
-            #
-
-            def _raw_kernel(
-                w_low_ref,
-                w_high_ref,
-                clen_ref,
-                seed_ref,
-                _,
-                post_ref,
-            ):
-                m = post_ref.shape[0]
-                w_low0 = w_low_ref[0]
-                w_high0 = w_high_ref[0]
-                clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
-                seed0 = seed_ref[0]  # Base random seed value
-                i_col = pl.program_id(0)
-
-                def body(data):
-                    i_row, rng = data
-                    post_ref[i_row, i_col] = rng.uniform(w_low0, w_high0)
-                    i_row += rng.random_integers(1, clen0)
-                    return i_row, rng
-
-                rng = LFSR88RNG(seed0 + i_col)
-                jax.lax.while_loop(
-                    lambda data: data[0] < m,
-                    body,
-                    (rng.random_integers(0, clen0), rng)
-                )
-
-    dim = out_info.shape[0] if corder else out_info.shape[1]
-
-    def kernel(w_low, w_high, clen, seed, out):
-        fn = pl.pallas_call(
-            _raw_kernel,
-            out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
-            grid=(dim,), input_output_aliases={4: 0},
-        )
-        return [fn(w_low, w_high, clen, seed, out)]
+        def kernel(w_low, w_high, clen, seed, out):
+            fn = pl.pallas_call(
+                _raw_kernel,
+                out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
+                grid=(dim,), input_output_aliases={4: 0},
+            )
+            return [fn(w_low, w_high, clen, seed, out)]
 
     return kernel
 
@@ -1151,8 +1151,78 @@ def _jitc_mv_uniform_pallas_kernel_generator(
     corder: bool = True,
     **kwargs
 ):
-    if corder:
-        if transpose:
+    dim = (out_info.shape[0] if corder else vector_info.shape[0])
+    tiled = True
+
+    if tiled:
+        block_size = generate_block_dim(dim, maximum=128)
+
+        if corder:
+            def kernel(w_low_ref, w_high_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
+                num_row = vector_ref.shape[0]
+                w_low = w_low_ref[0]
+                w_high = w_high_ref[0]
+                clen = clen_ref[0]  # Connection length parameter (controls sparsity)
+                seed = seed_ref[0]  # Base random seed value
+                i_col_block = pl.program_id(0)
+                i_cols = i_col_block * block_size + jnp.arange(block_size)
+                i_col_mask = i_cols < dim
+
+                def body(data):
+                    i_rows, i_row_mask, rng, out = data
+                    out += pl.load(vector_ref, i_rows, mask=i_row_mask) * rng.uniform(w_low, w_high)
+                    i_rows += rng.random_integers(1, clen)
+                    return i_rows, i_rows < num_row, rng, out
+
+                rng = LFSR88RNG(seed + i_cols)
+                i_rows = rng.random_integers(0, clen)
+                i_row_mask = i_rows < num_row
+                out = jnp.zeros(block_size, dtype=post_ref.dtype)
+                out = jax.lax.while_loop(
+                    lambda data: jnp.sum(data[1]) > 0,
+                    body,
+                    (i_rows, i_row_mask, rng, out)
+                )[-1]
+                pl.store(post_ref, i_cols, out, mask=i_col_mask)
+
+        else:
+            def kernel(w_low_ref, w_high_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
+                num_col = post_ref.shape[0]
+                w_low = w_low_ref[0]
+                w_high = w_high_ref[0]
+                clen = clen_ref[0]  # Connection length parameter (controls sparsity)
+                seed = seed_ref[0]  # Base random seed value
+                i_row_block = pl.program_id(0)
+                i_rows = i_row_block * block_size + jnp.arange(block_size)
+                i_row_mask = i_rows < dim
+                vector = pl.load(vector_ref, i_rows, mask=i_row_mask)
+
+                def body(data):
+                    i_cols, i_col_mask, rng = data
+                    pl.atomic_add(post_ref, i_cols, vector * rng.uniform(w_low, w_high), mask=i_row_mask & i_col_mask)
+                    i_cols += rng.random_integers(1, clen)
+                    return i_cols, i_cols < num_col, rng
+
+                rng = LFSR88RNG(seed + i_rows)
+                i_cols = rng.random_integers(0, clen)
+                i_col_mask = i_cols < num_col
+                jax.lax.while_loop(
+                    lambda data: jnp.sum(data[1]) > 0,
+                    body,
+                    (i_cols, i_col_mask, rng)
+                )
+
+        def final_kernel(w_low, w_high, clen, vector, seed, out):
+            fn = pl.pallas_call(
+                kernel,
+                out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
+                grid=(pl.cdiv(dim, block_size),),
+                input_output_aliases={5: 0},
+            )
+            return [fn(w_low, w_high, clen, vector, seed, out)]
+
+    else:
+        if corder:
             def kernel(w_low_ref, w_high_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
                 num_row = vector_ref.shape[0]
                 w_low0 = w_low_ref[0]
@@ -1175,31 +1245,8 @@ def _jitc_mv_uniform_pallas_kernel_generator(
                 )
                 post_ref[i_col] = r
 
+
         else:
-            def kernel(w_low_ref, w_high_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
-                num_col = vector_ref.shape[0]
-                w_low0 = w_low_ref[0]
-                w_high0 = w_high_ref[0]
-                clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
-                seed0 = seed_ref[0]  # Base random seed value
-                i_row = pl.program_id(0)
-
-                def body(data):
-                    i, rng, res = data
-                    res += vector_ref[i] * rng.uniform(w_low0, w_high0)
-                    i += rng.random_integers(1, clen0)
-                    return i, rng, res
-
-                rng = LFSR88RNG(seed0 + i_row)
-                _, _, r = jax.lax.while_loop(
-                    lambda data: data[0] < num_col,
-                    body,
-                    (rng.random_integers(0, clen0), rng, 0.0)
-                )
-                post_ref[i_row] = r
-
-    else:
-        if transpose:
             def kernel(w_low_ref, w_high_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
                 num_col = post_ref.shape[0]
                 w_low0 = w_low_ref[0]
@@ -1222,39 +1269,14 @@ def _jitc_mv_uniform_pallas_kernel_generator(
                     (rng.random_integers(0, clen0), rng)
                 )
 
-        else:
-            def kernel(w_low_ref, w_high_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
-                num_row = post_ref.shape[0]
-                w_low0 = w_low_ref[0]
-                w_high0 = w_high_ref[0]
-                clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
-                seed0 = seed_ref[0]  # Base random seed value
-                i_col = pl.program_id(0)
-                v = vector_ref[i_col]
-
-                def body(data):
-                    i, rng = data
-                    pl.atomic_add(post_ref, i, v * rng.uniform(w_low0, w_high0))
-                    i += rng.random_integers(1, clen0)
-                    return i, rng
-
-                rng = LFSR88RNG(seed0 + i_col)
-                jax.lax.while_loop(
-                    lambda data: data[0] < num_row,
-                    body,
-                    (rng.random_integers(0, clen0), rng)
-                )
-
-    dim = (out_info.shape[0] if corder else vector_info.shape[0])
-
-    def final_kernel(w_low, w_high, clen, vector, seed, out):
-        fn = pl.pallas_call(
-            kernel,
-            out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
-            grid=(dim,),
-            input_output_aliases={5: 0},
-        )
-        return [fn(w_low, w_high, clen, vector, seed, out)]
+        def final_kernel(w_low, w_high, clen, vector, seed, out):
+            fn = pl.pallas_call(
+                kernel,
+                out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
+                grid=(dim,),
+                input_output_aliases={5: 0},
+            )
+            return [fn(w_low, w_high, clen, vector, seed, out)]
 
     return final_kernel
 
