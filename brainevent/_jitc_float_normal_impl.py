@@ -621,17 +621,46 @@ def _jitc_normal_matrix_pallas_kernel_generator(
     return kernel
 
 
-def _jitc_normal_matrix_batching(
-    args,
-    axes,
-    **kwargs
+def _jitc_normal_matrix_jvp_wlow(
+    w_loc_dot, w_loc, w_scale, clen, seed, _, *, out_info, **kwargs
 ):
-    return general_batching_rule(
-        float_jitc_normal_matrix_p,
-        args,
-        axes,
-        **kwargs,
-    )
+    out = jnp.ones_like(out_info) * w_loc_dot
+    return [out]
+
+
+def _jitc_normal_matrix_jvp_whigh(
+    w_scale_dot, w_loc, w_scale, clen, seed, _, *,
+    shape: Sequence[int], transpose: bool, corder: bool, **kwargs
+):
+    return float_jitc_normal_matrix_p_call(0., w_scale_dot, clen, seed,
+                                           shape=shape, transpose=transpose, corder=corder)
+
+
+
+def _jitc_normal_matrix_transpose(
+    ct, w_loc, w_scale, clen, seed, _, *,
+    shape: Sequence[int], transpose: bool, corder: bool, **kwargs
+):
+    assert not ad.is_undefined_primal(clen)
+    assert not ad.is_undefined_primal(seed)
+    ct = ct[0]
+    if ad.is_undefined_primal(w_loc):
+        dwlow = jnp.expand_dims(ct.sum(), axis=0)
+        return (dwlow, w_scale, clen, seed, _)
+    elif ad.is_undefined_primal(w_scale):
+        # TODO: optimize memory
+        forward = float_jitc_normal_matrix_p_call(0., 1., clen, seed, shape=shape,transpose=transpose, corder=corder)[0]
+        dwhigh = jnp.expand_dims((ct * forward).sum(), axis=0)
+        return (w_loc, dwhigh, clen, seed, _)
+
+    else:
+        raise NotImplementedError(
+            'JITC matrix transpose is only implemented for the w_low and w_scale arguments.'
+        )
+
+
+def _jitc_normal_matrix_batching(args, axes, **kwargs):
+    return general_batching_rule(float_jitc_normal_matrix_p, args, axes, **kwargs)
 
 
 def float_jitc_normal_matrix_p_call(
@@ -683,6 +712,13 @@ float_jitc_normal_matrix_p.def_gpu_kernel(
     )
 )
 float_jitc_normal_matrix_p.def_tpu_kernel(PallasKernelGenerator(_jitc_normal_matrix_pallas_kernel_generator))
+float_jitc_normal_matrix_p.def_jvp_rule2(
+    _jitc_normal_matrix_jvp_wlow,
+    _jitc_normal_matrix_jvp_whigh,
+    None,
+    None,
+)
+float_jitc_normal_matrix_p.def_transpose_rule(_jitc_normal_matrix_transpose)
 float_jitc_normal_matrix_p.def_batching_rule(_jitc_normal_matrix_batching)
 
 

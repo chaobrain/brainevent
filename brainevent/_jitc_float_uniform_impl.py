@@ -624,17 +624,76 @@ def _jitc_uniform_matrix_pallas_kernel_generator(
     return kernel
 
 
-def _jitc_uniform_matrix_batching(
-    args,
-    axes,
-    **kwargs
+def _jitc_uniform_matrix_jvp_wlow(
+    w_low_dot, w_low, w_high, clen, seed, _, *,
+    shape: Sequence[int], transpose: bool, corder: bool, **kwargs
 ):
-    return general_batching_rule(
-        float_jitc_uniform_matrix_p,
-        args,
-        axes,
-        **kwargs,
+    res = float_jitc_uniform_matrix_p_call(
+        0., w_low_dot, clen, seed, shape=shape, transpose=transpose, corder=corder
+    )[0]
+    return [w_low_dot - res]
+
+
+def _jitc_uniform_matrix_jvp_whigh(
+    w_high_dot, w_low, w_high, clen, seed, _, *,
+    shape: Sequence[int], transpose: bool, corder: bool, **kwargs
+):
+    res = float_jitc_uniform_matrix_p_call(
+        0., w_high_dot, clen, seed, shape=shape, transpose=transpose, corder=corder
     )
+    return res
+
+
+def _wlow_tranpose(ct, seed, clen, **kwargs):
+    # JITC * (high - low) + low
+    # TODO: optimize memory
+    forward = float_jitc_uniform_matrix_p_call(0., 1., clen, seed, **kwargs)[0]
+    return jnp.expand_dims((ct * (-forward + 1.)).sum(), axis=0)
+
+
+def _whigh_tranpose(ct, seed, clen, **kwargs):
+    # JITC * (high - low) + low
+    # TODO: optimize memory
+    forward = float_jitc_uniform_matrix_p_call(0., 1., clen, seed, **kwargs)[0]
+    return jnp.expand_dims((ct * forward).sum(), axis=0)
+
+
+def _jitc_uniform_matrix_transpose(
+    ct, w_low, w_high, clen, seed, _, *,
+    shape: Sequence[int], transpose: bool, corder: bool, **kwargs
+):
+    assert not ad.is_undefined_primal(clen)
+    assert not ad.is_undefined_primal(seed)
+    ct = ct[0]
+    if ad.is_undefined_primal(w_low):
+        dwlow = _wlow_tranpose(
+            ct,
+            seed,
+            clen,
+            shape=shape,
+            transpose=transpose,
+            corder=corder,
+        )
+        return (dwlow, w_high, clen, seed, _)
+    elif ad.is_undefined_primal(w_high):
+        dwhigh = _whigh_tranpose(
+            ct,
+            seed,
+            clen,
+            shape=shape,
+            transpose=transpose,
+            corder=corder,
+        )
+        return (w_low, dwhigh, clen, seed, _)
+
+    else:
+        raise NotImplementedError(
+            'JITC matrix transpose is only implemented for the w_low and w_high arguments.'
+        )
+
+
+def _jitc_uniform_matrix_batching(args, axes, **kwargs):
+    return general_batching_rule(float_jitc_uniform_matrix_p, args, axes, **kwargs)
 
 
 def float_jitc_uniform_matrix_p_call(
@@ -686,6 +745,13 @@ float_jitc_uniform_matrix_p.def_gpu_kernel(
     )
 )
 float_jitc_uniform_matrix_p.def_tpu_kernel(PallasKernelGenerator(_jitc_uniform_matrix_pallas_kernel_generator))
+float_jitc_uniform_matrix_p.def_jvp_rule2(
+    _jitc_uniform_matrix_jvp_wlow,
+    _jitc_uniform_matrix_jvp_whigh,
+    None,
+    None,
+)
+float_jitc_uniform_matrix_p.def_transpose_rule(_jitc_uniform_matrix_transpose)
 float_jitc_uniform_matrix_p.def_batching_rule(_jitc_uniform_matrix_batching)
 
 
@@ -1219,7 +1285,7 @@ def _jitc_mv_uniform_jvp_v(
     )
 
 
-def _jitc_mv_uniform_jvp_wloc(
+def _jitc_mv_uniform_jvp_wlow(
     w_dot,
     w_low,
     w_high,
@@ -1245,7 +1311,7 @@ def _jitc_mv_uniform_jvp_wloc(
     )
 
 
-def _jitc_mv_uniform_jvp_wscale(
+def _jitc_mv_uniform_jvp_whigh(
     w_dot,
     w_low,
     w_high,
@@ -1303,6 +1369,7 @@ def _jitc_mv_uniform_transpose_rules(
             corder=not corder
         )[0]
         return w_low, w_high, clen, r, seed, _
+
     else:
         raise NotImplementedError(
             f"Transpose rule for {ct} not implemented "
@@ -1415,8 +1482,8 @@ float_jitc_mv_uniform_p.def_gpu_kernel(
 float_jitc_mv_uniform_p.def_gpu_kernel(WarpKernelGenerator(_jitc_mv_uniform_warp_kernel_generator))
 float_jitc_mv_uniform_p.def_tpu_kernel(PallasKernelGenerator(_jitc_mv_uniform_pallas_kernel_generator))
 float_jitc_mv_uniform_p.def_jvp_rule2(
-    _jitc_mv_uniform_jvp_wloc,
-    _jitc_mv_uniform_jvp_wscale,
+    _jitc_mv_uniform_jvp_wlow,
+    _jitc_mv_uniform_jvp_whigh,
     None,
     _jitc_mv_uniform_jvp_v,
     None,
@@ -1870,7 +1937,7 @@ def _jitc_mm_uniform_pallas_kernel_generator(
     return final_kernel
 
 
-def _jitc_mm_uniform_jvp_wloc(
+def _jitc_mm_uniform_jvp_wlow(
     w_dot,
     w_low,
     w_high,
@@ -1896,7 +1963,7 @@ def _jitc_mm_uniform_jvp_wloc(
     )
 
 
-def _jitc_mm_uniform_jvp_wscale(
+def _jitc_mm_uniform_jvp_whigh(
     w_dot,
     w_low,
     w_high,
@@ -2094,8 +2161,8 @@ float_jitc_mm_uniform_p.def_gpu_kernel(
 )
 float_jitc_mm_uniform_p.def_gpu_kernel(PallasKernelGenerator(_jitc_mm_uniform_pallas_kernel_generator))
 float_jitc_mm_uniform_p.def_jvp_rule2(
-    _jitc_mm_uniform_jvp_wloc,
-    _jitc_mm_uniform_jvp_wscale,
+    _jitc_mm_uniform_jvp_wlow,
+    _jitc_mm_uniform_jvp_whigh,
     None,
     _jitc_mm_uniform_jvp_B,
     None,
