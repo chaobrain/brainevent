@@ -49,6 +49,11 @@ else:
     ]
 
 
+
+def allclose(a, b, rtol=1e-3, atol=1e-3):
+    return jnp.allclose(a, b, rtol=rtol, atol=atol)
+
+
 class Test_JITC_RC_Conversion:
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
@@ -60,7 +65,7 @@ class Test_JITC_RC_Conversion:
 
         out1 = jitcr @ vector
         out2 = vector @ jitcc
-        assert jnp.allclose(out1, out2, rtol=1e-3, atol=1e-3)
+        assert allclose(out1, out2, rtol=1e-3, atol=1e-3)
 
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
@@ -72,7 +77,7 @@ class Test_JITC_RC_Conversion:
 
         out1 = vector @ jitcr
         out2 = jitcc @ vector
-        assert jnp.allclose(out1, out2, rtol=1e-3, atol=1e-3)
+        assert allclose(out1, out2, rtol=1e-3, atol=1e-3)
 
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('shape', shapes)
@@ -85,7 +90,7 @@ class Test_JITC_RC_Conversion:
 
         out1 = jitcr @ matrix
         out2 = (matrix.T @ jitcc).T
-        assert jnp.allclose(out1, out2, rtol=1e-3, atol=1e-3)
+        assert allclose(out1, out2, rtol=1e-3, atol=1e-3)
 
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('shape', shapes)
@@ -98,7 +103,7 @@ class Test_JITC_RC_Conversion:
 
         out1 = matrix @ jitcr
         out2 = (jitcc @ matrix.T).T
-        assert jnp.allclose(out1, out2, atol=1e-4, rtol=1e-4)
+        assert allclose(out1, out2, atol=1e-4, rtol=1e-4)
 
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
@@ -110,7 +115,7 @@ class Test_JITC_RC_Conversion:
 
         out1 = jitcr @ vector
         out2 = vector @ jitcc
-        assert jnp.allclose(out1, out2, rtol=1e-3, atol=1e-3)
+        assert allclose(out1, out2, rtol=1e-3, atol=1e-3)
 
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
@@ -122,7 +127,7 @@ class Test_JITC_RC_Conversion:
 
         out1 = vector @ jitcr
         out2 = jitcc @ vector
-        assert jnp.allclose(out1, out2, rtol=1e-3, atol=1e-3)
+        assert allclose(out1, out2, rtol=1e-3, atol=1e-3)
 
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('shape', shapes)
@@ -136,7 +141,7 @@ class Test_JITC_RC_Conversion:
 
         out1 = jitcr @ matrix
         out2 = (matrix.T @ jitcc).T
-        assert jnp.allclose(out1, out2, rtol=1e-3, atol=1e-3)
+        assert allclose(out1, out2, rtol=1e-3, atol=1e-3)
 
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('shape', shapes)
@@ -150,7 +155,7 @@ class Test_JITC_RC_Conversion:
 
         out1 = matrix @ jitcr
         out2 = (jitcc @ matrix.T).T
-        assert jnp.allclose(out1, out2, atol=1e-4, rtol=1e-4)
+        assert allclose(out1, out2, atol=1e-4, rtol=1e-4)
 
 
 class Test_JITC_To_Dense:
@@ -165,9 +170,9 @@ class Test_JITC_To_Dense:
         out2 = jitcc.todense().T
         out3 = jitcr.T.todense().T
         out4 = jitcc.T.todense()
-        assert jnp.allclose(out1, out2, rtol=1e-3, atol=1e-3)
-        assert jnp.allclose(out1, out3)
-        assert jnp.allclose(out1, out4)
+        assert allclose(out1, out2, rtol=1e-3, atol=1e-3)
+        assert allclose(out1, out3)
+        assert allclose(out1, out4)
 
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
@@ -187,8 +192,8 @@ class Test_JITC_To_Dense:
         expected_wlow_grad = (ct * (-base + 1.)).sum()
         expected_whigh_grad = (ct * base).sum()
 
-        assert jnp.allclose(true_wlow_grad, expected_wlow_grad)
-        assert jnp.allclose(true_whigh_grad, expected_whigh_grad)
+        assert allclose(true_wlow_grad, expected_wlow_grad)
+        assert allclose(true_whigh_grad, expected_whigh_grad)
 
         print(true_wlow_grad, true_whigh_grad)
         print(expected_wlow_grad, expected_whigh_grad)
@@ -200,8 +205,8 @@ class Test_JITC_To_Dense:
         primals, f_vjp2 = jax.vjp(f_jitc_vjp, wlow, whigh)
         jitc_wlow_grad, jitc_whigh_grad = f_vjp2(ct)
 
-        assert jnp.allclose(true_wlow_grad, jitc_wlow_grad)
-        assert jnp.allclose(true_whigh_grad, jitc_whigh_grad)
+        assert allclose(true_wlow_grad, jitc_wlow_grad)
+        assert allclose(true_whigh_grad, jitc_whigh_grad)
 
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
@@ -221,7 +226,7 @@ class Test_JITC_To_Dense:
 
         primals, true_grad = jax.jvp(f_dense_jvp, (wlow, whigh), tagents)
         primals, jitc_grad = jax.jvp(f_jitc_jvp, (wlow, whigh), tagents)
-        assert jnp.allclose(true_grad, jitc_grad)
+        assert allclose(true_grad, jitc_grad)
 
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
@@ -237,14 +242,14 @@ class Test_JITC_To_Dense:
 
         primals, true_grad = jax.jvp(f_dense_jvp, (wlow,), (dwlow,))
         expected_grad = (-base + 1.) * dwlow
-        assert jnp.allclose(true_grad, expected_grad)
+        assert allclose(true_grad, expected_grad)
 
         def f_jitc_jvp(wlow):
             mat = brainevent.JITCUniformR((wlow, whigh, 0.1, 123), shape=shape, corder=corder)
             return mat.todense()
 
         primals, jitc_grad = jax.jvp(f_jitc_jvp, (wlow,), (dwlow,))
-        assert jnp.allclose(true_grad, jitc_grad)
+        assert allclose(true_grad, jitc_grad)
 
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
@@ -260,11 +265,11 @@ class Test_JITC_To_Dense:
 
         primals, true_grad = jax.jvp(f_dense_jvp, (whigh,), (dw_high,))
         expected_grad = base * dw_high
-        assert jnp.allclose(true_grad, expected_grad)
+        assert allclose(true_grad, expected_grad)
 
         def f_jitc_jvp(whigh):
             mat = brainevent.JITCUniformR((wlow, whigh, 0.1, 123), shape=shape, corder=corder)
             return mat.todense()
 
         primals, jitc_grad = jax.jvp(f_jitc_jvp, (whigh,), (dw_high,))
-        assert jnp.allclose(true_grad, jitc_grad)
+        assert allclose(true_grad, jitc_grad)
