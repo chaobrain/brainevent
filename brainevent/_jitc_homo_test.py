@@ -24,6 +24,7 @@ import pytest
 
 import brainevent
 import brainstate
+import jax
 
 
 # brainevent.config.gpu_kernel_backend = 'pallas'
@@ -156,3 +157,50 @@ class Test_JITC_RC_Conversion:
         out2 = (jitcc @ matrix.T).T
         print(out1 - out2)
         assert jnp.allclose(out1, out2, atol=1e-4, rtol=1e-4)
+
+
+class Test_JITC_Gradient:
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    @pytest.mark.parametrize('weight', [-1., 1.])
+    def test_vjp(self, shape, corder, weight):
+        base = brainevent.JITCHomoR((1.0, 0.1, 123), shape=shape, corder=corder).todense()
+
+        def f_dense_vjp(weight):
+            res = base * weight
+            return res
+
+        ct = brainstate.random.random(shape)
+        primals, f_vjp = jax.vjp(f_dense_vjp, weight)
+        true_weight_grad, = f_vjp(ct)
+
+        expected_weight_grad = (ct * base).sum()
+        assert jnp.allclose(true_weight_grad, expected_weight_grad)
+
+        def f_jitc_vjp(weight):
+            mat = brainevent.JITCHomoR((weight, 0.1, 123), shape=shape, corder=corder)
+            return mat.todense()
+
+        primals, f_vjp2 = jax.vjp(f_jitc_vjp, weight)
+        jitc_weight_grad, = f_vjp2(ct)
+
+        assert jnp.allclose(true_weight_grad, jitc_weight_grad)
+
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('corder', [True, False])
+    @pytest.mark.parametrize('weight', [-1., 1.])
+    def test_jvp(self, shape, corder, weight):
+        base = brainevent.JITCHomoR((1., 0.1, 123), shape=shape, corder=corder).todense()
+        tagents = (brainstate.random.random(), )
+
+        def f_dense_jvp(weight):
+            res = base * weight
+            return res
+
+        def f_jitc_jvp(weight):
+            mat = brainevent.JITCHomoR((weight, 0.1, 123), shape=shape, corder=corder)
+            return mat.todense()
+
+        primals, true_grad = jax.jvp(f_dense_jvp, (weight,), tagents)
+        primals, jitc_grad = jax.jvp(f_jitc_jvp, (weight,), tagents)
+        assert jnp.allclose(true_grad, jitc_grad)
