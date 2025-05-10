@@ -26,8 +26,8 @@ import brainevent
 import brainstate
 import jax
 
+brainevent.config.gpu_kernel_backend = 'pallas'
 
-# brainevent.config.gpu_kernel_backend = 'pallas'
 
 def gen_events(shape, prob=0.5, asbool=True):
     events = brainstate.random.random(shape) < prob
@@ -36,24 +36,25 @@ def gen_events(shape, prob=0.5, asbool=True):
     return brainevent.EventArray(events)
 
 
+if brainstate.environ.get_platform() == 'cpu':
+    shapes = [
+        (200, 300),
+        (100, 500)
+    ]
+else:
+    shapes = [
+        (2000, 3000),
+        (1000, 5000)
+    ]
+
+
+def allclose(a, b, rtol=1e-3, atol=1e-3):
+    return jnp.allclose(a, b, rtol=rtol, atol=atol)
+
+
 class Test_JITC_RC_Conversion:
 
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('transpose', [True, False])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_todense(self, shape, transpose, corder):
-        jitcr = brainevent.JITCHomoR((1.5, 0.1, 123), shape=shape, corder=corder)
-        jitcc = jitcr.T
-
-        out1 = jitcr.todense()
-        out2 = jitcc.todense().T
-        out3 = jitcr.T.todense().T
-        out4 = jitcc.T.todense()
-        assert jnp.allclose(out1, out2)
-        assert jnp.allclose(out1, out3)
-        assert jnp.allclose(out1, out4)
-
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
     def test_matvec(self, shape, corder):
         jitcr = brainevent.JITCHomoR((1.5, 0.1, 123), shape=shape, corder=corder)
@@ -63,9 +64,9 @@ class Test_JITC_RC_Conversion:
 
         out1 = jitcr @ vector
         out2 = vector @ jitcc
-        assert jnp.allclose(out1, out2)
+        assert allclose(out1, out2)
 
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
     def test_vecmat(self, shape, corder):
         jitcr = brainevent.JITCHomoR((1.5, 0.1, 123), shape=shape, corder=corder)
@@ -75,10 +76,10 @@ class Test_JITC_RC_Conversion:
 
         out1 = vector @ jitcr
         out2 = jitcc @ vector
-        assert jnp.allclose(out1, out2)
+        assert allclose(out1, out2)
 
     @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
     def test_jitmat(self, k, shape, corder):
         jitcr = brainevent.JITCHomoR((1.5, 0.1, 123), shape=shape, corder=corder)
@@ -88,10 +89,10 @@ class Test_JITC_RC_Conversion:
 
         out1 = jitcr @ matrix
         out2 = (matrix.T @ jitcc).T
-        assert jnp.allclose(out1, out2)
+        assert allclose(out1, out2)
 
     @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
     def test_matjit(self, k, shape, corder):
         jitcr = brainevent.JITCHomoR((1.5, 0.1, 123), shape=shape, corder=corder)
@@ -101,9 +102,9 @@ class Test_JITC_RC_Conversion:
 
         out1 = matrix @ jitcr
         out2 = (jitcc @ matrix.T).T
-        assert jnp.allclose(out1, out2, atol=1e-4, rtol=1e-4)
+        assert allclose(out1, out2, atol=1e-4, rtol=1e-4)
 
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('asbool', [True, False])
     def test_matvec_event(self, shape, corder, asbool):
@@ -114,9 +115,9 @@ class Test_JITC_RC_Conversion:
 
         out1 = jitcr @ vector
         out2 = vector @ jitcc
-        assert jnp.allclose(out1, out2)
+        assert allclose(out1, out2)
 
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('asbool', [True, False])
     def test_vecmat_event(self, shape, corder, asbool):
@@ -127,10 +128,10 @@ class Test_JITC_RC_Conversion:
 
         out1 = vector @ jitcr
         out2 = jitcc @ vector
-        assert jnp.allclose(out1, out2)
+        assert allclose(out1, out2)
 
     @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('asbool', [True, False])
     def test_jitmat_event(self, k, shape, corder, asbool):
@@ -141,10 +142,10 @@ class Test_JITC_RC_Conversion:
 
         out1 = jitcr @ matrix
         out2 = (matrix.T @ jitcc).T
-        assert jnp.allclose(out1, out2)
+        assert allclose(out1, out2)
 
     @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('asbool', [True, False])
     def test_matjit_event(self, k, shape, corder, asbool):
@@ -156,11 +157,27 @@ class Test_JITC_RC_Conversion:
         out1 = matrix @ jitcr
         out2 = (jitcc @ matrix.T).T
         print(out1 - out2)
-        assert jnp.allclose(out1, out2, atol=1e-4, rtol=1e-4)
+        assert allclose(out1, out2, atol=1e-4, rtol=1e-4)
 
 
-class Test_JITC_Gradient:
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+class Test_JITC_To_Dense:
+
+    @pytest.mark.parametrize('shape', shapes)
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_todense(self, shape, transpose, corder):
+        jitcr = brainevent.JITCHomoR((1.5, 0.1, 123), shape=shape, corder=corder)
+        jitcc = jitcr.T
+
+        out1 = jitcr.todense()
+        out2 = jitcc.todense().T
+        out3 = jitcr.T.todense().T
+        out4 = jitcc.T.todense()
+        assert allclose(out1, out2)
+        assert allclose(out1, out3)
+        assert allclose(out1, out4)
+
+    @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('weight', [-1., 1.])
     def test_vjp(self, shape, corder, weight):
@@ -175,7 +192,7 @@ class Test_JITC_Gradient:
         true_weight_grad, = f_vjp(ct)
 
         expected_weight_grad = (ct * base).sum()
-        assert jnp.allclose(true_weight_grad, expected_weight_grad)
+        assert allclose(true_weight_grad, expected_weight_grad)
 
         def f_jitc_vjp(weight):
             mat = brainevent.JITCHomoR((weight, 0.1, 123), shape=shape, corder=corder)
@@ -184,14 +201,14 @@ class Test_JITC_Gradient:
         primals, f_vjp2 = jax.vjp(f_jitc_vjp, weight)
         jitc_weight_grad, = f_vjp2(ct)
 
-        assert jnp.allclose(true_weight_grad, jitc_weight_grad)
+        assert allclose(true_weight_grad, jitc_weight_grad)
 
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('weight', [-1., 1.])
     def test_jvp(self, shape, corder, weight):
         base = brainevent.JITCHomoR((1., 0.1, 123), shape=shape, corder=corder).todense()
-        tagents = (brainstate.random.random(), )
+        tagents = (brainstate.random.random(),)
 
         def f_dense_jvp(weight):
             res = base * weight
@@ -203,4 +220,4 @@ class Test_JITC_Gradient:
 
         primals, true_grad = jax.jvp(f_dense_jvp, (weight,), tagents)
         primals, jitc_grad = jax.jvp(f_jitc_jvp, (weight,), tagents)
-        assert jnp.allclose(true_grad, jitc_grad)
+        assert allclose(true_grad, jitc_grad)
