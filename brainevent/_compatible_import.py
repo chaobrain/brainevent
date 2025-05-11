@@ -22,6 +22,16 @@ __all__ = [
     'pallas',
     'JAXSparse',
     'custom_call',
+
+    'call_p',
+    'closed_call_p',
+    'jaxpr_as_fun',
+    'ClosedJaxpr',
+    'Jaxpr',
+    'JaxprEqn',
+    'Literal',
+    'Token',
+    'Var',
 ]
 
 from collections.abc import Callable, Sequence
@@ -43,6 +53,34 @@ if jax.__version_info__ < (0, 4, 35):
     from jax.lib import xla_client
 
 from jax.core import Tracer
+
+if jax.__version_info__ < (0, 6, 0):
+    from jax.core import (
+        call_p,
+        closed_call_p,
+        jaxpr_as_fun,
+        ClosedJaxpr,
+        Jaxpr,
+        JaxprEqn,
+        Literal,
+        Token,
+        Var,
+    )
+
+else:
+    from jax.extend.core import (
+        jaxpr_as_fun,
+        ClosedJaxpr,
+        Jaxpr,
+        JaxprEqn,
+        Literal,
+        Token,
+        Var,
+    )
+    from jax.extend.core.primitives import (
+        call_p,
+        closed_call_p,
+    )
 
 
 def register_custom_call(target_name, capsule, backend: str):
