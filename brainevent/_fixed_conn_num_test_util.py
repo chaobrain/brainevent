@@ -37,6 +37,7 @@ def generate_data(
     return indices
 
 
+@bst.compile.jit(static_argnums=(3,),)
 def vector_csr(x, weights, indices, shape):
     homo_w = jnp.size(weights) == 1
     post = jnp.zeros((shape[1],))
@@ -46,6 +47,7 @@ def vector_csr(x, weights, indices, shape):
     return post
 
 
+@bst.compile.jit(static_argnums=(3,))
 def matrix_csr(xs, weights, indices, shape):
     homo_w = jnp.size(weights) == 1
     post = jnp.zeros((xs.shape[0], shape[1]))
@@ -59,6 +61,7 @@ def matrix_csr(xs, weights, indices, shape):
     return post
 
 
+@bst.compile.jit(static_argnums=(3,))
 def csr_vector(x, weights, indices, shape):
     homo_w = jnp.size(weights) == 1
     out = jnp.zeros([shape[0]])
@@ -69,6 +72,7 @@ def csr_vector(x, weights, indices, shape):
     return out
 
 
+@bst.compile.jit(static_argnums=(3,))
 def csr_matrix(xs, weights, indices, shape):
     # CSR @ matrix
     homo_w = jnp.size(weights) == 1

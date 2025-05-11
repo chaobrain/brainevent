@@ -29,9 +29,6 @@ import brainevent
 from brainevent._fixed_conn_num_test_util import generate_data, vector_csr, csr_vector
 
 
-# brainstate.environ.set(platform='cpu')
-
-
 class TestVector:
 
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -57,7 +54,7 @@ class TestVector:
         data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
         csr = brainevent.FixedPostNumConn([data, indices], shape=(m, n))
         y = brainevent.EventArray(x) @ csr
-        y2 = vector_csr(x, csr.data, indices, shape=[m, n])
+        y2 = vector_csr(x, csr.data, indices, shape=(m, n))
         assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -71,7 +68,7 @@ class TestVector:
         data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
         csr = brainevent.FixedPostNumConn([data, indices], shape=(m, n))
         y = csr @ brainevent.EventArray(v)
-        y2 = csr_vector(v, csr.data, indices, [m, n])
+        y2 = csr_vector(v, csr.data, indices, (m, n))
         # print(y)
         # print(y2)
         # print()
@@ -86,7 +83,7 @@ class TestVector:
     #         data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
     #         csr = brainevent.FixedPostNumConn([data, indices], shape=(m, n))
     #         y = jax.vmap(lambda x: x @ csr)(xs)
-    #         y2 = jax.vmap(lambda x: vector_csr(x, csr.data, indices, [m, n]))(xs)
+    #         y2 = jax.vmap(lambda x: vector_csr(x, csr.data, indices, (m, n)))(xs)
     #
     #         print(y.shape, y2.shape)
     #         assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))

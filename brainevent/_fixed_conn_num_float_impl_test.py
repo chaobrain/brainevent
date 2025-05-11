@@ -19,8 +19,6 @@ import os
 
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
-import unittest
-
 import jax
 import brainstate as bst
 import jax.numpy as jnp
@@ -36,58 +34,41 @@ from brainevent._fixed_conn_num_test_util import (
 )
 
 
-# brainstate.environ.set(platform='cpu')
-
-
-class TestVector(unittest.TestCase):
-    def test_vector_csr(self):
+class TestVector:
+    @pytest.mark.parametrize('replace', [True, False])
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_vector_csr(self, replace, homo_w):
         m, n = 20, 40
         x = bst.random.rand(m)
-        for replace in [True, False]:
-            indices = generate_data(m, n, 8, replace=replace)
-            for homo_w in [True, False]:
-                print(f'replace = {replace}, homo_w = {homo_w}')
-                data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
-                csr = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
-                y = x @ csr
-                y2 = vector_csr(x, csr.data, indices, shape=[m, n])
-                self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+        indices = generate_data(m, n, 8, replace=replace)
 
-    def test_csr_vector(self):
+        data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
+        csr = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
+        y1 = x @ csr
+        y2 = x @ csr.T
+
+        y_true = vector_csr(x, csr.data, indices, (m, n))
+        assert (jnp.allclose(y1, y_true, rtol=1e-3, atol=1e-3))
+        assert (jnp.allclose(y2, y_true, rtol=1e-3, atol=1e-3))
+
+    @pytest.mark.parametrize('replace', [True, False])
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_csr_vector(self, replace, homo_w):
         m, n = 20, 40
         v = bst.random.rand(n)
-        for replace in [True, False]:
-            indices = generate_data(m, n, 8, replace=replace)
+        indices = generate_data(m, n, 8, replace=replace)
 
-            for homo_w in [True, False]:
-                print(f'replace = {replace}, homo_w = {homo_w}')
-                data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
-                csr = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
-                y = csr @ v
-                y2 = csr_vector(v, csr.data, indices, [m, n])
-                # print(y)
-                # print(y2)
-                # print()
-                self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
-
-    # def test_vector_csr_vmap_vector(self):
-    #     n_batch, m, n = 10, 20, 40
-    #     xs = brainstate.random.rand(n_batch, m)
-    #     indices = generate_data(m, n, 8)
-    #
-    #     for homo_w in [True, False]:
-    #         data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
-    #         csr = brainevent.FixedPostNumConn([data, indices], shape=(m, n))
-    #         y = jax.vmap(lambda x: x @ csr)(xs)
-    #         y2 = jax.vmap(lambda x: vector_csr(x, csr.data, indices, [m, n]))(xs)
-    #
-    #         print(y.shape, y2.shape)
-    #         self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+        print(f'replace = {replace}, homo_w = {homo_w}')
+        data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
+        csr = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
+        y = csr @ v
+        y2 = csr_vector(v, csr.data, indices, (m, n))
+        assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
     def _test_vjp(self, homo_w, replace, transpose):
         n_in = 20
         n_out = 30
-        shape = [n_in, n_out]
+        shape = (n_in, n_out)
         x = bst.random.rand(n_in) if transpose else bst.random.rand(n_out)
 
         indices = generate_data(n_in, n_out, 8, replace=replace)
@@ -101,33 +82,34 @@ class TestVector(unittest.TestCase):
                 r = csr.with_data(w) @ x
             return r.sum()
 
-        r = jax.grad(f_brainevent, argnums=(0, 1))(x, w)
+        r1 = jax.jit(lambda: jax.grad(f_brainevent, argnums=(0, 1))(x, w))()
 
         # -------------------
         # TRUE gradients
 
         def f_jax(x, w):
             if transpose:
-                r = vector_csr(x, w, indices, shape=shape)
+                r = vector_csr(x, w, indices, shape)
             else:
-                r = csr_vector(x, w, indices, shape=shape)
+                r = csr_vector(x, w, indices, shape)
             return r.sum()
 
-        r2 = jax.grad(f_jax, argnums=(0, 1))(x, w)
-        self.assertTrue(jnp.allclose(r[0], r2[0], rtol=1e-3, atol=1e-3))
-        self.assertTrue(jnp.allclose(r[1], r2[1], rtol=1e-3, atol=1e-3))
+        r2 = jax.jit(lambda: jax.grad(f_jax, argnums=(0, 1))(x, w))()
 
-    def test_vjp(self):
-        for replace in [True, False]:
-            for transpose in [True, False]:
-                for homo_w in [True, False]:
-                    print(f'replace = {replace}, transpose = {transpose}, homo_w = {homo_w}')
-                    self._test_vjp(homo_w=homo_w, replace=replace, transpose=transpose)
+        assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
+        assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
+
+    @pytest.mark.parametrize('replace', [True, False])
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_vjp(self, replace, transpose, homo_w):
+        print(f'replace = {replace}, transpose = {transpose}, homo_w = {homo_w}')
+        self._test_vjp(homo_w=homo_w, replace=replace, transpose=transpose)
 
     def _test_jvp(self, homo_w, replace, transpose):
         n_in = 20
         n_out = 30
-        shape = [n_in, n_out]
+        shape = (n_in, n_out)
         x = bst.random.rand(n_in if transpose else n_out)
         indices = generate_data(n_in, n_out, 8, replace=replace)
 
@@ -142,58 +124,58 @@ class TestVector(unittest.TestCase):
                 r = csr.with_data(w) @ x
             return r
 
-        o1, r1 = jax.jvp(f_brainevent, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
+        o1, r1 = jax.jit(lambda: jax.jvp(f_brainevent, (x, w), (jnp.ones_like(x), jnp.ones_like(w))))()
 
         # -------------------
         # TRUE gradients
 
         def f_jax(x, w):
             if transpose:
-                r = vector_csr(x, w, indices, shape=shape)
+                r = vector_csr(x, w, indices, shape)
             else:
-                r = csr_vector(x, w, indices, shape=shape)
+                r = csr_vector(x, w, indices, shape)
             return r
 
-        o2, r2 = jax.jvp(f_jax, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
-        self.assertTrue(jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3))
-        self.assertTrue(jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3))
+        o2, r2 = jax.jit(lambda: jax.jvp(f_jax, (x, w), (jnp.ones_like(x), jnp.ones_like(w))))()
 
-    def test_jvp(self):
-        for replace in [True, False]:
-            for transpose in [True, False]:
-                for homo_w in [True, False]:
-                    print(f'replace = {replace}, transpose = {transpose}, homo_w = {homo_w}')
-                    self._test_jvp(homo_w=homo_w, replace=replace, transpose=transpose)
+        assert (jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3))
+        assert (jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3))
+
+    @pytest.mark.parametrize('replace', [True, False])
+    @pytest.mark.parametrize('transpose', [True, False])
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_jvp(self, replace, transpose, homo_w):
+        print(f'replace = {replace}, transpose = {transpose}, homo_w = {homo_w}')
+        self._test_jvp(homo_w=homo_w, replace=replace, transpose=transpose)
 
 
-@pytest.mark.skip('Not implemented')
-class TestMatrix(unittest.TestCase):
-    def test_matrix_csr(self):
+class TestMatrix:
+    @pytest.mark.parametrize('replace', [True, False])
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_matrix_csr(self, replace, homo_w):
         k, m, n = 10, 20, 40
         x = bst.random.rand(k, m)
 
-        for replace in [True, False]:
-            indices = generate_data(m, n, 8, replace=replace)
+        indices = generate_data(m, n, 8, replace=replace)
 
-            for homo_w in [True, False]:
-                print(f'replace = {replace}, homo_w = {homo_w}')
-                data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
-                csr = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
-                y = x @ csr
-                y2 = matrix_csr(x, csr.data, indices, [m, n])
-                self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+        print(f'replace = {replace}, homo_w = {homo_w}')
+        data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
+        csr = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
+        y = x @ csr
+        y2 = matrix_csr(x, csr.data, indices, (m, n))
+        assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
-    def test_csr_matrix(self):
+    @pytest.mark.parametrize('replace', [True, False])
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_csr_matrix(self, replace, homo_w):
         m, n, k = 20, 40, 10
         matrix = bst.random.rand(n, k)
 
-        for replace in [True, False]:
-            indices = generate_data(m, n, 8, replace=replace)
+        indices = generate_data(m, n, 8, replace=replace)
 
-            for homo_w in [True, False]:
-                print(f'replace = {replace}, homo_w = {homo_w}')
-                data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
-                csr = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
-                y = csr @ matrix
-                y2 = csr_matrix(matrix, csr.data, indices, [m, n])
-                self.assertTrue(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+        print(f'replace = {replace}, homo_w = {homo_w}')
+        data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
+        csr = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
+        y1 = csr @ matrix
+        y2 = csr_matrix(matrix, csr.data, indices, (m, n))
+        assert (jnp.allclose(y1, y2, rtol=1e-3, atol=1e-3))

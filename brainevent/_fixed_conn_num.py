@@ -860,16 +860,16 @@ class FixedPreNumConn(FixedNumConn):
                     data,
                     self.indices,
                     other,
-                    shape=self.shape,
-                    transpose=False,
+                    shape=self.shape[::-1],
+                    transpose=True,
                 )[0]
             elif other.ndim == 2:
                 return fixed_num_mm_p_call(
                     data,
                     self.indices,
                     other,
-                    shape=self.shape,
-                    transpose=False,
+                    shape=self.shape[::-1],
+                    transpose=True,
                 )[0]
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -911,8 +911,8 @@ class FixedPreNumConn(FixedNumConn):
                     data,
                     self.indices,
                     other,
-                    shape=self.shape,
-                    transpose=True,
+                    shape=self.shape[::-1],
+                    transpose=False,
                 )[0]
             elif other.ndim == 2:
                 other = other.T
@@ -920,8 +920,8 @@ class FixedPreNumConn(FixedNumConn):
                     data,
                     self.indices,
                     other,
-                    shape=self.shape,
-                    transpose=True,
+                    shape=self.shape[::-1],
+                    transpose=False,
                 )[0]
                 return r.T
             else:
