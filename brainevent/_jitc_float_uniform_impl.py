@@ -2160,6 +2160,7 @@ float_jitc_mm_uniform_p.def_gpu_kernel(
     warp=_jitc_mm_uniform_warp_kernel_generator,
     pallas=_jitc_mm_uniform_pallas_kernel_generator,
 )
+float_jitc_mm_uniform_p.def_tpu_kernel(_jitc_mm_uniform_pallas_kernel_generator)
 float_jitc_mm_uniform_p.def_jvp_rule2(
     _jitc_mm_uniform_jvp_wlow,
     _jitc_mm_uniform_jvp_whigh,

@@ -406,6 +406,12 @@ class XLACustomKernel:
             TypeError: If `kernel_generator` is not an instance of
                        `KernelGenerator` or `KernelGenerator`.
         """
+        if default is not None:
+            assert isinstance(default, str), (
+                f'The `default` should be a string, but got '
+                f'{type(default)}'
+            )
+
         if len(kernel_generator) == 0:
             raise TypeError('The `kernel_generator` should provide at least one GPU kernel generator, '
                             'such as "warp" or "pallas".')
@@ -416,15 +422,19 @@ class XLACustomKernel:
                 register_pallas_gpu_translation(self.primitive, kernel_generator['pallas'])
             else:
                 raise TypeError('The `kernel_generator` should provide only one GPU kernel generator, '
-                            'such as "warp" or "pallas".')
+                                'such as "warp" or "pallas".')
         else:
             self.def_multiple_gpu_kernels(default=default, **kernel_generator)
 
     def def_multiple_gpu_kernels(self, default: str = None, **kernel_generator):
-        assert default is not None, ('The `default` should be provided when '
-                                     'multiple `kernel_generator` is provided.')
-        assert default in kernel_generator, ('The `default` should be one of '
-                                             f'{list(kernel_generator.keys())}.')
+        assert default is not None, (
+            'The `default` should be provided when '
+            'multiple `kernel_generator` is provided.'
+        )
+        assert default in kernel_generator, (
+            'The `default` should be one of '
+            f'{list(kernel_generator.keys())}.'
+        )
         self._gpu_kernel_choice = GPUKernelChoice(
             default=default,
             warp_kernel=kernel_generator.get('warp'),
