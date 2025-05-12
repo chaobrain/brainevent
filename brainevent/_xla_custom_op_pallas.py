@@ -31,17 +31,95 @@ __all__ = [
 
 
 class PallasKernel(NamedTuple):
+    """
+    A named tuple that encapsulates a Pallas kernel and its configuration parameters.
+
+    PallasKernel serves as a container for a compiled Pallas kernel function along with
+    the configuration that was used to create it. This allows for introspection of the
+    kernel's properties after creation and facilitates kernel reuse.
+
+    Attributes:
+        kernel: Callable
+            The compiled Pallas kernel function that can be called with input tensors
+            to perform accelerator-specific computations. This is the actual executable
+            that will run on the hardware accelerator (GPU/TPU).
+
+        input_output_aliases: Dict[int, int], optional
+            A dictionary mapping input buffer indices to output buffer indices,
+            indicating where memory can be reused between inputs and outputs.
+            This optimization allows the kernel to avoid unnecessary memory allocation.
+            Default is None.
+
+        tile: Sequence[int], optional
+            The execution grid dimensions used for this kernel, defining how many
+            parallel instances of the kernel will be launched. For example, [128, 128]
+            would create a 2D grid of 128×128 kernel instances.
+            Default is None.
+
+        outs: Sequence[jax.ShapeDtypeStruct], optional
+            Shape and dtype specifications for each output tensor produced by the kernel.
+            These structures define the expected outputs and are used by JAX for type
+            checking and shape inference.
+            Default is None.
+    """
     kernel: Kernel
+    input_output_aliases: Dict[int, int] = None
+    tile: Sequence[int] = None
+    outs: Sequence[jax.ShapeDtypeStruct] = None
 
 
 def pallas_kernel(
     fn: Callable = None,
     input_output_aliases: Dict[int, int] = None,
-    tile: Sequence[int] = None,
+    tile: Sequence[int] = (),
     outs: Sequence[jax.ShapeDtypeStruct] = None,
 ) -> Union[PallasKernel, Callable[[Callable], PallasKernel]]:
+    """
+    Wraps a function to create a Pallas kernel for accelerator execution.
+
+    This decorator transforms a Python function into a Pallas kernel that can be executed
+    on accelerator hardware (GPU/TPU). It handles the configuration of the execution grid,
+    memory aliasing, and output specifications required for Pallas kernels.
+
+    The function can be used either as a direct decorator or with parameters:
+
+    ```python
+    # Direct decorator usage
+    @pallas_kernel(tile=[128, 128], outs=[jax.ShapeDtypeStruct(...)])
+    def my_kernel(state):
+        # kernel implementation
+        pass
+
+    # Function call usage
+    kernel = pallas_kernel(my_kernel_fn, tile=[128, 128], outs=[...])
+    ```
+
+    Args:
+        fn: The function to be wrapped as a Pallas kernel. When used as a decorator
+            with arguments, this will be None.
+        input_output_aliases: Dictionary mapping input indices to output indices for
+            buffer reuse. Indicates that the input at key should be reused as the
+            output at value.
+        tile: Sequence of integers specifying the execution grid dimensions.
+            Defines how many kernel instances will be launched in parallel.
+        outs: Sequence of jax.ShapeDtypeStruct objects describing the shape and dtype
+            of each output tensor.
+
+    Returns:
+        If fn is provided, returns a PallasKernel instance wrapping the function.
+        If fn is None (when used as a decorator with arguments), returns a decorator
+        function that will wrap the decorated function.
+
+    Raises:
+        AssertionError: If tile is not a tuple or list, or if outs is not specified.
+    """
     if fn is None:
-        raise NotImplementedError
+        return lambda f: pallas_kernel(
+            f,
+            input_output_aliases=input_output_aliases,
+            tile=tile,
+            outs=outs,
+        )
 
     assert isinstance(tile, (tuple, list)), 'grid must be a tuple or list of integers'
     assert outs is not None, 'outs must be specified'
@@ -56,7 +134,12 @@ def pallas_kernel(
         )
         return fn_call(*args)
 
-    return PallasKernel(kernel=kernel)
+    return PallasKernel(
+        kernel=kernel,
+        input_output_aliases=input_output_aliases,
+        tile=tile,
+        outs=outs,
+    )
 
 
 def register_pallas_gpu_translation(

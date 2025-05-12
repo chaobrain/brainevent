@@ -473,13 +473,7 @@ def fixed_num_mv_p_call(
 
 fixed_num_mv_p = XLACustomKernel('fixed_num_mv')
 fixed_num_mv_p.def_cpu_kernel(_fixed_num_mv_numba_kernel_generator)
-fixed_num_mv_p.def_gpu_kernel(
-    GPUKernelChoice(
-        default='pallas',
-        # warp_kernel=WarpKernelGenerator(_fixed_num_mv_warp_kernel_generator),  # not optimized
-        pallas_kernel=_fixed_num_mv_pallas_kernel_generator,
-    )
-)
+fixed_num_mv_p.def_gpu_kernel(pallas=_fixed_num_mv_pallas_kernel_generator)
 fixed_num_mv_p.def_tpu_kernel(_fixed_num_mv_pallas_kernel_generator)
 fixed_num_mv_p.def_jvp_rule2(_fixed_num_mv_jvp_weights, None, _fixed_num_mv_jvp_vector, None)
 fixed_num_mv_p.def_transpose_rule(_fixed_num_mv_transpose_rule)
@@ -840,13 +834,7 @@ def fixed_num_mm_p_call(
 
 fixed_num_mm_p = XLACustomKernel('fixed_num_mm')
 fixed_num_mm_p.def_cpu_kernel(_fixed_num_mm_numba_kernel_generator)
-fixed_num_mm_p.def_gpu_kernel(
-    GPUKernelChoice(
-        default='pallas',
-        # warp_kernel=WarpKernelGenerator(_fixed_num_mv_warp_kernel_generator),
-        pallas_kernel=_fixed_num_mm_pallas_kernel_generator,
-    )
-)
+fixed_num_mm_p.def_gpu_kernel(pallas=_fixed_num_mm_pallas_kernel_generator)
 fixed_num_mm_p.def_tpu_kernel(_fixed_num_mm_pallas_kernel_generator)
 fixed_num_mm_p.def_jvp_rule2(_fixed_num_mm_jvp_weights, None, _fixed_num_mm_jvp_matrix, None)
 fixed_num_mm_p.def_transpose_rule(_fixed_num_mm_transpose_rule)

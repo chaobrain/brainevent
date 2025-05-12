@@ -605,13 +605,7 @@ def event_fixed_num_mv_p_call(
 
 event_fixed_num_mv_p = XLACustomKernel('event_fixed_num_mv')
 event_fixed_num_mv_p.def_cpu_kernel(_event_fixed_num_mv_numba_kernel_generator)
-event_fixed_num_mv_p.def_gpu_kernel(
-    GPUKernelChoice(
-        default='pallas',
-        # warp_kernel=WarpKernelGenerator(_event_fixed_num_mv_warp_kernel_generator),
-        pallas_kernel=_event_fixed_num_mv_pallas_kernel_generator
-    )
-)
+event_fixed_num_mv_p.def_gpu_kernel(pallas=_event_fixed_num_mv_pallas_kernel_generator)
 event_fixed_num_mv_p.def_tpu_kernel(_event_fixed_num_mv_pallas_kernel_generator)
 event_fixed_num_mv_p.def_jvp_rule2(_event_fixed_num_mv_jvp_weights, None, _event_fixed_num_mv_jvp_spikes, None)
 event_fixed_num_mv_p.def_transpose_rule(_event_fixed_num_mv_transpose_rule)
@@ -991,7 +985,7 @@ def event_fixed_num_mm_p_call(
 
 event_fixed_num_mm_p = XLACustomKernel('event_fixed_num_mm')
 event_fixed_num_mm_p.def_cpu_kernel(_event_fixed_num_mm_numba_kernel_generator)
-event_fixed_num_mm_p.def_gpu_kernel(_event_fixed_num_mm_pallas_kernel_generator)
+event_fixed_num_mm_p.def_gpu_kernel(pallas=_event_fixed_num_mm_pallas_kernel_generator)
 event_fixed_num_mm_p.def_tpu_kernel(_event_fixed_num_mm_pallas_kernel_generator)
 event_fixed_num_mm_p.def_jvp_rule2(_event_fixed_num_mm_jvp_weights, None, _event_fixed_num_mm_jvp_matrix, None)
 event_fixed_num_mm_p.def_transpose_rule(_event_fixed_num_mm_transpose_rule)

@@ -819,11 +819,9 @@ def float_jitc_homo_matrix_p_call(
 float_jitc_homo_matrix_p = XLACustomKernel('float_jitc_homo_matrix')
 float_jitc_homo_matrix_p.def_cpu_kernel(_jitc_homo_matrix_numba_kernel_generator)
 float_jitc_homo_matrix_p.def_gpu_kernel(
-    GPUKernelChoice(
-        default='warp',
-        warp_kernel=_jitc_homo_matrix_warp_kernel_generator,
-        pallas_kernel=_jitc_homo_matrix_pallas_kernel_generator
-    )
+    default='warp',
+    warp=_jitc_homo_matrix_warp_kernel_generator,
+    pallas=_jitc_homo_matrix_pallas_kernel_generator
 )
 float_jitc_homo_matrix_p.def_tpu_kernel(_jitc_homo_matrix_pallas_kernel_generator)
 float_jitc_homo_matrix_p.def_jvp_rule2(_jitc_homo_matrix_jvp_weight, None, None)
@@ -1579,11 +1577,9 @@ def float_jitc_mv_homo_p_call(
 float_jitc_mv_homo_p = XLACustomKernel('float_jitc_mv_homo')
 float_jitc_mv_homo_p.def_cpu_kernel(_jitc_mv_homo_numba_kernel_generator)
 float_jitc_mv_homo_p.def_gpu_kernel(
-    GPUKernelChoice(
-        default='warp',
-        warp_kernel=_jitc_mv_homo_warp_kernel_generator,
-        pallas_kernel=_jitc_mv_homo_pallas_kernel_generator,
-    )
+    default='warp',
+    warp=_jitc_mv_homo_warp_kernel_generator,
+    pallas=_jitc_mv_homo_pallas_kernel_generator,
 )
 float_jitc_mv_homo_p.def_tpu_kernel(_jitc_mv_homo_pallas_kernel_generator)
 float_jitc_mv_homo_p.def_jvp_rule2(
@@ -2196,11 +2192,9 @@ def float_jitc_mm_homo_p_call(
 float_jitc_mm_homo_p = XLACustomKernel('float_jitc_mm_homo')
 float_jitc_mm_homo_p.def_cpu_kernel(_jitc_mm_homo_numba_kernel_generator)
 float_jitc_mm_homo_p.def_gpu_kernel(
-    GPUKernelChoice(
-        default='warp',
-        warp_kernel=_jitc_mm_homo_warp_kernel_generator,
-        pallas_kernel=_jitc_mm_homo_pallas_kernel_generator,
-    )
+    warp=_jitc_mm_homo_warp_kernel_generator,
+    pallas=_jitc_mm_homo_pallas_kernel_generator,
+    default='warp',
 )
 float_jitc_mm_homo_p.def_tpu_kernel(_jitc_mm_homo_pallas_kernel_generator)
 float_jitc_mm_homo_p.def_jvp_rule2(

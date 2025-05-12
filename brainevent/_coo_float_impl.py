@@ -349,7 +349,7 @@ def coomv_p_call(
 
 coomv_p = XLACustomKernel('coomv')
 coomv_p.def_cpu_kernel(_coomv_numba_kernel_generator)
-coomv_p.def_gpu_kernel(_coomv_warp_kernel_generator)
+coomv_p.def_gpu_kernel(warp=_coomv_warp_kernel_generator)
 coomv_p.def_jvp_rule2(_coomv_jvp_weights, None, None, _coomv_jvp_vector)
 coomv_p.def_transpose_rule(_coomv_transpose_rule)
 coomv_p.def_batching_rule(_coomv_batching)
@@ -627,7 +627,7 @@ def coomm_p_call(
 
 coomm_p = XLACustomKernel('coomm')
 coomm_p.def_cpu_kernel(_coomm_numba_kernel_generator)
-coomm_p.def_gpu_kernel(_coomm_warp_kernel_generator)
+coomm_p.def_gpu_kernel(warp=_coomm_warp_kernel_generator)
 coomm_p.def_jvp_rule2(_coomm_jvp_left, None, None, _coomm_jvp_right)
 coomm_p.def_transpose_rule(_coomm_transpose_rule)
 coomm_p.def_batching_rule(coomm_batching)

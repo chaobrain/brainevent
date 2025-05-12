@@ -377,6 +377,11 @@ def _jitc_mv_homo_pallas_kernel_generator(
         if tiled:
             block_size = generate_block_dim(dim, maximum=128)
 
+            @pallas_kernel(
+                outs=kwargs['outs'],
+                tile=(pl.cdiv(dim, block_size),),
+                input_output_aliases={4: 0},
+            )
             def kernel(weight_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
                 num_row = vector_ref.shape[0]
                 weight = weight_ref[0]
@@ -405,14 +410,13 @@ def _jitc_mv_homo_pallas_kernel_generator(
                 )[-1]
                 pl.store(post_ref, i_cols, out, mask=i_col_mask)
 
-            return pallas_kernel(
-                kernel,
-                outs=kwargs['outs'],
-                tile=(pl.cdiv(dim, block_size),),
-                input_output_aliases={4: 0},
-            )
 
         else:
+            @pallas_kernel(
+                outs=kwargs['outs'],
+                tile=(dim,),
+                input_output_aliases={4: 0},
+            )
             def kernel(weight_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
                 num_row = vector_ref.shape[0]
                 weight = weight_ref[0]
@@ -437,15 +441,13 @@ def _jitc_mv_homo_pallas_kernel_generator(
                 )
                 post_ref[i_col] = r
 
-            return pallas_kernel(
-                kernel,
-                outs=kwargs['outs'],
-                tile=(dim,),
-                input_output_aliases={4: 0},
-            )
-
 
     else:
+        @pallas_kernel(
+            outs=kwargs['outs'],
+            tile=(dim,),
+            input_output_aliases={4: 0},
+        )
         def kernel(weight_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
             num_col = post_ref.shape[0]
             weight = weight_ref[0]
@@ -469,12 +471,7 @@ def _jitc_mv_homo_pallas_kernel_generator(
                     (rng.random_integers(0, clen0), rng)
                 )
 
-        return pallas_kernel(
-            kernel,
-            outs=kwargs['outs'],
-            tile=(dim,),
-            input_output_aliases={4: 0},
-        )
+    return kernel
 
 
 def _jitc_mv_homo_jvp_v(
@@ -705,11 +702,9 @@ def event_jitc_mv_homo_p_call(
 event_jitc_mv_homo_p = XLACustomKernel('event_jitc_mv_homo')
 event_jitc_mv_homo_p.def_cpu_kernel(_jitc_mv_homo_numba_kernel_generator)
 event_jitc_mv_homo_p.def_gpu_kernel(
-    GPUKernelChoice(
-        default='warp',
-        warp_kernel=_jitc_mv_homo_warp_kernel_generator,
-        pallas_kernel=_jitc_mv_homo_pallas_kernel_generator,
-    )
+    default='warp',
+    warp=_jitc_mv_homo_warp_kernel_generator,
+    pallas=_jitc_mv_homo_pallas_kernel_generator,
 )
 event_jitc_mv_homo_p.def_tpu_kernel(_jitc_mv_homo_pallas_kernel_generator)
 event_jitc_mv_homo_p.def_jvp_rule2(_jitc_mv_homo_jvp_weights, None, _jitc_mv_homo_jvp_v, None, None)
@@ -1327,11 +1322,9 @@ def event_jitc_mm_homo_p_call(
 event_jitc_mm_homo_p = XLACustomKernel('event_jitc_mm_homo')
 event_jitc_mm_homo_p.def_cpu_kernel(_jitc_mm_homo_numba_kernel_generator)
 event_jitc_mm_homo_p.def_gpu_kernel(
-    GPUKernelChoice(
-        default='warp',
-        warp_kernel=_jitc_mm_homo_warp_kernel_generator,
-        pallas_kernel=_jitc_mm_homo_pallas_kernel_generator,
-    )
+    default='warp',
+    warp=_jitc_mm_homo_warp_kernel_generator,
+    pallas=_jitc_mm_homo_pallas_kernel_generator,
 )
 event_jitc_mm_homo_p.def_tpu_kernel(_jitc_mm_homo_pallas_kernel_generator)
 event_jitc_mm_homo_p.def_jvp_rule2(_jitc_mm_homo_jvp_w, None, _jitc_mm_homo_jvp_B, None, None)

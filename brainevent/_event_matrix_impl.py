@@ -305,12 +305,7 @@ def matrix_event_mm_p_call(weights, spikes, *, float_as_event: bool):
 
 matrix_event_mm_p = XLACustomKernel('matrix_event_mm')
 matrix_event_mm_p.def_cpu_kernel(_matrix_event_mm_cpu_kernel_generator)
-matrix_event_mm_p.def_gpu_kernel(
-    GPUKernelChoice(
-        default='warp',
-        warp_kernel=_matrix_event_mm_gpu_kernel_generator,
-    )
-)
+matrix_event_mm_p.def_gpu_kernel(warp=_matrix_event_mm_gpu_kernel_generator)
 matrix_event_mm_p.def_jvp_rule2(_matrix_event_mm_jvp_weights, _matrix_event_mm_jvp_spikes)
 matrix_event_mm_p.def_transpose_rule(_matrix_event_mm_transpose_rule)
 matrix_event_mm_p.def_batching_rule(_matrix_event_mm_batching)
@@ -539,12 +534,7 @@ def event_matrix_mm_p_call(spikes, weights, *, float_as_event: bool):
 
 event_matrix_mm_p = XLACustomKernel('event_matrix_mm', )
 event_matrix_mm_p.def_cpu_kernel(_event_matrix_mm_cpu_kernel_generator)
-event_matrix_mm_p.def_gpu_kernel(
-    GPUKernelChoice(
-        default='warp',
-        warp_kernel=_event_matrix_mm_gpu_kernel_generator,
-    )
-)
+event_matrix_mm_p.def_gpu_kernel(warp=_event_matrix_mm_gpu_kernel_generator)
 event_matrix_mm_p.def_jvp_rule2(_event_matrix_mm_jvp_spikes, _event_matrix_mm_jvp_weights, )
 event_matrix_mm_p.def_transpose_rule(_event_matrix_mm_transpose_rule)
 event_matrix_mm_p.def_batching_rule(_event_matrix_mm_batching)

@@ -851,11 +851,9 @@ def event_csrmv_p_call(
 event_csrmv_p = XLACustomKernel('event_csrmv')
 event_csrmv_p.def_cpu_kernel(_event_csrmv_numba_kernel_generator)
 event_csrmv_p.def_gpu_kernel(
-    GPUKernelChoice(
-        default='pallas',
-        warp_kernel=_event_csrmv_warp_kernel_generator,
-        pallas_kernel=_event_csrmv_pallas_tiled_kernel_generator,
-    )
+    default='pallas',
+    warp=_event_csrmv_warp_kernel_generator,
+    pallas=_event_csrmv_pallas_tiled_kernel_generator,
 )
 event_csrmv_p.def_tpu_kernel(_event_csrmv_pallas_tiled_kernel_generator)
 event_csrmv_p.def_jvp_rule2(_event_csrmv_jvp_weights, None, None, _event_csrmv_jvp_v)
@@ -1676,11 +1674,9 @@ def event_csrmm_p_call(
 event_csrmm_p = XLACustomKernel('event_csrmm')
 event_csrmm_p.def_cpu_kernel(_event_csrmm_numba_kernel_generator)
 event_csrmm_p.def_gpu_kernel(
-    GPUKernelChoice(
-        default='pallas',
-        warp_kernel=_event_csrmm_warp_kernel_generator,
-        pallas_kernel=_event_csrmm_pallas_kernel_generator,
-    )
+    default='pallas',
+    warp=_event_csrmm_warp_kernel_generator,
+    pallas=_event_csrmm_pallas_kernel_generator,
 )
 event_csrmm_p.def_tpu_kernel(_event_csrmm_pallas_kernel_generator)
 event_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
