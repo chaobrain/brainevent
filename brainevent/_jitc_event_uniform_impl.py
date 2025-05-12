@@ -1353,10 +1353,10 @@ def _jitc_mm_uniform_transpose_rules(
         )
 
 
-def _batching_axis0(args, axes, **kwargs):
+def _batching_axis1(args, axis=1, **kwargs):
     assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
-    batch_size, m, n = args[3].shape
-    B = jnp.transpose(args[3], (1, 0, 2)).reshape(m, batch_size * n)
+    m, maybe_batch1, maybe_batch2 = args[3].shape
+    B = args[3].reshape(m, maybe_batch1 * maybe_batch2)
     r = event_jitc_mm_uniform_p_call(
         args[0],
         args[1],
@@ -1367,29 +1367,22 @@ def _batching_axis0(args, axes, **kwargs):
         transpose=kwargs['transpose'],
         corder=kwargs['corder'],
     )
-    r = jnp.reshape(r[0], [r[0].shape[0], batch_size, n])
-    return [r], [1]
+    r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
+    return [r], [axis]
 
 
-def _jitc_mm_uniform_batching(
-    args,
-    axes,
-    **kwargs
-):
+def _jitc_mm_uniform_batching(args, axes, **kwargs):
     if tuple(axes) == (None, None, None, 0, None, None):
-        return _batching_axis0(args, axes, **kwargs)
-
-    elif tuple(axes) == (None, None, None, 1, None, None):
         assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
         args = list(args)
         args[3] = jnp.transpose(args[3], (1, 0, 2))
-        return _batching_axis0(args, axes, **kwargs)
+        return _batching_axis1(args, **kwargs)
 
     elif tuple(axes) == (None, None, None, 1, None, None):
-        assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
-        args = list(args)
-        args[3] = jnp.transpose(args[3], (2, 0, 1))
-        return _batching_axis0(args, axes, **kwargs)
+        return _batching_axis1(args, **kwargs)
+
+    elif tuple(axes) == (None, None, None, 2, None, None):
+        return _batching_axis1(args, axis=2, **kwargs)
 
     else:
         return general_batching_rule(event_jitc_mm_uniform_p, args, axes, **kwargs)

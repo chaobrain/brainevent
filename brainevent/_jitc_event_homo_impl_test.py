@@ -14,33 +14,15 @@
 # ==============================================================================
 
 
-import os
-
-os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
-
-import brainevent
 import brainstate
 import brainunit as u
 import jax
 import jax.numpy as jnp
 import pytest
 
+import brainevent
+from brainevent._test_util import allclose, gen_events, ones_like
 
-def gen_events(shape, prob=0.5, asbool=True):
-    events = brainstate.random.random(shape) < prob
-    if not asbool:
-        events = jnp.asarray(events, dtype=float)
-    return brainevent.EventArray(events)
-
-
-def ones_like(x):
-    return jax.tree.map(jnp.ones_like, x)
-
-
-def allclose(x, y, rtol=1e-4, atol=1e-4):
-    x = x.data if isinstance(x, brainevent.EventArray) else x
-    y = y.data if isinstance(y, brainevent.EventArray) else y
-    return jnp.allclose(x, y, rtol=rtol, atol=atol)
 
 
 class Test_JITC_RC_Conversion:
