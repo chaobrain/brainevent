@@ -25,7 +25,7 @@ import jax.numpy as jnp
 from ._compatible_import import JAXSparse
 from ._coo import COO
 from ._event import EventArray
-from ._fixed_conn_num_event_impl import event_fixed_num_mv_p_call
+from ._fixed_conn_num_event_impl import event_fixed_num_mv_p_call, event_fixed_num_mm_p_call
 from ._fixed_conn_num_float_impl import fixed_num_mv_p_call, fixed_num_mm_p_call
 from ._misc import _coo_todense, COOInfo
 from ._typing import Data, MatrixShape, Index
@@ -284,7 +284,7 @@ class FixedPostNumConn(FixedNumConn):
              [4. 3.]]
         """
         pre_ids, post_ids, spinfo = fixed_post_num_to_coo(self)
-        return _coo_todense(self.data, pre_ids, post_ids, spinfo=spinfo)
+        return _coo_todense(self.data.flatten(), pre_ids, post_ids, spinfo=spinfo)
 
     def tocoo(self) -> COO:
         """
@@ -432,13 +432,14 @@ class FixedPostNumConn(FixedNumConn):
                     float_as_event=True,
                 )[0]
             elif other.ndim == 2:
-                return _event_perfect_ellmm(
+                return event_fixed_num_mm_p_call(
                     data,
                     self.indices,
                     other,
                     shape=self.shape,
                     transpose=False,
-                )
+                    float_as_event=True,
+                )[0]
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -479,16 +480,18 @@ class FixedPostNumConn(FixedNumConn):
                     other,
                     shape=self.shape,
                     transpose=True,
+                    float_as_event=True
                 )[0]
             elif other.ndim == 2:
                 other = other.T
-                r = _event_perfect_ellmm(
+                r = event_fixed_num_mm_p_call(
                     data,
                     self.indices,
                     other,
                     shape=self.shape,
                     transpose=True,
-                )
+                    float_as_event=True,
+                )[0]
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -686,7 +689,7 @@ class FixedPreNumConn(FixedNumConn):
              [0. 0. 6.]]
         """
         pre_ids, post_ids, spinfo = fixed_pre_num_to_coo(self)
-        return _coo_todense(self.data, pre_ids, post_ids, spinfo=spinfo)
+        return _coo_todense(self.data.flatten(), pre_ids, post_ids, spinfo=spinfo)
 
     def tocoo(self) -> COO:
         """
@@ -834,21 +837,23 @@ class FixedPreNumConn(FixedNumConn):
         if isinstance(other, EventArray):
             other = other.data
             if other.ndim == 1:
-                return _event_perfect_ellmv(
+                return event_fixed_num_mv_p_call(
                     data,
                     self.indices,
                     other,
-                    shape=self.shape,
-                    transpose=False,
-                )
+                    shape=self.shape[::-1],
+                    transpose=True,
+                    float_as_event=True,
+                )[0]
             elif other.ndim == 2:
-                return _event_perfect_ellmm(
+                return event_fixed_num_mm_p_call(
                     data,
                     self.indices,
                     other,
-                    shape=self.shape,
-                    transpose=False,
-                )
+                    shape=self.shape[::-1],
+                    transpose=True,
+                    float_as_event=True,
+                )[0]
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -883,22 +888,24 @@ class FixedPreNumConn(FixedNumConn):
         if isinstance(other, EventArray):
             other = other.data
             if other.ndim == 1:
-                return _event_perfect_ellmv(
+                return event_fixed_num_mv_p_call(
                     data,
                     self.indices,
                     other,
-                    shape=self.shape,
-                    transpose=True,
-                )
+                    shape=self.shape[::-1],
+                    transpose=False,
+                    float_as_event=True,
+                )[0]
             elif other.ndim == 2:
                 other = other.T
-                r = _event_perfect_ellmm(
+                r = event_fixed_num_mm_p_call(
                     data,
                     self.indices,
                     other,
-                    shape=self.shape,
-                    transpose=True,
-                )
+                    shape=self.shape[::-1],
+                    transpose=False,
+                    float_as_event=True,
+                )[0]
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
