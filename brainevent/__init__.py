@@ -28,10 +28,9 @@ from ._jitc_normal import JITCNormalR, JITCNormalC
 from ._jitc_uniform import JITCUniformR, JITCUniformC
 from ._pallas_random import LFSR88RNG, LFSR113RNG, LFSR128RNG
 from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
-from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
-from ._xla_custom_op_pallas import PallasKernelGenerator
+from ._xla_custom_op_numba import numba_kernel
 from ._xla_custom_op_util import defjvp, general_batching_rule
-from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type, warp_kernel
+from ._xla_custom_op_warp import warp_kernel, dtype_to_warp_type, jaxinfo_to_warpinfo
 
 __all__ = [
     # --- global configuration --- #
@@ -70,18 +69,16 @@ __all__ = [
     'general_batching_rule',
 
     # 3. Numba kernel
-    'NumbaKernelGenerator',
     'set_numba_environ',
     'numba_environ_context',
     'numba_kernel',
 
     # 4. Warp kernel
-    'WarpKernelGenerator',
-    'dtype_to_warp_type',
     'warp_kernel',
+    'dtype_to_warp_type',
+    'jaxinfo_to_warpinfo',
 
     # 5. Pallas kernel
-    'PallasKernelGenerator',
     'LFSR88RNG',
     'LFSR113RNG',
     'LFSR128RNG',

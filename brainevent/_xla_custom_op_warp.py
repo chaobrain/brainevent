@@ -27,9 +27,9 @@ from jax.interpreters import mlir
 from jax.interpreters.mlir import ir
 
 from ._compatible_import import Primitive, register_custom_call, custom_call
+from ._typing import KernelGenerator
 
 __all__ = [
-    'WarpKernelGenerator',
     'dtype_to_warp_type',
     'jaxinfo_to_warpinfo',
     'warp_kernel',
@@ -106,7 +106,7 @@ def warp_kernel(
     tile: Union[int, Sequence[int], Callable[..., Sequence[int]], Callable[..., int]] = None,
     block_dim: Union[int, Callable[..., int], None] = None,
     input_output_aliases: Union[Dict[int, int], Callable[..., Dict[int, int]], None] = None
-) -> Union[WarpKernel, Callable[..., WarpKernel]]:
+) -> Union[WarpKernel, Callable[[Callable], WarpKernel]]:
     """
     Creates a WarpKernel by compiling the provided function with Warp.
 
@@ -170,83 +170,17 @@ def warp_kernel(
             block_dim=block_dim,
             input_output_aliases=input_output_aliases
         )
-    else:
-        if not warp_installed:
-            raise ImportError('Warp is required to compile the GPU kernel for the custom operator.')
 
-        return WarpKernel(
-            kernel=warp.kernel(fn),
-            dim=dim,
-            tile=tile,
-            block_dim=block_dim,
-            input_output_aliases=input_output_aliases
-        )
+    if not warp_installed:
+        raise ImportError('Warp is required to compile the GPU kernel for the custom operator.')
 
-
-@dataclasses.dataclass(frozen=True)
-class WarpKernelGenerator:
-    """
-    A dataclass representing a generator for Warp kernels to be used in custom JAX operations.
-
-    This class provides a wrapper around functions that generate WarpKernel instances
-    for executing optimized code on GPU. It's designed to be used with the custom operation
-    system to provide Warp-accelerated implementations of operations.
-
-    Attributes
-    ----------
-    generator : Callable[..., WarpKernel]
-        A function that generates a WarpKernel instance when called with configuration parameters.
-        This function defines the computation to be performed on the GPU backend.
-
-    Examples
-    --------
-    >>> def kernel_gen(**kwargs) -> WarpKernel:
-    ...     # Define and return a WarpKernel
-    ...     return warp_kernel(my_function, **kwargs)
-    ...
-    >>> generator = WarpKernelGenerator(generator=kernel_gen)
-    >>> kernel = generator.generate_kernel(block_dim=256)
-    """
-    __module__ = 'brainevent'
-
-    generator: Callable[..., WarpKernel]
-
-    def generate_kernel(self, **kwargs):
-        """
-        Generate a WarpKernel by calling the generator function.
-
-        Parameters
-        ----------
-        **kwargs
-            Keyword arguments passed to the generator function to configure
-            the kernel generation process.
-
-        Returns
-        -------
-        WarpKernel
-            A compiled Warp kernel ready for execution.
-        """
-        return self.generator(**kwargs)
-
-    def __call__(self, *args, **kwargs):
-        """
-        Make the WarpKernelGenerator instance callable.
-
-        This method allows using the generator instance directly as a function.
-
-        Parameters
-        ----------
-        *args
-            Positional arguments (ignored, maintained for compatibility).
-        **kwargs
-            Keyword arguments passed to the generator function.
-
-        Returns
-        -------
-        WarpKernel
-            A compiled Warp kernel ready for execution.
-        """
-        return self.generator(**kwargs)
+    return WarpKernel(
+        kernel=warp.kernel(fn),
+        dim=dim,
+        tile=tile,
+        block_dim=block_dim,
+        input_output_aliases=input_output_aliases
+    )
 
 
 def dtype_to_warp_type(dtype):
@@ -616,7 +550,7 @@ def _warp_base_type_is_compatible(warp_type, jax_ir_type):
 
 
 def _warp_gpu_lowering(
-    kernel_generator: WarpKernelGenerator,
+    kernel_generator: KernelGenerator,
     ctx,
     *args,
     **kwargs,
@@ -628,7 +562,7 @@ def _warp_gpu_lowering(
     # ------------------
     # kernels
     # ------------------
-    wp_kernel: WarpKernel = kernel_generator.generate_kernel(**kwargs)
+    wp_kernel: WarpKernel = kernel_generator(**kwargs)
     assert isinstance(wp_kernel.kernel, warp.context.Kernel), (
         f'The kernel should be a Warp '
         f'kernel. But we got {wp_kernel}'
@@ -743,7 +677,7 @@ def _warp_gpu_lowering(
 
 def register_warp_gpu_translation(
     primitive: Primitive,
-    kernel_generator: WarpKernelGenerator,
+    kernel_generator: KernelGenerator,
 ):
     """
     Register the Warp GPU translation rule for the custom operator.

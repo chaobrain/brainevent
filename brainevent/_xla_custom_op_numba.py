@@ -25,9 +25,9 @@ from jax.interpreters import mlir
 
 from ._compatible_import import register_custom_call, Primitive, custom_call
 from ._config import numba_environ
+from ._typing import KernelGenerator
 
 __all__ = [
-    'NumbaKernelGenerator',
     'numba_kernel',
 ]
 
@@ -57,7 +57,7 @@ def numba_kernel(
     input_output_aliases: Dict[int, int] = None,
     parallel: bool = False,
     **kwargs
-) -> Union[NumbaKernel, Callable[..., NumbaKernel]]:
+) -> Union[NumbaKernel, Callable[[Callable], NumbaKernel]]:
     """
     Creates a NumbaKernel by compiling the provided function with Numba.
 
@@ -125,78 +125,12 @@ def numba_kernel(
             )
 
 
-@dataclasses.dataclass(frozen=True)
-class NumbaKernelGenerator:
-    """
-    A dataclass representing a generator for Numba kernels to be used in custom JAX operations.
-
-    This class provides a wrapper around functions that generate NumbaKernel instances
-    for executing optimized code on CPU. It's designed to be used with the custom operation
-    system to provide Numba-accelerated implementations of operations.
-
-    Attributes
-    ----------
-    generator : Callable[..., NumbaKernel]
-        A function that generates a NumbaKernel instance when called with configuration parameters.
-        This function defines the computation to be performed on the CPU backend.
-
-    Examples
-    --------
-    >>> def kernel_gen(**kwargs) -> NumbaKernel:
-    ...     # Define and return a NumbaKernel
-    ...     return numba_kernel(my_function, **kwargs)
-    ...
-    >>> generator = NumbaKernelGenerator(generator=kernel_gen)
-    >>> kernel = generator.generate_kernel(parallel=True)
-    """
-    __module__ = 'brainevent'
-
-    generator: Callable[..., NumbaKernel]
-
-    def generate_kernel(self, **kwargs):
-        """
-        Generate a NumbaKernel by calling the generator function.
-
-        Parameters
-        ----------
-        **kwargs
-            Keyword arguments passed to the generator function to configure
-            the kernel generation process.
-
-        Returns
-        -------
-        NumbaKernel
-            A compiled Numba kernel ready for execution.
-        """
-        return self.generator(**kwargs)
-
-    def __call__(self, *args, **kwargs):
-        """
-        Make the NumbaKernelGenerator instance callable.
-
-        This method allows using the generator instance directly as a function.
-
-        Parameters
-        ----------
-        *args
-            Positional arguments (ignored, maintained for compatibility).
-        **kwargs
-            Keyword arguments passed to the generator function.
-
-        Returns
-        -------
-        NumbaKernel
-            A compiled Numba kernel ready for execution.
-        """
-        return self.generator(**kwargs)
-
-
 def _shape_to_layout(shape):
     return tuple(range(len(shape) - 1, -1, -1))
 
 
 def _numba_mlir_cpu_translation_rule(
-    kernel_generator: NumbaKernelGenerator,
+    kernel_generator: KernelGenerator,
     debug: bool,
     ctx,
     *ins,
@@ -207,7 +141,7 @@ def _numba_mlir_cpu_translation_rule(
 
     from numba import types, carray, cfunc  # pylint: disable=import-error
 
-    kernel = kernel_generator.generate_kernel(**kwargs)
+    kernel = kernel_generator(**kwargs)
     assert isinstance(kernel, NumbaKernel), f'The kernel should be of type NumbaKernel, but got {type(kernel)}'
 
     # output information
@@ -292,7 +226,7 @@ def numba_cpu_custom_call_target(output_ptrs, input_ptrs):
 
 def register_numba_cpu_translation(
     primitive: Primitive,
-    cpu_kernel: NumbaKernelGenerator,
+    cpu_kernel: KernelGenerator,
     debug: bool = False
 ):
     """

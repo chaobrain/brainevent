@@ -16,76 +16,52 @@
 # -*- coding: utf-8 -*-
 
 
-import dataclasses
-from typing import Callable
+import functools
+from typing import Callable, NamedTuple, Dict, Union, Sequence
 
+import jax
 from jax.interpreters import mlir
 
-from ._compatible_import import Primitive
+from ._compatible_import import Primitive, pallas as pl
+from ._typing import KernelGenerator, Kernel
 
 __all__ = [
-    'PallasKernelGenerator',
+    'pallas_kernel',
 ]
 
 
-@dataclasses.dataclass(frozen=True)
-class PallasKernelGenerator:
-    """
-    Represents a configuration for generating JAX Pallas kernels.
+class PallasKernel(NamedTuple):
+    kernel: Kernel
 
-    This class encapsulates the necessary components to define and generate
-    a JAX Pallas kernel for custom operations on GPU or TPU backends.
-    It stores the kernel generation logic, block dimension specification,
-    and optional input/output aliasing information.
 
-    Attributes:
-        generator: A callable that, when invoked with keyword arguments (like `block_dim`),
-            returns the actual Pallas kernel function. This function defines the
-            computation logic to be executed on the target hardware (GPU/TPU).
-            See the `JAX Pallas documentation <https://docs.jax.dev/en/latest/pallas/quickstart.html>`_
-            for details on writing Pallas kernels.
-        block_dim: Specifies the block dimension for the Pallas kernel. It can be:
-            - An integer: A fixed block dimension.
-            - A callable: A function that takes keyword arguments (potentially derived
-              from the operation's parameters or input shapes) and returns the
-              calculated block dimension as an integer.
-            - None: Indicates that the block dimension might be determined later or
-              is not applicable.
-        input_output_aliases: An optional dictionary or callable defining aliases
-            between input and output buffers. This can enable optimizations by allowing
-            in-place operations.
-            - A dictionary mapping input buffer indices (int) to output buffer indices (int).
-            - A callable that takes keyword arguments and returns such a dictionary.
-            - None: No specific aliasing is defined.
-    """
-    __module__ = 'brainevent'
-    generator: Callable[..., Callable]
+def pallas_kernel(
+    fn: Callable = None,
+    input_output_aliases: Dict[int, int] = None,
+    tile: Sequence[int] = None,
+    outs: Sequence[jax.ShapeDtypeStruct] = None,
+) -> Union[PallasKernel, Callable[[Callable], PallasKernel]]:
+    if fn is None:
+        raise NotImplementedError
 
-    def generate_kernel(self, **kwargs) -> Callable:
-        """
-        Generates the Pallas kernel function by invoking the stored generator.
+    assert isinstance(tile, (tuple, list)), 'grid must be a tuple or list of integers'
+    assert outs is not None, 'outs must be specified'
 
-        This method calls the `generator` callable provided during initialization,
-        passing any provided keyword arguments (`kwargs`) to it. The `generator`
-        is expected to use these arguments (e.g., `block_dim`) to configure and
-        return the final Pallas kernel function.
+    @functools.wraps(fn)
+    def kernel(*args):
+        fn_call = pl.pallas_call(
+            fn,
+            grid=tuple(tile),
+            input_output_aliases=input_output_aliases,
+            out_shape=outs,
+        )
+        return fn_call(*args)
 
-        Args:
-            **kwargs: Arbitrary keyword arguments that will be forwarded to the
-                `self.generator` callable. This typically includes `block_dim`.
-
-        Returns:
-            The generated Pallas kernel function, ready to be compiled or used.
-        """
-        return self.generator(**kwargs)
-
-    def __call__(self, *args, **kwargs):
-        return self.generator(**kwargs)
+    return PallasKernel(kernel=kernel)
 
 
 def register_pallas_gpu_translation(
     primitive: Primitive,
-    kernel_generator: PallasKernelGenerator,
+    kernel_generator: KernelGenerator,
 ):
     """
     Registers a JAX Pallas translation rule for a given primitive on the GPU platform.
@@ -132,7 +108,7 @@ def register_pallas_gpu_translation(
         """
         # Generate the specific Pallas kernel function using the determined
         # block dimension and other relevant kwargs.
-        kernel = kernel_generator.generate_kernel(**kwargs)
+        kernel = kernel_generator(**kwargs)
         # Execute the generated Pallas kernel with the input arguments.
         return kernel(*args)
 
@@ -149,7 +125,7 @@ def register_pallas_gpu_translation(
 
 def register_pallas_tpu_translation(
     primitive: Primitive,
-    kernel_generator: PallasKernelGenerator,
+    kernel_generator: KernelGenerator,
 ):
     """
     Registers a JAX Pallas translation rule for a given primitive on the TPU platform.
@@ -196,7 +172,7 @@ def register_pallas_tpu_translation(
         """
         # Generate the specific Pallas kernel function using the determined
         # block dimension and other relevant kwargs.
-        kernel = kernel_generator.generate_kernel(**kwargs)
+        kernel = kernel_generator(**kwargs)
         # Execute the generated Pallas kernel with the input arguments.
         return kernel(*args)
 
