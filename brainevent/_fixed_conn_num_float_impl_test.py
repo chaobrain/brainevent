@@ -31,7 +31,7 @@ from brainevent._test_util import (
     allclose,
     ones_like,
 )
-brainevent.set_numba_environ(parallel_if_possible=False)
+brainevent.config.numba_environ_set(parallel_if_possible=False)
 
 if brainstate.environ.get_platform() == 'cpu':
     shapes = [

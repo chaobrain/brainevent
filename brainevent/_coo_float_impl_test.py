@@ -30,7 +30,7 @@ class TestVectorCOO:
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vector_coo(self, parallel, replace, homo_w):
-        with brainevent.numba_environ_context(parallel_if_possible=parallel):
+        with brainevent.config.numba_environ_context(parallel_if_possible=parallel):
             m, n = 20, 40
             x = brainstate.random.rand(m)
             row, col = _get_coo(m, n, 0.1, replace=replace)
@@ -46,7 +46,7 @@ class TestVectorCOO:
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_coo_vector(self, parallel, replace, homo_w):
-        with brainevent.numba_environ_context(parallel_if_possible=parallel):
+        with brainevent.config.numba_environ_context(parallel_if_possible=parallel):
             m, n = 20, 40
             v = brainstate.random.rand(n)
             row, col = _get_coo(m, n, 0.1, replace=replace)
@@ -61,7 +61,7 @@ class TestVectorCOO:
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vector_coo_vmap_vector(self, parallel, replace, homo_w):
-        with brainevent.numba_environ_context(parallel_if_possible=parallel):
+        with brainevent.config.numba_environ_context(parallel_if_possible=parallel):
             n_batch, m, n = 10, 20, 40
             xs = brainstate.random.rand(n_batch, m)
             row, col = _get_coo(m, n, 0.1, replace=replace)
@@ -74,7 +74,7 @@ class TestVectorCOO:
             assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
     def _test_vjp(self, homo_w, replace, transpose):
-        with brainevent.numba_environ_context(parallel_if_possible=True):
+        with brainevent.config.numba_environ_context(parallel_if_possible=True):
             n_in = 20
             n_out = 30
             shape = (n_in, n_out)
@@ -113,7 +113,7 @@ class TestVectorCOO:
         self._test_vjp(homo_w=homo_w, replace=replace, transpose=transpose)
 
     def _test_jvp(self, homo_w, replace, transpose):
-        with brainevent.numba_environ_context(parallel_if_possible=True):
+        with brainevent.config.numba_environ_context(parallel_if_possible=True):
             n_in = 20
             n_out = 30
             shape = (n_in, n_out)
@@ -158,7 +158,7 @@ class TestMatrixCOO:
     @pytest.mark.parametrize('parallel', [True, False])
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_matrix_coo(self, parallel, homo_w):
-        with brainevent.numba_environ_context(parallel_if_possible=parallel):
+        with brainevent.config.numba_environ_context(parallel_if_possible=parallel):
             k, m, n = 10, 20, 40
             x = brainstate.random.rand(k, m)
             row, col = _get_coo(m, n, 0.1)
@@ -172,7 +172,7 @@ class TestMatrixCOO:
     @pytest.mark.parametrize('parallel', [True, False])
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_coo_matrix(self, parallel, homo_w):
-        with brainevent.numba_environ_context(parallel_if_possible=parallel):
+        with brainevent.config.numba_environ_context(parallel_if_possible=parallel):
             m, n, k = 20, 40, 10
             x = brainstate.random.rand(n, k)
             row, col = _get_coo(m, n, 0.1)
