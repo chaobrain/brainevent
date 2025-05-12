@@ -29,7 +29,7 @@ from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
 from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
 from ._xla_custom_op_pallas import PallasKernelGenerator
 from ._xla_custom_op_util import general_batching_rule
-from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator, warp_kernel
+from ._xla_custom_op_warp import dtype_to_warp_type, warp_kernel
 
 
 def _fixed_num_mv_numba_kernel_generator(
@@ -241,10 +241,10 @@ def _fixed_num_mv_pallas_kernel_generator(
                 ind = pl.load(index_ref, (i_row, pl.dslice(i_col, block_dim)), mask=mask)
                 vec = pl.load(vector_ref, ind, mask=mask)
                 if homo:
+                    return out + jnp.sum(vec)
+                else:
                     weight = pl.load(weight_ref, (i_row, pl.dslice(i_col, block_dim)), mask=mask)
                     return out + jnp.sum(weight * vec)
-                else:
-                    return out + jnp.sum(vec)
 
             i_row_sum = jax.lax.fori_loop(0, pl.cdiv(n_conn, block_dim), loop_fn, 0.)
             if homo:
@@ -364,7 +364,6 @@ def _warp_fixed_num_mv_call(
     shape: Tuple[int, int],
     transpose: bool,
 ) -> Tuple[Union[jax.Array, u.Quantity]]:
-    assert transpose, "Customized operator does not support non-transpose mode."
     out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, vector, shape, transpose)
     weights, w_unit = u.split_mantissa_unit(weights)
     vector, v_unit = u.split_mantissa_unit(vector)
@@ -457,14 +456,15 @@ def fixed_num_mv_p_call(
         A tuple containing a single element: the resulting vector after multiplication,
         which will have the same type (JAX array or Quantity) as the inputs.
     """
+    return _warp_fixed_num_mv_call(
+        weights,
+        indices,
+        vector,
+        shape=shape,
+        transpose=transpose
+    )
     if transpose:
-        return _warp_fixed_num_mv_call(
-            weights,
-            indices,
-            vector,
-            shape=shape,
-            transpose=transpose
-        )
+        pass
     else:
         return _jax_fixed_num_mv_call(
             weights,
@@ -480,7 +480,7 @@ fixed_num_mv_p.def_cpu_kernel(NumbaKernelGenerator(_fixed_num_mv_numba_kernel_ge
 fixed_num_mv_p.def_gpu_kernel(
     GPUKernelChoice(
         default='pallas',
-        warp_kernel=WarpKernelGenerator(_fixed_num_mv_warp_kernel_generator),
+        # warp_kernel=WarpKernelGenerator(_fixed_num_mv_warp_kernel_generator),  # not optimized
         pallas_kernel=PallasKernelGenerator(_fixed_num_mv_pallas_kernel_generator),
     )
 )
@@ -550,51 +550,11 @@ def _fixed_num_mm_warp_kernel_generator(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    import warp  # pylint: disable=import-outside-toplevel
-
     weight_dtype = dtype_to_warp_type(weight_info.dtype)
     matrix_dtype = dtype_to_warp_type(matrix_info.dtype)
     indices_dtype = dtype_to_warp_type(indices_info.dtype)
 
     raise NotImplementedError
-
-    # fixed pre connection number
-
-    # CSR: [k, m]
-    # matrix: [k, n]
-    #
-
-    if jnp.size(weight_info) == 1:
-        def ell_mv(
-            weights: warp.array2d(dtype=weight_dtype),
-            indices: warp.array2d(dtype=indices_dtype),
-            matrix: warp.array2d(dtype=vector_dtype),
-            _: warp.array1d(dtype=weight_dtype),
-            posts: warp.array1d(dtype=weight_dtype)
-        ):
-            i = warp.tid()
-            w = weights[0]
-            wv = w * matrix[i]
-            for j in range(indices.shape[1]):
-                posts[indices[i, j]] += wv
-
-    else:
-        def ell_mv(
-            weights: warp.array2d(dtype=weight_dtype),
-            indices: warp.array2d(dtype=indices_dtype),
-            matrix: warp.array2d(dtype=vector_dtype),
-            _: warp.array1d(dtype=weight_dtype),
-            posts: warp.array1d(dtype=weight_dtype)
-        ):
-            i = warp.tid()
-            for j in range(indices.shape[1]):
-                posts[indices[i, j]] += weights[i, j] * matrix[i]
-    dim = (
-        vector_info.shape[0]
-        if transpose else
-        indices_info.shape[0]
-    )
-    return warp_kernel(ell_mv, dim=dim, input_output_aliases={3: 0})
 
 
 def _fixed_num_mm_pallas_kernel_generator(
@@ -763,34 +723,41 @@ def _fixed_num_mm_transpose_rule(
     if ad.is_undefined_primal(matrix):
         if type(ct) is ad.Zero:
             ct_vector = ad.Zero(matrix)
+
         else:
-            ct_vector = fixed_num_mv_p_call(
+            ct_vector = fixed_num_mm_p_call(
                 weights,
                 indices,
                 ct,
                 shape=shape,
                 transpose=not transpose
             )[0]
+
         return weights, indices, ct_vector, _
     else:
         # ∂L/∂w = ∂L/∂y * ∂y/∂w
         if type(ct) is ad.Zero:
             ct_weight = ad.Zero(weights)
+
         elif homo:
-            ct_weight = fixed_num_mv_p_call(
+            ct_weight = fixed_num_mm_p_call(
                 jnp.ones([1], dtype=weight_info.dtype),
                 indices,
                 matrix,
                 shape=shape,
                 transpose=transpose
             )[0]
-            ct_weight = jnp.inner(ct, ct_weight).reshape(*weight_info.shape)
+            ct_weight = jnp.sum(ct * ct_weight).reshape(*weight_info.shape)
 
         else:
             if transpose:
-                ct_weight = jax.vmap(lambda v, ind: v * ct[ind])(matrix, indices)
+                # inputs: [k, n] @ [k, n_conn]
+                # ct: [m, n]
+                ct_weight = jax.vmap(lambda mat, ind: ct[ind] @ mat)(matrix, indices)
             else:
-                ct_weight = jax.vmap(lambda c, ind: c * matrix[ind])(ct, indices)
+                # inputs: [m, n] @ [m, n_conn]
+                # ct: [k, n]
+                ct_weight = jax.vmap(lambda c, ind: (matrix[ind] @ c))(ct, indices)
         return ct_weight, indices, matrix, _
 
 
@@ -819,7 +786,7 @@ def _fixed_num_mm_batching(args, axes, **kwargs):
     elif tuple(axes) == (None, None, 1, None):
         return _batching_base_fn(args, **kwargs)
 
-    elif tuple(axes) == (None, None, 1, None):
+    elif tuple(axes) == (None, None, 2, None):
         return _batching_base_fn(args, axis=2, **kwargs)
 
     else:

@@ -334,7 +334,7 @@ def check_fixed_conn_num_shape(
                 f'got {vector.ndim}D'
             )
             assert vector.shape[0] == n_post, (
-                f'When transpose=False, matrix shape should be (xx, ({n_post}), '
+                f'When transpose=False, matrix shape should be ({n_post}, xx), '
                 f'got {vector.shape}'
             )
             out_struct = jax.ShapeDtypeStruct((n_pre, vector.shape[1]), weights.dtype)
