@@ -21,11 +21,8 @@ import jax.numpy as jnp
 import pytest
 
 import brainevent
-from brainevent._test_util import allclose, gen_events
+from brainevent._test_util import allclose, gen_events, ones_like
 
-
-def ones_like(x):
-    return jax.tree.map(jnp.ones_like, x)
 
 
 class Test_JITC_RC_Conversion:
