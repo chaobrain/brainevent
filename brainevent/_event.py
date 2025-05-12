@@ -63,7 +63,7 @@ class EventArray(object):
     __slots__ = ('_value',)
     __module__ = 'brainevent'
 
-    def __init__(self, value, dtype: Any = None):
+    def __init__(self, value, dtype: jax.typing.DTypeLike = None):
         """
         Initialize an EventArray instance.
 
@@ -73,7 +73,7 @@ class EventArray(object):
         """
         # array value
         if isinstance(value, EventArray):
-            value = value._value
+            value = value.value
         elif isinstance(value, (tuple, list, np.ndarray)):
             value = u.math.asarray(value)
         if dtype is not None:
