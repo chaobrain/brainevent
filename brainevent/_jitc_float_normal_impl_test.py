@@ -14,13 +14,14 @@
 # ==============================================================================
 
 
+from typing import Tuple
+
 import brainstate
 import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from typing import Tuple
 
 import brainevent
 

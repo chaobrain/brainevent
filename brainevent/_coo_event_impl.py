@@ -26,9 +26,9 @@ from jax.interpreters import ad
 from ._coo_float_impl import coo_matvec, coo_matmat
 from ._typing import Data, Row, Col, MatrixShape
 from ._xla_custom_op import XLACustomKernel
-from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
+from ._xla_custom_op_numba import numba_kernel
 from ._xla_custom_op_util import general_batching_rule
-from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator, warp_kernel
+from ._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
 
 
 def event_coo_matvec(
@@ -204,10 +204,10 @@ def _event_coomv_warp_kernel_generator(
 ):
     import warp  # pylint: disable=import-outside-toplevel
 
-    weight_dtype = dtype_to_warp_type(weight_info.dtype)
-    row_dtype = dtype_to_warp_type(row_info.dtype)
-    col_dtype = dtype_to_warp_type(col_info.dtype)
-    spike_dtype = dtype_to_warp_type(vector_info.dtype)
+    weight_dtype = jaxtype_to_warptype(weight_info.dtype)
+    row_dtype = jaxtype_to_warptype(row_info.dtype)
+    col_dtype = jaxtype_to_warptype(col_info.dtype)
+    spike_dtype = jaxtype_to_warptype(vector_info.dtype)
 
     match (transpose, weight_info.size, vector_info.dtype, float_as_event):
 
@@ -602,8 +602,8 @@ def event_coomv_p_call(
 
 
 event_coomv_p = XLACustomKernel('event_coomv')
-event_coomv_p.def_cpu_kernel(NumbaKernelGenerator(_event_coomv_numba_kernel_generator))
-event_coomv_p.def_gpu_kernel(WarpKernelGenerator(_event_coomv_warp_kernel_generator))
+event_coomv_p.def_cpu_kernel(_event_coomv_numba_kernel_generator)
+event_coomv_p.def_gpu_kernel(_event_coomv_warp_kernel_generator)
 event_coomv_p.def_jvp_rule2(_event_coomv_jvp_weights, None, None, _event_coomv_jvp_vector)
 event_coomv_p.def_transpose_rule(_event_coomv_transpose_rule)
 event_coomv_p.def_batching_rule(_event_coomv_batching)
@@ -743,10 +743,10 @@ def _event_coomm_warp_kernel_generator(
 ):
     import warp  # pylint: disable=import-outside-toplevel
 
-    weight_dtype = dtype_to_warp_type(weight_info.dtype)
-    row_dtype = dtype_to_warp_type(row_info.dtype)
-    col_dtype = dtype_to_warp_type(col_info.dtype)
-    spike_dtype = dtype_to_warp_type(matrix_info.dtype)
+    weight_dtype = jaxtype_to_warptype(weight_info.dtype)
+    row_dtype = jaxtype_to_warptype(row_info.dtype)
+    col_dtype = jaxtype_to_warptype(col_info.dtype)
+    spike_dtype = jaxtype_to_warptype(matrix_info.dtype)
 
     match (transpose, weight_info.size, matrix_info.dtype, float_as_event):
 
@@ -1131,8 +1131,8 @@ def event_coomm_p_call(
 
 
 event_coomm_p = XLACustomKernel('event_coomm')
-event_coomm_p.def_cpu_kernel(NumbaKernelGenerator(_event_coomm_numba_kernel_generator))
-event_coomm_p.def_gpu_kernel(WarpKernelGenerator(_event_coomm_warp_kernel_generator))
+event_coomm_p.def_cpu_kernel(_event_coomm_numba_kernel_generator)
+event_coomm_p.def_gpu_kernel(_event_coomm_warp_kernel_generator)
 event_coomm_p.def_jvp_rule2(_event_coomm_jvp_left, None, None, _event_coomm_jvp_right)
 event_coomm_p.def_transpose_rule(_event_coomm_transpose_rule)
 event_coomm_p.def_batching_rule(_event_coomm_batching)

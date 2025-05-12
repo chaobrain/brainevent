@@ -26,10 +26,10 @@ from jax.interpreters import ad
 from ._compatible_import import pallas as pl
 from ._misc import generate_block_dim, check_fixed_conn_num_shape
 from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
-from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
-from ._xla_custom_op_pallas import PallasKernelGenerator
+from ._xla_custom_op_numba import numba_kernel
+from ._xla_custom_op_pallas import pallas_kernel
 from ._xla_custom_op_util import general_batching_rule
-from ._xla_custom_op_warp import dtype_to_warp_type, warp_kernel
+from ._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
 
 
 def _fixed_num_mv_numba_kernel_generator(
@@ -84,9 +84,9 @@ def _fixed_num_mv_warp_kernel_generator(
 ):
     import warp  # pylint: disable=import-outside-toplevel
 
-    weight_dtype = dtype_to_warp_type(weight_info.dtype)
-    vector_dtype = dtype_to_warp_type(vector_info.dtype)
-    indices_dtype = dtype_to_warp_type(indices_info.dtype)
+    weight_dtype = jaxtype_to_warptype(weight_info.dtype)
+    vector_dtype = jaxtype_to_warptype(vector_info.dtype)
+    indices_dtype = jaxtype_to_warptype(indices_info.dtype)
 
     WARP_TILE_SIZE: int = 32
 
@@ -251,16 +251,12 @@ def _fixed_num_mv_pallas_kernel_generator(
                 i_row_sum = i_row_sum * weight_ref[0]
             out_ref[i_row] = i_row_sum
 
-    def kernel(weight, indices, vector, out):
-        fn = pl.pallas_call(
-            _raw_kernel,
-            out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
-            grid=(n_pre,),
-            input_output_aliases={3: 0},
-        )
-        return [fn(weight, indices, vector, out)]
-
-    return kernel
+    return pallas_kernel(
+        _raw_kernel,
+        outs=kwargs['outs'],
+        tile=(n_pre,),
+        input_output_aliases={3: 0},
+    )
 
 
 def _fixed_num_mv_jvp_vector(
@@ -434,7 +430,7 @@ def fixed_num_mv_p_call(
     *,
     shape: Tuple[int, int],
     transpose: bool,
-) -> Tuple[Union[jax.Array, u.Quantity]]:
+):
     """Perform a sparse matrix-vector multiplication with fixed connection number.
 
     This function multiplies a sparse weight matrix against a dense vector, where the
@@ -476,15 +472,15 @@ def fixed_num_mv_p_call(
 
 
 fixed_num_mv_p = XLACustomKernel('fixed_num_mv')
-fixed_num_mv_p.def_cpu_kernel(NumbaKernelGenerator(_fixed_num_mv_numba_kernel_generator))
+fixed_num_mv_p.def_cpu_kernel(_fixed_num_mv_numba_kernel_generator)
 fixed_num_mv_p.def_gpu_kernel(
     GPUKernelChoice(
         default='pallas',
         # warp_kernel=WarpKernelGenerator(_fixed_num_mv_warp_kernel_generator),  # not optimized
-        pallas_kernel=PallasKernelGenerator(_fixed_num_mv_pallas_kernel_generator),
+        pallas_kernel=_fixed_num_mv_pallas_kernel_generator,
     )
 )
-fixed_num_mv_p.def_tpu_kernel(PallasKernelGenerator(_fixed_num_mv_pallas_kernel_generator))
+fixed_num_mv_p.def_tpu_kernel(_fixed_num_mv_pallas_kernel_generator)
 fixed_num_mv_p.def_jvp_rule2(_fixed_num_mv_jvp_weights, None, _fixed_num_mv_jvp_vector, None)
 fixed_num_mv_p.def_transpose_rule(_fixed_num_mv_transpose_rule)
 fixed_num_mv_p.def_batching_rule(_fixed_num_mv_batching)
@@ -550,9 +546,9 @@ def _fixed_num_mm_warp_kernel_generator(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    weight_dtype = dtype_to_warp_type(weight_info.dtype)
-    matrix_dtype = dtype_to_warp_type(matrix_info.dtype)
-    indices_dtype = dtype_to_warp_type(indices_info.dtype)
+    weight_dtype = jaxtype_to_warptype(weight_info.dtype)
+    matrix_dtype = jaxtype_to_warptype(matrix_info.dtype)
+    indices_dtype = jaxtype_to_warptype(indices_info.dtype)
 
     raise NotImplementedError
 
@@ -610,14 +606,12 @@ def _fixed_num_mm_pallas_kernel_generator(
 
             jax.lax.fori_loop(0, pl.cdiv(n_conn, block_k), loop_fn, None)
 
-        def kernel(weight, indices, vector, out):
-            fn = pl.pallas_call(
-                _raw_kernel,
-                out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
-                grid=(n_pre, pl.cdiv(matrix_info.shape[1], block_n)),
-                input_output_aliases={3: 0},
-            )
-            return [fn(weight, indices, vector, out)]
+        return pallas_kernel(
+            _raw_kernel,
+            outs=kwargs['outs'],
+            tile=(n_pre, pl.cdiv(matrix_info.shape[1], block_n)),
+            input_output_aliases={3: 0},
+        )
 
     else:
 
@@ -632,6 +626,7 @@ def _fixed_num_mm_pallas_kernel_generator(
             weight_ref,  # [1] or [n_pre, n_conn]
             index_ref,  # [n_pre, n_conn]
             matrix_ref,  # [k, n]
+            _,
             out_ref,  # [n_pre, n]
         ):
             i_m = pl.program_id(0)
@@ -662,15 +657,12 @@ def _fixed_num_mm_pallas_kernel_generator(
                 final_out = final_out * weight_ref[0]
             pl.store(out_ref, (i_m, pl.dslice(i_n_start, block_n)), final_out, mask=i_n_mask)
 
-        def kernel(weight, indices, vector, out):
-            fn = pl.pallas_call(
-                _raw_kernel,
-                out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
-                grid=(n_pre, pl.cdiv(matrix_info.shape[1], block_n)),
-            )
-            return [fn(weight, indices, vector)]
-
-    return kernel
+        return pallas_kernel(
+            _raw_kernel,
+            outs=kwargs['outs'],
+            tile=(n_pre, pl.cdiv(matrix_info.shape[1], block_n)),
+            input_output_aliases={3: 0},
+        )
 
 
 def _fixed_num_mm_jvp_matrix(
@@ -847,15 +839,15 @@ def fixed_num_mm_p_call(
 
 
 fixed_num_mm_p = XLACustomKernel('fixed_num_mm')
-fixed_num_mm_p.def_cpu_kernel(NumbaKernelGenerator(_fixed_num_mm_numba_kernel_generator))
+fixed_num_mm_p.def_cpu_kernel(_fixed_num_mm_numba_kernel_generator)
 fixed_num_mm_p.def_gpu_kernel(
     GPUKernelChoice(
         default='pallas',
         # warp_kernel=WarpKernelGenerator(_fixed_num_mv_warp_kernel_generator),
-        pallas_kernel=PallasKernelGenerator(_fixed_num_mm_pallas_kernel_generator)
+        pallas_kernel=_fixed_num_mm_pallas_kernel_generator,
     )
 )
-fixed_num_mm_p.def_tpu_kernel(PallasKernelGenerator(_fixed_num_mm_pallas_kernel_generator))
+fixed_num_mm_p.def_tpu_kernel(_fixed_num_mm_pallas_kernel_generator)
 fixed_num_mm_p.def_jvp_rule2(_fixed_num_mm_jvp_weights, None, _fixed_num_mm_jvp_matrix, None)
 fixed_num_mm_p.def_transpose_rule(_fixed_num_mm_transpose_rule)
 fixed_num_mm_p.def_batching_rule(_fixed_num_mm_batching)

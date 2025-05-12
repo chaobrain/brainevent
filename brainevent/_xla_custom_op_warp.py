@@ -16,7 +16,6 @@
 # -*- coding: utf-8 -*-
 
 import ctypes
-import dataclasses
 import functools
 import importlib.util
 from typing import Callable, Sequence, Dict, Union, NamedTuple
@@ -30,7 +29,7 @@ from ._compatible_import import Primitive, register_custom_call, custom_call
 from ._typing import KernelGenerator
 
 __all__ = [
-    'dtype_to_warp_type',
+    'jaxtype_to_warptype',
     'jaxinfo_to_warpinfo',
     'warp_kernel',
 ]
@@ -183,7 +182,7 @@ def warp_kernel(
     )
 
 
-def dtype_to_warp_type(dtype):
+def jaxtype_to_warptype(dtype):
     """
     Convert the JAX dtype to the Warp type.
 
@@ -258,7 +257,7 @@ def jaxinfo_to_warpinfo(jax_info: jax.ShapeDtypeStruct):
     --------
     dtype_to_warp_type : Function to convert numpy/JAX dtypes to Warp types.
     """
-    dtype = dtype_to_warp_type(jax_info.dtype)
+    dtype = jaxtype_to_warptype(jax_info.dtype)
     shape = jax_info.shape
     return warp.array(dtype=dtype, ndim=len(shape))
 

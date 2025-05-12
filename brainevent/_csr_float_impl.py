@@ -26,10 +26,10 @@ from ._compatible_import import pallas as pl
 from ._misc import _csr_to_coo, generate_block_dim
 from ._typing import Data, Indptr, Index, MatrixShape
 from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
-from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
-from ._xla_custom_op_pallas import PallasKernelGenerator
+from ._xla_custom_op_numba import numba_kernel
+from ._xla_custom_op_pallas import pallas_kernel
 from ._xla_custom_op_util import general_batching_rule
-from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator, warp_kernel
+from ._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
 
 
 def csr_matvec(
@@ -165,10 +165,10 @@ def _csrmv_warp_kernel_generator(
 ):
     import warp  # pylint: disable=import-outside-toplevel
 
-    weight_dtype = dtype_to_warp_type(weight_info.dtype)
-    indices_dtype = dtype_to_warp_type(indices_info.dtype)
-    indptr_dtype = dtype_to_warp_type(indptr_info.dtype)
-    vector_dtype = dtype_to_warp_type(vector_info.dtype)
+    weight_dtype = jaxtype_to_warptype(weight_info.dtype)
+    indices_dtype = jaxtype_to_warptype(indices_info.dtype)
+    indptr_dtype = jaxtype_to_warptype(indptr_info.dtype)
+    vector_dtype = jaxtype_to_warptype(vector_info.dtype)
 
     if weight_info.size == 1:
         if transpose:
@@ -395,16 +395,12 @@ def _csrmv_pallas_tiled_kernel_generator(
                 )
                 posts_ref[i_row] = i_row_sum
 
-    def kernel(data, indices, indptr, B, placeholder):
-        fn = pl.pallas_call(
-            mm,
-            out_shape=jax.ShapeDtypeStruct([k if transpose else m], weight_info.dtype),
-            grid=(k if transpose else m,),
-            input_output_aliases={4: 0},
-        )
-        return [fn(data, indices, indptr, B, placeholder)]
-
-    return kernel
+    return pallas_kernel(
+        mm,
+        outs=kwargs['outs'],
+        tile=(k if transpose else m,),
+        input_output_aliases={4: 0},
+    )
 
 
 def _csrmv_jvp_v(
@@ -578,15 +574,15 @@ def csrmv_p_call(
 
 
 csrmv_p = XLACustomKernel('csrmv')
-csrmv_p.def_cpu_kernel(NumbaKernelGenerator(_csrmv_numba_kernel_generator))
+csrmv_p.def_cpu_kernel(_csrmv_numba_kernel_generator)
 csrmv_p.def_gpu_kernel(
     GPUKernelChoice(
         default='pallas',
-        warp_kernel=WarpKernelGenerator(_csrmv_warp_kernel_generator),
-        pallas_kernel=PallasKernelGenerator(_csrmv_pallas_tiled_kernel_generator)
+        warp_kernel=_csrmv_warp_kernel_generator,
+        pallas_kernel=_csrmv_pallas_tiled_kernel_generator,
     )
 )
-csrmv_p.def_tpu_kernel(PallasKernelGenerator(_csrmv_pallas_tiled_kernel_generator))
+csrmv_p.def_tpu_kernel(_csrmv_pallas_tiled_kernel_generator)
 csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
 csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
 csrmv_p.def_batching_rule(_csrmv_batching)
@@ -675,10 +671,10 @@ def _csrmm_warp_kernel_generator(
 ):
     import warp  # pylint: disable=import-outside-toplevel
 
-    weight_dtype = dtype_to_warp_type(weight_info.dtype)
-    spike_dtype = dtype_to_warp_type(vector_info.dtype)
-    indices_dtype = dtype_to_warp_type(indices_info.dtype)
-    indptr_dtype = dtype_to_warp_type(indptr_info.dtype)
+    weight_dtype = jaxtype_to_warptype(weight_info.dtype)
+    spike_dtype = jaxtype_to_warptype(vector_info.dtype)
+    indices_dtype = jaxtype_to_warptype(indices_info.dtype)
+    indptr_dtype = jaxtype_to_warptype(indptr_info.dtype)
     TILE_SIZE_N = vector_info.shape[1]
     k, n = vector_info.shape
 
@@ -926,16 +922,12 @@ def _csrmm_pallas_kernel1(
                     mask=mask
                 )
 
-    def kernel(data, indices, indptr, B, placeholder):
-        fn = pl.pallas_call(
-            mm,
-            out_shape=jax.ShapeDtypeStruct([k if transpose else m, n], weight_info.dtype),
-            grid=(k if transpose else (indptr_info.shape[0] - 1), pl.cdiv(n, block_dim_n)),
-            input_output_aliases={4: 0},
-        )
-        return [fn(data, indices, indptr, B, placeholder)]
-
-    return kernel
+    return pallas_kernel(
+        mm,
+        tile=(k if transpose else (indptr_info.shape[0] - 1), pl.cdiv(n, block_dim_n)),
+        input_output_aliases={4: 0},
+        outs=kwargs['outs'],
+    )
 
 
 def _csrmm_pallas_kernel2(
@@ -1275,15 +1267,15 @@ def csrmm_p_call(
 
 
 csrmm_p = XLACustomKernel('csrmm')
-csrmm_p.def_cpu_kernel(NumbaKernelGenerator(_csrmm_numba_kernel_generator))
+csrmm_p.def_cpu_kernel(_csrmm_numba_kernel_generator)
 csrmm_p.def_gpu_kernel(
     GPUKernelChoice(
         default='warp',
-        warp_kernel=WarpKernelGenerator(_csrmm_warp_kernel_generator),
-        pallas_kernel=PallasKernelGenerator(_csrmm_pallas_kernel_generator),
+        warp_kernel=_csrmm_warp_kernel_generator,
+        pallas_kernel=_csrmm_pallas_kernel_generator,
     )
 )
-csrmm_p.def_tpu_kernel(PallasKernelGenerator(_csrmm_pallas_kernel_generator))
+csrmm_p.def_tpu_kernel(_csrmm_pallas_kernel_generator)
 csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 csrmm_p.def_batching_rule(_csrmm_batching)

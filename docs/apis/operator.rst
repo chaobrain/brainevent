@@ -27,11 +27,7 @@ CPU kernel definition using Numba.
    :toctree: generated/
    :template: classtemplate.rst
 
-    NumbaKernelGenerator
     numba_kernel
-    set_numba_environ
-    numba_environ_context
-
 
 
 GPU kernel definition using Warp.
@@ -40,9 +36,9 @@ GPU kernel definition using Warp.
    :toctree: generated/
    :template: classtemplate.rst
 
-    WarpKernelGenerator
     warp_kernel
-    dtype_to_warp_type
+    jaxtype_to_warptype
+    jaxinfo_to_warpinfo
 
 
 
@@ -52,7 +48,7 @@ GPU/TPU kernel definition using JAX Pallas.
    :toctree: generated/
    :template: classtemplate.rst
 
-    PallasKernelGenerator
+    pallas_kernel
     LFSR88RNG
     LFSR113RNG
     LFSR128RNG

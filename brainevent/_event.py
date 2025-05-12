@@ -14,7 +14,7 @@
 # ==============================================================================
 
 import operator
-from typing import Union, Optional, Sequence, Any
+from typing import Union, Optional, Sequence
 
 import brainunit as u
 import jax

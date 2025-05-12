@@ -29,7 +29,8 @@ from ._pallas_random import LFSR88RNG, LFSR113RNG, LFSR128RNG
 from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
 from ._xla_custom_op_numba import numba_kernel
 from ._xla_custom_op_util import defjvp, general_batching_rule
-from ._xla_custom_op_warp import warp_kernel, dtype_to_warp_type, jaxinfo_to_warpinfo
+from ._xla_custom_op_warp import warp_kernel, jaxtype_to_warptype, jaxinfo_to_warpinfo
+from ._xla_custom_op_pallas import pallas_kernel
 
 __all__ = [
     # --- global configuration --- #
@@ -71,10 +72,12 @@ __all__ = [
     'numba_kernel',
 
     # 4. Warp kernel
-    'dtype_to_warp_type',
     'warp_kernel',
+    'jaxtype_to_warptype',
+    'jaxinfo_to_warpinfo',
 
     # 5. Pallas kernel
+    'pallas_kernel',
     'LFSR88RNG',
     'LFSR113RNG',
     'LFSR128RNG',

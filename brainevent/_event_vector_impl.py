@@ -24,9 +24,9 @@ from ._compatible_import import pallas as pl
 from ._event_matrix_impl import matrix_event_mm, event_matrix_mm
 from ._misc import cdiv
 from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
-from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
+from ._xla_custom_op_numba import numba_kernel
 from ._xla_custom_op_util import general_batching_rule
-from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type, warp_kernel
+from ._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
 
 TILE_THREAD = 256
 
@@ -97,8 +97,8 @@ def _matrix_event_mv_warp_kernel_generator(
     import warp  # pylint: disable=import-outside-toplevel
     assert warp.__version__ >= '1.8.0', "warp version >= 1.8.0 is required"
 
-    spike_dtype = dtype_to_warp_type(spk_info.dtype)
-    weight_dtype = dtype_to_warp_type(weight_info.dtype)
+    spike_dtype = jaxtype_to_warptype(spk_info.dtype)
+    weight_dtype = jaxtype_to_warptype(weight_info.dtype)
 
     if spk_info.dtype == jnp.bool_:
         def kernel(
@@ -194,11 +194,11 @@ def matrix_event_mv_p_call(weights, spikes, *, float_as_event: bool):
 
 
 matrix_event_mv_p = XLACustomKernel('matrix_event_mv_op')
-matrix_event_mv_p.def_cpu_kernel(NumbaKernelGenerator(_matrix_event_numba_cpu_kernel_generator))
+matrix_event_mv_p.def_cpu_kernel(_matrix_event_numba_cpu_kernel_generator)
 matrix_event_mv_p.def_gpu_kernel(
     GPUKernelChoice(
         default='warp',
-        warp_kernel=WarpKernelGenerator(_matrix_event_mv_warp_kernel_generator)
+        warp_kernel=_matrix_event_mv_warp_kernel_generator
     )
 )
 matrix_event_mv_p.def_jvp_rule2(_matrix_event_mv_jvp_weights, _matrix_event_mv_jvp_spikes)
@@ -266,8 +266,8 @@ def _event_matrix_mv_warp_kernel_generator(
     TILE_SIZE = spk_info.shape[0]
     block_dim = TILE_THREAD
 
-    spike_dtype = dtype_to_warp_type(spk_info.dtype)
-    weight_dtype = dtype_to_warp_type(weight_info.dtype)
+    spike_dtype = jaxtype_to_warptype(spk_info.dtype)
+    weight_dtype = jaxtype_to_warptype(weight_info.dtype)
 
     if spk_info.dtype == jnp.bool_:
         def kernel(
@@ -454,11 +454,11 @@ def event_matrix_mv_p_call(spikes, weights, *, float_as_event: bool):
 
 
 event_matrix_mv_p = XLACustomKernel('event_matrix_mv_op')
-event_matrix_mv_p.def_cpu_kernel(NumbaKernelGenerator(_event_matrix_mv_numba_kernel_generator))
+event_matrix_mv_p.def_cpu_kernel(_event_matrix_mv_numba_kernel_generator)
 event_matrix_mv_p.def_gpu_kernel(
     GPUKernelChoice(
         default='warp',
-        warp_kernel=WarpKernelGenerator(_event_matrix_mv_warp_kernel_generator)
+        warp_kernel=_event_matrix_mv_warp_kernel_generator
     )
 )
 event_matrix_mv_p.def_jvp_rule2(_event_matrix_mv_jvp_spikes, _event_matrix_mv_jvp_weights, )

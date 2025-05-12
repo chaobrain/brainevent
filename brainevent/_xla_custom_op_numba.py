@@ -16,7 +16,6 @@
 # -*- coding: utf-8 -*-
 
 import ctypes
-import dataclasses
 import functools
 import importlib.util
 from typing import Callable, Dict, Optional, NamedTuple, Union
@@ -24,8 +23,8 @@ from typing import Callable, Dict, Optional, NamedTuple, Union
 from jax.interpreters import mlir
 
 from ._compatible_import import register_custom_call, Primitive, custom_call
-from ._typing import KernelGenerator
 from ._config import config
+from ._typing import KernelGenerator
 
 __all__ = [
     'numba_kernel',
