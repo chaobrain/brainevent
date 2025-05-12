@@ -18,7 +18,6 @@ __version__ = "0.0.1"
 from ._block_csr import BlockCSR
 from ._block_ell import BlockELL
 from ._config import config
-from ._config import set_numba_environ, numba_environ_context
 from ._coo import COO
 from ._csr import CSR, CSC
 from ._event import EventArray
@@ -69,14 +68,11 @@ __all__ = [
     'general_batching_rule',
 
     # 3. Numba kernel
-    'set_numba_environ',
-    'numba_environ_context',
     'numba_kernel',
 
     # 4. Warp kernel
-    'warp_kernel',
     'dtype_to_warp_type',
-    'jaxinfo_to_warpinfo',
+    'warp_kernel',
 
     # 5. Pallas kernel
     'LFSR88RNG',

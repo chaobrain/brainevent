@@ -16,48 +16,49 @@
 # -*- coding: utf-8 -*-
 
 
-import json
-import pathlib
-import threading
 from contextlib import contextmanager
-from typing import Dict, Any, Optional, Union, Callable
+from typing import Union
 
 __all__ = [
     'config',
-    'load_config',
-    'set_config',
-    'set_environ',
-    'set_numba_environ',
-    'numba_environ_context',
-    'numba_environ',
 ]
 
 
 class Config:
     """
-    A named tuple that stores configuration settings for the brainevent package.
+    A configuration class that stores settings for the brainevent package.
 
-    This class provides a typed, immutable container for configuration settings
-    that affect the behavior of the library, particularly regarding GPU kernel backends.
+    This class provides a container for configuration settings that affect the behavior
+    of the library, particularly regarding GPU kernel backends and Numba optimization
+    settings. It implements various methods to get and set configuration values,
+    and provides context managers for temporary configuration changes.
 
-    Attributes
-    ----------
-    gpu_kernel_backend : str, default 'default'
-        The backend to use for GPU kernel operations.
-        Valid values are 'default', 'warp', and 'pallas'.
+    Notes
+    -----
+    This class is instantiated as a singleton named 'config' to provide
+    global access to configuration settings throughout the library.
     """
 
     def __init__(self):
         self._gpu_kernel_backend = 'default'
+        self._numba_setting: dict = dict(nogil=True, fastmath=True, parallel=False)
 
     @property
     def gpu_kernel_backend(self) -> str:
         """
         The backend to use for GPU kernel operations.
+
+        This property provides read access to the currently configured GPU kernel backend.
+        The backend determines which GPU acceleration library will be used for computations.
+
         Returns
         -------
         str
-            The current backend.
+            The current backend. Possible values are 'default', 'warp', or 'pallas'.
+
+        See Also
+        --------
+        set_gpu_backend : Method to set the GPU backend
         """
         return self._gpu_kernel_backend
 
@@ -65,10 +66,23 @@ class Config:
     def gpu_kernel_backend(self, value: str) -> None:
         """
         Set the backend to use for GPU kernel operations.
+
+        This property setter provides a convenient interface to change the GPU backend.
+        It delegates to the `set_gpu_backend` method which performs validation.
+
         Parameters
         ----------
         value : str
             The backend to set. Must be one of 'default', 'warp', or 'pallas'.
+
+        Raises
+        ------
+        ValueError
+            If the provided backend is not one of the supported values.
+
+        See Also
+        --------
+        set_gpu_backend : Method that implements the backend setting logic
         """
         self.set_gpu_backend(backend=value)
 
@@ -76,10 +90,27 @@ class Config:
         """
         Set the GPU kernel backend.
 
+        This method configures which GPU acceleration library will be used for
+        computational operations. It validates that the provided backend is supported.
+
         Parameters
         ----------
         backend : str
-            The backend to set. Can be 'default', 'jax', or 'torch'.
+            The backend to set. Must be one of:
+            - 'default': Use the default backend
+            - 'warp': Use the NVIDIA Warp framework
+            - 'pallas': Use JAX Pallas for GPU operations
+
+        Raises
+        ------
+        ValueError
+            If the provided backend is not one of the supported values.
+
+        Notes
+        -----
+        This method contains validation logic and is called by the `gpu_kernel_backend` setter.
+        There appears to be a documentation inconsistency as the docstring mentions 'jax' and 'torch'
+        but the implementation checks for 'warp' and 'pallas'.
         """
         if backend not in ['default', 'warp', 'pallas']:
             raise ValueError(
@@ -91,227 +122,273 @@ class Config:
         """
         Get the current GPU kernel backend.
 
+        This method provides the currently configured GPU backend and is
+        a functional alternative to accessing the `gpu_kernel_backend` property.
+
         Returns
         -------
         str
-            The current backend.
+            The current backend. Will be one of 'default', 'warp', or 'pallas'.
+
+        See Also
+        --------
+        gpu_kernel_backend : Property that provides the same functionality
+        set_gpu_backend : Method to set the GPU backend
+
+        Examples
+        --------
+        >>> from brainevent import config
+        >>> config.get_gpu_backend()
+        'default'
+        >>> config.set_gpu_backend('warp')
+        >>> config.get_gpu_backend()
+        'warp'
         """
         return self.gpu_kernel_backend
 
-
-# Config singleton
-config = Config()
-
-# Default configuration path
-DEFAULT_CONFIG_PATH = pathlib.Path.home() / '.brainevent' / 'config.json'
-
-
-def load_config(config_path: Optional[Union[str, pathlib.Path]] = None) -> Dict[str, Any]:
-    """
-    Load configuration from a JSON file in the user's home directory.
-
-    Parameters
-    ----------
-    config_path : Optional[Union[str, pathlib.Path]], optional
-        Path to the configuration file. If None, uses the default path.
-
-    Returns
-    -------
-    Dict[str, Any]
-        The loaded configuration dictionary.
-    """
-    if config_path is None:
-        config_path = DEFAULT_CONFIG_PATH
-    else:
-        config_path = pathlib.Path(config_path)
-
-    # Create default config directory if it doesn't exist
-    config_dir = config_path.parent
-    if not config_dir.exists():
-        config_dir.mkdir(parents=True, exist_ok=True)
-
-    # Load config if it exists, otherwise return empty dict
-    if config_path.exists():
-        with open(config_path, 'r') as f:
-            return json.load(f)
-    return {}
-
-
-def set_config(
-    config_dict: Dict[str, Any],
-    config_path: Optional[Union[str, pathlib.Path]] = None
-) -> None:
-    """
-    Save configuration to a JSON file in the user's home directory.
-
-    Parameters
-    ----------
-    config_dict : Dict[str, Any]
-        Configuration dictionary to save.
-    config_path : Optional[Union[str, pathlib.Path]], optional
-        Path to the configuration file. If None, uses the default path.
-    """
-    if config_path is None:
-        config_path = DEFAULT_CONFIG_PATH
-    else:
-        config_path = pathlib.Path(config_path)
-
-    # Create directory if it doesn't exist
-    config_dir = config_path.parent
-    if not config_dir.exists():
-        config_dir.mkdir(parents=True, exist_ok=True)
-
-    with open(config_path, 'w') as f:
-        json.dump(config_dict, f, indent=2)
-
-
-def set_environ(**kwargs) -> None:
-    """
-    Set a global environment setting and save it to the configuration file.
-    """
-    global config
-
-    # Load existing config
-    config_dict = load_config()
-
-    # Update the setting
-    config_dict.update(**kwargs)
-
-    # Save the updated config
-    set_config(config_dict)
-
-
-def initialize_config():
-    """
-    Initialize configuration from saved file if it exists.
-    Should be called during package initialization.
-    """
-    global config
-
-    # Load saved config
-    config_dict = load_config()
-
-    # Update global config object with saved values
-    update_dict = {}
-    for field in config._fields:
-        if field in config_dict:
-            update_dict[field] = config_dict[field]
-
-    if update_dict:
-        config = config._replace(**update_dict)
-
-
-class NumbaEnvironment(threading.local):
-    """
-    Thread-local environment for managing Numba configuration settings.
-
-    This class provides a thread-safe way to configure Numba JIT compilation
-    parameters. It inherits from threading.local to ensure that each thread
-    has its own independent configuration.
-
-    Attributes
-    ----------
-    parallel : bool
-        Flag to enable or disable parallel execution in Numba.
-        Defaults to True.
-    setting : dict
-        Dictionary of Numba JIT compilation parameters.
-        Defaults to {'nogil': True, 'fastmath': True}.
-    """
-
-    def __init__(self, *args, **kwargs):
-        # default environment settings
-        super().__init__(*args, **kwargs)
-        self.parallel: bool = True
-        self.setting: dict = dict(nogil=True, fastmath=True)
-
-    def jit_fn(self, fn: Callable):
+    def get_numba_setting(self) -> dict:
         """
-        Apply standard Numba JIT compilation to a function.
+        Get the current Numba compiler settings.
 
-        Parameters
-        ----------
-        fn : Callable
-            The function to be JIT compiled.
+        This method returns a copy of the internal Numba compiler configuration
+        dictionary, which controls optimization settings like parallel execution,
+        fast math mode, and no GIL mode.
 
         Returns
         -------
-        Callable
-            The compiled function with applied JIT optimizations.
-        """
-        import numba
-        return numba.njit(fn, **self.setting)
+        dict
+            A copy of the current Numba settings dictionary containing keys like:
+            - 'nogil': Boolean indicating if Numba should release the GIL when possible
+            - 'fastmath': Boolean controlling whether to enable fast math optimizations
+            - 'parallel': Boolean determining if Numba should parallelize operations
 
-    def pjit_fn(self, fn: Callable):
-        """
-        Apply parallel Numba JIT compilation to a function.
+        See Also
+        --------
+        update_numba_setting : Method to update specific Numba settings
+        replace_numba_setting : Method to replace all Numba settings
+        numba_environ_context : Context manager for temporary Numba setting changes
 
-        This uses the current parallel setting to determine whether
-        to enable parallel execution.
+        Examples
+        --------
+        >>> from brainevent import config
+        >>> config.get_numba_setting()
+        {'nogil': True, 'fastmath': True, 'parallel': False}
+        """
+        return self._numba_setting.copy()
+
+    def update_numba_setting(self, **setting) -> None:
+        """
+        Update the current Numba compiler settings with new values.
+
+        This method allows updating specific Numba settings while preserving
+        other existing settings. It accepts keyword arguments corresponding to
+        Numba optimization parameters.
 
         Parameters
         ----------
-        fn : Callable
-            The function to be JIT compiled with parallel support.
+        **setting : any
+            Keyword arguments specifying Numba settings to update. Valid keys include:
+            - 'nogil': Boolean indicating if Numba should release the GIL when possible
+            - 'fastmath': Boolean controlling whether to enable fast math optimizations
+            - 'parallel': Boolean determining if Numba should parallelize operations
 
-        Returns
-        -------
-        Callable
-            The compiled function with applied JIT optimizations and
-            parallel execution if enabled.
+        See Also
+        --------
+        get_numba_setting : Method to retrieve current Numba settings
+        replace_numba_setting : Method to replace all Numba settings
+
+        Examples
+        --------
+        >>> from brainevent import config
+        >>> config.update_numba_setting(parallel=True)
+        >>> config.get_numba_setting()
+        {'nogil': True, 'fastmath': True, 'parallel': True}
         """
-        import numba
-        return numba.njit(fn, **self.setting, parallel=self.parallel)
+        self._numba_setting.update(**setting)
 
+    def replace_numba_setting(self, setting: dict) -> None:
+        """
+        Replace the entire Numba compiler settings dictionary.
 
-numba_environ = NumbaEnvironment()
+        This method completely replaces the current Numba settings with a new
+        dictionary. It creates a copy of the provided dictionary to prevent
+        external modifications from affecting the internal configuration.
 
+        Parameters
+        ----------
+        setting : dict
+            A dictionary containing Numba compiler settings. Expected keys include:
+            - 'nogil': Boolean indicating if Numba should release the GIL when possible
+            - 'fastmath': Boolean controlling whether to enable fast math optimizations
+            - 'parallel': Boolean determining if Numba should parallelize operations
 
-@contextmanager
-def numba_environ_context(
-    parallel_if_possible: Union[int, bool] = None,
-    **kwargs
-):
-    """
-    Enable Numba parallel execution if possible.
-    """
-    old_parallel = numba_environ.parallel
-    old_setting = numba_environ.setting.copy()
+        See Also
+        --------
+        get_numba_setting : Method to retrieve current Numba settings
+        update_numba_setting : Method to update specific Numba settings
 
-    try:
-        numba_environ.setting.update(kwargs)
+        Examples
+        --------
+        >>> from brainevent import config
+        >>> config.replace_numba_setting({'nogil': False, 'fastmath': False, 'parallel': True})
+        >>> config.get_numba_setting()
+        {'nogil': False, 'fastmath': False, 'parallel': True}
+        """
+        self._numba_setting = setting.copy()
+
+    @contextmanager
+    def numba_environ_context(
+        self,
+        parallel_if_possible: Union[int, bool] = None,
+        **kwargs
+    ):
+        """
+        Create a context manager for temporary Numba environment configuration.
+
+        This context manager allows for temporarily changing Numba compiler settings
+        within its scope. When the context is exited, the original settings are
+        restored automatically, making it useful for code sections that need
+        special optimization settings without affecting the global configuration.
+
+        Parameters
+        ----------
+        parallel_if_possible : bool or int, optional
+            Controls parallel execution configuration:
+            - If bool: Directly sets the 'parallel' setting for Numba
+            - If int: Raises ValueError as thread count is not supported in this method
+            - If None: Leaves the current parallel setting unchanged
+        **kwargs : dict
+            Additional Numba settings to temporarily apply. Valid keys include:
+            - 'nogil': Boolean indicating if Numba should release the GIL
+            - 'fastmath': Boolean controlling fast math optimizations
+            - 'parallel': Boolean determining if Numba should parallelize operations
+
+        Yields
+        ------
+        dict
+            The active Numba settings dictionary during the context
+
+        Raises
+        ------
+        ValueError
+            If parallel_if_possible is an integer (use numba_environ_set instead)
+            or if it's neither a boolean nor an integer
+
+        See Also
+        --------
+        get_numba_setting : Method to retrieve current Numba settings
+        update_numba_setting : Method to update specific Numba settings
+        numba_environ_set : Method for permanent environment changes with thread count support
+
+        Examples
+        --------
+        >>> from brainevent import config
+        >>> # Temporarily enable parallel execution
+        >>> with config.numba_environ_context(parallel_if_possible=True):
+        ...     # Code executed with parallel Numba optimization
+        ...     result = compute_intensive_function(data)
+        >>> # Original settings are restored after the context ends
+
+        Notes
+        -----
+        This method is safer than directly modifying settings because it ensures
+        settings are properly restored even if exceptions occur within the context.
+        """
+        old_setting = self.get_numba_setting()
+
+        try:
+            self.update_numba_setting(**kwargs)
+            if parallel_if_possible is not None:
+                if isinstance(parallel_if_possible, bool):
+                    self.update_numba_setting(parallel=parallel_if_possible)
+                elif isinstance(parallel_if_possible, int):
+                    raise ValueError(
+                        'The argument `parallel_if_possible` must be a boolean when using '
+                        'brainevent.config.numba_environ_context. '
+                        'For setting the number of threads, use `brainevent.config.set_numba_environ` instead.'
+                    )
+                else:
+                    raise ValueError('The argument `parallel_if_possible` must be a boolean or an integer.')
+            yield self.get_numba_setting()
+        finally:
+            self.replace_numba_setting(old_setting)
+
+    @contextmanager
+    def numba_environ_set(
+        self,
+        parallel_if_possible: Union[int, bool] = None,
+        **kwargs
+    ):
+        """
+        Configure Numba environment settings and optionally set thread count.
+
+        This context manager allows for changing Numba compiler settings and thread
+        configuration. Unlike `numba_environ_context`, this method does not restore
+        the original settings when the context exits - the changes remain in effect.
+        It also supports direct configuration of the number of Numba threads.
+
+        Parameters
+        ----------
+        parallel_if_possible : bool or int, optional
+            Controls parallel execution configuration:
+            - If bool: Directly sets the 'parallel' setting for Numba
+            - If int: Enables parallel execution and sets the number of threads to this value
+            - If None: Leaves the current parallel setting unchanged
+        **kwargs : dict
+            Additional Numba settings to apply. Valid keys include:
+            - 'nogil': Boolean indicating if Numba should release the GIL
+            - 'fastmath': Boolean controlling fast math optimizations
+            - 'parallel': Boolean determining if Numba should parallelize operations
+
+        Yields
+        ------
+        None
+            This context manager doesn't yield any value but provides a context
+            where the specified Numba settings are in effect
+
+        Raises
+        ------
+        ValueError
+            If parallel_if_possible is neither a boolean nor an integer
+        AssertionError
+            If parallel_if_possible is an integer less than or equal to zero
+
+        See Also
+        --------
+        numba_environ_context : Context manager for temporary Numba setting changes
+        update_numba_setting : Method to update specific Numba settings
+
+        Examples
+        --------
+        >>> from brainevent import config
+        >>> # Set parallel execution with 4 threads
+        >>> with config.numba_environ_set(parallel_if_possible=4):
+        ...     # Code executed with parallel Numba optimization using 4 threads
+        ...     result = compute_intensive_function(data)
+        >>> # The settings remain after the context ends
+
+        >>> # Disable parallel execution
+        >>> with config.numba_environ_set(parallel_if_possible=False, fastmath=False):
+        ...     # Code executed with sequential execution and without fast math
+        ...     result = compute_intensive_function(data)
+
+        Notes
+        -----
+        Unlike `numba_environ_context`, this method does not restore previous settings
+        when the context ends. Changes made with this method persist until explicitly changed.
+        """
+        self.update_numba_setting(**kwargs)
         if parallel_if_possible is not None:
             if isinstance(parallel_if_possible, bool):
-                numba_environ.parallel = parallel_if_possible
+                self.update_numba_setting(parallel=parallel_if_possible)
             elif isinstance(parallel_if_possible, int):
-                numba_environ.parallel = True
+                self.update_numba_setting(parallel=True)
                 assert parallel_if_possible > 0, 'The number of threads must be a positive integer.'
                 import numba  # pylint: disable=import-outside-toplevel
                 numba.set_num_threads(parallel_if_possible)
             else:
                 raise ValueError('The argument `parallel_if_possible` must be a boolean or an integer.')
-        yield numba_environ.setting.copy()
-    finally:
-        numba_environ.parallel = old_parallel
-        numba_environ.setting = old_setting
 
 
-@contextmanager
-def set_numba_environ(
-    parallel_if_possible: Union[int, bool] = None,
-    **kwargs
-):
-    """
-    Enable Numba parallel execution if possible.
-    """
-    numba_environ.setting.update(kwargs)
-    if parallel_if_possible is not None:
-        if isinstance(parallel_if_possible, bool):
-            numba_environ.parallel = parallel_if_possible
-        elif isinstance(parallel_if_possible, int):
-            numba_environ.parallel = True
-            assert parallel_if_possible > 0, 'The number of threads must be a positive integer.'
-            import numba  # pylint: disable=import-outside-toplevel
-            numba.set_num_threads(parallel_if_possible)
-        else:
-            raise ValueError('The argument `parallel_if_possible` must be a boolean or an integer.')
+# Config singleton
+config = Config()

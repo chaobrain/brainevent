@@ -24,14 +24,58 @@ from typing import Callable, Dict, Optional, NamedTuple, Union
 from jax.interpreters import mlir
 
 from ._compatible_import import register_custom_call, Primitive, custom_call
-from ._config import numba_environ
 from ._typing import KernelGenerator
+from ._config import config
 
 __all__ = [
     'numba_kernel',
 ]
 
 numba_installed = importlib.util.find_spec('numba') is not None
+
+
+def numba_jit_fn(fn: Callable):
+    """
+    Apply standard Numba JIT compilation to a function.
+
+    Parameters
+    ----------
+    fn : Callable
+        The function to be JIT compiled.
+
+    Returns
+    -------
+    Callable
+        The compiled function with applied JIT optimizations.
+    """
+    import numba
+    setting = config.get_numba_setting()
+    setting.pop('parallel', False)
+    return numba.njit(fn, **setting)
+
+
+def numba_pjit_fn(fn: Callable):
+    """
+    Apply parallel Numba JIT compilation to a function.
+
+    This uses the current parallel setting to determine whether
+    to enable parallel execution.
+
+    Parameters
+    ----------
+    fn : Callable
+        The function to be JIT compiled with parallel support.
+
+    Returns
+    -------
+    Callable
+        The compiled function with applied JIT optimizations and
+        parallel execution if enabled.
+    """
+    import numba
+    setting = config.get_numba_setting()
+    setting.pop('parallel', False)
+    return numba.njit(fn, **setting)
 
 
 class NumbaKernel(NamedTuple):
@@ -115,12 +159,12 @@ def numba_kernel(
 
         if parallel:
             return NumbaKernel(
-                kernel=numba_environ.pjit_fn(fn),
+                kernel=numba_pjit_fn(fn),
                 input_output_aliases=input_output_aliases,
             )
         else:
             return NumbaKernel(
-                kernel=numba_environ.jit_fn(fn),
+                kernel=numba_jit_fn(fn),
                 input_output_aliases=input_output_aliases,
             )
 
