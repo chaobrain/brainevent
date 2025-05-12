@@ -1277,7 +1277,7 @@ def _jitc_mm_homo_batching(args, axes, **kwargs):
     elif tuple(axes) == (None, None, 1, None, None):
         return _batching_axis1(args, **kwargs)
 
-    elif tuple(axes) == (None, None, 1, None, None):
+    elif tuple(axes) == (None, None, 2, None, None):
         return _batching_axis1(args, axis=2, **kwargs)
 
     else:
