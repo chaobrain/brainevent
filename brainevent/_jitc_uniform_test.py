@@ -14,27 +14,17 @@
 # ==============================================================================
 
 
-import os
-
-os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
-
+import brainstate
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 import brainevent
-import brainstate
+from brainevent._test_util import allclose, gen_events
 from brainevent._typing import MatrixShape
 
 brainevent.config.gpu_kernel_backend = 'pallas'
-
-
-def gen_events(shape, prob=0.5, asbool=True):
-    events = brainstate.random.random(shape) < prob
-    if not asbool:
-        events = jnp.asarray(events, dtype=float)
-    return brainevent.EventArray(events)
 
 
 if brainstate.environ.get_platform() == 'cpu':
@@ -47,11 +37,6 @@ else:
         (2000, 3000),
         (1000, 5000),
     ]
-
-
-
-def allclose(a, b, rtol=1e-3, atol=1e-3):
-    return jnp.allclose(a, b, rtol=rtol, atol=atol)
 
 
 class Test_JITC_RC_Conversion:
