@@ -16,11 +16,10 @@
     </a>
     <a href="https://badge.fury.io/py/brainevent"><img alt="PyPI version" src="https://badge.fury.io/py/brainevent.svg"></a>
     <a href="https://github.com/chaobrain/brainevent/actions/workflows/CI.yml"><img alt="Continuous Integration" src="https://github.com/chaobrain/brainevent/actions/workflows/CI.yml/badge.svg"></a>
+    <a href="https://github.com/chaobrain/brainevent/actions/workflows/CI-daily.yml"><img alt="Daily CI Tests" src="https://github.com/chaobrain/brainevent/actions/workflows/CI-daily.yml/badge.svg"></a>
     <a href="https://pepy.tech/projects/brainevent"><img src="https://static.pepy.tech/badge/brainevent" alt="PyPI Downloads"></a>
     <a href="https://doi.org/10.5281/zenodo.15324450"><img src="https://zenodo.org/badge/921610544.svg" alt="DOI"></a>
 </p>
-
-
 
 
 Brain is characterized by the discrete spiking events, which are the fundamental units of computation in the brain.
