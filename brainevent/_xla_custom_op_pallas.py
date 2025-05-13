@@ -67,6 +67,27 @@ class PallasKernel(NamedTuple):
     tile: Sequence[int] = None
     outs: Sequence[jax.ShapeDtypeStruct] = None
 
+    def __call__(self, *args):
+        """
+        Makes the PallasKernel instance callable like a regular function.
+
+        This method allows a PallasKernel instance to be called directly with arguments,
+        delegating to the compiled kernel function stored in the 'kernel' attribute.
+        It enables users to treat a PallasKernel object as if it were the function itself.
+
+        Args:
+            *args: Variable length argument list to be passed directly to the
+                   underlying compiled kernel function.
+
+        Returns:
+            The result(s) of executing the compiled Pallas kernel with the given arguments.
+
+        Example:
+            >>> kernel = pallas_kernel(my_function, tile=[128], outs=[...])
+            >>> result = kernel(input_data)  # calls __call__ implicitly
+        """
+        return self.kernel(*args)
+
 
 def pallas_kernel(
     fn: Callable = None,
@@ -158,8 +179,8 @@ def register_pallas_gpu_translation(
     Args:
         primitive: The JAX `Primitive` object representing the custom operation
             for which the Pallas kernel translation is being registered.
-        kernel_generator: A `PallasKernelGenerator` instance containing the logic
-            to generate the Pallas kernel function and determine its block dimension.
+        kernel_generator: A `KernelGenerator` instance containing the logic
+            to generate the Pallas kernel function based on operation parameters.
             This generator encapsulates the GPU-specific computation details.
 
     Side Effects:
@@ -167,6 +188,11 @@ def register_pallas_gpu_translation(
         `primitive` on the 'cuda' platform. When JAX encounters this primitive
         during compilation for GPU, it will use the registered rule to generate
         the corresponding Pallas kernel code.
+
+    Example:
+        >>> primitive = create_primitive("custom_op")
+        >>> kernel_gen = MyPallasKernelGenerator(...)
+        >>> register_pallas_gpu_translation(primitive, kernel_gen)
     """
 
     def kernel_fn(*args, **kwargs):
@@ -175,16 +201,15 @@ def register_pallas_gpu_translation(
 
         This function is created dynamically and serves as the entry point
         for the Pallas kernel execution during the lowering process. It first
-        determines the appropriate block dimension using the `kernel_generator`,
-        then generates the actual Pallas kernel function, and finally calls
-        the generated kernel with the input arguments.
+        generates the actual Pallas kernel function using the kernel_generator,
+        and then calls the generated kernel with the input arguments.
 
         Args:
             *args: Positional arguments passed to the original primitive. These
                    will be forwarded to the generated Pallas kernel.
             **kwargs: Keyword arguments passed to the original primitive. These
-                      are used by the `kernel_generator` to potentially determine
-                      the block dimension and configure the kernel generation.
+                      are used by the `kernel_generator` to configure the kernel
+                      generation.
 
         Returns:
             The result(s) of executing the generated Pallas kernel.
@@ -222,8 +247,8 @@ def register_pallas_tpu_translation(
     Args:
         primitive: The JAX `Primitive` object representing the custom operation
             for which the Pallas kernel translation is being registered.
-        kernel_generator: A `PallasKernelGenerator` instance containing the logic
-            to generate the Pallas kernel function and determine its block dimension.
+        kernel_generator: A `KernelGenerator` instance containing the logic
+            to generate the Pallas kernel function based on operation parameters.
             This generator encapsulates the TPU-specific computation details.
 
     Side Effects:
@@ -239,16 +264,15 @@ def register_pallas_tpu_translation(
 
         This function is created dynamically and serves as the entry point
         for the Pallas kernel execution during the lowering process for TPU.
-        It first determines the appropriate block dimension using the
-        `kernel_generator`, then generates the actual Pallas kernel function,
-        and finally calls the generated kernel with the input arguments.
+        It first generates the actual Pallas kernel function using the
+        kernel_generator, and then calls the generated kernel with the input arguments.
 
         Args:
             *args: Positional arguments passed to the original primitive. These
                    will be forwarded to the generated Pallas kernel.
             **kwargs: Keyword arguments passed to the original primitive. These
-                      are used by the `kernel_generator` to potentially determine
-                      the block dimension and configure the kernel generation.
+                      are used by the `kernel_generator` to configure the kernel
+                      generation.
 
         Returns:
             The result(s) of executing the generated Pallas kernel.

@@ -852,7 +852,7 @@ def event_jitc_mv_normal_p_call(
 event_jitc_mv_normal_p = XLACustomKernel('event_jitc_mv_normal')
 event_jitc_mv_normal_p.def_cpu_kernel(_jitc_mv_normal_numba_kernel_generator)
 event_jitc_mv_normal_p.def_gpu_kernel(
-    default='warp',
+    default='pallas',
     warp=_jitc_mv_normal_warp_kernel_generator,
     pallas=_jitc_mv_normal_pallas_kernel_generator,
 )
@@ -1515,7 +1515,7 @@ def event_jitc_mm_normal_p_call(
 event_jitc_mm_normal_p = XLACustomKernel('event_jitc_mm_normal')
 event_jitc_mm_normal_p.def_cpu_kernel(_jitc_mm_normal_numba_kernel_generator)
 event_jitc_mm_normal_p.def_gpu_kernel(
-    default='warp',
+    default='pallas',
     warp=_jitc_mm_normal_warp_kernel_generator,
     pallas=_jitc_mm_normal_pallas_kernel_generator,
 )

@@ -692,7 +692,7 @@ def float_jitc_normal_matrix_p_call(
 float_jitc_normal_matrix_p = XLACustomKernel('float_jitc_normal_matrix')
 float_jitc_normal_matrix_p.def_cpu_kernel(_jitc_normal_matrix_numba_kernel_generator)
 float_jitc_normal_matrix_p.def_gpu_kernel(
-    default='warp',
+    default='pallas',
     warp=_jitc_normal_matrix_warp_kernel_generator,
     pallas=_jitc_normal_matrix_pallas_kernel_generator,
 )
@@ -1438,7 +1438,7 @@ def float_jitc_mv_normal_p_call(
 float_jitc_mv_normal_p = XLACustomKernel('float_jitc_mv_normal')
 float_jitc_mv_normal_p.def_cpu_kernel(_jitc_mv_normal_numba_kernel_generator)
 float_jitc_mv_normal_p.def_gpu_kernel(
-    default='warp',
+    default='pallas',
     warp=_jitc_mv_normal_warp_kernel_generator,
     pallas=_jitc_mv_normal_pallas_kernel_generator,
 )
@@ -2107,7 +2107,7 @@ def float_jitc_mm_normal_p_call(
 float_jitc_mm_normal_p = XLACustomKernel('float_jitc_mm_normal')
 float_jitc_mm_normal_p.def_cpu_kernel(_jitc_mm_normal_numba_kernel_generator)
 float_jitc_mm_normal_p.def_gpu_kernel(
-    default='warp',
+    default='pallas',
     warp=_jitc_mm_normal_warp_kernel_generator,
     pallas=_jitc_mm_normal_pallas_kernel_generator,
 )

@@ -735,7 +735,7 @@ def float_jitc_uniform_matrix_p_call(
 float_jitc_uniform_matrix_p = XLACustomKernel('float_jitc_uniform_matrix')
 float_jitc_uniform_matrix_p.def_cpu_kernel(_jitc_uniform_matrix_numba_kernel_generator)
 float_jitc_uniform_matrix_p.def_gpu_kernel(
-    default='warp',
+    default='pallas',
     warp=_jitc_uniform_matrix_warp_kernel_generator,
     pallas=_jitc_uniform_matrix_pallas_kernel_generator,
 )
@@ -1484,7 +1484,7 @@ def float_jitc_mv_uniform_p_call(
 float_jitc_mv_uniform_p = XLACustomKernel('float_jitc_mv_uniform')
 float_jitc_mv_uniform_p.def_cpu_kernel(_jitc_mv_uniform_numba_kernel_generator)
 float_jitc_mv_uniform_p.def_gpu_kernel(
-    default='warp',
+    default='pallas',
     warp=_jitc_mv_uniform_warp_kernel_generator,
     pallas=_jitc_mv_uniform_pallas_kernel_generator,
 )
@@ -2156,7 +2156,7 @@ def float_jitc_mm_uniform_p_call(
 float_jitc_mm_uniform_p = XLACustomKernel('float_jitc_mm_uniform')
 float_jitc_mm_uniform_p.def_cpu_kernel(_jitc_mm_uniform_numba_kernel_generator)
 float_jitc_mm_uniform_p.def_gpu_kernel(
-    default='warp',
+    default='pallas',
     warp=_jitc_mm_uniform_warp_kernel_generator,
     pallas=_jitc_mm_uniform_pallas_kernel_generator,
 )

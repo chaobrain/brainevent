@@ -715,7 +715,7 @@ def event_jitc_mv_uniform_p_call(
 event_jitc_mv_uniform_p = XLACustomKernel('event_jitc_mv_uniform')
 event_jitc_mv_uniform_p.def_cpu_kernel(_jitc_mv_uniform_numba_kernel_generator)
 event_jitc_mv_uniform_p.def_gpu_kernel(
-    default='warp',
+    default='pallas',
     warp=_jitc_mv_uniform_warp_kernel_generator,
     pallas=_jitc_mv_uniform_pallas_kernel_generator,
 )
@@ -1434,7 +1434,7 @@ def event_jitc_mm_uniform_p_call(
 event_jitc_mm_uniform_p = XLACustomKernel('event_jitc_mm_uniform')
 event_jitc_mm_uniform_p.def_cpu_kernel(_jitc_mm_uniform_numba_kernel_generator)
 event_jitc_mm_uniform_p.def_gpu_kernel(
-    default='warp',
+    default='pallas',
     warp=_jitc_mm_uniform_warp_kernel_generator,
     pallas=_jitc_mm_uniform_pallas_kernel_generator,
 )
