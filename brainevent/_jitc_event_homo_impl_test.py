@@ -24,7 +24,6 @@ import brainevent
 from brainevent._test_util import allclose, gen_events, ones_like
 
 
-
 class Test_JITC_RC_Conversion:
 
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
