@@ -55,6 +55,9 @@ Indptr = Index
 # A callable type, representing a function or method.
 Kernel = Callable
 
+# kernel function generator
+KernelGenerator = Callable[..., Kernel]
+
 # Represents a scalar weight value, which can be a number, NumPy array, JAX array, or BrainUnit quantity.
 WeightScalar = Union[numbers.Number, np.ndarray, jax.Array, u.Quantity]
 

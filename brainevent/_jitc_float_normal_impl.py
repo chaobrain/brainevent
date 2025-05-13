@@ -28,10 +28,10 @@ from ._misc import generate_block_dim
 from ._pallas_random import LFSR88RNG
 from ._typing import Data, MatrixShape
 from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
-from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
-from ._xla_custom_op_pallas import PallasKernelGenerator
+from ._xla_custom_op_numba import numba_kernel
+from ._xla_custom_op_pallas import pallas_kernel
 from ._xla_custom_op_util import general_batching_rule
-from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator, warp_kernel
+from ._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
 
 __all__ = [
     "float_jitc_normal_matrix",
@@ -281,10 +281,10 @@ def _jitc_normal_matrix_warp_kernel_generator(
 ):
     import warp
 
-    w_loc_dtype = dtype_to_warp_type(w_loc_info.dtype)
-    w_scale_dtype = dtype_to_warp_type(w_scale_info.dtype)
-    clen_dtype = dtype_to_warp_type(clen_info.dtype)
-    seed_dtype = dtype_to_warp_type(seed_info.dtype)
+    w_loc_dtype = jaxtype_to_warptype(w_loc_info.dtype)
+    w_scale_dtype = jaxtype_to_warptype(w_scale_info.dtype)
+    clen_dtype = jaxtype_to_warptype(clen_info.dtype)
+    seed_dtype = jaxtype_to_warptype(seed_info.dtype)
 
     if corder:
         if transpose:
@@ -539,14 +539,12 @@ def _jitc_normal_matrix_pallas_kernel_generator(
                     (i_rows, i_row_mask, rng)
                 )
 
-        def kernel(w_loc, w_scale, clen, seed, out):
-            fn = pl.pallas_call(
-                _raw_kernel,
-                out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
-                grid=(pl.cdiv(dim, block_size),),
-                input_output_aliases={4: 0},
-            )
-            return [fn(w_loc, w_scale, clen, seed, out)]
+        return pallas_kernel(
+            _raw_kernel,
+            outs=kwargs['outs'],
+            tile=(pl.cdiv(dim, block_size),),
+            input_output_aliases={4: 0},
+        )
 
     else:
         if corder:
@@ -606,17 +604,12 @@ def _jitc_normal_matrix_pallas_kernel_generator(
                     body,
                     (rng.random_integers(0, clen0), rng)
                 )
-
-        def kernel(w_loc, w_scale, clen, seed, out):
-            fn = pl.pallas_call(
-                _raw_kernel,
-                out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
-                grid=(dim,),
-                input_output_aliases={4: 0},
-            )
-            return [fn(w_loc, w_scale, clen, seed, out)]
-
-    return kernel
+        return pallas_kernel(
+            _raw_kernel,
+            outs=kwargs['outs'],
+            tile=(dim,),
+            input_output_aliases={4: 0},
+        )
 
 
 def _jitc_normal_matrix_jvp_wlow(
@@ -697,15 +690,13 @@ def float_jitc_normal_matrix_p_call(
 
 
 float_jitc_normal_matrix_p = XLACustomKernel('float_jitc_normal_matrix')
-float_jitc_normal_matrix_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_normal_matrix_numba_kernel_generator))
+float_jitc_normal_matrix_p.def_cpu_kernel(_jitc_normal_matrix_numba_kernel_generator)
 float_jitc_normal_matrix_p.def_gpu_kernel(
-    GPUKernelChoice(
-        default='warp',
-        warp_kernel=WarpKernelGenerator(_jitc_normal_matrix_warp_kernel_generator),
-        pallas_kernel=PallasKernelGenerator(_jitc_normal_matrix_pallas_kernel_generator),
-    )
+    default='pallas',
+    warp=_jitc_normal_matrix_warp_kernel_generator,
+    pallas=_jitc_normal_matrix_pallas_kernel_generator,
 )
-float_jitc_normal_matrix_p.def_tpu_kernel(PallasKernelGenerator(_jitc_normal_matrix_pallas_kernel_generator))
+float_jitc_normal_matrix_p.def_tpu_kernel(_jitc_normal_matrix_pallas_kernel_generator)
 float_jitc_normal_matrix_p.def_jvp_rule2(
     _jitc_normal_matrix_jvp_wlow,
     _jitc_normal_matrix_jvp_whigh,
@@ -913,11 +904,11 @@ def _jitc_mv_normal_warp_kernel_generator(
     """
     import warp
 
-    w_loc_dtype = dtype_to_warp_type(w_loc_info.dtype)
-    w_scale_dtype = dtype_to_warp_type(w_scale_info.dtype)
-    clen_dtype = dtype_to_warp_type(clen_info.dtype)
-    v_dtype = dtype_to_warp_type(vector_info.dtype)
-    seed_dtype = dtype_to_warp_type(seed_info.dtype)
+    w_loc_dtype = jaxtype_to_warptype(w_loc_info.dtype)
+    w_scale_dtype = jaxtype_to_warptype(w_scale_info.dtype)
+    clen_dtype = jaxtype_to_warptype(clen_info.dtype)
+    v_dtype = jaxtype_to_warptype(vector_info.dtype)
+    seed_dtype = jaxtype_to_warptype(seed_info.dtype)
 
     if corder:
 
@@ -1170,14 +1161,12 @@ def _jitc_mv_normal_pallas_kernel_generator(
                     (i_cols, i_col_mask, rng)
                 )
 
-        def final_kernel(w_loc, w_scale, clen, vector, seed, out):
-            fn = pl.pallas_call(
-                kernel,
-                out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
-                grid=(pl.cdiv(dim, block_size),),
-                input_output_aliases={5: 0},
-            )
-            return [fn(w_loc, w_scale, clen, vector, seed, out)]
+        return pallas_kernel(
+            kernel,
+            outs=kwargs['outs'],
+            tile=(pl.cdiv(dim, block_size),),
+            input_output_aliases={5: 0},
+        )
 
     else:
         if corder:
@@ -1226,14 +1215,12 @@ def _jitc_mv_normal_pallas_kernel_generator(
                     (rng.random_integers(0, clen), rng)
                 )
 
-        def final_kernel(w_loc, w_scale, clen, vector, seed, out):
-            fn = pl.pallas_call(
-                kernel,
-                out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
-                grid=(dim,),
-                input_output_aliases={5: 0},
-            )
-            return [fn(w_loc, w_scale, clen, vector, seed, out)]
+        return pallas_kernel(
+            kernel,
+            outs=kwargs['outs'],
+            tile=(dim,),
+            input_output_aliases={5: 0},
+        )
 
     return final_kernel
 
@@ -1449,15 +1436,13 @@ def float_jitc_mv_normal_p_call(
 
 
 float_jitc_mv_normal_p = XLACustomKernel('float_jitc_mv_normal')
-float_jitc_mv_normal_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mv_normal_numba_kernel_generator))
+float_jitc_mv_normal_p.def_cpu_kernel(_jitc_mv_normal_numba_kernel_generator)
 float_jitc_mv_normal_p.def_gpu_kernel(
-    GPUKernelChoice(
-        default='warp',
-        warp_kernel=WarpKernelGenerator(_jitc_mv_normal_warp_kernel_generator),
-        pallas_kernel=PallasKernelGenerator(_jitc_mv_normal_pallas_kernel_generator),
-    )
+    default='pallas',
+    warp=_jitc_mv_normal_warp_kernel_generator,
+    pallas=_jitc_mv_normal_pallas_kernel_generator,
 )
-float_jitc_mv_normal_p.def_tpu_kernel(PallasKernelGenerator(_jitc_mv_normal_pallas_kernel_generator))
+float_jitc_mv_normal_p.def_tpu_kernel(_jitc_mv_normal_pallas_kernel_generator)
 float_jitc_mv_normal_p.def_jvp_rule2(
     _jitc_mv_normal_jvp_wloc,
     _jitc_mv_normal_jvp_wscale,
@@ -1637,11 +1622,11 @@ def _jitc_mm_normal_warp_kernel_generator(
 ):
     import warp
 
-    w_loc_dtype = dtype_to_warp_type(w_loc_info.dtype)
-    w_scale_dtype = dtype_to_warp_type(w_scale_info.dtype)
-    clen_dtype = dtype_to_warp_type(clen_info.dtype)
-    B_dtype = dtype_to_warp_type(B_info.dtype)
-    seed_dtype = dtype_to_warp_type(seed_info.dtype)
+    w_loc_dtype = jaxtype_to_warptype(w_loc_info.dtype)
+    w_scale_dtype = jaxtype_to_warptype(w_scale_info.dtype)
+    clen_dtype = jaxtype_to_warptype(clen_info.dtype)
+    B_dtype = jaxtype_to_warptype(B_info.dtype)
+    seed_dtype = jaxtype_to_warptype(seed_info.dtype)
 
     if corder:
         if transpose:
@@ -1896,18 +1881,16 @@ def _jitc_mm_normal_pallas_kernel_generator(
                     (rng.random_integers(0, clen0), rng)
                 )
 
-    tile = (out_info.shape[0] if corder else B_info.shape[0])
-
-    def final_kernel(w_loc, w_scale, clen, B, seed, out):
-        fn = pl.pallas_call(
-            kernel,
-            grid=(tile, pl.cdiv(B_info.shape[1], block_dim)),
-            input_output_aliases={5: 0},
-            out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
-        )
-        return [fn(w_loc, w_scale, clen, B, seed, out)]
-
-    return final_kernel
+    grid = (
+        out_info.shape[0] if corder else B_info.shape[0],
+        pl.cdiv(B_info.shape[1], block_dim)
+    )
+    return pallas_kernel(
+        kernel,
+        tile=grid,
+        input_output_aliases={5: 0},
+        outs=kwargs['outs']
+    )
 
 
 def _jitc_mm_normal_jvp_wloc(
@@ -2122,15 +2105,13 @@ def float_jitc_mm_normal_p_call(
 
 
 float_jitc_mm_normal_p = XLACustomKernel('float_jitc_mm_normal')
-float_jitc_mm_normal_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mm_normal_numba_kernel_generator))
+float_jitc_mm_normal_p.def_cpu_kernel(_jitc_mm_normal_numba_kernel_generator)
 float_jitc_mm_normal_p.def_gpu_kernel(
-    GPUKernelChoice(
-        default='warp',
-        warp_kernel=WarpKernelGenerator(_jitc_mm_normal_warp_kernel_generator),
-        pallas_kernel=PallasKernelGenerator(_jitc_mm_normal_pallas_kernel_generator),
-    )
+    default='pallas',
+    warp=_jitc_mm_normal_warp_kernel_generator,
+    pallas=_jitc_mm_normal_pallas_kernel_generator,
 )
-float_jitc_mm_normal_p.def_tpu_kernel(PallasKernelGenerator(_jitc_mm_normal_pallas_kernel_generator))
+float_jitc_mm_normal_p.def_tpu_kernel(_jitc_mm_normal_pallas_kernel_generator)
 float_jitc_mm_normal_p.def_jvp_rule2(
     _jitc_mm_normal_jvp_wloc,
     _jitc_mm_normal_jvp_wscale,

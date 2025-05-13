@@ -19,12 +19,10 @@ from typing import Tuple
 import brainstate
 import brainunit as u
 import jax
-import jax.numpy as jnp
 import pytest
 
 import brainevent
 from brainevent._test_util import allclose, gen_events, ones_like
-
 
 
 class Test_JITCNormalR:

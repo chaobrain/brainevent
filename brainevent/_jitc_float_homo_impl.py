@@ -28,10 +28,10 @@ from ._misc import generate_block_dim
 from ._pallas_random import LFSR88RNG
 from ._typing import Data, MatrixShape
 from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
-from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
-from ._xla_custom_op_pallas import PallasKernelGenerator
+from ._xla_custom_op_numba import numba_kernel
+from ._xla_custom_op_pallas import pallas_kernel
 from ._xla_custom_op_util import general_batching_rule
-from ._xla_custom_op_warp import dtype_to_warp_type, WarpKernelGenerator, warp_kernel
+from ._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
 
 __all__ = [
     "float_jitc_homo_matrix",
@@ -419,9 +419,9 @@ def _jitc_homo_matrix_warp_kernel_generator(
     """
     import warp
 
-    weight_dtype = dtype_to_warp_type(weight_info.dtype)
-    clen_dtype = dtype_to_warp_type(clen_info.dtype)
-    seed_dtype = dtype_to_warp_type(seed_info.dtype)
+    weight_dtype = jaxtype_to_warptype(weight_info.dtype)
+    clen_dtype = jaxtype_to_warptype(clen_info.dtype)
+    seed_dtype = jaxtype_to_warptype(seed_info.dtype)
 
     if corder:
 
@@ -666,14 +666,12 @@ def _jitc_homo_matrix_pallas_kernel_generator(
                     (i_rows, i_row_mask, rng)
                 )
 
-        def kernel(weight, clen, seed, out):
-            fn = pl.pallas_call(
-                _raw_kernel,
-                out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
-                grid=(pl.cdiv(dim, block_size),),
-                input_output_aliases={3: 0},
-            )
-            return [fn(weight, clen, seed, out)]
+        return pallas_kernel(
+            _raw_kernel,
+            outs=kwargs['outs'],
+            tile=(pl.cdiv(dim, block_size),),
+            input_output_aliases={3: 0}
+        )
 
     else:
         if corder:
@@ -730,16 +728,12 @@ def _jitc_homo_matrix_pallas_kernel_generator(
                     (rng.random_integers(0, clen0), rng)
                 )
 
-        def kernel(weight, clen, seed, out):
-            fn = pl.pallas_call(
-                _raw_kernel,
-                out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
-                grid=(dim,),
-                input_output_aliases={3: 0},
-            )
-            return [fn(weight, clen, seed, out)]
-
-    return kernel
+        return pallas_kernel(
+            _raw_kernel,
+            outs=kwargs['outs'],
+            tile=(dim,),
+            input_output_aliases={3: 0}
+        )
 
 
 def _jitc_homo_matrix_jvp_weight(
@@ -823,15 +817,13 @@ def float_jitc_homo_matrix_p_call(
 
 
 float_jitc_homo_matrix_p = XLACustomKernel('float_jitc_homo_matrix')
-float_jitc_homo_matrix_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_homo_matrix_numba_kernel_generator))
+float_jitc_homo_matrix_p.def_cpu_kernel(_jitc_homo_matrix_numba_kernel_generator)
 float_jitc_homo_matrix_p.def_gpu_kernel(
-    GPUKernelChoice(
-        default='warp',
-        warp_kernel=WarpKernelGenerator(_jitc_homo_matrix_warp_kernel_generator),
-        pallas_kernel=PallasKernelGenerator(_jitc_homo_matrix_pallas_kernel_generator)
-    )
+    default='pallas',
+    warp=_jitc_homo_matrix_warp_kernel_generator,
+    pallas=_jitc_homo_matrix_pallas_kernel_generator
 )
-float_jitc_homo_matrix_p.def_tpu_kernel(PallasKernelGenerator(_jitc_homo_matrix_pallas_kernel_generator))
+float_jitc_homo_matrix_p.def_tpu_kernel(_jitc_homo_matrix_pallas_kernel_generator)
 float_jitc_homo_matrix_p.def_jvp_rule2(_jitc_homo_matrix_jvp_weight, None, None)
 float_jitc_homo_matrix_p.def_transpose_rule(_jitc_homo_matrix_transpose)
 float_jitc_homo_matrix_p.def_batching_rule(_jitc_homo_matrix_batching)
@@ -1040,10 +1032,10 @@ def _jitc_mv_homo_warp_kernel_generator(
     """
     import warp
 
-    weight_dtype = dtype_to_warp_type(weight_info.dtype)
-    clen_dtype = dtype_to_warp_type(clen_info.dtype)
-    v_dtype = dtype_to_warp_type(vector_info.dtype)
-    seed_dtype = dtype_to_warp_type(seed_info.dtype)
+    weight_dtype = jaxtype_to_warptype(weight_info.dtype)
+    clen_dtype = jaxtype_to_warptype(clen_info.dtype)
+    v_dtype = jaxtype_to_warptype(vector_info.dtype)
+    seed_dtype = jaxtype_to_warptype(seed_info.dtype)
 
     if corder:
 
@@ -1290,14 +1282,12 @@ def _jitc_mv_homo_pallas_kernel_generator(
                     (i_cols, i_col_mask, rng)
                 )
 
-        def final_kernel(weight, clen, vector, seed, out):
-            fn = pl.pallas_call(
-                kernel,
-                out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
-                grid=(pl.cdiv(dim, block_size),),
-                input_output_aliases={4: 0},
-            )
-            return [fn(weight, clen, vector, seed, out)]
+        return pallas_kernel(
+            kernel,
+            outs=kwargs['outs'],
+            tile=(pl.cdiv(dim, block_size),),
+            input_output_aliases={4: 0},
+        )
 
 
     else:
@@ -1345,14 +1335,12 @@ def _jitc_mv_homo_pallas_kernel_generator(
                     (rng.random_integers(0, clen0), rng)
                 )
 
-        def final_kernel(weight, clen, vector, seed, out):
-            fn = pl.pallas_call(
-                kernel,
-                out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
-                grid=(dim,),
-                input_output_aliases={4: 0},
-            )
-            return [fn(weight, clen, vector, seed, out)]
+        return pallas_kernel(
+            kernel,
+            outs=kwargs['outs'],
+            tile=(dim,),
+            input_output_aliases={4: 0},
+        )
 
     return final_kernel
 
@@ -1587,15 +1575,13 @@ def float_jitc_mv_homo_p_call(
 
 
 float_jitc_mv_homo_p = XLACustomKernel('float_jitc_mv_homo')
-float_jitc_mv_homo_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mv_homo_numba_kernel_generator))
+float_jitc_mv_homo_p.def_cpu_kernel(_jitc_mv_homo_numba_kernel_generator)
 float_jitc_mv_homo_p.def_gpu_kernel(
-    GPUKernelChoice(
-        default='warp',
-        warp_kernel=WarpKernelGenerator(_jitc_mv_homo_warp_kernel_generator),
-        pallas_kernel=PallasKernelGenerator(_jitc_mv_homo_pallas_kernel_generator),
-    )
+    default='pallas',
+    warp=_jitc_mv_homo_warp_kernel_generator,
+    pallas=_jitc_mv_homo_pallas_kernel_generator,
 )
-float_jitc_mv_homo_p.def_tpu_kernel(PallasKernelGenerator(_jitc_mv_homo_pallas_kernel_generator))
+float_jitc_mv_homo_p.def_tpu_kernel(_jitc_mv_homo_pallas_kernel_generator)
 float_jitc_mv_homo_p.def_jvp_rule2(
     _jitc_mv_homo_jvp_weights,
     None,
@@ -1769,10 +1755,10 @@ def _jitc_mm_homo_warp_kernel_generator(
 ):
     import warp
 
-    weight_dtype = dtype_to_warp_type(weight_info.dtype)
-    clen_dtype = dtype_to_warp_type(clen_info.dtype)
-    B_dtype = dtype_to_warp_type(B_info.dtype)
-    seed_dtype = dtype_to_warp_type(seed_info.dtype)
+    weight_dtype = jaxtype_to_warptype(weight_info.dtype)
+    clen_dtype = jaxtype_to_warptype(clen_info.dtype)
+    B_dtype = jaxtype_to_warptype(B_info.dtype)
+    seed_dtype = jaxtype_to_warptype(seed_info.dtype)
 
     if corder:
         if transpose:
@@ -2010,17 +1996,14 @@ def _jitc_mm_homo_pallas_kernel_generator(
                 )
 
     tile = (out_info.shape[0] if corder else B_info.shape[0])
+    grid = (tile, pl.cdiv(B_info.shape[1], block_dim))
 
-    def final_kernel(weight, clen, B, seed, out):
-        fn = pl.pallas_call(
-            kernel,
-            grid=(tile, pl.cdiv(B_info.shape[1], block_dim)),
-            input_output_aliases={4: 0},
-            out_shape=jax.ShapeDtypeStruct(out.shape, out.dtype),
-        )
-        return [fn(weight, clen, B, seed, out)]
-
-    return final_kernel
+    return pallas_kernel(
+        kernel,
+        tile=grid,
+        input_output_aliases={4: 0},
+        outs=kwargs['outs']
+    )
 
 
 def _jitc_mm_homo_jvp_w(
@@ -2146,7 +2129,7 @@ def _jitc_mm_homo_batching(args, axes, **kwargs):
         return _batching_axis1(args, **kwargs)
 
     elif tuple(axes) == (None, None, 1, None, None):
-        return _batching_axis1(args,  **kwargs)
+        return _batching_axis1(args, **kwargs)
 
     elif tuple(axes) == (None, None, 2, None, None):
         return _batching_axis1(args, axis=2, **kwargs)
@@ -2207,15 +2190,13 @@ def float_jitc_mm_homo_p_call(
 
 
 float_jitc_mm_homo_p = XLACustomKernel('float_jitc_mm_homo')
-float_jitc_mm_homo_p.def_cpu_kernel(NumbaKernelGenerator(_jitc_mm_homo_numba_kernel_generator))
+float_jitc_mm_homo_p.def_cpu_kernel(_jitc_mm_homo_numba_kernel_generator)
 float_jitc_mm_homo_p.def_gpu_kernel(
-    GPUKernelChoice(
-        default='warp',
-        warp_kernel=WarpKernelGenerator(_jitc_mm_homo_warp_kernel_generator),
-        pallas_kernel=PallasKernelGenerator(_jitc_mm_homo_pallas_kernel_generator),
-    )
+    warp=_jitc_mm_homo_warp_kernel_generator,
+    pallas=_jitc_mm_homo_pallas_kernel_generator,
+    default='pallas',
 )
-float_jitc_mm_homo_p.def_tpu_kernel(PallasKernelGenerator(_jitc_mm_homo_pallas_kernel_generator))
+float_jitc_mm_homo_p.def_tpu_kernel(_jitc_mm_homo_pallas_kernel_generator)
 float_jitc_mm_homo_p.def_jvp_rule2(
     _jitc_mm_homo_jvp_w,
     None,

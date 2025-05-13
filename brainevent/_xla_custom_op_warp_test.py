@@ -59,7 +59,7 @@ class TestWarpGPU(unittest.TestCase):
     def test_warp_change_with_dtype(self):
         def generate(**kwargs):
             outs = kwargs["outs"][0]
-            dtype = brainevent.dtype_to_warp_type(outs.dtype)
+            dtype = brainevent.jaxtype_to_warptype(outs.dtype)
 
             # generic kernel definition using Any as a placeholder for concrete types
             @wp.kernel

@@ -23,9 +23,9 @@ from jax.interpreters import ad
 
 from ._misc import cdiv
 from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
-from ._xla_custom_op_numba import NumbaKernelGenerator, numba_kernel
+from ._xla_custom_op_numba import numba_kernel
 from ._xla_custom_op_util import general_batching_rule
-from ._xla_custom_op_warp import WarpKernelGenerator, dtype_to_warp_type, warp_kernel
+from ._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
 
 TILE_THREAD = 256
 
@@ -172,6 +172,7 @@ def _matrix_event_mm_gpu_kernel_generator(
     TILE_N: int,
     TILE_K: int,
     TILE_M: int,
+    TILE_SIZE: int,
     block_dim: int,
     **kwargs
 ):
@@ -179,8 +180,8 @@ def _matrix_event_mm_gpu_kernel_generator(
 
     import warp  # pylint: disable=import-outside-toplevel
 
-    spike_dtype = dtype_to_warp_type(spk_info.dtype)
-    weight_dtype = dtype_to_warp_type(weight_info.dtype)
+    spike_dtype = jaxtype_to_warptype(spk_info.dtype)
+    weight_dtype = jaxtype_to_warptype(weight_info.dtype)
 
     if spk_info.dtype == jnp.bool_:
         def kernel(
@@ -303,13 +304,8 @@ def matrix_event_mm_p_call(weights, spikes, *, float_as_event: bool):
 
 
 matrix_event_mm_p = XLACustomKernel('matrix_event_mm')
-matrix_event_mm_p.def_cpu_kernel(NumbaKernelGenerator(_matrix_event_mm_cpu_kernel_generator))
-matrix_event_mm_p.def_gpu_kernel(
-    GPUKernelChoice(
-        default='warp',
-        warp_kernel=WarpKernelGenerator(_matrix_event_mm_gpu_kernel_generator)
-    )
-)
+matrix_event_mm_p.def_cpu_kernel(_matrix_event_mm_cpu_kernel_generator)
+matrix_event_mm_p.def_gpu_kernel(warp=_matrix_event_mm_gpu_kernel_generator)
 matrix_event_mm_p.def_jvp_rule2(_matrix_event_mm_jvp_weights, _matrix_event_mm_jvp_spikes)
 matrix_event_mm_p.def_transpose_rule(_matrix_event_mm_transpose_rule)
 matrix_event_mm_p.def_batching_rule(_matrix_event_mm_batching)
@@ -436,13 +432,14 @@ def _event_matrix_mm_gpu_kernel_generator(
     TILE_N: int,
     TILE_K: int,
     TILE_M: int,
+    TILE_SIZE: int,
     block_dim: int,
     **kwargs
 ):
     import warp  # pylint: disable=import-outside-toplevel
 
-    spike_dtype = dtype_to_warp_type(spk_info.dtype)
-    weight_dtype = dtype_to_warp_type(weight_info.dtype)
+    spike_dtype = jaxtype_to_warptype(spk_info.dtype)
+    weight_dtype = jaxtype_to_warptype(weight_info.dtype)
 
     if spk_info.dtype == jnp.bool_:
         def kernel(
@@ -536,13 +533,8 @@ def event_matrix_mm_p_call(spikes, weights, *, float_as_event: bool):
 
 
 event_matrix_mm_p = XLACustomKernel('event_matrix_mm', )
-event_matrix_mm_p.def_cpu_kernel(NumbaKernelGenerator(_event_matrix_mm_cpu_kernel_generator))
-event_matrix_mm_p.def_gpu_kernel(
-    GPUKernelChoice(
-        default='warp',
-        warp_kernel=WarpKernelGenerator(_event_matrix_mm_gpu_kernel_generator)
-    )
-)
+event_matrix_mm_p.def_cpu_kernel(_event_matrix_mm_cpu_kernel_generator)
+event_matrix_mm_p.def_gpu_kernel(warp=_event_matrix_mm_gpu_kernel_generator)
 event_matrix_mm_p.def_jvp_rule2(_event_matrix_mm_jvp_spikes, _event_matrix_mm_jvp_weights, )
 event_matrix_mm_p.def_transpose_rule(_event_matrix_mm_transpose_rule)
 event_matrix_mm_p.def_batching_rule(_event_matrix_mm_batching)
