@@ -21,18 +21,17 @@ import brainunit as u
 import pytest
 
 import brainevent
-from brainevent._event_matrix_impl import matrix_event_mm, event_matrix_mm
+from brainevent._binary_vector_impl import matrix_event_mv, event_matrix_mv
 
 
 class TestMatrixEvent:
     @pytest.mark.parametrize("m", [10])
     @pytest.mark.parametrize("k", [15, 20])
-    @pytest.mark.parametrize("n", [30])
     @pytest.mark.parametrize("asbool", [True, False])
-    def test_mm(self, m, k, n, asbool):
+    def test_mm(self, m, k, asbool):
         matrix = brainstate.random.randn(m, k)
         events = brainevent.EventArray(
-            brainstate.random.randn(k, n) < 0.5
+            brainstate.random.randn(k) < 0.5
         )
         if not asbool:
             events.value = u.math.asarray(events.value, dtype=float)
@@ -42,14 +41,13 @@ class TestMatrixEvent:
 
     @pytest.mark.parametrize("m", [10])
     @pytest.mark.parametrize("k", [15, 20])
-    @pytest.mark.parametrize("n", [30])
     @pytest.mark.parametrize("float_as_event", [True, False])
-    def test_matrix_event_mm(self, m, k, n, float_as_event):
+    def test_matrix_event_mv(self, m, k, float_as_event):
         matrix = brainstate.random.randn(m, k)
-        events = u.math.asarray(brainstate.random.randn(k, n) < 0.5, dtype=float)
+        events = u.math.asarray(brainstate.random.randn(k) < 0.5, dtype=float)
         if not float_as_event:
-            events = events * brainstate.random.rand(k, n)
-        out1 = matrix_event_mm(matrix, events, float_as_event=float_as_event)
+            events = events * brainstate.random.rand(k)
+        out1 = matrix_event_mv(matrix, events, float_as_event=float_as_event)
         out2 = matrix @ events
         assert u.math.allclose(out1, out2, atol=1e-4, rtol=1e-4)
 
@@ -57,28 +55,26 @@ class TestMatrixEvent:
 class TestEventMatrix:
     @pytest.mark.parametrize("m", [10])
     @pytest.mark.parametrize("k", [15, 20])
-    @pytest.mark.parametrize("n", [30])
     @pytest.mark.parametrize("asbool", [True, False])
-    def test_mm(self, m, k, n, asbool):
+    def test_mm(self, m, k, asbool):
         events = brainevent.EventArray(
-            brainstate.random.randn(m, k) < 0.5
+            brainstate.random.randn(k) < 0.5
         )
         if not asbool:
             events.value = u.math.asarray(events.value, dtype=float)
-        matrix = brainstate.random.randn(k, n)
+        matrix = brainstate.random.randn(k, m)
         out1 = events @ matrix
         out2 = events.data @ matrix
         assert u.math.allclose(out1, out2, atol=1e-4, rtol=1e-4)
 
     @pytest.mark.parametrize("m", [10])
     @pytest.mark.parametrize("k", [15, 20])
-    @pytest.mark.parametrize("n", [30])
     @pytest.mark.parametrize("float_as_event", [True, False])
-    def test_matrix_event_mm(self, m, k, n, float_as_event):
-        events = u.math.asarray(brainstate.random.randn(m, k) < 0.5, dtype=float)
+    def test_matrix_event_mv(self, m, k, float_as_event):
+        events = u.math.asarray(brainstate.random.randn(m) < 0.5, dtype=float)
         if not float_as_event:
-            events = events * brainstate.random.rand(m, k)
-        matrix = brainstate.random.randn(k, n)
-        out1 = event_matrix_mm(events, matrix, float_as_event=float_as_event)
+            events = events * brainstate.random.rand(m)
+        matrix = brainstate.random.randn(m, k)
+        out1 = event_matrix_mv(events, matrix, float_as_event=float_as_event)
         out2 = events @ matrix
         assert u.math.allclose(out1, out2, atol=1e-4, rtol=1e-4)

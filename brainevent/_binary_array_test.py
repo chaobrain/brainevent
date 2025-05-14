@@ -58,27 +58,6 @@ def test_update_method():
     assert np.array_equal(event_array, new_value)
 
 
-# # Test dtype property
-# def test_dtype_property():
-#     value = np.array([1, 2, 3], dtype=np.float32)
-#     event_array = EventArray(value)
-#     assert event_array.dtype == np.float32
-#
-#
-# # Test shape property
-# def test_shape_property():
-#     value = np.array([1, 2, 3])
-#     event_array = EventArray(value)
-#     assert event_array.shape == (3,)
-#
-#
-# # Test ndim property
-# def test_ndim_property():
-#     value = np.array([1, 2, 3])
-#     event_array = EventArray(value)
-#     assert event_array.ndim == 1
-
-
 # Test imag property
 def test_imag_property():
     value = np.array([1 + 2j, 3 + 4j])
@@ -159,7 +138,7 @@ def test_abs_method():
 # # Test __ne__ method
 # def test_ne_method():
 #     value = np.array([1, 2, 3])
-#     event_array = EventArray(value)
+#     event_array = LowBitArray(value)
 #     other_value = np.array([4, 5, 6])
 #     assert event_array != other_value
 
@@ -167,7 +146,7 @@ def test_abs_method():
 # # Test __lt__ method
 # def test_lt_method():
 #     value = np.array([1, 2, 3])
-#     event_array = EventArray(value)
+#     event_array = LowBitArray(value)
 #     other_value = np.array([4, 5, 6])
 #     assert event_array < other_value
 #
@@ -175,7 +154,7 @@ def test_abs_method():
 # # Test __le__ method
 # def test_le_method():
 #     value = np.array([1, 2, 3])
-#     event_array = EventArray(value)
+#     event_array = LowBitArray(value)
 #     other_value = np.array([4, 5, 6])
 #     assert event_array <= other_value
 #
@@ -183,7 +162,7 @@ def test_abs_method():
 # # Test __gt__ method
 # def test_gt_method():
 #     value = np.array([4, 5, 6])
-#     event_array = EventArray(value)
+#     event_array = LowBitArray(value)
 #     other_value = np.array([1, 2, 3])
 #     assert event_array > other_value
 #
@@ -191,7 +170,7 @@ def test_abs_method():
 # # Test __ge__ method
 # def test_ge_method():
 #     value = np.array([4, 5, 6])
-#     event_array = EventArray(value)
+#     event_array = LowBitArray(value)
 #     other_value = np.array([1, 2, 3])
 #     assert event_array >= other_value
 #
@@ -299,7 +278,7 @@ def test_truediv_method():
 # # Test __rtruediv__ method
 # def test_rtruediv_method():
 #     value = np.array([1, 2, 3])
-#     event_array = EventArray(value)
+#     event_array = LowBitArray(value)
 #     other_value = 4
 #     result = other_value / event_array
 #     assert np.array_equal(result, np.array([4, 2, 4 / 3]))

@@ -22,7 +22,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from ._misc import cdiv
-from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
+from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import numba_kernel
 from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel

@@ -21,8 +21,8 @@ from typing import Union, Tuple
 import brainunit as u
 import jax
 
+from ._binary_array import EventArray
 from ._compatible_import import JAXSparse, Tracer
-from ._event import EventArray
 from ._jitc_event_normal_impl import (
     event_jitc_normal_matvec,
     event_jitc_normal_matmat,

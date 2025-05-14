@@ -20,10 +20,10 @@ import jax
 import jax.numpy as jnp
 from jax.interpreters import ad
 
+from ._binary_matrix_impl import matrix_event_mm, event_matrix_mm
 from ._compatible_import import pallas as pl
-from ._event_matrix_impl import matrix_event_mm, event_matrix_mm
 from ._misc import cdiv
-from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
+from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import numba_kernel
 from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
@@ -414,11 +414,11 @@ def _event_matrix_mv_jvp_spikes(spk_dot, spikes, weights, **kwargs):
 def _event_matrix_mv_transpose_rule(ct, spikes, weights, **kwargs):
     if ad.is_undefined_primal(spikes):
         ct_events = jnp.matmul(weights, ct[0])
-        return weights, (ad.Zero(spikes) if type(ct[0]) is ad.Zero else ct_events)
+        return (ad.Zero(spikes) if type(ct[0]) is ad.Zero else ct_events), weights
 
     else:
         ct_weights = jnp.outer(spikes, ct[0])
-        return (ad.Zero(weights) if type(ct[0]) is ad.Zero else ct_weights), spikes
+        return spikes, (ad.Zero(weights) if type(ct[0]) is ad.Zero else ct_weights)
 
 
 def _event_matrix_batching(args, axes, **kwargs):

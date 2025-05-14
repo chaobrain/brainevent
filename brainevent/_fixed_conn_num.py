@@ -22,9 +22,9 @@ import brainunit as u
 import jax
 import jax.numpy as jnp
 
+from ._binary_array import EventArray
 from ._compatible_import import JAXSparse
 from ._coo import COO
-from ._event import EventArray
 from ._fixed_conn_num_event_impl import event_fixed_num_mv_p_call, event_fixed_num_mm_p_call
 from ._fixed_conn_num_float_impl import fixed_num_mv_p_call, fixed_num_mm_p_call
 from ._misc import _coo_todense, COOInfo

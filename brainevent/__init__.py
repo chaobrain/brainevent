@@ -15,12 +15,13 @@
 
 __version__ = "0.0.1"
 
+from ._array import LowBitArray
+from ._binary_array import BinaryArray, EventArray
 from ._block_csr import BlockCSR
 from ._block_ell import BlockELL
 from ._config import config
 from ._coo import COO
 from ._csr import CSR, CSC
-from ._event import EventArray
 from ._fixed_conn_num import FixedPostNumConn, FixedPreNumConn
 from ._jitc_homo import JITCHomoR, JITCHomoC
 from ._jitc_normal import JITCNormalR, JITCNormalC
@@ -28,16 +29,18 @@ from ._jitc_uniform import JITCUniformR, JITCUniformC
 from ._pallas_random import LFSR88RNG, LFSR113RNG, LFSR128RNG
 from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
 from ._xla_custom_op_numba import numba_kernel
+from ._xla_custom_op_pallas import pallas_kernel
 from ._xla_custom_op_util import defjvp, general_batching_rule
 from ._xla_custom_op_warp import warp_kernel, jaxtype_to_warptype, jaxinfo_to_warpinfo
-from ._xla_custom_op_pallas import pallas_kernel
 
 __all__ = [
     # --- global configuration --- #
     'config',
 
     # --- data representing events --- #
+    'LowBitArray',
     'EventArray',
+    'BinaryArray',
 
     # --- data interoperable with events --- #
     'COO',
