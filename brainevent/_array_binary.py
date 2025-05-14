@@ -16,7 +16,7 @@
 # -*- coding: utf-8 -*-
 
 
-from ._base_array import (
+from ._array_base import (
     LowBitArray,
     extract_raw_value,
     is_known_type,
@@ -38,6 +38,8 @@ __all__ = [
 class BinaryArray(LowBitArray):
     """
     A binary array is a special case of an event array where the events are binary (0 or 1).
+
+
     """
     __slots__ = ('_value',)
     __module__ = 'brainevent'

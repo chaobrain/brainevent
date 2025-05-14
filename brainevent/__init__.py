@@ -15,8 +15,9 @@
 
 __version__ = "0.0.1"
 
-from ._base_array import LowBitArray
-from ._binary_array import BinaryArray, EventArray
+from ._array_base import LowBitArray
+from ._array_binary import BinaryArray, EventArray
+from ._array_masked_float import MaskedFloat
 from ._block_csr import BlockCSR
 from ._block_ell import BlockELL
 from ._config import config

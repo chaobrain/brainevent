@@ -25,7 +25,7 @@ import brainunit as u
 import jax
 import numpy as np
 
-from ._binary_array import EventArray
+from ._array_binary import EventArray
 from ._compatible_import import JAXSparse
 from ._coo_impl_binary import event_coo_matvec, event_coo_matmat
 from ._coo_impl_float import coo_matvec, coo_matmat
