@@ -23,6 +23,7 @@ from ._block_ell import BlockELL
 from ._config import config
 from ._coo import COO
 from ._csr import CSR, CSC
+from ._error import MathError
 from ._fixed_conn_num import FixedPostNumConn, FixedPreNumConn
 from ._jitc_homo import JITCHomoR, JITCHomoC
 from ._jitc_normal import JITCNormalR, JITCNormalC
@@ -42,6 +43,7 @@ __all__ = [
     'LowBitArray',
     'EventArray',
     'BinaryArray',
+    'MaskedFloat',
 
     # --- data interoperable with events --- #
     'COO',
@@ -85,5 +87,9 @@ __all__ = [
     'LFSR88RNG',
     'LFSR113RNG',
     'LFSR128RNG',
+
+    # --- others --- #
+
+    'MathError',
 
 ]
