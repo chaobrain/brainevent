@@ -16,6 +16,7 @@
 # -*- coding: utf-8 -*-
 
 
+import threading
 from contextlib import contextmanager
 from typing import Union
 
@@ -24,7 +25,7 @@ __all__ = [
 ]
 
 
-class Config:
+class Config(threading.local):
     """
     A configuration class that stores settings for the brainevent package.
 
