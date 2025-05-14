@@ -15,7 +15,7 @@
 
 __version__ = "0.0.1"
 
-from ._array_base import LowBitArray
+from ._array_base import BaseArray
 from ._array_binary import BinaryArray, EventArray
 from ._array_masked_float import MaskedFloat
 from ._block_csr import BlockCSR
@@ -40,7 +40,7 @@ __all__ = [
     'config',
 
     # --- data representing events --- #
-    'LowBitArray',
+    'BaseArray',
     'EventArray',
     'BinaryArray',
     'MaskedFloat',

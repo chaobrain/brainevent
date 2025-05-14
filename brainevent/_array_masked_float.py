@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-from ._array_base import LowBitArray
+from ._array_base import BaseArray
 from ._array_base import (
     extract_raw_value,
     is_known_type,
@@ -31,7 +31,7 @@ __all__ = [
 ]
 
 
-class MaskedFloat(LowBitArray):
+class MaskedFloat(BaseArray):
     __slots__ = ('_value',)
     __module__ = 'brainevent'
 

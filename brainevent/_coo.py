@@ -689,7 +689,7 @@ class COO(u.sparse.SparseMatrix):
         data = self.data
 
         if isinstance(other, EventArray):
-            # Extract the data from the LowBitArray
+            # Extract the data from the BaseArray
             other = other.data
             if other.ndim == 1:
                 # Perform matrix-vector multiplication with event data
@@ -768,7 +768,7 @@ class COO(u.sparse.SparseMatrix):
         data = self.data
 
         if isinstance(other, EventArray):
-            # Extract the data from the LowBitArray
+            # Extract the data from the BaseArray
             other = other.data
             if other.ndim == 1:
                 # Perform matrix-vector multiplication with event data

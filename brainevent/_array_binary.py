@@ -17,7 +17,7 @@
 
 
 from ._array_base import (
-    LowBitArray,
+    BaseArray,
     extract_raw_value,
     is_known_type,
 )
@@ -35,7 +35,7 @@ __all__ = [
 ]
 
 
-class BinaryArray(LowBitArray):
+class BinaryArray(BaseArray):
     """
     A binary array is a special case of an event array where the events are binary (0 or 1).
 

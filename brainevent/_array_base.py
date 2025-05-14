@@ -25,7 +25,7 @@ from jax.tree_util import register_pytree_node_class
 from ._error import MathError
 
 __all__ = [
-    'LowBitArray',
+    'BaseArray',
 ]
 
 
@@ -38,23 +38,23 @@ def _get_dtype(v):
 
 
 def _check_out(out):
-    if not isinstance(out, LowBitArray):
+    if not isinstance(out, BaseArray):
         raise TypeError(f'out must be an instance of Array. But got {type(out)}')
 
 
 def extract_raw_value(obj):
-    return obj.value if isinstance(obj, LowBitArray) else obj
+    return obj.value if isinstance(obj, BaseArray) else obj
 
 
 def is_known_type(x):
-    return isinstance(x, (u.Quantity, jax.Array, np.ndarray, LowBitArray))
+    return isinstance(x, (u.Quantity, jax.Array, np.ndarray, BaseArray))
 
 
 ArrayLike = Union[jax.Array, np.ndarray, u.Quantity]
 
 
 @register_pytree_node_class
-class LowBitArray:
+class BaseArray:
     """
     The base array class for representing low-bit arrays.
 
@@ -67,14 +67,14 @@ class LowBitArray:
 
     def __init__(self, value, dtype: jax.typing.DTypeLike = None):
         """
-        Initialize an LowBitArray instance.
+        Initialize an BaseArray instance.
 
         Args:
-            value: The input value, which can be an LowBitArray, tuple, list, or np.ndarray.
+            value: The input value, which can be an BaseArray, tuple, list, or np.ndarray.
             dtype: The data type of the array. If None, the data type will be inferred from the input value.
         """
         # array value
-        if isinstance(value, LowBitArray):
+        if isinstance(value, BaseArray):
             value = value.value
         elif isinstance(value, (tuple, list, np.ndarray)):
             value = u.math.asarray(value)
@@ -141,7 +141,7 @@ class LowBitArray:
         self_value = self._check_tracer()
 
         # Handle different types of incoming values
-        if isinstance(value, LowBitArray):
+        if isinstance(value, BaseArray):
             value = value.value
         elif isinstance(value, np.ndarray):
             value = u.math.asarray(value)
@@ -170,20 +170,20 @@ class LowBitArray:
 
     def update(self, value):
         """
-        Update the value of this LowBitArray.
+        Update the value of this BaseArray.
 
-        This method updates the internal value of the LowBitArray with a new value.
+        This method updates the internal value of the BaseArray with a new value.
 
         Parameters
         ----------
         value : array-like
-            The new value to update the LowBitArray with. This should be compatible
+            The new value to update the BaseArray with. This should be compatible
             with the current array in terms of shape and dtype.
 
         Returns
         -------
         None
-            This method modifies the LowBitArray in-place and doesn't return anything.
+            This method modifies the BaseArray in-place and doesn't return anything.
 
         Raises
         ------
@@ -279,10 +279,10 @@ class LowBitArray:
 
     def __repr__(self) -> str:
         """
-        Return a string representation of the LowBitArray.
+        Return a string representation of the BaseArray.
 
         Returns:
-            A string representation of the LowBitArray.
+            A string representation of the BaseArray.
         """
         print_code = repr(self.value)
         if ', dtype' in print_code:
@@ -326,7 +326,7 @@ class LowBitArray:
         """
         if isinstance(index, tuple):
             index = tuple(extract_raw_value(x) for x in index)
-        elif isinstance(index, LowBitArray):
+        elif isinstance(index, BaseArray):
             index = index.value
         return self.value[index]
 
@@ -339,7 +339,7 @@ class LowBitArray:
             value: The new value to be set.
         """
         # value is Array
-        if isinstance(value, LowBitArray):
+        if isinstance(value, BaseArray):
             value = value.value
         # value is numpy.ndarray
         elif isinstance(value, np.ndarray):
@@ -349,7 +349,7 @@ class LowBitArray:
         if isinstance(index, tuple):
             index = tuple(extract_raw_value(x) for x in index)
         # index is Array
-        elif isinstance(index, LowBitArray):
+        elif isinstance(index, BaseArray):
             index = index.value
         # index is numpy.ndarray
         elif isinstance(index, np.ndarray):
@@ -787,19 +787,19 @@ class LowBitArray:
         Perform matrix multiplication on the array with another object.
 
         This special method implements the matrix multiplication operator (@)
-        for LowBitArray instances. It handles matrix multiplication with different
+        for BaseArray instances. It handles matrix multiplication with different
         array types and dimensions, performing appropriate validation checks.
 
         Parameters
         ----------
         oc : array_like
             The right operand of the matrix multiplication. This object will be
-            multiplied with the current LowBitArray instance.
+            multiplied with the current BaseArray instance.
 
         Returns
         -------
-        ndarray or LowBitArray
-            The result of the matrix multiplication between this LowBitArray instance
+        ndarray or BaseArray
+            The result of the matrix multiplication between this BaseArray instance
             and the other object.
 
         Raises
@@ -816,27 +816,27 @@ class LowBitArray:
         - If the right operand is not a recognized array type, it delegates to the
           operand's __rmatmul__ method
         """
-        raise NotImplementedError("Matrix multiplication is not supported for LowBitArray.")
+        raise NotImplementedError("Matrix multiplication is not supported for BaseArray.")
 
     def __rmatmul__(self, oc):
         """
         Perform matrix multiplication on another object with the array.
 
         This special method implements the reverse matrix multiplication operator (@)
-        when the left operand is not an LowBitArray. It handles the case where
-        another object is matrix-multiplied with this LowBitArray instance.
+        when the left operand is not an BaseArray. It handles the case where
+        another object is matrix-multiplied with this BaseArray instance.
 
         Parameters
         ----------
         oc : array_like
             The left operand of the matrix multiplication. This object will be
-            multiplied with the current LowBitArray instance.
+            multiplied with the current BaseArray instance.
 
         Returns
         -------
-        ndarray or LowBitArray
+        ndarray or BaseArray
             The result of the matrix multiplication between the other object and this
-            LowBitArray instance.
+            BaseArray instance.
 
         Raises
         ------
@@ -850,7 +850,7 @@ class LowBitArray:
         - For a 1D array multiplied by a 2D array, it performs a vector-matrix multiplication
         - The method checks dimensions for compatibility before performing the operation
         """
-        raise NotImplementedError("Matrix multiplication is not supported for LowBitArray.")
+        raise NotImplementedError("Matrix multiplication is not supported for BaseArray.")
 
     def __imatmul__(self, oc):
         """
@@ -862,7 +862,7 @@ class LowBitArray:
         Returns:
             The updated array.
         """
-        raise NotImplementedError("Matrix multiplication is not supported for LowBitArray.")
+        raise NotImplementedError("Matrix multiplication is not supported for BaseArray.")
 
     def __and__(self, oc):
         """
@@ -1104,19 +1104,19 @@ class LowBitArray:
         >>> # Set the element at index 1 to 10
         >>> b = a.at[1].set(10)
         >>> print(a) # Original array is unchanged
-        LowBitArray(value=array([1, 2, 3, 4]), dtype=int32)
+        BaseArray(value=array([1, 2, 3, 4]), dtype=int32)
         >>> print(b) # New array with the update
-        LowBitArray(value=array([ 1, 10,  3,  4]), dtype=int32)
+        BaseArray(value=array([ 1, 10,  3,  4]), dtype=int32)
 
         >>> # Add 5 to the element at index 0
         >>> c = a.at[0].add(5)
         >>> print(c)
-        LowBitArray(value=array([6, 2, 3, 4]), dtype=int32)
+        BaseArray(value=array([6, 2, 3, 4]), dtype=int32)
 
         >>> # Set multiple elements using slicing
         >>> d = a.at[1:3].set(jnp.array([5, 6]))
         >>> print(d)
-        LowBitArray(value=array([1, 5, 6, 4]), dtype=int32)
+        BaseArray(value=array([1, 5, 6, 4]), dtype=int32)
         """
         return self.value.at
 
@@ -1139,7 +1139,7 @@ class LowBitArray:
 
         Returns
         -------
-        LowBitArray
+        BaseArray
             The instance itself, after ensuring its underlying data's computations
             are complete. The data (`self.value`) remains unchanged.
 
@@ -1494,7 +1494,7 @@ class LowBitArray:
         jax.Array or brainunit.Quantity
             A copy of the underlying `self.value` array, cast to the specified `dtype`.
             Note that this method returns the underlying JAX array or Quantity,
-            *not* a new LowBitArray instance.
+            *not* a new BaseArray instance.
 
         Raises
         ------
@@ -1513,7 +1513,7 @@ class LowBitArray:
         >>> x.astype(jnp.float64)
         Array([1. , 2. , 2.5], dtype=float64)
 
-        >>> # Original LowBitArray remains unchanged
+        >>> # Original BaseArray remains unchanged
         >>> x.dtype
         dtype('float32')
         """
@@ -1844,7 +1844,7 @@ class LowBitArray:
         Returns
         -------
         tuple of ndarray
-            A tuple of arrays, one for each dimension of the `LowBitArray`, containing
+            A tuple of arrays, one for each dimension of the `BaseArray`, containing
             the indices of the non-zero elements in that dimension.
 
         See Also
@@ -1965,7 +1965,7 @@ class LowBitArray:
         >>> from brainevent import EventArray
         >>> x = EventArray(jnp.arange(12).reshape((3, 4)))
         >>> x
-        LowBitArray(value=Array([[ 0,  1,  2,  3],
+        BaseArray(value=Array([[ 0,  1,  2,  3],
                [ 4,  5,  6,  7],
                [ 8,  9, 10, 11]], dtype=int32))
         >>> x.ptp()
@@ -1988,7 +1988,7 @@ class LowBitArray:
 
         The indexing works on the flattened target array. `put` is roughly
         equivalent to `a.flat[indices] = values`. This method modifies the
-        `LowBitArray` in-place.
+        `BaseArray` in-place.
 
         Parameters
         ----------
@@ -1998,7 +1998,7 @@ class LowBitArray:
         values : array_like
             Values to place in the array at target indices. If `values` is shorter
             than `indices`, it will be repeated as necessary. `values` will be
-            converted to the dtype of the `LowBitArray`.
+            converted to the dtype of the `BaseArray`.
 
         Returns
         -------
@@ -2017,18 +2017,18 @@ class LowBitArray:
         >>> from brainevent import EventArray
         >>> a = EventArray(jnp.arange(5))
         >>> a
-        LowBitArray(value=Array([0, 1, 2, 3, 4], dtype=int32))
+        BaseArray(value=Array([0, 1, 2, 3, 4], dtype=int32))
         >>> a.put([0, 2], [-44, -55])
         >>> a
-        LowBitArray(value=Array([-44,   1, -55,   3,   4], dtype=int32))
+        BaseArray(value=Array([-44,   1, -55,   3,   4], dtype=int32))
 
         >>> b = EventArray(jnp.arange(6).reshape(2, 3))
         >>> b
-        LowBitArray(value=Array([[0, 1, 2],
+        BaseArray(value=Array([[0, 1, 2],
                [3, 4, 5]], dtype=int32))
         >>> b.put([1, 4], [10, 40]) # Operates on flattened array
         >>> b
-        LowBitArray(value=Array([[ 0, 10,  2],
+        BaseArray(value=Array([[ 0, 10,  2],
                [ 3, 40,  5]], dtype=int32))
         """
         # Note: This uses __setitem__, which handles JAX's immutability correctly
@@ -2192,7 +2192,7 @@ class LowBitArray:
         >>> print(ea.shape)
         (2, 3)
         >>> print(ea)
-        LowBitArray(value=array([[0, 1, 2],
+        BaseArray(value=array([[0, 1, 2],
                [3, 4, 5]]), dtype=int32)
 
         # Note: Unlike np.resize, this doesn't change the total size
@@ -2236,16 +2236,16 @@ class LowBitArray:
         >>> a = np.array([0.37, 1.64, 0.5])
         >>> ea = EventArray(a)
         >>> ea.round()
-        LowBitArray(value=array([0., 2., 0.]), dtype=float64)
+        BaseArray(value=array([0., 2., 0.]), dtype=float64)
         >>> ea.round(decimals=1)
-        LowBitArray(value=array([0.4, 1.6, 0.5]), dtype=float64)
+        BaseArray(value=array([0.4, 1.6, 0.5]), dtype=float64)
         >>> ea.round(decimals=-1)
-        LowBitArray(value=array([0., 0., 0.]), dtype=float64)
+        BaseArray(value=array([0., 0., 0.]), dtype=float64)
 
         >>> b = np.array([12.34, 98.76])
         >>> eb = EventArray(b)
         >>> eb.round(decimals=-1)
-        LowBitArray(value=array([ 10., 100.]), dtype=float64)
+        BaseArray(value=array([ 10., 100.]), dtype=float64)
         """
         # Delegates directly to the underlying array's round method.
         return self.value.round(decimals=decimals)
@@ -2264,7 +2264,7 @@ class LowBitArray:
         ----------
         v : array_like
             Values to insert into the array. Can be a scalar or array-like,
-            including `LowBitArray`.
+            including `BaseArray`.
         side : {'left', 'right'}, optional
             If 'left', the index of the first suitable location found is given.
             If 'right', return the last such index. If there is no suitable
@@ -2340,14 +2340,14 @@ class LowBitArray:
         >>> ea = EventArray(a)
         >>> ea.sort(axis=1) # Sort each row
         >>> print(ea)
-        LowBitArray(value=array([[1, 4],
+        BaseArray(value=array([[1, 4],
                [1, 3]]), dtype=int32)
 
         >>> b = np.array([3, 1, 4, 1, 5, 9])
         >>> eb = EventArray(b)
         >>> eb.sort() # Sort the flattened array
         >>> print(eb)
-        LowBitArray(value=array([1, 1, 3, 4, 5, 9]), dtype=int32)
+        BaseArray(value=array([1, 1, 3, 4, 5, 9]), dtype=int32)
         """
         # Note: JAX arrays are immutable. `sort` returns a new array.
         # We reassign self.value to the sorted result.
@@ -2548,14 +2548,14 @@ class LowBitArray:
         >>> x = np.array([[1, 2, 3]])
         >>> ex = EventArray(x)
         >>> ex.swapaxes(0, 1)
-        LowBitArray(value=array([[1],
+        BaseArray(value=array([[1],
                [2],
                [3]]), dtype=int32)
 
         >>> y = np.array([[[0, 1], [2, 3]], [[4, 5], [6, 7]]])
         >>> ey = EventArray(y)
         >>> ey.swapaxes(0, 2)
-        LowBitArray(value=array([[[0, 4],
+        BaseArray(value=array([[[0, 4],
                 [2, 6]],
         <BLANKLINE>
                [[1, 5],
@@ -2586,7 +2586,7 @@ class LowBitArray:
         Returns
         -------
         sub_arrays : list of ndarry
-            A list of sub-arrays. Each sub-array is an LowBitArray wrapping
+            A list of sub-arrays. Each sub-array is an BaseArray wrapping
             a view into the original array's data.
 
         Raises
@@ -2602,9 +2602,9 @@ class LowBitArray:
         >>> x = np.arange(9.0)
         >>> ex = EventArray(x)
         >>> ex.split(3)
-        [LowBitArray(value=array([0., 1., 2.]), dtype=float64), LowBitArray(value=array([3., 4., 5.]), dtype=float64), LowBitArray(value=array([6., 7., 8.]), dtype=float64)]
+        [BaseArray(value=array([0., 1., 2.]), dtype=float64), BaseArray(value=array([3., 4., 5.]), dtype=float64), BaseArray(value=array([6., 7., 8.]), dtype=float64)]
         >>> ex.split([3, 5, 6, 10])
-        [LowBitArray(value=array([0., 1., 2.]), dtype=float64), LowBitArray(value=array([3., 4.]), dtype=float64), LowBitArray(value=array([5.]), dtype=float64), LowBitArray(value=array([6., 7., 8.]), dtype=float64), LowBitArray(value=array([], dtype=float64), dtype=float64)]
+        [BaseArray(value=array([0., 1., 2.]), dtype=float64), BaseArray(value=array([3., 4.]), dtype=float64), BaseArray(value=array([5.]), dtype=float64), BaseArray(value=array([6., 7., 8.]), dtype=float64), BaseArray(value=array([], dtype=float64), dtype=float64)]
 
         >>> y = np.arange(8.0).reshape(2, 4)
         >>> ey = EventArray(y)
@@ -2626,7 +2626,7 @@ class LowBitArray:
         Parameters
         ----------
         indices : array_like
-            The indices of the values to extract. Also allows LowBitArray instances.
+            The indices of the values to extract. Also allows BaseArray instances.
         axis : int, optional
             The axis over which to select values. By default, the flattened
             input array is used.
@@ -2654,10 +2654,10 @@ class LowBitArray:
         >>> b = np.array([[1, 2], [3, 4]])
         >>> eb = EventArray(b)
         >>> eb.take([0, 1], axis=1)
-        LowBitArray(value=array([[1, 2],
+        BaseArray(value=array([[1, 2],
                [3, 4]]), dtype=int32)
         >>> eb.take([0, 1, 2], axis=1, mode='wrap') # Wrap around indices
-        LowBitArray(value=array([[1, 2, 1],
+        BaseArray(value=array([[1, 2, 1],
                [3, 4, 3]]), dtype=int32)
         """
         return self.value.take(indices=extract_raw_value(indices), axis=axis, mode=mode)
@@ -2807,27 +2807,27 @@ class LowBitArray:
         >>> a = np.array([[1, 2], [3, 4]])
         >>> ea = EventArray(a)
         >>> ea.transpose()
-        LowBitArray(value=array([[1, 3],
+        BaseArray(value=array([[1, 3],
                [2, 4]]), dtype=int32)
         >>> ea.transpose((1, 0))
-        LowBitArray(value=array([[1, 3],
+        BaseArray(value=array([[1, 3],
                [2, 4]]), dtype=int32)
 
         >>> b = np.array([1, 2, 3, 4])
         >>> eb = EventArray(b)
         >>> eb.transpose() # 1-D array is unaffected
-        LowBitArray(value=array([1, 2, 3, 4]), dtype=int32)
+        BaseArray(value=array([1, 2, 3, 4]), dtype=int32)
 
         >>> c = np.arange(16).reshape((2, 2, 4))
         >>> ec = EventArray(c)
         >>> ec.transpose((1, 0, 2))
-        LowBitArray(value=array([[[ 0,  1,  2,  3],
+        BaseArray(value=array([[[ 0,  1,  2,  3],
                 [ 8,  9, 10, 11]],
         <BLANKLINE>
                [[ 4,  5,  6,  7],
                 [12, 13, 14, 15]]]), dtype=int32)
         >>> ec.transpose(2, 0, 1)
-        LowBitArray(value=array([[[ 0,  4],
+        BaseArray(value=array([[[ 0,  4],
                 [ 8, 12]],
         <BLANKLINE>
                [[ 1,  5],
@@ -2865,22 +2865,22 @@ class LowBitArray:
         >>> a = np.array([0, 1, 2])
         >>> ea = EventArray(a)
         >>> ea.tile(2)
-        LowBitArray(value=array([0, 1, 2, 0, 1, 2]), dtype=int32)
+        BaseArray(value=array([0, 1, 2, 0, 1, 2]), dtype=int32)
         >>> ea.tile((2, 2))
-        LowBitArray(value=array([[0, 1, 2, 0, 1, 2],
+        BaseArray(value=array([[0, 1, 2, 0, 1, 2],
                [0, 1, 2, 0, 1, 2]]), dtype=int32)
         >>> ea.tile((2, 1, 2))
-        LowBitArray(value=array([[[0, 1, 2, 0, 1, 2]],
+        BaseArray(value=array([[[0, 1, 2, 0, 1, 2]],
         <BLANKLINE>
                [[0, 1, 2, 0, 1, 2]]]), dtype=int32)
 
         >>> b = np.array([[1, 2], [3, 4]])
         >>> eb = EventArray(b)
         >>> eb.tile(2)
-        LowBitArray(value=array([[1, 2, 1, 2],
+        BaseArray(value=array([[1, 2, 1, 2],
                [3, 4, 3, 4]]), dtype=int32)
         >>> eb.tile((2, 1))
-        LowBitArray(value=array([[1, 2],
+        BaseArray(value=array([[1, 2],
                [3, 4],
                [1, 2],
                [3, 4]]), dtype=int32)
@@ -2987,10 +2987,10 @@ class LowBitArray:
         >>> a = np.arange(6)
         >>> ea = EventArray(a)
         >>> ea.view(2, 3)
-        LowBitArray(value=array([[0, 1, 2],
+        BaseArray(value=array([[0, 1, 2],
                [3, 4, 5]]), dtype=int32)
         >>> ea.view((6,))
-        LowBitArray(value=array([0, 1, 2, 3, 4, 5]), dtype=int32)
+        BaseArray(value=array([0, 1, 2, 3, 4, 5]), dtype=int32)
 
         # View with a new dtype
         >>> x = np.array([(1, 2), (3, 4)], dtype=[('a', np.int8), ('b', np.int8)])
@@ -3002,11 +3002,11 @@ class LowBitArray:
         ...     ex.view(dtype=np.float32) # This might fail if sizes don't match
         ... except TypeError as e:
         ...     print(f"TypeError: {e}") # JAX might raise TypeError
-        LowBitArray(value=array([[-1.5881868e+22,  1.1028099e-38]], dtype=float32)
+        BaseArray(value=array([[-1.5881868e+22,  1.1028099e-38]], dtype=float32)
 
         >>> # View as a simple int16 array
         >>> ex.view(dtype=np.int16)
-        LowBitArray(value=array([[1, 2],
+        BaseArray(value=array([[1, 2],
                [3, 4]], dtype=int16)
         """
         if not args:
@@ -3148,13 +3148,13 @@ class LowBitArray:
         """
         return u.math.expand_dims(self.value, axis)
 
-    def expand_as(self, array: Union['LowBitArray', ArrayLike]) -> 'LowBitArray':
+    def expand_as(self, array: Union['BaseArray', ArrayLike]) -> 'BaseArray':
         """
         Expand this array to match the shape of another array through broadcasting.
 
         Parameters
         ----------
-        array : LowBitArray or ArrayLike
+        array : BaseArray or ArrayLike
             The array whose shape will be used as the target shape.
 
         Returns
@@ -3186,7 +3186,7 @@ class LowBitArray:
         """
         target_array = extract_raw_value(array)
         result = u.math.broadcast_to(self.value, u.math.shape(target_array))
-        return type(self)(result)  # Wrap in LowBitArray to return correct type
+        return type(self)(result)  # Wrap in BaseArray to return correct type
 
     def pow(self, index: Union[int, float, ArrayLike]) -> Union[jax.Array, u.Quantity]:
         """
@@ -3206,9 +3206,9 @@ class LowBitArray:
         --------
         >>> a = EventArray([1, 2, 3, 4])
         >>> a.pow(2)
-        LowBitArray([1, 4, 9, 16])
+        BaseArray([1, 4, 9, 16])
         >>> a.pow([2, 3, 2, 3])
-        LowBitArray([1, 8, 9, 64])
+        BaseArray([1, 8, 9, 64])
 
         See Also
         --------
@@ -3218,13 +3218,13 @@ class LowBitArray:
 
     def addr(
         self,
-        vec1: Union['LowBitArray', ArrayLike],
-        vec2: Union['LowBitArray', ArrayLike],
+        vec1: Union['BaseArray', ArrayLike],
+        vec2: Union['BaseArray', ArrayLike],
         *,
         beta: float = 1.0,
         alpha: float = 1.0,
-        out: Optional[Union['LowBitArray', ArrayLike]] = None
-    ) -> Union['LowBitArray', u.Quantity, jax.Array, None]:
+        out: Optional[Union['BaseArray', ArrayLike]] = None
+    ) -> Union['BaseArray', u.Quantity, jax.Array, None]:
         r"""
         Perform the outer product of vectors and add to this matrix.
 
@@ -3235,9 +3235,9 @@ class LowBitArray:
 
         Parameters
         ----------
-        vec1 : LowBitArray or ArrayLike
+        vec1 : BaseArray or ArrayLike
             The first vector of the outer product.
-        vec2 : LowBitArray or ArrayLike
+        vec2 : BaseArray or ArrayLike
             The second vector of the outer product.
         beta : float, default=1.0
             The multiplier for this array.
@@ -3274,7 +3274,7 @@ class LowBitArray:
         vec2 = extract_raw_value(vec2)
         r = alpha * u.math.outer(vec1, vec2) + beta * self.value
         if out is None:
-            return type(self)(r)  # Return as LowBitArray for consistent API
+            return type(self)(r)  # Return as BaseArray for consistent API
         else:
             _check_out(out)
             out.value = r
@@ -3282,12 +3282,12 @@ class LowBitArray:
 
     def addr_(
         self,
-        vec1: Union['LowBitArray', ArrayLike],
-        vec2: Union['LowBitArray', ArrayLike],
+        vec1: Union['BaseArray', ArrayLike],
+        vec2: Union['BaseArray', ArrayLike],
         *,
         beta: float = 1.0,
         alpha: float = 1.0
-    ) -> 'LowBitArray':
+    ) -> 'BaseArray':
         r"""
         In-place version of addr that modifies the array.
 
@@ -3297,9 +3297,9 @@ class LowBitArray:
 
         Parameters
         ----------
-        vec1 : LowBitArray or ArrayLike
+        vec1 : BaseArray or ArrayLike
             The first vector of the outer product.
-        vec2 : LowBitArray or ArrayLike
+        vec2 : BaseArray or ArrayLike
             The second vector of the outer product.
         beta : float, default=1.0
             The multiplier for this array.
@@ -3331,14 +3331,14 @@ class LowBitArray:
 
     def outer(
         self,
-        other: Union['LowBitArray', ArrayLike]
-    ) -> 'LowBitArray':
+        other: Union['BaseArray', ArrayLike]
+    ) -> 'BaseArray':
         """
         Compute the outer product with another array.
 
         Parameters
         ----------
-        other : LowBitArray or ArrayLike
+        other : BaseArray or ArrayLike
             The array to compute the outer product with.
 
         Returns
@@ -3369,14 +3369,14 @@ class LowBitArray:
         return type(self)(u.math.outer(self.value, other))
 
     def abs(
-        self, *, out: Optional[Union['LowBitArray', ArrayLike]] = None
-    ) -> Union['LowBitArray', u.Quantity, jax.Array, None]:
+        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
+    ) -> Union['BaseArray', u.Quantity, jax.Array, None]:
         """
         Calculate the absolute value element-wise.
 
         Parameters
         ----------
-        out : LowBitArray or ArrayLike, optional
+        out : BaseArray or ArrayLike, optional
             Array to store the output. If provided, it must have the correct shape.
 
         Returns
@@ -3389,13 +3389,13 @@ class LowBitArray:
         --------
         >>> a = EventArray([-1, -2, 3])
         >>> a.abs()
-        LowBitArray([1, 2, 3])
+        BaseArray([1, 2, 3])
 
         >>> # Using out parameter
         >>> result = EventArray(np.zeros(3))
         >>> a.abs(out=result)
         >>> result
-        LowBitArray([1, 2, 3])
+        BaseArray([1, 2, 3])
 
         See Also
         --------
@@ -3411,7 +3411,7 @@ class LowBitArray:
             out.value = r
             return None
 
-    def abs_(self) -> 'LowBitArray':
+    def abs_(self) -> 'BaseArray':
         """
         Calculate the absolute value element-wise in-place.
 
@@ -3426,7 +3426,7 @@ class LowBitArray:
         --------
         >>> a = EventArray([-1, -2, 3])
         >>> a.abs_()  # Modifies a in-place
-        LowBitArray([1, 2, 3])
+        BaseArray([1, 2, 3])
 
         See Also
         --------
@@ -3436,13 +3436,13 @@ class LowBitArray:
         self.value = u.math.abs(self.value)
         return self
 
-    def add_(self, value: Union['LowBitArray', ArrayLike]) -> 'LowBitArray':
+    def add_(self, value: Union['BaseArray', ArrayLike]) -> 'BaseArray':
         """
         Add a scalar or array to this array, in-place.
 
         Parameters
         ----------
-        value : LowBitArray or ArrayLike
+        value : BaseArray or ArrayLike
             The value to add to this array.
 
         Returns
@@ -3468,8 +3468,8 @@ class LowBitArray:
         return self
 
     def absolute(
-        self, *, out: Optional[Union['LowBitArray', ArrayLike]] = None
-    ) -> Union['LowBitArray', jax.Array, u.Quantity]:
+        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
+    ) -> Union['BaseArray', jax.Array, u.Quantity]:
         """
         Calculate the absolute value element-wise.
 
@@ -3482,7 +3482,7 @@ class LowBitArray:
 
         Returns
         -------
-        Union[LowBitArray, jax.Array, u.Quantity]
+        Union[BaseArray, jax.Array, u.Quantity]
             A new array with the absolute value of each element.
             If out is provided, returns None.
 
@@ -3499,7 +3499,7 @@ class LowBitArray:
         """
         return self.abs(out=out)
 
-    def absolute_(self) -> 'LowBitArray':
+    def absolute_(self) -> 'BaseArray':
         """
         Calculate the absolute value element-wise in-place.
 
@@ -3507,7 +3507,7 @@ class LowBitArray:
 
         Returns
         -------
-        LowBitArray
+        BaseArray
             Self, after taking the absolute value of each element.
 
         Examples
@@ -3523,13 +3523,13 @@ class LowBitArray:
         """
         return self.abs_()
 
-    def mul(self, value: Union['LowBitArray', ArrayLike]) -> Union[jax.Array, u.Quantity]:
+    def mul(self, value: Union['BaseArray', ArrayLike]) -> Union[jax.Array, u.Quantity]:
         """
         Multiply the array by a scalar or array element-wise.
 
         Parameters
         ----------
-        value : LowBitArray or ArrayLike
+        value : BaseArray or ArrayLike
             The value to multiply with this array.
 
         Returns
@@ -3554,18 +3554,18 @@ class LowBitArray:
         """
         return self.value * extract_raw_value(value)
 
-    def mul_(self, value: Union['LowBitArray', ArrayLike]) -> 'LowBitArray':
+    def mul_(self, value: Union['BaseArray', ArrayLike]) -> 'BaseArray':
         """
         Multiply the array by a scalar or array element-wise, in-place.
 
         Parameters
         ----------
-        value : LowBitArray or ArrayLike
+        value : BaseArray or ArrayLike
             The value to multiply with this array.
 
         Returns
         -------
-        LowBitArray
+        BaseArray
             Self, after the multiplication has been performed.
 
         Examples
@@ -3583,7 +3583,7 @@ class LowBitArray:
         self.value *= extract_raw_value(value)
         return self
 
-    def multiply(self, value: Union['LowBitArray', ArrayLike]) -> Union[jax.Array, u.Quantity]:
+    def multiply(self, value: Union['BaseArray', ArrayLike]) -> Union[jax.Array, u.Quantity]:
         """
         Multiply the array by a scalar or array element-wise.
 
@@ -3591,7 +3591,7 @@ class LowBitArray:
 
         Parameters
         ----------
-        value : LowBitArray or ArrayLike
+        value : BaseArray or ArrayLike
             The value to multiply with this array.
 
         Returns
@@ -3612,7 +3612,7 @@ class LowBitArray:
         """
         return self.value * extract_raw_value(value)
 
-    def multiply_(self, value: Union['LowBitArray', ArrayLike]) -> 'LowBitArray':
+    def multiply_(self, value: Union['BaseArray', ArrayLike]) -> 'BaseArray':
         """
         Multiply the array by a scalar or array element-wise, in-place.
 
@@ -3620,12 +3620,12 @@ class LowBitArray:
 
         Parameters
         ----------
-        value : LowBitArray or ArrayLike
+        value : BaseArray or ArrayLike
             The value to multiply with this array.
 
         Returns
         -------
-        LowBitArray
+        BaseArray
             Self, after the multiplication has been performed.
 
         Examples
@@ -3643,14 +3643,14 @@ class LowBitArray:
         return self
 
     def sin(
-        self, *, out: Optional[Union['LowBitArray', ArrayLike]] = None
+        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the sine of the array elements.
 
         Parameters
         ----------
-        out : LowBitArray or ArrayLike, optional
+        out : BaseArray or ArrayLike, optional
             Output array for the result. If provided, must have the same shape as the output.
 
         Returns
@@ -3678,7 +3678,7 @@ class LowBitArray:
 
         Returns
         -------
-        LowBitArray
+        BaseArray
             The modified array with sine values.
 
         See Also
@@ -3697,7 +3697,7 @@ class LowBitArray:
 
         Returns
         -------
-        LowBitArray
+        BaseArray
             The modified array with cosine values.
 
         See Also
@@ -3709,14 +3709,14 @@ class LowBitArray:
         return self
 
     def cos(
-        self, *, out: Optional[Union['LowBitArray', ArrayLike]] = None
+        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the cosine of the array elements.
 
         Parameters
         ----------
-        out : LowBitArray or ArrayLike, optional
+        out : BaseArray or ArrayLike, optional
             Output array for the result. If provided, must have the same shape as the output.
 
         Returns
@@ -3744,7 +3744,7 @@ class LowBitArray:
 
         Returns
         -------
-        LowBitArray
+        BaseArray
             The modified array with tangent values.
 
         See Also
@@ -3756,14 +3756,14 @@ class LowBitArray:
         return self
 
     def tan(
-        self, *, out: Optional[Union['LowBitArray', ArrayLike]] = None
+        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the tangent of the array elements.
 
         Parameters
         ----------
-        out : LowBitArray or ArrayLike, optional
+        out : BaseArray or ArrayLike, optional
             Output array for the result. If provided, must have the same shape as the output.
 
         Returns
@@ -3791,7 +3791,7 @@ class LowBitArray:
 
         Returns
         -------
-        LowBitArray
+        BaseArray
             The modified array with hyperbolic sine values.
 
         See Also
@@ -3803,14 +3803,14 @@ class LowBitArray:
         return self
 
     def sinh(
-        self, *, out: Optional[Union['LowBitArray', ArrayLike]] = None
+        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the hyperbolic sine of the array elements.
 
         Parameters
         ----------
-        out : LowBitArray or ArrayLike, optional
+        out : BaseArray or ArrayLike, optional
             Output array for the result. If provided, must have the same shape as the output.
 
         Returns
@@ -3838,7 +3838,7 @@ class LowBitArray:
 
         Returns
         -------
-        LowBitArray
+        BaseArray
             The modified array with hyperbolic cosine values.
 
         See Also
@@ -3850,14 +3850,14 @@ class LowBitArray:
         return self
 
     def cosh(
-        self, *, out: Optional[Union['LowBitArray', ArrayLike]] = None
+        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the hyperbolic cosine of the array elements.
 
         Parameters
         ----------
-        out : LowBitArray or ArrayLike, optional
+        out : BaseArray or ArrayLike, optional
             Output array for the result. If provided, must have the same shape as the output.
 
         Returns
@@ -3885,7 +3885,7 @@ class LowBitArray:
 
         Returns
         -------
-        LowBitArray
+        BaseArray
             The modified array with hyperbolic tangent values.
 
         See Also
@@ -3897,14 +3897,14 @@ class LowBitArray:
         return self
 
     def tanh(
-        self, *, out: Optional[Union['LowBitArray', ArrayLike]] = None
+        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the hyperbolic tangent of the array elements.
 
         Parameters
         ----------
-        out : LowBitArray or ArrayLike, optional
+        out : BaseArray or ArrayLike, optional
             Output array for the result. If provided, must have the same shape as the output.
 
         Returns
@@ -3933,7 +3933,7 @@ class LowBitArray:
 
         Returns
         -------
-        LowBitArray
+        BaseArray
             The modified array with inverse sine values.
 
         See Also
@@ -3945,14 +3945,14 @@ class LowBitArray:
         return self
 
     def arcsin(
-        self, *, out: Optional[Union['LowBitArray', ArrayLike]] = None
+        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the inverse sine of the array elements.
 
         Parameters
         ----------
-        out : LowBitArray or ArrayLike, optional
+        out : BaseArray or ArrayLike, optional
             Output array for the result. If provided, must have the same shape as the output.
 
         Returns
@@ -3982,7 +3982,7 @@ class LowBitArray:
 
         Returns
         -------
-        LowBitArray
+        BaseArray
             The modified array with inverse cosine values.
 
         See Also
@@ -3994,14 +3994,14 @@ class LowBitArray:
         return self
 
     def arccos(
-        self, *, out: Optional[Union['LowBitArray', ArrayLike]] = None
+        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the inverse cosine of the array elements.
 
         Parameters
         ----------
-        out : LowBitArray or ArrayLike, optional
+        out : BaseArray or ArrayLike, optional
             Output array for the result. If provided, must have the same shape as the output.
 
         Returns
@@ -4030,7 +4030,7 @@ class LowBitArray:
 
         Returns
         -------
-        LowBitArray
+        BaseArray
             The modified array with inverse tangent values.
 
         See Also
@@ -4042,14 +4042,14 @@ class LowBitArray:
         return self
 
     def arctan(
-        self, *, out: Optional[Union['LowBitArray', ArrayLike]] = None
+        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the inverse tangent of the array elements.
 
         Parameters
         ----------
-        out : LowBitArray or ArrayLike, optional
+        out : BaseArray or ArrayLike, optional
             Output array for the result. If provided, must have the same shape as the output.
 
         Returns
@@ -4072,10 +4072,10 @@ class LowBitArray:
 
     def clamp(
         self,
-        min_value: Optional[Union['LowBitArray', ArrayLike]] = None,
-        max_value: Optional[Union['LowBitArray', ArrayLike]] = None,
+        min_value: Optional[Union['BaseArray', ArrayLike]] = None,
+        max_value: Optional[Union['BaseArray', ArrayLike]] = None,
         *,
-        out: Optional[Union['LowBitArray', ArrayLike]] = None
+        out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
         Clamp (limit) the values in the array between min_value and max_value.
@@ -4087,11 +4087,11 @@ class LowBitArray:
 
         Parameters
         ----------
-        min_value : LowBitArray or ArrayLike, optional
+        min_value : BaseArray or ArrayLike, optional
             Minimum value. If None, clipping is not performed on lower bound.
-        max_value : LowBitArray or ArrayLike, optional
+        max_value : BaseArray or ArrayLike, optional
             Maximum value. If None, clipping is not performed on upper bound.
-        out : LowBitArray or ArrayLike, optional
+        out : BaseArray or ArrayLike, optional
             The output array. If provided, it must have a shape that the inputs
             broadcast to. If not provided or None, a freshly-allocated array is
             returned.
@@ -4129,9 +4129,9 @@ class LowBitArray:
 
     def clamp_(
         self,
-        min_value: Optional[Union['LowBitArray', ArrayLike]] = None,
-        max_value: Optional[Union['LowBitArray', ArrayLike]] = None
-    ) -> 'LowBitArray':
+        min_value: Optional[Union['BaseArray', ArrayLike]] = None,
+        max_value: Optional[Union['BaseArray', ArrayLike]] = None
+    ) -> 'BaseArray':
         """
         In-place version of clamp().
 
@@ -4147,7 +4147,7 @@ class LowBitArray:
 
         Returns
         -------
-        LowBitArray
+        BaseArray
             The modified array with clamped values (self).
 
         See Also
@@ -4168,9 +4168,9 @@ class LowBitArray:
 
     def clip_(
         self,
-        min_value: Optional[Union['LowBitArray', ArrayLike]] = None,
-        max_value: Optional[Union['LowBitArray', ArrayLike]] = None
-    ) -> 'LowBitArray':
+        min_value: Optional[Union['BaseArray', ArrayLike]] = None,
+        max_value: Optional[Union['BaseArray', ArrayLike]] = None
+    ) -> 'BaseArray':
         """
         Alias for clamp_().
 
@@ -4186,7 +4186,7 @@ class LowBitArray:
 
         Returns
         -------
-        LowBitArray
+        BaseArray
             The modified array with clipped values (self).
 
         See Also
@@ -4202,7 +4202,7 @@ class LowBitArray:
         self.clamp_(min_value, max_value)
         return self
 
-    def clone(self) -> 'LowBitArray':
+    def clone(self) -> 'BaseArray':
         """
         Return a copy of the array.
 
@@ -4210,7 +4210,7 @@ class LowBitArray:
 
         Returns
         -------
-        LowBitArray
+        BaseArray
             A new LowBitArray containing a copy of the values from this array.
 
         See Also
@@ -4230,18 +4230,18 @@ class LowBitArray:
         """
         return type(self)(self.value.copy())
 
-    def copy_(self, src: Union['LowBitArray', ArrayLike]) -> 'LowBitArray':
+    def copy_(self, src: Union['BaseArray', ArrayLike]) -> 'BaseArray':
         """
         Copy values from src into this array, in-place.
 
         Parameters
         ----------
-        src : LowBitArray or ArrayLike
+        src : BaseArray or ArrayLike
             The source array to copy values from.
 
         Returns
         -------
-        LowBitArray
+        BaseArray
             The modified array (self).
 
         See Also
@@ -4257,18 +4257,18 @@ class LowBitArray:
         >>> a  # values copied from b
         LowBitArray(value=array([4, 5, 6]))
         """
-        # Ensure we're correctly handling both LowBitArray and regular array inputs
-        src_value = src.value if isinstance(src, LowBitArray) else src
+        # Ensure we're correctly handling both BaseArray and regular array inputs
+        src_value = src.value if isinstance(src, BaseArray) else src
         self.value = src_value.copy()
         return self
 
     def cov_with(
         self,
-        y: Optional[Union['LowBitArray', ArrayLike]] = None,
+        y: Optional[Union['BaseArray', ArrayLike]] = None,
         rowvar: bool = True,
         bias: bool = False,
-        fweights: Optional[Union['LowBitArray', ArrayLike]] = None,
-        aweights: Optional[Union['LowBitArray', ArrayLike]] = None
+        fweights: Optional[Union['BaseArray', ArrayLike]] = None,
+        aweights: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[jax.Array, u.Quantity]:
         """
         Calculate the covariance matrix between this array and another.
@@ -4277,7 +4277,7 @@ class LowBitArray:
 
         Parameters
         ----------
-        y : LowBitArray or ArrayLike, optional
+        y : BaseArray or ArrayLike, optional
             An array containing multiple variables and observations.
             If not specified, the covariance is calculated for self.
         rowvar : bool, optional, default=True
@@ -4289,10 +4289,10 @@ class LowBitArray:
             If False, normalization is by (N - 1), where N is the number of
             observations given (unbiased estimate). If True, then
             normalization is by N.
-        fweights : LowBitArray or ArrayLike, optional
+        fweights : BaseArray or ArrayLike, optional
             Array of integer frequency weights. The number of times each
             observation vector should be repeated.
-        aweights : LowBitArray or ArrayLike, optional
+        aweights : BaseArray or ArrayLike, optional
             Array of observation vector weights. These relative weights are
             typically large for observations considered "important" and smaller
             for observations considered less "important".
@@ -4404,7 +4404,7 @@ class LowBitArray:
         """
         Flatten the object for JAX pytree functionality.
 
-        This method is used by JAX's tree_util to support LowBitArray instances
+        This method is used by JAX's tree_util to support BaseArray instances
         as part of JAX transformations. It separates the object into dynamic data
         (the array value) and static metadata (None in this case).
 
@@ -4413,7 +4413,7 @@ class LowBitArray:
         tuple
             A tuple containing two elements:
             - A tuple of dynamic values (just the array value in this case)
-            - Static metadata (None for LowBitArray)
+            - Static metadata (None for BaseArray)
 
         See Also
         --------
@@ -4435,22 +4435,22 @@ class LowBitArray:
     @classmethod
     def tree_unflatten(cls, aux_data, flat_contents):
         """
-        Reconstruct an LowBitArray from flattened data.
+        Reconstruct an BaseArray from flattened data.
 
-        This class method is used by JAX's tree_util to reconstruct LowBitArray instances
+        This class method is used by JAX's tree_util to reconstruct BaseArray instances
         from flattened data during JAX transformations.
 
         Parameters
         ----------
         aux_data : Any
-            Static metadata for reconstruction (typically None for LowBitArray)
+            Static metadata for reconstruction (typically None for BaseArray)
         flat_contents : tuple
             A tuple containing the dynamic values that were extracted by tree_flatten
 
         Returns
         -------
         EventArray
-            A reconstructed LowBitArray instance
+            A reconstructed BaseArray instance
 
         See Also
         --------
@@ -4805,5 +4805,5 @@ class LowBitArray:
         return u.math.asarray(self.value, dtype=np.float64)
 
 
-# Set the array priority for the LowBitArray class
-setattr(LowBitArray, "__array_priority__", 100)
+# Set the array priority for the BaseArray class
+setattr(BaseArray, "__array_priority__", 100)
