@@ -139,7 +139,7 @@ dense_mat_dot_masked_float_vec_p = XLACustomKernel('dense_mat_dot_masked_float_v
 dense_mat_dot_masked_float_vec_p.def_cpu_kernel(_dense_mat_dot_masked_float_vec_numba_cpu_kernel_generator)
 dense_mat_dot_masked_float_vec_p.def_gpu_kernel(warp=_dense_mat_dot_masked_float_vec_warp_kernel_generator)
 dense_mat_dot_masked_float_vec_p.def_jvp_rule2(_dense_mat_dot_masked_float_vec_jvp_weights,
-                                         _dense_mat_dot_masked_float_vec_jvp_spikes)
+                                               _dense_mat_dot_masked_float_vec_jvp_spikes)
 dense_mat_dot_masked_float_vec_p.def_transpose_rule(_dense_mat_dot_masked_float_vec_transpose_rule)
 dense_mat_dot_masked_float_vec_p.def_batching_rule(_dense_mat_dot_masked_float_vec_batching)
 
@@ -312,7 +312,7 @@ masked_float_vec_dot_dense_mat_p = XLACustomKernel('masked_float_vector_dot_dens
 masked_float_vec_dot_dense_mat_p.def_cpu_kernel(_masked_float_vec_dot_dense_mat_numba_kernel_generator)
 masked_float_vec_dot_dense_mat_p.def_gpu_kernel(warp=_masked_float_vec_dot_dense_mat_warp_kernel_generator)
 masked_float_vec_dot_dense_mat_p.def_jvp_rule2(_masked_float_vec_dot_dense_mat_jvp_spikes,
-                                         _masked_float_vec_dot_dense_mat_jvp_weights)
+                                               _masked_float_vec_dot_dense_mat_jvp_weights)
 masked_float_vec_dot_dense_mat_p.def_transpose_rule(_masked_float_vec_dot_dense_mat_transpose_rule)
 masked_float_vec_dot_dense_mat_p.def_batching_rule(_event_matrix_batching)
 
@@ -498,7 +498,8 @@ def dense_mat_dot_masked_float_mat_p_call(weights, spikes):
 dense_mat_dot_masked_float_mat_p = XLACustomKernel('dense_matrix_dot_masked_float_matrix')
 dense_mat_dot_masked_float_mat_p.def_cpu_kernel(_dense_mat_dot_masked_float_mat_cpu_kernel_generator)
 dense_mat_dot_masked_float_mat_p.def_gpu_kernel(warp=_dense_mat_dot_masked_float_mat_gpu_kernel_generator)
-dense_mat_dot_masked_float_mat_p.def_jvp_rule2(_dense_mat_dot_masked_float_mat_jvp_weights, _dense_mat_dot_masked_float_mat_jvp_spikes)
+dense_mat_dot_masked_float_mat_p.def_jvp_rule2(_dense_mat_dot_masked_float_mat_jvp_weights,
+                                               _dense_mat_dot_masked_float_mat_jvp_spikes)
 dense_mat_dot_masked_float_mat_p.def_transpose_rule(_dense_mat_dot_masked_float_mat_transpose_rule)
 dense_mat_dot_masked_float_mat_p.def_batching_rule(_dense_mat_dot_masked_float_mat_batching)
 
@@ -692,6 +693,7 @@ def masked_float_mat_dot_dense_mat_p_call(spikes, weights):
 masked_float_mat_dot_dense_mat_p = XLACustomKernel('masked_float_matrix_dot_dense_matrix')
 masked_float_mat_dot_dense_mat_p.def_cpu_kernel(_masked_float_mat_dot_dense_mat_cpu_kernel_generator)
 masked_float_mat_dot_dense_mat_p.def_gpu_kernel(warp=_masked_float_mat_dot_dense_mat_gpu_kernel_generator)
-masked_float_mat_dot_dense_mat_p.def_jvp_rule2(_masked_float_mat_dot_dense_mat_jvp_spikes, _masked_float_mat_dot_dense_mat_jvp_weights)
+masked_float_mat_dot_dense_mat_p.def_jvp_rule2(_masked_float_mat_dot_dense_mat_jvp_spikes,
+                                               _masked_float_mat_dot_dense_mat_jvp_weights)
 masked_float_mat_dot_dense_mat_p.def_transpose_rule(_masked_float_mat_dot_dense_mat_transpose_rule)
 masked_float_mat_dot_dense_mat_p.def_batching_rule(_masked_float_mat_dot_dense_mat_batching)

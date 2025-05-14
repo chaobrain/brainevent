@@ -18,9 +18,7 @@ import unittest
 
 import brainstate as bst
 import jax
-import jax.numpy as jnp
 import pytest
-from jax.experimental import pallas as pl
 
 import brainevent
 
@@ -50,7 +48,7 @@ class TestNumbaCPU(unittest.TestCase):
                 outs=kwargs['outs'],
             )
 
-        prim = brainevent.XLACustomKernel( 'add')
+        prim = brainevent.XLACustomKernel('add')
         prim.def_cpu_kernel(cpu_kernel)
         prim.def_gpu_kernel(pallas=gpu_kernel)
 

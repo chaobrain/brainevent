@@ -85,6 +85,7 @@ class TestEventMatrix:
         out2 = events @ matrix
         assert u.math.allclose(out1, out2, atol=1e-4, rtol=1e-4)
 
+
 class TestMatrixEvent_mv:
     @pytest.mark.parametrize("m", [10])
     @pytest.mark.parametrize("k", [15, 20])

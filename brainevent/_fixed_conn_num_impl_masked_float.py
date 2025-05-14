@@ -425,7 +425,8 @@ masked_float_fixed_num_mv_p = XLACustomKernel('masked_float_fixed_num_mv')
 masked_float_fixed_num_mv_p.def_cpu_kernel(_masked_float_fixed_num_mv_numba_kernel_generator)
 masked_float_fixed_num_mv_p.def_gpu_kernel(pallas=_masked_float_fixed_num_mv_pallas_kernel_generator)
 masked_float_fixed_num_mv_p.def_tpu_kernel(_masked_float_fixed_num_mv_pallas_kernel_generator)
-masked_float_fixed_num_mv_p.def_jvp_rule2(_masked_float_fixed_num_mv_jvp_weights, None, _masked_float_fixed_num_mv_jvp_spikes, None)
+masked_float_fixed_num_mv_p.def_jvp_rule2(_masked_float_fixed_num_mv_jvp_weights, None,
+                                          _masked_float_fixed_num_mv_jvp_spikes, None)
 masked_float_fixed_num_mv_p.def_transpose_rule(_masked_float_fixed_num_mv_transpose_rule)
 masked_float_fixed_num_mv_p.def_batching_rule(_masked_float_fixed_num_mv_batching)
 
@@ -765,6 +766,7 @@ masked_float_fixed_num_mm_p = XLACustomKernel('masked_float_fixed_num_mm')
 masked_float_fixed_num_mm_p.def_cpu_kernel(_masked_float_fixed_num_mm_numba_kernel_generator)
 masked_float_fixed_num_mm_p.def_gpu_kernel(pallas=_masked_float_fixed_num_mm_pallas_kernel_generator)
 masked_float_fixed_num_mm_p.def_tpu_kernel(_masked_float_fixed_num_mm_pallas_kernel_generator)
-masked_float_fixed_num_mm_p.def_jvp_rule2(_masked_float_fixed_num_mm_jvp_weights, None, _masked_float_fixed_num_mm_jvp_matrix, None)
+masked_float_fixed_num_mm_p.def_jvp_rule2(_masked_float_fixed_num_mm_jvp_weights, None,
+                                          _masked_float_fixed_num_mm_jvp_matrix, None)
 masked_float_fixed_num_mm_p.def_transpose_rule(_masked_float_fixed_num_mm_transpose_rule)
 masked_float_fixed_num_mm_p.def_batching_rule(_masked_float_fixed_num_mm_batching)

@@ -146,5 +146,6 @@ def gen_events(shape, prob=0.5, asbool=True):
         events = jnp.asarray(events, dtype=float)
     return brainevent.EventArray(events)
 
+
 def ones_like(x):
     return jax.tree.map(jnp.ones_like, x)

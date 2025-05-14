@@ -27,7 +27,7 @@ from ._jitc_util import _initialize_seed, _initialize_conn_length
 from ._misc import generate_block_dim
 from ._pallas_random import LFSR88RNG
 from ._typing import Data, MatrixShape
-from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
+from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import numba_kernel
 from ._xla_custom_op_pallas import pallas_kernel
 from ._xla_custom_op_util import general_batching_rule

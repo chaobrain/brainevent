@@ -447,7 +447,7 @@ def binary_vec_dot_dense_mat_p_call(spikes, weights, *, float_as_event: bool):
 binary_vec_dot_dense_mat_p = XLACustomKernel('binary_vector_dot_dense_matrix')
 binary_vec_dot_dense_mat_p.def_cpu_kernel(_binary_vec_dot_dense_mat_numba_kernel_generator)
 binary_vec_dot_dense_mat_p.def_gpu_kernel(warp=_binary_vec_dot_dense_mat_warp_kernel_generator)
-binary_vec_dot_dense_mat_p.def_jvp_rule2(_binary_vec_dot_dense_mat_jvp_spikes, 
+binary_vec_dot_dense_mat_p.def_jvp_rule2(_binary_vec_dot_dense_mat_jvp_spikes,
                                          _binary_vec_dot_dense_mat_jvp_weights)
 binary_vec_dot_dense_mat_p.def_transpose_rule(_binary_vec_dot_dense_mat_transpose_rule)
 binary_vec_dot_dense_mat_p.def_batching_rule(_event_matrix_batching)
