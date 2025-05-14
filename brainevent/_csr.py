@@ -24,8 +24,8 @@ import numpy as np
 
 from ._binary_array import EventArray
 from ._compatible_import import JAXSparse
-from ._csr_event_impl import event_csr_matvec, event_csr_matmat
-from ._csr_float_impl import csr_matvec, csr_matmat
+from ._csr_impl_binary import event_csr_matvec, event_csr_matmat
+from ._csr_impl_float import csr_matvec, csr_matmat
 from ._misc import _csr_to_coo, _csr_todense
 from ._typing import Data, Indptr, Index, MatrixShape
 

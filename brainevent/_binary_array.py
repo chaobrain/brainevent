@@ -16,9 +16,17 @@
 # -*- coding: utf-8 -*-
 
 
-from ._array import LowBitArray, _as_array, _known_type
-from ._binary_matrix_impl import matrix_event_mm, event_matrix_mm
-from ._binary_vector_impl import matrix_event_mv, event_matrix_mv
+from ._base_array import (
+    LowBitArray,
+    _as_array,
+    _known_type,
+)
+from ._dense_impl_binary import (
+    matrix_event_mm,
+    event_matrix_mm,
+    dense_dot_binary_vec,
+    binary_vec_dot_dense_mat,
+)
 from ._error import MathError
 
 __all__ = [
@@ -87,7 +95,7 @@ class BinaryArray(LowBitArray):
 
             # Perform the appropriate multiplication based on dimensions
             if self.ndim == 1:
-                return event_matrix_mv(self.value, oc, )
+                return binary_vec_dot_dense_mat(self.value, oc, )
             else:  # self.ndim == 2
                 return event_matrix_mm(self.value, oc, )
         else:
@@ -142,7 +150,7 @@ class BinaryArray(LowBitArray):
 
             # Perform the appropriate multiplication based on dimensions
             if self.ndim == 1:
-                return matrix_event_mv(oc, self.value, )
+                return dense_dot_binary_vec(oc, self.value, )
             else:
                 return matrix_event_mm(oc, self.value, )
         else:

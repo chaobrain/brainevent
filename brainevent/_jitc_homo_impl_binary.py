@@ -23,7 +23,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
-from ._jitc_float_homo_impl import float_jitc_mv_homo_p_call, float_jitc_mm_homo_p_call
+from ._jitc_homo_impl_float import float_jitc_mv_homo_p_call, float_jitc_mm_homo_p_call
 from ._jitc_util import _initialize_seed, _initialize_conn_length
 from ._misc import generate_block_dim
 from ._pallas_random import LFSR88RNG

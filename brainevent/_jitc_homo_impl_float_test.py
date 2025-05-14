@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 
 import brainevent
-from brainevent._jitc_float_homo_impl import (
+from brainevent._jitc_homo_impl_float import (
     float_jitc_homo_matvec,
     float_jitc_homo_matmat,
     float_jitc_homo_matrix

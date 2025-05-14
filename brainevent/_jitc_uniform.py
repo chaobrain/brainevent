@@ -23,11 +23,11 @@ import jax
 
 from ._binary_array import EventArray
 from ._compatible_import import JAXSparse, Tracer
-from ._jitc_event_uniform_impl import (
+from ._jitc_uniform_impl_binary import (
     event_jitc_uniform_matvec,
     event_jitc_uniform_matmat,
 )
-from ._jitc_float_uniform_impl import (
+from ._jitc_uniform_impl_float import (
     float_jitc_uniform_matrix,
     float_jitc_uniform_matvec,
     float_jitc_uniform_matmat,

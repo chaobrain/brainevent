@@ -25,7 +25,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
-from ._fixed_conn_num_float_impl import fixed_num_mv_p_call, fixed_num_mm_p_call
+from ._fixed_conn_num_impl_float import fixed_num_mv_p_call, fixed_num_mm_p_call
 from ._misc import generate_block_dim, check_fixed_conn_num_shape
 from ._typing import MatrixShape
 from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
