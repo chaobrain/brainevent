@@ -18,13 +18,13 @@
 
 from ._base_array import (
     LowBitArray,
-    _as_array,
-    _known_type,
+    extract_raw_value,
+    is_known_type,
 )
 from ._dense_impl_binary import (
-    matrix_event_mm,
-    event_matrix_mm,
-    dense_dot_binary_vec,
+    dense_mat_dot_binary_mat,
+    binary_mat_dot_dense_mat,
+    dense_mat_dot_binary_vec,
     binary_vec_dot_dense_mat,
 )
 from ._error import MathError
@@ -76,8 +76,8 @@ class BinaryArray(LowBitArray):
         - If the right operand is not a recognized array type, it delegates to the
           operand's __rmatmul__ method
         """
-        if _known_type(oc):
-            oc = _as_array(oc)
+        if is_known_type(oc):
+            oc = extract_raw_value(oc)
             # Check dimensions for both operands
             if self.ndim not in (1, 2):
                 raise MathError(
@@ -95,9 +95,9 @@ class BinaryArray(LowBitArray):
 
             # Perform the appropriate multiplication based on dimensions
             if self.ndim == 1:
-                return binary_vec_dot_dense_mat(self.value, oc, )
+                return binary_vec_dot_dense_mat(self.value, oc)
             else:  # self.ndim == 2
-                return event_matrix_mm(self.value, oc, )
+                return binary_mat_dot_dense_mat(self.value, oc)
         else:
             return oc.__rmatmul__(self)
 
@@ -133,8 +133,8 @@ class BinaryArray(LowBitArray):
         - For a 1D array multiplied by a 2D array, it performs a vector-matrix multiplication
         - The method checks dimensions for compatibility before performing the operation
         """
-        if _known_type(oc):
-            oc = _as_array(oc)
+        if is_known_type(oc):
+            oc = extract_raw_value(oc)
             # Check dimensions for both operands
             if self.ndim not in (1, 2):
                 raise MathError(f"Matrix multiplication is only supported "
@@ -150,9 +150,9 @@ class BinaryArray(LowBitArray):
 
             # Perform the appropriate multiplication based on dimensions
             if self.ndim == 1:
-                return dense_dot_binary_vec(oc, self.value, )
+                return dense_mat_dot_binary_vec(oc, self.value)
             else:
-                return matrix_event_mm(oc, self.value, )
+                return dense_mat_dot_binary_mat(oc, self.value)
         else:
             return oc.__matmul__(self)
 
@@ -167,7 +167,7 @@ class BinaryArray(LowBitArray):
             The updated array.
         """
         # a @= b
-        if _known_type(oc):
+        if is_known_type(oc):
             self.value = self.__matmul__(oc)
         else:
             self.value = oc.__rmatmul__(self)

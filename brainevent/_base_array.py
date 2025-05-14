@@ -42,11 +42,11 @@ def _check_out(out):
         raise TypeError(f'out must be an instance of Array. But got {type(out)}')
 
 
-def _as_array(obj):
+def extract_raw_value(obj):
     return obj.value if isinstance(obj, LowBitArray) else obj
 
 
-def _known_type(x):
+def is_known_type(x):
     return isinstance(x, (u.Quantity, jax.Array, np.ndarray, LowBitArray))
 
 
@@ -325,7 +325,7 @@ class LowBitArray:
             The item at the specified index.
         """
         if isinstance(index, tuple):
-            index = tuple(_as_array(x) for x in index)
+            index = tuple(extract_raw_value(x) for x in index)
         elif isinstance(index, LowBitArray):
             index = index.value
         return self.value[index]
@@ -347,7 +347,7 @@ class LowBitArray:
 
         # index is a tuple
         if isinstance(index, tuple):
-            index = tuple(_as_array(x) for x in index)
+            index = tuple(extract_raw_value(x) for x in index)
         # index is Array
         elif isinstance(index, LowBitArray):
             index = index.value
@@ -418,7 +418,7 @@ class LowBitArray:
         Returns:
             A boolean array indicating the equality.
         """
-        return self.value == _as_array(oc)
+        return self.value == extract_raw_value(oc)
 
     def __ne__(self, oc):
         """
@@ -430,7 +430,7 @@ class LowBitArray:
         Returns:
             A boolean array indicating the inequality.
         """
-        return self.value != _as_array(oc)
+        return self.value != extract_raw_value(oc)
 
     def __lt__(self, oc):
         """
@@ -442,7 +442,7 @@ class LowBitArray:
         Returns:
             A boolean array indicating the comparison result.
         """
-        return self.value < _as_array(oc)
+        return self.value < extract_raw_value(oc)
 
     def __le__(self, oc):
         """
@@ -454,7 +454,7 @@ class LowBitArray:
         Returns:
             A boolean array indicating the comparison result.
         """
-        return self.value <= _as_array(oc)
+        return self.value <= extract_raw_value(oc)
 
     def __gt__(self, oc):
         """
@@ -466,7 +466,7 @@ class LowBitArray:
         Returns:
             A boolean array indicating the comparison result.
         """
-        return self.value > _as_array(oc)
+        return self.value > extract_raw_value(oc)
 
     def __ge__(self, oc):
         """
@@ -478,7 +478,7 @@ class LowBitArray:
         Returns:
             A boolean array indicating the comparison result.
         """
-        return self.value >= _as_array(oc)
+        return self.value >= extract_raw_value(oc)
 
     def __add__(self, oc):
         """
@@ -490,7 +490,7 @@ class LowBitArray:
         Returns:
             The result of the addition.
         """
-        return self.value + _as_array(oc)
+        return self.value + extract_raw_value(oc)
 
     def __radd__(self, oc):
         """
@@ -502,7 +502,7 @@ class LowBitArray:
         Returns:
             The result of the addition.
         """
-        return self.value + _as_array(oc)
+        return self.value + extract_raw_value(oc)
 
     def __iadd__(self, oc):
         """
@@ -515,7 +515,7 @@ class LowBitArray:
             The updated array.
         """
         # a += b
-        self.value = self.value + _as_array(oc)
+        self.value = self.value + extract_raw_value(oc)
         return self
 
     def __sub__(self, oc):
@@ -528,7 +528,7 @@ class LowBitArray:
         Returns:
             The result of the subtraction.
         """
-        return self.value - _as_array(oc)
+        return self.value - extract_raw_value(oc)
 
     def __rsub__(self, oc):
         """
@@ -540,7 +540,7 @@ class LowBitArray:
         Returns:
             The result of the subtraction.
         """
-        return _as_array(oc) - self.value
+        return extract_raw_value(oc) - self.value
 
     def __isub__(self, oc):
         """
@@ -553,7 +553,7 @@ class LowBitArray:
             The updated array.
         """
         # a -= b
-        self.value = self.value - _as_array(oc)
+        self.value = self.value - extract_raw_value(oc)
         return self
 
     def __mul__(self, oc):
@@ -566,7 +566,7 @@ class LowBitArray:
         Returns:
             The result of the multiplication.
         """
-        return self.value * _as_array(oc)
+        return self.value * extract_raw_value(oc)
 
     def __rmul__(self, oc):
         """
@@ -578,7 +578,7 @@ class LowBitArray:
         Returns:
             The result of the multiplication.
         """
-        return _as_array(oc) * self.value
+        return extract_raw_value(oc) * self.value
 
     def __imul__(self, oc):
         """
@@ -591,7 +591,7 @@ class LowBitArray:
             The updated array.
         """
         # a *= b
-        self.value = self.value * _as_array(oc)
+        self.value = self.value * extract_raw_value(oc)
         return self
 
     def __rdiv__(self, oc):
@@ -604,7 +604,7 @@ class LowBitArray:
         Returns:
             The result of the division.
         """
-        return _as_array(oc) / self.value
+        return extract_raw_value(oc) / self.value
 
     def __truediv__(self, oc):
         """
@@ -616,7 +616,7 @@ class LowBitArray:
         Returns:
             The result of the division.
         """
-        return self.value / _as_array(oc)
+        return self.value / extract_raw_value(oc)
 
     def __rtruediv__(self, oc):
         """
@@ -628,7 +628,7 @@ class LowBitArray:
         Returns:
             The result of the division.
         """
-        return _as_array(oc) / self.value
+        return extract_raw_value(oc) / self.value
 
     def __itruediv__(self, oc):
         """
@@ -641,7 +641,7 @@ class LowBitArray:
             The updated array.
         """
         # a /= b
-        self.value = self.value / _as_array(oc)
+        self.value = self.value / extract_raw_value(oc)
         return self
 
     def __floordiv__(self, oc):
@@ -654,7 +654,7 @@ class LowBitArray:
         Returns:
             The result of the floor division.
         """
-        return self.value // _as_array(oc)
+        return self.value // extract_raw_value(oc)
 
     def __rfloordiv__(self, oc):
         """
@@ -666,7 +666,7 @@ class LowBitArray:
         Returns:
             The result of the floor division.
         """
-        return _as_array(oc) // self.value
+        return extract_raw_value(oc) // self.value
 
     def __ifloordiv__(self, oc):
         """
@@ -679,7 +679,7 @@ class LowBitArray:
             The updated array.
         """
         # a //= b
-        self.value = self.value // _as_array(oc)
+        self.value = self.value // extract_raw_value(oc)
         return self
 
     def __divmod__(self, oc):
@@ -692,7 +692,7 @@ class LowBitArray:
         Returns:
             The result of the divmod operation.
         """
-        return self.value.__divmod__(_as_array(oc))
+        return self.value.__divmod__(extract_raw_value(oc))
 
     def __rdivmod__(self, oc):
         """
@@ -704,7 +704,7 @@ class LowBitArray:
         Returns:
             The result of the divmod operation.
         """
-        return self.value.__rdivmod__(_as_array(oc))
+        return self.value.__rdivmod__(extract_raw_value(oc))
 
     def __mod__(self, oc):
         """
@@ -716,7 +716,7 @@ class LowBitArray:
         Returns:
             The result of the modulo operation.
         """
-        return self.value % _as_array(oc)
+        return self.value % extract_raw_value(oc)
 
     def __rmod__(self, oc):
         """
@@ -728,7 +728,7 @@ class LowBitArray:
         Returns:
             The result of the modulo operation.
         """
-        return _as_array(oc) % self.value
+        return extract_raw_value(oc) % self.value
 
     def __imod__(self, oc):
         """
@@ -741,7 +741,7 @@ class LowBitArray:
             The updated array.
         """
         # a %= b
-        self.value = self.value % _as_array(oc)
+        self.value = self.value % extract_raw_value(oc)
         return self
 
     def __pow__(self, oc):
@@ -754,7 +754,7 @@ class LowBitArray:
         Returns:
             The result of the power operation.
         """
-        return self.value ** _as_array(oc)
+        return self.value ** extract_raw_value(oc)
 
     def __rpow__(self, oc):
         """
@@ -766,7 +766,7 @@ class LowBitArray:
         Returns:
             The result of the power operation.
         """
-        return _as_array(oc) ** self.value
+        return extract_raw_value(oc) ** self.value
 
     def __ipow__(self, oc):
         """
@@ -779,7 +779,7 @@ class LowBitArray:
             The updated array.
         """
         # a **= b
-        self.value = self.value ** _as_array(oc)
+        self.value = self.value ** extract_raw_value(oc)
         return self
 
     def __matmul__(self, oc):
@@ -874,7 +874,7 @@ class LowBitArray:
         Returns:
             The result of the bitwise AND operation.
         """
-        return self.value & _as_array(oc)
+        return self.value & extract_raw_value(oc)
 
     def __rand__(self, oc):
         """
@@ -886,7 +886,7 @@ class LowBitArray:
         Returns:
             The result of the bitwise AND operation.
         """
-        return _as_array(oc) & self.value
+        return extract_raw_value(oc) & self.value
 
     def __iand__(self, oc):
         """
@@ -899,7 +899,7 @@ class LowBitArray:
             The updated array.
         """
         # a &= b
-        self.value = self.value & _as_array(oc)
+        self.value = self.value & extract_raw_value(oc)
         return self
 
     def __or__(self, oc):
@@ -912,7 +912,7 @@ class LowBitArray:
         Returns:
             The result of the bitwise OR operation.
         """
-        return self.value | _as_array(oc)
+        return self.value | extract_raw_value(oc)
 
     def __ror__(self, oc):
         """
@@ -924,7 +924,7 @@ class LowBitArray:
         Returns:
             The result of the bitwise OR operation.
         """
-        return _as_array(oc) | self.value
+        return extract_raw_value(oc) | self.value
 
     def __ior__(self, oc):
         """
@@ -937,7 +937,7 @@ class LowBitArray:
             The updated array.
         """
         # a |= b
-        self.value = self.value | _as_array(oc)
+        self.value = self.value | extract_raw_value(oc)
         return self
 
     def __xor__(self, oc):
@@ -950,7 +950,7 @@ class LowBitArray:
         Returns:
             The result of the bitwise XOR operation.
         """
-        return self.value ^ _as_array(oc)
+        return self.value ^ extract_raw_value(oc)
 
     def __rxor__(self, oc):
         """
@@ -962,7 +962,7 @@ class LowBitArray:
         Returns:
             The result of the bitwise XOR operation.
         """
-        return _as_array(oc) ^ self.value
+        return extract_raw_value(oc) ^ self.value
 
     def __ixor__(self, oc):
         """
@@ -975,7 +975,7 @@ class LowBitArray:
             The updated array.
         """
         # a ^= b
-        self.value = self.value ^ _as_array(oc)
+        self.value = self.value ^ extract_raw_value(oc)
         return self
 
     def __lshift__(self, oc):
@@ -988,7 +988,7 @@ class LowBitArray:
         Returns:
             The result of the left shift operation.
         """
-        return self.value << _as_array(oc)
+        return self.value << extract_raw_value(oc)
 
     def __rlshift__(self, oc):
         """
@@ -1000,7 +1000,7 @@ class LowBitArray:
         Returns:
             The result of the left shift operation.
         """
-        return _as_array(oc) << self.value
+        return extract_raw_value(oc) << self.value
 
     def __ilshift__(self, oc):
         """
@@ -1013,7 +1013,7 @@ class LowBitArray:
             The updated array.
         """
         # a <<= b
-        self.value = self.value << _as_array(oc)
+        self.value = self.value << extract_raw_value(oc)
         return self
 
     def __rshift__(self, oc):
@@ -1026,7 +1026,7 @@ class LowBitArray:
         Returns:
             The result of the right shift operation.
         """
-        return self.value >> _as_array(oc)
+        return self.value >> extract_raw_value(oc)
 
     def __rrshift__(self, oc):
         """
@@ -1038,7 +1038,7 @@ class LowBitArray:
         Returns:
             The result of the right shift operation.
         """
-        return _as_array(oc) >> self.value
+        return extract_raw_value(oc) >> self.value
 
     def __irshift__(self, oc):
         """
@@ -1051,7 +1051,7 @@ class LowBitArray:
             The updated array.
         """
         # a >>= b
-        self.value = self.value >> _as_array(oc)
+        self.value = self.value >> extract_raw_value(oc)
         return self
 
     def __round__(self, ndigits=None):
@@ -1592,8 +1592,8 @@ class LowBitArray:
         ----
         At least one of max or min must be given.
         """
-        min = _as_array(min)
-        max = _as_array(max)
+        min = extract_raw_value(min)
+        max = extract_raw_value(max)
         r = self.value.clip(min=min, max=max)
         if out is None:
             return r
@@ -1626,7 +1626,7 @@ class LowBitArray:
             same number of dimensions as the input array, but the size of the axis
             along which elements were selected may be smaller.
         """
-        return self.value.compress(condition=_as_array(condition), axis=axis)
+        return self.value.compress(condition=extract_raw_value(condition), axis=axis)
 
     def conj(self):
         """
@@ -1744,8 +1744,8 @@ class LowBitArray:
         If the type of 'b' is known, it uses the dot method of the underlying array.
         Otherwise, it delegates to the right matrix multiplication method of 'b'.
         """
-        if _known_type(b):
-            return self.value.dot(_as_array(b))
+        if is_known_type(b):
+            return self.value.dot(extract_raw_value(b))
         else:
             return b.__rmatmul__(self)
 
@@ -2299,7 +2299,7 @@ class LowBitArray:
         """
         # Ensure 'v' is unwrapped if it's an EventArray
         # Delegates to the underlying array's searchsorted method.
-        return self.value.searchsorted(v=_as_array(v), side=side, sorter=sorter)
+        return self.value.searchsorted(v=extract_raw_value(v), side=side, sorter=sorter)
 
     def sort(self, axis=-1, stable=True, order=None):
         """
@@ -2660,7 +2660,7 @@ class LowBitArray:
         LowBitArray(value=array([[1, 2, 1],
                [3, 4, 3]]), dtype=int32)
         """
-        return self.value.take(indices=_as_array(indices), axis=axis, mode=mode)
+        return self.value.take(indices=extract_raw_value(indices), axis=axis, mode=mode)
 
     def tobytes(self, order='C'):
         """
@@ -2887,7 +2887,7 @@ class LowBitArray:
         """
         # Use u.math.tile to support both numpy and jax backends if needed
         # Ensure _as_array is available or defined in the scope
-        return u.math.tile(self.value, _as_array(reps))
+        return u.math.tile(self.value, extract_raw_value(reps))
 
     def var(self, axis=None, dtype=None, ddof=0, keepdims=False):
         """
@@ -3184,7 +3184,7 @@ class LowBitArray:
         --------
         numpy.broadcast_to : The underlying NumPy function
         """
-        target_array = _as_array(array)
+        target_array = extract_raw_value(array)
         result = u.math.broadcast_to(self.value, u.math.shape(target_array))
         return type(self)(result)  # Wrap in LowBitArray to return correct type
 
@@ -3214,7 +3214,7 @@ class LowBitArray:
         --------
         __pow__ : The special method that implements the ** operator
         """
-        return self.value ** _as_array(index)
+        return self.value ** extract_raw_value(index)
 
     def addr(
         self,
@@ -3270,8 +3270,8 @@ class LowBitArray:
         addr_ : In-place version of this method
         outer : Compute just the outer product without adding to this array
         """
-        vec1 = _as_array(vec1)
-        vec2 = _as_array(vec2)
+        vec1 = extract_raw_value(vec1)
+        vec2 = extract_raw_value(vec2)
         r = alpha * u.math.outer(vec1, vec2) + beta * self.value
         if out is None:
             return type(self)(r)  # Return as LowBitArray for consistent API
@@ -3324,8 +3324,8 @@ class LowBitArray:
         --------
         addr : Non-in-place version that returns a new array
         """
-        vec1 = _as_array(vec1)
-        vec2 = _as_array(vec2)
+        vec1 = extract_raw_value(vec1)
+        vec2 = extract_raw_value(vec2)
         self.value = alpha * u.math.outer(vec1, vec2) + beta * self.value
         return self
 
@@ -3365,7 +3365,7 @@ class LowBitArray:
         addr : Compute outer product and add to an existing array
         numpy.outer : Similar NumPy function
         """
-        other = _as_array(other)
+        other = extract_raw_value(other)
         return type(self)(u.math.outer(self.value, other))
 
     def abs(
@@ -3464,7 +3464,7 @@ class LowBitArray:
         --------
         __iadd__ : The special method that implements the += operator
         """
-        self.value += _as_array(value)
+        self.value += extract_raw_value(value)
         return self
 
     def absolute(
@@ -3552,7 +3552,7 @@ class LowBitArray:
         multiply : Alias for this function
         __mul__ : The special method that implements the * operator
         """
-        return self.value * _as_array(value)
+        return self.value * extract_raw_value(value)
 
     def mul_(self, value: Union['LowBitArray', ArrayLike]) -> 'LowBitArray':
         """
@@ -3580,7 +3580,7 @@ class LowBitArray:
         multiply_ : Alias for this function
         __imul__ : The special method that implements the *= operator
         """
-        self.value *= _as_array(value)
+        self.value *= extract_raw_value(value)
         return self
 
     def multiply(self, value: Union['LowBitArray', ArrayLike]) -> Union[jax.Array, u.Quantity]:
@@ -3610,7 +3610,7 @@ class LowBitArray:
         mul : Equivalent function
         multiply_ : In-place version
         """
-        return self.value * _as_array(value)
+        return self.value * extract_raw_value(value)
 
     def multiply_(self, value: Union['LowBitArray', ArrayLike]) -> 'LowBitArray':
         """
@@ -3639,7 +3639,7 @@ class LowBitArray:
         multiply : Non-in-place version
         mul_ : Equivalent function
         """
-        self.value *= _as_array(value)
+        self.value *= extract_raw_value(value)
         return self
 
     def sin(
@@ -4117,8 +4117,8 @@ class LowBitArray:
         >>> a.clamp(None, 7)  # only clip from above
         array([0, 1, 2, 3, 4, 5, 6, 7, 7, 7])
         """
-        min_value = _as_array(min_value)
-        max_value = _as_array(max_value)
+        min_value = extract_raw_value(min_value)
+        max_value = extract_raw_value(max_value)
         r = u.math.clip(self.value, min_value, max_value)
         if out is None:
             return r
@@ -4319,9 +4319,9 @@ class LowBitArray:
         array([[ 1.5, -1.5],
                [-1.5,  1.5]])
         """
-        y = _as_array(y)
-        fweights = _as_array(fweights)
-        aweights = _as_array(aweights)
+        y = extract_raw_value(y)
+        fweights = extract_raw_value(fweights)
+        aweights = extract_raw_value(aweights)
         r = u.math.cov(self.value, y, rowvar, bias, fweights, aweights)
         return r
 
