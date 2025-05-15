@@ -13,6 +13,9 @@
 # limitations under the License.
 # ==============================================================================
 
+
+from jax.tree_util import register_pytree_node_class
+
 from ._array_base import BaseArray
 from ._array_base import (
     extract_raw_value,
@@ -31,6 +34,7 @@ __all__ = [
 ]
 
 
+@register_pytree_node_class
 class MaskedFloat(BaseArray):
     __slots__ = ('_value',)
     __module__ = 'brainevent'

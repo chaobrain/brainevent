@@ -15,6 +15,7 @@
 
 # -*- coding: utf-8 -*-
 
+from jax.tree_util import register_pytree_node_class
 
 from ._array_base import (
     BaseArray,
@@ -35,6 +36,7 @@ __all__ = [
 ]
 
 
+@register_pytree_node_class
 class BinaryArray(BaseArray):
     """
     A binary array is a special case of an event array where the events are binary (0 or 1).
