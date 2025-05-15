@@ -24,8 +24,8 @@ import jax
 from ._array_binary import EventArray
 from ._compatible_import import JAXSparse, Tracer
 from ._jitc_normal_impl_binary import (
-    event_jitc_normal_matvec,
-    event_jitc_normal_matmat,
+    binary_jitc_normal_matvec,
+    binary_jitc_normal_matmat,
 )
 from ._jitc_normal_impl_float import (
     float_jitc_normal_matrix,
@@ -473,7 +473,7 @@ class JITCNormalR(JITNormalMatrix):
             other = other.data
             if other.ndim == 1:
                 # JIT matrix @ events
-                return event_jitc_normal_matvec(
+                return binary_jitc_normal_matvec(
                     self.wloc,
                     self.wscale,
                     self.prob,
@@ -485,7 +485,7 @@ class JITCNormalR(JITNormalMatrix):
                 )
             elif other.ndim == 2:
                 # JIT matrix @ events
-                return event_jitc_normal_matmat(
+                return binary_jitc_normal_matmat(
                     self.wloc,
                     self.wscale,
                     self.prob,
@@ -542,7 +542,7 @@ class JITCNormalR(JITNormalMatrix):
                 # ==
                 # JIT matrix.T @ vector
                 #
-                return event_jitc_normal_matvec(
+                return binary_jitc_normal_matvec(
                     self.wloc,
                     self.wscale,
                     self.prob,
@@ -558,7 +558,7 @@ class JITCNormalR(JITNormalMatrix):
                 # ==
                 # (JIT matrix.T @ matrix.T).T
                 #
-                r = event_jitc_normal_matmat(
+                r = binary_jitc_normal_matmat(
                     self.wloc,
                     self.wscale,
                     self.prob,
@@ -815,7 +815,7 @@ class JITCNormalC(JITNormalMatrix):
                 # JITC_R matrix.T @ vector
                 # ==
                 # vector @ JITC_R matrix
-                return event_jitc_normal_matvec(
+                return binary_jitc_normal_matvec(
                     self.wloc,
                     self.wscale,
                     self.prob,
@@ -829,7 +829,7 @@ class JITCNormalC(JITNormalMatrix):
                 # JITC_R matrix.T @ matrix
                 # ==
                 # (matrix.T @ JITC_R matrix).T
-                return event_jitc_normal_matmat(
+                return binary_jitc_normal_matmat(
                     self.wloc,
                     self.wscale,
                     self.prob,
@@ -889,7 +889,7 @@ class JITCNormalC(JITNormalMatrix):
                 # ==
                 # JITC_R matrix @ vector
                 #
-                return event_jitc_normal_matvec(
+                return binary_jitc_normal_matvec(
                     self.wloc,
                     self.wscale,
                     self.prob,
@@ -905,7 +905,7 @@ class JITCNormalC(JITNormalMatrix):
                 # ==
                 # (JITC_R matrix @ matrix.T).T
                 #
-                r = event_jitc_normal_matmat(
+                r = binary_jitc_normal_matmat(
                     self.wloc,
                     self.wscale,
                     self.prob,

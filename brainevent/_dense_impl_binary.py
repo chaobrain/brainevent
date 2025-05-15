@@ -793,7 +793,7 @@ def _binary_mat_dot_dense_mat_numba_kernel_generator(
         def _kernel(spikes, weights, posts):
             for i_m in numba.prange(spikes.shape[0]):
                 out = np.zeros(weights.shape[1], dtype=posts.dtype)
-                for i_k in range(spikes.shape[0]):
+                for i_k in range(spikes.shape[1]):
                     if spikes[i_m, i_k]:
                         out += weights[i_k]
                 posts[i_m] = out
@@ -802,7 +802,7 @@ def _binary_mat_dot_dense_mat_numba_kernel_generator(
         def _kernel(spikes, weights, posts):
             for i_m in numba.prange(spikes.shape[0]):
                 out = np.zeros(weights.shape[1], dtype=posts.dtype)
-                for i_k in range(spikes.shape[0]):
+                for i_k in range(spikes.shape[1]):
                     if spikes[i_m, i_k] != 0.:
                         out += weights[i_k]
                 posts[i_m] = out

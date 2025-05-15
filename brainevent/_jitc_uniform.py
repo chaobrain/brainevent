@@ -24,8 +24,8 @@ import jax
 from ._array_binary import EventArray
 from ._compatible_import import JAXSparse, Tracer
 from ._jitc_uniform_impl_binary import (
-    event_jitc_uniform_matvec,
-    event_jitc_uniform_matmat,
+    binary_jitc_uniform_matvec,
+    binary_jitc_uniform_matmat,
 )
 from ._jitc_uniform_impl_float import (
     float_jitc_uniform_matrix,
@@ -535,7 +535,7 @@ class JITCUniformR(JITUniformMatrix):
             other = other.data
             if other.ndim == 1:
                 # JIT matrix @ events
-                return event_jitc_uniform_matvec(
+                return binary_jitc_uniform_matvec(
                     self.wlow,
                     self.whigh,
                     self.prob,
@@ -547,7 +547,7 @@ class JITCUniformR(JITUniformMatrix):
                 )
             elif other.ndim == 2:
                 # JIT matrix @ events
-                return event_jitc_uniform_matmat(
+                return binary_jitc_uniform_matmat(
                     self.wlow,
                     self.whigh,
                     self.prob,
@@ -604,7 +604,7 @@ class JITCUniformR(JITUniformMatrix):
                 # ==
                 # JIT matrix.T @ vector
                 #
-                return event_jitc_uniform_matvec(
+                return binary_jitc_uniform_matvec(
                     self.wlow,
                     self.whigh,
                     self.prob,
@@ -620,7 +620,7 @@ class JITCUniformR(JITUniformMatrix):
                 # ==
                 # (JIT matrix.T @ matrix.T).T
                 #
-                r = event_jitc_uniform_matmat(
+                r = binary_jitc_uniform_matmat(
                     self.wlow,
                     self.whigh,
                     self.prob,
@@ -913,7 +913,7 @@ class JITCUniformC(JITUniformMatrix):
                 # JITC_R matrix.T @ vector
                 # ==
                 # vector @ JITC_R matrix
-                return event_jitc_uniform_matvec(
+                return binary_jitc_uniform_matvec(
                     self.wlow,
                     self.whigh,
                     self.prob,
@@ -927,7 +927,7 @@ class JITCUniformC(JITUniformMatrix):
                 # JITC_R matrix.T @ matrix
                 # ==
                 # (matrix.T @ JITC_R matrix).T
-                return event_jitc_uniform_matmat(
+                return binary_jitc_uniform_matmat(
                     self.wlow,
                     self.whigh,
                     self.prob,
@@ -987,7 +987,7 @@ class JITCUniformC(JITUniformMatrix):
                 # ==
                 # JITC_R matrix @ vector
                 #
-                return event_jitc_uniform_matvec(
+                return binary_jitc_uniform_matvec(
                     self.wlow,
                     self.whigh,
                     self.prob,
@@ -1003,7 +1003,7 @@ class JITCUniformC(JITUniformMatrix):
                 # ==
                 # (JITC_R matrix @ matrix.T).T
                 #
-                r = event_jitc_uniform_matmat(
+                r = binary_jitc_uniform_matmat(
                     self.wlow,
                     self.whigh,
                     self.prob,

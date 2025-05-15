@@ -123,6 +123,7 @@ class Test_JITCHomoR:
         matrix = gen_events((k, shape[0]))
         out1 = matrix @ jitc
         out2 = matrix @ jitc.todense()
+        print(out1 - out2)
         assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4 * u.get_unit(out1))
 
     def test_todense_weight_batching(self):

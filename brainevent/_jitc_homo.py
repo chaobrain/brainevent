@@ -24,8 +24,8 @@ import jax
 from ._array_binary import EventArray
 from ._compatible_import import JAXSparse, Tracer
 from ._jitc_homo_impl_binary import (
-    event_jitc_homo_matvec,
-    event_jitc_homo_matmat,
+    binary_jitc_homo_matvec,
+    binary_jitc_homo_matmat,
 )
 from ._jitc_homo_impl_float import (
     float_jitc_homo_matrix,
@@ -488,26 +488,12 @@ class JITCHomoR(JITHomoMatrix):
             other = other.data
             if other.ndim == 1:
                 # JIT matrix @ events
-                return event_jitc_homo_matvec(
-                    weight,
-                    self.prob,
-                    other,
-                    self.seed,
-                    shape=self.shape,
-                    transpose=False,
-                    corder=self.corder,
-                )
+                return binary_jitc_homo_matvec(weight, self.prob, other, self.seed, shape=self.shape,
+                                               transpose=False, corder=self.corder, )
             elif other.ndim == 2:
                 # JIT matrix @ events
-                return event_jitc_homo_matmat(
-                    weight,
-                    self.prob,
-                    other,
-                    self.seed,
-                    shape=self.shape,
-                    transpose=False,
-                    corder=self.corder,
-                )
+                return binary_jitc_homo_matmat(weight, self.prob, other, self.seed, shape=self.shape,
+                                               transpose=False, corder=self.corder, )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -553,7 +539,7 @@ class JITCHomoR(JITHomoMatrix):
                 # ==
                 # JIT matrix.T @ vector
                 #
-                return event_jitc_homo_matvec(
+                return binary_jitc_homo_matvec(
                     weight,
                     self.prob,
                     other,
@@ -568,7 +554,7 @@ class JITCHomoR(JITHomoMatrix):
                 # ==
                 # (JIT matrix.T @ matrix.T).T
                 #
-                r = event_jitc_homo_matmat(
+                r = binary_jitc_homo_matmat(
                     weight,
                     self.prob,
                     other.T,
@@ -845,7 +831,7 @@ class JITCHomoC(JITHomoMatrix):
                 # JITC_R matrix.T @ vector
                 # ==
                 # vector @ JITC_R matrix
-                return event_jitc_homo_matvec(
+                return binary_jitc_homo_matvec(
                     weight,
                     self.prob,
                     other,
@@ -858,7 +844,7 @@ class JITCHomoC(JITHomoMatrix):
                 # JITC_R matrix.T @ matrix
                 # ==
                 # (matrix.T @ JITC_R matrix).T
-                return event_jitc_homo_matmat(
+                return binary_jitc_homo_matmat(
                     weight,
                     self.prob,
                     other,
@@ -916,7 +902,7 @@ class JITCHomoC(JITHomoMatrix):
                 # ==
                 # JITC_R matrix @ vector
                 #
-                return event_jitc_homo_matvec(
+                return binary_jitc_homo_matvec(
                     weight,
                     self.prob,
                     other,
@@ -931,7 +917,7 @@ class JITCHomoC(JITHomoMatrix):
                 # ==
                 # (JITC_R matrix @ matrix.T).T
                 #
-                r = event_jitc_homo_matmat(
+                r = binary_jitc_homo_matmat(
                     weight,
                     self.prob,
                     other.T,

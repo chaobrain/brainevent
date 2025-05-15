@@ -35,12 +35,12 @@ from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
 
 __all__ = [
-    "event_jitc_normal_matvec",
-    "event_jitc_normal_matmat",
+    "binary_jitc_normal_matvec",
+    "binary_jitc_normal_matmat",
 ]
 
 
-def event_jitc_normal_matvec(
+def binary_jitc_normal_matvec(
     w_loc: Data,
     w_scale: Data,
     prob: float,
@@ -57,7 +57,7 @@ def event_jitc_normal_matvec(
     w_scale = u.Quantity(w_scale).to(unitd).mantissa
     vector, unitv = u.split_mantissa_unit(vector)
     clen = _initialize_conn_length(prob)
-    res = event_jitc_mv_normal_p_call(
+    res = binary_jitc_mv_normal_p_call(
         w_loc,
         w_scale,
         clen,
@@ -70,7 +70,7 @@ def event_jitc_normal_matvec(
     return u.maybe_decimal(res * unitd * unitv)
 
 
-def event_jitc_normal_matmat(
+def binary_jitc_normal_matmat(
     w_loc: Data,
     w_scale: Data,
     prob: float,
@@ -87,7 +87,7 @@ def event_jitc_normal_matmat(
     w_scale = u.Quantity(w_scale).to(unitd).mantissa
     B, unitB = u.split_mantissa_unit(B)
     clen = _initialize_conn_length(prob)
-    res = event_jitc_mm_normal_p_call(
+    res = binary_jitc_mm_normal_p_call(
         w_loc,
         w_scale,
         clen,
@@ -683,7 +683,7 @@ def _jitc_mv_normal_jvp_wloc(
     corder,
     **kwargs
 ):
-    return event_jitc_mv_normal_p_call(
+    return binary_jitc_mv_normal_p_call(
         w_dot,
         w_scale,
         clen,
@@ -709,7 +709,7 @@ def _jitc_mv_normal_jvp_wscale(
     corder,
     **kwargs
 ):
-    return event_jitc_mv_normal_p_call(
+    return binary_jitc_mv_normal_p_call(
         w_loc,
         w_dot,
         clen,
@@ -763,7 +763,7 @@ def _jitc_mv_normal_transpose_rules(
 def _jitc_mv_normal_batching(args, axes, **kwargs):
     if tuple(axes) == (None, None, None, 0, None, None):
         assert args[3].ndim == 2, 'Batching axis 0 requires 2D input.'
-        r = event_jitc_mm_normal_p_call(
+        r = binary_jitc_mm_normal_p_call(
             args[0],
             args[1],
             args[2],
@@ -776,7 +776,7 @@ def _jitc_mv_normal_batching(args, axes, **kwargs):
         return r, [1]
     elif tuple(axes) == (None, None, None, 1, None, None):
         assert args[3].ndim == 2, 'Batching axis 0 requires 2D input.'
-        r = event_jitc_mm_normal_p_call(
+        r = binary_jitc_mm_normal_p_call(
             args[0],
             args[1],
             args[2],
@@ -789,14 +789,14 @@ def _jitc_mv_normal_batching(args, axes, **kwargs):
         return r, [1]
     else:
         return general_batching_rule(
-            event_jitc_mv_normal_p,
+            binary_jitc_mv_normal_p,
             args,
             axes,
             **kwargs,
         )
 
 
-def event_jitc_mv_normal_p_call(
+def binary_jitc_mv_normal_p_call(
     w_loc,
     w_scale,
     clen,
@@ -829,7 +829,7 @@ def event_jitc_mv_normal_p_call(
         jax.ShapeDtypeStruct([shape[0]], w_loc.dtype)
     )
 
-    return event_jitc_mv_normal_p(
+    return binary_jitc_mv_normal_p(
         w_loc,
         w_scale,
         clen,
@@ -849,15 +849,15 @@ def event_jitc_mv_normal_p_call(
     )
 
 
-event_jitc_mv_normal_p = XLACustomKernel('event_jitc_mv_normal')
-event_jitc_mv_normal_p.def_cpu_kernel(_jitc_mv_normal_numba_kernel_generator)
-event_jitc_mv_normal_p.def_gpu_kernel(
+binary_jitc_mv_normal_p = XLACustomKernel('event_jitc_mv_normal')
+binary_jitc_mv_normal_p.def_cpu_kernel(_jitc_mv_normal_numba_kernel_generator)
+binary_jitc_mv_normal_p.def_gpu_kernel(
     default='pallas',
     warp=_jitc_mv_normal_warp_kernel_generator,
     pallas=_jitc_mv_normal_pallas_kernel_generator,
 )
-event_jitc_mv_normal_p.def_tpu_kernel(_jitc_mv_normal_pallas_kernel_generator)
-event_jitc_mv_normal_p.def_jvp_rule2(
+binary_jitc_mv_normal_p.def_tpu_kernel(_jitc_mv_normal_pallas_kernel_generator)
+binary_jitc_mv_normal_p.def_jvp_rule2(
     _jitc_mv_normal_jvp_wloc,
     _jitc_mv_normal_jvp_wscale,
     None,
@@ -865,8 +865,8 @@ event_jitc_mv_normal_p.def_jvp_rule2(
     None,
     None
 )
-event_jitc_mv_normal_p.def_transpose_rule(_jitc_mv_normal_transpose_rules)
-event_jitc_mv_normal_p.def_batching_rule(_jitc_mv_normal_batching)
+binary_jitc_mv_normal_p.def_transpose_rule(_jitc_mv_normal_transpose_rules)
+binary_jitc_mv_normal_p.def_batching_rule(_jitc_mv_normal_batching)
 
 
 def _jitc_mm_normal_numba_kernel_generator(
@@ -1315,7 +1315,7 @@ def _jitc_mm_normal_jvp_wloc(
     corder,
     **kwargs
 ):
-    return event_jitc_mm_normal_p_call(
+    return binary_jitc_mm_normal_p_call(
         w_dot,
         w_scale,
         clen,
@@ -1341,7 +1341,7 @@ def _jitc_mm_normal_jvp_wscale(
     corder,
     **kwargs
 ):
-    return event_jitc_mm_normal_p_call(
+    return binary_jitc_mm_normal_p_call(
         w_loc,
         w_dot,
         clen,
@@ -1424,7 +1424,7 @@ def _batching_axis1(args, axis=1, **kwargs):
     assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
     m, maybe_batch1, maybe_batch2 = args[3].shape
     B = args[3].reshape(m, maybe_batch1 * maybe_batch2)
-    r = event_jitc_mm_normal_p_call(
+    r = binary_jitc_mm_normal_p_call(
         args[0],
         args[1],
         args[2],
@@ -1452,10 +1452,10 @@ def _jitc_mm_normal_batching(args, axes, **kwargs):
         return _batching_axis1(args, axis=2, **kwargs)
 
     else:
-        return general_batching_rule(event_jitc_mm_normal_p, args, axes, **kwargs)
+        return general_batching_rule(binary_jitc_mm_normal_p, args, axes, **kwargs)
 
 
-def event_jitc_mm_normal_p_call(
+def binary_jitc_mm_normal_p_call(
     w_loc,
     w_scale,
     clen,
@@ -1491,7 +1491,7 @@ def event_jitc_mm_normal_p_call(
         jax.ShapeDtypeStruct([shape[0], B.shape[1]], w_loc.dtype)
     )
 
-    return event_jitc_mm_normal_p(
+    return binary_jitc_mm_normal_p(
         w_loc,
         w_scale,
         clen,
@@ -1512,15 +1512,15 @@ def event_jitc_mm_normal_p_call(
     )
 
 
-event_jitc_mm_normal_p = XLACustomKernel('event_jitc_mm_normal')
-event_jitc_mm_normal_p.def_cpu_kernel(_jitc_mm_normal_numba_kernel_generator)
-event_jitc_mm_normal_p.def_gpu_kernel(
+binary_jitc_mm_normal_p = XLACustomKernel('binary_jitc_mm_normal')
+binary_jitc_mm_normal_p.def_cpu_kernel(_jitc_mm_normal_numba_kernel_generator)
+binary_jitc_mm_normal_p.def_gpu_kernel(
     default='pallas',
     warp=_jitc_mm_normal_warp_kernel_generator,
     pallas=_jitc_mm_normal_pallas_kernel_generator,
 )
-event_jitc_mm_normal_p.def_tpu_kernel(_jitc_mm_normal_pallas_kernel_generator)
-event_jitc_mm_normal_p.def_jvp_rule2(_jitc_mm_normal_jvp_wloc, _jitc_mm_normal_jvp_wscale,
-                                     None, _jitc_mm_normal_jvp_B, None, None)
-event_jitc_mm_normal_p.def_transpose_rule(_jitc_mm_normal_transpose_rules)
-event_jitc_mm_normal_p.def_batching_rule(_jitc_mm_normal_batching)
+binary_jitc_mm_normal_p.def_tpu_kernel(_jitc_mm_normal_pallas_kernel_generator)
+binary_jitc_mm_normal_p.def_jvp_rule2(_jitc_mm_normal_jvp_wloc, _jitc_mm_normal_jvp_wscale,
+                                      None, _jitc_mm_normal_jvp_B, None, None)
+binary_jitc_mm_normal_p.def_transpose_rule(_jitc_mm_normal_transpose_rules)
+binary_jitc_mm_normal_p.def_batching_rule(_jitc_mm_normal_batching)
