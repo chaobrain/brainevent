@@ -25,7 +25,7 @@ from jax.interpreters import ad
 from ._compatible_import import pallas as pl
 from ._misc import _csr_to_coo, generate_block_dim
 from ._typing import Data, Indptr, Index, MatrixShape
-from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
+from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import numba_kernel
 from ._xla_custom_op_pallas import pallas_kernel
 from ._xla_custom_op_util import general_batching_rule

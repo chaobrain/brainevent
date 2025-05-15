@@ -25,41 +25,54 @@ import sys
 
 sys.path.append('../')
 
+from brainevent._dense_impl_binary import (
+    dense_mat_dot_binary_mat,
+    binary_mat_dot_dense_mat,
+)
 import brainstate
 from utils import visualize
+# brainstate.environ.set_platform('cpu')
+# brainevent.config.gpu_kernel_backend = 'pallas'
 
 
-# brainstate.environ.set(platform='cpu')
-
-
-def event_matrix(m, k, n, spk_prob, as_float: bool):
-    spike = (brainstate.random.rand(m, k) < spk_prob)
-    weight = brainstate.init.KaimingUniform()((k, n))
-
+def matrix_event(m, k, n, spk_prob, as_float: bool, transpose: bool, n_run = 100):
+    if transpose:
+        weight = brainstate.init.KaimingUniform()((m, k))
+        spike = (brainstate.random.rand(k, n) < spk_prob)
+    else:
+        spike = (brainstate.random.rand(m, k) < spk_prob)
+        weight = brainstate.init.KaimingUniform()((k, n))
     if as_float:
         spike = spike.astype(float)
 
     @jax.jit
     def f1(spike, weight):
-        return brainevent.EventArray(spike) @ weight
+        return (
+            dense_mat_dot_binary_mat(weight, spike)
+            if transpose
+            else binary_mat_dot_dense_mat(spike, weight)
+        )
 
     @jax.jit
     def f2(spike, weight):
-        return spike @ weight
+        return (
+            weight @ spike
+            if transpose
+            else spike @ weight
+        )
 
     y1 = jax.block_until_ready(f1(spike, weight))
     y2 = jax.block_until_ready(f2(spike, weight))
     print('max difference:', jax.numpy.abs(y1 - y2).max())
 
-    n = 100
     t0 = time.time()
-    for _ in range(n):
+    for _ in range(n_run):
         jax.block_until_ready(f1(spike, weight))
     r1 = time.time() - t0
     print(f"m: {m}, k: {k}, n: {n}, spike probability: {spk_prob}, Linear: {r1} s")
 
     t0 = time.time()
-    for _ in range(n):
+    for _ in range(n_run):
         jax.block_until_ready(f2(spike, weight))
     r2 = time.time() - t0
     print(f"m: {m}, k: {k}, n: {n}, spike probability: {spk_prob}, Matmul: {r2} s")
@@ -70,98 +83,32 @@ def event_matrix(m, k, n, spk_prob, as_float: bool):
     return ratio
 
 
-def matrix_event(m, k, n, spk_prob, as_float: bool):
-    weight = brainstate.init.KaimingUniform()((m, k))
-    spike = (brainstate.random.rand(k, n) < spk_prob)
-
-    if as_float:
-        spike = spike.astype(float)
-
-    @jax.jit
-    def f1(spike):
-        return weight @ brainevent.EventArray(spike)
-
-    @jax.jit
-    def f2(spike):
-        return weight @ spike
-
-    y1 = jax.block_until_ready(f1(spike))
-    y2 = jax.block_until_ready(f2(spike))
-    print('max difference:', jax.numpy.abs(y1 - y2).max())
-
-    n = 100
-    t0 = time.time()
-    for _ in range(n):
-        jax.block_until_ready(f1(spike))
-    r1 = time.time() - t0
-    print(f"m: {m}, k: {k}, n: {n}, spike probability: {spk_prob}, Linear: {r1} s")
-
-    t0 = time.time()
-    for _ in range(n):
-        jax.block_until_ready(f2(spike))
-    r2 = time.time() - t0
-    print(f"m: {m}, k: {k}, n: {n}, spike probability: {spk_prob}, Matmul: {r2} s")
-
-    ratio = (r2 / r1 - 1.) if r2 > r1 else -(r1 / r2 - 1.)
-    print('Acceleration ratio:', ratio)
-    print()
-    return ratio
-
-
-def benchmark_event_matrix(prob=0.1):
-    platform = brainstate.environ.get_platform()
-
+def benchmark(prob=0.1, transpose=False):
     results = {}
     for m, k, n in [
-        (100, 100, 100),
-        (500, 500, 500),
-        (1000, 1000, 1000),
-        (2000, 2000, 1000),
-        (2000, 2000, 1000),
-        (1000, 1000, 10000),
-        # (10000, 10000, 10000),
+        # (100, 100, 100),
+        # (500, 500, 500),
+        # (1000, 1000, 1000),
+        # (2000, 2000, 1000),
+        # (1000, 1000, 10000),
+        (10000, 10000, 10000),
         # (20000, 20000, 10000),
-        # (10000, 10000, 20000),
+        (10000, 10000, 20000),
     ]:
-        results[f'{m}x{k}x{n}'] = event_matrix(m, k, n, prob, True)
+        key = f'{m}x{k}x{n}xtranspose' if transpose else f'{m}x{k}x{n}'
+        results[key] = matrix_event(m, k, n, prob, as_float=False, transpose=transpose)
 
     visualize(
         results,
         title=f'Acceleration Ratio (p={prob})',
-        filename=f'results/event-matrix-prob={prob}-{platform}.pdf'
-    )
-
-
-def benchmark_matrix_event(prob=0.1):
-    platform = brainstate.environ.get_platform()
-
-    results = {}
-    for m, k, n in [
-        (100, 100, 100),
-        (500, 500, 500),
-        (1000, 1000, 1000),
-        (2000, 2000, 1000),
-        (2000, 2000, 1000),
-        (1000, 1000, 10000),
-        # (10000, 10000, 10000),
-        # (20000, 20000, 10000),
-        # (10000, 10000, 20000),
-    ]:
-        results[f'{m}x{k}x{n}'] = matrix_event(m, k, n, prob, False)
-
-    visualize(
-        results,
-        title=f'Acceleration Ratio (p={prob})',
-        filename=f'results/matrix-event-prob={prob}-{platform}.pdf'
+        # filename=f'results/matrix-event-prob={prob}-{platform}.pdf'
     )
 
 
 if __name__ == '__main__':
-    # benchmark_forward(0.1)
+    # benchmark(0.1, transpose=True)
+    # benchmark(0.01, transpose=True)
+    # benchmark(0.01, transpose=False)
+    benchmark(0.001, transpose=True)
+    benchmark(0.001, transpose=False)
 
-    benchmark_event_matrix(0.1)
-    benchmark_event_matrix(0.01)
-    benchmark_event_matrix(0.001)
-
-    # benchmark_matrix_event(0.01)
-    # benchmark_matrix_event(0.001)

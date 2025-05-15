@@ -24,6 +24,7 @@ from jax.interpreters import xla, mlir, batching, ad
 
 from ._compatible_import import Primitive
 from ._config import config
+from ._typing import KernelGenerator
 from ._xla_custom_op_numba import register_numba_cpu_translation
 from ._xla_custom_op_pallas import (
     register_pallas_gpu_translation,
@@ -31,7 +32,6 @@ from ._xla_custom_op_pallas import (
 )
 from ._xla_custom_op_util import general_batching_rule, defjvp
 from ._xla_custom_op_warp import register_warp_gpu_translation
-from ._typing import KernelGenerator
 
 __all__ = [
     'XLACustomKernel',
@@ -368,91 +368,135 @@ class XLACustomKernel:
         if self._gpu_kernel_choice is not None:
             self.def_gpu_kernel(**self._gpu_kernel_choice())
 
-    def def_cpu_kernel(self, kernel_generator: Callable):
+    def def_cpu_kernel(self, numba: Callable):
         """
         Defines and registers the CPU kernel implementation using Numba.
 
-        This method associates a Numba-based kernel generator with the primitive
-        for execution on CPU backends. It performs a type check on the provided
-        generator.
+        This method associates a Numba kernel generator with the primitive for CPU execution.
+        The kernel generator should be a callable that produces a Numba-jitted function
+        that implements the operation's computation logic on CPU.
 
         Args:
-            kernel_generator: An instance of `KernelGenerator` responsible
-                              for generating the Numba jitted kernel function.
+            numba: A callable function that generates the Numba-jitted implementation.
+                This generator typically configures and returns a function optimized
+                for CPU execution using Numba's JIT compilation.
 
         Raises:
-            TypeError: If `kernel_generator` is not an instance of
-                       `KernelGenerator`.
-        """
-        if not callable(kernel_generator):
-            raise TypeError('The `kernel_generator` should be an instance of callable functions to '
-                            'generate the Numba jitted kernel function.')
-        register_numba_cpu_translation(self.primitive, kernel_generator)
+            TypeError: If the provided `numba` parameter is not callable.
 
-    def def_gpu_kernel(self, default: str = None, **kernel_generator):
-        """
-        Defines and registers the GPU kernel implementation using JAX Pallas or Warp.
+        Examples:
 
-        This method associates a Pallas or Warp kernel generator with the primitive
-        for execution on GPU backends. It checks the type of the generator and calls
-        the appropriate registration function.
+            ```python
+            def my_numba_kernel_generator():
+                @numba.njit
+                def kernel_impl(inputs, outputs):
+                    # Implementation logic
+                    pass
+                return kernel_impl
+
+            custom_op = XLACustomKernel("my_custom_op")
+            custom_op.def_cpu_kernel(my_numba_kernel_generator)
+            ```
+        """
+        if not callable(numba):
+            raise TypeError(
+                'The `numba` parameter must be a callable that generates '
+                'the Numba-jitted kernel function.'
+            )
+        register_numba_cpu_translation(self.primitive, numba)
+
+    def def_gpu_kernel(
+        self,
+        warp: Callable = None,
+        pallas: Callable = None,
+        default: str = None
+    ):
+        """
+        Defines and registers the GPU kernel implementation using Warp and/or Pallas.
+
+        This method associates GPU kernel implementations with the primitive. It supports
+        either a single implementation (Warp or Pallas) or both with a specified default.
+        When both implementations are provided, the selection is determined by the
+        `config.gpu_kernel_backend` setting at runtime.
 
         Args:
-            kernel_generator: An instance of `KernelGenerator` or
-                              `KernelGenerator` responsible for generating the
-                              GPU kernel function.
+            warp: A callable that generates the NVIDIA Warp kernel implementation.
+                Defaults to None.
+            pallas: A callable that generates the JAX Pallas kernel implementation.
+                Defaults to None.
+            default: The default kernel to use when both implementations are provided.
+                Must be either 'warp' or 'pallas'. Required when both warp and pallas
+                are provided. Defaults to None.
 
         Raises:
-            TypeError: If `kernel_generator` is not an instance of
-                       `KernelGenerator` or `KernelGenerator`.
+            AssertionError: If invalid combinations of arguments are provided:
+                - When warp is None, pallas must be provided
+                - When both warp and pallas are provided, default must be specified
+                - When default is provided, it must be either 'warp' or 'pallas'
         """
+        # Validate default if provided
         if default is not None:
             assert isinstance(default, str), (
-                f'The `default` should be a string, but got '
-                f'{type(default)}'
+                f'The `default` should be a string, but got {type(default)}'
             )
 
-        if len(kernel_generator) == 0:
-            raise TypeError('The `kernel_generator` should provide at least one GPU kernel generator, '
-                            'such as "warp" or "pallas".')
-        elif len(kernel_generator) == 1:
-            if 'warp' in kernel_generator:
-                register_warp_gpu_translation(self.primitive, kernel_generator['warp'])
-            elif 'pallas' in kernel_generator:
-                register_pallas_gpu_translation(self.primitive, kernel_generator['pallas'])
-            else:
-                raise TypeError('The `kernel_generator` should provide only one GPU kernel generator, '
-                                'such as "warp" or "pallas".')
+        # Case 1: Only Pallas implementation
+        if warp is None:
+            assert pallas is not None, 'The `pallas` should be provided when `warp` is not provided.'
+            register_pallas_gpu_translation(self.primitive, pallas)
+        # Cases 2 & 3: Warp only or both implementations
         else:
-            self.def_multiple_gpu_kernels(default=default, **kernel_generator)
+            if pallas is None:
+                # Case 2: Only Warp implementation
+                register_warp_gpu_translation(self.primitive, warp)
+            else:
+                # Case 3: Both implementations provided with a default
+                assert default is not None, (
+                    'The `default` should be provided when multiple kernel implementations are provided.'
+                )
+                assert default in ['warp', 'pallas'], (
+                    'The `default` should be either `warp` or `pallas`.'
+                )
+                self._gpu_kernel_choice = GPUKernelChoice(
+                    default=default,
+                    warp_kernel=warp,
+                    pallas_kernel=pallas,
+                )
 
-    def def_multiple_gpu_kernels(self, default: str = None, **kernel_generator):
-        assert default is not None, (
-            'The `default` should be provided when '
-            'multiple `kernel_generator` is provided.'
-        )
-        assert default in kernel_generator, (
-            'The `default` should be one of '
-            f'{list(kernel_generator.keys())}.'
-        )
-        self._gpu_kernel_choice = GPUKernelChoice(
-            default=default,
-            warp_kernel=kernel_generator.get('warp'),
-            pallas_kernel=kernel_generator.get('pallas'),
-        )
-
-    def def_tpu_kernel(self, kernel_generator: Callable):
+    def def_tpu_kernel(self, pallas: Callable):
         """
         Defines and registers the TPU kernel implementation using JAX Pallas.
 
-        This method associates a Pallas kernel generator with the primitive
-        for execution on TPU backends.
+        This method associates a Pallas kernel generator with the primitive for TPU execution.
+        TPU implementations must use the Pallas API, which provides optimized patterns for
+        XLA's MLIR-based TPU compiler.
 
         Args:
-            kernel_generator: An instance of `KernelGenerator` responsible
-                              for generating the TPU kernel function.
+            pallas: A callable function that generates the Pallas implementation.
+                This generator should produce a TPU-optimized kernel using the
+                JAX Pallas API that implements the operation's computation logic.
+
+        Raises:
+            TypeError: If the provided `pallas` parameter is not callable.
+
+        Examples:
+            ```python
+            def my_pallas_tpu_kernel():
+                def kernel_impl(inputs, outputs):
+                    # TPU-specific implementation logic using Pallas
+                    pass
+                return kernel_impl
+
+            custom_op = XLACustomKernel("my_custom_op")
+            custom_op.def_tpu_kernel(my_pallas_tpu_kernel)
+            ```
         """
-        register_pallas_tpu_translation(self.primitive, kernel_generator)
+        if not callable(pallas):
+            raise TypeError(
+                'The `pallas` parameter must be a callable that generates '
+                'the Pallas TPU kernel implementation.'
+            )
+        register_pallas_tpu_translation(self.primitive, pallas)
 
     def def_batching_rule(self, fun: Callable):
         """

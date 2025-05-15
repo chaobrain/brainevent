@@ -23,7 +23,7 @@ import jax
 import jax.numpy as jnp
 from jax.interpreters import ad
 
-from ._coo_float_impl import coo_matvec, coo_matmat
+from ._coo_impl_float import coo_matvec, coo_matmat
 from ._typing import Data, Row, Col, MatrixShape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import numba_kernel

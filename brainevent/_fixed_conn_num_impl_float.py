@@ -25,7 +25,7 @@ from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
 from ._misc import generate_block_dim, check_fixed_conn_num_shape
-from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
+from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import numba_kernel
 from ._xla_custom_op_pallas import pallas_kernel
 from ._xla_custom_op_util import general_batching_rule
@@ -600,13 +600,6 @@ def _fixed_num_mm_pallas_kernel_generator(
 
             jax.lax.fori_loop(0, pl.cdiv(n_conn, block_k), loop_fn, None)
 
-        return pallas_kernel(
-            _raw_kernel,
-            outs=kwargs['outs'],
-            tile=(n_pre, pl.cdiv(matrix_info.shape[1], block_n)),
-            input_output_aliases={3: 0},
-        )
-
     else:
 
         #
@@ -651,12 +644,12 @@ def _fixed_num_mm_pallas_kernel_generator(
                 final_out = final_out * weight_ref[0]
             pl.store(out_ref, (i_m, pl.dslice(i_n_start, block_n)), final_out, mask=i_n_mask)
 
-        return pallas_kernel(
-            _raw_kernel,
-            outs=kwargs['outs'],
-            tile=(n_pre, pl.cdiv(matrix_info.shape[1], block_n)),
-            input_output_aliases={3: 0},
-        )
+    return pallas_kernel(
+        _raw_kernel,
+        outs=kwargs['outs'],
+        tile=(n_pre, pl.cdiv(matrix_info.shape[1], block_n)),
+        input_output_aliases={3: 0},
+    )
 
 
 def _fixed_num_mm_jvp_matrix(

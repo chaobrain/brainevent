@@ -16,6 +16,7 @@
 # -*- coding: utf-8 -*-
 
 
+import threading
 from contextlib import contextmanager
 from typing import Union
 
@@ -24,7 +25,7 @@ __all__ = [
 ]
 
 
-class Config:
+class Config(threading.local):
     """
     A configuration class that stores settings for the brainevent package.
 
@@ -41,7 +42,7 @@ class Config:
 
     def __init__(self):
         self._gpu_kernel_backend = 'default'
-        self._numba_setting: dict = dict(nogil=True, fastmath=True, parallel=False)
+        self._numba_setting: dict = dict(nogil=True, fastmath=True, parallel=True)
 
     @property
     def gpu_kernel_backend(self) -> str:
