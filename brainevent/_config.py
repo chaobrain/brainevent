@@ -42,7 +42,7 @@ class Config(threading.local):
 
     def __init__(self):
         self._gpu_kernel_backend = 'default'
-        self._numba_setting: dict = dict(nogil=True, fastmath=True, parallel=False)
+        self._numba_setting: dict = dict(nogil=True, fastmath=True, parallel=True)
 
     @property
     def gpu_kernel_backend(self) -> str:

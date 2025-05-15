@@ -144,6 +144,8 @@ def pallas_kernel(
 
     assert isinstance(tile, (tuple, list)), 'grid must be a tuple or list of integers'
     assert outs is not None, 'outs must be specified'
+    if input_output_aliases is None:
+        input_output_aliases = {}
 
     @functools.wraps(fn)
     def kernel(*args):

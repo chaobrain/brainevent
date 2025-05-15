@@ -48,13 +48,10 @@ class TestMatrixEvent:
     @pytest.mark.parametrize("m", [10])
     @pytest.mark.parametrize("k", [15, 20])
     @pytest.mark.parametrize("n", [30])
-    @pytest.mark.parametrize("float_as_event", [True, False])
-    def test_dense_mat_dot_binary_mat(self, m, k, n, float_as_event):
+    def test_dense_mat_dot_binary_mat(self, m, k, n):
         matrix = brainstate.random.randn(m, k)
         events = u.math.asarray(brainstate.random.randn(k, n) < 0.5, dtype=float)
-        if not float_as_event:
-            events = events * brainstate.random.rand(k, n)
-        out1 = dense_mat_dot_binary_mat(matrix, events, float_as_event=float_as_event)
+        out1 = dense_mat_dot_binary_mat(matrix, events)
         out2 = matrix @ events
         assert u.math.allclose(out1, out2, atol=1e-4, rtol=1e-4)
 
@@ -78,13 +75,10 @@ class TestEventMatrix:
     @pytest.mark.parametrize("m", [10])
     @pytest.mark.parametrize("k", [15, 20])
     @pytest.mark.parametrize("n", [30])
-    @pytest.mark.parametrize("float_as_event", [True, False])
-    def test_dense_mat_dot_binary_mat(self, m, k, n, float_as_event):
+    def test_dense_mat_dot_binary_mat(self, m, k, n):
         events = u.math.asarray(brainstate.random.randn(m, k) < 0.5, dtype=float)
-        if not float_as_event:
-            events = events * brainstate.random.rand(m, k)
         matrix = brainstate.random.randn(k, n)
-        out1 = binary_mat_dot_dense_mat(events, matrix, float_as_event=float_as_event)
+        out1 = binary_mat_dot_dense_mat(events, matrix)
         out2 = events @ matrix
         assert u.math.allclose(out1, out2, atol=1e-4, rtol=1e-4)
 
@@ -106,13 +100,10 @@ class TestMatrixEvent_mv:
 
     @pytest.mark.parametrize("m", [10])
     @pytest.mark.parametrize("k", [15, 20])
-    @pytest.mark.parametrize("float_as_event", [True, False])
-    def test_matrix_event_mv(self, m, k, float_as_event):
+    def test_matrix_event_mv(self, m, k):
         matrix = brainstate.random.randn(m, k)
         events = u.math.asarray(brainstate.random.randn(k) < 0.5, dtype=float)
-        if not float_as_event:
-            events = events * brainstate.random.rand(k)
-        out1 = dense_mat_dot_binary_vec(matrix, events, float_as_event=float_as_event)
+        out1 = dense_mat_dot_binary_vec(matrix, events)
         out2 = matrix @ events
         assert u.math.allclose(out1, out2, atol=1e-4, rtol=1e-4)
 
@@ -134,12 +125,9 @@ class TestEventMatrix_mv:
 
     @pytest.mark.parametrize("m", [10])
     @pytest.mark.parametrize("k", [15, 20])
-    @pytest.mark.parametrize("float_as_event", [True, False])
-    def test_matrix_event_mv(self, m, k, float_as_event):
+    def test_matrix_event_mv(self, m, k):
         events = u.math.asarray(brainstate.random.randn(m) < 0.5, dtype=float)
-        if not float_as_event:
-            events = events * brainstate.random.rand(m)
         matrix = brainstate.random.randn(m, k)
-        out1 = binary_vec_dot_dense_mat(events, matrix, float_as_event=float_as_event)
+        out1 = binary_vec_dot_dense_mat(events, matrix)
         out2 = events @ matrix
         assert u.math.allclose(out1, out2, atol=1e-4, rtol=1e-4)
