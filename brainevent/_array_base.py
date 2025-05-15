@@ -2299,7 +2299,8 @@ class BaseArray:
         """
         # Ensure 'v' is unwrapped if it's an EventArray
         # Delegates to the underlying array's searchsorted method.
-        return self.value.searchsorted(v=extract_raw_value(v), side=side, sorter=sorter)
+        v = extract_raw_value(v)
+        return self.value.searchsorted(v=u.math.asarray(v), side=side, sorter=sorter)
 
     def sort(self, axis=-1, stable=True, order=None):
         """
