@@ -22,10 +22,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from ._array_binary import EventArray
+from ._array_masked_float import MaskedFloat
 from ._compatible_import import JAXSparse
-from ._csr_event_impl import event_csr_matvec, event_csr_matmat
-from ._csr_float_impl import csr_matvec, csr_matmat
-from ._event import EventArray
+from ._csr_impl_binary import binary_csr_matvec, binary_csr_matmat
+from ._csr_impl_float import csr_matvec, csr_matmat
+from ._csr_impl_masked_float import masked_float_csr_matvec, masked_float_csr_matmat
 from ._misc import _csr_to_coo, _csr_todense
 from ._typing import Data, Indptr, Index, MatrixShape
 
@@ -421,26 +423,22 @@ class CSR(BaseCLS):
         # csr @ other
         if isinstance(other, JAXSparse):
             raise NotImplementedError("matmul between two sparse objects.")
-        data = self.data
 
         if isinstance(other, EventArray):
             other = other.data
             if other.ndim == 1:
-                return event_csr_matvec(
-                    data,
-                    self.indices,
-                    self.indptr,
-                    other,
-                    shape=self.shape
-                )
+                return binary_csr_matvec(self.data, self.indices, self.indptr, other, shape=self.shape)
             elif other.ndim == 2:
-                return event_csr_matmat(
-                    data,
-                    self.indices,
-                    self.indptr,
-                    other,
-                    shape=self.shape
-                )
+                return binary_csr_matmat(self.data, self.indices, self.indptr, other, shape=self.shape)
+            else:
+                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+
+        elif isinstance(other, MaskedFloat):
+            other = other.data
+            if other.ndim == 1:
+                return masked_float_csr_matvec(self.data, self.indices, self.indptr, other, shape=self.shape)
+            elif other.ndim == 2:
+                return masked_float_csr_matmat(self.data, self.indices, self.indptr, other, shape=self.shape)
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -472,29 +470,27 @@ class CSR(BaseCLS):
         # other @ csr
         if isinstance(other, JAXSparse):
             raise NotImplementedError("matmul between two sparse objects.")
-        data = self.data
 
         if isinstance(other, EventArray):
             other = other.data
             if other.ndim == 1:
-                return event_csr_matvec(
-                    data,
-                    self.indices,
-                    self.indptr,
-                    other,
-                    shape=self.shape,
-                    transpose=True
-                )
+                return binary_csr_matvec(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True)
             elif other.ndim == 2:
                 other = other.T
-                r = event_csr_matmat(
-                    data,
-                    self.indices,
-                    self.indptr,
-                    other,
-                    shape=self.shape,
-                    transpose=True
-                )
+                r = binary_csr_matmat(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True)
+                return r.T
+            else:
+                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+
+        elif isinstance(other, MaskedFloat):
+            other = other.data
+            if other.ndim == 1:
+                return masked_float_csr_matvec(self.data, self.indices, self.indptr, other,
+                                               shape=self.shape, transpose=True)
+            elif other.ndim == 2:
+                other = other.T
+                r = masked_float_csr_matmat(self.data, self.indices, self.indptr, other,
+                                            shape=self.shape, transpose=True)
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -767,23 +763,20 @@ class CSC(BaseCLS):
         if isinstance(other, EventArray):
             other = other.value
             if other.ndim == 1:
-                return event_csr_matvec(
-                    data,
-                    self.indices,
-                    self.indptr,
-                    other,
-                    shape=self.shape[::-1],
-                    transpose=True
-                )
+                return binary_csr_matvec(data, self.indices, self.indptr, other, shape=self.shape[::-1], transpose=True)
             elif other.ndim == 2:
-                return event_csr_matmat(
-                    data,
-                    self.indices,
-                    self.indptr,
-                    other,
-                    shape=self.shape[::-1],
-                    transpose=True
-                )
+                return binary_csr_matmat(data, self.indices, self.indptr, other, shape=self.shape[::-1], transpose=True)
+            else:
+                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+
+        elif isinstance(other, MaskedFloat):
+            other = other.value
+            if other.ndim == 1:
+                return masked_float_csr_matvec(data, self.indices, self.indptr, other,
+                                               shape=self.shape[::-1], transpose=True)
+            elif other.ndim == 2:
+                return masked_float_csr_matmat(data, self.indices, self.indptr, other,
+                                               shape=self.shape[::-1], transpose=True)
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -820,24 +813,22 @@ class CSC(BaseCLS):
         if isinstance(other, EventArray):
             other = other.value
             if other.ndim == 1:
-                return event_csr_matvec(
-                    data,
-                    self.indices,
-                    self.indptr,
-                    other,
-                    shape=self.shape[::-1],
-                    transpose=False
-                )
+                return binary_csr_matvec(data, self.indices, self.indptr, other, shape=self.shape[::-1],
+                                         transpose=False)
             elif other.ndim == 2:
-                other = other.T
-                r = event_csr_matmat(
-                    data,
-                    self.indices,
-                    self.indptr, other,
-                    shape=self.shape[::-1],
-                    transpose=False
-                )
-                return r.T
+                return binary_csr_matmat(data, self.indices, self.indptr, other.T, shape=self.shape[::-1],
+                                         transpose=False).T
+            else:
+                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+
+        elif isinstance(other, MaskedFloat):
+            other = other.value
+            if other.ndim == 1:
+                return masked_float_csr_matvec(data, self.indices, self.indptr, other, shape=self.shape[::-1],
+                                               transpose=False)
+            elif other.ndim == 2:
+                return masked_float_csr_matmat(data, self.indices, self.indptr, other.T, shape=self.shape[::-1],
+                                               transpose=False).T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 

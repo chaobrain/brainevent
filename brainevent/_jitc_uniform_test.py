@@ -26,7 +26,6 @@ from brainevent._typing import MatrixShape
 
 brainevent.config.gpu_kernel_backend = 'pallas'
 
-
 if brainstate.environ.get_platform() == 'cpu':
     shapes = [
         (200, 300),

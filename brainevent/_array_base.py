@@ -23,11 +23,9 @@ from jax.dtypes import canonicalize_dtype
 from jax.tree_util import register_pytree_node_class
 
 from ._error import MathError
-from ._event_matrix_impl import matrix_event_mm, event_matrix_mm
-from ._event_vector_impl import matrix_event_mv, event_matrix_mv
 
 __all__ = [
-    'EventArray',
+    'BaseArray',
 ]
 
 
@@ -40,39 +38,43 @@ def _get_dtype(v):
 
 
 def _check_out(out):
-    if not isinstance(out, EventArray):
+    if not isinstance(out, BaseArray):
         raise TypeError(f'out must be an instance of Array. But got {type(out)}')
 
 
-def _as_array(obj):
-    return obj.value if isinstance(obj, EventArray) else obj
+def extract_raw_value(obj):
+    return obj.value if isinstance(obj, BaseArray) else obj
 
 
-def _known_type(x):
-    return isinstance(x, (u.Quantity, jax.Array, np.ndarray, EventArray))
+def is_known_type(x):
+    return isinstance(x, (u.Quantity, jax.Array, np.ndarray, BaseArray))
 
 
 ArrayLike = Union[jax.Array, np.ndarray, u.Quantity]
 
 
 @register_pytree_node_class
-class EventArray(object):
+class BaseArray:
     """
-    The base array class for representing events.
+    The base array class for representing low-bit arrays.
+
+    This class provides a basic implementation for low-bit arrays, which can be used to represent arrays
+    with low-precision floating-point numbers. It supports basic operations such as addition, subtraction,
+    multiplication, and division, and provides methods for checking the tracer and updating the array value.
     """
     __slots__ = ('_value',)
     __module__ = 'brainevent'
 
     def __init__(self, value, dtype: jax.typing.DTypeLike = None):
         """
-        Initialize an EventArray instance.
+        Initialize an BaseArray instance.
 
         Args:
-            value: The input value, which can be an EventArray, tuple, list, or np.ndarray.
+            value: The input value, which can be an BaseArray, tuple, list, or np.ndarray.
             dtype: The data type of the array. If None, the data type will be inferred from the input value.
         """
         # array value
-        if isinstance(value, EventArray):
+        if isinstance(value, BaseArray):
             value = value.value
         elif isinstance(value, (tuple, list, np.ndarray)):
             value = u.math.asarray(value)
@@ -139,7 +141,7 @@ class EventArray(object):
         self_value = self._check_tracer()
 
         # Handle different types of incoming values
-        if isinstance(value, EventArray):
+        if isinstance(value, BaseArray):
             value = value.value
         elif isinstance(value, np.ndarray):
             value = u.math.asarray(value)
@@ -168,20 +170,20 @@ class EventArray(object):
 
     def update(self, value):
         """
-        Update the value of this EventArray.
+        Update the value of this BaseArray.
 
-        This method updates the internal value of the EventArray with a new value.
+        This method updates the internal value of the BaseArray with a new value.
 
         Parameters
         ----------
         value : array-like
-            The new value to update the EventArray with. This should be compatible
+            The new value to update the BaseArray with. This should be compatible
             with the current array in terms of shape and dtype.
 
         Returns
         -------
         None
-            This method modifies the EventArray in-place and doesn't return anything.
+            This method modifies the BaseArray in-place and doesn't return anything.
 
         Raises
         ------
@@ -277,10 +279,10 @@ class EventArray(object):
 
     def __repr__(self) -> str:
         """
-        Return a string representation of the EventArray.
+        Return a string representation of the BaseArray.
 
         Returns:
-            A string representation of the EventArray.
+            A string representation of the BaseArray.
         """
         print_code = repr(self.value)
         if ', dtype' in print_code:
@@ -323,8 +325,8 @@ class EventArray(object):
             The item at the specified index.
         """
         if isinstance(index, tuple):
-            index = tuple((x.value if isinstance(x, EventArray) else x) for x in index)
-        elif isinstance(index, EventArray):
+            index = tuple(extract_raw_value(x) for x in index)
+        elif isinstance(index, BaseArray):
             index = index.value
         return self.value[index]
 
@@ -337,7 +339,7 @@ class EventArray(object):
             value: The new value to be set.
         """
         # value is Array
-        if isinstance(value, EventArray):
+        if isinstance(value, BaseArray):
             value = value.value
         # value is numpy.ndarray
         elif isinstance(value, np.ndarray):
@@ -345,9 +347,9 @@ class EventArray(object):
 
         # index is a tuple
         if isinstance(index, tuple):
-            index = tuple(_as_array(x) for x in index)
+            index = tuple(extract_raw_value(x) for x in index)
         # index is Array
-        elif isinstance(index, EventArray):
+        elif isinstance(index, BaseArray):
             index = index.value
         # index is numpy.ndarray
         elif isinstance(index, np.ndarray):
@@ -416,7 +418,7 @@ class EventArray(object):
         Returns:
             A boolean array indicating the equality.
         """
-        return self.value == _as_array(oc)
+        return self.value == extract_raw_value(oc)
 
     def __ne__(self, oc):
         """
@@ -428,7 +430,7 @@ class EventArray(object):
         Returns:
             A boolean array indicating the inequality.
         """
-        return self.value != _as_array(oc)
+        return self.value != extract_raw_value(oc)
 
     def __lt__(self, oc):
         """
@@ -440,7 +442,7 @@ class EventArray(object):
         Returns:
             A boolean array indicating the comparison result.
         """
-        return self.value < _as_array(oc)
+        return self.value < extract_raw_value(oc)
 
     def __le__(self, oc):
         """
@@ -452,7 +454,7 @@ class EventArray(object):
         Returns:
             A boolean array indicating the comparison result.
         """
-        return self.value <= _as_array(oc)
+        return self.value <= extract_raw_value(oc)
 
     def __gt__(self, oc):
         """
@@ -464,7 +466,7 @@ class EventArray(object):
         Returns:
             A boolean array indicating the comparison result.
         """
-        return self.value > _as_array(oc)
+        return self.value > extract_raw_value(oc)
 
     def __ge__(self, oc):
         """
@@ -476,7 +478,7 @@ class EventArray(object):
         Returns:
             A boolean array indicating the comparison result.
         """
-        return self.value >= _as_array(oc)
+        return self.value >= extract_raw_value(oc)
 
     def __add__(self, oc):
         """
@@ -488,7 +490,7 @@ class EventArray(object):
         Returns:
             The result of the addition.
         """
-        return self.value + _as_array(oc)
+        return self.value + extract_raw_value(oc)
 
     def __radd__(self, oc):
         """
@@ -500,7 +502,7 @@ class EventArray(object):
         Returns:
             The result of the addition.
         """
-        return self.value + _as_array(oc)
+        return self.value + extract_raw_value(oc)
 
     def __iadd__(self, oc):
         """
@@ -513,7 +515,7 @@ class EventArray(object):
             The updated array.
         """
         # a += b
-        self.value = self.value + _as_array(oc)
+        self.value = self.value + extract_raw_value(oc)
         return self
 
     def __sub__(self, oc):
@@ -526,7 +528,7 @@ class EventArray(object):
         Returns:
             The result of the subtraction.
         """
-        return self.value - _as_array(oc)
+        return self.value - extract_raw_value(oc)
 
     def __rsub__(self, oc):
         """
@@ -538,7 +540,7 @@ class EventArray(object):
         Returns:
             The result of the subtraction.
         """
-        return _as_array(oc) - self.value
+        return extract_raw_value(oc) - self.value
 
     def __isub__(self, oc):
         """
@@ -551,7 +553,7 @@ class EventArray(object):
             The updated array.
         """
         # a -= b
-        self.value = self.value - _as_array(oc)
+        self.value = self.value - extract_raw_value(oc)
         return self
 
     def __mul__(self, oc):
@@ -564,7 +566,7 @@ class EventArray(object):
         Returns:
             The result of the multiplication.
         """
-        return self.value * _as_array(oc)
+        return self.value * extract_raw_value(oc)
 
     def __rmul__(self, oc):
         """
@@ -576,7 +578,7 @@ class EventArray(object):
         Returns:
             The result of the multiplication.
         """
-        return _as_array(oc) * self.value
+        return extract_raw_value(oc) * self.value
 
     def __imul__(self, oc):
         """
@@ -589,7 +591,7 @@ class EventArray(object):
             The updated array.
         """
         # a *= b
-        self.value = self.value * _as_array(oc)
+        self.value = self.value * extract_raw_value(oc)
         return self
 
     def __rdiv__(self, oc):
@@ -602,7 +604,7 @@ class EventArray(object):
         Returns:
             The result of the division.
         """
-        return _as_array(oc) / self.value
+        return extract_raw_value(oc) / self.value
 
     def __truediv__(self, oc):
         """
@@ -614,7 +616,7 @@ class EventArray(object):
         Returns:
             The result of the division.
         """
-        return self.value / _as_array(oc)
+        return self.value / extract_raw_value(oc)
 
     def __rtruediv__(self, oc):
         """
@@ -626,7 +628,7 @@ class EventArray(object):
         Returns:
             The result of the division.
         """
-        return _as_array(oc) / self.value
+        return extract_raw_value(oc) / self.value
 
     def __itruediv__(self, oc):
         """
@@ -639,7 +641,7 @@ class EventArray(object):
             The updated array.
         """
         # a /= b
-        self.value = self.value / _as_array(oc)
+        self.value = self.value / extract_raw_value(oc)
         return self
 
     def __floordiv__(self, oc):
@@ -652,7 +654,7 @@ class EventArray(object):
         Returns:
             The result of the floor division.
         """
-        return self.value // _as_array(oc)
+        return self.value // extract_raw_value(oc)
 
     def __rfloordiv__(self, oc):
         """
@@ -664,7 +666,7 @@ class EventArray(object):
         Returns:
             The result of the floor division.
         """
-        return _as_array(oc) // self.value
+        return extract_raw_value(oc) // self.value
 
     def __ifloordiv__(self, oc):
         """
@@ -677,7 +679,7 @@ class EventArray(object):
             The updated array.
         """
         # a //= b
-        self.value = self.value // _as_array(oc)
+        self.value = self.value // extract_raw_value(oc)
         return self
 
     def __divmod__(self, oc):
@@ -690,7 +692,7 @@ class EventArray(object):
         Returns:
             The result of the divmod operation.
         """
-        return self.value.__divmod__(_as_array(oc))
+        return self.value.__divmod__(extract_raw_value(oc))
 
     def __rdivmod__(self, oc):
         """
@@ -702,7 +704,7 @@ class EventArray(object):
         Returns:
             The result of the divmod operation.
         """
-        return self.value.__rdivmod__(_as_array(oc))
+        return self.value.__rdivmod__(extract_raw_value(oc))
 
     def __mod__(self, oc):
         """
@@ -714,7 +716,7 @@ class EventArray(object):
         Returns:
             The result of the modulo operation.
         """
-        return self.value % _as_array(oc)
+        return self.value % extract_raw_value(oc)
 
     def __rmod__(self, oc):
         """
@@ -726,7 +728,7 @@ class EventArray(object):
         Returns:
             The result of the modulo operation.
         """
-        return _as_array(oc) % self.value
+        return extract_raw_value(oc) % self.value
 
     def __imod__(self, oc):
         """
@@ -739,7 +741,7 @@ class EventArray(object):
             The updated array.
         """
         # a %= b
-        self.value = self.value % _as_array(oc)
+        self.value = self.value % extract_raw_value(oc)
         return self
 
     def __pow__(self, oc):
@@ -752,7 +754,7 @@ class EventArray(object):
         Returns:
             The result of the power operation.
         """
-        return self.value ** _as_array(oc)
+        return self.value ** extract_raw_value(oc)
 
     def __rpow__(self, oc):
         """
@@ -764,7 +766,7 @@ class EventArray(object):
         Returns:
             The result of the power operation.
         """
-        return _as_array(oc) ** self.value
+        return extract_raw_value(oc) ** self.value
 
     def __ipow__(self, oc):
         """
@@ -777,7 +779,7 @@ class EventArray(object):
             The updated array.
         """
         # a **= b
-        self.value = self.value ** _as_array(oc)
+        self.value = self.value ** extract_raw_value(oc)
         return self
 
     def __matmul__(self, oc):
@@ -785,19 +787,19 @@ class EventArray(object):
         Perform matrix multiplication on the array with another object.
 
         This special method implements the matrix multiplication operator (@)
-        for EventArray instances. It handles matrix multiplication with different
+        for BaseArray instances. It handles matrix multiplication with different
         array types and dimensions, performing appropriate validation checks.
 
         Parameters
         ----------
         oc : array_like
             The right operand of the matrix multiplication. This object will be
-            multiplied with the current EventArray instance.
+            multiplied with the current BaseArray instance.
 
         Returns
         -------
-        ndarray or EventArray
-            The result of the matrix multiplication between this EventArray instance
+        ndarray or BaseArray
+            The result of the matrix multiplication between this BaseArray instance
             and the other object.
 
         Raises
@@ -814,50 +816,27 @@ class EventArray(object):
         - If the right operand is not a recognized array type, it delegates to the
           operand's __rmatmul__ method
         """
-        if _known_type(oc):
-            oc = _as_array(oc)
-            # Check dimensions for both operands
-            if self.ndim not in (1, 2):
-                raise MathError(
-                    f"Matrix multiplication is only supported "
-                    f"for 1D and 2D arrays. Got {self.ndim}D array."
-                )
-
-            if self.ndim == 0:
-                raise MathError("Matrix multiplication is not supported for scalar arrays.")
-
-            assert oc.ndim == 2, (f"Right operand must be a 2D array in "
-                                  f"matrix multiplication. Got {oc.ndim}D array.")
-            assert self.shape[-1] == oc.shape[0], (f"Incompatible dimensions for matrix multiplication: "
-                                                   f"{self.shape[-1]} and {oc.shape[0]}.")
-
-            # Perform the appropriate multiplication based on dimensions
-            if self.ndim == 1:
-                return event_matrix_mv(self.value, oc, )
-            else:  # self.ndim == 2
-                return event_matrix_mm(self.value, oc, )
-        else:
-            return oc.__rmatmul__(self)
+        raise NotImplementedError("Matrix multiplication is not supported for BaseArray.")
 
     def __rmatmul__(self, oc):
         """
         Perform matrix multiplication on another object with the array.
 
         This special method implements the reverse matrix multiplication operator (@)
-        when the left operand is not an EventArray. It handles the case where
-        another object is matrix-multiplied with this EventArray instance.
+        when the left operand is not an BaseArray. It handles the case where
+        another object is matrix-multiplied with this BaseArray instance.
 
         Parameters
         ----------
         oc : array_like
             The left operand of the matrix multiplication. This object will be
-            multiplied with the current EventArray instance.
+            multiplied with the current BaseArray instance.
 
         Returns
         -------
-        ndarray or EventArray
+        ndarray or BaseArray
             The result of the matrix multiplication between the other object and this
-            EventArray instance.
+            BaseArray instance.
 
         Raises
         ------
@@ -871,28 +850,7 @@ class EventArray(object):
         - For a 1D array multiplied by a 2D array, it performs a vector-matrix multiplication
         - The method checks dimensions for compatibility before performing the operation
         """
-        if _known_type(oc):
-            oc = _as_array(oc)
-            # Check dimensions for both operands
-            if self.ndim not in (1, 2):
-                raise MathError(f"Matrix multiplication is only supported "
-                                f"for 1D and 2D arrays. Got {self.ndim}D array.")
-
-            if self.ndim == 0:
-                raise MathError("Matrix multiplication is not supported for scalar arrays.")
-
-            assert oc.ndim == 2, (f"Left operand must be a 2D array in "
-                                  f"matrix multiplication. Got {oc.ndim}D array.")
-            assert oc.shape[-1] == self.shape[0], (f"Incompatible dimensions for matrix "
-                                                   f"multiplication: {oc.shape[-1]} and {self.shape[0]}.")
-
-            # Perform the appropriate multiplication based on dimensions
-            if self.ndim == 1:
-                return matrix_event_mv(oc, self.value, )
-            else:
-                return matrix_event_mm(oc, self.value, )
-        else:
-            return oc.__matmul__(self)
+        raise NotImplementedError("Matrix multiplication is not supported for BaseArray.")
 
     def __imatmul__(self, oc):
         """
@@ -904,12 +862,7 @@ class EventArray(object):
         Returns:
             The updated array.
         """
-        # a @= b
-        if _known_type(oc):
-            self.value = self.__matmul__(oc)
-        else:
-            self.value = oc.__rmatmul__(self)
-        return self
+        raise NotImplementedError("Matrix multiplication is not supported for BaseArray.")
 
     def __and__(self, oc):
         """
@@ -921,7 +874,7 @@ class EventArray(object):
         Returns:
             The result of the bitwise AND operation.
         """
-        return self.value & _as_array(oc)
+        return self.value & extract_raw_value(oc)
 
     def __rand__(self, oc):
         """
@@ -933,7 +886,7 @@ class EventArray(object):
         Returns:
             The result of the bitwise AND operation.
         """
-        return _as_array(oc) & self.value
+        return extract_raw_value(oc) & self.value
 
     def __iand__(self, oc):
         """
@@ -946,7 +899,7 @@ class EventArray(object):
             The updated array.
         """
         # a &= b
-        self.value = self.value & _as_array(oc)
+        self.value = self.value & extract_raw_value(oc)
         return self
 
     def __or__(self, oc):
@@ -959,7 +912,7 @@ class EventArray(object):
         Returns:
             The result of the bitwise OR operation.
         """
-        return self.value | _as_array(oc)
+        return self.value | extract_raw_value(oc)
 
     def __ror__(self, oc):
         """
@@ -971,7 +924,7 @@ class EventArray(object):
         Returns:
             The result of the bitwise OR operation.
         """
-        return _as_array(oc) | self.value
+        return extract_raw_value(oc) | self.value
 
     def __ior__(self, oc):
         """
@@ -984,7 +937,7 @@ class EventArray(object):
             The updated array.
         """
         # a |= b
-        self.value = self.value | _as_array(oc)
+        self.value = self.value | extract_raw_value(oc)
         return self
 
     def __xor__(self, oc):
@@ -997,7 +950,7 @@ class EventArray(object):
         Returns:
             The result of the bitwise XOR operation.
         """
-        return self.value ^ _as_array(oc)
+        return self.value ^ extract_raw_value(oc)
 
     def __rxor__(self, oc):
         """
@@ -1009,7 +962,7 @@ class EventArray(object):
         Returns:
             The result of the bitwise XOR operation.
         """
-        return _as_array(oc) ^ self.value
+        return extract_raw_value(oc) ^ self.value
 
     def __ixor__(self, oc):
         """
@@ -1022,7 +975,7 @@ class EventArray(object):
             The updated array.
         """
         # a ^= b
-        self.value = self.value ^ _as_array(oc)
+        self.value = self.value ^ extract_raw_value(oc)
         return self
 
     def __lshift__(self, oc):
@@ -1035,7 +988,7 @@ class EventArray(object):
         Returns:
             The result of the left shift operation.
         """
-        return self.value << _as_array(oc)
+        return self.value << extract_raw_value(oc)
 
     def __rlshift__(self, oc):
         """
@@ -1047,7 +1000,7 @@ class EventArray(object):
         Returns:
             The result of the left shift operation.
         """
-        return _as_array(oc) << self.value
+        return extract_raw_value(oc) << self.value
 
     def __ilshift__(self, oc):
         """
@@ -1060,7 +1013,7 @@ class EventArray(object):
             The updated array.
         """
         # a <<= b
-        self.value = self.value << _as_array(oc)
+        self.value = self.value << extract_raw_value(oc)
         return self
 
     def __rshift__(self, oc):
@@ -1073,7 +1026,7 @@ class EventArray(object):
         Returns:
             The result of the right shift operation.
         """
-        return self.value >> _as_array(oc)
+        return self.value >> extract_raw_value(oc)
 
     def __rrshift__(self, oc):
         """
@@ -1085,7 +1038,7 @@ class EventArray(object):
         Returns:
             The result of the right shift operation.
         """
-        return _as_array(oc) >> self.value
+        return extract_raw_value(oc) >> self.value
 
     def __irshift__(self, oc):
         """
@@ -1098,7 +1051,7 @@ class EventArray(object):
             The updated array.
         """
         # a >>= b
-        self.value = self.value >> _as_array(oc)
+        self.value = self.value >> extract_raw_value(oc)
         return self
 
     def __round__(self, ndigits=None):
@@ -1151,19 +1104,19 @@ class EventArray(object):
         >>> # Set the element at index 1 to 10
         >>> b = a.at[1].set(10)
         >>> print(a) # Original array is unchanged
-        EventArray(value=array([1, 2, 3, 4]), dtype=int32)
+        BaseArray(value=array([1, 2, 3, 4]), dtype=int32)
         >>> print(b) # New array with the update
-        EventArray(value=array([ 1, 10,  3,  4]), dtype=int32)
+        BaseArray(value=array([ 1, 10,  3,  4]), dtype=int32)
 
         >>> # Add 5 to the element at index 0
         >>> c = a.at[0].add(5)
         >>> print(c)
-        EventArray(value=array([6, 2, 3, 4]), dtype=int32)
+        BaseArray(value=array([6, 2, 3, 4]), dtype=int32)
 
         >>> # Set multiple elements using slicing
         >>> d = a.at[1:3].set(jnp.array([5, 6]))
         >>> print(d)
-        EventArray(value=array([1, 5, 6, 4]), dtype=int32)
+        BaseArray(value=array([1, 5, 6, 4]), dtype=int32)
         """
         return self.value.at
 
@@ -1186,7 +1139,7 @@ class EventArray(object):
 
         Returns
         -------
-        EventArray
+        BaseArray
             The instance itself, after ensuring its underlying data's computations
             are complete. The data (`self.value`) remains unchanged.
 
@@ -1541,7 +1494,7 @@ class EventArray(object):
         jax.Array or brainunit.Quantity
             A copy of the underlying `self.value` array, cast to the specified `dtype`.
             Note that this method returns the underlying JAX array or Quantity,
-            *not* a new EventArray instance.
+            *not* a new BaseArray instance.
 
         Raises
         ------
@@ -1560,7 +1513,7 @@ class EventArray(object):
         >>> x.astype(jnp.float64)
         Array([1. , 2. , 2.5], dtype=float64)
 
-        >>> # Original EventArray remains unchanged
+        >>> # Original BaseArray remains unchanged
         >>> x.dtype
         dtype('float32')
         """
@@ -1639,8 +1592,8 @@ class EventArray(object):
         ----
         At least one of max or min must be given.
         """
-        min = _as_array(min)
-        max = _as_array(max)
+        min = extract_raw_value(min)
+        max = extract_raw_value(max)
         r = self.value.clip(min=min, max=max)
         if out is None:
             return r
@@ -1673,7 +1626,7 @@ class EventArray(object):
             same number of dimensions as the input array, but the size of the axis
             along which elements were selected may be smaller.
         """
-        return self.value.compress(condition=_as_array(condition), axis=axis)
+        return self.value.compress(condition=extract_raw_value(condition), axis=axis)
 
     def conj(self):
         """
@@ -1791,8 +1744,8 @@ class EventArray(object):
         If the type of 'b' is known, it uses the dot method of the underlying array.
         Otherwise, it delegates to the right matrix multiplication method of 'b'.
         """
-        if _known_type(b):
-            return self.value.dot(_as_array(b))
+        if is_known_type(b):
+            return self.value.dot(extract_raw_value(b))
         else:
             return b.__rmatmul__(self)
 
@@ -1891,7 +1844,7 @@ class EventArray(object):
         Returns
         -------
         tuple of ndarray
-            A tuple of arrays, one for each dimension of the `EventArray`, containing
+            A tuple of arrays, one for each dimension of the `BaseArray`, containing
             the indices of the non-zero elements in that dimension.
 
         See Also
@@ -2012,7 +1965,7 @@ class EventArray(object):
         >>> from brainevent import EventArray
         >>> x = EventArray(jnp.arange(12).reshape((3, 4)))
         >>> x
-        EventArray(value=Array([[ 0,  1,  2,  3],
+        BaseArray(value=Array([[ 0,  1,  2,  3],
                [ 4,  5,  6,  7],
                [ 8,  9, 10, 11]], dtype=int32))
         >>> x.ptp()
@@ -2035,7 +1988,7 @@ class EventArray(object):
 
         The indexing works on the flattened target array. `put` is roughly
         equivalent to `a.flat[indices] = values`. This method modifies the
-        `EventArray` in-place.
+        `BaseArray` in-place.
 
         Parameters
         ----------
@@ -2045,7 +1998,7 @@ class EventArray(object):
         values : array_like
             Values to place in the array at target indices. If `values` is shorter
             than `indices`, it will be repeated as necessary. `values` will be
-            converted to the dtype of the `EventArray`.
+            converted to the dtype of the `BaseArray`.
 
         Returns
         -------
@@ -2064,18 +2017,18 @@ class EventArray(object):
         >>> from brainevent import EventArray
         >>> a = EventArray(jnp.arange(5))
         >>> a
-        EventArray(value=Array([0, 1, 2, 3, 4], dtype=int32))
+        BaseArray(value=Array([0, 1, 2, 3, 4], dtype=int32))
         >>> a.put([0, 2], [-44, -55])
         >>> a
-        EventArray(value=Array([-44,   1, -55,   3,   4], dtype=int32))
+        BaseArray(value=Array([-44,   1, -55,   3,   4], dtype=int32))
 
         >>> b = EventArray(jnp.arange(6).reshape(2, 3))
         >>> b
-        EventArray(value=Array([[0, 1, 2],
+        BaseArray(value=Array([[0, 1, 2],
                [3, 4, 5]], dtype=int32))
         >>> b.put([1, 4], [10, 40]) # Operates on flattened array
         >>> b
-        EventArray(value=Array([[ 0, 10,  2],
+        BaseArray(value=Array([[ 0, 10,  2],
                [ 3, 40,  5]], dtype=int32))
         """
         # Note: This uses __setitem__, which handles JAX's immutability correctly
@@ -2239,7 +2192,7 @@ class EventArray(object):
         >>> print(ea.shape)
         (2, 3)
         >>> print(ea)
-        EventArray(value=array([[0, 1, 2],
+        BaseArray(value=array([[0, 1, 2],
                [3, 4, 5]]), dtype=int32)
 
         # Note: Unlike np.resize, this doesn't change the total size
@@ -2283,16 +2236,16 @@ class EventArray(object):
         >>> a = np.array([0.37, 1.64, 0.5])
         >>> ea = EventArray(a)
         >>> ea.round()
-        EventArray(value=array([0., 2., 0.]), dtype=float64)
+        BaseArray(value=array([0., 2., 0.]), dtype=float64)
         >>> ea.round(decimals=1)
-        EventArray(value=array([0.4, 1.6, 0.5]), dtype=float64)
+        BaseArray(value=array([0.4, 1.6, 0.5]), dtype=float64)
         >>> ea.round(decimals=-1)
-        EventArray(value=array([0., 0., 0.]), dtype=float64)
+        BaseArray(value=array([0., 0., 0.]), dtype=float64)
 
         >>> b = np.array([12.34, 98.76])
         >>> eb = EventArray(b)
         >>> eb.round(decimals=-1)
-        EventArray(value=array([ 10., 100.]), dtype=float64)
+        BaseArray(value=array([ 10., 100.]), dtype=float64)
         """
         # Delegates directly to the underlying array's round method.
         return self.value.round(decimals=decimals)
@@ -2311,7 +2264,7 @@ class EventArray(object):
         ----------
         v : array_like
             Values to insert into the array. Can be a scalar or array-like,
-            including `EventArray`.
+            including `BaseArray`.
         side : {'left', 'right'}, optional
             If 'left', the index of the first suitable location found is given.
             If 'right', return the last such index. If there is no suitable
@@ -2346,7 +2299,8 @@ class EventArray(object):
         """
         # Ensure 'v' is unwrapped if it's an EventArray
         # Delegates to the underlying array's searchsorted method.
-        return self.value.searchsorted(v=_as_array(v), side=side, sorter=sorter)
+        v = extract_raw_value(v)
+        return self.value.searchsorted(v=u.math.asarray(v), side=side, sorter=sorter)
 
     def sort(self, axis=-1, stable=True, order=None):
         """
@@ -2387,14 +2341,14 @@ class EventArray(object):
         >>> ea = EventArray(a)
         >>> ea.sort(axis=1) # Sort each row
         >>> print(ea)
-        EventArray(value=array([[1, 4],
+        BaseArray(value=array([[1, 4],
                [1, 3]]), dtype=int32)
 
         >>> b = np.array([3, 1, 4, 1, 5, 9])
         >>> eb = EventArray(b)
         >>> eb.sort() # Sort the flattened array
         >>> print(eb)
-        EventArray(value=array([1, 1, 3, 4, 5, 9]), dtype=int32)
+        BaseArray(value=array([1, 1, 3, 4, 5, 9]), dtype=int32)
         """
         # Note: JAX arrays are immutable. `sort` returns a new array.
         # We reassign self.value to the sorted result.
@@ -2595,14 +2549,14 @@ class EventArray(object):
         >>> x = np.array([[1, 2, 3]])
         >>> ex = EventArray(x)
         >>> ex.swapaxes(0, 1)
-        EventArray(value=array([[1],
+        BaseArray(value=array([[1],
                [2],
                [3]]), dtype=int32)
 
         >>> y = np.array([[[0, 1], [2, 3]], [[4, 5], [6, 7]]])
         >>> ey = EventArray(y)
         >>> ey.swapaxes(0, 2)
-        EventArray(value=array([[[0, 4],
+        BaseArray(value=array([[[0, 4],
                 [2, 6]],
         <BLANKLINE>
                [[1, 5],
@@ -2632,8 +2586,8 @@ class EventArray(object):
 
         Returns
         -------
-        sub_arrays : list of EventArray
-            A list of sub-arrays. Each sub-array is an EventArray wrapping
+        sub_arrays : list of ndarry
+            A list of sub-arrays. Each sub-array is an BaseArray wrapping
             a view into the original array's data.
 
         Raises
@@ -2649,19 +2603,20 @@ class EventArray(object):
         >>> x = np.arange(9.0)
         >>> ex = EventArray(x)
         >>> ex.split(3)
-        [EventArray(value=array([0., 1., 2.]), dtype=float64), EventArray(value=array([3., 4., 5.]), dtype=float64), EventArray(value=array([6., 7., 8.]), dtype=float64)]
+        [BaseArray(value=array([0., 1., 2.]), dtype=float64), BaseArray(value=array([3., 4., 5.]), dtype=float64), BaseArray(value=array([6., 7., 8.]), dtype=float64)]
         >>> ex.split([3, 5, 6, 10])
-        [EventArray(value=array([0., 1., 2.]), dtype=float64), EventArray(value=array([3., 4.]), dtype=float64), EventArray(value=array([5.]), dtype=float64), EventArray(value=array([6., 7., 8.]), dtype=float64), EventArray(value=array([], dtype=float64), dtype=float64)]
+        [BaseArray(value=array([0., 1., 2.]), dtype=float64), BaseArray(value=array([3., 4.]), dtype=float64), BaseArray(value=array([5.]), dtype=float64), BaseArray(value=array([6., 7., 8.]), dtype=float64), BaseArray(value=array([], dtype=float64), dtype=float64)]
 
         >>> y = np.arange(8.0).reshape(2, 4)
         >>> ey = EventArray(y)
         >>> ey.split(2, axis=1)
-        [EventArray(value=array([[0., 1.],
-               [4., 5.]]), dtype=float64), EventArray(value=array([[2., 3.],
+        [array([[0., 1.],
+               [4., 5.]]), dtype=float64), 
+         array([[2., 3.],
                [6., 7.]]), dtype=float64)]
         """
         # Wrap results in EventArray
-        return [EventArray(a) for a in u.math.split(self.value, indices_or_sections, axis=axis)]
+        return [a for a in u.math.split(self.value, indices_or_sections, axis=axis)]
 
     def take(self, indices, axis=None, mode=None):
         """
@@ -2672,7 +2627,7 @@ class EventArray(object):
         Parameters
         ----------
         indices : array_like
-            The indices of the values to extract. Also allows EventArray instances.
+            The indices of the values to extract. Also allows BaseArray instances.
         axis : int, optional
             The axis over which to select values. By default, the flattened
             input array is used.
@@ -2700,13 +2655,13 @@ class EventArray(object):
         >>> b = np.array([[1, 2], [3, 4]])
         >>> eb = EventArray(b)
         >>> eb.take([0, 1], axis=1)
-        EventArray(value=array([[1, 2],
+        BaseArray(value=array([[1, 2],
                [3, 4]]), dtype=int32)
         >>> eb.take([0, 1, 2], axis=1, mode='wrap') # Wrap around indices
-        EventArray(value=array([[1, 2, 1],
+        BaseArray(value=array([[1, 2, 1],
                [3, 4, 3]]), dtype=int32)
         """
-        return self.value.take(indices=_as_array(indices), axis=axis, mode=mode)
+        return self.value.take(indices=extract_raw_value(indices), axis=axis, mode=mode)
 
     def tobytes(self, order='C'):
         """
@@ -2853,27 +2808,27 @@ class EventArray(object):
         >>> a = np.array([[1, 2], [3, 4]])
         >>> ea = EventArray(a)
         >>> ea.transpose()
-        EventArray(value=array([[1, 3],
+        BaseArray(value=array([[1, 3],
                [2, 4]]), dtype=int32)
         >>> ea.transpose((1, 0))
-        EventArray(value=array([[1, 3],
+        BaseArray(value=array([[1, 3],
                [2, 4]]), dtype=int32)
 
         >>> b = np.array([1, 2, 3, 4])
         >>> eb = EventArray(b)
         >>> eb.transpose() # 1-D array is unaffected
-        EventArray(value=array([1, 2, 3, 4]), dtype=int32)
+        BaseArray(value=array([1, 2, 3, 4]), dtype=int32)
 
         >>> c = np.arange(16).reshape((2, 2, 4))
         >>> ec = EventArray(c)
         >>> ec.transpose((1, 0, 2))
-        EventArray(value=array([[[ 0,  1,  2,  3],
+        BaseArray(value=array([[[ 0,  1,  2,  3],
                 [ 8,  9, 10, 11]],
         <BLANKLINE>
                [[ 4,  5,  6,  7],
                 [12, 13, 14, 15]]]), dtype=int32)
         >>> ec.transpose(2, 0, 1)
-        EventArray(value=array([[[ 0,  4],
+        BaseArray(value=array([[[ 0,  4],
                 [ 8, 12]],
         <BLANKLINE>
                [[ 1,  5],
@@ -2906,34 +2861,34 @@ class EventArray(object):
         Examples
         --------
         >>> import numpy as np
-        >>> from brainevent import EventArray, _as_array
+        >>> from brainevent import EventArray
         >>> import brainunit as u # Assuming brainunit is imported as u
         >>> a = np.array([0, 1, 2])
         >>> ea = EventArray(a)
         >>> ea.tile(2)
-        EventArray(value=array([0, 1, 2, 0, 1, 2]), dtype=int32)
+        BaseArray(value=array([0, 1, 2, 0, 1, 2]), dtype=int32)
         >>> ea.tile((2, 2))
-        EventArray(value=array([[0, 1, 2, 0, 1, 2],
+        BaseArray(value=array([[0, 1, 2, 0, 1, 2],
                [0, 1, 2, 0, 1, 2]]), dtype=int32)
         >>> ea.tile((2, 1, 2))
-        EventArray(value=array([[[0, 1, 2, 0, 1, 2]],
+        BaseArray(value=array([[[0, 1, 2, 0, 1, 2]],
         <BLANKLINE>
                [[0, 1, 2, 0, 1, 2]]]), dtype=int32)
 
         >>> b = np.array([[1, 2], [3, 4]])
         >>> eb = EventArray(b)
         >>> eb.tile(2)
-        EventArray(value=array([[1, 2, 1, 2],
+        BaseArray(value=array([[1, 2, 1, 2],
                [3, 4, 3, 4]]), dtype=int32)
         >>> eb.tile((2, 1))
-        EventArray(value=array([[1, 2],
+        BaseArray(value=array([[1, 2],
                [3, 4],
                [1, 2],
                [3, 4]]), dtype=int32)
         """
         # Use u.math.tile to support both numpy and jax backends if needed
         # Ensure _as_array is available or defined in the scope
-        return u.math.tile(self.value, _as_array(reps))
+        return u.math.tile(self.value, extract_raw_value(reps))
 
     def var(self, axis=None, dtype=None, ddof=0, keepdims=False):
         """
@@ -3033,10 +2988,10 @@ class EventArray(object):
         >>> a = np.arange(6)
         >>> ea = EventArray(a)
         >>> ea.view(2, 3)
-        EventArray(value=array([[0, 1, 2],
+        BaseArray(value=array([[0, 1, 2],
                [3, 4, 5]]), dtype=int32)
         >>> ea.view((6,))
-        EventArray(value=array([0, 1, 2, 3, 4, 5]), dtype=int32)
+        BaseArray(value=array([0, 1, 2, 3, 4, 5]), dtype=int32)
 
         # View with a new dtype
         >>> x = np.array([(1, 2), (3, 4)], dtype=[('a', np.int8), ('b', np.int8)])
@@ -3048,11 +3003,11 @@ class EventArray(object):
         ...     ex.view(dtype=np.float32) # This might fail if sizes don't match
         ... except TypeError as e:
         ...     print(f"TypeError: {e}") # JAX might raise TypeError
-        EventArray(value=array([[-1.5881868e+22,  1.1028099e-38]], dtype=float32)
+        BaseArray(value=array([[-1.5881868e+22,  1.1028099e-38]], dtype=float32)
 
         >>> # View as a simple int16 array
         >>> ex.view(dtype=np.int16)
-        EventArray(value=array([[1, 2],
+        BaseArray(value=array([[1, 2],
                [3, 4]], dtype=int16)
         """
         if not args:
@@ -3194,19 +3149,19 @@ class EventArray(object):
         """
         return u.math.expand_dims(self.value, axis)
 
-    def expand_as(self, array: Union['EventArray', ArrayLike]) -> 'EventArray':
+    def expand_as(self, array: Union['BaseArray', ArrayLike]) -> 'BaseArray':
         """
         Expand this array to match the shape of another array through broadcasting.
 
         Parameters
         ----------
-        array : EventArray or ArrayLike
+        array : BaseArray or ArrayLike
             The array whose shape will be used as the target shape.
 
         Returns
         -------
         EventArray
-            A new EventArray with the expanded shape. This is a view of the original
+            A new LowBitArray with the expanded shape. This is a view of the original
             data when possible.
 
         Examples
@@ -3230,9 +3185,9 @@ class EventArray(object):
         --------
         numpy.broadcast_to : The underlying NumPy function
         """
-        target_array = _as_array(array)
+        target_array = extract_raw_value(array)
         result = u.math.broadcast_to(self.value, u.math.shape(target_array))
-        return EventArray(result)  # Wrap in EventArray to return correct type
+        return type(self)(result)  # Wrap in BaseArray to return correct type
 
     def pow(self, index: Union[int, float, ArrayLike]) -> Union[jax.Array, u.Quantity]:
         """
@@ -3252,25 +3207,25 @@ class EventArray(object):
         --------
         >>> a = EventArray([1, 2, 3, 4])
         >>> a.pow(2)
-        EventArray([1, 4, 9, 16])
+        BaseArray([1, 4, 9, 16])
         >>> a.pow([2, 3, 2, 3])
-        EventArray([1, 8, 9, 64])
+        BaseArray([1, 8, 9, 64])
 
         See Also
         --------
         __pow__ : The special method that implements the ** operator
         """
-        return self.value ** _as_array(index)
+        return self.value ** extract_raw_value(index)
 
     def addr(
         self,
-        vec1: Union['EventArray', ArrayLike],
-        vec2: Union['EventArray', ArrayLike],
+        vec1: Union['BaseArray', ArrayLike],
+        vec2: Union['BaseArray', ArrayLike],
         *,
         beta: float = 1.0,
         alpha: float = 1.0,
-        out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union['EventArray', u.Quantity, jax.Array, None]:
+        out: Optional[Union['BaseArray', ArrayLike]] = None
+    ) -> Union['BaseArray', u.Quantity, jax.Array, None]:
         r"""
         Perform the outer product of vectors and add to this matrix.
 
@@ -3281,15 +3236,15 @@ class EventArray(object):
 
         Parameters
         ----------
-        vec1 : EventArray or ArrayLike
+        vec1 : BaseArray or ArrayLike
             The first vector of the outer product.
-        vec2 : EventArray or ArrayLike
+        vec2 : BaseArray or ArrayLike
             The second vector of the outer product.
         beta : float, default=1.0
             The multiplier for this array.
         alpha : float, default=1.0
             The multiplier for the outer product result.
-        out : EventArray or ArrayLike, optional
+        out : LowBitArray or ArrayLike, optional
             The output array where the result will be stored. If None, a new array is created.
 
         Returns
@@ -3303,7 +3258,7 @@ class EventArray(object):
         >>> x = EventArray([1, 2])
         >>> y = EventArray([3, 4])
         >>> a.addr(x, y, alpha=1.0, beta=1.0)
-        EventArray([[ 4, 9],
+        LowBitArray([[ 4, 9],
                     [ 9, 17]])
 
         Notes
@@ -3316,11 +3271,11 @@ class EventArray(object):
         addr_ : In-place version of this method
         outer : Compute just the outer product without adding to this array
         """
-        vec1 = _as_array(vec1)
-        vec2 = _as_array(vec2)
+        vec1 = extract_raw_value(vec1)
+        vec2 = extract_raw_value(vec2)
         r = alpha * u.math.outer(vec1, vec2) + beta * self.value
         if out is None:
-            return EventArray(r)  # Return as EventArray for consistent API
+            return type(self)(r)  # Return as BaseArray for consistent API
         else:
             _check_out(out)
             out.value = r
@@ -3328,12 +3283,12 @@ class EventArray(object):
 
     def addr_(
         self,
-        vec1: Union['EventArray', ArrayLike],
-        vec2: Union['EventArray', ArrayLike],
+        vec1: Union['BaseArray', ArrayLike],
+        vec2: Union['BaseArray', ArrayLike],
         *,
         beta: float = 1.0,
         alpha: float = 1.0
-    ) -> 'EventArray':
+    ) -> 'BaseArray':
         r"""
         In-place version of addr that modifies the array.
 
@@ -3343,9 +3298,9 @@ class EventArray(object):
 
         Parameters
         ----------
-        vec1 : EventArray or ArrayLike
+        vec1 : BaseArray or ArrayLike
             The first vector of the outer product.
-        vec2 : EventArray or ArrayLike
+        vec2 : BaseArray or ArrayLike
             The second vector of the outer product.
         beta : float, default=1.0
             The multiplier for this array.
@@ -3363,28 +3318,28 @@ class EventArray(object):
         >>> x = EventArray([1, 2])
         >>> y = EventArray([3, 4])
         >>> a.addr_(x, y, alpha=1.0, beta=1.0)  # Modifies a in-place
-        EventArray([[ 4, 9],
+        LowBitArray([[ 4, 9],
                     [ 9, 17]])
 
         See Also
         --------
         addr : Non-in-place version that returns a new array
         """
-        vec1 = _as_array(vec1)
-        vec2 = _as_array(vec2)
+        vec1 = extract_raw_value(vec1)
+        vec2 = extract_raw_value(vec2)
         self.value = alpha * u.math.outer(vec1, vec2) + beta * self.value
         return self
 
     def outer(
         self,
-        other: Union['EventArray', ArrayLike]
-    ) -> 'EventArray':
+        other: Union['BaseArray', ArrayLike]
+    ) -> 'BaseArray':
         """
         Compute the outer product with another array.
 
         Parameters
         ----------
-        other : EventArray or ArrayLike
+        other : BaseArray or ArrayLike
             The array to compute the outer product with.
 
         Returns
@@ -3397,7 +3352,7 @@ class EventArray(object):
         >>> a = EventArray([1, 2, 3])
         >>> b = EventArray([4, 5])
         >>> a.outer(b)
-        EventArray([[ 4,  5],
+        LowBitArray([[ 4,  5],
                     [ 8, 10],
                     [12, 15]])
 
@@ -3411,18 +3366,18 @@ class EventArray(object):
         addr : Compute outer product and add to an existing array
         numpy.outer : Similar NumPy function
         """
-        other = _as_array(other)
-        return EventArray(u.math.outer(self.value, other))
+        other = extract_raw_value(other)
+        return type(self)(u.math.outer(self.value, other))
 
     def abs(
-        self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union['EventArray', u.Quantity, jax.Array, None]:
+        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
+    ) -> Union['BaseArray', u.Quantity, jax.Array, None]:
         """
         Calculate the absolute value element-wise.
 
         Parameters
         ----------
-        out : EventArray or ArrayLike, optional
+        out : BaseArray or ArrayLike, optional
             Array to store the output. If provided, it must have the correct shape.
 
         Returns
@@ -3435,13 +3390,13 @@ class EventArray(object):
         --------
         >>> a = EventArray([-1, -2, 3])
         >>> a.abs()
-        EventArray([1, 2, 3])
+        BaseArray([1, 2, 3])
 
         >>> # Using out parameter
         >>> result = EventArray(np.zeros(3))
         >>> a.abs(out=result)
         >>> result
-        EventArray([1, 2, 3])
+        BaseArray([1, 2, 3])
 
         See Also
         --------
@@ -3451,13 +3406,13 @@ class EventArray(object):
         """
         r = u.math.abs(self.value)
         if out is None:
-            return EventArray(r)
+            return type(self)(r)
         else:
             _check_out(out)
             out.value = r
             return None
 
-    def abs_(self) -> 'EventArray':
+    def abs_(self) -> 'BaseArray':
         """
         Calculate the absolute value element-wise in-place.
 
@@ -3472,7 +3427,7 @@ class EventArray(object):
         --------
         >>> a = EventArray([-1, -2, 3])
         >>> a.abs_()  # Modifies a in-place
-        EventArray([1, 2, 3])
+        BaseArray([1, 2, 3])
 
         See Also
         --------
@@ -3482,13 +3437,13 @@ class EventArray(object):
         self.value = u.math.abs(self.value)
         return self
 
-    def add_(self, value: Union['EventArray', ArrayLike]) -> 'EventArray':
+    def add_(self, value: Union['BaseArray', ArrayLike]) -> 'BaseArray':
         """
         Add a scalar or array to this array, in-place.
 
         Parameters
         ----------
-        value : EventArray or ArrayLike
+        value : BaseArray or ArrayLike
             The value to add to this array.
 
         Returns
@@ -3500,22 +3455,22 @@ class EventArray(object):
         --------
         >>> a = EventArray([1, 2, 3])
         >>> a.add_(10)  # Modifies a in-place
-        EventArray([11, 12, 13])
+        LowBitArray([11, 12, 13])
 
         >>> b = EventArray([1, 2, 3])
         >>> b.add_(EventArray([10, 20, 30]))  # Modifies b in-place
-        EventArray([11, 22, 33])
+        LowBitArray([11, 22, 33])
 
         See Also
         --------
         __iadd__ : The special method that implements the += operator
         """
-        self.value += _as_array(value)
+        self.value += extract_raw_value(value)
         return self
 
     def absolute(
-        self, *, out: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> Union['EventArray', jax.Array, u.Quantity]:
+        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
+    ) -> Union['BaseArray', jax.Array, u.Quantity]:
         """
         Calculate the absolute value element-wise.
 
@@ -3523,12 +3478,12 @@ class EventArray(object):
 
         Parameters
         ----------
-        out : EventArray or ArrayLike, optional
+        out : LowBitArray or ArrayLike, optional
             Array to store the output. If provided, it must have the correct shape.
 
         Returns
         -------
-        Union[EventArray, jax.Array, u.Quantity]
+        Union[BaseArray, jax.Array, u.Quantity]
             A new array with the absolute value of each element.
             If out is provided, returns None.
 
@@ -3536,7 +3491,7 @@ class EventArray(object):
         --------
         >>> a = EventArray([-1, -2, 3])
         >>> a.absolute()
-        EventArray([1, 2, 3])
+        LowBitArray([1, 2, 3])
 
         See Also
         --------
@@ -3545,7 +3500,7 @@ class EventArray(object):
         """
         return self.abs(out=out)
 
-    def absolute_(self) -> 'EventArray':
+    def absolute_(self) -> 'BaseArray':
         """
         Calculate the absolute value element-wise in-place.
 
@@ -3553,14 +3508,14 @@ class EventArray(object):
 
         Returns
         -------
-        EventArray
+        BaseArray
             Self, after taking the absolute value of each element.
 
         Examples
         --------
         >>> a = EventArray([-1, -2, 3])
         >>> a.absolute_()  # Modifies a in-place
-        EventArray([1, 2, 3])
+        LowBitArray([1, 2, 3])
 
         See Also
         --------
@@ -3569,13 +3524,13 @@ class EventArray(object):
         """
         return self.abs_()
 
-    def mul(self, value: Union['EventArray', ArrayLike]) -> Union[jax.Array, u.Quantity]:
+    def mul(self, value: Union['BaseArray', ArrayLike]) -> Union[jax.Array, u.Quantity]:
         """
         Multiply the array by a scalar or array element-wise.
 
         Parameters
         ----------
-        value : EventArray or ArrayLike
+        value : BaseArray or ArrayLike
             The value to multiply with this array.
 
         Returns
@@ -3587,10 +3542,10 @@ class EventArray(object):
         --------
         >>> a = EventArray([1, 2, 3])
         >>> a.mul(10)
-        EventArray([10, 20, 30])
+        LowBitArray([10, 20, 30])
 
         >>> a.mul(EventArray([2, 3, 4]))
-        EventArray([2, 6, 12])
+        LowBitArray([2, 6, 12])
 
         See Also
         --------
@@ -3598,27 +3553,27 @@ class EventArray(object):
         multiply : Alias for this function
         __mul__ : The special method that implements the * operator
         """
-        return self.value * _as_array(value)
+        return self.value * extract_raw_value(value)
 
-    def mul_(self, value: Union['EventArray', ArrayLike]) -> 'EventArray':
+    def mul_(self, value: Union['BaseArray', ArrayLike]) -> 'BaseArray':
         """
         Multiply the array by a scalar or array element-wise, in-place.
 
         Parameters
         ----------
-        value : EventArray or ArrayLike
+        value : BaseArray or ArrayLike
             The value to multiply with this array.
 
         Returns
         -------
-        EventArray
+        BaseArray
             Self, after the multiplication has been performed.
 
         Examples
         --------
         >>> a = EventArray([1, 2, 3])
         >>> a.mul_(10)  # Modifies a in-place
-        EventArray([10, 20, 30])
+        LowBitArray([10, 20, 30])
 
         See Also
         --------
@@ -3626,10 +3581,10 @@ class EventArray(object):
         multiply_ : Alias for this function
         __imul__ : The special method that implements the *= operator
         """
-        self.value *= _as_array(value)
+        self.value *= extract_raw_value(value)
         return self
 
-    def multiply(self, value: Union['EventArray', ArrayLike]) -> Union[jax.Array, u.Quantity]:
+    def multiply(self, value: Union['BaseArray', ArrayLike]) -> Union[jax.Array, u.Quantity]:
         """
         Multiply the array by a scalar or array element-wise.
 
@@ -3637,7 +3592,7 @@ class EventArray(object):
 
         Parameters
         ----------
-        value : EventArray or ArrayLike
+        value : BaseArray or ArrayLike
             The value to multiply with this array.
 
         Returns
@@ -3649,16 +3604,16 @@ class EventArray(object):
         --------
         >>> a = EventArray([1, 2, 3])
         >>> a.multiply(10)
-        EventArray([10, 20, 30])
+        LowBitArray([10, 20, 30])
 
         See Also
         --------
         mul : Equivalent function
         multiply_ : In-place version
         """
-        return self.value * _as_array(value)
+        return self.value * extract_raw_value(value)
 
-    def multiply_(self, value: Union['EventArray', ArrayLike]) -> 'EventArray':
+    def multiply_(self, value: Union['BaseArray', ArrayLike]) -> 'BaseArray':
         """
         Multiply the array by a scalar or array element-wise, in-place.
 
@@ -3666,37 +3621,37 @@ class EventArray(object):
 
         Parameters
         ----------
-        value : EventArray or ArrayLike
+        value : BaseArray or ArrayLike
             The value to multiply with this array.
 
         Returns
         -------
-        EventArray
+        BaseArray
             Self, after the multiplication has been performed.
 
         Examples
         --------
         >>> a = EventArray([1, 2, 3])
         >>> a.multiply_(10)  # Modifies a in-place
-        EventArray([10, 20, 30])
+        LowBitArray([10, 20, 30])
 
         See Also
         --------
         multiply : Non-in-place version
         mul_ : Equivalent function
         """
-        self.value *= _as_array(value)
+        self.value *= extract_raw_value(value)
         return self
 
     def sin(
-        self, *, out: Optional[Union['EventArray', ArrayLike]] = None
+        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the sine of the array elements.
 
         Parameters
         ----------
-        out : EventArray or ArrayLike, optional
+        out : BaseArray or ArrayLike, optional
             Output array for the result. If provided, must have the same shape as the output.
 
         Returns
@@ -3724,7 +3679,7 @@ class EventArray(object):
 
         Returns
         -------
-        EventArray
+        BaseArray
             The modified array with sine values.
 
         See Also
@@ -3743,7 +3698,7 @@ class EventArray(object):
 
         Returns
         -------
-        EventArray
+        BaseArray
             The modified array with cosine values.
 
         See Also
@@ -3755,14 +3710,14 @@ class EventArray(object):
         return self
 
     def cos(
-        self, *, out: Optional[Union['EventArray', ArrayLike]] = None
+        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the cosine of the array elements.
 
         Parameters
         ----------
-        out : EventArray or ArrayLike, optional
+        out : BaseArray or ArrayLike, optional
             Output array for the result. If provided, must have the same shape as the output.
 
         Returns
@@ -3790,7 +3745,7 @@ class EventArray(object):
 
         Returns
         -------
-        EventArray
+        BaseArray
             The modified array with tangent values.
 
         See Also
@@ -3802,14 +3757,14 @@ class EventArray(object):
         return self
 
     def tan(
-        self, *, out: Optional[Union['EventArray', ArrayLike]] = None
+        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the tangent of the array elements.
 
         Parameters
         ----------
-        out : EventArray or ArrayLike, optional
+        out : BaseArray or ArrayLike, optional
             Output array for the result. If provided, must have the same shape as the output.
 
         Returns
@@ -3837,7 +3792,7 @@ class EventArray(object):
 
         Returns
         -------
-        EventArray
+        BaseArray
             The modified array with hyperbolic sine values.
 
         See Also
@@ -3849,14 +3804,14 @@ class EventArray(object):
         return self
 
     def sinh(
-        self, *, out: Optional[Union['EventArray', ArrayLike]] = None
+        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the hyperbolic sine of the array elements.
 
         Parameters
         ----------
-        out : EventArray or ArrayLike, optional
+        out : BaseArray or ArrayLike, optional
             Output array for the result. If provided, must have the same shape as the output.
 
         Returns
@@ -3884,7 +3839,7 @@ class EventArray(object):
 
         Returns
         -------
-        EventArray
+        BaseArray
             The modified array with hyperbolic cosine values.
 
         See Also
@@ -3896,14 +3851,14 @@ class EventArray(object):
         return self
 
     def cosh(
-        self, *, out: Optional[Union['EventArray', ArrayLike]] = None
+        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the hyperbolic cosine of the array elements.
 
         Parameters
         ----------
-        out : EventArray or ArrayLike, optional
+        out : BaseArray or ArrayLike, optional
             Output array for the result. If provided, must have the same shape as the output.
 
         Returns
@@ -3931,7 +3886,7 @@ class EventArray(object):
 
         Returns
         -------
-        EventArray
+        BaseArray
             The modified array with hyperbolic tangent values.
 
         See Also
@@ -3943,14 +3898,14 @@ class EventArray(object):
         return self
 
     def tanh(
-        self, *, out: Optional[Union['EventArray', ArrayLike]] = None
+        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the hyperbolic tangent of the array elements.
 
         Parameters
         ----------
-        out : EventArray or ArrayLike, optional
+        out : BaseArray or ArrayLike, optional
             Output array for the result. If provided, must have the same shape as the output.
 
         Returns
@@ -3979,7 +3934,7 @@ class EventArray(object):
 
         Returns
         -------
-        EventArray
+        BaseArray
             The modified array with inverse sine values.
 
         See Also
@@ -3991,14 +3946,14 @@ class EventArray(object):
         return self
 
     def arcsin(
-        self, *, out: Optional[Union['EventArray', ArrayLike]] = None
+        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the inverse sine of the array elements.
 
         Parameters
         ----------
-        out : EventArray or ArrayLike, optional
+        out : BaseArray or ArrayLike, optional
             Output array for the result. If provided, must have the same shape as the output.
 
         Returns
@@ -4028,7 +3983,7 @@ class EventArray(object):
 
         Returns
         -------
-        EventArray
+        BaseArray
             The modified array with inverse cosine values.
 
         See Also
@@ -4040,14 +3995,14 @@ class EventArray(object):
         return self
 
     def arccos(
-        self, *, out: Optional[Union['EventArray', ArrayLike]] = None
+        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the inverse cosine of the array elements.
 
         Parameters
         ----------
-        out : EventArray or ArrayLike, optional
+        out : BaseArray or ArrayLike, optional
             Output array for the result. If provided, must have the same shape as the output.
 
         Returns
@@ -4076,7 +4031,7 @@ class EventArray(object):
 
         Returns
         -------
-        EventArray
+        BaseArray
             The modified array with inverse tangent values.
 
         See Also
@@ -4088,14 +4043,14 @@ class EventArray(object):
         return self
 
     def arctan(
-        self, *, out: Optional[Union['EventArray', ArrayLike]] = None
+        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the inverse tangent of the array elements.
 
         Parameters
         ----------
-        out : EventArray or ArrayLike, optional
+        out : BaseArray or ArrayLike, optional
             Output array for the result. If provided, must have the same shape as the output.
 
         Returns
@@ -4118,10 +4073,10 @@ class EventArray(object):
 
     def clamp(
         self,
-        min_value: Optional[Union['EventArray', ArrayLike]] = None,
-        max_value: Optional[Union['EventArray', ArrayLike]] = None,
+        min_value: Optional[Union['BaseArray', ArrayLike]] = None,
+        max_value: Optional[Union['BaseArray', ArrayLike]] = None,
         *,
-        out: Optional[Union['EventArray', ArrayLike]] = None
+        out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
         Clamp (limit) the values in the array between min_value and max_value.
@@ -4133,11 +4088,11 @@ class EventArray(object):
 
         Parameters
         ----------
-        min_value : EventArray or ArrayLike, optional
+        min_value : BaseArray or ArrayLike, optional
             Minimum value. If None, clipping is not performed on lower bound.
-        max_value : EventArray or ArrayLike, optional
+        max_value : BaseArray or ArrayLike, optional
             Maximum value. If None, clipping is not performed on upper bound.
-        out : EventArray or ArrayLike, optional
+        out : BaseArray or ArrayLike, optional
             The output array. If provided, it must have a shape that the inputs
             broadcast to. If not provided or None, a freshly-allocated array is
             returned.
@@ -4163,8 +4118,8 @@ class EventArray(object):
         >>> a.clamp(None, 7)  # only clip from above
         array([0, 1, 2, 3, 4, 5, 6, 7, 7, 7])
         """
-        min_value = _as_array(min_value)
-        max_value = _as_array(max_value)
+        min_value = extract_raw_value(min_value)
+        max_value = extract_raw_value(max_value)
         r = u.math.clip(self.value, min_value, max_value)
         if out is None:
             return r
@@ -4175,9 +4130,9 @@ class EventArray(object):
 
     def clamp_(
         self,
-        min_value: Optional[Union['EventArray', ArrayLike]] = None,
-        max_value: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> 'EventArray':
+        min_value: Optional[Union['BaseArray', ArrayLike]] = None,
+        max_value: Optional[Union['BaseArray', ArrayLike]] = None
+    ) -> 'BaseArray':
         """
         In-place version of clamp().
 
@@ -4186,14 +4141,14 @@ class EventArray(object):
 
         Parameters
         ----------
-        min_value : EventArray or ArrayLike, optional
+        min_value : LowBitArray or ArrayLike, optional
             Minimum value. If None, clipping is not performed on lower bound.
-        max_value : EventArray or ArrayLike, optional
+        max_value : LowBitArray or ArrayLike, optional
             Maximum value. If None, clipping is not performed on upper bound.
 
         Returns
         -------
-        EventArray
+        BaseArray
             The modified array with clamped values (self).
 
         See Also
@@ -4207,16 +4162,16 @@ class EventArray(object):
         >>> a = EventArray(jnp.arange(10))
         >>> a.clamp_(3, 7)  # modifies a in-place
         >>> a  # values are clamped between 3 and 7
-        EventArray(value=array([3, 3, 3, 3, 4, 5, 6, 7, 7, 7]))
+        LowBitArray(value=array([3, 3, 3, 3, 4, 5, 6, 7, 7, 7]))
         """
         self.clamp(min_value, max_value, out=self)
         return self
 
     def clip_(
         self,
-        min_value: Optional[Union['EventArray', ArrayLike]] = None,
-        max_value: Optional[Union['EventArray', ArrayLike]] = None
-    ) -> 'EventArray':
+        min_value: Optional[Union['BaseArray', ArrayLike]] = None,
+        max_value: Optional[Union['BaseArray', ArrayLike]] = None
+    ) -> 'BaseArray':
         """
         Alias for clamp_().
 
@@ -4225,14 +4180,14 @@ class EventArray(object):
 
         Parameters
         ----------
-        min_value : EventArray or ArrayLike, optional
+        min_value : LowBitArray or ArrayLike, optional
             Minimum value. If None, clipping is not performed on lower bound.
-        max_value : EventArray or ArrayLike, optional
+        max_value : LowBitArray or ArrayLike, optional
             Maximum value. If None, clipping is not performed on upper bound.
 
         Returns
         -------
-        EventArray
+        BaseArray
             The modified array with clipped values (self).
 
         See Also
@@ -4248,16 +4203,16 @@ class EventArray(object):
         self.clamp_(min_value, max_value)
         return self
 
-    def clone(self) -> 'EventArray':
+    def clone(self) -> 'BaseArray':
         """
         Return a copy of the array.
 
-        This method creates a new EventArray with a copy of the data from the original array.
+        This method creates a new LowBitArray with a copy of the data from the original array.
 
         Returns
         -------
-        EventArray
-            A new EventArray containing a copy of the values from this array.
+        BaseArray
+            A new LowBitArray containing a copy of the values from this array.
 
         See Also
         --------
@@ -4270,24 +4225,24 @@ class EventArray(object):
         >>> b = a.clone()
         >>> b.value[0] = 5
         >>> a  # original array is unchanged
-        EventArray(value=array([1, 2, 3]))
+        LowBitArray(value=array([1, 2, 3]))
         >>> b  # cloned array is modified
-        EventArray(value=array([5, 2, 3]))
+        LowBitArray(value=array([5, 2, 3]))
         """
         return type(self)(self.value.copy())
 
-    def copy_(self, src: Union['EventArray', ArrayLike]) -> 'EventArray':
+    def copy_(self, src: Union['BaseArray', ArrayLike]) -> 'BaseArray':
         """
         Copy values from src into this array, in-place.
 
         Parameters
         ----------
-        src : EventArray or ArrayLike
+        src : BaseArray or ArrayLike
             The source array to copy values from.
 
         Returns
         -------
-        EventArray
+        BaseArray
             The modified array (self).
 
         See Also
@@ -4301,20 +4256,20 @@ class EventArray(object):
         >>> b = EventArray(jnp.array([4, 5, 6]))
         >>> a.copy_(b)
         >>> a  # values copied from b
-        EventArray(value=array([4, 5, 6]))
+        LowBitArray(value=array([4, 5, 6]))
         """
-        # Ensure we're correctly handling both EventArray and regular array inputs
-        src_value = src.value if isinstance(src, EventArray) else src
+        # Ensure we're correctly handling both BaseArray and regular array inputs
+        src_value = src.value if isinstance(src, BaseArray) else src
         self.value = src_value.copy()
         return self
 
     def cov_with(
         self,
-        y: Optional[Union['EventArray', ArrayLike]] = None,
+        y: Optional[Union['BaseArray', ArrayLike]] = None,
         rowvar: bool = True,
         bias: bool = False,
-        fweights: Optional[Union['EventArray', ArrayLike]] = None,
-        aweights: Optional[Union['EventArray', ArrayLike]] = None
+        fweights: Optional[Union['BaseArray', ArrayLike]] = None,
+        aweights: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[jax.Array, u.Quantity]:
         """
         Calculate the covariance matrix between this array and another.
@@ -4323,7 +4278,7 @@ class EventArray(object):
 
         Parameters
         ----------
-        y : EventArray or ArrayLike, optional
+        y : BaseArray or ArrayLike, optional
             An array containing multiple variables and observations.
             If not specified, the covariance is calculated for self.
         rowvar : bool, optional, default=True
@@ -4335,10 +4290,10 @@ class EventArray(object):
             If False, normalization is by (N - 1), where N is the number of
             observations given (unbiased estimate). If True, then
             normalization is by N.
-        fweights : EventArray or ArrayLike, optional
+        fweights : BaseArray or ArrayLike, optional
             Array of integer frequency weights. The number of times each
             observation vector should be repeated.
-        aweights : EventArray or ArrayLike, optional
+        aweights : BaseArray or ArrayLike, optional
             Array of observation vector weights. These relative weights are
             typically large for observations considered "important" and smaller
             for observations considered less "important".
@@ -4365,9 +4320,9 @@ class EventArray(object):
         array([[ 1.5, -1.5],
                [-1.5,  1.5]])
         """
-        y = _as_array(y)
-        fweights = _as_array(fweights)
-        aweights = _as_array(aweights)
+        y = extract_raw_value(y)
+        fweights = extract_raw_value(fweights)
+        aweights = extract_raw_value(aweights)
         r = u.math.cov(self.value, y, rowvar, bias, fweights, aweights)
         return r
 
@@ -4450,7 +4405,7 @@ class EventArray(object):
         """
         Flatten the object for JAX pytree functionality.
 
-        This method is used by JAX's tree_util to support EventArray instances
+        This method is used by JAX's tree_util to support BaseArray instances
         as part of JAX transformations. It separates the object into dynamic data
         (the array value) and static metadata (None in this case).
 
@@ -4459,7 +4414,7 @@ class EventArray(object):
         tuple
             A tuple containing two elements:
             - A tuple of dynamic values (just the array value in this case)
-            - Static metadata (None for EventArray)
+            - Static metadata (None for BaseArray)
 
         See Also
         --------
@@ -4481,22 +4436,22 @@ class EventArray(object):
     @classmethod
     def tree_unflatten(cls, aux_data, flat_contents):
         """
-        Reconstruct an EventArray from flattened data.
+        Reconstruct an BaseArray from flattened data.
 
-        This class method is used by JAX's tree_util to reconstruct EventArray instances
+        This class method is used by JAX's tree_util to reconstruct BaseArray instances
         from flattened data during JAX transformations.
 
         Parameters
         ----------
         aux_data : Any
-            Static metadata for reconstruction (typically None for EventArray)
+            Static metadata for reconstruction (typically None for BaseArray)
         flat_contents : tuple
             A tuple containing the dynamic values that were extracted by tree_flatten
 
         Returns
         -------
         EventArray
-            A reconstructed EventArray instance
+            A reconstructed BaseArray instance
 
         See Also
         --------
@@ -4851,5 +4806,5 @@ class EventArray(object):
         return u.math.asarray(self.value, dtype=np.float64)
 
 
-# Set the array priority for the EventArray class
-setattr(EventArray, "__array_priority__", 100)
+# Set the array priority for the BaseArray class
+setattr(BaseArray, "__array_priority__", 100)

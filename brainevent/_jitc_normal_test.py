@@ -25,8 +25,6 @@ from brainevent._test_util import allclose, gen_events
 
 brainevent.config.gpu_kernel_backend = 'pallas'
 
-
-
 if brainstate.environ.get_platform() == 'cpu':
     shapes = [
         (200, 300),
@@ -37,8 +35,6 @@ else:
         (2000, 3000),
         (1000, 5000)
     ]
-
-
 
 
 class Test_JITC_RC_Conversion:

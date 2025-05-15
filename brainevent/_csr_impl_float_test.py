@@ -21,7 +21,7 @@ import jax.numpy as jnp
 import pytest
 
 import brainevent
-from brainevent._csr_event_impl_test import TestBatchingVectorCSR, TestBatchingMatrixCSR
+from brainevent._csr_impl_binary_test import TestBatchingVectorCSR, TestBatchingMatrixCSR
 from brainevent._csr_test_util import get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
 
 pytest.mark.skipif(brainstate.environ.get_platform() != 'cpu', allow_module_level=True)

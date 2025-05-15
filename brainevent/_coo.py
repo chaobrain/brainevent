@@ -25,10 +25,10 @@ import brainunit as u
 import jax
 import numpy as np
 
+from ._array_binary import EventArray
 from ._compatible_import import JAXSparse
-from ._coo_event_impl import event_coo_matvec, event_coo_matmat
-from ._coo_float_impl import coo_matvec, coo_matmat
-from ._event import EventArray
+from ._coo_impl_binary import event_coo_matvec, event_coo_matmat
+from ._coo_impl_float import coo_matvec, coo_matmat
 from ._misc import _coo_todense, COOInfo
 from ._typing import MatrixShape, Data, Index, Row, Col
 
@@ -689,7 +689,7 @@ class COO(u.sparse.SparseMatrix):
         data = self.data
 
         if isinstance(other, EventArray):
-            # Extract the data from the EventArray
+            # Extract the data from the BaseArray
             other = other.data
             if other.ndim == 1:
                 # Perform matrix-vector multiplication with event data
@@ -768,7 +768,7 @@ class COO(u.sparse.SparseMatrix):
         data = self.data
 
         if isinstance(other, EventArray):
-            # Extract the data from the EventArray
+            # Extract the data from the BaseArray
             other = other.data
             if other.ndim == 1:
                 # Perform matrix-vector multiplication with event data
