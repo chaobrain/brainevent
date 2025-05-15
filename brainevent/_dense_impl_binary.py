@@ -663,33 +663,47 @@ def _dense_mat_dot_binary_mat_transpose_rule(ct, weights, spikes, **kwargs):
         return (ad.Zero(weights) if type(ct[0]) is ad.Zero else ct_weights), spikes
 
 
-def _dense_mat_dot_binary_mat_batching_axis1(args, axes, **kwargs):
-    assert args[1].ndim == 3, 'Batching axis 0 requires 3D input.'
-    m, batch_size, n = args[1].shape
-    events = args[1].reshape(m, batch_size * n)
+def _dense_mat_dot_binary_mat_batching_events_fn(args, axis=1, **kwargs):
+    assert args[0].ndim == 2, 'requires 2D input for weights'
+    assert args[1].ndim == 3, 'requires 3D input for events'
+    assert axis > 0, 'axis must be greater than 0'
+    k, maybe_batch1, maybe_batch2 = args[1].shape
+    events = args[1].reshape(k, maybe_batch1 * maybe_batch2)
     r = dense_mat_dot_binary_mat_p_call(args[0], events)
-    r = jnp.reshape(r[0], [r[0].shape[0], batch_size, n])
-    return [r], [1]
+    r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
+    return [r], [axis]
 
 
-def _dense_mat_dot_binary_mat_batching_axis2(args, axes, **kwargs):
-    assert args[1].ndim == 3, 'Batching axis 0 requires 3D input.'
-    m, n, batch_size = args[1].shape
-    events = args[1].reshape(m, batch_size * n)
-    r = dense_mat_dot_binary_mat_p_call(args[0], events)
-    r = jnp.reshape(r[0], [r[0].shape[0], n, batch_size])
-    return [r], [2]
+def _dense_mat_dot_binary_mat_batching_weight_fn(args, axis=0, **kwargs):
+    assert args[0].ndim == 3, 'requires 3D input for weights'
+    assert args[1].ndim == 2, 'requires 2D input for events'
+    assert axis < 2, 'axis must be less than 2'
+    maybe_batch1, maybe_batch2, k = args[1].shape
+    weights = args[0].reshape(maybe_batch1 * maybe_batch2, k)
+    r = dense_mat_dot_binary_mat_p_call(weights, args[1])
+    r = jnp.reshape(r[0], [maybe_batch1, maybe_batch2, r[0].shape[-1]])
+    return [r], [axis]
 
 
 def _dense_mat_dot_binary_mat_batching(args, axes, **kwargs):
     if axes == (None, 0):
         args = list(args)
         args[1] = jnp.transpose(args[1], (1, 0, 2))
-        return _dense_mat_dot_binary_mat_batching_axis1(args, axes, **kwargs)
+        return _dense_mat_dot_binary_mat_batching_events_fn(args, axis=1, **kwargs)
     elif axes == (None, 1):
-        return _dense_mat_dot_binary_mat_batching_axis1(args, axes, **kwargs)
+        return _dense_mat_dot_binary_mat_batching_events_fn(args, axis=1, **kwargs)
     elif axes == (None, 2):
-        return _dense_mat_dot_binary_mat_batching_axis2(args, axes, **kwargs)
+        return _dense_mat_dot_binary_mat_batching_events_fn(args, axs=2, **kwargs)
+
+    elif axes == (0, None):
+        return _dense_mat_dot_binary_mat_batching_weight_fn(args, axis=0, **kwargs)
+    elif axes == (1, None):
+        return _dense_mat_dot_binary_mat_batching_weight_fn(args, axis=1, **kwargs)
+    elif axes == (2, None):
+        args = list(args)
+        args[0] = jnp.transpose(args[0], (0, 2, 1))
+        return _dense_mat_dot_binary_mat_batching_weight_fn(args, axis=1, **kwargs)
+
     else:
         return general_batching_rule(dense_mat_dot_binary_mat_p, args, axes, **kwargs)
 
