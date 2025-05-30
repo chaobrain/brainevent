@@ -323,6 +323,7 @@ def coomv_p_call(
 ):
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
+    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
     out_info = (
         jax.ShapeDtypeStruct([shape[1]], weights.dtype)
@@ -603,6 +604,7 @@ def coomm_p_call(
 ):
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
+    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
     out_info = (
         jax.ShapeDtypeStruct([shape[1], B.shape[1]], weights.dtype)

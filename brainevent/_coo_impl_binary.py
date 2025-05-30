@@ -568,6 +568,7 @@ def event_coomv_p_call(
     # Convert scalar weights to a single-element array
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
+    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
     # Determine the output shape based on whether the sparse matrix is transposed
     out_info = (
@@ -1103,6 +1104,7 @@ def event_coomm_p_call(
     # Convert scalar weights to a single-element array
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
+    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
     # Determine the output shape based on whether the sparse matrix is transposed
     out_info = (

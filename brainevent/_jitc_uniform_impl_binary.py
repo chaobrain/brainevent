@@ -673,6 +673,8 @@ def binary_jitc_mv_uniform_p_call(
     w_low = jnp.atleast_1d(w_low)
     w_high = jnp.atleast_1d(w_high)
     clen = jnp.atleast_1d(clen)
+    assert jnp.issubdtype(w_low.dtype, jnp.floating), 'Weights must be a floating-point type.'
+    assert w_low.dtype == w_high.dtype, "w_low and w_high must have the same dtype."
 
     assert len(shape) == 2, "The matrix shape should be a tuple of two integers."
     assert w_low.shape == (1,), f"The weight shape should be (1,), but got {w_low.shape}."
@@ -938,7 +940,6 @@ def _jitc_mm_uniform_warp_kernel_generator(
 
     if corder:
         if B_info.dtype == jnp.bool_:
-            raise NotImplementedError
 
             # JIT Matrix.T @ B
             # - JIT matrix: [m, k]
@@ -966,7 +967,7 @@ def _jitc_mm_uniform_warp_kernel_generator(
                 i_k = warp.randi(state, 0, clen0)
                 while i_k < k:
                     w = warp.randf(state) * w_diff + w_low0
-                    out += warp.tile_load(B[i_k], TITLE_SIZE) * w
+                    out += warp.tile_astype(warp.tile_load(B[i_k], TITLE_SIZE), dtype=w_low_dtype) * w
                     i_k += warp.randi(state, 1, clen0)
                 warp.tile_store(posts[i_m], out)
 
@@ -1001,7 +1002,6 @@ def _jitc_mm_uniform_warp_kernel_generator(
 
     else:
         if B_info.dtype == jnp.bool_:
-            raise NotImplementedError
 
             # JIT Matrix.T @ B
             def kernel(
@@ -1023,8 +1023,7 @@ def _jitc_mm_uniform_warp_kernel_generator(
                 i_k = warp.tid()
                 state = warp.rand_init(seed0 + i_k)
 
-                # out = warp.tile_load(B[i_k], TITLE_SIZE)
-                out = warp.tile_map(where, warp.tile_load(B[i_k], TITLE_SIZE))
+                out = warp.tile_astype(warp.tile_load(B[i_k], TITLE_SIZE), dtype=w_low_dtype)
                 i_m = warp.randi(state, 0, clen0)
                 while i_m < m:
                     w = warp.randf(state) * w_diff + w_low0
@@ -1404,6 +1403,8 @@ def binary_jitc_mm_uniform_p_call(
         assert shape[0] == B.shape[0], f"The matrix shape and B shape do not match. {B.shape} @ {shape}"
     else:
         assert shape[1] == B.shape[0], f"The matrix shape and B shape do not match. {shape} @ {B.shape}"
+    assert jnp.issubdtype(w_low.dtype, jnp.floating), 'Weights must be a floating-point type.'
+    assert w_low.dtype == w_high.dtype, "w_low and w_high must have the same dtype."
 
     out_info = (
         jax.ShapeDtypeStruct([shape[1], B.shape[1]], w_low.dtype)

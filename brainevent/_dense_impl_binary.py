@@ -352,7 +352,7 @@ def _binary_vec_dot_dense_mat_warp_kernel_generator(
 
     return warp_kernel(
         kernel,
-        tile=cdiv(weight_info.shape[1], block_dim),
+        tile=(cdiv(weight_info.shape[1], block_dim),),
         block_dim=block_dim,
     )
 

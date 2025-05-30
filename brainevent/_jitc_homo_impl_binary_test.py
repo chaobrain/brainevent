@@ -24,6 +24,8 @@ import brainevent
 from brainevent._test_util import allclose, gen_events, ones_like
 
 
+# brainevent.config.gpu_kernel_backend = 'warp'
+
 class Test_JITC_RC_Conversion:
 
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])

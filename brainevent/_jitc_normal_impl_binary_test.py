@@ -25,6 +25,8 @@ import brainevent
 from brainevent._test_util import allclose, gen_events, ones_like
 
 
+# brainevent.config.gpu_kernel_backend = 'warp'
+
 class Test_JITCNormalR:
     @pytest.mark.parametrize('prob', [0.1, 0.2])
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
