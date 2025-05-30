@@ -73,9 +73,9 @@ setup(
         "Source Code": "https://github.com/chaobrain/brainevent",
     },
     extras_require={
-        'cpu': ['jax', 'numba'],
-        'cuda12': ['jax[cuda12]', 'warp-lang'],
-        'tpu': ['jax[tpu]'],
+        'cpu': ['jax[cpu]', 'numba', 'brainunit[cpu]'],
+        'cuda12': ['jax[cuda12]', 'warp-lang', 'brainunit[cuda12]'],
+        'tpu': ['jax[tpu]', 'brainunit[tpu]'],
     },
     keywords=(
         'computational neuroscience, '
