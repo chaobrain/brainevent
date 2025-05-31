@@ -548,6 +548,7 @@ def csrmv_p_call(
         assert shape[0] == vector.shape[0], "Shape mismatch for transpose operation."
     else:
         assert shape[1] == vector.shape[0], "Shape mismatch for non-transpose operation."
+    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
@@ -1239,6 +1240,7 @@ def csrmm_p_call(
         assert shape[0] == B.shape[0], "Shape mismatch for non-transpose operation."
     else:
         assert shape[1] == B.shape[0], "Shape mismatch for transpose operation."
+    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])

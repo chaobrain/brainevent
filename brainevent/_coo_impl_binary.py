@@ -568,6 +568,7 @@ def event_coomv_p_call(
     # Convert scalar weights to a single-element array
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
+    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
     # Determine the output shape based on whether the sparse matrix is transposed
     out_info = (
@@ -1004,11 +1005,7 @@ def _event_coomm_transpose_rule(
         return d_data, row, col, B, _
 
 
-def _event_coomm_batching(
-    args,
-    axes,
-    **kwargs
-):
+def _event_coomm_batching(args, axes, **kwargs):
     if tuple(axes) == (None, None, None, 0, None):
         assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
         batch_size, m, n = args[3].shape
@@ -1103,6 +1100,7 @@ def event_coomm_p_call(
     # Convert scalar weights to a single-element array
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
+    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
     # Determine the output shape based on whether the sparse matrix is transposed
     out_info = (

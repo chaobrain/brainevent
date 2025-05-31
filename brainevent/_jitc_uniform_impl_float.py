@@ -707,6 +707,8 @@ def float_jitc_uniform_matrix_p_call(
     w_high = jnp.atleast_1d(w_high)
     clen = jnp.atleast_1d(clen)
     seed = jnp.atleast_1d(seed)
+    assert jnp.issubdtype(w_low.dtype, jnp.floating), 'Weights must be a floating-point type.'
+    assert w_low.dtype == w_high.dtype, "w_low and w_high must have the same dtype."
 
     out_info = (
         jax.ShapeDtypeStruct(shape[::-1], dtype=w_low.dtype)
@@ -1142,7 +1144,6 @@ def _jitc_mv_uniform_warp_kernel_generator(
 def _jitc_mv_uniform_pallas_kernel_generator(
     vector_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
@@ -1449,6 +1450,8 @@ def float_jitc_mv_uniform_p_call(
     assert clen.shape == (1,), f"The clen shape should be (1,), but got {clen.shape}."
     assert vector.ndim == 1, f"The vector should be a 1D array, but got {vector.ndim}D."
     assert seed.shape == (1,), f"The seed shape should be (1,), but got {seed.shape}."
+    assert jnp.issubdtype(w_low.dtype, jnp.floating), 'Weights must be a floating-point type.'
+    assert w_low.dtype == w_high.dtype, "w_low and w_high must have the same dtype."
 
     if transpose:
         assert shape[0] == len(vector), f"The matrix shape and vector length do not match. {vector.shape} @ {shape}"
@@ -2125,6 +2128,8 @@ def float_jitc_mm_uniform_p_call(
         assert shape[0] == B.shape[0], f"The matrix shape and B shape do not match. {B.shape} @ {shape}"
     else:
         assert shape[1] == B.shape[0], f"The matrix shape and B shape do not match. {shape} @ {B.shape}"
+    assert jnp.issubdtype(w_low.dtype, jnp.floating), 'Weights must be a floating-point type.'
+    assert w_low.dtype == w_high.dtype, "w_low and w_high must have the same dtype."
 
     out_info = (
         jax.ShapeDtypeStruct([shape[1], B.shape[1]], w_low.dtype)
