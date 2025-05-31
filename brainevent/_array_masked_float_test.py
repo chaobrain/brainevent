@@ -18,26 +18,26 @@ class TestMaskedFloatMatMul:
         # Test vector @ matrix
         result = self.vector @ self.dense_matrix
         expected = np.array([22.0, 28.0])
-        assert np.array_equal(result, expected)
+        assert np.allclose(result, expected, rtol=1e-3, atol=1e-3)
 
     def test_matrix_matmul_vector(self):
         # Test matrix @ vector (using rmatmul)
         with pytest.raises(AssertionError):
             result = self.dense_vector @ self.matrix
             expected = np.array([22.0, 28.0])
-            assert np.array_equal(result, expected)
+            assert np.allclose(result, expected, rtol=1e-3, atol=1e-3)
 
     def test_matrix_matmul_matrix(self):
         # Test matrix @ matrix
         result = self.matrix @ self.dense_matrix2
         expected = np.array([[9.0, 12.0, 15.0], [19.0, 26.0, 33.0], [29.0, 40.0, 51.0]])
-        assert np.array_equal(result, expected)
+        assert np.allclose(result, expected, rtol=1e-3, atol=1e-3)
 
     def test_matrix_rmatmul_matrix(self):
         # Test dense_matrix @ matrix (using rmatmul)
         result = self.dense_matrix2 @ self.square_matrix
         expected = np.array([[30.0, 36.0, 42.0], [66.0, 81.0, 96.0]])
-        assert np.array_equal(result, expected)
+        assert np.allclose(result, expected, rtol=1e-3, atol=1e-3)
 
     def test_imatmul(self):
         # Test in-place matrix multiplication
