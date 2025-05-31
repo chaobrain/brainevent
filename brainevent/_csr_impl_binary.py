@@ -678,6 +678,7 @@ def binary_csrmv_p_call(
         assert shape[0] == vector.shape[0], "Shape mismatch for transpose operation."
     else:
         assert shape[1] == vector.shape[0], "Shape mismatch for non-transpose operation."
+    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
     # Check if weights is a scalar. If so, convert it to a one-dimensional array.
     if jnp.ndim(weights) == 0:
@@ -1002,7 +1003,7 @@ def _binary_csrmm_warp_kernel_generator(
     dim = (
         tuple(reversed(vector_info.shape)) if transpose else
         [vector_info.shape[1], indptr_info.shape[0] - 1]
-    ),
+    )
 
     return warp_kernel(mm, input_output_aliases={4: 0}, dim=dim)
 
@@ -1367,6 +1368,7 @@ def binary_csrmm_p_call(
         assert shape[0] == B.shape[0], "Shape mismatch for non-transpose operation."
     else:
         assert shape[1] == B.shape[0], "Shape mismatch for transpose operation."
+    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
     # Check if weights is a scalar. If so, convert it to a one-dimensional array.
     if jnp.ndim(weights) == 0:

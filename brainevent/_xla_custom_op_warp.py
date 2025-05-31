@@ -604,7 +604,7 @@ def _warp_gpu_lowering(
             f"Invalid launch dimensions, expected "
             f"tuple or list, got {warp_dims}"
         )
-        warp_dims = warp_dims + (block_dim,)
+        warp_dims = tuple(warp_dims) + (block_dim,)
     else:
         if callable(warp_dims):
             warp_dims = warp_dims(**kwargs)
@@ -614,6 +614,7 @@ def _warp_gpu_lowering(
             f"Invalid launch dimensions, expected "
             f"tuple or list, got {warp_dims}"
         )
+        warp_dims = tuple(warp_dims)
 
     # TODO: This may not be necessary, but it is perhaps better not to be
     #       mucking with kernel loading while already running the workload.

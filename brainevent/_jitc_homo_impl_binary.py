@@ -939,10 +939,6 @@ def _jitc_mm_homo_warp_kernel_generator(
     B_dtype = jaxtype_to_warptype(B_info.dtype)
     seed_dtype = jaxtype_to_warptype(seed_info.dtype)
 
-    @warp.func
-    def where(s: bool):
-        return warp.where(s, 1., 0.)
-
     if corder:
         # JIT Matrix.T @ B
 
@@ -967,7 +963,7 @@ def _jitc_mm_homo_warp_kernel_generator(
                 out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
                 i_k = warp.randi(state, 0, clen0)
                 while i_k < k:
-                    out += warp.tile_load(B[i_k], TITLE_SIZE)
+                    out += warp.tile_astype(warp.tile_load(B[i_k], TITLE_SIZE), dtype=weight_dtype)
                     i_k += warp.randi(state, 1, clen0)
                 warp.tile_store(posts[i_m], out * weight0)
 
@@ -1015,9 +1011,7 @@ def _jitc_mm_homo_warp_kernel_generator(
                 i_k = warp.tid()
                 state = warp.rand_init(seed0 + i_k)
 
-                # out = warp.where(warp.tile_load(B[i_k], TITLE_SIZE), weight0, 0.)
-                # out = warp.tile_load(B[i_k], TITLE_SIZE) * weight0
-                out = warp.tile_map(where, warp.tile_load(B[i_k], TITLE_SIZE)) * weight0
+                out = warp.tile_astype(warp.tile_load(B[i_k], TITLE_SIZE), dtype=weight_dtype) * weight0
                 i_m = warp.randi(state, 0, clen0)
                 while i_m < m:
                     warp.tile_atomic_add(posts[i_m], out)

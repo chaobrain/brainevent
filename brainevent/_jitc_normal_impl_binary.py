@@ -324,7 +324,6 @@ def _jitc_mv_normal_warp_kernel_generator(
     vector_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
@@ -527,7 +526,6 @@ def _jitc_mv_normal_warp_kernel_generator(
 def _jitc_mv_normal_pallas_kernel_generator(
     vector_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
@@ -1080,7 +1078,6 @@ def _jitc_mm_normal_warp_kernel_generator(
     seed_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
     TITLE_SIZE: int,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
@@ -1094,8 +1091,6 @@ def _jitc_mm_normal_warp_kernel_generator(
 
     if corder:
         if B_info.dtype == jnp.bool_:
-            raise NotImplementedError
-
             # JIT Matrix.T @ B
             def kernel(
                 w_loc: warp.array1d(dtype=w_loc_dtype),
@@ -1119,7 +1114,7 @@ def _jitc_mm_normal_warp_kernel_generator(
                 i_k = warp.randi(state, 0, clen0)
                 while i_k < k:
                     w = warp.randn(state) * w_scale0 + w_loc0
-                    out += warp.tile_load(B[i_k], TITLE_SIZE) * w
+                    out += warp.tile_astype(warp.tile_load(B[i_k], TITLE_SIZE), dtype=w_loc_dtype) * w
                     i_k += warp.randi(state, 1, clen0)
                 warp.tile_store(posts[i_m], out)
 
@@ -1153,8 +1148,6 @@ def _jitc_mm_normal_warp_kernel_generator(
 
     else:
         if B_info.dtype == jnp.bool_:
-            raise NotImplementedError
-
             # JIT Matrix.T @ B
             def kernel(
                 w_loc: warp.array1d(dtype=w_loc_dtype),
@@ -1174,7 +1167,7 @@ def _jitc_mm_normal_warp_kernel_generator(
                 i_k = warp.tid()
                 state = warp.rand_init(seed0 + i_k)
 
-                out = warp.tile_load(B[i_k], TITLE_SIZE)
+                out = warp.tile_astype(warp.tile_load(B[i_k], TITLE_SIZE), dtype=w_loc_dtype)
                 i_m = warp.randi(state, 0, clen0)
                 while i_m < m:
                     w = warp.randn(state) * w_scale0 + w_loc0
@@ -1217,7 +1210,6 @@ def _jitc_mm_normal_warp_kernel_generator(
 def _jitc_mm_normal_pallas_kernel_generator(
     B_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
