@@ -538,11 +538,7 @@ def _coomm_transpose_rule(
         return d_data, row, col, B, _
 
 
-def coomm_batching(
-    args,
-    axes,
-    **kwargs
-):
+def coomm_batching(args, axes, **kwargs):
     if tuple(axes) == (None, None, None, 0, None):
         assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
         batch_size, m, n = args[3].shape

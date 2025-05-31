@@ -324,7 +324,6 @@ def _jitc_mv_normal_warp_kernel_generator(
     vector_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
@@ -527,7 +526,6 @@ def _jitc_mv_normal_warp_kernel_generator(
 def _jitc_mv_normal_pallas_kernel_generator(
     vector_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
@@ -1080,7 +1078,6 @@ def _jitc_mm_normal_warp_kernel_generator(
     seed_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
     TITLE_SIZE: int,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
@@ -1213,7 +1210,6 @@ def _jitc_mm_normal_warp_kernel_generator(
 def _jitc_mm_normal_pallas_kernel_generator(
     B_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
