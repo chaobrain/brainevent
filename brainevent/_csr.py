@@ -602,6 +602,8 @@ class CSR(BaseCLS):
         x : jax.Array or u.Quantity
             The solution vector x that satisfies Ax = b.
         """
+        assert self.shape[0] == b.shape[0], ("The number of rows in the matrix must match "
+                                             "the size of the right-hand side vector b.")
         return csr_solve(self.data, self.indices, self.indptr, b)
 
 
@@ -961,4 +963,6 @@ class CSC(BaseCLS):
         x : jax.Array or u.Quantity
             The solution vector x that satisfies Ax = b.
         """
+        assert self.shape[0] == b.shape[0], ("The number of rows in the matrix must match "
+                                             "the size of the right-hand side vector b.")
         return self.T.solve(b, tol=tol, reorder=reorder)

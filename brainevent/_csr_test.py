@@ -795,3 +795,34 @@ class Test_diag_add:
         print(dense)
 
         assert jnp.allclose(new_dense, dense)
+
+
+class Test_solve:
+    @pytest.mark.parametrize('shape', [(200, 200), (400, 400)])
+    def test_csr(self, shape: brainstate.typing.Shape):
+        dense = brainstate.random.rand(*shape)
+        mask = dense < 0.1
+        dense = jnp.where(mask, dense, 0.)
+        csr = brainevent.CSR.fromdense(dense)
+        b = brainstate.random.randn(shape[0])
+
+        x = csr.solve(b)
+        assert jnp.allclose(csr @ x, b, atol=1e-2, rtol=1e-2)
+
+        x2 = jnp.linalg.solve(dense, b)
+        assert jnp.allclose(x, x2, atol=1e-2, rtol=1e-2)
+
+    @pytest.mark.parametrize('shape', [(200, 200), (400, 400)])
+    def test_csc(self, shape: brainstate.typing.Shape):
+        dense = brainstate.random.rand(*shape)
+        mask = dense < 0.1
+        dense = jnp.where(mask, dense, 0.)
+        csc = brainevent.CSR.fromdense(dense)
+        b = brainstate.random.randn(shape[0])
+
+        x = csc.solve(b)
+        assert jnp.allclose(csc @ x, b, atol=1e-2, rtol=1e-2)
+
+        x2 = jnp.linalg.solve(dense, b)
+        assert jnp.allclose(x, x2, atol=1e-2, rtol=1e-2)
+
