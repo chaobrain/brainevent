@@ -535,7 +535,6 @@ def _fixed_num_mm_numba_kernel_generator(
 
 
 def _fixed_num_mm_warp_kernel_generator(
-    transpose: bool,
     weight_info: jax.ShapeDtypeStruct,
     matrix_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
