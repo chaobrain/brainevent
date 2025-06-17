@@ -37,11 +37,6 @@ def _get_dtype(v):
     return dtype
 
 
-def _check_out(out):
-    if not isinstance(out, BaseArray):
-        raise TypeError(f'out must be an instance of Array. But got {type(out)}')
-
-
 def extract_raw_value(obj):
     return obj.value if isinstance(obj, BaseArray) else obj
 
@@ -1566,9 +1561,6 @@ class BaseArray:
         max : scalar or array_like, optional
             Maximum value. If None, clipping is not performed on upper interval edge.
             Not more than one of min and max may be None.
-        out : ndarray, optional
-            The results will be placed in this array. It may be the input array for in-place clipping.
-            Out must be of the right shape to hold the output. Its type is preserved.
 
         Returns
         -------
@@ -3155,7 +3147,6 @@ class BaseArray:
         *,
         beta: float = 1.0,
         alpha: float = 1.0,
-        out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union['BaseArray', u.Quantity, jax.Array, None]:
         r"""
         Perform the outer product of vectors and add to this matrix.
@@ -3175,8 +3166,6 @@ class BaseArray:
             The multiplier for this array.
         alpha : float, default=1.0
             The multiplier for the outer product result.
-        out : LowBitArray or ArrayLike, optional
-            The output array where the result will be stored. If None, a new array is created.
 
         Returns
         -------
@@ -3205,12 +3194,7 @@ class BaseArray:
         vec1 = extract_raw_value(vec1)
         vec2 = extract_raw_value(vec2)
         r = alpha * u.math.outer(vec1, vec2) + beta * self.value
-        if out is None:
-            return type(self)(r)  # Return as BaseArray for consistent API
-        else:
-            _check_out(out)
-            out.value = r
-            return None
+        return r
 
     def outer(
         self,
@@ -3251,16 +3235,9 @@ class BaseArray:
         other = extract_raw_value(other)
         return type(self)(u.math.outer(self.value, other))
 
-    def abs(
-        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> Union['BaseArray', u.Quantity, jax.Array, None]:
+    def abs(self) -> Union['BaseArray', u.Quantity, jax.Array, None]:
         """
         Calculate the absolute value element-wise.
-
-        Parameters
-        ----------
-        out : BaseArray or ArrayLike, optional
-            Array to store the output. If provided, it must have the correct shape.
 
         Returns
         -------
@@ -3287,12 +3264,7 @@ class BaseArray:
         numpy.abs : NumPy equivalent function
         """
         r = u.math.abs(self.value)
-        if out is None:
-            return type(self)(r)
-        else:
-            _check_out(out)
-            out.value = r
-            return None
+        return r
 
     def abs_(self) -> 'BaseArray':
         """
@@ -3319,18 +3291,11 @@ class BaseArray:
         self.value = u.math.abs(self.value)
         return self
 
-    def absolute(
-        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> Union['BaseArray', jax.Array, u.Quantity]:
+    def absolute(self) -> Union['BaseArray', jax.Array, u.Quantity]:
         """
         Calculate the absolute value element-wise.
 
         This is an alias for the `abs` method.
-
-        Parameters
-        ----------
-        out : LowBitArray or ArrayLike, optional
-            Array to store the output. If provided, it must have the correct shape.
 
         Returns
         -------
@@ -3349,7 +3314,7 @@ class BaseArray:
         abs : Equivalent function
         absolute_ : In-place version
         """
-        return self.abs(out=out)
+        return self.abs()
 
     def absolute_(self) -> 'BaseArray':
         """
@@ -3435,16 +3400,9 @@ class BaseArray:
         """
         return self.value * extract_raw_value(value)
 
-    def sin(
-        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array, None]:
+    def sin(self) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the sine of the array elements.
-
-        Parameters
-        ----------
-        out : BaseArray or ArrayLike, optional
-            Output array for the result. If provided, must have the same shape as the output.
 
         Returns
         -------
@@ -3457,22 +3415,11 @@ class BaseArray:
         cos, tan : Other trigonometric functions.
         """
         r = u.math.sin(self.value)
-        if out is None:
-            return r
-        else:
-            _check_out(out)
-            out.value = r
+        return r
 
-    def cos(
-        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array, None]:
+    def cos(self) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the cosine of the array elements.
-
-        Parameters
-        ----------
-        out : BaseArray or ArrayLike, optional
-            Output array for the result. If provided, must have the same shape as the output.
 
         Returns
         -------
@@ -3485,22 +3432,11 @@ class BaseArray:
         sin, tan : Other trigonometric functions.
         """
         r = u.math.cos(self.value)
-        if out is None:
-            return r
-        else:
-            _check_out(out)
-            out.value = r
+        return r
 
-    def tan(
-        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array, None]:
+    def tan(self) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the tangent of the array elements.
-
-        Parameters
-        ----------
-        out : BaseArray or ArrayLike, optional
-            Output array for the result. If provided, must have the same shape as the output.
 
         Returns
         -------
@@ -3513,22 +3449,11 @@ class BaseArray:
         sin, cos : Other trigonometric functions.
         """
         r = u.math.tan(self.value)
-        if out is None:
-            return r
-        else:
-            _check_out(out)
-            out.value = r
+        return r
 
-    def sinh(
-        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array, None]:
+    def sinh(self) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the hyperbolic sine of the array elements.
-
-        Parameters
-        ----------
-        out : BaseArray or ArrayLike, optional
-            Output array for the result. If provided, must have the same shape as the output.
 
         Returns
         -------
@@ -3541,22 +3466,11 @@ class BaseArray:
         cosh, tanh : Other hyperbolic functions.
         """
         r = u.math.sinh(self.value)
-        if out is None:
-            return r
-        else:
-            _check_out(out)
-            out.value = r
+        return r
 
-    def cosh(
-        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array, None]:
+    def cosh(self) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the hyperbolic cosine of the array elements.
-
-        Parameters
-        ----------
-        out : BaseArray or ArrayLike, optional
-            Output array for the result. If provided, must have the same shape as the output.
 
         Returns
         -------
@@ -3569,22 +3483,11 @@ class BaseArray:
         sinh, tanh : Other hyperbolic functions.
         """
         r = u.math.cosh(self.value)
-        if out is None:
-            return r
-        else:
-            _check_out(out)
-            out.value = r
+        return r
 
-    def tanh(
-        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array, None]:
+    def tanh(self) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the hyperbolic tangent of the array elements.
-
-        Parameters
-        ----------
-        out : BaseArray or ArrayLike, optional
-            Output array for the result. If provided, must have the same shape as the output.
 
         Returns
         -------
@@ -3597,22 +3500,11 @@ class BaseArray:
         sinh, cosh : Other hyperbolic functions.
         """
         r = u.math.tanh(self.value)
-        if out is None:
-            return r
-        else:
-            _check_out(out)
-            out.value = r
+        return r
 
-    def arcsin(
-        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array, None]:
+    def arcsin(self) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the inverse sine of the array elements.
-
-        Parameters
-        ----------
-        out : BaseArray or ArrayLike, optional
-            Output array for the result. If provided, must have the same shape as the output.
 
         Returns
         -------
@@ -3626,22 +3518,11 @@ class BaseArray:
         arccos, arctan : Other inverse trigonometric functions.
         """
         r = u.math.arcsin(self.value)
-        if out is None:
-            return r
-        else:
-            _check_out(out)
-            out.value = r
+        return r
 
-    def arccos(
-        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array, None]:
+    def arccos(self) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the inverse cosine of the array elements.
-
-        Parameters
-        ----------
-        out : BaseArray or ArrayLike, optional
-            Output array for the result. If provided, must have the same shape as the output.
 
         Returns
         -------
@@ -3655,22 +3536,11 @@ class BaseArray:
         arcsin, arctan : Other inverse trigonometric functions.
         """
         r = u.math.arccos(self.value)
-        if out is None:
-            return r
-        else:
-            _check_out(out)
-            out.value = r
+        return r
 
-    def arctan(
-        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array, None]:
+    def arctan(self) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the inverse tangent of the array elements.
-
-        Parameters
-        ----------
-        out : BaseArray or ArrayLike, optional
-            Output array for the result. If provided, must have the same shape as the output.
 
         Returns
         -------
@@ -3684,18 +3554,12 @@ class BaseArray:
         arcsin, arccos : Other inverse trigonometric functions.
         """
         r = u.math.arctan(self.value)
-        if out is None:
-            return r
-        else:
-            _check_out(out)
-            out.value = r
+        return r
 
     def clamp(
         self,
         min_value: Optional[Union['BaseArray', ArrayLike]] = None,
         max_value: Optional[Union['BaseArray', ArrayLike]] = None,
-        *,
-        out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
         Clamp (limit) the values in the array between min_value and max_value.
@@ -3711,10 +3575,6 @@ class BaseArray:
             Minimum value. If None, clipping is not performed on lower bound.
         max_value : BaseArray or ArrayLike, optional
             Maximum value. If None, clipping is not performed on upper bound.
-        out : BaseArray or ArrayLike, optional
-            The output array. If provided, it must have a shape that the inputs
-            broadcast to. If not provided or None, a freshly-allocated array is
-            returned.
 
         Returns
         -------
@@ -3740,12 +3600,7 @@ class BaseArray:
         min_value = extract_raw_value(min_value)
         max_value = extract_raw_value(max_value)
         r = u.math.clip(self.value, min_value, max_value)
-        if out is None:
-            return r
-        else:
-            _check_out(out)
-            out.value = r
-            return None
+        return r
 
     def clone(self) -> 'BaseArray':
         """
