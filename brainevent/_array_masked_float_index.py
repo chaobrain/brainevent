@@ -18,8 +18,8 @@ import jax
 from jax.tree_util import register_pytree_node_class
 
 from ._array_base import BaseArray
-from ._array_masked_float import MaskedFloat
 from ._array_base import extract_raw_value, is_known_type
+from ._array_masked_float import MaskedFloat
 from ._error import MathError
 
 __all__ = [
@@ -53,6 +53,12 @@ class MaskedFloatIndex(BaseArray):
         super().__init__(value, dtype=dtype)
 
         self.indices = ...
+
+    def __setitem__(self, index, value):
+        raise NotImplementedError
+
+    def _update(self, value):
+        raise NotImplementedError
 
     def __matmul__(self, oc):
         if is_known_type(oc):

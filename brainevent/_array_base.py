@@ -1550,7 +1550,7 @@ class BaseArray:
         """
         return self.value.choose(choices=choices, mode=mode)
 
-    def clip(self, min=None, max=None, out=None):
+    def clip(self, min=None, max=None):
         """
         Return an array with its values clipped to be within the specified range [min, max].
 
@@ -1583,11 +1583,7 @@ class BaseArray:
         min = extract_raw_value(min)
         max = extract_raw_value(max)
         r = self.value.clip(min=min, max=max)
-        if out is None:
-            return r
-        else:
-            _check_out(out)
-            out.value = r
+        return r
 
     def compress(self, condition, axis=None):
         """
@@ -1969,59 +1965,6 @@ class BaseArray:
         """
         r = self.value.ptp(axis=axis, keepdims=keepdims)
         return r
-
-    def put(self, indices, values):
-        """
-        Replaces specified elements of an array with given values.
-
-        The indexing works on the flattened target array. `put` is roughly
-        equivalent to `a.flat[indices] = values`. This method modifies the
-        `BaseArray` in-place.
-
-        Parameters
-        ----------
-        indices : array_like
-            Target indices, interpreted as integers for the flattened array.
-            Can be integers, slices, or integer arrays.
-        values : array_like
-            Values to place in the array at target indices. If `values` is shorter
-            than `indices`, it will be repeated as necessary. `values` will be
-            converted to the dtype of the `BaseArray`.
-
-        Returns
-        -------
-        None
-            This method modifies the array in-place.
-
-        See Also
-        --------
-        numpy.put : Equivalent NumPy function.
-        __setitem__ : More general indexing for setting values.
-        take : Select elements based on indices.
-
-        Examples
-        --------
-        >>> import jax.numpy as jnp
-        >>> from brainevent import EventArray
-        >>> a = EventArray(jnp.arange(5))
-        >>> a
-        BaseArray(value=Array([0, 1, 2, 3, 4], dtype=int32))
-        >>> a.put([0, 2], [-44, -55])
-        >>> a
-        BaseArray(value=Array([-44,   1, -55,   3,   4], dtype=int32))
-
-        >>> b = EventArray(jnp.arange(6).reshape(2, 3))
-        >>> b
-        BaseArray(value=Array([[0, 1, 2],
-               [3, 4, 5]], dtype=int32))
-        >>> b.put([1, 4], [10, 40]) # Operates on flattened array
-        >>> b
-        BaseArray(value=Array([[ 0, 10,  2],
-               [ 3, 40,  5]], dtype=int32))
-        """
-        # Note: This uses __setitem__, which handles JAX's immutability correctly
-        # by creating a new array and updating self.value.
-        self.__setitem__(indices, values)
 
     def ravel(self, order='C'):
         """

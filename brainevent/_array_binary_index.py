@@ -50,6 +50,12 @@ class BinaryArrayIndex(BaseArray):
 
         self.indices = ...
 
+    def __setitem__(self, index, value):
+        raise NotImplementedError
+
+    def _update(self, value):
+        raise NotImplementedError
+
     def __matmul__(self, oc):
         """
         Perform matrix multiplication on the array with another object.
