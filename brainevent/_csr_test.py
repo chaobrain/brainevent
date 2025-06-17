@@ -16,18 +16,13 @@
 # -*- coding: utf-8 -*-
 
 
-import os
-
+import brainstate
 import jax
-
-os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
-
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 import brainevent
-import brainstate
 
 brainevent.config.gpu_kernel_backend = 'warp'
 
@@ -743,3 +738,60 @@ class Test_CSC:
         csr = brainevent.CSR.fromdense(matrix).T
         dense = csr.todense()
         assert jnp.allclose(matrix.T, dense)
+
+
+class Test_diag_add:
+    @pytest.mark.parametrize('shape', [(200, 300), (100, 50), (400, 400)])
+    def test_csr(self, shape):
+        dense = brainstate.random.rand(*shape)
+        mask = dense < 0.1
+        dense = jnp.where(mask, dense, 0.)
+        csr = brainevent.CSR.fromdense(dense)
+        diag = brainstate.random.rand(min(shape))
+        new_csr = csr.diag_add(diag)
+
+        new_dense = new_csr.todense()
+        dense = dense.at[*jnp.diag_indices(min(shape))].add(diag)
+        dense = jnp.where(mask, dense, 0.)
+
+        print(new_dense)
+        print(dense)
+
+        assert jnp.allclose(new_dense, dense)
+
+    @pytest.mark.parametrize('shape', [(200, 300), (100, 50), (400, 400)])
+    def test_csc(self, shape):
+        dense = brainstate.random.rand(*shape)
+        mask = dense < 0.1
+        dense = jnp.where(mask, dense, 0.)
+        csc = brainevent.CSC.fromdense(dense)
+        diag = brainstate.random.rand(min(shape))
+        new_csr = csc.diag_add(diag)
+
+        new_dense = new_csr.todense()
+        dense = dense.at[*jnp.diag_indices(min(shape))].add(diag)
+        dense = jnp.where(mask, dense, 0.)
+
+        print(new_dense)
+        print(dense)
+
+        assert jnp.allclose(new_dense, dense)
+
+    @pytest.mark.parametrize('shape', [(200, 300), (100, 50), (400, 400)])
+    def test_csr_and_csc(self, shape):
+        dense = brainstate.random.rand(*shape)
+        mask = dense < 0.1
+        dense = jnp.where(mask, dense, 0.)
+        csr = brainevent.CSR.fromdense(dense)
+        csc = csr.T
+        diag = brainstate.random.rand(min(shape))
+        new_csr = csc.diag_add(diag)
+
+        new_dense = new_csr.todense().T
+        dense = dense.at[*jnp.diag_indices(min(shape))].add(diag)
+        dense = jnp.where(mask, dense, 0.)
+
+        print(new_dense)
+        print(dense)
+
+        assert jnp.allclose(new_dense, dense)

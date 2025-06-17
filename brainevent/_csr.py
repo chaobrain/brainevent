@@ -26,6 +26,7 @@ from ._array_binary import EventArray
 from ._array_masked_float import MaskedFloat
 from ._compatible_import import JAXSparse
 from ._csr_impl_binary import binary_csr_matvec, binary_csr_matmat
+from ._csr_impl_diag_add import csr_diag_position_v2, csr_diag_add_v2
 from ._csr_impl_float import csr_matvec, csr_matmat
 from ._csr_impl_masked_float import masked_float_csr_matvec, masked_float_csr_matmat
 from ._misc import _csr_to_coo, _csr_todense
@@ -186,6 +187,45 @@ class BaseCLS(u.sparse.SparseMatrix):
 
     def tocoo(self):
         raise NotImplementedError
+
+    def diag_add(self, other):
+        """
+        Add a diagonal value to the current sparse matrix.
+
+        This method adds the provided diagonal value to the diagonal elements of the
+        sparse matrix represented in Compressed Sparse Row (CSR) format. If the diagonal
+        positions have not been computed yet, it will first calculate them.
+
+        Parameters
+        ----------
+        other : array-like
+            The diagonal value to be added to the sparse matrix. It should be compatible
+            with the data type of the matrix's non-zero elements.
+
+        Returns
+        -------
+        ndarray
+            The result of adding the diagonal value to the sparse matrix.
+
+        Raises
+        ------
+        AssertionError
+            If `other` is an instance of `JAXSparse`, as this operation does not support
+            `JAXSparse` objects.
+
+        Notes
+        -----
+        - The diagonal positions are computed only once and cached in the `diag_positions`
+          attribute of the matrix instance.
+        - This method relies on `csr_diag_position_v2` to find diagonal positions and
+          `csr_diag_add_v2` to perform the actual addition.
+        """
+        if not hasattr(self, 'diag_positions'):
+            self.diag_positions = csr_diag_position_v2(self.indptr, self.indices, self.shape)
+        assert not isinstance(other, JAXSparse), "diag_add does not support JAXSparse objects."
+        return self.with_data(
+            csr_diag_add_v2(self.data, self.diag_positions, other)
+        )
 
 
 @jax.tree_util.register_pytree_node_class
