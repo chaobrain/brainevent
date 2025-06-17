@@ -81,7 +81,6 @@ def dense_mat_dot_masked_float_vec(weights, spikes):
 
 
 def _dense_mat_dot_masked_float_vec_numba_cpu_kernel_generator(
-    spk_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
     def _kernel(weights, spikes, posts):
@@ -132,7 +131,6 @@ def _dense_mat_dot_masked_float_vec_warp_kernel_generator(
 
 def _dense_mat_dot_masked_float_vec_pallas_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
-    spk_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
     mat_block_dim = generate_block_dim(weight_info.shape[0], maximum=1024)
@@ -267,7 +265,6 @@ def masked_float_vec_dot_dense_mat(spikes, weights):
 
 
 def _masked_float_vec_dot_dense_mat_numba_kernel_generator(
-    spk_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
     def _kernel(spikes, weights, posts):
@@ -463,7 +460,6 @@ def dense_mat_dot_masked_float_mat(weights, spikes):
 
 
 def _dense_mat_dot_masked_float_mat_numba_kernel_generator(
-    spk_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
     # weights: [m, k]
@@ -698,7 +694,6 @@ def masked_float_mat_dot_dense_mat(spikes, weights):
 
 
 def _masked_float_mat_dot_dense_mat_numba_kernel_generator(
-    spk_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
     # spikes: [m, k]
@@ -716,26 +711,6 @@ def _masked_float_mat_dot_dense_mat_numba_kernel_generator(
             posts[i_m] = out
 
     return numba_kernel(_kernel, parallel=True)
-
-    # if spk_info.dtype == jnp.bool_:
-    #     def _kernel(spikes, weights, posts):
-    #         posts[:] = 0.
-    #         for i_k in range(weights.shape[0]):
-    #             row = weights[i_k]
-    #             for i_m in range(spikes.shape[0]):
-    #                 if spikes[i_m, i_k]:
-    #                     posts[i_m] += row
-    #
-    # else:
-    #     def _kernel(spikes, weights, posts):
-    #         posts[:] = 0.
-    #         for i_k in range(weights.shape[0]):
-    #             row = weights[i_k]
-    #             for i_m in range(spikes.shape[0]):
-    #                 if spikes[i_m, i_k] != 0.:
-    #                     posts[i_m] += row
-    #
-    # return numba_kernel(_kernel)
 
 
 def _masked_float_mat_dot_dense_mat_warp_kernel_generator(
