@@ -751,7 +751,7 @@ class Test_diag_add:
         new_csr = csr.diag_add(diag)
 
         new_dense = new_csr.todense()
-        dense = dense.at[*jnp.diag_indices(min(shape))].add(diag)
+        dense = dense.at[jnp.diag_indices(min(shape))].add(diag)
         dense = jnp.where(mask, dense, 0.)
 
         print(new_dense)
@@ -769,7 +769,7 @@ class Test_diag_add:
         new_csr = csc.diag_add(diag)
 
         new_dense = new_csr.todense()
-        dense = dense.at[*jnp.diag_indices(min(shape))].add(diag)
+        dense = dense.at[jnp.diag_indices(min(shape))].add(diag)
         dense = jnp.where(mask, dense, 0.)
 
         print(new_dense)
@@ -788,7 +788,7 @@ class Test_diag_add:
         new_csr = csc.diag_add(diag)
 
         new_dense = new_csr.todense().T
-        dense = dense.at[*jnp.diag_indices(min(shape))].add(diag)
+        dense = dense.at[jnp.diag_indices(min(shape))].add(diag)
         dense = jnp.where(mask, dense, 0.)
 
         print(new_dense)
