@@ -29,6 +29,7 @@ from ._csr_impl_binary import binary_csr_matvec, binary_csr_matmat
 from ._csr_impl_diag_add import csr_diag_position_v2, csr_diag_add_v2
 from ._csr_impl_float import csr_matvec, csr_matmat
 from ._csr_impl_masked_float import masked_float_csr_matvec, masked_float_csr_matmat
+from ._csr_impl_spsolve import csr_solve
 from ._misc import _csr_to_coo, _csr_todense
 from ._typing import Data, Indptr, Index, MatrixShape
 
@@ -226,6 +227,25 @@ class BaseCLS(u.sparse.SparseMatrix):
         return self.with_data(
             csr_diag_add_v2(self.data, self.diag_positions, other)
         )
+
+    def solve(self, b: Union[jax.Array, u.Quantity]) -> Union[jax.Array, u.Quantity]:
+        """
+        Solve the linear system Ax = b where A is the sparse matrix.
+
+        This method uses JAX's sparse solver to solve the equation Ax = b,
+        where A is the current sparse matrix and b is the right-hand side vector.
+
+        Parameters
+        ----------
+        b : array_like
+            The right-hand side vector of the linear system.
+
+        Returns
+        -------
+        x : jax.Array or u.Quantity
+            The solution vector x that satisfies Ax = b.
+        """
+        raise NotImplementedError
 
 
 @jax.tree_util.register_pytree_node_class
@@ -560,6 +580,29 @@ class CSR(BaseCLS):
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
+
+    def solve(self, b: Union[jax.Array, u.Quantity], tol=1e-6, reorder=1) -> Union[jax.Array, u.Quantity]:
+        """
+        Solve the linear system Ax = b where A is the sparse matrix.
+
+        This method uses JAX's sparse solver to solve the equation Ax = b,
+        where A is the current sparse matrix and b is the right-hand side vector.
+
+        Parameters
+        ----------
+        b : array_like
+            The right-hand side vector of the linear system.
+        tol : Tolerance to decide if singular or not. Defaults to 1e-6.
+        reorder : The reordering scheme to use to reduce fill-in. No reordering if
+            ``reorder=0``. Otherwise, symrcm, symamd, or csrmetisnd (``reorder=1,2,3``),
+            respectively. Defaults to symrcm.
+
+        Returns
+        -------
+        x : jax.Array or u.Quantity
+            The solution vector x that satisfies Ax = b.
+        """
+        return csr_solve(self.data, self.indices, self.indptr, b)
 
 
 @jax.tree_util.register_pytree_node_class
@@ -896,3 +939,26 @@ class CSC(BaseCLS):
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
+
+    def solve(self, b: Union[jax.Array, u.Quantity], tol=1e-6, reorder=1) -> Union[jax.Array, u.Quantity]:
+        """
+        Solve the linear system Ax = b where A is the sparse matrix.
+
+        This method uses JAX's sparse solver to solve the equation Ax = b,
+        where A is the current sparse matrix and b is the right-hand side vector.
+
+        Parameters
+        ----------
+        b : array_like
+            The right-hand side vector of the linear system.
+        tol : Tolerance to decide if singular or not. Defaults to 1e-6.
+        reorder : The reordering scheme to use to reduce fill-in. No reordering if
+            ``reorder=0``. Otherwise, symrcm, symamd, or csrmetisnd (``reorder=1,2,3``),
+            respectively. Defaults to symrcm.
+
+        Returns
+        -------
+        x : jax.Array or u.Quantity
+            The solution vector x that satisfies Ax = b.
+        """
+        return self.T.solve(b, tol=tol, reorder=reorder)
