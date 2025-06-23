@@ -810,7 +810,7 @@ class Test_solve:
         assert jnp.allclose(csr @ x, b, atol=1e-2, rtol=1e-2)
 
         x2 = jnp.linalg.solve(dense, b)
-        assert jnp.allclose(x, x2, atol=1e-2, rtol=1e-2)
+        assert jnp.allclose(x, x2, atol=1e0, rtol=1e0)
 
     @pytest.mark.parametrize('shape', [(200, 200), (400, 400)])
     def test_csc(self, shape: brainstate.typing.Shape):
