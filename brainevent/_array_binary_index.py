@@ -48,6 +48,9 @@ class BinaryArrayIndex(BaseArray):
             value = value.value
         super().__init__(value, dtype=dtype)
 
+
+
+        self.value_cnt = ...
         self.indices = ...
 
     def __setitem__(self, index, value):
