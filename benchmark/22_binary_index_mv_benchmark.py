@@ -54,12 +54,12 @@ def forward(n_pre, n_post, spk_prob):
             binary_vec_get_indices(spikes)
         )
     idx,cnt = jax.block_until_ready(get_idx(spike))
-    #count_arr2 = brainstate.random.randn(cnt[0]).astype(int)
+    count_arr2 = brainstate.random.randn(cnt[0]).astype(int)
     # print(idx)
     # print(indices)
  
-    y1 = jax.block_until_ready(f1(indices, weight, count_arr))
-    #y1 = jax.block_until_ready(f1(idx, weight, count_arr2))
+    #y1 = jax.block_until_ready(f1(indices, weight, count_arr))
+    y1 = jax.block_until_ready(f1(idx, weight, count_arr2))
     y2 = jax.block_until_ready(f2(spike, weight))
     print('max difference:', jax.numpy.abs(y1 - y2).max())
 

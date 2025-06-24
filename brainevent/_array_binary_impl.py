@@ -117,18 +117,20 @@ def _binary_vec_get_indices_numba_kernel_generator(
 ):
     if spike_info.dtype == jnp.bool_:
         def _kernel(spikes, indices, cnt):
-            indices[:] = 0
+            idx = 0
             for i in range(spikes.shape[0]):
                 if spikes[i]:
-                    indices[cnt[0]] = i
-                    cnt[0] = cnt[0] + 1
+                    indices[idx] = i
+                    idx += 1
+            cnt[0] = idx
     else:
         def _kernel(spikes, indices, cnt):
-            indices[:] = 0
+            idx = 0
             for i in range(spikes.shape[0]):
                 if spikes[i] != 0.:
-                    indices[cnt[0]] = i
-                    cnt[0] = cnt[0] + 1
+                    indices[idx] = i
+                    idx += 1
+            cnt[0] = idx
 
     return numba_kernel(_kernel)
 
