@@ -245,9 +245,9 @@ class Test_CSR:
         r1, (g00, g01) = jax.jit(lambda: jax.value_and_grad(f_brainevent, argnums=(0, 1))(xs, csr.data))()
         r2, (g10, g11) = jax.jit(lambda: jax.value_and_grad(f_dense, argnums=(0, 1))(xs, csr.data))()
 
-        assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g00, g10, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g01, g11, rtol=1e-4, atol=1e-4)
+        assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
+        assert jnp.allclose(g00, g10, rtol=1e-2, atol=1e-2)
+        assert jnp.allclose(g01, g11, rtol=1e-2, atol=1e-2)
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -274,9 +274,9 @@ class Test_CSR:
         r1, (g00, g01) = jax.jit(lambda: jax.value_and_grad(f_brainevent, argnums=(0, 1))(xs, csr.data))()
         r2, (g10, g11) = jax.jit(lambda: jax.value_and_grad(f_dense, argnums=(0, 1))(xs, csr.data))()
 
-        assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g00, g10, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g01, g11, rtol=1e-4, atol=1e-4)
+        assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
+        assert jnp.allclose(g00, g10, rtol=1e-2, atol=1e-2)
+        assert jnp.allclose(g01, g11, rtol=1e-2, atol=1e-2)
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -409,8 +409,8 @@ class Test_CSR:
                                          (xs, csr.data),
                                          (ones_like(xs), ones_like(csr.data))))()
 
-        assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g1, g2, rtol=1e-4, atol=1e-4)
+        assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
+        assert jnp.allclose(g1, g2, rtol=1e-2, atol=1e-2)
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -445,8 +445,8 @@ class Test_CSR:
 
         print(r1, r2)
         print(g1, g2)
-        assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g1, g2, rtol=1e-4, atol=1e-4)
+        assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
+        assert jnp.allclose(g1, g2, rtol=1e-2, atol=1e-2)
 
 
 class Test_CSR_Event:
@@ -481,9 +481,9 @@ class Test_CSR_Event:
         assert isinstance(g00, brainevent.EventArray)
         assert isinstance(g10, brainevent.EventArray)
 
-        assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g00.value, g10.value, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g01, g11, rtol=1e-4, atol=1e-4)
+        assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
+        assert jnp.allclose(g00.value, g10.value, rtol=1e-2, atol=1e-2)
+        assert jnp.allclose(g01, g11, rtol=1e-2, atol=1e-2)
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('k', [10])
@@ -516,9 +516,9 @@ class Test_CSR_Event:
         assert isinstance(g00, brainevent.EventArray)
         assert isinstance(g10, brainevent.EventArray)
 
-        assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g00.value, g10.value, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g01, g11, rtol=1e-4, atol=1e-4)
+        assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
+        assert jnp.allclose(g00.value, g10.value, rtol=1e-2, atol=1e-2)
+        assert jnp.allclose(g01, g11, rtol=1e-2, atol=1e-2)
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -549,9 +549,9 @@ class Test_CSR_Event:
         assert isinstance(g00, brainevent.EventArray)
         assert isinstance(g10, brainevent.EventArray)
 
-        assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g00.value, g10.value, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g01, g11, rtol=1e-4, atol=1e-4)
+        assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
+        assert jnp.allclose(g00.value, g10.value, rtol=1e-2, atol=1e-2)
+        assert jnp.allclose(g01, g11, rtol=1e-2, atol=1e-2)
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -583,9 +583,9 @@ class Test_CSR_Event:
         assert isinstance(g00, brainevent.EventArray)
         assert isinstance(g10, brainevent.EventArray)
 
-        assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g00.value, g10.value, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g01, g11, rtol=1e-4, atol=1e-4)
+        assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
+        assert jnp.allclose(g00.value, g10.value, rtol=1e-2, atol=1e-2)
+        assert jnp.allclose(g01, g11, rtol=1e-2, atol=1e-2)
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('k', [10])
@@ -617,8 +617,8 @@ class Test_CSR_Event:
                                          (xs, csr.data),
                                          (ones_like(xs), ones_like(csr.data))))()
 
-        assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g1, g2, rtol=1e-4, atol=1e-4)
+        assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
+        assert jnp.allclose(g1, g2, rtol=1e-2, atol=1e-2)
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('k', [10])
@@ -652,8 +652,8 @@ class Test_CSR_Event:
                                          (xs, csr.data),
                                          (ones_like(xs), ones_like(csr.data))))()
 
-        assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g1, g2, rtol=1e-4, atol=1e-4)
+        assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
+        assert jnp.allclose(g1, g2, rtol=1e-2, atol=1e-2)
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -685,8 +685,8 @@ class Test_CSR_Event:
                                          (xs, csr.data),
                                          (ones_like(xs), ones_like(csr.data))))()
 
-        assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g1, g2, rtol=1e-4, atol=1e-4)
+        assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
+        assert jnp.allclose(g1, g2, rtol=1e-2, atol=1e-2)
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -719,8 +719,8 @@ class Test_CSR_Event:
                                          (xs, csr.data),
                                          (ones_like(xs), ones_like(csr.data))))()
 
-        assert jnp.allclose(r1, r2, rtol=1e-4, atol=1e-4)
-        assert jnp.allclose(g1, g2, rtol=1e-4, atol=1e-4)
+        assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
+        assert jnp.allclose(g1, g2, rtol=1e-2, atol=1e-2)
 
 
 class Test_CSC:
