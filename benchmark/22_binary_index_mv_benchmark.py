@@ -16,9 +16,10 @@ from brainevent._array_binary_impl import (
     binary_vec_get_indices
 
 )
+import jax.numpy as jnp
 brainevent.config.gpu_kernel_backend = 'warp'
 # brainevent.config.gpu_kernel_backend = 'pallas'
-
+# brainstate.environ.set(platform='cpu')
 def forward(n_pre, n_post, spk_prob):
     weight = brainstate.random.randn(n_pre, n_post)
     spike = (brainstate.random.rand(n_pre) < spk_prob)
@@ -38,9 +39,9 @@ def forward(n_pre, n_post, spk_prob):
     
     count_arr = brainstate.random.randn(count).astype(int)
     @jax.jit
-    def f1(spikes, weights, count_arr):
+    def f1(spikes, weights, cntds):
         return (
-            indices_dot_dense_mat(indices, weights, count_arr)
+            indices_dot_dense_mat(indices, weights, cntds)
         )
 
     @jax.jit
@@ -49,24 +50,37 @@ def forward(n_pre, n_post, spk_prob):
             (spikes @ weights)
         )
     @jax.jit
-    def get_idx(spikes):
+    def get_idx(spikes, count_array):
         return (
-            binary_vec_get_indices(spikes)
+            binary_vec_get_indices(spikes, count_array)
         )
-    idx,cnt = jax.block_until_ready(get_idx(spike))
-    #count_arr2 = brainstate.random.randn(cnt[0]).astype(int)
-    # print(idx)
-    # print(indices)
- 
-    y1 = jax.block_until_ready(f1(indices, weight, count_arr))
-    #y1 = jax.block_until_ready(f1(idx, weight, count_arr2))
+    cnt = jnp.zeros([1], jnp.int32)
+    cnt = cnt.at[0].set(0)
+    spike2 = jnp.zeros([n_pre], float)
+    idx = jax.block_until_ready(get_idx(spike, cnt))
+    #y1 = jax.block_until_ready(f1(indices, weight, count_arr))
+
+
+
+    cntds = jax.ShapeDtypeStruct([int(cnt[0].item())], int)
+    y1 = jax.block_until_ready(f1(idx, weight, cntds))
     y2 = jax.block_until_ready(f2(spike, weight))
     print('max difference:', jax.numpy.abs(y1 - y2).max())
+
+    # warm up
+    for _ in range(20):
+        cnt = cnt.at[0].set(0)
+        idx = jax.block_until_ready(get_idx(spike, cnt))
+        cntds = jax.ShapeDtypeStruct([int(cnt[0].item())], int)
+        jax.block_until_ready(f1(idx, weight, cntds))
 
     n = 100
     t0 = time.time()
     for _ in range(n):
-        jax.block_until_ready(f1(indices, weight, count_arr))
+        cnt = cnt.at[0].set(0)
+        idx = jax.block_until_ready(get_idx(spike, cnt))
+        cntds = jax.ShapeDtypeStruct([int(cnt[0].item())], int)
+        jax.block_until_ready(f1(idx, weight, cntds))
     r1 = time.time() - t0
     print(f"n_pre: {n_pre}, n_post: {n_post},  spike probability: {spk_prob}, Linear: {r1} s")
 

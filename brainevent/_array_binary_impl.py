@@ -29,16 +29,36 @@ from ._xla_custom_op_numba import numba_kernel
 from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
 
+from ._misc import cdiv, generate_block_dim
 
 
+"""
+This module defines a custom XLA-optimized operation for performing a sparse-dense vector-matrix multiplication.
+The main function `indices_dot_dense_mat` computes the sum of selected rows from the `weights` matrix
+based on the provided `indices`.
 
-def indices_dot_dense_mat(weights, indices, count_arr):
+Functions:
+----------
+indices_dot_dense_mat(weights, indices, count_arr):
+    Computes a dense vector by selecting and summing rows from `weights` as specified by `indices`.
+    
+    Parameters:
+        weights (array-like): A 2D array representing the weight matrix (shape: [num_rows, num_cols]).
+        indices (array-like): A 1D array of indices indicating which rows of `weights` to select and sum (shape: [count_arr[0]]).
+        count_arr (array-like): An auxiliary 1D array whose length determines the number of index accesses (shape: [1]).
+    
+    Returns:
+        array-like: A 1D array resulting from the sum of selected rows in `weights`, scaled by units extracted
+                    from `weights` and `indices`.
+"""
+
+def indices_dot_dense_mat(weights, indices, count_data_struct):
     with jax.ensure_compile_time_eval():
         weights = u.math.asarray(weights)
         indices = u.math.asarray(indices)
     weight_val, wunit = u.split_mantissa_unit(weights)
     indices_val, indicesunit = u.split_mantissa_unit(indices)
-    r = indices_dot_dense_mat_p_call(weight_val, indices_val, count_arr)
+    r = indices_dot_dense_mat_p_call(weight_val, indices_val, count_data_struct)
     return u.maybe_decimal(r[0] * wunit * indicesunit)
 
 
@@ -63,7 +83,7 @@ def _indices_dot_dense_mat_warp_kernel_generator(
     **kwargs
 ):
     import warp  # pylint: disable=import-outside-toplevel
-    indices_length = count.shape[0]
+    indices_length = count_info.shape[0]
     block_dim = generate_block_dim(weight_info.shape[1], maximum=128)
     weight_dtype = jaxtype_to_warptype(weight_info.dtype)
     def kernel(
@@ -71,26 +91,27 @@ def _indices_dot_dense_mat_warp_kernel_generator(
         weights: warp.array2d(dtype=weight_dtype),
         out: warp.array1d(dtype=weight_dtype),
     ):
-        i_col_block = wp.tid()
-        temp = wp.tile_zeros(shape=(block_dim,), dtype=weight_dtype)
+        i_col_block = warp.tid()
+        temp = warp.tile_zeros(shape=(block_dim,), dtype=weight_dtype)
         for j in range(indices_length):
-            temp += wp.tile_load(weights[indices[j]], shape=(block_dim,), offset=(i_col_block * block_dim,))
-        wp.tile_store(out, temp, offset=(i_col_block * block_dim,))
+            temp += warp.tile_load(weights[indices[j]], shape=(block_dim,), offset=(i_col_block * block_dim,))
+        warp.tile_store(out, temp, offset=(i_col_block * block_dim,))
     return warp_kernel(
         kernel,
         tile=(cdiv(weight_info.shape[1], block_dim),),
         block_dim=block_dim,
     )
 
-def indices_dot_dense_mat_p_call(indices, weights, count_arr):
+def indices_dot_dense_mat_p_call(indices, weights, count_data_struct):
     out = jax.ShapeDtypeStruct([weights.shape[1]], weights.dtype)
+
     return indices_dot_dense_mat_p(
         indices,
         weights,
         outs=[out],
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
-        count_info =jax.ShapeDtypeStruct(count_arr.shape, count_arr.dtype)
+        count_info =jax.ShapeDtypeStruct([count_data_struct.shape[0]], count_data_struct.dtype)
     )
 
 
@@ -100,14 +121,27 @@ indices_dot_dense_mat_p.def_gpu_kernel(warp=_indices_dot_dense_mat_warp_kernel_g
                                           default='warp')
 
 
+"""
+This module defines a custom XLA-optimized operation for extracting the indices of non-zero (or True) values in a binary or boolean vector.
+The main function `binary_vec_get_indices` returns the indices of active elements along with the count of such elements.
 
+Functions:
+----------
+binary_vec_get_indices(spikes):
+    Extracts the indices of non-zero/True elements from the input vector.
 
-def binary_vec_get_indices(spikes):
-    # with jax.ensure_compile_time_eval():
-    #     spikes = u.math.asarray(spikes)
-    # spikes_val, spikeunit = u.split_mantissa_unit(spikes)
-    r = binary_vec_get_indices_p_call(spikes)
-    return r[0], r[1]
+    Parameters:
+        spikes (array-like): A 1D array representing a binary or boolean vector. Can be of type bool or numeric (e.g., float, int).
+
+    Returns:
+        tuple:
+            - array-like: A 1D array containing the indices of non-zero/True elements.
+            - array-like: A scalar array indicating the number of non-zero/True elements.
+"""
+
+def binary_vec_get_indices(spikes, count_array):
+    r = binary_vec_get_indices_p_call(spikes, count_array)
+    return r[0]
 
 
 
@@ -116,7 +150,7 @@ def _binary_vec_get_indices_numba_kernel_generator(
     **kwargs
 ):
     if spike_info.dtype == jnp.bool_:
-        def _kernel(spikes, indices, cnt):
+        def _kernel(spikes,cnt, indices):
             idx = 0
             for i in range(spikes.shape[0]):
                 if spikes[i]:
@@ -124,7 +158,7 @@ def _binary_vec_get_indices_numba_kernel_generator(
                     idx += 1
             cnt[0] = idx
     else:
-        def _kernel(spikes, indices, cnt):
+        def _kernel(spikes, cnt, indices):
             idx = 0
             for i in range(spikes.shape[0]):
                 if spikes[i] != 0.:
@@ -145,25 +179,27 @@ def _binary_vec_get_indices_warp_kernel_generator(
     indices_length = indices_info.shape[0]
     if spike_info.dtype == jnp.bool_:
         def kernel(
-            spikes: wp.array(dtype=float),
-            indices: wp.array(dtype=int),
-            cnt: wp.array(dtype=int)
+            spikes: warp.array(dtype=float),
+            cnt: warp.array(dtype=int),
+            indices: warp.array(dtype=int),
+            
         ):
-            i_col_block = wp.tid()
+            i_col_block = warp.tid()
 
             if (spikes[i_col_block]):
-                idx = wp.atomic_add(cnt, 0, 1)
+                idx = warp.atomic_add(cnt, 0, 1)
                 indices[idx] = i_col_block
     else:
         def kernel(
-            spikes: wp.array(dtype=float),
-            indices: wp.array(dtype=int),
-            cnt: wp.array(dtype=int)
+            spikes: warp.array(dtype=float),
+            cnt: warp.array(dtype=int),
+            indices: warp.array(dtype=int),
         ):
-            i_col_block = wp.tid()
-
+            i_col_block = warp.tid()
+            temp = warp.tile_zeros(shape=(1,), dtype=int)
             if (spikes[i_col_block] != 0.):
-                idx = wp.atomic_add(cnt, 0, 1)
+                idx = warp.atomic_add(cnt, 0, 1)
+                # print(idx)
                 indices[idx] = i_col_block        
 
 
@@ -173,12 +209,14 @@ def _binary_vec_get_indices_warp_kernel_generator(
     )
 
 
-def binary_vec_get_indices_p_call(spikes):
+def binary_vec_get_indices_p_call(spikes, count_array):
     out = jax.ShapeDtypeStruct([spikes.shape[0]], jnp.int32)
-    cnt = jax.ShapeDtypeStruct([1], jnp.int32)
+    #cnt = jax.ShapeDtypeStruct([1], jnp.int32)
+
     return binary_vec_get_indices_p(
         spikes,
-        outs=[out,cnt],
+        count_array,
+        outs=[out],
         spike_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
         indices_info=jax.ShapeDtypeStruct(out.shape, out.dtype),
     )
