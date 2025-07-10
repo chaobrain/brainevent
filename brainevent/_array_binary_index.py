@@ -15,30 +15,28 @@
 
 # -*- coding: utf-8 -*-
 
-import brainunit as u
 import jax
-import numpy as np
 from jax.tree_util import register_pytree_node_class
 
 from ._array_base import BaseArray, extract_raw_value
 from ._array_binary import BinaryArray
+from ._array_binary_index_extraction import binary_array_index
+from ._dense_impl_binary_index import (
+    binary_vec_dot_dense_mat,
+    binary_mat_dot_dense_mat,
+    dense_mat_dot_binary_vec,
+    dense_mat_dot_binary_mat,
+)
 from ._error import MathError
+from ._misc import is_known_type
 
 __all__ = [
     'BinaryArrayIndex',
 ]
 
 
-def is_known_type(x):
-    return isinstance(x, (u.Quantity, jax.Array, np.ndarray, BaseArray))
-
-
 @register_pytree_node_class
 class BinaryArrayIndex(BaseArray):
-    """
-    A binary array is a special case of an event array where the events are binary (0 or 1).
-
-    """
     __module__ = 'brainevent'
 
     def __init__(self, value, dtype: jax.typing.DTypeLike = None):
@@ -48,16 +46,13 @@ class BinaryArrayIndex(BaseArray):
             value = value.value
         super().__init__(value, dtype=dtype)
 
-
-
-        self.value_cnt = ...
-        self.indices = ...
+        self.spike_indices, self.spike_count = binary_array_index(value)
 
     def __setitem__(self, index, value):
-        raise NotImplementedError
+        raise NotImplementedError('Setting items in BinaryArrayIndex is not supported.')
 
     def _update(self, value):
-        raise NotImplementedError
+        raise NotImplementedError('Updating BinaryArrayIndex is not supported.')
 
     def __matmul__(self, oc):
         """
@@ -116,9 +111,9 @@ class BinaryArrayIndex(BaseArray):
 
             # Perform the appropriate multiplication based on dimensions
             if self.ndim == 1:
-                return binary_vec_dot_dense_mat(self.value, oc)
+                return binary_vec_dot_dense_mat(self, oc)
             else:  # self.ndim == 2
-                return binary_mat_dot_dense_mat(self.value, oc)
+                return binary_mat_dot_dense_mat(self, oc)
         else:
             return oc.__rmatmul__(self)
 
@@ -201,13 +196,14 @@ class BinaryArrayIndex(BaseArray):
         return self
 
     def tree_flatten(self):
-        return (self.value,), (self.indices,)
+        return (self.value,), (self.spike_count, self.spike_indices)
 
     @classmethod
     def tree_unflatten(cls, aux_data, flat_contents):
         value, = flat_contents
-        indices, = aux_data
+        spike_count, spike_indices = aux_data
         obj = object.__new__(cls)
         obj._value = value
-        obj.indices = indices
+        obj.spike_count = spike_count
+        obj.spike_indices = spike_indices
         return obj
