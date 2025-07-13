@@ -69,8 +69,9 @@ def _binary_1d_array_index_warp_kernel_generator(
     if spikes_info.dtype == jnp.bool_:
         def kernel(
             spikes: warp.array(dtype=float),
-            count: warp.array(dtype=int),
+            _: warp.array(dtype=int),
             indices: warp.array(dtype=int),
+            count: warp.array(dtype=int),
         ):
             i_col_block = warp.tid()
             if spikes[i_col_block]:
@@ -80,8 +81,9 @@ def _binary_1d_array_index_warp_kernel_generator(
     else:
         def kernel(
             spikes: warp.array(dtype=float),
-            count: warp.array(dtype=int),
+            _: warp.array(dtype=int),
             indices: warp.array(dtype=int),
+            count: warp.array(dtype=int),
         ):
             i_col_block = warp.tid()
             if spikes[i_col_block] != 0.:
