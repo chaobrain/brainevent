@@ -244,7 +244,7 @@ class BaseCLS(u.sparse.SparseMatrix):
         """
         raise NotImplementedError
 
-    def _diag(self, pos):
+    def _diag_pos(self, pos):
         self.diag_positions = pos
         return self
 
@@ -332,7 +332,7 @@ class CSR(BaseCLS):
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
-        return CSR((data, self.indices, self.indptr), shape=self.shape)._diag(self.diag_positions)
+        return CSR((data, self.indices, self.indptr), shape=self.shape)._diag_pos(self.diag_positions)
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """
@@ -397,7 +397,7 @@ class CSR(BaseCLS):
             If axes is not None, as this implementation doesn't support custom axis ordering.
         """
         assert axes is None, "transpose does not support axes argument."
-        return CSC((self.data, self.indices, self.indptr), shape=self.shape[::-1])._diag(self.diag_positions)
+        return CSC((self.data, self.indices, self.indptr), shape=self.shape[::-1])._diag_pos(self.diag_positions)
 
     def _unitary_op(self, op) -> 'CSR':
         """
@@ -415,7 +415,7 @@ class CSR(BaseCLS):
         CSR
             A new CSR matrix with the result of applying the operation to its data.
         """
-        return CSR((op(self.data), self.indices, self.indptr), shape=self.shape)._diag(self.diag_positions)
+        return CSR((op(self.data), self.indices, self.indptr), shape=self.shape)._diag_pos(self.diag_positions)
 
     def _binary_op(self, other, op) -> 'CSR':
         if isinstance(other, CSR):
@@ -425,7 +425,7 @@ class CSR(BaseCLS):
                      self.indices,
                      self.indptr),
                     shape=self.shape
-                )._diag(self.diag_positions)
+                )._diag_pos(self.diag_positions)
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
@@ -434,7 +434,7 @@ class CSR(BaseCLS):
             return CSR(
                 (op(self.data, other), self.indices, self.indptr),
                 shape=self.shape
-            )._diag(self.diag_positions)
+            )._diag_pos(self.diag_positions)
 
         elif other.ndim == 2 and other.shape == self.shape:
             rows, cols = _csr_to_coo(self.indices, self.indptr)
@@ -444,7 +444,7 @@ class CSR(BaseCLS):
                  self.indices,
                  self.indptr),
                 shape=self.shape
-            )._diag(self.diag_positions)
+            )._diag_pos(self.diag_positions)
 
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
@@ -457,7 +457,7 @@ class CSR(BaseCLS):
                      self.indices,
                      self.indptr),
                     shape=self.shape
-                )._diag(self.diag_positions)
+                )._diag_pos(self.diag_positions)
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
@@ -468,7 +468,7 @@ class CSR(BaseCLS):
                  self.indices,
                  self.indptr),
                 shape=self.shape
-            )._diag(self.diag_positions)
+            )._diag_pos(self.diag_positions)
         elif other.ndim == 2 and other.shape == self.shape:
             rows, cols = _csr_to_coo(self.indices, self.indptr)
             other = other[rows, cols]
@@ -477,7 +477,7 @@ class CSR(BaseCLS):
                  self.indices,
                  self.indptr),
                 shape=self.shape
-            )._diag(self.diag_positions)
+            )._diag_pos(self.diag_positions)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
@@ -699,7 +699,7 @@ class CSC(BaseCLS):
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
-        return CSC((data, self.indices, self.indptr), shape=self.shape)._diag(self.diag_positions)
+        return CSC((data, self.indices, self.indptr), shape=self.shape)._diag_pos(self.diag_positions)
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """
@@ -764,7 +764,7 @@ class CSC(BaseCLS):
             If axes is not None, as this implementation doesn't support custom axis ordering.
         """
         assert axes is None
-        return CSR((self.data, self.indices, self.indptr), shape=self.shape[::-1])._diag(self.diag_positions)
+        return CSR((self.data, self.indices, self.indptr), shape=self.shape[::-1])._diag_pos(self.diag_positions)
 
     def _unitary_op(self, op) -> 'CSC':
         """
@@ -782,7 +782,7 @@ class CSC(BaseCLS):
         CSC
             A new CSC matrix with the result of applying the operation to its data.
         """
-        return CSC((op(self.data), self.indices, self.indptr), shape=self.shape)._diag(self.diag_positions)
+        return CSC((op(self.data), self.indices, self.indptr), shape=self.shape)._diag_pos(self.diag_positions)
 
     def _binary_op(self, other, op) -> 'CSC':
         if isinstance(other, CSC):
@@ -792,7 +792,7 @@ class CSC(BaseCLS):
                      self.indices,
                      self.indptr),
                     shape=self.shape
-                )._diag(self.diag_positions)
+                )._diag_pos(self.diag_positions)
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
@@ -803,7 +803,7 @@ class CSC(BaseCLS):
                  self.indices,
                  self.indptr),
                 shape=self.shape
-            )._diag(self.diag_positions)
+            )._diag_pos(self.diag_positions)
         elif other.ndim == 2 and other.shape == self.shape:
             cols, rows = _csr_to_coo(self.indices, self.indptr)
             other = other[rows, cols]
@@ -812,7 +812,7 @@ class CSC(BaseCLS):
                  self.indices,
                  self.indptr),
                 shape=self.shape
-            )._diag(self.diag_positions)
+            )._diag_pos(self.diag_positions)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
@@ -824,7 +824,7 @@ class CSC(BaseCLS):
                      self.indices,
                      self.indptr),
                     shape=self.shape
-                )._diag(self.diag_positions)
+                )._diag_pos(self.diag_positions)
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
@@ -835,7 +835,7 @@ class CSC(BaseCLS):
                  self.indices,
                  self.indptr),
                 shape=self.shape
-            )._diag(self.diag_positions)
+            )._diag_pos(self.diag_positions)
         elif other.ndim == 2 and other.shape == self.shape:
             cols, rows = _csr_to_coo(self.indices, self.indptr)
             other = other[rows, cols]
@@ -844,7 +844,7 @@ class CSC(BaseCLS):
                  self.indices,
                  self.indptr),
                 shape=self.shape
-            )._diag(self.diag_positions)
+            )._diag_pos(self.diag_positions)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
