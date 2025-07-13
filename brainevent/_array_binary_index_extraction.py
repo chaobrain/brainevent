@@ -64,8 +64,6 @@ def _binary_1d_array_index_warp_kernel_generator(
 ):
     import warp  # pylint: disable=import-outside-toplevel
 
-    indices_length = indices_info.shape[0]
-
     if spikes_info.dtype == jnp.bool_:
         def kernel(
             spikes: warp.array(dtype=float),
@@ -90,7 +88,7 @@ def _binary_1d_array_index_warp_kernel_generator(
                 idx = warp.atomic_add(count, 0, 1)
                 indices[idx] = i_col_block
 
-    return warp_kernel(kernel, dim=indices_length)
+    return warp_kernel(kernel, dim=spikes_info.shape[0], input_output_aliases={1: 1})
 
 
 def binary_1d_array_index_p_call(spikes):
