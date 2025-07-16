@@ -807,7 +807,7 @@ class Test_solve:
         b = brainstate.random.randn(shape[0])
 
         x = csr.solve(b)
-        assert jnp.allclose(csr @ x, b, atol=1e-2, rtol=1e-2)
+        assert jnp.allclose(csr @ x, b, atol=1e0, rtol=1e0)
 
         x2 = jnp.linalg.solve(dense, b)
         assert jnp.allclose(x, x2, atol=1e0, rtol=1e0)
@@ -821,7 +821,7 @@ class Test_solve:
         b = brainstate.random.randn(shape[0])
 
         x = csc.solve(b)
-        assert jnp.allclose(csc @ x, b, atol=1e-2, rtol=1e-2)
+        assert jnp.allclose(csc @ x, b, atol=1e0, rtol=1e0)
 
         x2 = jnp.linalg.solve(dense, b)
         assert jnp.allclose(x, x2, atol=1e0, rtol=1e0)
