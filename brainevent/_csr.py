@@ -75,6 +75,8 @@ class BaseCLS(u.sparse.SparseMatrix):
         # Call the constructor of the superclass to initialize the object with the given args and shape
         super().__init__(args, shape=shape)
 
+        self.diag_positions = None
+
     def tree_flatten(self):
         """
         Flatten the CSC matrix for JAX's tree utilities.
@@ -89,7 +91,7 @@ class BaseCLS(u.sparse.SparseMatrix):
             - A tuple with the CSC matrix's data as the only element.
             - A tuple with the CSC matrix's indices, indptr, and shape.
         """
-        return (self.data,), (self.indices, self.indptr, self.shape)
+        return (self.data,), (self.indices, self.indptr, self.shape, self.diag_positions)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
@@ -105,15 +107,12 @@ class BaseCLS(u.sparse.SparseMatrix):
             A tuple containing the CSC matrix's indices, indptr, and shape.
         children : tuple
             A tuple containing the CSC matrix's data as its only element.
-
-        Returns
-        --------
-        CSC
-            A new CSC matrix instance reconstructed from the flattened data.
         """
         data, = children
-        indices, indptr, shape = aux_data
-        return CSC((data, indices, indptr), shape=shape)
+        indices, indptr, shape, diag_positions = aux_data
+        obj = cls((data, indices, indptr), shape=shape)
+        obj.diag_positions = diag_positions
+        return obj
 
     def _unitary_op(self, op):
         raise NotImplementedError
@@ -221,12 +220,10 @@ class BaseCLS(u.sparse.SparseMatrix):
         - This method relies on `csr_diag_position_v2` to find diagonal positions and
           `csr_diag_add_v2` to perform the actual addition.
         """
-        if not hasattr(self, 'diag_positions'):
+        if self.diag_positions is None:
             self.diag_positions = csr_diag_position_v2(self.indptr, self.indices, self.shape)
         assert not isinstance(other, JAXSparse), "diag_add does not support JAXSparse objects."
-        return self.with_data(
-            csr_diag_add_v2(self.data, self.diag_positions, other)
-        )
+        return self.with_data(csr_diag_add_v2(self.data, self.diag_positions, other))
 
     def solve(self, b: Union[jax.Array, u.Quantity]) -> Union[jax.Array, u.Quantity]:
         """
@@ -246,6 +243,10 @@ class BaseCLS(u.sparse.SparseMatrix):
             The solution vector x that satisfies Ax = b.
         """
         raise NotImplementedError
+
+    def _diag_pos(self, pos):
+        self.diag_positions = pos
+        return self
 
 
 @jax.tree_util.register_pytree_node_class
@@ -281,9 +282,9 @@ class CSR(BaseCLS):
     def fromdense(cls, mat, *, nse=None, index_dtype=jnp.int32) -> 'CSR':
         """
         Create a CSR matrix from a dense matrix.
-    
+
         This method converts a dense matrix to a Compressed Sparse Row (CSR) format.
-    
+
         Parameters
         -----------
         mat : array_like
@@ -293,7 +294,7 @@ class CSR(BaseCLS):
             calculated from the input matrix.
         index_dtype : dtype, optional
             The data type to be used for index arrays (default is jnp.int32).
-    
+
         Returns
         --------
         CSR
@@ -304,24 +305,25 @@ class CSR(BaseCLS):
         csr = u.sparse.csr_fromdense(mat, nse=nse, index_dtype=index_dtype)
         return CSR((csr.data, csr.indices, csr.indptr), shape=csr.shape)
 
+
     def with_data(self, data: Data) -> 'CSR':
         """
         Create a new CSR matrix with updated data while keeping the same structure.
-    
+
         This method creates a new CSR matrix instance with the provided data,
         maintaining the original indices, indptr, and shape.
-    
+
         Parameters
         -----------
         data : Data
             The new data array to replace the existing data in the CSR matrix.
             It must have the same shape, dtype, and unit as the original data.
-    
+
         Returns
         --------
         CSR
             A new CSR matrix instance with updated data and the same structure as the original.
-    
+
         Raises
         -------
         AssertionError
@@ -330,15 +332,15 @@ class CSR(BaseCLS):
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
-        return CSR((data, self.indices, self.indptr), shape=self.shape)
+        return CSR((data, self.indices, self.indptr), shape=self.shape)._diag_pos(self.diag_positions)
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """
         Convert the CSR matrix to a dense matrix.
-    
+
         This method transforms the compressed sparse row (CSR) representation
         into a full dense matrix.
-    
+
         Returns
         --------
         array_like
@@ -375,27 +377,27 @@ class CSR(BaseCLS):
     def transpose(self, axes=None) -> 'CSC':
         """
         Transpose the CSR matrix.
-    
+
         This method returns the transpose of the CSR matrix as a CSC matrix.
-    
+
         Parameters
         -----------
         axes : None
             This parameter is not used and must be None. Included for compatibility
             with numpy's transpose function signature.
-    
+
         Returns
         --------
         CSC
             The transpose of the CSR matrix as a CSC (Compressed Sparse Column) matrix.
-    
+
         Raises
         -------
         AssertionError
             If axes is not None, as this implementation doesn't support custom axis ordering.
         """
         assert axes is None, "transpose does not support axes argument."
-        return CSC((self.data, self.indices, self.indptr), shape=self.shape[::-1])
+        return CSC((self.data, self.indices, self.indptr), shape=self.shape[::-1])._diag_pos(self.diag_positions)
 
     def _unitary_op(self, op) -> 'CSR':
         """
@@ -413,7 +415,7 @@ class CSR(BaseCLS):
         CSR
             A new CSR matrix with the result of applying the operation to its data.
         """
-        return CSR((op(self.data), self.indices, self.indptr), shape=self.shape)
+        return CSR((op(self.data), self.indices, self.indptr), shape=self.shape)._diag_pos(self.diag_positions)
 
     def _binary_op(self, other, op) -> 'CSR':
         if isinstance(other, CSR):
@@ -423,7 +425,7 @@ class CSR(BaseCLS):
                      self.indices,
                      self.indptr),
                     shape=self.shape
-                )
+                )._diag_pos(self.diag_positions)
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
@@ -432,7 +434,7 @@ class CSR(BaseCLS):
             return CSR(
                 (op(self.data, other), self.indices, self.indptr),
                 shape=self.shape
-            )
+            )._diag_pos(self.diag_positions)
 
         elif other.ndim == 2 and other.shape == self.shape:
             rows, cols = _csr_to_coo(self.indices, self.indptr)
@@ -442,7 +444,7 @@ class CSR(BaseCLS):
                  self.indices,
                  self.indptr),
                 shape=self.shape
-            )
+            )._diag_pos(self.diag_positions)
 
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
@@ -455,7 +457,7 @@ class CSR(BaseCLS):
                      self.indices,
                      self.indptr),
                     shape=self.shape
-                )
+                )._diag_pos(self.diag_positions)
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
@@ -466,7 +468,7 @@ class CSR(BaseCLS):
                  self.indices,
                  self.indptr),
                 shape=self.shape
-            )
+            )._diag_pos(self.diag_positions)
         elif other.ndim == 2 and other.shape == self.shape:
             rows, cols = _csr_to_coo(self.indices, self.indptr)
             other = other[rows, cols]
@@ -475,7 +477,7 @@ class CSR(BaseCLS):
                  self.indices,
                  self.indptr),
                 shape=self.shape
-            )
+            )._diag_pos(self.diag_positions)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
@@ -545,12 +547,18 @@ class CSR(BaseCLS):
         elif isinstance(other, MaskedFloat):
             other = other.data
             if other.ndim == 1:
-                return masked_float_csr_matvec(self.data, self.indices, self.indptr, other,
-                                               shape=self.shape, transpose=True)
+                return masked_float_csr_matvec(
+                    self.data, self.indices, self.indptr, other,
+                    shape=self.shape,
+                    transpose=True
+                )
             elif other.ndim == 2:
                 other = other.T
-                r = masked_float_csr_matmat(self.data, self.indices, self.indptr, other,
-                                            shape=self.shape, transpose=True)
+                r = masked_float_csr_matmat(
+                    self.data, self.indices, self.indptr, other,
+                    shape=self.shape,
+                    transpose=True
+                )
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -641,10 +649,10 @@ class CSC(BaseCLS):
     def fromdense(cls, mat, *, nse=None, index_dtype=jnp.int32) -> 'CSC':
         """
         Create a CSC (Compressed Sparse Column) matrix from a dense matrix.
-    
+
         This method converts a dense matrix to CSC format, which is an efficient
         storage format for sparse matrices.
-    
+
         Parameters
         -----------
         mat : array_like
@@ -654,7 +662,7 @@ class CSC(BaseCLS):
             calculated from the input matrix.
         index_dtype : dtype, optional
             The data type to be used for index arrays (default is jnp.int32).
-    
+
         Returns
         --------
         CSC
@@ -668,21 +676,21 @@ class CSC(BaseCLS):
     def with_data(self, data: Data) -> 'CSC':
         """
         Create a new CSC matrix with updated data while keeping the same structure.
-    
+
         This method creates a new CSC matrix instance with the provided data,
         maintaining the original indices, indptr, and shape.
-    
+
         Parameters
         -----------
         data : Data
             The new data array to replace the existing data in the CSC matrix.
             It must have the same shape, dtype, and unit as the original data.
-    
+
         Returns
         --------
         CSC
             A new CSC matrix instance with updated data and the same structure as the original.
-    
+
         Raises
         -------
         AssertionError
@@ -691,15 +699,15 @@ class CSC(BaseCLS):
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
-        return CSC((data, self.indices, self.indptr), shape=self.shape)
+        return CSC((data, self.indices, self.indptr), shape=self.shape)._diag_pos(self.diag_positions)
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """
         Convert the CSC matrix to a dense matrix.
-    
+
         This method transforms the compressed sparse column (CSC) representation
         into a full dense matrix.
-    
+
         Returns
         --------
         array_like
@@ -736,27 +744,27 @@ class CSC(BaseCLS):
     def transpose(self, axes=None) -> 'CSR':
         """
         Transpose the CSC matrix.
-    
+
         This method returns the transpose of the CSC matrix as a CSR matrix.
-    
+
         Parameters
         -----------
         axes : None
             This parameter is not used and must be None. Included for compatibility
             with numpy's transpose function signature.
-    
+
         Returns
         --------
         CSR
             The transpose of the CSC matrix as a CSR (Compressed Sparse Row) matrix.
-    
+
         Raises
         -------
         AssertionError
             If axes is not None, as this implementation doesn't support custom axis ordering.
         """
         assert axes is None
-        return CSR((self.data, self.indices, self.indptr), shape=self.shape[::-1])
+        return CSR((self.data, self.indices, self.indptr), shape=self.shape[::-1])._diag_pos(self.diag_positions)
 
     def _unitary_op(self, op) -> 'CSC':
         """
@@ -774,7 +782,7 @@ class CSC(BaseCLS):
         CSC
             A new CSC matrix with the result of applying the operation to its data.
         """
-        return CSC((op(self.data), self.indices, self.indptr), shape=self.shape)
+        return CSC((op(self.data), self.indices, self.indptr), shape=self.shape)._diag_pos(self.diag_positions)
 
     def _binary_op(self, other, op) -> 'CSC':
         if isinstance(other, CSC):
@@ -784,7 +792,7 @@ class CSC(BaseCLS):
                      self.indices,
                      self.indptr),
                     shape=self.shape
-                )
+                )._diag_pos(self.diag_positions)
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
@@ -795,7 +803,7 @@ class CSC(BaseCLS):
                  self.indices,
                  self.indptr),
                 shape=self.shape
-            )
+            )._diag_pos(self.diag_positions)
         elif other.ndim == 2 and other.shape == self.shape:
             cols, rows = _csr_to_coo(self.indices, self.indptr)
             other = other[rows, cols]
@@ -804,7 +812,7 @@ class CSC(BaseCLS):
                  self.indices,
                  self.indptr),
                 shape=self.shape
-            )
+            )._diag_pos(self.diag_positions)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
@@ -816,7 +824,7 @@ class CSC(BaseCLS):
                      self.indices,
                      self.indptr),
                     shape=self.shape
-                )
+                )._diag_pos(self.diag_positions)
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
@@ -827,7 +835,7 @@ class CSC(BaseCLS):
                  self.indices,
                  self.indptr),
                 shape=self.shape
-            )
+            )._diag_pos(self.diag_positions)
         elif other.ndim == 2 and other.shape == self.shape:
             cols, rows = _csr_to_coo(self.indices, self.indptr)
             other = other[rows, cols]
@@ -836,7 +844,7 @@ class CSC(BaseCLS):
                  self.indices,
                  self.indptr),
                 shape=self.shape
-            )
+            )._diag_pos(self.diag_positions)
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
@@ -848,20 +856,34 @@ class CSC(BaseCLS):
         if isinstance(other, EventArray):
             other = other.value
             if other.ndim == 1:
-                return binary_csr_matvec(data, self.indices, self.indptr, other, shape=self.shape[::-1], transpose=True)
+                return binary_csr_matvec(
+                    data, self.indices, self.indptr, other,
+                    shape=self.shape[::-1],
+                    transpose=True
+                )
             elif other.ndim == 2:
-                return binary_csr_matmat(data, self.indices, self.indptr, other, shape=self.shape[::-1], transpose=True)
+                return binary_csr_matmat(
+                    data, self.indices, self.indptr, other,
+                    shape=self.shape[::-1],
+                    transpose=True
+                )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
         elif isinstance(other, MaskedFloat):
             other = other.value
             if other.ndim == 1:
-                return masked_float_csr_matvec(data, self.indices, self.indptr, other,
-                                               shape=self.shape[::-1], transpose=True)
+                return masked_float_csr_matvec(
+                    data, self.indices, self.indptr, other,
+                    shape=self.shape[::-1],
+                    transpose=True
+                )
             elif other.ndim == 2:
-                return masked_float_csr_matmat(data, self.indices, self.indptr, other,
-                                               shape=self.shape[::-1], transpose=True)
+                return masked_float_csr_matmat(
+                    data, self.indices, self.indptr, other,
+                    shape=self.shape[::-1],
+                    transpose=True
+                )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -898,10 +920,12 @@ class CSC(BaseCLS):
         if isinstance(other, EventArray):
             other = other.value
             if other.ndim == 1:
-                return binary_csr_matvec(data, self.indices, self.indptr, other, shape=self.shape[::-1],
+                return binary_csr_matvec(data, self.indices, self.indptr, other,
+                                         shape=self.shape[::-1],
                                          transpose=False)
             elif other.ndim == 2:
-                return binary_csr_matmat(data, self.indices, self.indptr, other.T, shape=self.shape[::-1],
+                return binary_csr_matmat(data, self.indices, self.indptr, other.T,
+                                         shape=self.shape[::-1],
                                          transpose=False).T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -909,10 +933,12 @@ class CSC(BaseCLS):
         elif isinstance(other, MaskedFloat):
             other = other.value
             if other.ndim == 1:
-                return masked_float_csr_matvec(data, self.indices, self.indptr, other, shape=self.shape[::-1],
+                return masked_float_csr_matvec(data, self.indices, self.indptr, other,
+                                               shape=self.shape[::-1],
                                                transpose=False)
             elif other.ndim == 2:
-                return masked_float_csr_matmat(data, self.indices, self.indptr, other.T, shape=self.shape[::-1],
+                return masked_float_csr_matmat(data, self.indices, self.indptr, other.T,
+                                               shape=self.shape[::-1],
                                                transpose=False).T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
