@@ -27,7 +27,7 @@ from ._array_masked_float import MaskedFloat
 from ._compatible_import import JAXSparse
 from ._csr_impl_binary import binary_csr_matvec, binary_csr_matmat
 from ._csr_impl_diag_add import csr_diag_position_v2, csr_diag_add_v2
-from ._csr_impl_float import csr_matvec, csr_matmat
+from ._csr_impl_float import csr_matvec, csr_matmat, csrmv_yw2y
 from ._csr_impl_masked_float import masked_float_csr_matvec, masked_float_csr_matmat
 from ._csr_impl_spsolve import csr_solve
 from ._misc import _csr_to_coo, _csr_todense
@@ -304,7 +304,6 @@ class CSR(BaseCLS):
             nse = (u.get_mantissa(mat) != 0).sum()
         csr = u.sparse.csr_fromdense(mat, nse=nse, index_dtype=index_dtype)
         return CSR((csr.data, csr.indices, csr.indptr), shape=csr.shape)
-
 
     def with_data(self, data: Data) -> 'CSR':
         """
@@ -613,6 +612,18 @@ class CSR(BaseCLS):
         assert self.shape[0] == b.shape[0], ("The number of rows in the matrix must match "
                                              "the size of the right-hand side vector b.")
         return csr_solve(self.data, self.indices, self.indptr, b)
+
+    def yw_to_w(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        transpose: bool = False,
+    ) -> Union[jax.Array, u.Quantity]:
+        return csrmv_yw2y(
+            y_dim_arr, w_dim_arr, self.indices, self.indptr,
+            shape=self.shape,
+            transpose=transpose
+        )
 
 
 @jax.tree_util.register_pytree_node_class
@@ -992,3 +1003,15 @@ class CSC(BaseCLS):
         assert self.shape[0] == b.shape[0], ("The number of rows in the matrix must match "
                                              "the size of the right-hand side vector b.")
         return self.T.solve(b, tol=tol, reorder=reorder)
+
+    def yw_to_w(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        transpose: bool = False,
+    ) -> Union[jax.Array, u.Quantity]:
+        return csrmv_yw2y(
+            y_dim_arr, w_dim_arr, self.indices, self.indptr,
+            shape=self.shape[::-1],
+            transpose=not transpose
+        )
