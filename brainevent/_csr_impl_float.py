@@ -29,7 +29,7 @@ from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import numba_kernel
 from ._xla_custom_op_pallas import pallas_kernel
 from ._xla_custom_op_util import general_batching_rule
-from ._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel, jaxinfo_to_warpinfo
+from ._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
 
 
 def csr_matvec(
@@ -1317,56 +1317,13 @@ def _csrmv_yw2y_numba_kernel_generator(
     return numba_kernel(kernel)
 
 
-def _csrmv_yw2y_warp_kernel_generator(
-    shape: MatrixShape,
-    transpose: bool,
-    y_info: jax.ShapeDtypeStruct,
-    w_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    indptr_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    import warp  # pylint: disable=import-outside-toplevel
-
-    if transpose:
-        def kernel(
-            y_ref: jaxinfo_to_warpinfo(y_info),  # [shape[1]]
-            w_ref: jaxinfo_to_warpinfo(w_info),  # [nse]
-            indices_ref: jaxinfo_to_warpinfo(indices_info),  # [nse]
-            indptr_ref: jaxinfo_to_warpinfo(indptr_info),  # [shape[1] + 1]
-            posts_ref: jaxinfo_to_warpinfo(w_info),  # [nse]
-        ):
-            i_col = warp.tid()
-            i_row_start = indptr_ref[i_col]
-            i_row_end = indptr_ref[i_col + 1]
-            for index in range(i_row_start, i_row_end):
-                i_row = indices_ref[index]
-                posts_ref[index] = w_ref[index] * y_ref[i_row]
-
-    else:
-        def kernel(
-            y_ref: jaxinfo_to_warpinfo(y_info),  # [shape[0]]
-            w_ref: jaxinfo_to_warpinfo(w_info),  # [nse]
-            indices_ref: jaxinfo_to_warpinfo(indices_info),  # [nse]
-            indptr_ref: jaxinfo_to_warpinfo(indptr_info),  # [shape[0] + 1]
-            posts_ref: jaxinfo_to_warpinfo(w_info),  # [nse]
-        ):
-            i_row = warp.tid()
-            i_col_start = indptr_ref[i_row]
-            i_col_end = indptr_ref[i_row + 1]
-            for index in range(i_col_start, i_col_end):
-                posts_ref[index] = w_ref[index] * y_ref[i_row]
-
-    return warp_kernel(kernel, dim=shape[1] if transpose else shape[0])
-
-
 def _csrmv_yw2y_pallas_kernel_generator(
     shape: MatrixShape,
     transpose: bool,
     y_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    block_dim = generate_block_dim(y_info.shape[0], 512)
+    block_dim = generate_block_dim(y_info.shape[0], 128)
 
     def kernel(
         y_ref,
@@ -1375,22 +1332,24 @@ def _csrmv_yw2y_pallas_kernel_generator(
         indptr_ref,
         posts_ref,
     ):
-        i_col = pl.program_id(0)
-        i_start = indptr_ref[i_col]
-        i_end = indptr_ref[i_col + 1]
+        i_block = pl.program_id(0)
+        i_start = indptr_ref[i_block]
+        i_end = indptr_ref[i_block + 1]
         num_blocks = (i_end - i_start + block_dim - 1) // block_dim
+
+        if not transpose:
+            y_scalar = y_ref[i_block]
 
         def loop_fn(i, _):
             offset = i_start + i * block_dim
             mask = (offset + jnp.arange(block_dim)) < i_end
             w = pl.load(w_ref, pl.dslice(offset, block_dim), mask=mask, other=0.0)
-
             if transpose:
                 index = pl.load(indices_ref, pl.dslice(offset, block_dim), mask=mask, other=0)
                 y = pl.load(y_ref, index, mask=mask, other=0.0)
-                pl.store(posts_ref, pl.dslice(offset, block_dim), w * y)
+                pl.store(posts_ref, pl.dslice(offset, block_dim), w * y, mask=mask)
             else:
-                pl.store(posts_ref, pl.dslice(offset, block_dim), w * y_ref[i_col])
+                pl.store(posts_ref, pl.dslice(offset, block_dim), w * y_scalar, mask=mask)
 
         jax.lax.fori_loop(0, num_blocks, loop_fn, None)
 
@@ -1437,7 +1396,8 @@ def csrmv_yw2y_p_call(
     assert indices.ndim == 1, "Indices must be 1D."
     assert y.ndim == w.ndim == 1, "y and w must have the same shape."
     assert jnp.issubdtype(indices.dtype, jnp.integer), "Indices must be an integer type."
-    assert indptr.dtype == indices.dtype, "Indices and indptr must have the same dtype."
+    assert jnp.issubdtype(indptr.dtype, jnp.integer), "indptr must be an integer type."
+    # assert indptr.dtype == indices.dtype, "Indices and indptr must have the same dtype."
     assert jnp.issubdtype(w.dtype, jnp.floating), 'Weights must be a floating-point type.'
     assert w.shape == indices.shape, f"Weights shape mismatch, expected {indices.shape}, got {w.shape}."
     if transpose:
@@ -1464,8 +1424,6 @@ def csrmv_yw2y_p_call(
 
 csrmv_yw2y_p = XLACustomKernel('csrmv_yw2y')
 csrmv_yw2y_p.def_cpu_kernel(_csrmv_yw2y_numba_kernel_generator)
-csrmv_yw2y_p.def_gpu_kernel(pallas=_csrmv_yw2y_pallas_kernel_generator,
-                            warp=_csrmv_yw2y_warp_kernel_generator,
-                            default='pallas')
+csrmv_yw2y_p.def_gpu_kernel(pallas=_csrmv_yw2y_pallas_kernel_generator)
 csrmv_yw2y_p.def_tpu_kernel(_csrmv_yw2y_pallas_kernel_generator)
 csrmv_yw2y_p.def_jvp_rule2(_csrmv_yw2y_jvp_y, _csrmv_yw2y_jvp_w, None, None)
