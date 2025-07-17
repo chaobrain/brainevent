@@ -21,7 +21,7 @@ import pytest
 
 import brainevent
 from brainevent._csr_impl_binary_test import TestBatchingVectorCSR, TestBatchingMatrixCSR
-from brainevent._csr_impl_float import csr_yw2y
+from brainevent._csr_impl_float import csrmv_yw2y
 from brainevent._csr_test_util import get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
 
 pytest.mark.skipif(brainstate.environ.get_platform() != 'cpu', allow_module_level=True)
@@ -309,7 +309,7 @@ class Test_csr_yw2y:
         else:
             y = brainstate.random.rand(m)
 
-        res1 = csr_yw2y(y, csr.data, indices, indptr, shape=[m, n], transpose=transpose)
+        res1 = csrmv_yw2y(y, csr.data, indices, indptr, shape=[m, n], transpose=transpose)
         dense_res1 = csr.with_data(res1).todense()
         dense_res2 = (dense * jnp.expand_dims(y, axis=0)
                       if transpose else
