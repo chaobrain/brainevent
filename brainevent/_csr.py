@@ -175,6 +175,13 @@ class BaseCLS(u.sparse.SparseMatrix):
     ) -> Union[jax.Array, u.Quantity]:
         raise NotImplementedError
 
+    def yw_to_w_transposed(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity]
+    ) -> Union[jax.Array, u.Quantity]:
+        raise NotImplementedError
+
     @classmethod
     def fromdense(cls, mat, *, nse=None, index_dtype=jnp.int32):
         raise NotImplementedError
@@ -617,13 +624,67 @@ class CSR(BaseCLS):
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
-        transpose: bool = False,
     ) -> Union[jax.Array, u.Quantity]:
-        return csrmv_yw2y(
-            y_dim_arr, w_dim_arr, self.indices, self.indptr,
-            shape=self.shape,
-            transpose=transpose
-        )
+        """
+        Perform a specialized transformation from y-w space to w space using this sparse matrix.
+
+        This method implements a matrix-vector product operation that is optimized for
+        specific computational patterns in neural simulations. It efficiently computes
+        a sparse matrix vector product where indices in the y dimension map to values
+        in the w dimension.
+
+        Parameters
+        ----------
+        y_dim_arr : jax.Array, np.ndarray, u.Quantity
+            Array containing values in the y dimension (typically target/post-synaptic).
+        w_dim_arr : jax.Array, np.ndarray, u.Quantity
+            Array containing values in the w dimension (typically weights or connection values).
+
+        Returns
+        -------
+        Union[jax.Array, u.Quantity]
+            The resulting array after the sparse transformation operation.
+            Maintains the same units as the input arrays if they have units.
+
+        Notes
+        -----
+        This method is typically used in event-driven neural simulations to efficiently
+        compute the effect of connections between neurons.
+        """
+        return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape, transpose=False)
+
+    def yw_to_w_transposed(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+    ) -> Union[jax.Array, u.Quantity]:
+        """
+        Perform a transposed transformation from y-w space to w space using this sparse matrix.
+
+        This method implements the transpose of the yw_to_w operation, computing a specialized
+        matrix-vector product that is optimized for specific computational patterns in neural
+        simulations. It efficiently handles the transposed mapping between the y dimension and
+        the w dimension.
+
+        Parameters
+        ----------
+        y_dim_arr : jax.Array, np.ndarray, u.Quantity
+            Array containing values in the y dimension (typically target/post-synaptic).
+        w_dim_arr : jax.Array, np.ndarray, u.Quantity
+            Array containing values in the w dimension (typically weights or connection values).
+
+        Returns
+        -------
+        Union[jax.Array, u.Quantity]
+            The resulting array after the transposed sparse transformation operation.
+            Maintains the same units as the input arrays if they have units.
+
+        Notes
+        -----
+        This method computes the transpose of the yw_to_w operation, which can be useful
+        for backpropagation or adjoint operations in neural simulations.
+        """
+        return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape, transpose=True)
 
 
 @jax.tree_util.register_pytree_node_class
@@ -1008,10 +1069,68 @@ class CSC(BaseCLS):
         self,
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
-        transpose: bool = False,
     ) -> Union[jax.Array, u.Quantity]:
-        return csrmv_yw2y(
-            y_dim_arr, w_dim_arr, self.indices, self.indptr,
-            shape=self.shape[::-1],
-            transpose=not transpose
-        )
+        """
+        Perform a specialized transformation from y-w space to w space using this sparse matrix.
+
+        This method implements a matrix-vector product operation that is optimized for
+        specific computational patterns in neural simulations. It efficiently computes
+        a sparse matrix vector product where indices in the y dimension map to values
+        in the w dimension, using the Compressed Sparse Column format.
+
+        Parameters
+        ----------
+        y_dim_arr : jax.Array, np.ndarray, u.Quantity
+            Array containing values in the y dimension (typically target/post-synaptic).
+        w_dim_arr : jax.Array, np.ndarray, u.Quantity
+            Array containing values in the w dimension (typically weights or connection values).
+
+        Returns
+        -------
+        Union[jax.Array, u.Quantity]
+            The resulting array after the sparse transformation operation.
+            Maintains the same units as the input arrays if they have units.
+
+        Notes
+        -----
+        This method is typically used in event-driven neural simulations to efficiently
+        compute the effect of connections between neurons. Unlike the CSR implementation,
+        this method uses a transposed operation with reversed shape to account for the
+        column-oriented storage format.
+        """
+        return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape[::-1], transpose=True)
+
+    def yw_to_w_transposed(
+        self,
+        y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+        w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
+    ) -> Union[jax.Array, u.Quantity]:
+        """
+        Perform a transposed transformation from y-w space to w space using this sparse matrix.
+
+        This method implements the transpose of the yw_to_w operation, computing a specialized
+        matrix-vector product that is optimized for specific computational patterns in neural
+        simulations. It efficiently handles the transposed mapping between the y dimension and
+        the w dimension using the Compressed Sparse Column format.
+
+        Parameters
+        ----------
+        y_dim_arr : jax.Array, np.ndarray, u.Quantity
+            Array containing values in the y dimension (typically target/post-synaptic).
+        w_dim_arr : jax.Array, np.ndarray, u.Quantity
+            Array containing values in the w dimension (typically weights or connection values).
+
+        Returns
+        -------
+        Union[jax.Array, u.Quantity]
+            The resulting array after the transposed sparse transformation operation.
+            Maintains the same units as the input arrays if they have units.
+
+        Notes
+        -----
+        This method computes the transpose of the yw_to_w operation, which can be useful
+        for backpropagation or adjoint operations in neural simulations. Unlike the regular
+        yw_to_w method, this transposed version uses transpose=False in the underlying
+        implementation to compute the appropriate transposed operation.
+        """
+        return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape[::-1], transpose=False)
