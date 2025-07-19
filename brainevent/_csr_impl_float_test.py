@@ -13,15 +13,18 @@
 # limitations under the License.
 # ==============================================================================
 
+import os
+
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'off'
 
 import brainstate
-import brainstate as bst
 import jax
 import jax.numpy as jnp
 import pytest
 
 import brainevent
 from brainevent._csr_impl_binary_test import TestBatchingVectorCSR, TestBatchingMatrixCSR
+from brainevent._csr_impl_float import csrmv_yw2y
 from brainevent._csr_test_util import get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
 
 pytest.mark.skipif(brainstate.environ.get_platform() != 'cpu', allow_module_level=True)
@@ -31,11 +34,11 @@ class TestVectorCSR:
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vector_csr(self, homo_w):
         m, n = 20, 40
-        x = bst.random.rand(m)
+        x = brainstate.random.rand(m)
         indptr, indices = get_csr(m, n, 0.1)
 
         print(f'homo_w = {homo_w}')
-        data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
+        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = x @ csr
         y2 = vector_csr(x, csr.data, indices, indptr, [m, n])
@@ -44,10 +47,10 @@ class TestVectorCSR:
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_csr_vector(self, homo_w):
         m, n = 20, 40
-        v = bst.random.rand(n)
+        v = brainstate.random.rand(n)
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
+        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = csr @ v
         y2 = csr_vector(v, csr.data, indices, indptr, [m, n])
@@ -56,10 +59,10 @@ class TestVectorCSR:
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vector_csr_vmap_vector(self, homo_w):
         n_batch, m, n = 10, 20, 40
-        xs = bst.random.rand(n_batch, m)
+        xs = brainstate.random.rand(n_batch, m)
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
+        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = jax.vmap(lambda x: x @ csr)(xs)
         y2 = jax.vmap(lambda x: vector_csr(x, csr.data, indices, indptr, [m, n]))(xs)
@@ -71,10 +74,10 @@ class TestVectorCSR:
         n_in = 20
         n_out = 30
         shape = [n_in, n_out]
-        x = bst.random.rand(n_in) if transpose else bst.random.rand(n_out)
+        x = brainstate.random.rand(n_in) if transpose else brainstate.random.rand(n_out)
 
         indptr, indices = get_csr(n_in, n_out, 0.2, replace=replace)
-        w = 1.5 if homo_w else bst.init.Normal()(indices.shape)
+        w = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
         csr = brainevent.CSR((w, indices, indptr), shape=shape)
 
         def f_brainevent(x, w):
@@ -111,10 +114,10 @@ class TestVectorCSR:
         n_in = 20
         n_out = 30
         shape = [n_in, n_out]
-        x = bst.random.rand(n_in if transpose else n_out)
+        x = brainstate.random.rand(n_in if transpose else n_out)
         indptr, indices = get_csr(n_in, n_out, 0.1, replace=replace)
 
-        w = 1.5 if homo_w else bst.init.Normal()(indices.shape)
+        w = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
         csr = brainevent.CSR((w, indices, indptr), shape=shape)
 
         def f_brainevent(x, w):
@@ -212,10 +215,10 @@ class TestMatrixCSR:
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_matrix_csr(self, homo_w):
         k, m, n = 10, 20, 40
-        x = bst.random.rand(k, m)
+        x = brainstate.random.rand(k, m)
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
+        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = x @ csr
         y2 = matrix_csr(x, csr.data, indices, indptr, [m, n])
@@ -224,10 +227,10 @@ class TestMatrixCSR:
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_csr_matrix(self, homo_w):
         m, n, k = 20, 40, 10
-        matrix = bst.random.rand(n, k)
+        matrix = brainstate.random.rand(n, k)
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = 1.5 if homo_w else bst.init.Normal()(indices.shape)
+        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = csr @ matrix
         y2 = csr_matrix(matrix, csr.data, indices, indptr, [m, n])
@@ -292,3 +295,84 @@ class TestBatchingMatrixCSRFloat(TestBatchingMatrixCSR):
         r2 = jax.jit(lambda: jax.jvp(f_jax, (x, data), (jnp.ones_like(x), jnp.ones_like(data))))()
 
         return r1, r2
+
+
+class Test_csrmv_yw2y:
+    @pytest.mark.parametrize('shape', [(100, 200), (200, 400)])
+    @pytest.mark.parametrize('transpose', [True, False])
+    def test_csr(self, shape, transpose):
+        m, n = shape
+        indptr, indices = get_csr(m, n, 0.5)
+
+        data = brainstate.init.Normal()(indices.shape)
+        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
+        dense = csr.todense()
+
+        if transpose:
+            y = brainstate.random.rand(n)
+        else:
+            y = brainstate.random.rand(m)
+
+        res1 = csrmv_yw2y(y, csr.data, indices, indptr, shape=[m, n], transpose=transpose)
+        dense_res1 = csr.with_data(res1).todense()
+        if transpose:
+            print(dense)
+            dense_res2 = dense * jnp.expand_dims(y, axis=0)
+        else:
+            dense_res2 = dense * jnp.expand_dims(y, axis=1)
+
+        assert (jnp.allclose(dense_res1, dense_res2, rtol=1e-2, atol=1e-2))
+
+    def test_csr2(self):
+        for shape in [(100, 200), (200, 400)]:
+        # for shape in [(200, 400)]:
+            m, n = shape
+            indptr, indices = get_csr(m, n, 0.5)
+            data = brainstate.init.Normal()(indices.shape)
+            csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
+            dense = csr.todense()
+
+            for transpose in [True, False]:
+                if transpose:
+                    y = brainstate.random.rand(n)
+                else:
+                    y = brainstate.random.rand(m)
+
+                res1 = csrmv_yw2y(y, csr.data, indices, indptr, shape=[m, n], transpose=transpose)
+                dense_res1 = csr.with_data(res1).todense()
+                if transpose:
+                    dense_res2 = dense * jnp.expand_dims(y, axis=0)
+                else:
+                    dense_res2 = dense * jnp.expand_dims(y, axis=1)
+
+                print(jnp.abs(dense_res1 - dense_res2).max())
+                # assert (jnp.allclose(dense_res1, dense_res2))
+
+    def test_csr_no_transpose(self):
+        m, n = 10, 8
+        m, n = 1000, 800
+        indptr, indices = get_csr(m, n, 0.5)
+
+        data = brainstate.init.Normal()(indices.shape)
+        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
+        dense = csr.todense()
+        print()
+        print('original csr')
+        print(dense)
+
+        y = jnp.ones(m)
+
+        res1 = csrmv_yw2y(y, csr.data, indices, indptr, shape=[m, n], transpose=False)
+        dense_res1 = csr.with_data(res1).todense()
+        dense_res2 = dense * jnp.expand_dims(y, axis=1)
+        print('csr')
+        print(dense_res1)
+        print(csr.indptr)
+
+        print('dense')
+        print(dense_res2)
+
+        print('diff')
+        print(dense_res1 - dense_res2)
+        # print(jnp.abs(dense_res1 - dense_res2).max())
+        # assert (jnp.allclose(dense_res1, dense_res2))
