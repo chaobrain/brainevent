@@ -17,11 +17,13 @@
 
 import jax
 import jax.numpy as jnp
+
 from ._compatible_import import pallas as pl
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import numba_kernel
-from ._xla_custom_op_warp import warp_kernel
 from ._xla_custom_op_pallas import pallas_kernel
+from ._xla_custom_op_warp import warp_kernel
+
 
 def binary_array_index(spikes):
     if spikes.ndim == 1:
@@ -95,7 +97,6 @@ def _binary_1d_array_index_pallas_kernel_generator(
     spikes_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    import warp  # pylint: disable=import-outside-toplevel
     BLOCK_SIZE = 64
 
     def _raw_kernel(
@@ -110,7 +111,7 @@ def _binary_1d_array_index_pallas_kernel_generator(
 
         # Check valid indices
         valid_mask = idxs < spikes.shape[0]
-        perf_sum = idxs < spikes.shape[0]
+
         # Load values safely
         if spikes_info.dtype == jnp.bool_:
             default_val = False
@@ -126,14 +127,17 @@ def _binary_1d_array_index_pallas_kernel_generator(
         combined_mask = valid_mask & value_mask
 
         # Count non-zero elements in this block
-        total_in_block = 0
         total_in_block = jnp.sum(combined_mask.astype(jnp.int32))
+
         # Atomically reserve space in global count
         base_pos = pl.atomic_add(count, (0,), total_in_block)
         prefix_offsets = jnp.cumsum(combined_mask) - combined_mask
-        write_positions = base_pos + prefix_offsets
-        pl.store(indices, (write_positions,), idxs, mask = combined_mask)
 
+        # Calculate write positions
+        write_positions = base_pos + prefix_offsets
+
+        # Store indices
+        pl.store(indices, (write_positions,), idxs, mask=combined_mask)
 
     return pallas_kernel(
         _raw_kernel,
@@ -141,6 +145,8 @@ def _binary_1d_array_index_pallas_kernel_generator(
         tile=(pl.cdiv(spikes_info.shape[0], BLOCK_SIZE),),
         input_output_aliases={1: 1}
     )
+
+
 def binary_1d_array_index_p_call(spikes):
     indices_info = jax.ShapeDtypeStruct([spikes.shape[0]], jnp.int32)
     count_info = jax.ShapeDtypeStruct([1], jnp.int32)
@@ -158,8 +164,9 @@ binary_1d_array_index_p.def_cpu_kernel(_binary_1d_array_index_numba_kernel_gener
 binary_1d_array_index_p.def_gpu_kernel(
     warp=_binary_1d_array_index_warp_kernel_generator,
     pallas=_binary_1d_array_index_pallas_kernel_generator,
-    default='warp'
+    default='pallas'
 )
+binary_1d_array_index_p.def_tpu_kernel(_binary_1d_array_index_pallas_kernel_generator)
 
 
 def binary_2d_array_index_p_call(spikes):
