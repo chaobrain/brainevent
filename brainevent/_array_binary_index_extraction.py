@@ -22,7 +22,7 @@ from ._compatible_import import pallas as pl
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import numba_kernel
 from ._xla_custom_op_pallas import pallas_kernel
-from ._xla_custom_op_warp import warp_kernel
+from ._xla_custom_op_warp import warp_kernel, jaxinfo_to_warpinfo
 
 
 def binary_array_index(spikes):
@@ -62,16 +62,17 @@ def _binary_1d_array_index_numba_kernel_generator(
 def _binary_1d_array_index_warp_kernel_generator(
     spikes_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
+    count_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
     import warp  # pylint: disable=import-outside-toplevel
 
     if spikes_info.dtype == jnp.bool_:
         def kernel(
-            spikes: warp.array(dtype=float),
-            _: warp.array(dtype=int),
-            indices: warp.array(dtype=int),
-            count: warp.array(dtype=int),
+            spikes: jaxinfo_to_warpinfo(spikes_info),
+            _: jaxinfo_to_warpinfo(count_info),
+            indices: jaxinfo_to_warpinfo(indices_info),
+            count: jaxinfo_to_warpinfo(count_info),
         ):
             i_col_block = warp.tid()
             if spikes[i_col_block]:
@@ -80,10 +81,10 @@ def _binary_1d_array_index_warp_kernel_generator(
 
     else:
         def kernel(
-            spikes: warp.array(dtype=float),
-            _: warp.array(dtype=int),
-            indices: warp.array(dtype=int),
-            count: warp.array(dtype=int),
+            spikes: jaxinfo_to_warpinfo(spikes_info),
+            _: jaxinfo_to_warpinfo(count_info),
+            indices: jaxinfo_to_warpinfo(indices_info),
+            count: jaxinfo_to_warpinfo(count_info),
         ):
             i_col_block = warp.tid()
             if spikes[i_col_block] != 0.:
@@ -156,6 +157,7 @@ def binary_1d_array_index_p_call(spikes):
         outs=[indices_info, count_info],
         spikes_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
         indices_info=indices_info,
+        count_info=count_info,
     )
 
 
