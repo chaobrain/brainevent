@@ -424,6 +424,12 @@ class CSR(BaseCLS):
         return CSR((op(self.data), self.indices, self.indptr), shape=self.shape)._diag_pos(self.diag_positions)
 
     def _binary_op(self, other, op) -> 'CSR':
+        if op in [operator.add, operator.sub]:
+            jnp.broadcast_shapes(self.shape, other.shape)
+            dense = self.todense()
+            other = u.math.asarray(other)
+            return op(dense, other)
+
         if isinstance(other, CSR):
             if id(other.indices) == id(self.indices) and id(other.indptr) == id(self.indptr):
                 return CSR(
@@ -456,6 +462,12 @@ class CSR(BaseCLS):
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
     def _binary_rop(self, other, op) -> 'CSR':
+        if op in [operator.add, operator.sub]:
+            jnp.broadcast_shapes(self.shape, other.shape)
+            dense = self.todense()
+            other = u.math.asarray(other)
+            return op(other, dense)
+
         if isinstance(other, CSR):
             if id(other.indices) == id(self.indices) and id(other.indptr) == id(self.indptr):
                 return CSR(
@@ -857,6 +869,11 @@ class CSC(BaseCLS):
         return CSC((op(self.data), self.indices, self.indptr), shape=self.shape)._diag_pos(self.diag_positions)
 
     def _binary_op(self, other, op) -> 'CSC':
+        if op in [operator.add, operator.sub]:
+            jnp.broadcast_shapes(self.shape, other.shape)
+            dense = self.todense()
+            other = u.math.asarray(other)
+            return op(dense, other)
         if isinstance(other, CSC):
             if id(other.indices) == id(self.indices) and id(other.indptr) == id(self.indptr):
                 return CSC(
@@ -889,6 +906,11 @@ class CSC(BaseCLS):
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
     def _binary_rop(self, other, op) -> 'CSC':
+        if op in [operator.add, operator.sub]:
+            jnp.broadcast_shapes(self.shape, other.shape)
+            dense = self.todense()
+            other = u.math.asarray(other)
+            return op(other, dense)
         if isinstance(other, CSC):
             if id(other.indices) == id(self.indices) and id(other.indptr) == id(self.indptr):
                 return CSC(
