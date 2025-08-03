@@ -149,13 +149,7 @@ def pallas_kernel(
 
     @functools.wraps(fn)
     def kernel(*args):
-        fn_call = pl.pallas_call(
-            fn,
-            grid=tuple(tile),
-            input_output_aliases=input_output_aliases,
-            out_shape=outs,
-        )
-        return fn_call(*args)
+        return pl.pallas_call(fn, grid=tuple(tile), input_output_aliases=input_output_aliases, out_shape=outs)(*args)
 
     return PallasKernel(
         kernel=kernel,

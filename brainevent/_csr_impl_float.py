@@ -45,62 +45,23 @@ def csr_matvec(
     Product of CSR sparse matrix and a dense vector.
 
     Args:
-      data : array of shape ``(nse,)``.
-      indices : array of shape ``(nse,)``
-      indptr : array of shape ``(shape[0] + 1,)`` and dtype ``indices.dtype``
-      v : array of shape ``(shape[0] if transpose else shape[1],)``
-        and dtype ``data.dtype``
-      shape : length-2 tuple representing the matrix shape
-      transpose : boolean specifying whether to transpose the sparse matrix
-        before computing.
+        data : array of shape ``(nse,)``.
+        indices : array of shape ``(nse,)``
+        indptr : array of shape ``(shape[0] + 1,)`` and dtype ``indices.dtype``
+        v : array of shape ``(shape[0] if transpose else shape[1],)``
+            and dtype ``data.dtype``
+        shape : length-2 tuple representing the matrix shape
+        transpose : boolean specifying whether to transpose the sparse matrix
+                    before computing.
 
     Returns:
       y : array of shape ``(shape[1] if transpose else shape[0],)`` representing
-        the matrix vector product.
+          the matrix vector product.
     """
     data, unitd = u.split_mantissa_unit(data)
     v, unitv = u.split_mantissa_unit(v)
     res = csrmv_p_call(data, indices, indptr, v, shape=shape, transpose=transpose)[0]
     return u.maybe_decimal(res * unitd * unitv)
-
-
-def csr_matmat(
-    data: Data,
-    indices: Index,
-    indptr: Indptr,
-    B: Data,
-    *,
-    shape: MatrixShape,
-    transpose: bool = False,
-) -> Data:
-    """
-    Product of CSR sparse matrix and a dense matrix.
-
-    Args:
-      data : array of shape ``(nse,)``.
-      indices : array of shape ``(nse,)``
-      indptr : array of shape ``(shape[0] + 1,)`` and dtype ``indices.dtype``
-      B : array of shape ``(shape[0] if transpose else shape[1], cols)`` and
-        dtype ``data.dtype``
-      shape : length-2 tuple representing the matrix shape
-      transpose : boolean specifying whether to transpose the sparse matrix
-        before computing.
-
-    Returns:
-      C : array of shape ``(shape[1] if transpose else shape[0], cols)``
-        representing the matrix-matrix product.
-    """
-    data, unitd = u.split_mantissa_unit(data)
-    B, unitb = u.split_mantissa_unit(B)
-    res = csrmm_p_call(
-        data,
-        indices,
-        indptr,
-        B,
-        shape=shape,
-        transpose=transpose,
-    )[0]
-    return u.maybe_decimal(res * (unitd * unitb))
 
 
 def _csrmv_numba_kernel_generator(
@@ -585,6 +546,45 @@ csrmv_p.def_tpu_kernel(_csrmv_pallas_tiled_kernel_generator)
 csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
 csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
 csrmv_p.def_batching_rule(_csrmv_batching)
+
+
+def csr_matmat(
+    data: Data,
+    indices: Index,
+    indptr: Indptr,
+    B: Data,
+    *,
+    shape: MatrixShape,
+    transpose: bool = False,
+) -> Data:
+    """
+    Product of CSR sparse matrix and a dense matrix.
+
+    Args:
+        data : array of shape ``(nse,)``.
+        indices : array of shape ``(nse,)``
+        indptr : array of shape ``(shape[0] + 1,)`` and dtype ``indices.dtype``
+        B : array of shape ``(shape[0] if transpose else shape[1], cols)`` and
+        dtype ``data.dtype``
+        shape : length-2 tuple representing the matrix shape
+        transpose : boolean specifying whether to transpose the sparse matrix
+            before computing.
+
+    Returns:
+        C : array of shape ``(shape[1] if transpose else shape[0], cols)``
+            representing the matrix-matrix product.
+    """
+    data, unitd = u.split_mantissa_unit(data)
+    B, unitb = u.split_mantissa_unit(B)
+    res = csrmm_p_call(
+        data,
+        indices,
+        indptr,
+        B,
+        shape=shape,
+        transpose=transpose,
+    )[0]
+    return u.maybe_decimal(res * (unitd * unitb))
 
 
 def _csrmm_numba_kernel_generator(
@@ -1162,6 +1162,7 @@ def _csrmm_transpose_rule(
             )[0]
             return jnp.expand_dims(jnp.sum(r * ct), axis=0), indices, indptr, B, _
         else:
+            # TODO
             row, col = _csr_to_coo(indices, indptr)
             if transpose:
                 dCSR = B @ ct.T
@@ -1277,3 +1278,152 @@ csrmm_p.def_tpu_kernel(_csrmm_pallas_kernel_generator)
 csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 csrmm_p.def_batching_rule(_csrmm_batching)
+
+
+def csrmv_yw2y(
+    y: Data,
+    w: Data,
+    indices: Index,
+    indptr: Indptr,
+    *,
+    shape, transpose: bool = False,
+) -> Data:
+    w, w_unit = u.split_mantissa_unit(w)
+    y, _ = u.split_mantissa_unit(y)
+    res = csrmv_yw2y_p_call(y, w, indices, indptr, shape=shape, transpose=transpose)[0]
+    return u.maybe_decimal(res * w_unit)
+
+
+def _csrmv_yw2y_numba_kernel_generator(
+    shape: MatrixShape,
+    transpose: bool,
+    **kwargs
+):
+    if transpose:
+        def kernel(y, w, indices, indptr, posts):
+            for i_col in range(shape[1]):
+                i_row_start = indptr[i_col]
+                i_row_end = indptr[i_col + 1]
+                index = indices[i_row_start: i_row_end]
+                posts[i_row_start: i_row_end] = w[i_row_start: i_row_end] * y[index]
+
+    else:
+        def kernel(y, w, indices, indptr, posts):
+            for i_row in range(shape[0]):
+                i_col_start = indptr[i_row]
+                i_col_end = indptr[i_row + 1]
+                posts[i_col_start: i_col_end] = w[i_col_start: i_col_end] * y[i_row]
+
+    return numba_kernel(kernel)
+
+
+def _csrmv_yw2y_pallas_kernel_generator(
+    shape: MatrixShape,
+    transpose: bool,
+    y_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    block_dim = generate_block_dim(y_info.shape[0], 128)
+
+    def kernel(
+        y_ref,
+        w_ref,
+        indices_ref,
+        indptr_ref,
+        posts_ref,
+    ):
+        i_block = pl.program_id(0)
+        i_start = indptr_ref[i_block]
+        i_end = indptr_ref[i_block + 1]
+        num_blocks = (i_end - i_start + block_dim - 1) // block_dim
+
+        if not transpose:
+            y_scalar = y_ref[i_block]
+
+        def loop_fn(i, _):
+            offset = i_start + i * block_dim
+            mask = (offset + jnp.arange(block_dim)) < i_end
+            w = pl.load(w_ref, pl.dslice(offset, block_dim), mask=mask, other=0.0)
+            if transpose:
+                index = pl.load(indices_ref, pl.dslice(offset, block_dim), mask=mask, other=0)
+                y = pl.load(y_ref, index, mask=mask, other=0.0)
+                pl.store(posts_ref, pl.dslice(offset, block_dim), w * y, mask=mask)
+            else:
+                pl.store(posts_ref, pl.dslice(offset, block_dim), w * y_scalar, mask=mask)
+
+        jax.lax.fori_loop(0, num_blocks, loop_fn, None)
+
+    return pallas_kernel(kernel, tile=[shape[1] if transpose else shape[0]], outs=kwargs['outs'])
+
+
+def _csrmv_yw2y_jvp_y(y_dot, y, w, indices, indptr, *, shape, transpose, **kwargs):
+    return csrmv_yw2y_p_call(
+        y_dot,
+        w,
+        indices,
+        indptr,
+        shape=shape,
+        transpose=transpose
+    )
+
+
+def _csrmv_yw2y_jvp_w(w_dot, y, w, indices, indptr, *, shape, transpose, **kwargs):
+    return csrmv_yw2y_p_call(
+        y,
+        w_dot,
+        indices,
+        indptr,
+        shape=shape,
+        transpose=transpose
+    )
+
+
+def _csrmv_yw2y_transpose_rule(ct, y, w, indices, indptr, *, shape, transpose, **kwargs):
+    raise NotImplementedError
+
+
+def csrmv_yw2y_p_call(
+    y: Data,
+    w: Data,
+    indices: Index,
+    indptr: Indptr,
+    *,
+    shape: MatrixShape,
+    transpose: bool = False,
+):
+    assert y.dtype == w.dtype, f"y and w must have the same dtype, but got {y.dtype} and {w.dtype}."
+    assert indptr.ndim == 1, "Indptr must be 1D."
+    assert indices.ndim == 1, "Indices must be 1D."
+    assert y.ndim == w.ndim == 1, "y and w must have the same shape."
+    assert jnp.issubdtype(indices.dtype, jnp.integer), "Indices must be an integer type."
+    assert jnp.issubdtype(indptr.dtype, jnp.integer), "indptr must be an integer type."
+    # assert indptr.dtype == indices.dtype, "Indices and indptr must have the same dtype."
+    assert jnp.issubdtype(w.dtype, jnp.floating), 'Weights must be a floating-point type.'
+    assert w.shape == indices.shape, f"Weights shape mismatch, expected {indices.shape}, got {w.shape}."
+    if transpose:
+        # [x] @ [h, w] -> [w]
+        assert shape[1] == y.shape[0], "Shape mismatch for transpose operation."
+    else:
+        # [h, w] @ [x] -> [h]
+        assert shape[0] == y.shape[0], "Shape mismatch for non-transpose operation."
+
+    return csrmv_yw2y_p(
+        y,
+        w,
+        indices,
+        indptr,
+        outs=[jax.ShapeDtypeStruct(w.shape, w.dtype)],
+        shape=tuple(shape),
+        transpose=transpose,
+        indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
+        indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
+        y_info=jax.ShapeDtypeStruct(y.shape, y.dtype),
+        w_info=jax.ShapeDtypeStruct(w.shape, w.dtype),
+    )
+
+
+csrmv_yw2y_p = XLACustomKernel('csrmv_yw2y')
+csrmv_yw2y_p.def_cpu_kernel(_csrmv_yw2y_numba_kernel_generator)
+csrmv_yw2y_p.def_gpu_kernel(pallas=_csrmv_yw2y_pallas_kernel_generator)
+csrmv_yw2y_p.def_tpu_kernel(_csrmv_yw2y_pallas_kernel_generator)
+csrmv_yw2y_p.def_jvp_rule2(_csrmv_yw2y_jvp_y, _csrmv_yw2y_jvp_w, None, None)
