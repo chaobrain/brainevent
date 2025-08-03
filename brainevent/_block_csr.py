@@ -22,19 +22,19 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ._compatible_import import pallas as pl
 from ._compatible_import import JAXSparse
-from ._typing import Data, Indptr, Index, MatrixShape
+from ._compatible_import import pallas as pl
+from ._coo import COO
+from ._csr import CSR
 from ._misc import _block_csr_tocoo, _nonzero_blocks, _block_csr_tocsr, estimate_block_size
-from ._csr import CSR, CSC
+from ._typing import Data, Indptr, Index, MatrixShape
 
 __all__ = [
     'BlockCSR',
 ]
 
 
-@jax.tree_util.register_pytree_node_class
-class BlockCSR(u.sparse.SparseMatrix):
+class BlockBase(u.sparse.SparseMatrix):
     """
     Unit-aware Block-CSR sparse matrix.
     """
@@ -52,10 +52,10 @@ class BlockCSR(u.sparse.SparseMatrix):
     nse: int = property(lambda self: self.indices.size * self.data.shape[1] * self.data.shape[2])
 
     def __init__(
-        self, 
-        args: Tuple[Data, Index, Indptr], 
-        *, 
-        shape: MatrixShape
+        self,
+        args: Tuple[Data, Index, Indptr],
+        *,
+        shape: MatrixShape,
     ):
         self.data, self.indices, self.indptr = map(u.math.asarray, args)
 
@@ -99,8 +99,6 @@ class BlockCSR(u.sparse.SparseMatrix):
         data, indices, indptr = _block_csr_tocsr(self.data, self.indices, self.indptr, self.shape)
         return CSR((data, indices, indptr), shape=self.shape)
 
-
-
     def tocoo(self):
         """
         Convert the BlockCSR matrix to COO (Coordinate) format.
@@ -124,22 +122,20 @@ class BlockCSR(u.sparse.SparseMatrix):
         >>> coo_matrix = block_csr_matrix.tocoo()
         """
         self._validate()
-        from ._coo import COO
         _, n, m = self.data.shape
         with jax.ensure_compile_time_eval():
             pre_ids, post_ids = _block_csr_tocoo(n, m, self.shape[0], self.nse, self.indices, self.indptr)
         return COO((self.data.reshape(-1), pre_ids, post_ids), shape=self.shape)
 
-    @jax.jit
-    def todense(self) -> jax.Array: # BUG: when do todense() after doing fromdense(),  it will raise an error
+    def todense(self) -> jax.Array:  # BUG: when do todense() after doing fromdense(),  it will raise an error
         self._validate()
         return _sdd_todense(self)
 
     def todense_new(self):
         '''
-        Since the underlying logic of csr_todense is to convert the csr to coo, 
+        Since the underlying logic of csr_todense is to convert the csr to coo,
         and using coo_todense to convert the coo to dense,
-        same like that, we can first convert block_csr to coo, 
+        same like that, we can first convert block_csr to coo,
         and then directly use the coo_todense to convert the block_csr to dense.
         '''
         self._validate()
@@ -175,8 +171,9 @@ class BlockCSR(u.sparse.SparseMatrix):
 
         if n < 1 or m < 1 or N % n != 0 or M % m != 0:
             raise ValueError(f"Invalid block size: {block_size} for matrix shape {dense.shape}. "
-                             "The block size n and m must be positive, and the shape of the dense matrix must be divisible by the block size.")
-        
+                             "The block size n and m must be positive, and the shape of the "
+                             "dense matrix must be divisible by the block size.")
+
         nonzero_blocks, indices, indptr = _nonzero_blocks(dense, block_size)
         return BlockCSR((nonzero_blocks, indices, indptr), shape=(N, M))
 
@@ -207,10 +204,6 @@ class BlockCSR(u.sparse.SparseMatrix):
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
         return BlockCSR((data, self.indices, self.indptr), shape=self.shape)
-
-    def __matmul__(self, other) -> jax.Array:
-        self._validate()
-        return sdd_matmul(self, other)
 
     def transpose(self, axes=None) -> 'BlockCSR':
         """
@@ -261,7 +254,6 @@ class BlockCSR(u.sparse.SparseMatrix):
 
         new_shape = (self.shape[1], self.shape[0])
         return BlockCSR((new_data, new_indices, new_indptr), shape=new_shape)
-
 
     def _unitary_op(self, op) -> 'BlockCSR':
         """
@@ -318,7 +310,7 @@ class BlockCSR(u.sparse.SparseMatrix):
                 (op(self.data, other), self.indices, self.indptr),
                 shape=self.shape,
             )
-        
+
         else:
             raise ValueError(f"Unsupported operation: {op} between BlockCSR and {type(other)}")
 
@@ -352,7 +344,7 @@ class BlockCSR(u.sparse.SparseMatrix):
                 return BlockCSR(
                     (op(other.data, self.data), other.indices, other.indptr),
                     shape=self.shape
-                ) 
+                )
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
@@ -362,13 +354,13 @@ class BlockCSR(u.sparse.SparseMatrix):
                 (op(other, self.data), self.indices, self.indptr),
                 shape=self.shape
             )
-        
+
         elif other.ndim == 2 and other.shape == self.block_size:
             return BlockCSR(
                 (op(other, self.data), self.indices, self.indptr),
                 shape=self.shape,
             )
-        
+
         else:
             raise ValueError(f"Unsupported operation: {op} between BlockCSR and {type(other)}")
 
@@ -414,15 +406,372 @@ class BlockCSR(u.sparse.SparseMatrix):
         csr = self.tocsr()
         return csr.solve(b, tol, reorder)
 
-    def __matmul__(self, other):
-        #TODO: using tocsr VS manually implement the XLA kernel? 
-        # For example, block the other and do calculation?
-        return self.tocsr() @ other  # lazy implementation for now, plan to implement the XLA kernel
+    def __matmul__(self, other) -> jax.Array:
+        self._validate()
+        return sdd_matmul(self, other)
 
     def __rmatmul__(self, other):
-        #TODO: using tocsr VS manually implement the XLA kernel? 
+        # TODO: using tocsr VS manually implement the XLA kernel?
         # For example, block the other and do calculation?
         return other @ self.tocsr()  # lazy implementation for now, plan to implement the XLA kernel
+
+
+@jax.tree_util.register_pytree_node_class
+class BlockCSR(BlockBase):
+    """
+    Unit-aware Block-CSR sparse matrix.
+    """
+    __module__ = 'brainevent'
+
+    def _validate(self):
+        _nblocks, n, m = self.data.shape
+        nrows = self.indptr.shape[0] - 1
+        assert self.indices.shape[0] == _nblocks
+        assert len(self.shape) == 2
+        assert self.shape[0] == n * nrows
+        assert self.shape[1] % m == 0
+
+    def tocsr(self) -> CSR:
+        """
+        Convert the BlockCSR matrix to CSR (Compressed Sparse Row) format.
+
+        This method transforms the Block Compressed Sparse Row (BlockCSR) matrix into a CSR matrix.
+
+        Returns
+        -------
+        CSR
+            A CSR matrix containing the same data as the original BlockCSR matrix.
+
+        Examples
+        --------
+        >>> block_csr_matrix = BlockCSR((data, indices, indptr), shape=(6, 6))
+        >>> csr_matrix = block_csr_matrix.tocsr()
+
+        """
+        self._validate()
+        data, indices, indptr = _block_csr_tocsr(self.data, self.indices, self.indptr, self.shape)
+        return CSR((data, indices, indptr), shape=self.shape)
+
+    def tocoo(self):
+        """
+        Convert the BlockCSR matrix to COO (Coordinate) format.
+
+        This method transforms the Block Compressed Sparse Row (BlockCSR) matrix into a COO matrix,
+        which stores sparse data as a collection of (row, column, value) triplets.
+
+        Returns
+        -------
+        COO
+            A COO matrix containing the same data as the original BlockCSR matrix.
+
+        See Also
+        --------
+        _block_csr_to_coo : Internal function that converts BlockCSR row/column indices to COO format
+        COO : The Coordinate sparse matrix class
+
+        Examples
+        --------
+        >>> block_csr_matrix = BlockCSR((data, indices, indptr), shape=(3, 4))
+        >>> coo_matrix = block_csr_matrix.tocoo()
+        """
+        self._validate()
+        _, n, m = self.data.shape
+        with jax.ensure_compile_time_eval():
+            pre_ids, post_ids = _block_csr_tocoo(n, m, self.shape[0], self.nse, self.indices, self.indptr)
+        return COO((self.data.reshape(-1), pre_ids, post_ids), shape=self.shape)
+
+    def todense(self) -> jax.Array:  # BUG: when do todense() after doing fromdense(),  it will raise an error
+        self._validate()
+        return _sdd_todense(self)
+
+    def todense_new(self):
+        '''
+        Since the underlying logic of csr_todense is to convert the csr to coo, 
+        and using coo_todense to convert the coo to dense,
+        same like that, we can first convert block_csr to coo, 
+        and then directly use the coo_todense to convert the block_csr to dense.
+        '''
+        self._validate()
+        return self.tocoo().todense()
+
+    @classmethod
+    def fromdense(cls, dense: jax.Array, *, block_size: Tuple[int, int] = None) -> 'BlockCSR':
+        """
+        Create a BlockCSR matrix from a dense matrix.
+
+        This method converts a dense matrix to a BlockCSR format.
+
+        Parameters
+        -----------
+        dense : array_like
+            The dense matrix to be converted to BlockCSR format.
+        block_size : tuple
+            The size of each block in the BlockCSR matrix.
+
+        Returns
+        --------
+        BlockCSR
+            A new BlockCSR matrix object created from the input dense matrix.
+        """
+        if dense.ndim != 2:
+            raise ValueError("Cannot convert a 1d sparse array to block_csr format")
+
+        N, M = dense.shape
+        if block_size is None:
+            csr = CSR.fromdense(dense)
+            block_size = estimate_block_size(csr)
+        n, m = block_size
+
+        if n < 1 or m < 1 or N % n != 0 or M % m != 0:
+            raise ValueError(f"Invalid block size: {block_size} for matrix shape {dense.shape}. "
+                             "The block size n and m must be positive, and the shape of the "
+                             "dense matrix must be divisible by the block size.")
+
+        nonzero_blocks, indices, indptr = _nonzero_blocks(dense, block_size)
+        return BlockCSR((nonzero_blocks, indices, indptr), shape=(N, M))
+
+    def with_data(self, data: Data) -> 'BlockCSR':
+        """
+        Create a new BlockCSR matrix with updated data while keeping the same structure.
+
+        This method creates a new BlockCSR matrix instance with the provided data,
+        maintaining the original indices, indptr, and shape.
+
+        Parameters
+        -----------
+        data : Data
+            The new data array to replace the existing data in the BlockCSR matrix.
+            It must have the same shape, dtype, and unit as the original data.
+
+        Returns
+        --------
+        BlockCSR
+            A new BlockCSR matrix instance with updated data and the same structure as the original.
+
+        Raises
+        -------
+        AssertionError
+            If the shape, dtype, or unit of the new data doesn't match the original data.
+        """
+        assert data.shape == self.data.shape
+        assert data.dtype == self.data.dtype
+        assert u.get_unit(data) == u.get_unit(self.data)
+        return BlockCSR((data, self.indices, self.indptr), shape=self.shape)
+
+    def transpose(self, axes=None) -> 'BlockCSR':
+        """
+        Transpose the BlockCSR matrix.
+
+        This method returns the transpose of the BlockCSR matrix as a BlockCSC matrix.
+
+        Parameters
+        -----------
+        axes : None
+            This parameter is not used and must be None. Included for compatibility
+            with numpy's transpose function signature.
+
+        Returns
+        --------
+        BlockCSR
+            The transpose of the BlockCSR matrix.
+
+        Raises
+        -------
+        AssertionError
+            If axes is not None, as this implementation doesn't support custom axis ordering.
+        """
+        assert axes is None, "transpose does not support axes argument."
+        data = self.data
+        indices = self.indices
+        indptr = self.indptr
+        N, M = self.shape
+        n, m = data.shape[1:]  # block size
+        n_block_rows = indptr.shape[0] - 1
+        n_block_cols = M // m
+
+        block_row_ids = jnp.repeat(jnp.arange(n_block_rows), jnp.diff(indptr))
+        block_col_ids = indices
+
+        new_n_block_rows = n_block_cols
+        new_n_block_cols = n_block_rows
+
+        new_data = jnp.transpose(data, (0, 2, 1))  # (n_blocks, m, n)
+        new_indices = block_row_ids
+
+        counts = jnp.zeros(new_n_block_rows, dtype=jnp.int32).at[block_col_ids].add(1)
+        new_indptr = jnp.concatenate([jnp.array([0], dtype=jnp.int32), jnp.cumsum(counts)])
+
+        order = jnp.argsort(block_col_ids)
+        new_data = new_data[order]
+        new_indices = new_indices[order]
+
+        new_shape = (self.shape[1], self.shape[0])
+        return BlockCSR((new_data, new_indices, new_indptr), shape=new_shape)
+
+    def _unitary_op(self, op) -> 'BlockCSR':
+        """
+        Apply a unary operation to the data of the BlockCSR matrix.
+
+        This method applies a given unary operation to the data array of the BlockCSR matrix.
+
+        Parameters
+        ----------
+        op : callable
+            A unary operation to apply to the data array (e.g., abs, neg, pos).
+
+        Returns
+        -------
+        BlockCSR
+            A new BlockCSR matrix with the result of applying the operation to its data.
+        """
+        return BlockCSR((op(self.data), self.indices, self.indptr), shape=self.shape)
+
+    def __abs__(self):
+        return self._unitary_op(operator.abs)
+
+    def __neg__(self):
+        return self._unitary_op(operator.neg)
+
+    def __pos__(self):
+        return self._unitary_op(operator.pos)
+
+    def _binary_op(self, other, op) -> 'BlockCSR':
+        if op in [operator.add, operator.sub]:
+            jnp.broadcast_shapes(self.shape, other.shape)
+            dense = self.todense()
+            other = u.math.asarray(other)
+            return op(dense, other)
+
+        if isinstance(other, BlockCSR):
+            if id(other.indices) == id(self.indices) and id(other.indptr) == id(self.indptr):
+                return BlockCSR(
+                    (op(self.data, other.data), self.indices, self.indptr),
+                    shape=self.shape
+                )
+        if isinstance(other, JAXSparse):
+            raise NotImplementedError(f"binary operation {op} between two sparse objects.")
+
+        other = u.math.asarray(other)
+        if other.size == 1:
+            return BlockCSR(
+                (op(self.data, other), self.indices, self.indptr),
+                shape=self.shape
+            )
+
+        elif other.ndim == 2 and other.shape == self.block_size:
+            return BlockCSR(
+                (op(self.data, other), self.indices, self.indptr),
+                shape=self.shape,
+            )
+
+        else:
+            raise ValueError(f"Unsupported operation: {op} between BlockCSR and {type(other)}")
+
+    def __mul__(self, other: Data):
+        return self._binary_op(other, operator.mul)
+
+    def __div__(self, other: Data):
+        return self._binary_op(other, operator.truediv)
+
+    def __truediv__(self, other):
+        return self.__div__(other)
+
+    def __add__(self, other):
+        return self._binary_op(other, operator.add)
+
+    def __sub__(self, other):
+        return self._binary_op(other, operator.sub)
+
+    def __mod__(self, other):
+        return self._binary_op(other, operator.mod)
+
+    def _binary_rop(self, other, op) -> 'BlockCSR':
+        if op in [operator.add, operator.sub]:
+            jnp.broadcast_shapes(self.shape, other.shape)
+            dense = self.todense()
+            other = u.math.asarray(other)
+            return op(other, dense)
+
+        if isinstance(other, BlockCSR):
+            if id(other.indices) == id(self.indices) and id(other.indptr) == id(self.indptr):
+                return BlockCSR(
+                    (op(other.data, self.data), other.indices, other.indptr),
+                    shape=self.shape
+                )
+        if isinstance(other, JAXSparse):
+            raise NotImplementedError(f"binary operation {op} between two sparse objects.")
+
+        other = u.math.asarray(other)
+        if other.size == 1:
+            return BlockCSR(
+                (op(other, self.data), self.indices, self.indptr),
+                shape=self.shape
+            )
+
+        elif other.ndim == 2 and other.shape == self.block_size:
+            return BlockCSR(
+                (op(other, self.data), self.indices, self.indptr),
+                shape=self.shape,
+            )
+
+        else:
+            raise ValueError(f"Unsupported operation: {op} between BlockCSR and {type(other)}")
+
+    def __rmul__(self, other: Data):
+        return self._binary_rop(other, operator.mul)
+
+    def __rdiv__(self, other: Data):
+        return self._binary_rop(other, operator.truediv)
+
+    def __rtruediv__(self, other):
+        return self.__rdiv__(other)
+
+    def __radd__(self, other):
+        return self._binary_rop(other, operator.add)
+
+    def __rsub__(self, other):
+        return self._binary_rop(other, operator.sub)
+
+    def __rmod__(self, other):
+        return self._binary_rop(other, operator.mod)
+
+    def solve(self, b: Union[jax.Array, u.Quantity], tol=1e-6, reorder=1) -> Union[jax.Array, u.Quantity]:
+        """
+        Solve the linear system Ax = b where A is the sparse matrix.
+
+        This method uses JAX's sparse solver to solve the equation Ax = b,
+        where A is the current sparse matrix and b is the right-hand side vector.
+
+        Parameters
+        ----------
+        b : array_like
+            The right-hand side vector of the linear system.
+        tol : Tolerance to decide if singular or not. Defaults to 1e-6.
+        reorder : The reordering scheme to use to reduce fill-in. No reordering if
+            ``reorder=0``. Otherwise, symrcm, symamd, or csrmetisnd (``reorder=1,2,3``),
+            respectively. Defaults to symrcm.
+
+        Returns
+        -------
+        x : jax.Array or u.Quantity
+            The solution vector x that satisfies Ax = b.
+        """
+        csr = self.tocsr()
+        return csr.solve(b, tol, reorder)
+
+    def __matmul__(self, other) -> jax.Array:
+        self._validate()
+        return sdd_matmul(self, other)
+
+    def __rmatmul__(self, other):
+        # TODO: using tocsr VS manually implement the XLA kernel?
+        # For example, block the other and do calculation?
+        return other @ self.tocsr()  # lazy implementation for now, plan to implement the XLA kernel
+
+
+@jax.tree_util.register_pytree_node_class
+class BlockCSC(BlockBase):
+    pass
 
 
 def _sdd_todense(mat: BlockCSR) -> jax.Array:
@@ -518,7 +867,6 @@ def sdd_matmul(
     return u.maybe_decimal(u.Quantity(r, unit=unita * unitb))
 
 
-@jax.jit
 def native_sdd_matmul(
     mat1: BlockCSR,
     mat2: jax.Array,
@@ -581,4 +929,3 @@ def sample_sparse_matrix(
     indices = jnp.array(indices)  # [n_rows, max_num_blocks_per_row, 2], block indices
 
     return BlockCSR((jnp.asarray(blocks), jnp.asarray(indptr), jnp.asarray(indices)), shape=(m, n))
-
