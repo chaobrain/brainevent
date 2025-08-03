@@ -93,9 +93,9 @@ def _dense_on_pre_pallas_kernel_generator(weight_info, **kwargs):
 
 
 def _dense_on_pre_prim_call(weight, pre_spike, post_trace):
-    assert weight.ndim == 2, 'dense_one_pre only support 2D weight.'
-    assert pre_spike.ndim == 1, 'pre_spike should be 1D.'
-    assert post_trace.ndim == 1, 'post_trace should be 1D.'
+    assert weight.ndim == 2, f'dense_one_pre only support 2D weight. But got shape: {weight.shape}.'
+    assert pre_spike.ndim == 1, f'pre_spike should be 1D, But got shape: {pre_spike.shape}.'
+    assert post_trace.ndim == 1, f'post_trace should be 1D. But got shape: {post_trace.shape}.'
     assert weight.shape[0] == pre_spike.shape[0], (
         f'weight shape[0] ({weight.shape[0]}) should '
         f'match pre_spike shape[0] ({pre_spike.shape[0]}).'
@@ -184,9 +184,9 @@ def _dense_on_post_pallas_kernel_generator(weight_info, **kwargs):
 
 
 def _dense_one_post_prim_call(weight, pre_trace, post_spike):
-    assert weight.ndim == 2, 'dense_one_pre only support 2D weight.'
-    assert pre_trace.ndim == 1, 'pre_trace should be 1D.'
-    assert post_spike.ndim == 1, 'post_spike should be 1D.'
+    assert weight.ndim == 2, f'dense_one_pre only support 2D weight. But got shape: {weight.shape}.'
+    assert pre_trace.ndim == 1, f'pre_trace should be 1D. But got shape: {pre_trace.shape}.'
+    assert post_spike.ndim == 1, f'post_spike should be 1D. But got shape: {post_spike.shape}.'
     assert weight.shape[0] == pre_trace.shape[0], (f'weight shape[0] ({weight.shape[0]}) should '
                                                    f'match pre_trace shape[0] ({pre_trace.shape[0]}).')
     assert weight.shape[1] == post_spike.shape[0], (f'weight shape[1] ({weight.shape[1]}) should '

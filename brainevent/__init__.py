@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-__version__ = "0.0.3"
+__version__ = "0.0.4"
 
 from ._array_base import BaseArray
 from ._array_binary import BinaryArray, EventArray

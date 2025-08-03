@@ -115,7 +115,7 @@ def _csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, sha
     assert post_trace.ndim == 1, 'post_trace should be 1D.'
     assert shape[0] == pre_spike.shape[0], f'pre_spike shape {pre_spike.shape} does not match with shape {shape}.'
     assert shape[1] == post_trace.shape[0], f'post_trace shape {post_trace.shape} does not match with shape {shape}.'
-    assert weight.shape[0] == indices.shape[0] == indptr.shape[0] - 1, (
+    assert weight.shape[0] == indices.shape[0], (
         f'weight shape {weight.shape}, indices shape {indices.shape}, indptr shape {indptr.shape} do not match.'
     )
     return _csr_on_pre_prim(
@@ -135,6 +135,7 @@ def csc_on_post(
     weight: Union[u.Quantity, jax.Array],
     indices: Union[np.ndarray, jax.Array],
     indptr: Union[np.ndarray, jax.Array],
+    weight_indices: Union[np.ndarray, jax.Array],
     pre_trace: Union[u.Quantity, jax.Array],
     post_spike: jax.Array,
     w_min: Optional[Union[u.Quantity, jax.Array]] = None,
@@ -168,19 +169,21 @@ def csc_on_post(
     weight, wunit = u.split_mantissa_unit(weight)
     pre_trace = u.Quantity(pre_trace).to(wunit).mantissa
     weight = u.maybe_decimal(
-        _csc_on_post_prim_call(weight, indices, indptr, pre_trace, post_spike, shape=shape)[0] * wunit
+        _csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace, post_spike, shape=shape)[0] * wunit
     )
     weight = u.math.clip(weight, w_min, w_max)
     return weight
 
 
 def _csc_on_post_numba_kernel_generator(**kwargs):
-    def kernel(weight, indices, indptr, pre_trace, post_spike, out_w):
+    def kernel(weight, indices, indptr, weight_indices, pre_trace, post_spike, out_w):
         for i in range(post_spike.shape[0]):
             if post_spike[i]:
                 index = indptr[i]
                 index_end = indptr[i + 1]
-                out_w[index: index_end] += pre_trace[indices[index: index_end]]
+                weight_ids = weight_indices[index: index_end]
+                pre_ids = indices[index: index_end]
+                out_w[weight_ids] += pre_trace[pre_ids]
 
     return numba_kernel(kernel, parallel=True, input_output_aliases={0: 0})
 
@@ -188,7 +191,7 @@ def _csc_on_post_numba_kernel_generator(**kwargs):
 def _csc_on_post_pallas_kernel_generator(weight_info, shape, **kwargs):
     block_dim = generate_block_dim(weight_info.shape[0], 512)
 
-    def kernel(weight_ref, indices_ref, indptr_ref, trace_ref, spike_ref, out_w_ref):
+    def kernel(weight_ref, indices_ref, indptr_ref, weight_indices_ref, trace_ref, spike_ref, out_w_ref):
         i_col = pl.program_id(0)
         i_row_start = indptr_ref[i_col]
         i_row_end = indptr_ref[i_col + 1]
@@ -199,11 +202,12 @@ def _csc_on_post_pallas_kernel_generator(weight_info, shape, **kwargs):
                 i_start = i_block * block_dim + i_row_start
                 mask = jax.numpy.arange(block_dim) + i_start < i_row_end
                 pre_ids = pl.load(indices_ref, pl.dslice(i_start, block_dim), mask=mask)
+                weight_ids = pl.load(weight_indices_ref, pl.dslice(i_start, block_dim), mask=mask)
                 pre_trace = pl.load(trace_ref, pre_ids, mask=mask)
                 pl.store(
                     out_w_ref,
-                    pl.dslice(i_start, block_dim),
-                    pl.load(out_w_ref, pl.dslice(i_start, block_dim), mask=mask) + pre_trace,
+                    weight_ids,
+                    pl.load(out_w_ref, weight_ids, mask=mask) + pre_trace,
                     mask=mask,
                 )
 
@@ -212,17 +216,18 @@ def _csc_on_post_pallas_kernel_generator(weight_info, shape, **kwargs):
     return pallas_kernel(kernel, input_output_aliases={0: 0}, tile=(shape[1],))
 
 
-def _csc_on_post_prim_call(weight, indices, indptr, pre_trace, post_spike, *, shape):
+def _csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace, post_spike, *, shape):
     assert weight.ndim == 1, 'dense_one_post only support 1D weight.'
     assert post_spike.ndim == 1, 'post_spike should be 1D.'
     assert pre_trace.ndim == 1, 'pre_trace should be 1D.'
     assert shape[1] == post_spike.shape[0], f'post_spike shape {post_spike.shape} does not match with shape {shape}.'
     assert shape[0] == pre_trace.shape[0], f'pre_trace shape {pre_trace.shape} does not match with shape {shape}.'
-    assert weight.shape[0] == indices.shape[0] == indptr.shape[0] - 1, (
-        f'weight shape {weight.shape}, indices shape {indices.shape}, indptr shape {indptr.shape} do not match.'
+    assert weight.shape == weight_indices.shape == indices.shape, (
+        f'weight shape {weight.shape}, weight_indices shape {weight_indices.shape}, '
+        f'indices shape {indices.shape}, indptr shape {indptr.shape} do not match.'
     )
     return _csc_on_post_prim(
-        weight, indices, indptr, pre_trace, post_spike,
+        weight, indices, indptr, weight_indices, pre_trace, post_spike,
         outs=[jax.ShapeDtypeStruct(weight.shape, weight.dtype)],
         shape=shape,
     )
