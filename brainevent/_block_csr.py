@@ -760,10 +760,25 @@ class BlockCSR(BlockBase):
         return csr.solve(b, tol, reorder)
 
     def __matmul__(self, other) -> jax.Array:
+        """
+        Perform matrix multiplication between the BlockCSR matrix and another array.
+
+        $$
+        \mathrm{block CSR} \times \mathrm{dense} \rightarrow \mathrm{dense}
+        $$
+
+        """
         self._validate()
         return sdd_matmul(self, other)
 
     def __rmatmul__(self, other):
+        """
+        Perform matrix multiplication where the BlockCSR matrix is on the right side.
+
+        $$
+        \mathrm{dense} \times \mathrm{block CSR} \rightarrow \mathrm{dense}
+        $$
+        """
         # TODO: using tocsr VS manually implement the XLA kernel?
         # For example, block the other and do calculation?
         return other @ self.tocsr()  # lazy implementation for now, plan to implement the XLA kernel
