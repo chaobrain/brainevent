@@ -34,6 +34,12 @@ from ._xla_custom_op_numba import numba_kernel
 from ._xla_custom_op_pallas import pallas_kernel
 from ._xla_custom_op_util import defjvp, general_batching_rule
 from ._xla_custom_op_warp import warp_kernel, jaxtype_to_warptype, jaxinfo_to_warpinfo
+from ._primitives import (
+    ALL_PRIMITIVES,
+    get_all_primitive_names,
+    get_primitives_by_category,
+    get_primitive_info
+)
 
 __all__ = [
     # --- global configuration --- #
@@ -91,5 +97,11 @@ __all__ = [
     # --- others --- #
 
     'MathError',
+
+    # --- primitives --- #
+    'ALL_PRIMITIVES',
+    'get_all_primitive_names',
+    'get_primitives_by_category',
+    'get_primitive_info',
 
 ]
