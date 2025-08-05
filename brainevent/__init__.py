@@ -35,6 +35,11 @@ from ._xla_custom_op_pallas import pallas_kernel
 from ._xla_custom_op_util import defjvp, general_batching_rule
 from ._xla_custom_op_warp import warp_kernel, jaxtype_to_warptype, jaxinfo_to_warpinfo
 
+
+from ._misc import csr_to_coo_index, coo_to_csc_index, csr_to_csc_index
+
+
+
 __all__ = [
     # --- global configuration --- #
     'config',
@@ -91,5 +96,8 @@ __all__ = [
     # --- others --- #
 
     'MathError',
+    'csr_to_coo_index',
+    'coo_to_csc_index',
+    'csr_to_csc_index',
 
 ]
