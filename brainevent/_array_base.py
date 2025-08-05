@@ -82,6 +82,9 @@ class BaseArray:
             value = u.math.asarray(value, dtype=dtype)
         self._value = value
 
+    def __hash__(self):
+        return hash(self.value)
+
     def _check_tracer(self):
         """
         Check the tracer of the array value.
