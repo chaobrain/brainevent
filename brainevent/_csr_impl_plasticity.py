@@ -70,7 +70,9 @@ def csr_on_pre(
     weight, wunit = u.split_mantissa_unit(weight)
     post_trace = u.Quantity(post_trace).to(wunit).mantissa
     weight = u.maybe_decimal(
-        _csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, shape=shape)[0] * wunit
+        _csr_on_pre_prim_call(
+            weight, indices, indptr, pre_spike, post_trace, shape=shape
+        )[0] * wunit
     )
     weight = u.math.clip(weight, w_min, w_max)
     return weight
@@ -80,11 +82,11 @@ def _csr_on_pre_numba_kernel_generator(**kwargs):
     def kernel(weight, indices, indptr, pre_spike, post_trace, out_w):
         for i in range(pre_spike.shape[0]):
             if pre_spike[i]:
-                index = indptr[i]
-                index_end = indptr[i + 1]
-                out_w[index: index_end] += post_trace[indices[index: index_end]]
+                i_start = indptr[i]
+                i_end = indptr[i + 1]
+                out_w[i_start: i_end] += post_trace[indices[i_start: i_end]]
 
-    return numba_kernel(kernel, parallel=True, input_output_aliases={0: 0})
+    return numba_kernel(kernel, input_output_aliases={0: 0})
 
 
 def _csr_on_pre_pallas_kernel_generator(weight_info, shape, **kwargs):
@@ -180,8 +182,9 @@ def csr2csc_on_post(
     weight, wunit = u.split_mantissa_unit(weight)
     pre_trace = u.Quantity(pre_trace).to(wunit).mantissa
     weight = u.maybe_decimal(
-        _csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace, post_spike, shape=shape)[
-            0] * wunit
+        _csr2csc_on_post_prim_call(
+            weight, indices, indptr, weight_indices, pre_trace, post_spike, shape=shape
+        )[0] * wunit
     )
     weight = u.math.clip(weight, w_min, w_max)
     return weight
@@ -197,7 +200,7 @@ def _csr2csc_on_post_numba_kernel_generator(**kwargs):
                 pre_ids = indices[index: index_end]
                 out_w[weight_ids] += pre_trace[pre_ids]
 
-    return numba_kernel(kernel, parallel=True, input_output_aliases={0: 0})
+    return numba_kernel(kernel, parallel=False, input_output_aliases={0: 0})
 
 
 def _csr2csc_on_post_pallas_kernel_generator(weight_info, shape, **kwargs):

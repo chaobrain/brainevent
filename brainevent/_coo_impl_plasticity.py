@@ -18,6 +18,7 @@ from typing import Union, Optional
 import brainunit as u
 import jax
 import numpy as np
+import jax.numpy as jnp
 
 from ._compatible_import import pallas as pl
 from ._misc import generate_block_dim
@@ -69,11 +70,12 @@ def coo_on_pre(
 
 def _coo_on_pre_numba_kernel_generator(**kwargs):
     def kernel(weight, pre_ids, post_ids, pre_spike, post_trace, out_w):
-        for i in range(weight.shape[0]):
-            if pre_spike[pre_ids[i]]:
+        for i in range(out_w.shape[0]):
+            i_pre = pre_ids[i]
+            if pre_spike[i_pre]:
                 out_w[i] += post_trace[post_ids[i]]
 
-    return numba_kernel(kernel, parallel=True, input_output_aliases={0: 0})
+    return numba_kernel(kernel, input_output_aliases={0: 0})
 
 
 def _coo_on_pre_pallas_kernel_generator(weight_info, **kwargs):
@@ -160,11 +162,12 @@ def coo_on_post(
 
 def _coo_on_post_numba_kernel_generator(**kwargs):
     def kernel(weight, pre_ids, post_ids, pre_trace, post_spike, out_w):
-        for i in range(weight.shape[0]):
-            if post_spike[post_ids[i]]:
+        for i in range(out_w.shape[0]):
+            i_post = post_ids[i]
+            if post_spike[i_post]:
                 out_w[i] += pre_trace[pre_ids[i]]
 
-    return numba_kernel(kernel, parallel=True, input_output_aliases={0: 0})
+    return numba_kernel(kernel, input_output_aliases={0: 0})
 
 
 def _coo_on_post_pallas_kernel_generator(weight_info, **kwargs):

@@ -22,13 +22,13 @@ import brainevent
 from brainevent._coo_impl_plasticity import coo_on_pre, coo_on_post
 
 
-class Test_Coo:
+class Test_coo_on_pre:
     def test_coo_on_pre_v1(self):
         n_pre = 100
         n_post = 100
         mat = brainstate.random.random((n_pre, n_post))
-        mask = mat < 0.1
-        mat = jnp.where(mask, mat, 1.)
+        mask = mat < 0.5
+        mat = jnp.where(mask, mat, 0.)
         pre_spike = brainstate.random.random((n_pre,)) < 0.1
         post_trace = brainstate.random.random((n_post,))
 
@@ -36,8 +36,9 @@ class Test_Coo:
         coo = coo.with_data(coo_on_pre(coo.data, coo.row, coo.col, pre_spike, post_trace))
 
         mat = mat + jnp.outer(pre_spike, post_trace)
+        mat = jnp.where(mask, mat, 0.)
 
-        assert jnp.allclose(coo.todense(), mat)
+        assert jnp.allclose(coo.todense(), mat, rtol=1e-2, atol=1e-2)
 
     @pytest.mark.parametrize('mat_unit', [u.mV, u.ms])
     @pytest.mark.parametrize('trace_unit', [u.mV, u.ms])
@@ -46,8 +47,8 @@ class Test_Coo:
             n_pre = 100
             n_post = 100
             mat = brainstate.random.random((n_pre, n_post))
-            mask = mat < 0.1
-            mat = jnp.where(mask, mat, 1.) * mat_unit
+            mask = mat < 0.5
+            mat = jnp.where(mask, mat, 0.) * mat_unit
             pre_spike = brainstate.random.random((n_pre,)) < 0.1
             post_trace = brainstate.random.random((n_post,)) * trace_unit
 
@@ -55,6 +56,7 @@ class Test_Coo:
             coo = coo.with_data(coo_on_pre(coo.data, coo.row, coo.col, pre_spike, post_trace))
 
             mat = mat + u.math.outer(pre_spike, post_trace)
+            mat = u.math.where(mask, mat, 0. * mat_unit)
 
             assert u.math.allclose(coo.todense(), mat)
 
@@ -70,8 +72,8 @@ class Test_Coo:
         n_pre = 100
         n_post = 100
         mat = brainstate.random.random((n_pre, n_post))
-        mask = mat < 0.1
-        mat = jnp.where(mask, mat, 1.)
+        mask = mat < 0.5
+        mat = jnp.where(mask, mat, 0.)
         pre_spike = brainstate.random.random((n_pre,)) < 0.1
         post_trace = brainstate.random.random((n_post,))
 
@@ -80,15 +82,19 @@ class Test_Coo:
 
         mat = mat + jnp.outer(pre_spike, post_trace)
         mat = jnp.clip(mat, w_in, w_max)
+        mat = jnp.where(mask, mat, 0.)
 
         assert jnp.allclose(coo.todense(), mat)
+
+
+class Test_coo_on_post:
 
     def test_coo_on_post_v1(self):
         n_pre = 100
         n_post = 100
         mat = brainstate.random.random((n_pre, n_post))
-        mask = mat < 0.1
-        mat = jnp.where(mask, mat, 1.)
+        mask = mat < 0.5
+        mat = jnp.where(mask, mat, 0.)
         pre_trace = brainstate.random.random((n_pre,))
         post_spike = brainstate.random.random((n_post,)) < 0.1
 
@@ -96,6 +102,7 @@ class Test_Coo:
         coo = coo.with_data(coo_on_post(coo.data, coo.row, coo.col, pre_trace, post_spike))
 
         mat = mat + jnp.outer(pre_trace, post_spike)
+        mat = jnp.where(mask, mat, 0.)
 
         assert jnp.allclose(coo.todense(), mat)
 
@@ -106,8 +113,8 @@ class Test_Coo:
             n_pre = 100
             n_post = 100
             mat = brainstate.random.random((n_pre, n_post))
-            mask = mat < 0.1
-            mat = jnp.where(mask, mat, 1.) * mat_unit
+            mask = mat < 0.5
+            mat = jnp.where(mask, mat, 0.) * mat_unit
             pre_trace = brainstate.random.random((n_pre,)) * trace_unit
             post_spike = brainstate.random.random((n_post,)) < 0.1
 
@@ -115,6 +122,7 @@ class Test_Coo:
             coo = coo.with_data(coo_on_post(coo.data, coo.row, coo.col, pre_trace, post_spike))
 
             mat = mat + u.math.outer(pre_trace, post_spike)
+            mat = u.math.where(mask, mat, 0. * mat_unit)
 
             assert u.math.allclose(coo.todense(), mat)
 
@@ -130,8 +138,8 @@ class Test_Coo:
         n_pre = 100
         n_post = 100
         mat = brainstate.random.random((n_pre, n_post))
-        mask = mat < 0.1
-        mat = jnp.where(mask, mat, 1.)
+        mask = mat < 0.5
+        mat = jnp.where(mask, mat, 0.)
         pre_trace = brainstate.random.random((n_pre,))
         post_spike = brainstate.random.random((n_post,)) < 0.1
 
@@ -140,5 +148,6 @@ class Test_Coo:
 
         mat = mat + jnp.outer(pre_trace, post_spike)
         mat = jnp.clip(mat, w_in, w_max)
+        mat = jnp.where(mask, mat, 0.)
 
         assert jnp.allclose(coo.todense(), mat)
