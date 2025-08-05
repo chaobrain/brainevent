@@ -131,7 +131,7 @@ _csr_on_pre_prim.def_gpu_kernel(pallas=_csr_on_pre_pallas_kernel_generator)
 _csr_on_pre_prim.def_tpu_kernel(_csr_on_pre_pallas_kernel_generator)
 
 
-def csc_on_post(
+def csr2csc_on_post(
     weight: Union[u.Quantity, jax.Array],
     indices: Union[np.ndarray, jax.Array],
     indptr: Union[np.ndarray, jax.Array],
@@ -169,13 +169,14 @@ def csc_on_post(
     weight, wunit = u.split_mantissa_unit(weight)
     pre_trace = u.Quantity(pre_trace).to(wunit).mantissa
     weight = u.maybe_decimal(
-        _csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace, post_spike, shape=shape)[0] * wunit
+        _csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace, post_spike, shape=shape)[
+            0] * wunit
     )
     weight = u.math.clip(weight, w_min, w_max)
     return weight
 
 
-def _csc_on_post_numba_kernel_generator(**kwargs):
+def _csr2csc_on_post_numba_kernel_generator(**kwargs):
     def kernel(weight, indices, indptr, weight_indices, pre_trace, post_spike, out_w):
         for i in range(post_spike.shape[0]):
             if post_spike[i]:
@@ -188,7 +189,7 @@ def _csc_on_post_numba_kernel_generator(**kwargs):
     return numba_kernel(kernel, parallel=True, input_output_aliases={0: 0})
 
 
-def _csc_on_post_pallas_kernel_generator(weight_info, shape, **kwargs):
+def _csr2csc_on_post_pallas_kernel_generator(weight_info, shape, **kwargs):
     block_dim = generate_block_dim(weight_info.shape[0], 512)
 
     def kernel(weight_ref, indices_ref, indptr_ref, weight_indices_ref, trace_ref, spike_ref, out_w_ref):
@@ -216,7 +217,7 @@ def _csc_on_post_pallas_kernel_generator(weight_info, shape, **kwargs):
     return pallas_kernel(kernel, input_output_aliases={0: 0}, tile=(shape[1],))
 
 
-def _csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace, post_spike, *, shape):
+def _csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace, post_spike, *, shape):
     assert weight.ndim == 1, 'dense_one_post only support 1D weight.'
     assert post_spike.ndim == 1, 'post_spike should be 1D.'
     assert pre_trace.ndim == 1, 'pre_trace should be 1D.'
@@ -226,12 +227,14 @@ def _csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace, p
         f'weight shape {weight.shape}, weight_indices shape {weight_indices.shape}, '
         f'indices shape {indices.shape}, indptr shape {indptr.shape} do not match.'
     )
-    return _csc_on_post_prim(
+    return _csr2csc_on_post_prim(
         weight, indices, indptr, weight_indices, pre_trace, post_spike,
         outs=[jax.ShapeDtypeStruct(weight.shape, weight.dtype)],
         shape=shape,
     )
 
 
-_csc_on_post_prim = XLACustomKernel('csc_on_post')
-_csc_on_post_prim.def_cpu_kernel(_csc_on_post_numba_kernel_generator)
+_csr2csc_on_post_prim = XLACustomKernel('csr2csc_on_post')
+_csr2csc_on_post_prim.def_cpu_kernel(_csr2csc_on_post_numba_kernel_generator)
+_csr2csc_on_post_prim.def_gpu_kernel(pallas=_csr2csc_on_post_pallas_kernel_generator)
+_csr2csc_on_post_prim.def_tpu_kernel(_csr2csc_on_post_pallas_kernel_generator)
