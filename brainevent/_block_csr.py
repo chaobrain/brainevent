@@ -396,7 +396,16 @@ class BlockCSR(u.sparse.SparseMatrix):
 
     def __matmul__(self, other) -> jax.Array:
         self._validate()
-        return sdd_matmul(self, other)
+        if other.ndim == 2:
+            return sdd_matmul(self, other)
+        elif other.ndim == 1:
+            raise NotImplementedError
+            # For vector multiplication, we can use the dense representation
+            # to avoid the overhead of the sparse matrix multiplication.
+            return self.todense() @ other
+        else:
+            raise ValueError(f"Unsupported operation: BlockCSR @ {type(other)}. "
+                             "Only support 2D array or 1D vector multiplication.")
 
     def __rmatmul__(self, other):
         # TODO: using tocsr VS manually implement the XLA kernel?

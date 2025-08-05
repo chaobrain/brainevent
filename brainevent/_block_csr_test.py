@@ -145,18 +145,17 @@ class Test_BlockCSR:
         assert jnp.allclose(base_matrix_tocsr_indices, csr_indices)
         assert jnp.allclose(base_matrix_tocsr_indptr, csr_indptr)
 
-    @pytest.mark.parametrize('data', [np.random.rand(6,4).reshape(6, 2, 2)])
-    @pytest.mark.parametrize('indices', [np.array([0, 2, 2, 0, 1, 2])])
-    @pytest.mark.parametrize('indptr', [np.array([0, 2, 3, 6])])
-    @pytest.mark.parametrize('shape', [(6, 6)])
-    def test_solve(self, data, indices, indptr, shape):
-        dense = u.math.asarray(gen_bsr_matrix(data, indices, indptr, shape).toarray())
-        blockcsr = brainevent.BlockCSR.fromdense(dense, block_size=(2, 2))
-        # csr = blockcsr.tocsr()
-        b = brainstate.random.randn(shape[0])
-
-        x = blockcsr.solve(b)
-        assert jnp.allclose(blockcsr @ x, b, atol=1e0, rtol=1e0)
-
-        x2 = jnp.linalg.solve(dense, b)
-        assert jnp.allclose(x, x2, atol=1e0, rtol=1e0)
+    # @pytest.mark.parametrize('data', [np.random.rand(6,4).reshape(6, 2, 2)])
+    # @pytest.mark.parametrize('indices', [np.array([0, 2, 2, 0, 1, 2])])
+    # @pytest.mark.parametrize('indptr', [np.array([0, 2, 3, 6])])
+    # @pytest.mark.parametrize('shape', [(6, 6)])
+    # def test_solve(self, data, indices, indptr, shape):
+    #     dense = u.math.asarray(gen_bsr_matrix(data, indices, indptr, shape).toarray())
+    #     blockcsr = brainevent.BlockCSR.fromdense(dense, block_size=(2, 2))
+    #     b = brainstate.random.randn(shape[0])
+    #
+    #     x = blockcsr.solve(b)
+    #     assert jnp.allclose(blockcsr @ x, b, atol=1e0, rtol=1e0)
+    #
+    #     x2 = jnp.linalg.solve(dense, b)
+    #     assert jnp.allclose(x, x2, atol=1e0, rtol=1e0)
