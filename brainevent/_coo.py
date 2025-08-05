@@ -153,7 +153,7 @@ class COO(u.sparse.SparseMatrix):
         if nse is None:
             nse = (u.get_mantissa(mat) != 0.).sum()
         coo = u.sparse.coo_fromdense(mat, nse=nse, index_dtype=index_dtype)
-        return COO(coo.data, coo.row, coo.col, shape=coo.shape)
+        return COO((coo.data, coo.row, coo.col), shape=coo.shape)
 
     def _sort_indices(self) -> COO:
         """Return a copy of the COO matrix with sorted indices.
