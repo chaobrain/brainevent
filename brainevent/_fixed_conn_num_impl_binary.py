@@ -26,7 +26,7 @@ from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
 from ._fixed_conn_num_impl_float import fixed_num_mv_p_call, fixed_num_mm_p_call
-from ._misc import generate_block_dim, check_fixed_conn_num_shape, warp_jit_fun
+from ._misc import generate_block_dim, check_fixed_conn_num_shape, namescoped_jit
 from ._typing import MatrixShape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import numba_kernel
@@ -473,7 +473,7 @@ def _binary_fixed_num_mv_batching(args, axes, **kwargs):
     else:
         return general_batching_rule(binary_fixed_num_mv_p, args, axes, **kwargs)
 
-@warp_jit_fun(static_argnames=("shape", "transpose"))
+@namescoped_jit(static_argnames=("shape", "transpose"))
 def binary_fixed_num_mv_p_call(
     weights,
     indices,

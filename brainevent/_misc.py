@@ -342,7 +342,7 @@ def check_fixed_conn_num_shape(
     return out_struct, weights, n_pre, n_post
 
 
-def warp_jit_fun(
+def namescoped_jit(
     name: str = None,
     prefix: str = "brainevent",
     static_argnums: Tuple[int, ...] = (),
