@@ -40,6 +40,10 @@ def coo_on_pre(
     This function implements a plasticity rule for sparse connectivity matrices where
     presynaptic spikes trigger weight updates modulated by postsynaptic trace values.
 
+    Specifically, for each synapse, if the presynaptic neuron spikes ``pre_spike[i]`` is True,
+    the weight of the synapse is updated by adding the corresponding postsynaptic trace value
+    ``post_trace[post_ids[i]]`` to the weight ``weight[i]``.
+
     Args:
         weight: Sparse synaptic weight array in COO format, shape (n_synapses,).
         pre_ids: Array of presynaptic neuron indices for each synapse, shape (n_synapses,).
@@ -122,6 +126,31 @@ def coo_on_post(
     w_min: Optional[Union[u.Quantity, jax.Array]] = None,
     w_max: Optional[Union[u.Quantity, jax.Array]] = None,
 ):
+    """Updates synaptic weights in COO format based on postsynaptic spike events and presynaptic traces.
+
+    This function implements a plasticity rule for sparse connectivity matrices where
+    postsynaptic spikes trigger weight updates modulated by presynaptic trace values.
+
+    Specifically, for each synapse, if the postsynaptic neuron spikes ``post_spike[post_ids[i]]`` is True,
+    the weight of the synapse is updated by adding the corresponding presynaptic trace value
+    ``pre_trace[pre_ids[i]]`` to the weight ``weight[i]``.
+
+    Args:
+        weight: Sparse synaptic weight array in COO format, shape (n_synapses,).
+        pre_ids: Array of presynaptic neuron indices for each synapse, shape (n_synapses,).
+        post_ids: Array of postsynaptic neuron indices for each synapse, shape (n_synapses,).
+        pre_trace: Presynaptic trace values, shape (n_pre,).
+        post_spike: Binary/boolean array indicating postsynaptic spike events, shape (n_post,).
+        w_min: Optional lower bound for weight clipping. Must have same units as weight.
+        w_max: Optional upper bound for weight clipping. Must have same units as weight.
+
+    Returns:
+        Updated weight array with the same shape and units as the input weight.
+
+    Note:
+        The function handles unit conversion internally, ensuring that the pre_trace
+        is converted to the same unit as the weight before computation.
+    """
     weight, wunit = u.split_mantissa_unit(weight)
     pre_trace = u.Quantity(pre_trace).to(wunit).mantissa
     weight = u.maybe_decimal(_coo_on_post_prim_call(weight, pre_ids, post_ids, pre_trace, post_spike)[0] * wunit)

@@ -45,6 +45,11 @@ def csr_on_pre(
     presynaptic spikes trigger weight updates modulated by postsynaptic trace values.
     The weight matrix is stored in Compressed Sparse Row (CSR) format.
 
+    Specifically, for each presynaptic neuron, if it spikes ``pre_spike[i]`` is True,
+    the weights of all synapses originating from that neuron are updated by adding the
+    corresponding postsynaptic trace values ``post_trace[indices[index: index_end]]`` to
+    the weights ``weight[index: index_end]``.
+
     Args:
         weight: Sparse synaptic weight array in CSR format, shape (n_nonzero,).
         indices: Column indices array of the CSR format, shape (n_nonzero,).
@@ -149,10 +154,16 @@ def csr2csc_on_post(
     postsynaptic spikes trigger weight updates modulated by presynaptic trace values.
     The weight matrix is stored in Compressed Sparse Column (CSC) format.
 
+    Specifically, for each postsynaptic neuron, if it spikes ``post_spike[i]`` is True,
+    the weights of all synapses targeting that neuron are updated by adding the
+    corresponding presynaptic trace values ``pre_trace[indices[index: index_end]]`` to
+    the weights ``weight[index: index_end]``.
+
     Args:
         weight: Sparse synaptic weight array in CSC format, shape (n_nonzero,).
         indices: Row indices array of the CSC format, shape (n_nonzero,).
         indptr: Column pointers array of the CSC format, shape (n_cols + 1,).
+        weight_indices: Array of weight indices corresponding to the synapses, shape (n_nonzero,).
         pre_trace: Presynaptic trace values, shape (n_pre,).
         post_spike: Binary/boolean array indicating postsynaptic spike events, shape (n_post,).
         w_min: Optional lower bound for weight clipping. Must have same units as weight.
