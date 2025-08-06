@@ -73,7 +73,6 @@ def numba_pjit_fn(fn: Callable):
     """
     import numba
     setting = config.get_numba_setting()
-    setting.pop('parallel', False)
     return numba.njit(fn, **setting)
 
 
