@@ -24,7 +24,7 @@ from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
 from ._jitc_util import _initialize_seed, _initialize_conn_length
-from ._misc import generate_block_dim
+from ._misc import generate_block_dim, namescoped_jit
 from ._pallas_random import LFSR88RNG
 from ._typing import Data, MatrixShape
 from ._xla_custom_op import XLACustomKernel
