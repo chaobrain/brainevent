@@ -24,7 +24,7 @@ from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
 from ._jitc_util import _initialize_seed, _initialize_conn_length
-from ._misc import generate_block_dim
+from ._misc import generate_block_dim, namescoped_jit
 from ._pallas_random import LFSR88RNG
 from ._typing import Data, MatrixShape
 from ._xla_custom_op import XLACustomKernel
@@ -40,6 +40,7 @@ __all__ = [
 ]
 
 
+@namescoped_jit(static_argnames=("shape", "transpose", "corder"))
 def float_jitc_homo_matrix(
     weight: Data,
     prob: float,
@@ -121,6 +122,7 @@ def float_jitc_homo_matrix(
     return u.maybe_decimal(res * unitd)
 
 
+@namescoped_jit(static_argnames=("shape", "transpose", "corder"))
 def float_jitc_homo_matvec(
     weight: Data,
     prob: float,
@@ -191,6 +193,7 @@ def float_jitc_homo_matvec(
     return u.maybe_decimal(res * unitd * unitv)
 
 
+@namescoped_jit(static_argnames=("shape", "transpose", "corder"))
 def float_jitc_homo_matmat(
     weight: Data,
     prob: float,

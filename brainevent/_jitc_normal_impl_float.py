@@ -40,6 +40,7 @@ __all__ = [
 ]
 
 
+@namescoped_jit(static_argnames=("shape", "transpose", "corder"))
 def float_jitc_normal_matrix(
     w_loc: Data,
     w_scale: Data,
@@ -66,6 +67,7 @@ def float_jitc_normal_matrix(
     return u.maybe_decimal(res * unitd)
 
 
+@namescoped_jit(static_argnames=("shape", "transpose", "corder"))
 def float_jitc_normal_matvec(
     w_loc: Data,
     w_scale: Data,
@@ -96,6 +98,7 @@ def float_jitc_normal_matvec(
     return u.maybe_decimal(res * unitd * unitv)
 
 
+@namescoped_jit(static_argnames=("shape", "transpose", "corder"))
 def float_jitc_normal_matmat(
     w_loc: Data,
     w_scale: Data,

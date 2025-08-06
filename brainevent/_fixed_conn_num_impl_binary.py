@@ -473,6 +473,7 @@ def _binary_fixed_num_mv_batching(args, axes, **kwargs):
     else:
         return general_batching_rule(binary_fixed_num_mv_p, args, axes, **kwargs)
 
+
 @namescoped_jit(static_argnames=("shape", "transpose"))
 def binary_fixed_num_mv_p_call(
     weights,
@@ -817,6 +818,7 @@ def _binary_fixed_num_mm_batching(args, axes, **kwargs):
         return general_batching_rule(binary_fixed_num_mm_p, args, axes, **kwargs)
 
 
+@namescoped_jit(static_argnames=("shape", "transpose"))
 def binary_fixed_num_mm_p_call(
     weights: Union[jax.Array, u.Quantity],
     indices: jax.Array,

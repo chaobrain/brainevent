@@ -24,7 +24,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
-from ._misc import generate_block_dim, check_fixed_conn_num_shape
+from ._misc import generate_block_dim, check_fixed_conn_num_shape, namescoped_jit
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import numba_kernel
 from ._xla_custom_op_pallas import pallas_kernel
@@ -352,6 +352,7 @@ def _fixed_num_mv_transpose_rule(
         return ct_weight, indices, vector, _
 
 
+@namescoped_jit(static_argnames=("shape", "transpose"))
 def _warp_fixed_num_mv_call(
     weights: Union[jax.Array, u.Quantity],
     indices: jax.Array,
@@ -772,6 +773,7 @@ def _fixed_num_mm_batching(args, axes, **kwargs):
         return general_batching_rule(fixed_num_mm_p, args, axes, **kwargs)
 
 
+@namescoped_jit(static_argnames=("shape", "transpose"))
 def fixed_num_mm_p_call(
     weights: Union[jax.Array, u.Quantity],
     indices: jax.Array,
