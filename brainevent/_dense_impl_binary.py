@@ -30,7 +30,7 @@ from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
 
 
-@namescoped_jit
+@namescoped_jit()
 def dense_mat_dot_binary_vec(weights, spikes):
     """
     Performs event-driven matrix-vector multiplication: `weights @ spikes`.
