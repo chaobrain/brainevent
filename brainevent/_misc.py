@@ -15,11 +15,15 @@
 
 # -*- coding: utf-8 -*-
 
-from typing import Tuple, NamedTuple, Sequence, Callable
+from functools import partial
+from typing import Tuple, NamedTuple, Sequence, Union
+from typing import Tuple, NamedTuple, Sequence, Union, Callable
 
+import brainstate.environ
 import brainunit as u
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.experimental.sparse import csr_todense_p, coo_todense_p
 
 from ._typing import MatrixShape, Data, Index
@@ -102,6 +106,167 @@ def _csr_todense(
         data = jnp.ones(indices.shape, dtype=data.dtype) * data
     mat = csr_todense_p.bind(data, indices, indptr, shape=shape)
     return u.maybe_decimal(mat * unit)
+
+
+def _block_csr_tocsr(data: jax.Array, indices: jax.Array, indptr: jax.Array, shape: MatrixShape) -> Tuple[
+    jax.Array, jax.Array, jax.Array]:
+    n, m = data.shape[1:]
+    N, M = shape
+    n_block_rows = indptr.shape[0] - 1
+
+    block_row_ids = jnp.repeat(jnp.arange(n_block_rows), jnp.diff(indptr))
+    block_col_ids = indices
+
+    block_i = jnp.arange(n)
+    block_j = jnp.arange(m)
+    ii, jj = jnp.meshgrid(block_i, block_j, indexing='ij')  # (n, m)
+
+    row = (block_row_ids[:, None, None] * n + ii[None, :, :]).reshape(-1)
+    col = (block_col_ids[:, None, None] * m + jj[None, :, :]).reshape(-1)
+    val = data.reshape(-1)
+
+    mask = val != 0
+    row = row[mask]
+    col = col[mask]
+    val = val[mask]
+
+    counts = jnp.bincount(row, length=N)
+    csr_indptr = jnp.concatenate([jnp.array([0], dtype=jnp.int32), jnp.cumsum(counts)])
+
+    order = jnp.lexsort((col, row))  # row based sort
+    csr_data = val[order]
+    csr_indices = col[order]
+
+    return csr_data, csr_indices, csr_indptr
+
+
+@partial(jax.jit, static_argnames=["n", "m", "dense_shape_row", "nse"])
+def _block_csr_tocoo(n: int,
+                     m: int,
+                     dense_shape_row: int,
+                     nse: int,
+                     indices: jax.Array,
+                     indptr: jax.Array) -> Tuple[jax.Array, jax.Array]:
+    nrows = dense_shape_row // n
+    delta_row_array = jnp.arange(n).repeat(m)
+    delta_col_array = jnp.tile(jnp.arange(m), n)
+    mini_block_nse = n * m
+
+    def i_body(i_row, out):
+        def j_body(x):
+            i_block, i_row, val = x
+            i_col = indices[i_block]
+            start_row = i_row * n
+            start_col = i_col * m
+            val0 = jax.lax.dynamic_update_slice(val[0], start_row + delta_row_array, (i_block * mini_block_nse,))
+            val1 = jax.lax.dynamic_update_slice(val[1], start_col + delta_col_array, (i_block * mini_block_nse,))
+            val = (val0, val1)
+            return (i_block + 1, i_row, val)
+
+        return jax.lax.while_loop(lambda x: x[0] < indptr[x[1] + 1], j_body, (indptr[i_row], i_row, out))[-1]
+
+    pre_ids, post_ids = jax.lax.fori_loop(
+        0, nrows, i_body, (jnp.zeros(nse, dtype=jnp.int32), jnp.zeros(nse, dtype=jnp.int32))
+    )
+    return pre_ids, post_ids
+
+
+def estimate_block_size(csr, efficiency: float = 0.7) -> Tuple[int, int]:
+    """Attempt to determine the block_size of a CSR matrix
+
+    Returns a block_size=(r,c) such that best match the efficiency setting
+    """
+    if csr.nse == 0:
+        return (1, 1)
+
+    if not 0 < efficiency < 1.0:
+        raise ValueError('efficiency must satisfy 0.0 < efficiency < 1.0')
+
+    high_efficiency = (1.0 + efficiency) / 2.0
+    nse = float(csr.nse)
+    N, M = csr.shape
+
+    if N % 2 == 0 and M % 2 == 0:
+        e22 = nse / (4 * count_blocks(csr, (2, 2)))
+    else:
+        e22 = 0.0
+
+    if M % 3 == 0 and N % 3 == 0:
+        e33 = nse / (9 * count_blocks(csr, (3, 3)))
+    else:
+        e33 = 0.0
+
+    if e22 > high_efficiency and e33 > high_efficiency:
+        e66 = nse / (36 * count_blocks(csr, (6, 6)))
+        if e66 > efficiency:
+            return (6, 6)
+        else:
+            return (3, 3)
+    else:
+        if M % 4 == 0 and N % 4 == 0:
+            e44 = nse / (16 * count_blocks(csr, (4, 4)))
+        else:
+            e44 = 0.0
+
+        if e44 > efficiency:
+            return (4, 4)
+        elif e33 > efficiency:
+            return (3, 3)
+        elif e22 > efficiency:
+            return (2, 2)
+        else:
+            return (1, 1)
+
+
+def _count_blocks(N, M, n, m, indptr, indices):
+    mask = np.full(M // m + 1, -1, dtype=np.int32)
+    n_blks = 0
+
+    for i in range(N):
+        bi = i // n
+        for jj in range(indptr[i], indptr[i + 1]):
+            bj = indices[jj] // m
+            if mask[bj] != bi:
+                mask[bj] = bi
+                n_blks += 1
+
+    return n_blks
+
+
+def count_blocks(mat, block_size: Tuple[int, int]) -> int:
+    """For a given block_size=(n,m) count the number of occupied
+    blocks in a csr matrix
+    """
+    n, m = block_size
+    if n < 1 or m < 1:
+        raise ValueError('The block size n and m must be positive')
+
+    return _count_blocks(mat.shape[0], mat.shape[1], n, m, mat.indptr, mat.indices)
+
+
+def _nonzero_blocks(dense: jax.Array, block_size: Tuple[int, int]) -> Tuple[jax.Array, jax.Array, jax.Array]:
+    N, M = dense.shape
+    n, m = block_size
+    n_block_rows = N // n
+    n_block_cols = M // m
+    blocks = dense.reshape(n_block_rows, n, n_block_cols, m)
+    blocks = blocks.transpose(0, 2, 1, 3)
+    blocks = blocks.reshape(-1, n, m)
+
+    nonzero_blocks = []
+    indices = []
+    indptr = [0]
+    for i, block in enumerate(blocks):
+        if not jnp.all(block == 0):
+            nonzero_blocks.append(block)
+            indices.append(i % n_block_cols)
+        if (i + 1) % n_block_cols == 0:
+            indptr.append(len(nonzero_blocks))
+    nonzero_blocks = jnp.array(nonzero_blocks)
+    indices = jnp.array(indices)
+    indptr = jnp.array(indptr, dtype=jnp.int32)
+
+    return nonzero_blocks, indices, indptr
 
 
 def cdiv(m: int, n: int) -> int:
@@ -342,6 +507,174 @@ def check_fixed_conn_num_shape(
     return out_struct, weights, n_pre, n_post
 
 
+def csr_to_coo_index(
+    indptr: Union[jax.Array, np.ndarray],
+    indices: Union[jax.Array, np.ndarray]
+):
+    """
+    Converts CSR (Compressed Sparse Row) format indices to COO (Coordinate) format indices.
+
+    This function transforms the CSR representation of a sparse matrix (given by indptr and
+    indices) into the COO representation, which consists of explicit row and column indices
+    for each non-zero element.
+
+    Args:
+        indptr: Union[jax.Array, np.ndarray]
+            Row pointers array in CSR format. For a matrix with m rows, this has length m+1.
+            Each element represents the starting position of a row in the indices array.
+
+        indices: Union[jax.Array, np.ndarray]
+            Column indices array in CSR format. Contains the column index for each non-zero
+            element of the sparse matrix.
+
+    Returns:
+        Tuple[Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray]]:
+            A tuple (pre_ids, post_ids) where:
+            - pre_ids: Row indices in COO format
+            - post_ids: Column indices in COO format (same as input indices)
+
+    Notes:
+        The function automatically determines whether to use NumPy or JAX based on the
+        type of the input arrays. The computation is performed at compile time using
+        jax.ensure_compile_time_eval().
+    """
+    with jax.ensure_compile_time_eval():
+        mod = np if isinstance(indptr, np.ndarray) else jnp
+        pre_ids = mod.repeat(mod.arange(indptr.size - 1), mod.diff(indptr))
+        post_ids = indices
+        return pre_ids, post_ids
+
+
+def coo_to_csc_index(
+    pre_ids: Union[jax.Array, np.ndarray],
+    indices: Union[jax.Array, np.ndarray],
+    *,
+    shape: Tuple[int, int],
+):
+    """
+    Convert COO (Coordinate) format indices to CSC (Compressed Sparse Column) format.
+
+    This function transforms a sparse matrix representation from Coordinate format
+    (given by explicit row and column indices) to Compressed Sparse Column format.
+    The implementation handles both NumPy and JAX arrays automatically.
+
+    Parameters
+    ----------
+    pre_ids : Union[jax.Array, np.ndarray]
+        Row indices array in COO format. Contains the row index for each non-zero
+        element of the sparse matrix.
+
+    indices : Union[jax.Array, np.ndarray]
+        Column indices array in COO format. Contains the column index for each non-zero
+        element of the sparse matrix.
+
+    shape : Tuple[int, int]
+        A tuple of (n_rows, n_cols) specifying the dimensions of the sparse matrix.
+        Required as a keyword-only argument.
+
+    Returns
+    -------
+    Tuple[Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray]]
+        A tuple containing:
+        - csc_indptr: Column pointers array in CSC format. For a matrix with n columns,
+          this has length n+1. Each element represents the starting position of a column
+          in the row indices array.
+        - csc_indices: Row indices array in CSC format. Contains the row index for each
+          non-zero element, sorted by column.
+        - post_positions: Array of indices that can be used to reorder the data values
+          from COO to CSC format.
+
+    Notes
+    -----
+    The implementation automatically determines whether to use NumPy or JAX based on
+    the type of input arrays. When using JAX arrays, computation is performed at
+    compile time using jax.ensure_compile_time_eval().
+    """
+    n_post = shape[1]
+    if isinstance(indices, np.ndarray) and isinstance(pre_ids, np.ndarray):
+        # to maintain the original order of the elements with the same value
+        new_post_position = np.argsort(indices)
+        pre_ids_new = np.asarray(pre_ids[new_post_position], dtype=brainstate.environ.ditype())
+
+        unique_post_ids, count = np.unique(indices, return_counts=True)
+        post_count = np.zeros(n_post, dtype=brainstate.environ.ditype())
+        post_count[unique_post_ids] = count
+
+        indptr_new = np.insert(post_count.cumsum(), 0, 0)
+        indptr_new = np.asarray(indptr_new, dtype=brainstate.environ.ditype())
+
+    else:
+        # to maintain the original order of the elements with the same value
+
+        with jax.ensure_compile_time_eval():
+            new_post_position = jnp.argsort(indices)
+            pre_ids_new = jnp.asarray(pre_ids[new_post_position], dtype=brainstate.environ.ditype())
+
+            unique_post_ids, count = jnp.unique(indices, return_counts=True)
+            post_count = jnp.zeros(n_post, dtype=brainstate.environ.ditype())
+            post_count = post_count.at[unique_post_ids].set(count)
+
+            indptr_new = jnp.insert(post_count.cumsum(), 0, 0)
+            indptr_new = jnp.asarray(indptr_new, dtype=brainstate.environ.ditype())
+
+    return indptr_new, pre_ids_new, new_post_position
+
+
+def csr_to_csc_index(
+    csr_indptr: Union[jax.Array, np.ndarray],
+    csr_indices: Union[jax.Array, np.ndarray],
+    *,
+    shape: Tuple[int, int],
+):
+    """
+    Convert CSR (Compressed Sparse Row) format indices to CSC (Compressed Sparse Column) format.
+
+    This function transforms the sparse matrix representation from Compressed Sparse Row format
+    to Compressed Sparse Column format by first converting to COO (Coordinate) format as an
+    intermediate step.
+
+    Parameters
+    ----------
+    csr_indptr : Union[jax.Array, np.ndarray]
+        Row pointers array in CSR format. For a matrix with m rows, this has length m+1.
+        Each element represents the starting position of a row in the indices array.
+
+    csr_indices : Union[jax.Array, np.ndarray]
+        Column indices array in CSR format. Contains the column index for each non-zero
+        element of the sparse matrix.
+
+    shape : Tuple[int, int]
+        A tuple of (n_rows, n_cols) specifying the dimensions of the sparse matrix.
+        Required as a keyword-only argument.
+
+    Returns
+    -------
+    Tuple[Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray]]
+        A tuple containing:
+        - csc_indptr: Column pointers array in CSC format
+        - csc_indices: Row indices array in CSC format
+        - post_positions: Array of indices that can be used to reorder the data values
+          from CSR to CSC format
+
+    Raises
+    ------
+    AssertionError
+        If shape is not a tuple/list, doesn't have exactly 2 dimensions, or contains
+        non-positive dimensions.
+
+    Notes
+    -----
+    The implementation automatically determines whether to use NumPy or JAX based on
+    the type of input arrays.
+    """
+    assert isinstance(shape, (tuple, list)), "Shape must be a tuple or list"
+    assert len(shape) == 2, "Shape must have exactly two dimensions (rows, columns)"
+    assert shape[0] > 0 and shape[1] > 0, "Shape dimensions must be positive integers"
+    pre_ids, post_ids = csr_to_coo_index(csr_indptr, csr_indices)
+    csc_indptr, csc_indices, post_positions = coo_to_csc_index(pre_ids, post_ids, shape=shape)
+    return csc_indptr, csc_indices, post_positions
+
+
 def namescoped_jit(
     name: str = None,
     prefix: str = "brainevent",
@@ -350,21 +683,21 @@ def namescoped_jit(
 ):
     """Decorator that wraps a function with JAX's JIT compilation and sets its name.
     (For `brainstate.experimental.gdiist_bpu` module)
-    
+
     Args:
         name: Optional name to set for the function. If None, uses the original function name.
         prefix: Prefix to add to function name if name is None.
         static_argnums: Tuple of positional argument indices to be treated as static.
         static_argnames: Tuple of keyword argument names to be treated as static.
-    
+
     Returns:
         Decorated function with JAX JIT compilation applied.
-    
+
     Example:
         @warp_jit_fun("my_function", static_argnums=(0,))
         def my_func(x, y):
             return x + y
-            
+
         @warp_jit_fun(static_argnames=("shape", "transpose"))
         def my_func2(x, y, *, shape, transpose=False):
             return x + y
@@ -375,5 +708,5 @@ def namescoped_jit(
         else:
             fun.__name__ = f"{prefix}.{fun.__name__}"
         return jax.jit(fun, static_argnums=static_argnums, static_argnames=static_argnames)
-    
+
     return decorator
