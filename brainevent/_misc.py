@@ -149,28 +149,24 @@ def _block_csr_tocoo(n: int,
     nrows = dense_shape_row // n
     delta_row_array = jnp.arange(n).repeat(m)
     delta_col_array = jnp.tile(jnp.arange(m), n)
-    miniblock_nse = n * m
+    mini_block_nse = n * m
 
     def i_body(i_row, out):
         def j_body(x):
-            i_block, val = x
+            i_block, i_row, val = x
             i_col = indices[i_block]
             start_row = i_row * n
             start_col = i_col * m
-            val0 = jax.lax.dynamic_update_slice(val[0], start_row + delta_row_array, (i_block * miniblock_nse,))
-            val1 = jax.lax.dynamic_update_slice(val[1], start_col + delta_col_array, (i_block * miniblock_nse,))
+            val0 = jax.lax.dynamic_update_slice(val[0], start_row + delta_row_array, (i_block * mini_block_nse,))
+            val1 = jax.lax.dynamic_update_slice(val[1], start_col + delta_col_array, (i_block * mini_block_nse,))
             val = (val0, val1)
-            return (i_block + 1, val)
+            return (i_block + 1, i_row, val)
 
-        return jax.lax.while_loop(
-            lambda x: x[0] < indptr[i_row + 1],
-            j_body,
-            (indptr[i_row], out)
-        )[1]
+        return jax.lax.while_loop(lambda x: x[0] < indptr[x[1] + 1], j_body, (indptr[i_row], i_row, out))[-1]
 
-    pre_ids, post_ids = jax.lax.fori_loop(0, nrows, i_body,
-                                          (jnp.zeros(nse, dtype=jnp.int32), jnp.zeros(nse, dtype=jnp.int32)))
-
+    pre_ids, post_ids = jax.lax.fori_loop(
+        0, nrows, i_body, (jnp.zeros(nse, dtype=jnp.int32), jnp.zeros(nse, dtype=jnp.int32))
+    )
     return pre_ids, post_ids
 
 
