@@ -16,12 +16,11 @@
 # -*- coding: utf-8 -*-
 
 
-import brainstate
 import brainunit as u
 import jax.numpy as jnp
 import numpy as np
-from scipy.sparse import bsr_matrix
 import pytest
+from scipy.sparse import bsr_matrix
 
 import brainevent
 
