@@ -22,6 +22,7 @@ import jax
 from jax import numpy as jnp
 from jax.interpreters import ad
 
+from ._misc import namescoped_jit
 from ._typing import Data, Row, Col, MatrixShape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import numba_kernel
@@ -34,6 +35,7 @@ __all__ = [
 ]
 
 
+@namescoped_jit(static_argnames=("shape", "transpose"))
 def coo_matvec(
     data: Data,
     row: Row,
@@ -49,6 +51,7 @@ def coo_matvec(
     return u.maybe_decimal(res * unitd * unitv)
 
 
+@namescoped_jit(static_argnames=("shape", "transpose"))
 def coo_matmat(
     data: Data,
     row: Row,
