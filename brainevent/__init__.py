@@ -17,6 +17,8 @@ __version__ = "0.0.4"
 
 from ._array_base import BaseArray
 from ._array_binary import BinaryArray, EventArray
+from ._array_binary_index import BinaryArrayIndex
+from ._array_masked_float_index import MaskedFloatIndex
 from ._array_masked_float import MaskedFloat
 from ._block_csr import BlockCSR
 from ._block_ell import BlockELL
@@ -55,7 +57,9 @@ __all__ = [
     'BaseArray',
     'EventArray',
     'BinaryArray',
+    'BinaryArrayIndex',
     'MaskedFloat',
+    'MaskedFloatIndex',
 
     # --- data interoperable with events --- #
     'COO',

@@ -37,11 +37,6 @@ def _get_dtype(v):
     return dtype
 
 
-def _check_out(out):
-    if not isinstance(out, BaseArray):
-        raise TypeError(f'out must be an instance of Array. But got {type(out)}')
-
-
 def extract_raw_value(obj):
     return obj.value if isinstance(obj, BaseArray) else obj
 
@@ -518,8 +513,7 @@ class BaseArray:
             The updated array.
         """
         # a += b
-        self.value = self.value + extract_raw_value(oc)
-        return self
+        return self.value + extract_raw_value(oc)
 
     def __sub__(self, oc):
         """
@@ -556,8 +550,7 @@ class BaseArray:
             The updated array.
         """
         # a -= b
-        self.value = self.value - extract_raw_value(oc)
-        return self
+        return self.value - extract_raw_value(oc)
 
     def __mul__(self, oc):
         """
@@ -594,8 +587,7 @@ class BaseArray:
             The updated array.
         """
         # a *= b
-        self.value = self.value * extract_raw_value(oc)
-        return self
+        return self.value * extract_raw_value(oc)
 
     def __rdiv__(self, oc):
         """
@@ -644,8 +636,7 @@ class BaseArray:
             The updated array.
         """
         # a /= b
-        self.value = self.value / extract_raw_value(oc)
-        return self
+        return self.value / extract_raw_value(oc)
 
     def __floordiv__(self, oc):
         """
@@ -682,8 +673,7 @@ class BaseArray:
             The updated array.
         """
         # a //= b
-        self.value = self.value // extract_raw_value(oc)
-        return self
+        return self.value // extract_raw_value(oc)
 
     def __divmod__(self, oc):
         """
@@ -744,8 +734,7 @@ class BaseArray:
             The updated array.
         """
         # a %= b
-        self.value = self.value % extract_raw_value(oc)
-        return self
+        return self.value % extract_raw_value(oc)
 
     def __pow__(self, oc):
         """
@@ -782,8 +771,7 @@ class BaseArray:
             The updated array.
         """
         # a **= b
-        self.value = self.value ** extract_raw_value(oc)
-        return self
+        return self.value ** extract_raw_value(oc)
 
     def __matmul__(self, oc):
         """
@@ -902,8 +890,7 @@ class BaseArray:
             The updated array.
         """
         # a &= b
-        self.value = self.value & extract_raw_value(oc)
-        return self
+        return self.value & extract_raw_value(oc)
 
     def __or__(self, oc):
         """
@@ -940,8 +927,7 @@ class BaseArray:
             The updated array.
         """
         # a |= b
-        self.value = self.value | extract_raw_value(oc)
-        return self
+        return self.value | extract_raw_value(oc)
 
     def __xor__(self, oc):
         """
@@ -978,8 +964,7 @@ class BaseArray:
             The updated array.
         """
         # a ^= b
-        self.value = self.value ^ extract_raw_value(oc)
-        return self
+        return self.value ^ extract_raw_value(oc)
 
     def __lshift__(self, oc):
         """
@@ -1016,8 +1001,7 @@ class BaseArray:
             The updated array.
         """
         # a <<= b
-        self.value = self.value << extract_raw_value(oc)
-        return self
+        return self.value << extract_raw_value(oc)
 
     def __rshift__(self, oc):
         """
@@ -1054,8 +1038,7 @@ class BaseArray:
             The updated array.
         """
         # a >>= b
-        self.value = self.value >> extract_raw_value(oc)
-        return self
+        return self.value >> extract_raw_value(oc)
 
     def __round__(self, ndigits=None):
         """
@@ -1565,7 +1548,7 @@ class BaseArray:
         """
         return self.value.choose(choices=choices, mode=mode)
 
-    def clip(self, min=None, max=None, out=None):
+    def clip(self, min=None, max=None):
         """
         Return an array with its values clipped to be within the specified range [min, max].
 
@@ -1581,9 +1564,6 @@ class BaseArray:
         max : scalar or array_like, optional
             Maximum value. If None, clipping is not performed on upper interval edge.
             Not more than one of min and max may be None.
-        out : ndarray, optional
-            The results will be placed in this array. It may be the input array for in-place clipping.
-            Out must be of the right shape to hold the output. Its type is preserved.
 
         Returns
         -------
@@ -1598,11 +1578,7 @@ class BaseArray:
         min = extract_raw_value(min)
         max = extract_raw_value(max)
         r = self.value.clip(min=min, max=max)
-        if out is None:
-            return r
-        else:
-            _check_out(out)
-            out.value = r
+        return r
 
     def compress(self, condition, axis=None):
         """
@@ -1984,59 +1960,6 @@ class BaseArray:
         """
         r = self.value.ptp(axis=axis, keepdims=keepdims)
         return r
-
-    def put(self, indices, values):
-        """
-        Replaces specified elements of an array with given values.
-
-        The indexing works on the flattened target array. `put` is roughly
-        equivalent to `a.flat[indices] = values`. This method modifies the
-        `BaseArray` in-place.
-
-        Parameters
-        ----------
-        indices : array_like
-            Target indices, interpreted as integers for the flattened array.
-            Can be integers, slices, or integer arrays.
-        values : array_like
-            Values to place in the array at target indices. If `values` is shorter
-            than `indices`, it will be repeated as necessary. `values` will be
-            converted to the dtype of the `BaseArray`.
-
-        Returns
-        -------
-        None
-            This method modifies the array in-place.
-
-        See Also
-        --------
-        numpy.put : Equivalent NumPy function.
-        __setitem__ : More general indexing for setting values.
-        take : Select elements based on indices.
-
-        Examples
-        --------
-        >>> import jax.numpy as jnp
-        >>> from brainevent import EventArray
-        >>> a = EventArray(jnp.arange(5))
-        >>> a
-        BaseArray(value=Array([0, 1, 2, 3, 4], dtype=int32))
-        >>> a.put([0, 2], [-44, -55])
-        >>> a
-        BaseArray(value=Array([-44,   1, -55,   3,   4], dtype=int32))
-
-        >>> b = EventArray(jnp.arange(6).reshape(2, 3))
-        >>> b
-        BaseArray(value=Array([[0, 1, 2],
-               [3, 4, 5]], dtype=int32))
-        >>> b.put([1, 4], [10, 40]) # Operates on flattened array
-        >>> b
-        BaseArray(value=Array([[ 0, 10,  2],
-               [ 3, 40,  5]], dtype=int32))
-        """
-        # Note: This uses __setitem__, which handles JAX's immutability correctly
-        # by creating a new array and updating self.value.
-        self.__setitem__(indices, values)
 
     def ravel(self, order='C'):
         """
@@ -3227,7 +3150,6 @@ class BaseArray:
         *,
         beta: float = 1.0,
         alpha: float = 1.0,
-        out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union['BaseArray', u.Quantity, jax.Array, None]:
         r"""
         Perform the outer product of vectors and add to this matrix.
@@ -3247,8 +3169,6 @@ class BaseArray:
             The multiplier for this array.
         alpha : float, default=1.0
             The multiplier for the outer product result.
-        out : LowBitArray or ArrayLike, optional
-            The output array where the result will be stored. If None, a new array is created.
 
         Returns
         -------
@@ -3277,61 +3197,7 @@ class BaseArray:
         vec1 = extract_raw_value(vec1)
         vec2 = extract_raw_value(vec2)
         r = alpha * u.math.outer(vec1, vec2) + beta * self.value
-        if out is None:
-            return type(self)(r)  # Return as BaseArray for consistent API
-        else:
-            _check_out(out)
-            out.value = r
-            return None
-
-    def addr_(
-        self,
-        vec1: Union['BaseArray', ArrayLike],
-        vec2: Union['BaseArray', ArrayLike],
-        *,
-        beta: float = 1.0,
-        alpha: float = 1.0
-    ) -> 'BaseArray':
-        r"""
-        In-place version of addr that modifies the array.
-
-        Performs the outer product of vectors and adds to this matrix in-place.
-
-        Computes: self = beta * self + alpha * (vec1 ⊗ vec2)
-
-        Parameters
-        ----------
-        vec1 : BaseArray or ArrayLike
-            The first vector of the outer product.
-        vec2 : BaseArray or ArrayLike
-            The second vector of the outer product.
-        beta : float, default=1.0
-            The multiplier for this array.
-        alpha : float, default=1.0
-            The multiplier for the outer product result.
-
-        Returns
-        -------
-        EventArray
-            Self, after the operation has been performed.
-
-        Examples
-        --------
-        >>> a = EventArray([[1, 2], [3, 4]])
-        >>> x = EventArray([1, 2])
-        >>> y = EventArray([3, 4])
-        >>> a.addr_(x, y, alpha=1.0, beta=1.0)  # Modifies a in-place
-        LowBitArray([[ 4, 9],
-                    [ 9, 17]])
-
-        See Also
-        --------
-        addr : Non-in-place version that returns a new array
-        """
-        vec1 = extract_raw_value(vec1)
-        vec2 = extract_raw_value(vec2)
-        self.value = alpha * u.math.outer(vec1, vec2) + beta * self.value
-        return self
+        return r
 
     def outer(
         self,
@@ -3372,16 +3238,9 @@ class BaseArray:
         other = extract_raw_value(other)
         return type(self)(u.math.outer(self.value, other))
 
-    def abs(
-        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> Union['BaseArray', u.Quantity, jax.Array, None]:
+    def abs(self) -> Union['BaseArray', u.Quantity, jax.Array, None]:
         """
         Calculate the absolute value element-wise.
-
-        Parameters
-        ----------
-        out : BaseArray or ArrayLike, optional
-            Array to store the output. If provided, it must have the correct shape.
 
         Returns
         -------
@@ -3408,12 +3267,7 @@ class BaseArray:
         numpy.abs : NumPy equivalent function
         """
         r = u.math.abs(self.value)
-        if out is None:
-            return type(self)(r)
-        else:
-            _check_out(out)
-            out.value = r
-            return None
+        return r
 
     def abs_(self) -> 'BaseArray':
         """
@@ -3440,49 +3294,11 @@ class BaseArray:
         self.value = u.math.abs(self.value)
         return self
 
-    def add_(self, value: Union['BaseArray', ArrayLike]) -> 'BaseArray':
-        """
-        Add a scalar or array to this array, in-place.
-
-        Parameters
-        ----------
-        value : BaseArray or ArrayLike
-            The value to add to this array.
-
-        Returns
-        -------
-        EventArray
-            Self, after the addition has been performed.
-
-        Examples
-        --------
-        >>> a = EventArray([1, 2, 3])
-        >>> a.add_(10)  # Modifies a in-place
-        LowBitArray([11, 12, 13])
-
-        >>> b = EventArray([1, 2, 3])
-        >>> b.add_(EventArray([10, 20, 30]))  # Modifies b in-place
-        LowBitArray([11, 22, 33])
-
-        See Also
-        --------
-        __iadd__ : The special method that implements the += operator
-        """
-        self.value += extract_raw_value(value)
-        return self
-
-    def absolute(
-        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> Union['BaseArray', jax.Array, u.Quantity]:
+    def absolute(self) -> Union['BaseArray', jax.Array, u.Quantity]:
         """
         Calculate the absolute value element-wise.
 
         This is an alias for the `abs` method.
-
-        Parameters
-        ----------
-        out : LowBitArray or ArrayLike, optional
-            Array to store the output. If provided, it must have the correct shape.
 
         Returns
         -------
@@ -3501,7 +3317,7 @@ class BaseArray:
         abs : Equivalent function
         absolute_ : In-place version
         """
-        return self.abs(out=out)
+        return self.abs()
 
     def absolute_(self) -> 'BaseArray':
         """
@@ -3558,35 +3374,6 @@ class BaseArray:
         """
         return self.value * extract_raw_value(value)
 
-    def mul_(self, value: Union['BaseArray', ArrayLike]) -> 'BaseArray':
-        """
-        Multiply the array by a scalar or array element-wise, in-place.
-
-        Parameters
-        ----------
-        value : BaseArray or ArrayLike
-            The value to multiply with this array.
-
-        Returns
-        -------
-        BaseArray
-            Self, after the multiplication has been performed.
-
-        Examples
-        --------
-        >>> a = EventArray([1, 2, 3])
-        >>> a.mul_(10)  # Modifies a in-place
-        LowBitArray([10, 20, 30])
-
-        See Also
-        --------
-        mul : Non-in-place version
-        multiply_ : Alias for this function
-        __imul__ : The special method that implements the *= operator
-        """
-        self.value *= extract_raw_value(value)
-        return self
-
     def multiply(self, value: Union['BaseArray', ArrayLike]) -> Union[jax.Array, u.Quantity]:
         """
         Multiply the array by a scalar or array element-wise.
@@ -3616,46 +3403,9 @@ class BaseArray:
         """
         return self.value * extract_raw_value(value)
 
-    def multiply_(self, value: Union['BaseArray', ArrayLike]) -> 'BaseArray':
-        """
-        Multiply the array by a scalar or array element-wise, in-place.
-
-        This is an alias for the `mul_` method, providing PyTorch-compatible API.
-
-        Parameters
-        ----------
-        value : BaseArray or ArrayLike
-            The value to multiply with this array.
-
-        Returns
-        -------
-        BaseArray
-            Self, after the multiplication has been performed.
-
-        Examples
-        --------
-        >>> a = EventArray([1, 2, 3])
-        >>> a.multiply_(10)  # Modifies a in-place
-        LowBitArray([10, 20, 30])
-
-        See Also
-        --------
-        multiply : Non-in-place version
-        mul_ : Equivalent function
-        """
-        self.value *= extract_raw_value(value)
-        return self
-
-    def sin(
-        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array, None]:
+    def sin(self) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the sine of the array elements.
-
-        Parameters
-        ----------
-        out : BaseArray or ArrayLike, optional
-            Output array for the result. If provided, must have the same shape as the output.
 
         Returns
         -------
@@ -3668,60 +3418,11 @@ class BaseArray:
         cos, tan : Other trigonometric functions.
         """
         r = u.math.sin(self.value)
-        if out is None:
-            return r
-        else:
-            _check_out(out)
-            out.value = r
+        return r
 
-    def sin_(self):
-        """
-        Calculate the sine of the array elements in-place.
-
-        Modifies the array in-place with the sine of each element.
-
-        Returns
-        -------
-        BaseArray
-            The modified array with sine values.
-
-        See Also
-        --------
-        sin : Out-of-place version of this function.
-        cos_, tan_ : Other in-place trigonometric functions.
-        """
-        self.value = u.math.sin(self.value)
-        return self
-
-    def cos_(self):
-        """
-        Calculate the cosine of the array elements in-place.
-
-        Modifies the array in-place with the cosine of each element.
-
-        Returns
-        -------
-        BaseArray
-            The modified array with cosine values.
-
-        See Also
-        --------
-        cos : Out-of-place version of this function.
-        sin_, tan_ : Other in-place trigonometric functions.
-        """
-        self.value = u.math.cos(self.value)
-        return self
-
-    def cos(
-        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array, None]:
+    def cos(self) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the cosine of the array elements.
-
-        Parameters
-        ----------
-        out : BaseArray or ArrayLike, optional
-            Output array for the result. If provided, must have the same shape as the output.
 
         Returns
         -------
@@ -3734,41 +3435,11 @@ class BaseArray:
         sin, tan : Other trigonometric functions.
         """
         r = u.math.cos(self.value)
-        if out is None:
-            return r
-        else:
-            _check_out(out)
-            out.value = r
+        return r
 
-    def tan_(self):
-        """
-        Calculate the tangent of the array elements in-place.
-
-        Modifies the array in-place with the tangent of each element.
-
-        Returns
-        -------
-        BaseArray
-            The modified array with tangent values.
-
-        See Also
-        --------
-        tan : Out-of-place version of this function.
-        sin_, cos_ : Other in-place trigonometric functions.
-        """
-        self.value = u.math.tan(self.value)
-        return self
-
-    def tan(
-        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array, None]:
+    def tan(self) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the tangent of the array elements.
-
-        Parameters
-        ----------
-        out : BaseArray or ArrayLike, optional
-            Output array for the result. If provided, must have the same shape as the output.
 
         Returns
         -------
@@ -3781,41 +3452,11 @@ class BaseArray:
         sin, cos : Other trigonometric functions.
         """
         r = u.math.tan(self.value)
-        if out is None:
-            return r
-        else:
-            _check_out(out)
-            out.value = r
+        return r
 
-    def sinh_(self):
-        """
-        Calculate the hyperbolic sine of the array elements in-place.
-
-        Modifies the array in-place with the hyperbolic sine of each element.
-
-        Returns
-        -------
-        BaseArray
-            The modified array with hyperbolic sine values.
-
-        See Also
-        --------
-        sinh : Out-of-place version of this function.
-        cosh_, tanh_ : Other in-place hyperbolic functions.
-        """
-        self.value = u.math.sinh(self.value)
-        return self
-
-    def sinh(
-        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array, None]:
+    def sinh(self) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the hyperbolic sine of the array elements.
-
-        Parameters
-        ----------
-        out : BaseArray or ArrayLike, optional
-            Output array for the result. If provided, must have the same shape as the output.
 
         Returns
         -------
@@ -3828,41 +3469,11 @@ class BaseArray:
         cosh, tanh : Other hyperbolic functions.
         """
         r = u.math.sinh(self.value)
-        if out is None:
-            return r
-        else:
-            _check_out(out)
-            out.value = r
+        return r
 
-    def cosh_(self):
-        """
-        Calculate the hyperbolic cosine of the array elements in-place.
-
-        Modifies the array in-place with the hyperbolic cosine of each element.
-
-        Returns
-        -------
-        BaseArray
-            The modified array with hyperbolic cosine values.
-
-        See Also
-        --------
-        cosh : Out-of-place version of this function.
-        sinh_, tanh_ : Other in-place hyperbolic functions.
-        """
-        self.value = u.math.cosh(self.value)
-        return self
-
-    def cosh(
-        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array, None]:
+    def cosh(self) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the hyperbolic cosine of the array elements.
-
-        Parameters
-        ----------
-        out : BaseArray or ArrayLike, optional
-            Output array for the result. If provided, must have the same shape as the output.
 
         Returns
         -------
@@ -3875,41 +3486,11 @@ class BaseArray:
         sinh, tanh : Other hyperbolic functions.
         """
         r = u.math.cosh(self.value)
-        if out is None:
-            return r
-        else:
-            _check_out(out)
-            out.value = r
+        return r
 
-    def tanh_(self):
-        """
-        Calculate the hyperbolic tangent of the array elements in-place.
-
-        Modifies the array in-place with the hyperbolic tangent of each element.
-
-        Returns
-        -------
-        BaseArray
-            The modified array with hyperbolic tangent values.
-
-        See Also
-        --------
-        tanh : Out-of-place version of this function.
-        sinh_, cosh_ : Other in-place hyperbolic functions.
-        """
-        self.value = u.math.tanh(self.value)
-        return self
-
-    def tanh(
-        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array, None]:
+    def tanh(self) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the hyperbolic tangent of the array elements.
-
-        Parameters
-        ----------
-        out : BaseArray or ArrayLike, optional
-            Output array for the result. If provided, must have the same shape as the output.
 
         Returns
         -------
@@ -3922,42 +3503,11 @@ class BaseArray:
         sinh, cosh : Other hyperbolic functions.
         """
         r = u.math.tanh(self.value)
-        if out is None:
-            return r
-        else:
-            _check_out(out)
-            out.value = r
+        return r
 
-    def arcsin_(self):
-        """
-        Calculate the inverse sine of the array elements in-place.
-
-        Modifies the array in-place with the inverse sine (arcsine) of each element.
-        Each element should be in the range [-1, 1].
-
-        Returns
-        -------
-        BaseArray
-            The modified array with inverse sine values.
-
-        See Also
-        --------
-        arcsin : Out-of-place version of this function.
-        arccos_, arctan_ : Other in-place inverse trigonometric functions.
-        """
-        self.value = u.math.arcsin(self.value)
-        return self
-
-    def arcsin(
-        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array, None]:
+    def arcsin(self) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the inverse sine of the array elements.
-
-        Parameters
-        ----------
-        out : BaseArray or ArrayLike, optional
-            Output array for the result. If provided, must have the same shape as the output.
 
         Returns
         -------
@@ -3971,42 +3521,11 @@ class BaseArray:
         arccos, arctan : Other inverse trigonometric functions.
         """
         r = u.math.arcsin(self.value)
-        if out is None:
-            return r
-        else:
-            _check_out(out)
-            out.value = r
+        return r
 
-    def arccos_(self):
-        """
-        Calculate the inverse cosine of the array elements in-place.
-
-        Modifies the array in-place with the inverse cosine (arccosine) of each element.
-        Each element should be in the range [-1, 1].
-
-        Returns
-        -------
-        BaseArray
-            The modified array with inverse cosine values.
-
-        See Also
-        --------
-        arccos : Out-of-place version of this function.
-        arcsin_, arctan_ : Other in-place inverse trigonometric functions.
-        """
-        self.value = u.math.arccos(self.value)
-        return self
-
-    def arccos(
-        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array, None]:
+    def arccos(self) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the inverse cosine of the array elements.
-
-        Parameters
-        ----------
-        out : BaseArray or ArrayLike, optional
-            Output array for the result. If provided, must have the same shape as the output.
 
         Returns
         -------
@@ -4020,41 +3539,11 @@ class BaseArray:
         arcsin, arctan : Other inverse trigonometric functions.
         """
         r = u.math.arccos(self.value)
-        if out is None:
-            return r
-        else:
-            _check_out(out)
-            out.value = r
+        return r
 
-    def arctan_(self):
-        """
-        Calculate the inverse tangent of the array elements in-place.
-
-        Modifies the array in-place with the inverse tangent (arctangent) of each element.
-
-        Returns
-        -------
-        BaseArray
-            The modified array with inverse tangent values.
-
-        See Also
-        --------
-        arctan : Out-of-place version of this function.
-        arcsin_, arccos_ : Other in-place inverse trigonometric functions.
-        """
-        self.value = u.math.arctan(self.value)
-        return self
-
-    def arctan(
-        self, *, out: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> Union[u.Quantity, jax.Array, None]:
+    def arctan(self) -> Union[u.Quantity, jax.Array, None]:
         """
         Calculate the inverse tangent of the array elements.
-
-        Parameters
-        ----------
-        out : BaseArray or ArrayLike, optional
-            Output array for the result. If provided, must have the same shape as the output.
 
         Returns
         -------
@@ -4068,18 +3557,12 @@ class BaseArray:
         arcsin, arccos : Other inverse trigonometric functions.
         """
         r = u.math.arctan(self.value)
-        if out is None:
-            return r
-        else:
-            _check_out(out)
-            out.value = r
+        return r
 
     def clamp(
         self,
         min_value: Optional[Union['BaseArray', ArrayLike]] = None,
         max_value: Optional[Union['BaseArray', ArrayLike]] = None,
-        *,
-        out: Optional[Union['BaseArray', ArrayLike]] = None
     ) -> Union[u.Quantity, jax.Array, None]:
         """
         Clamp (limit) the values in the array between min_value and max_value.
@@ -4095,10 +3578,6 @@ class BaseArray:
             Minimum value. If None, clipping is not performed on lower bound.
         max_value : BaseArray or ArrayLike, optional
             Maximum value. If None, clipping is not performed on upper bound.
-        out : BaseArray or ArrayLike, optional
-            The output array. If provided, it must have a shape that the inputs
-            broadcast to. If not provided or None, a freshly-allocated array is
-            returned.
 
         Returns
         -------
@@ -4124,87 +3603,7 @@ class BaseArray:
         min_value = extract_raw_value(min_value)
         max_value = extract_raw_value(max_value)
         r = u.math.clip(self.value, min_value, max_value)
-        if out is None:
-            return r
-        else:
-            _check_out(out)
-            out.value = r
-            return None
-
-    def clamp_(
-        self,
-        min_value: Optional[Union['BaseArray', ArrayLike]] = None,
-        max_value: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> 'BaseArray':
-        """
-        In-place version of clamp().
-
-        Clamps (limits) the values in the array between min_value and max_value,
-        modifying the array in-place.
-
-        Parameters
-        ----------
-        min_value : LowBitArray or ArrayLike, optional
-            Minimum value. If None, clipping is not performed on lower bound.
-        max_value : LowBitArray or ArrayLike, optional
-            Maximum value. If None, clipping is not performed on upper bound.
-
-        Returns
-        -------
-        BaseArray
-            The modified array with clamped values (self).
-
-        See Also
-        --------
-        clamp : Out-of-place version of this function
-        clip_ : Alias for this function
-
-        Examples
-        --------
-        >>> import jax.numpy as jnp
-        >>> a = EventArray(jnp.arange(10))
-        >>> a.clamp_(3, 7)  # modifies a in-place
-        >>> a  # values are clamped between 3 and 7
-        LowBitArray(value=array([3, 3, 3, 3, 4, 5, 6, 7, 7, 7]))
-        """
-        self.clamp(min_value, max_value, out=self)
-        return self
-
-    def clip_(
-        self,
-        min_value: Optional[Union['BaseArray', ArrayLike]] = None,
-        max_value: Optional[Union['BaseArray', ArrayLike]] = None
-    ) -> 'BaseArray':
-        """
-        Alias for clamp_().
-
-        Clips (limits) the values in the array between min_value and max_value,
-        modifying the array in-place.
-
-        Parameters
-        ----------
-        min_value : LowBitArray or ArrayLike, optional
-            Minimum value. If None, clipping is not performed on lower bound.
-        max_value : LowBitArray or ArrayLike, optional
-            Maximum value. If None, clipping is not performed on upper bound.
-
-        Returns
-        -------
-        BaseArray
-            The modified array with clipped values (self).
-
-        See Also
-        --------
-        clamp_ : Equivalent function with different name
-        clamp : Out-of-place version
-
-        Notes
-        -----
-        This is an alias provided for NumPy compatibility.
-        """
-        # Fixed bug: was assigning to self.value but should call clamp_ directly
-        self.clamp_(min_value, max_value)
-        return self
+        return r
 
     def clone(self) -> 'BaseArray':
         """
@@ -4233,38 +3632,6 @@ class BaseArray:
         LowBitArray(value=array([5, 2, 3]))
         """
         return type(self)(self.value.copy())
-
-    def copy_(self, src: Union['BaseArray', ArrayLike]) -> 'BaseArray':
-        """
-        Copy values from src into this array, in-place.
-
-        Parameters
-        ----------
-        src : BaseArray or ArrayLike
-            The source array to copy values from.
-
-        Returns
-        -------
-        BaseArray
-            The modified array (self).
-
-        See Also
-        --------
-        clone : Create a new copy of this array
-
-        Examples
-        --------
-        >>> import jax.numpy as jnp
-        >>> a = EventArray(jnp.zeros(3))
-        >>> b = EventArray(jnp.array([4, 5, 6]))
-        >>> a.copy_(b)
-        >>> a  # values copied from b
-        LowBitArray(value=array([4, 5, 6]))
-        """
-        # Ensure we're correctly handling both BaseArray and regular array inputs
-        src_value = src.value if isinstance(src, BaseArray) else src
-        self.value = src_value.copy()
-        return self
 
     def cov_with(
         self,
@@ -4471,342 +3838,6 @@ class BaseArray:
         Array([1, 2, 3], dtype=int32)
         """
         return cls(*flat_contents)
-
-    def zero_(self):
-        """
-        Fill the array with zeros in-place.
-
-        Sets all elements in the array to zero, preserving the shape and dtype.
-
-        Returns
-        -------
-        EventArray
-            The modified array (self)
-
-        See Also
-        --------
-        fill_ : Fill the array with a specified value
-
-        Examples
-        --------
-        >>> import jax.numpy as jnp
-        >>> a = EventArray(jnp.array([1, 2, 3]))
-        >>> a.zero_()
-        >>> a.value
-        Array([0, 0, 0], dtype=int32)
-        """
-        self.value = u.math.zeros_like(self.value)
-        return self
-
-    def fill_(self, value):
-        """
-        Fill the array with a specified value in-place.
-
-        Sets all elements in the array to the specified value,
-        preserving the shape and dtype.
-
-        Parameters
-        ----------
-        value : scalar
-            The value to fill the array with
-
-        Returns
-        -------
-        EventArray
-            The modified array (self)
-
-        See Also
-        --------
-        zero_ : Fill the array with zeros
-
-        Examples
-        --------
-        >>> import jax.numpy as jnp
-        >>> a = EventArray(jnp.zeros(3))
-        >>> a.fill_(5)
-        >>> a.value
-        Array([5, 5, 5], dtype=int32)
-        """
-        self.fill(value)
-        return self
-
-    def cuda(self):
-        """
-        Move the array to a CUDA device.
-
-        Transfers the underlying array to the first available CUDA device.
-        This operation is performed in-place.
-
-        Returns
-        -------
-        EventArray
-            The modified array (self)
-
-        Raises
-        ------
-        RuntimeError
-            If no CUDA devices are available
-
-        See Also
-        --------
-        cpu : Move the array to CPU
-
-        Examples
-        --------
-        >>> import jax.numpy as jnp
-        >>> a = EventArray(jnp.array([1, 2, 3]))
-        >>> # Only run if CUDA device is available
-        >>> if len(jax.devices('cuda')) > 0:
-        ...     a.cuda()  # Moves array to GPU
-        """
-        # Bug fix: should check if CUDA devices exist before accessing
-        cuda_devices = jax.devices('cuda')
-        if not cuda_devices:
-            raise RuntimeError("No CUDA devices found")
-        self.value = jax.device_put(self.value, cuda_devices[0])
-        return self
-
-    def cpu(self):
-        """
-        Move the array to CPU.
-
-        Transfers the underlying array to the CPU device.
-        This operation is performed in-place.
-
-        Returns
-        -------
-        EventArray
-            The modified array (self)
-
-        See Also
-        --------
-        cuda : Move the array to a CUDA device
-
-        Examples
-        --------
-        >>> import jax.numpy as jnp
-        >>> a = EventArray(jnp.array([1, 2, 3]))
-        >>> a.cpu()  # Ensures array is on CPU
-        >>> # The array is now on the CPU device
-        """
-        self.value = jax.device_put(self.value, jax.devices('cpu')[0])
-        return self
-
-    # dtype exchanging #
-    # ---------------- #
-
-    def bool(self):
-        """
-        Convert the array to boolean data type.
-
-        Converts each element of the array to boolean values according to standard truth
-        testing in Python. Non-zero values are converted to True and zeros are converted
-        to False.
-
-        Returns
-        -------
-        ndarray
-            A new array with boolean data type.
-
-        See Also
-        --------
-        int : Convert to 32-bit integer type
-        float : Convert to 32-bit floating-point type
-
-        Examples
-        --------
-        >>> import jax.numpy as jnp
-        >>> a = EventArray(jnp.array([0, 1, 2, 0, -1]))
-        >>> a.bool()
-        Array([False,  True,  True, False,  True])
-        """
-        return u.math.asarray(self.value, dtype=np.bool_)
-
-    def int(self):
-        """
-        Convert the array to a 32-bit integer data type.
-
-        Converts each element of the array to 32-bit signed integers. Floating-point
-        values are truncated toward zero.
-
-        Returns
-        -------
-        ndarray
-            A new array with int32 data type.
-
-        See Also
-        --------
-        long : Convert to 64-bit integer type
-        float : Convert to 32-bit floating-point type
-
-        Examples
-        --------
-        >>> import jax.numpy as jnp
-        >>> a = EventArray(jnp.array([1.7, -1.2, 0, 10.1]))
-        >>> a.int()
-        Array([ 1, -1,  0, 10], dtype=int32)
-        """
-        return u.math.asarray(self.value, dtype=np.int32)
-
-    def long(self):
-        """
-        Convert the array to a 64-bit integer data type.
-
-        Converts each element of the array to 64-bit signed integers. Floating-point
-        values are truncated toward zero. This provides greater precision for large
-        integer values compared to the standard int type.
-
-        Returns
-        -------
-        ndarray
-            A new array with int64 data type.
-
-        See Also
-        --------
-        int : Convert to 32-bit integer type
-        float : Convert to 32-bit floating-point type
-
-        Examples
-        --------
-        >>> import jax.numpy as jnp
-        >>> a = EventArray(jnp.array([2**40, -2.7, 0]))
-        >>> a.long()  # Can represent large integers
-        Array([ 1099511627776,            -2,             0], dtype=int64)
-        """
-        return u.math.asarray(self.value, dtype=np.int64)
-
-    def half(self):
-        """
-        Convert the array to a 16-bit floating-point data type.
-
-        Converts each element of the array to half-precision (16-bit) floating-point format.
-        This format has reduced precision and range compared to standard float32 but requires
-        half the storage space.
-
-        Returns
-        -------
-        ndarray
-            A new array with float16 data type.
-
-        See Also
-        --------
-        float : Convert to 32-bit floating-point type
-        double : Convert to 64-bit floating-point type
-        bfloat16 : Convert to Brain Floating Point 16 type
-
-        Examples
-        --------
-        >>> import jax.numpy as jnp
-        >>> a = EventArray(jnp.array([1.0, 10000.0, 0.0001]))
-        >>> a.half()  # Note the limited precision
-        Array([1.0e+00, 1.0e+04, 9.9e-05], dtype=float16)
-
-        Notes
-        -----
-        float16 has a precision of about 3 decimal digits and can represent values
-        from approximately 6e-8 to 65504.
-        """
-        return u.math.asarray(self.value, dtype=np.float16)
-
-    def float(self):
-        """
-        Convert the array to a 32-bit floating-point data type.
-
-        Converts each element of the array to single-precision (32-bit) floating-point format.
-        This is the default floating-point format used in most scientific computing applications
-        and provides a balance between precision and memory usage.
-
-        Returns
-        -------
-        ndarray
-            A new array with float32 data type.
-
-        See Also
-        --------
-        half : Convert to 16-bit floating-point type
-        double : Convert to 64-bit floating-point type
-        int : Convert to 32-bit integer type
-
-        Examples
-        --------
-        >>> import jax.numpy as jnp
-        >>> a = EventArray(jnp.array([1, 2, 3], dtype=jnp.int32))
-        >>> a.float()
-        Array([1., 2., 3.], dtype=float32)
-
-        Notes
-        -----
-        float32 has a precision of about 7 decimal digits and can represent values
-        from approximately 1.2e-38 to 3.4e38.
-        """
-        return u.math.asarray(self.value, dtype=np.float32)
-
-    def bfloat16(self):
-        """
-        Convert the array to a Brain Floating Point 16 (bfloat16) data type.
-
-        Converts each element of the array to Brain Floating Point 16 format, which uses
-        the same 8-bit exponent as float32 but only 7 bits for the mantissa. This format
-        is particularly useful in machine learning applications where the dynamic range
-        of float32 is needed, but full precision is not critical.
-
-        Returns
-        -------
-        ndarray
-            A new array with bfloat16 data type.
-
-        See Also
-        --------
-        half : Convert to standard 16-bit floating-point type
-        float : Convert to 32-bit floating-point type
-
-        Examples
-        --------
-        >>> import jax.numpy as jnp
-        >>> a = EventArray(jnp.array([0.1, 200.0, 0.0001]))
-        >>> a.bfloat16()
-        Array([1.0e-01, 2.0e+02, 1.0e-04], dtype=bfloat16)
-
-        Notes
-        -----
-        bfloat16 preserves the numerical range of float32 but with reduced precision.
-        It has approximately 3 decimal digits of precision but the same range as float32,
-        making it suitable for many deep learning applications.
-        """
-        return u.math.asarray(self.value, dtype=jax.numpy.bfloat16)
-
-    def double(self):
-        """
-        Convert the array to a 64-bit floating-point data type.
-
-        Converts each element of the array to double-precision (64-bit) floating-point format.
-        This format provides higher precision and a wider range of representable values
-        compared to the standard float type, which is useful for numerical applications
-        requiring high accuracy.
-
-        Returns
-        -------
-        ndarray
-            A new array with float64 data type.
-
-        See Also
-        --------
-        float : Convert to 32-bit floating-point type
-        half : Convert to 16-bit floating-point type
-
-        Examples
-        --------
-        >>> import jax.numpy as jnp
-        >>> a = EventArray(jnp.array([1.1234567891234, 1e-8]))
-        >>> a.double()  # Higher precision representation
-        Array([1.123457e+00, 1.000000e-08], dtype=float64)
-
-        Notes
-        -----
-        float64 has a precision of about 16 decimal digits and can represent values
-        from approximately 2.3e-308 to 1.7e308.
-        """
-        return u.math.asarray(self.value, dtype=np.float64)
 
 
 # Set the array priority for the BaseArray class
