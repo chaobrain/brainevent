@@ -24,7 +24,7 @@ from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
 from ._csr_impl_float import csr_matvec, csr_matmat
-from ._misc import _csr_to_coo, generate_block_dim
+from ._misc import _csr_to_coo, generate_block_dim, namescoped_jit
 from ._typing import Data, Indptr, Index, MatrixShape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import numba_kernel
@@ -33,6 +33,7 @@ from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
 
 
+@namescoped_jit(static_argnames=("shape", "transpose"))
 def masked_float_csr_matvec(
     data: Data,
     indices: Index,
@@ -72,6 +73,7 @@ def masked_float_csr_matvec(
     return u.maybe_decimal(res * (unitd * unitv))
 
 
+@namescoped_jit(static_argnames=("shape", "transpose"))
 def masked_float_csr_matmat(
     data: Data,
     indices: Index,

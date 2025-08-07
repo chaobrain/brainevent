@@ -17,6 +17,7 @@
 
 from functools import partial
 from typing import Tuple, NamedTuple, Sequence, Union
+from typing import Tuple, NamedTuple, Sequence, Union, Callable
 
 import brainstate.environ
 import brainunit as u
@@ -672,3 +673,40 @@ def csr_to_csc_index(
     pre_ids, post_ids = csr_to_coo_index(csr_indptr, csr_indices)
     csc_indptr, csc_indices, post_positions = coo_to_csc_index(pre_ids, post_ids, shape=shape)
     return csc_indptr, csc_indices, post_positions
+
+
+def namescoped_jit(
+    name: str = None,
+    prefix: str = "brainevent",
+    static_argnums: Tuple[int, ...] = (),
+    static_argnames: Tuple[str, ...] = ()
+):
+    """Decorator that wraps a function with JAX's JIT compilation and sets its name.
+    (For `brainstate.experimental.gdiist_bpu` module)
+
+    Args:
+        name: Optional name to set for the function. If None, uses the original function name.
+        prefix: Prefix to add to function name if name is None.
+        static_argnums: Tuple of positional argument indices to be treated as static.
+        static_argnames: Tuple of keyword argument names to be treated as static.
+
+    Returns:
+        Decorated function with JAX JIT compilation applied.
+
+    Example:
+        @warp_jit_fun("my_function", static_argnums=(0,))
+        def my_func(x, y):
+            return x + y
+
+        @warp_jit_fun(static_argnames=("shape", "transpose"))
+        def my_func2(x, y, *, shape, transpose=False):
+            return x + y
+    """
+    def decorator(fun: Callable):
+        if name is not None:
+            fun.__name__ = name
+        else:
+            fun.__name__ = f"{prefix}.{fun.__name__}"
+        return jax.jit(fun, static_argnums=static_argnums, static_argnames=static_argnames)
+
+    return decorator
