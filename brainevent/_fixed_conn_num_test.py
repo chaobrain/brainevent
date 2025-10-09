@@ -15,6 +15,7 @@
 
 # -*- coding: utf-8 -*-
 
+import braintools
 import brainstate
 import pytest
 
@@ -41,7 +42,7 @@ class Test_To_Dense:
         m, n = shape
         x = brainstate.random.rand(m)
         indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1), replace=replace)
-        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
         csc = csr.T
 

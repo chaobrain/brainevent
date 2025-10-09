@@ -15,6 +15,7 @@
 # -*- coding: utf-8 -*-
 
 
+import braintools
 import brainstate
 import brainunit as u
 import jax
@@ -103,7 +104,7 @@ class TestVectorCOO:
         row, col = _get_coo(m, n, 0.1)
 
         print(f'homo_w = {homo_w}')
-        data = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         coo = brainevent.COO([data, row, col], shape=(m, n))
         y = brainevent.EventArray(x) @ coo
         y2 = vector_coo(x, coo.data, row, col, [m, n])
@@ -115,7 +116,7 @@ class TestVectorCOO:
         xs = brainstate.random.rand(n_batch, m) < 0.1
         row, col = _get_coo(m, n, 0.1)
 
-        data = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         coo = brainevent.COO([data, row, col], shape=(m, n))
         y = jax.vmap(lambda x: brainevent.EventArray(x) @ coo)(xs)
         y2 = jax.vmap(lambda x: vector_coo(x, coo.data, row, col, [m, n]))(xs)
@@ -127,7 +128,7 @@ class TestVectorCOO:
         v = brainstate.random.rand(n) < 0.1
         row, col = _get_coo(m, n, 0.2)
 
-        data = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         coo = brainevent.COO([data, row, col], shape=(m, n))
         y = coo @ brainevent.EventArray(v)
         y2 = coo_vector(v, coo.data, row, col, [m, n])
@@ -141,7 +142,7 @@ class TestVectorCOO:
         x = (x < 0.6).astype(float)
 
         row, col = _get_coo(n_in, n_out, 0.2, replace=replace)
-        w = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
+        w = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         coo = brainevent.COO((w, row, col), shape=shape)
 
         def f_brainevent(x, w):
@@ -183,7 +184,7 @@ class TestVectorCOO:
 
         row, col = _get_coo(n_in, n_out, 0.1, replace=replace)
 
-        w = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
+        w = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         coo = brainevent.COO((w, row, col), shape=shape)
 
         def f_brainevent(x, w):
@@ -224,7 +225,7 @@ class TestMatrixCOO:
         row, col = _get_coo(m, n, 0.1)
 
         for homo_w in [True, False]:
-            data = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
+            data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
             coo = brainevent.COO([data, row, col], shape=(m, n))
             y = brainevent.EventArray(x) @ coo
             y2 = matrix_coo(x.astype(float), coo.data, row, col, [m, n])
@@ -236,7 +237,7 @@ class TestMatrixCOO:
         matrix = brainstate.random.rand(n, k) < 0.1
         row, col = _get_coo(m, n, 0.1)
 
-        data = 1.5 if homo_w else brainstate.init.Normal()(row.shape)
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         coo = brainevent.COO([data, row, col], shape=(m, n))
         y = coo @ brainevent.EventArray(matrix)
         y2 = coo_matrix(matrix.astype(float), coo.data, row, col, [m, n])
