@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 
@@ -18,6 +18,9 @@ exclude = [
     "brainevent/__init__.py"
 ]
 
+[tool.setuptools.dynamic]
+version = {attr = "brainevent.__version__"}
+
 
 [tool.distutils.bdist_wheel]
 universal = true
@@ -30,25 +33,23 @@ readme = 'README.md'
 license = { text = 'Apache-2.0 license' }
 requires-python = '>=3.10'
 authors = [{ name = 'BrainEvent Developers', email = 'chao.brain@qq.com' }]
+dynamic = ["version"]
 classifiers = [
     'Natural Language :: English',
     'Operating System :: OS Independent',
-    'Development Status :: 4 - Beta',
-    'Intended Audience :: Developers',
-    'Intended Audience :: Science/Research',
+    'Programming Language :: Python',
     'Programming Language :: Python :: 3',
     'Programming Language :: Python :: 3.10',
     'Programming Language :: Python :: 3.11',
     'Programming Language :: Python :: 3.12',
     'Programming Language :: Python :: 3.13',
+    'Intended Audience :: Science/Research',
     'License :: OSI Approved :: Apache Software License',
-    'Programming Language :: Python',
     'Topic :: Scientific/Engineering :: Bio-Informatics',
     'Topic :: Scientific/Engineering :: Mathematics',
     'Topic :: Scientific/Engineering :: Artificial Intelligence',
     'Topic :: Software Development :: Libraries',
 ]
-
 
 keywords = [
     'computational neuroscience',
@@ -57,19 +58,38 @@ keywords = [
 ]
 
 dependencies = [
-    'numpy',
+    'numpy>=1.15',
     'brainunit>=0.0.8',
     'absl-py',
 ]
 
-dynamic = ['version']
-
-
 [project.urls]
-homepage = 'http://github.com/chaobrain/brainevent'
-repository = 'http://github.com/chaobrain/brainevent'
+homepage = 'https://github.com/chaobrain/brainevent'
+repository = 'https://github.com/chaobrain/brainevent'
+"Bug Tracker" = 'https://github.com/chaobrain/brainevent/issues'
+"Documentation" = 'https://brainevent.readthedocs.io/'
+"Source Code" = 'https://github.com/chaobrain/brainevent'
 
 [project.optional-dependencies]
+cpu = [
+    'jax[cpu]',
+    'numba',
+    'brainunit',
+]
+cuda12 = [
+    'jax[cuda12]',
+    'warp-lang',
+    'brainunit',
+]
+cuda13 = [
+    'jax[cuda13]',
+    'warp-lang',
+    'brainunit',
+]
+tpu = [
+    'jax[tpu]',
+    'brainunit',
+]
 testing = [
     'pytest',
 ]

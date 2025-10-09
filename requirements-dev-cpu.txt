@@ -1,6 +1,7 @@
 -r requirements.txt
 numba
 brainstate
+braintools
 
 # test requirements
 pytest
