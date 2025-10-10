@@ -1,10 +1,10 @@
 # Enabling Event-driven Computation in Brain Dynamics
 
-[//]: # (<p align="center">)
+<p align="center">
 
-[//]: # (  	<img alt="Header image of brainevent." src="https://github.com/chaobrain/brainevent/blob/main/docs/_static/brainevent.png" width=50%>)
+  	<img alt="Header image of brainevent." src="https://github.com/chaobrain/brainevent/main/docs/_static/brainevent.png" width=50%>
 
-[//]: # (</p> )
+</p> 
 
 
 
@@ -105,7 +105,7 @@ pip install BrainX -U
 The official documentation is hosted on Read the Docs: [https://brainevent.readthedocs.io/](https://brainevent.readthedocs.io/)
 
 
-## See also the brain modeling ecosystem
+## See also the ecosystem
 
-We are building the brain modeling ecosystem: https://brainmodeling.readthedocs.io/
+``brainevent`` is one part of our brain modeling ecosystem: https://brainmodeling.readthedocs.io/
 
