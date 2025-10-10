@@ -15,6 +15,7 @@
 # -*- coding: utf-8 -*-
 
 
+import braintools
 import brainstate
 import brainunit as u
 import jax
@@ -103,7 +104,7 @@ class TestVectorCSR:
         indptr, indices = get_csr(m, n, 0.1)
 
         print(f'homo_w = {homo_w}')
-        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = brainevent.EventArray(x) @ csr
         y2 = vector_csr(x, csr.data, indices, indptr, [m, n])
@@ -115,7 +116,7 @@ class TestVectorCSR:
         xs = brainstate.random.rand(n_batch, m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = jax.vmap(lambda x: brainevent.EventArray(x) @ csr)(xs)
         y2 = jax.vmap(lambda x: vector_csr(x, csr.data, indices, indptr, [m, n]))(xs)
@@ -127,7 +128,7 @@ class TestVectorCSR:
         v = brainstate.random.rand(n) < 0.1
         indptr, indices = get_csr(m, n, 0.2)
 
-        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = csr @ brainevent.EventArray(v)
         y2 = csr_vector(v, csr.data, indices, indptr, [m, n])
@@ -141,7 +142,7 @@ class TestVectorCSR:
         x = (x < 0.6).astype(float)
 
         indptr, indices = get_csr(n_in, n_out, 0.2, replace=replace)
-        w = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        w = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((w, indices, indptr), shape=shape)
 
         def f_brainevent(x, w):
@@ -183,7 +184,7 @@ class TestVectorCSR:
 
         indptr, indices = get_csr(n_in, n_out, 0.1, replace=replace)
 
-        w = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        w = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((w, indices, indptr), shape=shape)
 
         def f_brainevent(x, w):
@@ -234,7 +235,7 @@ class TestBatchingVectorCSR:
         xs = brainstate.random.rand(b, m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         res = jax.vmap(lambda x: self._run(x, data, indices, indptr, m, n))(xs)
         assert jnp.all(res)
 
@@ -244,7 +245,7 @@ class TestBatchingVectorCSR:
         x = brainstate.random.rand(m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = brainstate.random.rand(b) if homo_w else brainstate.init.Normal()((b,) + indices.shape)
+        data = brainstate.random.rand(b) if homo_w else braintools.init.Normal(0., 1.)((b,) + indices.shape)
         res = jax.vmap(lambda data: self._run(x, data, indices, indptr, m, n))(data)
         assert jnp.all(res)
 
@@ -255,7 +256,7 @@ class TestBatchingVectorCSR:
         indptr, indices = brainstate.compile.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
         indptr = indptr[0]
 
-        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape[1:])
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
         res = jax.vmap(lambda ind: self._run(x, data, ind, indptr, m, n))(indices)
         assert jnp.all(res)
 
@@ -289,7 +290,7 @@ class TestBatchingVectorCSR:
         xs = brainstate.random.rand(b, m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         r1, r2 = jax.vmap(lambda x: self._run_vjp(x, data, indices, indptr, m, n))(xs)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
@@ -301,7 +302,7 @@ class TestBatchingVectorCSR:
         x = brainstate.random.rand(m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = brainstate.random.rand(b) if homo_w else brainstate.init.Normal()((b,) + indices.shape)
+        data = brainstate.random.rand(b) if homo_w else braintools.init.Normal(0., 1.)((b,) + indices.shape)
         r1, r2 = jax.vmap(lambda data: self._run_vjp(x, data, indices, indptr, m, n))(data)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
@@ -315,7 +316,7 @@ class TestBatchingVectorCSR:
         indptr, indices = brainstate.compile.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
         indptr = indptr[0]
 
-        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape[1:])
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
         r1, r2 = jax.vmap(lambda ind: self._run_vjp(x, data, ind, indptr, m, n))(indices)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
@@ -352,7 +353,7 @@ class TestBatchingVectorCSR:
         xs = brainstate.random.rand(b, m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         r1, r2 = jax.vmap(lambda x: self._run_jvp(x, data, indices, indptr, m, n))(xs)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
@@ -365,7 +366,7 @@ class TestBatchingVectorCSR:
         x = brainstate.random.rand(m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = brainstate.random.rand(b) if homo_w else brainstate.init.Normal()((b,) + indices.shape)
+        data = brainstate.random.rand(b) if homo_w else braintools.init.Normal(0., 1.)((b,) + indices.shape)
         r1, r2 = jax.vmap(lambda data: self._run_jvp(x, data, indices, indptr, m, n))(data)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
@@ -379,7 +380,7 @@ class TestBatchingVectorCSR:
         indptr, indices = brainstate.compile.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
         indptr = indptr[0]
 
-        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape[1:])
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
         r1, r2 = jax.vmap(lambda ind: self._run_jvp(x, data, ind, indptr, m, n))(indices)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
@@ -393,7 +394,7 @@ class TestMatrixCSR:
         x = brainstate.random.rand(k, m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = brainevent.EventArray(x) @ csr
         y2 = matrix_csr(x, csr.data, indices, indptr, [m, n])
@@ -405,7 +406,7 @@ class TestMatrixCSR:
         matrix = brainstate.random.rand(n, k) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = csr @ brainevent.EventArray(matrix)
         y2 = csr_matrix(matrix, csr.data, indices, indptr, [m, n])
@@ -429,7 +430,7 @@ class TestBatchingMatrixCSR:
         xs = brainstate.random.rand(b, k, m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         res = jax.vmap(lambda x: self._run(x, data, indices, indptr, m, n))(xs)
         assert jnp.all(res)
 
@@ -439,7 +440,7 @@ class TestBatchingMatrixCSR:
         x = brainstate.random.rand(k, m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = brainstate.random.rand(b) if homo_w else brainstate.init.Normal()((b,) + indices.shape)
+        data = brainstate.random.rand(b) if homo_w else braintools.init.Normal(0., 1.)((b,) + indices.shape)
         res = jax.vmap(lambda data: self._run(x, data, indices, indptr, m, n))(data)
         assert jnp.all(res)
 
@@ -450,7 +451,7 @@ class TestBatchingMatrixCSR:
         indptr, indices = brainstate.compile.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
         indptr = indptr[0]
 
-        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape[1:])
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
         res = jax.vmap(lambda ind: self._run(x, data, ind, indptr, m, n))(indices)
         assert jnp.all(res)
 
@@ -485,7 +486,7 @@ class TestBatchingMatrixCSR:
         xs = brainstate.random.rand(b, k, m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = brainstate.init.Normal()(indices.shape)
+        data = braintools.init.Normal(0., 1.)(indices.shape)
         r1, r2 = jax.vmap(lambda x: self._run_vjp(x, data, indices, indptr, m, n, transpose=transpose))(xs)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
@@ -498,7 +499,7 @@ class TestBatchingMatrixCSR:
         x = brainstate.random.rand(k, m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = brainstate.random.rand(b) if homo_w else brainstate.init.Normal()((b,) + indices.shape)
+        data = brainstate.random.rand(b) if homo_w else braintools.init.Normal(0., 1.)((b,) + indices.shape)
         r1, r2 = jax.vmap(lambda data: self._run_vjp(x, data, indices, indptr, m, n))(data)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
@@ -512,7 +513,7 @@ class TestBatchingMatrixCSR:
         indptr, indices = brainstate.compile.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
         indptr = indptr[0]
 
-        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape[1:])
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
         r1, r2 = jax.vmap(lambda ind: self._run_vjp(x, data, ind, indptr, m, n))(indices)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
@@ -548,7 +549,7 @@ class TestBatchingMatrixCSR:
         xs = brainstate.random.rand(b, k, m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         r1, r2 = jax.vmap(lambda x: self._run_jvp(x, data, indices, indptr, m, n))(xs)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
@@ -560,7 +561,7 @@ class TestBatchingMatrixCSR:
         x = brainstate.random.rand(k, m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = brainstate.random.rand(b) if homo_w else brainstate.init.Normal()((b,) + indices.shape)
+        data = brainstate.random.rand(b) if homo_w else braintools.init.Normal(0., 1.)((b,) + indices.shape)
         r1, r2 = jax.vmap(lambda data: self._run_jvp(x, data, indices, indptr, m, n))(data)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
@@ -574,7 +575,7 @@ class TestBatchingMatrixCSR:
         indptr, indices = brainstate.compile.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
         indptr = indptr[0]
 
-        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape[1:])
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
         r1, r2 = jax.vmap(lambda ind: self._run_jvp(x, data, ind, indptr, m, n))(indices)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
