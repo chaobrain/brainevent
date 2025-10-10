@@ -13,10 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-import os
-
-os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'off'
-
+import braintools
 import brainstate
 import jax
 import jax.numpy as jnp
@@ -38,7 +35,7 @@ class TestVectorCSR:
         indptr, indices = get_csr(m, n, 0.1)
 
         print(f'homo_w = {homo_w}')
-        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = x @ csr
         y2 = vector_csr(x, csr.data, indices, indptr, [m, n])
@@ -50,7 +47,7 @@ class TestVectorCSR:
         v = brainstate.random.rand(n)
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = csr @ v
         y2 = csr_vector(v, csr.data, indices, indptr, [m, n])
@@ -62,7 +59,7 @@ class TestVectorCSR:
         xs = brainstate.random.rand(n_batch, m)
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = jax.vmap(lambda x: x @ csr)(xs)
         y2 = jax.vmap(lambda x: vector_csr(x, csr.data, indices, indptr, [m, n]))(xs)
@@ -77,7 +74,7 @@ class TestVectorCSR:
         x = brainstate.random.rand(n_in) if transpose else brainstate.random.rand(n_out)
 
         indptr, indices = get_csr(n_in, n_out, 0.2, replace=replace)
-        w = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        w = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((w, indices, indptr), shape=shape)
 
         def f_brainevent(x, w):
@@ -117,7 +114,7 @@ class TestVectorCSR:
         x = brainstate.random.rand(n_in if transpose else n_out)
         indptr, indices = get_csr(n_in, n_out, 0.1, replace=replace)
 
-        w = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        w = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((w, indices, indptr), shape=shape)
 
         def f_brainevent(x, w):
@@ -218,7 +215,7 @@ class TestMatrixCSR:
         x = brainstate.random.rand(k, m)
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = x @ csr
         y2 = matrix_csr(x, csr.data, indices, indptr, [m, n])
@@ -230,7 +227,7 @@ class TestMatrixCSR:
         matrix = brainstate.random.rand(n, k)
         indptr, indices = get_csr(m, n, 0.1)
 
-        data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = csr @ matrix
         y2 = csr_matrix(matrix, csr.data, indices, indptr, [m, n])
@@ -304,7 +301,7 @@ class Test_csrmv_yw2y:
         m, n = shape
         indptr, indices = get_csr(m, n, 0.5)
 
-        data = brainstate.init.Normal()(indices.shape)
+        data = braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         dense = csr.todense()
 
@@ -328,7 +325,7 @@ class Test_csrmv_yw2y:
         # for shape in [(200, 400)]:
             m, n = shape
             indptr, indices = get_csr(m, n, 0.5)
-            data = brainstate.init.Normal()(indices.shape)
+            data = braintools.init.Normal(0., 1.)(indices.shape)
             csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
             dense = csr.todense()
 
@@ -353,7 +350,7 @@ class Test_csrmv_yw2y:
         m, n = 1000, 800
         indptr, indices = get_csr(m, n, 0.5)
 
-        data = brainstate.init.Normal()(indices.shape)
+        data = braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         dense = csr.todense()
         print()

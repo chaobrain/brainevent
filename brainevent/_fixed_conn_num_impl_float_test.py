@@ -18,6 +18,7 @@
 import functools
 
 import brainstate
+import braintools
 import jax
 import pytest
 
@@ -71,7 +72,7 @@ class TestVector:
         for x in self._generate_x(m):
             indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1), replace=replace)
 
-            data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+            data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
             csr = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
             y1 = jax.jit(lambda: x @ csr)()
             y2 = jax.jit(lambda: csr.T @ x)()
@@ -89,7 +90,7 @@ class TestVector:
         m, n = 20, 40
         for v in self._generate_x(n):
             indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1), replace=replace)
-            data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+            data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
             csr = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
             y1 = jax.jit(lambda: csr @ v)()
             y2 = jax.jit(lambda: v @ csr.T)()
@@ -102,7 +103,7 @@ class TestVector:
         shape = (n_in, n_out)
 
         indices = generate_fixed_conn_num_indices(n_in, n_out, int(n_out * 0.1), replace=replace)
-        w = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        w = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.FixedPostNumConn((w, indices), shape=shape)
 
         def f_brainevent(x, w):
@@ -141,7 +142,7 @@ class TestVector:
         shape = (n_in, n_out)
 
         indices = generate_fixed_conn_num_indices(n_in, n_out, int(n_out * 0.1), replace=replace)
-        w = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        w = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.FixedPostNumConn((w, indices), shape=shape)
 
         def f_brainevent(x, w):
@@ -198,7 +199,7 @@ class TestVector:
         data = (
             brainstate.random.rand(batch_size)
             if homo_w else
-            brainstate.init.Normal()((batch_size,) + indices.shape)
+            braintools.init.Normal(0., 1.)((batch_size,) + indices.shape)
         )
 
         @jax.jit
@@ -241,7 +242,7 @@ class TestVector:
         data = (
             1.5
             if homo_w else
-            brainstate.init.Normal()(indices.shape)
+            braintools.init.Normal(0., 1.)(indices.shape)
         )
 
         @jax.jit
@@ -288,7 +289,7 @@ class TestMatrix:
         m, n = shape
         for x in self._generate_x([k, m]):
             indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1), replace=replace)
-            data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+            data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
             csr = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
             y1 = jax.jit(lambda: x @ csr)()
             y2 = jax.jit(lambda: (csr.T @ x.T).T)()
@@ -304,7 +305,7 @@ class TestMatrix:
         m, n = shape
         for matrix in self._generate_x([n, k]):
             indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1), replace=replace)
-            data = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+            data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
             csr = brainevent.FixedPostNumConn((data, indices), shape=(m, n))
             y1 = jax.jit(lambda: csr @ matrix)()
             y2 = jax.jit(lambda: (matrix.T @ csr.T).T)()
@@ -317,7 +318,7 @@ class TestMatrix:
         shape = (n_in, n_out)
 
         indices = generate_fixed_conn_num_indices(n_in, n_out, int(n_out * 0.1), replace=replace)
-        w = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        w = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.FixedPostNumConn((w, indices), shape=shape)
 
         def f_brainevent(x, w):
@@ -357,7 +358,7 @@ class TestMatrix:
         shape = (n_in, n_out)
 
         indices = generate_fixed_conn_num_indices(n_in, n_out, int(n_out * 0.1), replace=replace)
-        w = 1.5 if homo_w else brainstate.init.Normal()(indices.shape)
+        w = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.FixedPostNumConn((w, indices), shape=shape)
 
         def f_brainevent(x, w):
@@ -412,7 +413,7 @@ class TestMatrix:
         data = (
             brainstate.random.rand(batch_size)
             if homo_w else
-            brainstate.init.Normal()((batch_size,) + indices.shape)
+            braintools.init.Normal(0., 1.)((batch_size,) + indices.shape)
         )
 
         @jax.jit
@@ -456,7 +457,7 @@ class TestMatrix:
         data = (
             1.5
             if homo_w else
-            brainstate.init.Normal()(indices.shape)
+            braintools.init.Normal(0., 1.)(indices.shape)
         )
 
         @jax.jit
