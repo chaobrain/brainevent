@@ -28,6 +28,12 @@ Installation
 
           pip install -U brainevent[cuda12]
 
+    .. tab-item:: GPU (CUDA 13.0)
+
+       .. code-block:: bash
+
+          pip install -U brainevent[cuda13]
+
     .. tab-item:: TPU
 
        .. code-block:: bash
@@ -37,11 +43,11 @@ Installation
 ----
 
 
-See also the brain modeling ecosystem
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+See also the ecosystem
+^^^^^^^^^^^^^^^^^^^^^^
 
 
-We are building the `Brain Modeling ecosystem <https://brainmodeling.readthedocs.io/>`_.
+``brainevent`` is one part of our `brain modeling ecosystem <https://brainmodeling.readthedocs.io/>`_.
 
 
 
