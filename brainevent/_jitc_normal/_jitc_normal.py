@@ -21,8 +21,10 @@ from typing import Union, Tuple
 import brainunit as u
 import jax
 
-from brainevent._event._array_binary import EventArray
 from brainevent._compatible_import import JAXSparse, Tracer
+from brainevent._event._array_binary import EventArray
+from brainevent._jitc_util import JITCMatrix
+from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
 from ._jitc_normal_impl_binary import (
     binary_jitc_normal_matvec,
     binary_jitc_normal_matmat,
@@ -32,8 +34,6 @@ from ._jitc_normal_impl_float import (
     float_jitc_normal_matvec,
     float_jitc_normal_matmat,
 )
-from brainevent._jitc_util import JITCMatrix
-from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
 
 __all__ = [
     'JITCNormalR',

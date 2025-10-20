@@ -89,7 +89,6 @@ class Test_csr_on_pre:
         mat = jnp.where(mask, mat, 0.)
         assert jnp.allclose(csr.todense(), mat)
 
-
 # class Test_on_post:
 #     def test_csr_on_post_v1(self):
 #         n_pre = 20

@@ -17,10 +17,10 @@
 import jax
 from jax.tree_util import register_pytree_node_class
 
+from brainevent._error import MathError
 from ._array_base import BaseArray
 from ._array_base import extract_raw_value, is_known_type
 from ._array_masked_float import MaskedFloat
-from brainevent._error import MathError
 
 __all__ = [
     'MaskedFloatIndex',

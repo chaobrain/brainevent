@@ -15,8 +15,8 @@
 
 # -*- coding: utf-8 -*-
 
-import braintools
 import brainstate
+import braintools
 import pytest
 
 import brainevent

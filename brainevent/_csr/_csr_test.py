@@ -825,4 +825,3 @@ class Test_solve:
 
         x2 = jnp.linalg.solve(dense, b)
         assert jnp.allclose(x, x2, atol=1e0, rtol=1e0)
-

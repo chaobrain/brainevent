@@ -25,12 +25,12 @@ import brainunit as u
 import jax
 import numpy as np
 
-from brainevent._event._array_binary import EventArray
 from brainevent._compatible_import import JAXSparse
-from ._coo_impl_binary import event_coo_matvec, event_coo_matmat
-from ._coo_impl_float import coo_matvec, coo_matmat
+from brainevent._event._array_binary import EventArray
 from brainevent._misc import _coo_todense, COOInfo
 from brainevent._typing import MatrixShape, Data, Index, Row, Col
+from ._coo_impl_binary import event_coo_matvec, event_coo_matmat
+from ._coo_impl_float import coo_matvec, coo_matmat
 
 __all__ = [
     'COO',

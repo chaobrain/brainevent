@@ -22,16 +22,16 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from brainevent._compatible_import import JAXSparse
 from brainevent._event._array_binary import EventArray
 from brainevent._event._array_masked_float import MaskedFloat
-from brainevent._compatible_import import JAXSparse
+from brainevent._misc import _csr_to_coo, _csr_todense
+from brainevent._typing import Data, Indptr, Index, MatrixShape
 from ._csr_impl_binary import binary_csr_matvec, binary_csr_matmat
 from ._csr_impl_diag_add import csr_diag_position_v2, csr_diag_add_v2
 from ._csr_impl_float import csr_matvec, csr_matmat, csrmv_yw2y
 from ._csr_impl_masked_float import masked_float_csr_matvec, masked_float_csr_matmat
 from ._csr_impl_spsolve import csr_solve
-from brainevent._misc import _csr_to_coo, _csr_todense
-from brainevent._typing import Data, Indptr, Index, MatrixShape
 
 __all__ = [
     'CSR',

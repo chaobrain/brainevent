@@ -22,15 +22,15 @@ import brainunit as u
 import jax
 import jax.numpy as jnp
 
-from brainevent._event._array_binary import EventArray
-from brainevent._event._array_masked_float import MaskedFloat
 from brainevent._compatible_import import JAXSparse
 from brainevent._coo import COO
+from brainevent._event._array_binary import EventArray
+from brainevent._event._array_masked_float import MaskedFloat
+from brainevent._misc import _coo_todense, COOInfo
+from brainevent._typing import Data, MatrixShape, Index
 from ._fixed_conn_num_impl_binary import binary_fixed_num_mv_p_call, binary_fixed_num_mm_p_call
 from ._fixed_conn_num_impl_float import fixed_num_mv_p_call, fixed_num_mm_p_call
 from ._fixed_conn_num_impl_masked_float import masked_float_fixed_num_mv_p_call, masked_float_fixed_num_mm_p_call
-from brainevent._misc import _coo_todense, COOInfo
-from brainevent._typing import Data, MatrixShape, Index
 
 __all__ = [
     'FixedPostNumConn',

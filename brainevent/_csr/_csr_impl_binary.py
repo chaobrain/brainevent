@@ -23,7 +23,6 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._compatible_import import pallas as pl
-from ._csr_impl_float import csr_matvec, csr_matmat
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescoped_jit
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent.op._xla_custom_op import XLACustomKernel
@@ -31,6 +30,7 @@ from brainevent.op._xla_custom_op_numba import numba_kernel
 from brainevent.op._xla_custom_op_pallas import pallas_kernel
 from brainevent.op._xla_custom_op_util import general_batching_rule
 from brainevent.op._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
+from ._csr_impl_float import csr_matvec, csr_matmat
 
 
 @namescoped_jit(static_argnames=("shape", "transpose"))

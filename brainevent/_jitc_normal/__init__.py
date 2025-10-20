@@ -17,4 +17,3 @@
 from ._jitc_normal import JITCNormalR, JITCNormalC
 
 __all__ = ['JITCNormalR', 'JITCNormalC']
-

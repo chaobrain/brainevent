@@ -18,9 +18,6 @@
 import jax
 from jax.tree_util import register_pytree_node_class
 
-from ._array_base import BaseArray, extract_raw_value
-from ._array_binary import BinaryArray
-from ._array_binary_index_extraction import binary_array_index
 from brainevent._dense._dense_impl_binary_index import (
     binary_vec_dot_dense_mat,
     binary_mat_dot_dense_mat,
@@ -29,6 +26,9 @@ from brainevent._dense._dense_impl_binary_index import (
 )
 from brainevent._error import MathError
 from brainevent._misc import is_known_type
+from ._array_base import BaseArray, extract_raw_value
+from ._array_binary import BinaryArray
+from ._array_binary_index_extraction import binary_array_index
 
 __all__ = [
     'BinaryArrayIndex',

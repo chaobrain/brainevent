@@ -16,8 +16,6 @@
 
 from jax.tree_util import register_pytree_node_class
 
-from ._array_base import BaseArray
-from ._array_base import extract_raw_value, is_known_type
 from brainevent._dense._dense_impl_masked_float import (
     dense_mat_dot_masked_float_mat,
     masked_float_mat_dot_dense_mat,
@@ -25,6 +23,8 @@ from brainevent._dense._dense_impl_masked_float import (
     masked_float_vec_dot_dense_mat,
 )
 from brainevent._error import MathError
+from ._array_base import BaseArray
+from ._array_base import extract_raw_value, is_known_type
 
 __all__ = [
     'MaskedFloat',

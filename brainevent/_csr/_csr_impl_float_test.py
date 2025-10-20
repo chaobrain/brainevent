@@ -13,8 +13,8 @@
 # limitations under the License.
 # ==============================================================================
 
-import braintools
 import brainstate
+import braintools
 import jax
 import jax.numpy as jnp
 import pytest
@@ -322,7 +322,7 @@ class Test_csrmv_yw2y:
 
     def test_csr2(self):
         for shape in [(100, 200), (200, 400)]:
-        # for shape in [(200, 400)]:
+            # for shape in [(200, 400)]:
             m, n = shape
             indptr, indices = get_csr(m, n, 0.5)
             data = braintools.init.Normal(0., 1.)(indices.shape)

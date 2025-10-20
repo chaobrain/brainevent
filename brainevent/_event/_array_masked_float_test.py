@@ -1,7 +1,9 @@
-import pytest
 import numpy as np
+import pytest
+
 import brainevent
 from brainevent import MaskedFloat, MathError
+
 
 class TestMaskedFloatMatMul:
     def setup_method(self):

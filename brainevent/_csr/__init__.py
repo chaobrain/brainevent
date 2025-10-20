@@ -23,5 +23,3 @@ __all__ = [
     'csr_on_pre',
     'csr2csc_on_post',
 ]
-
-

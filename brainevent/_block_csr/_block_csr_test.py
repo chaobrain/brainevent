@@ -53,7 +53,6 @@ class Test_BlockCSR:
 
         assert jnp.allclose(dense_base, dense_our)
 
-
     @pytest.mark.parametrize('data', [np.array([1, 2, 3, 4, 5, 6]).repeat(4).reshape(6, 2, 2)])
     @pytest.mark.parametrize('indices', [np.array([0, 2, 2, 0, 1, 2])])
     @pytest.mark.parametrize('indptr', [np.array([0, 2, 3, 6])])
@@ -65,7 +64,6 @@ class Test_BlockCSR:
         dense_our = coo.todense()
 
         assert jnp.allclose(dense_base, dense_our)
-
 
     @pytest.mark.parametrize('data', [np.array([1, 2, 3, 4, 5, 6]).repeat(4).reshape(6, 2, 2)])
     @pytest.mark.parametrize('indices', [np.array([0, 2, 2, 0, 1, 2])])
@@ -98,7 +96,6 @@ class Test_BlockCSR:
         assert jnp.allclose(dense_base, dense_our)
         assert jnp.allclose(indices, indices_our)
         assert jnp.allclose(indptr, indptr_our)
-
 
     @pytest.mark.parametrize('data1', [np.array([1, 2, 3, 4, 5, 6]).repeat(4).reshape(6, 2, 2)])
     @pytest.mark.parametrize('data2', [np.array([1, 2, 3, 4, 5, 6]).repeat(4).reshape(6, 2, 2)])

@@ -17,9 +17,9 @@
 from ._array_base import BaseArray
 from ._array_binary import BinaryArray, EventArray
 from ._array_binary_index import BinaryArrayIndex
+from ._array_binary_index_extraction import binary_array_index
 from ._array_masked_float import MaskedFloat
 from ._array_masked_float_index import MaskedFloatIndex
-from ._array_binary_index_extraction import binary_array_index
 
 __all__ = [
     'BaseArray',

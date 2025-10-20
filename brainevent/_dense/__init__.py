@@ -13,9 +13,9 @@
 # limitations under the License.
 # ==============================================================================
 
-from ._dense_impl_plasticity import dense_on_pre, dense_on_post
-from ._dense_impl_binary_index import dense_mat_dot_binary_mat, binary_mat_dot_dense_mat
 from ._dense_impl_binary import binary_vec_dot_dense_mat, dense_mat_dot_binary_vec
+from ._dense_impl_binary_index import dense_mat_dot_binary_mat, binary_mat_dot_dense_mat
+from ._dense_impl_plasticity import dense_on_pre, dense_on_post
 
 __all__ = [
     'dense_on_pre',
@@ -25,5 +25,3 @@ __all__ = [
     'binary_vec_dot_dense_mat',
     'dense_mat_dot_binary_vec',
 ]
-
-

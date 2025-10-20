@@ -17,11 +17,6 @@
 
 from jax.tree_util import register_pytree_node_class
 
-from ._array_base import (
-    BaseArray,
-    extract_raw_value,
-    is_known_type,
-)
 from brainevent._dense._dense_impl_binary import (
     dense_mat_dot_binary_mat,
     binary_mat_dot_dense_mat,
@@ -29,6 +24,11 @@ from brainevent._dense._dense_impl_binary import (
     binary_vec_dot_dense_mat,
 )
 from brainevent._error import MathError
+from ._array_base import (
+    BaseArray,
+    extract_raw_value,
+    is_known_type,
+)
 
 __all__ = [
     'BinaryArray',
