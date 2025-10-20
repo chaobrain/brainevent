@@ -47,12 +47,6 @@ if warp_installed:
     import warp.context  # pylint: disable=import-error, import-outside-toplevel
     import warp.types  # pylint: disable=import-error, import-outside-toplevel
 
-    warp_version = warp.__version__
-    if version.parse(warp_version) >= version.parse("1.9.0"):
-        warp_launch_kernel_func = warp.context.runtime.core.wp_cuda_launch_kernel
-    else:
-        warp_launch_kernel_func = warp.context.runtime.core.cuda_launch_kernel
-
     warp.config.enable_backward = False
 
 
@@ -319,6 +313,12 @@ def _warp_gpu_custom_callback(stream, buffers, opaque, opaque_len):
     assert hooks.forward, "Failed to find kernel entry point"
 
     # Launch the kernel.
+    warp_version = warp.__version__
+    if version.parse(warp_version) >= version.parse("1.9.0"):
+        warp_launch_kernel_func = warp.context.runtime.core.wp_cuda_launch_kernel
+    else:
+        warp_launch_kernel_func = warp.context.runtime.core.cuda_launch_kernel
+    
     warp_launch_kernel_func(
         device.context,
         hooks.forward,
