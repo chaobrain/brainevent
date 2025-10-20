@@ -25,17 +25,17 @@ from brainevent._coo._float import (
     coomv_p,
     coomm_p,
 )
-from brainevent._csr._csr_impl_binary import (
+from brainevent._csr._binary import (
     binary_csrmv_p,
     binary_csrmm_p,
 )
-from brainevent._csr._csr_impl_diag_add import csr_diag_add_p
-from brainevent._csr._csr_impl_float import (
+from brainevent._csr._diag_add import csr_diag_add_p
+from brainevent._csr._float import (
     csrmv_p,
     csrmm_p,
     csrmv_yw2y_p,
 )
-from brainevent._csr._csr_impl_masked_float import (
+from brainevent._csr._masked_float import (
     masked_float_csrmv_p,
     masked_float_csrmm_p,
 )

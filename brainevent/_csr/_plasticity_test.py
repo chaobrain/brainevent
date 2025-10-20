@@ -20,7 +20,7 @@ import jax.numpy as jnp
 import pytest
 
 import brainevent
-from brainevent._csr._csr_impl_plasticity import csr_on_pre
+from brainevent._csr._plasticity import csr_on_pre
 
 
 class Test_csr_on_pre:
