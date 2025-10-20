@@ -72,6 +72,7 @@ def dense_mat_dot_binary_vec(weights, spikes):
     using `brainunit`. The computation is delegated to a JAX primitive
     `dense_mat_dot_binary_vec_p` for potential hardware acceleration.
     """
+
     with jax.ensure_compile_time_eval():
         weights = u.math.asarray(weights)
         spikes = u.math.asarray(spikes)
