@@ -312,7 +312,7 @@ def _warp_gpu_custom_callback(stream, buffers, opaque, opaque_len):
     assert hooks.forward, "Failed to find kernel entry point"
 
     # Launch the kernel.
-    warp.context.runtime.core.cuda_launch_kernel(
+    warp.context.runtime.core.wp_cuda_launch_kernel(
         device.context,
         hooks.forward,
         bounds.size,
