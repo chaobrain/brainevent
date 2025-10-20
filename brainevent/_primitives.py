@@ -39,13 +39,13 @@ from brainevent._csr._masked_float import (
     masked_float_csrmv_p,
     masked_float_csrmm_p,
 )
-from brainevent._dense._dense_impl_binary import (
+from brainevent._dense._binary import (
     dense_mat_dot_binary_vec_p,
     binary_vec_dot_dense_mat_p,
     dense_mat_dot_binary_mat_p,
     binary_mat_dot_dense_mat_p
 )
-from brainevent._dense._dense_impl_masked_float import (
+from brainevent._dense._masked_float import (
     dense_mat_dot_masked_float_vec_p,
     masked_float_vec_dot_dense_mat_p,
     dense_mat_dot_masked_float_mat_p,

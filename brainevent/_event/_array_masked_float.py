@@ -16,7 +16,7 @@
 
 from jax.tree_util import register_pytree_node_class
 
-from brainevent._dense._dense_impl_masked_float import (
+from brainevent._dense._masked_float import (
     dense_mat_dot_masked_float_mat,
     masked_float_mat_dot_dense_mat,
     dense_mat_dot_masked_float_vec,

@@ -18,7 +18,7 @@
 import jax
 from jax.tree_util import register_pytree_node_class
 
-from brainevent._dense._dense_impl_binary_index import (
+from brainevent._dense._binary_index import (
     binary_vec_dot_dense_mat,
     binary_mat_dot_dense_mat,
     dense_mat_dot_binary_vec,

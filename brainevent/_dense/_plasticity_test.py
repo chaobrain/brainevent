@@ -19,7 +19,7 @@ import brainunit as u
 import jax.numpy as jnp
 import pytest
 
-from brainevent._dense._dense_impl_plasticity import dense_on_pre, dense_on_post
+from brainevent._dense._plasticity import dense_on_pre, dense_on_post
 
 
 class Test_dense_on_pre:

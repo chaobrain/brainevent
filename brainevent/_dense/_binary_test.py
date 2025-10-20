@@ -21,7 +21,7 @@ import brainunit as u
 import pytest
 
 import brainevent
-from brainevent._dense._dense_impl_binary import (
+from brainevent._dense._binary import (
     dense_mat_dot_binary_mat,
     binary_mat_dot_dense_mat,
     dense_mat_dot_binary_vec,
