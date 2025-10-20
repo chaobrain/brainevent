@@ -49,7 +49,7 @@ if warp_installed:
 _FFI_CALLBACK_LOCK = threading.Lock()
 
 
-class FfiKernel:
+class JaxFFIKernel:
     def __init__(
         self,
         kernel,
@@ -341,6 +341,6 @@ def _ffi_gpu_lowering(
         wp_kernel = kernel_generator(**kwargs)  # ensure kernel is registered
         block_dim, warp_dims = get_dim(wp_kernel, **kwargs)
 
-        return FfiKernel(wp_kernel.kernel)(*args)
+        return JaxFFIKernel(wp_kernel.kernel)(*args)
 
     return mlir.lower_fun(kernel_fn, multiple_results=True)

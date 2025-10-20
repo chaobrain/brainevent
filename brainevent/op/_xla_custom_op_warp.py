@@ -241,7 +241,7 @@ def warp_kernel(
             dim=dim,
             tile=tile,
             block_dim=block_dim,
-            input_output_aliases=input_output_aliases
+            input_output_aliases=input_output_aliases,
         )
 
     if not warp_installed:
@@ -252,7 +252,7 @@ def warp_kernel(
         dim=dim,
         tile=tile,
         block_dim=block_dim,
-        input_output_aliases=input_output_aliases
+        input_output_aliases=input_output_aliases,
     )
 
 

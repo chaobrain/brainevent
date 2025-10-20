@@ -28,7 +28,7 @@ from brainevent._typing import KernelGenerator
 from ._xla_custom_op_numba import register_numba_cpu_translation
 from ._xla_custom_op_pallas import (
     register_pallas_gpu_translation,
-    register_pallas_tpu_translation
+    register_pallas_tpu_translation,
 )
 from ._xla_custom_op_util import general_batching_rule, defjvp
 from ._xla_custom_op_warp import register_warp_gpu_translation
