@@ -1,4 +1,4 @@
-# Copyright 2024 BDP Ecosystem Limited. All Rights Reserved.
+# Copyright 2024 BrainX Ecosystem Limited. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -253,7 +253,7 @@ class TestBatchingVectorCSR:
     def test_vmap_indices(self, homo_w):
         b, m, n, p = 10, 20, 40, 0.1
         x = brainstate.random.rand(m) < 0.1
-        indptr, indices = brainstate.compile.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
+        indptr, indices = brainstate.transform.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
         indptr = indptr[0]
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
@@ -313,7 +313,7 @@ class TestBatchingVectorCSR:
     def test_vmap_indices_vjp(self, homo_w):
         b, m, n, p = 10, 20, 40, 0.1
         x = brainstate.random.rand(m) < 0.1
-        indptr, indices = brainstate.compile.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
+        indptr, indices = brainstate.transform.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
         indptr = indptr[0]
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
@@ -377,7 +377,7 @@ class TestBatchingVectorCSR:
     def test_vmap_indices_jvp(self, homo_w):
         b, m, n, p = 10, 20, 40, 0.1
         x = brainstate.random.rand(m) < 0.1
-        indptr, indices = brainstate.compile.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
+        indptr, indices = brainstate.transform.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
         indptr = indptr[0]
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
@@ -448,7 +448,7 @@ class TestBatchingMatrixCSR:
     def test_vmap_indices(self, homo_w):
         b, k, m, n, p = 10, 15, 20, 40, 0.1
         x = brainstate.random.rand(k, m) < 0.1
-        indptr, indices = brainstate.compile.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
+        indptr, indices = brainstate.transform.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
         indptr = indptr[0]
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
@@ -510,7 +510,7 @@ class TestBatchingMatrixCSR:
     def test_vmap_indices_vjp(self, homo_w):
         b, k, m, n, p = 10, 15, 20, 40, 0.1
         x = brainstate.random.rand(k, m) < 0.1
-        indptr, indices = brainstate.compile.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
+        indptr, indices = brainstate.transform.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
         indptr = indptr[0]
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
@@ -572,7 +572,7 @@ class TestBatchingMatrixCSR:
     def test_vmap_indices_jvp(self, homo_w):
         b, k, m, n, p = 10, 15, 20, 40, 0.1
         x = brainstate.random.rand(k, m) < 0.1
-        indptr, indices = brainstate.compile.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
+        indptr, indices = brainstate.transform.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
         indptr = indptr[0]
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])

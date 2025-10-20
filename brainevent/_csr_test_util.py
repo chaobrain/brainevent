@@ -1,4 +1,4 @@
-# Copyright 2025 BDP Ecosystem Limited. All Rights Reserved.
+# Copyright 2025 BrainX Ecosystem Limited. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ def get_csr(n_pre, n_post, prob, replace=True):
     if replace:
         indices = brainstate.random.randint(0, n_post, (n_pre * n_conn,))
     else:
-        indices = brainstate.compile.for_loop(
+        indices = brainstate.transform.for_loop(
             lambda *args: brainstate.random.choice(n_post, n_conn, replace=False),
             length=n_pre
         ).flatten()

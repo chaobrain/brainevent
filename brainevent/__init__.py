@@ -1,4 +1,4 @@
-# Copyright 2025 BDP Ecosystem Limited. All Rights Reserved.
+# Copyright 2025 BrainX Ecosystem Limited. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,41 +13,41 @@
 # limitations under the License.
 # ==============================================================================
 
+
 __version__ = "0.0.4"
+__version_info__ = (0, 0, 4)
 
 from ._array_base import BaseArray
 from ._array_binary import BinaryArray, EventArray
 from ._array_binary_index import BinaryArrayIndex
-from ._array_masked_float_index import MaskedFloatIndex
 from ._array_masked_float import MaskedFloat
+from ._array_masked_float_index import MaskedFloatIndex
 from ._block_csr import BlockCSR
 from ._block_ell import BlockELL
 from ._config import config
 from ._coo import COO
+from ._coo_impl_plasticity import coo_on_pre, coo_on_post
 from ._csr import CSR, CSC
+from ._csr_impl_plasticity import csr_on_pre, csr2csc_on_post
+from ._dense_impl_plasticity import dense_on_pre, dense_on_post
 from ._error import MathError
 from ._fixed_conn_num import FixedPostNumConn, FixedPreNumConn
 from ._jitc_homo import JITCHomoR, JITCHomoC
 from ._jitc_normal import JITCNormalR, JITCNormalC
 from ._jitc_uniform import JITCUniformR, JITCUniformC
+from ._misc import csr_to_coo_index, coo_to_csc_index, csr_to_csc_index
 from ._pallas_random import LFSR88RNG, LFSR113RNG, LFSR128RNG
-from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
-from ._xla_custom_op_numba import numba_kernel
-from ._xla_custom_op_pallas import pallas_kernel
-from ._xla_custom_op_util import defjvp, general_batching_rule
-from ._xla_custom_op_warp import warp_kernel, jaxtype_to_warptype, jaxinfo_to_warpinfo
 from ._primitives import (
     ALL_PRIMITIVES,
     get_all_primitive_names,
     get_primitives_by_category,
     get_primitive_info
 )
-
-from ._misc import csr_to_coo_index, coo_to_csc_index, csr_to_csc_index
-from ._csr_impl_plasticity import csr_on_pre, csr2csc_on_post
-from ._coo_impl_plasticity import coo_on_pre, coo_on_post
-from ._dense_impl_plasticity import dense_on_pre, dense_on_post
-
+from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
+from ._xla_custom_op_numba import numba_kernel
+from ._xla_custom_op_pallas import pallas_kernel
+from ._xla_custom_op_util import defjvp, general_batching_rule
+from ._xla_custom_op_warp import warp_kernel, jaxtype_to_warptype, jaxinfo_to_warpinfo
 
 __all__ = [
     # --- global configuration --- #

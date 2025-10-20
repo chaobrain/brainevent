@@ -1,4 +1,4 @@
-# Copyright 2025 BDP Ecosystem Limited. All Rights Reserved.
+# Copyright 2025 BrainX Ecosystem Limited. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -33,14 +33,14 @@ def generate_fixed_conn_num_indices(
     if replace:
         indices = rng.randint(0, n_post, (n_pre, n_conn))
     else:
-        indices = brainstate.compile.for_loop(
+        indices = brainstate.transform.for_loop(
             lambda *args: rng.choice(n_post, n_conn, replace=False),
             length=n_pre
         )
     return jnp.asarray(indices)
 
 
-@brainstate.compile.jit(static_argnums=(3,), )
+@brainstate.transform.jit(static_argnums=(3,), )
 def vector_fcn(x, weights, indices, shape):
     x = x.data if isinstance(x, brainevent.BaseArray) else x
     weights = weights.data if isinstance(weights, brainevent.BaseArray) else weights
@@ -64,7 +64,7 @@ def vector_fcn(x, weights, indices, shape):
     # return post
 
 
-@brainstate.compile.jit(static_argnums=(3,))
+@brainstate.transform.jit(static_argnums=(3,))
 def matrix_fcn(xs, weights, indices, shape):
     xs = xs.data if isinstance(xs, brainevent.BaseArray) else xs
     weights = weights.data if isinstance(weights, brainevent.BaseArray) else weights
@@ -97,7 +97,7 @@ def matrix_fcn(xs, weights, indices, shape):
     # return post
 
 
-@brainstate.compile.jit(static_argnums=(3,))
+@brainstate.transform.jit(static_argnums=(3,))
 def fcn_vector(x, weights, indices, shape):
     x = x.data if isinstance(x, brainevent.BaseArray) else x
     weights = weights.data if isinstance(weights, brainevent.BaseArray) else weights
@@ -123,7 +123,7 @@ def fcn_vector(x, weights, indices, shape):
     # return out
 
 
-@brainstate.compile.jit(static_argnums=(3,))
+@brainstate.transform.jit(static_argnums=(3,))
 def fcn_matrix(xs, weights, indices, shape):
     xs = xs.data if isinstance(xs, brainevent.BaseArray) else xs
     weights = weights.data if isinstance(weights, brainevent.BaseArray) else weights

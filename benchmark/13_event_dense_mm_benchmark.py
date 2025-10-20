@@ -1,4 +1,4 @@
-# Copyright 2024 BDP Ecosystem Limited. All Rights Reserved.
+# Copyright 2024 BrainX Ecosystem Limited. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -37,11 +37,11 @@ from utils import visualize
 
 def matrix_event(m, k, n, spk_prob, as_float: bool, transpose: bool, n_run = 100):
     if transpose:
-        weight = brainstate.init.KaimingUniform()((m, k))
+        weight = braintools.init.KaimingUniform()((m, k))
         spike = (brainstate.random.rand(k, n) < spk_prob)
     else:
         spike = (brainstate.random.rand(m, k) < spk_prob)
-        weight = brainstate.init.KaimingUniform()((k, n))
+        weight = braintools.init.KaimingUniform()((k, n))
     if as_float:
         spike = spike.astype(float)
 
