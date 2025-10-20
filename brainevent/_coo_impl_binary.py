@@ -24,6 +24,7 @@ import jax.numpy as jnp
 from jax.interpreters import ad
 
 from ._coo_impl_float import coo_matvec, coo_matmat
+from ._misc import namescoped_jit
 from ._typing import Data, Row, Col, MatrixShape
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import numba_kernel
@@ -31,6 +32,7 @@ from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
 
 
+@namescoped_jit(static_argnames=("shape", "transpose", "float_as_event"))
 def event_coo_matvec(
     data: Data,
     row: Row,
@@ -52,6 +54,7 @@ def event_coo_matvec(
     return u.maybe_decimal(res * (unitd * unitv))
 
 
+@namescoped_jit(static_argnames=("shape", "transpose", "float_as_event"))
 def event_coo_matmat(
     data: Data,
     row: Row,

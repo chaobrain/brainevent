@@ -37,8 +37,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
-        jax-version: ["0.4.38", "0.5.2", "0.6.0", ""]
+        python-version: ["3.13"]
+        jax-version: ["0.6.0", "0.7.0"]
         # Optional: Exclude incompatible combinations if needed
         # exclude:
         #   - python-version: "3.13"
@@ -49,11 +49,11 @@ jobs:
         uses: styfle/cancel-workflow-action@0.12.1
         with:
           access_token: ${{ github.token }}
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Print concurrency group
         run: echo '${{ github.workflow }}-${{ github.ref }}'
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies

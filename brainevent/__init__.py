@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-__version__ = "0.0.3"
+__version__ = "0.0.4"
 
 from ._array_base import BaseArray
 from ._array_binary import BinaryArray, EventArray
@@ -36,6 +36,18 @@ from ._xla_custom_op_numba import numba_kernel
 from ._xla_custom_op_pallas import pallas_kernel
 from ._xla_custom_op_util import defjvp, general_batching_rule
 from ._xla_custom_op_warp import warp_kernel, jaxtype_to_warptype, jaxinfo_to_warpinfo
+from ._primitives import (
+    ALL_PRIMITIVES,
+    get_all_primitive_names,
+    get_primitives_by_category,
+    get_primitive_info
+)
+
+from ._misc import csr_to_coo_index, coo_to_csc_index, csr_to_csc_index
+from ._csr_impl_plasticity import csr_on_pre, csr2csc_on_post
+from ._coo_impl_plasticity import coo_on_pre, coo_on_post
+from ._dense_impl_plasticity import dense_on_pre, dense_on_post
+
 
 __all__ = [
     # --- global configuration --- #
@@ -95,5 +107,20 @@ __all__ = [
     # --- others --- #
 
     'MathError',
+    'csr_to_coo_index',
+    'coo_to_csc_index',
+    'csr_to_csc_index',
+    'csr_on_pre',
+    'csr2csc_on_post',
+    'coo_on_pre',
+    'coo_on_post',
+    'dense_on_pre',
+    'dense_on_post',
+
+    # --- primitives --- #
+    'ALL_PRIMITIVES',
+    'get_all_primitive_names',
+    'get_primitives_by_category',
+    'get_primitive_info',
 
 ]

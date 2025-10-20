@@ -22,7 +22,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from ._compatible_import import pallas as pl
-from ._misc import cdiv, generate_block_dim
+from ._misc import cdiv, generate_block_dim, namescoped_jit
 from ._xla_custom_op import XLACustomKernel
 from ._xla_custom_op_numba import numba_kernel
 from ._xla_custom_op_pallas import pallas_kernel
@@ -30,6 +30,7 @@ from ._xla_custom_op_util import general_batching_rule
 from ._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
 
 
+@namescoped_jit()
 def dense_mat_dot_binary_vec(weights, spikes):
     """
     Performs event-driven matrix-vector multiplication: `weights @ spikes`.
