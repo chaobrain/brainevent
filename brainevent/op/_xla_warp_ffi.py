@@ -16,6 +16,7 @@
 
 import ctypes
 import importlib.util
+import threading
 
 import jax
 from jax.interpreters import mlir
@@ -33,16 +34,18 @@ if warp_installed:
         from warp.jax_experimental.ffi import (
             generate_unique_name, FfiArg, XLA_FFI_CallFrame, XLA_FFI_Extension_Type,
             XLA_FFI_Handler_TraitsBits, XLA_FFI_Metadata_Extension, XLA_FFI_Buffer,
-            _FFI_CALLBACK_LOCK, FfiLaunchDesc, decode_attrs, XLA_FFI_Error_Code,
+            FfiLaunchDesc, decode_attrs, XLA_FFI_Error_Code,
             create_ffi_error,
         )
     else:
         from warp._src.jax_experimental.ffi import (
             generate_unique_name, FfiArg, XLA_FFI_CallFrame, XLA_FFI_Extension_Type,
             XLA_FFI_Handler_TraitsBits, XLA_FFI_Metadata_Extension, XLA_FFI_Buffer,
-            _FFI_CALLBACK_LOCK, FfiLaunchDesc, decode_attrs, XLA_FFI_Error_Code,
+            FfiLaunchDesc, decode_attrs, XLA_FFI_Error_Code,
             create_ffi_error,
         )
+
+_FFI_CALLBACK_LOCK = threading.Lock()
 
 
 def _get_jax_device():

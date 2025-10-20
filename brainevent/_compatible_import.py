@@ -20,7 +20,6 @@ __all__ = [
     'pallas',
     'JAXSparse',
     'custom_call',
-
     'call_p',
     'closed_call_p',
     'jaxpr_as_fun',

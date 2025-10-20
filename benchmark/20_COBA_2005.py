@@ -26,11 +26,11 @@
 
 import time
 
-import brainunit as u
-import jax
-
 import brainpy
 import brainstate
+import braintools
+import brainunit as u
+import jax
 
 
 class EINet(brainstate.nn.Module):
