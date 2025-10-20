@@ -72,20 +72,20 @@ from brainevent._jitc_homo._float import (
     float_jitc_mv_homo_p,
     float_jitc_mm_homo_p,
 )
-from brainevent._jitc_normal._jitc_normal_impl_binary import (
+from brainevent._jitc_normal._binary import (
     binary_jitc_mv_normal_p,
     binary_jitc_mm_normal_p,
 )
-from brainevent._jitc_normal._jitc_normal_impl_float import (
+from brainevent._jitc_normal._float import (
     float_jitc_normal_matrix_p,
     float_jitc_mv_normal_p,
     float_jitc_mm_normal_p,
 )
-from brainevent._jitc_uniform._jitc_uniform_impl_binary import (
+from brainevent._jitc_uniform._binary import (
     binary_jitc_mv_uniform_p,
     binary_jitc_mm_uniform_p,
 )
-from brainevent._jitc_uniform._jitc_uniform_impl_float import (
+from brainevent._jitc_uniform._float import (
     float_jitc_uniform_matrix_p,
     float_jitc_mv_uniform_p,
     float_jitc_mm_uniform_p,
