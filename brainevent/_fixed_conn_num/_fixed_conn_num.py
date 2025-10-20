@@ -28,9 +28,9 @@ from brainevent._event._binary import EventArray
 from brainevent._event._masked_float import MaskedFloat
 from brainevent._misc import _coo_todense, COOInfo
 from brainevent._typing import Data, MatrixShape, Index
-from ._fixed_conn_num_impl_binary import binary_fixed_num_mv_p_call, binary_fixed_num_mm_p_call
-from ._fixed_conn_num_impl_float import fixed_num_mv_p_call, fixed_num_mm_p_call
-from ._fixed_conn_num_impl_masked_float import masked_float_fixed_num_mv_p_call, masked_float_fixed_num_mm_p_call
+from ._binary import binary_fixed_num_mv_p_call, binary_fixed_num_mm_p_call
+from ._float import fixed_num_mv_p_call, fixed_num_mm_p_call
+from ._masked_float import masked_float_fixed_num_mv_p_call, masked_float_fixed_num_mm_p_call
 
 __all__ = [
     'FixedPostNumConn',

@@ -51,15 +51,15 @@ from brainevent._dense._masked_float import (
     dense_mat_dot_masked_float_mat_p,
     masked_float_mat_dot_dense_mat_p
 )
-from brainevent._fixed_conn_num._fixed_conn_num_impl_binary import (
+from brainevent._fixed_conn_num._binary import (
     binary_fixed_num_mv_p,
     binary_fixed_num_mm_p,
 )
-from brainevent._fixed_conn_num._fixed_conn_num_impl_float import (
+from brainevent._fixed_conn_num._float import (
     fixed_num_mv_p,
     fixed_num_mm_p,
 )
-from brainevent._fixed_conn_num._fixed_conn_num_impl_masked_float import (
+from brainevent._fixed_conn_num._masked_float import (
     masked_float_fixed_num_mv_p,
     masked_float_fixed_num_mm_p,
 )

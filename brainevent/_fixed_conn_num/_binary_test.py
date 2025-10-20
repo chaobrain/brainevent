@@ -16,7 +16,7 @@
 # -*- coding: utf-8 -*-
 
 
-from brainevent._fixed_conn_num._fixed_conn_num_impl_float_test import TestVector, TestMatrix
+from brainevent._fixed_conn_num._float_test import TestVector, TestMatrix
 from brainevent._test_util import gen_events
 
 
