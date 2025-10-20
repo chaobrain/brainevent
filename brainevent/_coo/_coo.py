@@ -26,7 +26,7 @@ import jax
 import numpy as np
 
 from brainevent._compatible_import import JAXSparse
-from brainevent._event._array_binary import EventArray
+from brainevent._event._binary import EventArray
 from brainevent._misc import _coo_todense, COOInfo
 from brainevent._typing import MatrixShape, Data, Index, Row, Col
 from ._binary import event_coo_matvec, event_coo_matmat

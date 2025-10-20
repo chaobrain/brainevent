@@ -23,8 +23,8 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._compatible_import import JAXSparse
-from brainevent._event._array_binary import EventArray
-from brainevent._event._array_masked_float import MaskedFloat
+from brainevent._event._binary import EventArray
+from brainevent._event._masked_float import MaskedFloat
 from brainevent._misc import _csr_to_coo, _csr_todense
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from ._binary import binary_csr_matvec, binary_csr_matmat

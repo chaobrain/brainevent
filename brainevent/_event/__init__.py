@@ -14,12 +14,12 @@
 # ==============================================================================
 
 
-from ._array_base import BaseArray
-from ._array_binary import BinaryArray, EventArray
-from ._array_binary_index import BinaryArrayIndex
-from ._array_binary_index_extraction import binary_array_index
-from ._array_masked_float import MaskedFloat
-from ._array_masked_float_index import MaskedFloatIndex
+from ._base import BaseArray
+from ._binary import BinaryArray, EventArray
+from ._binary_index import BinaryArrayIndex
+from ._binary_index_extraction import binary_array_index
+from ._masked_float import MaskedFloat
+from ._masked_float_index import MaskedFloatIndex
 
 __all__ = [
     'BaseArray',

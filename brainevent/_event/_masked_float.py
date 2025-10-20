@@ -14,21 +14,25 @@
 # ==============================================================================
 
 
-import jax
 from jax.tree_util import register_pytree_node_class
 
+from brainevent._dense._masked_float import (
+    dense_mat_dot_masked_float_mat,
+    masked_float_mat_dot_dense_mat,
+    dense_mat_dot_masked_float_vec,
+    masked_float_vec_dot_dense_mat,
+)
 from brainevent._error import MathError
-from ._array_base import BaseArray
-from ._array_base import extract_raw_value, is_known_type
-from ._array_masked_float import MaskedFloat
+from ._base import BaseArray
+from ._base import extract_raw_value, is_known_type
 
 __all__ = [
-    'MaskedFloatIndex',
+    'MaskedFloat',
 ]
 
 
 @register_pytree_node_class
-class MaskedFloatIndex(BaseArray):
+class MaskedFloat(BaseArray):
     """
     A specialized array class for masked floating-point values (0 or floating points).
 
@@ -42,23 +46,12 @@ class MaskedFloatIndex(BaseArray):
 
     The class is registered as a PyTree node for compatibility with JAX's
     functional transformations.
+
+    Attributes:
+        value: The underlying masked float array data
     """
+    __slots__ = ('_value',)
     __module__ = 'brainevent'
-
-    def __init__(self, value, dtype: jax.typing.DTypeLike = None):
-        if isinstance(value, BaseArray):
-            if not isinstance(value, MaskedFloat):
-                raise TypeError("MaskedFloatIndex can only be initialized with a MaskedFloat or a compatible type.")
-            value = value.value
-        super().__init__(value, dtype=dtype)
-
-        self.indices = ...
-
-    def __setitem__(self, index, value):
-        raise NotImplementedError
-
-    def _update(self, value):
-        raise NotImplementedError
 
     def __matmul__(self, oc):
         if is_known_type(oc):
@@ -126,15 +119,3 @@ class MaskedFloatIndex(BaseArray):
         else:
             self.value = oc.__rmatmul__(self)
         return self
-
-    def tree_flatten(self):
-        return (self.value,), (self.indices,)
-
-    @classmethod
-    def tree_unflatten(cls, aux_data, flat_contents):
-        value, = flat_contents
-        indices, = aux_data
-        obj = object.__new__(cls)
-        obj._value = value
-        obj.indices = indices
-        return obj

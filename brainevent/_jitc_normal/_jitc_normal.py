@@ -22,7 +22,7 @@ import brainunit as u
 import jax
 
 from brainevent._compatible_import import JAXSparse, Tracer
-from brainevent._event._array_binary import EventArray
+from brainevent._event._binary import EventArray
 from brainevent._jitc_matrix import JITCMatrix
 from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
 from ._jitc_normal_impl_binary import (

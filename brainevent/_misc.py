@@ -25,7 +25,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.experimental.sparse import csr_todense_p, coo_todense_p
 
-from brainevent._event._array_base import BaseArray
+from brainevent._event._base import BaseArray
 from ._typing import MatrixShape, Data, Index
 
 

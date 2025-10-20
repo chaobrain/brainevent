@@ -15,35 +15,44 @@
 
 # -*- coding: utf-8 -*-
 
+import jax
 from jax.tree_util import register_pytree_node_class
 
-from brainevent._dense._binary import (
-    dense_mat_dot_binary_mat,
+from brainevent._dense._binary_index import (
+    binary_vec_dot_dense_mat,
     binary_mat_dot_dense_mat,
     dense_mat_dot_binary_vec,
-    binary_vec_dot_dense_mat,
+    dense_mat_dot_binary_mat,
 )
 from brainevent._error import MathError
-from ._array_base import (
-    BaseArray,
-    extract_raw_value,
-    is_known_type,
-)
+from brainevent._misc import is_known_type
+from ._base import BaseArray, extract_raw_value
+from ._binary import BinaryArray
+from ._binary_index_extraction import binary_array_index
 
 __all__ = [
-    'BinaryArray',
-    'EventArray',
+    'BinaryArrayIndex',
 ]
 
 
 @register_pytree_node_class
-class BinaryArray(BaseArray):
-    """
-    A binary array is a special case of an event array where the events are binary (0 or 1).
-
-    """
-    __slots__ = ('_value',)
+class BinaryArrayIndex(BaseArray):
     __module__ = 'brainevent'
+
+    def __init__(self, value, dtype: jax.typing.DTypeLike = None):
+        if isinstance(value, BaseArray):
+            if not isinstance(value, BinaryArray):
+                raise TypeError("BinaryArrayIndex can only be initialized with a BinaryArray or a compatible type.")
+            value = value.value
+        super().__init__(value, dtype=dtype)
+
+        self.spike_indices, self.spike_count = binary_array_index(value)
+
+    def __setitem__(self, index, value):
+        raise NotImplementedError('Setting items in BinaryArrayIndex is not supported.')
+
+    def _update(self, value):
+        raise NotImplementedError('Updating BinaryArrayIndex is not supported.')
 
     def __matmul__(self, oc):
         """
@@ -91,16 +100,20 @@ class BinaryArray(BaseArray):
             if self.ndim == 0:
                 raise MathError("Matrix multiplication is not supported for scalar arrays.")
 
-            assert oc.ndim == 2, (f"Right operand must be a 2D array in "
-                                  f"matrix multiplication. Got {oc.ndim}D array.")
-            assert self.shape[-1] == oc.shape[0], (f"Incompatible dimensions for matrix multiplication: "
-                                                   f"{self.shape[-1]} and {oc.shape[0]}.")
+            assert oc.ndim == 2, (
+                f"Right operand must be a 2D array in "
+                f"matrix multiplication. Got {oc.ndim}D array."
+            )
+            assert self.shape[-1] == oc.shape[0], (
+                f"Incompatible dimensions for matrix multiplication: "
+                f"{self.shape[-1]} and {oc.shape[0]}."
+            )
 
             # Perform the appropriate multiplication based on dimensions
             if self.ndim == 1:
-                return binary_vec_dot_dense_mat(self.value, oc)
+                return binary_vec_dot_dense_mat(self, oc)
             else:  # self.ndim == 2
-                return binary_mat_dot_dense_mat(self.value, oc)
+                return binary_mat_dot_dense_mat(self, oc)
         else:
             return oc.__rmatmul__(self)
 
@@ -140,16 +153,22 @@ class BinaryArray(BaseArray):
             oc = extract_raw_value(oc)
             # Check dimensions for both operands
             if self.ndim not in (1, 2):
-                raise MathError(f"Matrix multiplication is only supported "
-                                f"for 1D and 2D arrays. Got {self.ndim}D array.")
+                raise MathError(
+                    f"Matrix multiplication is only supported "
+                    f"for 1D and 2D arrays. Got {self.ndim}D array."
+                )
 
             if self.ndim == 0:
                 raise MathError("Matrix multiplication is not supported for scalar arrays.")
 
-            assert oc.ndim == 2, (f"Left operand must be a 2D array in "
-                                  f"matrix multiplication. Got {oc.ndim}D array.")
-            assert oc.shape[-1] == self.shape[0], (f"Incompatible dimensions for matrix "
-                                                   f"multiplication: {oc.shape[-1]} and {self.shape[0]}.")
+            assert oc.ndim == 2, (
+                f"Left operand must be a 2D array in "
+                f"matrix multiplication. Got {oc.ndim}D array."
+            )
+            assert oc.shape[-1] == self.shape[0], (
+                f"Incompatible dimensions for matrix "
+                f"multiplication: {oc.shape[-1]} and {self.shape[0]}."
+            )
 
             # Perform the appropriate multiplication based on dimensions
             if self.ndim == 1:
@@ -176,5 +195,15 @@ class BinaryArray(BaseArray):
             self.value = oc.__rmatmul__(self)
         return self
 
+    def tree_flatten(self):
+        return (self.value,), (self.spike_count, self.spike_indices)
 
-EventArray = BinaryArray
+    @classmethod
+    def tree_unflatten(cls, aux_data, flat_contents):
+        value, = flat_contents
+        spike_count, spike_indices = aux_data
+        obj = object.__new__(cls)
+        obj._value = value
+        obj.spike_count = spike_count
+        obj.spike_indices = spike_indices
+        return obj
