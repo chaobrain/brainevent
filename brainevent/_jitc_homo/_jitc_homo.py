@@ -25,11 +25,11 @@ from brainevent._compatible_import import JAXSparse, Tracer
 from brainevent._event._binary import EventArray
 from brainevent._jitc_matrix import JITCMatrix
 from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
-from ._jitc_homo_impl_binary import (
+from ._binary import (
     binary_jitc_homo_matvec,
     binary_jitc_homo_matmat,
 )
-from ._jitc_homo_impl_float import (
+from ._float import (
     float_jitc_homo_matrix,
     float_jitc_homo_matvec,
     float_jitc_homo_matmat,

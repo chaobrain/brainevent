@@ -32,7 +32,7 @@ from brainevent.op._xla_custom_op_numba import numba_kernel
 from brainevent.op._xla_custom_op_pallas import pallas_kernel
 from brainevent.op._xla_custom_op_util import general_batching_rule
 from brainevent.op._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
-from ._jitc_homo_impl_float import float_jitc_mv_homo_p_call, float_jitc_mm_homo_p_call
+from ._float import float_jitc_mv_homo_p_call, float_jitc_mm_homo_p_call
 
 __all__ = [
     "binary_jitc_homo_matvec",

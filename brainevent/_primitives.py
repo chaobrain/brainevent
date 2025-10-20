@@ -63,11 +63,11 @@ from brainevent._fixed_conn_num._masked_float import (
     masked_float_fixed_num_mv_p,
     masked_float_fixed_num_mm_p,
 )
-from brainevent._jitc_homo._jitc_homo_impl_binary import (
+from brainevent._jitc_homo._binary import (
     binary_jitc_mv_homo_p,
     binary_jitc_mm_homo_p,
 )
-from brainevent._jitc_homo._jitc_homo_impl_float import (
+from brainevent._jitc_homo._float import (
     float_jitc_homo_matrix_p,
     float_jitc_mv_homo_p,
     float_jitc_mm_homo_p,
