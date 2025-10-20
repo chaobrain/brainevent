@@ -23,7 +23,7 @@ from packaging import version
 
 from brainevent._compatible_import import register_custom_call, custom_call
 from brainevent._typing import KernelGenerator
-from ._xla_warp_util import get_jax_device, get_dim
+from ._warp_util import get_jax_device, get_dim
 
 # Holder for the custom callback to keep it alive.
 _registered_warp_gpu_kernels = [None]

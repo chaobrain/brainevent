@@ -24,7 +24,7 @@ from jax.interpreters import mlir
 from packaging import version
 
 from brainevent._typing import KernelGenerator
-from ._xla_warp_util import get_dim
+from ._warp_util import get_dim
 
 warp_installed = importlib.util.find_spec('warp') is not None
 
