@@ -19,7 +19,7 @@ exclude = [
 ]
 
 [tool.setuptools.dynamic]
-version = {attr = "brainevent.__version__"}
+version = { attr = "brainevent.__version__" }
 
 
 [tool.distutils.bdist_wheel]
@@ -92,4 +92,7 @@ tpu = [
 ]
 testing = [
     'pytest',
+    'jax',
+    'brainunit',
+    'absl-py',
 ]

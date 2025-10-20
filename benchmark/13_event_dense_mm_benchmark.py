@@ -16,8 +16,6 @@
 import os
 import time
 
-import brainevent
-
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
 import jax
@@ -25,10 +23,11 @@ import sys
 
 sys.path.append('../')
 
-from brainevent._dense_impl_binary import (
+from brainevent._dense import (
     dense_mat_dot_binary_mat,
     binary_mat_dot_dense_mat,
 )
+import braintools
 import brainstate
 from utils import visualize
 # brainstate.environ.set_platform('cpu')

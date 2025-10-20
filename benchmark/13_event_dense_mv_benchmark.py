@@ -26,7 +26,7 @@ sys.path.append('../')
 import brainstate
 from utils import visualize
 import brainevent
-from brainevent._dense_impl_binary import (
+from brainevent._dense import (
     binary_vec_dot_dense_mat,
     dense_mat_dot_binary_vec,
 )

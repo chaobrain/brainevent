@@ -30,7 +30,7 @@ from ._primitives import (
     get_primitives_by_category,
     get_primitive_info
 )
-from ._xla_custom_op import XLACustomKernel
+from brainevent.op._xla_custom_op import XLACustomKernel
 
 
 def test_all_primitives_structure():

@@ -14,23 +14,17 @@
 # ==============================================================================
 
 
-__version__ = "0.0.4"
-__version_info__ = (0, 0, 4)
+__version__ = "0.0.5"
+__version_info__ = (0, 0, 5)
 
-from ._array_base import BaseArray
-from ._array_binary import BinaryArray, EventArray
-from ._array_binary_index import BinaryArrayIndex
-from ._array_masked_float import MaskedFloat
-from ._array_masked_float_index import MaskedFloatIndex
 from ._block_csr import BlockCSR
 from ._block_ell import BlockELL
 from ._config import config
-from ._coo import COO
-from ._coo_impl_plasticity import coo_on_pre, coo_on_post
-from ._csr import CSR, CSC
-from ._csr_impl_plasticity import csr_on_pre, csr2csc_on_post
-from ._dense_impl_plasticity import dense_on_pre, dense_on_post
+from ._coo import COO, coo_on_pre, coo_on_post
+from ._csr import CSR, CSC, csr_on_pre, csr2csc_on_post
+from ._dense import dense_on_pre, dense_on_post
 from ._error import MathError
+from ._event import BaseArray, BinaryArray, EventArray, BinaryArrayIndex, MaskedFloat, MaskedFloatIndex
 from ._fixed_conn_num import FixedPostNumConn, FixedPreNumConn
 from ._jitc_homo import JITCHomoR, JITCHomoC
 from ._jitc_normal import JITCNormalR, JITCNormalC
@@ -43,11 +37,17 @@ from ._primitives import (
     get_primitives_by_category,
     get_primitive_info
 )
-from ._xla_custom_op import XLACustomKernel, GPUKernelChoice
-from ._xla_custom_op_numba import numba_kernel
-from ._xla_custom_op_pallas import pallas_kernel
-from ._xla_custom_op_util import defjvp, general_batching_rule
-from ._xla_custom_op_warp import warp_kernel, jaxtype_to_warptype, jaxinfo_to_warpinfo
+from .op import (
+    XLACustomKernel,
+    GPUKernelChoice,
+    numba_kernel,
+    pallas_kernel,
+    defjvp,
+    general_batching_rule,
+    warp_kernel,
+    jaxtype_to_warptype,
+    jaxinfo_to_warpinfo
+)
 
 __all__ = [
     # --- global configuration --- #
