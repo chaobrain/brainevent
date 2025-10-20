@@ -29,30 +29,31 @@ import time
 import brainunit as u
 import jax
 
+import brainpy
 import brainstate
 
 
-class EINet(brainstate.nn.DynamicsGroup):
+class EINet(brainstate.nn.Module):
     def __init__(self, scale=1.0):
         super().__init__()
         self.n_exc = int(3200 * scale)
         self.n_inh = int(800 * scale)
         self.num = self.n_exc + self.n_inh
-        self.N = brainstate.nn.LIFRef(
+        self.N = brainpy.state.LIFRef(
             self.num, V_rest=-49. * u.mV, V_th=-50. * u.mV, V_reset=-60. * u.mV,
             tau=20. * u.ms, tau_ref=5. * u.ms,
             V_initializer=brainstate.init.Normal(-55., 2., unit=u.mV)
         )
-        self.E = brainstate.nn.AlignPostProj(
+        self.E = brainpy.state.AlignPostProj(
             comm=brainstate.nn.EventFixedProb(self.n_exc, self.num, conn_num=80 / self.num, conn_weight=1.62 * u.mS),
-            syn=brainstate.nn.Expon.desc(self.num, tau=5. * u.ms),
-            out=brainstate.nn.CUBA.desc(scale=u.volt),
+            syn=brainpy.state.Expon.desc(self.num, tau=5. * u.ms),
+            out=brainpy.state.CUBA.desc(scale=u.volt),
             post=self.N
         )
-        self.I = brainstate.nn.AlignPostProj(
+        self.I = brainpy.state.AlignPostProj(
             comm=brainstate.nn.EventFixedProb(self.n_inh, self.num, conn_num=80 / self.num, conn_weight=-9.0 * u.mS),
-            syn=brainstate.nn.Expon.desc(self.num, tau=10. * u.ms),
-            out=brainstate.nn.CUBA.desc(scale=u.volt),
+            syn=brainpy.state.Expon.desc(self.num, tau=10. * u.ms),
+            out=brainpy.state.CUBA.desc(scale=u.volt),
             post=self.N
         )
 

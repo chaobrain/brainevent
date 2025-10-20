@@ -18,13 +18,13 @@
 import ctypes
 import functools
 import importlib.util
-from packaging import version
 from typing import Callable, Sequence, Dict, Union, NamedTuple
 
 import jax
 import numpy as np
 from jax.interpreters import mlir
 from jax.interpreters.mlir import ir
+from packaging import version
 
 from ._compatible_import import Primitive, register_custom_call, custom_call
 from ._typing import KernelGenerator
@@ -318,7 +318,7 @@ def _warp_gpu_custom_callback(stream, buffers, opaque, opaque_len):
         warp_launch_kernel_func = warp.context.runtime.core.wp_cuda_launch_kernel
     else:
         warp_launch_kernel_func = warp.context.runtime.core.cuda_launch_kernel
-    
+
     warp_launch_kernel_func(
         device.context,
         hooks.forward,
@@ -342,116 +342,17 @@ warp_gpu_CCALL_FUNC = ctypes.CFUNCTYPE(
 warp_gpu_cc_callback = warp_gpu_CCALL_FUNC(_warp_gpu_custom_callback)
 warp_gpu_ccall_address = ctypes.cast(warp_gpu_cc_callback, ctypes.c_void_p)
 
-# def _warp_cpu_single_out_call(output_ptrs, input_ptrs):
-#     kernel_id = int(kernel_id_str)
-#     kernel = _registered_warp_gpu_kernels[kernel_id]
-#
-#     num_args = len(kernel.adj.args)
-#
-#     # First param is the launch bounds.
-#     kernel_params = (ctypes.c_void_p * num_args)()
-#
-#     # Parse array descriptors.
-#     args = []
-#     for i in range(num_args):
-#         dtype = kernel.adj.args[i].type.dtype
-#         shape = [int(d) for d in arg_strings[i].split(",")]
-#         strides = warp.types.strides_from_shape(shape, dtype)
-#
-#         arr = warp.types.array_t(input_ptrs[i], 0, len(shape), shape, strides)
-#         args.append(arr)  # keep a reference
-#         arg_ptr = ctypes.addressof(arr)
-#         kernel_params[i] = arg_ptr
-#
-#     # compile the kernel #
-#     # ------------------ #
-#
-#     # Get current device.
-#     device = warp.device_from_jax(_get_jax_device())
-#     # Get kernel hooks.
-#     # Note: module was loaded during jit lowering.
-#     hooks = kernel.module.get_kernel_hooks(kernel, device)
-#     assert hooks.forward, "Failed to find kernel entry point"
-#
-#     # Launch the kernel.
-#     hooks.forward(*kernel_params)
-
-
 warp_cpu_CCALL_FUNC_single_out = ctypes.CFUNCTYPE(
     ctypes.c_voidp,
     ctypes.c_void_p,
     ctypes.POINTER(ctypes.c_void_p),
 )
-# warp_cpu_callback_single_out = warp_cpu_CCALL_FUNC_single_out(_warp_cpu_single_out_call)
-# warp_cpu_ccall_address_single_out = ctypes.cast(warp_cpu_callback_single_out, ctypes.c_void_p)
-
-
-# def _warp_cpu_multiple_outs_call(output_ptrs, input_ptrs):
-#     # The descriptor is the form
-#     # <kernel-id>|<launch-dims>|<arg-dims-list>
-#     # Example:  42|16,32|16,32;100;16,32
-#     kernel_id_str, dim_str, args_str = opaque.decode().split("|")
-#
-#     # Get the kernel from the registry.
-#     kernel_id = int(kernel_id_str)
-#     kernel = _registered_warp_gpu_kernels[kernel_id]
-#
-#     # Parse launch dimensions.
-#     dims = [int(d) for d in dim_str.split(",")]
-#     bounds = warp.types.launch_bounds_t(dims)
-#
-#     # Parse arguments.
-#     arg_strings = args_str.split(";")
-#     num_args = len(arg_strings)
-#     assert num_args == len(kernel.adj.args), "Incorrect number of arguments"
-#
-#     # First param is the launch bounds.
-#     kernel_params = (ctypes.c_void_p * (1 + num_args))()
-#     kernel_params[0] = ctypes.addressof(bounds)
-#
-#     # Parse array descriptors.
-#     args = []
-#     for i in range(num_args):
-#         dtype = kernel.adj.args[i].type.dtype
-#         shape = [int(d) for d in arg_strings[i].split(",")]
-#         strides = warp.types.strides_from_shape(shape, dtype)
-#
-#         arr = warp.types.array_t(buffers[i], 0, len(shape), shape, strides)
-#         args.append(arr)  # keep a reference
-#         arg_ptr = ctypes.addressof(arr)
-#
-#         kernel_params[i + 1] = arg_ptr
-#
-#     # Get current device.
-#     device = warp.device_from_jax(_get_jax_device())
-#
-#     # Get kernel hooks.
-#     # Note: module was loaded during jit lowering.
-#     hooks = kernel.module.get_kernel_hooks(kernel, device)
-#     assert hooks.forward, "Failed to find kernel entry point"
-#
-#     # Launch the kernel.
-#     warp.context.runtime.core.cuda_launch_kernel(
-#         device.context,
-#         hooks.forward,
-#         bounds.size,
-#         0,  # max_blocks
-#         256,  # threads_per_block
-#         hooks.forward_smem_bytes,
-#         kernel_params,
-#         stream
-#     )
-
 
 warp_cpu_CCALL_FUNC_multi_outs = ctypes.CFUNCTYPE(
     ctypes.c_voidp,
     ctypes.POINTER(ctypes.c_void_p),
     ctypes.POINTER(ctypes.c_void_p),
 )
-
-
-# warp_cpu_callback_multi_out = warp_cpu_CCALL_FUNC_multi_outs(_warp_cpu_multiple_outs_call)
-# warp_cpu_ccall_address_multi_out = ctypes.cast(warp_cpu_callback_multi_out, ctypes.c_void_p)
 
 
 def _warp_gpu_register_capsule():
