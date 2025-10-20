@@ -279,8 +279,8 @@ def custom_call(
         attributes["output_operand_aliases"] = ir.ArrayAttr.get(
             [
                 hlo.OutputOperandAlias.get(
-                    # if len(result_types) == 1 then the aliasing refers implicitly to
-                    # the only output.
+                    # if len(result_types) == 1
+                    # then the aliasing refers implicitly to the only output.
                     output_tuple_indices=[output_idx] if len(result_types) > 1 else [],
                     operand_index=input_idx,
                     operand_tuple_indices=[],
