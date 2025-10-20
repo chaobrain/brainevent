@@ -17,13 +17,14 @@
 import ctypes
 import importlib.util
 import threading
+import traceback
 
 import jax
 from jax.interpreters import mlir
 from packaging import version
 
-from brainevent._compatible_import import register_custom_call
 from brainevent._typing import KernelGenerator
+from ._xla_warp_util import get_dim
 
 warp_installed = importlib.util.find_spec('warp') is not None
 
@@ -46,15 +47,6 @@ if warp_installed:
         )
 
 _FFI_CALLBACK_LOCK = threading.Lock()
-
-
-def _get_jax_device():
-    # check if jax.default_device() context manager is active
-    device = jax.config.jax_default_device
-    # if default device is not set, use first device
-    if device is None:
-        device = jax.local_devices()[0]
-    return device
 
 
 class FfiKernel:
@@ -139,7 +131,7 @@ class FfiKernel:
         self.callback_func = FFI_CCALLFUNC(lambda call_frame: self.ffi_callback(call_frame))
         ffi_ccall_address = ctypes.cast(self.callback_func, ctypes.c_void_p)
         ffi_capsule = jax.ffi.pycapsule(ffi_ccall_address.value)
-        register_custom_call(self.name, ffi_capsule, "CUDA")
+        jax.ffi.register_ffi_target(self.name, ffi_capsule, platform="CUDA")
 
     def __call__(self, *args, output_dims=None, launch_dims=None, vmap_method=None):
         num_inputs = len(args)
@@ -235,6 +227,8 @@ class FfiKernel:
                 # we only support CUDA devices for now
                 if dev.is_cuda:
                     self.kernel.module.load(dev)
+        else:
+            raise ValueError(f"Unknown preload mode '{self.module_preload_mode}'")
 
         # save launch data to be retrieved by callback
         launch_id = self.launch_id
@@ -344,7 +338,9 @@ def _ffi_gpu_lowering(
     kernel_generator: KernelGenerator,
 ):
     def kernel_fn(*args, **kwargs):
-        kernel = kernel_generator(**kwargs)  # ensure kernel is registered
-        return FfiKernel(kernel)(*args)
+        wp_kernel = kernel_generator(**kwargs)  # ensure kernel is registered
+        block_dim, warp_dims = get_dim(wp_kernel, **kwargs)
+
+        return FfiKernel(wp_kernel.kernel)(*args)
 
     return mlir.lower_fun(kernel_fn, multiple_results=True)

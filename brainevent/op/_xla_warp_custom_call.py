@@ -17,13 +17,13 @@ import ctypes
 import functools
 import importlib.util
 
-import jax
 from jax.interpreters import mlir
 from jax.interpreters.mlir import ir
 from packaging import version
 
 from brainevent._compatible_import import register_custom_call, custom_call
 from brainevent._typing import KernelGenerator
+from ._xla_warp_util import get_jax_device, get_dim
 
 # Holder for the custom callback to keep it alive.
 _registered_warp_gpu_kernels = [None]
@@ -82,7 +82,7 @@ def _warp_gpu_custom_callback(stream, buffers, opaque, opaque_len):
         kernel_params[i + 1] = arg_ptr
 
     # Get current device.
-    device = warp.get_cuda_device(_get_jax_device().id)
+    device = warp.get_cuda_device(get_jax_device().id)
 
     # Get kernel hooks.
     # Note: module was loaded during jit lowering.
@@ -198,15 +198,6 @@ def _warp_infer_dimensions(warp_arg, actual_shape):
     return _warp_collapse_into_leading_dimension(warp_arg, actual_shape)
 
 
-def _get_jax_device():
-    # check if jax.default_device() context manager is active
-    device = jax.config.jax_default_device
-    # if default device is not set, use first device
-    if device is None:
-        device = jax.local_devices()[0]
-    return device
-
-
 def _warp_base_type_is_compatible(warp_type, jax_ir_type):
     jax_ir_to_warp = {
         "f16": warp.float16,
@@ -253,58 +244,12 @@ def _custom_call_gpu_lowering(
     )
 
     kernel_id = _register_warp_kernel(wp_kernel.kernel)
-
-    # ------------------
-    # block dimensions
-    # ------------------
-    block_dim = wp_kernel.block_dim
-    if callable(block_dim):
-        block_dim = block_dim(**kwargs)
-    if isinstance(block_dim, int):
-        pass
-    elif block_dim is None:
-        block_dim = 256
-    else:
-        raise ValueError(
-            f"Invalid block dimensions, expected "
-            f"int, got {block_dim}"
-        )
-
-    # ------------------
-    # launch dimensions
-    # ------------------
-    warp_dims = wp_kernel.dim
-    if warp_dims is None:
-        assert wp_kernel.tile is not None, ('The tile dimensions should be provided when '
-                                            'the launch dimensions are not provided.')
-        assert wp_kernel.block_dim is not None, (
-            'The block dimensions should be provided when the tile dimensions are provided.'
-        )
-        warp_dims = wp_kernel.tile
-        if callable(warp_dims):
-            warp_dims = warp_dims(**kwargs)
-        if isinstance(warp_dims, int):
-            warp_dims = (warp_dims,)
-        assert isinstance(warp_dims, (tuple, list)), (
-            f"Invalid launch dimensions, expected "
-            f"tuple or list, got {warp_dims}"
-        )
-        warp_dims = tuple(warp_dims) + (block_dim,)
-    else:
-        if callable(warp_dims):
-            warp_dims = warp_dims(**kwargs)
-        if isinstance(warp_dims, int):
-            warp_dims = (warp_dims,)
-        assert isinstance(warp_dims, (tuple, list)), (
-            f"Invalid launch dimensions, expected "
-            f"tuple or list, got {warp_dims}"
-        )
-        warp_dims = tuple(warp_dims)
+    block_dim, warp_dims = get_dim(wp_kernel, **kwargs)
 
     # TODO: This may not be necessary, but it is perhaps better not to be
     #       mucking with kernel loading while already running the workload.
     module = wp_kernel.kernel.module
-    device = warp.device_from_jax(_get_jax_device())
+    device = warp.device_from_jax(get_jax_device())
     if not module.load(device, block_dim):
         raise Exception("Could not load kernel on device")
 
