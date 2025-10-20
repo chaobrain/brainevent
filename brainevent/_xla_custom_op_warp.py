@@ -18,6 +18,7 @@
 import ctypes
 import functools
 import importlib.util
+from packaging import version
 from typing import Callable, Sequence, Dict, Union, NamedTuple
 
 import jax
@@ -312,7 +313,13 @@ def _warp_gpu_custom_callback(stream, buffers, opaque, opaque_len):
     assert hooks.forward, "Failed to find kernel entry point"
 
     # Launch the kernel.
-    warp.context.runtime.core.cuda_launch_kernel(
+    warp_version = warp.__version__
+    if version.parse(warp_version) >= version.parse("1.9.0"):
+        warp_launch_kernel_func = warp.context.runtime.core.wp_cuda_launch_kernel
+    else:
+        warp_launch_kernel_func = warp.context.runtime.core.cuda_launch_kernel
+    
+    warp_launch_kernel_func(
         device.context,
         hooks.forward,
         bounds.size,
