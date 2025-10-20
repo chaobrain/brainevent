@@ -14,6 +14,6 @@
 # ==============================================================================
 
 from ._coo import COO
-from ._coo_impl_plasticity import coo_on_pre, coo_on_post
+from ._plasticity import coo_on_pre, coo_on_post
 
 __all__ = ['COO', 'coo_on_pre', 'coo_on_post']

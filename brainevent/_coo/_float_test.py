@@ -21,7 +21,7 @@ import jax.numpy as jnp
 import pytest
 
 import brainevent
-from brainevent._coo._coo_test_util import _get_coo, vector_coo, matrix_coo, coo_vector, coo_matrix
+from brainevent._coo._test_util import _get_coo, vector_coo, matrix_coo, coo_vector, coo_matrix
 
 pytest.mark.skipif(brainstate.environ.get_platform() != 'cpu', allow_module_level=True)
 

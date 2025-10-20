@@ -17,11 +17,11 @@
 
 from typing import List, Dict
 
-from brainevent._coo._coo_impl_binary import (
+from brainevent._coo._binary import (
     event_coomv_p,
     event_coomm_p,
 )
-from brainevent._coo._coo_impl_float import (
+from brainevent._coo._float import (
     coomv_p,
     coomm_p,
 )

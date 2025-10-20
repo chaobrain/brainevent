@@ -29,8 +29,8 @@ from brainevent._compatible_import import JAXSparse
 from brainevent._event._array_binary import EventArray
 from brainevent._misc import _coo_todense, COOInfo
 from brainevent._typing import MatrixShape, Data, Index, Row, Col
-from ._coo_impl_binary import event_coo_matvec, event_coo_matmat
-from ._coo_impl_float import coo_matvec, coo_matmat
+from ._binary import event_coo_matvec, event_coo_matmat
+from ._float import coo_matvec, coo_matmat
 
 __all__ = [
     'COO',
