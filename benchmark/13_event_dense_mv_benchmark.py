@@ -112,4 +112,4 @@ def benchmark_forward(prob=0.1):
 if __name__ == '__main__':
     # benchmark_forward(0.1)
     # benchmark_forward(0.01)
-    benchmark_forward(0.001)
+    benchmark_forward(0.01)
