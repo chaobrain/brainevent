@@ -384,9 +384,8 @@ class XLACustomKernel:
         Raises:
             TypeError: If the provided `numba` parameter is not callable.
 
-        Examples:
+        Examples::
 
-            ```python
             def my_numba_kernel_generator():
                 @numba.njit
                 def kernel_impl(inputs, outputs):
@@ -396,7 +395,6 @@ class XLACustomKernel:
 
             custom_op = XLACustomKernel("my_custom_op")
             custom_op.def_cpu_kernel(my_numba_kernel_generator)
-            ```
         """
         if not callable(numba):
             raise TypeError(
@@ -479,8 +477,8 @@ class XLACustomKernel:
         Raises:
             TypeError: If the provided `pallas` parameter is not callable.
 
-        Examples:
-            ```python
+        Examples::
+
             def my_pallas_tpu_kernel():
                 def kernel_impl(inputs, outputs):
                     # TPU-specific implementation logic using Pallas
@@ -489,7 +487,6 @@ class XLACustomKernel:
 
             custom_op = XLACustomKernel("my_custom_op")
             custom_op.def_tpu_kernel(my_pallas_tpu_kernel)
-            ```
         """
         if not callable(pallas):
             raise TypeError(

@@ -3,6 +3,7 @@ Data Structures Interoperable with Events
 
 .. currentmodule:: brainevent
 .. automodule:: brainevent
+   :no-index:
 
 
 Compressed Sparse Row matrix
