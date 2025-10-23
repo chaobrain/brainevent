@@ -22,7 +22,9 @@ Installation
 
        .. code-block:: bash
 
-          pip install -U brainevent[cuda]
+          pip install -U brainevent[cuda12]
+
+          pip install -U brainevent[cuda13]
 
     .. tab-item:: TPU
 
