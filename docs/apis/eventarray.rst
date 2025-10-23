@@ -3,6 +3,7 @@ Data Structures Representing Events
 
 .. currentmodule:: brainevent
 .. automodule:: brainevent
+   :no-index:
 
 
 .. autosummary::

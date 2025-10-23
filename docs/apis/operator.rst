@@ -3,6 +3,7 @@ Operation Customization Routines
 
 .. currentmodule:: brainevent
 .. automodule:: brainevent
+   :no-index:
 
 
 Define JAX Primitive
