@@ -1,9 +1,7 @@
 # Enabling Event-driven Computation in Brain Dynamics
 
 <p align="center">
-
   	<img alt="Header image of brainevent." src="https://raw.githubusercontent.com/chaobrain/brainevent/main/docs/_static/brainevent.png" width=50%>
-
 </p> 
 
 
