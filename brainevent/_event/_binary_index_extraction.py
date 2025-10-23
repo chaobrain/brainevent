@@ -19,10 +19,10 @@ import jax
 import jax.numpy as jnp
 
 from brainevent._compatible_import import pallas as pl
-from brainevent.op._xla_custom_op import XLACustomKernel
-from brainevent.op._xla_custom_op_numba import numba_kernel
-from brainevent.op._xla_custom_op_pallas import pallas_kernel
-from brainevent.op._xla_custom_op_warp import warp_kernel, jaxinfo_to_warpinfo
+from brainevent._op._xla_custom_op import XLACustomKernel
+from brainevent._op._xla_custom_op_numba import numba_kernel
+from brainevent._op._xla_custom_op_pallas import pallas_kernel
+from brainevent._op._xla_custom_op_warp import warp_kernel, jaxinfo_to_warpinfo
 
 
 def binary_array_index(spikes):

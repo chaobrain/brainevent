@@ -27,11 +27,11 @@ from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescoped_jit
 from brainevent._pallas_random import LFSR88RNG
 from brainevent._typing import Data, MatrixShape
-from brainevent.op._xla_custom_op import XLACustomKernel
-from brainevent.op._xla_custom_op_numba import numba_kernel
-from brainevent.op._xla_custom_op_pallas import pallas_kernel
-from brainevent.op._xla_custom_op_util import general_batching_rule
-from brainevent.op._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
+from brainevent._op._xla_custom_op import XLACustomKernel
+from brainevent._op._xla_custom_op_numba import numba_kernel
+from brainevent._op._xla_custom_op_pallas import pallas_kernel
+from brainevent._op._xla_custom_op_util import general_batching_rule
+from brainevent._op._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
 
 __all__ = [
     "float_jitc_normal_matrix",

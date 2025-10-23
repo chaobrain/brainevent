@@ -25,11 +25,11 @@ from jax.interpreters import ad
 
 from brainevent._compatible_import import pallas as pl
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescoped_jit
-from brainevent.op._xla_custom_op import XLACustomKernel
-from brainevent.op._xla_custom_op_numba import numba_kernel
-from brainevent.op._xla_custom_op_pallas import pallas_kernel
-from brainevent.op._xla_custom_op_util import general_batching_rule
-from brainevent.op._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
+from brainevent._op._xla_custom_op import XLACustomKernel
+from brainevent._op._xla_custom_op_numba import numba_kernel
+from brainevent._op._xla_custom_op_pallas import pallas_kernel
+from brainevent._op._xla_custom_op_util import general_batching_rule
+from brainevent._op._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
 
 
 def _fixed_num_mv_numba_kernel_generator(

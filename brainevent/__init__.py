@@ -37,7 +37,7 @@ from ._primitives import (
     get_primitives_by_category,
     get_primitive_info
 )
-from .op import (
+from ._op import (
     XLACustomKernel,
     GPUKernelChoice,
     numba_kernel,

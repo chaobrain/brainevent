@@ -23,11 +23,11 @@ from jax.interpreters import ad
 
 from brainevent._compatible_import import pallas as pl
 from brainevent._misc import cdiv, generate_block_dim, namescoped_jit
-from brainevent.op._xla_custom_op import XLACustomKernel
-from brainevent.op._xla_custom_op_numba import numba_kernel
-from brainevent.op._xla_custom_op_pallas import pallas_kernel
-from brainevent.op._xla_custom_op_util import general_batching_rule
-from brainevent.op._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
+from brainevent._op._xla_custom_op import XLACustomKernel
+from brainevent._op._xla_custom_op_numba import numba_kernel
+from brainevent._op._xla_custom_op_pallas import pallas_kernel
+from brainevent._op._xla_custom_op_util import general_batching_rule
+from brainevent._op._xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
 
 
 @namescoped_jit()
@@ -81,9 +81,7 @@ def dense_mat_dot_masked_float_vec(weights, spikes):
     return u.maybe_decimal(r[0] * wunit * spkunit)
 
 
-def _dense_mat_dot_masked_float_vec_numba_cpu_kernel_generator(
-    **kwargs
-):
+def _dense_mat_dot_masked_float_vec_numba_cpu_kernel_generator(**kwargs):
     def _kernel(weights, spikes, posts):
         posts[:] = 0.
         for i in range(spikes.shape[0]):
@@ -265,9 +263,7 @@ def masked_float_vec_dot_dense_mat(spikes, weights):
     return u.maybe_decimal(r[0] * wunit * spkunit)
 
 
-def _masked_float_vec_dot_dense_mat_numba_kernel_generator(
-    **kwargs
-):
+def _masked_float_vec_dot_dense_mat_numba_kernel_generator(**kwargs):
     def _kernel(spikes, weights, posts):
         posts[:] = 0.
         for i in range(spikes.shape[0]):
@@ -460,9 +456,7 @@ def dense_mat_dot_masked_float_mat(weights, spikes):
     return u.maybe_decimal(r[0] * wunit * spkunit)
 
 
-def _dense_mat_dot_masked_float_mat_numba_kernel_generator(
-    **kwargs
-):
+def _dense_mat_dot_masked_float_mat_numba_kernel_generator(**kwargs):
     # weights: [m, k]
     # spikes: [k, n]
 

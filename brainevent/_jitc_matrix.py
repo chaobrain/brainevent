@@ -23,6 +23,8 @@ import jax
 import numpy as np
 from jax import numpy as jnp
 
+__all__ = ['JITCMatrix']
+
 
 class JITCMatrix(u.sparse.SparseMatrix):
     """
@@ -44,6 +46,7 @@ class JITCMatrix(u.sparse.SparseMatrix):
         This is a base class and should be subclassed for specific
         implementations of JITC matrices.
     """
+    __module__ = 'brainevent'
 
     def _unitary_op(self, op):
         """
