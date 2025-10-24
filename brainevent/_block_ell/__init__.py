@@ -14,7 +14,7 @@
 # ==============================================================================
 
 
-from ._block_ell import BlockELL, sample_sparse_matrix, sdd_matmul, native_sdd_matmul
+from .block_ell import BlockELL, sample_sparse_matrix, sdd_matmul, native_sdd_matmul
 
 __all__ = [
     'BlockELL',

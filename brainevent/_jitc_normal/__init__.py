@@ -14,6 +14,6 @@
 # ==============================================================================
 
 
-from ._jitc_normal import JITCNormalR, JITCNormalC
+from .jitc_normal import JITCNormalR, JITCNormalC
 
 __all__ = ['JITCNormalR', 'JITCNormalC']

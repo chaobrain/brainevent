@@ -17,75 +17,75 @@
 
 from typing import List, Dict
 
-from brainevent._coo._binary import (
+from brainevent._coo.binary import (
     event_coomv_p,
     event_coomm_p,
 )
-from brainevent._coo._float import (
+from brainevent._coo.float import (
     coomv_p,
     coomm_p,
 )
-from brainevent._csr._binary import (
+from brainevent._csr.binary import (
     binary_csrmv_p,
     binary_csrmm_p,
 )
-from brainevent._csr._diag_add import csr_diag_add_p
-from brainevent._csr._float import (
+from brainevent._csr.diag_add import csr_diag_add_p
+from brainevent._csr.float import (
     csrmv_p,
     csrmm_p,
     csrmv_yw2y_p,
 )
-from brainevent._csr._masked_float import (
+from brainevent._csr.masked_float import (
     masked_float_csrmv_p,
     masked_float_csrmm_p,
 )
-from brainevent._dense._binary import (
+from brainevent._dense.binary import (
     dense_mat_dot_binary_vec_p,
     binary_vec_dot_dense_mat_p,
     dense_mat_dot_binary_mat_p,
     binary_mat_dot_dense_mat_p
 )
-from brainevent._dense._masked_float import (
+from brainevent._dense.masked_float import (
     dense_mat_dot_masked_float_vec_p,
     masked_float_vec_dot_dense_mat_p,
     dense_mat_dot_masked_float_mat_p,
     masked_float_mat_dot_dense_mat_p
 )
-from brainevent._fixed_conn_num._binary import (
+from brainevent._fixed_conn_num.binary import (
     binary_fixed_num_mv_p,
     binary_fixed_num_mm_p,
 )
-from brainevent._fixed_conn_num._float import (
+from brainevent._fixed_conn_num.float import (
     fixed_num_mv_p,
     fixed_num_mm_p,
 )
-from brainevent._fixed_conn_num._masked_float import (
+from brainevent._fixed_conn_num.masked_float import (
     masked_float_fixed_num_mv_p,
     masked_float_fixed_num_mm_p,
 )
-from brainevent._jitc_homo._binary import (
+from brainevent._jitc_homo.binary import (
     binary_jitc_mv_homo_p,
     binary_jitc_mm_homo_p,
 )
-from brainevent._jitc_homo._float import (
+from brainevent._jitc_homo.float import (
     float_jitc_homo_matrix_p,
     float_jitc_mv_homo_p,
     float_jitc_mm_homo_p,
 )
-from brainevent._jitc_normal._binary import (
+from brainevent._jitc_normal.binary import (
     binary_jitc_mv_normal_p,
     binary_jitc_mm_normal_p,
 )
-from brainevent._jitc_normal._float import (
+from brainevent._jitc_normal.float import (
     float_jitc_normal_matrix_p,
     float_jitc_mv_normal_p,
     float_jitc_mm_normal_p,
 )
-from brainevent._jitc_uniform._binary import (
+from brainevent._jitc_uniform.binary import (
     binary_jitc_mv_uniform_p,
     binary_jitc_mm_uniform_p,
 )
-from brainevent._jitc_uniform._float import (
+from brainevent._jitc_uniform.float import (
     float_jitc_uniform_matrix_p,
     float_jitc_mv_uniform_p,
     float_jitc_mm_uniform_p,

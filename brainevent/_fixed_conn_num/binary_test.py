@@ -16,10 +16,23 @@
 # -*- coding: utf-8 -*-
 
 
-__all__ = [
-    'MathError',
-]
+from brainevent._fixed_conn_num.float_test import TestVector, TestMatrix
+from brainevent._test_util import gen_events
 
 
-class MathError(Exception):
-    __module__ = 'brainevent'
+class TestEventVector(TestVector):
+    def _generate_x(self, shape, require_float=True):
+        if not isinstance(shape, (tuple, list)):
+            shape = [shape]
+        yield gen_events(shape, asbool=False)
+        if not require_float:
+            yield gen_events(shape, asbool=True)
+
+
+class TestEventMatrix(TestMatrix):
+    def _generate_x(self, shape, require_float=True):
+        if not isinstance(shape, (tuple, list)):
+            shape = [shape]
+        yield gen_events(shape, asbool=False)
+        if not require_float:
+            yield gen_events(shape, asbool=True)

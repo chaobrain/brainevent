@@ -14,7 +14,7 @@
 # ==============================================================================
 
 
-from ._jitc_homo import JITHomoMatrix, JITCHomoC, JITCHomoR
+from .jitc_homo import JITHomoMatrix, JITCHomoC, JITCHomoR
 
 __all__ = [
     'JITHomoMatrix',

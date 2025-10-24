@@ -14,6 +14,6 @@
 # ==============================================================================
 
 
-from ._block_csr import BlockCSR
+from .block_csr import BlockCSR
 
 __all__ = ['BlockCSR']
