@@ -14,6 +14,6 @@
 # ==============================================================================
 
 
-from .jitc_uniform import JITCUniformR, JITCUniformC
+from .main import JITCUniformR, JITCUniformC
 
 __all__ = ['JITCUniformR', 'JITCUniformC']

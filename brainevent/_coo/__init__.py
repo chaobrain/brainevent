@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-from .coo import COO
+from .main import COO
 from .plasticity import coo_on_pre, coo_on_post
 
 __all__ = ['COO', 'coo_on_pre', 'coo_on_post']

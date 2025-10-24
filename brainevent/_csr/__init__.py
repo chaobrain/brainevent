@@ -14,7 +14,7 @@
 # ==============================================================================
 
 
-from .csr import CSR, CSC
+from .main import CSR, CSC
 from .plasticity import csr_on_pre, csr2csc_on_post
 
 __all__ = [

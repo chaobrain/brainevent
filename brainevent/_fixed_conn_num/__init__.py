@@ -13,6 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 
-from .fixed_conn_num import FixedNumConn, FixedPreNumConn, FixedPostNumConn
+from .main import FixedNumConn, FixedPreNumConn, FixedPostNumConn
 
 __all__ = ['FixedNumConn', 'FixedPreNumConn', 'FixedPostNumConn']
