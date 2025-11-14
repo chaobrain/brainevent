@@ -25,7 +25,7 @@ from jax.interpreters import mlir
 
 from brainevent._compatible_import import Primitive
 from brainevent._typing import KernelGenerator
-from .warp_custom_call import _custom_call_gpu_lowering
+from .warp_customcall import _custom_call_gpu_lowering
 from .warp_ffi import _ffi_gpu_lowering
 
 __all__ = [
