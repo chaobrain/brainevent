@@ -25,13 +25,13 @@ from jax.interpreters import xla, mlir, batching, ad
 from brainevent._compatible_import import Primitive
 from brainevent._config import config
 from brainevent._typing import KernelGenerator
-from .xla_custom_op_numba import register_numba_cpu_translation
-from .xla_custom_op_pallas import (
+from .op_numba import register_numba_cpu_translation
+from .op_pallas import (
     register_pallas_gpu_translation,
     register_pallas_tpu_translation,
 )
-from .xla_custom_op_util import general_batching_rule, defjvp
-from .xla_custom_op_warp import register_warp_gpu_translation
+from .util import general_batching_rule, defjvp
+from .op_warp import register_warp_gpu_translation
 
 __all__ = [
     'XLACustomKernel',

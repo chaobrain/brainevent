@@ -21,9 +21,9 @@ import jax.numpy as jnp
 
 from brainevent._compatible_import import pallas as pl
 from brainevent._misc import generate_block_dim
-from brainevent._op.xla_custom_op import XLACustomKernel
-from brainevent._op.xla_custom_op_numba import numba_kernel
-from brainevent._op.xla_custom_op_pallas import pallas_kernel
+from brainevent._op.main import XLACustomKernel
+from brainevent._op.op_numba import numba_kernel
+from brainevent._op.op_pallas import pallas_kernel
 
 
 def dense_on_pre(

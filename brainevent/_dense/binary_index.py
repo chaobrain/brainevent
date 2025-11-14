@@ -21,10 +21,10 @@ from jax.interpreters import ad
 
 from brainevent._compatible_import import pallas as pl
 from brainevent._misc import cdiv, generate_block_dim
-from brainevent._op.xla_custom_op import XLACustomKernel
-from brainevent._op.xla_custom_op_numba import numba_kernel
-from brainevent._op.xla_custom_op_pallas import pallas_kernel
-from brainevent._op.xla_custom_op_warp import warp_kernel, jaxinfo_to_warpinfo, jaxtype_to_warptype
+from brainevent._op.main import XLACustomKernel
+from brainevent._op.op_numba import numba_kernel
+from brainevent._op.op_pallas import pallas_kernel
+from brainevent._op.op_warp import warp_kernel, jaxinfo_to_warpinfo, jaxtype_to_warptype
 
 
 def binary_vec_dot_dense_mat(binary_index, weights):

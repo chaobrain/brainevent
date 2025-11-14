@@ -27,11 +27,11 @@ from jax.interpreters import ad
 from brainevent._compatible_import import pallas as pl
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescoped_jit
 from brainevent._typing import MatrixShape
-from brainevent._op.xla_custom_op import XLACustomKernel
-from brainevent._op.xla_custom_op_numba import numba_kernel
-from brainevent._op.xla_custom_op_pallas import pallas_kernel
-from brainevent._op.xla_custom_op_util import general_batching_rule
-from brainevent._op.xla_custom_op_warp import jaxtype_to_warptype, warp_kernel
+from brainevent._op.main import XLACustomKernel
+from brainevent._op.op_numba import numba_kernel
+from brainevent._op.op_pallas import pallas_kernel
+from brainevent._op.util import general_batching_rule
+from brainevent._op.op_warp import jaxtype_to_warptype, warp_kernel
 from .float import fixed_num_mv_p_call, fixed_num_mm_p_call
 
 

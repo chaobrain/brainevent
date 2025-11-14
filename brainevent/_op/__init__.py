@@ -13,16 +13,16 @@
 # limitations under the License.
 # ==============================================================================
 
-from .xla_custom_op import *
-from .xla_custom_op import __all__ as xla_custom_op_all
-from .xla_custom_op_numba import *
-from .xla_custom_op_numba import __all__ as xla_custom_op_numba_all
-from .xla_custom_op_pallas import *
-from .xla_custom_op_pallas import __all__ as xla_custom_op_pallas_all
-from .xla_custom_op_util import *
-from .xla_custom_op_util import __all__ as xla_custom_op_util_all
-from .xla_custom_op_warp import *
-from .xla_custom_op_warp import __all__ as xla_custom_op_warp_all
+from .main import *
+from .main import __all__ as xla_custom_op_all
+from .op_numba import *
+from .op_numba import __all__ as xla_custom_op_numba_all
+from .op_pallas import *
+from .op_pallas import __all__ as xla_custom_op_pallas_all
+from .util import *
+from .util import __all__ as xla_custom_op_util_all
+from .op_warp import *
+from .op_warp import __all__ as xla_custom_op_warp_all
 
 __all__ = xla_custom_op_all + xla_custom_op_numba_all + xla_custom_op_pallas_all + xla_custom_op_util_all
 __all__ += xla_custom_op_warp_all

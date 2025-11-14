@@ -59,7 +59,7 @@ def defjvp(primitive, *jvp_rules):
             input is zero.
     """
     # Import XLACustomKernel locally to avoid circular dependencies.
-    from .xla_custom_op import XLACustomKernel
+    from .main import XLACustomKernel
 
     # If the input is an XLACustomKernel, extract the underlying JAX primitive.
     if isinstance(primitive, XLACustomKernel):
