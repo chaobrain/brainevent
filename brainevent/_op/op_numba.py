@@ -173,7 +173,7 @@ def register_numba_cpu_translation(
     primitive: Primitive,
     cpu_kernel: KernelGenerator,
     debug: bool = False,
-    version: str = 'ffi',
+    version: str = 'custom_call',
 ):
     """
     Register the Numba CPU translation rule for the custom operator.
