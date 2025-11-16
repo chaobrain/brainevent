@@ -16,7 +16,7 @@
 import importlib.util
 import unittest
 
-import brainstate as bst
+import brainstate
 import jax
 import pytest
 
@@ -49,7 +49,7 @@ class TestNumbaCPU(unittest.TestCase):
         prim.def_cpu_kernel(cpu_kernel)
         prim.def_gpu_kernel(pallas=gpu_kernel)
 
-        a = bst.random.rand(64)
-        b = bst.random.rand(64)
+        a = brainstate.random.rand(64)
+        b = brainstate.random.rand(64)
         x_info = jax.ShapeDtypeStruct(a.shape, a.dtype)
         r1 = prim(a, b, outs=[jax.ShapeDtypeStruct((64,), jax.numpy.float32)], x_info=x_info)

@@ -81,7 +81,6 @@ class JaxFFIKernel:
         self.vmap_method = vmap_method
         self.launch_dims = launch_dims
         self.module_preload_mode = module_preload_mode
-        self.first_array_arg = None
         self.launch_id = 0
         self.launch_descriptors = {}
         self.launch_input_output = {}
@@ -112,10 +111,6 @@ class JaxFFIKernel:
         for i in range(self.num_inputs):
             arg_name = self.kernel.adj.args[i].label
             arg = FfiArg(arg_name, self.kernel.adj.args[i].type, False)
-            if arg.is_array:
-                # keep track of the first input array argument
-                if self.first_array_arg is None:
-                    self.first_array_arg = i
             input_args.append(arg)
 
         # process output args

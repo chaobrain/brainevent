@@ -186,7 +186,7 @@ def register_numba_cpu_translation(
         version: str. The lowering version, can be 'ffi' or 'custom_call'.
     """
     if version == 'ffi':
-        rule = functools.partial(numba_cpu_ffi_rule, cpu_kernel)
+        rule = numba_cpu_ffi_rule(cpu_kernel)
     elif version == 'custom_call':
         rule = functools.partial(numba_cpu_custom_call_rule, cpu_kernel, debug)
     else:

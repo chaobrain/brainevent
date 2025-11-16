@@ -13,5 +13,133 @@
 # limitations under the License.
 # ==============================================================================
 
+import importlib.util
+from typing import Sequence, Tuple
+
+import jax
+import numpy as np
+from jax.interpreters import mlir
+
+from brainevent._typing import KernelGenerator
+from .util import OutType, abstract_arguments
+
+numba_installed = importlib.util.find_spec('numba') is not None
+
+if numba_installed:
+    from numba import types, carray, cfunc
 
 
+def _normalize_shapes_and_dtypes(
+    shapes: Sequence[Sequence[int]],
+    dtypes: Sequence[object],
+    kind: str,
+) -> Tuple[Tuple[Tuple[int, ...], ...], Tuple[np.dtype, ...]]:
+    if len(shapes) != len(dtypes):
+        raise ValueError(f'Number of {kind} shapes ({len(shapes)}) must match number of dtypes ({len(dtypes)}).')
+    normalized_shapes = tuple(tuple(int(dim) for dim in shape) for shape in shapes)
+    normalized_dtypes = tuple(np.dtype(dtype) for dtype in dtypes)
+    return normalized_shapes, normalized_dtypes
+
+
+def _register_numba_cpu_ffi_target(
+    kernel,
+    input_shapes: Tuple[Tuple[int, ...], ...],
+    input_dtypes: Tuple[np.dtype, ...],
+    output_shapes: Tuple[Tuple[int, ...], ...],
+    output_dtypes: Tuple[np.dtype, ...],
+):
+    if not numba_installed:
+        raise ImportError('Numba is required to compile the CPU kernel for the custom operator.')
+
+    code_scope = dict(
+        func_to_call=kernel,
+        input_shapes=input_shapes,
+        input_dtypes=input_dtypes,
+        output_shapes=output_shapes,
+        output_dtypes=output_dtypes,
+        carray=carray
+    )
+
+    args_in = [
+        f'in{i} = carray(input_ptrs[{i}], input_shapes[{i}], dtype=input_dtypes[{i}])'
+        for i in range(len(input_shapes))
+    ]
+
+    if len(output_shapes) > 1:
+        args_out = [
+            f'out{i} = carray(output_ptrs[{i}], output_shapes[{i}], dtype=output_dtypes[{i}])'
+            for i in range(len(output_shapes))
+        ]
+        sig = types.void(types.CPointer(types.voidptr), types.CPointer(types.voidptr))
+    else:
+        args_out = [f'out0 = carray(output_ptrs, output_shapes[0], dtype=output_dtypes[0])']
+        sig = types.void(types.voidptr, types.CPointer(types.voidptr))
+
+    args_call = [f'in{i}' for i in range(len(input_shapes))] + [f'out{i}' for i in range(len(output_shapes))]
+
+    code_string = '''
+def numba_cpu_ffi_target(output_ptrs, input_ptrs):
+    {args_in}
+    {args_out}
+    func_to_call({args_call})
+    '''.format(
+        args_in="\n    ".join(args_in),
+        args_out="\n    ".join(args_out),
+        args_call=", ".join(args_call)
+    )
+
+    exec(compile(code_string.strip(), '', 'exec'), code_scope)
+    new_f = code_scope['numba_cpu_ffi_target']
+
+    xla_ffi_rule = cfunc(sig)(new_f)
+    target_name = f'brainevent_numba_ffi_{str(xla_ffi_rule.address)}'
+
+    ffi_capsule = jax.ffi.pycapsule(xla_ffi_rule.address)
+    jax.ffi.register_ffi_target(target_name, ffi_capsule, platform="cpu")
+
+    out_types = tuple([
+        jax.ShapeDtypeStruct(shape, dtype)
+        for shape, dtype in zip(output_shapes, output_dtypes)
+    ])
+    return target_name, out_types
+
+
+def numba_cpu_ffi_rule(
+    kernel_generator: KernelGenerator,
+):
+    from .op_numba import NumbaKernel
+
+    if not numba_installed:
+        raise ImportError('Numba is required to compile the CPU kernel for the custom operator.')
+
+    def kernel_fn(*ins, outs: OutType, **kwargs):
+        kernel = kernel_generator(**kwargs)
+        assert isinstance(kernel, NumbaKernel), f'The kernel should be of type NumbaKernel, but got {type(kernel)}'
+
+        # output information
+        output_shapes, output_dtypes = _normalize_shapes_and_dtypes(
+            tuple(out.shape for out in outs),
+            tuple(out.dtype for out in outs),
+            'output'
+        )
+
+        # input information
+        in_info, _ = abstract_arguments(ins)
+        input_shapes, input_dtypes = _normalize_shapes_and_dtypes(
+            tuple(inp.shape for inp in in_info),
+            tuple(inp.dtype for inp in in_info),
+            'input'
+        )
+
+        # register FFI target
+        target_name, out_types = _register_numba_cpu_ffi_target(
+            kernel.kernel, input_shapes, input_dtypes, output_shapes, output_dtypes,
+        )
+
+        # call FFI
+        return jax.ffi.ffi_call(
+            target_name, out_types,
+            input_output_aliases=kernel.input_output_aliases if kernel.input_output_aliases else {},
+        )(*ins)
+
+    return mlir.lower_fun(kernel_fn, multiple_results=True)
