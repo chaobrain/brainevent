@@ -155,7 +155,7 @@ def _warp_gpu_register_capsule():
     )
 
     # Register the callback in XLA.
-    register_custom_call("brainevent_warp_gpu_call", warp_capsule, "gpu")
+    register_custom_call("brainevent_warp_custom_call", warp_capsule, "gpu")
 
 
 def _register_warp_kernel(wp_kernel) -> int:

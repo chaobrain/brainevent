@@ -76,7 +76,7 @@ class JaxFFIKernel:
         # parameters
         self.kernel = kernel
         self.num_kernel_args = len(kernel.adj.args)
-        self.name = f"brainevent_warp_v2_kernel_{generate_unique_name(kernel.func)}"
+        self.name = f"brainevent_warp_ffi_{generate_unique_name(kernel.func)}"
         self.block_dim = block_dim
         self.vmap_method = vmap_method
         self.launch_dims = launch_dims
