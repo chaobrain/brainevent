@@ -14,6 +14,8 @@
 # ==============================================================================
 
 import importlib.util
+import re
+from typing import Union, Callable
 
 import jax
 import numpy as np
@@ -27,6 +29,24 @@ __all__ = [
     'jaxtype_to_warptype',
     'jaxinfo_to_warpinfo',
 ]
+
+
+# generates a C function name based on the python function name
+def make_full_qualified_name(func: Union[str, Callable]) -> str:
+    if not isinstance(func, str):
+        func = func.__qualname__
+    return re.sub("[^0-9a-zA-Z_]+", "", func.replace(".", "__"))
+
+
+# ensure unique FFI callback names
+ffi_name_counts = {}
+
+
+def generate_unique_name(func) -> str:
+    key = make_full_qualified_name(func)
+    unique_id = ffi_name_counts.get(key, 0)
+    ffi_name_counts[key] = unique_id + 1
+    return f"{key}_{unique_id}"
 
 
 def get_jax_device():

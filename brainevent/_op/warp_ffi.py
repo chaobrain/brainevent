@@ -18,7 +18,7 @@ import ctypes
 import importlib.util
 import threading
 import traceback
-from typing import List, Sequence
+from typing import Sequence, Dict
 
 import jax
 from jax.interpreters import mlir
@@ -26,7 +26,7 @@ from packaging import version
 
 from brainevent._typing import KernelGenerator
 from .util import OutType, flatten_outs
-from .warp_util import get_dim, get_jax_device
+from .warp_util import get_dim, get_jax_device, generate_unique_name
 
 warp_installed = importlib.util.find_spec('warp') is not None
 
@@ -35,21 +35,26 @@ if warp_installed:
 
     if version.parse(warp.__version__) < version.parse("1.10.0"):
         from warp.jax_experimental.ffi import (
-            generate_unique_name, FfiArg, XLA_FFI_CallFrame, XLA_FFI_Extension_Type,
+            FfiArg, XLA_FFI_CallFrame, XLA_FFI_Extension_Type, XLA_FFI_Array, XLA_FFI_Error_Code,
             XLA_FFI_Handler_TraitsBits, XLA_FFI_Metadata_Extension, XLA_FFI_Buffer,
-            FfiLaunchDesc, decode_attrs, XLA_FFI_Error_Code,
-            create_ffi_error, strides_from_shape, get_device_ordinal_from_callframe,
+            decode_attrs, create_ffi_error, strides_from_shape, get_device_ordinal_from_callframe,
             get_stream_from_callframe, get_jax_output_type
         )
 
     else:
         from warp._src.jax_experimental.ffi import (
-            generate_unique_name, FfiArg, XLA_FFI_CallFrame, XLA_FFI_Extension_Type,
+            FfiArg, XLA_FFI_CallFrame, XLA_FFI_Extension_Type, XLA_FFI_Error_Code,
             XLA_FFI_Handler_TraitsBits, XLA_FFI_Metadata_Extension, XLA_FFI_Buffer,
-            FfiLaunchDesc, decode_attrs, XLA_FFI_Error_Code,
-            create_ffi_error, strides_from_shape, get_device_ordinal_from_callframe,
+            decode_attrs, create_ffi_error, strides_from_shape, get_device_ordinal_from_callframe,
             get_stream_from_callframe, get_jax_output_type
         )
+
+
+class FfiLaunchDesc:
+    def __init__(self, static_inputs, launch_dims):
+        self.static_inputs = static_inputs
+        self.launch_dims = launch_dims
+
 
 _FFI_CALLBACK_LOCK = threading.Lock()
 
@@ -58,98 +63,75 @@ class JaxFFIKernel:
     def __init__(
         self,
         kernel,
-        num_outputs: int,
         vmap_method: str,
         block_dim: int,
         launch_dims: Sequence[int],
-        in_out_argnames: List[str],
+        input_output_aliases: Dict[int, int],
         module_preload_mode: str = 'CURRENT_DEVICE',
     ):
         assert module_preload_mode in [
             'CURRENT_DEVICE', 'ALL_DEVICES'
         ], f"Unknown module_preload_mode '{module_preload_mode}'"
 
+        # parameters
         self.kernel = kernel
+        self.num_kernel_args = len(kernel.adj.args)
         self.name = f"brainevent_warp_v2_kernel_{generate_unique_name(kernel.func)}"
         self.block_dim = block_dim
-        self.num_outputs = num_outputs
         self.vmap_method = vmap_method
         self.launch_dims = launch_dims
         self.module_preload_mode = module_preload_mode
         self.first_array_arg = None
         self.launch_id = 0
         self.launch_descriptors = {}
-
-        in_out_argnames = set(in_out_argnames)
-        self.num_kernel_args = len(kernel.adj.args)
-        self.num_in_out = len(in_out_argnames)
-        self.num_inputs = self.num_kernel_args - num_outputs + self.num_in_out
-        if self.num_outputs < 1:
-            raise ValueError("At least one output is required")
-        if self.num_outputs > self.num_kernel_args:
-            raise ValueError("Number of outputs cannot be greater than the number of kernel arguments")
-        if self.num_outputs < self.num_in_out:
-            raise ValueError("Number of outputs cannot be smaller than the number of in_out_argnames")
-
-        # process input args
-        self.input_args = []
-        for i in range(self.num_inputs):
-            arg_name = kernel.adj.args[i].label
-            arg = FfiArg(arg_name, kernel.adj.args[i].type, arg_name in in_out_argnames)
-            if arg_name in in_out_argnames:
-                in_out_argnames.remove(arg_name)
-            if arg.is_array:
-                # keep track of the first input array argument
-                if self.first_array_arg is None:
-                    self.first_array_arg = i
-            self.input_args.append(arg)
-
-        # process output args
-        self.output_args = []
-        for i in range(self.num_inputs, self.num_kernel_args):
-            arg_name = kernel.adj.args[i].label
-            if arg_name in in_out_argnames:
-                raise AssertionError(
-                    f"Expected an output-only argument for argument {arg_name}."
-                    " in_out arguments should be placed before output-only arguments."
-                )
-            arg = FfiArg(arg_name, kernel.adj.args[i].type, False)
-            if not arg.is_array:
-                raise TypeError("All output arguments must be arrays")
-            self.output_args.append(arg)
-
-        if in_out_argnames:
-            raise ValueError(f"in_out_argnames: '{in_out_argnames}' did not match any function argument names.")
+        self.launch_input_output = {}
+        self.num_inputs = None
 
         # Build input output aliases.
-        out_id = 0
-        input_output_aliases = {}
-        for in_id, arg in enumerate(self.input_args):
-            if not arg.in_out:
-                continue
-            input_output_aliases[in_id] = out_id
-            out_id += 1
-        self.input_output_aliases = input_output_aliases
+        self.input_output_aliases = input_output_aliases if input_output_aliases else {}
 
         # register the callback
-        FFI_CCALLFUNC = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.POINTER(XLA_FFI_CallFrame))
-        self.callback_func = FFI_CCALLFUNC(lambda call_frame: self.ffi_callback(call_frame))
+        ffi_c_call_func = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.POINTER(XLA_FFI_CallFrame))
+        self.callback_func = ffi_c_call_func(lambda call_frame: self.ffi_callback(call_frame))
         ffi_ccall_address = ctypes.cast(self.callback_func, ctypes.c_void_p)
         ffi_capsule = jax.ffi.pycapsule(ffi_ccall_address.value)
         jax.ffi.register_ffi_target(self.name, ffi_capsule, platform="CUDA")
 
     def __call__(self, *args, outs: OutType):
-        num_inputs = len(args)
-        if num_inputs != self.num_inputs:
-            raise ValueError(f"Expected {self.num_inputs} inputs, but got {num_inputs}")
+        launch_id = self.launch_id
+        if self.num_inputs is None:
+            self.num_inputs = len(args)
+        else:
+            if len(args) != self.num_inputs:
+                raise ValueError('Inconsistent number of input arguments, expected '
+                                 f'{self.num_inputs}, got {len(args)}')
+        num_outputs = self.num_kernel_args - self.num_inputs
 
-        # output types
-        out_types = []
+        # process input args
+        input_args = []
+        for i in range(self.num_inputs):
+            arg_name = self.kernel.adj.args[i].label
+            arg = FfiArg(arg_name, self.kernel.adj.args[i].type, False)
+            if arg.is_array:
+                # keep track of the first input array argument
+                if self.first_array_arg is None:
+                    self.first_array_arg = i
+            input_args.append(arg)
+
+        # process output args
+        output_args = []
+        for i in range(self.num_inputs, self.num_kernel_args):
+            arg_name = self.kernel.adj.args[i].label
+            arg = FfiArg(arg_name, self.kernel.adj.args[i].type, False)
+            if not arg.is_array:
+                raise TypeError("All output arguments must be arrays")
+            output_args.append(arg)
+        self.launch_input_output[launch_id] = (input_args, output_args)
 
         # process inputs
         static_inputs = {}
-        for i in range(num_inputs):
-            input_arg = self.input_args[i]
+        for i in range(self.num_inputs):
+            input_arg = input_args[i]
             input_value = args[i]
             if input_arg.is_array:
                 # check dtype
@@ -181,29 +163,26 @@ class JaxFFIKernel:
                 # stash the value to be retrieved by callback
                 static_inputs[input_arg.name] = input_arg.type(input_value)
 
-            # append in-out arg to output types
-            if input_arg.in_out:
-                out_types.append(get_jax_output_type(input_arg, input_value.shape))
-
         # launch dimensions
         if isinstance(self.launch_dims, int):
             launch_dims = (self.launch_dims,)
         else:
             launch_dims = tuple(self.launch_dims)
 
-        # output shapes
-        if isinstance(outs, dict):
-            # assume a dictionary of shapes keyed on argument name
-            outs = [outs.get(output_arg.name) for output_arg in self.output_args]
+        # output types
+        out_types = []
+        if isinstance(outs, dict):  # assume a dictionary of shapes keyed on argument name
+            outs = [outs.get(output_arg.name) for output_arg in output_args]
         outs, tree = flatten_outs(outs)
-        # assume same dimensions for all outputs
-        for out, arg in zip(outs, self.output_args):
+        for out, arg in zip(outs, output_args):
             out_types.append(get_jax_output_type(arg, out.shape))
+        if len(out_types) != num_outputs:
+            raise ValueError('Inconsistent number of output arguments, expected '
+                             f'{num_outputs}, got {len(out_types)}')
 
+        # call FFI
         call = jax.ffi.ffi_call(
-            self.name,
-            out_types,
-            vmap_method=self.vmap_method,
+            self.name, out_types, vmap_method=self.vmap_method,
             input_output_aliases=self.input_output_aliases,
         )
 
@@ -225,7 +204,6 @@ class JaxFFIKernel:
             raise ValueError(f"Unknown preload mode '{self.module_preload_mode}'")
 
         # save launch data to be retrieved by callback
-        launch_id = self.launch_id
         self.launch_descriptors[launch_id] = FfiLaunchDesc(static_inputs, launch_dims)
         self.launch_id += 1
 
@@ -256,6 +234,7 @@ class JaxFFIKernel:
                 attrs = decode_attrs(call_frame.contents.attrs)
                 launch_id = int(attrs["launch_id"])
                 launch_desc = self.launch_descriptors[launch_id]
+                input_args, output_args = self.launch_input_output[launch_id]
 
                 num_inputs = call_frame.contents.args.size
                 inputs = ctypes.cast(call_frame.contents.args.args, ctypes.POINTER(ctypes.POINTER(XLA_FFI_Buffer)))
@@ -264,7 +243,7 @@ class JaxFFIKernel:
                 outputs = ctypes.cast(call_frame.contents.rets.rets, ctypes.POINTER(ctypes.POINTER(XLA_FFI_Buffer)))
 
                 assert num_inputs == self.num_inputs
-                assert num_outputs == self.num_outputs
+                assert num_outputs == self.num_kernel_args - self.num_inputs
 
                 launch_bounds = warp.types.launch_bounds_t(launch_desc.launch_dims)
 
@@ -275,7 +254,7 @@ class JaxFFIKernel:
                 arg_refs = []
 
                 # input and in-out args
-                for i, input_arg in enumerate(self.input_args):
+                for i, input_arg in enumerate(input_args):
                     if input_arg.is_array:
                         buffer = inputs[i].contents
                         shape = buffer.dims[: input_arg.type.ndim]
@@ -291,8 +270,8 @@ class JaxFFIKernel:
                         arg_refs.append(arg)  # keep a reference
 
                 # pure output args (skip in-out FFI buffers)
-                for i, output_arg in enumerate(self.output_args):
-                    buffer = outputs[i + self.num_in_out].contents
+                for i, output_arg in enumerate(output_args):
+                    buffer = outputs[i].contents
                     shape = buffer.dims[: output_arg.type.ndim]
                     strides = strides_from_shape(shape, output_arg.type.dtype)
                     arg = warp.types.array_t(buffer.data, 0, output_arg.type.ndim, shape, strides)
@@ -339,6 +318,13 @@ def _ffi_gpu_lowering(
         wp_kernel = kernel_generator(**kwargs)  # ensure kernel is registered
         block_dim, warp_dims = get_dim(wp_kernel, **kwargs)
 
-        return JaxFFIKernel(wp_kernel.kernel)(*args)
+        return JaxFFIKernel(
+            kernel=wp_kernel.kernel,
+            vmap_method=kernel_generator.vmap_method,
+            block_dim=block_dim,
+            launch_dims=warp_dims,
+            input_output_aliases=kernel_generator.input_output_aliases,
+            module_preload_mode=kernel_generator.module_preload_mode,
+        )(*args, **kwargs)
 
     return mlir.lower_fun(kernel_fn, multiple_results=True)

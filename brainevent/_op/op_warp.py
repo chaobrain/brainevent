@@ -85,6 +85,9 @@ class WarpKernel(NamedTuple):
     # input_output_aliases: Dict[int, int]. The input-output aliases.
     input_output_aliases: Union[Dict[int, int], Callable[..., Dict[int, int]], None] = None
 
+    vmap_method: str = 'sequential'
+    module_preload_mode: str = 'CURRENT_DEVICE'
+
 
 def warp_kernel(
     fn: Callable = None,
