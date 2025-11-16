@@ -14,7 +14,7 @@
 # ==============================================================================
 
 import importlib.util
-from typing import Sequence, Tuple
+from typing import Dict, Sequence, Tuple
 
 import jax
 import numpy as np
@@ -23,10 +23,21 @@ from jax.interpreters import mlir
 from brainevent._typing import KernelGenerator
 from .util import OutType, abstract_arguments
 
-numba_installed = importlib.util.find_spec('numba') is not None
+__all__ = [
+    'numba_cpu_ffi_rule',
+]
 
+numba_installed = importlib.util.find_spec('numba') is not None
 if numba_installed:
     from numba import types, carray, cfunc
+
+_NUMBA_CPU_FFI_HANDLES: Dict[str, object] = {}
+
+
+def _ensure_sequence(outs: OutType):
+    if isinstance(outs, Sequence):
+        return tuple(outs)
+    return (outs,)
 
 
 def _normalize_shapes_and_dtypes(
@@ -57,7 +68,7 @@ def _register_numba_cpu_ffi_target(
         input_dtypes=input_dtypes,
         output_shapes=output_shapes,
         output_dtypes=output_dtypes,
-        carray=carray
+        carray=carray,
     )
 
     args_in = [
@@ -85,7 +96,7 @@ def numba_cpu_ffi_target(output_ptrs, input_ptrs):
     '''.format(
         args_in="\n    ".join(args_in),
         args_out="\n    ".join(args_out),
-        args_call=", ".join(args_call)
+        args_call=", ".join(args_call),
     )
 
     exec(compile(code_string.strip(), '', 'exec'), code_scope)
@@ -94,13 +105,15 @@ def numba_cpu_ffi_target(output_ptrs, input_ptrs):
     xla_ffi_rule = cfunc(sig)(new_f)
     target_name = f'brainevent_numba_ffi_{str(xla_ffi_rule.address)}'
 
+    # Register FFI target with version compatibility
     ffi_capsule = jax.ffi.pycapsule(xla_ffi_rule.address)
     jax.ffi.register_ffi_target(target_name, ffi_capsule, platform="cpu")
+    _NUMBA_CPU_FFI_HANDLES[target_name] = xla_ffi_rule  # keep handle alive
 
-    out_types = tuple([
+    out_types = tuple(
         jax.ShapeDtypeStruct(shape, dtype)
         for shape, dtype in zip(output_shapes, output_dtypes)
-    ])
+    )
     return target_name, out_types
 
 
@@ -115,12 +128,14 @@ def numba_cpu_ffi_rule(
     def kernel_fn(*ins, outs: OutType, **kwargs):
         kernel = kernel_generator(**kwargs)
         assert isinstance(kernel, NumbaKernel), f'The kernel should be of type NumbaKernel, but got {type(kernel)}'
+        input_output_aliases = kernel.input_output_aliases if kernel.input_output_aliases else {}
 
         # output information
+        outs_seq = _ensure_sequence(outs)
         output_shapes, output_dtypes = _normalize_shapes_and_dtypes(
-            tuple(out.shape for out in outs),
-            tuple(out.dtype for out in outs),
-            'output'
+            tuple(out.shape for out in outs_seq),
+            tuple(out.dtype for out in outs_seq),
+            'output',
         )
 
         # input information
@@ -128,7 +143,7 @@ def numba_cpu_ffi_rule(
         input_shapes, input_dtypes = _normalize_shapes_and_dtypes(
             tuple(inp.shape for inp in in_info),
             tuple(inp.dtype for inp in in_info),
-            'input'
+            'input',
         )
 
         # register FFI target
@@ -137,9 +152,6 @@ def numba_cpu_ffi_rule(
         )
 
         # call FFI
-        return jax.ffi.ffi_call(
-            target_name, out_types,
-            input_output_aliases=kernel.input_output_aliases if kernel.input_output_aliases else {},
-        )(*ins)
+        return jax.ffi.ffi_call(target_name, out_types, input_output_aliases=input_output_aliases)(*ins)
 
     return mlir.lower_fun(kernel_fn, multiple_results=True)
