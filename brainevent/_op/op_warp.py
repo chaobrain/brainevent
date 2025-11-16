@@ -183,4 +183,4 @@ def register_warp_gpu_translation(
         rule = functools.partial(_custom_call_gpu_lowering, kernel_generator)
     else:
         raise ValueError(f'Unsupported Warp GPU lowering version: {version}')
-    mlir.register_lowering(primitive, rule, platform="gpu")
+    mlir.register_lowering(primitive, rule, platform="CUDA")

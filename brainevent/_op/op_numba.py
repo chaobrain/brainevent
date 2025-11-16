@@ -15,16 +15,16 @@
 
 # -*- coding: utf-8 -*-
 
-import ctypes
 import functools
 import importlib.util
 from typing import Callable, Dict, Optional, NamedTuple, Union
 
 from jax.interpreters import mlir
 
-from brainevent._compatible_import import register_custom_call, Primitive, custom_call
+from brainevent._compatible_import import Primitive
 from brainevent._config import config
 from brainevent._typing import KernelGenerator
+from .numba_customcall import numba_cpu_translation_rule
 
 __all__ = [
     'numba_kernel',
@@ -167,109 +167,11 @@ def numba_kernel(
             )
 
 
-def _shape_to_layout(shape):
-    return tuple(range(len(shape) - 1, -1, -1))
-
-
-def _numba_mlir_cpu_translation_rule(
-    kernel_generator: KernelGenerator,
-    debug: bool,
-    ctx,
-    *ins,
-    **kwargs
-):
-    if not numba_installed:
-        raise ImportError('Numba is required to compile the CPU kernel for the custom operator.')
-
-    from numba import types, carray, cfunc  # pylint: disable=import-error
-
-    kernel = kernel_generator(**kwargs)
-    assert isinstance(kernel, NumbaKernel), f'The kernel should be of type NumbaKernel, but got {type(kernel)}'
-
-    # output information
-    outs = ctx.avals_out
-    output_shapes = tuple([out.shape for out in outs])
-    output_dtypes = tuple([out.dtype for out in outs])
-    output_layouts = tuple([_shape_to_layout(out.shape) for out in outs])
-    result_types = [mlir.aval_to_ir_type(out) for out in outs]
-
-    # input information
-    avals_in = ctx.avals_in
-    input_layouts = [_shape_to_layout(a.shape) for a in avals_in]
-    input_dtypes = tuple(inp.dtype for inp in avals_in)
-    input_shapes = tuple(inp.shape for inp in avals_in)
-
-    # compiling function
-    code_scope = dict(
-        func_to_call=kernel.kernel,
-        input_shapes=input_shapes,
-        input_dtypes=input_dtypes,
-        output_shapes=output_shapes,
-        output_dtypes=output_dtypes,
-        carray=carray
-    )
-    args_in = [f'in{i} = carray(input_ptrs[{i}], input_shapes[{i}], dtype=input_dtypes[{i}])'
-               for i in range(len(input_shapes))]
-    if len(output_shapes) > 1:
-        args_out = [f'out{i} = carray(output_ptrs[{i}], output_shapes[{i}], dtype=output_dtypes[{i}])'
-                    for i in range(len(output_shapes))]
-        sig = types.void(types.CPointer(types.voidptr), types.CPointer(types.voidptr))
-    else:
-        args_out = [f'out0 = carray(output_ptrs, output_shapes[0], dtype=output_dtypes[0])']
-        sig = types.void(types.voidptr, types.CPointer(types.voidptr))
-    args_call = [f'in{i}' for i in range(len(input_shapes))] + [f'out{i}' for i in range(len(output_shapes))]
-    code_string = '''
-def numba_cpu_custom_call_target(output_ptrs, input_ptrs):
-    {args_in}
-    {args_out}
-    func_to_call({args_call})
-      '''.format(args_in="\n    ".join(args_in),
-                 args_out="\n    ".join(args_out),
-                 args_call=", ".join(args_call))
-    if debug:
-        print(code_string)
-    exec(compile(code_string.strip(), '', 'exec'), code_scope)
-    new_f = code_scope['numba_cpu_custom_call_target']
-
-    # register
-    xla_c_rule = cfunc(sig)(new_f)
-    target_name = f'brainevent_numba_call_{str(xla_c_rule.address)}'
-
-    PyCapsule_Destructor = ctypes.CFUNCTYPE(None, ctypes.py_object)
-    PyCapsule_New = ctypes.pythonapi.PyCapsule_New
-    #                                         [void* pointer,
-    #                                          const char *name,
-    #                                          PyCapsule_Destructor destructor]
-    PyCapsule_New.argtypes = (
-        ctypes.c_void_p,
-        ctypes.c_char_p,
-        PyCapsule_Destructor
-    )
-    PyCapsule_New.restype = ctypes.py_object
-    capsule = PyCapsule_New(
-        xla_c_rule.address,
-        b"xla._CUSTOM_CALL_TARGET",
-        PyCapsule_Destructor(0)
-    )
-
-    register_custom_call(target_name, capsule, "cpu")
-
-    # call
-    return custom_call(
-        call_target_name=target_name,
-        operands=ins,
-        operand_layouts=list(input_layouts),
-        result_layouts=list(output_layouts),
-        result_types=list(result_types),
-        has_side_effect=False,
-        operand_output_aliases=kernel.input_output_aliases,
-    ).results
-
-
 def register_numba_cpu_translation(
     primitive: Primitive,
     cpu_kernel: KernelGenerator,
-    debug: bool = False
+    debug: bool = False,
+    version: str = 'ffi',
 ):
     """
     Register the Numba CPU translation rule for the custom operator.
@@ -279,6 +181,12 @@ def register_numba_cpu_translation(
         cpu_kernel: Callable. The function defines the computation on CPU backend.
             It can be a function to generate the Numba jitted kernel.
         debug: bool. Whether to print the generated code.
+        version: str. The lowering version, can be 'ffi' or 'custom_call'.
     """
-    rule = functools.partial(_numba_mlir_cpu_translation_rule, cpu_kernel, debug)
+    if version == 'ffi':
+        pass
+    elif version == 'custom_call':
+        rule = functools.partial(numba_cpu_translation_rule, cpu_kernel, debug)
+    else:
+        raise ValueError(f'Unsupported Numba CPU lowering version: {version}')
     mlir.register_lowering(primitive, rule, platform='cpu')
