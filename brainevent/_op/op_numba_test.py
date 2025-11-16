@@ -43,10 +43,7 @@ class TestNumbaCPU(unittest.TestCase):
                 x, y = x_ref[...], y_ref[...]
                 o_ref[...] = x + y
 
-            return brainevent.pallas_kernel(
-                add_vectors_kernel,
-                outs=kwargs['outs'],
-            )
+            return brainevent.pallas_kernel(add_vectors_kernel, outs=kwargs['outs'])
 
         prim = brainevent.XLACustomKernel('add')
         prim.def_cpu_kernel(cpu_kernel)

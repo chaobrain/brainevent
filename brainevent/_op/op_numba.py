@@ -24,7 +24,8 @@ from jax.interpreters import mlir
 from brainevent._compatible_import import Primitive
 from brainevent._config import config
 from brainevent._typing import KernelGenerator
-from .numba_customcall import numba_cpu_translation_rule
+from .numba_customcall import numba_cpu_custom_call_rule
+from .numba_ffi import numba_cpu_ffi_rule
 
 __all__ = [
     'numba_kernel',
@@ -184,9 +185,9 @@ def register_numba_cpu_translation(
         version: str. The lowering version, can be 'ffi' or 'custom_call'.
     """
     if version == 'ffi':
-        pass
+        rule = functools.partial(numba_cpu_ffi_rule, cpu_kernel)
     elif version == 'custom_call':
-        rule = functools.partial(numba_cpu_translation_rule, cpu_kernel, debug)
+        rule = functools.partial(numba_cpu_custom_call_rule, cpu_kernel, debug)
     else:
         raise ValueError(f'Unsupported Numba CPU lowering version: {version}')
     mlir.register_lowering(primitive, rule, platform='cpu')

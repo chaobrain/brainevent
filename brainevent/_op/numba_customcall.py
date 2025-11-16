@@ -28,7 +28,7 @@ def _shape_to_layout(shape):
     return tuple(range(len(shape) - 1, -1, -1))
 
 
-def numba_cpu_translation_rule(
+def numba_cpu_custom_call_rule(
     kernel_generator: KernelGenerator,
     debug: bool,
     ctx,
