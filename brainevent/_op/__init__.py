@@ -19,15 +19,18 @@ from .op_numba import *
 from .op_numba import __all__ as xla_custom_op_numba_all
 from .op_pallas import *
 from .op_pallas import __all__ as xla_custom_op_pallas_all
-from .util import *
-from .util import __all__ as xla_custom_op_util_all
 from .op_warp import *
 from .op_warp import __all__ as xla_custom_op_warp_all
+from .util import *
+from .util import __all__ as xla_custom_op_util_all
+from .warp_util import *
+from .warp_util import __all__ as warp_util_all
 
 __all__ = xla_custom_op_all + xla_custom_op_numba_all + xla_custom_op_pallas_all + xla_custom_op_util_all
-__all__ += xla_custom_op_warp_all
+__all__ += xla_custom_op_warp_all + warp_util_all
 del xla_custom_op_all
 del xla_custom_op_numba_all
 del xla_custom_op_pallas_all
 del xla_custom_op_util_all
 del xla_custom_op_warp_all
+del warp_util_all
