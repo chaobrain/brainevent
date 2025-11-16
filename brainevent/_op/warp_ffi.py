@@ -18,13 +18,15 @@ import ctypes
 import importlib.util
 import threading
 import traceback
+from typing import List, Sequence
 
 import jax
 from jax.interpreters import mlir
 from packaging import version
 
 from brainevent._typing import KernelGenerator
-from .warp_util import get_dim
+from .util import OutType, flatten_outs
+from .warp_util import get_dim, get_jax_device
 
 warp_installed = importlib.util.find_spec('warp') is not None
 
@@ -36,14 +38,17 @@ if warp_installed:
             generate_unique_name, FfiArg, XLA_FFI_CallFrame, XLA_FFI_Extension_Type,
             XLA_FFI_Handler_TraitsBits, XLA_FFI_Metadata_Extension, XLA_FFI_Buffer,
             FfiLaunchDesc, decode_attrs, XLA_FFI_Error_Code,
-            create_ffi_error,
+            create_ffi_error, strides_from_shape, get_device_ordinal_from_callframe,
+            get_stream_from_callframe, get_jax_output_type
         )
+
     else:
         from warp._src.jax_experimental.ffi import (
             generate_unique_name, FfiArg, XLA_FFI_CallFrame, XLA_FFI_Extension_Type,
             XLA_FFI_Handler_TraitsBits, XLA_FFI_Metadata_Extension, XLA_FFI_Buffer,
             FfiLaunchDesc, decode_attrs, XLA_FFI_Error_Code,
-            create_ffi_error,
+            create_ffi_error, strides_from_shape, get_device_ordinal_from_callframe,
+            get_stream_from_callframe, get_jax_output_type
         )
 
 _FFI_CALLBACK_LOCK = threading.Lock()
@@ -53,29 +58,29 @@ class JaxFFIKernel:
     def __init__(
         self,
         kernel,
-        num_outputs,
-        vmap_method,
-        launch_dims,
-        output_dims,
-        in_out_argnames,
+        num_outputs: int,
+        vmap_method: str,
+        block_dim: int,
+        launch_dims: Sequence[int],
+        in_out_argnames: List[str],
         module_preload_mode: str = 'CURRENT_DEVICE',
     ):
+        assert module_preload_mode in [
+            'CURRENT_DEVICE', 'ALL_DEVICES'
+        ], f"Unknown module_preload_mode '{module_preload_mode}'"
+
         self.kernel = kernel
-        self.name = f"brainevent_warp_kernel_{generate_unique_name(kernel.func)}"
+        self.name = f"brainevent_warp_v2_kernel_{generate_unique_name(kernel.func)}"
+        self.block_dim = block_dim
         self.num_outputs = num_outputs
         self.vmap_method = vmap_method
         self.launch_dims = launch_dims
-        self.output_dims = output_dims
         self.module_preload_mode = module_preload_mode
         self.first_array_arg = None
         self.launch_id = 0
         self.launch_descriptors = {}
 
-        in_out_argnames_list = in_out_argnames or []
-        in_out_argnames = set(in_out_argnames_list)
-        if len(in_out_argnames_list) != len(in_out_argnames):
-            raise AssertionError("in_out_argnames must not contain duplicate names")
-
+        in_out_argnames = set(in_out_argnames)
         self.num_kernel_args = len(kernel.adj.args)
         self.num_in_out = len(in_out_argnames)
         self.num_inputs = self.num_kernel_args - num_outputs + self.num_in_out
@@ -133,18 +138,10 @@ class JaxFFIKernel:
         ffi_capsule = jax.ffi.pycapsule(ffi_ccall_address.value)
         jax.ffi.register_ffi_target(self.name, ffi_capsule, platform="CUDA")
 
-    def __call__(self, *args, output_dims=None, launch_dims=None, vmap_method=None):
+    def __call__(self, *args, outs: OutType):
         num_inputs = len(args)
         if num_inputs != self.num_inputs:
             raise ValueError(f"Expected {self.num_inputs} inputs, but got {num_inputs}")
-
-        # default argument fallback
-        if launch_dims is None:
-            launch_dims = self.launch_dims
-        if output_dims is None:
-            output_dims = self.output_dims
-        if vmap_method is None:
-            vmap_method = self.vmap_method
 
         # output types
         out_types = []
@@ -158,18 +155,24 @@ class JaxFFIKernel:
                 # check dtype
                 if input_value.dtype != input_arg.jax_scalar_type:
                     raise TypeError(
-                        f"Invalid data type for array argument '{input_arg.name}', expected {input_arg.jax_scalar_type}, got {input_value.dtype}"
+                        f"Invalid data type for array argument '{input_arg.name}', "
+                        f"expected {input_arg.jax_scalar_type}, "
+                        f"got {input_value.dtype}"
                     )
                 # check ndim
                 if input_value.ndim != input_arg.jax_ndim:
                     raise TypeError(
-                        f"Invalid dimensionality for array argument '{input_arg.name}', expected {input_arg.jax_ndim} dimensions, got {input_value.ndim}"
+                        f"Invalid dimensionality for array argument "
+                        f"'{input_arg.name}', expected {input_arg.jax_ndim} "
+                        f"dimensions, got {input_value.ndim}"
                     )
                 # check inner dims
                 for d in range(input_arg.dtype_ndim):
                     if input_value.shape[input_arg.type.ndim + d] != input_arg.dtype_shape[d]:
                         raise TypeError(
-                            f"Invalid inner dimensions for array argument '{input_arg.name}', expected {input_arg.dtype_shape}, got {input_value.shape[-input_arg.dtype_ndim:]}"
+                            f"Invalid inner dimensions for array argument "
+                            f"'{input_arg.name}', expected {input_arg.dtype_shape}, "
+                            f"got {input_value.shape[-input_arg.dtype_ndim:]}"
                         )
             else:
                 # make sure scalar is not a traced variable, should be static
@@ -183,39 +186,30 @@ class JaxFFIKernel:
                 out_types.append(get_jax_output_type(input_arg, input_value.shape))
 
         # launch dimensions
-        if isinstance(launch_dims, int):
-            launch_dims = (launch_dims,)
+        if isinstance(self.launch_dims, int):
+            launch_dims = (self.launch_dims,)
         else:
-            launch_dims = tuple(launch_dims)
+            launch_dims = tuple(self.launch_dims)
 
         # output shapes
-        if isinstance(output_dims, dict):
+        if isinstance(outs, dict):
             # assume a dictionary of shapes keyed on argument name
-            for output_arg in self.output_args:
-                dims = output_dims.get(output_arg.name)
-                if dims is None:
-                    raise ValueError(f"Missing output dimensions for argument '{output_arg.name}'")
-                out_types.append(get_jax_output_type(output_arg, dims))
-        else:
-            if output_dims is None:
-                # use launch dimensions
-                output_dims = launch_dims
-            elif isinstance(output_dims, int):
-                output_dims = (output_dims,)
-            # assume same dimensions for all outputs
-            for output_arg in self.output_args:
-                out_types.append(get_jax_output_type(output_arg, output_dims))
+            outs = [outs.get(output_arg.name) for output_arg in self.output_args]
+        outs, tree = flatten_outs(outs)
+        # assume same dimensions for all outputs
+        for out, arg in zip(outs, self.output_args):
+            out_types.append(get_jax_output_type(arg, out.shape))
 
         call = jax.ffi.ffi_call(
             self.name,
             out_types,
-            vmap_method=vmap_method,
+            vmap_method=self.vmap_method,
             input_output_aliases=self.input_output_aliases,
         )
 
         # preload on the specified devices
         if self.module_preload_mode == 'CURRENT_DEVICE':
-            device = warp.device_from_jax(_get_jax_device())
+            device = warp.device_from_jax(get_jax_device())
             self.kernel.module.load(device)
         elif self.module_preload_mode == 'ALL_DEVICES':
             for d in jax.local_devices():
@@ -311,15 +305,19 @@ class JaxFFIKernel:
 
                 # get kernel hooks
                 hooks = self.kernel.module.get_kernel_hooks(self.kernel, device)
-                assert hooks.forward, "Failed to find kernel entry point"
+                assert hooks.forward, "Failed to find kernel entry point. "
 
                 # launch the kernel
-                warp.context.runtime.core.wp_cuda_launch_kernel(
+                if version.parse(warp.__version__) >= version.parse("1.9.0"):
+                    warp_launch_kernel_func = warp.context.runtime.core.wp_cuda_launch_kernel
+                else:
+                    warp_launch_kernel_func = warp.context.runtime.core.cuda_launch_kernel
+                warp_launch_kernel_func(
                     device.context,
                     hooks.forward,
                     launch_bounds.size,
                     0,
-                    256,
+                    self.block_dim,
                     hooks.forward_smem_bytes,
                     kernel_params,
                     stream,

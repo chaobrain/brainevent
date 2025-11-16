@@ -16,10 +16,9 @@
 # -*- coding: utf-8 -*-
 
 import functools
-from typing import Callable, Sequence, Tuple, Protocol, Union, Optional, Dict
+from typing import Callable, Union, Optional, Dict
 
 import jax
-import numpy as np
 from jax.interpreters import xla, mlir, batching, ad
 
 from brainevent._compatible_import import Primitive
@@ -30,61 +29,13 @@ from .op_pallas import (
     register_pallas_gpu_translation,
     register_pallas_tpu_translation,
 )
-from .util import general_batching_rule, defjvp
 from .op_warp import register_warp_gpu_translation
+from .util import general_batching_rule, defjvp, OutType, flatten_outs
 
 __all__ = [
     'XLACustomKernel',
     'GPUKernelChoice',
 ]
-
-
-class ShapeDtype(Protocol):
-    """A protocol defining objects that have `shape` and `dtype` attributes.
-
-    This protocol is used for type hinting to indicate that an object is expected
-    to provide information about its tensor shape (as a tuple of integers) and
-    its data type (as a NumPy dtype). It's commonly used in JAX and related
-    libraries to specify the expected structure of abstract arrays or outputs
-    without requiring a specific concrete class like `jax.core.ShapedArray`.
-
-    Examples:
-
-    .. code-block:: python
-
-        >>> import numpy as np
-        >>> from typing import Tuple
-        >>>
-        >>> class MyTensorSpec:
-        ...     def __init__(self, shape: Tuple[int, ...], dtype: np.dtype):
-        ...         self._shape = shape
-        ...         self._dtype = dtype
-        ...
-        ...     @property
-        ...     def shape(self) -> Tuple[int, ...]:
-        ...         return self._shape
-        ...
-        ...     @property
-        ...     def dtype(self) -> np.dtype:
-        ...         return self._dtype
-        >>>
-        >>> def process_spec(spec: ShapeDtype):
-        ...     print(f"Shape: {spec.shape}, Dtype: {spec.dtype}")
-        >>>
-        >>> spec = MyTensorSpec(shape=(10, 20), dtype=np.float32)
-        >>> process_spec(spec)
-        Shape: (10, 20), Dtype: float32
-    """
-
-    @property
-    def shape(self) -> Tuple[int, ...]:
-        """The shape of the tensor as a tuple of integers."""
-        ...
-
-    @property
-    def dtype(self) -> np.dtype:
-        """The data type of the tensor elements (e.g., np.float32)."""
-        ...
 
 
 class GPUKernelChoice:
@@ -245,7 +196,7 @@ class XLACustomKernel:
     def _abstract_eval(
         self,
         *ins,
-        outs: Sequence[jax.core.ShapedArray],
+        outs: OutType,
         **kwargs
     ):
         """
@@ -273,12 +224,7 @@ class XLACustomKernel:
         """
         return tuple(outs)
 
-    def call(
-        self,
-        *ins,
-        outs: Union[ShapeDtype, Sequence[ShapeDtype]],
-        **kwargs,
-    ):
+    def call(self, *ins, outs: OutType, **kwargs):
         """
         Public interface to call the custom operator.
 
@@ -297,12 +243,7 @@ class XLACustomKernel:
         """
         return self.__call__(*ins, outs=outs, **kwargs, )
 
-    def bind(
-        self,
-        *ins,
-        outs: Union[ShapeDtype, Sequence[ShapeDtype]],
-        **kwargs,
-    ):
+    def bind(self, *ins, outs: OutType, **kwargs):
         """
         Bind the primitive with the given inputs and parameters.
 
@@ -322,12 +263,7 @@ class XLACustomKernel:
         """
         return self.__call__(*ins, outs=outs, **kwargs, )
 
-    def __call__(
-        self,
-        *ins,
-        outs: Union[ShapeDtype, Sequence[ShapeDtype]],
-        **kwargs,
-    ):
+    def __call__(self, *ins, outs: OutType, **kwargs):
         """
         Core method to bind and execute the custom JAX primitive.
 
@@ -354,8 +290,7 @@ class XLACustomKernel:
         """
         self.ready_to_call()
 
-        outs = jax.tree.map(_transform_to_shapedarray, outs)
-        outs, tree_def = jax.tree.flatten(outs)
+        outs, tree_def = flatten_outs(outs)
         r = self.primitive.bind(
             *ins,
             **kwargs,
@@ -598,6 +533,3 @@ class XLACustomKernel:
         prim = self.primitive
         batching.primitive_batchers[prim] = functools.partial(general_batching_rule, prim)
 
-
-def _transform_to_shapedarray(a):
-    return jax.core.ShapedArray(a.shape, a.dtype)

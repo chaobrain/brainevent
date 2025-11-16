@@ -16,8 +16,10 @@
 # -*- coding: utf-8 -*-
 
 import functools
+from typing import Protocol, Union, Sequence, Tuple
 
 import jax
+import numpy as np
 from jax import tree_util
 from jax.interpreters import ad
 
@@ -26,6 +28,7 @@ from brainevent._compatible_import import Primitive
 __all__ = [
     'defjvp',
     'general_batching_rule',
+    'OutType',
 ]
 
 
@@ -162,3 +165,67 @@ def general_batching_rule(prim, args, axes, **kwargs):
     out_vals, out_tree = jax.tree.flatten(outs)
     out_dim = jax.tree.unflatten(out_tree, (0,) * len(out_vals))
     return outs, out_dim
+
+
+class ShapeDtype(Protocol):
+    """A protocol defining objects that have `shape` and `dtype` attributes.
+
+    This protocol is used for type hinting to indicate that an object is expected
+    to provide information about its tensor shape (as a tuple of integers) and
+    its data type (as a NumPy dtype). It's commonly used in JAX and related
+    libraries to specify the expected structure of abstract arrays or outputs
+    without requiring a specific concrete class like `jax.core.ShapedArray`.
+
+    Examples:
+
+    .. code-block:: python
+
+        >>> import numpy as np
+        >>> from typing import Tuple
+        >>>
+        >>> class MyTensorSpec:
+        ...     def __init__(self, shape: Tuple[int, ...], dtype: np.dtype):
+        ...         self._shape = shape
+        ...         self._dtype = dtype
+        ...
+        ...     @property
+        ...     def shape(self) -> Tuple[int, ...]:
+        ...         return self._shape
+        ...
+        ...     @property
+        ...     def dtype(self) -> np.dtype:
+        ...         return self._dtype
+        >>>
+        >>> def process_spec(spec: ShapeDtype):
+        ...     print(f"Shape: {spec.shape}, Dtype: {spec.dtype}")
+        >>>
+        >>> spec = MyTensorSpec(shape=(10, 20), dtype=np.float32)
+        >>> process_spec(spec)
+        Shape: (10, 20), Dtype: float32
+    """
+
+    @property
+    def shape(self) -> Tuple[int, ...]:
+        """The shape of the tensor as a tuple of integers."""
+        ...
+
+    @property
+    def dtype(self) -> np.dtype:
+        """The data type of the tensor elements (e.g., np.float32)."""
+        ...
+
+
+OutType = Union[ShapeDtype, Sequence[ShapeDtype]]
+
+
+
+
+def _transform_to_shapedarray(a):
+    return jax.core.ShapedArray(a.shape, a.dtype)
+
+
+def flatten_outs(outs):
+    outs = jax.tree.map(_transform_to_shapedarray, outs)
+    outs, tree_def = jax.tree.flatten(outs)
+    return outs, tree_def
+
