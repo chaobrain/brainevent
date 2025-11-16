@@ -38,7 +38,7 @@ class TestNumbaCPU(unittest.TestCase):
 
             return add_kernel_numba
 
-        def gpu_kernel(x_info, **kwargs):
+        def gpu_kernel(**kwargs):
             def add_vectors_kernel(x_ref, y_ref, o_ref):
                 x, y = x_ref[...], y_ref[...]
                 o_ref[...] = x + y
@@ -52,4 +52,4 @@ class TestNumbaCPU(unittest.TestCase):
         a = brainstate.random.rand(64)
         b = brainstate.random.rand(64)
         x_info = jax.ShapeDtypeStruct(a.shape, a.dtype)
-        r1 = prim(a, b, outs=[jax.ShapeDtypeStruct((64,), jax.numpy.float32)], x_info=x_info)
+        r1 = prim(a, b, outs=[jax.ShapeDtypeStruct((64,), jax.numpy.float32)])
