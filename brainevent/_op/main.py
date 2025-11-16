@@ -30,7 +30,7 @@ from .op_pallas import (
     register_pallas_tpu_translation,
 )
 from .op_warp import register_warp_gpu_translation
-from .util import general_batching_rule, defjvp, OutType, flatten_outs
+from .util import general_batching_rule, defjvp, OutType, abstract_arguments
 
 __all__ = [
     'XLACustomKernel',
@@ -290,7 +290,7 @@ class XLACustomKernel:
         """
         self.ready_to_call()
 
-        outs, tree_def = flatten_outs(outs)
+        outs, tree_def = abstract_arguments(outs)
         r = self.primitive.bind(
             *ins,
             **kwargs,

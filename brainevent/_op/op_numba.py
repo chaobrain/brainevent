@@ -93,6 +93,7 @@ class NumbaKernel(NamedTuple):
     """
     kernel: Callable
     input_output_aliases: Optional[Dict[int, int]]
+    vmap_method: str = "sequential"
 
 
 def numba_kernel(

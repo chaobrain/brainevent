@@ -222,7 +222,7 @@ def _transform_to_shapedarray(a):
     return jax.core.ShapedArray(a.shape, a.dtype)
 
 
-def flatten_outs(outs):
+def abstract_arguments(outs):
     outs = jax.tree.map(_transform_to_shapedarray, outs)
     outs, tree_def = jax.tree.flatten(outs)
     return outs, tree_def

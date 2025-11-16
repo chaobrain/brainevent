@@ -25,7 +25,7 @@ from jax.interpreters import mlir
 from packaging import version
 
 from brainevent._typing import KernelGenerator
-from .util import OutType, flatten_outs
+from .util import OutType, abstract_arguments
 from .warp_util import get_dim, get_jax_device, generate_unique_name
 
 warp_installed = importlib.util.find_spec('warp') is not None
@@ -173,7 +173,7 @@ class JaxFFIKernel:
         out_types = []
         if isinstance(outs, dict):  # assume a dictionary of shapes keyed on argument name
             outs = [outs.get(output_arg.name) for output_arg in output_args]
-        outs, tree = flatten_outs(outs)
+        outs, tree = abstract_arguments(outs)
         for out, arg in zip(outs, output_args):
             out_types.append(get_jax_output_type(arg, out.shape))
         if len(out_types) != num_outputs:
