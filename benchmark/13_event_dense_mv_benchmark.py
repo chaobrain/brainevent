@@ -1,4 +1,4 @@
-# Copyright 2024 BDP Ecosystem Limited. All Rights Reserved.
+# Copyright 2024 BrainX Ecosystem Limited. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ sys.path.append('../')
 import brainstate
 from utils import visualize
 import brainevent
-from brainevent._dense_impl_binary import (
+from brainevent._dense import (
     binary_vec_dot_dense_mat,
     dense_mat_dot_binary_vec,
 )

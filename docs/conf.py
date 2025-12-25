@@ -1,4 +1,4 @@
-# Copyright 2024 BDP Ecosystem Limited. All Rights Reserved.
+# Copyright 2024 BrainX Ecosystem Limited. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -37,7 +37,7 @@ import brainevent
 
 project = 'brainevent'
 copyright = '2024, brainevent'
-author = 'BDP Ecosystem'
+author = 'BrainX Ecosystem'
 
 # The full version, including alpha/beta/rc tags
 release = brainevent.__version__

@@ -4,8 +4,6 @@
   	<img alt="Header image of brainevent." src="https://raw.githubusercontent.com/chaobrain/brainevent/main/docs/_static/brainevent.png" width=50%>
 </p> 
 
-
-
 <p align="center">
 	<a href="https://pypi.org/project/brainevent/"><img alt="Supported Python Version" src="https://img.shields.io/pypi/pyversions/brainevent"></a>
 	<a href="https://github.com/chaobrain/brainevent/blob/main/LICENSE"><img alt="LICENSE" src="https://img.shields.io/badge/License-Apache%202.0-blue.svg"></a>

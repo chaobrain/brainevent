@@ -1,4 +1,4 @@
-# Copyright 2024 BDP Ecosystem Limited. All Rights Reserved.
+# Copyright 2024 BrainX Ecosystem Limited. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,34 +26,34 @@
 
 import time
 
+import brainpy
+import brainstate
+import braintools
 import brainunit as u
 import jax
 
-import brainevent
-import brainstate
 
-
-class EINet(brainstate.nn.DynamicsGroup):
+class EINet(brainstate.nn.Module):
     def __init__(self, scale):
         super().__init__()
         self.n_exc = int(3200 * scale)
         self.n_inh = int(800 * scale)
         self.num = self.n_exc + self.n_inh
-        self.N = brainstate.nn.LIFRef(
+        self.N = brainpy.state.LIFRef(
             self.num, V_rest=-60. * u.mV, V_th=-50. * u.mV, V_reset=-60. * u.mV,
             tau=20. * u.ms, tau_ref=5. * u.ms,
-            V_initializer=brainstate.init.Normal(-55., 2., unit=u.mV)
+            V_initializer=braintools.init.Normal(-55., 2., unit=u.mV)
         )
-        self.E = brainstate.nn.AlignPostProj(
+        self.E = brainpy.state.AlignPostProj(
             comm=brainstate.nn.EventFixedProb(self.n_exc, self.num, conn_num=80 / self.num, conn_weight=0.6 * u.mS),
-            syn=brainstate.nn.Expon.desc(self.num, tau=5. * u.ms),
-            out=brainstate.nn.COBA.desc(E=0. * u.mV),
+            syn=brainpy.state.Expon.desc(self.num, tau=5. * u.ms),
+            out=brainpy.state.COBA.desc(E=0. * u.mV),
             post=self.N
         )
-        self.I = brainstate.nn.AlignPostProj(
+        self.I = brainpy.state.AlignPostProj(
             comm=brainstate.nn.EventFixedProb(self.n_inh, self.num, conn_num=80 / self.num, conn_weight=6.7 * u.mS),
-            syn=brainstate.nn.Expon.desc(self.num, tau=10. * u.ms),
-            out=brainstate.nn.COBA.desc(E=-80. * u.mV),
+            syn=brainpy.state.Expon.desc(self.num, tau=10. * u.ms),
+            out=brainpy.state.COBA.desc(E=-80. * u.mV),
             post=self.N
         )
 
@@ -69,7 +69,7 @@ class EINet(brainstate.nn.DynamicsGroup):
             self.rate.value += self.N.get_spike()
 
 
-@brainstate.compile.jit(static_argnums=0)
+@brainstate.transform.jit(static_argnums=0)
 def run(scale: float):
     # network
     net = EINet(scale)
@@ -79,7 +79,7 @@ def run(scale: float):
     # simulation
     with brainstate.environ.context(dt=0.1 * u.ms):
         times = u.math.arange(0. * u.ms, duration, brainstate.environ.get_dt())
-        brainstate.compile.for_loop(lambda t: net.update(t, 20. * u.mA), times)
+        brainstate.transform.for_loop(lambda t: net.update(t, 20. * u.mA), times)
 
     return net.num, net.rate.value.sum() / net.num / duration.to_decimal(u.second)
 

@@ -1,4 +1,4 @@
-# Copyright 2025 BDP Ecosystem Limited. All Rights Reserved.
+# Copyright 2025 BrainX Ecosystem Limited. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@
 # -*- coding: utf-8 -*-
 
 from functools import partial
-from typing import Tuple, NamedTuple, Sequence, Union
 from typing import Tuple, NamedTuple, Sequence, Union, Callable
 
 import brainstate.environ
@@ -26,7 +25,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.experimental.sparse import csr_todense_p, coo_todense_p
 
-from ._array_base import BaseArray
+from ._event.base import BaseArray
 from ._typing import MatrixShape, Data, Index
 
 
@@ -82,7 +81,10 @@ def _coo_todense(
 
 
 @jax.jit
-def _csr_to_coo(indices: jax.Array, indptr: jax.Array) -> Tuple[jax.Array, jax.Array]:
+def _csr_to_coo(
+    indices: jax.Array,
+    indptr: jax.Array
+) -> Tuple[jax.Array, jax.Array]:
     """Given CSR (indices, indptr) return COO (row, col)"""
     return jnp.cumsum(jnp.zeros_like(indices).at[indptr].add(1)) - 1, indices
 
@@ -113,8 +115,12 @@ def _csr_todense(
     return u.maybe_decimal(mat * unit)
 
 
-def _block_csr_tocsr(data: jax.Array, indices: jax.Array, indptr: jax.Array, shape: MatrixShape) -> Tuple[
-    jax.Array, jax.Array, jax.Array]:
+def _block_csr_tocsr(
+    data: jax.Array,
+    indices: jax.Array,
+    indptr: jax.Array,
+    shape: MatrixShape
+) -> Tuple[jax.Array, jax.Array, jax.Array]:
     n, m = data.shape[1:]
     N, M = shape
     n_block_rows = indptr.shape[0] - 1
@@ -146,12 +152,14 @@ def _block_csr_tocsr(data: jax.Array, indices: jax.Array, indptr: jax.Array, sha
 
 
 @partial(jax.jit, static_argnames=["n", "m", "dense_shape_row", "nse"])
-def _block_csr_tocoo(n: int,
-                     m: int,
-                     dense_shape_row: int,
-                     nse: int,
-                     indices: jax.Array,
-                     indptr: jax.Array) -> Tuple[jax.Array, jax.Array]:
+def _block_csr_tocoo(
+    n: int,
+    m: int,
+    dense_shape_row: int,
+    nse: int,
+    indices: jax.Array,
+    indptr: jax.Array
+) -> Tuple[jax.Array, jax.Array]:
     nrows = dense_shape_row // n
     delta_row_array = jnp.arange(n).repeat(m)
     delta_col_array = jnp.tile(jnp.arange(m), n)
@@ -249,7 +257,10 @@ def count_blocks(mat, block_size: Tuple[int, int]) -> int:
     return _count_blocks(mat.shape[0], mat.shape[1], n, m, mat.indptr, mat.indices)
 
 
-def _nonzero_blocks(dense: jax.Array, block_size: Tuple[int, int]) -> Tuple[jax.Array, jax.Array, jax.Array]:
+def _nonzero_blocks(
+    dense: jax.Array,
+    block_size: Tuple[int, int]
+) -> Tuple[jax.Array, jax.Array, jax.Array]:
     N, M = dense.shape
     n, m = block_size
     n_block_rows = N // n
@@ -707,6 +718,7 @@ def namescoped_jit(
         def my_func2(x, y, *, shape, transpose=False):
             return x + y
     """
+
     def decorator(fun: Callable):
         if name is not None:
             fun.__name__ = name

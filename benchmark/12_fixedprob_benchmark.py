@@ -1,4 +1,4 @@
-# Copyright 2024 BDP Ecosystem Limited. All Rights Reserved.
+# Copyright 2024 BrainX Ecosystem Limited. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -89,7 +89,7 @@ def event_matrix(n_pre, n_post, conn_prob, spk_prob, as_float: bool, transpose: 
         else:
             return csr @ brainevent.EventArray(spike)
 
-    weight2 = brainstate.init.Normal()([n_pre, n_post])
+    weight2 = braintools.init.Normal()([n_pre, n_post])
 
     @jax.jit
     def f2(spike):
