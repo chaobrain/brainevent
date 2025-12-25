@@ -30,6 +30,7 @@ from brainevent._op.op_numba import numba_kernel
 from brainevent._op.op_pallas import pallas_kernel
 from brainevent._op.util import general_batching_rule
 from brainevent._op.op_warp import jaxtype_to_warptype, warp_kernel
+from brainevent._sddmm.main import sddmm_coo_indices
 from .float import csr_matvec, csr_matmat
 
 
@@ -1280,11 +1281,9 @@ def _csrmm_transpose_rule(
         else:
             row, col = _csr_to_coo(indices, indptr)
             if transpose:
-                dCSR = B @ ct.T
-                d_data = dCSR[row, col]
+                d_data = sddmm_coo_indices(B, ct.T, row, col).data
             else:
-                dCSR = B @ ct.T
-                d_data = dCSR[col, row]
+                d_data = sddmm_coo_indices(B, ct.T, col, row).data
             return d_data, indices, indptr, B, _
 
 
