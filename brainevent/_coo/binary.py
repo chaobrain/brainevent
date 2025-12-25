@@ -30,6 +30,7 @@ from brainevent._op.op_numba import numba_kernel
 from brainevent._op.util import general_batching_rule
 from brainevent._op.op_warp import jaxtype_to_warptype, warp_kernel
 from .float import coo_matvec, coo_matmat
+from brainevent._sddmm.main import sddmm_coo_indices
 
 
 @namescoped_jit(static_argnames=("shape", "transpose", "float_as_event"))
@@ -1003,8 +1004,9 @@ def _event_coomm_transpose_rule(
         dB = coo_matmat(data, row, col, ct, shape=shape, transpose=not transpose)
         return data, row, col, dB, _
     else:
-        B = jnp.asarray(B)
-        d_data = (ct[row] * B[col]).sum(1)
+        # B = jnp.asarray(B)
+        # d_data = (ct[row] * B[col]).sum(1)
+        d_data = sddmm_coo_indices(ct, B, row, col).data
         return d_data, row, col, B, _
 
 
