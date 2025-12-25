@@ -12,14 +12,13 @@ import brainstate
 from utils import visualize
 import brainevent
 
-import jax.numpy as jnp
 brainevent.config.gpu_kernel_backend = 'pallas'
-from brainevent._array_binary_index_extraction import binary_array_index
+from brainevent._event import binary_array_index
+
 
 def forward(n_pre, n_post, spk_prob):
     spike = (brainstate.random.rand(n_pre) < spk_prob)
     spike = spike.astype(float)
-
 
     indices = brainstate.random.randn(n_pre).astype(int)
 
@@ -40,9 +39,7 @@ def forward(n_pre, n_post, spk_prob):
     for _ in range(10):
         idx, cnt = jax.block_until_ready(get_idx(spike))
 
-
     print('max difference:', jax.numpy.abs(count - cnt[0]))
-
 
     t0 = time.time()
     for _ in range(n):
@@ -50,14 +47,12 @@ def forward(n_pre, n_post, spk_prob):
     r2 = time.time() - t0
     print(f"n_pre: {n_pre}, get index: {r2} s")
 
-
     ratio = 0
     return ratio
 
 
-
 def benchmark_forward(prob=0.1):
-    #platform = brainstate.environ.get_platform()
+    # platform = brainstate.environ.get_platform()
 
     results = {}
     for transpose in [True, False]:

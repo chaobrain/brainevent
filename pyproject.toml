@@ -18,19 +18,15 @@ exclude = [
     "brainevent/__init__.py"
 ]
 
+
 [tool.setuptools.dynamic]
-version = {attr = "brainevent.__version__"}
-
-
-[tool.distutils.bdist_wheel]
-universal = true
+version = { attr = "brainevent.__version__" }
 
 
 [project]
 name = "brainevent"
 description = "Event-driven Computation in JAX for Brain Dynamics."
 readme = 'README.md'
-license = { text = 'Apache-2.0 license' }
 requires-python = '>=3.10'
 authors = [{ name = 'BrainEvent Developers', email = 'chao.brain@qq.com' }]
 dynamic = ["version"]
@@ -44,24 +40,22 @@ classifiers = [
     'Programming Language :: Python :: 3.12',
     'Programming Language :: Python :: 3.13',
     'Intended Audience :: Science/Research',
-    'License :: OSI Approved :: Apache Software License',
     'Topic :: Scientific/Engineering :: Bio-Informatics',
     'Topic :: Scientific/Engineering :: Mathematics',
     'Topic :: Scientific/Engineering :: Artificial Intelligence',
     'Topic :: Software Development :: Libraries',
 ]
-
 keywords = [
     'computational neuroscience',
     'brain-inspired computation',
     'brain dynamics programming',
 ]
-
 dependencies = [
     'numpy>=1.15',
     'brainunit>=0.0.8',
     'absl-py',
 ]
+
 
 [project.urls]
 homepage = 'https://github.com/chaobrain/brainevent'
@@ -69,6 +63,7 @@ repository = 'https://github.com/chaobrain/brainevent'
 "Bug Tracker" = 'https://github.com/chaobrain/brainevent/issues'
 "Documentation" = 'https://brainevent.readthedocs.io/'
 "Source Code" = 'https://github.com/chaobrain/brainevent'
+
 
 [project.optional-dependencies]
 cpu = [
@@ -92,4 +87,7 @@ tpu = [
 ]
 testing = [
     'pytest',
+    'jax',
+    'brainunit',
+    'absl-py',
 ]

@@ -49,17 +49,6 @@ in sparse spike-based scenarios where only a small fraction of neurons are activ
 - **Seamless JAX integration**: Full support for automatic differentiation, JIT compilation, and vmap
 - **Biologically plausible**: Mirrors the sparse, event-driven nature of real neural systems
 
-Why BrainEvent?
-^^^^^^^^^^^^^^^
-
-**Performance**: Event-driven computation can be orders of magnitude faster than dense operations when spike activity is sparse (typical in biological neural networks).
-
-**Memory efficiency**: Sparse data structures reduce memory footprint for large-scale neural simulations.
-
-**Biological realism**: Event-based processing naturally represents how the brain computes with discrete action potentials.
-
-**Scalability**: Optimized implementations across different hardware backends (CPU/GPU/TPU) enable simulations from small networks to brain-scale models.
-
 
 Core Components
 ^^^^^^^^^^^^^^^
