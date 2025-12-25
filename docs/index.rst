@@ -158,27 +158,6 @@ processing only the active (non-zero) events.
    spikes = brainevent.EventArray(jax.numpy.array([...]))
    output = spikes @ jitc_conn  # Only active spikes are processed
 
-**Integration with BrainPy**
-
-BrainEvent seamlessly integrates with BrainPy for large-scale brain simulations:
-
-.. code-block:: python
-
-
-   import brainpy
-   import brainunit
-   import brainevent
-
-   # Define a spiking neural network
-   class Network(brainpy.DynamicalSystem):
-       def __init__(self):
-           super().__init__()
-           self.neurons = brainpy.neurons.LIF(4000, V_rest=-60*brainunit.mV, ...)
-           self.synapses = brainevent.CSR(...)  # Use BrainEvent sparse matrix
-
-       def update(self, inp):
-           spikes = brainevent.EventArray(self.neurons.spike)
-           self.neurons.input += spikes @ self.synapses
 
 
 See also the ecosystem
