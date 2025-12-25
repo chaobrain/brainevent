@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+import ctypes
 import importlib.util
 from typing import Dict, Sequence, Tuple
 
@@ -32,6 +33,7 @@ if numba_installed:
     from numba import types, carray, cfunc
 
 _NUMBA_CPU_FFI_HANDLES: Dict[str, object] = {}
+_FFI_CALLBACK_COUNTER = 0
 
 
 def _ensure_sequence(outs: OutType):
@@ -59,56 +61,74 @@ def _register_numba_cpu_ffi_target(
     output_shapes: Tuple[Tuple[int, ...], ...],
     output_dtypes: Tuple[np.dtype, ...],
 ):
+    global _FFI_CALLBACK_COUNTER
+
     if not numba_installed:
         raise ImportError('Numba is required to compile the CPU kernel for the custom operator.')
 
-    code_scope = dict(
-        func_to_call=kernel,
-        input_shapes=input_shapes,
-        input_dtypes=input_dtypes,
-        output_shapes=output_shapes,
-        output_dtypes=output_dtypes,
-        carray=carray,
-    )
+    # Create the callback function that processes the FFI call
+    def ffi_callback(output_ptrs, input_ptrs):
+        # Convert input pointers to numpy arrays using numba carray
+        inputs = []
+        for i in range(len(input_shapes)):
+            ptr = ctypes.cast(input_ptrs[i], ctypes.c_void_p).value
+            arr = carray(ptr, input_shapes[i], dtype=input_dtypes[i])
+            inputs.append(arr)
 
-    args_in = [
-        f'in{i} = carray(input_ptrs[{i}], input_shapes[{i}], dtype=input_dtypes[{i}])'
-        for i in range(len(input_shapes))
-    ]
+        # Convert output pointers to numpy arrays
+        outputs = []
+        if len(output_shapes) > 1:
+            for i in range(len(output_shapes)):
+                ptr = ctypes.cast(output_ptrs[i], ctypes.c_void_p).value
+                arr = carray(ptr, output_shapes[i], dtype=output_dtypes[i])
+                outputs.append(arr)
+        else:
+            ptr = ctypes.cast(output_ptrs, ctypes.c_void_p).value
+            arr = carray(ptr, output_shapes[0], dtype=output_dtypes[0])
+            outputs.append(arr)
 
+        # Call the kernel function
+        kernel(*inputs, *outputs)
+
+    # Define the ctypes signature for the FFI callback
+    #
+    # JAX FFI expects:
+    #
+    #   void(void* output_ptrs, void** input_ptrs) for single output
+    #
+    # or
+    #
+    #   void(void** output_ptrs, void** input_ptrs) for multiple outputs
+    #
     if len(output_shapes) > 1:
-        args_out = [
-            f'out{i} = carray(output_ptrs[{i}], output_shapes[{i}], dtype=output_dtypes[{i}])'
-            for i in range(len(output_shapes))
-        ]
-        sig = types.void(types.CPointer(types.voidptr), types.CPointer(types.voidptr))
+        ffi_c_call_func = ctypes.CFUNCTYPE(
+            None,  # return type: void
+            ctypes.POINTER(ctypes.c_void_p),  # output_ptrs: void**
+            ctypes.POINTER(ctypes.c_void_p),  # input_ptrs: void**
+        )
     else:
-        args_out = [f'out0 = carray(output_ptrs, output_shapes[0], dtype=output_dtypes[0])']
-        sig = types.void(types.voidptr, types.CPointer(types.voidptr))
+        ffi_c_call_func = ctypes.CFUNCTYPE(
+            None,  # return type: void
+            ctypes.c_void_p,  # output_ptrs: void*
+            ctypes.POINTER(ctypes.c_void_p),  # input_ptrs: void**
+        )
 
-    args_call = [f'in{i}' for i in range(len(input_shapes))] + [f'out{i}' for i in range(len(output_shapes))]
+    # Create the callback wrapper
+    callback_func = ffi_c_call_func(ffi_callback)
 
-    code_string = '''
-def numba_cpu_ffi_target(output_ptrs, input_ptrs):
-    {args_in}
-    {args_out}
-    func_to_call({args_call})
-    '''.format(
-        args_in="\n    ".join(args_in),
-        args_out="\n    ".join(args_out),
-        args_call=", ".join(args_call),
-    )
+    # Get the function pointer address
+    ffi_ccall_address = ctypes.cast(callback_func, ctypes.c_void_p)
 
-    exec(compile(code_string.strip(), '', 'exec'), code_scope)
-    new_f = code_scope['numba_cpu_ffi_target']
+    # Create the PyCapsule and register the FFI target
+    ffi_capsule = jax.ffi.pycapsule(ffi_ccall_address.value)
 
-    xla_ffi_rule = cfunc(sig)(new_f)
-    target_name = f'brainevent_numba_ffi_{str(xla_ffi_rule.address)}'
+    target_name = f'brainevent_numba_ffi_{_FFI_CALLBACK_COUNTER}'
+    _FFI_CALLBACK_COUNTER += 1
 
-    # Register FFI target with version compatibility
-    ffi_capsule = jax.ffi.pycapsule(xla_ffi_rule.address)
     jax.ffi.register_ffi_target(target_name, ffi_capsule, platform="cpu")
-    _NUMBA_CPU_FFI_HANDLES[target_name] = xla_ffi_rule  # keep handle alive
+
+    # Keep the callback alive to prevent garbage collection
+    _NUMBA_CPU_FFI_HANDLES[target_name] = callback_func
 
     out_types = tuple(
         jax.ShapeDtypeStruct(shape, dtype)
@@ -151,7 +171,9 @@ def numba_cpu_ffi_rule(
             kernel.kernel, input_shapes, input_dtypes, output_shapes, output_dtypes,
         )
 
-        # call FFI
-        return jax.ffi.ffi_call(target_name, out_types, input_output_aliases=input_output_aliases)(*ins)
+        # call FFI with api_version=0 for old-style custom_call interface
+        return jax.ffi.ffi_call(
+            target_name, out_types, input_output_aliases=input_output_aliases, custom_call_api_version=0
+        )(*ins)
 
     return mlir.lower_fun(kernel_fn, multiple_results=True)

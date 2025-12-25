@@ -18,7 +18,6 @@
 import functools
 from typing import Callable, Union, Optional, Dict
 
-import jax
 from jax.interpreters import xla, mlir, batching, ad
 
 from brainevent._compatible_import import Primitive
@@ -532,4 +531,3 @@ class XLACustomKernel:
         """
         prim = self.primitive
         batching.primitive_batchers[prim] = functools.partial(general_batching_rule, prim)
-
