@@ -562,7 +562,7 @@ def _jitc_mv_homo_transpose_rules(
             transpose=not transpose,
             corder=not corder
         )[0]
-        dw = jnp.sum(row * vector, keepdims=True)
+        dw = jnp.sum(row * vector, keepdims=True).reshape(weight.aval.shape)
         return dw, clen, vector, seed, _
     else:
         raise NotImplementedError(
@@ -1218,7 +1218,7 @@ def _jitc_mm_homo_transpose_rules(
             transpose=not transpose,
             corder=not corder
         )[0]
-        dw = jnp.sum(r * B, keepdims=True)
+        dw = jnp.sum(r * B, keepdims=True).reshape(weight.aval.shape)
         return dw, clen, B, seed, _
 
     else:
