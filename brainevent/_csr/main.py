@@ -376,7 +376,7 @@ class CSR(BaseCLS):
         >>> csr_matrix = CSR((data, indices, indptr), shape=(3, 4))
         >>> coo_matrix = csr_matrix.tocoo()
         """
-        from ._coo import COO
+        from brainevent import COO
         pre_ids, post_ids = _csr_to_coo(self.indices, self.indptr)
         return COO((self.data, pre_ids, post_ids), shape=self.shape)
 
@@ -821,7 +821,7 @@ class CSC(BaseCLS):
         >>> csc_matrix = CSC((data, indices, indptr), shape=(3, 4))
         >>> coo_matrix = csc_matrix.tocoo()
         """
-        from ._coo import COO
+        from brainevent import COO
         post_ids, pre_ids = _csr_to_coo(self.indices, self.indptr)
         return COO((self.data, pre_ids, post_ids), shape=self.shape)
 

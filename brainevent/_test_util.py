@@ -34,7 +34,7 @@ def generate_fixed_conn_num_indices(
         indices = rng.randint(0, n_post, (n_pre, n_conn))
     else:
         indices = brainstate.transform.for_loop(
-            lambda *args: rng.choice(n_post, n_conn, replace=False),
+            lambda *args: rng.choice(n_post, size=n_conn, replace=False),
             length=n_pre
         )
     return jnp.asarray(indices)
