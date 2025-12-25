@@ -1168,11 +1168,9 @@ def _csrmm_transpose_rule(
             # TODO
             row, col = _csr_to_coo(indices, indptr)
             if transpose:
-                dCSR = B @ ct.T
-                d_data = sddmm_coo_indices(B, ct.T, row, col)
+                d_data = sddmm_coo_indices(B, ct.T, row, col).data
             else:
-                dCSR = B @ ct.T
-                d_data = sddmm_coo_indices(B, ct.T, col, row)
+                d_data = sddmm_coo_indices(B, ct.T, col, row).data
             return d_data, indices, indptr, B, _
 
 
