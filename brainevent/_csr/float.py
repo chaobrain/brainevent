@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-
-
+from functools import partial
 from typing import Sequence
 
 import brainunit as u
@@ -23,6 +22,11 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._compatible_import import pallas as pl
+from brainevent._compatible_import import (
+    pallas_store,
+    pallas_atomic_add,
+    pallas_load,
+)
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescoped_jit
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent._op.main import XLACustomKernel
@@ -207,6 +211,7 @@ def _csrmv_warp_kernel_generator(
 
 
 def _csrmv_pallas_tiled_kernel_generator(
+    platform,
     weight_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
     shape: MatrixShape,
@@ -245,8 +250,8 @@ def _csrmv_pallas_tiled_kernel_generator(
                 def loop_fn(index, _):
                     offset = col_start + index * block_dim
                     mask = offset + jnp.arange(block_dim) < col_end
-                    rows = pl.load(indices_ref, pl.dslice(offset, block_dim), mask=mask)
-                    pl.atomic_add(posts_ref, rows, data, mask=mask)
+                    rows = pallas_store(platform, indices_ref, pl.dslice(offset, block_dim), mask=mask)
+                    pallas_atomic_add(platform, posts_ref, rows, data, mask=mask)
 
                 jax.lax.fori_loop(0, num_blocks, loop_fn, None)
 
@@ -275,8 +280,8 @@ def _csrmv_pallas_tiled_kernel_generator(
                     offset = row_start + index * block_dim
                     mask = offset + jnp.arange(block_dim) < row_end
 
-                    cols = pl.load(indices_ref, pl.dslice(offset, block_dim), mask=mask)
-                    val_B = pl.load(vector_ref, cols, mask=mask, other=0.0)
+                    cols = pallas_load(platform, indices_ref, pl.dslice(offset, block_dim), mask=mask)
+                    val_B = pallas_load(platform, vector_ref, cols, mask=mask, other=0.0)
                     sum_ += val_A * jnp.sum(val_B)
                     return sum_
 
@@ -313,10 +318,10 @@ def _csrmv_pallas_tiled_kernel_generator(
                 def loop_fn(index, _):
                     offset = col_start + index * block_dim
                     mask = offset + jnp.arange(block_dim) < col_end
-                    rows = pl.load(indices_ref, pl.dslice(offset, block_dim), mask=mask)
-                    val_A = pl.load(data_ref, pl.dslice(offset, block_dim), mask=mask, other=0.0)
+                    rows = pallas_load(platform, indices_ref, pl.dslice(offset, block_dim), mask=mask)
+                    val_A = pallas_load(platform, data_ref, pl.dslice(offset, block_dim), mask=mask, other=0.0)
                     contrib = val_A * val_vector
-                    pl.atomic_add(posts_ref, rows, contrib, mask=mask)
+                    pallas_atomic_add(platform, posts_ref, rows, contrib, mask=mask)
 
                 jax.lax.fori_loop(0, num_blocks, loop_fn, None)
 
@@ -344,9 +349,9 @@ def _csrmv_pallas_tiled_kernel_generator(
                     offset = row_start + index * block_dim
                     mask = offset + jnp.arange(block_dim) < row_end
 
-                    cols = pl.load(indices_ref, pl.dslice(offset, block_dim), mask=mask)
-                    val_A = pl.load(data_ref, pl.dslice(offset, block_dim), mask=mask, other=0.0)
-                    val_B = pl.load(vector_ref, cols, mask=mask, other=0.0)
+                    cols = pallas_load(platform, indices_ref, pl.dslice(offset, block_dim), mask=mask)
+                    val_A = pallas_load(platform, data_ref, pl.dslice(offset, block_dim), mask=mask, other=0.0)
+                    val_B = pallas_load(platform, vector_ref, cols, mask=mask, other=0.0)
                     sum_ += jnp.sum(val_A * val_B)
                     return sum_
 
@@ -542,9 +547,9 @@ csrmv_p.def_cpu_kernel(_csrmv_numba_kernel_generator)
 csrmv_p.def_gpu_kernel(
     default='pallas',
     warp=_csrmv_warp_kernel_generator,
-    pallas=_csrmv_pallas_tiled_kernel_generator,
+    pallas=partial(_csrmv_pallas_tiled_kernel_generator, 'gpu'),
 )
-csrmv_p.def_tpu_kernel(_csrmv_pallas_tiled_kernel_generator)
+csrmv_p.def_tpu_kernel(partial(_csrmv_pallas_tiled_kernel_generator, 'tpu'))
 csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
 csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
 csrmv_p.def_batching_rule(_csrmv_batching)
@@ -764,6 +769,7 @@ def _csrmm_warp_kernel_generator(
 
 
 def _csrmm_pallas_kernel1(
+    platform,
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     indptr_info: jax.ShapeDtypeStruct,
@@ -794,7 +800,10 @@ def _csrmm_pallas_kernel1(
                 i_n_block = pl.program_id(1)
                 i_n_start = i_n_block * block_dim_n
                 mask = (i_n_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
-                B_row = pl.load(B_ref, (i_k, pl.dslice(i_n_start, block_dim_n)), mask=mask, other=0.0)
+                B_row = pallas_load(
+                    platform,
+                    B_ref, (i_k, pl.dslice(i_n_start, block_dim_n)), mask=mask, other=0.0
+                )
                 val = B_row * data_ref[0]
 
                 def loop_fn(index, _):
@@ -831,7 +840,7 @@ def _csrmm_pallas_kernel1(
 
                 def loop_fn(index, out):
                     i_k = indices_ref[index]
-                    B_row = pl.load(B_ref, (i_k, pl.dslice(i_n_start, block_dim_n)), mask=mask, other=0.0)
+                    B_row = pallas_load(B_ref, (i_k, pl.dslice(i_n_start, block_dim_n)), mask=mask, other=0.0)
                     out += weight * B_row
                     return out
 
@@ -868,7 +877,7 @@ def _csrmm_pallas_kernel1(
                 i_n_block = pl.program_id(1)
                 i_n_start = i_n_block * block_dim_n
                 mask = (i_n_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
-                B_row = pl.load(B_ref, (i_k, pl.dslice(i_n_start, block_dim_n)), mask=mask, other=0.0)
+                B_row = pallas_load(B_ref, (i_k, pl.dslice(i_n_start, block_dim_n)), mask=mask, other=0.0)
 
                 def loop_fn(index, _):
                     i_row = indices_ref[index]
@@ -907,7 +916,7 @@ def _csrmm_pallas_kernel1(
                 def loop_fn(index, out):
                     i_col = indices_ref[index]
                     val_A = data_ref[index]
-                    val_B = pl.load(B_ref, (i_col, pl.dslice(i_n_start, block_dim_n)), mask=mask, other=0.0)
+                    val_B = pallas_load(B_ref, (i_col, pl.dslice(i_n_start, block_dim_n)), mask=mask, other=0.0)
                     out += val_A * val_B
                     return out
 
@@ -973,7 +982,7 @@ def _csrmm_pallas_kernel2(
                 def outer_loop_fn(i_row, _):
                     def inner_loop_fn(i_k, inner_acc):
                         index = indices_ref[i_k]
-                        val_B = pl.load(
+                        val_B = pallas_load(
                             B_ref,
                             (index, pl.dslice(i_n * block_dim_n, block_dim_n)),
                             mask=col_mask
@@ -1033,7 +1042,7 @@ def _csrmm_pallas_kernel2(
                     def inner_loop_fn(i_k, inner_acc):
                         index = indices_ref[i_k]
                         val_A = data_ref[i_k]
-                        val_B = pl.load(
+                        val_B = pallas_load(
                             B_ref,
                             (index, pl.dslice(i_n * block_dim_n, block_dim_n)),
                             mask=col_mask
@@ -1344,10 +1353,10 @@ def _csrmv_yw2y_pallas_kernel_generator(
         def loop_fn(i, _):
             offset = i_start + i * block_dim
             mask = (offset + jnp.arange(block_dim)) < i_end
-            w = pl.load(w_ref, pl.dslice(offset, block_dim), mask=mask, other=0.0)
+            w = pallas_load(w_ref, pl.dslice(offset, block_dim), mask=mask, other=0.0)
             if transpose:
-                index = pl.load(indices_ref, pl.dslice(offset, block_dim), mask=mask, other=0)
-                y = pl.load(y_ref, index, mask=mask, other=0.0)
+                index = pallas_load(indices_ref, pl.dslice(offset, block_dim), mask=mask, other=0)
+                y = pallas_load(y_ref, index, mask=mask, other=0.0)
                 pl.store(posts_ref, pl.dslice(offset, block_dim), w * y, mask=mask)
             else:
                 pl.store(posts_ref, pl.dslice(offset, block_dim), w * y_scalar, mask=mask)

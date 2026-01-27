@@ -24,6 +24,11 @@
 # - Vogels, T. P. and Abbott, L. F. (2005), Signal propagation and logic gating in networks of integrate-and-fire neurons., J. Neurosci., 25, 46, 10786–95
 #
 
+import os
+
+import brainevent
+
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'  # specify which GPU(s) to use
 import time
 
 import brainpy
@@ -31,6 +36,8 @@ import brainstate
 import braintools
 import brainunit as u
 import jax
+# brainevent.config.get_gpu_backend = 'warp'
+
 
 
 class EINet(brainstate.nn.Module):

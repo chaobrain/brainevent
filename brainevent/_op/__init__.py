@@ -25,12 +25,15 @@ from .util import *
 from .util import __all__ as xla_custom_op_util_all
 from .warp_util import *
 from .warp_util import __all__ as warp_util_all
+from .op_tvm_ffi import *
+from .op_tvm_ffi import __all__ as tvm_ffi_all
 
 __all__ = xla_custom_op_all + xla_custom_op_numba_all + xla_custom_op_pallas_all + xla_custom_op_util_all
-__all__ += xla_custom_op_warp_all + warp_util_all
+__all__ += xla_custom_op_warp_all + warp_util_all + tvm_ffi_all
 del xla_custom_op_all
 del xla_custom_op_numba_all
 del xla_custom_op_pallas_all
 del xla_custom_op_util_all
 del xla_custom_op_warp_all
 del warp_util_all
+del tvm_ffi_all

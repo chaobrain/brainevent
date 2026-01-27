@@ -26,7 +26,13 @@ from brainevent._compatible_import import JAXSparse
 from brainevent._compatible_import import pallas as pl
 from brainevent._coo import COO
 from brainevent._csr import CSR
-from brainevent._misc import _block_csr_tocoo, _nonzero_blocks, _block_csr_tocsr, estimate_block_size, csr_to_csc_index
+from brainevent._misc import (
+    _block_csr_tocoo,
+    _nonzero_blocks,
+    _block_csr_tocsr,
+    estimate_block_size,
+    csr_to_csc_index,
+)
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 
 __all__ = [
@@ -461,16 +467,16 @@ def _sdd_kernel(
     def body(x):
         val, i_block = x
         i_x_col = indices_ref[i_block]
-        block = pl.load(x_ref, (i_block, pl.dslice(None), pl.dslice(None)))  # [bm, bn]
-        chunk = pl.load(y_ref, (pl.dslice(i_x_col * bn, bn), pl.dslice(i_k * bk, bk)))  # [bn, bk]
-        return val + jnp.dot(block, chunk).astype(o_ref.dtype), i_block + 1
+        block = x_ref[i_block, ...]  # [bm, bn]
+        chunk = y_ref[pl.dslice(i_x_col * bn, bn), pl.dslice(i_k * bk, bk)]  # [bn, bk]
+        return val + pl.dot(block, chunk).astype(o_ref.dtype), i_block + 1
 
     acc = jax.lax.while_loop(
         lambda x: x[1] < i_end,
         body,
         (jnp.zeros([bm, bk], dtype=o_ref.dtype), i_start)
     )[0]
-    pl.store(o_ref, (pl.dslice(bm * i_m, bm), pl.dslice(bk * i_k, bk)), acc)  # [bm, bk]
+    o_ref[pl.dslice(bm * i_m, bm), pl.dslice(bk * i_k, bk)] = acc  # [bm, bk]
 
 
 @functools.partial(jax.jit, static_argnames=["debug", 'interpret', 'block_size'])
@@ -490,8 +496,9 @@ def sdd_matmul(
     dtype = jnp.result_type(mat1.dtype, mat2.dtype)
 
     # kernel
+    kernel = functools.partial(_sdd_kernel, bm=bm, bn=bn, bk=block_size)
     fn = pl.pallas_call(
-        functools.partial(_sdd_kernel, bm=bm, bn=bn, bk=block_size),
+        kernel,
         out_shape=jax.ShapeDtypeStruct(shape=(m, k), dtype=dtype),
         grid=(pl.cdiv(m, bm), pl.cdiv(k, block_size)),
         debug=debug,

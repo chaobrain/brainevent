@@ -477,17 +477,8 @@ def _jitc_mv_homo_pallas_kernel_generator(
 
 
 def _jitc_mv_homo_jvp_v(
-    v_dot,
-    weight,
-    clen,
-    vector,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
+    v_dot, weight, clen, vector, seed, _, *,
+    shape, transpose, corder, **kwargs
 ):
     return float_jitc_mv_homo_p_call(
         weight,
@@ -501,17 +492,8 @@ def _jitc_mv_homo_jvp_v(
 
 
 def _jitc_mv_homo_jvp_weights(
-    w_dot,
-    weight,
-    clen,
-    vector,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
+    w_dot, weight, clen, vector, seed, _, *,
+    shape, transpose, corder, **kwargs
 ):
     return binary_jitc_mv_homo_p_call(
         w_dot,
@@ -525,17 +507,8 @@ def _jitc_mv_homo_jvp_weights(
 
 
 def _jitc_mv_homo_transpose_rules(
-    ct,
-    weight,
-    clen,
-    vector,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
+    ct, weight, clen, vector, seed, _, *,
+    shape, transpose, corder, **kwargs
 ):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
@@ -703,9 +676,11 @@ def binary_jitc_mv_homo_p_call(
 
 binary_jitc_mv_homo_p = XLACustomKernel('binary_jitc_mv_homo')
 binary_jitc_mv_homo_p.def_cpu_kernel(_jitc_mv_homo_numba_kernel_generator)
-binary_jitc_mv_homo_p.def_gpu_kernel(warp=_jitc_mv_homo_warp_kernel_generator,
-                                     pallas=_jitc_mv_homo_pallas_kernel_generator,
-                                     default='pallas')
+binary_jitc_mv_homo_p.def_gpu_kernel(
+    warp=_jitc_mv_homo_warp_kernel_generator,
+    pallas=_jitc_mv_homo_pallas_kernel_generator,
+    default='pallas'
+)
 binary_jitc_mv_homo_p.def_tpu_kernel(_jitc_mv_homo_pallas_kernel_generator)
 binary_jitc_mv_homo_p.def_jvp_rule2(_jitc_mv_homo_jvp_weights, None, _jitc_mv_homo_jvp_v, None, None)
 binary_jitc_mv_homo_p.def_transpose_rule(_jitc_mv_homo_transpose_rules)
@@ -741,7 +716,6 @@ def _jitc_mm_homo_numba_kernel_generator(
                         i_k = np.random.randint(0, clen0)
                         out = np.zeros(n, dtype=weight.dtype)
                         while i_k < k:
-                            # out += B[i_k]
                             for j in range(B.shape[1]):
                                 if B[i_k, j]:
                                     out[j] += 1.0

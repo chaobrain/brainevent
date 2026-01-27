@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-
-
+from functools import partial
 from typing import Sequence
 
 import brainunit as u
@@ -23,6 +22,14 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._compatible_import import pallas as pl
+from brainevent._compatible_import import (
+    triton_load,
+    triton_store,
+    tpu_load,
+    tpu_store,
+    triton_atomic_add,
+    tpu_atomic_add,
+)
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescoped_jit
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent._op.main import XLACustomKernel
@@ -356,12 +363,17 @@ def _binary_csrmv_warp_kernel_generator(
 
 
 def _binary_csrmv_pallas_tiled_kernel_generator(
+    platform: str,
     weight_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
     shape: MatrixShape,
     transpose: bool,
     **kwargs
 ):
+    load = triton_load if platform == 'gpu' else tpu_load
+    store = triton_store if platform == 'gpu' else tpu_store
+    atomic_add = triton_atomic_add if platform == 'gpu' else tpu_atomic_add
+
     m, k = shape
     block_dim = generate_block_dim(pl.cdiv(indices_info.size, shape[1] if transpose else shape[0]))
     block_dim = block_dim // 2
@@ -395,8 +407,8 @@ def _binary_csrmv_pallas_tiled_kernel_generator(
                     def loop_fn(index, _):
                         offset = col_start + index * block_dim
                         mask = offset + jnp.arange(block_dim) < col_end
-                        rows = pl.load(indices_ref, pl.dslice(offset, block_dim), mask=mask)
-                        pl.atomic_add(posts_ref, rows, data, mask=mask)
+                        rows = load(indices_ref, pl.dslice(offset, block_dim), mask=mask)
+                        atomic_add(posts_ref, rows, data, mask=mask)
 
                     jax.lax.fori_loop(0, num_blocks, loop_fn, None)
 
@@ -425,8 +437,8 @@ def _binary_csrmv_pallas_tiled_kernel_generator(
                     offset = row_start + index * block_dim
                     mask = offset + jnp.arange(block_dim) < row_end
 
-                    cols = pl.load(indices_ref, pl.dslice(offset, block_dim), mask=mask)
-                    events = pl.load(vector_ref, cols, mask=mask)
+                    cols = load(indices_ref, pl.dslice(offset, block_dim), mask=mask)
+                    events = load(vector_ref, cols, mask=mask)
                     events = jnp.asarray(events, dtype=posts_ref.dtype)
                     sum_ += val_A * jnp.sum(events)
                     return sum_
@@ -466,9 +478,9 @@ def _binary_csrmv_pallas_tiled_kernel_generator(
                     def loop_fn(index, _):
                         offset = col_start + index * block_dim
                         mask = offset + jnp.arange(block_dim) < col_end
-                        rows = pl.load(indices_ref, pl.dslice(offset, block_dim), mask=mask)
-                        val_A = pl.load(data_ref, pl.dslice(offset, block_dim), mask=mask, other=0.0)
-                        pl.atomic_add(posts_ref, rows, val_A, mask=mask)
+                        rows = load(indices_ref, pl.dslice(offset, block_dim), mask=mask)
+                        val_A = load(data_ref, pl.dslice(offset, block_dim), mask=mask, other=0.0)
+                        atomic_add(posts_ref, rows, val_A, mask=mask)
 
                     jax.lax.fori_loop(0, num_blocks, loop_fn, None)
 
@@ -496,9 +508,9 @@ def _binary_csrmv_pallas_tiled_kernel_generator(
                     offset = row_start + index * block_dim
                     mask = offset + jnp.arange(block_dim) < row_end
 
-                    cols = pl.load(indices_ref, pl.dslice(offset, block_dim), mask=mask)
-                    val_A = pl.load(data_ref, pl.dslice(offset, block_dim), mask=mask, other=0.0)
-                    events = pl.load(vector_ref, cols, mask=mask)
+                    cols = load(indices_ref, pl.dslice(offset, block_dim), mask=mask)
+                    val_A = load(data_ref, pl.dslice(offset, block_dim), mask=mask, other=0.0)
+                    events = load(vector_ref, cols, mask=mask)
                     events = jnp.asarray(events, dtype=posts_ref.dtype)
                     sum_ += jnp.sum(val_A * events)
                     return sum_
@@ -720,11 +732,11 @@ def binary_csrmv_p_call(
 binary_csrmv_p = XLACustomKernel('binary_csrmv')
 binary_csrmv_p.def_cpu_kernel(_binary_csrmv_numba_kernel_generator)
 binary_csrmv_p.def_gpu_kernel(
-    default='pallas',
+    default='warp',
     warp=_binary_csrmv_warp_kernel_generator,
-    pallas=_binary_csrmv_pallas_tiled_kernel_generator,
+    pallas=partial(_binary_csrmv_pallas_tiled_kernel_generator, 'gpu'),
 )
-binary_csrmv_p.def_tpu_kernel(_binary_csrmv_pallas_tiled_kernel_generator)
+binary_csrmv_p.def_tpu_kernel(partial(_binary_csrmv_pallas_tiled_kernel_generator, 'tpu'))
 binary_csrmv_p.def_jvp_rule2(_binary_csrmv_jvp_weights, None, None, _binary_csrmv_jvp_v)
 binary_csrmv_p.def_transpose_rule(_binary_csrmv_transpose_rule)
 binary_csrmv_p.def_batching_rule(_binary_csrmv_batching)
@@ -1012,12 +1024,17 @@ def _binary_csrmm_warp_kernel_generator(
 
 
 def _binary_csrmm_pallas_kernel_generator(
+    platform: str,
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     transpose: bool,
     shape: MatrixShape,
     **kwargs
 ):
+    load = triton_load if platform == 'gpu' else tpu_load
+    store = triton_store if platform == 'gpu' else tpu_store
+    atomic_add = triton_atomic_add if platform == 'gpu' else tpu_atomic_add
+
     m, k = shape
     n = vector_info.shape[1]
 
@@ -1044,7 +1061,7 @@ def _binary_csrmm_pallas_kernel_generator(
                 col_start = indptr_ref[i_k]
                 col_end = indptr_ref[i_k + 1]
                 mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
-                events = pl.load(B_ref, (i_k, pl.dslice(i_col_start, block_dim_n)), mask=mask)
+                events = load(B_ref, (i_k, pl.dslice(i_col_start, block_dim_n)), mask=mask)
                 if B_ref.dtype == jnp.bool_:
                     mask = mask & events
                     val = jnp.where(events, data_ref[0], 0.)
@@ -1054,7 +1071,7 @@ def _binary_csrmm_pallas_kernel_generator(
 
                 def loop_fn(index, _):
                     i_row = indices_ref[index]
-                    pl.atomic_add(posts_ref, (i_row, pl.dslice(i_col_start, block_dim_n)), val, mask=mask)
+                    atomic_add(posts_ref, (i_row, pl.dslice(i_col_start, block_dim_n)), val, mask=mask)
 
                 jax.lax.fori_loop(col_start, col_end, loop_fn, None, )
 
@@ -1088,7 +1105,7 @@ def _binary_csrmm_pallas_kernel_generator(
 
                 def loop_fn(i_k, sum_):
                     index = indices_ref[i_k]
-                    events = pl.load(B_ref, (index, pl.dslice(i_col_start, block_dim_n)), mask=mask)
+                    events = load(B_ref, (index, pl.dslice(i_col_start, block_dim_n)), mask=mask)
                     sum_ += weight * events
                     return sum_
 
@@ -1098,7 +1115,7 @@ def _binary_csrmm_pallas_kernel_generator(
                     loop_fn,
                     jnp.zeros([block_dim_n], dtype=posts_ref.dtype)
                 )
-                pl.store(
+                store(
                     posts_ref,
                     (i_m, pl.dslice(i_col_start, block_dim_n)),
                     i_row_sum,
@@ -1127,7 +1144,7 @@ def _binary_csrmm_pallas_kernel_generator(
                 mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
                 col_start = indptr_ref[i_k]
                 col_end = indptr_ref[i_k + 1]
-                events = pl.load(B_ref, (i_k, pl.dslice(i_col_start, block_dim_n)), mask=mask)
+                events = load(B_ref, (i_k, pl.dslice(i_col_start, block_dim_n)), mask=mask)
                 if B_ref.dtype == jnp.bool_:
                     mask = mask & events
                 else:
@@ -1140,7 +1157,7 @@ def _binary_csrmm_pallas_kernel_generator(
                         val = jnp.where(events, val_A, 0.)
                     else:
                         val = events * val_A
-                    pl.atomic_add(posts_ref, (i_row, pl.dslice(i_col_start, block_dim_n)), val, mask=mask)
+                    atomic_add(posts_ref, (i_row, pl.dslice(i_col_start, block_dim_n)), val, mask=mask)
 
                 jax.lax.fori_loop(col_start, col_end, loop_fn, None, )
 
@@ -1175,7 +1192,7 @@ def _binary_csrmm_pallas_kernel_generator(
                 def loop_fn(index, sum_):
                     i_col = indices_ref[index]
                     val_A = data_ref[index]
-                    events = pl.load(B_ref, (i_col, pl.dslice(i_col_start, block_dim_n)), mask=mask)
+                    events = load(B_ref, (i_col, pl.dslice(i_col_start, block_dim_n)), mask=mask)
                     sum_ += val_A * events
                     return sum_
 
@@ -1185,7 +1202,7 @@ def _binary_csrmm_pallas_kernel_generator(
                     loop_fn,
                     jnp.zeros([block_dim_n], dtype=posts_ref.dtype)
                 )
-                pl.store(
+                store(
                     posts_ref,
                     (i_m, pl.dslice(i_col_start, block_dim_n)),
                     i_row_sum,
@@ -1410,9 +1427,9 @@ binary_csrmm_p.def_cpu_kernel(_binary_csrmm_numba_kernel_generator)
 binary_csrmm_p.def_gpu_kernel(
     default='pallas',
     warp=_binary_csrmm_warp_kernel_generator,
-    pallas=_binary_csrmm_pallas_kernel_generator,
+    pallas=partial(_binary_csrmm_pallas_kernel_generator, 'gpu'),
 )
-binary_csrmm_p.def_tpu_kernel(_binary_csrmm_pallas_kernel_generator)
+binary_csrmm_p.def_tpu_kernel(partial(_binary_csrmm_pallas_kernel_generator, 'tpu'))
 binary_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 binary_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 binary_csrmm_p.def_batching_rule(_binary_csrmm_batching)

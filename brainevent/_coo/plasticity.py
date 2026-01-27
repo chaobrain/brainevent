@@ -20,10 +20,16 @@ import jax
 import numpy as np
 
 from brainevent._compatible_import import pallas as pl
+from brainevent._compatible_import import (
+    triton_store,
+    triton_load,
+    tpu_load,
+    tpu_store,
+)
 from brainevent._misc import generate_block_dim
-from brainevent._op.main import XLACustomKernel
-from brainevent._op.op_numba import numba_kernel
-from brainevent._op.op_pallas import pallas_kernel
+from brainevent._op import XLACustomKernel
+from brainevent._op import numba_kernel
+from brainevent._op import pallas_kernel
 
 
 def coo_on_pre(
@@ -84,13 +90,31 @@ def _coo_on_pre_pallas_kernel_generator(weight_info, **kwargs):
         i_block = pl.program_id(0)
         i_post_start = i_block * block_dim
         mask = jax.numpy.arange(block_dim) + i_post_start < weight_info.shape[0]
-        pre_ids = pl.load(pre_ids_ref, pl.dslice(i_post_start, block_dim), mask=mask)
-        spikes = pl.load(spike_ref, pre_ids, mask=mask)
+        pre_ids = pre_ids_ref[pl.dslice(i_post_start, block_dim)]
+        spikes = spike_ref[pre_ids]
         all_mask = spikes & mask
-        post_ids = pl.load(post_ids_ref, pl.dslice(i_post_start, block_dim), mask=all_mask)
-        post_trace = pl.load(trace_ref, post_ids, mask=all_mask)
-        old_weight = pl.load(out_w_ref, pl.dslice(i_post_start, block_dim), mask=all_mask)
-        pl.store(out_w_ref, pl.dslice(i_post_start, block_dim), old_weight + post_trace, mask=all_mask)
+        post_ids = post_ids_ref[pl.dslice(i_post_start, block_dim)]
+        post_trace = trace_ref[post_ids]
+        old_weight = out_w_ref[pl.dslice(i_post_start, block_dim)]
+        triton_store(out_w_ref.at[pl.dslice(i_post_start, block_dim)], old_weight + post_trace, mask=all_mask)
+
+    return pallas_kernel(kernel, input_output_aliases={0: 0}, tile=(pl.cdiv(weight_info.shape[0], block_dim),))
+
+
+def _coo_on_pre_tpu_kernel_generator(weight_info, **kwargs):
+    block_dim = generate_block_dim(weight_info.shape[0], 1024)
+
+    def kernel(weight_ref, pre_ids_ref, post_ids_ref, spike_ref, trace_ref, out_w_ref):
+        i_block = pl.program_id(0)
+        i_post_start = i_block * block_dim
+        mask = jax.numpy.arange(block_dim) + i_post_start < weight_info.shape[0]
+        pre_ids = tpu_load(pre_ids_ref, pl.dslice(i_post_start, block_dim), mask=mask)
+        spikes = tpu_load(spike_ref, pre_ids, mask=mask)
+        all_mask = spikes & mask
+        post_ids = tpu_load(post_ids_ref, pl.dslice(i_post_start, block_dim), mask=all_mask)
+        post_trace = tpu_load(trace_ref, post_ids, mask=all_mask)
+        old_weight = tpu_load(out_w_ref, pl.dslice(i_post_start, block_dim), mask=all_mask)
+        tpu_store(out_w_ref, pl.dslice(i_post_start, block_dim), old_weight + post_trace, mask=all_mask)
 
     return pallas_kernel(kernel, input_output_aliases={0: 0}, tile=(pl.cdiv(weight_info.shape[0], block_dim),))
 
@@ -115,7 +139,7 @@ def _coo_on_pre_prim_call(weight, pre_ids, post_ids, pre_spike, post_trace):
 _coo_on_pre_prim = XLACustomKernel('coo_on_pre')
 _coo_on_pre_prim.def_cpu_kernel(_coo_on_pre_numba_kernel_generator)
 _coo_on_pre_prim.def_gpu_kernel(pallas=_coo_on_pre_pallas_kernel_generator)
-_coo_on_pre_prim.def_tpu_kernel(_coo_on_pre_pallas_kernel_generator)
+_coo_on_pre_prim.def_tpu_kernel(_coo_on_pre_tpu_kernel_generator)
 
 
 def coo_on_post(
@@ -176,13 +200,31 @@ def _coo_on_post_pallas_kernel_generator(weight_info, **kwargs):
         i_block = pl.program_id(0)
         i_post_start = i_block * block_dim
         mask = jax.numpy.arange(block_dim) + i_post_start < weight_info.shape[0]
-        post_ids = pl.load(post_ids_ref, pl.dslice(i_post_start, block_dim), mask=mask)
-        spikes = pl.load(spike_ref, post_ids, mask=mask)
+        post_ids = triton_load(post_ids_ref, pl.dslice(i_post_start, block_dim), mask=mask)
+        spikes = triton_load(spike_ref, post_ids, mask=mask)
         all_mask = spikes & mask
-        pre_ids = pl.load(pre_ids_ref, pl.dslice(i_post_start, block_dim), mask=all_mask)
-        pre_trace = pl.load(trace_ref, pre_ids, mask=all_mask)
-        old_weight = pl.load(out_w_ref, pl.dslice(i_post_start, block_dim), mask=all_mask)
-        pl.store(out_w_ref, pl.dslice(i_post_start, block_dim), old_weight + pre_trace, mask=all_mask)
+        pre_ids = triton_load(pre_ids_ref, pl.dslice(i_post_start, block_dim), mask=all_mask)
+        pre_trace = triton_load(trace_ref, pre_ids, mask=all_mask)
+        old_weight = triton_load(out_w_ref, pl.dslice(i_post_start, block_dim), mask=all_mask)
+        triton_store(out_w_ref, pl.dslice(i_post_start, block_dim), old_weight + pre_trace, mask=all_mask)
+
+    return pallas_kernel(kernel, input_output_aliases={0: 0}, tile=(pl.cdiv(weight_info.shape[0], block_dim),))
+
+
+def _coo_on_post_tpu_kernel_generator(weight_info, **kwargs):
+    block_dim = generate_block_dim(weight_info.shape[0], 1024)
+
+    def kernel(weight_ref, pre_ids_ref, post_ids_ref, trace_ref, spike_ref, out_w_ref):
+        i_block = pl.program_id(0)
+        i_post_start = i_block * block_dim
+        mask = jax.numpy.arange(block_dim) + i_post_start < weight_info.shape[0]
+        post_ids = tpu_load(post_ids_ref, pl.dslice(i_post_start, block_dim), mask=mask)
+        spikes = tpu_load(spike_ref, post_ids, mask=mask)
+        all_mask = spikes & mask
+        pre_ids = tpu_load(pre_ids_ref, pl.dslice(i_post_start, block_dim), mask=all_mask)
+        pre_trace = tpu_load(trace_ref, pre_ids, mask=all_mask)
+        old_weight = tpu_load(out_w_ref, pl.dslice(i_post_start, block_dim), mask=all_mask)
+        tpu_store(out_w_ref, pl.dslice(i_post_start, block_dim), old_weight + pre_trace, mask=all_mask)
 
     return pallas_kernel(kernel, input_output_aliases={0: 0}, tile=(pl.cdiv(weight_info.shape[0], block_dim),))
 
@@ -207,4 +249,4 @@ def _coo_on_post_prim_call(weight, pre_ids, post_ids, pre_trace, post_spike):
 _coo_on_post_prim = XLACustomKernel('coo_on_post')
 _coo_on_post_prim.def_cpu_kernel(_coo_on_post_numba_kernel_generator)
 _coo_on_post_prim.def_gpu_kernel(pallas=_coo_on_post_pallas_kernel_generator)
-_coo_on_post_prim.def_tpu_kernel(_coo_on_post_pallas_kernel_generator)
+_coo_on_post_prim.def_tpu_kernel(_coo_on_post_tpu_kernel_generator)

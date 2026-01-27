@@ -24,6 +24,12 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._compatible_import import pallas as pl
+from brainevent._compatible_import import (
+    triton_load,
+    triton_store,
+    tpu_load,
+    tpu_store,
+)
 
 __all__ = [
     'BlockELL',
@@ -151,15 +157,13 @@ def _sdd_kernel(
     def body(k, val):
         i_x_col = indices_ref[i_m, k, 0]
         i_block = indices_ref[i_m, k, 1]
-        # block = x_ref[i_block, ...]  # [bm, bn]
-        # chunk = y_ref[i_x_col * bn:(i_x_col + 1) * bn, i_k * bk:(i_k + 1) * bk]  # [bn, bk]
-        block = pl.load(x_ref, (i_block, pl.dslice(None), pl.dslice(None)))  # [bm, bn]
-        chunk = pl.load(y_ref, (pl.dslice(i_x_col * bn, bn), pl.dslice(i_k * bk, bk)))  # [bn, bk]
+        block = x_ref[i_block, ...]  # [bm, bn]
+        chunk = y_ref[pl.dslice(i_x_col * bn, bn), pl.dslice(i_k * bk, bk)]  # [bn, bk]
         return val + jnp.dot(block, chunk).astype(o_ref.dtype)
 
     acc = jax.lax.fori_loop(0, n_block_this_row, body, jnp.zeros([bm, bk], dtype=o_ref.dtype))
-    pl.store(o_ref, (pl.dslice(bm * i_m, bm), pl.dslice(bk * i_k, bk)), acc)  # [bm, bk]
-    # o_ref[i_m * bm:(i_m + 1) * bm, i_k * bk:(i_k + 1) * bk] = acc
+    o_ref[pl.dslice(bm * i_m, bm), pl.dslice(bk * i_k, bk)] = acc  # [bm, bk]
+
 
 
 @functools.partial(jax.jit, static_argnames=["debug", 'interpret', 'block_size'])
@@ -179,8 +183,9 @@ def sdd_matmul(
     dtype = jnp.result_type(mat1.dtype, mat2.dtype)
 
     # kernel
+    kernel = functools.partial(_sdd_kernel, bm=bm, bn=bn, bk=block_size)
     fn = pl.pallas_call(
-        functools.partial(_sdd_kernel, bm=bm, bn=bn, bk=block_size),
+        kernel,
         out_shape=jax.ShapeDtypeStruct(shape=(m, k), dtype=dtype),
         grid=(pl.cdiv(m, bm), pl.cdiv(k, block_size)),
         debug=debug,

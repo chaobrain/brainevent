@@ -74,12 +74,10 @@ cpu = [
 ]
 cuda12 = [
     'jax[cuda12]',
-    'warp-lang',
     'brainunit',
 ]
 cuda13 = [
     'jax[cuda13]',
-    'warp-lang',
     'brainunit',
 ]
 tpu = [

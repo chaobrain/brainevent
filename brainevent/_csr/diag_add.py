@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
+from functools import partial
 
 # -*- coding: utf-8 -*-
 
@@ -25,6 +26,11 @@ from jax.interpreters import ad
 from jax.interpreters.partial_eval import DynamicJaxprTracer
 
 from brainevent._compatible_import import pallas as pl
+from brainevent._compatible_import import (
+    pallas_load,
+    pallas_store,
+    pallas_atomic_add,
+)
 from brainevent._misc import generate_block_dim
 from brainevent._op.main import XLACustomKernel
 from brainevent._op.op_numba import numba_jit_fn, numba_kernel
@@ -191,6 +197,7 @@ def _csr_diag_add_warp_kernel_generator(
 
 
 def _csr_diag_add_pallas_kernel_generator(
+    platform: str,
     diag_pos_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
@@ -201,9 +208,15 @@ def _csr_diag_add_pallas_kernel_generator(
         i_tile = pl.program_id(0)
         i_title_start = i_tile * block_dim
         mask = (i_title_start + jnp.arange(block_dim)) < total
-        positions = pl.load(diag_position, pl.dslice(i_title_start, block_dim), mask=mask)
-        values = pl.load(diag_value, pl.dslice(i_title_start, block_dim), mask=mask)
-        pl.atomic_add(out, pl.dslice(i_title_start, block_dim), values, mask=mask & (positions >= 0))
+        positions = pallas_load(platform, diag_position, pl.dslice(i_title_start, block_dim), mask=mask)
+        values = pallas_load(platform, diag_value, pl.dslice(i_title_start, block_dim), mask=mask)
+        pallas_atomic_add(
+            platform,
+            out,
+            pl.dslice(i_title_start, block_dim),
+            values,
+            mask=mask & (positions >= 0)
+        )
 
     return pallas_kernel(kernel, outs=kwargs['outs'], tile=(pl.cdiv(total, block_dim),))
 
@@ -240,8 +253,10 @@ csr_diag_add_p = XLACustomKernel('csr_diag_add')
 csr_diag_add_p.def_cpu_kernel(_csr_diag_add_numba_kernel_generator)
 csr_diag_add_p.def_gpu_kernel(
     warp=_csr_diag_add_warp_kernel_generator,
-    pallas=_csr_diag_add_pallas_kernel_generator,
+    pallas=partial(_csr_diag_add_pallas_kernel_generator, 'gpu'),
     default='warp',
 )
-csr_diag_add_p.def_tpu_kernel(_csr_diag_add_pallas_kernel_generator)
+csr_diag_add_p.def_tpu_kernel(
+    partial(_csr_diag_add_pallas_kernel_generator, 'tpu')
+)
 csr_diag_add_p.def_jvp_rule2(_csr_diag_add_jvp_csr_value, None, _csr_diag_add_jvp_diag_value)

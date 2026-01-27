@@ -29,6 +29,16 @@ __all__ = [
     'Literal',
     'Token',
     'Var',
+
+    'triton_load',
+    'triton_store',
+    'triton_atomic_add',
+    'tpu_load',
+    'tpu_store',
+    'tpu_atomic_add',
+    'pallas_load',
+    'pallas_store',
+    'pallas_atomic_add',
 ]
 
 from collections.abc import Callable, Sequence
@@ -50,6 +60,83 @@ if jax.__version_info__ < (0, 4, 35):
     from jax.lib import xla_client
 
 from jax.core import Tracer
+
+if jax.__version_info__ < (0, 7, 1):
+    from jax.experimental.pallas import (
+        load as triton_load,
+        store as triton_store,
+        atomic_add as triton_atomic_add,
+    )
+    from jax.experimental.pallas import (
+        load as tpu_load,
+        store as tpu_store,
+        atomic_add as tpu_atomic_add,
+    )
+else:
+    from jax.experimental.pallas.triton import (
+        load as triton_load,
+        store as triton_store,
+        atomic_add as triton_atomic_add,
+    )
+
+    from jax.experimental.pallas.tpu import (
+        load as tpu_load,
+        store as tpu_store,
+    )
+
+
+    def tpu_atomic_add(*args, **kwargs):
+        raise NotImplementedError()
+
+
+def pallas_load(
+    platform: str,
+    ref,
+    *,
+    mask: jax.Array | None = None
+):
+    if platform == 'gpu':
+        return triton_load(ref, mask=mask)
+    elif platform == 'tpu':
+        return tpu_load(ref, mask=mask)
+    else:
+        raise NotImplementedError(
+            f'Not implemented for {platform}'
+        )
+
+
+def pallas_store(
+    platform: str,
+    ref,
+    val: jax.Array,
+    *,
+    mask: jax.Array | None = None
+):
+    if platform == 'gpu':
+        return triton_store(ref, val, mask=mask)
+    elif platform == 'tpu':
+        return tpu_store(ref, val, mask=mask)
+    else:
+        raise NotImplementedError(
+            f'Not implemented for {platform}'
+        )
+
+
+def pallas_atomic_add(
+    platform: str,
+    x_ref_or_view,
+    idx,
+    val,
+    *,
+    mask=None
+):
+    if platform == 'gpu':
+        return triton_atomic_add(x_ref_or_view, idx, val, mask=mask)
+    else:
+        raise NotImplementedError(
+            f'Not implemented for {platform}'
+        )
+
 
 if jax.__version_info__ < (0, 6, 0):
     from jax.core import (
