@@ -33,11 +33,16 @@ warp_installed = importlib.util.find_spec('warp') is not None
 _warp_gpu_capsule = False
 
 if warp_installed:
-    import warp  # pylint: disable=import-error, import-outside-toplevel
-    import warp.context  # pylint: disable=import-error, import-outside-toplevel
-    import warp.types  # pylint: disable=import-error, import-outside-toplevel
+    try:
+        import warp  # pylint: disable=import-error, import-outside-toplevel
+        import warp.context  # pylint: disable=import-error, import-outside-toplevel
+        import warp.types  # pylint: disable=import-error, import-outside-toplevel
 
-    warp.config.enable_backward = False
+        warp.config.enable_backward = False
+    except:
+        warp = None
+else:
+    warp = None
 
 
 def _shape_to_layout(shape):
@@ -230,14 +235,16 @@ def _custom_call_gpu_lowering(
     *args,
     **kwargs,
 ):
-    if not warp_installed:
+    if not warp_installed or warp is None:
         raise ImportError('Warp is required to compile the GPU kernel for the custom operator.')
     _warp_gpu_register_capsule()
 
     # ------------------
     # kernels
     # ------------------
+    from .op_warp import WarpKernel
     wp_kernel = kernel_generator(**kwargs)
+    assert isinstance(wp_kernel, WarpKernel), "Kernel generator did not return a WarpKernel"
     assert isinstance(wp_kernel.kernel, warp.context.Kernel), (
         f'The kernel should be a Warp '
         f'kernel. But we got {wp_kernel}'
