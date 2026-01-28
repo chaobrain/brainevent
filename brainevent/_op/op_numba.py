@@ -24,8 +24,8 @@ from jax.interpreters import mlir
 from brainevent._compatible_import import Primitive
 from brainevent._config import config
 from brainevent._typing import KernelGenerator
-from .numba_customcall import numba_cpu_custom_call_rule
-from .numba_ffi import numba_cpu_ffi_rule
+from ._numba_customcall import numba_cpu_custom_call_rule
+from ._numba_ffi import numba_cpu_ffi_rule
 
 __all__ = [
     'numba_kernel',

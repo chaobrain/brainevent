@@ -28,7 +28,7 @@ from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, nam
 from brainevent._op.main import XLACustomKernel
 from brainevent._op.op_numba import numba_kernel
 from brainevent._op.op_pallas import pallas_kernel
-from brainevent._op.util import general_batching_rule
+from brainevent._op._util import general_batching_rule
 from brainevent._op.op_warp import jaxtype_to_warptype, warp_kernel
 
 

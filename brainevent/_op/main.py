@@ -29,7 +29,7 @@ from .op_pallas import (
     register_pallas_tpu_translation,
 )
 from .op_warp import register_warp_gpu_translation
-from .util import general_batching_rule, defjvp, OutType, abstract_arguments
+from ._util import general_batching_rule, defjvp, OutType, abstract_arguments
 
 __all__ = [
     'XLACustomKernel',

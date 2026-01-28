@@ -142,7 +142,6 @@ class TestWarpGPU(unittest.TestCase):
         TILE_SIZE = wp.constant(256)
         TILE_THREADS = 64
 
-        @wp.kernel
         def compute(
             a: wp.array2d(dtype=float),
             b: wp.array2d(dtype=float),
@@ -162,13 +161,13 @@ class TestWarpGPU(unittest.TestCase):
         N = 10
         a_np = np.arange(N).reshape(-1, 1) * np.ones((1, 256), dtype=float)
 
-        op = brainevent.XLACustomKernel(
-            name="mm",
-            gpu_kernel=brainevent.WarpKernelGenerator(
-                lambda **kwargs: compute,
+        op = brainevent.XLACustomKernel(name="mm")
+        op.def_gpu_kernel(
+            warp=lambda **kwargs: brainevent.warp_kernel(
+                compute,
                 dim=(a_np.shape[0], TILE_THREADS),
                 block_dim=TILE_THREADS,
-            ),
+            )
         )
         r = op.call(
             jax.numpy.asarray(a_np, dtype=jax.numpy.float32),

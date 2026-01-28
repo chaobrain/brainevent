@@ -25,29 +25,26 @@ from jax.interpreters import mlir
 from packaging import version
 
 from brainevent._typing import KernelGenerator
-from .util import OutType, abstract_arguments
-from .warp_util import get_dim, get_jax_device, generate_unique_name
+from ._util import OutType, abstract_arguments
+from ._warp_util import get_dim, get_jax_device, generate_unique_name
 
 warp_installed = importlib.util.find_spec('warp') is not None
 
 if warp_installed:
-    import warp  # noqa: F401
+    try:
+        import warp  # noqa: F401
 
-    if version.parse(warp.__version__) < version.parse("1.10.0"):
-        from warp.jax_experimental.ffi import (
-            FfiArg, XLA_FFI_CallFrame, XLA_FFI_Extension_Type, XLA_FFI_Array, XLA_FFI_Error_Code,
-            XLA_FFI_Handler_TraitsBits, XLA_FFI_Metadata_Extension, XLA_FFI_Buffer,
-            decode_attrs, create_ffi_error, strides_from_shape, get_device_ordinal_from_callframe,
-            get_stream_from_callframe, get_jax_output_type
-        )
+        if version.parse(warp.__version__) < version.parse("1.10.0"):
+            raise ImportError("warp-ffi requires warp version 1.10.0 or higher.")
+    except:
+        warp_installed = False
 
-    else:
-        from warp._src.jax_experimental.ffi import (
-            FfiArg, XLA_FFI_CallFrame, XLA_FFI_Extension_Type, XLA_FFI_Error_Code,
-            XLA_FFI_Handler_TraitsBits, XLA_FFI_Metadata_Extension, XLA_FFI_Buffer,
-            decode_attrs, create_ffi_error, strides_from_shape, get_device_ordinal_from_callframe,
-            get_stream_from_callframe, get_jax_output_type
-        )
+    from warp._src.jax_experimental.ffi import (
+        FfiArg, XLA_FFI_CallFrame, XLA_FFI_Extension_Type, XLA_FFI_Error_Code,
+        XLA_FFI_Handler_TraitsBits, XLA_FFI_Metadata_Extension, XLA_FFI_Buffer,
+        decode_attrs, create_ffi_error, strides_from_shape, get_device_ordinal_from_callframe,
+        get_stream_from_callframe, get_jax_output_type
+    )
 
 
 class FfiLaunchDesc:

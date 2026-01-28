@@ -26,7 +26,7 @@ import numpy as np
 from jax.interpreters import mlir
 
 from brainevent._typing import KernelGenerator
-from .util import OutType, abstract_arguments
+from ._util import OutType, abstract_arguments
 
 __all__ = [
     'numba_cpu_ffi_rule',

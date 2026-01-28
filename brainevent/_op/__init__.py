@@ -21,10 +21,10 @@ from .op_pallas import *
 from .op_pallas import __all__ as xla_custom_op_pallas_all
 from .op_warp import *
 from .op_warp import __all__ as xla_custom_op_warp_all
-from .util import *
-from .util import __all__ as xla_custom_op_util_all
-from .warp_util import *
-from .warp_util import __all__ as warp_util_all
+from ._util import *
+from ._util import __all__ as xla_custom_op_util_all
+from ._warp_util import *
+from ._warp_util import __all__ as warp_util_all
 from .op_tvm_ffi import *
 from .op_tvm_ffi import __all__ as tvm_ffi_all
 
