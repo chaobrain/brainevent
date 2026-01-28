@@ -40,9 +40,7 @@ if warp_installed:
 
         warp.config.enable_backward = False
     except:
-        warp = None
-else:
-    warp = None
+        warp_installed = False
 
 
 def _shape_to_layout(shape):
@@ -235,7 +233,7 @@ def _custom_call_gpu_lowering(
     *args,
     **kwargs,
 ):
-    if not warp_installed or warp is None:
+    if not warp_installed:
         raise ImportError('Warp is required to compile the GPU kernel for the custom operator.')
     _warp_gpu_register_capsule()
 
