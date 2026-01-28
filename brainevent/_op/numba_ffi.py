@@ -18,7 +18,7 @@ import enum
 import importlib.util
 import threading
 import traceback
-from ctypes import c_void_p, c_int, c_int32, c_int64, c_uint8, c_size_t, POINTER, Structure, CFUNCTYPE
+from ctypes import c_void_p, c_int, c_int32, c_int64, c_uint32, c_size_t, POINTER, Structure, CFUNCTYPE
 from typing import Dict, Sequence, Tuple
 
 import jax
@@ -39,27 +39,33 @@ _FFI_CALLBACK_LOCK = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # XLA FFI ctypes structure definitions
-# (minimal set needed to implement a typed FFI handler, matching the XLA C
-#  header at jaxlib/include/xla/ffi/api/c_api.h and warp's xla_ffi.py)
+# (minimal set matching the XLA C header at jaxlib/include/xla/ffi/api/c_api.h
+#  and warp._src.jax_experimental.xla_ffi)
 # ---------------------------------------------------------------------------
 
 
 class XLA_FFI_Extension_Type(enum.IntEnum):
-    XLA_FFI_EXTENSION_METADATA = 1
+    Metadata = 1
 
 
+# Forward-declared for self-referencing pointer
 class XLA_FFI_Extension_Base(Structure):
-    _fields_ = [
-        ("type", c_int32),
-        ("next", c_void_p),
-    ]
+    pass
+
+
+XLA_FFI_Extension_Base._fields_ = [
+    ("struct_size", c_size_t),
+    ("type", c_int),       # XLA_FFI_Extension_Type
+    ("next", POINTER(XLA_FFI_Extension_Base)),
+]
 
 
 class XLA_FFI_Api_Version(Structure):
     _fields_ = [
         ("struct_size", c_size_t),
-        ("major", c_int),
-        ("minor", c_int),
+        ("extension_start", POINTER(XLA_FFI_Extension_Base)),
+        ("major_version", c_int),
+        ("minor_version", c_int),
     ]
 
 
@@ -71,14 +77,13 @@ class XLA_FFI_Metadata(Structure):
     _fields_ = [
         ("struct_size", c_size_t),
         ("api_version", XLA_FFI_Api_Version),
-        ("traits", c_int),
+        ("traits", c_uint32),
     ]
 
 
 class XLA_FFI_Metadata_Extension(Structure):
     _fields_ = [
-        ("type", c_int32),
-        ("next", c_void_p),
+        ("extension_base", XLA_FFI_Extension_Base),
         ("metadata", POINTER(XLA_FFI_Metadata)),
     ]
 
@@ -86,7 +91,8 @@ class XLA_FFI_Metadata_Extension(Structure):
 class XLA_FFI_Buffer(Structure):
     _fields_ = [
         ("struct_size", c_size_t),
-        ("dtype", c_int32),
+        ("extension_start", POINTER(XLA_FFI_Extension_Base)),
+        ("dtype", c_int),          # XLA_FFI_DataType
         ("data", c_void_p),
         ("rank", c_int64),
         ("dims", POINTER(c_int64)),
@@ -96,8 +102,9 @@ class XLA_FFI_Buffer(Structure):
 class XLA_FFI_Args(Structure):
     _fields_ = [
         ("struct_size", c_size_t),
+        ("extension_start", POINTER(XLA_FFI_Extension_Base)),
         ("size", c_int64),
-        ("types", POINTER(c_int32)),
+        ("types", POINTER(c_int)),   # XLA_FFI_ArgType*
         ("args", POINTER(c_void_p)),
     ]
 
@@ -105,8 +112,9 @@ class XLA_FFI_Args(Structure):
 class XLA_FFI_Rets(Structure):
     _fields_ = [
         ("struct_size", c_size_t),
+        ("extension_start", POINTER(XLA_FFI_Extension_Base)),
         ("size", c_int64),
-        ("types", POINTER(c_int32)),
+        ("types", POINTER(c_int)),   # XLA_FFI_RetType*
         ("rets", POINTER(c_void_p)),
     ]
 
@@ -114,9 +122,10 @@ class XLA_FFI_Rets(Structure):
 class XLA_FFI_Attrs(Structure):
     _fields_ = [
         ("struct_size", c_size_t),
+        ("extension_start", POINTER(XLA_FFI_Extension_Base)),
         ("size", c_int64),
-        ("types", POINTER(c_int32)),
-        ("names", POINTER(c_void_p)),
+        ("types", POINTER(c_int)),            # XLA_FFI_AttrType*
+        ("names", POINTER(c_void_p)),          # XLA_FFI_ByteSpan**
         ("attrs", POINTER(c_void_p)),
     ]
 
@@ -125,18 +134,19 @@ class XLA_FFI_CallFrame(Structure):
     _fields_ = [
         ("struct_size", c_size_t),
         ("extension_start", POINTER(XLA_FFI_Extension_Base)),
-        ("api", c_void_p),
-        ("ctx", c_void_p),
+        ("api", c_void_p),                     # const XLA_FFI_Api*
+        ("ctx", c_void_p),                     # XLA_FFI_ExecutionContext*
+        ("stage", c_int),                      # XLA_FFI_ExecutionStage
         ("args", XLA_FFI_Args),
         ("rets", XLA_FFI_Rets),
         ("attrs", XLA_FFI_Attrs),
+        ("future", c_void_p),                  # XLA_FFI_Future*
     ]
 
 
 # XLA FFI dtype enum -> numpy dtype mapping
 # (from xla/ffi/api/c_api.h XLA_FFI_DataType)
 _XLA_FFI_DTYPE_TO_NUMPY = {
-    0: np.dtype(np.bool_),        # INVALID -> treat as bool
     1: np.dtype(np.bool_),        # PRED
     2: np.dtype(np.int8),         # S8
     3: np.dtype(np.int16),        # S16
@@ -150,7 +160,8 @@ _XLA_FFI_DTYPE_TO_NUMPY = {
     11: np.dtype(np.float32),     # F32
     12: np.dtype(np.float64),     # F64
     15: np.dtype(np.complex64),   # C64
-    16: np.dtype(np.complex128),  # C128
+    16: np.dtype(np.bfloat16) if hasattr(np, 'bfloat16') else None,  # BF16
+    18: np.dtype(np.complex128),  # C128
 }
 
 
@@ -205,13 +216,13 @@ class NumbaCpuFfiHandler:
             ext_ptr = call_frame.extension_start
             if ext_ptr:
                 ext = ext_ptr.contents
-                if ext.type == int(XLA_FFI_Extension_Type.XLA_FFI_EXTENSION_METADATA):
+                if ext.type == int(XLA_FFI_Extension_Type.Metadata):
                     metadata_ext = ctypes.cast(
                         ext_ptr, POINTER(XLA_FFI_Metadata_Extension)
                     ).contents
                     metadata = metadata_ext.metadata.contents
-                    metadata.api_version.major = 0
-                    metadata.api_version.minor = 1
+                    metadata.api_version.major_version = 0
+                    metadata.api_version.minor_version = 1
                     metadata.traits = 0  # not command-buffer-compatible
                     return None  # success
 

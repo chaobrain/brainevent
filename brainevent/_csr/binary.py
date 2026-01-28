@@ -1217,52 +1217,12 @@ def _binary_csrmm_pallas_kernel_generator(
     )
 
 
-def _csrmm_jvp_data(
-    data_dot,
-    data,
-    indices,
-    indptr,
-    B,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
-    return [
-        csr_matmat(
-            data_dot,
-            indices,
-            indptr,
-            B,
-            shape=shape,
-            transpose=transpose
-        )
-    ]
+def _csrmm_jvp_data(data_dot, data, indices, indptr, B, _, *, shape, transpose, **kwargs):
+    return [csr_matmat(data_dot, indices, indptr, B, shape=shape, transpose=transpose)]
 
 
-def _csrmm_jvp_B(
-    B_dot,
-    data,
-    indices,
-    indptr,
-    B,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
-    return [
-        csr_matmat(
-            data,
-            indices,
-            indptr,
-            B_dot,
-            shape=shape,
-            transpose=transpose
-        )
-    ]
+def _csrmm_jvp_B(B_dot, data, indices, indptr, B, _, *, shape, transpose, **kwargs):
+    return [csr_matmat(data, indices, indptr, B_dot, shape=shape, transpose=transpose)]
 
 
 def _csrmm_transpose_rule(
