@@ -133,15 +133,6 @@ class XLACustomKernel:
 
     Args:
         name (str): The unique name for the custom JAX primitive.
-        cpu_kernel (Optional[KernelGenerator]): An instance of
-            `KernelGenerator` defining the computation for the CPU backend.
-            Defaults to None.
-        gpu_kernel (Optional[Union[KernelGenerator, KernelGenerator]]):
-            An instance of `KernelGenerator` or `KernelGenerator`
-            defining the computation for the GPU backend. Defaults to None.
-        tpu_kernel (Optional[KernelGenerator]): An instance of
-            `KernelGenerator` defining the computation for the TPU backend.
-            Defaults to None.
         batching_translation (Optional[Callable]): A function defining a custom
             batching rule for the primitive. If None, a general batching rule
             is usually registered by default. See `jax.interpreters.batching`.
@@ -167,6 +158,7 @@ class XLACustomKernel:
         transpose_translation: Callable = None,
     ):
         # primitive
+        self.name = name
         self.primitive = Primitive(name)
         self.primitive.multiple_results = True
 
@@ -321,7 +313,6 @@ class XLACustomKernel:
         Examples::
 
             def my_numba_kernel_generator():
-                @numba.njit
                 def kernel_impl(inputs, outputs):
                     # Implementation logic
                     pass

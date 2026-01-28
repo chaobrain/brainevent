@@ -15,17 +15,18 @@
 
 import importlib.util
 import unittest
+import os
+
+os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
 import brainstate
 import jax
 import pytest
 
+brainstate.environ.set(platform='cpu')
 import brainevent
 
 numba_installed = importlib.util.find_spec('numba') is not None
-
-if numba_installed:
-    pass
 
 
 @pytest.mark.skipif(not numba_installed, reason="Numba not installed")

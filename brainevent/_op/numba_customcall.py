@@ -35,12 +35,11 @@ def numba_cpu_custom_call_rule(
     *ins,
     **kwargs
 ):
-    from .op_numba import NumbaKernel
     if not numba_installed:
         raise ImportError('Numba is required to compile the CPU kernel for the custom operator.')
-
     from numba import types, carray, cfunc  # pylint: disable=import-error
 
+    from .op_numba import NumbaKernel
     kernel = kernel_generator(**kwargs)
     assert isinstance(kernel, NumbaKernel), f'The kernel should be of type NumbaKernel, but got {type(kernel)}'
 
@@ -81,9 +80,11 @@ def numba_cpu_custom_call_target(output_ptrs, input_ptrs):
     {args_in}
     {args_out}
     func_to_call({args_call})
-      '''.format(args_in="\n    ".join(args_in),
-                 args_out="\n    ".join(args_out),
-                 args_call=", ".join(args_call))
+      '''.format(
+        args_in="\n    ".join(args_in),
+        args_out="\n    ".join(args_out),
+        args_call=", ".join(args_call)
+    )
     if debug:
         print(code_string)
     exec(compile(code_string.strip(), '', 'exec'), code_scope)
