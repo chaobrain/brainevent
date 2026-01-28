@@ -35,9 +35,11 @@ __all__ = [
 ]
 
 warp_installed = importlib.util.find_spec('warp') is not None
-
 if warp_installed:
-    import warp  # pylint: disable=import-error, import-outside-toplevel
+    try:
+        import warp  # pylint: disable=import-error, import-outside-toplevel
+    except:
+        warp_installed = False
 
 
 class WarpKernel(NamedTuple):

@@ -16,239 +16,207 @@
 import importlib.util
 import unittest
 
-import brainstate
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 import brainevent
-import brainstate
 
 warp_installed = importlib.util.find_spec('warp') is not None
-
-if warp_installed:
-    import warp as wp
-
-gpu_available = jax.default_backend() != 'gpu'
+gpu_available = jax.default_backend() == 'gpu'
 
 
-@pytest.mark.skipif(not warp_installed or not gpu_available, reason="no warp or gpu available")
-class TestWarpKernel1(unittest.TestCase):
-    def test1(self):
-        def gpu_kernel(**kwargs):
-            def add_vectors_kernel(x_ref, y_ref, o_ref):
-                x, y = x_ref[...], y_ref[...]
-                o_ref[...] = x + y
+@pytest.mark.skipif(not warp_installed or not gpu_available, reason="warp not installed or no GPU")
+class TestWarpFFI(unittest.TestCase):
+    """
+    Examples of using _ffi_gpu_lowering via the public brainevent API.
 
-            return brainevent.pallas_kernel(add_vectors_kernel, outs=kwargs['outs'])
+    The FFI path is activated when you pass a warp kernel generator to
+    ``XLACustomKernel.def_gpu_kernel(warp=...)``.  Internally this calls
+    ``register_warp_gpu_translation`` -> ``_ffi_gpu_lowering``.
 
-        prim = brainevent.XLACustomKernel('add')
-        prim.def_gpu_kernel(pallas=gpu_kernel)
+    All examples below are compatible with ``jax.jit``.
+    """
 
-        a = brainstate.random.rand(64)
-        b = brainstate.random.rand(64)
-        r1 = prim(a, b, outs=[jax.ShapeDtypeStruct((64,), jax.numpy.float32)])
+    # -- Example 1: basic element-wise kernel (static dim) ------------------
 
+    def test_elementwise_square(self):
+        """Square every element: y[i] = x[i] * x[i].
 
-@pytest.mark.skipif(
-    jax.default_backend() != 'gpu' or not warp_installed,
-    reason="No GPU available, or warp not installed",
-)
-class TestWarpGPU(unittest.TestCase):
-    def test_warp1(self):
-        # generic kernel definition using Any as a placeholder for concrete types
-        @wp.kernel
-        def scale(x: wp.array1d(dtype=float), y: wp.array1d(dtype=float), ):
+        Demonstrates:
+        - Defining a warp kernel function (raw, not @wp.kernel decorated)
+        - Using brainevent.warp_kernel() with a fixed dim
+        - Running both eagerly and under jax.jit
+        """
+        import warp as wp
+
+        def square_kernel(
+            x: wp.array1d(dtype=float),
+            y: wp.array1d(dtype=float),
+        ):
             i = wp.tid()
             y[i] = x[i] * x[i]
 
-        data = jnp.asarray([1, 2, 3, 4, 5, 6, 7, 8, 9], dtype=jnp.float32)
+        data = jnp.arange(1, 10, dtype=jnp.float32)
 
-        op = brainevent.XLACustomKernel(
-            name="scale",
-            gpu_kernel=brainevent.WarpKernelGenerator(
-                lambda **kwargs: scale,
+        # The warp= argument is a kernel generator: callable(**kwargs) -> WarpKernel
+        op = brainevent.XLACustomKernel(name="square")
+        op.def_gpu_kernel(
+            warp=lambda **kwargs: brainevent.warp_kernel(
+                square_kernel,
                 dim=data.shape,
-            ),
+            )
         )
-        r = op.call(data, outs=jax.ShapeDtypeStruct(data.shape, data.dtype))
-        print(r)
 
-        self.assertTrue(jnp.allclose(r, data * data))
+        # Works eagerly
+        r = op(data, outs=jax.ShapeDtypeStruct(data.shape, data.dtype))
+        np.testing.assert_allclose(np.array(r), np.arange(1, 10) ** 2, rtol=1e-5)
 
-    def test_warp_change_with_dtype(self):
-        def generate(**kwargs):
-            outs = kwargs["outs"][0]
-            dtype = brainevent.jaxtype_to_warptype(outs.dtype)
+        # Works under jax.jit
+        r_jit = jax.jit(lambda x: op(x, outs=jax.ShapeDtypeStruct(x.shape, x.dtype)))(data)
+        np.testing.assert_allclose(np.array(r_jit), np.arange(1, 10) ** 2, rtol=1e-5)
 
-            # generic kernel definition using Any as a placeholder for concrete types
-            @wp.kernel
-            def scale(x: wp.array1d(dtype=dtype),
-                      y: wp.array1d(dtype=dtype)):
-                i = wp.tid()
-                y[i] = x[i] * x[i]
+    # -- Example 2: two-input kernel under jax.jit -------------------------
 
-            return scale
+    def test_elementwise_add(self):
+        """Add two vectors: z[i] = x[i] + y[i].
 
-        op = brainevent.XLACustomKernel(
-            name="scale",
-            gpu_kernel=brainevent.WarpKernelGenerator(
-                generate,
-                dim=lambda **kwargs: kwargs["outs"][0].shape,
-            ),
+        Demonstrates:
+        - Multiple input arrays
+        - Running under jax.jit
+        """
+        import warp as wp
+
+        def add_kernel(
+            x: wp.array1d(dtype=float),
+            y: wp.array1d(dtype=float),
+            z: wp.array1d(dtype=float),
+        ):
+            i = wp.tid()
+            z[i] = x[i] + y[i]
+
+        n = 64
+        a = jnp.ones(n, dtype=jnp.float32) * 3.0
+        b = jnp.ones(n, dtype=jnp.float32) * 7.0
+
+        op = brainevent.XLACustomKernel(name="add_vec")
+        op.def_gpu_kernel(
+            warp=lambda **kwargs: brainevent.warp_kernel(add_kernel, dim=(n,))
         )
 
         @jax.jit
-        def f(x):
-            return op.call(x, outs=jax.ShapeDtypeStruct(x.shape, x.dtype))
+        def run(x, y):
+            return op(x, y, outs=jax.ShapeDtypeStruct((n,), jnp.float32))
 
-        with brainstate.environ.context(precision=64):
-            print(f(jnp.asarray([1, 2, 3, 4, 5, 6, 7, 8, 9], dtype=jnp.float32)))
-            print(f(brainstate.random.rand(20, dtype=jnp.float32)))
-            print(f(brainstate.random.rand(20, dtype=jnp.float16)))
-            print(f(brainstate.random.rand(20, dtype=jnp.float64)))
+        r = run(a, b)
+        np.testing.assert_allclose(np.array(r), np.full(n, 10.0), rtol=1e-5)
 
-    def test_warp_scalar(self):
-        # generic kernel definition using Any as a placeholder for concrete types
-        @wp.kernel
-        def scale2(
+    # -- Example 3: dynamic dim from kwargs ---------------------------------
+
+    def test_dynamic_dim(self):
+        """Kernel whose launch dim is inferred from the ``outs`` kwarg.
+
+        Demonstrates:
+        - Using a callable for dim= that reads shape from outs at trace time
+        - Works with jax.jit because dim is resolved during tracing
+        """
+        import warp as wp
+
+        def copy_kernel(
+            src: wp.array1d(dtype=float),
+            dst: wp.array1d(dtype=float),
+        ):
+            i = wp.tid()
+            dst[i] = src[i]
+
+        op = brainevent.XLACustomKernel(name="copy")
+        op.def_gpu_kernel(
+            warp=lambda **kwargs: brainevent.warp_kernel(
+                copy_kernel,
+                dim=lambda **kw: kw["outs"][0].shape,
+            )
+        )
+
+        @jax.jit
+        def run(x):
+            return op(x, outs=jax.ShapeDtypeStruct(x.shape, x.dtype))
+
+        data = jnp.arange(32, dtype=jnp.float32)
+        r = run(data)
+        np.testing.assert_array_equal(np.array(r), np.array(data))
+
+    # -- Example 4: scalar (1-element array) input --------------------------
+
+    def test_scalar_input(self):
+        """Scale a vector by a scalar stored in a 1-element array.
+
+        Demonstrates:
+        - Passing a scalar array (shape (1,)) as a kernel input
+        - Multiple inputs with different shapes
+        """
+        import warp as wp
+
+        def scale_kernel(
             x: wp.array1d(dtype=float),
             s: wp.array1d(dtype=float),
-            y: wp.array1d(dtype=float)
+            y: wp.array1d(dtype=float),
         ):
             i = wp.tid()
             y[i] = s[0] * x[i]
 
-        data = jnp.asarray([1, 2, 3, 4, 5, 6, 7, 8, 9], dtype=jnp.float32)
+        n = 16
+        data = jnp.arange(1, n + 1, dtype=jnp.float32)
+        scalar = jnp.array([2.5], dtype=jnp.float32)
 
-        op = brainevent.XLACustomKernel(
-            name="scale2",
-            gpu_kernel=brainevent.WarpKernelGenerator(
-                lambda **kwargs: scale2,
-                dim=data.shape,
-            ),
-        )
-        r = op.call(data, jnp.asarray([1.5]), outs=jax.ShapeDtypeStruct(data.shape, data.dtype))
-        print(r)
-        self.assertTrue(jnp.allclose(r, 1.5 * data))
-
-    def test_warp_two_vectors(self):
-        # generic kernel definition using Any as a placeholder for concrete types
-        @wp.kernel
-        def scale2(
-            x: wp.array1d(dtype=float),
-            y: wp.array1d(dtype=float),
-            z: wp.array1d(dtype=float)
-        ):
-            i = wp.tid()
-            z[i] = x[i] * y[i]
-
-        xs = jnp.asarray([1, 2, 3, 4, 5, 6, 7, 8, 9], dtype=jnp.float32)
-        ys = brainstate.random.rand_like(xs)
-
-        op = brainevent.XLACustomKernel(
-            name="scale2",
-            gpu_kernel=brainevent.WarpKernelGenerator(
-                lambda **kwargs: scale2,
-                dim=xs.shape,
-            ),
-        )
-        r = op.call(xs, ys, outs=jax.ShapeDtypeStruct(xs.shape, xs.dtype))
-        print(r)
-
-        self.assertTrue(jnp.allclose(r, xs * ys))
-
-    def test_tile1(self):
-        TILE_SIZE = wp.constant(256)
-        TILE_THREADS = 64
-
-        def compute(
-            a: wp.array2d(dtype=float),
-            b: wp.array2d(dtype=float),
-        ):
-            # obtain our block index
-            i = wp.tid()
-
-            # load a row from global memory
-            t = wp.tile_load(a[i], 0, TILE_SIZE)
-
-            # cooperatively compute the sum of the tile elements; s is a 1x1 tile
-            s = wp.tile_sum(t)
-
-            # store s in global memory
-            wp.tile_store(b[0], i, s)
-
-        N = 10
-        a_np = np.arange(N).reshape(-1, 1) * np.ones((1, 256), dtype=float)
-
-        op = brainevent.XLACustomKernel(name="mm")
+        op = brainevent.XLACustomKernel(name="scale")
         op.def_gpu_kernel(
-            warp=lambda **kwargs: brainevent.warp_kernel(
-                compute,
-                dim=(a_np.shape[0], TILE_THREADS),
-                block_dim=TILE_THREADS,
+            warp=lambda **kwargs: brainevent.warp_kernel(scale_kernel, dim=(n,))
+        )
+
+        @jax.jit
+        def run(x, s):
+            return op(x, s, outs=jax.ShapeDtypeStruct((n,), jnp.float32))
+
+        r = run(data, scalar)
+        np.testing.assert_allclose(np.array(r), np.arange(1, n + 1) * 2.5, rtol=1e-5)
+
+    # -- Example 5: dynamic dtype (generator reads outs at trace time) ------
+
+    def test_dynamic_dtype(self):
+        """Kernel dtype determined at trace time from ``outs``.
+
+        Demonstrates:
+        - A kernel generator that creates different warp kernels depending
+          on the output dtype (resolved at jax.jit trace time)
+        - Using brainevent.jaxtype_to_warptype() for dtype conversion
+        """
+        import warp as wp
+
+        def generate(**kwargs):
+            out_info = kwargs["outs"][0]
+            dtype = brainevent.jaxtype_to_warptype(out_info.dtype)
+
+            def negate(
+                x: wp.array1d(dtype=dtype),
+                y: wp.array1d(dtype=dtype),
+            ):
+                i = wp.tid()
+                y[i] = -x[i]
+
+            return brainevent.warp_kernel(
+                negate,
+                dim=lambda **kw: kw["outs"][0].shape,
             )
-        )
-        r = op.call(
-            jax.numpy.asarray(a_np, dtype=jax.numpy.float32),
-            outs=jax.core.ShapedArray([1, N], dtype=jax.numpy.float32)
-        )
-        r_true = a_np.sum(axis=1)
-        print(r)
-        print(r_true)
-        self.assertTrue(jnp.allclose(r[0], r_true))
 
-    def test_tile_matrix_multiplication(self):
-        TILE_M = wp.constant(8)
-        TILE_N = wp.constant(4)
-        TILE_K = wp.constant(8)
-        TILE_THREADS = 64
+        op = brainevent.XLACustomKernel(name="negate")
+        op.def_gpu_kernel(warp=generate)
 
-        @wp.kernel
-        def tile_gemm(
-            A: wp.array2d(dtype=float),
-            B: wp.array2d(dtype=float),
-            C: wp.array2d(dtype=float),
-        ):
-            # output tile index
-            i, j = wp.tid()
+        @jax.jit
+        def run(x):
+            return op(x, outs=jax.ShapeDtypeStruct(x.shape, x.dtype))
 
-            sum = wp.tile_zeros(m=TILE_M, n=TILE_N, dtype=wp.float32)
-
-            M = A.shape[0]
-            N = B.shape[1]
-            K = A.shape[1]
-
-            count = int(K / TILE_K)
-
-            for k in range(0, count):
-                a = wp.tile_load(A, i, k, m=TILE_M, n=TILE_K)
-                b = wp.tile_load(B, k, j, m=TILE_K, n=TILE_N)
-
-                # sum += a*b
-                wp.tile_matmul(a, b, sum)
-
-            wp.tile_store(C, i, j, sum)
-
-        # generate some tile aligned matrix dimensions
-        M = TILE_M * 7
-        K = TILE_K * 6
-        N = TILE_N * 5
-
-        brainstate.random.seed(42)
-        A = brainstate.random.random((M, K), dtype=np.float32)
-        B = brainstate.random.random((K, N), dtype=np.float32)
-        C_true = A @ B
-
-        op = brainevent.XLACustomKernel(
-            name="mm",
-            gpu_kernel=brainevent.WarpKernelGenerator(
-                lambda **kwargs: tile_gemm,
-                dim=(int(M / TILE_M), int(N / TILE_N), TILE_THREADS),
-                block_dim=TILE_THREADS,
-            ),
-        )
-        r = op.call(A, B, outs=jax.core.ShapedArray([M, N], dtype=jax.numpy.float32))
-
-        self.assertTrue(jnp.allclose(r, C_true, atol=1e-3))
+        for dtype in [jnp.float32, jnp.float16]:
+            data = jnp.ones(8, dtype=dtype) * 5.0
+            r = run(data)
+            np.testing.assert_allclose(np.array(r, dtype=np.float32), -5.0 * np.ones(8), atol=1e-2)

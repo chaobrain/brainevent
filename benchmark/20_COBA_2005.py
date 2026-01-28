@@ -28,7 +28,7 @@ import os
 
 import brainevent
 
-os.environ['CUDA_VISIBLE_DEVICES'] = ''  # specify which GPU(s) to use
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'  # specify which GPU(s) to use
 import time
 
 import brainpy
@@ -36,6 +36,7 @@ import brainstate
 import braintools
 import brainunit as u
 import jax
+brainevent.config.gpu_kernel_backend = 'warp'
 
 
 class EINet(brainstate.nn.Module):

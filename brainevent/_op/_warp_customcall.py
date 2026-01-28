@@ -35,8 +35,8 @@ _warp_gpu_capsule = False
 if warp_installed:
     try:
         import warp  # pylint: disable=import-error, import-outside-toplevel
-        import warp.context  # pylint: disable=import-error, import-outside-toplevel
-        import warp.types  # pylint: disable=import-error, import-outside-toplevel
+        import warp._src.context  # pylint: disable=import-error, import-outside-toplevel
+        import warp._src.types  # pylint: disable=import-error, import-outside-toplevel
 
         warp.config.enable_backward = False
     except:
@@ -59,7 +59,7 @@ def _warp_gpu_custom_callback(stream, buffers, opaque, opaque_len):
 
     # Parse launch dimensions.
     dims = [int(d) for d in dim_str.split(",")]
-    bounds = warp.types.launch_bounds_t(dims)
+    bounds = warp._src.types.launch_bounds_t(dims)
     block_dim = int(block_dim_str)
 
     # Parse arguments.
@@ -76,9 +76,9 @@ def _warp_gpu_custom_callback(stream, buffers, opaque, opaque_len):
     for i in range(num_args):
         dtype = kernel.adj.args[i].type.dtype
         shape = [int(d) for d in arg_strings[i].split(",")]
-        strides = warp.types.strides_from_shape(shape, dtype)
+        strides = warp._src.types.strides_from_shape(shape, dtype)
 
-        arr = warp.types.array_t(buffers[i], 0, len(shape), shape, strides)
+        arr = warp._src.types.array_t(buffers[i], 0, len(shape), shape, strides)
         args.append(arr)  # keep a reference
         arg_ptr = ctypes.addressof(arr)
 
@@ -95,9 +95,9 @@ def _warp_gpu_custom_callback(stream, buffers, opaque, opaque_len):
     # Launch the kernel.
     warp_version = warp.__version__
     if version.parse(warp_version) >= version.parse("1.9.0"):
-        warp_launch_kernel_func = warp.context.runtime.core.wp_cuda_launch_kernel
+        warp_launch_kernel_func = warp._src.context.runtime.core.wp_cuda_launch_kernel
     else:
-        warp_launch_kernel_func = warp.context.runtime.core.cuda_launch_kernel
+        warp_launch_kernel_func = warp._src.context.runtime.core.cuda_launch_kernel
 
     warp_launch_kernel_func(
         device.context,
@@ -243,7 +243,7 @@ def _custom_call_gpu_lowering(
     from .op_warp import WarpKernel
     wp_kernel = kernel_generator(**kwargs)
     assert isinstance(wp_kernel, WarpKernel), "Kernel generator did not return a WarpKernel"
-    assert isinstance(wp_kernel.kernel, warp.context.Kernel), (
+    assert isinstance(wp_kernel.kernel, warp._src.context.Kernel), (
         f'The kernel should be a Warp '
         f'kernel. But we got {wp_kernel}'
     )
