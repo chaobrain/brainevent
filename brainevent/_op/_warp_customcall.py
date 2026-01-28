@@ -19,11 +19,10 @@ import importlib.util
 
 from jax.interpreters import mlir
 from jax.interpreters.mlir import ir
-from packaging import version
 
 from brainevent._compatible_import import register_custom_call, custom_call
 from brainevent._typing import KernelGenerator
-from ._warp_util import get_jax_device, get_dim
+from ._warp_util import get_jax_device, get_dim, check_warp_version
 
 # Holder for the custom callback to keep it alive.
 _registered_warp_gpu_kernels = [None]
@@ -93,11 +92,7 @@ def _warp_gpu_custom_callback(stream, buffers, opaque, opaque_len):
     assert hooks.forward, "Failed to find kernel entry point"
 
     # Launch the kernel.
-    warp_version = warp.__version__
-    if version.parse(warp_version) >= version.parse("1.9.0"):
-        warp_launch_kernel_func = warp._src.context.runtime.core.wp_cuda_launch_kernel
-    else:
-        warp_launch_kernel_func = warp._src.context.runtime.core.cuda_launch_kernel
+    warp_launch_kernel_func = warp._src.context.runtime.core.wp_cuda_launch_kernel
 
     warp_launch_kernel_func(
         device.context,
@@ -233,8 +228,7 @@ def _custom_call_gpu_lowering(
     *args,
     **kwargs,
 ):
-    if not warp_installed:
-        raise ImportError('Warp is required to compile the GPU kernel for the custom operator.')
+    check_warp_version()
     _warp_gpu_register_capsule()
 
     # ------------------

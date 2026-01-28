@@ -13,12 +13,25 @@
 # limitations under the License.
 # ==============================================================================
 
+import importlib.util
 import re
 from typing import Union, Callable
 
 import jax
 
+warp_installed = importlib.util.find_spec('warp') is not None
+
 __all__ = []
+
+
+def check_warp_version():
+    if not warp_installed:
+        raise ImportError('Warp is required to compile the GPU kernel for the custom operator.')
+    import warp
+    warp_version = tuple(int(x) for x in warp.__version__.split("."))
+    if warp_version < (1, 11, 0):
+        raise ImportError(
+            'Warp version 1.11.0 or higher is required to compile the GPU kernel for the custom operator.')
 
 
 # generates a C function name based on the python function name

@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-from functools import partial
 
 # -*- coding: utf-8 -*-
 
+
+from functools import partial
 
 import brainstate
 import brainunit as u
@@ -28,7 +29,6 @@ from jax.interpreters.partial_eval import DynamicJaxprTracer
 from brainevent._compatible_import import pallas as pl
 from brainevent._compatible_import import (
     pallas_load,
-    pallas_store,
     pallas_atomic_add,
 )
 from brainevent._misc import generate_block_dim

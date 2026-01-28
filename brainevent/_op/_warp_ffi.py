@@ -28,7 +28,7 @@ from jax.interpreters import mlir
 
 from brainevent._typing import KernelGenerator
 from ._util import OutType, abstract_arguments
-from ._warp_util import get_dim, get_jax_device, generate_unique_name
+from ._warp_util import get_dim, get_jax_device, generate_unique_name, check_warp_version
 
 warp_installed = importlib.util.find_spec('warp') is not None
 
@@ -39,6 +39,7 @@ if warp_installed:
         import warp._src.context
     except Exception:
         warp_installed = False
+
 
 # ============================================================================
 # XLA FFI ctypes structures and enums
@@ -731,6 +732,8 @@ class JaxFFIKernel:
 
 def _ffi_gpu_lowering(kernel_generator: KernelGenerator, ctx, *args, **kwargs):
     def kernel_fn(*args, **kwargs):
+        check_warp_version()
+
         from .op_warp import WarpKernel
         wp_kernel = kernel_generator(**kwargs)
         assert isinstance(wp_kernel, WarpKernel), "Kernel generator did not return a WarpKernel"
