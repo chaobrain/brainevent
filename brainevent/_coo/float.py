@@ -182,18 +182,7 @@ def _coomv_warp_kernel_generator(
     return warp_kernel(mv, dim=dim, input_output_aliases={4: 0})
 
 
-def _coomv_jvp_vector(
-    vector_dot,
-    data,
-    row,
-    col,
-    vector,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
+def _coomv_jvp_vector(vector_dot, data, row, col, vector, _, *, shape, transpose, **kwargs):
     # return coomv_p_call(
     #     data,
     #     row,
@@ -202,38 +191,11 @@ def _coomv_jvp_vector(
     #     shape=shape,
     #     transpose=transpose,
     # )
-    return [
-        coo_matvec(
-            data,
-            row,
-            col,
-            vector_dot,
-            shape=shape,
-            transpose=transpose
-        )
-    ]
+    return [coo_matvec(data, row, col, vector_dot, shape=shape, transpose=transpose)]
 
 
-def _coomv_jvp_weights(
-    data_dot,
-    data,
-    row,
-    col,
-    vector,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
-    return coomv_p_call(
-        data_dot,
-        row,
-        col,
-        vector,
-        shape=shape,
-        transpose=transpose,
-    )
+def _coomv_jvp_weights(data_dot, data, row, col, vector, _, *, shape, transpose, **kwargs):
+    return coomv_p_call(data_dot, row, col, vector, shape=shape, transpose=transpose)
 
 
 def _coomv_transpose_rule(
@@ -475,48 +437,12 @@ def _coomm_warp_kernel_generator(
     return warp_kernel(mm, dim=dim, input_output_aliases={4: 0})
 
 
-def _coomm_jvp_left(
-    data_dot,
-    data,
-    row,
-    col,
-    B,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
-    return coomm_p_call(
-        data_dot,
-        row,
-        col,
-        B,
-        shape=shape,
-        transpose=transpose
-    )
+def _coomm_jvp_left(data_dot, data, row, col, B, _, *, shape, transpose, **kwargs):
+    return coomm_p_call(data_dot, row, col, B, shape=shape, transpose=transpose)
 
 
-def _coomm_jvp_right(
-    B_dot,
-    data,
-    row,
-    col,
-    B,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
-    return coomm_p_call(
-        data,
-        row,
-        col,
-        B_dot,
-        shape=shape,
-        transpose=transpose
-    )
+def _coomm_jvp_right(B_dot, data, row, col, B, _, *, shape, transpose, **kwargs):
+    return coomm_p_call(data, row, col, B_dot, shape=shape, transpose=transpose)
 
 
 def _coomm_transpose_rule(

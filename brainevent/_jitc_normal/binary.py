@@ -643,82 +643,16 @@ def _jitc_mv_normal_pallas_kernel_generator(
         )
 
 
-def _jitc_mv_normal_jvp_v(
-    v_dot,
-    w_loc,
-    w_scale,
-    clen,
-    vector,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
-    return float_jitc_mv_normal_p_call(
-        w_loc,
-        w_scale,
-        clen,
-        v_dot,
-        seed,
-        shape=shape,
-        transpose=transpose,
-        corder=corder
-    )
+def _jitc_mv_normal_jvp_v(v_dot, w_loc, w_scale, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
+    return float_jitc_mv_normal_p_call(w_loc, w_scale, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitc_mv_normal_jvp_wloc(
-    w_dot,
-    w_loc,
-    w_scale,
-    clen,
-    vector,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
-    return binary_jitc_mv_normal_p_call(
-        w_dot,
-        w_scale,
-        clen,
-        vector,
-        seed,
-        shape=shape,
-        transpose=transpose,
-        corder=corder
-    )
+def _jitc_mv_normal_jvp_wloc(w_dot, w_loc, w_scale, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
+    return binary_jitc_mv_normal_p_call(w_dot, w_scale, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitc_mv_normal_jvp_wscale(
-    w_dot,
-    w_loc,
-    w_scale,
-    clen,
-    vector,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
-    return binary_jitc_mv_normal_p_call(
-        w_loc,
-        w_dot,
-        clen,
-        vector,
-        seed,
-        shape=shape,
-        transpose=transpose,
-        corder=corder
-    )
+def _jitc_mv_normal_jvp_wscale(w_dot, w_loc, w_scale, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
+    return binary_jitc_mv_normal_p_call(w_loc, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
 
 
 def _jitc_mv_normal_transpose_rules(
@@ -1295,82 +1229,16 @@ def _jitc_mm_normal_pallas_kernel_generator(
     )
 
 
-def _jitc_mm_normal_jvp_wloc(
-    w_dot,
-    w_loc,
-    w_scale,
-    clen,
-    B,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
-    return binary_jitc_mm_normal_p_call(
-        w_dot,
-        w_scale,
-        clen,
-        B,
-        seed,
-        shape=shape,
-        transpose=transpose,
-        corder=corder,
-    )
+def _jitc_mm_normal_jvp_wloc(w_dot, w_loc, w_scale, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
+    return binary_jitc_mm_normal_p_call(w_dot, w_scale, clen, B, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitc_mm_normal_jvp_wscale(
-    w_dot,
-    w_loc,
-    w_scale,
-    clen,
-    B,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
-    return binary_jitc_mm_normal_p_call(
-        w_loc,
-        w_dot,
-        clen,
-        B,
-        seed,
-        shape=shape,
-        transpose=transpose,
-        corder=corder,
-    )
+def _jitc_mm_normal_jvp_wscale(w_dot, w_loc, w_scale, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
+    return binary_jitc_mm_normal_p_call(w_loc, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitc_mm_normal_jvp_B(
-    B_dot,
-    w_loc,
-    w_scale,
-    clen,
-    B,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
-    return float_jitc_mm_normal_p_call(
-        w_loc,
-        w_scale,
-        clen,
-        B_dot,
-        seed,
-        shape=shape,
-        transpose=transpose,
-        corder=corder,
-    )
+def _jitc_mm_normal_jvp_B(B_dot, w_loc, w_scale, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
+    return float_jitc_mm_normal_p_call(w_loc, w_scale, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder)
 
 
 def _jitc_mm_normal_transpose_rules(

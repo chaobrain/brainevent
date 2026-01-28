@@ -25,10 +25,10 @@ from jax.interpreters import ad
 
 from brainevent._compatible_import import pallas as pl
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescoped_jit
+from brainevent._op._util import general_batching_rule
 from brainevent._op.main import XLACustomKernel
 from brainevent._op.op_numba import numba_kernel
 from brainevent._op.op_pallas import pallas_kernel
-from brainevent._op._util import general_batching_rule
 from brainevent._op.op_warp import jaxtype_to_warptype, warp_kernel
 
 
@@ -259,44 +259,12 @@ def _fixed_num_mv_pallas_kernel_generator(
     )
 
 
-def _fixed_num_mv_jvp_vector(
-    spk_dot,
-    weights,
-    indices,
-    spikes,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
-    return fixed_num_mv_p_call(
-        weights,
-        indices,
-        spk_dot,
-        shape=shape,
-        transpose=transpose,
-    )
+def _fixed_num_mv_jvp_vector(spk_dot, weights, indices, spikes, _, *, shape, transpose, **kwargs):
+    return fixed_num_mv_p_call(weights, indices, spk_dot, shape=shape, transpose=transpose)
 
 
-def _fixed_num_mv_jvp_weights(
-    w_dot,
-    weights,
-    indices,
-    vector,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
-    return fixed_num_mv_p_call(
-        w_dot,
-        indices,
-        vector,
-        shape=shape,
-        transpose=transpose,
-    )
+def _fixed_num_mv_jvp_weights(w_dot, weights, indices, vector, _, *, shape, transpose, **kwargs):
+    return fixed_num_mv_p_call(w_dot, indices, vector, shape=shape, transpose=transpose)
 
 
 def _fixed_num_mv_transpose_rule(
@@ -653,31 +621,11 @@ def _fixed_num_mm_pallas_kernel_generator(
     )
 
 
-def _fixed_num_mm_jvp_matrix(
-    matrix_dot,
-    weights,
-    indices,
-    matrix,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
+def _fixed_num_mm_jvp_matrix(matrix_dot, weights, indices, matrix, _, *, shape, transpose, **kwargs):
     return fixed_num_mm_p_call(weights, indices, matrix_dot, shape=shape, transpose=transpose)
 
 
-def _fixed_num_mm_jvp_weights(
-    weights_dot,
-    weights,
-    indices,
-    matrix,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
+def _fixed_num_mm_jvp_weights(weights_dot, weights, indices, matrix, _, *, shape, transpose, **kwargs):
     return fixed_num_mm_p_call(weights_dot, indices, matrix, shape=shape, transpose=transpose)
 
 

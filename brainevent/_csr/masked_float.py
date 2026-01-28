@@ -423,50 +423,12 @@ def _masked_float_csrmv_pallas_tiled_kernel_generator(
     )
 
 
-def _masked_float_csrmv_jvp_v(
-    v_dot,
-    data,
-    indices,
-    indptr,
-    v,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
-    return [
-        csr_matvec(
-            data,
-            indices,
-            indptr,
-            v_dot,
-            shape=shape,
-            transpose=transpose
-        )
-    ]
+def _masked_float_csrmv_jvp_v(v_dot, data, indices, indptr, v, _, *, shape, transpose, **kwargs):
+    return [csr_matvec(data, indices, indptr, v_dot, shape=shape, transpose=transpose)]
 
 
-def _masked_float_csrmv_jvp_weights(
-    data_dot,
-    data,
-    indices,
-    indptr,
-    v,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
-    return masked_float_csrmv_p_call(
-        data_dot,
-        indices,
-        indptr,
-        v,
-        shape=shape,
-        transpose=transpose,
-    )
+def _masked_float_csrmv_jvp_weights(data_dot, data, indices, indptr, v, _, *, shape, transpose, **kwargs):
+    return masked_float_csrmv_p_call(data_dot, indices, indptr, v, shape=shape, transpose=transpose)
 
 
 def _masked_float_csrmv_transpose_rule(
@@ -981,52 +943,12 @@ def _masked_float_csrmm_pallas_kernel_generator(
     )
 
 
-def _csrmm_jvp_data(
-    data_dot,
-    data,
-    indices,
-    indptr,
-    B,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
-    return [
-        csr_matmat(
-            data_dot,
-            indices,
-            indptr,
-            B,
-            shape=shape,
-            transpose=transpose
-        )
-    ]
+def _csrmm_jvp_data(data_dot, data, indices, indptr, B, _, *, shape, transpose, **kwargs):
+    return [csr_matmat(data_dot, indices, indptr, B, shape=shape, transpose=transpose)]
 
 
-def _csrmm_jvp_B(
-    B_dot,
-    data,
-    indices,
-    indptr,
-    B,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
-    return [
-        csr_matmat(
-            data,
-            indices,
-            indptr,
-            B_dot,
-            shape=shape,
-            transpose=transpose
-        )
-    ]
+def _csrmm_jvp_B(B_dot, data, indices, indptr, B, _, *, shape, transpose, **kwargs):
+    return [csr_matmat(data, indices, indptr, B_dot, shape=shape, transpose=transpose)]
 
 
 def _csrmm_transpose_rule(

@@ -397,52 +397,12 @@ def _event_coomv_warp_kernel_generator(
     return warp_kernel(mv, dim=dim, input_output_aliases={4: 0})
 
 
-def _event_coomv_jvp_vector(
-    v_dot,
-    data,
-    row,
-    col,
-    v,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
-    return [
-        coo_matvec(
-            data,
-            row,
-            col,
-            v_dot,
-            shape=shape,
-            transpose=transpose
-        )
-    ]
+def _event_coomv_jvp_vector(v_dot, data, row, col, v, _, *, shape, transpose, **kwargs):
+    return [coo_matvec(data, row, col, v_dot, shape=shape, transpose=transpose)]
 
 
-def _event_coomv_jvp_weights(
-    data_dot,
-    data,
-    row,
-    col,
-    v,
-    _,
-    *,
-    shape,
-    transpose,
-    float_as_event,
-    **kwargs
-):
-    return event_coomv_p_call(
-        data_dot,
-        row,
-        col,
-        v,
-        shape=shape,
-        transpose=transpose,
-        float_as_event=float_as_event
-    )
+def _event_coomv_jvp_weights(data_dot, data, row, col, v, _, *, shape, transpose, float_as_event, **kwargs):
+    return event_coomv_p_call(data_dot, row, col, v, shape=shape, transpose=transpose, float_as_event=float_as_event)
 
 
 def _event_coomv_transpose_rule(
@@ -937,52 +897,12 @@ def _event_coomm_warp_kernel_generator(
     return warp_kernel(mm, dim=dim, input_output_aliases={4: 0})
 
 
-def _event_coomm_jvp_left(
-    data_dot,
-    data,
-    row,
-    col,
-    B,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
-    return [
-        coo_matmat(
-            data_dot,
-            row,
-            col,
-            B,
-            shape=shape,
-            transpose=transpose
-        )
-    ]
+def _event_coomm_jvp_left(data_dot, data, row, col, B, _, *, shape, transpose, **kwargs):
+    return [coo_matmat(data_dot, row, col, B, shape=shape, transpose=transpose)]
 
 
-def _event_coomm_jvp_right(
-    B_dot,
-    data,
-    row,
-    col,
-    B,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
-    return [
-        coo_matmat(
-            data,
-            row,
-            col,
-            B_dot,
-            shape=shape,
-            transpose=transpose
-        )
-    ]
+def _event_coomm_jvp_right(B_dot, data, row, col, B, _, *, shape, transpose, **kwargs):
+    return [coo_matmat(data, row, col, B_dot, shape=shape, transpose=transpose)]
 
 
 def _event_coomm_transpose_rule(

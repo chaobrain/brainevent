@@ -739,10 +739,7 @@ def _jitc_homo_matrix_pallas_kernel_generator(
         )
 
 
-def _jitc_homo_matrix_jvp_weight(
-    weight_dot, weight, clen, seed, _, *,
-    shape: Sequence[int], transpose: bool, corder: bool, **kwargs
-):
+def _jitc_homo_matrix_jvp_weight(weight_dot, weight, clen, seed, _, *, shape: Sequence[int], transpose: bool, corder: bool, **kwargs):
     return float_jitc_homo_matrix_p_call(weight_dot, clen, seed, shape=shape, transpose=transpose, corder=corder)
 
 
@@ -1346,52 +1343,12 @@ def _jitc_mv_homo_pallas_kernel_generator(
     return final_kernel
 
 
-def _jitc_mv_homo_jvp_v(
-    v_dot,
-    weight,
-    clen,
-    vector,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
-    return float_jitc_mv_homo_p_call(
-        weight,
-        clen,
-        v_dot,
-        seed,
-        shape=shape,
-        transpose=transpose,
-        corder=corder
-    )
+def _jitc_mv_homo_jvp_v(v_dot, weight, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
+    return float_jitc_mv_homo_p_call(weight, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitc_mv_homo_jvp_weights(
-    w_dot,
-    weight,
-    clen,
-    vector,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
-    return float_jitc_mv_homo_p_call(
-        w_dot,
-        clen,
-        vector,
-        seed,
-        shape=shape,
-        transpose=transpose,
-        corder=corder
-    )
+def _jitc_mv_homo_jvp_weights(w_dot, weight, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
+    return float_jitc_mv_homo_p_call(w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
 
 
 def _jitc_mv_homo_transpose_rules(
@@ -2005,52 +1962,12 @@ def _jitc_mm_homo_pallas_kernel_generator(
     )
 
 
-def _jitc_mm_homo_jvp_w(
-    w_dot,
-    weight,
-    clen,
-    B,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
-    return float_jitc_mm_homo_p_call(
-        w_dot,
-        clen,
-        B,
-        seed,
-        shape=shape,
-        transpose=transpose,
-        corder=corder,
-    )
+def _jitc_mm_homo_jvp_w(w_dot, weight, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
+    return float_jitc_mm_homo_p_call(w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitc_mm_homo_jvp_B(
-    B_dot,
-    weight,
-    clen,
-    B,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
-    return float_jitc_mm_homo_p_call(
-        weight,
-        clen,
-        B_dot,
-        seed,
-        shape=shape,
-        transpose=transpose,
-        corder=corder,
-    )
+def _jitc_mm_homo_jvp_B(B_dot, weight, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
+    return float_jitc_mm_homo_p_call(weight, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder)
 
 
 def _jitc_mm_homo_transpose_rules(

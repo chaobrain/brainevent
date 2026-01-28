@@ -276,44 +276,12 @@ def _masked_float_fixed_num_mv_pallas_kernel_generator(
     )
 
 
-def _masked_float_fixed_num_mv_jvp_spikes(
-    spk_dot,
-    weights,
-    indices,
-    spikes,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
-    return fixed_num_mv_p_call(
-        weights,
-        indices,
-        spk_dot,
-        shape=shape,
-        transpose=transpose,
-    )
+def _masked_float_fixed_num_mv_jvp_spikes(spk_dot, weights, indices, spikes, _, *, shape, transpose, **kwargs):
+    return fixed_num_mv_p_call(weights, indices, spk_dot, shape=shape, transpose=transpose)
 
 
-def _masked_float_fixed_num_mv_jvp_weights(
-    w_dot,
-    weights,
-    indices,
-    spikes,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
-    return masked_float_fixed_num_mv_p_call(
-        w_dot,
-        indices,
-        spikes,
-        shape=shape,
-        transpose=transpose
-    )
+def _masked_float_fixed_num_mv_jvp_weights(w_dot, weights, indices, spikes, _, *, shape, transpose, **kwargs):
+    return masked_float_fixed_num_mv_p_call(w_dot, indices, spikes, shape=shape, transpose=transpose)
 
 
 def _masked_float_fixed_num_mv_transpose_rule(
@@ -585,38 +553,12 @@ def _masked_float_fixed_num_mm_pallas_kernel_generator(
     )
 
 
-def _masked_float_fixed_num_mm_jvp_matrix(
-    matrix_dot,
-    weights,
-    indices,
-    matrix,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
+def _masked_float_fixed_num_mm_jvp_matrix(matrix_dot, weights, indices, matrix, _, *, shape, transpose, **kwargs):
     return fixed_num_mm_p_call(weights, indices, matrix_dot, shape=shape, transpose=transpose)
 
 
-def _masked_float_fixed_num_mm_jvp_weights(
-    weights_dot,
-    weights,
-    indices,
-    matrix,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
-    return masked_float_fixed_num_mm_p_call(
-        weights_dot,
-        indices,
-        matrix,
-        shape=shape,
-        transpose=transpose,
-    )
+def _masked_float_fixed_num_mm_jvp_weights(weights_dot, weights, indices, matrix, _, *, shape, transpose, **kwargs):
+    return masked_float_fixed_num_mm_p_call(weights_dot, indices, matrix, shape=shape, transpose=transpose)
 
 
 def _masked_float_fixed_num_mm_transpose_rule(

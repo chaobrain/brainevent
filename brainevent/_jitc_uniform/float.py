@@ -624,20 +624,14 @@ def _jitc_uniform_matrix_pallas_kernel_generator(
         )
 
 
-def _jitc_uniform_matrix_jvp_wlow(
-    w_low_dot, w_low, w_high, clen, seed, _, *,
-    shape: Sequence[int], transpose: bool, corder: bool, **kwargs
-):
+def _jitc_uniform_matrix_jvp_wlow(w_low_dot, w_low, w_high, clen, seed, _, *, shape: Sequence[int], transpose: bool, corder: bool, **kwargs):
     res = float_jitc_uniform_matrix_p_call(
         0., w_low_dot, clen, seed, shape=shape, transpose=transpose, corder=corder
     )[0]
     return [w_low_dot - res]
 
 
-def _jitc_uniform_matrix_jvp_whigh(
-    w_high_dot, w_low, w_high, clen, seed, _, *,
-    shape: Sequence[int], transpose: bool, corder: bool, **kwargs
-):
+def _jitc_uniform_matrix_jvp_whigh(w_high_dot, w_low, w_high, clen, seed, _, *, shape: Sequence[int], transpose: bool, corder: bool, **kwargs):
     res = float_jitc_uniform_matrix_p_call(
         0., w_high_dot, clen, seed, shape=shape, transpose=transpose, corder=corder
     )
@@ -1274,82 +1268,16 @@ def _jitc_mv_uniform_pallas_kernel_generator(
         )
 
 
-def _jitc_mv_uniform_jvp_v(
-    v_dot,
-    w_low,
-    w_high,
-    clen,
-    vector,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
-    return float_jitc_mv_uniform_p_call(
-        w_low,
-        w_high,
-        clen,
-        v_dot,
-        seed,
-        shape=shape,
-        transpose=transpose,
-        corder=corder
-    )
+def _jitc_mv_uniform_jvp_v(v_dot, w_low, w_high, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
+    return float_jitc_mv_uniform_p_call(w_low, w_high, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitc_mv_uniform_jvp_wlow(
-    w_dot,
-    w_low,
-    w_high,
-    clen,
-    vector,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
-    return float_jitc_mv_uniform_p_call(
-        w_dot,
-        w_high,
-        clen,
-        vector,
-        seed,
-        shape=shape,
-        transpose=transpose,
-        corder=corder
-    )
+def _jitc_mv_uniform_jvp_wlow(w_dot, w_low, w_high, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
+    return float_jitc_mv_uniform_p_call(w_dot, w_high, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitc_mv_uniform_jvp_whigh(
-    w_dot,
-    w_low,
-    w_high,
-    clen,
-    vector,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
-    return float_jitc_mv_uniform_p_call(
-        w_low,
-        w_dot,
-        clen,
-        vector,
-        seed,
-        shape=shape,
-        transpose=transpose,
-        corder=corder
-    )
+def _jitc_mv_uniform_jvp_whigh(w_dot, w_low, w_high, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
+    return float_jitc_mv_uniform_p_call(w_low, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
 
 
 def _jitc_mv_uniform_transpose_rules(
@@ -1949,82 +1877,16 @@ def _jitc_mm_uniform_pallas_kernel_generator(
     )
 
 
-def _jitc_mm_uniform_jvp_wlow(
-    w_dot,
-    w_low,
-    w_high,
-    clen,
-    B,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
-    return float_jitc_mm_uniform_p_call(
-        w_dot,
-        w_high,
-        clen,
-        B,
-        seed,
-        shape=shape,
-        transpose=transpose,
-        corder=corder,
-    )
+def _jitc_mm_uniform_jvp_wlow(w_dot, w_low, w_high, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
+    return float_jitc_mm_uniform_p_call(w_dot, w_high, clen, B, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitc_mm_uniform_jvp_whigh(
-    w_dot,
-    w_low,
-    w_high,
-    clen,
-    B,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
-    return float_jitc_mm_uniform_p_call(
-        w_low,
-        w_dot,
-        clen,
-        B,
-        seed,
-        shape=shape,
-        transpose=transpose,
-        corder=corder,
-    )
+def _jitc_mm_uniform_jvp_whigh(w_dot, w_low, w_high, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
+    return float_jitc_mm_uniform_p_call(w_low, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitc_mm_uniform_jvp_B(
-    B_dot,
-    w_low,
-    w_high,
-    clen,
-    B,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
-    return float_jitc_mm_uniform_p_call(
-        w_low,
-        w_high,
-        clen,
-        B_dot,
-        seed,
-        shape=shape,
-        transpose=transpose,
-        corder=corder,
-    )
+def _jitc_mm_uniform_jvp_B(B_dot, w_low, w_high, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
+    return float_jitc_mm_uniform_p_call(w_low, w_high, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder)
 
 
 def _jitc_mm_uniform_transpose_rules(

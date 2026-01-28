@@ -531,50 +531,12 @@ def _binary_csrmv_pallas_tiled_kernel_generator(
     )
 
 
-def _binary_csrmv_jvp_v(
-    v_dot,
-    data,
-    indices,
-    indptr,
-    v,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
-    return [
-        csr_matvec(
-            data,
-            indices,
-            indptr,
-            v_dot,
-            shape=shape,
-            transpose=transpose
-        )
-    ]
+def _binary_csrmv_jvp_v(v_dot, data, indices, indptr, v, _, *, shape, transpose, **kwargs):
+    return [csr_matvec(data, indices, indptr, v_dot, shape=shape, transpose=transpose)]
 
 
-def _binary_csrmv_jvp_weights(
-    data_dot,
-    data,
-    indices,
-    indptr,
-    v,
-    _,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
-    return binary_csrmv_p_call(
-        data_dot,
-        indices,
-        indptr,
-        v,
-        shape=shape,
-        transpose=transpose,
-    )
+def _binary_csrmv_jvp_weights(data_dot, data, indices, indptr, v, _, *, shape, transpose, **kwargs):
+    return binary_csrmv_p_call(data_dot, indices, indptr, v, shape=shape, transpose=transpose)
 
 
 def _binary_csrmv_transpose_rule(
