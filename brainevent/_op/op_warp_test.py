@@ -16,18 +16,39 @@
 import importlib.util
 import unittest
 
-import brainstate as bst
+import brainstate
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 import brainevent
+import brainstate
 
 warp_installed = importlib.util.find_spec('warp') is not None
 
 if warp_installed:
     import warp as wp
+
+gpu_available = jax.default_backend() != 'gpu'
+
+
+@pytest.mark.skipif(not warp_installed or not gpu_available, reason="no warp or gpu available")
+class TestWarpKernel1(unittest.TestCase):
+    def test1(self):
+        def gpu_kernel(**kwargs):
+            def add_vectors_kernel(x_ref, y_ref, o_ref):
+                x, y = x_ref[...], y_ref[...]
+                o_ref[...] = x + y
+
+            return brainevent.pallas_kernel(add_vectors_kernel, outs=kwargs['outs'])
+
+        prim = brainevent.XLACustomKernel('add')
+        prim.def_gpu_kernel(pallas=gpu_kernel)
+
+        a = brainstate.random.rand(64)
+        b = brainstate.random.rand(64)
+        r1 = prim(a, b, outs=[jax.ShapeDtypeStruct((64,), jax.numpy.float32)])
 
 
 @pytest.mark.skipif(
@@ -82,11 +103,11 @@ class TestWarpGPU(unittest.TestCase):
         def f(x):
             return op.call(x, outs=jax.ShapeDtypeStruct(x.shape, x.dtype))
 
-        with bst.environ.context(precision=64):
+        with brainstate.environ.context(precision=64):
             print(f(jnp.asarray([1, 2, 3, 4, 5, 6, 7, 8, 9], dtype=jnp.float32)))
-            print(f(bst.random.rand(20, dtype=jnp.float32)))
-            print(f(bst.random.rand(20, dtype=jnp.float16)))
-            print(f(bst.random.rand(20, dtype=jnp.float64)))
+            print(f(brainstate.random.rand(20, dtype=jnp.float32)))
+            print(f(brainstate.random.rand(20, dtype=jnp.float16)))
+            print(f(brainstate.random.rand(20, dtype=jnp.float64)))
 
     def test_warp_scalar(self):
         # generic kernel definition using Any as a placeholder for concrete types
@@ -124,7 +145,7 @@ class TestWarpGPU(unittest.TestCase):
             z[i] = x[i] * y[i]
 
         xs = jnp.asarray([1, 2, 3, 4, 5, 6, 7, 8, 9], dtype=jnp.float32)
-        ys = bst.random.rand_like(xs)
+        ys = brainstate.random.rand_like(xs)
 
         op = brainevent.XLACustomKernel(
             name="scale2",
@@ -215,9 +236,9 @@ class TestWarpGPU(unittest.TestCase):
         K = TILE_K * 6
         N = TILE_N * 5
 
-        bst.random.seed(42)
-        A = bst.random.random((M, K), dtype=np.float32)
-        B = bst.random.random((K, N), dtype=np.float32)
+        brainstate.random.seed(42)
+        A = brainstate.random.random((M, K), dtype=np.float32)
+        B = brainstate.random.random((K, N), dtype=np.float32)
         C_true = A @ B
 
         op = brainevent.XLACustomKernel(

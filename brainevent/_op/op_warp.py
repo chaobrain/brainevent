@@ -179,7 +179,7 @@ def warp_kernel(
 def register_warp_gpu_translation(
     primitive: Primitive,
     kernel_generator: KernelGenerator,
-    version: str = 'custom_call',
+    version: str = 'ffi',
 ):
     if version == 'ffi':
         rule = functools.partial(_ffi_gpu_lowering, kernel_generator)
