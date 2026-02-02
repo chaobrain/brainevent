@@ -31,6 +31,9 @@ numba_installed = importlib.util.find_spec('numba') is not None
 @pytest.mark.skipif(not numba_installed, reason="Numba not installed")
 class TestNumbaKernel1(unittest.TestCase):
     def test1(self):
+        import numba
+
+        @numba.njit
         def add_kernel_numba(x, y, out):
             out[...] = x + y
 
@@ -38,5 +41,7 @@ class TestNumbaKernel1(unittest.TestCase):
 
         a = brainstate.random.rand(64)
         b = brainstate.random.rand(64)
-        r1 = kernel(a, b)
+        r1 = kernel(a, b)[0]
         print(r1)
+        r2 = a + b
+        print(jax.numpy.allclose(r1, r2))

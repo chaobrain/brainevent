@@ -30,23 +30,20 @@ from ._jitc_homo import JITCHomoR, JITCHomoC
 from ._jitc_normal import JITCNormalR, JITCNormalC
 from ._jitc_uniform import JITCUniformR, JITCUniformC
 from ._misc import csr_to_coo_index, coo_to_csc_index, csr_to_csc_index
+from ._op import (
+    XLACustomKernel,
+    numba_kernel,
+    defjvp,
+    general_batching_rule,
+    jaxtype_to_warptype,
+    jaxinfo_to_warpinfo
+)
 from ._pallas_random import LFSR88RNG, LFSR113RNG, LFSR128RNG
 from ._primitives import (
     ALL_PRIMITIVES,
     get_all_primitive_names,
     get_primitives_by_category,
     get_primitive_info
-)
-from ._op import (
-    XLACustomKernel,
-    GPUKernelChoice,
-    numba_kernel,
-    pallas_kernel,
-    defjvp,
-    general_batching_rule,
-    warp_kernel,
-    jaxtype_to_warptype,
-    jaxinfo_to_warpinfo
 )
 
 __all__ = [
@@ -84,7 +81,6 @@ __all__ = [
 
     # 1. Custom kernel
     'XLACustomKernel',
-    'GPUKernelChoice',
 
     # 2. utilities
     'defjvp',
@@ -94,12 +90,10 @@ __all__ = [
     'numba_kernel',
 
     # 4. Warp kernel
-    'warp_kernel',
     'jaxtype_to_warptype',
     'jaxinfo_to_warpinfo',
 
     # 5. Pallas kernel
-    'pallas_kernel',
     'LFSR88RNG',
     'LFSR113RNG',
     'LFSR128RNG',

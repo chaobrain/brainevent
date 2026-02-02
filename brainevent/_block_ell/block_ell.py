@@ -24,12 +24,6 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._compatible_import import pallas as pl
-from brainevent._compatible_import import (
-    triton_load,
-    triton_store,
-    tpu_load,
-    tpu_store,
-)
 
 __all__ = [
     'BlockELL',
