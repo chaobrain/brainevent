@@ -28,8 +28,7 @@ from jax.interpreters.partial_eval import DynamicJaxprTracer
 
 from brainevent._compatible_import import pallas as pl
 from brainevent._misc import generate_block_dim
-from brainevent._op import numba_kernel, jaxinfo_to_warpinfo
-from brainevent._op.main import XLACustomKernel
+from brainevent._op import numba_kernel, jaxinfo_to_warpinfo, XLACustomKernel
 
 
 def _is_tracer(x):

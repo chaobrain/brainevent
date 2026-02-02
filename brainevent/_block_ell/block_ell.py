@@ -159,7 +159,6 @@ def _sdd_kernel(
     o_ref[pl.dslice(bm * i_m, bm), pl.dslice(bk * i_k, bk)] = acc  # [bm, bk]
 
 
-
 @functools.partial(jax.jit, static_argnames=["debug", 'interpret', 'block_size'])
 def sdd_matmul(
     mat1: BlockELL,

@@ -22,11 +22,8 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescoped_jit
-from brainevent._op import jaxtype_to_warptype
-from brainevent._op import numba_kernel
-from brainevent._op.main import XLACustomKernel
-from brainevent._op.util import general_batching_rule
-from brainevent._sddmm.main import sddmm_coo_indices
+from brainevent._op import jaxtype_to_warptype, numba_kernel, XLACustomKernel, general_batching_rule
+from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .float import csr_matvec, csr_matmat
 

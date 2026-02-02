@@ -23,10 +23,8 @@ from jax.interpreters import ad
 
 from brainevent._compatible_import import pallas as pl
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescoped_jit
-from brainevent._op import numba_kernel, jaxtype_to_warptype
-from brainevent._op.main import XLACustomKernel
-from brainevent._op.util import general_batching_rule
-from brainevent._sddmm.main import sddmm_coo_indices
+from brainevent._op import numba_kernel, jaxtype_to_warptype, XLACustomKernel, general_batching_rule
+from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 
 

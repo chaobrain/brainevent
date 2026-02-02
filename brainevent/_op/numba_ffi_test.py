@@ -23,7 +23,7 @@ import jax
 import pytest
 
 import brainstate
-from brainevent._op.numba_ffi import numba_kernel
+from brainevent import numba_kernel
 
 numba_installed = importlib.util.find_spec('numba') is not None
 

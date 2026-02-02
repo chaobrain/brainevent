@@ -24,7 +24,7 @@ from jax.interpreters import ad
 
 from brainevent._misc import namescoped_jit
 from brainevent._op import jaxtype_to_warptype, XLACustomKernel, general_batching_rule, numba_kernel
-from brainevent._sddmm.main import sddmm_coo_indices
+from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Row, Col, MatrixShape
 
 __all__ = [

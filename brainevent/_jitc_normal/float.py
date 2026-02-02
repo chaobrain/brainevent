@@ -25,9 +25,9 @@ from jax.interpreters import ad
 from brainevent._compatible_import import pallas as pl
 from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescoped_jit
+from brainevent._op import XLACustomKernel, numba_kernel, jaxtype_to_warptype, general_batching_rule
 from brainevent._pallas_random import LFSR88RNG
 from brainevent._typing import Data, MatrixShape
-from brainevent._op import XLACustomKernel, numba_kernel, jaxtype_to_warptype, general_batching_rule
 
 __all__ = [
     "float_jitc_normal_matrix",
@@ -616,7 +616,8 @@ def _jitc_normal_matrix_jvp_wlow(w_loc_dot, w_loc, w_scale, clen, seed, _, *, ou
     return [out]
 
 
-def _jitc_normal_matrix_jvp_whigh(w_scale_dot, w_loc, w_scale, clen, seed, _, *, shape: Sequence[int], transpose: bool, corder: bool, **kwargs):
+def _jitc_normal_matrix_jvp_whigh(w_scale_dot, w_loc, w_scale, clen, seed, _, *, shape: Sequence[int], transpose: bool,
+                                  corder: bool, **kwargs):
     return float_jitc_normal_matrix_p_call(0., w_scale_dot, clen, seed, shape=shape, transpose=transpose, corder=corder)
 
 
@@ -1216,15 +1217,18 @@ def _jitc_mv_normal_pallas_kernel_generator(
 
 
 def _jitc_mv_normal_jvp_v(v_dot, w_loc, w_scale, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
-    return float_jitc_mv_normal_p_call(w_loc, w_scale, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder)
+    return float_jitc_mv_normal_p_call(w_loc, w_scale, clen, v_dot, seed, shape=shape, transpose=transpose,
+                                       corder=corder)
 
 
 def _jitc_mv_normal_jvp_wloc(w_dot, w_loc, w_scale, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
-    return float_jitc_mv_normal_p_call(w_dot, w_scale, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
+    return float_jitc_mv_normal_p_call(w_dot, w_scale, clen, vector, seed, shape=shape, transpose=transpose,
+                                       corder=corder)
 
 
 def _jitc_mv_normal_jvp_wscale(w_dot, w_loc, w_scale, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
-    return float_jitc_mv_normal_p_call(w_loc, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
+    return float_jitc_mv_normal_p_call(w_loc, w_dot, clen, vector, seed, shape=shape, transpose=transpose,
+                                       corder=corder)
 
 
 def _jitc_mv_normal_transpose_rules(
@@ -1823,7 +1827,8 @@ def _jitc_mm_normal_jvp_wscale(w_dot, w_loc, w_scale, clen, B, seed, _, *, shape
 
 
 def _jitc_mm_normal_jvp_B(B_dot, w_loc, w_scale, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
-    return float_jitc_mm_normal_p_call(w_loc, w_scale, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder)
+    return float_jitc_mm_normal_p_call(w_loc, w_scale, clen, B_dot, seed, shape=shape, transpose=transpose,
+                                       corder=corder)
 
 
 def _jitc_mm_normal_transpose_rules(

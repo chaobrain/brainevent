@@ -17,7 +17,7 @@
 
 import pytest
 
-from brainevent._op.main import XLACustomKernel
+from brainevent._op import XLACustomKernel
 from ._primitives import (
     ALL_PRIMITIVES,
     COO_PRIMITIVES,

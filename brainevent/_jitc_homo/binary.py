@@ -25,9 +25,9 @@ from jax.interpreters import ad
 from brainevent._compatible_import import pallas as pl
 from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescoped_jit
+from brainevent._op import XLACustomKernel, numba_kernel, jaxtype_to_warptype, general_batching_rule
 from brainevent._pallas_random import LFSR88RNG
 from brainevent._typing import Data, MatrixShape
-from brainevent._op import XLACustomKernel, numba_kernel, jaxtype_to_warptype, general_batching_rule
 from .float import float_jitc_mv_homo_p_call, float_jitc_mm_homo_p_call
 
 __all__ = [
