@@ -18,24 +18,23 @@ import enum
 import importlib.util
 import threading
 import traceback
-from ctypes import c_void_p, c_int, c_int32, c_int64, c_uint32, c_size_t, POINTER, Structure, CFUNCTYPE
+from ctypes import c_void_p, c_int, c_int64, c_uint32, c_size_t, POINTER, Structure, CFUNCTYPE
 from typing import Dict, Sequence, Tuple
 
 import jax
 import numpy as np
-from jax.interpreters import mlir
 
-from brainevent._typing import KernelGenerator
-from ._util import OutType, abstract_arguments
+from .util import OutType, abstract_arguments
 
 __all__ = [
-    'numba_cpu_ffi_rule',
+    'numba_kernel',
 ]
 
 numba_installed = importlib.util.find_spec('numba') is not None
 _NUMBA_CPU_FFI_HANDLES: Dict[str, object] = {}
 _FFI_CALLBACK_COUNTER = 0
 _FFI_CALLBACK_LOCK = threading.Lock()
+
 
 # ---------------------------------------------------------------------------
 # XLA FFI ctypes structure definitions
@@ -55,7 +54,7 @@ class XLA_FFI_Extension_Base(Structure):
 
 XLA_FFI_Extension_Base._fields_ = [
     ("struct_size", c_size_t),
-    ("type", c_int),       # XLA_FFI_Extension_Type
+    ("type", c_int),  # XLA_FFI_Extension_Type
     ("next", POINTER(XLA_FFI_Extension_Base)),
 ]
 
@@ -92,7 +91,7 @@ class XLA_FFI_Buffer(Structure):
     _fields_ = [
         ("struct_size", c_size_t),
         ("extension_start", POINTER(XLA_FFI_Extension_Base)),
-        ("dtype", c_int),          # XLA_FFI_DataType
+        ("dtype", c_int),  # XLA_FFI_DataType
         ("data", c_void_p),
         ("rank", c_int64),
         ("dims", POINTER(c_int64)),
@@ -104,7 +103,7 @@ class XLA_FFI_Args(Structure):
         ("struct_size", c_size_t),
         ("extension_start", POINTER(XLA_FFI_Extension_Base)),
         ("size", c_int64),
-        ("types", POINTER(c_int)),   # XLA_FFI_ArgType*
+        ("types", POINTER(c_int)),  # XLA_FFI_ArgType*
         ("args", POINTER(c_void_p)),
     ]
 
@@ -114,7 +113,7 @@ class XLA_FFI_Rets(Structure):
         ("struct_size", c_size_t),
         ("extension_start", POINTER(XLA_FFI_Extension_Base)),
         ("size", c_int64),
-        ("types", POINTER(c_int)),   # XLA_FFI_RetType*
+        ("types", POINTER(c_int)),  # XLA_FFI_RetType*
         ("rets", POINTER(c_void_p)),
     ]
 
@@ -124,8 +123,8 @@ class XLA_FFI_Attrs(Structure):
         ("struct_size", c_size_t),
         ("extension_start", POINTER(XLA_FFI_Extension_Base)),
         ("size", c_int64),
-        ("types", POINTER(c_int)),            # XLA_FFI_AttrType*
-        ("names", POINTER(c_void_p)),          # XLA_FFI_ByteSpan**
+        ("types", POINTER(c_int)),  # XLA_FFI_AttrType*
+        ("names", POINTER(c_void_p)),  # XLA_FFI_ByteSpan**
         ("attrs", POINTER(c_void_p)),
     ]
 
@@ -134,32 +133,32 @@ class XLA_FFI_CallFrame(Structure):
     _fields_ = [
         ("struct_size", c_size_t),
         ("extension_start", POINTER(XLA_FFI_Extension_Base)),
-        ("api", c_void_p),                     # const XLA_FFI_Api*
-        ("ctx", c_void_p),                     # XLA_FFI_ExecutionContext*
-        ("stage", c_int),                      # XLA_FFI_ExecutionStage
+        ("api", c_void_p),  # const XLA_FFI_Api*
+        ("ctx", c_void_p),  # XLA_FFI_ExecutionContext*
+        ("stage", c_int),  # XLA_FFI_ExecutionStage
         ("args", XLA_FFI_Args),
         ("rets", XLA_FFI_Rets),
         ("attrs", XLA_FFI_Attrs),
-        ("future", c_void_p),                  # XLA_FFI_Future*
+        ("future", c_void_p),  # XLA_FFI_Future*
     ]
 
 
 # XLA FFI dtype enum -> numpy dtype mapping
 # (from xla/ffi/api/c_api.h XLA_FFI_DataType)
 _XLA_FFI_DTYPE_TO_NUMPY = {
-    1: np.dtype(np.bool_),        # PRED
-    2: np.dtype(np.int8),         # S8
-    3: np.dtype(np.int16),        # S16
-    4: np.dtype(np.int32),        # S32
-    5: np.dtype(np.int64),        # S64
-    6: np.dtype(np.uint8),        # U8
-    7: np.dtype(np.uint16),       # U16
-    8: np.dtype(np.uint32),       # U32
-    9: np.dtype(np.uint64),       # U64
-    10: np.dtype(np.float16),     # F16
-    11: np.dtype(np.float32),     # F32
-    12: np.dtype(np.float64),     # F64
-    15: np.dtype(np.complex64),   # C64
+    1: np.dtype(np.bool_),  # PRED
+    2: np.dtype(np.int8),  # S8
+    3: np.dtype(np.int16),  # S16
+    4: np.dtype(np.int32),  # S32
+    5: np.dtype(np.int64),  # S64
+    6: np.dtype(np.uint8),  # U8
+    7: np.dtype(np.uint16),  # U16
+    8: np.dtype(np.uint32),  # U32
+    9: np.dtype(np.uint64),  # U64
+    10: np.dtype(np.float16),  # F16
+    11: np.dtype(np.float32),  # F32
+    12: np.dtype(np.float64),  # F64
+    15: np.dtype(np.complex64),  # C64
     16: np.dtype(np.bfloat16) if hasattr(np, 'bfloat16') else None,  # BF16
     18: np.dtype(np.complex128),  # C128
 }
@@ -282,7 +281,6 @@ def _register_numba_cpu_ffi_target(
     input_dtypes: Tuple[np.dtype, ...],
     output_shapes: Tuple[Tuple[int, ...], ...],
     output_dtypes: Tuple[np.dtype, ...],
-    debug: bool = False,
 ):
     global _FFI_CALLBACK_COUNTER
 
@@ -304,11 +302,6 @@ def _register_numba_cpu_ffi_target(
     # Keep the handler alive to prevent GC of ctypes callback
     _NUMBA_CPU_FFI_HANDLES[target_name] = handler
 
-    if debug:
-        print(f"Registered typed FFI target: {target_name}")
-        print(f"  inputs: {list(zip(input_shapes, input_dtypes))}")
-        print(f"  outputs: {list(zip(output_shapes, output_dtypes))}")
-
     out_types = tuple(
         jax.ShapeDtypeStruct(shape, dtype)
         for shape, dtype in zip(output_shapes, output_dtypes)
@@ -316,28 +309,25 @@ def _register_numba_cpu_ffi_target(
     return target_name, out_types
 
 
-def numba_cpu_ffi_rule(
-    kernel_generator: KernelGenerator,
-    debug: bool = False,
+def numba_kernel(
+    kernel,
+    outs: OutType,
+    *,
+    vmap_method: str | None = None,
+    input_output_aliases: dict[int, int] | None = None,
 ):
-    from .op_numba import NumbaKernel
+    from numba.core.registry import CPUDispatcher
 
-    if not numba_installed:
-        raise ImportError('Numba is required to compile the CPU kernel for the custom operator.')
+    # output information
+    outs_seq = _ensure_sequence(outs)
+    output_shapes, output_dtypes = _normalize_shapes_and_dtypes(
+        tuple(out.shape for out in outs_seq),
+        tuple(out.dtype for out in outs_seq),
+        'output',
+    )
+    assert isinstance(kernel, CPUDispatcher), 'The kernel must be a Numba JIT-compiled function.'
 
-    def kernel_fn(*ins, outs: OutType, **kwargs):
-        kernel = kernel_generator(**kwargs)
-        assert isinstance(kernel, NumbaKernel), f'The kernel should be of type NumbaKernel, but got {type(kernel)}'
-        input_output_aliases = kernel.input_output_aliases if kernel.input_output_aliases else {}
-
-        # output information
-        outs_seq = _ensure_sequence(outs)
-        output_shapes, output_dtypes = _normalize_shapes_and_dtypes(
-            tuple(out.shape for out in outs_seq),
-            tuple(out.dtype for out in outs_seq),
-            'output',
-        )
-
+    def call(*ins):
         # input information
         in_info, _ = abstract_arguments(ins)
         input_shapes, input_dtypes = _normalize_shapes_and_dtypes(
@@ -348,15 +338,15 @@ def numba_cpu_ffi_rule(
 
         # register FFI target
         target_name, out_types = _register_numba_cpu_ffi_target(
-            kernel.kernel, input_shapes, input_dtypes, output_shapes, output_dtypes, debug=debug,
+            kernel, input_shapes, input_dtypes, output_shapes, output_dtypes,
         )
 
-        # call FFI with typed FFI protocol (custom_call_api_version=4 is the default in JAX 0.9+)
+        # call FFI with typed FFI protocol
         return jax.ffi.ffi_call(
             target_name,
             out_types,
             input_output_aliases=input_output_aliases,
-            vmap_method=kernel.vmap_method,
+            vmap_method=vmap_method,
         )(*ins)
 
-    return mlir.lower_fun(kernel_fn, multiple_results=True)
+    return call

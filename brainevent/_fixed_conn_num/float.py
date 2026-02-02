@@ -25,7 +25,7 @@ from jax.interpreters import ad
 
 from brainevent._compatible_import import pallas as pl
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescoped_jit
-from brainevent._op._util import general_batching_rule
+from brainevent._op.util import general_batching_rule
 from brainevent._op.main import XLACustomKernel
 from brainevent._op.op_numba import numba_kernel
 from brainevent._op.op_pallas import pallas_kernel
@@ -334,7 +334,7 @@ def _warp_fixed_num_mv_call(
     vector, v_unit = u.split_mantissa_unit(vector)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
-    r = fixed_num_mv_p.call(
+    r = fixed_num_mv_p(
         weights,
         indices,
         vector,
@@ -761,7 +761,7 @@ def fixed_num_mm_p_call(
     matrix, m_unit = u.split_mantissa_unit(matrix)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
-    r = fixed_num_mm_p.call(
+    r = fixed_num_mm_p(
         weights,
         indices,
         matrix,

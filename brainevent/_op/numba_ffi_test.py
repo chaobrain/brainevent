@@ -14,17 +14,16 @@
 # ==============================================================================
 
 import importlib.util
-import unittest
 import os
+import unittest
 
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
-import brainstate
 import jax
 import pytest
 
-brainstate.environ.set(platform='cpu')
-import brainevent
+import brainstate
+from brainevent._op.numba_ffi import numba_kernel
 
 numba_installed = importlib.util.find_spec('numba') is not None
 
@@ -32,17 +31,12 @@ numba_installed = importlib.util.find_spec('numba') is not None
 @pytest.mark.skipif(not numba_installed, reason="Numba not installed")
 class TestNumbaKernel1(unittest.TestCase):
     def test1(self):
-        def cpu_kernel(**kwargs):
-            @brainevent.numba_kernel
-            def add_kernel_numba(x, y, out):
-                out[...] = x + y
+        def add_kernel_numba(x, y, out):
+            out[...] = x + y
 
-            return add_kernel_numba
-
-        prim = brainevent.XLACustomKernel('add')
-        prim.def_cpu_kernel(cpu_kernel)
+        kernel = numba_kernel(add_kernel_numba, outs=jax.ShapeDtypeStruct((64,), jax.numpy.float32))
 
         a = brainstate.random.rand(64)
         b = brainstate.random.rand(64)
-        x_info = jax.ShapeDtypeStruct(a.shape, a.dtype)
-        r1 = prim(a, b, outs=[jax.ShapeDtypeStruct((64,), jax.numpy.float32)])
+        r1 = kernel(a, b)
+        print(r1)

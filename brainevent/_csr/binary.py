@@ -21,23 +21,13 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._compatible_import import pallas as pl
-from brainevent._compatible_import import (
-    triton_load,
-    triton_store,
-    tpu_load,
-    tpu_store,
-    triton_atomic_add,
-    tpu_atomic_add,
-)
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescoped_jit
-from brainevent._typing import Data, Indptr, Index, MatrixShape
+from brainevent._op import jaxtype_to_warptype
+from brainevent._op import numba_kernel
 from brainevent._op.main import XLACustomKernel
-from brainevent._op.op_numba import numba_kernel
-from brainevent._op.op_pallas import pallas_kernel
-from brainevent._op._util import general_batching_rule
-from brainevent._op.op_warp import jaxtype_to_warptype, warp_kernel
+from brainevent._op.util import general_batching_rule
 from brainevent._sddmm.main import sddmm_coo_indices
+from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .float import csr_matvec, csr_matmat
 
 
@@ -121,17 +111,19 @@ def binary_csr_matmat(
     return u.maybe_decimal(res * (unitd * unitb))
 
 
-def _binary_csrmv_numba_kernel_generator(
+def _csrmv_numba_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs
 ):
+    import numba
     if weight_info.size == 1:
         if transpose:
             if vector_info.dtype == jnp.bool_:
-                @numba_kernel(parallel=False, input_output_aliases={4: 0})
-                def mv(weights, indices, indptr, v, _, posts):
+                @numba.njit
+                def mv(weights, indices, indptr, v, posts):
+                    posts[:] = 0.
                     w = weights[0]
                     for i in range(v.shape[0]):
                         if v[i]:
@@ -139,8 +131,9 @@ def _binary_csrmv_numba_kernel_generator(
                                 posts[indices[j]] += w
 
             else:
-                @numba_kernel(parallel=False, input_output_aliases={4: 0})
-                def mv(weights, indices, indptr, v, _, posts):
+                @numba.njit
+                def mv(weights, indices, indptr, v, posts):
+                    posts[:] = 0.
                     w = weights[0]
                     for i in range(v.shape[0]):
                         if v[i] != 0.:
@@ -149,8 +142,9 @@ def _binary_csrmv_numba_kernel_generator(
 
         else:
             if vector_info.dtype == jnp.bool_:
-                @numba_kernel(parallel=False, input_output_aliases={4: 0})
-                def mv(weights, indices, indptr, v, _, posts):
+                @numba.njit
+                def mv(weights, indices, indptr, v, posts):
+                    posts[:] = 0.
                     w = weights[0]
                     for i in range(indptr.shape[0] - 1):
                         r = np.asarray(0., dtype=posts.dtype)
@@ -160,8 +154,9 @@ def _binary_csrmv_numba_kernel_generator(
                         posts[i] = r
 
             else:
-                @numba_kernel(parallel=False, input_output_aliases={4: 0})
-                def mv(weights, indices, indptr, v, _, posts):
+                @numba.njit
+                def mv(weights, indices, indptr, v, posts):
+                    posts[:] = 0.
                     w = weights[0]
                     for i in range(indptr.shape[0] - 1):
                         r = np.asarray(0., dtype=posts.dtype)
@@ -173,16 +168,18 @@ def _binary_csrmv_numba_kernel_generator(
     else:
         if transpose:
             if vector_info.dtype == jnp.bool_:
-                @numba_kernel(parallel=False, input_output_aliases={4: 0})
-                def mv(weights, indices, indptr, v, _, posts):
+                @numba.njit
+                def mv(weights, indices, indptr, v, posts):
+                    posts[:] = 0.
                     for i in range(v.shape[0]):
                         if v[i]:
                             for j in range(indptr[i], indptr[i + 1]):
                                 posts[indices[j]] += weights[j]
 
             else:
-                @numba_kernel(parallel=False, input_output_aliases={4: 0})
-                def mv(weights, indices, indptr, v, _, posts):
+                @numba.njit
+                def mv(weights, indices, indptr, v, posts):
+                    posts[:] = 0.
                     for i in range(v.shape[0]):
                         if v[i] != 0.:
                             for j in range(indptr[i], indptr[i + 1]):
@@ -190,8 +187,9 @@ def _binary_csrmv_numba_kernel_generator(
 
         else:
             if vector_info.dtype == jnp.bool_:
-                @numba_kernel(parallel=False, input_output_aliases={4: 0})
-                def mv(weights, indices, indptr, v, _, posts):
+                @numba.njit
+                def mv(weights, indices, indptr, v, posts):
+                    posts[:] = 0.
                     for i in range(indptr.shape[0] - 1):
                         r = np.asarray(0., dtype=posts.dtype)
                         for j in range(indptr[i], indptr[i + 1]):
@@ -200,8 +198,9 @@ def _binary_csrmv_numba_kernel_generator(
                         posts[i] = r
 
             else:
-                @numba_kernel(parallel=False, input_output_aliases={4: 0})
-                def mv(weights, indices, indptr, v, _, posts):
+                @numba.njit
+                def mv(weights, indices, indptr, v, posts):
+                    posts[:] = 0.
                     for i in range(indptr.shape[0] - 1):
                         r = np.asarray(0., dtype=posts.dtype)
                         for j in range(indptr[i], indptr[i + 1]):
@@ -209,10 +208,13 @@ def _binary_csrmv_numba_kernel_generator(
                                 r += weights[j]
                         posts[i] = r
 
-    return mv
+    def kernel(weights, indices, indptr, v):
+        return numba_kernel(mv, outs=kwargs['outs'])(weights, indices, indptr, v)
+
+    return kernel
 
 
-def _binary_csrmv_warp_kernel_generator(
+def _csrmv_warp_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
@@ -221,6 +223,7 @@ def _binary_csrmv_warp_kernel_generator(
     **kwargs
 ):
     import warp  # pylint: disable=import-outside-toplevel
+    from warp.jax_experimental import jax_kernel
 
     weight_dtype = jaxtype_to_warptype(weight_info.dtype)
     indices_dtype = jaxtype_to_warptype(indices_info.dtype)
@@ -356,13 +359,17 @@ def _binary_csrmv_warp_kernel_generator(
                         if v[indices[j]] != 0.:
                             r += weights[j]
                     posts[i] = r
-    dim = (
-        vector_info.shape[0] if transpose else indptr_info.shape[0] - 1
-    )
-    return warp_kernel(mv, dim=dim, input_output_aliases={4: 0})
+
+    def kernel(weights, indices, indptr, v):
+        dim = vector_info.shape[0] if transpose else indptr_info.shape[0] - 1
+        return jax_kernel(mv, dim=dim, input_output_aliases={4: 0})(
+            weights, indices, indptr, v
+        )
+
+    return kernel
 
 
-def _binary_csrmv_pallas_tiled_kernel_generator(
+def _csrmv_pallas_tiled_kernel_generator(
     platform: str,
     weight_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
@@ -531,15 +538,15 @@ def _binary_csrmv_pallas_tiled_kernel_generator(
     )
 
 
-def _binary_csrmv_jvp_v(v_dot, data, indices, indptr, v, _, *, shape, transpose, **kwargs):
+def _csrmv_jvp_v(v_dot, data, indices, indptr, v, _, *, shape, transpose, **kwargs):
     return [csr_matvec(data, indices, indptr, v_dot, shape=shape, transpose=transpose)]
 
 
-def _binary_csrmv_jvp_weights(data_dot, data, indices, indptr, v, _, *, shape, transpose, **kwargs):
+def _csrmv_jvp_weights(data_dot, data, indices, indptr, v, _, *, shape, transpose, **kwargs):
     return binary_csrmv_p_call(data_dot, indices, indptr, v, shape=shape, transpose=transpose)
 
 
-def _binary_csrmv_transpose_rule(
+def _csrmv_transpose_rule(
     ct,
     data,
     indices,
@@ -591,7 +598,7 @@ def _binary_csrmv_transpose_rule(
         return ct_values, indices, indptr, events, _
 
 
-def _binary_csrmv_batching(args, axes, **kwargs):
+def _csrmv_batching(args, axes, **kwargs):
     if tuple(axes) == (None, None, None, 0, None):
         assert args[3].ndim == 2, 'Batching axis 0 requires 2D input.'
         r = binary_csrmm_p_call(
@@ -620,15 +627,7 @@ def _binary_csrmv_batching(args, axes, **kwargs):
         return general_batching_rule(binary_csrmv_p, args, axes, **kwargs)
 
 
-def binary_csrmv_p_call(
-    weights,
-    indices,
-    indptr,
-    vector,
-    *,
-    shape: MatrixShape,
-    transpose: bool,
-):
+def binary_csrmv_p_call(weights, indices, indptr, vector, *, shape: MatrixShape, transpose: bool):
     """
     Perform a call to the event CSR matrix-vector multiplication custom operation.
 
@@ -676,7 +675,6 @@ def binary_csrmv_p_call(
         indptr,
         vector,
         # Initialize a zero vector with the output shape and data type.
-        jnp.zeros(out_info.shape, out_info.dtype),
         outs=[out_info],
         shape=shape,
         transpose=transpose,
@@ -692,19 +690,16 @@ def binary_csrmv_p_call(
 
 
 binary_csrmv_p = XLACustomKernel('binary_csrmv')
-binary_csrmv_p.def_cpu_kernel(_binary_csrmv_numba_kernel_generator)
-binary_csrmv_p.def_gpu_kernel(
-    default='warp',
-    warp=_binary_csrmv_warp_kernel_generator,
-    pallas=partial(_binary_csrmv_pallas_tiled_kernel_generator, 'gpu'),
-)
-binary_csrmv_p.def_tpu_kernel(partial(_binary_csrmv_pallas_tiled_kernel_generator, 'tpu'))
-binary_csrmv_p.def_jvp_rule2(_binary_csrmv_jvp_weights, None, None, _binary_csrmv_jvp_v)
-binary_csrmv_p.def_transpose_rule(_binary_csrmv_transpose_rule)
-binary_csrmv_p.def_batching_rule(_binary_csrmv_batching)
+binary_csrmv_p.def_numba_kernel(_csrmv_numba_kernel_generator)
+binary_csrmv_p.def_warp_kernel(_csrmv_warp_kernel_generator)
+binary_csrmv_p.def_pallas_kernel('gpu', _csrmv_pallas_tiled_kernel_generator)
+binary_csrmv_p.def_pallas_kernel('tpu', _csrmv_pallas_tiled_kernel_generator)
+binary_csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
+binary_csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
+binary_csrmv_p.def_batching_rule(_csrmv_batching)
 
 
-def _binary_csrmm_numba_kernel_generator(
+def _csrmm_numba_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     transpose: bool,
@@ -821,7 +816,7 @@ def _binary_csrmm_numba_kernel_generator(
     return mv
 
 
-def _binary_csrmm_warp_kernel_generator(
+def _csrmm_warp_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
@@ -985,7 +980,7 @@ def _binary_csrmm_warp_kernel_generator(
     return warp_kernel(mm, input_output_aliases={4: 0}, dim=dim)
 
 
-def _binary_csrmm_pallas_kernel_generator(
+def _csrmm_pallas_kernel_generator(
     platform: str,
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
@@ -1226,7 +1221,7 @@ def _csrmm_transpose_rule(
             return d_data, indices, indptr, B, _
 
 
-def _binary_csrmm_batching(args, axes, **kwargs):
+def _csrmm_batching(args, axes, **kwargs):
     if tuple(axes) == (None, None, None, 0, None):
         assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
         batch_size, m, n = args[3].shape
@@ -1345,13 +1340,13 @@ def binary_csrmm_p_call(
 
 
 binary_csrmm_p = XLACustomKernel('binary_csrmm')
-binary_csrmm_p.def_cpu_kernel(_binary_csrmm_numba_kernel_generator)
+binary_csrmm_p.def_cpu_kernel(_csrmm_numba_kernel_generator)
 binary_csrmm_p.def_gpu_kernel(
     default='pallas',
-    warp=_binary_csrmm_warp_kernel_generator,
-    pallas=partial(_binary_csrmm_pallas_kernel_generator, 'gpu'),
+    warp=_csrmm_warp_kernel_generator,
+    pallas=partial(_csrmm_pallas_kernel_generator, 'gpu'),
 )
-binary_csrmm_p.def_tpu_kernel(partial(_binary_csrmm_pallas_kernel_generator, 'tpu'))
+binary_csrmm_p.def_tpu_kernel(partial(_csrmm_pallas_kernel_generator, 'tpu'))
 binary_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 binary_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
-binary_csrmm_p.def_batching_rule(_binary_csrmm_batching)
+binary_csrmm_p.def_batching_rule(_csrmm_batching)

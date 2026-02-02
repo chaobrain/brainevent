@@ -30,7 +30,7 @@ from brainevent._typing import MatrixShape
 from brainevent._op.main import XLACustomKernel
 from brainevent._op.op_numba import numba_kernel
 from brainevent._op.op_pallas import pallas_kernel
-from brainevent._op._util import general_batching_rule
+from brainevent._op.util import general_batching_rule
 from brainevent._op.op_warp import jaxtype_to_warptype, warp_kernel
 from .float import fixed_num_mv_p_call, fixed_num_mm_p_call
 
@@ -800,7 +800,7 @@ def binary_fixed_num_mm_p_call(
     matrix, m_unit = u.split_mantissa_unit(matrix)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
-    r = binary_fixed_num_mm_p.call(
+    r = binary_fixed_num_mm_p(
         weights,
         indices,
         matrix,
