@@ -24,9 +24,7 @@ import jax.numpy as jnp
 from jax.interpreters import ad
 
 from brainevent._misc import namescoped_jit
-from brainevent._op import jaxtype_to_warptype
-from brainevent._op.main import XLACustomKernel
-from brainevent._op.util import general_batching_rule
+from brainevent._op import jaxtype_to_warptype, XLACustomKernel, general_batching_rule
 from brainevent._sddmm.main import sddmm_coo_indices
 from brainevent._typing import Data, Row, Col, MatrixShape
 from .float import coo_matvec, coo_matmat

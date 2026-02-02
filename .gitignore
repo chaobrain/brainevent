@@ -230,3 +230,4 @@ cython_debug/
 /benchmark/results/
 /dev/links.md
 /.claude/
+/dev/replace_all.py

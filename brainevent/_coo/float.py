@@ -1,4 +1,4 @@
-# Copyright 2024- BrainPy Ecosystem Limited. All Rights Reserved.
+# Copyright 2024- BrainX Ecosystem Limited. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,12 +23,9 @@ from jax import numpy as jnp
 from jax.interpreters import ad
 
 from brainevent._misc import namescoped_jit
-from brainevent._typing import Data, Row, Col, MatrixShape
-from brainevent._op.main import XLACustomKernel
-from brainevent._op import numba_kernel
-from brainevent._op.util import general_batching_rule
-from brainevent._op import jaxtype_to_warptype
+from brainevent._op import jaxtype_to_warptype, XLACustomKernel, general_batching_rule, numba_kernel
 from brainevent._sddmm.main import sddmm_coo_indices
+from brainevent._typing import Data, Row, Col, MatrixShape
 
 __all__ = [
     "coo_matvec",
