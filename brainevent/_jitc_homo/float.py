@@ -25,13 +25,9 @@ from jax.interpreters import ad
 from brainevent._compatible_import import pallas as pl
 from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescoped_jit
+from brainevent._op import XLACustomKernel, numba_kernel, jaxtype_to_warptype, general_batching_rule
 from brainevent._pallas_random import LFSR88RNG
 from brainevent._typing import Data, MatrixShape
-from brainevent._op.main import XLACustomKernel
-from brainevent._op.op_numba import numba_kernel
-from brainevent._op.op_pallas import pallas_kernel
-from brainevent._op.util import general_batching_rule
-from brainevent._op.op_warp import jaxtype_to_warptype, warp_kernel
 
 __all__ = [
     "float_jitc_homo_matrix",
@@ -739,7 +735,8 @@ def _jitc_homo_matrix_pallas_kernel_generator(
         )
 
 
-def _jitc_homo_matrix_jvp_weight(weight_dot, weight, clen, seed, _, *, shape: Sequence[int], transpose: bool, corder: bool, **kwargs):
+def _jitc_homo_matrix_jvp_weight(weight_dot, weight, clen, seed, _, *, shape: Sequence[int], transpose: bool,
+                                 corder: bool, **kwargs):
     return float_jitc_homo_matrix_p_call(weight_dot, clen, seed, shape=shape, transpose=transpose, corder=corder)
 
 
@@ -817,11 +814,10 @@ def float_jitc_homo_matrix_p_call(
 
 
 float_jitc_homo_matrix_p = XLACustomKernel('float_jitc_homo_matrix')
-float_jitc_homo_matrix_p.def_cpu_kernel(_jitc_homo_matrix_numba_kernel_generator)
-float_jitc_homo_matrix_p.def_gpu_kernel(warp=_jitc_homo_matrix_warp_kernel_generator,
-                                        pallas=_jitc_homo_matrix_pallas_kernel_generator,
-                                        default='pallas')
-float_jitc_homo_matrix_p.def_tpu_kernel(_jitc_homo_matrix_pallas_kernel_generator)
+float_jitc_homo_matrix_p.def_numba_kernel(_jitc_homo_matrix_numba_kernel_generator)
+float_jitc_homo_matrix_p.def_warp_kernel(_jitc_homo_matrix_warp_kernel_generator)
+float_jitc_homo_matrix_p.def_pallas_kernel('gpu', _jitc_homo_matrix_pallas_kernel_generator)
+float_jitc_homo_matrix_p.def_pallas_kernel('tpu', _jitc_homo_matrix_pallas_kernel_generator)
 float_jitc_homo_matrix_p.def_jvp_rule2(_jitc_homo_matrix_jvp_weight, None, None)
 float_jitc_homo_matrix_p.def_transpose_rule(_jitc_homo_matrix_transpose)
 float_jitc_homo_matrix_p.def_batching_rule(_jitc_homo_matrix_batching)
@@ -1533,11 +1529,10 @@ def float_jitc_mv_homo_p_call(
 
 
 float_jitc_mv_homo_p = XLACustomKernel('float_jitc_mv_homo')
-float_jitc_mv_homo_p.def_cpu_kernel(_jitc_mv_homo_numba_kernel_generator)
-float_jitc_mv_homo_p.def_gpu_kernel(default='pallas',
-                                    warp=_jitc_mv_homo_warp_kernel_generator,
-                                    pallas=_jitc_mv_homo_pallas_kernel_generator, )
-float_jitc_mv_homo_p.def_tpu_kernel(_jitc_mv_homo_pallas_kernel_generator)
+float_jitc_mv_homo_p.def_numba_kernel(_jitc_mv_homo_numba_kernel_generator)
+float_jitc_mv_homo_p.def_warp_kernel(_jitc_mv_homo_warp_kernel_generator)
+float_jitc_mv_homo_p.def_pallas_kernel('gpu', _jitc_mv_homo_pallas_kernel_generator)
+float_jitc_mv_homo_p.def_pallas_kernel('tpu', _jitc_mv_homo_pallas_kernel_generator)
 float_jitc_mv_homo_p.def_jvp_rule2(
     _jitc_mv_homo_jvp_weights,
     None,
@@ -2106,11 +2101,10 @@ def float_jitc_mm_homo_p_call(
 
 
 float_jitc_mm_homo_p = XLACustomKernel('float_jitc_mm_homo')
-float_jitc_mm_homo_p.def_cpu_kernel(_jitc_mm_homo_numba_kernel_generator)
-float_jitc_mm_homo_p.def_gpu_kernel(warp=_jitc_mm_homo_warp_kernel_generator,
-                                    pallas=_jitc_mm_homo_pallas_kernel_generator,
-                                    default='pallas', )
-float_jitc_mm_homo_p.def_tpu_kernel(_jitc_mm_homo_pallas_kernel_generator)
+float_jitc_mm_homo_p.def_numba_kernel(_jitc_mm_homo_numba_kernel_generator)
+float_jitc_mm_homo_p.def_warp_kernel(_jitc_mm_homo_warp_kernel_generator)
+float_jitc_mm_homo_p.def_pallas_kernel('gpu', _jitc_mm_homo_pallas_kernel_generator)
+float_jitc_mm_homo_p.def_pallas_kernel('tpu', _jitc_mm_homo_pallas_kernel_generator)
 float_jitc_mm_homo_p.def_jvp_rule2(
     _jitc_mm_homo_jvp_w,
     None,

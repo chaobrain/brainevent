@@ -26,12 +26,8 @@ from jax.interpreters import ad
 
 from brainevent._compatible_import import pallas as pl
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescoped_jit
+from brainevent._op import XLACustomKernel, numba_kernel, jaxtype_to_warptype, general_batching_rule
 from brainevent._typing import MatrixShape
-from brainevent._op.main import XLACustomKernel
-from brainevent._op.op_numba import numba_kernel
-from brainevent._op.op_pallas import pallas_kernel
-from brainevent._op.util import general_batching_rule
-from brainevent._op.op_warp import jaxtype_to_warptype, warp_kernel
 from .float import fixed_num_mv_p_call, fixed_num_mm_p_call
 
 
@@ -472,9 +468,9 @@ def binary_fixed_num_mv_p_call(
 
 
 binary_fixed_num_mv_p = XLACustomKernel('binary_fixed_num_mv')
-binary_fixed_num_mv_p.def_cpu_kernel(_binary_fixed_num_mv_numba_kernel_generator)
-binary_fixed_num_mv_p.def_gpu_kernel(pallas=_binary_fixed_num_mv_pallas_kernel_generator)
-binary_fixed_num_mv_p.def_tpu_kernel(_binary_fixed_num_mv_pallas_kernel_generator)
+binary_fixed_num_mv_p.def_numba_kernel(_binary_fixed_num_mv_numba_kernel_generator)
+binary_fixed_num_mv_p.def_pallas_kernel('gpu', _binary_fixed_num_mv_pallas_kernel_generator)
+binary_fixed_num_mv_p.def_pallas_kernel('tpu', _binary_fixed_num_mv_pallas_kernel_generator)
 binary_fixed_num_mv_p.def_jvp_rule2(_binary_fixed_num_mv_jvp_weights, None, _binary_fixed_num_mv_jvp_spikes, None)
 binary_fixed_num_mv_p.def_transpose_rule(_binary_fixed_num_mv_transpose_rule)
 binary_fixed_num_mv_p.def_batching_rule(_binary_fixed_num_mv_batching)
@@ -816,9 +812,9 @@ def binary_fixed_num_mm_p_call(
 
 
 binary_fixed_num_mm_p = XLACustomKernel('binary_fixed_num_mm')
-binary_fixed_num_mm_p.def_cpu_kernel(_binary_fixed_num_mm_numba_kernel_generator)
-binary_fixed_num_mm_p.def_gpu_kernel(pallas=_binary_fixed_num_mm_pallas_kernel_generator)
-binary_fixed_num_mm_p.def_tpu_kernel(_binary_fixed_num_mm_pallas_kernel_generator)
+binary_fixed_num_mm_p.def_numba_kernel(_binary_fixed_num_mm_numba_kernel_generator)
+binary_fixed_num_mm_p.def_pallas_kernel('gpu', _binary_fixed_num_mm_pallas_kernel_generator)
+binary_fixed_num_mm_p.def_pallas_kernel('tpu', _binary_fixed_num_mm_pallas_kernel_generator)
 binary_fixed_num_mm_p.def_jvp_rule2(_binary_fixed_num_mm_jvp_weights, None, _binary_fixed_num_mm_jvp_matrix, None)
 binary_fixed_num_mm_p.def_transpose_rule(_binary_fixed_num_mm_transpose_rule)
 binary_fixed_num_mm_p.def_batching_rule(_binary_fixed_num_mm_batching)

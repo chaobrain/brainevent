@@ -21,10 +21,7 @@ from jax.interpreters import ad
 
 from brainevent._compatible_import import pallas as pl
 from brainevent._misc import cdiv, generate_block_dim
-from brainevent._op.main import XLACustomKernel
-from brainevent._op.op_numba import numba_kernel
-from brainevent._op.op_pallas import pallas_kernel
-from brainevent._op.op_warp import warp_kernel, jaxinfo_to_warpinfo, jaxtype_to_warptype
+from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, jaxtype_to_warptype
 
 
 def binary_vec_dot_dense_mat(binary_index, weights):
@@ -190,13 +187,10 @@ def _binary_vec_dot_dense_mat_p_call(spikes, indices, count, weights):
 
 
 _binary_vec_dot_dense_mat_p = XLACustomKernel('binary_vec_dot_dense_matrix')
-_binary_vec_dot_dense_mat_p.def_cpu_kernel(_binary_vec_dot_dense_mat_numba_kernel_generator)
-_binary_vec_dot_dense_mat_p.def_gpu_kernel(
-    warp=_binary_vec_dot_dense_mat_warp_kernel_generator,
-    pallas=_binary_vec_dot_dense_mat_pallas_kernel_generator,
-    default='warp'
-)
-_binary_vec_dot_dense_mat_p.def_tpu_kernel(_binary_vec_dot_dense_mat_pallas_kernel_generator)
+_binary_vec_dot_dense_mat_p.def_numba_kernel(_binary_vec_dot_dense_mat_numba_kernel_generator)
+_binary_vec_dot_dense_mat_p.def_warp_kernel(_binary_vec_dot_dense_mat_warp_kernel_generator)
+_binary_vec_dot_dense_mat_p.def_pallas_kernel('gpu', _binary_vec_dot_dense_mat_pallas_kernel_generator)
+_binary_vec_dot_dense_mat_p.def_pallas_kernel('tpu', _binary_vec_dot_dense_mat_pallas_kernel_generator)
 _binary_vec_dot_dense_mat_p.def_jvp_rule2(
     _binary_vec_dot_dense_mat_jvp_spikes,
     None, None,
@@ -426,13 +420,10 @@ def _binary_mat_dot_dense_mat_p_call(spikes, indices, count, weights):
 
 
 _binary_mat_dot_dense_mat_p = XLACustomKernel('binary_mat_dot_dense_matrix')
-_binary_mat_dot_dense_mat_p.def_cpu_kernel(_binary_mat_dot_dense_mat_numba_kernel_generator)
-_binary_mat_dot_dense_mat_p.def_gpu_kernel(
-    warp=_binary_mat_dot_dense_mat_warp_kernel_generator,
-    pallas=_binary_mat_dot_dense_mat_pallas_kernel_generator,
-    default='pallas'
-)
-_binary_mat_dot_dense_mat_p.def_tpu_kernel(_binary_mat_dot_dense_mat_pallas_kernel_generator)
+_binary_mat_dot_dense_mat_p.def_numba_kernel(_binary_mat_dot_dense_mat_numba_kernel_generator)
+_binary_mat_dot_dense_mat_p.def_warp_kernel(_binary_mat_dot_dense_mat_warp_kernel_generator)
+_binary_mat_dot_dense_mat_p.def_pallas_kernel('gpu', _binary_mat_dot_dense_mat_pallas_kernel_generator)
+_binary_mat_dot_dense_mat_p.def_pallas_kernel('tpu', _binary_mat_dot_dense_mat_pallas_kernel_generator)
 _binary_mat_dot_dense_mat_p.def_jvp_rule2(
     _binary_mat_dot_dense_mat_jvp_spikes,
     None, None,

@@ -19,10 +19,7 @@ import jax
 import jax.numpy as jnp
 
 from brainevent._compatible_import import pallas as pl
-from brainevent._op.main import XLACustomKernel
-from brainevent._op.op_numba import numba_kernel
-from brainevent._op.op_pallas import pallas_kernel
-from brainevent._op.op_warp import warp_kernel, jaxinfo_to_warpinfo
+from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
 
 
 def binary_array_index(spikes):
@@ -162,13 +159,10 @@ def binary_1d_array_index_p_call(spikes):
 
 
 binary_1d_array_index_p = XLACustomKernel('binary_1d_array_index')
-binary_1d_array_index_p.def_cpu_kernel(_binary_1d_array_index_numba_kernel_generator)
-binary_1d_array_index_p.def_gpu_kernel(
-    warp=_binary_1d_array_index_warp_kernel_generator,
-    pallas=_binary_1d_array_index_pallas_kernel_generator,
-    default='pallas'
-)
-binary_1d_array_index_p.def_tpu_kernel(_binary_1d_array_index_pallas_kernel_generator)
+binary_1d_array_index_p.def_numba_kernel(_binary_1d_array_index_numba_kernel_generator)
+binary_1d_array_index_p.def_warp_kernel(_binary_1d_array_index_warp_kernel_generator)
+binary_1d_array_index_p.def_pallas_kernel('gpu', _binary_1d_array_index_pallas_kernel_generator)
+binary_1d_array_index_p.def_pallas_kernel('tpu', _binary_1d_array_index_pallas_kernel_generator)
 
 
 def binary_2d_array_index_p_call(spikes):

@@ -25,13 +25,9 @@ from jax.interpreters import ad
 from brainevent._compatible_import import pallas as pl
 from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescoped_jit
+from brainevent._op import XLACustomKernel, numba_kernel, jaxtype_to_warptype, general_batching_rule
 from brainevent._pallas_random import LFSR88RNG
 from brainevent._typing import Data, MatrixShape
-from brainevent._op.main import XLACustomKernel
-from brainevent._op.op_numba import numba_kernel
-from brainevent._op.op_pallas import pallas_kernel
-from brainevent._op.util import general_batching_rule
-from brainevent._op.op_warp import jaxtype_to_warptype, warp_kernel
 from .float import float_jitc_mv_uniform_p_call, float_jitc_mm_uniform_p_call
 
 __all__ = [
@@ -508,15 +504,18 @@ def _jitc_mv_uniform_pallas_kernel_generator(
 
 
 def _jitc_mv_uniform_jvp_v(v_dot, w_low, w_high, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
-    return float_jitc_mv_uniform_p_call(w_low, w_high, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder)
+    return float_jitc_mv_uniform_p_call(w_low, w_high, clen, v_dot, seed, shape=shape, transpose=transpose,
+                                        corder=corder)
 
 
 def _jitc_mv_uniform_jvp_wloc(w_dot, w_low, w_high, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
-    return binary_jitc_mv_uniform_p_call(w_dot, w_high, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
+    return binary_jitc_mv_uniform_p_call(w_dot, w_high, clen, vector, seed, shape=shape, transpose=transpose,
+                                         corder=corder)
 
 
 def _jitc_mv_uniform_jvp_wscale(w_dot, w_low, w_high, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
-    return binary_jitc_mv_uniform_p_call(w_low, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
+    return binary_jitc_mv_uniform_p_call(w_low, w_dot, clen, vector, seed, shape=shape, transpose=transpose,
+                                         corder=corder)
 
 
 def _jitc_mv_uniform_transpose_rules(
@@ -649,13 +648,10 @@ def binary_jitc_mv_uniform_p_call(
 
 
 binary_jitc_mv_uniform_p = XLACustomKernel('binary_jitc_mv_uniform')
-binary_jitc_mv_uniform_p.def_cpu_kernel(_jitc_mv_uniform_numba_kernel_generator)
-binary_jitc_mv_uniform_p.def_gpu_kernel(
-    default='pallas',
-    warp=_jitc_mv_uniform_warp_kernel_generator,
-    pallas=_jitc_mv_uniform_pallas_kernel_generator,
-)
-binary_jitc_mv_uniform_p.def_tpu_kernel(_jitc_mv_uniform_pallas_kernel_generator)
+binary_jitc_mv_uniform_p.def_numba_kernel(_jitc_mv_uniform_numba_kernel_generator)
+binary_jitc_mv_uniform_p.def_warp_kernel(_jitc_mv_uniform_warp_kernel_generator)
+binary_jitc_mv_uniform_p.def_pallas_kernel('gpu', _jitc_mv_uniform_pallas_kernel_generator)
+binary_jitc_mv_uniform_p.def_pallas_kernel('tpu', _jitc_mv_uniform_pallas_kernel_generator)
 binary_jitc_mv_uniform_p.def_jvp_rule2(
     _jitc_mv_uniform_jvp_wloc,
     _jitc_mv_uniform_jvp_wscale,
@@ -1162,7 +1158,8 @@ def _jitc_mm_uniform_jvp_wscale(w_dot, w_low, w_high, clen, B, seed, _, *, shape
 
 
 def _jitc_mm_uniform_jvp_B(B_dot, w_low, w_high, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
-    return float_jitc_mm_uniform_p_call(w_low, w_high, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder)
+    return float_jitc_mm_uniform_p_call(w_low, w_high, clen, B_dot, seed, shape=shape, transpose=transpose,
+                                        corder=corder)
 
 
 def _jitc_mm_uniform_transpose_rules(
@@ -1300,13 +1297,10 @@ def binary_jitc_mm_uniform_p_call(
 
 
 binary_jitc_mm_uniform_p = XLACustomKernel('binary_jitc_mm_uniform')
-binary_jitc_mm_uniform_p.def_cpu_kernel(_jitc_mm_uniform_numba_kernel_generator)
-binary_jitc_mm_uniform_p.def_gpu_kernel(
-    default='pallas',
-    warp=_jitc_mm_uniform_warp_kernel_generator,
-    pallas=_jitc_mm_uniform_pallas_kernel_generator,
-)
-binary_jitc_mm_uniform_p.def_tpu_kernel(_jitc_mm_uniform_pallas_kernel_generator)
+binary_jitc_mm_uniform_p.def_numba_kernel(_jitc_mm_uniform_numba_kernel_generator)
+binary_jitc_mm_uniform_p.def_warp_kernel(_jitc_mm_uniform_warp_kernel_generator)
+binary_jitc_mm_uniform_p.def_pallas_kernel('gpu', _jitc_mm_uniform_pallas_kernel_generator)
+binary_jitc_mm_uniform_p.def_pallas_kernel('tpu', _jitc_mm_uniform_pallas_kernel_generator)
 binary_jitc_mm_uniform_p.def_jvp_rule2(
     _jitc_mm_uniform_jvp_wloc,
     _jitc_mm_uniform_jvp_wscale,

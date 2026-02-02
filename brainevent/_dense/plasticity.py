@@ -21,9 +21,7 @@ import jax.numpy as jnp
 
 from brainevent._compatible_import import pallas as pl
 from brainevent._misc import generate_block_dim
-from brainevent._op.main import XLACustomKernel
-from brainevent._op.op_numba import numba_kernel
-from brainevent._op.op_pallas import pallas_kernel
+from brainevent._op import XLACustomKernel, numba_kernel
 
 
 def dense_on_pre(
@@ -112,9 +110,9 @@ def _dense_on_pre_prim_call(weight, pre_spike, post_trace):
 
 
 _dense_on_pre_prim = XLACustomKernel('dense_on_pre')
-_dense_on_pre_prim.def_cpu_kernel(_dense_on_pre_numba_kernel_generator)
-_dense_on_pre_prim.def_gpu_kernel(pallas=_dense_on_pre_pallas_kernel_generator)
-_dense_on_pre_prim.def_tpu_kernel(_dense_on_pre_pallas_kernel_generator)
+_dense_on_pre_prim.def_numba_kernel(_dense_on_pre_numba_kernel_generator)
+_dense_on_pre_prim.def_pallas_kernel('gpu', _dense_on_pre_pallas_kernel_generator)
+_dense_on_pre_prim.def_pallas_kernel('tpu', _dense_on_pre_pallas_kernel_generator)
 
 
 def dense_on_post(
@@ -199,6 +197,6 @@ def _dense_one_post_prim_call(weight, pre_trace, post_spike):
 
 
 _dense_on_post_prim = XLACustomKernel('dense_on_post')
-_dense_on_post_prim.def_cpu_kernel(_dense_on_post_numba_kernel_generator)
-_dense_on_post_prim.def_gpu_kernel(pallas=_dense_on_post_pallas_kernel_generator)
-_dense_on_post_prim.def_tpu_kernel(_dense_on_post_pallas_kernel_generator)
+_dense_on_post_prim.def_numba_kernel(_dense_on_post_numba_kernel_generator)
+_dense_on_post_prim.def_pallas_kernel('gpu', _dense_on_post_pallas_kernel_generator)
+_dense_on_post_prim.def_pallas_kernel('tpu', _dense_on_post_pallas_kernel_generator)

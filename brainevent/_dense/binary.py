@@ -23,10 +23,7 @@ from jax.interpreters import ad
 
 from brainevent._compatible_import import pallas as pl
 from brainevent._misc import cdiv, generate_block_dim, namescoped_jit
-from brainevent._op import jaxtype_to_warptype
-from brainevent._op import numba_kernel
-from brainevent._op.main import XLACustomKernel
-from brainevent._op.util import general_batching_rule
+from brainevent._op import jaxtype_to_warptype, numba_kernel, XLACustomKernel, general_batching_rule
 
 
 @namescoped_jit()

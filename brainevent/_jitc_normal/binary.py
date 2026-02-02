@@ -27,11 +27,7 @@ from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescoped_jit
 from brainevent._pallas_random import LFSR88RNG
 from brainevent._typing import Data, MatrixShape
-from brainevent._op.main import XLACustomKernel
-from brainevent._op.op_numba import numba_kernel
-from brainevent._op.op_pallas import pallas_kernel
-from brainevent._op.util import general_batching_rule
-from brainevent._op.op_warp import jaxtype_to_warptype, warp_kernel
+from brainevent._op import XLACustomKernel, numba_kernel, jaxtype_to_warptype, general_batching_rule
 from .float import float_jitc_mv_normal_p_call, float_jitc_mm_normal_p_call
 
 __all__ = [
@@ -784,13 +780,10 @@ def binary_jitc_mv_normal_p_call(
 
 
 binary_jitc_mv_normal_p = XLACustomKernel('event_jitc_mv_normal')
-binary_jitc_mv_normal_p.def_cpu_kernel(_jitc_mv_normal_numba_kernel_generator)
-binary_jitc_mv_normal_p.def_gpu_kernel(
-    default='pallas',
-    warp=_jitc_mv_normal_warp_kernel_generator,
-    pallas=_jitc_mv_normal_pallas_kernel_generator,
-)
-binary_jitc_mv_normal_p.def_tpu_kernel(_jitc_mv_normal_pallas_kernel_generator)
+binary_jitc_mv_normal_p.def_numba_kernel(_jitc_mv_normal_numba_kernel_generator)
+binary_jitc_mv_normal_p.def_warp_kernel(_jitc_mv_normal_warp_kernel_generator)
+binary_jitc_mv_normal_p.def_pallas_kernel('gpu', _jitc_mv_normal_pallas_kernel_generator)
+binary_jitc_mv_normal_p.def_pallas_kernel('tpu', _jitc_mv_normal_pallas_kernel_generator)
 binary_jitc_mv_normal_p.def_jvp_rule2(
     _jitc_mv_normal_jvp_wloc,
     _jitc_mv_normal_jvp_wscale,
@@ -1375,13 +1368,10 @@ def binary_jitc_mm_normal_p_call(
 
 
 binary_jitc_mm_normal_p = XLACustomKernel('binary_jitc_mm_normal')
-binary_jitc_mm_normal_p.def_cpu_kernel(_jitc_mm_normal_numba_kernel_generator)
-binary_jitc_mm_normal_p.def_gpu_kernel(
-    default='pallas',
-    warp=_jitc_mm_normal_warp_kernel_generator,
-    pallas=_jitc_mm_normal_pallas_kernel_generator,
-)
-binary_jitc_mm_normal_p.def_tpu_kernel(_jitc_mm_normal_pallas_kernel_generator)
+binary_jitc_mm_normal_p.def_numba_kernel(_jitc_mm_normal_numba_kernel_generator)
+binary_jitc_mm_normal_p.def_warp_kernel(_jitc_mm_normal_warp_kernel_generator)
+binary_jitc_mm_normal_p.def_pallas_kernel('gpu', _jitc_mm_normal_pallas_kernel_generator)
+binary_jitc_mm_normal_p.def_pallas_kernel('tpu', _jitc_mm_normal_pallas_kernel_generator)
 binary_jitc_mm_normal_p.def_jvp_rule2(_jitc_mm_normal_jvp_wloc, _jitc_mm_normal_jvp_wscale,
                                       None, _jitc_mm_normal_jvp_B, None, None)
 binary_jitc_mm_normal_p.def_transpose_rule(_jitc_mm_normal_transpose_rules)
