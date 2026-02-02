@@ -55,6 +55,7 @@ dependencies = [
     'numpy>=1.15',
     'brainunit>=0.0.8',
     'absl-py',
+    'jax>=0.7.1',
 ]
 
 
@@ -68,25 +69,10 @@ repository = 'https://github.com/chaobrain/brainevent'
 
 [project.optional-dependencies]
 cpu = [
-    'jax[cpu]',
+    'jax[cpu]>=0.7.1',
     'numba',
-    'brainunit',
 ]
-cuda12 = [
-    'jax[cuda12]',
-    'brainunit',
-]
-cuda13 = [
-    'jax[cuda13]',
-    'brainunit',
-]
-tpu = [
-    'jax[tpu]',
-    'brainunit',
-]
-testing = [
-    'pytest',
-    'jax',
-    'brainunit',
-    'absl-py',
-]
+cuda12 = ['jax[cuda12]>=0.7.1']
+cuda13 = ['jax[cuda13]>=0.7.1']
+tpu = ['jax[tpu]>=0.7.1']
+testing = ['pytest']
