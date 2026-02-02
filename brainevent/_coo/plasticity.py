@@ -20,16 +20,9 @@ import jax
 import numpy as np
 
 from brainevent._compatible_import import pallas as pl
-from brainevent._compatible_import import (
-    triton_store,
-    triton_load,
-    tpu_load,
-    tpu_store,
-)
 from brainevent._misc import generate_block_dim
 from brainevent._op import XLACustomKernel
 from brainevent._op import numba_kernel
-from brainevent._op import pallas_kernel
 
 
 def coo_on_pre(
@@ -137,9 +130,9 @@ def _coo_on_pre_prim_call(weight, pre_ids, post_ids, pre_spike, post_trace):
 
 
 _coo_on_pre_prim = XLACustomKernel('coo_on_pre')
-_coo_on_pre_prim.def_cpu_kernel(_coo_on_pre_numba_kernel_generator)
-_coo_on_pre_prim.def_gpu_kernel(pallas=_coo_on_pre_pallas_kernel_generator)
-_coo_on_pre_prim.def_tpu_kernel(_coo_on_pre_tpu_kernel_generator)
+_coo_on_pre_prim.def_numba_kernel(_coo_on_pre_numba_kernel_generator)
+_coo_on_pre_prim.def_pallas_kernel('gpu', _coo_on_pre_pallas_kernel_generator)
+_coo_on_pre_prim.def_pallas_kernel('tpu', _coo_on_pre_pallas_kernel_generator)
 
 
 def coo_on_post(
@@ -247,6 +240,6 @@ def _coo_on_post_prim_call(weight, pre_ids, post_ids, pre_trace, post_spike):
 
 
 _coo_on_post_prim = XLACustomKernel('coo_on_post')
-_coo_on_post_prim.def_cpu_kernel(_coo_on_post_numba_kernel_generator)
-_coo_on_post_prim.def_gpu_kernel(pallas=_coo_on_post_pallas_kernel_generator)
-_coo_on_post_prim.def_tpu_kernel(_coo_on_post_tpu_kernel_generator)
+_coo_on_post_prim.def_numba_kernel(_coo_on_post_numba_kernel_generator)
+_coo_on_post_prim.def_pallas_kernel('gpu', _coo_on_post_pallas_kernel_generator)
+_coo_on_post_prim.def_pallas_kernel('tpu', _coo_on_post_pallas_kernel_generator)

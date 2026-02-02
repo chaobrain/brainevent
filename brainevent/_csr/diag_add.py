@@ -27,15 +27,9 @@ from jax.interpreters import ad
 from jax.interpreters.partial_eval import DynamicJaxprTracer
 
 from brainevent._compatible_import import pallas as pl
-from brainevent._compatible_import import (
-    pallas_load,
-    pallas_atomic_add,
-)
 from brainevent._misc import generate_block_dim
+from brainevent._op import numba_kernel, jaxinfo_to_warpinfo
 from brainevent._op.main import XLACustomKernel
-from brainevent._op.op_numba import numba_jit_fn, numba_kernel
-from brainevent._op.op_pallas import pallas_kernel
-from brainevent._op.op_warp import warp_kernel, jaxinfo_to_warpinfo
 
 
 def _is_tracer(x):
@@ -250,13 +244,8 @@ def csr_diag_add_call(csr_value, diag_position, diag_value):
 
 
 csr_diag_add_p = XLACustomKernel('csr_diag_add')
-csr_diag_add_p.def_cpu_kernel(_csr_diag_add_numba_kernel_generator)
-csr_diag_add_p.def_gpu_kernel(
-    warp=_csr_diag_add_warp_kernel_generator,
-    pallas=partial(_csr_diag_add_pallas_kernel_generator, 'gpu'),
-    default='warp',
-)
-csr_diag_add_p.def_tpu_kernel(
-    partial(_csr_diag_add_pallas_kernel_generator, 'tpu')
-)
+csr_diag_add_p.def_numba_kernel(_csr_diag_add_numba_kernel_generator)
+csr_diag_add_p.def_warp_kernel(_csr_diag_add_warp_kernel_generator)
+csr_diag_add_p.def_pallas_kernel('gpu', partial(_csr_diag_add_pallas_kernel_generator, 'gpu'))
+csr_diag_add_p.def_pallas_kernel('tpu', partial(_csr_diag_add_pallas_kernel_generator, 'tpu'))
 csr_diag_add_p.def_jvp_rule2(_csr_diag_add_jvp_csr_value, None, _csr_diag_add_jvp_diag_value)

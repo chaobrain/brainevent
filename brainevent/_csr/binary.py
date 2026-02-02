@@ -1340,13 +1340,10 @@ def binary_csrmm_p_call(
 
 
 binary_csrmm_p = XLACustomKernel('binary_csrmm')
-binary_csrmm_p.def_cpu_kernel(_csrmm_numba_kernel_generator)
-binary_csrmm_p.def_gpu_kernel(
-    default='pallas',
-    warp=_csrmm_warp_kernel_generator,
-    pallas=partial(_csrmm_pallas_kernel_generator, 'gpu'),
-)
-binary_csrmm_p.def_tpu_kernel(partial(_csrmm_pallas_kernel_generator, 'tpu'))
+binary_csrmm_p.def_numba_kernel(_csrmm_numba_kernel_generator)
+binary_csrmm_p.def_warp_kernel(_csrmm_warp_kernel_generator)
+binary_csrmm_p.def_pallas_kernel('gpu', partial(_csrmm_pallas_kernel_generator, 'gpu'))
+binary_csrmm_p.def_pallas_kernel('tpu', partial(_csrmm_pallas_kernel_generator, 'tpu'))
 binary_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 binary_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 binary_csrmm_p.def_batching_rule(_csrmm_batching)

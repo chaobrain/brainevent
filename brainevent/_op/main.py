@@ -45,11 +45,11 @@ class XLACustomKernel:
     to bind everything together into a callable JAX operation.
 
     Attributes:
-        primitive (jax.core.Primitive): The underlying JAX primitive created.
-        name (str): The name assigned to the primitive.
+        primitive: The underlying JAX primitive created.
+        name: The name assigned to the primitive.
 
     Args:
-        name (str): The unique name for the custom JAX primitive.
+        name: The unique name for the custom JAX primitive.
 
     """
 
@@ -68,12 +68,7 @@ class XLACustomKernel:
         # batching rule
         self.register_general_batching()
 
-    def _abstract_eval(
-        self,
-        *ins,
-        outs: OutType,
-        **kwargs
-    ):
+    def _abstract_eval(self, *ins, outs: OutType, **kwargs):
         """
         Abstract evaluation rule for the JAX primitive.
 

@@ -24,12 +24,8 @@ from jax.interpreters import ad
 
 from brainevent._compatible_import import pallas as pl
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescoped_jit
+from brainevent._op import numba_kernel, jaxtype_to_warptype, XLACustomKernel, general_batching_rule
 from brainevent._typing import Data, Indptr, Index, MatrixShape
-from brainevent._op.main import XLACustomKernel
-from brainevent._op.op_numba import numba_kernel
-from brainevent._op.op_pallas import pallas_kernel
-from brainevent._op.util import general_batching_rule
-from brainevent._op.op_warp import jaxtype_to_warptype, warp_kernel
 from .float import csr_matvec, csr_matmat
 
 
@@ -583,13 +579,10 @@ def masked_float_csrmv_p_call(
 
 
 masked_float_csrmv_p = XLACustomKernel('masked_float_csrmv')
-masked_float_csrmv_p.def_cpu_kernel(_masked_float_csrmv_numba_kernel_generator)
-masked_float_csrmv_p.def_gpu_kernel(
-    default='pallas',
-    warp=_masked_float_csrmv_warp_kernel_generator,
-    pallas=_masked_float_csrmv_pallas_tiled_kernel_generator,
-)
-masked_float_csrmv_p.def_tpu_kernel(_masked_float_csrmv_pallas_tiled_kernel_generator)
+masked_float_csrmv_p.def_numba_kernel(_masked_float_csrmv_numba_kernel_generator)
+masked_float_csrmv_p.def_warp_kernel(_masked_float_csrmv_warp_kernel_generator)
+masked_float_csrmv_p.def_pallas_kernel('gpu', _masked_float_csrmv_pallas_tiled_kernel_generator)
+masked_float_csrmv_p.def_pallas_kernel('tpu', _masked_float_csrmv_pallas_tiled_kernel_generator)
 masked_float_csrmv_p.def_jvp_rule2(_masked_float_csrmv_jvp_weights, None, None, _masked_float_csrmv_jvp_v)
 masked_float_csrmv_p.def_transpose_rule(_masked_float_csrmv_transpose_rule)
 masked_float_csrmv_p.def_batching_rule(_masked_float_csrmv_batching)
@@ -1110,13 +1103,10 @@ def masked_float_csrmm_p_call(
 
 
 masked_float_csrmm_p = XLACustomKernel('masked_float_csrmm')
-masked_float_csrmm_p.def_cpu_kernel(_masked_float_csrmm_numba_kernel_generator)
-masked_float_csrmm_p.def_gpu_kernel(
-    default='pallas',
-    warp=_masked_float_csrmm_warp_kernel_generator,
-    pallas=_masked_float_csrmm_pallas_kernel_generator,
-)
-masked_float_csrmm_p.def_tpu_kernel(_masked_float_csrmm_pallas_kernel_generator)
+masked_float_csrmm_p.def_numba_kernel(_masked_float_csrmm_numba_kernel_generator)
+masked_float_csrmm_p.def_warp_kernel(_masked_float_csrmm_warp_kernel_generator)
+masked_float_csrmm_p.def_pallas_kernel('gpu', _masked_float_csrmm_pallas_kernel_generator)
+masked_float_csrmm_p.def_pallas_kernel('tpu', _masked_float_csrmm_pallas_kernel_generator)
 masked_float_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 masked_float_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 masked_float_csrmm_p.def_batching_rule(_masked_float_csrmm_batching)

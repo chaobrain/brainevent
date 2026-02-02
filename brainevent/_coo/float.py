@@ -25,9 +25,9 @@ from jax.interpreters import ad
 from brainevent._misc import namescoped_jit
 from brainevent._typing import Data, Row, Col, MatrixShape
 from brainevent._op.main import XLACustomKernel
-from brainevent._op.op_numba import numba_kernel
+from brainevent._op import numba_kernel
 from brainevent._op.util import general_batching_rule
-from brainevent._op.op_warp import jaxtype_to_warptype, warp_kernel
+from brainevent._op import jaxtype_to_warptype
 from brainevent._sddmm.main import sddmm_coo_indices
 
 __all__ = [
@@ -315,8 +315,8 @@ def coomv_p_call(
 
 
 coomv_p = XLACustomKernel('coomv')
-coomv_p.def_cpu_kernel(_coomv_numba_kernel_generator)
-coomv_p.def_gpu_kernel(warp=_coomv_warp_kernel_generator)
+coomv_p.def_numba_kernel(_coomv_numba_kernel_generator)
+coomv_p.def_warp_kernel(_coomv_warp_kernel_generator)
 coomv_p.def_jvp_rule2(_coomv_jvp_weights, None, None, _coomv_jvp_vector)
 coomv_p.def_transpose_rule(_coomv_transpose_rule)
 coomv_p.def_batching_rule(_coomv_batching)
@@ -555,8 +555,8 @@ def coomm_p_call(
 
 
 coomm_p = XLACustomKernel('coomm')
-coomm_p.def_cpu_kernel(_coomm_numba_kernel_generator)
-coomm_p.def_gpu_kernel(warp=_coomm_warp_kernel_generator)
+coomm_p.def_numba_kernel(_coomm_numba_kernel_generator)
+coomm_p.def_warp_kernel(_coomm_warp_kernel_generator)
 coomm_p.def_jvp_rule2(_coomm_jvp_left, None, None, _coomm_jvp_right)
 coomm_p.def_transpose_rule(_coomm_transpose_rule)
 coomm_p.def_batching_rule(coomm_batching)

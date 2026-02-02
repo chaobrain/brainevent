@@ -23,11 +23,10 @@ from jax.interpreters import ad
 
 from brainevent._compatible_import import pallas as pl
 from brainevent._misc import cdiv, generate_block_dim, namescoped_jit
+from brainevent._op import jaxtype_to_warptype
+from brainevent._op import numba_kernel
 from brainevent._op.main import XLACustomKernel
-from brainevent._op.op_numba import numba_kernel
-from brainevent._op.op_pallas import pallas_kernel
 from brainevent._op.util import general_batching_rule
-from brainevent._op.op_warp import jaxtype_to_warptype, warp_kernel
 
 
 @namescoped_jit()
@@ -239,13 +238,11 @@ def dense_mat_dot_binary_vec_p_call(weights, spikes):
 
 
 dense_mat_dot_binary_vec_p = XLACustomKernel('dense_mat_dot_binary_vector')
-dense_mat_dot_binary_vec_p.def_cpu_kernel(_dense_mat_dot_binary_vec_numba_cpu_kernel_generator)
-dense_mat_dot_binary_vec_p.def_gpu_kernel(warp=_dense_mat_dot_binary_vec_warp_kernel_generator,
-                                          pallas=_dense_mat_dot_binary_vec_pallas_kernel_generator,
-                                          default='warp')
-dense_mat_dot_binary_vec_p.def_tpu_kernel(_dense_mat_dot_binary_vec_pallas_kernel_generator)
-dense_mat_dot_binary_vec_p.def_jvp_rule2(_dense_mat_dot_binary_vec_jvp_weights,
-                                         _dense_mat_dot_binary_vec_jvp_spikes)
+dense_mat_dot_binary_vec_p.def_numba_kernel(_dense_mat_dot_binary_vec_numba_cpu_kernel_generator)
+dense_mat_dot_binary_vec_p.def_warp_kernel(_dense_mat_dot_binary_vec_warp_kernel_generator)
+dense_mat_dot_binary_vec_p.def_pallas_kernel('gpu', _dense_mat_dot_binary_vec_pallas_kernel_generator)
+dense_mat_dot_binary_vec_p.def_pallas_kernel('tpu', _dense_mat_dot_binary_vec_pallas_kernel_generator)
+dense_mat_dot_binary_vec_p.def_jvp_rule2(_dense_mat_dot_binary_vec_jvp_weights, _dense_mat_dot_binary_vec_jvp_spikes)
 dense_mat_dot_binary_vec_p.def_transpose_rule(_dense_mat_dot_binary_vec_transpose_rule)
 dense_mat_dot_binary_vec_p.def_batching_rule(_dense_mat_dot_binary_vec_batching)
 
@@ -444,13 +441,11 @@ def binary_vec_dot_dense_mat_p_call(spikes, weights):
 
 
 binary_vec_dot_dense_mat_p = XLACustomKernel('binary_vector_dot_dense_matrix')
-binary_vec_dot_dense_mat_p.def_cpu_kernel(_binary_vec_dot_dense_mat_numba_kernel_generator)
-binary_vec_dot_dense_mat_p.def_gpu_kernel(warp=_binary_vec_dot_dense_mat_warp_kernel_generator,
-                                          pallas=_binary_vec_dot_dense_mat_pallas_kernel_generator,
-                                          default='warp')
-binary_vec_dot_dense_mat_p.def_tpu_kernel(_binary_vec_dot_dense_mat_pallas_kernel_generator)
-binary_vec_dot_dense_mat_p.def_jvp_rule2(_binary_vec_dot_dense_mat_jvp_spikes,
-                                         _binary_vec_dot_dense_mat_jvp_weights)
+binary_vec_dot_dense_mat_p.def_numba_kernel(_binary_vec_dot_dense_mat_numba_kernel_generator)
+binary_vec_dot_dense_mat_p.def_warp_kernel(_binary_vec_dot_dense_mat_warp_kernel_generator)
+binary_vec_dot_dense_mat_p.def_pallas_kernel('gpu', _binary_vec_dot_dense_mat_pallas_kernel_generator)
+binary_vec_dot_dense_mat_p.def_pallas_kernel('tpu', _binary_vec_dot_dense_mat_pallas_kernel_generator)
+binary_vec_dot_dense_mat_p.def_jvp_rule2(_binary_vec_dot_dense_mat_jvp_spikes, _binary_vec_dot_dense_mat_jvp_weights)
 binary_vec_dot_dense_mat_p.def_transpose_rule(_binary_vec_dot_dense_mat_transpose_rule)
 binary_vec_dot_dense_mat_p.def_batching_rule(_event_matrix_batching)
 
@@ -726,13 +721,11 @@ def dense_mat_dot_binary_mat_p_call(weights, spikes):
 
 
 dense_mat_dot_binary_mat_p = XLACustomKernel('dense_matrix_dot_binary_matrix')
-dense_mat_dot_binary_mat_p.def_cpu_kernel(_dense_mat_dot_binary_mat_numba_kernel_generator)
-dense_mat_dot_binary_mat_p.def_gpu_kernel(warp=_dense_mat_dot_binary_mat_warp_kernel_generator,
-                                          pallas=_dense_mat_dot_binary_mat_pallas_kernel_generator,
-                                          default='warp')
-dense_mat_dot_binary_mat_p.def_tpu_kernel(_dense_mat_dot_binary_mat_pallas_kernel_generator)
-dense_mat_dot_binary_mat_p.def_jvp_rule2(_dense_mat_dot_binary_mat_jvp_weights,
-                                         _dense_mat_dot_binary_mat_jvp_spikes)
+dense_mat_dot_binary_mat_p.def_numba_kernel(_dense_mat_dot_binary_mat_numba_kernel_generator)
+dense_mat_dot_binary_mat_p.def_warp_kernel(_dense_mat_dot_binary_mat_warp_kernel_generator)
+dense_mat_dot_binary_mat_p.def_pallas_kernel('gpu', _dense_mat_dot_binary_mat_pallas_kernel_generator)
+dense_mat_dot_binary_mat_p.def_pallas_kernel('tpu', _dense_mat_dot_binary_mat_pallas_kernel_generator)
+dense_mat_dot_binary_mat_p.def_jvp_rule2(_dense_mat_dot_binary_mat_jvp_weights, _dense_mat_dot_binary_mat_jvp_spikes)
 dense_mat_dot_binary_mat_p.def_transpose_rule(_dense_mat_dot_binary_mat_transpose_rule)
 dense_mat_dot_binary_mat_p.def_batching_rule(_dense_mat_dot_binary_mat_batching)
 
@@ -998,12 +991,10 @@ def binary_mat_dot_dense_mat_p_call(spikes, weights):
 
 
 binary_mat_dot_dense_mat_p = XLACustomKernel('binary_matrix_dot_dense_matrix')
-binary_mat_dot_dense_mat_p.def_cpu_kernel(_binary_mat_dot_dense_mat_numba_kernel_generator)
-binary_mat_dot_dense_mat_p.def_gpu_kernel(warp=_binary_mat_dot_dense_mat_warp_kernel_generator,
-                                          pallas=_binary_mat_dot_dense_mat_pallas_kernel_generator,
-                                          default='warp')
-binary_mat_dot_dense_mat_p.def_tpu_kernel(_binary_mat_dot_dense_mat_pallas_kernel_generator)
-binary_mat_dot_dense_mat_p.def_jvp_rule2(_binary_mat_dot_dense_mat_jvp_spikes,
-                                         _binary_mat_dot_dense_mat_jvp_weights)
+binary_mat_dot_dense_mat_p.def_numba_kernel(_binary_mat_dot_dense_mat_numba_kernel_generator)
+binary_mat_dot_dense_mat_p.def_warp_kernel(_binary_mat_dot_dense_mat_warp_kernel_generator)
+binary_mat_dot_dense_mat_p.def_pallas_kernel('gpu', _binary_mat_dot_dense_mat_pallas_kernel_generator)
+binary_mat_dot_dense_mat_p.def_pallas_kernel('tpu', _binary_mat_dot_dense_mat_pallas_kernel_generator)
+binary_mat_dot_dense_mat_p.def_jvp_rule2(_binary_mat_dot_dense_mat_jvp_spikes, _binary_mat_dot_dense_mat_jvp_weights)
 binary_mat_dot_dense_mat_p.def_transpose_rule(_binary_mat_dot_dense_mat_transpose_rule)
 binary_mat_dot_dense_mat_p.def_batching_rule(_binary_mat_dot_dense_mat_batching)
