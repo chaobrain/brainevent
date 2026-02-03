@@ -42,8 +42,9 @@ DEFAULT_PRIORITIES: Dict[tuple, int] = {
 
     # GPU
     ('pallas', 'gpu'): 100,
-    ('numba_cuda', 'gpu'): 150,
-    ('warp', 'gpu'): 200,
+    ('tvmffi', 'gpu'): 150,
+    ('numba_cuda', 'gpu'): 200,
+    ('warp', 'gpu'): 250,
     ('triton', 'gpu'): 300,
 
     # TPU
