@@ -107,7 +107,7 @@ class TestVectorCSR:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = brainevent.EventArray(x) @ csr
-        y2 = vector_csr(x, csr.data, indices, indptr, [m, n])
+        y2 = vector_csr(x, csr.data, indices, indptr, (m, n))
         assert (jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
 
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -119,7 +119,7 @@ class TestVectorCSR:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = jax.vmap(lambda x: brainevent.EventArray(x) @ csr)(xs)
-        y2 = jax.vmap(lambda x: vector_csr(x, csr.data, indices, indptr, [m, n]))(xs)
+        y2 = jax.vmap(lambda x: vector_csr(x, csr.data, indices, indptr, (m, n)))(xs)
         assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -131,7 +131,7 @@ class TestVectorCSR:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = csr @ brainevent.EventArray(v)
-        y2 = csr_vector(v, csr.data, indices, indptr, [m, n])
+        y2 = csr_vector(v, csr.data, indices, indptr, (m, n))
         assert (jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
 
     def _test_vjp(self, homo_w, replace, transpose):
@@ -223,10 +223,10 @@ class TestBatchingVectorCSR:
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         if transpose:
             y1 = brainevent.EventArray(x) @ csr
-            y2 = vector_csr(x, csr.data, indices, indptr, [m, n])
+            y2 = vector_csr(x, csr.data, indices, indptr, (m, n))
         else:
             y1 = csr @ brainevent.EventArray(x)
-            y2 = csr_vector(x, csr.data, indices, indptr, [m, n])
+            y2 = csr_vector(x, csr.data, indices, indptr, (m, n))
         return jnp.allclose(y1, y2)
 
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -275,9 +275,9 @@ class TestBatchingVectorCSR:
 
         def f_jax(x, w):
             if transpose:
-                r = vector_csr(x, w, indices, indptr, shape=[m, n])
+                r = vector_csr(x, w, indices, indptr, shape=(m, n))
             else:
-                r = csr_vector(x, w, indices, indptr, shape=[m, n])
+                r = csr_vector(x, w, indices, indptr, shape=(m, n))
             return r.sum()
 
         r2 = jax.grad(f_jax, argnums=(0, 1))(x, csr.data)
@@ -397,7 +397,7 @@ class TestMatrixCSR:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = brainevent.EventArray(x) @ csr
-        y2 = matrix_csr(x, csr.data, indices, indptr, [m, n])
+        y2 = matrix_csr(x, csr.data, indices, indptr, (m, n))
         assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -409,7 +409,7 @@ class TestMatrixCSR:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = csr @ brainevent.EventArray(matrix)
-        y2 = csr_matrix(matrix, csr.data, indices, indptr, [m, n])
+        y2 = csr_matrix(matrix, csr.data, indices, indptr, (m, n))
         assert (jnp.allclose(y, y2))
 
 
@@ -418,10 +418,10 @@ class TestBatchingMatrixCSR:
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         if transpose:
             y1 = brainevent.EventArray(x) @ csr
-            y2 = matrix_csr(x, csr.data, indices, indptr, [m, n])
+            y2 = matrix_csr(x, csr.data, indices, indptr, (m, n))
         else:
             y1 = csr @ brainevent.EventArray(x)
-            y2 = csr_matrix(x, csr.data, indices, indptr, [m, n])
+            y2 = csr_matrix(x, csr.data, indices, indptr, (m, n))
         return jnp.allclose(y1, y2)
 
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -470,9 +470,9 @@ class TestBatchingMatrixCSR:
 
         def f_jax(x, w):
             if transpose:
-                r = matrix_csr(x, w, indices, indptr, shape=[m, n])
+                r = matrix_csr(x, w, indices, indptr, shape=(m, n))
             else:
-                r = csr_matrix(x, w, indices, indptr, shape=[m, n])
+                r = csr_matrix(x, w, indices, indptr, shape=(m, n))
             return r.sum()
 
         r2 = jax.grad(f_jax, argnums=(0, 1))(x, csr.data)
