@@ -34,7 +34,7 @@ if tvmffi_installed:
     try:
         import jax_tvm_ffi
         import tvm_ffi.cpp
-    except ImportError:
+    except:
         tvmffi_installed = False
 
 # Try to import Warp - will fail gracefully if not available
