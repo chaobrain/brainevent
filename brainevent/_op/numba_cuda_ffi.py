@@ -114,7 +114,7 @@ def _get_stream_from_callframe(call_frame) -> int:
         call_frame: The XLA_FFI_CallFrame structure.
 
     Returns:
-        The CUDA stream pointer as an integer, or 0 if extraction fails.
+        The CUDA stream pointer as an integer.
     """
     api = call_frame.api
     # Prepare stream get arguments
