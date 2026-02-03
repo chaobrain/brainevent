@@ -19,7 +19,6 @@ __version_info__ = tuple(map(int, __version__.split(".")))
 
 from ._block_csr import BlockCSR
 from ._block_ell import BlockELL
-from ._config import config
 from ._coo import COO, coo_on_pre, coo_on_post
 from ._csr import CSR, CSC, csr_on_pre, csr2csc_on_post
 from ._dense import dense_on_pre, dense_on_post
@@ -47,9 +46,6 @@ from ._primitives import (
 )
 
 __all__ = [
-    # --- global configuration --- #
-    'config',
-
     # --- data representing events --- #
     'BaseArray',
     'EventArray',

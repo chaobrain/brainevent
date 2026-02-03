@@ -205,8 +205,8 @@ def _csrmv_numba_kernel_generator(
                                 r += weights[j]
                         posts[i] = r
 
-    def kernel(weights, indices, indptr, v):
-        return numba_kernel(mv, outs=kwargs['outs'])(weights, indices, indptr, v)
+    def kernel(weights, indices, indptr, vector):
+        return numba_kernel(mv, outs=kwargs['outs'])(weights, indices, indptr, vector)
 
     return kernel
 
@@ -1320,8 +1320,6 @@ def binary_csrmm_p_call(
         indices,
         indptr,
         B,
-        # Initialize a zero matrix with the output shape and data type.
-        jnp.zeros(out_info.shape, out_info.dtype),
         outs=[out_info],
         shape=shape,
         transpose=transpose,

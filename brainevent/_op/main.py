@@ -16,17 +16,58 @@
 # -*- coding: utf-8 -*-
 
 import functools
-from typing import Callable, Optional
+from dataclasses import dataclass, field
+from typing import Callable, Dict, List, Optional
 
 from jax.interpreters import xla, batching, ad, mlir
 
 from brainevent._compatible_import import Primitive
+from brainevent._error import KernelNotAvailableError, KernelCompilationError, KernelFallbackExhaustedError
 from brainevent._typing import KernelGenerator
 from .util import general_batching_rule, defjvp, OutType, abstract_arguments
 
 __all__ = [
     'XLACustomKernel',
+    'KernelEntry',
+    'DEFAULT_PRIORITIES',
 ]
+
+# Default priority for each (backend, platform) combination.
+# Lower values = higher priority (tried first).
+DEFAULT_PRIORITIES: Dict[tuple, int] = {
+
+    # CPU
+    ('numba', 'cpu'): 100,
+    ('tvmffi', 'cpu'): 200,
+
+    # GPU
+    ('pallas', 'gpu'): 100,
+    ('warp', 'gpu'): 200,
+    ('triton', 'gpu'): 300,
+
+    # TPU
+    ('pallas', 'tpu'): 100,
+}
+
+
+@dataclass
+class KernelEntry:
+    """Represents a registered kernel for a specific backend and platform.
+
+    Attributes:
+        backend: The backend name (e.g., 'numba', 'warp', 'pallas', 'triton').
+        platform: The platform name (e.g., 'cpu', 'gpu', 'tpu').
+        kernel_generator: A callable that generates the kernel function.
+        priority: Execution priority. Lower values are tried first.
+    """
+    backend: str
+    platform: str
+    kernel_generator: KernelGenerator
+    priority: int = field(default=0)
+
+    def __post_init__(self):
+        if self.priority == 0:
+            self.priority = DEFAULT_PRIORITIES.get((self.backend, self.platform), 500)
 
 
 class XLACustomKernel:
@@ -55,7 +96,7 @@ class XLACustomKernel:
 
     __module__ = 'brainevent'
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, fallback_enabled: bool = True):
         # primitive
         self.name = name
         self.primitive = Primitive(name)
@@ -67,6 +108,14 @@ class XLACustomKernel:
 
         # batching rule
         self.register_general_batching()
+
+        # kernel storage: platform -> list of KernelEntry (sorted by priority)
+        self._kernels: Dict[str, List[KernelEntry]] = {}
+        # tracks which platforms have had lowering registered
+        self._registered_platforms: set = set()
+
+        # setting
+        self.fallback_enabled = fallback_enabled
 
     def _abstract_eval(self, *ins, outs: OutType, **kwargs):
         """
@@ -95,37 +144,183 @@ class XLACustomKernel:
         return tuple(outs)
 
     def __call__(self, *ins, outs: OutType, backend: Optional[str] = None, **kwargs):
-        # if default backend is not the given "backend",
-        # call register_translation to register the kernel again.
+        """Call the primitive with the given inputs.
 
+        Args:
+            *ins: Input arrays to the primitive.
+            outs: Output specification (shapes and dtypes).
+            backend: Optional backend to use. If specified and a kernel
+                with that backend is available for the target platform,
+                it will be prioritized. If None, kernels are tried in
+                default priority order.
+            **kwargs: Additional keyword arguments passed to the kernel.
+
+        Returns:
+            The output(s) of the primitive.
+        """
         outs, tree_def = abstract_arguments(outs)
-        r = self.primitive.bind(*ins, **kwargs, outs=tuple(outs))
+        # Pass backend hint to the lowering via kwargs if specified
+        bind_kwargs = dict(kwargs)
+        if backend is not None:
+            bind_kwargs['_preferred_backend'] = backend
+        r = self.primitive.bind(*ins, **bind_kwargs, outs=tuple(outs))
         assert len(r) == len(outs), 'The number of outputs does not match the expected.'
         return tree_def.unflatten(r)
 
-    def def_kernel(self, backend: str, platform: str, kg: KernelGenerator, is_default: bool = False):
+    def def_kernel(
+        self,
+        backend: str,
+        platform: str,
+        kg: KernelGenerator,
+        priority: Optional[int] = None
+    ):
+        """Register a kernel for a specific backend and platform.
+
+        Args:
+            backend: The backend name (e.g., 'numba', 'warp', 'pallas').
+            platform: The platform name (e.g., 'cpu', 'gpu', 'tpu').
+            kg: A kernel generator callable that creates the kernel function.
+            priority: Priority of this kernel. Lower values are tried first.
+                If not specified, uses DEFAULT_PRIORITIES or 500 as fallback.
+            priority: Optional priority override. Lower values are tried first.
+                If not specified, uses DEFAULT_PRIORITIES or 500 as fallback.
+        """
         assert isinstance(backend, str), f'The `backend` should be a string, but got {type(backend)}.'
         assert isinstance(platform, str), f'The `platform` should be a string, but got {type(platform)}.'
         assert callable(kg), f'The `kg` should be a callable, but got {type(kg)}.'
-        if is_default:
-            register_translation(platform, self.primitive, kg=kg)
 
-    def def_numba_kernel(self, kg: KernelGenerator, is_default: bool = False):
-        self.def_kernel(backend='numba', platform='cpu', kg=kg, is_default=is_default)
+        # Create kernel entry
+        entry = KernelEntry(
+            backend=backend,
+            platform=platform,
+            kernel_generator=kg,
+            priority=priority if priority is not None else 0  # 0 triggers __post_init__ default
+        )
+        if priority is not None:
+            entry.priority = priority  # Override post_init default
 
-    def def_warp_kernel(self, kg: KernelGenerator, is_default: bool = False):
-        self.def_kernel(backend='warp', platform='gpu', kg=kg, is_default=is_default)
+        # Store kernel in the platform's list
+        if platform not in self._kernels:
+            self._kernels[platform] = []
+        self._kernels[platform].append(entry)
+        # Sort by priority (lower = higher priority)
+        self._kernels[platform].sort(key=lambda e: e.priority)
 
-    def def_triton_kernel(self, kg: KernelGenerator, is_default: bool = False):
-        self.def_kernel(backend='triton', platform='gpu', kg=kg, is_default=is_default)
+        # Register fallback lowering once per platform
+        if platform not in self._registered_platforms:
+            self._register_fallback_lowering(platform)
+            self._registered_platforms.add(platform)
 
-    def def_pallas_kernel(self, platform: str, kg: KernelGenerator, is_default: bool = False):
+    def _register_fallback_lowering(self, platform: str):
+        """Register a lowering function that implements the fallback mechanism.
+
+        This creates a lowering function that will try kernels in priority order,
+        catching expected errors and falling back to the next kernel.
+
+        Args:
+            platform: The platform to register the lowering for.
+        """
+        primitive = self.primitive
+        kernels_dict = self._kernels
+        name = self.name
+
+        def fallback_kernel_fn(*args, **kwargs):
+            # Extract preferred backend hint if provided
+            preferred_backend = kwargs.pop('_preferred_backend', None)
+
+            # Get kernels for this platform
+            kernels = kernels_dict.get(platform, [])
+            if not kernels:
+                raise KernelFallbackExhaustedError(
+                    f"No kernels registered for platform '{platform}' in primitive '{name}'."
+                )
+
+            # Reorder kernels if a preferred backend is specified
+            if preferred_backend is not None:
+                # Put preferred backend kernels first, maintaining priority within groups
+                preferred = [k for k in kernels if k.backend == preferred_backend]
+                others = [k for k in kernels if k.backend != preferred_backend]
+                kernels = preferred + others
+
+            # Check if fallback is enabled
+            errors = []
+            for entry in kernels:
+                try:
+                    kernel = entry.kernel_generator(**kwargs)
+                    return kernel(*args)
+                except (ImportError, ModuleNotFoundError) as e:
+                    errors.append((entry.backend, type(e).__name__, str(e)))
+                    if not self.fallback_enabled:
+                        raise
+                    continue
+                except KernelNotAvailableError as e:
+                    errors.append((entry.backend, type(e).__name__, str(e)))
+                    if not self.fallback_enabled:
+                        raise
+                    continue
+                except KernelCompilationError as e:
+                    errors.append((entry.backend, type(e).__name__, str(e)))
+                    if not self.fallback_enabled:
+                        raise
+                    continue
+                except Exception as e:
+                    errors.append((entry.backend, type(e).__name__, str(e)))
+                    if not self.fallback_enabled:
+                        raise
+                    continue
+
+            # All kernels failed
+            error_details = "\n".join(
+                f"  - {backend} ({err_type}): {msg}"
+                for backend, err_type, msg in errors
+            )
+            raise KernelFallbackExhaustedError(
+                f"All kernels failed for platform '{platform}' in primitive '{name}'.\n"
+                f"Attempted kernels (in order):\n{error_details}"
+            )
+
+        # Register the lowering with JAX
+        lower = mlir.lower_fun(fallback_kernel_fn, multiple_results=True)
+        mlir.register_lowering(primitive, lower, platform=platform)
+
+    def def_numba_kernel(
+        self,
+        kg: KernelGenerator,
+        priority: Optional[int] = None
+    ):
+        self.def_kernel(backend='numba', platform='cpu', kg=kg, priority=priority)
+
+    def def_warp_kernel(
+        self,
+        kg: KernelGenerator,
+        priority: Optional[int] = None
+    ):
+        self.def_kernel(backend='warp', platform='gpu', kg=kg, priority=priority)
+
+    def def_triton_kernel(
+        self,
+        kg: KernelGenerator,
+        priority: Optional[int] = None
+    ):
+        self.def_kernel(backend='triton', platform='gpu', kg=kg, priority=priority)
+
+    def def_pallas_kernel(
+        self,
+        platform: str,
+        kg: KernelGenerator,
+        priority: Optional[int] = None
+    ):
         assert platform in ['gpu', 'tpu'], f'The `platform` should be either `gpu` or `tpu`, but got {platform}.'
-        self.def_kernel(backend='pallas', platform=platform, kg=kg, is_default=is_default)
+        self.def_kernel(backend='pallas', platform=platform, kg=kg, priority=priority)
 
-    def def_tvmffi_kernel(self, platform: str, kg: KernelGenerator, is_default: bool = False):
+    def def_tvmffi_kernel(
+        self,
+        platform: str,
+        kg: KernelGenerator,
+        priority: Optional[int] = None
+    ):
         assert platform in ['cpu', 'gpu'], f'The `platform` should be either `cpu` or `gpu`, but got {platform}.'
-        self.def_kernel(backend='tvmffi', platform=platform, kg=kg, is_default=is_default)
+        self.def_kernel(backend='tvmffi', platform=platform, kg=kg, priority=priority)
 
     def def_batching_rule(self, fun: Callable):
         """

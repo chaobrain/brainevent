@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-from .main import XLACustomKernel
+from .main import XLACustomKernel, KernelEntry, DEFAULT_PRIORITIES
 from .numba_ffi import numba_kernel
 from .util import (
     defjvp,
@@ -24,6 +24,8 @@ from .util import (
 
 __all__ = [
     'XLACustomKernel',
+    'KernelEntry',
+    'DEFAULT_PRIORITIES',
     'numba_kernel',
     'defjvp',
     'general_batching_rule',

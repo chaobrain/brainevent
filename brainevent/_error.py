@@ -18,8 +18,26 @@
 
 __all__ = [
     'MathError',
+    'KernelNotAvailableError',
+    'KernelCompilationError',
+    'KernelFallbackExhaustedError',
 ]
 
 
 class MathError(Exception):
+    __module__ = 'brainevent'
+
+
+class KernelNotAvailableError(Exception):
+    """Raised when a kernel backend is not installed or version incompatible."""
+    __module__ = 'brainevent'
+
+
+class KernelCompilationError(Exception):
+    """Raised when a kernel fails to compile."""
+    __module__ = 'brainevent'
+
+
+class KernelFallbackExhaustedError(Exception):
+    """Raised when all fallback kernels have failed."""
     __module__ = 'brainevent'
