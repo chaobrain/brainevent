@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-from .main import XLACustomKernel, KernelEntry, DEFAULT_PRIORITIES
+from .main import XLACustomKernel, KernelEntry, DEFAULT_PRIORITIES, BenchmarkResult, BenchmarkReport
 from .numba_ffi import numba_kernel
 from .numba_cuda_ffi import numba_cuda_kernel
 from .util import (
@@ -27,6 +27,8 @@ __all__ = [
     'XLACustomKernel',
     'KernelEntry',
     'DEFAULT_PRIORITIES',
+    'BenchmarkResult',
+    'BenchmarkReport',
     'numba_kernel',
     'numba_cuda_kernel',
     'defjvp',

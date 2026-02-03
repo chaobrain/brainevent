@@ -16,20 +16,25 @@
 # -*- coding: utf-8 -*-
 
 import functools
+import inspect
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Union
 
+import jax
 from jax.interpreters import xla, batching, ad, mlir
 
 from brainevent._compatible_import import Primitive
 from brainevent._error import KernelNotAvailableError, KernelCompilationError, KernelFallbackExhaustedError
 from brainevent._typing import KernelGenerator
+from .benchmark import BenchmarkResult, BenchmarkReport, benchmark_function
 from .util import general_batching_rule, defjvp, OutType, abstract_arguments
 
 __all__ = [
     'XLACustomKernel',
     'KernelEntry',
     'DEFAULT_PRIORITIES',
+    'BenchmarkResult',
+    'BenchmarkReport',
 ]
 
 # Default priority for each (backend, platform) combination.
@@ -118,6 +123,9 @@ class XLACustomKernel:
 
         # setting
         self.fallback_enabled = fallback_enabled
+
+        # call function for benchmarking
+        self._call_fn: Optional[Callable] = None
 
     def _abstract_eval(self, *ins, outs: OutType, **kwargs):
         """
@@ -409,3 +417,157 @@ class XLACustomKernel:
         """
         prim = self.primitive
         batching.primitive_batchers[prim] = functools.partial(general_batching_rule, prim)
+
+    def def_call(self, fn: Callable):
+        """Associate a call function with this primitive.
+
+        The call function is automatically JIT-compiled with all keyword-only
+        arguments treated as static.
+
+        Args:
+            fn: The call function (e.g., binary_csrmv_p_call).
+        """
+
+        # Get all keyword-only parameter names from the function signature
+        sig = inspect.signature(fn)
+        static_argnames = [
+            name for name, param in sig.parameters.items()
+            if param.kind == inspect.Parameter.KEYWORD_ONLY
+        ]
+
+        # Wrap with JIT, treating all kwargs as static
+        self._call_fn = jax.jit(fn, static_argnames=static_argnames)
+
+    def available_backends(self, platform: str) -> List[str]:
+        """Return list of registered backend names for a platform.
+
+        Args:
+            platform: The platform name (e.g., 'cpu', 'gpu', 'tpu').
+
+        Returns:
+            A list of backend names registered for the given platform.
+        """
+        if platform not in self._kernels:
+            return []
+        return [entry.backend for entry in self._kernels[platform]]
+
+    def benchmark(
+        self,
+        *args,
+        platform: str,
+        backend: Optional[str] = None,
+        n_warmup: int = 5,
+        n_runs: int = 20,
+        batch_mode: bool = False,
+        compare_results: bool = True,
+        **kwargs
+    ) -> Union[BenchmarkResult, BenchmarkReport]:
+        """Benchmark kernel execution using the registered call function.
+
+        Args:
+            *args: Positional args passed to the call function.
+            platform: Target platform ('cpu', 'gpu', 'tpu').
+            backend: Specific backend to benchmark, or None for all.
+            n_warmup: Number of warmup runs.
+            n_runs: Number of timed runs.
+            batch_mode: If False (default), block after each function call and time
+                each run individually (measures per-call latency). If True, run all
+                n_runs calls first, then block once at the end and measure total time
+                (measures throughput, useful for async GPU/TPU execution).
+            compare_results: Verify outputs match across backends (not yet implemented).
+            **kwargs: Keyword args passed to the call function.
+
+        Returns:
+            BenchmarkResult if backend specified, else BenchmarkReport.
+
+        Raises:
+            ValueError: If no call function registered (use def_call first).
+        """
+        if self._call_fn is None:
+            raise ValueError(
+                f"No call function registered for '{self.name}'. "
+                "Use def_call() to register one before benchmarking."
+            )
+
+        # Get backends to benchmark
+        if backend is not None:
+            backends_to_test = [backend]
+        else:
+            backends_to_test = self.available_backends(platform)
+
+        if not backends_to_test:
+            raise ValueError(
+                f"No backends registered for platform '{platform}' in primitive '{self.name}'."
+            )
+
+        results = []
+        outputs = {}  # backend -> output for comparison
+        for be in backends_to_test:
+            try:
+                # Create a function that calls the primitive with the specified backend
+                def run_fn(be=be):
+                    return self._call_fn(*args, backend=be, **kwargs)
+
+                mean_time, std_time, min_time, max_time, output = benchmark_function(
+                    run_fn, n_warmup, n_runs, batch_mode=batch_mode
+                )
+
+                results.append(BenchmarkResult(
+                    backend=be,
+                    platform=platform,
+                    mean_time=mean_time,
+                    std_time=std_time,
+                    min_time=min_time,
+                    max_time=max_time,
+                    n_runs=n_runs,
+                    success=True,
+                    error=None,
+                ))
+                outputs[be] = output
+            except Exception as e:
+                results.append(BenchmarkResult(
+                    backend=be,
+                    platform=platform,
+                    mean_time=0.0,
+                    std_time=0.0,
+                    min_time=0.0,
+                    max_time=0.0,
+                    n_runs=0,
+                    success=False,
+                    error=str(e),
+                ))
+
+        # Compare results across backends if requested
+        mismatches = []
+        if compare_results and len(outputs) > 1:
+            import jax.numpy as jnp
+            backends_list = list(outputs.keys())
+            ref_backend = backends_list[0]
+            ref_output = outputs[ref_backend]
+
+            for other_backend in backends_list[1:]:
+                other_output = outputs[other_backend]
+                try:
+                    # Handle tuple/list outputs
+                    if isinstance(ref_output, (list, tuple)):
+                        for i, (r, o) in enumerate(zip(ref_output, other_output)):
+                            if not jnp.allclose(r, o, rtol=1e-5, atol=1e-5):
+                                mismatches.append(
+                                    f"{ref_backend} vs {other_backend}: output[{i}] mismatch"
+                                )
+                    else:
+                        if not jnp.allclose(ref_output, other_output, rtol=1e-5, atol=1e-5):
+                            mismatches.append(f"{ref_backend} vs {other_backend}: output mismatch")
+                except Exception as e:
+                    mismatches.append(f"{ref_backend} vs {other_backend}: comparison error: {e}")
+
+        # Return single result if specific backend was requested
+        if backend is not None:
+            return results[0]
+
+        return BenchmarkReport(
+            primitive_name=self.name,
+            platform=platform,
+            results=results,
+            mismatches=mismatches,
+        )

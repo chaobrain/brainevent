@@ -316,6 +316,81 @@ def numba_kernel(
     vmap_method: str | None = None,
     input_output_aliases: dict[int, int] | None = None,
 ):
+    """Create a JAX-callable function from a Numba CPU kernel.
+
+    This function wraps a Numba JIT-compiled CPU kernel (decorated with @numba.njit)
+    so it can be called from JAX on CPU. The kernel operates on memory directly
+    through the XLA FFI (Foreign Function Interface).
+
+    Args:
+        kernel: A Numba CPU kernel function decorated with @numba.njit.
+        outs: Output specification. Can be a single jax.ShapeDtypeStruct or a
+            sequence of them for multiple outputs.
+        vmap_method: The method to use for vmapping this kernel. See JAX documentation
+            for jax.ffi.ffi_call for details. Default is None.
+        input_output_aliases: A dictionary mapping input indices to output indices
+            for in-place operations. See JAX documentation for details. Default is None.
+
+    Returns:
+        A callable that takes JAX arrays as inputs and returns JAX arrays as outputs.
+        The callable can be used inside jax.jit and other JAX transformations.
+
+    Example:
+        >>> import numba
+        >>> import jax.numpy as jnp
+        >>> import jax
+        >>>
+        >>> @numba.njit
+        ... def add_kernel(x, y, out):
+        ...     for i in range(out.size):
+        ...         out[i] = x[i] + y[i]
+        >>>
+        >>> kernel = numba_kernel(
+        ...     add_kernel,
+        ...     outs=jax.ShapeDtypeStruct((64,), jnp.float32),
+        ... )
+        >>>
+        >>> a = jnp.arange(64, dtype=jnp.float32)
+        >>> b = jnp.ones(64, dtype=jnp.float32)
+        >>> result = kernel(a, b)
+        >>>
+        >>> # Multiple outputs
+        >>> @numba.njit
+        ... def split_kernel(x, out1, out2):
+        ...     for i in range(out1.size):
+        ...         out1[i] = x[i] * 2
+        ...         out2[i] = x[i] * 3
+        >>>
+        >>> kernel = numba_kernel(
+        ...     split_kernel,
+        ...     outs=[
+        ...         jax.ShapeDtypeStruct((64,), jnp.float32),
+        ...         jax.ShapeDtypeStruct((64,), jnp.float32),
+        ...     ],
+        ... )
+        >>> out1, out2 = kernel(x)
+        >>>
+        >>> # Use with jax.jit
+        >>> @jax.jit
+        ... def f(a, b):
+        ...     return kernel(a, b)
+        >>>
+        >>> # Use parallel Numba
+        >>> @numba.njit(parallel=True)
+        ... def parallel_add_kernel(x, y, out):
+        ...     for i in numba.prange(out.size):
+        ...         out[i] = x[i] + y[i]
+
+    Raises:
+        ImportError: If Numba is not installed.
+        AssertionError: If kernel is not a Numba CPU dispatcher.
+
+    Note:
+        The Numba kernel function should:
+        - Accept input arrays followed by output arrays as arguments
+        - Write results directly to the output arrays
+        - Not return any values (outputs are written in-place)
+    """
     if not numba_installed:
         raise ImportError('Numba is required to compile the CPU kernel for the custom operator.')
 
