@@ -117,25 +117,19 @@ def _get_stream_from_callframe(call_frame) -> int:
     Returns:
         The CUDA stream pointer as an integer, or 0 if extraction fails.
     """
-    try:
-        api = call_frame.api
-        if not api:
-            return 0
+    api = call_frame.api
+    # Prepare stream get arguments
+    stream_args = XLA_FFI_Stream_Get_Args()
+    stream_args.struct_size = ctypes.sizeof(XLA_FFI_Stream_Get_Args)
+    stream_args.extension_start = POINTER(XLA_FFI_Extension_Base)()
+    stream_args.ctx = call_frame.ctx
+    stream_args.stream = None
 
-        # Prepare stream get arguments
-        stream_args = XLA_FFI_Stream_Get_Args()
-        stream_args.struct_size = ctypes.sizeof(XLA_FFI_Stream_Get_Args)
-        stream_args.extension_start = POINTER(XLA_FFI_Extension_Base)()
-        stream_args.ctx = call_frame.ctx
-        stream_args.stream = None
+    # Call XLA's stream getter
+    api_ptr = ctypes.cast(api, POINTER(XLA_FFI_Api))
+    api_ptr.contents.XLA_FFI_Stream_Get(stream_args)
 
-        # Call XLA's stream getter
-        api_ptr = ctypes.cast(api, POINTER(XLA_FFI_Api))
-        api_ptr.contents.XLA_FFI_Stream_Get(stream_args)
-
-        return stream_args.stream
-    except Exception:
-        return 0
+    return stream_args.stream
 
 
 def _numba_stream_from_ptr(stream_ptr: int):
