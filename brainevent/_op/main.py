@@ -42,6 +42,7 @@ DEFAULT_PRIORITIES: Dict[tuple, int] = {
 
     # GPU
     ('pallas', 'gpu'): 100,
+    ('numba_cuda', 'gpu'): 150,
     ('warp', 'gpu'): 200,
     ('triton', 'gpu'): 300,
 
@@ -321,6 +322,20 @@ class XLACustomKernel:
     ):
         assert platform in ['cpu', 'gpu'], f'The `platform` should be either `cpu` or `gpu`, but got {platform}.'
         self.def_kernel(backend='tvmffi', platform=platform, kg=kg, priority=priority)
+
+    def def_numba_cuda_kernel(
+        self,
+        kg: KernelGenerator,
+        priority: Optional[int] = None
+    ):
+        """Register a Numba CUDA kernel for GPU platform.
+
+        Args:
+            kg: A kernel generator callable that creates the Numba CUDA kernel function.
+            priority: Priority of this kernel. Lower values are tried first.
+                If not specified, uses DEFAULT_PRIORITIES (150 for numba_cuda on gpu).
+        """
+        self.def_kernel(backend='numba_cuda', platform='gpu', kg=kg, priority=priority)
 
     def def_batching_rule(self, fun: Callable):
         """

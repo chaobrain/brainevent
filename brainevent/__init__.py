@@ -32,6 +32,7 @@ from ._misc import csr_to_coo_index, coo_to_csc_index, csr_to_csc_index
 from ._op import (
     XLACustomKernel,
     numba_kernel,
+    numba_cuda_kernel,
     defjvp,
     general_batching_rule,
     jaxtype_to_warptype,
@@ -84,6 +85,7 @@ __all__ = [
 
     # 3. Numba kernel
     'numba_kernel',
+    'numba_cuda_kernel',
 
     # 4. Warp kernel
     'jaxtype_to_warptype',
