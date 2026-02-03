@@ -641,7 +641,16 @@ def _csrmv_batching(args, axes, **kwargs):
         return general_batching_rule(binary_csrmv_p, args, axes, **kwargs)
 
 
-def binary_csrmv_p_call(weights, indices, indptr, vector, *, shape: MatrixShape, transpose: bool):
+def binary_csrmv_p_call(
+    weights,
+    indices,
+    indptr,
+    vector,
+    *,
+    shape: MatrixShape,
+    transpose: bool,
+    backend: str = None,
+):
     """
     Perform a call to the event CSR matrix-vector multiplication custom operation.
 
@@ -655,6 +664,7 @@ def binary_csrmv_p_call(weights, indices, indptr, vector, *, shape: MatrixShape,
         vector (jax.Array): The dense vector to be multiplied with the sparse matrix.
         shape (Sequence[int]): A sequence of length 2, representing the shape of the sparse matrix.
         transpose (bool): Whether to transpose the sparse matrix before multiplication.
+        backend (str): Optional backend to use for the operation.
 
     Returns:
         jax.Array: The result of the matrix-vector multiplication.
@@ -692,6 +702,7 @@ def binary_csrmv_p_call(weights, indices, indptr, vector, *, shape: MatrixShape,
         outs=[out_info],
         shape=shape,
         transpose=transpose,
+        backend=backend,
         # Provide shape and data type information for indices.
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         # Provide shape and data type information for indptr.
@@ -711,6 +722,7 @@ binary_csrmv_p.def_pallas_kernel('tpu', _csrmv_pallas_gpu_kernel)
 binary_csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
 binary_csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
 binary_csrmv_p.def_batching_rule(_csrmv_batching)
+binary_csrmv_p.def_call(binary_csrmv_p_call)
 
 
 def _csrmm_numba_kernel(
@@ -1302,6 +1314,7 @@ def binary_csrmm_p_call(
     *,
     shape: MatrixShape,
     transpose: bool,
+    backend: str = None,
 ):
     """
     Perform a call to the event CSR matrix-matrix multiplication custom operation.
@@ -1313,6 +1326,7 @@ def binary_csrmm_p_call(
         B (jax.Array): A dense matrix.
         shape (Sequence[int]): A sequence of length 2, representing the shape of the sparse matrix.
         transpose (bool): A boolean indicating whether to transpose the sparse matrix before multiplication.
+        backend (str): Optional backend to use for the operation.
 
     Returns:
         jax.Array: The result of the matrix-matrix multiplication.
@@ -1349,6 +1363,7 @@ def binary_csrmm_p_call(
         outs=[out_info],
         shape=shape,
         transpose=transpose,
+        backend=backend,
         # Provide shape and data type information for indices.
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         # Provide shape and data type information for indptr.
@@ -1368,3 +1383,4 @@ binary_csrmm_p.def_pallas_kernel('tpu', partial(_csrmm_pallas_kernel, 'tpu'))
 binary_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 binary_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 binary_csrmm_p.def_batching_rule(_csrmm_batching)
+binary_csrmm_p.def_call(binary_csrmm_p_call)
