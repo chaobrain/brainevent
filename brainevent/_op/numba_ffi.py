@@ -316,6 +316,9 @@ def numba_kernel(
     vmap_method: str | None = None,
     input_output_aliases: dict[int, int] | None = None,
 ):
+    if not numba_installed:
+        raise ImportError('Numba is required to compile the CPU kernel for the custom operator.')
+
     from numba.core.registry import CPUDispatcher
 
     # output information
