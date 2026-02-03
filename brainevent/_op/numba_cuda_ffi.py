@@ -17,7 +17,7 @@ import ctypes
 import importlib.util
 import threading
 import traceback
-from ctypes import c_void_p, POINTER, CFUNCTYPE
+from ctypes import c_void_p, c_size_t, POINTER, CFUNCTYPE, Structure
 from typing import Dict, Sequence, Tuple, Union
 
 import jax
@@ -25,6 +25,7 @@ import numpy as np
 
 from .numba_ffi import (
     XLA_FFI_Extension_Type,
+    XLA_FFI_Extension_Base,
     XLA_FFI_Metadata_Extension,
     XLA_FFI_CallFrame,
     XLA_FFI_Buffer,
@@ -57,6 +58,96 @@ _CUDA_FFI_CALLBACK_LOCK = threading.Lock()
 
 # The typed FFI callback signature: void* fn(XLA_FFI_CallFrame*)
 _CUDA_FFI_CALLBACK_TYPE = CFUNCTYPE(c_void_p, POINTER(XLA_FFI_CallFrame))
+
+
+# ---------------------------------------------------------------------------
+# XLA FFI API structures for CUDA stream extraction
+# (Based on XLA's C API: xla/ffi/api/c_api.h)
+# ---------------------------------------------------------------------------
+
+class XLA_FFI_Api_Version(Structure):
+    """XLA FFI API version structure."""
+    _fields_ = [
+        ("struct_size", c_size_t),
+        ("extension_start", POINTER(XLA_FFI_Extension_Base)),
+        ("major_version", ctypes.c_int),
+        ("minor_version", ctypes.c_int),
+    ]
+
+
+class XLA_FFI_Stream_Get_Args(Structure):
+    """Arguments for XLA_FFI_Stream_Get function."""
+    _fields_ = [
+        ("struct_size", c_size_t),
+        ("extension_start", POINTER(XLA_FFI_Extension_Base)),
+        ("ctx", c_void_p),  # XLA_FFI_ExecutionContext*
+        ("stream", c_void_p),  # Output: cudaStream_t
+    ]
+
+
+# Function pointer type: XLA_FFI_Error* (*XLA_FFI_Stream_Get)(XLA_FFI_Stream_Get_Args*)
+_XLA_FFI_Stream_Get_Fn = CFUNCTYPE(c_void_p, POINTER(XLA_FFI_Stream_Get_Args))
+
+
+class XLA_FFI_Api(Structure):
+    """XLA FFI API structure with fields up to XLA_FFI_Stream_Get.
+
+    This matches the layout from XLA's c_api.h header file.
+    """
+    _fields_ = [
+        ("struct_size", c_size_t),
+        ("extension_start", POINTER(XLA_FFI_Extension_Base)),
+        ("api_version", XLA_FFI_Api_Version),  # Embedded struct, not pointer
+        ("internal_api", c_void_p),
+        ("XLA_FFI_Error_Create", c_void_p),
+        ("XLA_FFI_Error_GetMessage", c_void_p),
+        ("XLA_FFI_Error_Destroy", c_void_p),
+        ("XLA_FFI_Handler_Register", c_void_p),
+        ("XLA_FFI_Stream_Get", _XLA_FFI_Stream_Get_Fn),
+        # ... other fields not needed for stream extraction
+    ]
+
+
+def _get_stream_from_callframe(call_frame) -> int:
+    """Extract CUDA stream pointer from XLA FFI call frame.
+
+    Args:
+        call_frame: The XLA_FFI_CallFrame structure.
+
+    Returns:
+        The CUDA stream pointer as an integer, or 0 if extraction fails.
+    """
+    try:
+        api = call_frame.api
+        if not api:
+            return 0
+
+        # Prepare stream get arguments
+        stream_args = XLA_FFI_Stream_Get_Args()
+        stream_args.struct_size = ctypes.sizeof(XLA_FFI_Stream_Get_Args)
+        stream_args.extension_start = POINTER(XLA_FFI_Extension_Base)()
+        stream_args.ctx = call_frame.ctx
+        stream_args.stream = None
+
+        # Call XLA's stream getter
+        api_ptr = ctypes.cast(api, POINTER(XLA_FFI_Api))
+        api_ptr.contents.XLA_FFI_Stream_Get(stream_args)
+
+        return stream_args.stream
+    except Exception:
+        return 0
+
+
+def _numba_stream_from_ptr(stream_ptr: int):
+    """Create a Numba CUDA stream from a raw CUDA stream pointer.
+
+    Args:
+        stream_ptr: The cudaStream_t pointer as an integer.
+
+    Returns:
+        A Numba CUDA stream object that wraps the given stream.
+    """
+    return cuda.external_stream(stream_ptr)
 
 
 def _device_array_from_buffer(data_ptr: int, shape: Tuple[int, ...], dtype: np.dtype):
@@ -214,16 +305,12 @@ class NumbaCudaFfiHandler:
                 dtype = _XLA_FFI_DTYPE_TO_NUMPY.get(buf_ptr.dtype, self.output_dtypes[i])
                 output_arrays.append(_device_array_from_buffer(buf_ptr.data, shape, dtype))
 
-            # Launch the CUDA kernel
-            # Use default stream for now - proper stream extraction from XLA context is complex
-            stream = cuda.default_stream()
-
+            # Extract XLA's CUDA stream and launch kernel on it
+            stream_ptr = _get_stream_from_callframe(call_frame)
+            # Use XLA's stream - no synchronization needed
+            stream = _numba_stream_from_ptr(stream_ptr)
             with _CUDA_FFI_CALLBACK_LOCK:
-                self.kernel[self.grid, self.block, stream, self.shared_mem](
-                    *input_arrays, *output_arrays
-                )
-                # Synchronize to ensure completion before returning to XLA
-                stream.synchronize()
+                self.kernel[self.grid, self.block, stream, self.shared_mem](*input_arrays, *output_arrays)
 
         except Exception:
             traceback.print_exc()
