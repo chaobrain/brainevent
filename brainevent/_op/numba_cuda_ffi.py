@@ -18,7 +18,7 @@ import importlib.util
 import threading
 import traceback
 from ctypes import c_void_p, c_size_t, POINTER, CFUNCTYPE, Structure
-from typing import Dict, Sequence, Tuple, Union
+from typing import Dict, Tuple, Union
 
 import jax
 import numpy as np
@@ -30,7 +30,6 @@ from .numba_ffi import (
     XLA_FFI_CallFrame,
     XLA_FFI_Buffer,
     _XLA_FFI_DTYPE_TO_NUMPY,
-    _ensure_sequence,
     _normalize_shapes_and_dtypes,
 )
 from .util import OutType, abstract_arguments
@@ -477,12 +476,11 @@ def numba_cuda_kernel(
             "Either (grid, block) or launch_dims must be specified for kernel launch configuration."
         )
 
-    # Output information - track if single output for unpacking later
-    single_output = not isinstance(outs, Sequence)
-    outs_seq = _ensure_sequence(outs)
+    # Output information
+    out_info, out_treedef = abstract_arguments(outs)
     output_shapes, output_dtypes = _normalize_shapes_and_dtypes(
-        tuple(out.shape for out in outs_seq),
-        tuple(out.dtype for out in outs_seq),
+        tuple(out.shape for out in out_info),
+        tuple(out.dtype for out in out_info),
         'output',
     )
 
@@ -515,9 +513,6 @@ def numba_cuda_kernel(
             vmap_method=vmap_method,
         )(*ins)
 
-        # Unpack single output
-        if single_output:
-            return result[0]
-        return result
+        return jax.tree.unflatten(out_treedef, result)
 
     return call

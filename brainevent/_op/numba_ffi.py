@@ -322,10 +322,10 @@ def numba_kernel(
     from numba.core.registry import CPUDispatcher
 
     # output information
-    outs_seq = _ensure_sequence(outs)
+    out_info, out_treedef = abstract_arguments(outs)
     output_shapes, output_dtypes = _normalize_shapes_and_dtypes(
-        tuple(out.shape for out in outs_seq),
-        tuple(out.dtype for out in outs_seq),
+        tuple(out.shape for out in out_info),
+        tuple(out.dtype for out in out_info),
         'output',
     )
     assert isinstance(kernel, CPUDispatcher), 'The kernel must be a Numba JIT-compiled function.'
@@ -345,11 +345,12 @@ def numba_kernel(
         )
 
         # call FFI with typed FFI protocol
-        return jax.ffi.ffi_call(
+        results = jax.ffi.ffi_call(
             target_name,
             out_types,
             input_output_aliases=input_output_aliases,
             vmap_method=vmap_method,
         )(*ins)
+        return jax.tree.unflatten(out_treedef, results)
 
     return call

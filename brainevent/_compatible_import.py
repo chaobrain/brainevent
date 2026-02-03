@@ -28,6 +28,7 @@ __all__ = [
     'Literal',
     'Token',
     'Var',
+    'pallas',
 ]
 
 from collections.abc import Callable, Sequence
@@ -336,3 +337,10 @@ def custom_call(
         backend_config_attr = ir.DictAttr.get(backend_config)
         op.operation.attributes["mhlo.backend_config"] = backend_config_attr
     return op
+
+
+# Pallas import for compatibility
+try:
+    from jax.experimental import pallas
+except ImportError:
+    pallas = None

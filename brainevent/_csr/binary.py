@@ -296,7 +296,7 @@ def _csrmv_warp_kernel(
             )
             dim = vector_info.shape[0] if transpose else indptr_info.shape[0] - 1
             fn = jax_kernel(mv, launch_dims=dim, num_outputs=0, in_out_argnames=['posts'])
-            return fn(weights, indices, indptr, v, jnp.zeros_like(out_info))
+            return fn(weights, indices, indptr, v, jnp.zeros(out_info.dtype, out_info.shape))
 
 
     else:
@@ -491,7 +491,6 @@ def _csrmv_pallas_gpu_kernel(
                 indices_ref,  # [nse]
                 indptr_ref,  # [m + 1]
                 vector_ref,  # [k, n]
-                _,  # [m, ]
                 posts_ref,  # [m, ]
             ):
                 i_row = pl.program_id(0)
@@ -530,7 +529,6 @@ def _csrmv_pallas_gpu_kernel(
                 indices_ref,  # [nse]
                 indptr_ref,  # [m + 1]
                 vector_ref,  # [k, n]
-                _,  # [m, ]
                 posts_ref,  # [m, ]
             ):
                 i_row = pl.program_id(0)
@@ -559,11 +557,7 @@ def _csrmv_pallas_gpu_kernel(
                 posts_ref[i_row] = i_row_sum
 
         def kernel(data, indices, indptr, vector):
-            fn = pl.pallas_call(
-                mm,
-                grid=(k if transpose else m,),
-                out_shape=kwargs['outs']
-            )
+            fn = pl.pallas_call(mm, grid=(k if transpose else m,), out_shape=kwargs['outs'])
             return fn(data, indices, indptr, vector)
 
     return kernel
