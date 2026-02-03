@@ -14,7 +14,6 @@ Define JAX Primitive
    :template: classtemplate.rst
 
     XLACustomKernel
-    GPUKernelChoice
 
 
 
@@ -31,15 +30,13 @@ CPU kernel definition using Numba.
     numba_kernel
 
 
-GPU kernel definition using Warp.
+GPU kernel definition using Numba CUDA.
 
 .. autosummary::
    :toctree: generated/
    :template: classtemplate.rst
 
-    warp_kernel
-    jaxtype_to_warptype
-    jaxinfo_to_warpinfo
+    numba_cuda_kernel
 
 
 
@@ -56,7 +53,6 @@ GPU/TPU kernel definition using JAX Pallas.
 
 
 
-
 Kernel definition helper functions.
 
 .. autosummary::
@@ -64,4 +60,6 @@ Kernel definition helper functions.
 
     defjvp
     general_batching_rule
+    jaxtype_to_warptype
+    jaxinfo_to_warpinfo
 
