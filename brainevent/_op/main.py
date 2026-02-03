@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # Copyright 2024 BrainX Ecosystem Limited. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,9 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-import copy
-# -*- coding: utf-8 -*-
 
+import copy
 import functools
 import inspect
 from dataclasses import dataclass, field
@@ -270,47 +270,55 @@ class XLACustomKernel:
 
             # Reorder kernels if a preferred backend is specified
             if preferred_backend is not None:
-                # Put preferred backend kernels first, maintaining priority within groups
-                preferred = [k for k in kernels if k.backend == preferred_backend]
-                others = [k for k in kernels if k.backend != preferred_backend]
-                kernels = preferred + others
+                # Restrict to preferred backend kernels only
+                kernels = [k for k in kernels if k.backend == preferred_backend]
+                if not kernels:
+                    raise KernelFallbackExhaustedError(
+                        f"No kernels registered for preferred backend '{preferred_backend}' "
+                        f"on platform '{platform}' in primitive '{self.name}'."
+                    )
 
             # Check if fallback is enabled
-            errors = []
-            for entry in kernels:
-                try:
-                    kernel = entry.kernel_generator(**kwargs)
-                    return kernel(*args)
-                except (ImportError, ModuleNotFoundError) as e:
-                    errors.append((entry.backend, type(e).__name__, str(e)))
-                    if not self.enable_fallback:
-                        raise e
-                    continue
-                except KernelNotAvailableError as e:
-                    errors.append((entry.backend, type(e).__name__, str(e)))
-                    if not self.enable_fallback:
-                        raise e
-                    continue
-                except KernelCompilationError as e:
-                    errors.append((entry.backend, type(e).__name__, str(e)))
-                    if not self.enable_fallback:
-                        raise e
-                    continue
-                except Exception as e:
-                    errors.append((entry.backend, type(e).__name__, str(e)))
-                    if not self.enable_fallback:
-                        raise e
-                    continue
+            if preferred_backend is None:
+                kernel = kernels[0].kernel_generator(**kwargs)
+                return kernel(*args)
 
-            # All kernels failed
-            error_details = "\n".join(
-                f"  - {backend} ({err_type}): {msg}"
-                for backend, err_type, msg in errors
-            )
-            raise KernelFallbackExhaustedError(
-                f"All kernels failed for platform '{platform}' in primitive '{self.name}'.\n"
-                f"Attempted kernels (in order):\n{error_details}"
-            )
+            else:
+                errors = []
+                for entry in kernels:
+                    try:
+                        kernel = entry.kernel_generator(**kwargs)
+                        return kernel(*args)
+                    except (ImportError, ModuleNotFoundError) as e:
+                        errors.append((entry.backend, type(e).__name__, str(e)))
+                        if not self.enable_fallback:
+                            raise e
+                        continue
+                    except KernelNotAvailableError as e:
+                        errors.append((entry.backend, type(e).__name__, str(e)))
+                        if not self.enable_fallback:
+                            raise e
+                        continue
+                    except KernelCompilationError as e:
+                        errors.append((entry.backend, type(e).__name__, str(e)))
+                        if not self.enable_fallback:
+                            raise e
+                        continue
+                    except Exception as e:
+                        errors.append((entry.backend, type(e).__name__, str(e)))
+                        if not self.enable_fallback:
+                            raise e
+                        continue
+
+                # All kernels failed
+                error_details = "\n".join(
+                    f"  - {backend} ({err_type}): {msg}"
+                    for backend, err_type, msg in errors
+                )
+                raise KernelFallbackExhaustedError(
+                    f"All kernels failed for platform '{platform}' in primitive '{self.name}'.\n"
+                    f"Attempted kernels (in order):\n{error_details}"
+                )
 
         # Register the lowering with JAX
         lower = mlir.lower_fun(fallback_kernel_fn, multiple_results=True)
