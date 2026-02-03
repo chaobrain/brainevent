@@ -15,6 +15,7 @@
 
 from .main import XLACustomKernel, KernelEntry, DEFAULT_PRIORITIES
 from .numba_ffi import numba_kernel
+from .numba_cuda_ffi import numba_cuda_kernel
 from .util import (
     defjvp,
     general_batching_rule,
@@ -27,6 +28,7 @@ __all__ = [
     'KernelEntry',
     'DEFAULT_PRIORITIES',
     'numba_kernel',
+    'numba_cuda_kernel',
     'defjvp',
     'general_batching_rule',
     'jaxinfo_to_warpinfo',
