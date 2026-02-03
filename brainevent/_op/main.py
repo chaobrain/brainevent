@@ -512,30 +512,34 @@ class XLACustomKernel:
                     run_fn, n_warmup, n_runs, batch_mode=batch_mode
                 )
 
-                results.append(BenchmarkResult(
-                    backend=be,
-                    platform=platform,
-                    mean_time=mean_time,
-                    std_time=std_time,
-                    min_time=min_time,
-                    max_time=max_time,
-                    n_runs=n_runs,
-                    success=True,
-                    error=None,
-                ))
+                results.append(
+                    BenchmarkResult(
+                        backend=be,
+                        platform=platform,
+                        mean_time=mean_time,
+                        std_time=std_time,
+                        min_time=min_time,
+                        max_time=max_time,
+                        n_runs=n_runs,
+                        success=True,
+                        error=None,
+                    )
+                )
                 outputs[be] = output
             except Exception as e:
-                results.append(BenchmarkResult(
-                    backend=be,
-                    platform=platform,
-                    mean_time=0.0,
-                    std_time=0.0,
-                    min_time=0.0,
-                    max_time=0.0,
-                    n_runs=0,
-                    success=False,
-                    error=str(e),
-                ))
+                results.append(
+                    BenchmarkResult(
+                        backend=be,
+                        platform=platform,
+                        mean_time=0.0,
+                        std_time=0.0,
+                        min_time=0.0,
+                        max_time=0.0,
+                        n_runs=0,
+                        success=False,
+                        error=str(e),
+                    )
+                )
 
         # Compare results across backends if requested
         mismatches = []
@@ -552,9 +556,7 @@ class XLACustomKernel:
                     if isinstance(ref_output, (list, tuple)):
                         for i, (r, o) in enumerate(zip(ref_output, other_output)):
                             if not jnp.allclose(r, o, rtol=1e-5, atol=1e-5):
-                                mismatches.append(
-                                    f"{ref_backend} vs {other_backend}: output[{i}] mismatch"
-                                )
+                                mismatches.append(f"{ref_backend} vs {other_backend}: output[{i}] mismatch")
                     else:
                         if not jnp.allclose(ref_output, other_output, rtol=1e-5, atol=1e-5):
                             mismatches.append(f"{ref_backend} vs {other_backend}: output mismatch")

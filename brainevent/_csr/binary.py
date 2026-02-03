@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Sequence
+from typing import Sequence, Optional
 
 import brainunit as u
 import jax
@@ -37,6 +37,7 @@ def binary_csr_matvec(
     *,
     shape: MatrixShape,
     transpose: bool = False,
+    backend: Optional[str] = None,
 ) -> Data:
     """
     Product of CSR sparse matrix and a dense vector.
@@ -64,6 +65,7 @@ def binary_csr_matvec(
         v,
         shape=shape,
         transpose=transpose,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * (unitd * unitv))
 
@@ -77,6 +79,7 @@ def binary_csr_matmat(
     *,
     shape: MatrixShape,
     transpose: bool = False,
+    backend: Optional[str] = None,
 ) -> Data:
     """
     Product of CSR sparse matrix and a dense matrix.
@@ -104,6 +107,7 @@ def binary_csr_matmat(
         B,
         shape=shape,
         transpose=transpose,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * (unitd * unitb))
 
@@ -667,7 +671,7 @@ def binary_csrmv_p_call(
     *,
     shape: MatrixShape,
     transpose: bool,
-    backend: str = None,
+    backend: Optional[str] = None,
 ):
     """
     Perform a call to the event CSR matrix-vector multiplication custom operation.
@@ -1423,7 +1427,7 @@ def binary_csrmm_p_call(
     *,
     shape: MatrixShape,
     transpose: bool,
-    backend: str = None,
+    backend: Optional[str] = None,
 ):
     """
     Perform a call to the event CSR matrix-matrix multiplication custom operation.

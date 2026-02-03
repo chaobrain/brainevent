@@ -24,8 +24,6 @@ from brainevent._csr.binary_test import TestBatchingVectorCSR, TestBatchingMatri
 from brainevent._csr.float import csrmv_yw2y
 from brainevent._csr.test_util import get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
 
-pytest.mark.skipif(brainstate.environ.get_platform() != 'cpu', allow_module_level=True)
-
 
 class TestVectorCSR:
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -38,7 +36,7 @@ class TestVectorCSR:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = x @ csr
-        y2 = vector_csr(x, csr.data, indices, indptr, [m, n])
+        y2 = vector_csr(x, csr.data, indices, indptr, (m, n))
         assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -50,7 +48,7 @@ class TestVectorCSR:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = csr @ v
-        y2 = csr_vector(v, csr.data, indices, indptr, [m, n])
+        y2 = csr_vector(v, csr.data, indices, indptr, (m, n))
         assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -62,7 +60,7 @@ class TestVectorCSR:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = jax.vmap(lambda x: x @ csr)(xs)
-        y2 = jax.vmap(lambda x: vector_csr(x, csr.data, indices, indptr, [m, n]))(xs)
+        y2 = jax.vmap(lambda x: vector_csr(x, csr.data, indices, indptr, (m, n)))(xs)
 
         print(y.shape, y2.shape)
         assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
@@ -153,10 +151,10 @@ class TestBatchingVectorCSRFloat(TestBatchingVectorCSR):
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         if transpose:
             y1 = x @ csr
-            y2 = vector_csr(x, csr.data, indices, indptr, [m, n])
+            y2 = vector_csr(x, csr.data, indices, indptr, (m, n))
         else:
             y1 = csr @ x
-            y2 = csr_vector(x, csr.data, indices, indptr, [m, n])
+            y2 = csr_vector(x, csr.data, indices, indptr, (m, n))
         return jnp.allclose(y1, y2)
 
     def _run_vjp(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
@@ -174,9 +172,9 @@ class TestBatchingVectorCSRFloat(TestBatchingVectorCSR):
 
         def f_jax(x, w):
             if transpose:
-                r = vector_csr(x, w, indices, indptr, shape=[m, n])
+                r = vector_csr(x, w, indices, indptr, shape=(m, n))
             else:
-                r = csr_vector(x, w, indices, indptr, shape=[m, n])
+                r = csr_vector(x, w, indices, indptr, shape=(m, n))
             return r.sum()
 
         r2 = jax.jit(lambda: jax.grad(f_jax, argnums=(0, 1))(x, csr.data))()
@@ -218,7 +216,7 @@ class TestMatrixCSR:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = x @ csr
-        y2 = matrix_csr(x, csr.data, indices, indptr, [m, n])
+        y2 = matrix_csr(x, csr.data, indices, indptr, (m, n))
         assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -230,7 +228,7 @@ class TestMatrixCSR:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         y = csr @ matrix
-        y2 = csr_matrix(matrix, csr.data, indices, indptr, [m, n])
+        y2 = csr_matrix(matrix, csr.data, indices, indptr, (m, n))
         assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
 
@@ -239,10 +237,10 @@ class TestBatchingMatrixCSRFloat(TestBatchingMatrixCSR):
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         if transpose:
             y1 = x @ csr
-            y2 = matrix_csr(x, csr.data, indices, indptr, [m, n])
+            y2 = matrix_csr(x, csr.data, indices, indptr, (m, n))
         else:
             y1 = csr @ x
-            y2 = csr_matrix(x, csr.data, indices, indptr, [m, n])
+            y2 = csr_matrix(x, csr.data, indices, indptr, (m, n))
         return jnp.allclose(y1, y2)
 
     def _run_vjp(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
@@ -260,9 +258,9 @@ class TestBatchingMatrixCSRFloat(TestBatchingMatrixCSR):
 
         def f_jax(x, w):
             if transpose:
-                r = matrix_csr(x, w, indices, indptr, shape=[m, n])
+                r = matrix_csr(x, w, indices, indptr, shape=(m, n))
             else:
-                r = csr_matrix(x, w, indices, indptr, shape=[m, n])
+                r = csr_matrix(x, w, indices, indptr, shape=(m, n))
             return r.sum()
 
         r2 = jax.jit(lambda: jax.grad(f_jax, argnums=(0, 1))(x, csr.data))()
@@ -310,7 +308,7 @@ class Test_csrmv_yw2y:
         else:
             y = brainstate.random.rand(m)
 
-        res1 = csrmv_yw2y(y, csr.data, indices, indptr, shape=[m, n], transpose=transpose)
+        res1 = csrmv_yw2y(y, csr.data, indices, indptr, shape=(m, n), transpose=transpose)
         dense_res1 = csr.with_data(res1).todense()
         if transpose:
             print(dense)
@@ -335,7 +333,7 @@ class Test_csrmv_yw2y:
                 else:
                     y = brainstate.random.rand(m)
 
-                res1 = csrmv_yw2y(y, csr.data, indices, indptr, shape=[m, n], transpose=transpose)
+                res1 = csrmv_yw2y(y, csr.data, indices, indptr, shape=(m, n), transpose=transpose)
                 dense_res1 = csr.with_data(res1).todense()
                 if transpose:
                     dense_res2 = dense * jnp.expand_dims(y, axis=0)
@@ -359,7 +357,7 @@ class Test_csrmv_yw2y:
 
         y = jnp.ones(m)
 
-        res1 = csrmv_yw2y(y, csr.data, indices, indptr, shape=[m, n], transpose=False)
+        res1 = csrmv_yw2y(y, csr.data, indices, indptr, shape=(m, n), transpose=False)
         dense_res1 = csr.with_data(res1).todense()
         dense_res2 = dense * jnp.expand_dims(y, axis=1)
         print('csr')

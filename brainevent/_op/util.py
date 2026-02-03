@@ -220,7 +220,7 @@ def general_batching_rule(prim, args, axes, **kwargs):
             [(x[f'ax{i}'] if i in batch_axes else non_batch_args[f'ax{i}'])
              for i in range(len(axes))]
         )
-        return 0, prim.bind(*pars, **kwargs)
+        return 0, prim(*pars, **kwargs)
 
     _, outs = jax.lax.scan(f, 0, batch_args)
     out_vals, out_tree = jax.tree.flatten(outs)

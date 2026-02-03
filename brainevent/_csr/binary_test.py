@@ -25,8 +25,6 @@ import pytest
 import brainevent
 from brainevent._csr.test_util import get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
 
-pytest.mark.skipif(brainstate.environ.get_platform() != 'cpu', allow_module_level=True)
-
 
 class TestCSR:
     def test_event_homo_bool(self):
