@@ -14,6 +14,9 @@
 # ==============================================================================
 # -*- coding: utf-8 -*-
 
+import os
+
+os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
 import brainstate
 import braintools
@@ -110,15 +113,16 @@ class TestVectorCSR:
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vector_csr_vmap_vector(self, homo_w):
-        n_batch, m, n = 10, 20, 40
-        xs = brainstate.random.rand(n_batch, m) < 0.1
-        indptr, indices = get_csr(m, n, 0.1)
+        with jax.checking_leaks():
+            n_batch, m, n = 10, 20, 40
+            xs = brainstate.random.rand(n_batch, m) < 0.1
+            indptr, indices = get_csr(m, n, 0.1)
 
-        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-        y = jax.vmap(lambda x: brainevent.EventArray(x) @ csr)(xs)
-        y2 = jax.vmap(lambda x: vector_csr(x, csr.data, indices, indptr, (m, n)))(xs)
-        assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+            data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
+            csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
+            y = brainstate.transform.vmap2(lambda x: brainevent.EventArray(x) @ csr)(xs)
+            y2 = brainstate.transform.vmap2(lambda x: vector_csr(x, csr.data, indices, indptr, (m, n)))(xs)
+            assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_csr_vector(self, homo_w):
@@ -234,7 +238,7 @@ class TestBatchingVectorCSR:
         indptr, indices = get_csr(m, n, 0.1)
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        res = jax.vmap(lambda x: self._run(x, data, indices, indptr, m, n))(xs)
+        res = brainstate.transform.vmap2(lambda x: self._run(x, data, indices, indptr, m, n))(xs)
         assert jnp.all(res)
 
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -244,7 +248,7 @@ class TestBatchingVectorCSR:
         indptr, indices = get_csr(m, n, 0.1)
 
         data = brainstate.random.rand(b) if homo_w else braintools.init.Normal(0., 1.)((b,) + indices.shape)
-        res = jax.vmap(lambda data: self._run(x, data, indices, indptr, m, n))(data)
+        res = brainstate.transform.vmap2(lambda data: self._run(x, data, indices, indptr, m, n))(data)
         assert jnp.all(res)
 
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -255,7 +259,7 @@ class TestBatchingVectorCSR:
         indptr = indptr[0]
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
-        res = jax.vmap(lambda ind: self._run(x, data, ind, indptr, m, n))(indices)
+        res = brainstate.transform.vmap2(lambda ind: self._run(x, data, ind, indptr, m, n))(indices)
         assert jnp.all(res)
 
     def _run_vjp(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
@@ -289,7 +293,7 @@ class TestBatchingVectorCSR:
         indptr, indices = get_csr(m, n, 0.1)
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        r1, r2 = jax.vmap(lambda x: self._run_vjp(x, data, indices, indptr, m, n))(xs)
+        r1, r2 = brainstate.transform.vmap2(lambda x: self._run_vjp(x, data, indices, indptr, m, n))(xs)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
@@ -301,7 +305,7 @@ class TestBatchingVectorCSR:
         indptr, indices = get_csr(m, n, 0.1)
 
         data = brainstate.random.rand(b) if homo_w else braintools.init.Normal(0., 1.)((b,) + indices.shape)
-        r1, r2 = jax.vmap(lambda data: self._run_vjp(x, data, indices, indptr, m, n))(data)
+        r1, r2 = brainstate.transform.vmap2(lambda data: self._run_vjp(x, data, indices, indptr, m, n))(data)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
@@ -315,7 +319,7 @@ class TestBatchingVectorCSR:
         indptr = indptr[0]
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
-        r1, r2 = jax.vmap(lambda ind: self._run_vjp(x, data, ind, indptr, m, n))(indices)
+        r1, r2 = brainstate.transform.vmap2(lambda ind: self._run_vjp(x, data, ind, indptr, m, n))(indices)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
@@ -352,7 +356,7 @@ class TestBatchingVectorCSR:
         indptr, indices = get_csr(m, n, 0.1)
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        r1, r2 = jax.vmap(lambda x: self._run_jvp(x, data, indices, indptr, m, n))(xs)
+        r1, r2 = brainstate.transform.vmap2(lambda x: self._run_jvp(x, data, indices, indptr, m, n))(xs)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
@@ -365,7 +369,7 @@ class TestBatchingVectorCSR:
         indptr, indices = get_csr(m, n, 0.1)
 
         data = brainstate.random.rand(b) if homo_w else braintools.init.Normal(0., 1.)((b,) + indices.shape)
-        r1, r2 = jax.vmap(lambda data: self._run_jvp(x, data, indices, indptr, m, n))(data)
+        r1, r2 = brainstate.transform.vmap2(lambda data: self._run_jvp(x, data, indices, indptr, m, n))(data)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
@@ -379,7 +383,7 @@ class TestBatchingVectorCSR:
         indptr = indptr[0]
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
-        r1, r2 = jax.vmap(lambda ind: self._run_jvp(x, data, ind, indptr, m, n))(indices)
+        r1, r2 = brainstate.transform.vmap2(lambda ind: self._run_jvp(x, data, ind, indptr, m, n))(indices)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
@@ -429,7 +433,7 @@ class TestBatchingMatrixCSR:
         indptr, indices = get_csr(m, n, 0.1)
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        res = jax.vmap(lambda x: self._run(x, data, indices, indptr, m, n))(xs)
+        res = brainstate.transform.vmap2(lambda x: self._run(x, data, indices, indptr, m, n))(xs)
         assert jnp.all(res)
 
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -439,7 +443,7 @@ class TestBatchingMatrixCSR:
         indptr, indices = get_csr(m, n, 0.1)
 
         data = brainstate.random.rand(b) if homo_w else braintools.init.Normal(0., 1.)((b,) + indices.shape)
-        res = jax.vmap(lambda data: self._run(x, data, indices, indptr, m, n))(data)
+        res = brainstate.transform.vmap2(lambda data: self._run(x, data, indices, indptr, m, n))(data)
         assert jnp.all(res)
 
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -450,7 +454,7 @@ class TestBatchingMatrixCSR:
         indptr = indptr[0]
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
-        res = jax.vmap(lambda ind: self._run(x, data, ind, indptr, m, n))(indices)
+        res = brainstate.transform.vmap2(lambda ind: self._run(x, data, ind, indptr, m, n))(indices)
         assert jnp.all(res)
 
     def _run_vjp(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
@@ -485,7 +489,8 @@ class TestBatchingMatrixCSR:
         indptr, indices = get_csr(m, n, 0.1)
 
         data = braintools.init.Normal(0., 1.)(indices.shape)
-        r1, r2 = jax.vmap(lambda x: self._run_vjp(x, data, indices, indptr, m, n, transpose=transpose))(xs)
+        r1, r2 = brainstate.transform.vmap2(
+            lambda x: self._run_vjp(x, data, indices, indptr, m, n, transpose=transpose))(xs)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
@@ -498,7 +503,7 @@ class TestBatchingMatrixCSR:
         indptr, indices = get_csr(m, n, 0.1)
 
         data = brainstate.random.rand(b) if homo_w else braintools.init.Normal(0., 1.)((b,) + indices.shape)
-        r1, r2 = jax.vmap(lambda data: self._run_vjp(x, data, indices, indptr, m, n))(data)
+        r1, r2 = brainstate.transform.vmap2(lambda data: self._run_vjp(x, data, indices, indptr, m, n))(data)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
@@ -512,7 +517,7 @@ class TestBatchingMatrixCSR:
         indptr = indptr[0]
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
-        r1, r2 = jax.vmap(lambda ind: self._run_vjp(x, data, ind, indptr, m, n))(indices)
+        r1, r2 = brainstate.transform.vmap2(lambda ind: self._run_vjp(x, data, ind, indptr, m, n))(indices)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
@@ -548,7 +553,7 @@ class TestBatchingMatrixCSR:
         indptr, indices = get_csr(m, n, 0.1)
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        r1, r2 = jax.vmap(lambda x: self._run_jvp(x, data, indices, indptr, m, n))(xs)
+        r1, r2 = brainstate.transform.vmap2(lambda x: self._run_jvp(x, data, indices, indptr, m, n))(xs)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
@@ -560,7 +565,7 @@ class TestBatchingMatrixCSR:
         indptr, indices = get_csr(m, n, 0.1)
 
         data = brainstate.random.rand(b) if homo_w else braintools.init.Normal(0., 1.)((b,) + indices.shape)
-        r1, r2 = jax.vmap(lambda data: self._run_jvp(x, data, indices, indptr, m, n))(data)
+        r1, r2 = brainstate.transform.vmap2(lambda data: self._run_jvp(x, data, indices, indptr, m, n))(data)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
@@ -574,7 +579,7 @@ class TestBatchingMatrixCSR:
         indptr = indptr[0]
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
-        r1, r2 = jax.vmap(lambda ind: self._run_jvp(x, data, ind, indptr, m, n))(indices)
+        r1, r2 = brainstate.transform.vmap2(lambda ind: self._run_jvp(x, data, ind, indptr, m, n))(indices)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))

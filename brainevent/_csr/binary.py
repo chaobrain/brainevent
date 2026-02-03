@@ -1168,11 +1168,10 @@ def _csrmm_pallas_kernel(
             )
 
     def kernel(data, indices, indptr, B):
-        out_info = kwargs['outs'][0]
         fn = pl.pallas_call(
             mm,
             grid=(m, pl.cdiv(n, block_dim_n)),
-            out_shape=out_info
+            out_shape=kwargs['outs']
         )
         return fn(data, indices, indptr, B)
 
@@ -1212,49 +1211,30 @@ def _csrmm_pallas_gpu_kernel(
             def mm(
                 data_ref,  # [1]
                 indices_ref,  # [nse]
-                indptr_ref,  # [m + 1]
-                B_ref,  # [m, n]
-                _,  # [k, n]
-                posts_ref,  # [k, n]
+                indptr_ref,  # [k + 1]
+                B_ref,  # [k, n]
+                _,  # [m, n]
+                posts_ref,  # [m, n]
             ):
-                i_row = pl.program_id(0)
+                i_k = pl.program_id(0)
                 i_n = pl.program_id(1)
                 i_col_start = i_n * block_dim_n
-                col_mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
-
-                row_start = indptr_ref[i_row]
-                row_end = indptr_ref[i_row + 1]
-                row_nnz = row_end - row_start
-                num_blocks = (row_nnz + block_dim - 1) // block_dim
-
-                events = B_ref[i_row, pl.dslice(i_col_start, block_dim_n)]
-
+                col_start = indptr_ref[i_k]
+                col_end = indptr_ref[i_k + 1]
+                mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
+                events = pl.load(B_ref, (i_k, pl.dslice(i_col_start, block_dim_n)), mask=mask)
                 if B_ref.dtype == jnp.bool_:
-                    event_mask = col_mask & events
+                    mask = mask & events
                     val = jnp.where(events, data_ref[0], 0.)
                 else:
-                    event_mask = col_mask & (events != 0.)
+                    mask = mask & (events != 0.)
                     val = events * data_ref[0]
 
-                @pl.when(jnp.any(event_mask))
-                def event_processing():
-                    def loop_fn(index, _):
-                        offset = row_start + index * block_dim
-                        nnz_mask = offset + jnp.arange(block_dim) < row_end
-                        cols = indices_ref[pl.dslice(offset, block_dim)]
+                def loop_fn(index, _):
+                    i_row = indices_ref[index]
+                    pl.atomic_add(posts_ref, (i_row, pl.dslice(i_col_start, block_dim_n)), val, mask=mask)
 
-                        for col_idx in range(block_dim):
-                            @pl.when(nnz_mask[col_idx])
-                            def do_add():
-                                atomic_add(
-                                    posts_ref,
-                                    (cols[col_idx], pl.dslice(i_col_start, block_dim_n)),
-                                    val, mask=event_mask
-                                )
-
-                        return None
-
-                    jax.lax.fori_loop(0, num_blocks, loop_fn, None)
+                jax.lax.fori_loop(col_start, col_end, loop_fn, None, )
 
         else:
             # csr.T @ B (heterogeneous weights)
@@ -1266,49 +1246,33 @@ def _csrmm_pallas_gpu_kernel(
             def mm(
                 data_ref,  # [nse]
                 indices_ref,  # [nse]
-                indptr_ref,  # [m + 1]
-                B_ref,  # [m, n]
-                _,  # [k, n]
-                posts_ref,  # [k, n]
+                indptr_ref,  # [k + 1]
+                B_ref,  # [k, n]
+                _,  # [m, n]
+                posts_ref,  # [m, n]
             ):
-                i_row = pl.program_id(0)
+                i_k = pl.program_id(0)
                 i_n = pl.program_id(1)
                 i_col_start = i_n * block_dim_n
-                col_mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
-
-                row_start = indptr_ref[i_row]
-                row_end = indptr_ref[i_row + 1]
-                row_nnz = row_end - row_start
-                num_blocks = (row_nnz + block_dim - 1) // block_dim
-
-                events = B_ref[i_row, pl.dslice(i_col_start, block_dim_n)]
-
+                mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
+                col_start = indptr_ref[i_k]
+                col_end = indptr_ref[i_k + 1]
+                events = pl.load(B_ref, (i_k, pl.dslice(i_col_start, block_dim_n)), mask=mask)
                 if B_ref.dtype == jnp.bool_:
-                    event_mask = col_mask & events
+                    mask = mask & events
                 else:
-                    event_mask = col_mask & (events != 0.)
+                    mask = mask & (events != 0.)
 
-                @pl.when(jnp.any(event_mask))
-                def event_processing():
-                    def loop_fn(index, _):
-                        offset = row_start + index * block_dim
-                        nnz_mask = offset + jnp.arange(block_dim) < row_end
-                        cols = indices_ref[pl.dslice(offset, block_dim)]
-                        weights = data_ref[pl.dslice(offset, block_dim)]
+                def loop_fn(index, _):
+                    i_row = indices_ref[index]
+                    val_A = data_ref[index]
+                    if B_ref.dtype == jnp.bool_:
+                        val = jnp.where(events, val_A, 0.)
+                    else:
+                        val = events * val_A
+                    pl.atomic_add(posts_ref, (i_row, pl.dslice(i_col_start, block_dim_n)), val, mask=mask)
 
-                        for col_idx in range(block_dim):
-                            @pl.when(nnz_mask[col_idx])
-                            def do_add():
-                                if B_ref.dtype == jnp.bool_:
-                                    val = jnp.where(events, weights[col_idx], 0.)
-                                else:
-                                    val = events * weights[col_idx]
-                                atomic_add(posts_ref, (cols[col_idx], pl.dslice(i_col_start, block_dim_n)),
-                                           val, mask=event_mask)
-
-                        return None
-
-                    jax.lax.fori_loop(0, num_blocks, loop_fn, None)
+                jax.lax.fori_loop(col_start, col_end, loop_fn, None, )
 
         def kernel(data, indices, indptr, B):
             out_info = kwargs['outs'][0]
@@ -1316,7 +1280,7 @@ def _csrmm_pallas_gpu_kernel(
                 mm,
                 grid=(m, pl.cdiv(n, block_dim_n)),
                 input_output_aliases={4: 0},
-                out_shape=out_info
+                out_shape=kwargs['outs']
             )
             posts = jnp.zeros(out_info.shape, dtype=out_info.dtype)
             return fn(data, indices, indptr, B, posts)
@@ -1472,7 +1436,7 @@ def binary_csrmm_p_call(
         indices,
         indptr,
         B,
-        outs=[out_info],
+        outs=(out_info,),
         shape=shape,
         transpose=transpose,
         backend=backend,

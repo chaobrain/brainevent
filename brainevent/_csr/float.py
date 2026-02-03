@@ -302,7 +302,8 @@ def _csrmv_pallas_kernel_generator(
 
         def kernel(data, indices, indptr, vector):
             fn = pl.pallas_call(
-                mm, grid=(k if transpose else m,), input_output_aliases={4: 0}, out_shape=kwargs['outs'])
+                mm, grid=(k if transpose else m,), input_output_aliases={4: 0}, out_shape=kwargs['outs']
+            )
             out_info = kwargs['outs'][0]
             placeholder = jnp.zeros(out_info.shape, out_info.dtype)
             return fn(data, indices, indptr, vector, placeholder)
@@ -319,7 +320,6 @@ def _csrmv_pallas_kernel_generator(
                 indices_ref,  # [nse]
                 indptr_ref,  # [m + 1]
                 vector_ref,  # [k]
-                _,  # [m]
                 posts_ref,  # [m]
             ):
                 i_row = pl.program_id(0)
@@ -502,7 +502,6 @@ def csrmv_p_call(
         indices,
         indptr,
         vector,
-        # jnp.zeros(out_info.shape, out_info.dtype),
         outs=[out_info],
         shape=shape,
         transpose=transpose,
@@ -759,7 +758,6 @@ def _csrmm_warp_kernel_generator(
 def _csrmm_pallas_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
-    indptr_info: jax.ShapeDtypeStruct,
     transpose: bool,
     shape,
     **kwargs
@@ -859,7 +857,6 @@ def _csrmm_pallas_kernel_generator(
                 indices_ref,  # [nse]
                 indptr_ref,  # [m + 1]
                 B_ref,  # [k, n]
-                # [m, n]
                 posts_ref,  # [m, n]
             ):
                 i_m = pl.program_id(0)
@@ -900,7 +897,6 @@ def _csrmm_pallas_kernel_generator(
                 indices_ref,  # [nse]
                 indptr_ref,  # [m + 1]
                 B_ref,  # [k, n]
-                # [m, n]
                 posts_ref,  # [m, n]
             ):
                 i_m = pl.program_id(0)
@@ -1072,8 +1068,7 @@ def csrmm_p_call(
 csrmm_p = XLACustomKernel('csrmm')
 csrmm_p.def_numba_kernel(_csrmm_numba_kernel_generator)
 csrmm_p.def_warp_kernel(_csrmm_warp_kernel_generator)
-csrmm_p.def_pallas_kernel('gpu', partial(_csrmm_pallas_kernel_generator, 'gpu'))
-csrmm_p.def_pallas_kernel('tpu', partial(_csrmm_pallas_kernel_generator, 'tpu'))
+csrmm_p.def_pallas_kernel('gpu', _csrmm_pallas_kernel_generator)
 csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 csrmm_p.def_batching_rule(_csrmm_batching)
