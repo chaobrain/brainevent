@@ -23,8 +23,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent._compatible_import import pallas as pl
-
 __all__ = [
     'BlockELL',
 ]
@@ -144,6 +142,8 @@ def _sdd_kernel(
     bn: int,
     bk: int,
 ):
+    from jax.experimental import pallas as pl
+
     i_m = pl.program_id(axis=0)
     i_k = pl.program_id(axis=1)
     n_block_this_row = blocks_per_row_ref[i_m]
@@ -153,7 +153,7 @@ def _sdd_kernel(
         i_block = indices_ref[i_m, k, 1]
         block = x_ref[i_block, ...]  # [bm, bn]
         chunk = y_ref[pl.dslice(i_x_col * bn, bn), pl.dslice(i_k * bk, bk)]  # [bn, bk]
-        return val + jnp.dot(block, chunk).astype(o_ref.dtype)
+        return val + pl.dot(block, chunk).astype(o_ref.dtype)
 
     acc = jax.lax.fori_loop(0, n_block_this_row, body, jnp.zeros([bm, bk], dtype=o_ref.dtype))
     o_ref[pl.dslice(bm * i_m, bm), pl.dslice(bk * i_k, bk)] = acc  # [bm, bk]
@@ -168,6 +168,8 @@ def sdd_matmul(
     interpret: bool = False,
     block_size: int = 256,
 ) -> jax.Array:
+    from jax.experimental import pallas as pl
+
     _check_shape_consistency(mat1, mat2)
 
     # shape and dtype

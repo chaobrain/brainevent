@@ -28,7 +28,6 @@ from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .float import csr_matvec, csr_matmat
 
 
-@namescoped_jit(static_argnames=("shape", "transpose"))
 def binary_csr_matvec(
     data: Data,
     indices: Index,

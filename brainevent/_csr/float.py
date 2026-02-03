@@ -172,7 +172,7 @@ def _csrmv_warp_kernel_generator(
         def kernel(weights, indices, indptr, vector):
             out_info = jax.ShapeDtypeStruct([shape[1]], weights.dtype)
             dim = vector_info.shape[0]
-            fn = jax_kernel(mv, launch_dims=dim, num_outputs=0, in_out_argnames=['posts'])
+            fn = jax_kernel(mv, launch_dims=[dim], num_outputs=0, in_out_argnames=['posts'])
             return fn(weights, indices, indptr, vector, jnp.zeros(out_info.shape, out_info.dtype))
 
     else:
@@ -215,14 +215,13 @@ def _csrmv_warp_kernel_generator(
         def kernel(weights, indices, indptr, vector):
             out_info = jax.ShapeDtypeStruct([shape[0]], weights.dtype)
             dim = indptr_info.shape[0] - 1
-            fn = jax_kernel(mv, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
+            fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
             return fn(weights, indices, indptr, vector)
 
     return kernel
 
 
 def _csrmv_pallas_kernel_generator(
-    platform,
     weight_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
     shape: MatrixShape,
@@ -230,16 +229,16 @@ def _csrmv_pallas_kernel_generator(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    if platform == 'gpu':
-        from jax.experimental.pallas.triton import atomic_add
+    from jax.experimental.pallas.triton import atomic_add
 
     m, k = shape
     block_dim = generate_block_dim(pl.cdiv(indices_info.size, shape[1] if transpose else shape[0]))
     block_dim = block_dim // 2
     block_dim = 32 if block_dim < 32 else block_dim
 
-    if weight_info.size == 1:
-        if transpose:
+    if transpose:
+
+        if weight_info.size == 1:
             # csr.T @ B
             #
             # csr: [k, m]
@@ -250,7 +249,7 @@ def _csrmv_pallas_kernel_generator(
                 indices_ref,  # [nse]
                 indptr_ref,  # [k + 1]
                 vector_ref,  # [k]
-                # [m]
+                _,  # [m]
                 posts_ref,  # [m]
             ):
                 i_col = pl.program_id(0)
@@ -266,14 +265,50 @@ def _csrmv_pallas_kernel_generator(
                     offset = col_start + index * block_dim
                     mask = offset + jnp.arange(block_dim) < col_end
                     rows = indices_ref[pl.dslice(offset, block_dim)]
-                    if platform == 'gpu':
-                        atomic_add(posts_ref, rows, data_block, mask=mask)
-                    else:
-                        pl.atomic_add(posts_ref, rows, data_block, mask=mask)
+                    atomic_add(posts_ref, rows, data_block, mask=mask)
 
                 jax.lax.fori_loop(0, num_blocks, loop_fn, None)
 
         else:
+            # csr.T @ B
+            #
+            # csr: [k, m]
+            # B: [k]
+            #
+            def mm(
+                data_ref,  # [nse]
+                indices_ref,  # [nse]
+                indptr_ref,  # [k + 1]
+                vector_ref,  # [k]
+                _,  # [m]
+                posts_ref,  # [m]
+            ):
+                i_col = pl.program_id(0)
+                col_start = indptr_ref[i_col]
+                col_end = indptr_ref[i_col + 1]
+                col_nnz = col_end - col_start
+                num_blocks = (col_nnz + block_dim - 1) // block_dim
+                val_vector = vector_ref[i_col]
+
+                def loop_fn(index, _):
+                    offset = col_start + index * block_dim
+                    mask = offset + jnp.arange(block_dim) < col_end
+                    rows = indices_ref[pl.dslice(offset, block_dim)]
+                    val_A = data_ref[pl.dslice(offset, block_dim)]
+                    contrib = jnp.where(mask, val_A * val_vector, 0.0)
+                    atomic_add(posts_ref, rows, contrib, mask=mask)
+
+                jax.lax.fori_loop(0, num_blocks, loop_fn, None)
+
+        def kernel(data, indices, indptr, vector):
+            fn = pl.pallas_call(
+                mm, grid=(k if transpose else m,), input_output_aliases={4: 0}, out_shape=kwargs['outs'])
+            out_info = kwargs['outs'][0]
+            placeholder = jnp.zeros(out_info.shape, out_info.dtype)
+            return fn(data, indices, indptr, vector, placeholder)
+
+    else:
+        if weight_info.size == 1:
             # csr @ B
             #
             # csr: [m, k]
@@ -284,7 +319,7 @@ def _csrmv_pallas_kernel_generator(
                 indices_ref,  # [nse]
                 indptr_ref,  # [m + 1]
                 vector_ref,  # [k]
-                # [m]
+                _,  # [m]
                 posts_ref,  # [m]
             ):
                 i_row = pl.program_id(0)
@@ -311,41 +346,6 @@ def _csrmv_pallas_kernel_generator(
                 )
                 posts_ref[i_row] = i_row_sum
 
-    else:
-        if transpose:
-            # csr.T @ B
-            #
-            # csr: [k, m]
-            # B: [k]
-            #
-            def mm(
-                data_ref,  # [nse]
-                indices_ref,  # [nse]
-                indptr_ref,  # [k + 1]
-                vector_ref,  # [k]
-                # [m]
-                posts_ref,  # [m]
-            ):
-                i_col = pl.program_id(0)
-                col_start = indptr_ref[i_col]
-                col_end = indptr_ref[i_col + 1]
-                col_nnz = col_end - col_start
-                num_blocks = (col_nnz + block_dim - 1) // block_dim
-                val_vector = vector_ref[i_col]
-
-                def loop_fn(index, _):
-                    offset = col_start + index * block_dim
-                    mask = offset + jnp.arange(block_dim) < col_end
-                    rows = indices_ref[pl.dslice(offset, block_dim)]
-                    val_A = data_ref[pl.dslice(offset, block_dim)]
-                    contrib = jnp.where(mask, val_A * val_vector, 0.0)
-                    if platform == 'gpu':
-                        atomic_add(posts_ref, rows, contrib, mask=mask)
-                    else:
-                        pl.atomic_add(posts_ref, rows, contrib, mask=mask)
-
-                jax.lax.fori_loop(0, num_blocks, loop_fn, None)
-
         else:
             # csr @ B
             #
@@ -357,7 +357,6 @@ def _csrmv_pallas_kernel_generator(
                 indices_ref,  # [nse]
                 indptr_ref,  # [m + 1]
                 vector_ref,  # [k]
-                # [m]
                 posts_ref,  # [m]
             ):
                 i_row = pl.program_id(0)
@@ -384,16 +383,9 @@ def _csrmv_pallas_kernel_generator(
                 )
                 posts_ref[i_row] = i_row_sum
 
-    def kernel(data, indices, indptr, vector):
-        fn = pl.pallas_call(
-            mm,
-            grid=(k if transpose else m,),
-            input_output_aliases={4: 0},
-            out_shape=kwargs['outs']
-        )
-        out_info = kwargs['outs'][0]
-        placeholder = jnp.zeros(out_info.shape, out_info.dtype)
-        return fn(data, indices, indptr, vector, placeholder)
+        def kernel(data, indices, indptr, vector):
+            fn = pl.pallas_call(mm, grid=(k if transpose else m,), out_shape=kwargs['outs'])
+            return fn(data, indices, indptr, vector)
 
     return kernel
 
@@ -525,8 +517,7 @@ def csrmv_p_call(
 csrmv_p = XLACustomKernel('csrmv')
 csrmv_p.def_numba_kernel(_csrmv_numba_kernel_generator)
 csrmv_p.def_warp_kernel(_csrmv_warp_kernel_generator)
-csrmv_p.def_pallas_kernel('gpu', partial(_csrmv_pallas_kernel_generator, 'gpu'))
-csrmv_p.def_pallas_kernel('tpu', partial(_csrmv_pallas_kernel_generator, 'tpu'))
+csrmv_p.def_pallas_kernel('gpu', _csrmv_pallas_kernel_generator)
 csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
 csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
 csrmv_p.def_batching_rule(_csrmv_batching)
@@ -715,7 +706,7 @@ def _csrmm_warp_kernel_generator(
             out_info = jax.ShapeDtypeStruct([shape[1], n], weights.dtype)
             dim = k
             block_dim = generate_block_dim(vector_info.shape[1], 1024)
-            fn = jax_kernel(mm, launch_dims=block_dim, num_outputs=0, in_out_argnames=['posts'])
+            fn = jax_kernel(mm, launch_dims=[block_dim], num_outputs=0, in_out_argnames=['posts'])
             return fn(weights, indices, indptr, B, jnp.zeros(out_info.shape, out_info.dtype))
 
     else:
@@ -759,15 +750,13 @@ def _csrmm_warp_kernel_generator(
             out_info = jax.ShapeDtypeStruct([shape[0], n], weights.dtype)
             dim = indptr_info.shape[0] - 1
             block_dim = generate_block_dim(vector_info.shape[1], 1024)
-            fn = jax_kernel(mm, launch_dims=block_dim, num_outputs=1,
-                            output_dims={'posts': out_info.shape})
+            fn = jax_kernel(mm, launch_dims=[block_dim], num_outputs=1, output_dims={'posts': out_info.shape})
             return fn(weights, indices, indptr, B)
 
     return kernel
 
 
 def _csrmm_pallas_kernel_generator(
-    platform,
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     indptr_info: jax.ShapeDtypeStruct,
@@ -776,12 +765,13 @@ def _csrmm_pallas_kernel_generator(
     **kwargs
 ):
     from jax.experimental import pallas as pl
+
     m, k = shape
     n = vector_info.shape[1]
     block_dim_n = generate_block_dim(n, 512)
 
-    if weight_info.size == 1:
-        if transpose:
+    if transpose:
+        if weight_info.size == 1:
             # csr.T @ B
             #
             # csr: [k, m]
@@ -792,7 +782,7 @@ def _csrmm_pallas_kernel_generator(
                 indices_ref,  # [nse]
                 indptr_ref,  # [k + 1]
                 B_ref,  # [k, n]
-                # [m, n]
+                _,  # [m, n]
                 posts_ref,  # [m, n]
             ):
                 i_k = pl.program_id(0)
@@ -809,12 +799,55 @@ def _csrmm_pallas_kernel_generator(
 
                 jax.lax.fori_loop(indptr_ref[i_k], indptr_ref[i_k + 1], loop_fn, None)
 
+
         else:
+            # csr.T @ B
             #
-            # Gustavson algorithm: Sparse matrix–matrix multiplication is performed in a row-wise fashion.
+            # csr: [k, m]
+            # B: [k, n]
             #
-            # Each nonzero value in a row is multiplied by the nonzero values corresponding to the column index.
-            # These values are summed and stored in a temporary row buffer based on their column indices.
+            def mm(
+                data_ref,  # [nse]
+                indices_ref,  # [nse]
+                indptr_ref,  # [k + 1]
+                B_ref,  # [k, n]
+                _,  # [m, n]
+                posts_ref,  # [m, n]
+            ):
+                i_k = pl.program_id(0)
+                i_n_block = pl.program_id(1)
+                i_n_start = i_n_block * block_dim_n
+                mask = (i_n_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
+                B_row = B_ref[i_k, pl.dslice(i_n_start, block_dim_n)]
+                B_row = jnp.where(mask, B_row, 0.0)
+
+                def loop_fn(index, _):
+                    i_row = indices_ref[index]
+                    A_val = data_ref[index]
+                    val = A_val * B_row
+                    pl.atomic_add(posts_ref, (i_row, pl.dslice(i_n_start, block_dim_n)), val, mask=mask)
+
+                jax.lax.fori_loop(indptr_ref[i_k], indptr_ref[i_k + 1], loop_fn, None)
+
+        def kernel(data, indices, indptr, B):
+            fn = pl.pallas_call(
+                mm,
+                grid=(k if transpose else m, pl.cdiv(n, block_dim_n)),
+                input_output_aliases={4: 0},
+                out_shape=kwargs['outs']
+            )
+            out_info = kwargs['outs'][0]
+            placeholder = jnp.zeros(out_info.shape, out_info.dtype)
+            return fn(data, indices, indptr, B, placeholder)
+
+    else:
+
+        #
+        # Gustavson algorithm: Sparse matrix–matrix multiplication is performed in a row-wise fashion.
+        #
+        # Each nonzero value in a row is multiplied by the nonzero values corresponding to the column index.
+        # These values are summed and stored in a temporary row buffer based on their column indices.
+        if weight_info.size == 1:
 
             # csr @ B
             #
@@ -856,44 +889,7 @@ def _csrmm_pallas_kernel_generator(
                 )
 
 
-    else:
-        if transpose:
-            # csr.T @ B
-            #
-            # csr: [k, m]
-            # B: [k, n]
-            #
-            def mm(
-                data_ref,  # [nse]
-                indices_ref,  # [nse]
-                indptr_ref,  # [k + 1]
-                B_ref,  # [k, n]
-                # [m, n]
-                posts_ref,  # [m, n]
-            ):
-                i_k = pl.program_id(0)
-                i_n_block = pl.program_id(1)
-                i_n_start = i_n_block * block_dim_n
-                mask = (i_n_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
-                B_row = B_ref[i_k, pl.dslice(i_n_start, block_dim_n)]
-                B_row = jnp.where(mask, B_row, 0.0)
-
-                def loop_fn(index, _):
-                    i_row = indices_ref[index]
-                    A_val = data_ref[index]
-                    val = A_val * B_row
-                    pl.atomic_add(posts_ref, (i_row, pl.dslice(i_n_start, block_dim_n)), val, mask=mask)
-
-                jax.lax.fori_loop(indptr_ref[i_k], indptr_ref[i_k + 1], loop_fn, None)
-
-
         else:
-            #
-            # Gustavson algorithm: Sparse matrix–matrix multiplication is performed in a row-wise fashion.
-            #
-            # Each nonzero value in a row is multiplied by the nonzero values corresponding to the column index.
-            # These values are summed and stored in a temporary row buffer based on their column indices.
-
             # csr @ B
             #
             # csr: [m, k]
@@ -933,16 +929,9 @@ def _csrmm_pallas_kernel_generator(
                     mask=mask
                 )
 
-    def kernel(data, indices, indptr, B):
-        fn = pl.pallas_call(
-            mm,
-            grid=(k if transpose else m, pl.cdiv(n, block_dim_n)),
-            input_output_aliases={4: 0},
-            out_shape=kwargs['outs']
-        )
-        out_info = kwargs['outs'][0]
-        placeholder = jnp.zeros(out_info.shape, out_info.dtype)
-        return fn(data, indices, indptr, B, placeholder)
+        def kernel(data, indices, indptr, B):
+            fn = pl.pallas_call(mm, grid=(k if transpose else m, pl.cdiv(n, block_dim_n)), out_shape=kwargs['outs'])
+            return fn(data, indices, indptr, B)
 
     return kernel
 
@@ -1069,7 +1058,6 @@ def csrmm_p_call(
         indices,
         indptr,
         B,
-        # jnp.zeros(out_info.shape, out_info.dtype),
         outs=[out_info],
         shape=shape,
         transpose=transpose,

@@ -101,11 +101,11 @@ def run_benchmark(
 
 def main():
     parser = argparse.ArgumentParser(description='Benchmark binary_csrmv_p')
-    parser.add_argument('--platform', type=str, default='cpu', choices=['cpu', 'gpu', 'tpu'],
+    parser.add_argument('--platform', type=str, default='gpu', choices=['cpu', 'gpu', 'tpu'],
                         help='Platform to benchmark on')
-    parser.add_argument('--n-warmup', type=int, default=5, help='Number of warmup runs')
-    parser.add_argument('--n-runs', type=int, default=20, help='Number of timed runs')
-    parser.add_argument('--batch-mode', action='store_true', help='Use batch timing mode')
+    parser.add_argument('--n-warmup', type=int, default=50, help='Number of warmup runs')
+    parser.add_argument('--n-runs', type=int, default=200, help='Number of timed runs')
+    parser.add_argument('--batch-mode', action='store_true', default=True, help='Use batch timing mode')
     args = parser.parse_args()
 
     print(f"Binary CSR Matrix-Vector Multiplication Benchmark")
@@ -162,6 +162,7 @@ def main():
                         n_runs=args.n_runs,
                         batch_mode=args.batch_mode,
                     )
+                    print(report.summary())
 
                     fastest = report.fastest()
                     if fastest:

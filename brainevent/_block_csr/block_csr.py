@@ -23,7 +23,6 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._compatible_import import JAXSparse
-from brainevent._compatible_import import pallas as pl
 from brainevent._coo import COO
 from brainevent._csr import CSR
 from brainevent._misc import (
@@ -459,6 +458,8 @@ def _sdd_kernel(
     bn: int,
     bk: int,
 ):
+    from jax.experimental import pallas as pl
+
     i_m = pl.program_id(axis=0)
     i_k = pl.program_id(axis=1)
     i_start = indptr_ref[i_m]
@@ -488,6 +489,8 @@ def sdd_matmul(
     interpret: bool = False,
     block_size: int = 256,
 ) -> jax.Array:
+    from jax.experimental import pallas as pl
+
     _check_shape_consistency(mat1, mat2)
 
     # shape and dtype
