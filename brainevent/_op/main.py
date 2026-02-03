@@ -83,22 +83,50 @@ class XLACustomKernel:
     This class provides a high-level interface to define custom operations
     that can be executed efficiently on different backends (CPU, GPU, TPU)
     via XLA custom calls. It handles the registration of the JAX primitive,
-    its abstract evaluation rule, backend-specific kernel implementations
-    (using Numba for CPU, Pallas or Warp for GPU/TPU), and JAX transformation
-    rules like batching, JVP (forward-mode AD), and transpose (reverse-mode AD).
+    its abstract evaluation rule, backend-specific kernel implementations,
+    and JAX transformation rules like batching, JVP (forward-mode AD), and
+    transpose (reverse-mode AD).
 
-    The core idea is to define the computation logic once for each relevant
-    backend using specialized kernel generators (:class:`KernelGenerator`,
-    :class:`KernelGenerator`, :class:`KernelGenerator`) and then use this class
-    to bind everything together into a callable JAX operation.
+    Supported backends by platform:
+
+    - **CPU**: Numba (priority 100), TVM FFI (priority 200)
+    - **GPU**: Pallas (priority 100), TVM FFI (priority 150), Numba CUDA (priority 200),
+      Warp (priority 250), Triton (priority 300)
+    - **TPU**: Pallas (priority 100)
+
+    The workflow for using this class is:
+
+    1. Create an instance with a unique primitive name
+    2. Register kernel implementations using ``def_kernel`` or convenience
+       methods like ``def_numba_kernel``, ``def_pallas_kernel``, etc.
+    3. Define JAX transformation rules (batching, JVP, transpose) as needed
+    4. Call the instance with input arrays and output specifications
+
+    When multiple kernels are registered for the same platform, they are tried
+    in priority order (lower values first). If a kernel fails due to import
+    errors or compilation issues, the next kernel is automatically tried
+    (when ``fallback_enabled=True``).
 
     Attributes:
         primitive: The underlying JAX primitive created.
         name: The name assigned to the primitive.
+        fallback_enabled: Whether to automatically try the next kernel when
+            one fails. Defaults to True.
 
     Args:
         name: The unique name for the custom JAX primitive.
+        fallback_enabled: Whether to enable automatic fallback to the next
+            kernel when one fails. Defaults to True.
 
+    Example:
+        >>> kernel = XLACustomKernel('my_custom_op')
+        >>> kernel.def_numba_kernel(numba_kernel_generator)
+        >>> kernel.def_pallas_kernel('gpu', pallas_kernel_generator)
+        >>> result = kernel(input_array, outs=[jax.ShapeDtypeStruct((10,), jnp.float32)])
+
+    See Also:
+        :class:`KernelEntry`: Represents a registered kernel.
+        :data:`DEFAULT_PRIORITIES`: Default priority values for each backend/platform.
     """
 
     __module__ = 'brainevent'
@@ -191,8 +219,6 @@ class XLACustomKernel:
             platform: The platform name (e.g., 'cpu', 'gpu', 'tpu').
             kg: A kernel generator callable that creates the kernel function.
             priority: Priority of this kernel. Lower values are tried first.
-                If not specified, uses DEFAULT_PRIORITIES or 500 as fallback.
-            priority: Optional priority override. Lower values are tried first.
                 If not specified, uses DEFAULT_PRIORITIES or 500 as fallback.
         """
         assert isinstance(backend, str), f'The `backend` should be a string, but got {type(backend)}.'
@@ -298,6 +324,16 @@ class XLACustomKernel:
         kg: KernelGenerator,
         priority: Optional[int] = None
     ):
+        """Register a Numba kernel for CPU platform.
+
+        This is a convenience method equivalent to:
+        ``self.def_kernel(backend='numba', platform='cpu', kg=kg, priority=priority)``
+
+        Args:
+            kg: A kernel generator callable that creates the Numba kernel function.
+            priority: Priority of this kernel. Lower values are tried first.
+                If not specified, uses DEFAULT_PRIORITIES (100 for numba on cpu).
+        """
         self.def_kernel(backend='numba', platform='cpu', kg=kg, priority=priority)
 
     def def_warp_kernel(
@@ -305,6 +341,16 @@ class XLACustomKernel:
         kg: KernelGenerator,
         priority: Optional[int] = None
     ):
+        """Register a Warp kernel for GPU platform.
+
+        This is a convenience method equivalent to:
+        ``self.def_kernel(backend='warp', platform='gpu', kg=kg, priority=priority)``
+
+        Args:
+            kg: A kernel generator callable that creates the Warp kernel function.
+            priority: Priority of this kernel. Lower values are tried first.
+                If not specified, uses DEFAULT_PRIORITIES (250 for warp on gpu).
+        """
         self.def_kernel(backend='warp', platform='gpu', kg=kg, priority=priority)
 
     def def_triton_kernel(
@@ -312,6 +358,16 @@ class XLACustomKernel:
         kg: KernelGenerator,
         priority: Optional[int] = None
     ):
+        """Register a Triton kernel for GPU platform.
+
+        This is a convenience method equivalent to:
+        ``self.def_kernel(backend='triton', platform='gpu', kg=kg, priority=priority)``
+
+        Args:
+            kg: A kernel generator callable that creates the Triton kernel function.
+            priority: Priority of this kernel. Lower values are tried first.
+                If not specified, uses DEFAULT_PRIORITIES (300 for triton on gpu).
+        """
         self.def_kernel(backend='triton', platform='gpu', kg=kg, priority=priority)
 
     def def_pallas_kernel(
@@ -320,6 +376,18 @@ class XLACustomKernel:
         kg: KernelGenerator,
         priority: Optional[int] = None
     ):
+        """Register a Pallas kernel for GPU or TPU platform.
+
+        This is a convenience method equivalent to:
+        ``self.def_kernel(backend='pallas', platform=platform, kg=kg, priority=priority)``
+
+        Args:
+            platform: The target platform, must be either 'gpu' or 'tpu'.
+            kg: A kernel generator callable that creates the Pallas kernel function.
+            priority: Priority of this kernel. Lower values are tried first.
+                If not specified, uses DEFAULT_PRIORITIES (100 for pallas on both
+                gpu and tpu).
+        """
         assert platform in ['gpu', 'tpu'], f'The `platform` should be either `gpu` or `tpu`, but got {platform}.'
         self.def_kernel(backend='pallas', platform=platform, kg=kg, priority=priority)
 
@@ -329,6 +397,18 @@ class XLACustomKernel:
         kg: KernelGenerator,
         priority: Optional[int] = None
     ):
+        """Register a TVM FFI kernel for CPU or GPU platform.
+
+        This is a convenience method equivalent to:
+        ``self.def_kernel(backend='tvmffi', platform=platform, kg=kg, priority=priority)``
+
+        Args:
+            platform: The target platform, must be either 'cpu' or 'gpu'.
+            kg: A kernel generator callable that creates the TVM FFI kernel function.
+            priority: Priority of this kernel. Lower values are tried first.
+                If not specified, uses DEFAULT_PRIORITIES (200 for tvmffi on cpu,
+                150 for tvmffi on gpu).
+        """
         assert platform in ['cpu', 'gpu'], f'The `platform` should be either `cpu` or `gpu`, but got {platform}.'
         self.def_kernel(backend='tvmffi', platform=platform, kg=kg, priority=priority)
 
