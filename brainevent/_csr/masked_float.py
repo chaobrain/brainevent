@@ -22,7 +22,6 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._compatible_import import pallas as pl
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescoped_jit
 from brainevent._op import numba_kernel, jaxtype_to_warptype, XLACustomKernel, general_batching_rule
 from brainevent._typing import Data, Indptr, Index, MatrixShape

@@ -409,13 +409,3 @@ class XLACustomKernel:
         """
         prim = self.primitive
         batching.primitive_batchers[prim] = functools.partial(general_batching_rule, prim)
-
-
-def register_translation(platform: str, primitive: Primitive, kg: KernelGenerator):
-    def kernel_fn(*args, **kwargs):
-        kernel = kg(**kwargs)
-        return kernel(*args)
-
-    assert isinstance(platform, str), f"platform must be a string. But got {platform}."
-    lower = mlir.lower_fun(kernel_fn, multiple_results=True)
-    mlir.register_lowering(primitive, lower, platform=platform)

@@ -19,7 +19,6 @@ import brainunit as u
 import jax
 import numpy as np
 
-from brainevent._compatible_import import pallas as pl
 from brainevent._misc import generate_block_dim
 from brainevent._op import XLACustomKernel
 from brainevent._op import numba_kernel

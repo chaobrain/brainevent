@@ -18,7 +18,6 @@
 import jax
 import jax.numpy as jnp
 
-from brainevent._compatible_import import pallas as pl
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
 
 
