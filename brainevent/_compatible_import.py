@@ -17,7 +17,6 @@ __all__ = [
     'Primitive',
     'Tracer',
     'register_custom_call',
-    'pallas',
     'JAXSparse',
     'custom_call',
     'call_p',
@@ -105,7 +104,6 @@ def register_custom_call(target_name, capsule, backend: str):
 
 
 # import experimental module in JAX for compatibility
-from jax.experimental import pallas
 from jax.experimental.sparse import JAXSparse
 
 _dtype_to_ir_type_factory: dict[np.dtype, Callable[[], ir.Type]] = {
