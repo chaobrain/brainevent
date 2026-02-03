@@ -523,6 +523,23 @@ class XLACustomKernel:
         # Wrap with JIT, treating all kwargs as static
         self._call_fn = jax.jit(fn, static_argnames=static_argnames)
 
+    def call(self, *args, **kwargs):
+        """Call the associated call function.
+
+        Args:
+            *args: Positional arguments for the call function.
+            **kwargs: Keyword arguments for the call function.
+
+        Returns:
+            The result of the call function.
+        """
+        if self._call_fn is None:
+            raise ValueError(
+                f"No call function registered for '{self.name}'. "
+                "Use def_call() to register one before calling."
+            )
+        return self._call_fn(*args, **kwargs)
+
     def available_backends(self, platform: str) -> List[str]:
         """Return list of registered backend names for a platform.
 
