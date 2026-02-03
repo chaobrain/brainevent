@@ -13,6 +13,9 @@
 # limitations under the License.
 # ==============================================================================
 
+import os
+os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
+
 import brainstate
 import braintools
 import jax
@@ -59,8 +62,8 @@ class TestVectorCSR:
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-        y = jax.vmap(lambda x: x @ csr)(xs)
-        y2 = jax.vmap(lambda x: vector_csr(x, csr.data, indices, indptr, (m, n)))(xs)
+        y = brainstate.transform.vmap2(lambda x: x @ csr)(xs)
+        y2 = brainstate.transform.vmap2(lambda x: vector_csr(x, csr.data, indices, indptr, (m, n)))(xs)
 
         print(y.shape, y2.shape)
         assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))

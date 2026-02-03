@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-
+import copy
 # -*- coding: utf-8 -*-
 
 import functools
@@ -131,7 +131,7 @@ class XLACustomKernel:
 
     __module__ = 'brainevent'
 
-    def __init__(self, name: str, fallback_enabled: bool = True):
+    def __init__(self, name: str, fallback_enabled: bool = False):
         # primitive
         self.name = name
         self.primitive = Primitive(name)
@@ -198,7 +198,7 @@ class XLACustomKernel:
         """
         outs, tree_def = abstract_arguments(outs)
         # Pass backend hint to the lowering via kwargs if specified
-        bind_kwargs = dict(kwargs)
+        bind_kwargs = copy.copy(kwargs)
         if backend is not None:
             bind_kwargs['_preferred_backend'] = backend
         r = self.primitive.bind(*ins, **bind_kwargs, outs=tuple(outs))
@@ -265,10 +265,10 @@ class XLACustomKernel:
             preferred_backend = kwargs.pop('_preferred_backend', None)
 
             # Get kernels for this platform
-            kernels = kernels_dict.get(platform, [])
+            kernels = self._kernels.get(platform, [])
             if not kernels:
                 raise KernelFallbackExhaustedError(
-                    f"No kernels registered for platform '{platform}' in primitive '{name}'."
+                    f"No kernels registered for platform '{platform}' in primitive '{self.name}'."
                 )
 
             # Reorder kernels if a preferred backend is specified
@@ -287,22 +287,22 @@ class XLACustomKernel:
                 except (ImportError, ModuleNotFoundError) as e:
                     errors.append((entry.backend, type(e).__name__, str(e)))
                     if not self.fallback_enabled:
-                        raise
+                        raise e
                     continue
                 except KernelNotAvailableError as e:
                     errors.append((entry.backend, type(e).__name__, str(e)))
                     if not self.fallback_enabled:
-                        raise
+                        raise e
                     continue
                 except KernelCompilationError as e:
                     errors.append((entry.backend, type(e).__name__, str(e)))
                     if not self.fallback_enabled:
-                        raise
+                        raise e
                     continue
                 except Exception as e:
                     errors.append((entry.backend, type(e).__name__, str(e)))
                     if not self.fallback_enabled:
-                        raise
+                        raise e
                     continue
 
             # All kernels failed
@@ -311,13 +311,13 @@ class XLACustomKernel:
                 for backend, err_type, msg in errors
             )
             raise KernelFallbackExhaustedError(
-                f"All kernels failed for platform '{platform}' in primitive '{name}'.\n"
+                f"All kernels failed for platform '{platform}' in primitive '{self.name}'.\n"
                 f"Attempted kernels (in order):\n{error_details}"
             )
 
         # Register the lowering with JAX
         lower = mlir.lower_fun(fallback_kernel_fn, multiple_results=True)
-        mlir.register_lowering(primitive, lower, platform=platform)
+        mlir.register_lowering(self.primitive, lower, platform=platform)
 
     def def_numba_kernel(
         self,
