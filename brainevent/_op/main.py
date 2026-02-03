@@ -105,17 +105,17 @@ class XLACustomKernel:
     When multiple kernels are registered for the same platform, they are tried
     in priority order (lower values first). If a kernel fails due to import
     errors or compilation issues, the next kernel is automatically tried
-    (when ``fallback_enabled=True``).
+    (when ``enable_fallback=True``).
 
     Attributes:
         primitive: The underlying JAX primitive created.
         name: The name assigned to the primitive.
-        fallback_enabled: Whether to automatically try the next kernel when
+        enable_fallback: Whether to automatically try the next kernel when
             one fails. Defaults to True.
 
     Args:
         name: The unique name for the custom JAX primitive.
-        fallback_enabled: Whether to enable automatic fallback to the next
+        enable_fallback: Whether to enable automatic fallback to the next
             kernel when one fails. Defaults to True.
 
     Example:
@@ -131,7 +131,7 @@ class XLACustomKernel:
 
     __module__ = 'brainevent'
 
-    def __init__(self, name: str, fallback_enabled: bool = False):
+    def __init__(self, name: str, enable_fallback: bool = True):
         # primitive
         self.name = name
         self.primitive = Primitive(name)
@@ -150,7 +150,7 @@ class XLACustomKernel:
         self._registered_platforms: set = set()
 
         # setting
-        self.fallback_enabled = fallback_enabled
+        self.enable_fallback = enable_fallback
 
         # call function for benchmarking
         self._call_fn: Optional[Callable] = None
@@ -256,9 +256,6 @@ class XLACustomKernel:
         Args:
             platform: The platform to register the lowering for.
         """
-        primitive = self.primitive
-        kernels_dict = self._kernels
-        name = self.name
 
         def fallback_kernel_fn(*args, **kwargs):
             # Extract preferred backend hint if provided
@@ -286,22 +283,22 @@ class XLACustomKernel:
                     return kernel(*args)
                 except (ImportError, ModuleNotFoundError) as e:
                     errors.append((entry.backend, type(e).__name__, str(e)))
-                    if not self.fallback_enabled:
+                    if not self.enable_fallback:
                         raise e
                     continue
                 except KernelNotAvailableError as e:
                     errors.append((entry.backend, type(e).__name__, str(e)))
-                    if not self.fallback_enabled:
+                    if not self.enable_fallback:
                         raise e
                     continue
                 except KernelCompilationError as e:
                     errors.append((entry.backend, type(e).__name__, str(e)))
-                    if not self.fallback_enabled:
+                    if not self.enable_fallback:
                         raise e
                     continue
                 except Exception as e:
                     errors.append((entry.backend, type(e).__name__, str(e)))
-                    if not self.fallback_enabled:
+                    if not self.enable_fallback:
                         raise e
                     continue
 
