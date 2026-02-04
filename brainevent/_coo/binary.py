@@ -27,11 +27,11 @@ from brainevent._misc import namescoped_jit
 from brainevent._op import jaxtype_to_warptype, XLACustomKernel, general_batching_rule
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Row, Col, MatrixShape
-from .float import coo_matvec, coo_matmat
+from .float import coomv, coomm
 
 
 @namescoped_jit(static_argnames=("shape", "transpose", "float_as_event"))
-def event_coo_matvec(
+def binary_coomv(
     data: Data,
     row: Row,
     col: Col,
@@ -53,7 +53,7 @@ def event_coo_matvec(
 
 
 @namescoped_jit(static_argnames=("shape", "transpose", "float_as_event"))
-def event_coo_matmat(
+def binary_coomm(
     data: Data,
     row: Row,
     col: Col,
@@ -74,7 +74,7 @@ def event_coo_matmat(
     return u.maybe_decimal(res * (unitd * unitb))
 
 
-def _event_coomv_numba_kernel_generator(
+def _coomv_numba_kernel_generator(
     float_as_event: bool,
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
@@ -194,7 +194,7 @@ def _event_coomv_numba_kernel_generator(
     return mv
 
 
-def _event_coomv_warp_kernel_generator(
+def _coomv_warp_kernel_generator(
     float_as_event: bool,
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
@@ -394,15 +394,15 @@ def _event_coomv_warp_kernel_generator(
     return warp_kernel(mv, dim=dim, input_output_aliases={4: 0})
 
 
-def _event_coomv_jvp_vector(v_dot, data, row, col, v, _, *, shape, transpose, **kwargs):
-    return [coo_matvec(data, row, col, v_dot, shape=shape, transpose=transpose)]
+def _coomv_jvp_vector(v_dot, data, row, col, v, _, *, shape, transpose, **kwargs):
+    return [coomv(data, row, col, v_dot, shape=shape, transpose=transpose)]
 
 
-def _event_coomv_jvp_weights(data_dot, data, row, col, v, _, *, shape, transpose, float_as_event, **kwargs):
+def _coomv_jvp_weights(data_dot, data, row, col, v, _, *, shape, transpose, float_as_event, **kwargs):
     return event_coomv_p_call(data_dot, row, col, v, shape=shape, transpose=transpose, float_as_event=float_as_event)
 
 
-def _event_coomv_transpose_rule(
+def _coomv_transpose_rule(
     ct,
     data,
     row,
@@ -423,7 +423,7 @@ def _event_coomv_transpose_rule(
         if type(ct) is ad.Zero:
             ct_events = ad.Zero(events)
         else:
-            ct_events = coo_matvec(
+            ct_events = coomv(
                 data,
                 row,
                 col,
@@ -452,7 +452,7 @@ def _event_coomv_transpose_rule(
         return ct_values, row, col, events, _
 
 
-def _event_coomv_batching(
+def _coomv_batching(
     args,
     axes,
     **kwargs
@@ -564,14 +564,14 @@ def event_coomv_p_call(
 
 
 event_coomv_p = XLACustomKernel('event_coomv')
-event_coomv_p.def_numba_kernel(_event_coomv_numba_kernel_generator)
-event_coomv_p.def_warp_kernel(_event_coomv_warp_kernel_generator)
-event_coomv_p.def_jvp_rule2(_event_coomv_jvp_weights, None, None, _event_coomv_jvp_vector)
-event_coomv_p.def_transpose_rule(_event_coomv_transpose_rule)
-event_coomv_p.def_batching_rule(_event_coomv_batching)
+event_coomv_p.def_numba_kernel(_coomv_numba_kernel_generator)
+event_coomv_p.def_warp_kernel(_coomv_warp_kernel_generator)
+event_coomv_p.def_jvp_rule2(_coomv_jvp_weights, None, None, _coomv_jvp_vector)
+event_coomv_p.def_transpose_rule(_coomv_transpose_rule)
+event_coomv_p.def_batching_rule(_coomv_batching)
 
 
-def _event_coomm_numba_kernel_generator(
+def _coomm_numba_kernel_generator(
     float_as_event: bool,
     weight_info: jax.ShapeDtypeStruct,
     matrix_info: jax.ShapeDtypeStruct,
@@ -694,7 +694,7 @@ def _event_coomm_numba_kernel_generator(
     return mm
 
 
-def _event_coomm_warp_kernel_generator(
+def _coomm_warp_kernel_generator(
     float_as_event: bool,
     weight_info: jax.ShapeDtypeStruct,
     matrix_info: jax.ShapeDtypeStruct,
@@ -894,15 +894,15 @@ def _event_coomm_warp_kernel_generator(
     return warp_kernel(mm, dim=dim, input_output_aliases={4: 0})
 
 
-def _event_coomm_jvp_left(data_dot, data, row, col, B, _, *, shape, transpose, **kwargs):
-    return [coo_matmat(data_dot, row, col, B, shape=shape, transpose=transpose)]
+def _coomm_jvp_left(data_dot, data, row, col, B, _, *, shape, transpose, **kwargs):
+    return [coomm(data_dot, row, col, B, shape=shape, transpose=transpose)]
 
 
-def _event_coomm_jvp_right(B_dot, data, row, col, B, _, *, shape, transpose, **kwargs):
-    return [coo_matmat(data, row, col, B_dot, shape=shape, transpose=transpose)]
+def _coomm_jvp_right(B_dot, data, row, col, B, _, *, shape, transpose, **kwargs):
+    return [coomm(data, row, col, B_dot, shape=shape, transpose=transpose)]
 
 
-def _event_coomm_transpose_rule(
+def _coomm_transpose_rule(
     ct,
     data,
     row,
@@ -918,7 +918,7 @@ def _event_coomm_transpose_rule(
     assert not ad.is_undefined_primal(col)
     # TODO: Can optimize transpose rule if data is homogenous?
     if ad.is_undefined_primal(B):
-        dB = coo_matmat(data, row, col, ct, shape=shape, transpose=not transpose)
+        dB = coomm(data, row, col, ct, shape=shape, transpose=not transpose)
         return data, row, col, dB, _
     else:
         # B = jnp.asarray(B)
@@ -927,7 +927,7 @@ def _event_coomm_transpose_rule(
         return d_data, row, col, B, _
 
 
-def _event_coomm_batching(args, axes, **kwargs):
+def _coomm_batching(args, axes, **kwargs):
     if tuple(axes) == (None, None, None, 0, None):
         assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
         batch_size, m, n = args[3].shape
@@ -1051,8 +1051,8 @@ def event_coomm_p_call(
 
 
 event_coomm_p = XLACustomKernel('event_coomm')
-event_coomm_p.def_numba_kernel(_event_coomm_numba_kernel_generator)
-event_coomm_p.def_warp_kernel(_event_coomm_warp_kernel_generator)
-event_coomm_p.def_jvp_rule2(_event_coomm_jvp_left, None, None, _event_coomm_jvp_right)
-event_coomm_p.def_transpose_rule(_event_coomm_transpose_rule)
-event_coomm_p.def_batching_rule(_event_coomm_batching)
+event_coomm_p.def_numba_kernel(_coomm_numba_kernel_generator)
+event_coomm_p.def_warp_kernel(_coomm_warp_kernel_generator)
+event_coomm_p.def_jvp_rule2(_coomm_jvp_left, None, None, _coomm_jvp_right)
+event_coomm_p.def_transpose_rule(_coomm_transpose_rule)
+event_coomm_p.def_batching_rule(_coomm_batching)

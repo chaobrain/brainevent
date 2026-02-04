@@ -29,8 +29,8 @@ from brainevent._compatible_import import JAXSparse
 from brainevent._event import EventArray
 from brainevent._misc import _coo_todense, COOInfo
 from brainevent._typing import MatrixShape, Data, Index, Row, Col
-from .binary import event_coo_matvec, event_coo_matmat
-from .float import coo_matvec, coo_matmat
+from .binary import binary_coomv, binary_coomm
+from .float import coomv, coomm
 
 __all__ = [
     'COO',
@@ -693,7 +693,7 @@ class COO(u.sparse.SparseMatrix):
             other = other.data
             if other.ndim == 1:
                 # Perform matrix-vector multiplication with event data
-                return event_coo_matvec(
+                return binary_coomv(
                     data,
                     self.row,
                     self.col,
@@ -702,7 +702,7 @@ class COO(u.sparse.SparseMatrix):
                 )
             elif other.ndim == 2:
                 # Perform matrix-matrix multiplication with event data
-                return event_coo_matmat(
+                return binary_coomm(
                     data,
                     self.row,
                     self.col,
@@ -719,7 +719,7 @@ class COO(u.sparse.SparseMatrix):
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
                 # Perform matrix-vector multiplication
-                return coo_matvec(
+                return coomv(
                     data,
                     self.row,
                     self.col,
@@ -728,7 +728,7 @@ class COO(u.sparse.SparseMatrix):
                 )
             elif other.ndim == 2:
                 # Perform matrix-matrix multiplication
-                return coo_matmat(
+                return coomm(
                     data,
                     self.row,
                     self.col,
@@ -772,7 +772,7 @@ class COO(u.sparse.SparseMatrix):
             other = other.data
             if other.ndim == 1:
                 # Perform matrix-vector multiplication with event data
-                return event_coo_matvec(
+                return binary_coomv(
                     data,
                     self.row,
                     self.col,
@@ -784,7 +784,7 @@ class COO(u.sparse.SparseMatrix):
                 # Transpose the other matrix for multiplication
                 other = other.T
                 # Perform matrix-matrix multiplication with event data
-                r = event_coo_matmat(
+                r = binary_coomm(
                     data,
                     self.row,
                     self.col,
@@ -804,7 +804,7 @@ class COO(u.sparse.SparseMatrix):
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
                 # Perform matrix-vector multiplication
-                return coo_matvec(
+                return coomv(
                     data,
                     self.row,
                     self.col,
@@ -816,7 +816,7 @@ class COO(u.sparse.SparseMatrix):
                 # Transpose the other matrix for multiplication
                 other = other.T
                 # Perform matrix-matrix multiplication
-                r = coo_matmat(
+                r = coomm(
                     data,
                     self.row,
                     self.col,

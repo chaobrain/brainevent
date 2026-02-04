@@ -28,13 +28,13 @@ from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Row, Col, MatrixShape
 
 __all__ = [
-    "coo_matvec",
-    "coo_matmat",
+    "coomv",
+    "coomm",
 ]
 
 
 @namescoped_jit(static_argnames=("shape", "transpose"))
-def coo_matvec(
+def coomv(
     data: Data,
     row: Row,
     col: Col,
@@ -50,7 +50,7 @@ def coo_matvec(
 
 
 @namescoped_jit(static_argnames=("shape", "transpose"))
-def coo_matmat(
+def coomm(
     data: Data,
     row: Row,
     col: Col,
@@ -188,7 +188,7 @@ def _coomv_jvp_vector(vector_dot, data, row, col, vector, _, *, shape, transpose
     #     shape=shape,
     #     transpose=transpose,
     # )
-    return [coo_matvec(data, row, col, vector_dot, shape=shape, transpose=transpose)]
+    return [coomv(data, row, col, vector_dot, shape=shape, transpose=transpose)]
 
 
 def _coomv_jvp_weights(data_dot, data, row, col, vector, _, *, shape, transpose, **kwargs):
@@ -215,7 +215,7 @@ def _coomv_transpose_rule(
         if type(ct) is ad.Zero:
             ct_events = ad.Zero(v)
         else:
-            ct_events = coo_matvec(
+            ct_events = coomv(
                 data,
                 row,
                 col,
@@ -457,7 +457,7 @@ def _coomm_transpose_rule(
     assert not ad.is_undefined_primal(col)
     # TODO: Can optimize transpose rule if data is homogenous?
     if ad.is_undefined_primal(B):
-        dB = coo_matmat(data, row, col, ct, shape=shape, transpose=not transpose)
+        dB = coomm(data, row, col, ct, shape=shape, transpose=not transpose)
         return data, row, col, dB, _
     else:
         # B = jnp.asarray(B)

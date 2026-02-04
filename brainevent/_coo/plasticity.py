@@ -121,17 +121,17 @@ def _coo_on_pre_prim_call(weight, pre_ids, post_ids, pre_spike, post_trace):
     )
     assert pre_spike.ndim == 1, 'pre_spike should be 1D.'
     assert post_trace.ndim == 1, 'post_trace should be 1D.'
-    return _coo_on_pre_prim(
+    return coo_on_pre_p(
         weight, pre_ids, post_ids, pre_spike, post_trace,
         outs=[jax.ShapeDtypeStruct(weight.shape, weight.dtype)],
         weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
     )
 
 
-_coo_on_pre_prim = XLACustomKernel('coo_on_pre')
-_coo_on_pre_prim.def_numba_kernel(_coo_on_pre_numba_kernel_generator)
-_coo_on_pre_prim.def_pallas_kernel('gpu', _coo_on_pre_pallas_kernel_generator)
-_coo_on_pre_prim.def_pallas_kernel('tpu', _coo_on_pre_pallas_kernel_generator)
+coo_on_pre_p = XLACustomKernel('coo_on_pre')
+coo_on_pre_p.def_numba_kernel(_coo_on_pre_numba_kernel_generator)
+coo_on_pre_p.def_pallas_kernel('gpu', _coo_on_pre_pallas_kernel_generator)
+coo_on_pre_p.def_pallas_kernel('tpu', _coo_on_pre_pallas_kernel_generator)
 
 
 def coo_on_post(
@@ -231,14 +231,14 @@ def _coo_on_post_prim_call(weight, pre_ids, post_ids, pre_trace, post_spike):
     )
     assert pre_trace.ndim == 1, 'pre_trace should be 1D.'
     assert post_spike.ndim == 1, 'post_spike should be 1D.'
-    return _coo_on_post_prim(
+    return coo_on_post_p(
         weight, pre_ids, post_ids, pre_trace, post_spike,
         outs=[jax.ShapeDtypeStruct(weight.shape, weight.dtype)],
         weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
     )
 
 
-_coo_on_post_prim = XLACustomKernel('coo_on_post')
-_coo_on_post_prim.def_numba_kernel(_coo_on_post_numba_kernel_generator)
-_coo_on_post_prim.def_pallas_kernel('gpu', _coo_on_post_pallas_kernel_generator)
-_coo_on_post_prim.def_pallas_kernel('tpu', _coo_on_post_pallas_kernel_generator)
+coo_on_post_p = XLACustomKernel('coo_on_post')
+coo_on_post_p.def_numba_kernel(_coo_on_post_numba_kernel_generator)
+coo_on_post_p.def_pallas_kernel('gpu', _coo_on_post_pallas_kernel_generator)
+coo_on_post_p.def_pallas_kernel('tpu', _coo_on_post_pallas_kernel_generator)
