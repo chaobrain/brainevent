@@ -24,6 +24,13 @@ from brainevent._misc import generate_block_dim
 from brainevent._op import XLACustomKernel, numba_kernel
 from brainevent._typing import MatrixShape
 
+__all__ = [
+    'csr_on_pre',
+    'csr_on_pre_p',
+    'csr2csc_on_post',
+    'csr2csc_on_post_p',
+]
+
 
 def csr_on_pre(
     weight: Union[u.Quantity, jax.Array],
@@ -122,17 +129,17 @@ def _csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, sha
     assert weight.shape[0] == indices.shape[0], (
         f'weight shape {weight.shape}, indices shape {indices.shape}, indptr shape {indptr.shape} do not match.'
     )
-    return _csr_on_pre_prim(
+    return csr_on_pre_p(
         weight, indices, indptr, pre_spike, post_trace,
         outs=[jax.ShapeDtypeStruct(weight.shape, weight.dtype)],
         shape=shape,
     )
 
 
-_csr_on_pre_prim = XLACustomKernel('csr_on_pre')
-_csr_on_pre_prim.def_numba_kernel(_csr_on_pre_numba_kernel_generator)
-_csr_on_pre_prim.def_pallas_kernel('gpu', _csr_on_pre_pallas_kernel_generator)
-_csr_on_pre_prim.def_pallas_kernel('tpu', _csr_on_pre_pallas_kernel_generator)
+csr_on_pre_p = XLACustomKernel('csr_on_pre')
+csr_on_pre_p.def_numba_kernel(_csr_on_pre_numba_kernel_generator)
+csr_on_pre_p.def_pallas_kernel('gpu', _csr_on_pre_pallas_kernel_generator)
+csr_on_pre_p.def_pallas_kernel('tpu', _csr_on_pre_pallas_kernel_generator)
 
 
 def csr2csc_on_post(
@@ -238,14 +245,14 @@ def _csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trac
         f'weight shape {weight.shape}, weight_indices shape {weight_indices.shape}, '
         f'indices shape {indices.shape}, indptr shape {indptr.shape} do not match.'
     )
-    return _csr2csc_on_post_prim(
+    return csr2csc_on_post_p(
         weight, indices, indptr, weight_indices, pre_trace, post_spike,
         outs=[jax.ShapeDtypeStruct(weight.shape, weight.dtype)],
         shape=shape,
     )
 
 
-_csr2csc_on_post_prim = XLACustomKernel('csr2csc_on_post')
-_csr2csc_on_post_prim.def_numba_kernel(_csr2csc_on_post_numba_kernel_generator)
-_csr2csc_on_post_prim.def_pallas_kernel('gpu', _csr2csc_on_post_pallas_kernel_generator)
-_csr2csc_on_post_prim.def_pallas_kernel('tpu', _csr2csc_on_post_pallas_kernel_generator)
+csr2csc_on_post_p = XLACustomKernel('csr2csc_on_post')
+csr2csc_on_post_p.def_numba_kernel(_csr2csc_on_post_numba_kernel_generator)
+csr2csc_on_post_p.def_pallas_kernel('gpu', _csr2csc_on_post_pallas_kernel_generator)
+csr2csc_on_post_p.def_pallas_kernel('tpu', _csr2csc_on_post_pallas_kernel_generator)
