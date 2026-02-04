@@ -232,3 +232,4 @@ cython_debug/
 /.claude/
 /dev/replace_all.py
 /dev/prompt/
+/old/
