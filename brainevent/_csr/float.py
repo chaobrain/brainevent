@@ -13,7 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 
-from functools import partial
 from typing import Sequence, Optional
 
 import brainunit as u
@@ -27,9 +26,18 @@ from brainevent._op import numba_kernel, jaxinfo_to_warpinfo, XLACustomKernel, g
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 
+__all__ = [
+    'csrmv',
+    'csrmv_p',
+    'csrmm',
+    'csrmm_p',
+    'csrmv_yw2y',
+    'csrmv_yw2y_p',
+]
+
 
 @namescoped_jit(static_argnames=("shape", "transpose"))
-def csr_matvec(
+def csrmv(
     data: Data,
     indices: Index,
     indptr: Indptr,
@@ -391,7 +399,7 @@ def _csrmv_pallas_kernel_generator(
 
 
 def _csrmv_jvp_v(v_dot, data, indices, indptr, v, *, shape, transpose, **kwargs):
-    return [csr_matvec(data, indices, indptr, v_dot, shape=shape, transpose=transpose)]
+    return [csrmv(data, indices, indptr, v_dot, shape=shape, transpose=transpose)]
 
 
 def _csrmv_jvp_weights(data_dot, data, indices, indptr, v, *, shape, transpose, **kwargs):
@@ -410,7 +418,7 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, vector, *, shape, transpose
         if type(ct) is ad.Zero:
             ct_events = ad.Zero(vector)
         else:
-            ct_events = csr_matvec(
+            ct_events = csrmv(
                 data,
                 indices,
                 indptr,
@@ -524,7 +532,7 @@ csrmv_p.def_call(csrmv_p_call)
 
 
 @namescoped_jit(static_argnames=("shape", "transpose"))
-def csr_matmat(
+def csrmm(
     data: Data,
     indices: Index,
     indptr: Indptr,
@@ -933,11 +941,11 @@ def _csrmm_pallas_kernel_generator(
 
 
 def _csrmm_jvp_data(data_dot, data, indices, indptr, B, *, shape, transpose, **kwargs):
-    return [csr_matmat(data_dot, indices, indptr, B, shape=shape, transpose=transpose)]
+    return [csrmm(data_dot, indices, indptr, B, shape=shape, transpose=transpose)]
 
 
 def _csrmm_jvp_B(B_dot, data, indices, indptr, B, *, shape, transpose, **kwargs):
-    return [csr_matmat(data, indices, indptr, B_dot, shape=shape, transpose=transpose)]
+    return [csrmm(data, indices, indptr, B_dot, shape=shape, transpose=transpose)]
 
 
 def _csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose, **kwargs):
@@ -946,7 +954,7 @@ def _csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose, **k
     ct = ct[0]
 
     if ad.is_undefined_primal(B):
-        dB = csr_matmat(data, indices, indptr, ct, shape=shape, transpose=not transpose)
+        dB = csrmm(data, indices, indptr, ct, shape=shape, transpose=not transpose)
         return data, indices, indptr, dB
     else:
         B = jnp.asarray(B)

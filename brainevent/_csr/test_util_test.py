@@ -19,12 +19,10 @@ These tests verify that the fori_loop implementations produce the same results
 as the original Python for-loop implementations.
 """
 
+import brainstate
 import jax
 import jax.numpy as jnp
-import numpy as np
 import pytest
-
-import brainstate
 
 from brainevent._csr.test_util import (
     get_csr,
