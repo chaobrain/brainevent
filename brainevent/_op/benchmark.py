@@ -15,9 +15,9 @@
 
 # -*- coding: utf-8 -*-
 
+import time
 from dataclasses import dataclass, field
 from typing import Any, List, Optional, Tuple
-import time
 
 import jax
 import numpy as np
@@ -161,16 +161,6 @@ class BenchmarkReport:
         )
 
 
-def _block_until_ready(output):
-    """Block until the output is ready (for GPU/TPU async execution)."""
-    if hasattr(output, 'block_until_ready'):
-        output.block_until_ready()
-    elif isinstance(output, (list, tuple)):
-        for o in output:
-            if hasattr(o, 'block_until_ready'):
-                o.block_until_ready()
-
-
 def benchmark_function(
     fn,
     n_warmup: int,
@@ -195,7 +185,7 @@ def benchmark_function(
     output = None
     for _ in range(n_warmup):
         output = fn()
-        _block_until_ready(output)
+        jax.block_until_ready(output)
 
     if batch_mode:
         # Batch mode: run all n_runs, then block once at the end
@@ -203,7 +193,7 @@ def benchmark_function(
         start = time.perf_counter()
         for _ in range(n_runs):
             output = fn()
-        _block_until_ready(output)
+        jax.block_until_ready(output)
         end = time.perf_counter()
 
         total_time = end - start
@@ -218,7 +208,7 @@ def benchmark_function(
         for _ in range(n_runs):
             start = time.perf_counter()
             output = fn()
-            _block_until_ready(output)
+            jax.block_until_ready(output)
             end = time.perf_counter()
             times.append(end - start)
 
