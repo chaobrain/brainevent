@@ -25,7 +25,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescoped_jit
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, jaxtype_to_warptype
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, jaxinfo_to_warpinfo
 from brainevent._typing import MatrixShape
 from .float import fixed_num_mv_p_call, fixed_num_mm_p_call
 
@@ -35,10 +35,13 @@ def _sparse_float_fixed_num_mv_numba_kernel_generator(
     transpose: bool,
     **kwargs
 ):
+    import numba
+
     if transpose:
         if weight_info.size == 1:
-            @numba_kernel(parallel=False, input_output_aliases={3: 0})
+            @numba.njit(fastmath=True, cache=True)
             def ell_mv(weights, indices, spikes, _, posts):
+                posts[:] = 0.
                 w = weights[0]
                 for i in range(spikes.shape[0]):
                     sp = spikes[i]
@@ -46,10 +49,10 @@ def _sparse_float_fixed_num_mv_numba_kernel_generator(
                         wsp = w * sp
                         for j in range(indices.shape[1]):
                             posts[indices[i, j]] += wsp
-
         else:
-            @numba_kernel(parallel=False, input_output_aliases={3: 0})
+            @numba.njit(fastmath=True, cache=True)
             def ell_mv(weights, indices, spikes, _, posts):
+                posts[:] = 0.
                 for i in range(spikes.shape[0]):
                     sp = spikes[i]
                     if sp != 0.:
@@ -57,132 +60,124 @@ def _sparse_float_fixed_num_mv_numba_kernel_generator(
                             posts[indices[i, j]] += weights[i, j] * sp
 
     else:
-        import numba
-
         if weight_info.size == 1:
-            @numba_kernel(parallel=True, input_output_aliases={3: 0})
+            @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
             def ell_mv(weights, indices, spikes, _, posts):
                 w = weights[0]
                 spk_bool = spikes != 0.
-                for i in numba.prange(indices.shape[0]):  # n_pre
+                for i in numba.prange(indices.shape[0]):
                     r = 0.
-                    for j in range(indices.shape[1]):  # n_conn
+                    for j in range(indices.shape[1]):
                         index = indices[i, j]
                         if spk_bool[index] != 0.:
                             r += spikes[index]
                     posts[i] = r * w
-
         else:
-            @numba_kernel(parallel=True, input_output_aliases={3: 0})
+            @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
             def ell_mv(weights, indices, spikes, _, posts):
                 spk_bool = spikes != 0.
-                for i in numba.prange(indices.shape[0]):  # n_pre
+                for i in numba.prange(indices.shape[0]):
                     r = 0.
-                    for j in range(indices.shape[1]):  # n_conn
+                    for j in range(indices.shape[1]):
                         index = indices[i, j]
                         if spk_bool[index]:
                             r += weights[i, j] * spikes[index]
                     posts[i] = r
 
-    return ell_mv
+    def kernel(weights, indices, spikes, _):
+        return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, spikes, _)
+
+    return kernel
 
 
 def _sparse_float_fixed_num_mv_warp_kernel_generator(
     transpose: bool,
-    block_dim: int,
     weight_info: jax.ShapeDtypeStruct,
     spike_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
+    shape: Tuple[int, int],
     **kwargs
 ):
-    import warp  # pylint: disable=import-outside-toplevel
+    import warp
+    from warp.jax_experimental import jax_kernel
 
-    weight_dtype = jaxtype_to_warptype(weight_info.dtype)
-    vector_dtype = jaxtype_to_warptype(spike_info.dtype)
-    indices_dtype = jaxtype_to_warptype(indices_info.dtype)
-    TILE_THREADS = generate_block_dim(indices_info.shape[1], maximum=128)
+    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
+    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
+    spike_warp_info = jaxinfo_to_warpinfo(spike_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
 
     if transpose:
         if weight_info.size == 1:
+            @warp.kernel
             def ell_mv(
-                weights: warp.array1d(dtype=weight_dtype),
-                indices: warp.array2d(dtype=indices_dtype),
-                spikes: warp.array1d(dtype=vector_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype)
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                spikes: spike_warp_info,
+                posts: out_warp_info
             ):
                 i = warp.tid()
                 w = weights[0]
                 sp = spikes[i]
                 if sp != 0.:
                     wsp = w * sp
-                    # index = warp.tile_load(indices[i])
-                    # warp.tile_atomic_add(posts, wsp, index)
-
-                    for j in range(0, indices.shape[1], block_dim):
-                        index = warp.tile_load(indices[i], block_dim, j)
-                        index_thread = warp.untile(index)
-                        warp.atomic_add(posts, index_thread, wsp)
-
+                    for j in range(indices.shape[1]):
+                        warp.atomic_add(posts, indices[i, j], wsp)
         else:
+            @warp.kernel
             def ell_mv(
-                weights: warp.array2d(dtype=weight_dtype),
-                indices: warp.array2d(dtype=indices_dtype),
-                spikes: warp.array1d(dtype=vector_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype)
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                spikes: spike_warp_info,
+                posts: out_warp_info
             ):
                 i = warp.tid()
                 sp = spikes[i]
                 if sp != 0.:
-                    for j in range(0, indices.shape[1], block_dim):
-                        index = warp.tile_load(indices[i], block_dim, j)
-                        weight = warp.tile_load(weights[i], block_dim, j) * sp
-                        index_thread = warp.untile(index)
-                        weight_thread = warp.untile(weight)
-                        warp.atomic_add(posts, index_thread, weight_thread)
+                    for j in range(indices.shape[1]):
+                        warp.atomic_add(posts, indices[i, j], weights[i, j] * sp)
+
+        def kernel(weights, indices, spikes, _):
+            out_info = kwargs['outs'][0]
+            dim = spike_info.shape[0]
+            fn = jax_kernel(ell_mv, launch_dims=dim, num_outputs=0, in_out_argnames=['posts'])
+            return fn(weights, indices, spikes, jnp.zeros(out_info.shape, out_info.dtype))
 
     else:
         if weight_info.size == 1:
+            @warp.kernel
             def ell_mv(
-                weights: warp.array1d(dtype=weight_dtype),
-                indices: warp.array2d(dtype=indices_dtype),
-                spikes: warp.array1d(dtype=vector_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype)
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                spikes: spike_warp_info,
+                posts: out_warp_info
             ):
                 i = warp.tid()
                 w = weights[0]
                 r = weights.dtype(0.)
-                for j in range(0, indices.shape[1], TILE_THREADS):  # n_conn
-                    index = warp.tile_load(indices, block_dim, j)
-                    index_thread = warp.untile(index)
-                    spike_thread = spikes[index_thread]
-                    spike = warp.tile(spike_thread)
-                    r += warp.tile_sum(spike)
+                for j in range(indices.shape[1]):
+                    r += spikes[indices[i, j]]
                 posts[i] = r * w
-
         else:
+            @warp.kernel
             def ell_mv(
-                weights: warp.array2d(dtype=weight_dtype),
-                indices: warp.array2d(dtype=indices_dtype),
-                spikes: warp.array1d(dtype=vector_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype)
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                spikes: spike_warp_info,
+                posts: out_warp_info
             ):
                 i = warp.tid()
                 r = weights.dtype(0.)
-                for j in range(0, indices.shape[1], TILE_THREADS):  # n_conn
-                    index = warp.tile_load(indices, block_dim, j)
-                    weight = warp.tile_load(weights, block_dim, j)
-                    index_thread = warp.untile(index)
-                    spike_thread = spikes[index_thread]
-                    spike = warp.tile(spike_thread)
-                    r += warp.tile_sum(spike * weight)
+                for j in range(indices.shape[1]):
+                    r += weights[i, j] * spikes[indices[i, j]]
                 posts[i] = r
 
-    tile = spike_info.shape[0] if transpose else indices_info.shape[0]
-    return warp_kernel(ell_mv, tile=tile, block_dim=TILE_THREADS, input_output_aliases={3: 0})
+        def kernel(weights, indices, spikes, _):
+            out_info = kwargs['outs'][0]
+            dim = indices_info.shape[0]
+            fn = jax_kernel(ell_mv, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
+            return fn(weights, indices, spikes)
+
+    return kernel
 
 
 def _sparse_float_fixed_num_mv_pallas_kernel_generator(
@@ -192,6 +187,9 @@ def _sparse_float_fixed_num_mv_pallas_kernel_generator(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
+    from jax.experimental import pallas as pl
+    from jax.experimental.pallas.triton import atomic_add
+
     if len(shape) != 2:
         raise ValueError("shape must be a tuple of length 2")
     n_pre, n_post = shape
@@ -222,16 +220,27 @@ def _sparse_float_fixed_num_mv_pallas_kernel_generator(
                 def loop_fn(i_col_block, _):
                     i_col = i_col_block * block_dim
                     mask = i_col + jnp.arange(block_dim) < n_conn
-                    ind = pl.load(index_ref, (i_row, pl.dslice(i_col, block_dim)), mask=mask)
+                    ind = index_ref[i_row, pl.dslice(i_col, block_dim)]
+                    ind = jnp.where(mask, ind, 0)
                     if homo:
                         data = homo_data
                     else:
-                        data = pl.load(weight_ref, (i_row, pl.dslice(i_col, block_dim)), mask=mask)
-                        data = data * vector
-                    pl.atomic_add(out_ref, ind, data, mask=mask)
+                        data = weight_ref[i_row, pl.dslice(i_col, block_dim)]
+                        data = jnp.where(mask, data * vector, 0.0)
+                    atomic_add(out_ref, ind, data, mask=mask)
 
                 jax.lax.fori_loop(0, pl.cdiv(n_conn, block_dim), loop_fn, None)
 
+        def kernel(weights, indices, vector, _):
+            fn = pl.pallas_call(
+                _raw_kernel,
+                grid=(n_pre,),
+                input_output_aliases={3: 0},
+                out_shape=kwargs['outs']
+            )
+            out_info = kwargs['outs'][0]
+            placeholder = jnp.zeros(out_info.shape, out_info.dtype)
+            return fn(weights, indices, vector, placeholder)
 
     else:
         # Sparse Matrix: [m, k]
@@ -249,13 +258,15 @@ def _sparse_float_fixed_num_mv_pallas_kernel_generator(
             def loop_fn(i_col_block, out):
                 i_col = i_col_block * block_dim
                 mask = i_col + jnp.arange(block_dim) < n_conn
-                ind = pl.load(index_ref, (i_row, pl.dslice(i_col, block_dim)), mask=mask)
-                vec = pl.load(vector_ref, ind, mask=mask)
+                ind = index_ref[i_row, pl.dslice(i_col, block_dim)]
+                ind = jnp.where(mask, ind, 0)
+                vec = vector_ref[ind]
+                vec = jnp.where(mask, vec, 0.0)
                 if homo:
                     return out + jnp.sum(vec)
                 else:
-                    weight = pl.load(weight_ref, (i_row, pl.dslice(i_col, block_dim)), mask=mask)
-                    weight = weight * vec
+                    weight = weight_ref[i_row, pl.dslice(i_col, block_dim)]
+                    weight = jnp.where(mask, weight * vec, 0.0)
                     return out + jnp.sum(weight)
 
             i_row_sum = jax.lax.fori_loop(0, pl.cdiv(n_conn, block_dim), loop_fn, 0.)
@@ -263,12 +274,11 @@ def _sparse_float_fixed_num_mv_pallas_kernel_generator(
                 i_row_sum = i_row_sum * weight_ref[0]
             out_ref[i_row] = i_row_sum
 
-    return pallas_kernel(
-        _raw_kernel,
-        outs=kwargs['outs'],
-        tile=(n_pre,),
-        input_output_aliases={3: 0},
-    )
+        def kernel(weights, indices, vector, _):
+            fn = pl.pallas_call(_raw_kernel, grid=(n_pre,), out_shape=kwargs['outs'])
+            return fn(weights, indices, vector, _)
+
+    return kernel
 
 
 def _sparse_float_fixed_num_mv_jvp_spikes(spk_dot, weights, indices, spikes, _, *, shape, transpose, **kwargs):
@@ -388,12 +398,14 @@ def sparse_float_fixed_num_mv_p_call(
 
 sparse_float_fixed_num_mv_p = XLACustomKernel('sparse_float_fixed_num_mv')
 sparse_float_fixed_num_mv_p.def_numba_kernel(_sparse_float_fixed_num_mv_numba_kernel_generator)
+sparse_float_fixed_num_mv_p.def_warp_kernel(_sparse_float_fixed_num_mv_warp_kernel_generator)
 sparse_float_fixed_num_mv_p.def_pallas_kernel('gpu', _sparse_float_fixed_num_mv_pallas_kernel_generator)
 sparse_float_fixed_num_mv_p.def_pallas_kernel('tpu', _sparse_float_fixed_num_mv_pallas_kernel_generator)
 sparse_float_fixed_num_mv_p.def_jvp_rule2(_sparse_float_fixed_num_mv_jvp_weights, None,
                                           _sparse_float_fixed_num_mv_jvp_spikes, None)
 sparse_float_fixed_num_mv_p.def_transpose_rule(_sparse_float_fixed_num_mv_transpose_rule)
 sparse_float_fixed_num_mv_p.def_batching_rule(_sparse_float_fixed_num_mv_batching)
+sparse_float_fixed_num_mv_p.def_call(sparse_float_fixed_num_mv_p_call)
 
 
 def _sparse_float_fixed_num_mm_numba_kernel_generator(
@@ -402,6 +414,8 @@ def _sparse_float_fixed_num_mm_numba_kernel_generator(
     transpose: bool,
     **kwargs
 ):
+    import numba
+
     if transpose:
         # fixed pre connection number
         #
@@ -410,11 +424,21 @@ def _sparse_float_fixed_num_mm_numba_kernel_generator(
         #
 
         if jnp.size(weight_info) == 1:
-            raise NotImplementedError
-
+            @numba.njit(fastmath=True, cache=True)
+            def ell_mv(weights, indices, matrix, _, posts):
+                posts[:] = 0.
+                w = weights[0]
+                for i_k in range(matrix.shape[0]):
+                    wv = w * matrix[i_k]
+                    for i_conn in range(indices.shape[1]):
+                        posts[indices[i_k, i_conn]] += wv
         else:
-            raise NotImplementedError
-
+            @numba.njit(fastmath=True, cache=True)
+            def ell_mv(weights, indices, matrix, _, posts):
+                posts[:] = 0.
+                for i_k in range(matrix.shape[0]):
+                    for i_conn in range(indices.shape[1]):
+                        posts[indices[i_k, i_conn]] += weights[i_k, i_conn] * matrix[i_k]
 
     else:
         # fixed post connection number
@@ -422,22 +446,23 @@ def _sparse_float_fixed_num_mm_numba_kernel_generator(
         # CSR: [m, k]
         # matrix: [k, n]
         #
-        import numba
 
         if jnp.size(weight_info) == 1:
-            @numba_kernel(parallel=True, input_output_aliases={3: 0})
+            @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
             def ell_mv(weights, indices, matrix, _, posts):
                 w = weights[0]
                 for i_m in numba.prange(indices.shape[0]):
                     posts[i_m] = w * np.sum(matrix[indices[i_m]], axis=0)
-
         else:
-            @numba_kernel(parallel=True, input_output_aliases={3: 0})
+            @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
             def ell_mv(weights, indices, matrix, _, posts):
                 for i_m in numba.prange(indices.shape[0]):
                     posts[i_m] = weights[i_m] @ matrix[indices[i_m]]
 
-    return ell_mv
+    def kernel(weights, indices, matrix, _):
+        return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, matrix, _)
+
+    return kernel
 
 
 def _sparse_float_fixed_num_mm_pallas_kernel_generator(
@@ -448,6 +473,9 @@ def _sparse_float_fixed_num_mm_pallas_kernel_generator(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
+    from jax.experimental import pallas as pl
+    from jax.experimental.pallas.triton import atomic_add
+
     if len(shape) != 2:
         raise ValueError("shape must be a tuple of length 2")
     n_pre, n_post = shape
@@ -481,19 +509,32 @@ def _sparse_float_fixed_num_mm_pallas_kernel_generator(
             def loop_fn(i_index_block, _):
                 i_index_start = i_index_block * block_k
                 i_index_mask = i_index_start + jnp.arange(block_k) < n_conn
-                ind = pl.load(index_ref, (i_k, pl.dslice(i_index_start, block_k)), mask=i_index_mask)
-                mat = pl.load(matrix_ref, (i_k, pl.dslice(i_n_start, block_n)), mask=i_n_mask)
+                ind = index_ref[i_k, pl.dslice(i_index_start, block_k)]
+                ind = jnp.where(i_index_mask, ind, 0)
+                mat = matrix_ref[i_k, pl.dslice(i_n_start, block_n)]
+                mat = jnp.where(i_n_mask, mat, 0.0)
                 mat = jnp.asarray(mat, dtype=weight_ref.dtype)
                 if homo:
                     A = weight
                 else:
-                    A = pl.load(weight_ref, (i_k, pl.dslice(i_index_start, block_k)), mask=i_index_mask)
+                    A = weight_ref[i_k, pl.dslice(i_index_start, block_k)]
+                    A = jnp.where(i_index_mask, A, 0.0)
                 data = A[:, None] * mat[None, :]
-                pl.atomic_add(out_ref, (ind, pl.dslice(i_n_start, block_n)), data,
-                              mask=i_index_mask[:, None] & i_n_mask[None, :])
+                atomic_add(out_ref, (ind, pl.dslice(i_n_start, block_n)), data,
+                           mask=i_index_mask[:, None] & i_n_mask[None, :])
 
             jax.lax.fori_loop(0, pl.cdiv(n_conn, block_k), loop_fn, None)
 
+        def kernel(weights, indices, matrix, _):
+            fn = pl.pallas_call(
+                _raw_kernel,
+                grid=(n_pre, pl.cdiv(matrix_info.shape[1], block_n)),
+                input_output_aliases={3: 0},
+                out_shape=kwargs['outs']
+            )
+            out_info = kwargs['outs'][0]
+            placeholder = jnp.zeros(out_info.shape, out_info.dtype)
+            return fn(weights, indices, matrix, placeholder)
 
     else:
 
@@ -519,14 +560,16 @@ def _sparse_float_fixed_num_mm_pallas_kernel_generator(
             def loop_fn(i_k_block, out):
                 i_k_start = i_k_block * block_k
                 i_k_mask = i_k_start + jnp.arange(block_k) < n_conn
-                ind = pl.load(index_ref, (i_m, pl.dslice(i_k_start, block_k)), mask=i_k_mask)
-                mat = pl.load(matrix_ref, (ind, pl.dslice(i_n_start, block_n)),
-                              mask=i_k_mask[:, None] & i_n_mask[None, :])
+                ind = index_ref[i_m, pl.dslice(i_k_start, block_k)]
+                ind = jnp.where(i_k_mask, ind, 0)
+                mat = matrix_ref[ind, pl.dslice(i_n_start, block_n)]
+                mat = jnp.where(i_k_mask[:, None] & i_n_mask[None, :], mat, 0.0)
                 if homo:
                     inc = mat.sum(axis=0)
                 else:
                     mat = jnp.asarray(mat, dtype=weight_ref.dtype)
-                    weight = pl.load(weight_ref, (i_m, pl.dslice(i_k_start, block_k)), mask=i_k_mask)
+                    weight = weight_ref[i_m, pl.dslice(i_k_start, block_k)]
+                    weight = jnp.where(i_k_mask, weight, 0.0)
                     inc = (weight[:, None] * mat).sum(axis=0)
                 return out + inc
 
@@ -538,14 +581,17 @@ def _sparse_float_fixed_num_mm_pallas_kernel_generator(
             )
             if homo:
                 final_out = final_out * weight_ref[0]
-            pl.store(out_ref, (i_m, pl.dslice(i_n_start, block_n)), final_out, mask=i_n_mask)
+            out_ref[i_m, pl.dslice(i_n_start, block_n)] = jnp.where(i_n_mask, final_out, 0.0)
 
-    return pallas_kernel(
-        _raw_kernel,
-        outs=kwargs['outs'],
-        tile=(n_pre, pl.cdiv(matrix_info.shape[1], block_n)),
-        input_output_aliases={3: 0},
-    )
+        def kernel(weights, indices, matrix, _):
+            fn = pl.pallas_call(
+                _raw_kernel,
+                grid=(n_pre, pl.cdiv(matrix_info.shape[1], block_n)),
+                out_shape=kwargs['outs']
+            )
+            return fn(weights, indices, matrix, _)
+
+    return kernel
 
 
 def _sparse_float_fixed_num_mm_jvp_matrix(matrix_dot, weights, indices, matrix, _, *, shape, transpose, **kwargs):
@@ -711,3 +757,4 @@ sparse_float_fixed_num_mm_p.def_jvp_rule2(_sparse_float_fixed_num_mm_jvp_weights
                                           _sparse_float_fixed_num_mm_jvp_matrix, None)
 sparse_float_fixed_num_mm_p.def_transpose_rule(_sparse_float_fixed_num_mm_transpose_rule)
 sparse_float_fixed_num_mm_p.def_batching_rule(_sparse_float_fixed_num_mm_batching)
+sparse_float_fixed_num_mm_p.def_call(sparse_float_fixed_num_mm_p_call)
