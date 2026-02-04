@@ -30,7 +30,7 @@ def forward(n_pre, n_post, spk_prob):
 
     @jax.jit
     def get_idx(spikes):
-        sbi = brainevent.BinaryArrayIndex(spikes)
+        sbi = brainevent.IndexedBinary(spikes)
         return (
             binary_array_index(sbi.value)
         )

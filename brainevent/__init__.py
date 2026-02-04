@@ -26,7 +26,7 @@ from ._csr import (
 )
 from ._dense import dense_on_pre, dense_on_post
 from ._error import MathError
-from ._event import BaseArray, BinaryArray, EventArray, BinaryArrayIndex, SparseFloat, SparseFloatIndex
+from ._event import BaseArray, BinaryArray, EventArray, IndexedBinary, SparseFloat, IndexedSparseFloat
 from ._fixed_conn_num import FixedPostNumConn, FixedPreNumConn
 from ._jitc_homo import JITCHomoR, JITCHomoC
 from ._jitc_normal import JITCNormalR, JITCNormalC
@@ -54,9 +54,9 @@ __all__ = [
     'BaseArray',
     'EventArray',
     'BinaryArray',
-    'BinaryArrayIndex',
+    'IndexedBinary',
     'SparseFloat',
-    'SparseFloatIndex',
+    'IndexedSparseFloat',
 
     # --- data interoperable with events --- #
     'COO',

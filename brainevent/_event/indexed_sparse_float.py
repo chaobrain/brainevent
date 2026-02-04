@@ -29,21 +29,21 @@ from .base import extract_raw_value, is_known_type
 from .sparse_float import SparseFloat
 
 __all__ = [
-    'SparseFloatIndex',
+    'IndexedSparseFloat',
 ]
 
 
 @register_pytree_node_class
-class SparseFloatIndex(BaseArray):
+class IndexedSparseFloat(BaseArray):
     """
     A specialized array class for sparse floating-point values (0 or floating points).
 
-    ``SparseFloatIndex`` extends ``BaseArray`` to provide functionality for arrays with sparse
+    ``IndexedSparseFloat`` extends ``BaseArray`` to provide functionality for arrays with sparse
     floating-point values, where zeros are treated as sparse (skipped during computation).
 
     This class supports matrix multiplication operations with other arrays:
-    - ``SparseFloatIndex`` @ dense matrix
-    - dense matrix @ ``SparseFloatIndex``
+    - ``IndexedSparseFloat`` @ dense matrix
+    - dense matrix @ ``IndexedSparseFloat``
 
     The class is registered as a PyTree node for compatibility with JAX's
     functional transformations.
@@ -53,7 +53,7 @@ class SparseFloatIndex(BaseArray):
     def __init__(self, value, dtype: jax.typing.DTypeLike = None):
         if isinstance(value, BaseArray):
             if not isinstance(value, SparseFloat):
-                raise TypeError("SparseFloatIndex can only be initialized with a SparseFloat or a compatible type.")
+                raise TypeError("IndexedSparseFloat can only be initialized with a SparseFloat or a compatible type.")
             value = value.value
         super().__init__(value, dtype=dtype)
 

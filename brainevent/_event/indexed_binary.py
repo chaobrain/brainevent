@@ -28,31 +28,31 @@ from brainevent._error import MathError
 from brainevent._misc import is_known_type
 from .base import BaseArray, extract_raw_value
 from .binary import BinaryArray
-from .binary_index_extraction import binary_array_index
+from .indexed_binary_extraction import binary_array_index
 
 __all__ = [
-    'BinaryArrayIndex',
+    'IndexedBinary',
 ]
 
 
 @register_pytree_node_class
-class BinaryArrayIndex(BaseArray):
+class IndexedBinary(BaseArray):
     __module__ = 'brainevent'
 
     def __init__(self, value, dtype: jax.typing.DTypeLike = None):
         if isinstance(value, BaseArray):
             if not isinstance(value, BinaryArray):
-                raise TypeError("BinaryArrayIndex can only be initialized with a BinaryArray or a compatible type.")
+                raise TypeError("IndexedBinary can only be initialized with a BinaryArray or a compatible type.")
             value = value.value
         super().__init__(value, dtype=dtype)
 
         self.spike_indices, self.spike_count = binary_array_index(value)
 
     def __setitem__(self, index, value):
-        raise NotImplementedError('Setting items in BinaryArrayIndex is not supported.')
+        raise NotImplementedError('Setting items in IndexedBinary is not supported.')
 
     def _update(self, value):
-        raise NotImplementedError('Updating BinaryArrayIndex is not supported.')
+        raise NotImplementedError('Updating IndexedBinary is not supported.')
 
     def __matmul__(self, oc):
         """

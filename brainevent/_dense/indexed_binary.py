@@ -34,7 +34,7 @@ def binary_vec_dot_dense_mat(binary_index, weights):
 
     Parameters
     ----------
-    binary_index : BinaryArrayIndex
+    binary_index : IndexedBinary
         An object representing a binary vector in sparse format. It must have the attributes:
         - value: the spike values (typically all ones for binary)
         - spike_indices: indices of nonzero (spike) elements
@@ -212,7 +212,7 @@ def dense_mat_dot_binary_vec(weights, binary_arr):
     weights : ndarray or compatible
         A dense matrix of shape (N, M), where N is the input dimension and M is the output dimension.
         May be a unit-aware array.
-    binary_arr : BinaryArrayIndex
+    binary_arr : IndexedBinary
         An object representing a binary vector in sparse format. It must have the attributes:
         - value: the spike values (typically all ones for binary)
         - spike_indices: indices of nonzero (spike) elements
@@ -249,7 +249,7 @@ def binary_mat_dot_dense_mat(binary_arr, weights):
 
     Parameters
     ----------
-    binary_arr : BinaryArrayIndex
+    binary_arr : IndexedBinary
         An object representing a batch of binary vectors in sparse format. It must have the attributes:
         - value: the spike values (typically all ones for binary), shape (batch_size, n_spikes)
         - spike_indices: indices of nonzero (spike) elements, shape (batch_size, n_spikes)

@@ -14,7 +14,7 @@
 # ==============================================================================
 
 from .binary import binary_vec_dot_dense_mat, dense_mat_dot_binary_vec
-from .binary_index import dense_mat_dot_binary_mat, binary_mat_dot_dense_mat
+from .indexed_binary import dense_mat_dot_binary_mat, binary_mat_dot_dense_mat
 from .sparse_float import (
     dense_mat_dot_sparse_float_mat,
     sparse_float_mat_dot_dense_mat,
