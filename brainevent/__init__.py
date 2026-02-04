@@ -17,21 +17,52 @@
 __version__ = "0.0.6"
 __version_info__ = tuple(map(int, __version__.split(".")))
 
-from ._block_csr import BlockCSR
-from ._block_ell import BlockELL
-from ._coo import COO, coo_on_pre, coo_on_post
+from ._coo import (
+    COO,
+    coo_on_pre,
+    coo_on_post,
+)
 from ._csr import (
-    CSR, CSC, plast_csr_on_binary_pre, csr2csc_on_post,
+    CSR,
+    CSC,
+    plast_csr_on_binary_pre,
+    csr2csc_on_post,
     binary_csrmv_p,
 )
-from ._dense import dense_on_pre, dense_on_post
+from ._dense import (
+    dense_on_pre,
+    dense_on_post,
+)
 from ._error import MathError
-from ._event import BaseArray, BinaryArray, EventArray, IndexedBinary, SparseFloat, IndexedSparseFloat
-from ._fixed_conn_num import FixedPostNumConn, FixedPreNumConn
-from ._jitc_homo import JITCHomoR, JITCHomoC
-from ._jitc_normal import JITCNormalR, JITCNormalC
-from ._jitc_uniform import JITCUniformR, JITCUniformC
-from ._misc import csr_to_coo_index, coo_to_csc_index, csr_to_csc_index
+from ._event import (
+    BaseArray,
+    BinaryArray,
+    EventArray,
+    IndexedBinary,
+    SparseFloat,
+    IndexedSparseFloat,
+)
+from ._fixed_conn_num import (
+    FixedPostNumConn,
+    FixedPreNumConn,
+)
+from ._jitc_homo import (
+    JITCHomoR,
+    JITCHomoC,
+)
+from ._jitc_normal import (
+    JITCNormalR,
+    JITCNormalC,
+)
+from ._jitc_uniform import (
+    JITCUniformR,
+    JITCUniformC,
+)
+from ._misc import (
+    csr_to_coo_index,
+    coo_to_csc_index,
+    csr_to_csc_index,
+)
 from ._op import (
     XLACustomKernel,
     numba_kernel,
@@ -41,7 +72,11 @@ from ._op import (
     jaxtype_to_warptype,
     jaxinfo_to_warpinfo
 )
-from ._pallas_random import LFSR88RNG, LFSR113RNG, LFSR128RNG
+from ._pallas_random import (
+    LFSR88RNG,
+    LFSR113RNG,
+    LFSR128RNG,
+)
 from ._primitives import (
     ALL_PRIMITIVES,
     get_all_primitive_names,
@@ -71,9 +106,7 @@ __all__ = [
     'JITCUniformR',  # row-oriented JITC matrix with uniform weight
     'JITCUniformC',  # column-oriented JITC matrix with uniform weight
 
-    # --- block data --- #
-    'BlockCSR',
-    'BlockELL',
+    # --- Fixed number connectivity --- #
     'FixedPreNumConn',
     'FixedPostNumConn',
 
