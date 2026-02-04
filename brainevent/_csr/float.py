@@ -71,8 +71,8 @@ def _csrmv_numba_kernel_generator(
 
     if weight_info.size == 1:
         if transpose:
-            # [m, k].T @ [m]
-            @numba.njit
+            # [m, k].T @ [m] - cannot parallelize due to race condition
+            @numba.njit(fastmath=True, cache=True)
             def mv(weights, indices, indptr, vector, posts):
                 posts[:] = 0.
                 w = weights[0]
@@ -82,20 +82,20 @@ def _csrmv_numba_kernel_generator(
                         posts[indices[j]] += wsp
 
         else:
-            # [m, k] @ [k]
-            @numba.njit
+            # [m, k] @ [k] - can parallelize by row
+            @numba.njit(parallel=True, fastmath=True, cache=True)
             def mv(weights, indices, indptr, vector, posts):
                 w = weights[0]
-                for i_m in range(indptr.shape[0] - 1):
-                    r = np.asarray(0., dtype=posts.dtype)
+                for i_m in numba.prange(indptr.shape[0] - 1):
+                    r = 0.0
                     for j in range(indptr[i_m], indptr[i_m + 1]):
-                        r += w * vector[indices[j]]
-                    posts[i_m] = r
+                        r += vector[indices[j]]
+                    posts[i_m] = w * r
 
     else:
         if transpose:
-            # [m, k].T @ [m]
-            @numba.njit
+            # [m, k].T @ [m] - cannot parallelize due to race condition
+            @numba.njit(fastmath=True, cache=True)
             def mv(weights, indices, indptr, vector, posts):
                 posts[:] = 0.
                 for i in range(vector.shape[0]):
@@ -104,11 +104,11 @@ def _csrmv_numba_kernel_generator(
                         posts[indices[j]] += weights[j] * sp
 
         else:
-            # [m, k] @ [k]
-            @numba.njit
+            # [m, k] @ [k] - can parallelize by row
+            @numba.njit(parallel=True, fastmath=True, cache=True)
             def mv(weights, indices, indptr, vector, posts):
-                for i in range(indptr.shape[0] - 1):
-                    r = np.asarray(0., dtype=posts.dtype)
+                for i in numba.prange(indptr.shape[0] - 1):
+                    r = 0.0
                     for j in range(indptr[i], indptr[i + 1]):
                         r += weights[j] * vector[indices[j]]
                     posts[i] = r
@@ -515,7 +515,7 @@ def csrmv_p_call(
 
 csrmv_p = XLACustomKernel('csrmv')
 csrmv_p.def_numba_kernel(_csrmv_numba_kernel_generator)
-csrmv_p.def_warp_kernel(_csrmv_warp_kernel_generator)
+# csrmv_p.def_warp_kernel(_csrmv_warp_kernel_generator)
 csrmv_p.def_pallas_kernel('gpu', _csrmv_pallas_kernel_generator)
 csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
 csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
@@ -574,12 +574,12 @@ def _csrmm_numba_kernel_generator(
 
     if weight_info.size == 1:
         if transpose:
-            # csr.T @ B
+            # csr.T @ B - cannot parallelize due to race condition
             #
             # CSR: [k, m]
             # B: [k, n]
             #
-            @numba.njit
+            @numba.njit(fastmath=True, cache=True)
             def mm(weights, indices, indptr, B, posts):
                 posts[:] = 0.
                 w = weights[0]
@@ -590,29 +590,29 @@ def _csrmm_numba_kernel_generator(
                         posts[i_row] += wsp
 
         else:
-            # csr @ B
+            # csr @ B - can parallelize by row
             #
             # CSR: [m, k]
             # B: [k, n]
             #
-            @numba.njit(parallel=True)
+            @numba.njit(parallel=True, fastmath=True, cache=True)
             def mm(weights, indices, indptr, B, posts):
                 w = weights[0]
                 for i_m in numba.prange(indptr.shape[0] - 1):
                     r = np.zeros(B.shape[1], dtype=posts.dtype)
                     for index in range(indptr[i_m], indptr[i_m + 1]):
                         i_k = indices[index]
-                        r += w * B[i_k]
-                    posts[i_m] = r
+                        r += B[i_k]
+                    posts[i_m] = w * r
 
     else:
         if transpose:
-            # csr.T @ B
+            # csr.T @ B - cannot parallelize due to race condition
             #
             # CSR: [k, m]
             # B: [k, n]
             #
-            @numba.njit
+            @numba.njit(fastmath=True, cache=True)
             def mm(weights, indices, indptr, B, posts):
                 posts[:] = 0.
                 for i_k in range(B.shape[0]):
@@ -622,12 +622,12 @@ def _csrmm_numba_kernel_generator(
                         posts[i_row] += weights[index] * B_row
 
         else:
-            # csr @ B
+            # csr @ B - can parallelize by row
             #
             # CSR: [m, k]
             # B: [k, n]
             #
-            @numba.njit(parallel=True)
+            @numba.njit(parallel=True, fastmath=True, cache=True)
             def mm(weights, indices, indptr, B, posts):
                 for i_m in numba.prange(indptr.shape[0] - 1):
                     r = np.zeros(B.shape[1], dtype=posts.dtype)
@@ -1067,7 +1067,7 @@ def csrmm_p_call(
 
 csrmm_p = XLACustomKernel('csrmm')
 csrmm_p.def_numba_kernel(_csrmm_numba_kernel_generator)
-csrmm_p.def_warp_kernel(_csrmm_warp_kernel_generator)
+# csrmm_p.def_warp_kernel(_csrmm_warp_kernel_generator)
 csrmm_p.def_pallas_kernel('gpu', _csrmm_pallas_kernel_generator)
 csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 csrmm_p.def_transpose_rule(_csrmm_transpose_rule)

@@ -231,3 +231,4 @@ cython_debug/
 /dev/links.md
 /.claude/
 /dev/replace_all.py
+/dev/prompt/

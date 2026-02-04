@@ -121,7 +121,8 @@ def _csrmv_numba_kernel(
     if weight_info.size == 1:
         if transpose:
             if vector_info.dtype == jnp.bool_:
-                @numba.njit
+                # Cannot parallelize due to race condition on posts[indices[j]]
+                @numba.njit(fastmath=True, cache=True)
                 def mv(weights, indices, indptr, v, posts):
                     posts[:] = 0.
                     w = weights[0]
@@ -131,7 +132,7 @@ def _csrmv_numba_kernel(
                                 posts[indices[j]] += w
 
             else:
-                @numba.njit
+                @numba.njit(fastmath=True, cache=True)
                 def mv(weights, indices, indptr, v, posts):
                     posts[:] = 0.
                     w = weights[0]
@@ -142,22 +143,23 @@ def _csrmv_numba_kernel(
 
         else:
             if vector_info.dtype == jnp.bool_:
-                @numba.njit
+                # Can parallelize by row
+                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
                 def mv(weights, indices, indptr, v, posts):
                     w = weights[0]
-                    for i in range(indptr.shape[0] - 1):
-                        r = np.asarray(0., dtype=posts.dtype)
+                    for i in numba.prange(indptr.shape[0] - 1):
+                        r = 0.0
                         for j in range(indptr[i], indptr[i + 1]):
                             if v[indices[j]]:
                                 r += w
                         posts[i] = r
 
             else:
-                @numba.njit
+                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
                 def mv(weights, indices, indptr, v, posts):
                     w = weights[0]
-                    for i in range(indptr.shape[0] - 1):
-                        r = np.asarray(0., dtype=posts.dtype)
+                    for i in numba.prange(indptr.shape[0] - 1):
+                        r = 0.0
                         for j in range(indptr[i], indptr[i + 1]):
                             if v[indices[j]] != 0.:
                                 r += w
@@ -166,7 +168,8 @@ def _csrmv_numba_kernel(
     else:
         if transpose:
             if vector_info.dtype == jnp.bool_:
-                @numba.njit
+                # Cannot parallelize due to race condition
+                @numba.njit(fastmath=True, cache=True)
                 def mv(weights, indices, indptr, v, posts):
                     posts[:] = 0.
                     for i in range(v.shape[0]):
@@ -175,7 +178,7 @@ def _csrmv_numba_kernel(
                                 posts[indices[j]] += weights[j]
 
             else:
-                @numba.njit
+                @numba.njit(fastmath=True, cache=True)
                 def mv(weights, indices, indptr, v, posts):
                     posts[:] = 0.
                     for i in range(v.shape[0]):
@@ -185,20 +188,21 @@ def _csrmv_numba_kernel(
 
         else:
             if vector_info.dtype == jnp.bool_:
-                @numba.njit
+                # Can parallelize by row
+                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
                 def mv(weights, indices, indptr, v, posts):
-                    for i in range(indptr.shape[0] - 1):
-                        r = np.asarray(0., dtype=posts.dtype)
+                    for i in numba.prange(indptr.shape[0] - 1):
+                        r = 0.0
                         for j in range(indptr[i], indptr[i + 1]):
                             if v[indices[j]]:
                                 r += weights[j]
                         posts[i] = r
 
             else:
-                @numba.njit
+                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
                 def mv(weights, indices, indptr, v, posts):
-                    for i in range(indptr.shape[0] - 1):
-                        r = np.asarray(0., dtype=posts.dtype)
+                    for i in numba.prange(indptr.shape[0] - 1):
+                        r = 0.0
                         for j in range(indptr[i], indptr[i + 1]):
                             if v[indices[j]] != 0.:
                                 r += weights[j]
@@ -219,7 +223,7 @@ def _csrmv_warp_kernel(
     shape: MatrixShape,
     **kwargs
 ):
-    import warp  # pylint: disable=import-outside-toplevel
+    import warp 
     from warp.jax_experimental import jax_kernel
 
     weight_warp_info = jaxinfo_to_warpinfo(weight_info)
@@ -752,7 +756,7 @@ def _csrmm_numba_kernel(
     transpose: bool,
     **kwargs
 ):
-    import numba  # pylint: disable=import-outside-toplevel
+    import numba 
 
     if weight_info.size == 1:
         if transpose:
@@ -762,7 +766,7 @@ def _csrmm_numba_kernel(
             # [k, m] @ [k, n]
             #
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
                 def mm(weights, indices, indptr, B, posts):
                     w = weights[0]
                     posts[:] = 0.
@@ -773,7 +777,7 @@ def _csrmm_numba_kernel(
                                     posts[indices[j], k] += w
 
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
                 def mm(weights, indices, indptr, B, posts):
                     B = B != 0.
                     w = weights[0]
@@ -787,7 +791,7 @@ def _csrmm_numba_kernel(
         else:
             # csr @ B
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
                 def mm(weights, indices, indptr, B, posts):
                     w = weights[0]
                     posts[:] = 0.
@@ -801,7 +805,7 @@ def _csrmm_numba_kernel(
                         posts[i] = r
 
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
                 def mm(weights, indices, indptr, B, posts):
                     w = weights[0]
                     B = B != 0.
@@ -819,7 +823,7 @@ def _csrmm_numba_kernel(
             # csr.T @ B
 
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
                 def mm(weights, indices, indptr, B, posts):
                     posts[:] = 0.
                     for k in numba.prange(B.shape[1]):
@@ -829,7 +833,7 @@ def _csrmm_numba_kernel(
                                     posts[indices[j], k] += weights[j]
 
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
                 def mm(weights, indices, indptr, B, posts):
                     B = B != 0.
                     posts[:] = 0.
@@ -841,29 +845,36 @@ def _csrmm_numba_kernel(
 
         else:
             # csr @ B
+            # Fixed: Changed range to prange for parallelization
 
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
                 def mm(weights, indices, indptr, B, posts):
-                    for i in range(indptr.shape[0] - 1):
-                        for k in range(B.shape[1]):
-                            r = 0.
-                            for j in range(indptr[i], indptr[i + 1]):
-                                if B[indices[j], k]:
-                                    r += weights[j]
-                            posts[i, k] = r
+                    n_cols = B.shape[1]
+                    for i in numba.prange(indptr.shape[0] - 1):
+                        r = np.zeros(n_cols, dtype=posts.dtype)
+                        for j in range(indptr[i], indptr[i + 1]):
+                            col_idx = indices[j]
+                            w = weights[j]
+                            B_row = B[col_idx]  # Load entire row once (cache-friendly)
+                            for k in range(n_cols):
+                                if B_row[k]:
+                                    r[k] += w
+                        posts[i] = r
 
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
                 def mm(weights, indices, indptr, B, posts):
-                    B = B != 0.
-                    for i in range(indptr.shape[0] - 1):
-                        for k in range(B.shape[1]):
-                            r = 0.
-                            for j in range(indptr[i], indptr[i + 1]):
-                                if B[indices[j], k]:
-                                    r += weights[j]
-                            posts[i, k] = r
+                    n_cols = B.shape[1]
+                    for i in numba.prange(indptr.shape[0] - 1):
+                        r = np.zeros(n_cols, dtype=posts.dtype)
+                        for j in range(indptr[i], indptr[i + 1]):
+                            col_idx = indices[j]
+                            w = weights[j]
+                            for k in range(n_cols):
+                                if B[col_idx, k] != 0.:
+                                    r[k] += w
+                        posts[i] = r
 
     def kernel(weights, indices, indptr, B):
         return numba_kernel(mm, kwargs['outs'])(weights, indices, indptr, B)
@@ -880,7 +891,7 @@ def _csrmm_warp_kernel(
     shape: MatrixShape,
     **kwargs
 ):
-    import warp  # pylint: disable=import-outside-toplevel
+    import warp 
     from warp.jax_experimental import jax_kernel
 
     weight_warp_info = jaxinfo_to_warpinfo(weight_info)
