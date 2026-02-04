@@ -24,7 +24,7 @@ from jax.interpreters import ad
 
 from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescoped_jit
-from brainevent._op import XLACustomKernel, numba_kernel, jaxtype_to_warptype, general_batching_rule
+from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 from brainevent._pallas_random import LFSR88RNG
 from brainevent._typing import Data, MatrixShape
 from .float import float_jitc_mv_homo_p_call, float_jitc_mm_homo_p_call
@@ -180,18 +180,21 @@ def _jitc_mv_homo_numba_kernel_generator(
     vector_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
+    import numba
+
     if corder:
         if vector_info.dtype == jnp.bool_:
-            def kernel(weight, clen, vector, seed, _, posts):
+            @numba.njit(fastmath=True, cache=True)
+            def kernel_impl(weight, clen, vector, seed, posts):
                 n_col = posts.shape[0]
                 n_row = vector.shape[0]
-                weight0 = weight[0]  # Homogeneous weight value
-                clen0 = clen[0]  # Connection length (inverse of connection probability)
-                seed0 = seed[0]  # Random seed
+                weight0 = weight[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
                 np.random.seed(seed0)
                 for i_col in range(n_col):
                     i_row = np.random.randint(0, clen0)
-                    out = np.asarray(0., dtype=weight.dtype)
+                    out = np.float64(0.)
                     while i_row < n_row:
                         if vector[i_row]:
                             out += 1.0
@@ -199,16 +202,17 @@ def _jitc_mv_homo_numba_kernel_generator(
                     posts[i_col] = out * weight0
 
         else:
-            def kernel(weight, clen, vector, seed, _, posts):
+            @numba.njit(fastmath=True, cache=True)
+            def kernel_impl(weight, clen, vector, seed, posts):
                 n_col = posts.shape[0]
                 n_row = vector.shape[0]
-                weight0 = weight[0]  # Homogeneous weight value
-                clen0 = clen[0]  # Connection length (inverse of connection probability)
-                seed0 = seed[0]  # Random seed
+                weight0 = weight[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
                 np.random.seed(seed0)
                 for i_col in range(n_col):
                     i_row = np.random.randint(0, clen0)
-                    out = np.asarray(0., dtype=weight.dtype)
+                    out = np.float64(0.)
                     while i_row < n_row:
                         if vector[i_row] != 0:
                             out += vector[i_row]
@@ -217,12 +221,14 @@ def _jitc_mv_homo_numba_kernel_generator(
 
     else:
         if vector_info.dtype == jnp.bool_:
-            def kernel(weight, clen, vector, seed, _, posts):
+            @numba.njit(fastmath=True, cache=True)
+            def kernel_impl(weight, clen, vector, seed, posts):
+                posts[:] = 0.
                 num_col = posts.shape[0]
                 num_row = vector.shape[0]
-                weight0 = weight[0]  # Homogeneous weight value applied to all connections
-                clen0 = clen[0]  # Controls sparsity - higher values mean fewer connections
-                seed0 = seed[0]  # Random seed for reproducible matrix generation
+                weight0 = weight[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
                 np.random.seed(seed0)
                 for i_row in range(num_row):
                     is_event = vector[i_row]
@@ -233,12 +239,14 @@ def _jitc_mv_homo_numba_kernel_generator(
                         i_col += np.random.randint(1, clen0)
 
         else:
-            def kernel(weight, clen, vector, seed, _, posts):
+            @numba.njit(fastmath=True, cache=True)
+            def kernel_impl(weight, clen, vector, seed, posts):
+                posts[:] = 0.
                 num_col = posts.shape[0]
                 num_row = vector.shape[0]
-                weight0 = weight[0]  # Homogeneous weight value applied to all connections
-                clen0 = clen[0]  # Controls sparsity - higher values mean fewer connections
-                seed0 = seed[0]  # Random seed for reproducible matrix generation
+                weight0 = weight[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
                 np.random.seed(seed0)
                 for i_row in range(num_row):
                     is_event = vector[i_row] != 0.
@@ -248,7 +256,10 @@ def _jitc_mv_homo_numba_kernel_generator(
                             posts[i_col] += weight0
                         i_col += np.random.randint(1, clen0)
 
-    return numba_kernel(kernel, parallel=False, input_output_aliases={4: 0})
+    def kernel(weight, clen, vector, seed, _):
+        return numba_kernel(kernel_impl, outs=kwargs['outs'])(weight, clen, vector, seed)
+
+    return kernel
 
 
 def _jitc_mv_homo_warp_kernel_generator(
@@ -262,71 +273,78 @@ def _jitc_mv_homo_warp_kernel_generator(
     **kwargs
 ):
     import warp
+    from warp.jax_experimental import jax_kernel
 
-    weight_dtype = jaxtype_to_warptype(weight_info.dtype)
-    clen_dtype = jaxtype_to_warptype(clen_info.dtype)
-    v_dtype = jaxtype_to_warptype(vector_info.dtype)
-    seed_dtype = jaxtype_to_warptype(seed_info.dtype)
+    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
+    clen_warp_info = jaxinfo_to_warpinfo(clen_info)
+    vector_warp_info = jaxinfo_to_warpinfo(vector_info)
+    seed_warp_info = jaxinfo_to_warpinfo(seed_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
 
     if corder:
         if vector_info.dtype == jnp.bool_:
-            def kernel(
-                weight: warp.array1d(dtype=weight_dtype),
-                clen: warp.array1d(dtype=clen_dtype),
-                vector: warp.array1d(dtype=v_dtype),
-                seed: warp.array1d(dtype=seed_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype),
+            @warp.kernel
+            def mv(
+                weight: weight_warp_info,
+                clen: clen_warp_info,
+                vector: vector_warp_info,
+                seed: seed_warp_info,
+                posts: out_warp_info,
             ):
                 num_row = vector.shape[0]
-                weight0 = weight[0]  # Homogeneous weight for all connections
-                clen0 = clen[0]  # Connection length parameter (controls sparsity)
-                seed0 = seed[0]  # Base random seed value
+                weight0 = weight[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
                 i_col = warp.tid()
-                r = float(0.0)
+                r = weight.dtype(0.)
                 state = warp.rand_init(seed0 + i_col)
                 i_row = warp.randi(state, 0, clen0)
                 while i_row < num_row:
-                    r = warp.where(vector[i_row], 1., 0.)
+                    if vector[i_row]:
+                        r += weight.dtype(1.)
                     i_row += warp.randi(state, 1, clen0)
                 posts[i_col] = r * weight0
-
         else:
-            def kernel(
-                weight: warp.array1d(dtype=weight_dtype),
-                clen: warp.array1d(dtype=clen_dtype),
-                vector: warp.array1d(dtype=v_dtype),
-                seed: warp.array1d(dtype=seed_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype),
+            @warp.kernel
+            def mv(
+                weight: weight_warp_info,
+                clen: clen_warp_info,
+                vector: vector_warp_info,
+                seed: seed_warp_info,
+                posts: out_warp_info,
             ):
                 num_row = vector.shape[0]
-                weight0 = weight[0]  # Homogeneous weight for all connections
-                clen0 = clen[0]  # Connection length parameter (controls sparsity)
-                seed0 = seed[0]  # Base random seed value
+                weight0 = weight[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
                 i_col = warp.tid()
-                r = float(0.0)
+                r = weight.dtype(0.)
                 state = warp.rand_init(seed0 + i_col)
                 i_row = warp.randi(state, 0, clen0)
                 while i_row < num_row:
-                    r += vector[i_row]
+                    if vector[i_row] != vector.dtype(0.):
+                        r += weight.dtype(1.)
                     i_row += warp.randi(state, 1, clen0)
                 posts[i_col] = r * weight0
 
+        def kernel(weight, clen, vector, seed, _):
+            dim = out_info.shape[0]
+            fn = jax_kernel(mv, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
+            return fn(weight, clen, vector, seed)
     else:
         if vector_info.dtype == jnp.bool_:
-            def kernel(
-                weight: warp.array1d(dtype=weight_dtype),
-                clen: warp.array1d(dtype=clen_dtype),
-                vector: warp.array1d(dtype=v_dtype),
-                seed: warp.array1d(dtype=seed_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype),
+            @warp.kernel
+            def mv(
+                weight: weight_warp_info,
+                clen: clen_warp_info,
+                vector: vector_warp_info,
+                seed: seed_warp_info,
+                posts: out_warp_info,
             ):
                 num_col = posts.shape[0]
-                weight0 = weight[0]  # Homogeneous weight for all connections
-                clen0 = clen[0]  # Connection length parameter (controls sparsity)
-                seed0 = seed[0]  # Base random seed value
+                weight0 = weight[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
                 i_row = warp.tid()
                 if vector[i_row]:
                     state = warp.rand_init(seed0 + i_row)
@@ -334,30 +352,33 @@ def _jitc_mv_homo_warp_kernel_generator(
                     while i_col < num_col:
                         posts[i_col] += weight0
                         i_col += warp.randi(state, 1, clen0)
-
         else:
-            def kernel(
-                weight: warp.array1d(dtype=weight_dtype),
-                clen: warp.array1d(dtype=clen_dtype),
-                vector: warp.array1d(dtype=v_dtype),
-                seed: warp.array1d(dtype=seed_dtype),
-                _: warp.array1d(dtype=weight_dtype),
-                posts: warp.array1d(dtype=weight_dtype),
+            @warp.kernel
+            def mv(
+                weight: weight_warp_info,
+                clen: clen_warp_info,
+                vector: vector_warp_info,
+                seed: seed_warp_info,
+                posts: out_warp_info,
             ):
                 num_col = posts.shape[0]
-                weight0 = weight[0]  # Homogeneous weight for all connections
-                clen0 = clen[0]  # Connection length parameter (controls sparsity)
-                seed0 = seed[0]  # Base random seed value
+                weight0 = weight[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
                 i_row = warp.tid()
-                if vector[i_row] != 0.:
+                if vector[i_row] != vector.dtype(0.):
                     state = warp.rand_init(seed0 + i_row)
                     i_col = warp.randi(state, 0, clen0)
                     while i_col < num_col:
                         posts[i_col] += weight0
                         i_col += warp.randi(state, 1, clen0)
 
-    dim = (out_info.shape[0] if corder else vector_info.shape[0])
-    return warp_kernel(kernel, dim=dim, input_output_aliases={4: 0})
+        def kernel(weight, clen, vector, seed, _):
+            dim = vector_info.shape[0]
+            fn = jax_kernel(mv, launch_dims=dim, num_outputs=0, in_out_argnames=['posts'])
+            return fn(weight, clen, vector, seed, jnp.zeros(out_info.shape, out_info.dtype))
+
+    return kernel
 
 
 def _jitc_mv_homo_pallas_kernel_generator(
@@ -367,98 +388,66 @@ def _jitc_mv_homo_pallas_kernel_generator(
     corder: bool = True,
     **kwargs
 ):
-    dim = (out_info.shape[0] if corder else vector_info.shape[0])
-    tiled = True
+    from jax.experimental import pallas as pl
+    from jax.experimental.pallas.triton import atomic_add
+
+    dim = out_info.shape[0] if corder else vector_info.shape[0]
+    block_size = generate_block_dim(dim, maximum=128)
 
     if corder:
-        if tiled:
-            block_size = generate_block_dim(dim, maximum=128)
+        def pallas_kernel_fn(weight_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
+            num_row = vector_ref.shape[0]
+            weight = weight_ref[0]
+            clen = clen_ref[0]
+            seed = seed_ref[0]
+            i_col_block = pl.program_id(0)
+            i_cols = i_col_block * block_size + jnp.arange(block_size)
+            i_col_mask = i_cols < dim
 
-            @pallas_kernel(
-                outs=kwargs['outs'],
-                tile=(pl.cdiv(dim, block_size),),
+            def body(data):
+                i_rows, i_row_mask, rng, res = data
+                v = vector_ref[i_rows]
+                v = jnp.where(i_row_mask, v, jnp.zeros_like(v))
+                if vector_ref.dtype != jnp.bool_:
+                    v = v != 0.
+                res = jnp.where(v, res + weight, res)
+                i_rows = i_rows + rng.random_integers(1, clen)
+                return i_rows, i_rows < num_row, rng, res
+
+            rng = LFSR88RNG(seed + i_cols)
+            i_rows = rng.random_integers(0, clen)
+            i_row_mask = i_rows < num_row
+            out = jax.lax.while_loop(
+                lambda data: jnp.sum(data[1]) > 0,
+                body,
+                (i_rows, i_row_mask, rng, jnp.zeros(block_size, dtype=post_ref.dtype))
+            )[-1]
+            post_ref[i_cols] = jnp.where(i_col_mask, out, post_ref[i_cols])
+
+        def kernel(weight, clen, vector, seed, _):
+            fn = pl.pallas_call(
+                pallas_kernel_fn,
+                grid=(pl.cdiv(dim, block_size),),
                 input_output_aliases={4: 0},
+                out_shape=kwargs['outs']
             )
-            def kernel(weight_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
-                num_row = vector_ref.shape[0]
-                weight = weight_ref[0]
-                clen = clen_ref[0]  # Connection length parameter (controls sparsity)
-                seed = seed_ref[0]  # Base random seed value
-                i_col_block = pl.program_id(0)
-                i_cols = i_col_block * block_size + jnp.arange(block_size)
-                i_col_mask = i_cols < dim
-
-                def body(data):
-                    i_rows, i_row_mask, rng, res = data
-                    v = pl.load(vector_ref, i_rows, mask=i_row_mask)
-                    if vector_ref.dtype != jnp.bool_:
-                        v = v != 0.
-                    res = jnp.where(v, res + weight, res)
-                    i_rows += rng.random_integers(1, clen)
-                    return i_rows, i_rows < num_row, rng, res
-
-                rng = LFSR88RNG(seed + i_cols)
-                i_rows = rng.random_integers(0, clen)
-                i_row_mask = i_rows < num_row
-                out = jax.lax.while_loop(
-                    lambda data: jnp.sum(data[1]) > 0,
-                    body,
-                    (i_rows, i_row_mask, rng, jnp.zeros(block_size, dtype=post_ref.dtype))
-                )[-1]
-                pl.store(post_ref, i_cols, out, mask=i_col_mask)
-
-
-        else:
-            @pallas_kernel(
-                outs=kwargs['outs'],
-                tile=(dim,),
-                input_output_aliases={4: 0},
-            )
-            def kernel(weight_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
-                num_row = vector_ref.shape[0]
-                weight = weight_ref[0]
-                clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
-                seed0 = seed_ref[0]  # Base random seed value
-                i_col = pl.program_id(0)
-
-                def body(data):
-                    i, rng, res = data
-                    if vector_ref.dtype == jnp.bool_:
-                        res = jnp.where(vector_ref[i], res + weight, res)
-                    else:
-                        res = jnp.where(vector_ref[i] != 0., res + weight, res)
-                    i += rng.random_integers(1, clen0)
-                    return i, rng, res
-
-                rng = LFSR88RNG(seed0 + i_col)
-                _, _, r = jax.lax.while_loop(
-                    lambda data: data[0] < num_row,
-                    body,
-                    (rng.random_integers(0, clen0), rng, 0.0)
-                )
-                post_ref[i_col] = r
-
-
+            return fn(weight, clen, vector, seed, _)
     else:
-        @pallas_kernel(
-            outs=kwargs['outs'],
-            tile=(dim,),
-            input_output_aliases={4: 0},
-        )
-        def kernel(weight_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
+        def pallas_kernel_fn(weight_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
             num_col = post_ref.shape[0]
             weight = weight_ref[0]
-            clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
-            seed0 = seed_ref[0]  # Base random seed value
+            clen0 = clen_ref[0]
+            seed0 = seed_ref[0]
             i_row = pl.program_id(0)
             v = vector_ref[i_row]
+            is_event = v if vector_ref.dtype == jnp.bool_ else (v != 0.)
 
-            @pl.when(v if v.dtype == jnp.bool_ else v != 0.)
+            @pl.when(is_event)
             def run():
                 def body(data):
                     i, rng = data
-                    pl.atomic_add(post_ref, i, weight)
-                    i += rng.random_integers(1, clen0)
+                    atomic_add(post_ref, i, weight)
+                    i = i + rng.random_integers(1, clen0)
                     return i, rng
 
                 rng = LFSR88RNG(seed0 + i_row)
@@ -467,6 +456,15 @@ def _jitc_mv_homo_pallas_kernel_generator(
                     body,
                     (rng.random_integers(0, clen0), rng)
                 )
+
+        def kernel(weight, clen, vector, seed, _):
+            fn = pl.pallas_call(
+                pallas_kernel_fn,
+                grid=(dim,),
+                input_output_aliases={4: 0},
+                out_shape=kwargs['outs']
+            )
+            return fn(weight, clen, vector, seed, _)
 
     return kernel
 
@@ -655,6 +653,7 @@ binary_jitc_mv_homo_p.def_pallas_kernel('tpu', _jitc_mv_homo_pallas_kernel_gener
 binary_jitc_mv_homo_p.def_jvp_rule2(_jitc_mv_homo_jvp_weights, None, _jitc_mv_homo_jvp_v, None, None)
 binary_jitc_mv_homo_p.def_transpose_rule(_jitc_mv_homo_transpose_rules)
 binary_jitc_mv_homo_p.def_batching_rule(_jitc_mv_homo_batching)
+binary_jitc_mv_homo_p.def_call(binary_jitc_mv_homo_p_call)
 
 
 def _jitc_mm_homo_numba_kernel_generator(
@@ -663,25 +662,23 @@ def _jitc_mm_homo_numba_kernel_generator(
     B_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    if corder:
+    import numba
 
+    if corder:
         if transpose:
             # JIT Matrix.T @ B
-            #
             # - JIT matrix: [k, m]
             # - B: [k, n]
-
             if B_info.dtype == jnp.bool_:
-                def kernel(weight, clen, B, seed, _, posts):
-                    m = posts.shape[0]  # Number of rows in output matrix (columns in M)
-                    n = posts.shape[1]  # Number of columns in output matrix (columns in B)
-                    k = B.shape[0]  # Number of rows in B (rows in M)
-
-                    weight0 = weight[0]  # Homogeneous weight value for all non-zero connections
-                    seed0 = seed[0]  # Random seed for reproducible matrix generation
-                    clen0 = clen[0]  # Connection length parameter (controls sparsity)
+                @numba.njit(fastmath=True, cache=True)
+                def kernel_impl(weight, clen, B, seed, posts):
+                    m = posts.shape[0]
+                    n = posts.shape[1]
+                    k = B.shape[0]
+                    weight0 = weight[0]
+                    seed0 = seed[0]
+                    clen0 = clen[0]
                     np.random.seed(seed0)
-
                     for i_m in range(m):
                         i_k = np.random.randint(0, clen0)
                         out = np.zeros(n, dtype=weight.dtype)
@@ -691,180 +688,145 @@ def _jitc_mm_homo_numba_kernel_generator(
                                     out[j] += 1.0
                             i_k += np.random.randint(1, clen0)
                         posts[i_m] = out * weight0
-
             else:
-                def kernel(weight, clen, B, seed, _, posts):
-                    m = posts.shape[0]  # Number of rows in output matrix (columns in M)
-                    n = posts.shape[1]  # Number of columns in output matrix (columns in B)
-                    k = B.shape[0]  # Number of rows in B (rows in M)
-
-                    weight0 = weight[0]  # Homogeneous weight value for all non-zero connections
-                    seed0 = seed[0]  # Random seed for reproducible matrix generation
-                    clen0 = clen[0]  # Connection length parameter (controls sparsity)
+                @numba.njit(fastmath=True, cache=True)
+                def kernel_impl(weight, clen, B, seed, posts):
+                    m = posts.shape[0]
+                    n = posts.shape[1]
+                    k = B.shape[0]
+                    weight0 = weight[0]
+                    seed0 = seed[0]
+                    clen0 = clen[0]
                     np.random.seed(seed0)
-
                     for i_m in range(m):
                         i_k = np.random.randint(0, clen0)
                         out = np.zeros(n, dtype=weight.dtype)
                         while i_k < k:
-                            # out += B[i_k]
                             for j in range(B.shape[1]):
                                 if B[i_k, j] != 0.:
                                     out[j] += 1.0
                             i_k += np.random.randint(1, clen0)
                         posts[i_m] = out * weight0
-
         else:
             # JIT Matrix @ B
-            #
             # - JIT matrix: [m, k]
             # - B: [k, n]
-
             if B_info.dtype == jnp.bool_:
-                def kernel(weight, clen, B, seed, _, posts):
-                    m = posts.shape[0]  # Number of rows in output matrix (rows in M)
-                    n = posts.shape[1]  # Number of columns in output matrix (columns in B)
-                    k = B.shape[0]  # Number of rows in B (columns in M)
-
-                    weight0 = weight[0]  # Homogeneous weight value for all non-zero connections
-                    seed0 = seed[0]  # Random seed for reproducible matrix generation
-                    clen0 = clen[0]  # Connection length parameter (controls sparsity)
-                    np.random.seed(seed0)  # Initialize random number generator with seed for reproducibility
-
+                @numba.njit(fastmath=True, cache=True)
+                def kernel_impl(weight, clen, B, seed, posts):
+                    m = posts.shape[0]
+                    n = posts.shape[1]
+                    k = B.shape[0]
+                    weight0 = weight[0]
+                    seed0 = seed[0]
+                    clen0 = clen[0]
+                    np.random.seed(seed0)
                     for i_m in range(m):
                         i_k = np.random.randint(0, clen0)
                         out = np.zeros(n, dtype=weight.dtype)
                         while i_k < k:
-                            # out += B[i_k]
                             for j in range(B.shape[1]):
                                 if B[i_k, j]:
                                     out[j] += 1.0
                             i_k += np.random.randint(1, clen0)
                         posts[i_m] = out * weight0
             else:
-                def kernel(weight, clen, B, seed, _, posts):
-                    m = posts.shape[0]  # Number of rows in output matrix (rows in M)
-                    n = posts.shape[1]  # Number of columns in output matrix (columns in B)
-                    k = B.shape[0]  # Number of rows in B (columns in M)
-
-                    weight0 = weight[0]  # Homogeneous weight value for all non-zero connections
-                    seed0 = seed[0]  # Random seed for reproducible matrix generation
-                    clen0 = clen[0]  # Connection length parameter (controls sparsity)
-                    np.random.seed(seed0)  # Initialize random number generator with seed for reproducibility
-
+                @numba.njit(fastmath=True, cache=True)
+                def kernel_impl(weight, clen, B, seed, posts):
+                    m = posts.shape[0]
+                    n = posts.shape[1]
+                    k = B.shape[0]
+                    weight0 = weight[0]
+                    seed0 = seed[0]
+                    clen0 = clen[0]
+                    np.random.seed(seed0)
                     for i_m in range(m):
                         i_k = np.random.randint(0, clen0)
                         out = np.zeros(n, dtype=weight.dtype)
                         while i_k < k:
-                            # out += B[i_k]
                             for j in range(B.shape[1]):
                                 if B[i_k, j] != 0.:
                                     out[j] += 1.0
                             i_k += np.random.randint(1, clen0)
                         posts[i_m] = out * weight0
-
     else:
         if transpose:
             # JIT Matrix.T @ B
-            #
             # - JIT matrix: [k, m]
             # - B: [k, n]
             if B_info.dtype == jnp.bool_:
-                def kernel(weight, clen, B, seed, _, posts):
-                    m = posts.shape[0]  # Number of rows in output matrix (columns in M)
-                    k = B.shape[0]  # Number of rows in B (rows in M)
-
-                    weight0 = weight[0]  # Homogeneous weight value for all non-zero connections
-                    seed0 = seed[0]  # Random seed for reproducible matrix generation
-                    clen0 = clen[0]  # Connection length parameter (controls sparsity)
-                    np.random.seed(seed0)  # Initialize random number generator with seed
-
+                @numba.njit(fastmath=True, cache=True)
+                def kernel_impl(weight, clen, B, seed, posts):
+                    posts[:] = 0.
+                    m = posts.shape[0]
+                    k = B.shape[0]
+                    weight0 = weight[0]
+                    seed0 = seed[0]
+                    clen0 = clen[0]
+                    np.random.seed(seed0)
                     for i_k in range(k):
                         indices = np.where(B[i_k])[0]
                         i_m = np.random.randint(0, clen0)
                         while i_m < m:
                             posts[i_m, indices] += weight0
                             i_m += np.random.randint(1, clen0)
-                    # for i_k in range(k):
-                    #     out = B[i_k] * weight0
-                    #     i_m = np.random.randint(0, clen0)
-                    #     while i_m < m:
-                    #         posts[i_m] += out
-                    #         i_m += np.random.randint(1, clen0)
-
             else:
-                def kernel(weight, clen, B, seed, _, posts):
-                    m = posts.shape[0]  # Number of rows in output matrix (columns in M)
-                    k = B.shape[0]  # Number of rows in B (rows in M)
-
-                    weight0 = weight[0]  # Homogeneous weight value for all non-zero connections
-                    seed0 = seed[0]  # Random seed for reproducible matrix generation
-                    clen0 = clen[0]  # Connection length parameter (controls sparsity)
-                    np.random.seed(seed0)  # Initialize random number generator with seed
-
+                @numba.njit(fastmath=True, cache=True)
+                def kernel_impl(weight, clen, B, seed, posts):
+                    posts[:] = 0.
+                    m = posts.shape[0]
+                    k = B.shape[0]
+                    weight0 = weight[0]
+                    seed0 = seed[0]
+                    clen0 = clen[0]
+                    np.random.seed(seed0)
                     for i_k in range(k):
                         indices = np.where(B[i_k] != 0.)[0]
                         i_m = np.random.randint(0, clen0)
                         while i_m < m:
                             posts[i_m, indices] += weight0
                             i_m += np.random.randint(1, clen0)
-                    # for i_k in range(k):
-                    #     out = B[i_k] * weight0
-                    #     i_m = np.random.randint(0, clen0)
-                    #     while i_m < m:
-                    #         posts[i_m] += out
-                    #         i_m += np.random.randint(1, clen0)
-
         else:
             # JIT Matrix @ B
-            #
             # - JIT matrix: [m, k]
             # - B: [k, n]
             if B_info.dtype == jnp.bool_:
-                def kernel(weight, clen, B, seed, _, posts):
-                    m = posts.shape[0]  # Number of rows in output matrix (rows in M)
-                    k = B.shape[0]  # Number of rows in B (columns in M)
-
-                    weight0 = weight[0]  # Homogeneous weight value for all non-zero connections
-                    seed0 = seed[0]  # Random seed for reproducible matrix generation
-                    clen0 = clen[0]  # Connection length parameter (controls sparsity)
-                    np.random.seed(seed0)  # Initialize random number generator with seed
-
+                @numba.njit(fastmath=True, cache=True)
+                def kernel_impl(weight, clen, B, seed, posts):
+                    posts[:] = 0.
+                    m = posts.shape[0]
+                    k = B.shape[0]
+                    weight0 = weight[0]
+                    seed0 = seed[0]
+                    clen0 = clen[0]
+                    np.random.seed(seed0)
                     for i_k in range(k):
                         indices = np.where(B[i_k])[0]
                         i_m = np.random.randint(0, clen0)
                         while i_m < m:
                             posts[i_m, indices] += weight0
                             i_m += np.random.randint(1, clen0)
-                        # out = B[i_k] * weight0
-                        # i_m = np.random.randint(0, clen0)
-                        # while i_m < m:
-                        #     posts[i_m] += out
-                        #     i_m += np.random.randint(1, clen0)
-
             else:
-                def kernel(weight, clen, B, seed, _, posts):
-                    m = posts.shape[0]  # Number of rows in output matrix (rows in M)
-                    k = B.shape[0]  # Number of rows in B (columns in M)
-
-                    weight0 = weight[0]  # Homogeneous weight value for all non-zero connections
-                    seed0 = seed[0]  # Random seed for reproducible matrix generation
-                    clen0 = clen[0]  # Connection length parameter (controls sparsity)
-                    np.random.seed(seed0)  # Initialize random number generator with seed
-
+                @numba.njit(fastmath=True, cache=True)
+                def kernel_impl(weight, clen, B, seed, posts):
+                    posts[:] = 0.
+                    m = posts.shape[0]
+                    k = B.shape[0]
+                    weight0 = weight[0]
+                    seed0 = seed[0]
+                    clen0 = clen[0]
+                    np.random.seed(seed0)
                     for i_k in range(k):
                         indices = np.where(B[i_k] != 0.)[0]
                         i_m = np.random.randint(0, clen0)
                         while i_m < m:
                             posts[i_m, indices] += weight0
                             i_m += np.random.randint(1, clen0)
-                        # out = B[i_k] * weight0
-                        # i_m = np.random.randint(0, clen0)
-                        # while i_m < m:
-                        #     posts[i_m] += out
-                        #     i_m += np.random.randint(1, clen0)
 
-    return numba_kernel(kernel, parallel=False, input_output_aliases={4: 0})
+    def kernel(weight, clen, B, seed, _):
+        return numba_kernel(kernel_impl, outs=kwargs['outs'])(weight, clen, B, seed)
+
+    return kernel
 
 
 def _jitc_mm_homo_warp_kernel_generator(
@@ -879,57 +841,52 @@ def _jitc_mm_homo_warp_kernel_generator(
     **kwargs
 ):
     import warp
+    from warp.jax_experimental import jax_kernel
 
-    weight_dtype = jaxtype_to_warptype(weight_info.dtype)
-    clen_dtype = jaxtype_to_warptype(clen_info.dtype)
-    B_dtype = jaxtype_to_warptype(B_info.dtype)
-    seed_dtype = jaxtype_to_warptype(seed_info.dtype)
+    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
+    clen_warp_info = jaxinfo_to_warpinfo(clen_info)
+    B_warp_info = jaxinfo_to_warpinfo(B_info)
+    seed_warp_info = jaxinfo_to_warpinfo(seed_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
 
     if corder:
         # JIT Matrix.T @ B
-
         if B_info.dtype == jnp.bool_:
-            def kernel(
-                weight: warp.array1d(dtype=weight_dtype),
-                clen: warp.array1d(dtype=clen_dtype),
-                B: warp.array2d(dtype=B_dtype),
-                seed: warp.array1d(dtype=seed_dtype),
-                _: warp.array2d(dtype=weight_dtype),
-                posts: warp.array2d(dtype=weight_dtype),
+            @warp.kernel
+            def mm(
+                weight: weight_warp_info,
+                clen: clen_warp_info,
+                B: B_warp_info,
+                seed: seed_warp_info,
+                posts: out_warp_info,
             ):
                 k = B.shape[0]
                 weight0 = weight[0]
                 clen0 = clen[0]
                 seed0 = seed[0]
-                B = warp.array(B, dtype=weight_dtype)
-
                 i_m = warp.tid()
                 state = warp.rand_init(seed0 + i_m)
-
                 out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
                 i_k = warp.randi(state, 0, clen0)
                 while i_k < k:
-                    out += warp.tile_astype(warp.tile_load(B[i_k], TITLE_SIZE), dtype=weight_dtype)
+                    out += warp.tile_astype(warp.tile_load(B[i_k], TITLE_SIZE), dtype=weight.dtype)
                     i_k += warp.randi(state, 1, clen0)
                 warp.tile_store(posts[i_m], out * weight0)
-
         else:
-            def kernel(
-                weight: warp.array1d(dtype=weight_dtype),
-                clen: warp.array1d(dtype=clen_dtype),
-                B: warp.array2d(dtype=B_dtype),
-                seed: warp.array1d(dtype=seed_dtype),
-                _: warp.array2d(dtype=weight_dtype),
-                posts: warp.array2d(dtype=weight_dtype),
+            @warp.kernel
+            def mm(
+                weight: weight_warp_info,
+                clen: clen_warp_info,
+                B: B_warp_info,
+                seed: seed_warp_info,
+                posts: out_warp_info,
             ):
                 k = B.shape[0]
                 weight0 = weight[0]
                 clen0 = clen[0]
                 seed0 = seed[0]
-
                 i_m = warp.tid()
                 state = warp.rand_init(seed0 + i_m)
-
                 out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
                 i_k = warp.randi(state, 0, clen0)
                 while i_k < k:
@@ -937,57 +894,59 @@ def _jitc_mm_homo_warp_kernel_generator(
                     i_k += warp.randi(state, 1, clen0)
                 warp.tile_store(posts[i_m], out * weight0)
 
-
+        def kernel(weight, clen, B, seed, _):
+            dim = out_info.shape[0]
+            fn = jax_kernel(mm, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
+            return fn(weight, clen, B, seed)
     else:
-        # JIT Matrix.T @ B
+        # JIT Matrix.T @ B (corder=False)
         if B_info.dtype == jnp.bool_:
-            def kernel(
-                weight: warp.array1d(dtype=weight_dtype),
-                clen: warp.array1d(dtype=clen_dtype),
-                B: warp.array2d(dtype=B_dtype),
-                seed: warp.array1d(dtype=seed_dtype),
-                _: warp.array2d(dtype=weight_dtype),
-                posts: warp.array2d(dtype=weight_dtype),
+            @warp.kernel
+            def mm(
+                weight: weight_warp_info,
+                clen: clen_warp_info,
+                B: B_warp_info,
+                seed: seed_warp_info,
+                posts: out_warp_info,
             ):
                 m = posts.shape[0]
                 weight0 = weight[0]
                 clen0 = clen[0]
                 seed0 = seed[0]
-
                 i_k = warp.tid()
                 state = warp.rand_init(seed0 + i_k)
-
-                out = warp.tile_astype(warp.tile_load(B[i_k], TITLE_SIZE), dtype=weight_dtype) * weight0
+                out = warp.tile_astype(warp.tile_load(B[i_k], TITLE_SIZE), dtype=weight.dtype) * weight0
                 i_m = warp.randi(state, 0, clen0)
                 while i_m < m:
                     warp.tile_atomic_add(posts[i_m], out)
                     i_m += warp.randi(state, 1, clen0)
-
         else:
-            def kernel(
-                weight: warp.array1d(dtype=weight_dtype),
-                clen: warp.array1d(dtype=clen_dtype),
-                B: warp.array2d(dtype=B_dtype),
-                seed: warp.array1d(dtype=seed_dtype),
-                _: warp.array2d(dtype=weight_dtype),
-                posts: warp.array2d(dtype=weight_dtype),
+            @warp.kernel
+            def mm(
+                weight: weight_warp_info,
+                clen: clen_warp_info,
+                B: B_warp_info,
+                seed: seed_warp_info,
+                posts: out_warp_info,
             ):
                 m = posts.shape[0]
                 weight0 = weight[0]
                 clen0 = clen[0]
                 seed0 = seed[0]
-
                 i_k = warp.tid()
                 state = warp.rand_init(seed0 + i_k)
-
                 out = warp.tile_load(B[i_k], TITLE_SIZE) * weight0
                 i_m = warp.randi(state, 0, clen0)
                 while i_m < m:
                     warp.tile_atomic_add(posts[i_m], out)
                     i_m += warp.randi(state, 1, clen0)
 
-    tile = (out_info.shape[0] if corder else B_info.shape[0])
-    return warp_kernel(kernel, tile=tile, input_output_aliases={4: 0}, block_dim=256)
+        def kernel(weight, clen, B, seed, _):
+            dim = B_info.shape[0]
+            fn = jax_kernel(mm, launch_dims=dim, num_outputs=0, in_out_argnames=['posts'])
+            return fn(weight, clen, B, seed, jnp.zeros(out_info.shape, out_info.dtype))
+
+    return kernel
 
 
 def _jitc_mm_homo_pallas_kernel_generator(
@@ -997,17 +956,20 @@ def _jitc_mm_homo_pallas_kernel_generator(
     corder: bool = True,
     **kwargs
 ):
+    from jax.experimental import pallas as pl
+    from jax.experimental.pallas.triton import atomic_add
+
     block_dim = generate_block_dim(B_info.shape[1], maximum=1024)
+    tile = out_info.shape[0] if corder else B_info.shape[0]
+    grid = (tile, pl.cdiv(B_info.shape[1], block_dim))
 
     if corder:
-        # JIT Matrix.T @ B
-        # - JIT matrix: [k, m]
-        # - B: [k, n]
-        def kernel(weight_ref, clen_ref, B_ref, seed_ref, _, post_ref):
+        # JIT Matrix.T @ B - JIT matrix: [k, m], B: [k, n]
+        def pallas_kernel_fn(weight_ref, clen_ref, B_ref, seed_ref, _, post_ref):
             k = B_ref.shape[0]
             weight = weight_ref[0]
-            clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
-            seed0 = seed_ref[0]  # Base random seed value
+            clen0 = clen_ref[0]
+            seed0 = seed_ref[0]
             i_m = pl.program_id(0)
             i_n_block = pl.program_id(1)
             i_n_start = block_dim * i_n_block
@@ -1015,12 +977,13 @@ def _jitc_mm_homo_pallas_kernel_generator(
 
             def body(data):
                 i, rng, out = data
-                events = pl.load(B_ref, (i, pl.dslice(i_n_start, block_dim)), mask=mask)
+                events = B_ref[i, pl.dslice(i_n_start, block_dim)]
+                events = jnp.where(mask, events, jnp.zeros_like(events))
                 if B_ref.dtype == jnp.bool_:
                     out = jnp.where(events, out + weight, out)
                 else:
-                    out += events * weight
-                i += rng.random_integers(1, clen0)
+                    out = out + events * weight
+                i = i + rng.random_integers(1, clen0)
                 return i, rng, out
 
             rng = LFSR88RNG(seed0 + i_m)
@@ -1030,30 +993,29 @@ def _jitc_mm_homo_pallas_kernel_generator(
                 body,
                 (rng.random_integers(0, clen0), rng, out)
             )
-            pl.store(post_ref, (i_m, pl.dslice(i_n_start, block_dim)), out, mask=mask)
-
-
+            post_ref[i_m, pl.dslice(i_n_start, block_dim)] = jnp.where(
+                mask, out, post_ref[i_m, pl.dslice(i_n_start, block_dim)]
+            )
     else:
-        # JIT Matrix.T @ B
-        # - JIT matrix: [k, m]
-        # - B: [k, n]
-        def kernel(weight_ref, clen_ref, B_ref, seed_ref, _, post_ref):
+        # JIT Matrix.T @ B - JIT matrix: [k, m], B: [k, n]
+        def pallas_kernel_fn(weight_ref, clen_ref, B_ref, seed_ref, _, post_ref):
             m = post_ref.shape[0]
             weight = weight_ref[0]
-            clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
-            seed0 = seed_ref[0]  # Base random seed value
+            clen0 = clen_ref[0]
+            seed0 = seed_ref[0]
             i_k = pl.program_id(0)
             i_n_block = pl.program_id(1)
             i_n_start = block_dim * i_n_block
             mask = i_n_start + jnp.arange(block_dim) < B_info.shape[1]
 
-            B_block = pl.load(B_ref, (i_k, pl.dslice(i_n_start, block_dim)), mask=mask)
+            B_block = B_ref[i_k, pl.dslice(i_n_start, block_dim)]
+            B_block = jnp.where(mask, B_block, jnp.zeros_like(B_block))
             out = jnp.asarray(B_block, dtype=post_ref.dtype) * weight
 
             def body(data):
                 i, rng = data
-                pl.atomic_add(post_ref, (i, pl.dslice(i_n_start, block_dim)), out, mask=mask)
-                i += rng.random_integers(1, clen0)
+                atomic_add(post_ref, (i, pl.dslice(i_n_start, block_dim)), out, mask=mask)
+                i = i + rng.random_integers(1, clen0)
                 return i, rng
 
             rng = LFSR88RNG(seed0 + i_k)
@@ -1063,15 +1025,16 @@ def _jitc_mm_homo_pallas_kernel_generator(
                 (rng.random_integers(0, clen0), rng)
             )
 
-    tile = (out_info.shape[0] if corder else B_info.shape[0])
-    grid = (tile, pl.cdiv(B_info.shape[1], block_dim))
+    def kernel(weight, clen, B, seed, _):
+        fn = pl.pallas_call(
+            pallas_kernel_fn,
+            grid=grid,
+            input_output_aliases={4: 0},
+            out_shape=kwargs['outs']
+        )
+        return fn(weight, clen, B, seed, _)
 
-    return pallas_kernel(
-        kernel,
-        tile=grid,
-        input_output_aliases={4: 0},
-        outs=kwargs['outs'],
-    )
+    return kernel
 
 
 def _jitc_mm_homo_jvp_w(w_dot, weight, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
@@ -1225,3 +1188,4 @@ binary_jitc_mm_homo_p.def_pallas_kernel('tpu', _jitc_mm_homo_pallas_kernel_gener
 binary_jitc_mm_homo_p.def_jvp_rule2(_jitc_mm_homo_jvp_w, None, _jitc_mm_homo_jvp_B, None, None)
 binary_jitc_mm_homo_p.def_transpose_rule(_jitc_mm_homo_transpose_rules)
 binary_jitc_mm_homo_p.def_batching_rule(_jitc_mm_homo_batching)
+binary_jitc_mm_homo_p.def_call(binary_jitc_mm_homo_p_call)
