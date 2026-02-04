@@ -18,8 +18,8 @@
 from typing import List, Dict
 
 from brainevent._coo.binary import (
-    event_coomv_p,
-    event_coomm_p,
+    binary_coomv_p,
+    binary_coomm_p,
 )
 from brainevent._coo.float import (
     coomv_p,
@@ -102,8 +102,8 @@ __all__ = [
 COO_PRIMITIVES = {
     'coomv_p': coomv_p,
     'coomm_p': coomm_p,
-    'event_coomv_p': event_coomv_p,
-    'event_coomm_p': event_coomm_p,
+    'binary_coomv_p': binary_coomv_p,
+    'binary_coomm_p': binary_coomm_p,
 }
 
 CSR_PRIMITIVES = {

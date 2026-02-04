@@ -19,7 +19,7 @@ import jax.numpy as jnp
 import pytest
 
 import brainevent
-from brainevent._coo.plasticity import coo_on_pre, coo_on_post
+from brainevent._coo.plasticity_with_binary import coo_on_pre, coo_on_post
 
 
 class Test_coo_on_pre:

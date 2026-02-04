@@ -16,8 +16,6 @@
 # -*- coding: utf-8 -*-
 
 
-from __future__ import annotations
-
 import operator
 from typing import Any, Tuple
 
@@ -128,7 +126,7 @@ class COO(u.sparse.SparseMatrix):
         *,
         nse: int | None = None,
         index_dtype: jax.typing.DTypeLike = np.int32
-    ) -> COO:
+    ) -> 'COO':
         """
         Create a COO (Coordinate Format) sparse matrix from a dense matrix.
 
@@ -155,7 +153,7 @@ class COO(u.sparse.SparseMatrix):
         coo = u.sparse.coo_fromdense(mat, nse=nse, index_dtype=index_dtype)
         return COO((coo.data, coo.row, coo.col), shape=coo.shape)
 
-    def _sort_indices(self) -> COO:
+    def _sort_indices(self) -> 'COO':
         """Return a copy of the COO matrix with sorted indices.
 
         The matrix is sorted by row indices and column indices per row.
@@ -175,7 +173,7 @@ class COO(u.sparse.SparseMatrix):
             rows_sorted=True
         )
 
-    def with_data(self, data: Data) -> COO:
+    def with_data(self, data: Data) -> 'COO':
         """
         Create a new COO matrix with the same structure but different data.
 
@@ -228,7 +226,7 @@ class COO(u.sparse.SparseMatrix):
         """
         return self.transpose()
 
-    def transpose(self, axes: Tuple[int, ...] | None = None) -> COO:
+    def transpose(self, axes: Tuple[int, ...] | None = None) -> 'COO':
         """
         Transpose the COO matrix.
 
@@ -432,7 +430,7 @@ class COO(u.sparse.SparseMatrix):
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
-    def __mul__(self, other: Data) -> COO:
+    def __mul__(self, other: Data) -> 'COO':
         """
         Perform element-wise multiplication of the COO matrix with another object.
 
@@ -451,7 +449,7 @@ class COO(u.sparse.SparseMatrix):
         """
         return self._binary_op(other, operator.mul)
 
-    def __rmul__(self, other: Data) -> COO:
+    def __rmul__(self, other: Data) -> 'COO':
         """
         Perform right element-wise multiplication of the COO matrix with another object.
 
@@ -470,7 +468,7 @@ class COO(u.sparse.SparseMatrix):
         """
         return self._binary_rop(other, operator.mul)
 
-    def __div__(self, other: Data) -> COO:
+    def __div__(self, other: Data) -> 'COO':
         """
         Perform element-wise division of the COO matrix by another object.
 
@@ -489,7 +487,7 @@ class COO(u.sparse.SparseMatrix):
         """
         return self._binary_op(other, operator.truediv)
 
-    def __rdiv__(self, other: Data) -> COO:
+    def __rdiv__(self, other: Data) -> 'COO':
         """
         Perform right element-wise division of the COO matrix by another object.
 
@@ -508,7 +506,7 @@ class COO(u.sparse.SparseMatrix):
         """
         return self._binary_rop(other, operator.truediv)
 
-    def __truediv__(self, other: Data) -> COO:
+    def __truediv__(self, other: Data) -> 'COO':
         """
         Perform true division of the COO matrix by another object.
 
@@ -526,7 +524,7 @@ class COO(u.sparse.SparseMatrix):
         """
         return self.__div__(other)
 
-    def __rtruediv__(self, other: Data) -> COO:
+    def __rtruediv__(self, other: Data) -> 'COO':
         """
         Perform right true division of the COO matrix by another object.
 
@@ -544,7 +542,7 @@ class COO(u.sparse.SparseMatrix):
         """
         return self.__rdiv__(other)
 
-    def __add__(self, other: Data) -> COO:
+    def __add__(self, other: Data) -> 'COO':
         """
         Perform element-wise addition of the COO matrix with another object.
 
@@ -563,7 +561,7 @@ class COO(u.sparse.SparseMatrix):
         """
         return self._binary_op(other, operator.add)
 
-    def __radd__(self, other: Data) -> COO:
+    def __radd__(self, other: Data) -> 'COO':
         """
         Perform right element-wise addition of the COO matrix with another object.
 
@@ -582,7 +580,7 @@ class COO(u.sparse.SparseMatrix):
         """
         return self._binary_rop(other, operator.add)
 
-    def __sub__(self, other: Data) -> COO:
+    def __sub__(self, other: Data) -> 'COO':
         """
         Perform element-wise subtraction of another object from the COO matrix.
 
@@ -601,7 +599,7 @@ class COO(u.sparse.SparseMatrix):
         """
         return self._binary_op(other, operator.sub)
 
-    def __rsub__(self, other: Data) -> COO:
+    def __rsub__(self, other: Data) -> 'COO':
         """
         Perform right element-wise subtraction of the COO matrix from another object.
 
@@ -620,7 +618,7 @@ class COO(u.sparse.SparseMatrix):
         """
         return self._binary_rop(other, operator.sub)
 
-    def __mod__(self, other: Data) -> COO:
+    def __mod__(self, other: Data) -> 'COO':
         """
         Perform element-wise modulo operation of the COO matrix with another object.
 
@@ -639,7 +637,7 @@ class COO(u.sparse.SparseMatrix):
         """
         return self._binary_op(other, operator.mod)
 
-    def __rmod__(self, other: Data) -> COO:
+    def __rmod__(self, other: Data) -> 'COO':
         """
         Perform right element-wise modulo operation of the COO matrix with another object.
 
