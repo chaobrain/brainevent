@@ -145,3 +145,13 @@ __all__ = [
     'dense_on_post',
 
 ]
+
+
+def __getattr__(name):
+    import warnings
+    if name == 'csr_on_pre':
+        warnings.warn(
+            f'csr_on_pre is deprecated, use {plast_csr_on_binary_pre.__name__} instead',
+        )
+        return plast_csr_on_binary_pre
+    raise AttributeError(name)

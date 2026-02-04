@@ -36,7 +36,7 @@ def _fixed_num_mv_numba_kernel_generator(
 
     if transpose:
         # fixed pre connection number
-        if jnp.size(weight_info) == 1:
+        if weight_info.size == 1:
             @numba.njit(fastmath=True, cache=True)
             def ell_mv(weights, indices, vector, _, posts):
                 posts[:] = 0.
@@ -55,7 +55,7 @@ def _fixed_num_mv_numba_kernel_generator(
 
     else:
         # fixed post connection number
-        if jnp.size(weight_info) == 1:
+        if weight_info.size == 1:
             @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
             def ell_mv(weights, indices, vector, _, posts):
                 w = weights[0]
@@ -94,7 +94,7 @@ def _fixed_num_mv_warp_kernel_generator(
         # vector: [k]
 
         # fixed pre connection number
-        if jnp.size(weight_info) == 1:
+        if weight_info.size == 1:
             @warp.kernel
             def ell_mv(
                 weights: weight_warp_info,
@@ -131,7 +131,7 @@ def _fixed_num_mv_warp_kernel_generator(
         # Sparse Matrix: [m, k]
         # vector: [k]
 
-        if jnp.size(weight_info) == 1:
+        if weight_info.size == 1:
             @warp.kernel
             def ell_mv(
                 weights: weight_warp_info,
@@ -182,7 +182,7 @@ def _fixed_num_mv_pallas_kernel_generator(
         raise ValueError("shape must be a tuple of length 2")
     n_pre, n_post = shape
     n_conn = indices_info.shape[1]
-    homo = jnp.size(weight_info) == 1
+    homo = weight_info.size == 1
     block_dim = generate_block_dim(indices_info.shape[1], maximum=128)
 
     if transpose:
@@ -473,7 +473,7 @@ def _fixed_num_mm_numba_kernel_generator(
         # matrix: [k, n]
         #
 
-        if jnp.size(weight_info) == 1:
+        if weight_info.size == 1:
             @numba.njit(fastmath=True, cache=True)
             def ell_mv(weights, indices, matrix, _, posts):
                 posts[:] = 0.
@@ -497,7 +497,7 @@ def _fixed_num_mm_numba_kernel_generator(
         # matrix: [k, n]
         #
 
-        if jnp.size(weight_info) == 1:
+        if weight_info.size == 1:
             @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
             def ell_mv(weights, indices, matrix, _, posts):
                 w = weights[0]
@@ -540,7 +540,7 @@ def _fixed_num_mm_pallas_kernel_generator(
         raise ValueError("shape must be a tuple of length 2")
     n_pre, n_post = shape
     n_conn = indices_info.shape[1]
-    homo = jnp.size(weight_info) == 1
+    homo = weight_info.size == 1
     block_k = generate_block_dim(indices_info.shape[1], maximum=128)
     block_n = generate_block_dim(matrix_info.shape[1], maximum=128)
 

@@ -27,7 +27,7 @@ def _get_coo(n_pre, n_post, prob, replace=True):
     if replace:
         cols = np.random.randint(0, n_post, size=(n_pre * n_conn,))
     else:
-        cols = brainstate.compile.for_loop(
+        cols = brainstate.transform.for_loop(
             lambda *args: brainstate.random.choice(n_post, n_conn, replace=False),
             length=n_pre
         ).flatten()

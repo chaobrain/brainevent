@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+import numbers
 from typing import Union, Optional
 
 import brainunit as u
@@ -33,13 +34,13 @@ __all__ = [
 
 
 def plast_csr_on_binary_pre(
-    weight: Union[u.Quantity, jax.Array],
+    weight: Union[u.Quantity, jax.Array, numbers.Number],
     indices: Union[np.ndarray, jax.Array],
     indptr: Union[np.ndarray, jax.Array],
     pre_spike: jax.Array,
     post_trace: Union[u.Quantity, jax.Array],
-    w_min: Optional[Union[u.Quantity, jax.Array]] = None,
-    w_max: Optional[Union[u.Quantity, jax.Array]] = None,
+    w_min: Optional[Union[u.Quantity, jax.Array, numbers.Number]] = None,
+    w_max: Optional[Union[u.Quantity, jax.Array, numbers.Number]] = None,
     *,
     shape: MatrixShape,
 ):
@@ -269,8 +270,8 @@ def csr2csc_on_post(
     weight_indices: Union[np.ndarray, jax.Array],
     pre_trace: Union[u.Quantity, jax.Array],
     post_spike: jax.Array,
-    w_min: Optional[Union[u.Quantity, jax.Array]] = None,
-    w_max: Optional[Union[u.Quantity, jax.Array]] = None,
+    w_min: Optional[Union[u.Quantity, jax.Array, numbers.Number]] = None,
+    w_max: Optional[Union[u.Quantity, jax.Array, numbers.Number]] = None,
     *,
     shape: MatrixShape,
 ):
@@ -520,5 +521,3 @@ csr2csc_on_post_p.def_numba_kernel(_csr2csc_on_post_numba_kernel_generator)
 csr2csc_on_post_p.def_warp_kernel(_csr2csc_on_post_warp_kernel_generator)
 csr2csc_on_post_p.def_pallas_kernel('gpu', _csr2csc_on_post_pallas_kernel_generator)
 csr2csc_on_post_p.def_pallas_kernel('tpu', _csr2csc_on_post_pallas_kernel_generator)
-
-csr_on_pre = plast_csr_on_binary_pre

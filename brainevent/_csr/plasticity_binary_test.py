@@ -22,7 +22,7 @@ import pytest
 import scipy.sparse as sp
 
 import brainevent
-from brainevent._csr.plasticity_with_binary import plast_csr_on_binary_pre, csr2csc_on_post
+from brainevent._csr.plasticity_binary import plast_csr_on_binary_pre, csr2csc_on_post
 
 
 class Test_csr_on_pre:

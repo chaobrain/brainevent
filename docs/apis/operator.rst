@@ -46,7 +46,6 @@ GPU/TPU kernel definition using JAX Pallas.
    :toctree: generated/
    :template: classtemplate.rst
 
-    pallas_kernel
     LFSR88RNG
     LFSR113RNG
     LFSR128RNG
