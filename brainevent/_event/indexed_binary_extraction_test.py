@@ -13,19 +13,15 @@
 # limitations under the License.
 # ==============================================================================
 
-import pytest
-
 import jax
 import jax.numpy as jnp
-from jax.interpreters import ad
+import pytest
 
 from brainevent._event.indexed_binary_extraction import (
     binary_array_index,
-    binary_1d_array_index_p_call,
     binary_1d_array_index_p,
     _binary_1d_array_index_numba_kernel,
     _binary_1d_array_index_warp_kernel,
-    _binary_1d_array_index_pallas_kernel,
 )
 
 
@@ -184,7 +180,7 @@ class TestBinary1DArrayIndexKernels:
             import warp
         except ImportError:
             pytest.skip("Warp not installed")
-        
+
         spikes_info = jax.ShapeDtypeStruct((5,), jnp.bool_)
         indices_info = jax.ShapeDtypeStruct((5,), jnp.int32)
         count_info = jax.ShapeDtypeStruct((1,), jnp.int32)
@@ -193,18 +189,6 @@ class TestBinary1DArrayIndexKernels:
             spikes_info=spikes_info,
             indices_info=indices_info,
             count_info=count_info,
-            outs=[indices_info, count_info],
-        )
-        assert kernel is not None
-
-    def test_pallas_kernel_generator(self):
-        """Test Pallas kernel generator."""
-        spikes_info = jax.ShapeDtypeStruct((64,), jnp.bool_)
-        indices_info = jax.ShapeDtypeStruct((64,), jnp.int32)
-        count_info = jax.ShapeDtypeStruct((1,), jnp.int32)
-
-        kernel = _binary_1d_array_index_pallas_kernel(
-            spikes_info=spikes_info,
             outs=[indices_info, count_info],
         )
         assert kernel is not None
