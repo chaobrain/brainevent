@@ -20,7 +20,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import cdiv, generate_block_dim
-from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, jaxtype_to_warptype
+from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 
 
 def binary_vec_dot_dense_mat(binary_index, weights):
@@ -68,52 +68,67 @@ def binary_vec_dot_dense_mat(binary_index, weights):
     return u.maybe_decimal(r[0] * wunit)
 
 
-def _binary_vec_dot_dense_mat_numba_kernel_generator(
-    **kwargs
-):
-    def _kernel(spikes, indices, count, weights, out):
+def _binary_vec_dot_dense_mat_numba_kernel(**kwargs):
+    import numba
+
+    @numba.njit(fastmath=True, cache=True)
+    def kernel(spikes, indices, count, weights, out):
         out[:] = 0.
         for i in range(count[0]):
             out += weights[indices[i]]
 
-    return numba_kernel(_kernel)
+    def run(spikes, indices, count, weights):
+        return numba_kernel(kernel, outs=kwargs['outs'])(spikes, indices, count, weights)
+
+    return run
 
 
-def _binary_vec_dot_dense_mat_warp_kernel_generator(
+def _binary_vec_dot_dense_mat_warp_kernel(
     spikes_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
     count_info: jax.ShapeDtypeStruct,
     weights_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    import warp  # pylint: disable=import-outside-toplevel
-    block_dim = generate_block_dim(weights_info.shape[1], maximum=128)
-    weight_dtype = jaxtype_to_warptype(weights_info.dtype)
+    import warp
+    from warp.jax_experimental import jax_kernel
 
+    n = weights_info.shape[1]
+    spike_warp_info = jaxinfo_to_warpinfo(spikes_info)
+    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
+    count_warp_info = jaxinfo_to_warpinfo(count_info)
+    weight_warp_info = jaxinfo_to_warpinfo(weights_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    @warp.kernel
     def kernel(
-        spikes: jaxinfo_to_warpinfo(spikes_info),
-        indices: jaxinfo_to_warpinfo(indices_info),
-        count: jaxinfo_to_warpinfo(count_info),
-        weights: jaxinfo_to_warpinfo(weights_info),
-        out: warp.array1d(dtype=weight_dtype),
+        spikes: spike_warp_info,
+        indices: indices_warp_info,
+        count: count_warp_info,
+        weights: weight_warp_info,
+        out: out_warp_info,
     ):
-        i_col_block = warp.tid()
-        temp = warp.tile_zeros(shape=(block_dim,), dtype=weight_dtype)
-        for j in range(count[0]):
-            temp += warp.tile_load(weights[indices[j]], shape=(block_dim,), offset=(i_col_block * block_dim,))
-        warp.tile_store(out, temp, offset=(i_col_block * block_dim,))
+        j = warp.tid()
+        r = weights.dtype(0.)
+        for i in range(count[0]):
+            r += weights[indices[i], j]
+        out[j] = r
 
-    return warp_kernel(
-        kernel,
-        tile=(cdiv(weights_info.shape[1], block_dim),),
-        block_dim=block_dim,
-    )
+    def run(spikes, indices, count, weights):
+        out_info = kwargs['outs'][0]
+        fn = jax_kernel(kernel, launch_dims=n, num_outputs=1, output_dims={'out': out_info.shape})
+        return fn(spikes, indices, count, weights)
+
+    return run
 
 
-def _binary_vec_dot_dense_mat_pallas_kernel_generator(
+def _binary_vec_dot_dense_mat_pallas_kernel(
     weights_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
+    from jax.experimental import pallas as pl
+    from jax.experimental.pallas import triton as plt
+
     block_dim = generate_block_dim(weights_info.shape[1], maximum=128)
 
     def kernel(
@@ -121,25 +136,37 @@ def _binary_vec_dot_dense_mat_pallas_kernel_generator(
         indices_ref,  # [n_neuron]
         count_ref,  # [1]
         weights_ref,  # [n_neuron, n_output]
-        o_ref,  # [n_output]
+        out_ref,  # [n_output]
     ):
         i_block = pl.program_id(0)
-        i_start = i_block * block_dim
-        mask = i_start + jnp.arange(block_dim) < weights_ref.shape[1]
+        col_start = i_block * block_dim
+        cols = col_start + jnp.arange(block_dim)
+        mask = cols < weights_ref.shape[1]
+        safe_cols = jnp.where(mask, cols, 0)
 
         def fn(i, temp):
-            i_col = indices_ref[i]
-            temp += pl.load(weights_ref, (i_col, pl.dslice(i_start, block_dim)), mask=mask)
-            return temp
+            i_row = indices_ref[i]
+            weight_row = plt.load(weights_ref[i_row, safe_cols])
+            weight_row = jnp.where(mask, weight_row, 0.0)
+            return temp + weight_row
 
-        out = jax.lax.fori_loop(0, count_ref[0], fn, jnp.zeros([block_dim], dtype=weights_ref.dtype))
-        pl.store(o_ref, pl.dslice(i_start, block_dim), out, mask=mask)
+        out = jax.lax.fori_loop(
+            0,
+            count_ref[0],
+            fn,
+            jnp.zeros([block_dim], dtype=weights_ref.dtype)
+        )
+        plt.store(out_ref[safe_cols], out, mask=mask)
 
-    return pallas_kernel(kernel, outs=kwargs['outs'], tile=(cdiv(weights_info.shape[1], block_dim),))
+    def run(spikes, indices, count, weights):
+        fn = pl.pallas_call(kernel, grid=(cdiv(weights_info.shape[1], block_dim),), out_shape=kwargs['outs'])
+        return fn(spikes, indices, count, weights)
+
+    return run
 
 
 def _binary_vec_dot_dense_mat_jvp_spikes(spikes_dot, spikes, indices, count, weights, **kwargs):
-    return [spikes_dot @ weights]
+    return [jnp.zeros((weights.shape[1],), dtype=weights.dtype)]
 
 
 def _binary_vec_dot_dense_mat_jvp_weights(weights_dot, spikes, indices, count, weights, **kwargs):
@@ -151,16 +178,29 @@ def _binary_vec_dot_dense_mat_transpose(ct, spikes, indices, count, weights, **k
         raise ValueError("Cannot transpose with respect to indices.")
     if ad.is_undefined_primal(count):
         raise ValueError("Cannot transpose with respect to count.")
+    ct = ct[0]
     if ad.is_undefined_primal(spikes):
-        return weights @ ct[0], indices, count, weights
-    elif ad.is_undefined_primal(weights):
-        return spikes, indices, count, jnp.outer(spikes, ct[0])
-    else:
-        raise ValueError("Cannot transpose with respect to both spikes and weights.")
+        return ad.Zero(spikes), indices, count, weights
+    if ad.is_undefined_primal(weights):
+        if type(ct) is ad.Zero:
+            return spikes, indices, count, ad.Zero(weights)
+        mask = jnp.arange(indices.shape[0]) < count[0]
+        updates = jnp.where(mask[:, None], ct, 0.0)
+        zeros = jnp.zeros(weights.aval.shape, dtype=weights.aval.dtype)
+        ct_weights = zeros.at[indices].add(updates)
+        return spikes, indices, count, ct_weights
+    raise ValueError("Cannot transpose with respect to both spikes and weights.")
 
 
-def _binary_vec_dot_dense_mat_batching():
-    pass
+def _binary_vec_dot_dense_mat_batching(args, axes, **kwargs):
+    if axes == (None, None, None, 0):
+        spikes, indices, count, weights = args
+        mask = jnp.arange(indices.shape[0]) < count[0]
+        gathered = jnp.take(weights, indices, axis=1)
+        updates = jnp.where(mask[None, :, None], gathered, 0.0)
+        r = updates.sum(axis=1)
+        return [r], [0]
+    return general_batching_rule(_binary_vec_dot_dense_mat_p, args, axes, **kwargs)
 
 
 def _binary_vec_dot_dense_mat_p_call(spikes, indices, count, weights):
@@ -186,16 +226,18 @@ def _binary_vec_dot_dense_mat_p_call(spikes, indices, count, weights):
 
 
 _binary_vec_dot_dense_mat_p = XLACustomKernel('binary_vec_dot_dense_matrix')
-_binary_vec_dot_dense_mat_p.def_numba_kernel(_binary_vec_dot_dense_mat_numba_kernel_generator)
-_binary_vec_dot_dense_mat_p.def_warp_kernel(_binary_vec_dot_dense_mat_warp_kernel_generator)
-_binary_vec_dot_dense_mat_p.def_pallas_kernel('gpu', _binary_vec_dot_dense_mat_pallas_kernel_generator)
-_binary_vec_dot_dense_mat_p.def_pallas_kernel('tpu', _binary_vec_dot_dense_mat_pallas_kernel_generator)
+_binary_vec_dot_dense_mat_p.def_numba_kernel(_binary_vec_dot_dense_mat_numba_kernel)
+_binary_vec_dot_dense_mat_p.def_warp_kernel(_binary_vec_dot_dense_mat_warp_kernel)
+_binary_vec_dot_dense_mat_p.def_pallas_kernel('gpu', _binary_vec_dot_dense_mat_pallas_kernel)
+_binary_vec_dot_dense_mat_p.def_pallas_kernel('tpu', _binary_vec_dot_dense_mat_pallas_kernel)
 _binary_vec_dot_dense_mat_p.def_jvp_rule2(
     _binary_vec_dot_dense_mat_jvp_spikes,
     None, None,
     _binary_vec_dot_dense_mat_jvp_weights,
 )
 _binary_vec_dot_dense_mat_p.def_transpose_rule(_binary_vec_dot_dense_mat_transpose)
+_binary_vec_dot_dense_mat_p.def_batching_rule(_binary_vec_dot_dense_mat_batching)
+_binary_vec_dot_dense_mat_p.def_call(_binary_vec_dot_dense_mat_p_call)
 
 
 def dense_mat_dot_binary_vec(weights, binary_arr):
@@ -284,98 +326,116 @@ def binary_mat_dot_dense_mat(binary_arr, weights):
     return u.maybe_decimal(r[0] * wunit)
 
 
-def _binary_mat_dot_dense_mat_numba_kernel_generator(
-    **kwargs
-):
-    def _kernel(spikes, indices, count, weights, out):
-        for i_row in range(indices.shape[0]):
+def _binary_mat_dot_dense_mat_numba_kernel(**kwargs):
+    import numba
+
+    @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+    def kernel(spikes, indices, count, weights, out):
+        for i_row in numba.prange(indices.shape[0]):
             temp = np.zeros(weights.shape[1], dtype=weights.dtype)
             for i_col in range(count[i_row]):
                 temp += weights[indices[i_row, i_col]]
             out[i_row] = temp
 
-    return numba_kernel(_kernel, parallel=True)
+    def run(spikes, indices, count, weights):
+        return numba_kernel(kernel, outs=kwargs['outs'])(spikes, indices, count, weights)
+
+    return run
 
 
-def _binary_mat_dot_dense_mat_warp_kernel_generator(
+def _binary_mat_dot_dense_mat_warp_kernel(
     spikes_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
     count_info: jax.ShapeDtypeStruct,
     weights_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    import warp  # pylint: disable=import-outside-toplevel
-    block_dim = generate_block_dim(weights_info.shape[1], maximum=128)
-    weight_dtype = jaxtype_to_warptype(weights_info.dtype)
+    import warp
+    from warp.jax_experimental import jax_kernel
 
+    batch = indices_info.shape[0]
+    n_out = weights_info.shape[1]
+    spike_warp_info = jaxinfo_to_warpinfo(spikes_info)
+    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
+    count_warp_info = jaxinfo_to_warpinfo(count_info)
+    weight_warp_info = jaxinfo_to_warpinfo(weights_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    @warp.kernel
     def kernel(
-        spikes: jaxinfo_to_warpinfo(spikes_info),
-        indices: jaxinfo_to_warpinfo(indices_info),
-        count: jaxinfo_to_warpinfo(count_info),
-        weights: jaxinfo_to_warpinfo(weights_info),
-        out: warp.array2d(dtype=weight_dtype),
+        spikes: spike_warp_info,
+        indices: indices_warp_info,
+        count: count_warp_info,
+        weights: weight_warp_info,
+        out: out_warp_info,
     ):
-        i_row_block, i_col_block = warp.tid()
-        temp = warp.tile_zeros(shape=(block_dim,), dtype=weight_dtype)
-        n_count = count[i_row_block]
-        for j in range(n_count):
-            temp += warp.tile_load(
-                weights[indices[i_row_block, j]],
-                shape=(block_dim,),
-                offset=(i_col_block * block_dim,)
-            )
-        warp.tile_store(out[i_row_block], temp, offset=(i_col_block * block_dim,))
+        i_row = warp.tid()
+        for j in range(n_out):
+            r = weights.dtype(0.)
+            for k in range(count[i_row]):
+                r += weights[indices[i_row, k], j]
+            out[i_row, j] = r
 
-    return warp_kernel(
-        kernel,
-        tile=(indices_info.shape[0], cdiv(weights_info.shape[1], block_dim),),
-        block_dim=block_dim,
-    )
+    def run(spikes, indices, count, weights):
+        out_info = kwargs['outs'][0]
+        fn = jax_kernel(kernel, launch_dims=batch, num_outputs=1, output_dims={'out': out_info.shape})
+        return fn(spikes, indices, count, weights)
+
+    return run
 
 
-def _binary_mat_dot_dense_mat_pallas_kernel_generator(
+def _binary_mat_dot_dense_mat_pallas_kernel(
     spikes_info: jax.ShapeDtypeStruct,
     weights_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
+    from jax.experimental import pallas as pl
+    from jax.experimental.pallas import triton as plt
+
     block_dim = generate_block_dim(weights_info.shape[1], maximum=128)
 
     def kernel(
-        spikes_ref,  # [n_neuron]
-        indices_ref,  # [n_neuron]
-        count_ref,  # [1]
-        weights_ref,  # [n_neuron, n_output]
-        o_ref,  # [n_output]
+        spikes_ref,  # [batch, n_spikes]
+        indices_ref,  # [batch, n_spikes]
+        count_ref,  # [batch]
+        weights_ref,  # [n_input, n_output]
+        out_ref,  # [batch, n_output]
     ):
         i_row = pl.program_id(0)
         i_block = pl.program_id(1)
-        i_start = i_block * block_dim
-        col_mask = (i_start + jnp.arange(block_dim) < weights_ref.shape[1])[None, :]
+        col_start = i_block * block_dim
+        cols = col_start + jnp.arange(block_dim)
+        mask = cols < weights_ref.shape[1]
+        safe_cols = jnp.where(mask, cols, 0)
         count = count_ref[i_row]
 
-        def fn(i_index_block, temp):
-            i_index = i_index_block * block_dim
-            ind_mask = i_index + jnp.arange(block_dim) < count
-            indices = pl.load(indices_ref, pl.dslice(i_index, block_dim), mask=ind_mask)
-            weight = pl.load(weights_ref, (indices, pl.dslice(i_start, block_dim)), mask=ind_mask[:, None] & col_mask)
-            temp += weight.sum(axis=0)
-            return temp
+        def fn(i_index, temp):
+            idx = indices_ref[i_row, i_index]
+            weight_row = plt.load(weights_ref[idx, safe_cols])
+            weight_row = jnp.where(mask, weight_row, 0.0)
+            return temp + weight_row
 
         out = jax.lax.fori_loop(
-            0, (count + block_dim - 1) // block_dim, fn,
+            0,
+            count,
+            fn,
             jnp.zeros([block_dim], dtype=weights_ref.dtype)
         )
-        pl.store(o_ref, (i_row, pl.dslice(i_start, block_dim)), out, mask=col_mask)
+        plt.store(out_ref[i_row, safe_cols], out, mask=mask)
 
-    return pallas_kernel(
-        kernel,
-        outs=kwargs['outs'],
-        tile=(spikes_info.shape[0], cdiv(weights_info.shape[1], block_dim))
-    )
+    def run(spikes, indices, count, weights):
+        fn = pl.pallas_call(
+            kernel,
+            grid=(spikes_info.shape[0], cdiv(weights_info.shape[1], block_dim)),
+            out_shape=kwargs['outs'],
+        )
+        return fn(spikes, indices, count, weights)
+
+    return run
 
 
 def _binary_mat_dot_dense_mat_jvp_spikes(spikes_dot, spikes, indices, count, weights, **kwargs):
-    return [spikes_dot @ weights]
+    return [jnp.zeros((spikes.shape[0], weights.shape[1]), dtype=weights.dtype)]
 
 
 def _binary_mat_dot_dense_mat_jvp_weights(weights_dot, spikes, indices, count, weights, **kwargs):
@@ -387,13 +447,22 @@ def _binary_mat_dot_dense_mat_transpose(ct, spikes, indices, count, weights, **k
         raise ValueError("Cannot transpose with respect to indices.")
     if ad.is_undefined_primal(count):
         raise ValueError("Cannot transpose with respect to count.")
+    ct = ct[0]
     if ad.is_undefined_primal(spikes):
-        return ct[0] @ weights.T, indices, count, weights
-    elif ad.is_undefined_primal(weights):
-        # return spikes, indices, count, dense_mat_dot_binary_mat()
-        return spikes, indices, count, spikes.T @ ct[0]
-    else:
-        raise ValueError("Cannot transpose with respect to both spikes and weights.")
+        return ad.Zero(spikes), indices, count, weights
+    if ad.is_undefined_primal(weights):
+        if type(ct) is ad.Zero:
+            return spikes, indices, count, ad.Zero(weights)
+        mask = jnp.arange(indices.shape[1])[None, :] < count[:, None]
+        updates = jnp.where(mask[:, :, None], ct[:, None, :], 0.0)
+        zeros = jnp.zeros(weights.aval.shape, dtype=weights.aval.dtype)
+        ct_weights = zeros.at[indices].add(updates)
+        return spikes, indices, count, ct_weights
+    raise ValueError("Cannot transpose with respect to both spikes and weights.")
+
+
+def _binary_mat_dot_dense_mat_batching(args, axes, **kwargs):
+    return general_batching_rule(_binary_mat_dot_dense_mat_p, args, axes, **kwargs)
 
 
 def _binary_mat_dot_dense_mat_p_call(spikes, indices, count, weights):
@@ -419,16 +488,18 @@ def _binary_mat_dot_dense_mat_p_call(spikes, indices, count, weights):
 
 
 _binary_mat_dot_dense_mat_p = XLACustomKernel('binary_mat_dot_dense_matrix')
-_binary_mat_dot_dense_mat_p.def_numba_kernel(_binary_mat_dot_dense_mat_numba_kernel_generator)
-_binary_mat_dot_dense_mat_p.def_warp_kernel(_binary_mat_dot_dense_mat_warp_kernel_generator)
-_binary_mat_dot_dense_mat_p.def_pallas_kernel('gpu', _binary_mat_dot_dense_mat_pallas_kernel_generator)
-_binary_mat_dot_dense_mat_p.def_pallas_kernel('tpu', _binary_mat_dot_dense_mat_pallas_kernel_generator)
+_binary_mat_dot_dense_mat_p.def_numba_kernel(_binary_mat_dot_dense_mat_numba_kernel)
+_binary_mat_dot_dense_mat_p.def_warp_kernel(_binary_mat_dot_dense_mat_warp_kernel)
+_binary_mat_dot_dense_mat_p.def_pallas_kernel('gpu', _binary_mat_dot_dense_mat_pallas_kernel)
+_binary_mat_dot_dense_mat_p.def_pallas_kernel('tpu', _binary_mat_dot_dense_mat_pallas_kernel)
 _binary_mat_dot_dense_mat_p.def_jvp_rule2(
     _binary_mat_dot_dense_mat_jvp_spikes,
     None, None,
     _binary_mat_dot_dense_mat_jvp_weights,
 )
 _binary_mat_dot_dense_mat_p.def_transpose_rule(_binary_mat_dot_dense_mat_transpose)
+_binary_mat_dot_dense_mat_p.def_batching_rule(_binary_mat_dot_dense_mat_batching)
+_binary_mat_dot_dense_mat_p.def_call(_binary_mat_dot_dense_mat_p_call)
 
 
 def dense_mat_dot_binary_mat(weights, binary_arr):
