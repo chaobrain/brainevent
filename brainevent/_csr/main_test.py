@@ -24,8 +24,6 @@ import pytest
 
 import brainevent
 
-brainevent.config.gpu_kernel_backend = 'warp'
-
 
 def gen_events(shape, prob=0.5, asbool=True):
     events = brainstate.random.random(shape) < prob
