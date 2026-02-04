@@ -278,12 +278,15 @@ class XLACustomKernel:
                         f"on platform '{platform}' in primitive '{self.name}'."
                     )
 
-            # Check if fallback is enabled
-            if preferred_backend is None:
+            # Determine whether to use fallback
+            use_fallback = self.enable_fallback and (preferred_backend is None)
+
+            if not use_fallback:
+                # No fallback: just use the first kernel
                 kernel = kernels[0].kernel_generator(**kwargs)
                 return kernel(*args)
-
             else:
+                # Fallback enabled: try kernels in order
                 errors = []
                 for entry in kernels:
                     try:
@@ -291,23 +294,15 @@ class XLACustomKernel:
                         return kernel(*args)
                     except (ImportError, ModuleNotFoundError) as e:
                         errors.append((entry.backend, type(e).__name__, str(e)))
-                        if not self.enable_fallback:
-                            raise e
                         continue
                     except KernelNotAvailableError as e:
                         errors.append((entry.backend, type(e).__name__, str(e)))
-                        if not self.enable_fallback:
-                            raise e
                         continue
                     except KernelCompilationError as e:
                         errors.append((entry.backend, type(e).__name__, str(e)))
-                        if not self.enable_fallback:
-                            raise e
                         continue
                     except Exception as e:
                         errors.append((entry.backend, type(e).__name__, str(e)))
-                        if not self.enable_fallback:
-                            raise e
                         continue
 
                 # All kernels failed

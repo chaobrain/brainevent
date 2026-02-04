@@ -1187,7 +1187,6 @@ def _csrmm_pallas_gpu_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import atomic_add
 
     m, k = shape
     n = vector_info.shape[1]
@@ -1415,7 +1414,7 @@ def binary_csrmm_p_call(
     if transpose:
         assert shape[0] == B.shape[0], "Shape mismatch for non-transpose operation."
     else:
-        assert shape[1] == B.shape[0], "Shape mismatch for transpose operation."
+        assert shape[1] == B.shape[0], f"Shape mismatch for transpose operation. {shape[1]} != {B.shape[0]} "
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
     # Check if weights is a scalar. If so, convert it to a one-dimensional array.

@@ -310,7 +310,6 @@ class TestBatchingVectorCSR:
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
 
-    @pytest.mark.skip
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_indices_vjp(self, homo_w):
         b, m, n, p = 10, 20, 40, 0.1
@@ -348,7 +347,6 @@ class TestBatchingVectorCSR:
 
         return r1, r2
 
-    @pytest.mark.skip
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_vector_jvp(self, homo_w):
         b, m, n = 10, 20, 40
@@ -361,7 +359,6 @@ class TestBatchingVectorCSR:
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
 
-    @pytest.mark.skip
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_data_jvp(self, homo_w):
         b, m, n = 10, 20, 40
@@ -374,7 +371,6 @@ class TestBatchingVectorCSR:
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
 
-    @pytest.mark.skip
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_indices_jvp(self, homo_w):
         b, m, n, p = 10, 20, 40, 0.1
@@ -481,21 +477,23 @@ class TestBatchingMatrixCSR:
 
         return r1, r2
 
-    @pytest.mark.skip  # TODO: fix bugs
     @pytest.mark.parametrize('transpose', [True, False])
     def test_vmap_matrix_vjp(self, transpose):
         b, k, m, n = 10, 15, 20, 40
-        xs = brainstate.random.rand(b, k, m) < 0.1
+        if transpose:
+            xs = brainstate.random.rand(b, n, m) < 0.1
+        else:
+            xs = brainstate.random.rand(b, n, k) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
         data = braintools.init.Normal(0., 1.)(indices.shape)
         r1, r2 = brainstate.transform.vmap2(
-            lambda x: self._run_vjp(x, data, indices, indptr, m, n, transpose=transpose))(xs)
+            lambda x: self._run_vjp(x, data, indices, indptr, m, n, transpose=transpose)
+        )(xs)
 
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
 
-    @pytest.mark.skip  # TODO: fix bugs
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_data_vjp(self, homo_w):
         b, k, m, n = 10, 15, 20, 40
@@ -508,7 +506,6 @@ class TestBatchingMatrixCSR:
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
 
-    @pytest.mark.skip  # TODO: fix bugs
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_indices_vjp(self, homo_w):
         b, k, m, n, p = 10, 15, 20, 40, 0.1
@@ -570,7 +567,6 @@ class TestBatchingMatrixCSR:
         assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
         assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
 
-    @pytest.mark.skip
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_indices_jvp(self, homo_w):
         b, k, m, n, p = 10, 15, 20, 40, 0.1
