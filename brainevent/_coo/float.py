@@ -362,17 +362,7 @@ def _coomv_jvp_weights(data_dot, data, row, col, vector, *, shape, transpose, **
     return coomv_p_call(data_dot, row, col, vector, shape=shape, transpose=transpose)
 
 
-def _coomv_transpose_rule(
-    ct,
-    data,
-    row,
-    col,
-    v,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
+def _coomv_transpose_rule(ct, data, row, col, v, *, shape, transpose, **kwargs):
     assert not ad.is_undefined_primal(row)
     assert not ad.is_undefined_primal(col)
     ct = ct[0]
@@ -407,11 +397,7 @@ def _coomv_transpose_rule(
         return ct_values, row, col, v
 
 
-def _coomv_batching(
-    args,
-    axes,
-    **kwargs
-):
+def _coomv_batching(args, axes, **kwargs):
     if tuple(axes) == (None, None, None, 0):
         assert args[3].ndim == 2, 'Batching axis 0 requires 2D input.'
         r = coomm_p_call(
@@ -832,17 +818,7 @@ def _coomm_jvp_right(B_dot, data, row, col, B, *, shape, transpose, **kwargs):
     return coomm_p_call(data, row, col, B_dot, shape=shape, transpose=transpose)
 
 
-def _coomm_transpose_rule(
-    ct,
-    data,
-    row,
-    col,
-    B,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
+def _coomm_transpose_rule(ct, data, row, col, B, *, shape, transpose, **kwargs):
     assert not ad.is_undefined_primal(row)
     assert not ad.is_undefined_primal(col)
     ct = ct[0]

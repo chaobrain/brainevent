@@ -693,11 +693,7 @@ def _coomv_transpose_rule(
         return ct_values, row, col, events
 
 
-def _coomv_batching(
-    args,
-    axes,
-    **kwargs
-):
+def _coomv_batching(args, axes, **kwargs):
     if tuple(axes) == (None, None, None, 0):
         assert args[3].ndim == 2, 'Batching axis 0 requires 2D input.'
         r = binary_coomm_p_call(
