@@ -112,7 +112,6 @@ def _jitc_mv_uniform_numba_kernel_generator(
             if vector_info.dtype == jnp.bool_:
                 @numba.njit(fastmath=True, cache=True)
                 def kernel_impl(w_low, w_high, clen, vector, seed, posts):
-                    posts[:] = 0.
                     n_col = posts.shape[0]
                     n_row = vector.shape[0]
                     w_low0 = w_low[0]
@@ -132,7 +131,6 @@ def _jitc_mv_uniform_numba_kernel_generator(
             else:
                 @numba.njit(fastmath=True, cache=True)
                 def kernel_impl(w_low, w_high, clen, vector, seed, posts):
-                    posts[:] = 0.
                     n_col = posts.shape[0]
                     n_row = vector.shape[0]
                     w_low0 = w_low[0]
@@ -154,7 +152,6 @@ def _jitc_mv_uniform_numba_kernel_generator(
             if vector_info.dtype == jnp.bool_:
                 @numba.njit(fastmath=True, cache=True)
                 def kernel_impl(w_low, w_high, clen, vector, seed, posts):
-                    posts[:] = 0.
                     num_row = posts.shape[0]
                     num_col = vector.shape[0]
                     w_low0 = w_low[0]
@@ -174,7 +171,6 @@ def _jitc_mv_uniform_numba_kernel_generator(
             else:
                 @numba.njit(fastmath=True, cache=True)
                 def kernel_impl(w_low, w_high, clen, vector, seed, posts):
-                    posts[:] = 0.
                     num_row = posts.shape[0]
                     num_col = vector.shape[0]
                     w_low0 = w_low[0]
@@ -665,7 +661,6 @@ def _jitc_mm_uniform_numba_kernel_generator(
             if B_info.dtype == jnp.bool_:
                 @numba.njit(fastmath=True, cache=True)
                 def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                    posts[:] = 0.
                     m = posts.shape[0]
                     n = posts.shape[1]
                     k = B.shape[0]
@@ -687,7 +682,6 @@ def _jitc_mm_uniform_numba_kernel_generator(
             else:
                 @numba.njit(fastmath=True, cache=True)
                 def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                    posts[:] = 0.
                     m = posts.shape[0]
                     n = posts.shape[1]
                     k = B.shape[0]
@@ -711,7 +705,6 @@ def _jitc_mm_uniform_numba_kernel_generator(
             if B_info.dtype == jnp.bool_:
                 @numba.njit(fastmath=True, cache=True)
                 def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                    posts[:] = 0.
                     m = posts.shape[0]
                     n = posts.shape[1]
                     k = B.shape[0]
@@ -733,7 +726,6 @@ def _jitc_mm_uniform_numba_kernel_generator(
             else:
                 @numba.njit(fastmath=True, cache=True)
                 def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                    posts[:] = 0.
                     m = posts.shape[0]
                     n = posts.shape[1]
                     k = B.shape[0]
