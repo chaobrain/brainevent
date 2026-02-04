@@ -29,7 +29,9 @@ from brainevent._csr.binary import (
     binary_csrmv_p,
     binary_csrmm_p,
 )
-from brainevent._csr.diag_add import csr_diag_add_p
+from brainevent._csr.diag_add import (
+    csr_diag_add_p,
+)
 from brainevent._csr.float import (
     csrmv_p,
     csrmm_p,
@@ -239,5 +241,7 @@ def get_primitive_info(primitive_name: str) -> Dict:
                 'kernel_object': kernel
             }
 
-    raise ValueError(f"Primitive '{primitive_name}' not found. "
-                     f"Available: {get_all_primitive_names()}")
+    raise ValueError(
+        f"Primitive '{primitive_name}' not found. "
+        f"Available: {get_all_primitive_names()}"
+    )
