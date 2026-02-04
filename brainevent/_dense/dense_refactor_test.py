@@ -19,9 +19,9 @@ import numpy as np
 
 import brainevent
 from brainevent._dense.indexed_binary import (
-    binary_vec_dot_dense_mat,
-    dense_mat_dot_binary_vec,
-    binary_mat_dot_dense_mat,
+    indexed_binary_vec_dot_dense_mat,
+    dense_mat_dot_indexed_binary_vec,
+    indexed_binary_mat_dot_dense_mat,
 )
 from brainevent._dense.plasticity import dense_on_pre, dense_on_post
 from brainevent._dense.sparse_float import (
@@ -58,22 +58,22 @@ def test_indexed_binary_vector_forward_and_grads():
     weights = jnp.asarray(rng.normal(size=(n_in, n_out)).astype(np.float32))
     idx = brainevent.IndexedBinary(jnp.asarray(spikes))
 
-    out = binary_vec_dot_dense_mat(idx, weights)
+    out = indexed_binary_vec_dot_dense_mat(idx, weights)
     mask = jnp.asarray(spikes, dtype=weights.dtype)
     expected = (weights * mask[:, None]).sum(axis=0)
     assert jnp.allclose(out, expected, rtol=1e-6, atol=1e-6)
 
     weights2 = jnp.asarray(rng.normal(size=(n_out, n_in)).astype(np.float32))
-    out2 = dense_mat_dot_binary_vec(weights2, idx)
+    out2 = dense_mat_dot_indexed_binary_vec(weights2, idx)
     expected2 = (weights2 * mask[None, :]).sum(axis=1)
     assert jnp.allclose(out2, expected2, rtol=1e-6, atol=1e-6)
 
     w_dot = jnp.asarray(rng.normal(size=(n_in, n_out)).astype(np.float32))
-    _, out_dot = jax.jvp(lambda w: binary_vec_dot_dense_mat(idx, w), (weights,), (w_dot,))
+    _, out_dot = jax.jvp(lambda w: indexed_binary_vec_dot_dense_mat(idx, w), (weights,), (w_dot,))
     expected_dot = (w_dot * mask[:, None]).sum(axis=0)
     assert jnp.allclose(out_dot, expected_dot, rtol=1e-6, atol=1e-6)
 
-    grad = jax.grad(lambda w: binary_vec_dot_dense_mat(idx, w).sum())(weights)
+    grad = jax.grad(lambda w: indexed_binary_vec_dot_dense_mat(idx, w).sum())(weights)
     mask = jnp.asarray(spikes, dtype=weights.dtype)
     expected_grad = mask[:, None] * jnp.ones((n_out,), dtype=weights.dtype)
     assert jnp.allclose(grad, expected_grad, rtol=1e-6, atol=1e-6)
@@ -86,7 +86,7 @@ def test_indexed_binary_vector_batching():
     idx = brainevent.IndexedBinary(jnp.asarray(spikes))
     weights_batch = jnp.asarray(rng.normal(size=(3, n_in, n_out)).astype(np.float32))
 
-    out = jax.vmap(lambda w: binary_vec_dot_dense_mat(idx, w))(weights_batch)
+    out = jax.vmap(lambda w: indexed_binary_vec_dot_dense_mat(idx, w))(weights_batch)
     mask = jnp.asarray(spikes, dtype=weights_batch.dtype)
     expected = jnp.stack([(w * mask[:, None]).sum(axis=0) for w in weights_batch])
     assert jnp.allclose(out, expected, rtol=1e-6, atol=1e-6)
@@ -104,7 +104,7 @@ def test_indexed_binary_matrix_forward():
     )
     weights = jnp.asarray(rng.normal(size=(n_in, n_out)).astype(np.float32))
 
-    out = binary_mat_dot_dense_mat(fake, weights)
+    out = indexed_binary_mat_dot_dense_mat(fake, weights)
     expected = jnp.stack([
         (weights * jnp.asarray(spikes[i], dtype=weights.dtype)[:, None]).sum(axis=0)
         for i in range(batch)

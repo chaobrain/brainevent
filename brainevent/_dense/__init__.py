@@ -13,15 +13,32 @@
 # limitations under the License.
 # ==============================================================================
 
-from .binary import binary_vec_dot_dense_mat, dense_mat_dot_binary_vec
-from .indexed_binary import dense_mat_dot_binary_mat, binary_mat_dot_dense_mat
+from .binary import (
+    binary_vec_dot_dense_mat,
+    binary_vec_dot_dense_mat_p,
+    dense_mat_dot_binary_vec,
+    dense_mat_dot_binary_vec_p,
+    binary_mat_dot_dense_mat,
+    binary_mat_dot_dense_mat_p,
+    dense_mat_dot_binary_mat,
+    dense_mat_dot_binary_mat_p,
+)
+from .indexed_binary import (
+    dense_mat_dot_indexed_binary_mat,
+    dense_mat_dot_indexed_binary_vec,
+    indexed_binary_mat_dot_dense_mat,
+    indexed_binary_vec_dot_dense_mat,
+)
+from .plasticity import (
+    dense_on_pre,
+    dense_on_post,
+)
 from .sparse_float import (
     dense_mat_dot_sparse_float_mat,
     sparse_float_mat_dot_dense_mat,
     dense_mat_dot_sparse_float_vec,
     sparse_float_vec_dot_dense_mat,
 )
-from .plasticity import dense_on_pre, dense_on_post
 
 __all__ = [
     'dense_on_pre',

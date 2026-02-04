@@ -82,12 +82,6 @@ from ._pallas_random import (
     LFSR113RNG,
     LFSR128RNG,
 )
-from ._primitives import (
-    ALL_PRIMITIVES,
-    get_all_primitive_names,
-    get_primitives_by_category,
-    get_primitive_info
-)
 
 __all__ = [
     # --- data representing events --- #
@@ -149,11 +143,5 @@ __all__ = [
     'coo_on_post',
     'dense_on_pre',
     'dense_on_post',
-
-    # --- primitives --- #
-    'ALL_PRIMITIVES',
-    'get_all_primitive_names',
-    'get_primitives_by_category',
-    'get_primitive_info',
 
 ]

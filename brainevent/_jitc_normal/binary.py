@@ -24,7 +24,7 @@ from jax.interpreters import ad
 
 from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescoped_jit
-from brainevent._op import XLACustomKernel, numba_kernel, jaxtype_to_warptype, general_batching_rule
+from brainevent._op import XLACustomKernel, jaxinfo_to_warpinfo, numba_kernel, general_batching_rule
 from brainevent._pallas_random import LFSR88RNG
 from brainevent._typing import Data, MatrixShape
 from .float import float_jitc_mv_normal_p_call, float_jitc_mm_normal_p_call
@@ -105,14 +105,16 @@ def _jitc_mv_normal_numba_kernel_generator(
 ):
     r"""Generate the CPU kernel for the :func:`_jitc_matvec_normal` operation.
     """
+    import numba
 
     if corder:
         # This means that the for loop is parallelized along the dimension of the output vector: ``post.shape[0]``.
 
         if transpose:
             if vector_info.dtype == jnp.bool_:
-                @numba_kernel(parallel=False, input_output_aliases={5: 0})
-                def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
+                @numba.njit(fastmath=True, cache=True)
+                def kernel(w_loc, w_scale, clen, vector, seed, posts):
+                    posts[:] = 0.
                     # Output vector dimension = number of columns in the matrix
                     n_col = posts.shape[0]
 
@@ -150,8 +152,9 @@ def _jitc_mv_normal_numba_kernel_generator(
 
                         posts[i_col] = out
             else:
-                @numba_kernel(parallel=False, input_output_aliases={5: 0})
-                def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
+                @numba.njit(fastmath=True, cache=True)
+                def kernel(w_loc, w_scale, clen, vector, seed, posts):
+                    posts[:] = 0.
                     # Output vector dimension = number of columns in the matrix
                     n_col = posts.shape[0]
 
@@ -191,8 +194,9 @@ def _jitc_mv_normal_numba_kernel_generator(
 
         else:
             if vector_info.dtype == jnp.bool_:
-                @numba_kernel(parallel=False, input_output_aliases={5: 0})
-                def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
+                @numba.njit(fastmath=True, cache=True)
+                def kernel(w_loc, w_scale, clen, vector, seed, posts):
+                    posts[:] = 0.
                     # Output vector dimension = number of rows in the matrix
                     # Each row in the matrix will produce one element in the output vector
                     num_row = posts.shape[0]
@@ -212,8 +216,9 @@ def _jitc_mv_normal_numba_kernel_generator(
                             i_col += np.random.randint(1, clen0)
                         posts[i_row] = out
             else:
-                @numba_kernel(parallel=False, input_output_aliases={5: 0})
-                def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
+                @numba.njit(fastmath=True, cache=True)
+                def kernel(w_loc, w_scale, clen, vector, seed, posts):
+                    posts[:] = 0.
                     # Output vector dimension = number of rows in the matrix
                     # Each row in the matrix will produce one element in the output vector
                     num_row = posts.shape[0]
@@ -236,8 +241,9 @@ def _jitc_mv_normal_numba_kernel_generator(
     else:
         if transpose:
             if vector_info.dtype == jnp.bool_:
-                @numba_kernel(parallel=False, input_output_aliases={5: 0})
-                def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
+                @numba.njit(fastmath=True, cache=True)
+                def kernel(w_loc, w_scale, clen, vector, seed, posts):
+                    posts[:] = 0.
                     num_col = posts.shape[0]
                     num_row = vector.shape[0]
                     w_loc0 = w_loc[0]
@@ -254,8 +260,9 @@ def _jitc_mv_normal_numba_kernel_generator(
                                 posts[i_col] += w
                             i_col += np.random.randint(1, clen0)
             else:
-                @numba_kernel(parallel=False, input_output_aliases={5: 0})
-                def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
+                @numba.njit(fastmath=True, cache=True)
+                def kernel(w_loc, w_scale, clen, vector, seed, posts):
+                    posts[:] = 0.
                     num_col = posts.shape[0]
                     num_row = vector.shape[0]
                     w_loc0 = w_loc[0]
@@ -274,8 +281,9 @@ def _jitc_mv_normal_numba_kernel_generator(
 
         else:
             if vector_info.dtype == jnp.bool_:
-                @numba_kernel(parallel=False, input_output_aliases={5: 0})
-                def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
+                @numba.njit(fastmath=True, cache=True)
+                def kernel(w_loc, w_scale, clen, vector, seed, posts):
+                    posts[:] = 0.
                     num_row = posts.shape[0]
                     num_col = vector.shape[0]
 
@@ -293,8 +301,9 @@ def _jitc_mv_normal_numba_kernel_generator(
                                 posts[i_row] += w
                             i_row += np.random.randint(1, clen0)
             else:
-                @numba_kernel(parallel=False, input_output_aliases={5: 0})
-                def kernel(w_loc, w_scale, clen, vector, seed, _, posts):
+                @numba.njit(fastmath=True, cache=True)
+                def kernel(w_loc, w_scale, clen, vector, seed, posts):
+                    posts[:] = 0.
                     num_row = posts.shape[0]
                     num_col = vector.shape[0]
 
@@ -311,7 +320,10 @@ def _jitc_mv_normal_numba_kernel_generator(
                             if v:
                                 posts[i_row] += w
                             i_row += np.random.randint(1, clen0)
-    return kernel
+    def run(w_loc, w_scale, clen, vector, seed):
+        return numba_kernel(kernel, outs=kwargs['outs'])(w_loc, w_scale, clen, vector, seed)
+
+    return run
 
 
 def _jitc_mv_normal_warp_kernel_generator(
@@ -328,23 +340,25 @@ def _jitc_mv_normal_warp_kernel_generator(
     Generate the GPU kernel for the :func:`_jitc_matvec_normal` operation.
     """
     import warp
+    from warp.jax_experimental import jax_kernel
 
-    w_loc_dtype = jaxtype_to_warptype(w_loc_info.dtype)
-    w_scale_dtype = jaxtype_to_warptype(w_scale_info.dtype)
-    clen_dtype = jaxtype_to_warptype(clen_info.dtype)
-    v_dtype = jaxtype_to_warptype(vector_info.dtype)
-    seed_dtype = jaxtype_to_warptype(seed_info.dtype)
+    w_loc_warp_info = jaxinfo_to_warpinfo(w_loc_info)
+    w_scale_warp_info = jaxinfo_to_warpinfo(w_scale_info)
+    clen_warp_info = jaxinfo_to_warpinfo(clen_info)
+    v_warp_info = jaxinfo_to_warpinfo(vector_info)
+    seed_warp_info = jaxinfo_to_warpinfo(seed_info)
+    out_warp_info = jaxinfo_to_warpinfo(out_info)
 
     if corder:
         if vector_info.dtype == jnp.bool_:
+            @warp.kernel
             def kernel(
-                w_loc: warp.array1d(dtype=w_loc_dtype),
-                w_scale: warp.array1d(dtype=w_scale_dtype),
-                clen: warp.array1d(dtype=clen_dtype),
-                vector: warp.array1d(dtype=v_dtype),
-                seed: warp.array1d(dtype=seed_dtype),
-                _: warp.array1d(dtype=w_loc_dtype),
-                posts: warp.array1d(dtype=w_loc_dtype),
+                w_loc: w_loc_warp_info,
+                w_scale: w_scale_warp_info,
+                clen: clen_warp_info,
+                vector: v_warp_info,
+                seed: seed_warp_info,
+                posts: out_warp_info,
             ):
                 # Input vector dimension (number of rows in the matrix)
                 num_row = vector.shape[0]
@@ -382,14 +396,14 @@ def _jitc_mv_normal_warp_kernel_generator(
                 posts[i_col] = r
 
         else:
+            @warp.kernel
             def kernel(
-                w_loc: warp.array1d(dtype=w_loc_dtype),
-                w_scale: warp.array1d(dtype=w_scale_dtype),
-                clen: warp.array1d(dtype=clen_dtype),
-                vector: warp.array1d(dtype=v_dtype),
-                seed: warp.array1d(dtype=seed_dtype),
-                _: warp.array1d(dtype=w_loc_dtype),
-                posts: warp.array1d(dtype=w_loc_dtype),
+                w_loc: w_loc_warp_info,
+                w_scale: w_scale_warp_info,
+                clen: clen_warp_info,
+                vector: v_warp_info,
+                seed: seed_warp_info,
+                posts: out_warp_info,
             ):
                 # Input vector dimension (number of columns in the matrix)
                 num_col = vector.shape[0]
@@ -427,14 +441,14 @@ def _jitc_mv_normal_warp_kernel_generator(
     else:
 
         if vector_info.dtype == jnp.bool_:
+            @warp.kernel
             def kernel(
-                w_loc: warp.array1d(dtype=w_loc_dtype),
-                w_scale: warp.array1d(dtype=w_scale_dtype),
-                clen: warp.array1d(dtype=clen_dtype),
-                vector: warp.array1d(dtype=v_dtype),
-                seed: warp.array1d(dtype=seed_dtype),
-                _: warp.array1d(dtype=w_loc_dtype),
-                posts: warp.array1d(dtype=w_loc_dtype),
+                w_loc: w_loc_warp_info,
+                w_scale: w_scale_warp_info,
+                clen: clen_warp_info,
+                vector: v_warp_info,
+                seed: seed_warp_info,
+                posts: out_warp_info,
             ):
                 # Output dimension (number of columns in the matrix)
                 num_col = posts.shape[0]
@@ -473,14 +487,14 @@ def _jitc_mv_normal_warp_kernel_generator(
 
         else:
 
+            @warp.kernel
             def kernel(
-                w_loc: warp.array1d(dtype=w_loc_dtype),
-                w_scale: warp.array1d(dtype=w_scale_dtype),
-                clen: warp.array1d(dtype=clen_dtype),
-                vector: warp.array1d(dtype=v_dtype),
-                seed: warp.array1d(dtype=seed_dtype),
-                _: warp.array1d(dtype=w_loc_dtype),
-                posts: warp.array1d(dtype=w_loc_dtype),
+                w_loc: w_loc_warp_info,
+                w_scale: w_scale_warp_info,
+                clen: clen_warp_info,
+                vector: v_warp_info,
+                seed: seed_warp_info,
+                posts: out_warp_info,
             ):
                 # Output dimension (number of rows in the matrix)
                 num_row = posts.shape[0]
@@ -516,8 +530,18 @@ def _jitc_mv_normal_warp_kernel_generator(
                         # This creates sparse connectivity with ~1/clen0 connection probability
                         i_row += warp.randi(state, 1, clen0)
 
-    dim = (out_info.shape[0] if corder else vector_info.shape[0])
-    return warp_kernel(kernel, dim=dim, input_output_aliases={5: 0})
+    if corder:
+        def run(w_loc, w_scale, clen, vector, seed):
+            dim = out_info.shape[0]
+            fn = jax_kernel(kernel, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
+            return fn(w_loc, w_scale, clen, vector, seed)
+    else:
+        def run(w_loc, w_scale, clen, vector, seed):
+            dim = vector_info.shape[0]
+            fn = jax_kernel(kernel, launch_dims=dim, num_outputs=0, in_out_argnames=['posts'])
+            return fn(w_loc, w_scale, clen, vector, seed, jnp.zeros(out_info.shape, out_info.dtype))
+
+    return run
 
 
 def _jitc_mv_normal_pallas_kernel_generator(
@@ -526,6 +550,9 @@ def _jitc_mv_normal_pallas_kernel_generator(
     corder: bool = True,
     **kwargs
 ):
+    from jax.experimental import pallas as pl
+    from jax.experimental.pallas import triton as plt
+
     dim = (out_info.shape[0] if corder else vector_info.shape[0])
     tiled = True
 
@@ -533,7 +560,7 @@ def _jitc_mv_normal_pallas_kernel_generator(
         if tiled:
             block_size = generate_block_dim(dim, maximum=128)
 
-            def kernel(w_loc_ref, w_scale_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
+            def kernel(w_loc_ref, w_scale_ref, clen_ref, vector_ref, seed_ref, post_ref):
                 num_row = vector_ref.shape[0]
                 w_loc = w_loc_ref[0]
                 w_scale = w_scale_ref[0]
@@ -542,11 +569,16 @@ def _jitc_mv_normal_pallas_kernel_generator(
                 i_col_block = pl.program_id(0)
                 i_cols = i_col_block * block_size + jnp.arange(block_size)
                 i_col_mask = i_cols < dim
+                safe_cols = jnp.where(i_col_mask, i_cols, 0)
 
                 def body(data):
                     i_rows, i_row_mask, rng, res = data
-                    v = pl.load(vector_ref, i_rows, mask=i_row_mask)
-                    if vector_ref.dtype != jnp.bool_:
+                    safe_rows = jnp.where(i_row_mask, i_rows, 0)
+                    v = plt.load(vector_ref[safe_rows])
+                    if vector_ref.dtype == jnp.bool_:
+                        v = jnp.where(i_row_mask, v, False)
+                    else:
+                        v = jnp.where(i_row_mask, v, 0)
                         v = v != 0.
                     w = rng.normal(w_loc, w_scale)
                     res = jnp.where(v, res + w, res)
@@ -561,17 +593,16 @@ def _jitc_mv_normal_pallas_kernel_generator(
                     body,
                     (i_rows, i_row_mask, rng, jnp.zeros(block_size, dtype=post_ref.dtype))
                 )[-1]
-                pl.store(post_ref, i_cols, out, mask=i_col_mask)
+                plt.store(post_ref[safe_cols], out, mask=i_col_mask)
 
-            return pallas_kernel(
-                kernel,
-                outs=kwargs['outs'],
-                tile=(pl.cdiv(dim, block_size),),
-                input_output_aliases={5: 0},
-            )
+            def run(w_loc, w_scale, clen, vector, seed):
+                fn = pl.pallas_call(kernel, grid=(pl.cdiv(dim, block_size),), out_shape=kwargs['outs'])
+                return fn(w_loc, w_scale, clen, vector, seed)
+
+            return run
 
         else:
-            def kernel(w_loc_ref, w_scale_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
+            def kernel(w_loc_ref, w_scale_ref, clen_ref, vector_ref, seed_ref, post_ref):
                 num_row = vector_ref.shape[0]
                 w_loc = w_loc_ref[0]
                 w_scale = w_scale_ref[0]
@@ -582,10 +613,11 @@ def _jitc_mv_normal_pallas_kernel_generator(
                 def body(data):
                     i, rng, res = data
                     w = rng.normal(w_loc, w_scale)
+                    v = plt.load(vector_ref[i])
                     if vector_ref.dtype == jnp.bool_:
-                        res = jnp.where(vector_ref[i], res + w, res)
+                        res = jnp.where(v, res + w, res)
                     else:
-                        res = jnp.where(vector_ref[i] != 0., res + w, res)
+                        res = jnp.where(v != 0., res + w, res)
                     i += rng.random_integers(1, clen)
                     return i, rng, res
 
@@ -595,31 +627,30 @@ def _jitc_mv_normal_pallas_kernel_generator(
                     body,
                     (rng.random_integers(0, clen), rng, 0.0)
                 )
-                post_ref[i_col] = r
+                plt.store(post_ref[i_col], r)
 
-            return pallas_kernel(
-                kernel,
-                outs=kwargs['outs'],
-                tile=(dim,),
-                input_output_aliases={5: 0},
-            )
+            def run(w_loc, w_scale, clen, vector, seed):
+                fn = pl.pallas_call(kernel, grid=(dim,), out_shape=kwargs['outs'])
+                return fn(w_loc, w_scale, clen, vector, seed)
+
+            return run
 
 
     else:
-        def kernel(w_loc_ref, w_scale_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
+        def kernel(w_loc_ref, w_scale_ref, clen_ref, vector_ref, seed_ref, post_ref):
             num_col = post_ref.shape[0]
             w_loc = w_loc_ref[0]
             w_scale = w_scale_ref[0]
             clen = clen_ref[0]  # Connection length parameter (controls sparsity)
             seed = seed_ref[0]  # Base random seed value
             i_row = pl.program_id(0)
-            v = vector_ref[i_row]
+            v = plt.load(vector_ref[i_row])
 
             @pl.when(v if vector_ref.dtype == jnp.bool_ else v != 0.)
             def run():
                 def body(data):
                     i, rng = data
-                    pl.atomic_add(post_ref, i, rng.normal(w_loc, w_scale))
+                    plt.atomic_add(post_ref[i], rng.normal(w_loc, w_scale))
                     i += rng.random_integers(1, clen)
                     return i, rng
 
@@ -630,43 +661,29 @@ def _jitc_mv_normal_pallas_kernel_generator(
                     (rng.random_integers(0, clen), rng)
                 )
 
-        return pallas_kernel(
-            kernel,
-            outs=kwargs['outs'],
-            tile=(dim,),
-            input_output_aliases={5: 0},
-        )
+        def run(w_loc, w_scale, clen, vector, seed):
+            fn = pl.pallas_call(kernel, grid=(dim,), out_shape=kwargs['outs'])
+            return fn(w_loc, w_scale, clen, vector, seed)
+
+        return run
 
 
-def _jitc_mv_normal_jvp_v(v_dot, w_loc, w_scale, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
+def _jitc_mv_normal_jvp_v(v_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
     return float_jitc_mv_normal_p_call(w_loc, w_scale, clen, v_dot, seed, shape=shape, transpose=transpose,
                                        corder=corder)
 
 
-def _jitc_mv_normal_jvp_wloc(w_dot, w_loc, w_scale, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
+def _jitc_mv_normal_jvp_wloc(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
     return binary_jitc_mv_normal_p_call(w_dot, w_scale, clen, vector, seed, shape=shape, transpose=transpose,
                                         corder=corder)
 
 
-def _jitc_mv_normal_jvp_wscale(w_dot, w_loc, w_scale, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
+def _jitc_mv_normal_jvp_wscale(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
     return binary_jitc_mv_normal_p_call(w_loc, w_dot, clen, vector, seed, shape=shape, transpose=transpose,
                                         corder=corder)
 
 
-def _jitc_mv_normal_transpose_rules(
-    ct,
-    w_loc,
-    w_scale,
-    clen,
-    vector,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
+def _jitc_mv_normal_transpose_rules(ct, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
     assert not ad.is_undefined_primal(w_loc)
@@ -684,7 +701,7 @@ def _jitc_mv_normal_transpose_rules(
             transpose=not transpose,
             corder=not corder
         )[0]
-        return w_loc, w_scale, clen, r, seed, _
+        return w_loc, w_scale, clen, r, seed
     else:
         raise NotImplementedError(
             f"Transpose rule for {ct} not implemented "
@@ -693,7 +710,7 @@ def _jitc_mv_normal_transpose_rules(
 
 
 def _jitc_mv_normal_batching(args, axes, **kwargs):
-    if tuple(axes) == (None, None, None, 0, None, None):
+    if tuple(axes) == (None, None, None, 0, None):
         assert args[3].ndim == 2, 'Batching axis 0 requires 2D input.'
         r = binary_jitc_mm_normal_p_call(
             args[0],
@@ -706,7 +723,7 @@ def _jitc_mv_normal_batching(args, axes, **kwargs):
             corder=kwargs['corder'],
         )
         return r, [1]
-    elif tuple(axes) == (None, None, None, 1, None, None):
+    elif tuple(axes) == (None, None, None, 1, None):
         assert args[3].ndim == 2, 'Batching axis 0 requires 2D input.'
         r = binary_jitc_mm_normal_p_call(
             args[0],
@@ -767,7 +784,6 @@ def binary_jitc_mv_normal_p_call(
         clen,
         vector,
         seed,
-        jnp.zeros(out_info.shape, out_info.dtype),
         outs=[out_info],
         w_loc_info=jax.ShapeDtypeStruct(w_loc.shape, w_loc.dtype),
         w_scale_info=jax.ShapeDtypeStruct(w_scale.shape, w_scale.dtype),
@@ -792,7 +808,6 @@ binary_jitc_mv_normal_p.def_jvp_rule2(
     None,
     _jitc_mv_normal_jvp_v,
     None,
-    None
 )
 binary_jitc_mv_normal_p.def_transpose_rule(_jitc_mv_normal_transpose_rules)
 binary_jitc_mv_normal_p.def_batching_rule(_jitc_mv_normal_batching)
@@ -807,6 +822,7 @@ def _jitc_mm_normal_numba_kernel_generator(
     r"""
     Generate the CPU kernel for the :func:`_jitc_matmat_normal` operation.
     """
+    import numba
 
     if corder:
         if transpose:
@@ -816,7 +832,9 @@ def _jitc_mm_normal_numba_kernel_generator(
             # - B: [k, n]
 
             if B_info.dtype == jnp.bool_:
-                def kernel(w_loc, w_scale, clen, B, seed, _, posts):
+                @numba.njit(fastmath=True, cache=True)
+                def kernel(w_loc, w_scale, clen, B, seed, posts):
+                    posts[:] = 0.
                     m = posts.shape[0]  # Number of rows in output matrix (columns in M)
                     n = posts.shape[1]  # Number of columns in output matrix (columns in B)
                     k = B.shape[0]  # Number of rows in B (rows in M)
@@ -838,7 +856,9 @@ def _jitc_mm_normal_numba_kernel_generator(
                             i_k += np.random.randint(1, clen0)
                         posts[i_m] = out
             else:
-                def kernel(w_loc, w_scale, clen, B, seed, _, posts):
+                @numba.njit(fastmath=True, cache=True)
+                def kernel(w_loc, w_scale, clen, B, seed, posts):
+                    posts[:] = 0.
                     m = posts.shape[0]  # Number of rows in output matrix (columns in M)
                     n = posts.shape[1]  # Number of columns in output matrix (columns in B)
                     k = B.shape[0]  # Number of rows in B (rows in M)
@@ -867,7 +887,9 @@ def _jitc_mm_normal_numba_kernel_generator(
             # - B: [k, n]
 
             if B_info.dtype == jnp.bool_:
-                def kernel(w_loc, w_scale, clen, B, seed, _, posts):
+                @numba.njit(fastmath=True, cache=True)
+                def kernel(w_loc, w_scale, clen, B, seed, posts):
+                    posts[:] = 0.
                     m = posts.shape[0]  # Number of rows in output matrix (rows in M)
                     n = posts.shape[1]  # Number of columns in output matrix (columns in B)
                     k = B.shape[0]  # Number of rows in B (columns in M)
@@ -890,7 +912,9 @@ def _jitc_mm_normal_numba_kernel_generator(
                         posts[i_m] = out
 
             else:
-                def kernel(w_loc, w_scale, clen, B, seed, _, posts):
+                @numba.njit(fastmath=True, cache=True)
+                def kernel(w_loc, w_scale, clen, B, seed, posts):
+                    posts[:] = 0.
                     m = posts.shape[0]  # Number of rows in output matrix (rows in M)
                     n = posts.shape[1]  # Number of columns in output matrix (columns in B)
                     k = B.shape[0]  # Number of rows in B (columns in M)
@@ -920,7 +944,9 @@ def _jitc_mm_normal_numba_kernel_generator(
             # - B: [k, n]
 
             if B_info.dtype == jnp.bool_:
-                def kernel(w_loc, w_scale, clen, B, seed, _, posts):
+                @numba.njit(fastmath=True, cache=True)
+                def kernel(w_loc, w_scale, clen, B, seed, posts):
+                    posts[:] = 0.
                     m = posts.shape[0]  # Number of rows in output matrix (columns in M)
                     k = B.shape[0]  # Number of rows in B (rows in M)
 
@@ -938,7 +964,9 @@ def _jitc_mm_normal_numba_kernel_generator(
                             posts[i_m, indices] += w
                             i_m += np.random.randint(1, clen0)
             else:
-                def kernel(w_loc, w_scale, clen, B, seed, _, posts):
+                @numba.njit(fastmath=True, cache=True)
+                def kernel(w_loc, w_scale, clen, B, seed, posts):
+                    posts[:] = 0.
                     m = posts.shape[0]  # Number of rows in output matrix (columns in M)
                     k = B.shape[0]  # Number of rows in B (rows in M)
 
@@ -963,7 +991,9 @@ def _jitc_mm_normal_numba_kernel_generator(
             # - B: [k, n]
 
             if B_info.dtype == jnp.bool_:
-                def kernel(w_loc, w_scale, clen, B, seed, _, posts):
+                @numba.njit(fastmath=True, cache=True)
+                def kernel(w_loc, w_scale, clen, B, seed, posts):
+                    posts[:] = 0.
                     m = posts.shape[0]  # Number of rows in output matrix (rows in M)
                     k = B.shape[0]  # Number of rows in B (columns in M)
 
@@ -981,7 +1011,9 @@ def _jitc_mm_normal_numba_kernel_generator(
                             i_m += np.random.randint(1, clen0)
 
             else:
-                def kernel(w_loc, w_scale, clen, B, seed, _, posts):
+                @numba.njit(fastmath=True, cache=True)
+                def kernel(w_loc, w_scale, clen, B, seed, posts):
+                    posts[:] = 0.
                     m = posts.shape[0]  # Number of rows in output matrix (rows in M)
                     k = B.shape[0]  # Number of rows in B (columns in M)
 
@@ -998,8 +1030,10 @@ def _jitc_mm_normal_numba_kernel_generator(
                             posts[i_m, indices] += w
                             i_m += np.random.randint(1, clen0)
 
-    return numba_kernel(kernel, parallel=False, input_output_aliases={5: 0})
+    def run(w_loc, w_scale, clen, B, seed):
+        return numba_kernel(kernel, outs=kwargs['outs'])(w_loc, w_scale, clen, B, seed)
 
+    return run
 
 def _jitc_mm_normal_warp_kernel_generator(
     w_loc_info: jax.ShapeDtypeStruct,
@@ -1013,24 +1047,26 @@ def _jitc_mm_normal_warp_kernel_generator(
     **kwargs
 ):
     import warp
+    from warp.jax_experimental import jax_kernel
 
-    w_loc_dtype = jaxtype_to_warptype(w_loc_info.dtype)
-    w_scale_dtype = jaxtype_to_warptype(w_scale_info.dtype)
-    clen_dtype = jaxtype_to_warptype(clen_info.dtype)
-    B_dtype = jaxtype_to_warptype(B_info.dtype)
-    seed_dtype = jaxtype_to_warptype(seed_info.dtype)
+    w_loc_warp_info = jaxinfo_to_warpinfo(w_loc_info)
+    w_scale_warp_info = jaxinfo_to_warpinfo(w_scale_info)
+    clen_warp_info = jaxinfo_to_warpinfo(clen_info)
+    B_warp_info = jaxinfo_to_warpinfo(B_info)
+    seed_warp_info = jaxinfo_to_warpinfo(seed_info)
+    out_warp_info = jaxinfo_to_warpinfo(out_info)
 
     if corder:
         if B_info.dtype == jnp.bool_:
             # JIT Matrix.T @ B
+            @warp.kernel
             def kernel(
-                w_loc: warp.array1d(dtype=w_loc_dtype),
-                w_scale: warp.array1d(dtype=w_scale_dtype),
-                clen: warp.array1d(dtype=clen_dtype),
-                B: warp.array2d(dtype=B_dtype),
-                seed: warp.array1d(dtype=seed_dtype),
-                _: warp.array2d(dtype=w_loc_dtype),
-                posts: warp.array2d(dtype=w_loc_dtype),
+                w_loc: w_loc_warp_info,
+                w_scale: w_scale_warp_info,
+                clen: clen_warp_info,
+                B: B_warp_info,
+                seed: seed_warp_info,
+                posts: out_warp_info,
             ):
                 k = B.shape[0]
                 w_loc0 = w_loc[0]
@@ -1051,14 +1087,14 @@ def _jitc_mm_normal_warp_kernel_generator(
 
         else:
             # JIT Matrix @ B
+            @warp.kernel
             def kernel(
-                w_loc: warp.array1d(dtype=w_loc_dtype),
-                w_scale: warp.array1d(dtype=w_scale_dtype),
-                clen: warp.array1d(dtype=clen_dtype),
-                B: warp.array2d(dtype=B_dtype),
-                seed: warp.array1d(dtype=seed_dtype),
-                _: warp.array2d(dtype=w_loc_dtype),
-                posts: warp.array2d(dtype=w_loc_dtype),
+                w_loc: w_loc_warp_info,
+                w_scale: w_scale_warp_info,
+                clen: clen_warp_info,
+                B: B_warp_info,
+                seed: seed_warp_info,
+                posts: out_warp_info,
             ):
                 k = B.shape[0]
                 w_loc0 = w_loc[0]
@@ -1080,14 +1116,14 @@ def _jitc_mm_normal_warp_kernel_generator(
     else:
         if B_info.dtype == jnp.bool_:
             # JIT Matrix.T @ B
+            @warp.kernel
             def kernel(
-                w_loc: warp.array1d(dtype=w_loc_dtype),
-                w_scale: warp.array1d(dtype=w_scale_dtype),
-                clen: warp.array1d(dtype=clen_dtype),
-                B: warp.array2d(dtype=B_dtype),
-                seed: warp.array1d(dtype=seed_dtype),
-                _: warp.array2d(dtype=w_loc_dtype),
-                posts: warp.array2d(dtype=w_loc_dtype),
+                w_loc: w_loc_warp_info,
+                w_scale: w_scale_warp_info,
+                clen: clen_warp_info,
+                B: B_warp_info,
+                seed: seed_warp_info,
+                posts: out_warp_info,
             ):
                 m = posts.shape[0]
                 w_loc0 = w_loc[0]
@@ -1108,14 +1144,14 @@ def _jitc_mm_normal_warp_kernel_generator(
 
         else:
             # JIT Matrix @ B
+            @warp.kernel
             def kernel(
-                w_loc: warp.array1d(dtype=w_loc_dtype),
-                w_scale: warp.array1d(dtype=w_scale_dtype),
-                clen: warp.array1d(dtype=clen_dtype),
-                B: warp.array2d(dtype=B_dtype),
-                seed: warp.array1d(dtype=seed_dtype),
-                _: warp.array2d(dtype=w_loc_dtype),
-                posts: warp.array2d(dtype=w_loc_dtype),
+                w_loc: w_loc_warp_info,
+                w_scale: w_scale_warp_info,
+                clen: clen_warp_info,
+                B: B_warp_info,
+                seed: seed_warp_info,
+                posts: out_warp_info,
             ):
                 m = posts.shape[0]
                 w_loc0 = w_loc[0]
@@ -1133,9 +1169,18 @@ def _jitc_mm_normal_warp_kernel_generator(
                     warp.tile_atomic_add(posts[i_m], out * w)
                     i_m += warp.randi(state, 1, clen0)
 
-    tile = (out_info.shape[0] if corder else B_info.shape[0])
-    kernel = warp_kernel(kernel, tile=tile, block_dim=256, input_output_aliases={5: 0})
-    return kernel
+    if corder:
+        def run(w_loc, w_scale, clen, B, seed):
+            dim = out_info.shape[0]
+            fn = jax_kernel(kernel, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
+            return fn(w_loc, w_scale, clen, B, seed)
+    else:
+        def run(w_loc, w_scale, clen, B, seed):
+            dim = B_info.shape[0]
+            fn = jax_kernel(kernel, launch_dims=dim, num_outputs=0, in_out_argnames=['posts'])
+            return fn(w_loc, w_scale, clen, B, seed, jnp.zeros(out_info.shape, out_info.dtype))
+
+    return run
 
 
 def _jitc_mm_normal_pallas_kernel_generator(
@@ -1144,13 +1189,18 @@ def _jitc_mm_normal_pallas_kernel_generator(
     corder: bool = True,
     **kwargs
 ):
+    from jax.experimental import pallas as pl
+    from jax.experimental.pallas import triton as plt
+
     block_dim = generate_block_dim(B_info.shape[1], maximum=1024)
+    tile = out_info.shape[0] if corder else B_info.shape[0]
+    grid = (tile, pl.cdiv(B_info.shape[1], block_dim))
 
     if corder:
         # JIT Matrix.T @ B
         # - JIT matrix: [k, m]
         # - B: [k, n]
-        def kernel(w_loc_ref, w_scale_ref, clen_ref, B_ref, seed_ref, _, post_ref):
+        def kernel(w_loc_ref, w_scale_ref, clen_ref, B_ref, seed_ref, post_ref):
             k = B_ref.shape[0]
             w_loc0 = w_loc_ref[0]
             w_scale0 = w_scale_ref[0]
@@ -1159,14 +1209,16 @@ def _jitc_mm_normal_pallas_kernel_generator(
             i_m = pl.program_id(0)
             i_n_block = pl.program_id(1)
             i_n_start = block_dim * i_n_block
-            mask = i_n_start + jnp.arange(block_dim) < B_info.shape[1]
+            cols = i_n_start + jnp.arange(block_dim)
+            mask = cols < B_info.shape[1]
+            safe_cols = jnp.where(mask, cols, 0)
 
             def body(data):
                 i, rng, out = data
                 w = rng.normal(w_loc0, w_scale0)
-                events = pl.load(B_ref, (i, pl.dslice(i_n_start, block_dim)), mask=mask)
-                if events.dtype == jnp.bool_:
-                    events = jnp.asarray(events, dtype=out.dtype)
+                events = plt.load(B_ref[i, safe_cols])
+                events = jnp.asarray(events, dtype=out.dtype) if B_ref.dtype == jnp.bool_ else events
+                events = jnp.where(mask, events, 0)
                 out += events * w
                 i += rng.random_integers(1, clen0)
                 return i, rng, out
@@ -1178,14 +1230,14 @@ def _jitc_mm_normal_pallas_kernel_generator(
                 body,
                 (rng.random_integers(0, clen0), rng, out)
             )
-            pl.store(post_ref, (i_m, pl.dslice(i_n_start, block_dim)), out, mask=mask)
+            plt.store(post_ref[i_m, safe_cols], out, mask=mask)
 
 
     else:
         # JIT Matrix.T @ B
         # - JIT matrix: [k, m]
         # - B: [k, n]
-        def kernel(w_loc_ref, w_scale_ref, clen_ref, B_ref, seed_ref, _, post_ref):
+        def kernel(w_loc_ref, w_scale_ref, clen_ref, B_ref, seed_ref, post_ref):
             m = post_ref.shape[0]
             w_loc0 = w_loc_ref[0]
             w_scale0 = w_scale_ref[0]
@@ -1194,15 +1246,18 @@ def _jitc_mm_normal_pallas_kernel_generator(
             i_k = pl.program_id(0)
             i_n_block = pl.program_id(1)
             i_n_start = block_dim * i_n_block
-            mask = i_n_start + jnp.arange(block_dim) < B_info.shape[1]
+            cols = i_n_start + jnp.arange(block_dim)
+            mask = cols < B_info.shape[1]
+            safe_cols = jnp.where(mask, cols, 0)
 
-            B_block = pl.load(B_ref, (i_k, pl.dslice(i_n_start, block_dim)), mask=mask)
+            B_block = plt.load(B_ref[i_k, safe_cols])
             B_block = jnp.asarray(B_block, dtype=post_ref.dtype)
+            B_block = jnp.where(mask, B_block, 0)
 
             def body(data):
                 i, rng = data
                 w = rng.normal(w_loc0, w_scale0)
-                pl.atomic_add(post_ref, (i, pl.dslice(i_n_start, block_dim)), B_block * w, mask=mask)
+                plt.atomic_add(post_ref[i, safe_cols], B_block * w, mask=mask)
                 i += rng.random_integers(1, clen0)
                 return i, rng
 
@@ -1213,44 +1268,27 @@ def _jitc_mm_normal_pallas_kernel_generator(
                 (rng.random_integers(0, clen0), rng)
             )
 
-    tile = (out_info.shape[0] if corder else B_info.shape[0])
-    grid = (tile, pl.cdiv(B_info.shape[1], block_dim))
+    def run(w_loc, w_scale, clen, B, seed):
+        fn = pl.pallas_call(kernel, grid=grid, out_shape=kwargs['outs'])
+        return fn(w_loc, w_scale, clen, B, seed)
 
-    return pallas_kernel(
-        kernel,
-        tile=grid,
-        input_output_aliases={5: 0},
-        outs=kwargs['outs']
-    )
+    return run
 
 
-def _jitc_mm_normal_jvp_wloc(w_dot, w_loc, w_scale, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
+def _jitc_mm_normal_jvp_wloc(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
     return binary_jitc_mm_normal_p_call(w_dot, w_scale, clen, B, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitc_mm_normal_jvp_wscale(w_dot, w_loc, w_scale, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
+def _jitc_mm_normal_jvp_wscale(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
     return binary_jitc_mm_normal_p_call(w_loc, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitc_mm_normal_jvp_B(B_dot, w_loc, w_scale, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
+def _jitc_mm_normal_jvp_B(B_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
     return float_jitc_mm_normal_p_call(w_loc, w_scale, clen, B_dot, seed, shape=shape, transpose=transpose,
                                        corder=corder)
 
 
-def _jitc_mm_normal_transpose_rules(
-    ct,
-    w_loc,
-    w_scale,
-    clen,
-    B,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
+def _jitc_mm_normal_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
     assert not ad.is_undefined_primal(w_loc)
@@ -1269,7 +1307,7 @@ def _jitc_mm_normal_transpose_rules(
             corder=not corder,
         )[0]
 
-        return w_loc, w_scale, clen, r, seed, _
+        return w_loc, w_scale, clen, r, seed
 
     else:
         raise NotImplementedError(
@@ -1297,16 +1335,16 @@ def _batching_axis1(args, axis=1, **kwargs):
 
 
 def _jitc_mm_normal_batching(args, axes, **kwargs):
-    if tuple(axes) == (None, None, None, 0, None, None):
+    if tuple(axes) == (None, None, None, 0, None):
         assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
         args = list(args)
         args[3] = jnp.transpose(args[3], (1, 0, 2))
         return _batching_axis1(args, **kwargs)
 
-    elif tuple(axes) == (None, None, None, 1, None, None):
+    elif tuple(axes) == (None, None, None, 1, None):
         return _batching_axis1(args, **kwargs)
 
-    elif tuple(axes) == (None, None, None, 2, None, None):
+    elif tuple(axes) == (None, None, None, 2, None):
         return _batching_axis1(args, axis=2, **kwargs)
 
     else:
@@ -1355,7 +1393,6 @@ def binary_jitc_mm_normal_p_call(
         clen,
         B,
         seed,
-        jnp.zeros(out_info.shape, out_info.dtype),
         outs=[out_info],
         w_loc_info=jax.ShapeDtypeStruct(w_loc.shape, w_loc.dtype),
         w_scale_info=jax.ShapeDtypeStruct(w_scale.shape, w_scale.dtype),
@@ -1376,6 +1413,6 @@ binary_jitc_mm_normal_p.def_warp_kernel(_jitc_mm_normal_warp_kernel_generator)
 binary_jitc_mm_normal_p.def_pallas_kernel('gpu', _jitc_mm_normal_pallas_kernel_generator)
 binary_jitc_mm_normal_p.def_pallas_kernel('tpu', _jitc_mm_normal_pallas_kernel_generator)
 binary_jitc_mm_normal_p.def_jvp_rule2(_jitc_mm_normal_jvp_wloc, _jitc_mm_normal_jvp_wscale,
-                                      None, _jitc_mm_normal_jvp_B, None, None)
+                                      None, _jitc_mm_normal_jvp_B, None)
 binary_jitc_mm_normal_p.def_transpose_rule(_jitc_mm_normal_transpose_rules)
 binary_jitc_mm_normal_p.def_batching_rule(_jitc_mm_normal_batching)

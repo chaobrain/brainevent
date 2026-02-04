@@ -23,7 +23,7 @@ from brainevent._misc import cdiv, generate_block_dim
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 
 
-def binary_vec_dot_dense_mat(binary_index, weights):
+def indexed_binary_vec_dot_dense_mat(binary_index, weights):
     """
     Computes the dot product between a binary vector (in sparse format) and a dense matrix.
 
@@ -58,7 +58,7 @@ def binary_vec_dot_dense_mat(binary_index, weights):
     --------
     >>> # Suppose binary_arr has spike_indices = [0, 2], spike_count = 2
     >>> # and weights is a (3, 4) matrix
-    >>> result = binary_vec_dot_dense_mat(binary_index, weights)
+    >>> result = indexed_binary_vec_dot_dense_mat(binary_index, weights)
     """
     weight_val, wunit = u.split_mantissa_unit(weights)
     spikes = binary_index.value
@@ -240,7 +240,7 @@ _binary_vec_dot_dense_mat_p.def_batching_rule(_binary_vec_dot_dense_mat_batching
 _binary_vec_dot_dense_mat_p.def_call(_binary_vec_dot_dense_mat_p_call)
 
 
-def dense_mat_dot_binary_vec(weights, binary_arr):
+def dense_mat_dot_indexed_binary_vec(weights, binary_arr):
     """
     Computes the dot product between a dense matrix and a binary vector (in sparse format).
 
@@ -275,12 +275,12 @@ def dense_mat_dot_binary_vec(weights, binary_arr):
     --------
     >>> # Suppose binary_arr has spike_indices = [1, 3], spike_count = 2
     >>> # and weights is a (5, 4) matrix
-    >>> result = dense_mat_dot_binary_vec(weights, binary_arr)
+    >>> result = dense_mat_dot_indexed_binary_vec(weights, binary_arr)
     """
-    return binary_vec_dot_dense_mat(binary_arr, weights.T)
+    return indexed_binary_vec_dot_dense_mat(binary_arr, weights.T)
 
 
-def binary_mat_dot_dense_mat(binary_arr, weights):
+def indexed_binary_mat_dot_dense_mat(binary_arr, weights):
     """
     Computes the dot product between a batch of binary vectors (in sparse format) and a dense matrix.
 
@@ -316,7 +316,7 @@ def binary_mat_dot_dense_mat(binary_arr, weights):
     --------
     >>> # Suppose binary_arr has spike_indices = [[0, 2], [1, 3]], spike_count = [2, 2]
     >>> # and weights is a (4, 5) matrix
-    >>> result = binary_mat_dot_dense_mat(binary_arr, weights)
+    >>> result = indexed_binary_mat_dot_dense_mat(binary_arr, weights)
     """
     weights, wunit = u.split_mantissa_unit(weights)
     spikes = binary_arr.value
@@ -493,18 +493,18 @@ _binary_mat_dot_dense_mat_p.def_warp_kernel(_binary_mat_dot_dense_mat_warp_kerne
 _binary_mat_dot_dense_mat_p.def_pallas_kernel('gpu', _binary_mat_dot_dense_mat_pallas_kernel)
 _binary_mat_dot_dense_mat_p.def_pallas_kernel('tpu', _binary_mat_dot_dense_mat_pallas_kernel)
 _binary_mat_dot_dense_mat_p.def_jvp_rule2(
-    _binary_mat_dot_dense_mat_jvp_spikes,
-    None, None,
-    _binary_mat_dot_dense_mat_jvp_weights,
+    _binary_mat_dot_dense_mat_jvp_spikes, None, None, _binary_mat_dot_dense_mat_jvp_weights,
 )
 _binary_mat_dot_dense_mat_p.def_transpose_rule(_binary_mat_dot_dense_mat_transpose)
 _binary_mat_dot_dense_mat_p.def_batching_rule(_binary_mat_dot_dense_mat_batching)
 _binary_mat_dot_dense_mat_p.def_call(_binary_mat_dot_dense_mat_p_call)
 
 
-def dense_mat_dot_binary_mat(weights, binary_arr):
+def dense_mat_dot_indexed_binary_mat(weights, binary_arr):
     weight_val, wunit = u.split_mantissa_unit(weights)
     spikes = binary_arr.value
     indices = binary_arr.spike_indices
     count = binary_arr.spike_count
-    raise ValueError
+    return u.maybe_decimal(
+        _binary_mat_dot_dense_mat_p_call(spikes, indices, count, weight_val) * wunit
+    )
