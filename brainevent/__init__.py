@@ -21,7 +21,7 @@ from ._block_csr import BlockCSR
 from ._block_ell import BlockELL
 from ._coo import COO, coo_on_pre, coo_on_post
 from ._csr import (
-    CSR, CSC, binary_csr_plast, csr2csc_on_post,
+    CSR, CSC, plast_csr_on_binary_pre, csr2csc_on_post,
     binary_csrmv_p,
 )
 from ._dense import dense_on_pre, dense_on_post
@@ -105,7 +105,7 @@ __all__ = [
     'csr_to_coo_index',
     'coo_to_csc_index',
     'csr_to_csc_index',
-    'binary_csr_plast',
+    'plast_csr_on_binary_pre',
     'csr2csc_on_post',
     'coo_on_pre',
     'coo_on_post',

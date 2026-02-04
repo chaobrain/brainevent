@@ -25,14 +25,14 @@ from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
 from brainevent._typing import MatrixShape
 
 __all__ = [
-    'binary_csr_plast',
-    'binary_csr_plast_p',
+    'plast_csr_on_binary_pre',
+    'plast_csr_on_binary_pre_p',
     'csr2csc_on_post',
     'csr2csc_on_post_p',
 ]
 
 
-def binary_csr_plast(
+def plast_csr_on_binary_pre(
     weight: Union[u.Quantity, jax.Array],
     indices: Union[np.ndarray, jax.Array],
     indptr: Union[np.ndarray, jax.Array],
@@ -243,7 +243,7 @@ def _csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, sha
     assert weight.shape[0] == indices.shape[0], (
         f'weight shape {weight.shape}, indices shape {indices.shape}, indptr shape {indptr.shape} do not match.'
     )
-    return binary_csr_plast_p(
+    return plast_csr_on_binary_pre_p(
         weight, indices, indptr, pre_spike, post_trace,
         outs=[jax.ShapeDtypeStruct(weight.shape, weight.dtype)],
         shape=shape,
@@ -255,11 +255,11 @@ def _csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, sha
     )
 
 
-binary_csr_plast_p = XLACustomKernel('binary_csr_plast')
-binary_csr_plast_p.def_numba_kernel(_csr_on_pre_numba_kernel_generator)
-binary_csr_plast_p.def_warp_kernel(_csr_on_pre_warp_kernel_generator)
-binary_csr_plast_p.def_pallas_kernel('gpu', _csr_on_pre_pallas_kernel_generator)
-binary_csr_plast_p.def_pallas_kernel('tpu', _csr_on_pre_pallas_kernel_generator)
+plast_csr_on_binary_pre_p = XLACustomKernel('binary_csr_plast')
+plast_csr_on_binary_pre_p.def_numba_kernel(_csr_on_pre_numba_kernel_generator)
+plast_csr_on_binary_pre_p.def_warp_kernel(_csr_on_pre_warp_kernel_generator)
+plast_csr_on_binary_pre_p.def_pallas_kernel('gpu', _csr_on_pre_pallas_kernel_generator)
+plast_csr_on_binary_pre_p.def_pallas_kernel('tpu', _csr_on_pre_pallas_kernel_generator)
 
 
 def csr2csc_on_post(
@@ -521,4 +521,4 @@ csr2csc_on_post_p.def_warp_kernel(_csr2csc_on_post_warp_kernel_generator)
 csr2csc_on_post_p.def_pallas_kernel('gpu', _csr2csc_on_post_pallas_kernel_generator)
 csr2csc_on_post_p.def_pallas_kernel('tpu', _csr2csc_on_post_pallas_kernel_generator)
 
-csr_on_pre = binary_csr_plast
+csr_on_pre = plast_csr_on_binary_pre

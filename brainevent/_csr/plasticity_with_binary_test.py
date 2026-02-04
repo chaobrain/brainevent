@@ -22,7 +22,7 @@ import pytest
 import scipy.sparse as sp
 
 import brainevent
-from brainevent._csr.plasticity_with_binary import binary_csr_plast, csr2csc_on_post
+from brainevent._csr.plasticity_with_binary import plast_csr_on_binary_pre, csr2csc_on_post
 
 
 class Test_csr_on_pre:
@@ -37,7 +37,7 @@ class Test_csr_on_pre:
         post_trace = brainstate.random.random((n_post,))
 
         csr = brainevent.CSR.fromdense(mat)
-        csr2 = csr.with_data(binary_csr_plast(csr.data, csr.indices, csr.indptr, pre_spike, post_trace, shape=csr.shape))
+        csr2 = csr.with_data(plast_csr_on_binary_pre(csr.data, csr.indices, csr.indptr, pre_spike, post_trace, shape=csr.shape))
         dense2 = jnp.where(mask, mat + jnp.outer(pre_spike.astype(float), post_trace), 0.)
 
         assert jnp.allclose(csr2.todense(), dense2)
@@ -55,7 +55,7 @@ class Test_csr_on_pre:
             post_trace = brainstate.random.random((n_post,)) * trace_unit
 
             csr = brainevent.CSR.fromdense(mat)
-            csr = csr.with_data(binary_csr_plast(csr.data, csr.indices, csr.indptr, pre_spike, post_trace, shape=csr.shape))
+            csr = csr.with_data(plast_csr_on_binary_pre(csr.data, csr.indices, csr.indptr, pre_spike, post_trace, shape=csr.shape))
 
             dense = mat + u.math.outer(pre_spike.astype(float), post_trace)
             dense = u.math.where(mask, dense, 0. * mat_unit)
@@ -81,8 +81,8 @@ class Test_csr_on_pre:
 
         csr = brainevent.CSR.fromdense(mat)
         csr = csr.with_data(
-            binary_csr_plast(csr.data, csr.indices, csr.indptr, pre_spike, post_trace,
-                             w_min=w_in, w_max=w_max, shape=csr.shape)
+            plast_csr_on_binary_pre(csr.data, csr.indices, csr.indptr, pre_spike, post_trace,
+                                    w_min=w_in, w_max=w_max, shape=csr.shape)
         )
 
         mat = mat + jnp.outer(pre_spike.astype(float), post_trace)
