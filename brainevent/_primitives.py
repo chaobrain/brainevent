@@ -35,9 +35,9 @@ from brainevent._csr.float import (
     csrmm_p,
     csrmv_yw2y_p,
 )
-from brainevent._csr.masked_float import (
-    masked_float_csrmv_p,
-    masked_float_csrmm_p,
+from brainevent._csr.sparse_float import (
+    sparse_float_csrmv_p,
+    sparse_float_csrmm_p,
 )
 from brainevent._dense.binary import (
     dense_mat_dot_binary_vec_p,
@@ -45,11 +45,11 @@ from brainevent._dense.binary import (
     dense_mat_dot_binary_mat_p,
     binary_mat_dot_dense_mat_p
 )
-from brainevent._dense.masked_float import (
-    dense_mat_dot_masked_float_vec_p,
-    masked_float_vec_dot_dense_mat_p,
-    dense_mat_dot_masked_float_mat_p,
-    masked_float_mat_dot_dense_mat_p
+from brainevent._dense.sparse_float import (
+    dense_mat_dot_sparse_float_vec_p,
+    sparse_float_vec_dot_dense_mat_p,
+    dense_mat_dot_sparse_float_mat_p,
+    sparse_float_mat_dot_dense_mat_p
 )
 from brainevent._fixed_conn_num.binary import (
     binary_fixed_num_mv_p,
@@ -59,9 +59,9 @@ from brainevent._fixed_conn_num.float import (
     fixed_num_mv_p,
     fixed_num_mm_p,
 )
-from brainevent._fixed_conn_num.masked_float import (
-    masked_float_fixed_num_mv_p,
-    masked_float_fixed_num_mm_p,
+from brainevent._fixed_conn_num.sparse_float import (
+    sparse_float_fixed_num_mv_p,
+    sparse_float_fixed_num_mm_p,
 )
 from brainevent._jitc_homo.binary import (
     binary_jitc_mv_homo_p,
@@ -112,8 +112,8 @@ CSR_PRIMITIVES = {
     'csrmv_yw2y_p': csrmv_yw2y_p,
     'binary_csrmv_p': binary_csrmv_p,
     'binary_csrmm_p': binary_csrmm_p,
-    'masked_float_csrmv_p': masked_float_csrmv_p,
-    'masked_float_csrmm_p': masked_float_csrmm_p,
+    'sparse_float_csrmv_p': sparse_float_csrmv_p,
+    'sparse_float_csrmm_p': sparse_float_csrmm_p,
     'csr_diag_add_p': csr_diag_add_p,
 }
 
@@ -122,10 +122,10 @@ DENSE_PRIMITIVES = {
     'binary_vec_dot_dense_mat_p': binary_vec_dot_dense_mat_p,
     'dense_mat_dot_binary_mat_p': dense_mat_dot_binary_mat_p,
     'binary_mat_dot_dense_mat_p': binary_mat_dot_dense_mat_p,
-    'dense_mat_dot_masked_float_vec_p': dense_mat_dot_masked_float_vec_p,
-    'masked_float_vec_dot_dense_mat_p': masked_float_vec_dot_dense_mat_p,
-    'dense_mat_dot_masked_float_mat_p': dense_mat_dot_masked_float_mat_p,
-    'masked_float_mat_dot_dense_mat_p': masked_float_mat_dot_dense_mat_p,
+    'dense_mat_dot_sparse_float_vec_p': dense_mat_dot_sparse_float_vec_p,
+    'sparse_float_vec_dot_dense_mat_p': sparse_float_vec_dot_dense_mat_p,
+    'dense_mat_dot_sparse_float_mat_p': dense_mat_dot_sparse_float_mat_p,
+    'sparse_float_mat_dot_dense_mat_p': sparse_float_mat_dot_dense_mat_p,
 }
 
 FIXED_CONN_PRIMITIVES = {
@@ -133,8 +133,8 @@ FIXED_CONN_PRIMITIVES = {
     'fixed_num_mm_p': fixed_num_mm_p,
     'binary_fixed_num_mv_p': binary_fixed_num_mv_p,
     'binary_fixed_num_mm_p': binary_fixed_num_mm_p,
-    'masked_float_fixed_num_mv_p': masked_float_fixed_num_mv_p,
-    'masked_float_fixed_num_mm_p': masked_float_fixed_num_mm_p,
+    'sparse_float_fixed_num_mv_p': sparse_float_fixed_num_mv_p,
+    'sparse_float_fixed_num_mm_p': sparse_float_fixed_num_mm_p,
 }
 
 JITC_HOMO_PRIMITIVES = {

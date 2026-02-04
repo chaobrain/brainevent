@@ -2,19 +2,19 @@ import numpy as np
 import pytest
 
 import brainevent
-from brainevent import MaskedFloat, MathError
+from brainevent import SparseFloat, MathError
 
 
-class TestMaskedFloatMatMul:
+class TestSparseFloatMatMul:
     def setup_method(self):
         # Create test arrays
-        self.vector = MaskedFloat(np.array([1.0, 2.0, 3.0]))
-        self.matrix = MaskedFloat(np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]))
+        self.vector = SparseFloat(np.array([1.0, 2.0, 3.0]))
+        self.matrix = SparseFloat(np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]))
         self.dense_vector = np.array([1.0, 2.0, 3.0])
         self.dense_matrix = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
         self.dense_matrix2 = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
-        self.square_matrix = MaskedFloat(np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]))
-        self.scalar = MaskedFloat(np.array(5.0))
+        self.square_matrix = SparseFloat(np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]))
+        self.scalar = SparseFloat(np.array(5.0))
 
     def test_vector_matmul_matrix(self):
         # Test vector @ matrix
@@ -44,7 +44,7 @@ class TestMaskedFloatMatMul:
     def test_imatmul(self):
         # Test in-place matrix multiplication
         with pytest.raises(brainevent.MathError):
-            matrix_copy = MaskedFloat(self.matrix.value.copy())
+            matrix_copy = SparseFloat(self.matrix.value.copy())
             matrix_copy @= self.dense_matrix2
             expected = np.array([[9.0, 12.0, 15.0], [19.0, 26.0, 33.0], [29.0, 40.0, 51.0]])
             assert np.array_equal(matrix_copy.value, expected)
@@ -56,7 +56,7 @@ class TestMaskedFloatMatMul:
 
     def test_3d_array_matmul_error(self):
         # Test error for 3D array in matrix multiplication
-        array_3d = MaskedFloat(np.ones((2, 2, 2)))
+        array_3d = SparseFloat(np.ones((2, 2, 2)))
         with pytest.raises(MathError) as excinfo:
             _ = array_3d @ self.dense_matrix
         assert "Matrix multiplication is only supported for 1D and 2D arrays" in str(excinfo.value)

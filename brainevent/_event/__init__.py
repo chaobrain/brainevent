@@ -18,15 +18,15 @@ from .base import BaseArray
 from .binary import BinaryArray, EventArray
 from .binary_index import BinaryArrayIndex
 from .binary_index_extraction import binary_array_index
-from .masked_float import MaskedFloat
-from .masked_float_index import MaskedFloatIndex
+from .sparse_float import SparseFloat
+from .sparse_float_index import SparseFloatIndex
 
 __all__ = [
     'BaseArray',
     'BinaryArray',
     'BinaryArrayIndex',
     'EventArray',
-    'MaskedFloat',
-    'MaskedFloatIndex',
+    'SparseFloat',
+    'SparseFloatIndex',
     'binary_array_index',
 ]

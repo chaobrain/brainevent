@@ -14,44 +14,56 @@
 # ==============================================================================
 
 
+import jax
 from jax.tree_util import register_pytree_node_class
 
 from brainevent._dense import (
-    dense_mat_dot_masked_float_mat,
-    masked_float_mat_dot_dense_mat,
-    dense_mat_dot_masked_float_vec,
-    masked_float_vec_dot_dense_mat,
+    dense_mat_dot_sparse_float_mat,
+    sparse_float_mat_dot_dense_mat,
+    dense_mat_dot_sparse_float_vec,
+    sparse_float_vec_dot_dense_mat,
 )
 from brainevent._error import MathError
 from .base import BaseArray
 from .base import extract_raw_value, is_known_type
+from .sparse_float import SparseFloat
 
 __all__ = [
-    'MaskedFloat',
+    'SparseFloatIndex',
 ]
 
 
 @register_pytree_node_class
-class MaskedFloat(BaseArray):
+class SparseFloatIndex(BaseArray):
     """
-    A specialized array class for masked floating-point values (0 or floating points).
+    A specialized array class for sparse floating-point values (0 or floating points).
 
-    ``MaskedFloatIndex`` extends ``BaseArray`` to provide functionality for arrays with masked
-    floating-point values, where certain elements may be masked (typically to
-    indicate missing or invalid data).
+    ``SparseFloatIndex`` extends ``BaseArray`` to provide functionality for arrays with sparse
+    floating-point values, where zeros are treated as sparse (skipped during computation).
 
     This class supports matrix multiplication operations with other arrays:
-    - ``MaskedFloatIndex`` @ dense matrix
-    - dense matrix @ ``MaskedFloatIndex``
+    - ``SparseFloatIndex`` @ dense matrix
+    - dense matrix @ ``SparseFloatIndex``
 
     The class is registered as a PyTree node for compatibility with JAX's
     functional transformations.
-
-    Attributes:
-        value: The underlying masked float array data
     """
-    __slots__ = ('_value',)
     __module__ = 'brainevent'
+
+    def __init__(self, value, dtype: jax.typing.DTypeLike = None):
+        if isinstance(value, BaseArray):
+            if not isinstance(value, SparseFloat):
+                raise TypeError("SparseFloatIndex can only be initialized with a SparseFloat or a compatible type.")
+            value = value.value
+        super().__init__(value, dtype=dtype)
+
+        self.indices = ...
+
+    def __setitem__(self, index, value):
+        raise NotImplementedError
+
+    def _update(self, value):
+        raise NotImplementedError
 
     def __matmul__(self, oc):
         if is_known_type(oc):
@@ -77,9 +89,9 @@ class MaskedFloat(BaseArray):
 
             # Perform the appropriate multiplication based on dimensions
             if self.ndim == 1:
-                return masked_float_vec_dot_dense_mat(self.value, oc)
+                return sparse_float_vec_dot_dense_mat(self.value, oc)
             else:  # self.ndim == 2
-                return masked_float_mat_dot_dense_mat(self.value, oc)
+                return sparse_float_mat_dot_dense_mat(self.value, oc)
         else:
             return oc.__rmatmul__(self)
 
@@ -107,9 +119,9 @@ class MaskedFloat(BaseArray):
 
             # Perform the appropriate multiplication based on dimensions
             if self.ndim == 1:
-                return dense_mat_dot_masked_float_vec(oc, self.value)
+                return dense_mat_dot_sparse_float_vec(oc, self.value)
             else:
-                return dense_mat_dot_masked_float_mat(oc, self.value)
+                return dense_mat_dot_sparse_float_mat(oc, self.value)
         else:
             return oc.__matmul__(self)
 
@@ -119,3 +131,15 @@ class MaskedFloat(BaseArray):
         else:
             self.value = oc.__rmatmul__(self)
         return self
+
+    def tree_flatten(self):
+        return (self.value,), (self.indices,)
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, flat_contents):
+        value, = flat_contents
+        indices, = aux_data
+        obj = object.__new__(cls)
+        obj._value = value
+        obj.indices = indices
+        return obj

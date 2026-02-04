@@ -14,7 +14,7 @@
 # ==============================================================================
 
 """
-Unit tests for masked_float CSR operations.
+Unit tests for sparse_float CSR operations.
 
 Tests cover:
 - Forward pass for matvec and matmat
@@ -33,15 +33,15 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from brainevent._csr.masked_float import (
-    masked_float_csrmv,
-    masked_float_csrmm,
+from brainevent._csr.sparse_float import (
+    sparse_float_csrmv,
+    sparse_float_csrmm,
 )
 from brainevent._csr.float import csrmv, csrmm
 from brainevent._csr.test_util import get_csr
 
 
-class TestMaskedFloatCSRMV:
+class TestSparseFloatCSRMV:
     """Test forward pass for masked float CSR matrix-vector multiplication."""
 
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -60,7 +60,7 @@ class TestMaskedFloatCSRMV:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         # Test implementation
-        result = masked_float_csrmv(
+        result = sparse_float_csrmv(
             data, indices, indptr, v,
             shape=(m, n), transpose=transpose
         )
@@ -90,7 +90,7 @@ class TestMaskedFloatCSRMV:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         # Test implementation
-        result = masked_float_csrmv(
+        result = sparse_float_csrmv(
             data, indices, indptr, v,
             shape=(m, n), transpose=transpose
         )
@@ -112,7 +112,7 @@ class TestMaskedFloatCSRMV:
         # Scalar weight
         data = 2.5
 
-        result = masked_float_csrmv(
+        result = sparse_float_csrmv(
             data, indices, indptr, v,
             shape=(m, n), transpose=False
         )
@@ -124,7 +124,7 @@ class TestMaskedFloatCSRMV:
         assert jnp.allclose(result, expected, rtol=1e-5, atol=1e-5)
 
 
-class TestMaskedFloatCSRMM:
+class TestSparseFloatCSRMM:
     """Test forward pass for masked float CSR matrix-matrix multiplication."""
 
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -143,7 +143,7 @@ class TestMaskedFloatCSRMM:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         # Test implementation
-        result = masked_float_csrmm(
+        result = sparse_float_csrmm(
             data, indices, indptr, B,
             shape=(m, n), transpose=transpose
         )
@@ -173,7 +173,7 @@ class TestMaskedFloatCSRMM:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         # Test implementation
-        result = masked_float_csrmm(
+        result = sparse_float_csrmm(
             data, indices, indptr, B,
             shape=(m, n), transpose=transpose
         )
@@ -195,7 +195,7 @@ class TestMaskedFloatCSRMM:
         # Scalar weight
         data = 2.5
 
-        result = masked_float_csrmm(
+        result = sparse_float_csrmm(
             data, indices, indptr, B,
             shape=(m, n), transpose=False
         )
@@ -207,7 +207,7 @@ class TestMaskedFloatCSRMM:
         assert jnp.allclose(result, expected, rtol=1e-5, atol=1e-5)
 
 
-class TestMaskedFloatGradients:
+class TestSparseFloatGradients:
     """Test JVP and VJP gradient rules for masked float CSR operations."""
 
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -226,7 +226,7 @@ class TestMaskedFloatGradients:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         def f_test(v):
-            return masked_float_csrmv(
+            return sparse_float_csrmv(
                 data, indices, indptr, v,
                 shape=(m, n), transpose=transpose
             ).sum()
@@ -258,7 +258,7 @@ class TestMaskedFloatGradients:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         def f_test(w):
-            return masked_float_csrmv(
+            return sparse_float_csrmv(
                 w, indices, indptr, v,
                 shape=(m, n), transpose=transpose
             ).sum()
@@ -291,7 +291,7 @@ class TestMaskedFloatGradients:
         v_dot = jnp.ones_like(v)
 
         def f_test(v):
-            return masked_float_csrmv(
+            return sparse_float_csrmv(
                 data, indices, indptr, v,
                 shape=(m, n), transpose=transpose
             )
@@ -325,7 +325,7 @@ class TestMaskedFloatGradients:
         data_dot = jnp.ones_like(data)
 
         def f_test(w):
-            return masked_float_csrmv(
+            return sparse_float_csrmv(
                 w, indices, indptr, v,
                 shape=(m, n), transpose=transpose
             )
@@ -358,7 +358,7 @@ class TestMaskedFloatGradients:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         def f_test(B):
-            return masked_float_csrmm(
+            return sparse_float_csrmm(
                 data, indices, indptr, B,
                 shape=(m, n), transpose=transpose
             ).sum()
@@ -390,7 +390,7 @@ class TestMaskedFloatGradients:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         def f_test(w):
-            return masked_float_csrmm(
+            return sparse_float_csrmm(
                 w, indices, indptr, B,
                 shape=(m, n), transpose=transpose
             ).sum()
@@ -423,7 +423,7 @@ class TestMaskedFloatGradients:
         B_dot = jnp.ones_like(B)
 
         def f_test(B):
-            return masked_float_csrmm(
+            return sparse_float_csrmm(
                 data, indices, indptr, B,
                 shape=(m, n), transpose=transpose
             )
@@ -457,7 +457,7 @@ class TestMaskedFloatGradients:
         data_dot = jnp.ones_like(data)
 
         def f_test(w):
-            return masked_float_csrmm(
+            return sparse_float_csrmm(
                 w, indices, indptr, B,
                 shape=(m, n), transpose=transpose
             )
@@ -475,7 +475,7 @@ class TestMaskedFloatGradients:
         assert jnp.allclose(tangent_test, tangent_ref, rtol=1e-3, atol=1e-3)
 
 
-class TestMaskedFloatBatching:
+class TestSparseFloatBatching:
     """Test vmap/batching rules for masked float CSR operations."""
 
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -489,7 +489,7 @@ class TestMaskedFloatBatching:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         def f_test(v):
-            return masked_float_csrmv(
+            return sparse_float_csrmv(
                 data, indices, indptr, v,
                 shape=(m, n), transpose=False
             )
@@ -516,7 +516,7 @@ class TestMaskedFloatBatching:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         def f_test(v):
-            return masked_float_csrmv(
+            return sparse_float_csrmv(
                 data, indices, indptr, v,
                 shape=(m, n), transpose=True
             )
@@ -546,7 +546,7 @@ class TestMaskedFloatBatching:
             data = braintools.init.Normal(0., 1.)((b,) + indices.shape)
 
         def f_test(w):
-            return masked_float_csrmv(
+            return sparse_float_csrmv(
                 w, indices, indptr, v,
                 shape=(m, n), transpose=False
             )
@@ -573,7 +573,7 @@ class TestMaskedFloatBatching:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         def f_test(B):
-            return masked_float_csrmm(
+            return sparse_float_csrmm(
                 data, indices, indptr, B,
                 shape=(m, n), transpose=False
             )
@@ -600,7 +600,7 @@ class TestMaskedFloatBatching:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         def f_test(B):
-            return masked_float_csrmm(
+            return sparse_float_csrmm(
                 data, indices, indptr, B,
                 shape=(m, n), transpose=True
             )
@@ -627,7 +627,7 @@ class TestMaskedFloatBatching:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         def f_test(v, w):
-            return masked_float_csrmv(
+            return sparse_float_csrmv(
                 w, indices, indptr, v,
                 shape=(m, n), transpose=False
             ).sum()
@@ -656,7 +656,7 @@ class TestMaskedFloatBatching:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         def f_test(v):
-            return masked_float_csrmv(
+            return sparse_float_csrmv(
                 data, indices, indptr, v,
                 shape=(m, n), transpose=False
             )

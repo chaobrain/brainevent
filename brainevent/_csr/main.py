@@ -24,13 +24,13 @@ import numpy as np
 
 from brainevent._compatible_import import JAXSparse
 from brainevent._event.binary import EventArray
-from brainevent._event.masked_float import MaskedFloat
+from brainevent._event.sparse_float import SparseFloat
 from brainevent._misc import _csr_to_coo, _csr_todense
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .binary import binary_csrmv, binary_csrmm
 from .diag_add import csr_diag_position_v2, csr_diag_add_v2
 from .float import csrmv, csrmm, csrmv_yw2y
-from .masked_float import masked_float_csrmv, masked_float_csrmm
+from .sparse_float import sparse_float_csrmv, sparse_float_csrmm
 from .spsolve import csr_solve
 
 __all__ = [
@@ -513,12 +513,12 @@ class CSR(BaseCLS):
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
-        elif isinstance(other, MaskedFloat):
+        elif isinstance(other, SparseFloat):
             other = other.data
             if other.ndim == 1:
-                return masked_float_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
+                return sparse_float_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
             elif other.ndim == 2:
-                return masked_float_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape)
+                return sparse_float_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape)
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -562,17 +562,17 @@ class CSR(BaseCLS):
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
-        elif isinstance(other, MaskedFloat):
+        elif isinstance(other, SparseFloat):
             other = other.data
             if other.ndim == 1:
-                return masked_float_csrmv(
+                return sparse_float_csrmv(
                     self.data, self.indices, self.indptr, other,
                     shape=self.shape,
                     transpose=True
                 )
             elif other.ndim == 2:
                 other = other.T
-                r = masked_float_csrmm(
+                r = sparse_float_csrmm(
                     self.data, self.indices, self.indptr, other,
                     shape=self.shape,
                     transpose=True
@@ -964,16 +964,16 @@ class CSC(BaseCLS):
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
-        elif isinstance(other, MaskedFloat):
+        elif isinstance(other, SparseFloat):
             other = other.value
             if other.ndim == 1:
-                return masked_float_csrmv(
+                return sparse_float_csrmv(
                     data, self.indices, self.indptr, other,
                     shape=self.shape[::-1],
                     transpose=True
                 )
             elif other.ndim == 2:
-                return masked_float_csrmm(
+                return sparse_float_csrmm(
                     data, self.indices, self.indptr, other,
                     shape=self.shape[::-1],
                     transpose=True
@@ -1024,14 +1024,14 @@ class CSC(BaseCLS):
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
-        elif isinstance(other, MaskedFloat):
+        elif isinstance(other, SparseFloat):
             other = other.value
             if other.ndim == 1:
-                return masked_float_csrmv(data, self.indices, self.indptr, other,
+                return sparse_float_csrmv(data, self.indices, self.indptr, other,
                                           shape=self.shape[::-1],
                                           transpose=False)
             elif other.ndim == 2:
-                return masked_float_csrmm(data, self.indices, self.indptr, other.T,
+                return sparse_float_csrmm(data, self.indices, self.indptr, other.T,
                                           shape=self.shape[::-1],
                                           transpose=False).T
             else:

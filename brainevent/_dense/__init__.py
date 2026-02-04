@@ -15,11 +15,11 @@
 
 from .binary import binary_vec_dot_dense_mat, dense_mat_dot_binary_vec
 from .binary_index import dense_mat_dot_binary_mat, binary_mat_dot_dense_mat
-from .masked_float import (
-    dense_mat_dot_masked_float_mat,
-    masked_float_mat_dot_dense_mat,
-    dense_mat_dot_masked_float_vec,
-    masked_float_vec_dot_dense_mat,
+from .sparse_float import (
+    dense_mat_dot_sparse_float_mat,
+    sparse_float_mat_dot_dense_mat,
+    dense_mat_dot_sparse_float_vec,
+    sparse_float_vec_dot_dense_mat,
 )
 from .plasticity import dense_on_pre, dense_on_post
 
@@ -30,8 +30,8 @@ __all__ = [
     'binary_mat_dot_dense_mat',
     'binary_vec_dot_dense_mat',
     'dense_mat_dot_binary_vec',
-    'dense_mat_dot_masked_float_mat',
-    'masked_float_mat_dot_dense_mat',
-    'dense_mat_dot_masked_float_vec',
-    'masked_float_vec_dot_dense_mat',
+    'dense_mat_dot_sparse_float_mat',
+    'sparse_float_mat_dot_dense_mat',
+    'dense_mat_dot_sparse_float_vec',
+    'sparse_float_vec_dot_dense_mat',
 ]
