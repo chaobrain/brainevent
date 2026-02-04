@@ -33,7 +33,12 @@ from ._dense import (
     dense_on_pre,
     dense_on_post,
 )
-from ._error import MathError
+from ._error import (
+    MathError,
+    KernelNotAvailableError,
+    KernelCompilationError,
+    KernelFallbackExhaustedError,
+)
 from ._event import (
     BaseArray,
     BinaryArray,
