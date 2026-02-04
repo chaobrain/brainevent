@@ -200,10 +200,10 @@ def _binary_fixed_num_mv_warp_kernel_generator(
                         for j in range(indices.shape[1]):
                             warp.atomic_add(posts, indices[i, j], weights[i, j])
 
-        def kernel(weights, indices, spikes, _):
+        def kernel(weights, indices, spikes):
             out_info = kwargs['outs'][0]
             dim = spike_info.shape[0]
-            fn = jax_kernel(ell_mv, launch_dims=dim, num_outputs=0, in_out_argnames=['posts'])
+            fn = jax_kernel(ell_mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
             return fn(weights, indices, spikes, jnp.zeros(out_info.shape, out_info.dtype))
 
     else:
@@ -268,10 +268,10 @@ def _binary_fixed_num_mv_warp_kernel_generator(
                             r += weights[i, j]
                     posts[i] = r
 
-        def kernel(weights, indices, spikes, _):
+        def kernel(weights, indices, spikes):
             out_info = kwargs['outs'][0]
             dim = indices_info.shape[0]
-            fn = jax_kernel(ell_mv, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
+            fn = jax_kernel(ell_mv, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
             return fn(weights, indices, spikes)
 
     return kernel
@@ -292,7 +292,7 @@ def _binary_fixed_num_mv_pallas_kernel_generator(
     n_pre, n_post = shape
     n_conn = indices_info.shape[1]
     homo = weight_info.size == 1
-    block_dim = generate_block_dim(indices_info.shape[1])
+    block_dim = generate_block_dim(indices_info.shape[1], maximum=256)
 
     if transpose:
         # Sparse Matrix: [k, m]
@@ -328,7 +328,7 @@ def _binary_fixed_num_mv_pallas_kernel_generator(
 
                 jax.lax.fori_loop(0, pl.cdiv(n_conn, block_dim), loop_fn, None)
 
-        def kernel(weights, indices, vector, _):
+        def kernel(weights, indices, vector):
             fn = pl.pallas_call(
                 _raw_kernel,
                 grid=(n_pre,),
@@ -375,33 +375,22 @@ def _binary_fixed_num_mv_pallas_kernel_generator(
                 i_row_sum = i_row_sum * weight_ref[0]
             out_ref[i_row] = i_row_sum
 
-        def kernel(weights, indices, vector, _):
+        def kernel(weights, indices, vector):
             fn = pl.pallas_call(_raw_kernel, grid=(n_pre,), out_shape=kwargs['outs'])
-            return fn(weights, indices, vector, _)
+            return fn(weights, indices, vector)
 
     return kernel
 
 
-def _binary_fixed_num_mv_jvp_spikes(spk_dot, weights, indices, spikes, _, *, shape, transpose, **kwargs):
+def _binary_fixed_num_mv_jvp_spikes(spk_dot, weights, indices, spikes, *, shape, transpose, **kwargs):
     return fixed_num_mv_p_call(weights, indices, spk_dot, shape=shape, transpose=transpose)
 
 
-def _binary_fixed_num_mv_jvp_weights(w_dot, weights, indices, spikes, _, *, shape, transpose, **kwargs):
+def _binary_fixed_num_mv_jvp_weights(w_dot, weights, indices, spikes, *, shape, transpose, **kwargs):
     return binary_fixed_num_mv_p_call(w_dot, indices, spikes, shape=shape, transpose=transpose)
 
 
-def _binary_fixed_num_mv_transpose_rule(
-    ct,
-    weights,
-    indices,
-    spikes,
-    _,
-    *,
-    shape,
-    transpose,
-    weight_info,
-    **kwargs
-):
+def _binary_fixed_num_mv_transpose_rule(ct, weights, indices, spikes, *, shape, transpose, weight_info, **kwargs):
     if ad.is_undefined_primal(indices):
         raise ValueError("Cannot transpose with respect to sparse indices.")
 
@@ -419,7 +408,7 @@ def _binary_fixed_num_mv_transpose_rule(
             else:
                 # heterogeneous weight
                 ct_spk = jax.vmap(lambda idx, w: jnp.inner(ct[idx], w))(indices, weights)
-        return weights, indices, ct_spk, _
+        return weights, indices, ct_spk
 
     else:
         # ∂L/∂w = ∂L/∂y * ∂y/∂w
@@ -440,11 +429,11 @@ def _binary_fixed_num_mv_transpose_rule(
                 ct_gmax = jax.vmap(lambda v, ind: v * ct[ind])(spikes, indices)
             else:
                 ct_gmax = jax.vmap(lambda c, ind: c * spikes[ind])(ct, indices)
-        return ct_gmax, indices, spikes, _
+        return ct_gmax, indices, spikes
 
 
 def _binary_fixed_num_mv_batching(args, axes, **kwargs):
-    if tuple(axes) == (None, None, 0, None):
+    if tuple(axes) == (None, None, 0):
         assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
         r = binary_fixed_num_mm_p_call(
             args[0],
@@ -454,7 +443,7 @@ def _binary_fixed_num_mv_batching(args, axes, **kwargs):
             transpose=kwargs['transpose'],
         )
         return r, [1]
-    elif tuple(axes) == (None, None, 1, None):
+    elif tuple(axes) == (None, None, 1):
         assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
         r = binary_fixed_num_mm_p_call(
             args[0],
@@ -486,7 +475,6 @@ def binary_fixed_num_mv_p_call(
         weights,
         indices,
         spikes,
-        jnp.zeros(out.shape, dtype=out.dtype),
         outs=out,
         shape=shape,
         transpose=transpose,
@@ -497,11 +485,11 @@ def binary_fixed_num_mv_p_call(
     return (u.maybe_decimal(r * v_unit * w_unit),)
 
 
-binary_fixed_num_mv_p = XLACustomKernel('binary_fixed_num_mv')
+binary_fixed_num_mv_p = XLACustomKernel('binary_fixed_num_mv', enable_fallback=True)
 binary_fixed_num_mv_p.def_numba_kernel(_binary_fixed_num_mv_numba_kernel_generator)
 binary_fixed_num_mv_p.def_warp_kernel(_binary_fixed_num_mv_warp_kernel_generator)
-binary_fixed_num_mv_p.def_pallas_kernel('gpu', _binary_fixed_num_mv_pallas_kernel_generator)
-binary_fixed_num_mv_p.def_pallas_kernel('tpu', _binary_fixed_num_mv_pallas_kernel_generator)
+# binary_fixed_num_mv_p.def_pallas_kernel('gpu', _binary_fixed_num_mv_pallas_kernel_generator)
+# binary_fixed_num_mv_p.def_pallas_kernel('tpu', _binary_fixed_num_mv_pallas_kernel_generator)
 binary_fixed_num_mv_p.def_jvp_rule2(_binary_fixed_num_mv_jvp_weights, None, _binary_fixed_num_mv_jvp_spikes, None)
 binary_fixed_num_mv_p.def_transpose_rule(_binary_fixed_num_mv_transpose_rule)
 binary_fixed_num_mv_p.def_batching_rule(_binary_fixed_num_mv_batching)

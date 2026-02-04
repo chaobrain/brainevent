@@ -36,7 +36,6 @@ import brainstate
 import braintools
 import brainunit as u
 import jax
-brainevent.config.gpu_kernel_backend = 'warp'
 
 
 class EINet(brainstate.nn.Module):
@@ -112,6 +111,20 @@ for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
 # scale=80, size=320000, time = 9.384576320648193 s, firing rate = 50.618499755859375 Hz
 # scale=100, size=400000, time = 11.69654369354248 s, firing rate = 50.61605453491211 Hz
 
+
+# NVIDIA GeForce RTX 3090 @ 2026.02.04
+
+# scale=1, size=4000, time = 1.7868633270263672 s, firing rate = 59.56795120239258 Hz
+# scale=2, size=8000, time = 1.8208961486816406 s, firing rate = 59.56516647338867 Hz
+# scale=4, size=16000, time = 1.9305737018585205 s, firing rate = 59.5695915222168 Hz
+# scale=6, size=24000, time = 2.1917836666107178 s, firing rate = 59.56669998168945 Hz
+# scale=8, size=32000, time = 2.235652208328247 s, firing rate = 59.57065200805664 Hz
+# scale=10, size=40000, time = 2.2676308155059814 s, firing rate = 59.57038497924805 Hz
+# scale=20, size=80000, time = 2.3961074352264404 s, firing rate = 59.570884704589844 Hz
+# scale=40, size=160000, time = 2.8628697395324707 s, firing rate = 59.571327209472656 Hz
+# scale=60, size=240000, time = 3.671980857849121 s, firing rate = 59.57017135620117 Hz
+# scale=80, size=320000, time = 4.697195053100586 s, firing rate = 59.56940841674805 Hz
+# scale=100, size=400000, time = 5.40840220451355 s, firing rate = 59.569679260253906 Hz
 
 # AMD Ryzen 7 7840HS
 
