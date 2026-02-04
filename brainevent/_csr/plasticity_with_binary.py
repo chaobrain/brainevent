@@ -25,14 +25,14 @@ from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
 from brainevent._typing import MatrixShape
 
 __all__ = [
-    'csr_on_pre',
-    'csr_on_pre_p',
+    'binary_csr_plast',
+    'binary_csr_plast_p',
     'csr2csc_on_post',
     'csr2csc_on_post_p',
 ]
 
 
-def csr_on_pre(
+def binary_csr_plast(
     weight: Union[u.Quantity, jax.Array],
     indices: Union[np.ndarray, jax.Array],
     indptr: Union[np.ndarray, jax.Array],
@@ -243,7 +243,7 @@ def _csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, sha
     assert weight.shape[0] == indices.shape[0], (
         f'weight shape {weight.shape}, indices shape {indices.shape}, indptr shape {indptr.shape} do not match.'
     )
-    return csr_on_pre_p(
+    return binary_csr_plast_p(
         weight, indices, indptr, pre_spike, post_trace,
         outs=[jax.ShapeDtypeStruct(weight.shape, weight.dtype)],
         shape=shape,
@@ -255,11 +255,11 @@ def _csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, sha
     )
 
 
-csr_on_pre_p = XLACustomKernel('csr_on_pre')
-csr_on_pre_p.def_numba_kernel(_csr_on_pre_numba_kernel_generator)
-csr_on_pre_p.def_warp_kernel(_csr_on_pre_warp_kernel_generator)
-csr_on_pre_p.def_pallas_kernel('gpu', _csr_on_pre_pallas_kernel_generator)
-csr_on_pre_p.def_pallas_kernel('tpu', _csr_on_pre_pallas_kernel_generator)
+binary_csr_plast_p = XLACustomKernel('binary_csr_plast')
+binary_csr_plast_p.def_numba_kernel(_csr_on_pre_numba_kernel_generator)
+binary_csr_plast_p.def_warp_kernel(_csr_on_pre_warp_kernel_generator)
+binary_csr_plast_p.def_pallas_kernel('gpu', _csr_on_pre_pallas_kernel_generator)
+binary_csr_plast_p.def_pallas_kernel('tpu', _csr_on_pre_pallas_kernel_generator)
 
 
 def csr2csc_on_post(
@@ -445,6 +445,7 @@ def _csr2csc_on_post_pallas_kernel_generator(
                     pre_trace_vals = trace_ref[pre_ids]
                     current_w = out_w_ref[weight_ids]
                     updated_w = jnp.where(mask, current_w + pre_trace_vals, current_w)
+
                     # Scatter update: for each position, update out_w_ref at weight_ids
                     # Using a loop to handle potential non-contiguous writes
                     def scatter_fn(j, _):
@@ -469,6 +470,7 @@ def _csr2csc_on_post_pallas_kernel_generator(
                     pre_ids = indices_ref[pl.dslice(offset, block_dim)]
                     weight_ids = weight_indices_ref[pl.dslice(offset, block_dim)]
                     pre_trace_vals = trace_ref[pre_ids]
+
                     # Scatter update: for each position, update out_w_ref at weight_ids
                     def scatter_fn(j, _):
                         w_id = weight_ids[j]
@@ -518,3 +520,5 @@ csr2csc_on_post_p.def_numba_kernel(_csr2csc_on_post_numba_kernel_generator)
 csr2csc_on_post_p.def_warp_kernel(_csr2csc_on_post_warp_kernel_generator)
 csr2csc_on_post_p.def_pallas_kernel('gpu', _csr2csc_on_post_pallas_kernel_generator)
 csr2csc_on_post_p.def_pallas_kernel('tpu', _csr2csc_on_post_pallas_kernel_generator)
+
+csr_on_pre = binary_csr_plast

@@ -16,12 +16,13 @@
 
 from .binary import binary_csrmv_p
 from .main import CSR, CSC
-from .plasticity import csr_on_pre, csr2csc_on_post
+from .plasticity_with_binary import binary_csr_plast, csr2csc_on_post
 
 __all__ = [
     'CSR',
     'CSC',
-    'csr_on_pre',
     'csr2csc_on_post',
     'binary_csrmv_p',
+
+    'binary_csr_plast',
 ]
