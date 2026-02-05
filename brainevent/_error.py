@@ -21,6 +21,7 @@ __all__ = [
     'KernelNotAvailableError',
     'KernelCompilationError',
     'KernelFallbackExhaustedError',
+    'KernelExecutionError',
 ]
 
 
@@ -40,4 +41,9 @@ class KernelCompilationError(Exception):
 
 class KernelFallbackExhaustedError(Exception):
     """Raised when all fallback kernels have failed."""
+    __module__ = 'brainevent'
+
+
+class KernelExecutionError(Exception):
+    """Raised when a kernel execution fails with helpful alternatives."""
     __module__ = 'brainevent'
