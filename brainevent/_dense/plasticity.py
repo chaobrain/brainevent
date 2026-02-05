@@ -23,8 +23,15 @@ from jax.interpreters import ad
 from brainevent._misc import generate_block_dim
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule
 
+__all__ = [
+    'plast_dense_on_binary_pre',
+    'plast_dense_on_binary_pre_p',
+    'plast_dense_on_binary_post',
+    'plast_dense_on_binary_post_p'
+]
 
-def dense_on_pre(
+
+def plast_dense_on_binary_pre(
     weight: Union[u.Quantity, jax.Array],
     pre_spike: jax.Array,
     post_trace: Union[u.Quantity, jax.Array],
@@ -130,7 +137,7 @@ def _dense_on_pre_prim_call(weight, pre_spike, post_trace):
         f'weight shape[1] ({weight.shape[1]}) should '
         f'match post_trace shape[0] ({post_trace.shape[0]}).'
     )
-    return _dense_on_pre_prim(
+    return plast_dense_on_binary_pre_p(
         weight, pre_spike, post_trace,
         outs=[jax.ShapeDtypeStruct(weight.shape, weight.dtype)],
         weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
@@ -161,20 +168,20 @@ def _dense_on_pre_batching(args, axes, **kwargs):
             mask = (pre_spike != 0.).astype(weight.dtype)
         update = mask[:, None] * post_trace[None, :]
         return [weight + update[None, :, :]], [0]
-    return general_batching_rule(_dense_on_pre_prim, args, axes, **kwargs)
+    return general_batching_rule(plast_dense_on_binary_pre_p, args, axes, **kwargs)
 
 
-_dense_on_pre_prim = XLACustomKernel('dense_on_pre')
-_dense_on_pre_prim.def_numba_kernel(_dense_on_pre_numba_kernel)
-_dense_on_pre_prim.def_pallas_kernel('gpu', _dense_on_pre_pallas_kernel)
-_dense_on_pre_prim.def_pallas_kernel('tpu', _dense_on_pre_pallas_kernel)
-_dense_on_pre_prim.def_jvp_rule2(_dense_on_pre_jvp_weight, None, None)
-_dense_on_pre_prim.def_transpose_rule(_dense_on_pre_transpose_rule)
-_dense_on_pre_prim.def_batching_rule(_dense_on_pre_batching)
-_dense_on_pre_prim.def_call(_dense_on_pre_prim_call)
+plast_dense_on_binary_pre_p = XLACustomKernel('dense_on_pre')
+plast_dense_on_binary_pre_p.def_numba_kernel(_dense_on_pre_numba_kernel)
+plast_dense_on_binary_pre_p.def_pallas_kernel('gpu', _dense_on_pre_pallas_kernel)
+plast_dense_on_binary_pre_p.def_pallas_kernel('tpu', _dense_on_pre_pallas_kernel)
+plast_dense_on_binary_pre_p.def_jvp_rule2(_dense_on_pre_jvp_weight, None, None)
+plast_dense_on_binary_pre_p.def_transpose_rule(_dense_on_pre_transpose_rule)
+plast_dense_on_binary_pre_p.def_batching_rule(_dense_on_pre_batching)
+plast_dense_on_binary_pre_p.def_call(_dense_on_pre_prim_call)
 
 
-def dense_on_post(
+def plast_dense_on_binary_post(
     weight: Union[u.Quantity, jax.Array],
     pre_trace: Union[u.Quantity, jax.Array],
     post_spike: jax.Array,
@@ -276,7 +283,7 @@ def _dense_one_post_prim_call(weight, pre_trace, post_spike):
                                                    f'match pre_trace shape[0] ({pre_trace.shape[0]}).')
     assert weight.shape[1] == post_spike.shape[0], (f'weight shape[1] ({weight.shape[1]}) should '
                                                     f'match post_spike shape[0] ({post_spike.shape[0]}).')
-    return _dense_on_post_prim(
+    return plast_dense_on_binary_post_p(
         weight, pre_trace, post_spike,
         outs=[jax.ShapeDtypeStruct(weight.shape, weight.dtype)],
         weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
@@ -307,14 +314,14 @@ def _dense_on_post_batching(args, axes, **kwargs):
             mask = (post_spike != 0.).astype(weight.dtype)
         update = pre_trace[:, None] * mask[None, :]
         return [weight + update[None, :, :]], [0]
-    return general_batching_rule(_dense_on_post_prim, args, axes, **kwargs)
+    return general_batching_rule(plast_dense_on_binary_post_p, args, axes, **kwargs)
 
 
-_dense_on_post_prim = XLACustomKernel('dense_on_post')
-_dense_on_post_prim.def_numba_kernel(_dense_on_post_numba_kernel)
-_dense_on_post_prim.def_pallas_kernel('gpu', _dense_on_post_pallas_kernel)
-_dense_on_post_prim.def_pallas_kernel('tpu', _dense_on_post_pallas_kernel)
-_dense_on_post_prim.def_jvp_rule2(_dense_on_post_jvp_weight, None, None)
-_dense_on_post_prim.def_transpose_rule(_dense_on_post_transpose_rule)
-_dense_on_post_prim.def_batching_rule(_dense_on_post_batching)
-_dense_on_post_prim.def_call(_dense_one_post_prim_call)
+plast_dense_on_binary_post_p = XLACustomKernel('dense_on_post')
+plast_dense_on_binary_post_p.def_numba_kernel(_dense_on_post_numba_kernel)
+plast_dense_on_binary_post_p.def_pallas_kernel('gpu', _dense_on_post_pallas_kernel)
+plast_dense_on_binary_post_p.def_pallas_kernel('tpu', _dense_on_post_pallas_kernel)
+plast_dense_on_binary_post_p.def_jvp_rule2(_dense_on_post_jvp_weight, None, None)
+plast_dense_on_binary_post_p.def_transpose_rule(_dense_on_post_transpose_rule)
+plast_dense_on_binary_post_p.def_batching_rule(_dense_on_post_batching)
+plast_dense_on_binary_post_p.def_call(_dense_one_post_prim_call)

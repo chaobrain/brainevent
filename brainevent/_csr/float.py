@@ -1098,7 +1098,7 @@ def csrmv_yw2y(
     return u.maybe_decimal(res * w_unit)
 
 
-def _csrmv_yw2y_numba_kernel_generator(
+def _csrmv_yw2y_numba_kernels(
     transpose: bool,
     **kwargs
 ):
@@ -1113,28 +1113,33 @@ def _csrmv_yw2y_numba_kernel_generator(
                 for j in range(i_row_start, i_row_end):
                     posts[j] = w[j] * y[indices[j]]
 
+        def kernel(y, w, indices, indptr):
+            return numba_kernel(mm, outs=kwargs['outs'])(y, w, indices, indptr)
+
     else:
         @numba.njit
-        def mm(y, w, indices, indptr, posts):
+        def mm(y, w, indptr, posts):
             for i_row in range(indptr.shape[0] - 1):
                 i_col_start = indptr[i_row]
                 i_col_end = indptr[i_row + 1]
                 for j in range(i_col_start, i_col_end):
                     posts[j] = w[j] * y[i_row]
 
-    def kernel(y, w, indices, indptr):
-        return numba_kernel(mm, outs=kwargs['outs'])(y, w, indices, indptr)
+        def kernel(y, w, indptr):
+            return numba_kernel(mm, outs=kwargs['outs'])(y, w, indptr)
 
     return kernel
 
 
-def _csrmv_yw2y_pallas_kernel_generator(
+def _csrmv_yw2y_pallas_kernels(
     shape: MatrixShape,
     transpose: bool,
     y_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
     from jax.experimental import pallas as pl
+    from jax.experimental.pallas.triton import store
+
     block_dim = generate_block_dim(y_info.shape[0], 128)
 
     if transpose:
@@ -1158,15 +1163,21 @@ def _csrmv_yw2y_pallas_kernel_generator(
                 index = indices_ref[pl.dslice(offset, block_dim)]
                 y = y_ref[index]
                 y = jnp.where(mask, y, 0.0)
-                pl.store(posts_ref, pl.dslice(offset, block_dim), w * y, mask=mask)
+                store(posts_ref[pl.dslice(offset, block_dim)], w * y, mask=mask)
 
             jax.lax.fori_loop(0, num_blocks, loop_fn, None)
 
+        def kernel(y, w, indices, indptr):
+            fn = pl.pallas_call(
+                mm,
+                grid=(shape[1] if transpose else shape[0],),
+                out_shape=kwargs['outs']
+            )
+            return fn(y, w, indices, indptr)
     else:
         def mm(
             y_ref,
             w_ref,
-            indices_ref,
             indptr_ref,
             posts_ref,
         ):
@@ -1181,17 +1192,13 @@ def _csrmv_yw2y_pallas_kernel_generator(
                 mask = (offset + jnp.arange(block_dim)) < i_end
                 w = w_ref[pl.dslice(offset, block_dim)]
                 w = jnp.where(mask, w, 0.0)
-                pl.store(posts_ref, pl.dslice(offset, block_dim), w * y_scalar, mask=mask)
+                store(posts_ref[pl.dslice(offset, block_dim)], w * y_scalar, mask=mask)
 
             jax.lax.fori_loop(0, num_blocks, loop_fn, None)
 
-    def kernel(y, w, indices, indptr):
-        fn = pl.pallas_call(
-            mm,
-            grid=(shape[1] if transpose else shape[0],),
-            out_shape=kwargs['outs']
-        )
-        return fn(y, w, indices, indptr)
+        def kernel(y, w, indptr):
+            fn = pl.pallas_call(mm, grid=(shape[1] if transpose else shape[0],), out_shape=kwargs['outs'])
+            return fn(y, w, indptr)
 
     return kernel
 
@@ -1251,8 +1258,7 @@ def csrmv_yw2y_p_call(
 
 
 csrmv_yw2y_p = XLACustomKernel('csrmv_yw2y')
-csrmv_yw2y_p.def_numba_kernel(_csrmv_yw2y_numba_kernel_generator)
-csrmv_yw2y_p.def_pallas_kernel('gpu', _csrmv_yw2y_pallas_kernel_generator)
-csrmv_yw2y_p.def_pallas_kernel('tpu', _csrmv_yw2y_pallas_kernel_generator)
+csrmv_yw2y_p.def_numba_kernel(_csrmv_yw2y_numba_kernels)
+csrmv_yw2y_p.def_pallas_kernel('gpu', _csrmv_yw2y_pallas_kernels)
 csrmv_yw2y_p.def_jvp_rule2(_csrmv_yw2y_jvp_y, _csrmv_yw2y_jvp_w, None, None)
 csrmv_yw2y_p.def_call(csrmv_yw2y_p_call)

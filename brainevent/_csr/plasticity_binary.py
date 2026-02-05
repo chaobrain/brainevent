@@ -28,8 +28,8 @@ from brainevent._typing import MatrixShape
 __all__ = [
     'plast_csr_on_binary_pre',
     'plast_csr_on_binary_pre_p',
-    'csr2csc_on_post',
-    'csr2csc_on_post_p',
+    'plast_csr2csc_on_binary_post',
+    'plast_csr2csc_on_binary_post_p',
 ]
 
 
@@ -263,7 +263,7 @@ plast_csr_on_binary_pre_p.def_pallas_kernel('gpu', _csr_on_pre_pallas_kernel_gen
 plast_csr_on_binary_pre_p.def_pallas_kernel('tpu', _csr_on_pre_pallas_kernel_generator)
 
 
-def csr2csc_on_post(
+def plast_csr2csc_on_binary_post(
     weight: Union[u.Quantity, jax.Array],
     indices: Union[np.ndarray, jax.Array],
     indptr: Union[np.ndarray, jax.Array],
@@ -503,7 +503,7 @@ def _csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trac
         f'weight shape {weight.shape}, weight_indices shape {weight_indices.shape}, '
         f'indices shape {indices.shape}, indptr shape {indptr.shape} do not match.'
     )
-    return csr2csc_on_post_p(
+    return plast_csr2csc_on_binary_post_p(
         weight, indices, indptr, weight_indices, pre_trace, post_spike,
         outs=[jax.ShapeDtypeStruct(weight.shape, weight.dtype)],
         shape=shape,
@@ -516,8 +516,8 @@ def _csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trac
     )
 
 
-csr2csc_on_post_p = XLACustomKernel('csr2csc_on_post')
-csr2csc_on_post_p.def_numba_kernel(_csr2csc_on_post_numba_kernel_generator)
-csr2csc_on_post_p.def_warp_kernel(_csr2csc_on_post_warp_kernel_generator)
-csr2csc_on_post_p.def_pallas_kernel('gpu', _csr2csc_on_post_pallas_kernel_generator)
-csr2csc_on_post_p.def_pallas_kernel('tpu', _csr2csc_on_post_pallas_kernel_generator)
+plast_csr2csc_on_binary_post_p = XLACustomKernel('csr2csc_on_post')
+plast_csr2csc_on_binary_post_p.def_numba_kernel(_csr2csc_on_post_numba_kernel_generator)
+plast_csr2csc_on_binary_post_p.def_warp_kernel(_csr2csc_on_post_warp_kernel_generator)
+plast_csr2csc_on_binary_post_p.def_pallas_kernel('gpu', _csr2csc_on_post_pallas_kernel_generator)
+plast_csr2csc_on_binary_post_p.def_pallas_kernel('tpu', _csr2csc_on_post_pallas_kernel_generator)

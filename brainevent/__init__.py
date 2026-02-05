@@ -19,19 +19,19 @@ __version_info__ = tuple(map(int, __version__.split(".")))
 
 from ._coo import (
     COO,
-    coo_on_pre,
-    coo_on_post,
+    plast_coo_on_binary_pre,
+    plast_coo_on_binary_post,
 )
 from ._csr import (
     CSR,
     CSC,
     plast_csr_on_binary_pre,
-    csr2csc_on_post,
+    plast_csr2csc_on_binary_post,
     binary_csrmv_p,
 )
 from ._dense import (
-    dense_on_pre,
-    dense_on_post,
+    plast_dense_on_binary_pre,
+    plast_dense_on_binary_post,
 )
 from ._error import (
     MathError,
@@ -92,10 +92,16 @@ __all__ = [
     'SparseFloat',
     'IndexedSparseFloat',
 
-    # --- data interoperable with events --- #
+    # --- COO --- #
     'COO',
+    'plast_coo_on_binary_pre',
+    'plast_coo_on_binary_post',
+
+    # CSR
     'CSR',
     'CSC',
+    'plast_csr_on_binary_pre',
+    'plast_csr2csc_on_binary_post',
 
     # Just-In-Time Connectivity matrix
     'JITCHomoR',  # row-oriented JITC matrix with homogeneous weight
@@ -108,6 +114,10 @@ __all__ = [
     # --- Fixed number connectivity --- #
     'FixedPreNumConn',
     'FixedPostNumConn',
+
+    # --- dense matrix ----- #
+    'plast_dense_on_binary_pre',
+    'plast_dense_on_binary_post',
 
     # --- operator customization routines --- #
 
@@ -137,12 +147,6 @@ __all__ = [
     'csr_to_coo_index',
     'coo_to_csc_index',
     'csr_to_csc_index',
-    'plast_csr_on_binary_pre',
-    'csr2csc_on_post',
-    'coo_on_pre',
-    'coo_on_post',
-    'dense_on_pre',
-    'dense_on_post',
 
 ]
 
@@ -154,4 +158,13 @@ def __getattr__(name):
             f'csr_on_pre is deprecated, use {plast_csr_on_binary_pre.__name__} instead',
         )
         return plast_csr_on_binary_pre
+    if name == 'csr2csc_on_post':
+        warnings.warn(
+            f'csr2csc_on_post is deprecated, use {plast_csr2csc_on_binary_post.__name__} instead',
+        )
+        return plast_csr2csc_on_binary_post
+    if name == 'dense_on_pre':
+        return plast_dense_on_binary_pre
+    if name == 'dense_on_post':
+        return plast_dense_on_binary_post
     raise AttributeError(name)

@@ -368,5 +368,4 @@ def jaxinfo_to_warpinfo(jax_info: jax.ShapeDtypeStruct):
     dtype_to_warp_type : Function to convert numpy/JAX dtypes to Warp types.
     """
     dtype = jaxtype_to_warptype(jax_info.dtype)
-    shape = jax_info.shape
-    return warp.array(dtype=dtype, ndim=len(shape))
+    return warp.array(dtype=dtype, ndim=jax_info.ndim)

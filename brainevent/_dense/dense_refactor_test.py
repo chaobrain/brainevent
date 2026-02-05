@@ -23,7 +23,7 @@ from brainevent._dense.indexed_binary import (
     dense_mat_dot_indexed_binary_vec,
     indexed_binary_mat_dot_dense_mat,
 )
-from brainevent._dense.plasticity import dense_on_pre, dense_on_post
+from brainevent._dense.plasticity import plast_dense_on_binary_pre, plast_dense_on_binary_post
 from brainevent._dense.sparse_float import (
     dense_mat_dot_sparse_float_vec,
     sparse_float_vec_dot_dense_mat,
@@ -119,35 +119,35 @@ def test_dense_plasticity_forward_grads_and_batching():
     pre_spike = jnp.asarray(rng.random(n_pre) < 0.5)
     post_trace = jnp.asarray(rng.normal(size=(n_post,)).astype(np.float32))
 
-    out = dense_on_pre(weight, pre_spike, post_trace)
+    out = plast_dense_on_binary_pre(weight, pre_spike, post_trace)
     expected = weight + pre_spike.astype(weight.dtype)[:, None] * post_trace[None, :]
     assert jnp.allclose(out, expected, rtol=1e-6, atol=1e-6)
 
     w_dot = jnp.asarray(rng.normal(size=weight.shape).astype(np.float32))
-    _, out_dot = jax.jvp(lambda w: dense_on_pre(w, pre_spike, post_trace), (weight,), (w_dot,))
+    _, out_dot = jax.jvp(lambda w: plast_dense_on_binary_pre(w, pre_spike, post_trace), (weight,), (w_dot,))
     assert jnp.allclose(out_dot, w_dot, rtol=1e-6, atol=1e-6)
 
-    grad = jax.grad(lambda w: dense_on_pre(w, pre_spike, post_trace).sum())(weight)
+    grad = jax.grad(lambda w: plast_dense_on_binary_pre(w, pre_spike, post_trace).sum())(weight)
     assert jnp.allclose(grad, jnp.ones_like(weight), rtol=1e-6, atol=1e-6)
 
     weight_batch = jnp.asarray(rng.normal(size=(2, n_pre, n_post)).astype(np.float32))
-    out_batch = jax.vmap(lambda w: dense_on_pre(w, pre_spike, post_trace))(weight_batch)
+    out_batch = jax.vmap(lambda w: plast_dense_on_binary_pre(w, pre_spike, post_trace))(weight_batch)
     expected_batch = weight_batch + pre_spike.astype(weight.dtype)[None, :, None] * post_trace[None, None, :]
     assert jnp.allclose(out_batch, expected_batch, rtol=1e-6, atol=1e-6)
 
     pre_trace = jnp.asarray(rng.normal(size=(n_pre,)).astype(np.float32))
     post_spike = jnp.asarray(rng.random(n_post) < 0.5)
-    out_post = dense_on_post(weight, pre_trace, post_spike)
+    out_post = plast_dense_on_binary_post(weight, pre_trace, post_spike)
     expected_post = weight + pre_trace[:, None] * post_spike.astype(weight.dtype)[None, :]
     assert jnp.allclose(out_post, expected_post, rtol=1e-6, atol=1e-6)
 
-    _, out_post_dot = jax.jvp(lambda w: dense_on_post(w, pre_trace, post_spike), (weight,), (w_dot,))
+    _, out_post_dot = jax.jvp(lambda w: plast_dense_on_binary_post(w, pre_trace, post_spike), (weight,), (w_dot,))
     assert jnp.allclose(out_post_dot, w_dot, rtol=1e-6, atol=1e-6)
 
-    grad_post = jax.grad(lambda w: dense_on_post(w, pre_trace, post_spike).sum())(weight)
+    grad_post = jax.grad(lambda w: plast_dense_on_binary_post(w, pre_trace, post_spike).sum())(weight)
     assert jnp.allclose(grad_post, jnp.ones_like(weight), rtol=1e-6, atol=1e-6)
 
-    out_post_batch = jax.vmap(lambda w: dense_on_post(w, pre_trace, post_spike))(weight_batch)
+    out_post_batch = jax.vmap(lambda w: plast_dense_on_binary_post(w, pre_trace, post_spike))(weight_batch)
     expected_post_batch = weight_batch + pre_trace[None, :, None] * post_spike.astype(weight.dtype)[None, None, :]
     assert jnp.allclose(out_post_batch, expected_post_batch, rtol=1e-6, atol=1e-6)
 

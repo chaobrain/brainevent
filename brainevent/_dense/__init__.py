@@ -14,14 +14,14 @@
 # ==============================================================================
 
 from .binary import (
-    binary_vec_dot_dense_mat,
-    binary_vec_dot_dense_mat_p,
-    dense_mat_dot_binary_vec,
-    dense_mat_dot_binary_vec_p,
-    binary_mat_dot_dense_mat,
-    binary_mat_dot_dense_mat_p,
-    dense_mat_dot_binary_mat,
-    dense_mat_dot_binary_mat_p,
+    bvm_dense,
+    bvm_dense_p,
+    dmv_binary,
+    dmv_binary_p,
+    bmm_dense,
+    bmm_dense_p,
+    dmm_binary,
+    dmm_binary_p,
 )
 from .indexed_binary import (
     dense_mat_dot_indexed_binary_mat,
@@ -30,8 +30,8 @@ from .indexed_binary import (
     indexed_binary_vec_dot_dense_mat,
 )
 from .plasticity import (
-    dense_on_pre,
-    dense_on_post,
+    plast_dense_on_binary_pre,
+    plast_dense_on_binary_post,
 )
 from .sparse_float import (
     dense_mat_dot_sparse_float_mat,
@@ -41,12 +41,12 @@ from .sparse_float import (
 )
 
 __all__ = [
-    'dense_on_pre',
-    'dense_on_post',
-    'dense_mat_dot_binary_mat',
-    'binary_mat_dot_dense_mat',
-    'binary_vec_dot_dense_mat',
-    'dense_mat_dot_binary_vec',
+    'plast_dense_on_binary_pre',
+    'plast_dense_on_binary_post',
+    'dmm_binary',
+    'bmm_dense',
+    'bvm_dense',
+    'dmv_binary',
     'dense_mat_dot_sparse_float_mat',
     'sparse_float_mat_dot_dense_mat',
     'dense_mat_dot_sparse_float_vec',

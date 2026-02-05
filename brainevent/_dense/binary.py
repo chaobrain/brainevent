@@ -24,9 +24,20 @@ from jax.interpreters import ad
 from brainevent._misc import cdiv, generate_block_dim, namescoped_jit
 from brainevent._op import jaxinfo_to_warpinfo, numba_kernel, XLACustomKernel, general_batching_rule
 
+__all__ = [
+    'dmv_binary',
+    'dmv_binary_p',
+    'bvm_dense',
+    'bvm_dense_p',
+    'dmm_binary',
+    'dmm_binary_p',
+    'bmm_dense',
+    'bmm_dense_p',
+]
 
-@namescoped_jit()
-def dense_mat_dot_binary_vec(weights, spikes):
+
+@namescoped_jit(prefix='brainevent.dense')
+def dmv_binary(weights, spikes):
     """
     Performs event-driven matrix-vector multiplication: `weights @ spikes`.
 
@@ -65,7 +76,7 @@ def dense_mat_dot_binary_vec(weights, spikes):
 
     The function ensures inputs are JAX arrays and handles unit consistency
     using `brainunit`. The computation is delegated to a JAX primitive
-    `dense_mat_dot_binary_vec_p` for potential hardware acceleration.
+    `dmv_binary_p` for potential hardware acceleration.
     """
 
     with jax.ensure_compile_time_eval():
@@ -221,13 +232,13 @@ def _dense_mat_dot_binary_vec_transpose_rule(ct, weights, spikes, **kwargs):
 
 def _dense_mat_dot_binary_vec_batching(args, axes, **kwargs):
     if axes == (None, 0):
-        r = dense_mat_dot_binary_mat(args[0], args[1].T)
+        r = dmm_binary(args[0], args[1].T)
         return [r], [1]
     if axes == (None, 1):
-        r = dense_mat_dot_binary_mat(args[0], args[1])
+        r = dmm_binary(args[0], args[1])
         return [r], [1]
     else:
-        return general_batching_rule(dense_mat_dot_binary_vec_p, args, axes, **kwargs)
+        return general_batching_rule(dmv_binary_p, args, axes, **kwargs)
 
 
 def dense_mat_dot_binary_vec_p_call(weights, spikes):
@@ -235,7 +246,7 @@ def dense_mat_dot_binary_vec_p_call(weights, spikes):
         f"spikes shape {spikes.shape} and weights shape {weights.shape} are not compatible"
     )
     out = jax.ShapeDtypeStruct([weights.shape[0]], weights.dtype)
-    return dense_mat_dot_binary_vec_p(
+    return dmv_binary_p(
         weights,
         spikes,
         outs=[out],
@@ -244,18 +255,18 @@ def dense_mat_dot_binary_vec_p_call(weights, spikes):
     )
 
 
-dense_mat_dot_binary_vec_p = XLACustomKernel('dense_mat_dot_binary_vector')
-dense_mat_dot_binary_vec_p.def_numba_kernel(_dense_mat_dot_binary_vec_numba_kernel)
-dense_mat_dot_binary_vec_p.def_warp_kernel(_dense_mat_dot_binary_vec_warp_kernel)
-dense_mat_dot_binary_vec_p.def_pallas_kernel('gpu', _dense_mat_dot_binary_vec_pallas_kernel)
-dense_mat_dot_binary_vec_p.def_pallas_kernel('tpu', _dense_mat_dot_binary_vec_pallas_kernel)
-dense_mat_dot_binary_vec_p.def_jvp_rule2(_dense_mat_dot_binary_vec_jvp_weights, _dense_mat_dot_binary_vec_jvp_spikes)
-dense_mat_dot_binary_vec_p.def_transpose_rule(_dense_mat_dot_binary_vec_transpose_rule)
-dense_mat_dot_binary_vec_p.def_batching_rule(_dense_mat_dot_binary_vec_batching)
-dense_mat_dot_binary_vec_p.def_call(dense_mat_dot_binary_vec_p_call)
+dmv_binary_p = XLACustomKernel('dense_mat_dot_binary_vector')
+dmv_binary_p.def_numba_kernel(_dense_mat_dot_binary_vec_numba_kernel)
+dmv_binary_p.def_warp_kernel(_dense_mat_dot_binary_vec_warp_kernel)
+dmv_binary_p.def_pallas_kernel('gpu', _dense_mat_dot_binary_vec_pallas_kernel)
+dmv_binary_p.def_pallas_kernel('tpu', _dense_mat_dot_binary_vec_pallas_kernel)
+dmv_binary_p.def_jvp_rule2(_dense_mat_dot_binary_vec_jvp_weights, _dense_mat_dot_binary_vec_jvp_spikes)
+dmv_binary_p.def_transpose_rule(_dense_mat_dot_binary_vec_transpose_rule)
+dmv_binary_p.def_batching_rule(_dense_mat_dot_binary_vec_batching)
+dmv_binary_p.def_call(dense_mat_dot_binary_vec_p_call)
 
 
-def binary_vec_dot_dense_mat(spikes, weights):
+def bvm_dense(spikes, weights):
     """Performs event-driven vector-matrix multiplication: `spikes @ weights`.
 
     This function computes the vector-matrix product of a spike vector and a
@@ -439,13 +450,13 @@ def _binary_vec_dot_dense_mat_transpose_rule(ct, spikes, weights, **kwargs):
 
 def _event_matrix_batching(args, axes, **kwargs):
     if axes == (0, None):
-        r = binary_mat_dot_dense_mat(args[0], args[1])
+        r = bmm_dense(args[0], args[1])
         return [r], [0]
     if axes == (1, None):
-        r = binary_mat_dot_dense_mat(args[0].T, args[1])
+        r = bmm_dense(args[0].T, args[1])
         return [r], [0]
     else:
-        return general_batching_rule(binary_vec_dot_dense_mat_p, args, axes, **kwargs)
+        return general_batching_rule(bvm_dense_p, args, axes, **kwargs)
 
 
 def binary_vec_dot_dense_mat_p_call(spikes, weights):
@@ -454,7 +465,7 @@ def binary_vec_dot_dense_mat_p_call(spikes, weights):
         f"{spikes.shape[0]} (dim 0) != {weights.shape[0]} (dim 0)"
     )
     out = jax.ShapeDtypeStruct([weights.shape[1]], weights.dtype)
-    return binary_vec_dot_dense_mat_p(
+    return bvm_dense_p(
         spikes,
         weights,
         outs=[out],
@@ -463,18 +474,18 @@ def binary_vec_dot_dense_mat_p_call(spikes, weights):
     )
 
 
-binary_vec_dot_dense_mat_p = XLACustomKernel('binary_vector_dot_dense_matrix')
-binary_vec_dot_dense_mat_p.def_numba_kernel(_binary_vec_dot_dense_mat_numba_kernel)
-binary_vec_dot_dense_mat_p.def_warp_kernel(_binary_vec_dot_dense_mat_warp_kernel)
-binary_vec_dot_dense_mat_p.def_pallas_kernel('gpu', _binary_vec_dot_dense_mat_pallas_kernel)
-binary_vec_dot_dense_mat_p.def_pallas_kernel('tpu', _binary_vec_dot_dense_mat_pallas_kernel)
-binary_vec_dot_dense_mat_p.def_jvp_rule2(_binary_vec_dot_dense_mat_jvp_spikes, _binary_vec_dot_dense_mat_jvp_weights)
-binary_vec_dot_dense_mat_p.def_transpose_rule(_binary_vec_dot_dense_mat_transpose_rule)
-binary_vec_dot_dense_mat_p.def_batching_rule(_event_matrix_batching)
-binary_vec_dot_dense_mat_p.def_call(binary_vec_dot_dense_mat_p_call)
+bvm_dense_p = XLACustomKernel('binary_vector_dot_dense_matrix')
+bvm_dense_p.def_numba_kernel(_binary_vec_dot_dense_mat_numba_kernel)
+bvm_dense_p.def_warp_kernel(_binary_vec_dot_dense_mat_warp_kernel)
+bvm_dense_p.def_pallas_kernel('gpu', _binary_vec_dot_dense_mat_pallas_kernel)
+bvm_dense_p.def_pallas_kernel('tpu', _binary_vec_dot_dense_mat_pallas_kernel)
+bvm_dense_p.def_jvp_rule2(_binary_vec_dot_dense_mat_jvp_spikes, _binary_vec_dot_dense_mat_jvp_weights)
+bvm_dense_p.def_transpose_rule(_binary_vec_dot_dense_mat_transpose_rule)
+bvm_dense_p.def_batching_rule(_event_matrix_batching)
+bvm_dense_p.def_call(binary_vec_dot_dense_mat_p_call)
 
 
-def dense_mat_dot_binary_mat(weights, spikes):
+def dmm_binary(weights, spikes):
     """
     Performs event-driven matrix-matrix multiplication: `weights @ spikes`.
 
@@ -513,7 +524,7 @@ def dense_mat_dot_binary_mat(weights, spikes):
 
     The function ensures inputs are JAX arrays and handles unit consistency
     using `brainunit`. The computation is delegated to a JAX primitive
-    `dense_mat_dot_binary_mat_p` for potential hardware acceleration.
+    `dmm_binary_p` for potential hardware acceleration.
     """
     with jax.ensure_compile_time_eval():
         weights = u.math.asarray(weights)
@@ -679,7 +690,7 @@ def _dense_mat_dot_binary_mat_transpose_rule(ct, weights, spikes, **kwargs):
         ct_events = weights.T @ ct
         return weights, (ad.Zero(spikes) if type(ct) is ad.Zero else ct_events)
     else:
-        ct_weights = dense_mat_dot_binary_mat(ct, spikes.T)
+        ct_weights = dmm_binary(ct, spikes.T)
         return (ad.Zero(weights) if type(ct) is ad.Zero else ct_weights), spikes
 
 
@@ -725,7 +736,7 @@ def _dense_mat_dot_binary_mat_batching(args, axes, **kwargs):
         return _dense_mat_dot_binary_mat_batching_weight_fn(args, axis=1, **kwargs)
 
     else:
-        return general_batching_rule(dense_mat_dot_binary_mat_p, args, axes, **kwargs)
+        return general_batching_rule(dmm_binary_p, args, axes, **kwargs)
 
 
 def dense_mat_dot_binary_mat_p_call(weights, spikes):
@@ -734,7 +745,7 @@ def dense_mat_dot_binary_mat_p_call(weights, spikes):
         f", weights: {weights.shape}, spikes: {spikes.shape} in dense_mat_dot_binary_mat_p_call"
     )
     out = jax.ShapeDtypeStruct([weights.shape[0], spikes.shape[1]], weights.dtype)
-    return dense_mat_dot_binary_mat_p(
+    return dmm_binary_p(
         weights,
         spikes,
         outs=[out],
@@ -743,18 +754,18 @@ def dense_mat_dot_binary_mat_p_call(weights, spikes):
     )
 
 
-dense_mat_dot_binary_mat_p = XLACustomKernel('dense_matrix_dot_binary_matrix')
-dense_mat_dot_binary_mat_p.def_numba_kernel(_dense_mat_dot_binary_mat_numba_kernel)
-dense_mat_dot_binary_mat_p.def_warp_kernel(_dense_mat_dot_binary_mat_warp_kernel)
-dense_mat_dot_binary_mat_p.def_pallas_kernel('gpu', _dense_mat_dot_binary_mat_pallas_kernel)
-dense_mat_dot_binary_mat_p.def_pallas_kernel('tpu', _dense_mat_dot_binary_mat_pallas_kernel)
-dense_mat_dot_binary_mat_p.def_jvp_rule2(_dense_mat_dot_binary_mat_jvp_weights, _dense_mat_dot_binary_mat_jvp_spikes)
-dense_mat_dot_binary_mat_p.def_transpose_rule(_dense_mat_dot_binary_mat_transpose_rule)
-dense_mat_dot_binary_mat_p.def_batching_rule(_dense_mat_dot_binary_mat_batching)
-dense_mat_dot_binary_mat_p.def_call(dense_mat_dot_binary_mat_p_call)
+dmm_binary_p = XLACustomKernel('dense_matrix_dot_binary_matrix')
+dmm_binary_p.def_numba_kernel(_dense_mat_dot_binary_mat_numba_kernel)
+dmm_binary_p.def_warp_kernel(_dense_mat_dot_binary_mat_warp_kernel)
+dmm_binary_p.def_pallas_kernel('gpu', _dense_mat_dot_binary_mat_pallas_kernel)
+dmm_binary_p.def_pallas_kernel('tpu', _dense_mat_dot_binary_mat_pallas_kernel)
+dmm_binary_p.def_jvp_rule2(_dense_mat_dot_binary_mat_jvp_weights, _dense_mat_dot_binary_mat_jvp_spikes)
+dmm_binary_p.def_transpose_rule(_dense_mat_dot_binary_mat_transpose_rule)
+dmm_binary_p.def_batching_rule(_dense_mat_dot_binary_mat_batching)
+dmm_binary_p.def_call(dense_mat_dot_binary_mat_p_call)
 
 
-def binary_mat_dot_dense_mat(spikes, weights):
+def bmm_dense(spikes, weights):
     """
     Performs event-driven binary matrix - dense matrix multiplication: `spikes @ weights`.
 
@@ -948,7 +959,7 @@ def _binary_mat_dot_dense_mat_transpose_rule(ct, spikes, weights, **kwargs):
         return (ad.Zero(spikes) if type(ct) is ad.Zero else ct_events), weights
 
     else:
-        ct_weights = binary_mat_dot_dense_mat(spikes.T, ct)
+        ct_weights = bmm_dense(spikes.T, ct)
         return spikes, (ad.Zero(weights) if type(ct) is ad.Zero else ct_weights)
 
 
@@ -993,7 +1004,7 @@ def _binary_mat_dot_dense_mat_batching(args, axes, **kwargs):
         return _binary_mat_dot_dense_mat_batching_weight_base_fn(args, axis=2, **kwargs)
 
     else:
-        return general_batching_rule(binary_mat_dot_dense_mat_p, args, axes, **kwargs)
+        return general_batching_rule(bmm_dense_p, args, axes, **kwargs)
 
 
 def binary_mat_dot_dense_mat_p_call(spikes, weights):
@@ -1002,7 +1013,7 @@ def binary_mat_dot_dense_mat_p_call(spikes, weights):
         f"for event matrix multiplication"
     )
     out = jax.ShapeDtypeStruct([spikes.shape[0], weights.shape[1]], weights.dtype)
-    return binary_mat_dot_dense_mat_p(
+    return bmm_dense_p(
         spikes,
         weights,
         outs=[out],
@@ -1011,12 +1022,12 @@ def binary_mat_dot_dense_mat_p_call(spikes, weights):
     )
 
 
-binary_mat_dot_dense_mat_p = XLACustomKernel('binary_matrix_dot_dense_matrix')
-binary_mat_dot_dense_mat_p.def_numba_kernel(_binary_mat_dot_dense_mat_numba_kernel)
-binary_mat_dot_dense_mat_p.def_warp_kernel(_binary_mat_dot_dense_mat_warp_kernel)
-binary_mat_dot_dense_mat_p.def_pallas_kernel('gpu', _binary_mat_dot_dense_mat_pallas_kernel)
-binary_mat_dot_dense_mat_p.def_pallas_kernel('tpu', _binary_mat_dot_dense_mat_pallas_kernel)
-binary_mat_dot_dense_mat_p.def_jvp_rule2(_binary_mat_dot_dense_mat_jvp_spikes, _binary_mat_dot_dense_mat_jvp_weights)
-binary_mat_dot_dense_mat_p.def_transpose_rule(_binary_mat_dot_dense_mat_transpose_rule)
-binary_mat_dot_dense_mat_p.def_batching_rule(_binary_mat_dot_dense_mat_batching)
-binary_mat_dot_dense_mat_p.def_call(binary_mat_dot_dense_mat_p_call)
+bmm_dense_p = XLACustomKernel('binary_matrix_dot_dense_matrix')
+bmm_dense_p.def_numba_kernel(_binary_mat_dot_dense_mat_numba_kernel)
+bmm_dense_p.def_warp_kernel(_binary_mat_dot_dense_mat_warp_kernel)
+bmm_dense_p.def_pallas_kernel('gpu', _binary_mat_dot_dense_mat_pallas_kernel)
+bmm_dense_p.def_pallas_kernel('tpu', _binary_mat_dot_dense_mat_pallas_kernel)
+bmm_dense_p.def_jvp_rule2(_binary_mat_dot_dense_mat_jvp_spikes, _binary_mat_dot_dense_mat_jvp_weights)
+bmm_dense_p.def_transpose_rule(_binary_mat_dot_dense_mat_transpose_rule)
+bmm_dense_p.def_batching_rule(_binary_mat_dot_dense_mat_batching)
+bmm_dense_p.def_call(binary_mat_dot_dense_mat_p_call)
