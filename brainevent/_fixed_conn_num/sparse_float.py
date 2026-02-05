@@ -139,7 +139,7 @@ def _sparse_float_fixed_num_mv_warp_kernel_generator(
         def kernel(weights, indices, spikes, _):
             out_info = kwargs['outs'][0]
             dim = spike_info.shape[0]
-            fn = jax_kernel(ell_mv, launch_dims=dim, num_outputs=0, in_out_argnames=['posts'])
+            fn = jax_kernel(ell_mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
             return fn(weights, indices, spikes, jnp.zeros(out_info.shape, out_info.dtype))
 
     else:
@@ -174,7 +174,7 @@ def _sparse_float_fixed_num_mv_warp_kernel_generator(
         def kernel(weights, indices, spikes, _):
             out_info = kwargs['outs'][0]
             dim = indices_info.shape[0]
-            fn = jax_kernel(ell_mv, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
+            fn = jax_kernel(ell_mv, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
             return fn(weights, indices, spikes)
 
     return kernel

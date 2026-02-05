@@ -533,12 +533,12 @@ def _jitc_mv_normal_warp_kernel_generator(
     if corder:
         def run(w_loc, w_scale, clen, vector, seed):
             dim = out_info.shape[0]
-            fn = jax_kernel(kernel, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
+            fn = jax_kernel(kernel, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
             return fn(w_loc, w_scale, clen, vector, seed)
     else:
         def run(w_loc, w_scale, clen, vector, seed):
             dim = vector_info.shape[0]
-            fn = jax_kernel(kernel, launch_dims=dim, num_outputs=0, in_out_argnames=['posts'])
+            fn = jax_kernel(kernel, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
             return fn(w_loc, w_scale, clen, vector, seed, jnp.zeros(out_info.shape, out_info.dtype))
 
     return run
@@ -1172,12 +1172,12 @@ def _jitc_mm_normal_warp_kernel_generator(
     if corder:
         def run(w_loc, w_scale, clen, B, seed):
             dim = out_info.shape[0]
-            fn = jax_kernel(kernel, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
+            fn = jax_kernel(kernel, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
             return fn(w_loc, w_scale, clen, B, seed)
     else:
         def run(w_loc, w_scale, clen, B, seed):
             dim = B_info.shape[0]
-            fn = jax_kernel(kernel, launch_dims=dim, num_outputs=0, in_out_argnames=['posts'])
+            fn = jax_kernel(kernel, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
             return fn(w_loc, w_scale, clen, B, seed, jnp.zeros(out_info.shape, out_info.dtype))
 
     return run

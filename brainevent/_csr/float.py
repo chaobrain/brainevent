@@ -180,7 +180,7 @@ def _csrmv_warp_kernel_generator(
         def kernel(weights, indices, indptr, vector):
             out_info = jax.ShapeDtypeStruct([shape[1]], weights.dtype)
             dim = vector_info.shape[0]
-            fn = jax_kernel(mv, launch_dims=[dim], num_outputs=0, in_out_argnames=['posts'])
+            fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
             return fn(weights, indices, indptr, vector, jnp.zeros(out_info.shape, out_info.dtype))
 
     else:
@@ -713,7 +713,7 @@ def _csrmm_warp_kernel_generator(
             out_info = jax.ShapeDtypeStruct([shape[1], n], weights.dtype)
             dim = k
             block_dim = generate_block_dim(vector_info.shape[1], 1024)
-            fn = jax_kernel(mm, launch_dims=[block_dim], num_outputs=0, in_out_argnames=['posts'])
+            fn = jax_kernel(mm, launch_dims=[block_dim], num_outputs=1, in_out_argnames=['posts'])
             return fn(weights, indices, indptr, B, jnp.zeros(out_info.shape, out_info.dtype))
 
     else:

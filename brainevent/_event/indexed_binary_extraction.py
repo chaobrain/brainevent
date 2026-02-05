@@ -101,7 +101,7 @@ def _binary_1d_array_index_warp_kernel(
 
     def kernel(spikes, indices, count):
         dim = spikes_info.shape[0]
-        fn = jax_kernel(mv, launch_dims=dim, num_outputs=0, in_out_argnames=['count'])
+        fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['count'])
         return fn(spikes, indices, count, jnp.zeros(count_info.shape, count_info.dtype))
 
     return kernel

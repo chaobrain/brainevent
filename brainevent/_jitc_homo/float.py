@@ -396,7 +396,7 @@ def _jitc_homo_matrix_warp_kernel_generator(
 
         def kernel(weight, clen, seed, _):
             dim = out_info.shape[0]
-            fn = jax_kernel(mat, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
+            fn = jax_kernel(mat, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
             return fn(weight, clen, seed)
     else:
         if transpose:
@@ -440,7 +440,7 @@ def _jitc_homo_matrix_warp_kernel_generator(
 
         def kernel(weight, clen, seed, _):
             dim = out_info.shape[1]
-            fn = jax_kernel(mat, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
+            fn = jax_kernel(mat, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
             return fn(weight, clen, seed)
 
     return kernel
@@ -756,7 +756,7 @@ def _jitc_mv_homo_warp_kernel_generator(
 
         def kernel(weight, clen, vector, seed, _):
             dim = out_info.shape[0]
-            fn = jax_kernel(mv, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
+            fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
             return fn(weight, clen, vector, seed)
     else:
         if transpose:
@@ -802,7 +802,7 @@ def _jitc_mv_homo_warp_kernel_generator(
 
         def kernel(weight, clen, vector, seed, _):
             dim = vector_info.shape[0]
-            fn = jax_kernel(mv, launch_dims=dim, num_outputs=0, in_out_argnames=['posts'])
+            fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
             return fn(weight, clen, vector, seed, jnp.zeros(out_info.shape, out_info.dtype))
 
     return kernel
@@ -1307,7 +1307,7 @@ def _jitc_mm_homo_warp_kernel_generator(
 
         def kernel(weight, clen, B, seed, _):
             dim = out_info.shape[0]
-            fn = jax_kernel(mm, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
+            fn = jax_kernel(mm, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
             return fn(weight, clen, B, seed)
     else:
         if transpose:
@@ -1355,7 +1355,7 @@ def _jitc_mm_homo_warp_kernel_generator(
 
         def kernel(weight, clen, B, seed, _):
             dim = B_info.shape[0]
-            fn = jax_kernel(mm, launch_dims=dim, num_outputs=0, in_out_argnames=['posts'])
+            fn = jax_kernel(mm, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
             return fn(weight, clen, B, seed, jnp.zeros(out_info.shape, out_info.dtype))
 
     return kernel

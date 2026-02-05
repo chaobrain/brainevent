@@ -123,7 +123,7 @@ def _dense_mat_dot_sparse_float_vec_warp_kernel(
 
     def run(weights, spikes):
         out_info = kwargs['outs'][0]
-        fn = jax_kernel(kernel, launch_dims=m, num_outputs=1, output_dims={'out_ref': out_info.shape})
+        fn = jax_kernel(kernel, launch_dims=[m], num_outputs=1, output_dims={'out_ref': out_info.shape})
         return fn(weights, spikes)
 
     return run
@@ -321,7 +321,7 @@ def _sparse_float_vec_dot_dense_mat_warp_kernel(
 
     def run(spikes, weights):
         out_info = kwargs['outs'][0]
-        fn = jax_kernel(kernel, launch_dims=n, num_outputs=1, output_dims={'out_ref': out_info.shape})
+        fn = jax_kernel(kernel, launch_dims=[n], num_outputs=1, output_dims={'out_ref': out_info.shape})
         return fn(spikes, weights)
 
     return run
@@ -541,7 +541,7 @@ def _dense_mat_dot_sparse_float_mat_warp_kernel(
 
     def run(weights, spikes):
         out_info = kwargs['outs'][0]
-        fn = jax_kernel(kernel, launch_dims=n, num_outputs=1, output_dims={'out_ref': out_info.shape})
+        fn = jax_kernel(kernel, launch_dims=[n], num_outputs=1, output_dims={'out_ref': out_info.shape})
         return fn(weights, spikes)
 
     return run
@@ -789,7 +789,7 @@ def _sparse_float_mat_dot_dense_mat_warp_kernel(
 
     def run(spikes, weights):
         out_info = kwargs['outs'][0]
-        fn = jax_kernel(kernel, launch_dims=m, num_outputs=1, output_dims={'out_ref': out_info.shape})
+        fn = jax_kernel(kernel, launch_dims=[m], num_outputs=1, output_dims={'out_ref': out_info.shape})
         return fn(spikes, weights)
 
     return run

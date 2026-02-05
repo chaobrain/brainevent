@@ -228,7 +228,7 @@ def _coomv_warp_kernel(
     out_info = kwargs['outs'][0]
 
     def kernel(weights, row, col, v):
-        fn = jax_kernel(mv, launch_dims=dim, num_outputs=0, in_out_argnames=['posts'])
+        fn = jax_kernel(mv, launch_dims=dim, num_outputs=1, in_out_argnames=['posts'])
         return fn(weights, row, col, v, jnp.zeros(out_info.shape, out_info.dtype))
 
     return kernel
@@ -627,7 +627,7 @@ def _coomm_warp_kernel(
     out_info = kwargs['outs'][0]
 
     def kernel(weights, row, col, B):
-        fn = jax_kernel(mm, launch_dims=dim, num_outputs=0, in_out_argnames=['posts'])
+        fn = jax_kernel(mm, launch_dims=dim, num_outputs=1, in_out_argnames=['posts'])
         return fn(weights, row, col, B, jnp.zeros(out_info.shape, out_info.dtype))
 
     return kernel

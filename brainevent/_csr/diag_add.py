@@ -20,11 +20,10 @@ import brainstate
 import brainunit as u
 import jax
 import jax.numpy as jnp
+import numba
 import numpy as np
 from jax.interpreters import ad
 from jax.interpreters.partial_eval import DynamicJaxprTracer
-
-import numba
 
 from brainevent._misc import generate_block_dim
 from brainevent._op import numba_kernel, jaxinfo_to_warpinfo, XLACustomKernel
@@ -197,7 +196,7 @@ def _csr_diag_add_warp_kernel_generator(
 
     def kernel(csr_value, diag_position, diag_value):
         dim = diag_pos_info.shape[0]
-        fn = jax_kernel(diag_add_warp, launch_dims=dim, num_outputs=0, in_out_argnames=['out'])
+        fn = jax_kernel(diag_add_warp, launch_dims=[dim], num_outputs=1, in_out_argnames=['out'])
         return fn(csr_value, diag_position, diag_value, jnp.array(csr_value))
 
     return kernel

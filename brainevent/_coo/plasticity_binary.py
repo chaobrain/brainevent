@@ -143,7 +143,7 @@ def _coo_on_pre_warp_kernel(
     out_info = kwargs['outs'][0]
 
     def run(weight, pre_ids, post_ids, pre_spike, post_trace):
-        fn = jax_kernel(plast_kernel, launch_dims=n_syn, num_outputs=0, in_out_argnames=['out_w'])
+        fn = jax_kernel(plast_kernel, launch_dims=n_syn, num_outputs=1, in_out_argnames=['out_w'])
         return fn(weight, pre_ids, post_ids, pre_spike, post_trace, jnp.zeros(out_info.shape, out_info.dtype))
 
     return run
@@ -365,7 +365,7 @@ def _coo_on_post_warp_kernel(
     out_info = kwargs['outs'][0]
 
     def run(weight, pre_ids, post_ids, pre_trace, post_spike):
-        fn = jax_kernel(plast_kernel, launch_dims=n_syn, num_outputs=0, in_out_argnames=['out_w'])
+        fn = jax_kernel(plast_kernel, launch_dims=n_syn, num_outputs=1, in_out_argnames=['out_w'])
         return fn(weight, pre_ids, post_ids, pre_trace, post_spike, jnp.zeros(out_info.shape, out_info.dtype))
 
     return run

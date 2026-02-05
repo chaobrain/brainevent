@@ -24,11 +24,7 @@
 # - Vogels, T. P. and Abbott, L. F. (2005), Signal propagation and logic gating in networks of integrate-and-fire neurons., J. Neurosci., 25, 46, 10786–95
 #
 
-import os
 
-import brainevent
-
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'  # specify which GPU(s) to use
 import time
 
 import brainpy
@@ -112,7 +108,7 @@ for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
 # scale=100, size=400000, time = 11.69654369354248 s, firing rate = 50.61605453491211 Hz
 
 
-# NVIDIA GeForce RTX 3090 @ 2026.02.04
+# NVIDIA GeForce RTX 3090 @ 2026.02.04, warp implementation
 
 # scale=1, size=4000, time = 1.7868633270263672 s, firing rate = 59.56795120239258 Hz
 # scale=2, size=8000, time = 1.8208961486816406 s, firing rate = 59.56516647338867 Hz

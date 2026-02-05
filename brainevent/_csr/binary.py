@@ -308,7 +308,7 @@ def _csrmv_warp_kernel(
                 jax.ShapeDtypeStruct([shape[0]], weights.dtype)
             )
             dim = vector_info.shape[0] if transpose else indptr_info.shape[0] - 1
-            fn = jax_kernel(mv, launch_dims=dim, num_outputs=0, in_out_argnames=['posts'])
+            fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
             return fn(weights, indices, indptr, v, jnp.zeros(out_info.dtype, out_info.shape))
 
 
@@ -388,7 +388,7 @@ def _csrmv_warp_kernel(
                 jax.ShapeDtypeStruct([shape[0]], weights.dtype)
             )
             dim = vector_info.shape[0] if transpose else indptr_info.shape[0] - 1
-            fn = jax_kernel(mv, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
+            fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
             return fn(weights, indices, indptr, v)
 
     return kernel

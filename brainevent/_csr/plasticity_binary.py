@@ -166,7 +166,7 @@ def _csr_on_pre_warp_kernel_generator(
         fn = jax_kernel(
             plasticity_kernel,
             launch_dims=shape[0],
-            num_outputs=0,
+            num_outputs=1,
             in_out_argnames=['out_w']
         )
         return fn(weight, indices, indptr, pre_spike, post_trace, weight.copy())
@@ -411,7 +411,7 @@ def _csr2csc_on_post_warp_kernel_generator(
         fn = jax_kernel(
             plasticity_kernel,
             launch_dims=shape[1],
-            num_outputs=0,
+            num_outputs=1,
             in_out_argnames=['out_w']
         )
         return fn(weight, indices, indptr, weight_indices, pre_trace, post_spike, weight.copy())
