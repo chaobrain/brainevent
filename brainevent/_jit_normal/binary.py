@@ -31,7 +31,9 @@ from .float import jitnmv_p_call, jitnmm_p_call
 
 __all__ = [
     "binary_jitnmv",
+    "binary_jitnmv_p",
     "binary_jitnmm",
+    "binary_jitnmm_p",
 ]
 
 

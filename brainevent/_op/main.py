@@ -24,7 +24,7 @@ import jax
 from jax.interpreters import xla, batching, ad, mlir
 
 from brainevent._compatible_import import Primitive
-from brainevent._error import KernelNotAvailableError, KernelCompilationError, KernelFallbackExhaustedError
+from brainevent._error import KernelFallbackExhaustedError
 from brainevent._typing import KernelGenerator
 from .benchmark import BenchmarkResult, BenchmarkReport, benchmark_function
 from .util import general_batching_rule, defjvp, OutType, abstract_arguments
@@ -32,29 +32,9 @@ from .util import general_batching_rule, defjvp, OutType, abstract_arguments
 __all__ = [
     'XLACustomKernel',
     'KernelEntry',
-    'DEFAULT_PRIORITIES',
     'BenchmarkResult',
     'BenchmarkReport',
 ]
-
-# Default priority for each (backend, platform) combination.
-# Lower values = higher priority (tried first).
-DEFAULT_PRIORITIES: Dict[tuple, int] = {
-
-    # CPU
-    ('numba', 'cpu'): 100,
-    ('tvmffi', 'cpu'): 200,
-
-    # GPU
-    ('tvmffi', 'gpu'): 100,
-    ('pallas', 'gpu'): 150,
-    ('numba_cuda', 'gpu'): 200,
-    ('warp', 'gpu'): 250,
-    ('triton', 'gpu'): 300,
-
-    # TPU
-    ('pallas', 'tpu'): 100,
-}
 
 
 @dataclass
@@ -71,10 +51,6 @@ class KernelEntry:
     platform: str
     kernel_generator: KernelGenerator
     priority: int = field(default=0)
-
-    def __post_init__(self):
-        if self.priority == 0:
-            self.priority = DEFAULT_PRIORITIES.get((self.backend, self.platform), 500)
 
 
 class XLACustomKernel:
@@ -126,7 +102,6 @@ class XLACustomKernel:
 
     See Also:
         :class:`KernelEntry`: Represents a registered kernel.
-        :data:`DEFAULT_PRIORITIES`: Default priority values for each backend/platform.
     """
 
     __module__ = 'brainevent'
@@ -219,7 +194,6 @@ class XLACustomKernel:
             platform: The platform name (e.g., 'cpu', 'gpu', 'tpu').
             kg: A kernel generator callable that creates the kernel function.
             priority: Priority of this kernel. Lower values are tried first.
-                If not specified, uses DEFAULT_PRIORITIES or 500 as fallback.
         """
         assert isinstance(backend, str), f'The `backend` should be a string, but got {type(backend)}.'
         assert isinstance(platform, str), f'The `platform` should be a string, but got {type(platform)}.'
@@ -278,42 +252,13 @@ class XLACustomKernel:
                         f"on platform '{platform}' in primitive '{self.name}'."
                     )
 
-            # Determine whether to use fallback
-            use_fallback = self.enable_fallback and (preferred_backend is None)
-
-            if not use_fallback:
-                # No fallback: just use the first kernel
-                kernel = kernels[0].kernel_generator(**kwargs)
-                return kernel(*args)
-            else:
-                # Fallback enabled: try kernels in order
-                errors = []
-                for entry in kernels:
-                    try:
-                        kernel = entry.kernel_generator(**kwargs)
-                        return kernel(*args)
-                    except (ImportError, ModuleNotFoundError) as e:
-                        errors.append((entry.backend, type(e).__name__, str(e)))
-                        continue
-                    except KernelNotAvailableError as e:
-                        errors.append((entry.backend, type(e).__name__, str(e)))
-                        continue
-                    except KernelCompilationError as e:
-                        errors.append((entry.backend, type(e).__name__, str(e)))
-                        continue
-                    except Exception as e:
-                        errors.append((entry.backend, type(e).__name__, str(e)))
-                        continue
-
-                # All kernels failed
-                error_details = "\n".join(
-                    f"  - {backend} ({err_type}): {msg}"
-                    for backend, err_type, msg in errors
-                )
+            if len(kernels) < 1:
                 raise KernelFallbackExhaustedError(
-                    f"All kernels failed for platform '{platform}' in primitive '{self.name}'.\n"
-                    f"Attempted kernels (in order):\n{error_details}"
+                    f"No kernels available for platform '{platform}' in primitive '{self.name}'."
                 )
+
+            kernel = kernels[0].kernel_generator(**kwargs)
+            return kernel(*args)
 
         # Register the lowering with JAX
         lower = mlir.lower_fun(fallback_kernel_fn, multiple_results=True)
@@ -332,7 +277,6 @@ class XLACustomKernel:
         Args:
             kg: A kernel generator callable that creates the Numba kernel function.
             priority: Priority of this kernel. Lower values are tried first.
-                If not specified, uses DEFAULT_PRIORITIES (100 for numba on cpu).
         """
         self.def_kernel(backend='numba', platform='cpu', kg=kg, priority=priority)
 
@@ -349,7 +293,6 @@ class XLACustomKernel:
         Args:
             kg: A kernel generator callable that creates the Warp kernel function.
             priority: Priority of this kernel. Lower values are tried first.
-                If not specified, uses DEFAULT_PRIORITIES (250 for warp on gpu).
         """
         self.def_kernel(backend='warp', platform='gpu', kg=kg, priority=priority)
 
@@ -366,7 +309,6 @@ class XLACustomKernel:
         Args:
             kg: A kernel generator callable that creates the Triton kernel function.
             priority: Priority of this kernel. Lower values are tried first.
-                If not specified, uses DEFAULT_PRIORITIES (300 for triton on gpu).
         """
         self.def_kernel(backend='triton', platform='gpu', kg=kg, priority=priority)
 
@@ -385,7 +327,6 @@ class XLACustomKernel:
             platform: The target platform, must be either 'gpu' or 'tpu'.
             kg: A kernel generator callable that creates the Pallas kernel function.
             priority: Priority of this kernel. Lower values are tried first.
-                If not specified, uses DEFAULT_PRIORITIES (100 for pallas on both
                 gpu and tpu).
         """
         assert platform in ['gpu', 'tpu'], f'The `platform` should be either `gpu` or `tpu`, but got {platform}.'
@@ -406,8 +347,6 @@ class XLACustomKernel:
             platform: The target platform, must be either 'cpu' or 'gpu'.
             kg: A kernel generator callable that creates the TVM FFI kernel function.
             priority: Priority of this kernel. Lower values are tried first.
-                If not specified, uses DEFAULT_PRIORITIES (200 for tvmffi on cpu,
-                150 for tvmffi on gpu).
         """
         assert platform in ['cpu', 'gpu'], f'The `platform` should be either `cpu` or `gpu`, but got {platform}.'
         self.def_kernel(backend='tvmffi', platform=platform, kg=kg, priority=priority)
@@ -422,7 +361,6 @@ class XLACustomKernel:
         Args:
             kg: A kernel generator callable that creates the Numba CUDA kernel function.
             priority: Priority of this kernel. Lower values are tried first.
-                If not specified, uses DEFAULT_PRIORITIES (150 for numba_cuda on gpu).
         """
         self.def_kernel(backend='numba_cuda', platform='gpu', kg=kg, priority=priority)
 

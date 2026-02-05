@@ -14,7 +14,7 @@
 # ==============================================================================
 # -*- coding: utf-8 -*-
 
-from typing import Optional, Sequence
+from typing import Optional
 
 import brainunit as u
 import jax
@@ -282,6 +282,7 @@ def _jitn_numba_kernel_generator(
 
     return run
 
+
 def _jitn_warp_kernel_generator(
     w_loc_info: jax.ShapeDtypeStruct,
     w_scale_info: jax.ShapeDtypeStruct,
@@ -399,6 +400,8 @@ def _jitn_warp_kernel_generator(
             return fn(w_loc, w_scale, clen, seed)
 
     return run
+
+
 def _jitn_pallas_kernel_generator(
     out_info: jax.ShapeDtypeStruct,
     corder: bool = True,
@@ -550,18 +553,18 @@ def _jitn_pallas_kernel_generator(
             return fn(w_loc, w_scale, clen, seed)
 
         return run
+
+
 def _jitn_jvp_wlow(w_loc_dot, w_loc, w_scale, clen, seed, *, out_info, **kwargs):
     out = jnp.ones_like(out_info) * w_loc_dot
     return [out]
 
 
-def _jitn_jvp_whigh(w_scale_dot, w_loc, w_scale, clen, seed, *, shape: Sequence[int], transpose: bool,
-                                  corder: bool, **kwargs):
+def _jitn_jvp_whigh(w_scale_dot, w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool, **kwargs):
     return jitn_p_call(0., w_scale_dot, clen, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitn_transpose(ct, w_loc, w_scale, clen, seed, *, shape: Sequence[int], transpose: bool,
-                                  corder: bool, **kwargs):
+def _jitn_transpose(ct, w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
     ct = ct[0]
@@ -570,9 +573,7 @@ def _jitn_transpose(ct, w_loc, w_scale, clen, seed, *, shape: Sequence[int], tra
         return (dwlow, w_scale, clen, seed)
     elif ad.is_undefined_primal(w_scale):
         # TODO: optimize memory
-        forward = jitn_p_call(
-            0., 1., clen, seed, shape=shape, transpose=transpose, corder=corder
-        )[0]
+        forward = jitn_p_call(0., 1., clen, seed, shape=shape, transpose=transpose, corder=corder)[0]
         dwhigh = jnp.expand_dims((ct * forward).sum(), axis=0)
         return (w_loc, dwhigh, clen, seed)
 
@@ -589,7 +590,7 @@ def _jitn_batching(args, axes, **kwargs):
 def jitn_p_call(
     w_loc, w_scale, clen, seed,
     *,
-    shape: Sequence[int], transpose: bool, corder: bool,
+    shape, transpose: bool, corder: bool,
 ):
     w_loc = jnp.atleast_1d(w_loc)
     w_scale = jnp.atleast_1d(w_scale)
@@ -817,10 +818,12 @@ def _jitnmv_numba_kernel_generator(
                         # Each next connection is approximately clen0 positions away on average
                         # This creates a sparse pattern where only ~1/clen0 of all possible connections exist
                         i_row += np.random.randint(1, clen0)
+
     def run(w_loc, w_scale, clen, vector, seed):
         return numba_kernel(kernel, outs=kwargs['outs'])(w_loc, w_scale, clen, vector, seed)
 
     return run
+
 
 def _jitnmv_warp_kernel_generator(
     w_loc_info: jax.ShapeDtypeStruct,
@@ -950,6 +953,8 @@ def _jitnmv_warp_kernel_generator(
             return fn(w_loc, w_scale, clen, vector, seed, jnp.zeros(out_info.shape, out_info.dtype))
 
     return run
+
+
 def _jitnmv_pallas_kernel_generator(
     vector_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
@@ -1015,7 +1020,8 @@ def _jitnmv_pallas_kernel_generator(
                 def body(data):
                     i_cols, i_col_mask, rng = data
                     safe_cols = jnp.where(i_col_mask, i_cols, 0)
-                    plt.atomic_add(post_ref[safe_cols], vector * rng.normal(w_loc, w_scale), mask=i_row_mask & i_col_mask)
+                    plt.atomic_add(post_ref[safe_cols], vector * rng.normal(w_loc, w_scale),
+                                   mask=i_row_mask & i_col_mask)
                     i_cols += rng.random_integers(1, clen)
                     return i_cols, i_cols < num_col, rng
 
@@ -1035,19 +1041,18 @@ def _jitnmv_pallas_kernel_generator(
         return run
 
     raise NotImplementedError("Non-tiled kernel path is not implemented.")
+
+
 def _jitnmv_jvp_v(v_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
-    return jitnmv_p_call(w_loc, w_scale, clen, v_dot, seed, shape=shape, transpose=transpose,
-                         corder=corder)
+    return jitnmv_p_call(w_loc, w_scale, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder)
 
 
 def _jitnmv_jvp_wloc(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
-    return jitnmv_p_call(w_dot, w_scale, clen, vector, seed, shape=shape, transpose=transpose,
-                         corder=corder)
+    return jitnmv_p_call(w_dot, w_scale, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
 
 
 def _jitnmv_jvp_wscale(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
-    return jitnmv_p_call(w_loc, w_dot, clen, vector, seed, shape=shape, transpose=transpose,
-                         corder=corder)
+    return jitnmv_p_call(w_loc, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
 
 
 def _jitnmv_transpose_rules(ct, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
@@ -1119,7 +1124,7 @@ def jitnmv_p_call(
     vector,
     seed,
     *,
-    shape: Sequence[int],
+    shape,
     transpose: bool,
     corder: bool,
 ):
@@ -1344,6 +1349,7 @@ def _jitnmm_numba_kernel_generator(
 
     return run
 
+
 def _jitnmm_warp_kernel_generator(
     w_loc_info: jax.ShapeDtypeStruct,
     w_scale_info: jax.ShapeDtypeStruct,
@@ -1489,6 +1495,8 @@ def _jitnmm_warp_kernel_generator(
             return fn(w_loc, w_scale, clen, B, seed, jnp.zeros(out_info.shape, out_info.dtype))
 
     return run
+
+
 def _jitnmm_pallas_kernel_generator(
     B_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
@@ -1571,6 +1579,8 @@ def _jitnmm_pallas_kernel_generator(
         return fn(w_loc, w_scale, clen, B, seed)
 
     return run
+
+
 def _jitnmm_jvp_wloc(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
     return jitnmm_p_call(w_dot, w_scale, clen, B, seed, shape=shape, transpose=transpose, corder=corder)
 
@@ -1580,8 +1590,7 @@ def _jitnmm_jvp_wscale(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose
 
 
 def _jitnmm_jvp_B(B_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
-    return jitnmm_p_call(w_loc, w_scale, clen, B_dot, seed, shape=shape, transpose=transpose,
-                         corder=corder)
+    return jitnmm_p_call(w_loc, w_scale, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder)
 
 
 def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
