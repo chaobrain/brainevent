@@ -1125,7 +1125,7 @@ def _csrmv_yw2y_numba_kernels(
                 for j in range(i_col_start, i_col_end):
                     posts[j] = w[j] * y[i_row]
 
-        def kernel(y, w, indptr):
+        def kernel(y, w, indices, indptr):
             return numba_kernel(mm, outs=kwargs['outs'])(y, w, indptr)
 
     return kernel
@@ -1196,7 +1196,7 @@ def _csrmv_yw2y_pallas_kernels(
 
             jax.lax.fori_loop(0, num_blocks, loop_fn, None)
 
-        def kernel(y, w, indptr):
+        def kernel(y, w, indices, indptr):
             fn = pl.pallas_call(mm, grid=(shape[1] if transpose else shape[0],), out_shape=kwargs['outs'])
             return fn(y, w, indptr)
 
