@@ -24,9 +24,18 @@ from jax.interpreters import ad
 from brainevent._misc import cdiv, generate_block_dim, namescoped_jit
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 
+__all__ = [
+    'dm_sfv',
+    'dm_sfv_p',
+    'sfv_dm',
+    'sfv_dm_p',
+    'dm_sfm',
+    'dm_sfm_p',
+]
+
 
 @namescoped_jit()
-def dense_mat_dot_sparse_float_vec(weights, spikes):
+def dm_sfv(weights, spikes):
     """
     Performs event-driven matrix-vector multiplication: `weights @ spikes`.
 
@@ -34,7 +43,7 @@ def dense_mat_dot_sparse_float_vec(weights, spikes):
     vector, where the binary vector often represents events (e.g., neural spikes).
     It handles potential units associated with the input arrays using the
     `brainunit` library. The actual computation is dispatched to specialized
-    CPU/GPU kernels via `dense_mat_dot_sparse_float_vec_p_call`.
+    CPU/GPU kernels via `dmsfv_p_call`.
 
     Parameters
     ----------
@@ -65,18 +74,18 @@ def dense_mat_dot_sparse_float_vec(weights, spikes):
 
     The function ensures inputs are JAX arrays and handles unit consistency
     using `brainunit`. The computation is delegated to a JAX primitive
-    `dense_mat_dot_sparse_float_vec_p` for potential hardware acceleration.
+    `dm_sfv_p` for potential hardware acceleration.
     """
     with jax.ensure_compile_time_eval():
         weights = u.math.asarray(weights)
         spikes = u.math.asarray(spikes)
     weight_val, wunit = u.split_mantissa_unit(weights)
     spk_val, spkunit = u.split_mantissa_unit(spikes)
-    r = dense_mat_dot_sparse_float_vec_p_call(weight_val, spk_val)
+    r = dmsfv_p_call(weight_val, spk_val)
     return u.maybe_decimal(r[0] * wunit * spkunit)
 
 
-def _dense_mat_dot_sparse_float_vec_numba_kernel(**kwargs):
+def _dmsfv_numba_kernel(**kwargs):
     import numba
 
     @numba.njit(fastmath=True, cache=True)
@@ -93,7 +102,7 @@ def _dense_mat_dot_sparse_float_vec_numba_kernel(**kwargs):
     return run
 
 
-def _dense_mat_dot_sparse_float_vec_warp_kernel(
+def _dmsfv_warp_kernel(
     weight_info: jax.ShapeDtypeStruct,
     spk_info: jax.ShapeDtypeStruct,
     **kwargs
@@ -129,7 +138,7 @@ def _dense_mat_dot_sparse_float_vec_warp_kernel(
     return run
 
 
-def _dense_mat_dot_sparse_float_vec_pallas_kernel(
+def _dmsfv_pallas_kernel(
     weight_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
@@ -177,15 +186,15 @@ def _dense_mat_dot_sparse_float_vec_pallas_kernel(
     return run
 
 
-def _dense_mat_dot_sparse_float_vec_jvp_weights(w_dot, weights, spikes, **kwargs):
-    return dense_mat_dot_sparse_float_vec_p_call(w_dot, spikes)
+def _dmsfv_jvp_weights(w_dot, weights, spikes, **kwargs):
+    return dmsfv_p_call(w_dot, spikes)
 
 
-def _dense_mat_dot_sparse_float_vec_jvp_spikes(spk_dot, weights, spikes, **kwargs):
+def _dmsfv_jvp_spikes(spk_dot, weights, spikes, **kwargs):
     return [weights @ spk_dot]
 
 
-def _dense_mat_dot_sparse_float_vec_transpose_rule(ct, weights, spikes, **kwargs):
+def _dmsfv_transpose_rule(ct, weights, spikes, **kwargs):
     ct = ct[0]
     if ad.is_undefined_primal(spikes):
         ct_events = jnp.matmul(ct, weights)
@@ -195,7 +204,7 @@ def _dense_mat_dot_sparse_float_vec_transpose_rule(ct, weights, spikes, **kwargs
         return (ad.Zero(weights) if type(ct[0]) is ad.Zero else ct_weights), spikes
 
 
-def _dense_mat_dot_sparse_float_vec_batching(args, axes, **kwargs):
+def _dmsfv_batching(args, axes, **kwargs):
     if axes == (None, 0):
         weights, spikes = args
         r = spikes @ weights.T
@@ -205,15 +214,15 @@ def _dense_mat_dot_sparse_float_vec_batching(args, axes, **kwargs):
         r = weights @ spikes
         return [r], [1]
     else:
-        return general_batching_rule(dense_mat_dot_sparse_float_vec_p, args, axes, **kwargs)
+        return general_batching_rule(dm_sfv_p, args, axes, **kwargs)
 
 
-def dense_mat_dot_sparse_float_vec_p_call(weights, spikes):
+def dmsfv_p_call(weights, spikes):
     assert spikes.shape[0] == weights.shape[1], (
         f"spikes shape {spikes.shape} and weights shape {weights.shape} are not compatible"
     )
     out = jax.ShapeDtypeStruct([weights.shape[0]], weights.dtype)
-    return dense_mat_dot_sparse_float_vec_p(
+    return dm_sfv_p(
         weights,
         spikes,
         outs=[out],
@@ -222,26 +231,25 @@ def dense_mat_dot_sparse_float_vec_p_call(weights, spikes):
     )
 
 
-dense_mat_dot_sparse_float_vec_p = XLACustomKernel('dense_mat_dot_sparse_float_vector')
-dense_mat_dot_sparse_float_vec_p.def_numba_kernel(_dense_mat_dot_sparse_float_vec_numba_kernel)
-dense_mat_dot_sparse_float_vec_p.def_warp_kernel(_dense_mat_dot_sparse_float_vec_warp_kernel)
-dense_mat_dot_sparse_float_vec_p.def_pallas_kernel('gpu', _dense_mat_dot_sparse_float_vec_pallas_kernel)
-dense_mat_dot_sparse_float_vec_p.def_pallas_kernel('tpu', _dense_mat_dot_sparse_float_vec_pallas_kernel)
-dense_mat_dot_sparse_float_vec_p.def_jvp_rule2(_dense_mat_dot_sparse_float_vec_jvp_weights,
-                                               _dense_mat_dot_sparse_float_vec_jvp_spikes)
-dense_mat_dot_sparse_float_vec_p.def_transpose_rule(_dense_mat_dot_sparse_float_vec_transpose_rule)
-dense_mat_dot_sparse_float_vec_p.def_batching_rule(_dense_mat_dot_sparse_float_vec_batching)
-dense_mat_dot_sparse_float_vec_p.def_call(dense_mat_dot_sparse_float_vec_p_call)
+dm_sfv_p = XLACustomKernel('dmsfv')
+dm_sfv_p.def_numba_kernel(_dmsfv_numba_kernel)
+dm_sfv_p.def_warp_kernel(_dmsfv_warp_kernel)
+dm_sfv_p.def_pallas_kernel('gpu', _dmsfv_pallas_kernel)
+dm_sfv_p.def_pallas_kernel('tpu', _dmsfv_pallas_kernel)
+dm_sfv_p.def_jvp_rule2(_dmsfv_jvp_weights, _dmsfv_jvp_spikes)
+dm_sfv_p.def_transpose_rule(_dmsfv_transpose_rule)
+dm_sfv_p.def_batching_rule(_dmsfv_batching)
+dm_sfv_p.def_call(dmsfv_p_call)
 
 
-def sparse_float_vec_dot_dense_mat(spikes, weights):
+def sfv_dm(spikes, weights):
     """Performs event-driven vector-matrix multiplication: `spikes @ weights`.
 
     This function computes the vector-matrix product of a spike vector and a
     weight matrix, where the spike vector typically represents binary events
     (e.g., neural spikes). It handles units attached to input arrays using the
     `brainunit` library and dispatches computation to specialized kernels via
-    `sparse_float_vec_dot_dense_mat_p_call`.
+    `sfvdm_p_call`.
 
     Parameters
     ----------
@@ -270,11 +278,11 @@ def sparse_float_vec_dot_dense_mat(spikes, weights):
         spikes = u.math.asarray(spikes)
     weight_val, wunit = u.split_mantissa_unit(weights)
     spk_val, spkunit = u.split_mantissa_unit(spikes)
-    r = sparse_float_vec_dot_dense_mat_p_call(spk_val, weight_val)
+    r = sfvdm_p_call(spk_val, weight_val)
     return u.maybe_decimal(r[0] * wunit * spkunit)
 
 
-def _sparse_float_vec_dot_dense_mat_numba_kernel(**kwargs):
+def _sfvdm_numba_kernel(**kwargs):
     import numba
 
     @numba.njit(fastmath=True, cache=True)
@@ -291,7 +299,7 @@ def _sparse_float_vec_dot_dense_mat_numba_kernel(**kwargs):
     return run
 
 
-def _sparse_float_vec_dot_dense_mat_warp_kernel(
+def _sfvdm_warp_kernel(
     weight_info: jax.ShapeDtypeStruct,
     spk_info: jax.ShapeDtypeStruct,
     **kwargs
@@ -327,7 +335,7 @@ def _sparse_float_vec_dot_dense_mat_warp_kernel(
     return run
 
 
-def _sparse_float_vec_dot_dense_mat_pallas_kernel(
+def _sfvdm_pallas_kernel(
     weight_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
@@ -375,15 +383,15 @@ def _sparse_float_vec_dot_dense_mat_pallas_kernel(
     return run
 
 
-def _sparse_float_vec_dot_dense_mat_jvp_weights(w_dot, spikes, weights, **kwargs):
-    return sparse_float_vec_dot_dense_mat_p_call(spikes, w_dot)
+def _sfvdm_jvp_weights(w_dot, spikes, weights, **kwargs):
+    return sfvdm_p_call(spikes, w_dot)
 
 
-def _sparse_float_vec_dot_dense_mat_jvp_spikes(spk_dot, spikes, weights, **kwargs):
+def _sfvdm_jvp_spikes(spk_dot, spikes, weights, **kwargs):
     return [spk_dot @ weights]
 
 
-def _sparse_float_vec_dot_dense_mat_transpose_rule(ct, spikes, weights, **kwargs):
+def _sfvdm_transpose_rule(ct, spikes, weights, **kwargs):
     if ad.is_undefined_primal(spikes):
         ct_events = jnp.matmul(weights, ct[0])
         return (ad.Zero(spikes) if type(ct[0]) is ad.Zero else ct_events), weights
@@ -401,16 +409,16 @@ def _event_matrix_batching(args, axes, **kwargs):
         r = sparse_float_mat_dot_dense_mat(args[0].T, args[1])
         return [r], [0]
     else:
-        return general_batching_rule(sparse_float_vec_dot_dense_mat_p, args, axes, **kwargs)
+        return general_batching_rule(sfv_dm_p, args, axes, **kwargs)
 
 
-def sparse_float_vec_dot_dense_mat_p_call(spikes, weights):
+def sfvdm_p_call(spikes, weights):
     assert spikes.shape[0] == weights.shape[0], (
         f"shapes {spikes.shape} and {weights.shape} not aligned: "
         f"{spikes.shape[0]} (dim 0) != {weights.shape[0]} (dim 0)"
     )
     out = jax.ShapeDtypeStruct([weights.shape[1]], weights.dtype)
-    return sparse_float_vec_dot_dense_mat_p(
+    return sfv_dm_p(
         spikes,
         weights,
         outs=[out],
@@ -419,19 +427,19 @@ def sparse_float_vec_dot_dense_mat_p_call(spikes, weights):
     )
 
 
-sparse_float_vec_dot_dense_mat_p = XLACustomKernel('sparse_float_vector_dot_dense_matrix')
-sparse_float_vec_dot_dense_mat_p.def_numba_kernel(_sparse_float_vec_dot_dense_mat_numba_kernel)
-sparse_float_vec_dot_dense_mat_p.def_warp_kernel(_sparse_float_vec_dot_dense_mat_warp_kernel)
-sparse_float_vec_dot_dense_mat_p.def_pallas_kernel('gpu', _sparse_float_vec_dot_dense_mat_pallas_kernel)
-sparse_float_vec_dot_dense_mat_p.def_pallas_kernel('tpu', _sparse_float_vec_dot_dense_mat_pallas_kernel)
-sparse_float_vec_dot_dense_mat_p.def_jvp_rule2(_sparse_float_vec_dot_dense_mat_jvp_spikes,
-                                               _sparse_float_vec_dot_dense_mat_jvp_weights)
-sparse_float_vec_dot_dense_mat_p.def_transpose_rule(_sparse_float_vec_dot_dense_mat_transpose_rule)
-sparse_float_vec_dot_dense_mat_p.def_batching_rule(_event_matrix_batching)
-sparse_float_vec_dot_dense_mat_p.def_call(sparse_float_vec_dot_dense_mat_p_call)
+sfv_dm_p = XLACustomKernel('sparse_float_vector_dot_dense_matrix')
+sfv_dm_p.def_numba_kernel(_sfvdm_numba_kernel)
+sfv_dm_p.def_warp_kernel(_sfvdm_warp_kernel)
+sfv_dm_p.def_pallas_kernel('gpu', _sfvdm_pallas_kernel)
+sfv_dm_p.def_pallas_kernel('tpu', _sfvdm_pallas_kernel)
+sfv_dm_p.def_jvp_rule2(_sfvdm_jvp_spikes,
+                       _sfvdm_jvp_weights)
+sfv_dm_p.def_transpose_rule(_sfvdm_transpose_rule)
+sfv_dm_p.def_batching_rule(_event_matrix_batching)
+sfv_dm_p.def_call(sfvdm_p_call)
 
 
-def dense_mat_dot_sparse_float_mat(weights, spikes):
+def dm_sfm(weights, spikes):
     """
     Performs event-driven matrix-matrix multiplication: `weights @ spikes`.
 
@@ -439,7 +447,7 @@ def dense_mat_dot_sparse_float_mat(weights, spikes):
     matrix, where the binary matrix typically represents events (e.g., neural spikes).
     It handles potential units associated with the input arrays using the
     `brainunit` library. The actual computation is dispatched to specialized
-    CPU/GPU kernels via `dense_mat_dot_sparse_float_mat_p_call`.
+    CPU/GPU kernels via `dmsfm_p_call`.
 
     Parameters
     ----------
@@ -470,7 +478,7 @@ def dense_mat_dot_sparse_float_mat(weights, spikes):
 
     The function ensures inputs are JAX arrays and handles unit consistency
     using `brainunit`. The computation is delegated to a JAX primitive
-    `dense_mat_dot_sparse_float_mat_p` for potential hardware acceleration.
+    `dm_sfm_p` for potential hardware acceleration.
     """
     with jax.ensure_compile_time_eval():
         weights = u.math.asarray(weights)
@@ -478,12 +486,12 @@ def dense_mat_dot_sparse_float_mat(weights, spikes):
     weight_val, wunit = u.split_mantissa_unit(weights)
     spk_val, spkunit = u.split_mantissa_unit(spikes)
     # Call the underlying primitive with unitless values
-    r = dense_mat_dot_sparse_float_mat_p_call(weight_val, spk_val)
+    r = dmsfm_p_call(weight_val, spk_val)
     # Re-attach units to the result
     return u.maybe_decimal(r[0] * wunit * spkunit)
 
 
-def _dense_mat_dot_sparse_float_mat_numba_kernel(**kwargs):
+def _dmsfm_numba_kernel(**kwargs):
     # weights: [m, k]
     # spikes: [k, n]
 
@@ -505,7 +513,7 @@ def _dense_mat_dot_sparse_float_mat_numba_kernel(**kwargs):
     return run
 
 
-def _dense_mat_dot_sparse_float_mat_warp_kernel(
+def _dmsfm_warp_kernel(
     weight_info: jax.ShapeDtypeStruct,
     spk_info: jax.ShapeDtypeStruct,
     **kwargs
@@ -547,7 +555,7 @@ def _dense_mat_dot_sparse_float_mat_warp_kernel(
     return run
 
 
-def _dense_mat_dot_sparse_float_mat_pallas_kernel(
+def _dmsfm_pallas_kernel(
     weight_info: jax.ShapeDtypeStruct,
     spk_info: jax.ShapeDtypeStruct,
     **kwargs
@@ -598,75 +606,75 @@ def _dense_mat_dot_sparse_float_mat_pallas_kernel(
     return run
 
 
-def _dense_mat_dot_sparse_float_mat_jvp_weights(w_dot, weights, spikes, **kwargs):
-    return dense_mat_dot_sparse_float_mat_p_call(w_dot, spikes)
+def _dmsfm_jvp_weights(w_dot, weights, spikes, **kwargs):
+    return dmsfm_p_call(w_dot, spikes)
 
 
-def _dense_mat_dot_sparse_float_mat_jvp_spikes(spk_dot, weights, spikes, **kwargs):
+def _dmsfm_jvp_spikes(spk_dot, weights, spikes, **kwargs):
     return [weights @ spk_dot]
 
 
-def _dense_mat_dot_sparse_float_mat_transpose_rule(ct, weights, spikes, **kwargs):
+def _dmsfm_transpose_rule(ct, weights, spikes, **kwargs):
     if ad.is_undefined_primal(spikes):
         ct_events = weights.T @ ct[0]
         return weights, (ad.Zero(spikes) if type(ct[0]) is ad.Zero else ct_events)
     else:
-        ct_weights = dense_mat_dot_sparse_float_mat(ct[0], spikes.T)
+        ct_weights = dm_sfm(ct[0], spikes.T)
         return (ad.Zero(weights) if type(ct[0]) is ad.Zero else ct_weights), spikes
 
 
-def _dense_mat_dot_sparse_float_mat_batching_events_fn(args, axis=1, **kwargs):
+def _dmsfm_batching_events_fn(args, axis=1, **kwargs):
     assert args[0].ndim == 2, 'requires 2D input for weights'
     assert args[1].ndim == 3, 'requires 3D input for events'
     assert axis > 0, 'axis must be greater than 0'
     k, maybe_batch1, maybe_batch2 = args[1].shape
     events = args[1].reshape(k, maybe_batch1 * maybe_batch2)
-    r = dense_mat_dot_sparse_float_mat_p_call(args[0], events)
+    r = dmsfm_p_call(args[0], events)
     r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
     return [r], [axis]
 
 
-def _dense_mat_dot_sparse_float_mat_batching_weight_fn(args, axis=0, **kwargs):
+def _dmsfm_batching_weight_fn(args, axis=0, **kwargs):
     assert args[0].ndim == 3, 'requires 3D input for weights'
     assert args[1].ndim == 2, 'requires 2D input for events'
     assert axis < 2, 'axis must be less than 2'
     maybe_batch1, maybe_batch2, k = args[1].shape
     weights = args[0].reshape(maybe_batch1 * maybe_batch2, k)
-    r = dense_mat_dot_sparse_float_mat_p_call(weights, args[1])
+    r = dmsfm_p_call(weights, args[1])
     r = jnp.reshape(r[0], [maybe_batch1, maybe_batch2, r[0].shape[-1]])
     return [r], [axis]
 
 
-def _dense_mat_dot_sparse_float_mat_batching(args, axes, **kwargs):
+def _dmsfm_batching(args, axes, **kwargs):
     if axes == (None, 0):
         args = list(args)
         args[1] = jnp.transpose(args[1], (1, 0, 2))
-        return _dense_mat_dot_sparse_float_mat_batching_events_fn(args, axis=1, **kwargs)
+        return _dmsfm_batching_events_fn(args, axis=1, **kwargs)
     elif axes == (None, 1):
-        return _dense_mat_dot_sparse_float_mat_batching_events_fn(args, axis=1, **kwargs)
+        return _dmsfm_batching_events_fn(args, axis=1, **kwargs)
     elif axes == (None, 2):
-        return _dense_mat_dot_sparse_float_mat_batching_events_fn(args, axs=2, **kwargs)
+        return _dmsfm_batching_events_fn(args, axs=2, **kwargs)
 
     elif axes == (0, None):
-        return _dense_mat_dot_sparse_float_mat_batching_weight_fn(args, axis=0, **kwargs)
+        return _dmsfm_batching_weight_fn(args, axis=0, **kwargs)
     elif axes == (1, None):
-        return _dense_mat_dot_sparse_float_mat_batching_weight_fn(args, axis=1, **kwargs)
+        return _dmsfm_batching_weight_fn(args, axis=1, **kwargs)
     elif axes == (2, None):
         args = list(args)
         args[0] = jnp.transpose(args[0], (0, 2, 1))
-        return _dense_mat_dot_sparse_float_mat_batching_weight_fn(args, axis=1, **kwargs)
+        return _dmsfm_batching_weight_fn(args, axis=1, **kwargs)
 
     else:
-        return general_batching_rule(dense_mat_dot_sparse_float_mat_p, args, axes, **kwargs)
+        return general_batching_rule(dm_sfm_p, args, axes, **kwargs)
 
 
-def dense_mat_dot_sparse_float_mat_p_call(weights, spikes):
+def dmsfm_p_call(weights, spikes):
     assert weights.shape[1] == spikes.shape[0], (
         f"weights.shape[1] ({weights.shape[1]}) != spikes.shape[0] ({spikes.shape[0]})"
-        f", weights: {weights.shape}, spikes: {spikes.shape} in dense_mat_dot_sparse_float_mat_p_call"
+        f", weights: {weights.shape}, spikes: {spikes.shape} in dmsfm_p_call"
     )
     out = jax.ShapeDtypeStruct([weights.shape[0], spikes.shape[1]], weights.dtype)
-    return dense_mat_dot_sparse_float_mat_p(
+    return dm_sfm_p(
         weights,
         spikes,
         outs=[out],
@@ -675,16 +683,16 @@ def dense_mat_dot_sparse_float_mat_p_call(weights, spikes):
     )
 
 
-dense_mat_dot_sparse_float_mat_p = XLACustomKernel('dense_matrix_dot_sparse_float_matrix')
-dense_mat_dot_sparse_float_mat_p.def_numba_kernel(_dense_mat_dot_sparse_float_mat_numba_kernel)
-dense_mat_dot_sparse_float_mat_p.def_warp_kernel(_dense_mat_dot_sparse_float_mat_warp_kernel)
-dense_mat_dot_sparse_float_mat_p.def_pallas_kernel('gpu', _dense_mat_dot_sparse_float_mat_pallas_kernel)
-dense_mat_dot_sparse_float_mat_p.def_pallas_kernel('tpu', _dense_mat_dot_sparse_float_mat_pallas_kernel)
-dense_mat_dot_sparse_float_mat_p.def_jvp_rule2(_dense_mat_dot_sparse_float_mat_jvp_weights,
-                                               _dense_mat_dot_sparse_float_mat_jvp_spikes)
-dense_mat_dot_sparse_float_mat_p.def_transpose_rule(_dense_mat_dot_sparse_float_mat_transpose_rule)
-dense_mat_dot_sparse_float_mat_p.def_batching_rule(_dense_mat_dot_sparse_float_mat_batching)
-dense_mat_dot_sparse_float_mat_p.def_call(dense_mat_dot_sparse_float_mat_p_call)
+dm_sfm_p = XLACustomKernel('dense_matrix_dot_sparse_float_matrix')
+dm_sfm_p.def_numba_kernel(_dmsfm_numba_kernel)
+dm_sfm_p.def_warp_kernel(_dmsfm_warp_kernel)
+dm_sfm_p.def_pallas_kernel('gpu', _dmsfm_pallas_kernel)
+dm_sfm_p.def_pallas_kernel('tpu', _dmsfm_pallas_kernel)
+dm_sfm_p.def_jvp_rule2(_dmsfm_jvp_weights,
+                       _dmsfm_jvp_spikes)
+dm_sfm_p.def_transpose_rule(_dmsfm_transpose_rule)
+dm_sfm_p.def_batching_rule(_dmsfm_batching)
+dm_sfm_p.def_call(dmsfm_p_call)
 
 
 def sparse_float_mat_dot_dense_mat(spikes, weights):

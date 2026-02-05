@@ -27,8 +27,8 @@ import brainstate
 from utils import visualize
 import brainevent
 from brainevent._dense import (
-    bvm_dense,
-    dmv_binary,
+    bv_dm,
+    dm_bv,
 )
 
 brainevent.config.gpu_kernel_backend = 'warp'
@@ -45,9 +45,9 @@ def forward(n_pre, n_post, spk_prob, as_float: bool, transpose: bool = False):
     @jax.jit
     def f1(spikes, weights):
         return (
-            bvm_dense(spikes, weights)
+            bv_dm(spikes, weights)
             if transpose else
-            dmv_binary(weight, spikes)
+            dm_bv(weight, spikes)
         )
 
     @jax.jit

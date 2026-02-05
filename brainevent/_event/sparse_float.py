@@ -17,10 +17,10 @@
 from jax.tree_util import register_pytree_node_class
 
 from brainevent._dense import (
-    dense_mat_dot_sparse_float_mat,
+    dm_sfm,
     sparse_float_mat_dot_dense_mat,
-    dense_mat_dot_sparse_float_vec,
-    sparse_float_vec_dot_dense_mat,
+    dm_sfv,
+    sfv_dm,
 )
 from brainevent._error import MathError
 from .base import BaseArray
@@ -76,7 +76,7 @@ class SparseFloat(BaseArray):
 
             # Perform the appropriate multiplication based on dimensions
             if self.ndim == 1:
-                return sparse_float_vec_dot_dense_mat(self.value, oc)
+                return sfv_dm(self.value, oc)
             else:  # self.ndim == 2
                 return sparse_float_mat_dot_dense_mat(self.value, oc)
         else:
@@ -106,9 +106,9 @@ class SparseFloat(BaseArray):
 
             # Perform the appropriate multiplication based on dimensions
             if self.ndim == 1:
-                return dense_mat_dot_sparse_float_vec(oc, self.value)
+                return dm_sfv(oc, self.value)
             else:
-                return dense_mat_dot_sparse_float_mat(oc, self.value)
+                return dm_sfm(oc, self.value)
         else:
             return oc.__matmul__(self)
 

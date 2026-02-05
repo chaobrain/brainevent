@@ -19,10 +19,10 @@ import jax
 from jax.tree_util import register_pytree_node_class
 
 from brainevent._dense import (
-    bvm_dense,
-    bmm_dense,
-    dmv_binary,
-    dmm_binary,
+    bv_dm,
+    bm_dm,
+    dm_bv,
+    dm_bm,
 )
 from brainevent._error import MathError
 from brainevent._misc import is_known_type
@@ -111,9 +111,9 @@ class IndexedBinary(BaseArray):
 
             # Perform the appropriate multiplication based on dimensions
             if self.ndim == 1:
-                return bvm_dense(self, oc)
+                return bv_dm(self, oc)
             else:  # self.ndim == 2
-                return bmm_dense(self, oc)
+                return bm_dm(self, oc)
         else:
             return oc.__rmatmul__(self)
 
@@ -172,9 +172,9 @@ class IndexedBinary(BaseArray):
 
             # Perform the appropriate multiplication based on dimensions
             if self.ndim == 1:
-                return dmv_binary(oc, self.value)
+                return dm_bv(oc, self.value)
             else:
-                return dmm_binary(oc, self.value)
+                return dm_bm(oc, self.value)
         else:
             return oc.__matmul__(self)
 
