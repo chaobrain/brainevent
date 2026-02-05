@@ -124,7 +124,7 @@ def fcn_matrix(xs, weights, indices, shape):
     )
 
 
-def allclose(x, y, rtol=1e-4, atol=1e-4):
+def allclose(x, y, rtol=1e-6, atol=1e-6):
     x = x.data if isinstance(x, brainevent.EventArray) else x
     y = y.data if isinstance(y, brainevent.EventArray) else y
     return jnp.allclose(x, y, rtol=rtol, atol=atol)

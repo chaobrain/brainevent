@@ -47,7 +47,7 @@ class Test_JITC_RC_Conversion:
 
         out1 = jitcr @ vector
         out2 = vector @ jitcc
-        assert allclose(out1, out2, rtol=1e-3, atol=1e-3)
+        assert allclose(out1, out2)
 
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
@@ -59,7 +59,7 @@ class Test_JITC_RC_Conversion:
 
         out1 = vector @ jitcr
         out2 = jitcc @ vector
-        assert allclose(out1, out2, rtol=1e-3, atol=1e-3)
+        assert allclose(out1, out2)
 
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('shape', shapes)
@@ -72,7 +72,7 @@ class Test_JITC_RC_Conversion:
 
         out1 = jitcr @ matrix
         out2 = (matrix.T @ jitcc).T
-        assert allclose(out1, out2, rtol=1e-3, atol=1e-3)
+        assert allclose(out1, out2)
 
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('shape', shapes)
@@ -97,7 +97,7 @@ class Test_JITC_RC_Conversion:
 
         out1 = jitcr @ vector
         out2 = vector @ jitcc
-        assert allclose(out1, out2, rtol=1e-3, atol=1e-3)
+        assert allclose(out1, out2)
 
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
@@ -109,7 +109,7 @@ class Test_JITC_RC_Conversion:
 
         out1 = vector @ jitcr
         out2 = jitcc @ vector
-        assert allclose(out1, out2, rtol=1e-3, atol=1e-3)
+        assert allclose(out1, out2)
 
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('shape', shapes)
@@ -123,7 +123,7 @@ class Test_JITC_RC_Conversion:
 
         out1 = jitcr @ matrix
         out2 = (matrix.T @ jitcc).T
-        assert allclose(out1, out2, rtol=1e-3, atol=1e-3)
+        assert allclose(out1, out2)
 
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('shape', shapes)
@@ -152,7 +152,7 @@ class Test_JITC_To_Dense:
         out2 = jitcc.todense().T
         out3 = jitcr.T.todense().T
         out4 = jitcc.T.todense()
-        assert allclose(out1, out2, rtol=1e-3, atol=1e-3)
+        assert allclose(out1, out2)
         assert allclose(out1, out3)
         assert allclose(out1, out4)
 
