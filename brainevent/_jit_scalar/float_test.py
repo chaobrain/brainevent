@@ -22,10 +22,10 @@ import numpy as np
 import pytest
 
 import brainevent
-from brainevent._jitc_homo.float import (
-    float_jitc_homo_matvec,
-    float_jitc_homo_matmat,
-    float_jitc_homo_matrix
+from brainevent._jit_scalar.float import (
+    jitsmv,
+    jitsmm,
+    jits
 )
 from brainevent._typing import MatrixShape
 
@@ -38,7 +38,7 @@ class TestJitcCsrMatvecHomo:
     @pytest.mark.parametrize('transpose', [True, False])
     @pytest.mark.parametrize('corder', [True, False])
     def test_jitc_homo_matrix(self, transpose, corder):
-        out1 = float_jitc_homo_matrix(
+        out1 = jits(
             1.5,
             0.1,
             123,
@@ -46,7 +46,7 @@ class TestJitcCsrMatvecHomo:
             transpose=transpose,
             corder=corder
         )
-        out2 = float_jitc_homo_matrix(
+        out2 = jits(
             1.5,
             0.1,
             123,
@@ -61,7 +61,7 @@ class TestJitcCsrMatvecHomo:
     @pytest.mark.parametrize('transpose', [True, False])
     @pytest.mark.parametrize('corder', [True, False])
     def test_todense(self, shape: MatrixShape, transpose, corder):
-        jitc = brainevent.JITCHomoR(
+        jitc = brainevent.JITCScalarR(
             (1.5, 0.1, 123),
             shape=shape,
             corder=corder
@@ -70,7 +70,7 @@ class TestJitcCsrMatvecHomo:
             jitc = jitc.T
         out1 = jitc.todense()
 
-        out2 = float_jitc_homo_matrix(
+        out2 = jits(
             1.5,
             0.1,
             123,
@@ -88,7 +88,7 @@ class TestJitcCsrMatvecHomo:
         shape = (2, 3)
         v = brainstate.random.rand(shape[0]) if transpose else brainstate.random.rand(shape[1])
         seed = 1234
-        result = float_jitc_homo_matvec(
+        result = jitsmv(
             weight,
             conn_prob,
             v,
@@ -108,7 +108,7 @@ class TestJitcCsrMatvecHomo:
     def test_random_connectivity(self, shape: MatrixShape, weight, prob, transpose, corder):
         seed = 1234
         vector = jnp.asarray(np.random.rand(shape[0] if transpose else shape[1]))
-        r1 = float_jitc_homo_matvec(
+        r1 = jitsmv(
             weight,
             prob,
             vector,
@@ -117,7 +117,7 @@ class TestJitcCsrMatvecHomo:
             transpose=transpose,
             corder=corder
         )
-        r2 = float_jitc_homo_matvec(
+        r2 = jitsmv(
             weight,
             prob,
             vector,
@@ -142,7 +142,7 @@ class TestJitcCsrMatvecHomo:
         x = jnp.asarray(np.random.rand(n_in if transpose else n_out))
 
         def f_brainevent(x, w):
-            return float_jitc_homo_matvec(
+            return jitsmv(
                 w,
                 prob,
                 x,
@@ -191,7 +191,7 @@ class TestJitcCsrMatmatHomo:
         B_shape = (shape[0] if transpose else shape[1], batch_size)
         B = jnp.asarray(np.random.rand(*B_shape))
 
-        r1 = float_jitc_homo_matmat(
+        r1 = jitsmm(
             weight,
             prob,
             B,
@@ -200,7 +200,7 @@ class TestJitcCsrMatmatHomo:
             transpose=transpose,
             corder=corder
         )
-        r2 = float_jitc_homo_matmat(
+        r2 = jitsmm(
             weight,
             prob,
             B,
@@ -235,7 +235,7 @@ class TestJitcCsrMatmatHomo:
         X = jnp.asarray(np.random.rand(*X_shape))
 
         def f_brainevent(X, w):
-            return float_jitc_homo_matmat(
+            return jitsmm(
                 w,
                 prob,
                 X,
@@ -273,7 +273,7 @@ class Test_JITCHomoR:
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matvec(self, prob, weight, shape):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape)
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape)
         vector = jnp.asarray(np.random.rand(shape[1]))
         out1 = jitc @ vector
         out2 = jitc.todense() @ vector
@@ -283,7 +283,7 @@ class Test_JITCHomoR:
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_vecmat(self, prob, weight, shape):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape)
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape)
         vector = jnp.asarray(np.random.rand(shape[0]))
         out1 = vector @ jitc
         out2 = vector @ jitc.todense()
@@ -294,7 +294,7 @@ class Test_JITCHomoR:
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_jitmat(self, prob, weight, shape: MatrixShape, k):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape)
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape)
         matrix = jnp.asarray(np.random.rand(shape[1], k))
         out1 = jitc @ matrix
         out2 = jitc.todense() @ matrix
@@ -305,7 +305,7 @@ class Test_JITCHomoR:
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matjit(self, k, prob, weight, shape):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape)
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape)
         matrix = jnp.asarray(np.random.rand(k, shape[0]))
         out1 = matrix @ jitc
         out2 = matrix @ jitc.todense()
@@ -313,7 +313,7 @@ class Test_JITCHomoR:
 
     def test_todense_weight_batching(self):
         def f(weight):
-            jitc = brainevent.JITCHomoR((weight, 0.1, 123), shape=(100, 50))
+            jitc = brainevent.JITCScalarR((weight, 0.1, 123), shape=(100, 50))
             return jitc.todense()
 
         weights = brainstate.random.rand(10)
@@ -328,7 +328,7 @@ class Test_JITCHomoR:
 
     def test_todense_prob_batching(self):
         def f(prob):
-            jitc = brainevent.JITCHomoR((1.5, prob, 123), shape=(100, 50))
+            jitc = brainevent.JITCScalarR((1.5, prob, 123), shape=(100, 50))
             return jitc.todense()
 
         probs = brainstate.random.rand(10)
@@ -343,7 +343,7 @@ class Test_JITCHomoR:
 
     def test_todense_seed_batching(self):
         def f(seed):
-            jitc = brainevent.JITCHomoR((1.5, 0.1, seed), shape=(100, 50))
+            jitc = brainevent.JITCScalarR((1.5, 0.1, seed), shape=(100, 50))
             return jitc.todense()
 
         seeds = brainstate.random.randint(0, 100000, 10)
@@ -362,7 +362,7 @@ class Test_JITCHomoR:
     )
     def test_large_matrix(self):
         m = 10000
-        jitc = brainevent.JITCHomoR((1.5, 0.1, 123), shape=(m, m))
+        jitc = brainevent.JITCScalarR((1.5, 0.1, 123), shape=(m, m))
         vector = jnp.asarray(np.random.rand(m))
         out1 = jitc @ vector
         out2 = jitc.todense() @ vector
@@ -376,8 +376,8 @@ class Test_JITCHomoR_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matvec_jvp(self, weight, prob, corder, shape):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder)
-        dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder)
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape, corder=corder)
+        dense = brainevent.JITCScalarR((1., prob, 123), shape=shape, corder=corder)
         x = jnp.asarray(np.random.rand(shape[1]))
 
         def f_brainevent(x, w):
@@ -406,8 +406,8 @@ class Test_JITCHomoR_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matvec_vjp(self, weight, prob, corder, shape):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder)
-        dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder)
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape, corder=corder)
+        dense = brainevent.JITCScalarR((1., prob, 123), shape=shape, corder=corder)
         x = jnp.asarray(np.random.rand(shape[1]))
 
         def f_brainevent(x, w):
@@ -428,8 +428,8 @@ class Test_JITCHomoR_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_vecmat_jvp(self, weight, prob, corder, shape):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder)
-        dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder)
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape, corder=corder)
+        dense = brainevent.JITCScalarR((1., prob, 123), shape=shape, corder=corder)
         x = jnp.asarray(np.random.rand(shape[0]))
 
         def f_brainevent(x, w):
@@ -458,8 +458,8 @@ class Test_JITCHomoR_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_vecmat_vjp(self, weight, prob, corder, shape):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder)
-        dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder)
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape, corder=corder)
+        dense = brainevent.JITCScalarR((1., prob, 123), shape=shape, corder=corder)
         x = jnp.asarray(np.random.rand(shape[0]))
 
         def f_brainevent(x, w):
@@ -481,8 +481,8 @@ class Test_JITCHomoR_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_jitmat_jvp(self, weight, prob, corder, k, shape):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder)
-        dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder)
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape, corder=corder)
+        dense = brainevent.JITCScalarR((1., prob, 123), shape=shape, corder=corder)
         x = jnp.asarray(np.random.rand(shape[1], k))
 
         def f_brainevent(x, w):
@@ -512,8 +512,8 @@ class Test_JITCHomoR_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_jitmat_vjp(self, weight, prob, corder, k, shape):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder)
-        dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder)
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape, corder=corder)
+        dense = brainevent.JITCScalarR((1., prob, 123), shape=shape, corder=corder)
         x = jnp.asarray(np.random.rand(shape[1], k))
 
         def f_brainevent(x, w):
@@ -535,8 +535,8 @@ class Test_JITCHomoR_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matjit_jvp(self, weight, prob, corder, k, shape):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder)
-        dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder)
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape, corder=corder)
+        dense = brainevent.JITCScalarR((1., prob, 123), shape=shape, corder=corder)
         x = jnp.asarray(np.random.rand(k, shape[0]))
 
         def f_brainevent(x, w):
@@ -566,8 +566,8 @@ class Test_JITCHomoR_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matjit_vjp(self, weight, prob, corder, k, shape):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder)
-        dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder)
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape, corder=corder)
+        dense = brainevent.JITCScalarR((1., prob, 123), shape=shape, corder=corder)
         x = jnp.asarray(np.random.rand(k, shape[0]))
 
         def f_brainevent(x, w):
@@ -592,7 +592,7 @@ class Test_JITCHomoR_Batching:
         vectors = brainstate.random.rand(batch_size, shape[1])
 
         def f(vector):
-            jitc = brainevent.JITCHomoR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
             return jitc @ vector
 
         matrices = jax.vmap(f)(vectors)
@@ -610,7 +610,7 @@ class Test_JITCHomoR_Batching:
         vectors = brainstate.random.rand(shape[1], batch_size)
 
         def f(vector):
-            jitc = brainevent.JITCHomoR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
             return jitc @ vector
 
         matrices = jax.vmap(f, in_axes=1, out_axes=1)(vectors)
@@ -629,7 +629,7 @@ class Test_JITCHomoR_Batching:
         vector = brainstate.random.rand(shape[1], )
 
         def f(w):
-            jitc = brainevent.JITCHomoR((w, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarR((w, 0.1, 123), shape=shape, corder=corder)
             return jitc @ vector
 
         matrices = jax.vmap(f)(weights)
@@ -647,7 +647,7 @@ class Test_JITCHomoR_Batching:
         vectors = brainstate.random.rand(batch_size, shape[0])
 
         def f(vector):
-            jitc = brainevent.JITCHomoR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
             return vector @ jitc
 
         matrices = jax.vmap(f)(vectors)
@@ -665,7 +665,7 @@ class Test_JITCHomoR_Batching:
         vectors = brainstate.random.rand(shape[0], batch_size)
 
         def f(vector):
-            jitc = brainevent.JITCHomoR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
             return vector @ jitc
 
         matrices = jax.vmap(f, in_axes=1, out_axes=1)(vectors)
@@ -684,7 +684,7 @@ class Test_JITCHomoR_Batching:
         vector = brainstate.random.rand(shape[0], )
 
         def f(w):
-            jitc = brainevent.JITCHomoR((w, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarR((w, 0.1, 123), shape=shape, corder=corder)
             return vector @ jitc
 
         matrices = jax.vmap(f)(weights)
@@ -703,7 +703,7 @@ class Test_JITCHomoR_Batching:
         matrices = brainstate.random.rand(batch_size, shape[1], k)
 
         def f(mat):
-            jitc = brainevent.JITCHomoR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
             return jitc @ mat
 
         outs = jax.vmap(f)(matrices)
@@ -722,7 +722,7 @@ class Test_JITCHomoR_Batching:
         matrices = brainstate.random.rand(shape[1], batch_size, k)
 
         def f(mat):
-            jitc = brainevent.JITCHomoR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
             return jitc @ mat
 
         outs = jax.vmap(f, in_axes=1)(matrices)
@@ -741,7 +741,7 @@ class Test_JITCHomoR_Batching:
         matrices = brainstate.random.rand(shape[1], k, batch_size, )
 
         def f(mat):
-            jitc = brainevent.JITCHomoR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
             return jitc @ mat
 
         outs = jax.vmap(f, in_axes=2)(matrices)
@@ -761,7 +761,7 @@ class Test_JITCHomoR_Batching:
         matrix = brainstate.random.rand(shape[1], k)
 
         def f(w):
-            jitc = brainevent.JITCHomoR((w, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarR((w, 0.1, 123), shape=shape, corder=corder)
             return jitc @ matrix
 
         matrices = jax.vmap(f)(weights)
@@ -780,7 +780,7 @@ class Test_JITCHomoR_Batching:
         matrix = brainstate.random.rand(batch_size, k, shape[0])
 
         def f(mat):
-            jitc = brainevent.JITCHomoR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
             return mat @ jitc
 
         matrices = jax.vmap(f)(matrix)
@@ -799,7 +799,7 @@ class Test_JITCHomoR_Batching:
         matrix = brainstate.random.rand(k, batch_size, shape[0])
 
         def f(mat):
-            jitc = brainevent.JITCHomoR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
             return mat @ jitc
 
         matrices = jax.vmap(f, in_axes=1)(matrix)
@@ -818,7 +818,7 @@ class Test_JITCHomoR_Batching:
         matrix = brainstate.random.rand(k, shape[0], batch_size)
 
         def f(mat):
-            jitc = brainevent.JITCHomoR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarR((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
             return mat @ jitc
 
         matrices = jax.vmap(f, in_axes=2)(matrix)
@@ -838,7 +838,7 @@ class Test_JITCHomoR_Batching:
         mat = brainstate.random.rand(k, shape[0], )
 
         def f(w):
-            jitc = brainevent.JITCHomoR((w, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarR((w, 0.1, 123), shape=shape, corder=corder)
             return mat @ jitc
 
         matrices = jax.vmap(f)(weights)
@@ -855,7 +855,7 @@ class Test_JITCHomoR_Transpose:
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matvec(self, prob, weight, shape):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape).T
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape).T
         vector = jnp.asarray(np.random.rand(shape[0]))
         out1 = jitc @ vector
         out2 = jitc.todense() @ vector
@@ -865,7 +865,7 @@ class Test_JITCHomoR_Transpose:
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_vecmat(self, prob, weight, shape):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape).T
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape).T
         vector = jnp.asarray(np.random.rand(shape[1]))
         out1 = vector @ jitc
         out2 = vector @ jitc.todense()
@@ -876,7 +876,7 @@ class Test_JITCHomoR_Transpose:
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_jitmat(self, prob, weight, shape: MatrixShape, k):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape).T
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape).T
         matrix = jnp.asarray(np.random.rand(shape[0], k))
         out1 = jitc @ matrix
         out2 = jitc.todense() @ matrix
@@ -887,7 +887,7 @@ class Test_JITCHomoR_Transpose:
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matjit(self, k, prob, weight, shape):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape).T
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape).T
         matrix = jnp.asarray(np.random.rand(k, shape[1]))
         out1 = matrix @ jitc
         out2 = matrix @ jitc.todense()
@@ -900,8 +900,8 @@ class Test_JITCHomoR_Transpose_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matvec_jvp(self, weight, prob, corder, shape):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder).T
-        dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder).T
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape, corder=corder).T
+        dense = brainevent.JITCScalarR((1., prob, 123), shape=shape, corder=corder).T
         x = jnp.asarray(np.random.rand(shape[0]))
 
         def f_brainevent(x, w):
@@ -930,8 +930,8 @@ class Test_JITCHomoR_Transpose_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matvec_vjp(self, weight, prob, corder, shape):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder).T
-        dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder).T
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape, corder=corder).T
+        dense = brainevent.JITCScalarR((1., prob, 123), shape=shape, corder=corder).T
         x = jnp.asarray(np.random.rand(shape[0]))
 
         def f_brainevent(x, w):
@@ -952,8 +952,8 @@ class Test_JITCHomoR_Transpose_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_vecmat_jvp(self, weight, prob, corder, shape):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder).T
-        dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder).T
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape, corder=corder).T
+        dense = brainevent.JITCScalarR((1., prob, 123), shape=shape, corder=corder).T
         x = jnp.asarray(np.random.rand(shape[1]))
 
         def f_brainevent(x, w):
@@ -982,8 +982,8 @@ class Test_JITCHomoR_Transpose_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_vecmat_vjp(self, weight, prob, corder, shape):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder).T
-        dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder).T
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape, corder=corder).T
+        dense = brainevent.JITCScalarR((1., prob, 123), shape=shape, corder=corder).T
         x = jnp.asarray(np.random.rand(shape[1]))
 
         def f_brainevent(x, w):
@@ -1005,8 +1005,8 @@ class Test_JITCHomoR_Transpose_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_jitmat_jvp(self, weight, prob, corder, k, shape):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder).T
-        dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder).T
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape, corder=corder).T
+        dense = brainevent.JITCScalarR((1., prob, 123), shape=shape, corder=corder).T
         x = jnp.asarray(np.random.rand(shape[0], k))
 
         def f_brainevent(x, w):
@@ -1036,8 +1036,8 @@ class Test_JITCHomoR_Transpose_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_jitmat_vjp(self, weight, prob, corder, k, shape):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder).T
-        dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder).T
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape, corder=corder).T
+        dense = brainevent.JITCScalarR((1., prob, 123), shape=shape, corder=corder).T
         x = jnp.asarray(np.random.rand(shape[0], k))
 
         def f_brainevent(x, w):
@@ -1059,8 +1059,8 @@ class Test_JITCHomoR_Transpose_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matjit_jvp(self, weight, prob, corder, k, shape):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder).T
-        dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder).T
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape, corder=corder).T
+        dense = brainevent.JITCScalarR((1., prob, 123), shape=shape, corder=corder).T
         x = jnp.asarray(np.random.rand(k, shape[1]))
 
         def f_brainevent(x, w):
@@ -1090,8 +1090,8 @@ class Test_JITCHomoR_Transpose_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matjit_vjp(self, weight, prob, corder, k, shape):
-        jitc = brainevent.JITCHomoR((weight, prob, 123), shape=shape, corder=corder).T
-        dense = brainevent.JITCHomoR((1., prob, 123), shape=shape, corder=corder).T
+        jitc = brainevent.JITCScalarR((weight, prob, 123), shape=shape, corder=corder).T
+        dense = brainevent.JITCScalarR((1., prob, 123), shape=shape, corder=corder).T
         x = jnp.asarray(np.random.rand(k, shape[1]))
 
         def f_brainevent(x, w):
@@ -1113,7 +1113,7 @@ class Test_JITCHomoC:
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matvec(self, prob, weight, shape):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape)
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape)
         vector = jnp.asarray(np.random.rand(shape[1]))
         out1 = jitc @ vector
         out2 = jitc.todense() @ vector
@@ -1123,7 +1123,7 @@ class Test_JITCHomoC:
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_vecmat(self, prob, weight, shape):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape)
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape)
         vector = jnp.asarray(np.random.rand(shape[0]))
         out1 = vector @ jitc
         out2 = vector @ jitc.todense()
@@ -1134,7 +1134,7 @@ class Test_JITCHomoC:
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_jitmat(self, prob, weight, shape: MatrixShape, k):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape)
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape)
         matrix = jnp.asarray(np.random.rand(shape[1], k))
         out1 = jitc @ matrix
         out2 = jitc.todense() @ matrix
@@ -1145,7 +1145,7 @@ class Test_JITCHomoC:
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matjit(self, k, prob, weight, shape):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape)
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape)
         matrix = jnp.asarray(np.random.rand(k, shape[0]))
         out1 = matrix @ jitc
         out2 = matrix @ jitc.todense()
@@ -1153,7 +1153,7 @@ class Test_JITCHomoC:
 
     def test_todense_weight_batching(self):
         def f(weight):
-            jitc = brainevent.JITCHomoC((weight, 0.1, 123), shape=(100, 50))
+            jitc = brainevent.JITCScalarC((weight, 0.1, 123), shape=(100, 50))
             return jitc.todense()
 
         weights = brainstate.random.rand(10)
@@ -1168,7 +1168,7 @@ class Test_JITCHomoC:
 
     def test_todense_prob_batching(self):
         def f(prob):
-            jitc = brainevent.JITCHomoC((1.5, prob, 123), shape=(100, 50))
+            jitc = brainevent.JITCScalarC((1.5, prob, 123), shape=(100, 50))
             return jitc.todense()
 
         probs = brainstate.random.rand(10)
@@ -1183,7 +1183,7 @@ class Test_JITCHomoC:
 
     def test_todense_seed_batching(self):
         def f(seed):
-            jitc = brainevent.JITCHomoC((1.5, 0.1, seed), shape=(100, 50))
+            jitc = brainevent.JITCScalarC((1.5, 0.1, seed), shape=(100, 50))
             return jitc.todense()
 
         seeds = brainstate.random.randint(0, 100000, 10)
@@ -1202,7 +1202,7 @@ class Test_JITCHomoC:
     )
     def test_large_matrix(self):
         m = 10000
-        jitc = brainevent.JITCHomoC((1.5, 0.1, 123), shape=(m, m))
+        jitc = brainevent.JITCScalarC((1.5, 0.1, 123), shape=(m, m))
         vector = jnp.asarray(np.random.rand(m))
         out1 = jitc @ vector
         out2 = jitc.todense() @ vector
@@ -1216,8 +1216,8 @@ class Test_JITCHomoC_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matvec_jvp(self, weight, prob, corder, shape):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder)
-        dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder)
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape, corder=corder)
+        dense = brainevent.JITCScalarC((1., prob, 123), shape=shape, corder=corder)
         x = jnp.asarray(np.random.rand(shape[1]))
 
         def f_brainevent(x, w):
@@ -1246,8 +1246,8 @@ class Test_JITCHomoC_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matvec_vjp(self, weight, prob, corder, shape):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder)
-        dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder)
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape, corder=corder)
+        dense = brainevent.JITCScalarC((1., prob, 123), shape=shape, corder=corder)
         x = jnp.asarray(np.random.rand(shape[1]))
 
         def f_brainevent(x, w):
@@ -1268,8 +1268,8 @@ class Test_JITCHomoC_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_vecmat_jvp(self, weight, prob, corder, shape):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder)
-        dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder)
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape, corder=corder)
+        dense = brainevent.JITCScalarC((1., prob, 123), shape=shape, corder=corder)
         x = jnp.asarray(np.random.rand(shape[0]))
 
         def f_brainevent(x, w):
@@ -1298,8 +1298,8 @@ class Test_JITCHomoC_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_vecmat_vjp(self, weight, prob, corder, shape):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder)
-        dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder)
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape, corder=corder)
+        dense = brainevent.JITCScalarC((1., prob, 123), shape=shape, corder=corder)
         x = jnp.asarray(np.random.rand(shape[0]))
 
         def f_brainevent(x, w):
@@ -1321,8 +1321,8 @@ class Test_JITCHomoC_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_jitmat_jvp(self, weight, prob, corder, k, shape):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder)
-        dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder)
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape, corder=corder)
+        dense = brainevent.JITCScalarC((1., prob, 123), shape=shape, corder=corder)
         x = jnp.asarray(np.random.rand(shape[1], k))
 
         def f_brainevent(x, w):
@@ -1352,8 +1352,8 @@ class Test_JITCHomoC_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_jitmat_vjp(self, weight, prob, corder, k, shape):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder)
-        dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder)
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape, corder=corder)
+        dense = brainevent.JITCScalarC((1., prob, 123), shape=shape, corder=corder)
         x = jnp.asarray(np.random.rand(shape[1], k))
 
         def f_brainevent(x, w):
@@ -1375,8 +1375,8 @@ class Test_JITCHomoC_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matjit_jvp(self, weight, prob, corder, k, shape):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder)
-        dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder)
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape, corder=corder)
+        dense = brainevent.JITCScalarC((1., prob, 123), shape=shape, corder=corder)
         x = jnp.asarray(np.random.rand(k, shape[0]))
 
         def f_brainevent(x, w):
@@ -1406,8 +1406,8 @@ class Test_JITCHomoC_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matjit_vjp(self, weight, prob, corder, k, shape):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder)
-        dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder)
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape, corder=corder)
+        dense = brainevent.JITCScalarC((1., prob, 123), shape=shape, corder=corder)
         x = jnp.asarray(np.random.rand(k, shape[0]))
 
         def f_brainevent(x, w):
@@ -1432,7 +1432,7 @@ class Test_JITCHomoC_Batching:
         vectors = brainstate.random.rand(batch_size, shape[1])
 
         def f(vector):
-            jitc = brainevent.JITCHomoC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
             return jitc @ vector
 
         matrices = jax.vmap(f)(vectors)
@@ -1450,7 +1450,7 @@ class Test_JITCHomoC_Batching:
         vectors = brainstate.random.rand(shape[1], batch_size)
 
         def f(vector):
-            jitc = brainevent.JITCHomoC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
             return jitc @ vector
 
         matrices = jax.vmap(f, in_axes=1, out_axes=1)(vectors)
@@ -1469,7 +1469,7 @@ class Test_JITCHomoC_Batching:
         vector = brainstate.random.rand(shape[1], )
 
         def f(w):
-            jitc = brainevent.JITCHomoC((w, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarC((w, 0.1, 123), shape=shape, corder=corder)
             return jitc @ vector
 
         matrices = jax.vmap(f)(weights)
@@ -1487,7 +1487,7 @@ class Test_JITCHomoC_Batching:
         vectors = brainstate.random.rand(batch_size, shape[0])
 
         def f(vector):
-            jitc = brainevent.JITCHomoC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
             return vector @ jitc
 
         matrices = jax.vmap(f)(vectors)
@@ -1505,7 +1505,7 @@ class Test_JITCHomoC_Batching:
         vectors = brainstate.random.rand(shape[0], batch_size)
 
         def f(vector):
-            jitc = brainevent.JITCHomoC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
             return vector @ jitc
 
         matrices = jax.vmap(f, in_axes=1, out_axes=1)(vectors)
@@ -1524,7 +1524,7 @@ class Test_JITCHomoC_Batching:
         vector = brainstate.random.rand(shape[0], )
 
         def f(w):
-            jitc = brainevent.JITCHomoC((w, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarC((w, 0.1, 123), shape=shape, corder=corder)
             return vector @ jitc
 
         matrices = jax.vmap(f)(weights)
@@ -1543,7 +1543,7 @@ class Test_JITCHomoC_Batching:
         matrices = brainstate.random.rand(batch_size, shape[1], k)
 
         def f(mat):
-            jitc = brainevent.JITCHomoC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
             return jitc @ mat
 
         outs = jax.vmap(f)(matrices)
@@ -1562,7 +1562,7 @@ class Test_JITCHomoC_Batching:
         matrices = brainstate.random.rand(shape[1], batch_size, k)
 
         def f(mat):
-            jitc = brainevent.JITCHomoC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
             return jitc @ mat
 
         outs = jax.vmap(f, in_axes=1)(matrices)
@@ -1581,7 +1581,7 @@ class Test_JITCHomoC_Batching:
         matrices = brainstate.random.rand(shape[1], k, batch_size, )
 
         def f(mat):
-            jitc = brainevent.JITCHomoC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
             return jitc @ mat
 
         outs = jax.vmap(f, in_axes=2)(matrices)
@@ -1601,7 +1601,7 @@ class Test_JITCHomoC_Batching:
         matrix = brainstate.random.rand(shape[1], k)
 
         def f(w):
-            jitc = brainevent.JITCHomoC((w, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarC((w, 0.1, 123), shape=shape, corder=corder)
             return jitc @ matrix
 
         matrices = jax.vmap(f)(weights)
@@ -1620,7 +1620,7 @@ class Test_JITCHomoC_Batching:
         matrix = brainstate.random.rand(batch_size, k, shape[0])
 
         def f(mat):
-            jitc = brainevent.JITCHomoC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
             return mat @ jitc
 
         matrices = jax.vmap(f)(matrix)
@@ -1639,7 +1639,7 @@ class Test_JITCHomoC_Batching:
         matrix = brainstate.random.rand(k, batch_size, shape[0])
 
         def f(mat):
-            jitc = brainevent.JITCHomoC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
             return mat @ jitc
 
         matrices = jax.vmap(f, in_axes=1)(matrix)
@@ -1658,7 +1658,7 @@ class Test_JITCHomoC_Batching:
         matrix = brainstate.random.rand(k, shape[0], batch_size)
 
         def f(mat):
-            jitc = brainevent.JITCHomoC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarC((1.05 * u.mA, 0.1, 123), shape=shape, corder=corder)
             return mat @ jitc
 
         matrices = jax.vmap(f, in_axes=2)(matrix)
@@ -1678,7 +1678,7 @@ class Test_JITCHomoC_Batching:
         mat = brainstate.random.rand(k, shape[0], )
 
         def f(w):
-            jitc = brainevent.JITCHomoC((w, 0.1, 123), shape=shape, corder=corder)
+            jitc = brainevent.JITCScalarC((w, 0.1, 123), shape=shape, corder=corder)
             return mat @ jitc
 
         matrices = jax.vmap(f)(weights)
@@ -1695,7 +1695,7 @@ class Test_JITCHomoC_Transpose:
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matvec(self, prob, weight, shape):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape).T
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape).T
         vector = jnp.asarray(np.random.rand(shape[0]))
         out1 = jitc @ vector
         out2 = jitc.todense() @ vector
@@ -1705,7 +1705,7 @@ class Test_JITCHomoC_Transpose:
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_vecmat(self, prob, weight, shape):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape).T
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape).T
         vector = jnp.asarray(np.random.rand(shape[1]))
         out1 = vector @ jitc
         out2 = vector @ jitc.todense()
@@ -1716,7 +1716,7 @@ class Test_JITCHomoC_Transpose:
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_jitmat(self, prob, weight, shape: MatrixShape, k):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape).T
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape).T
         matrix = jnp.asarray(np.random.rand(shape[0], k))
         out1 = jitc @ matrix
         out2 = jitc.todense() @ matrix
@@ -1727,7 +1727,7 @@ class Test_JITCHomoC_Transpose:
     @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matjit(self, k, prob, weight, shape):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape).T
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape).T
         matrix = jnp.asarray(np.random.rand(k, shape[1]))
         out1 = matrix @ jitc
         out2 = matrix @ jitc.todense()
@@ -1740,8 +1740,8 @@ class Test_JITCHomoC_Transpose_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matvec_jvp(self, weight, prob, corder, shape):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder).T
-        dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder).T
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape, corder=corder).T
+        dense = brainevent.JITCScalarC((1., prob, 123), shape=shape, corder=corder).T
         x = jnp.asarray(np.random.rand(shape[0]))
 
         def f_brainevent(x, w):
@@ -1770,8 +1770,8 @@ class Test_JITCHomoC_Transpose_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matvec_vjp(self, weight, prob, corder, shape):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder).T
-        dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder).T
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape, corder=corder).T
+        dense = brainevent.JITCScalarC((1., prob, 123), shape=shape, corder=corder).T
         x = jnp.asarray(np.random.rand(shape[0]))
 
         def f_brainevent(x, w):
@@ -1792,8 +1792,8 @@ class Test_JITCHomoC_Transpose_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_vecmat_jvp(self, weight, prob, corder, shape):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder).T
-        dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder).T
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape, corder=corder).T
+        dense = brainevent.JITCScalarC((1., prob, 123), shape=shape, corder=corder).T
         x = jnp.asarray(np.random.rand(shape[1]))
 
         def f_brainevent(x, w):
@@ -1822,8 +1822,8 @@ class Test_JITCHomoC_Transpose_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_vecmat_vjp(self, weight, prob, corder, shape):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder).T
-        dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder).T
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape, corder=corder).T
+        dense = brainevent.JITCScalarC((1., prob, 123), shape=shape, corder=corder).T
         x = jnp.asarray(np.random.rand(shape[1]))
 
         def f_brainevent(x, w):
@@ -1845,8 +1845,8 @@ class Test_JITCHomoC_Transpose_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_jitmat_jvp(self, weight, prob, corder, k, shape):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder).T
-        dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder).T
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape, corder=corder).T
+        dense = brainevent.JITCScalarC((1., prob, 123), shape=shape, corder=corder).T
         x = jnp.asarray(np.random.rand(shape[0], k))
 
         def f_brainevent(x, w):
@@ -1876,8 +1876,8 @@ class Test_JITCHomoC_Transpose_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_jitmat_vjp(self, weight, prob, corder, k, shape):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder).T
-        dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder).T
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape, corder=corder).T
+        dense = brainevent.JITCScalarC((1., prob, 123), shape=shape, corder=corder).T
         x = jnp.asarray(np.random.rand(shape[0], k))
 
         def f_brainevent(x, w):
@@ -1899,8 +1899,8 @@ class Test_JITCHomoC_Transpose_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matjit_jvp(self, weight, prob, corder, k, shape):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder).T
-        dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder).T
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape, corder=corder).T
+        dense = brainevent.JITCScalarC((1., prob, 123), shape=shape, corder=corder).T
         x = jnp.asarray(np.random.rand(k, shape[1]))
 
         def f_brainevent(x, w):
@@ -1930,8 +1930,8 @@ class Test_JITCHomoC_Transpose_Gradients:
     @pytest.mark.parametrize('corder', [True, False])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matjit_vjp(self, weight, prob, corder, k, shape):
-        jitc = brainevent.JITCHomoC((weight, prob, 123), shape=shape, corder=corder).T
-        dense = brainevent.JITCHomoC((1., prob, 123), shape=shape, corder=corder).T
+        jitc = brainevent.JITCScalarC((weight, prob, 123), shape=shape, corder=corder).T
+        dense = brainevent.JITCScalarC((1., prob, 123), shape=shape, corder=corder).T
         x = jnp.asarray(np.random.rand(k, shape[1]))
 
         def f_brainevent(x, w):

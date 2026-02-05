@@ -26,13 +26,13 @@ from brainevent._event.binary import EventArray
 from brainevent._jitc_matrix import JITCMatrix
 from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
 from .binary import (
-    binary_jitc_uniform_matvec,
-    binary_jitc_uniform_matmat,
+    binary_jitumv,
+    binary_jitumm,
 )
 from .float import (
-    float_jitc_uniform_matrix,
-    float_jitc_uniform_matvec,
-    float_jitc_uniform_matmat,
+    jitu,
+    jitumv,
+    jitumm,
 )
 
 __all__ = [
@@ -424,16 +424,16 @@ class JITCUniformR(JITUniformMatrix):
         --------
         >>> import jax
         >>> import brainunit as u
-        >>> from brainevent import JITCHomoR
+        >>> from brainevent import JITCScalarR
         >>>
         >>> # Create a sparse homogeneous matrix
-        >>> sparse_matrix = JITCHomoR((1.5 * u.mV, 0.5, 42), shape=(10, 4))
+        >>> sparse_matrix = JITCScalarR((1.5 * u.mV, 0.5, 42), shape=(10, 4))
         >>>
         >>> # Convert to dense format
         >>> dense_matrix = sparse_matrix.todense()
         >>> print(dense_matrix.shape)  # (10, 4)
         """
-        return float_jitc_uniform_matrix(
+        return jitu(
             self.wlow,
             self.whigh,
             self.prob,
@@ -472,10 +472,10 @@ class JITCUniformR(JITUniformMatrix):
         --------
         >>> import jax
         >>> import brainunit as u
-        >>> from brainevent import JITCHomoR
+        >>> from brainevent import JITCScalarR
         >>>
         >>> # Create a row-oriented matrix
-        >>> row_matrix = JITCHomoR((1.5, 0.5, 42), shape=(30, 5))
+        >>> row_matrix = JITCScalarR((1.5, 0.5, 42), shape=(30, 5))
         >>> print(row_matrix.shape)  # (30, 5)
         >>>
         >>> # Transpose to column-oriented matrix
@@ -535,7 +535,7 @@ class JITCUniformR(JITUniformMatrix):
             other = other.data
             if other.ndim == 1:
                 # JIT matrix @ events
-                return binary_jitc_uniform_matvec(
+                return binary_jitumv(
                     self.wlow,
                     self.whigh,
                     self.prob,
@@ -547,7 +547,7 @@ class JITCUniformR(JITUniformMatrix):
                 )
             elif other.ndim == 2:
                 # JIT matrix @ events
-                return binary_jitc_uniform_matmat(
+                return binary_jitumm(
                     self.wlow,
                     self.whigh,
                     self.prob,
@@ -566,7 +566,7 @@ class JITCUniformR(JITUniformMatrix):
             scale, other = u.math.promote_dtypes(self.whigh, other)
             if other.ndim == 1:
                 # JIT matrix @ vector
-                return float_jitc_uniform_matvec(
+                return jitumv(
                     loc,
                     scale,
                     self.prob,
@@ -578,7 +578,7 @@ class JITCUniformR(JITUniformMatrix):
                 )
             elif other.ndim == 2:
                 # JIT matrix @ matrix
-                return float_jitc_uniform_matmat(
+                return jitumm(
                     loc,
                     scale,
                     self.prob,
@@ -604,7 +604,7 @@ class JITCUniformR(JITUniformMatrix):
                 # ==
                 # JIT matrix.T @ vector
                 #
-                return binary_jitc_uniform_matvec(
+                return binary_jitumv(
                     self.wlow,
                     self.whigh,
                     self.prob,
@@ -620,7 +620,7 @@ class JITCUniformR(JITUniformMatrix):
                 # ==
                 # (JIT matrix.T @ matrix.T).T
                 #
-                r = binary_jitc_uniform_matmat(
+                r = binary_jitumm(
                     self.wlow,
                     self.whigh,
                     self.prob,
@@ -644,7 +644,7 @@ class JITCUniformR(JITUniformMatrix):
                 # ==
                 # JIT matrix.T @ vector
                 #
-                return float_jitc_uniform_matvec(
+                return jitumv(
                     loc,
                     scale,
                     self.prob,
@@ -660,7 +660,7 @@ class JITCUniformR(JITUniformMatrix):
                 # ==
                 # (JIT matrix.T @ matrix.T).T
                 #
-                r = float_jitc_uniform_matmat(
+                r = jitumm(
                     loc,
                     scale,
                     self.prob,
@@ -800,16 +800,16 @@ class JITCUniformC(JITUniformMatrix):
         --------
         >>> import jax
         >>> import brainunit as u
-        >>> from brainevent import JITCHomoC
+        >>> from brainevent import JITCScalarC
         >>>
         >>> # Create a sparse column-oriented homogeneous matrix
-        >>> sparse_matrix = JITCHomoC((1.5 * u.mV, 0.5, 42), shape=(3, 10))
+        >>> sparse_matrix = JITCScalarC((1.5 * u.mV, 0.5, 42), shape=(3, 10))
         >>>
         >>> # Convert to dense format
         >>> dense_matrix = sparse_matrix.todense()
         >>> print(dense_matrix.shape)  # (3, 10)
         """
-        return float_jitc_uniform_matrix(
+        return jitu(
             self.wlow,
             self.whigh,
             self.prob,
@@ -848,10 +848,10 @@ class JITCUniformC(JITUniformMatrix):
         --------
         >>> import jax
         >>> import brainunit as u
-        >>> from brainevent import JITCHomoC
+        >>> from brainevent import JITCScalarC
         >>>
         >>> # Create a column-oriented matrix
-        >>> col_matrix = JITCHomoC((1.5, 0.5, 42), shape=(3, 5))
+        >>> col_matrix = JITCScalarC((1.5, 0.5, 42), shape=(3, 5))
         >>> print(col_matrix.shape)  # (3, 5)
         >>>
         >>> # Transpose to row-oriented matrix
@@ -913,7 +913,7 @@ class JITCUniformC(JITUniformMatrix):
                 # JITC_R matrix.T @ vector
                 # ==
                 # vector @ JITC_R matrix
-                return binary_jitc_uniform_matvec(
+                return binary_jitumv(
                     self.wlow,
                     self.whigh,
                     self.prob,
@@ -927,7 +927,7 @@ class JITCUniformC(JITUniformMatrix):
                 # JITC_R matrix.T @ matrix
                 # ==
                 # (matrix.T @ JITC_R matrix).T
-                return binary_jitc_uniform_matmat(
+                return binary_jitumm(
                     self.wlow,
                     self.whigh,
                     self.prob,
@@ -948,7 +948,7 @@ class JITCUniformC(JITUniformMatrix):
                 # JITC_R matrix.T @ vector
                 # ==
                 # vector @ JITC_R matrix
-                return float_jitc_uniform_matvec(
+                return jitumv(
                     loc,
                     scale,
                     self.prob,
@@ -962,7 +962,7 @@ class JITCUniformC(JITUniformMatrix):
                 # JITC_R matrix.T @ matrix
                 # ==
                 # (matrix.T @ JITC_R matrix).T
-                return float_jitc_uniform_matmat(
+                return jitumm(
                     loc,
                     scale,
                     self.prob,
@@ -987,7 +987,7 @@ class JITCUniformC(JITUniformMatrix):
                 # ==
                 # JITC_R matrix @ vector
                 #
-                return binary_jitc_uniform_matvec(
+                return binary_jitumv(
                     self.wlow,
                     self.whigh,
                     self.prob,
@@ -1003,7 +1003,7 @@ class JITCUniformC(JITUniformMatrix):
                 # ==
                 # (JITC_R matrix @ matrix.T).T
                 #
-                r = binary_jitc_uniform_matmat(
+                r = binary_jitumm(
                     self.wlow,
                     self.whigh,
                     self.prob,
@@ -1027,7 +1027,7 @@ class JITCUniformC(JITUniformMatrix):
                 # ==
                 # JITC_R matrix @ vector
                 #
-                return float_jitc_uniform_matvec(
+                return jitumv(
                     loc,
                     scale,
                     self.prob,
@@ -1043,7 +1043,7 @@ class JITCUniformC(JITUniformMatrix):
                 # ==
                 # (JITC_R matrix @ matrix.T).T
                 #
-                r = float_jitc_uniform_matmat(
+                r = jitumm(
                     loc,
                     scale,
                     self.prob,

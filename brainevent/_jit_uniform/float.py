@@ -14,7 +14,7 @@
 # ==============================================================================
 # -*- coding: utf-8 -*-
 
-from typing import Optional, Sequence
+from typing import Optional
 
 import brainunit as u
 import jax
@@ -29,14 +29,17 @@ from brainevent._pallas_random import LFSR88RNG
 from brainevent._typing import Data, MatrixShape
 
 __all__ = [
-    "float_jitc_uniform_matrix",
-    "float_jitc_uniform_matvec",
-    "float_jitc_uniform_matmat",
+    "jitu",
+    "jitu_p",
+    "jitumv",
+    "jitumv_p",
+    "jitumm",
+    "jitumm_p",
 ]
 
 
 @namescoped_jit(static_argnames=("shape", "transpose", "corder"))
-def float_jitc_uniform_matrix(
+def jitu(
     w_low: Data,
     w_high: Data,
     prob: float,
@@ -50,7 +53,7 @@ def float_jitc_uniform_matrix(
     w_low, unitd = u.split_mantissa_unit(w_low)
     w_high = u.Quantity(w_high).to(unitd).mantissa
     clen = _initialize_conn_length(prob)
-    res = float_jitc_uniform_matrix_p_call(
+    res = jitu_p_call(
         w_low,
         w_high,
         clen,
@@ -63,7 +66,7 @@ def float_jitc_uniform_matrix(
 
 
 @namescoped_jit(static_argnames=("shape", "transpose", "corder"))
-def float_jitc_uniform_matvec(
+def jitumv(
     w_low: Data,
     w_high: Data,
     prob: float,
@@ -80,7 +83,7 @@ def float_jitc_uniform_matvec(
     w_high = u.Quantity(w_high).to(unitd).mantissa
     vector, unitv = u.split_mantissa_unit(vector)
     clen = _initialize_conn_length(prob)
-    res = float_jitc_mv_uniform_p_call(
+    res = jitumv_p_call(
         w_low,
         w_high,
         clen,
@@ -94,7 +97,7 @@ def float_jitc_uniform_matvec(
 
 
 @namescoped_jit(static_argnames=("shape", "transpose", "corder"))
-def float_jitc_uniform_matmat(
+def jitumm(
     w_low: Data,
     w_high: Data,
     prob: float,
@@ -111,7 +114,7 @@ def float_jitc_uniform_matmat(
     w_high = u.Quantity(w_high).to(unitd).mantissa
     B, unitB = u.split_mantissa_unit(B)
     clen = _initialize_conn_length(prob)
-    res = float_jitc_mm_uniform_p_call(
+    res = jitumm_p_call(
         w_low,
         w_high,
         clen,
@@ -124,7 +127,7 @@ def float_jitc_uniform_matmat(
     return u.maybe_decimal(res * unitd * unitB)
 
 
-def _jitc_uniform_matrix_numba_kernel_generator(
+def _jitu_numba_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
@@ -215,7 +218,7 @@ def _jitc_uniform_matrix_numba_kernel_generator(
     return kernel
 
 
-def _jitc_uniform_matrix_warp_kernel_generator(
+def _jitu_warp_kernel_generator(
     w_low_info: jax.ShapeDtypeStruct,
     w_high_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
@@ -340,7 +343,7 @@ def _jitc_uniform_matrix_warp_kernel_generator(
     return kernel
 
 
-def _jitc_uniform_matrix_pallas_kernel_generator(
+def _jitu_pallas_kernel_generator(
     out_info: jax.ShapeDtypeStruct,
     corder: bool = True,
     **kwargs
@@ -417,40 +420,31 @@ def _jitc_uniform_matrix_pallas_kernel_generator(
     return run
 
 
-def _jitc_uniform_matrix_jvp_wlow(w_low_dot, w_low, w_high, clen, seed, *, shape: Sequence[int], transpose: bool,
-                                  corder: bool, **kwargs):
-    res = float_jitc_uniform_matrix_p_call(
-        0., w_low_dot, clen, seed, shape=shape, transpose=transpose, corder=corder
-    )[0]
+def _jitu_jvp_wlow(w_low_dot, w_low, w_high, clen, seed, *, shape, transpose: bool, corder: bool, **kwargs):
+    res = jitu_p_call(0., w_low_dot, clen, seed, shape=shape, transpose=transpose, corder=corder)[0]
     return [w_low_dot - res]
 
 
-def _jitc_uniform_matrix_jvp_whigh(w_high_dot, w_low, w_high, clen, seed, *, shape: Sequence[int], transpose: bool,
-                                   corder: bool, **kwargs):
-    res = float_jitc_uniform_matrix_p_call(
-        0., w_high_dot, clen, seed, shape=shape, transpose=transpose, corder=corder
-    )
+def _jitu_jvp_whigh(w_high_dot, w_low, w_high, clen, seed, *, shape, transpose: bool, corder: bool, **kwargs):
+    res = jitu_p_call(0., w_high_dot, clen, seed, shape=shape, transpose=transpose, corder=corder)
     return res
 
 
 def _wlow_tranpose(ct, seed, clen, **kwargs):
     # JITC * (high - low) + low
     # TODO: optimize memory
-    forward = float_jitc_uniform_matrix_p_call(0., 1., clen, seed, **kwargs)[0]
+    forward = jitu_p_call(0., 1., clen, seed, **kwargs)[0]
     return jnp.expand_dims((ct * (-forward + 1.)).sum(), axis=0)
 
 
 def _whigh_tranpose(ct, seed, clen, **kwargs):
     # JITC * (high - low) + low
     # TODO: optimize memory
-    forward = float_jitc_uniform_matrix_p_call(0., 1., clen, seed, **kwargs)[0]
+    forward = jitu_p_call(0., 1., clen, seed, **kwargs)[0]
     return jnp.expand_dims((ct * forward).sum(), axis=0)
 
 
-def _jitc_uniform_matrix_transpose(
-    ct, w_low, w_high, clen, seed, *,
-    shape: Sequence[int], transpose: bool, corder: bool, **kwargs
-):
+def _jitu_transpose(ct, w_low, w_high, clen, seed, *, shape, transpose: bool, corder: bool, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
     ct = ct[0]
@@ -480,17 +474,17 @@ def _jitc_uniform_matrix_transpose(
         )
 
 
-def _jitc_uniform_matrix_batching(args, axes, **kwargs):
-    return general_batching_rule(float_jitc_uniform_matrix_p, args, axes, **kwargs)
+def _jitu_batching(args, axes, **kwargs):
+    return general_batching_rule(jitu_p, args, axes, **kwargs)
 
 
-def float_jitc_uniform_matrix_p_call(
+def jitu_p_call(
     w_low,
     w_high,
     clen,
     seed,
     *,
-    shape: Sequence[int],
+    shape,
     transpose: bool,
     corder: bool,
 ):
@@ -507,7 +501,7 @@ def float_jitc_uniform_matrix_p_call(
         jax.ShapeDtypeStruct(shape, dtype=w_low.dtype)
     )
 
-    return float_jitc_uniform_matrix_p(
+    return jitu_p(
         w_low,
         w_high,
         clen,
@@ -524,25 +518,20 @@ def float_jitc_uniform_matrix_p_call(
     )
 
 
-float_jitc_uniform_matrix_p = XLACustomKernel('float_jitc_uniform_matrix')
-float_jitc_uniform_matrix_p.def_numba_kernel(_jitc_uniform_matrix_numba_kernel_generator)
-float_jitc_uniform_matrix_p.def_warp_kernel(_jitc_uniform_matrix_warp_kernel_generator)
-float_jitc_uniform_matrix_p.def_pallas_kernel('gpu', _jitc_uniform_matrix_pallas_kernel_generator)
-float_jitc_uniform_matrix_p.def_pallas_kernel('tpu', _jitc_uniform_matrix_pallas_kernel_generator)
-float_jitc_uniform_matrix_p.def_jvp_rule2(
-    _jitc_uniform_matrix_jvp_wlow,
-    _jitc_uniform_matrix_jvp_whigh,
-    None,
-    None,
-)
-float_jitc_uniform_matrix_p.def_transpose_rule(_jitc_uniform_matrix_transpose)
-float_jitc_uniform_matrix_p.def_batching_rule(_jitc_uniform_matrix_batching)
-float_jitc_uniform_matrix_p.def_call(float_jitc_uniform_matrix_p_call)
+jitu_p = XLACustomKernel('float_jitu')
+jitu_p.def_numba_kernel(_jitu_numba_kernel_generator)
+jitu_p.def_warp_kernel(_jitu_warp_kernel_generator)
+jitu_p.def_pallas_kernel('gpu', _jitu_pallas_kernel_generator)
+jitu_p.def_pallas_kernel('tpu', _jitu_pallas_kernel_generator)
+jitu_p.def_jvp_rule2(_jitu_jvp_wlow, _jitu_jvp_whigh, None, None)
+jitu_p.def_transpose_rule(_jitu_transpose)
+jitu_p.def_batching_rule(_jitu_batching)
+jitu_p.def_call(jitu_p_call)
 
 
 # Kernel generators for JIT connection SPMV
 
-def _jitc_mv_uniform_numba_kernel_generator(
+def _jitumv_numba_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
@@ -629,7 +618,7 @@ def _jitc_mv_uniform_numba_kernel_generator(
     return kernel
 
 
-def _jitc_mv_uniform_warp_kernel_generator(
+def _jitumv_warp_kernel_generator(
     w_low_info: jax.ShapeDtypeStruct,
     w_high_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
@@ -757,7 +746,7 @@ def _jitc_mv_uniform_warp_kernel_generator(
     return kernel
 
 
-def _jitc_mv_uniform_pallas_kernel_generator(
+def _jitumv_pallas_kernel_generator(
     vector_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
     corder: bool = True,
@@ -838,22 +827,22 @@ def _jitc_mv_uniform_pallas_kernel_generator(
     return run
 
 
-def _jitc_mv_uniform_jvp_v(v_dot, w_low, w_high, clen, vector, seed, *, shape, transpose, corder, **kwargs):
-    return float_jitc_mv_uniform_p_call(w_low, w_high, clen, v_dot, seed, shape=shape, transpose=transpose,
-                                        corder=corder)
+def _jitumv_jvp_v(v_dot, w_low, w_high, clen, vector, seed, *, shape, transpose, corder, **kwargs):
+    return jitumv_p_call(w_low, w_high, clen, v_dot, seed, shape=shape, transpose=transpose,
+                         corder=corder)
 
 
-def _jitc_mv_uniform_jvp_wlow(w_dot, w_low, w_high, clen, vector, seed, *, shape, transpose, corder, **kwargs):
-    return float_jitc_mv_uniform_p_call(w_dot, w_high, clen, vector, seed, shape=shape, transpose=transpose,
-                                        corder=corder)
+def _jitumv_jvp_wlow(w_dot, w_low, w_high, clen, vector, seed, *, shape, transpose, corder, **kwargs):
+    return jitumv_p_call(w_dot, w_high, clen, vector, seed, shape=shape, transpose=transpose,
+                         corder=corder)
 
 
-def _jitc_mv_uniform_jvp_whigh(w_dot, w_low, w_high, clen, vector, seed, *, shape, transpose, corder, **kwargs):
-    return float_jitc_mv_uniform_p_call(w_low, w_dot, clen, vector, seed, shape=shape, transpose=transpose,
-                                        corder=corder)
+def _jitumv_jvp_whigh(w_dot, w_low, w_high, clen, vector, seed, *, shape, transpose, corder, **kwargs):
+    return jitumv_p_call(w_low, w_dot, clen, vector, seed, shape=shape, transpose=transpose,
+                         corder=corder)
 
 
-def _jitc_mv_uniform_transpose_rules(
+def _jitumv_transpose_rules(
     ct,
     w_low,
     w_high,
@@ -873,7 +862,7 @@ def _jitc_mv_uniform_transpose_rules(
 
     ct = ct[0]
     if ad.is_undefined_primal(vector):
-        r = float_jitc_mv_uniform_p_call(
+        r = jitumv_p_call(
             w_low,
             w_high,
             clen,
@@ -891,14 +880,10 @@ def _jitc_mv_uniform_transpose_rules(
         )
 
 
-def _jitc_mv_uniform_batching(
-    args,
-    axes,
-    **kwargs
-):
+def _jitumv_batching(args, axes, **kwargs):
     if tuple(axes) == (None, None, None, 0, None):
         assert args[3].ndim == 2, 'Batching axis 0 requires 2D input.'
-        r = float_jitc_mm_uniform_p_call(
+        r = jitumm_p_call(
             args[0],
             args[1],
             args[2],
@@ -911,7 +896,7 @@ def _jitc_mv_uniform_batching(
         return r, [1]
     elif tuple(axes) == (None, None, None, 1, None):
         assert args[3].ndim == 2, 'Batching axis 0 requires 2D input.'
-        r = float_jitc_mm_uniform_p_call(
+        r = jitumm_p_call(
             args[0],
             args[1],
             args[2],
@@ -923,22 +908,17 @@ def _jitc_mv_uniform_batching(
         )
         return r, [1]
     else:
-        return general_batching_rule(
-            float_jitc_mv_uniform_p,
-            args,
-            axes,
-            **kwargs,
-        )
+        return general_batching_rule(jitumv_p, args, axes, **kwargs)
 
 
-def float_jitc_mv_uniform_p_call(
+def jitumv_p_call(
     w_low,
     w_high,
     clen,
     vector,
     seed,
     *,
-    shape: Sequence[int],
+    shape,
     transpose: bool,
     corder: bool,
 ):
@@ -966,7 +946,7 @@ def float_jitc_mv_uniform_p_call(
         jax.ShapeDtypeStruct([shape[0]], w_low.dtype)
     )
 
-    return float_jitc_mv_uniform_p(
+    return jitumv_p(
         w_low,
         w_high,
         clen,
@@ -985,24 +965,24 @@ def float_jitc_mv_uniform_p_call(
     )
 
 
-float_jitc_mv_uniform_p = XLACustomKernel('float_jitc_mv_uniform')
-float_jitc_mv_uniform_p.def_numba_kernel(_jitc_mv_uniform_numba_kernel_generator)
-float_jitc_mv_uniform_p.def_warp_kernel(_jitc_mv_uniform_warp_kernel_generator)
-float_jitc_mv_uniform_p.def_pallas_kernel('gpu', _jitc_mv_uniform_pallas_kernel_generator)
-float_jitc_mv_uniform_p.def_pallas_kernel('tpu', _jitc_mv_uniform_pallas_kernel_generator)
-float_jitc_mv_uniform_p.def_jvp_rule2(
-    _jitc_mv_uniform_jvp_wlow,
-    _jitc_mv_uniform_jvp_whigh,
+jitumv_p = XLACustomKernel('float_jitumv')
+jitumv_p.def_numba_kernel(_jitumv_numba_kernel_generator)
+jitumv_p.def_warp_kernel(_jitumv_warp_kernel_generator)
+jitumv_p.def_pallas_kernel('gpu', _jitumv_pallas_kernel_generator)
+jitumv_p.def_pallas_kernel('tpu', _jitumv_pallas_kernel_generator)
+jitumv_p.def_jvp_rule2(
+    _jitumv_jvp_wlow,
+    _jitumv_jvp_whigh,
     None,
-    _jitc_mv_uniform_jvp_v,
+    _jitumv_jvp_v,
     None,
 )
-float_jitc_mv_uniform_p.def_transpose_rule(_jitc_mv_uniform_transpose_rules)
-float_jitc_mv_uniform_p.def_batching_rule(_jitc_mv_uniform_batching)
-float_jitc_mv_uniform_p.def_call(float_jitc_mv_uniform_p_call)
+jitumv_p.def_transpose_rule(_jitumv_transpose_rules)
+jitumv_p.def_batching_rule(_jitumv_batching)
+jitumv_p.def_call(jitumv_p_call)
 
 
-def _jitc_mm_uniform_numba_kernel_generator(
+def _jitumm_numba_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
     **kwargs
@@ -1103,7 +1083,7 @@ def _jitc_mm_uniform_numba_kernel_generator(
     return kernel
 
 
-def _jitc_mm_uniform_warp_kernel_generator(
+def _jitumm_warp_kernel_generator(
     w_low_info: jax.ShapeDtypeStruct,
     w_high_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
@@ -1241,7 +1221,7 @@ def _jitc_mm_uniform_warp_kernel_generator(
     return kernel
 
 
-def _jitc_mm_uniform_pallas_kernel_generator(
+def _jitumm_pallas_kernel_generator(
     B_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
     transpose: bool = False,
@@ -1401,20 +1381,20 @@ def _jitc_mm_uniform_pallas_kernel_generator(
     return run
 
 
-def _jitc_mm_uniform_jvp_wlow(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
-    return float_jitc_mm_uniform_p_call(w_dot, w_high, clen, B, seed, shape=shape, transpose=transpose, corder=corder)
+def _jitumm_jvp_wlow(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
+    return jitumm_p_call(w_dot, w_high, clen, B, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitc_mm_uniform_jvp_whigh(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
-    return float_jitc_mm_uniform_p_call(w_low, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder)
+def _jitumm_jvp_whigh(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
+    return jitumm_p_call(w_low, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitc_mm_uniform_jvp_B(B_dot, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
-    return float_jitc_mm_uniform_p_call(w_low, w_high, clen, B_dot, seed, shape=shape, transpose=transpose,
-                                        corder=corder)
+def _jitumm_jvp_B(B_dot, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
+    return jitumm_p_call(w_low, w_high, clen, B_dot, seed, shape=shape, transpose=transpose,
+                         corder=corder)
 
 
-def _jitc_mm_uniform_transpose_rules(
+def _jitumm_transpose_rules(
     ct,
     w_low,
     w_high,
@@ -1434,7 +1414,7 @@ def _jitc_mm_uniform_transpose_rules(
 
     ct = ct[0]
     if ad.is_undefined_primal(B):
-        dB = float_jitc_mm_uniform_p_call(
+        dB = jitumm_p_call(
             w_low,
             w_high,
             clen,
@@ -1456,7 +1436,7 @@ def _batching_axis1(args, axis=1, **kwargs):
     assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
     m, maybe_batch1, maybe_batch2 = args[3].shape
     B = args[3].reshape(m, maybe_batch1 * maybe_batch2)
-    r = float_jitc_mm_uniform_p_call(
+    r = jitumm_p_call(
         args[0],
         args[1],
         args[2],
@@ -1470,7 +1450,7 @@ def _batching_axis1(args, axis=1, **kwargs):
     return [r], [axis]
 
 
-def _jitc_mm_uniform_batching(args, axes, **kwargs):
+def _jitumm_batching(args, axes, **kwargs):
     if tuple(axes) == (None, None, None, 0, None):
         assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
         args = list(args)
@@ -1484,10 +1464,10 @@ def _jitc_mm_uniform_batching(args, axes, **kwargs):
         return _batching_axis1(args, axis=2, **kwargs)
 
     else:
-        return general_batching_rule(float_jitc_mm_uniform_p, args, axes, **kwargs)
+        return general_batching_rule(jitumm_p, args, axes, **kwargs)
 
 
-def float_jitc_mm_uniform_p_call(
+def jitumm_p_call(
     w_low,
     w_high,
     clen,
@@ -1525,7 +1505,7 @@ def float_jitc_mm_uniform_p_call(
         jax.ShapeDtypeStruct([shape[0], B.shape[1]], w_low.dtype)
     )
 
-    return float_jitc_mm_uniform_p(
+    return jitumm_p(
         w_low,
         w_high,
         clen,
@@ -1545,18 +1525,18 @@ def float_jitc_mm_uniform_p_call(
     )
 
 
-float_jitc_mm_uniform_p = XLACustomKernel('float_jitc_mm_uniform')
-float_jitc_mm_uniform_p.def_numba_kernel(_jitc_mm_uniform_numba_kernel_generator)
-float_jitc_mm_uniform_p.def_warp_kernel(_jitc_mm_uniform_warp_kernel_generator)
-float_jitc_mm_uniform_p.def_pallas_kernel('gpu', _jitc_mm_uniform_pallas_kernel_generator)
-float_jitc_mm_uniform_p.def_pallas_kernel('tpu', _jitc_mm_uniform_pallas_kernel_generator)
-float_jitc_mm_uniform_p.def_jvp_rule2(
-    _jitc_mm_uniform_jvp_wlow,
-    _jitc_mm_uniform_jvp_whigh,
+jitumm_p = XLACustomKernel('float_jitumm')
+jitumm_p.def_numba_kernel(_jitumm_numba_kernel_generator)
+jitumm_p.def_warp_kernel(_jitumm_warp_kernel_generator)
+jitumm_p.def_pallas_kernel('gpu', _jitumm_pallas_kernel_generator)
+jitumm_p.def_pallas_kernel('tpu', _jitumm_pallas_kernel_generator)
+jitumm_p.def_jvp_rule2(
+    _jitumm_jvp_wlow,
+    _jitumm_jvp_whigh,
     None,
-    _jitc_mm_uniform_jvp_B,
+    _jitumm_jvp_B,
     None,
 )
-float_jitc_mm_uniform_p.def_transpose_rule(_jitc_mm_uniform_transpose_rules)
-float_jitc_mm_uniform_p.def_batching_rule(_jitc_mm_uniform_batching)
-float_jitc_mm_uniform_p.def_call(float_jitc_mm_uniform_p_call)
+jitumm_p.def_transpose_rule(_jitumm_transpose_rules)
+jitumm_p.def_batching_rule(_jitumm_batching)
+jitumm_p.def_call(jitumm_p_call)

@@ -14,10 +14,10 @@
 # ==============================================================================
 
 
-from .main import JITHomoMatrix, JITCHomoC, JITCHomoR
+from .main import JITScalarMatrix, JITCScalarC, JITCScalarR
 
 __all__ = [
-    'JITHomoMatrix',
-    'JITCHomoC',
-    'JITCHomoR',
+    'JITScalarMatrix',
+    'JITCScalarC',
+    'JITCScalarR',
 ]

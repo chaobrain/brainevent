@@ -51,15 +51,15 @@ from ._fcn import (
     FixedPostNumConn,
     FixedPreNumConn,
 )
-from ._jitc_homo import (
-    JITCHomoR,
-    JITCHomoC,
+from ._jit_scalar import (
+    JITCScalarR,
+    JITCScalarC,
 )
-from ._jitc_normal import (
+from ._jit_normal import (
     JITCNormalR,
     JITCNormalC,
 )
-from ._jitc_uniform import (
+from ._jit_uniform import (
     JITCUniformR,
     JITCUniformC,
 )
@@ -104,8 +104,8 @@ __all__ = [
     'plast_csr2csc_on_binary_post',
 
     # Just-In-Time Connectivity matrix
-    'JITCHomoR',  # row-oriented JITC matrix with homogeneous weight
-    'JITCHomoC',  # column-oriented JITC matrix with homogeneous weight
+    'JITCScalarR',  # row-oriented JITC matrix with homogeneous weight
+    'JITCScalarC',  # column-oriented JITC matrix with homogeneous weight
     'JITCNormalR',  # row-oriented JITC matrix with normal weight
     'JITCNormalC',  # column-oriented JITC matrix with normal weight
     'JITCUniformR',  # row-oriented JITC matrix with uniform weight

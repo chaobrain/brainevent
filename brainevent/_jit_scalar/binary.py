@@ -27,16 +27,18 @@ from brainevent._misc import generate_block_dim, namescoped_jit
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 from brainevent._pallas_random import LFSR88RNG
 from brainevent._typing import Data, MatrixShape
-from .float import float_jitc_mv_homo_p_call, float_jitc_mm_homo_p_call
+from .float import jitsmv_p_call, jitsmm_p_call
 
 __all__ = [
-    "binary_jitc_homo_matvec",
-    "binary_jitc_homo_matmat",
+    "binary_jitsmv",
+    "binary_jitsmv_p",
+    "binary_jitsmm",
+    "binary_jitsmm_p",
 ]
 
 
 @namescoped_jit(static_argnames=("shape", "transpose", "corder"))
-def binary_jitc_homo_matvec(
+def binary_jitsmv(
     weight: Data,
     prob: float,
     vector: Data,
@@ -94,7 +96,7 @@ def binary_jitc_homo_matvec(
     weight, unitd = u.split_mantissa_unit(weight)
     vector, unitv = u.split_mantissa_unit(vector)
     clen = _initialize_conn_length(prob)
-    res = binary_jitc_mv_homo_p_call(
+    res = binary_jitsmv_p_call(
         weight,
         clen,
         vector,
@@ -107,7 +109,7 @@ def binary_jitc_homo_matvec(
 
 
 @namescoped_jit(static_argnames=("shape", "transpose", "corder"))
-def binary_jitc_homo_matmat(
+def binary_jitsmm(
     weight: Data,
     prob: float,
     B: Data,
@@ -163,7 +165,7 @@ def binary_jitc_homo_matmat(
     weight, unitd = u.split_mantissa_unit(weight)
     B, unitB = u.split_mantissa_unit(B)
     clen = _initialize_conn_length(prob)
-    res = binary_jitc_mm_homo_p_call(
+    res = binary_jitsmm_p_call(
         weight,
         clen,
         B,
@@ -175,7 +177,7 @@ def binary_jitc_homo_matmat(
     return u.maybe_decimal(res * unitd * unitB)
 
 
-def _jitc_mv_homo_numba_kernel_generator(
+def _jitsmv_numba_kernel(
     corder: bool,
     vector_info: jax.ShapeDtypeStruct,
     **kwargs
@@ -262,13 +264,12 @@ def _jitc_mv_homo_numba_kernel_generator(
     return kernel
 
 
-def _jitc_mv_homo_warp_kernel_generator(
+def _jitsmv_warp_kernel(
     weight_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
@@ -381,10 +382,9 @@ def _jitc_mv_homo_warp_kernel_generator(
     return kernel
 
 
-def _jitc_mv_homo_pallas_kernel_generator(
+def _jitsmv_pallas_kernel(
     vector_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
@@ -469,15 +469,15 @@ def _jitc_mv_homo_pallas_kernel_generator(
     return kernel
 
 
-def _jitc_mv_homo_jvp_v(v_dot, weight, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
-    return float_jitc_mv_homo_p_call(weight, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder)
+def _jitsmv_jvp_v(v_dot, weight, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
+    return jitsmv_p_call(weight, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitc_mv_homo_jvp_weights(w_dot, weight, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
-    return binary_jitc_mv_homo_p_call(w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
+def _jitsmv_jvp_weights(w_dot, weight, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
+    return binary_jitsmv_p_call(w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitc_mv_homo_transpose_rules(
+def _jitsmv_transpose_rules(
     ct, weight, clen, vector, seed, _, *,
     shape, transpose, corder, **kwargs
 ):
@@ -486,7 +486,7 @@ def _jitc_mv_homo_transpose_rules(
 
     ct = ct[0]
     if ad.is_undefined_primal(vector):
-        r = float_jitc_mv_homo_p_call(
+        r = jitsmv_p_call(
             weight,
             clen,
             ct,
@@ -497,7 +497,7 @@ def _jitc_mv_homo_transpose_rules(
         )[0]
         return weight, clen, r, seed, _
     elif ad.is_undefined_primal(weight):
-        row = float_jitc_mv_homo_p_call(
+        row = jitsmv_p_call(
             jnp.ones((1,), dtype=ct.dtype),
             clen,
             ct,
@@ -515,10 +515,10 @@ def _jitc_mv_homo_transpose_rules(
         )
 
 
-def _jitc_mv_homo_batching(args, axes, **kwargs):
+def _jitsmv_batching(args, axes, **kwargs):
     if tuple(axes) == (None, None, 0, None, None):
         assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
-        r = binary_jitc_mm_homo_p_call(
+        r = binary_jitsmm_p_call(
             args[0],
             args[1],
             args[2].T,
@@ -530,7 +530,7 @@ def _jitc_mv_homo_batching(args, axes, **kwargs):
         return r, [1]
     elif tuple(axes) == (None, None, 1, None, None):
         assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
-        r = binary_jitc_mm_homo_p_call(
+        r = binary_jitsmm_p_call(
             args[0],
             args[1],
             args[2],
@@ -541,10 +541,10 @@ def _jitc_mv_homo_batching(args, axes, **kwargs):
         )
         return r, [1]
     else:
-        return general_batching_rule(binary_jitc_mv_homo_p, args, axes, **kwargs)
+        return general_batching_rule(binary_jitsmv_p, args, axes, **kwargs)
 
 
-def binary_jitc_mv_homo_p_call(
+def binary_jitsmv_p_call(
     weight,
     clen,
     vector,
@@ -627,7 +627,7 @@ def binary_jitc_mv_homo_p_call(
         jax.ShapeDtypeStruct([shape[0]], weight.dtype)
     )
 
-    return binary_jitc_mv_homo_p(
+    return binary_jitsmv_p(
         weight,
         clen,
         vector,
@@ -645,18 +645,18 @@ def binary_jitc_mv_homo_p_call(
     )
 
 
-binary_jitc_mv_homo_p = XLACustomKernel('binary_jitc_mv_homo')
-binary_jitc_mv_homo_p.def_numba_kernel(_jitc_mv_homo_numba_kernel_generator)
-binary_jitc_mv_homo_p.def_warp_kernel(_jitc_mv_homo_warp_kernel_generator)
-binary_jitc_mv_homo_p.def_pallas_kernel('gpu', _jitc_mv_homo_pallas_kernel_generator)
-binary_jitc_mv_homo_p.def_pallas_kernel('tpu', _jitc_mv_homo_pallas_kernel_generator)
-binary_jitc_mv_homo_p.def_jvp_rule2(_jitc_mv_homo_jvp_weights, None, _jitc_mv_homo_jvp_v, None, None)
-binary_jitc_mv_homo_p.def_transpose_rule(_jitc_mv_homo_transpose_rules)
-binary_jitc_mv_homo_p.def_batching_rule(_jitc_mv_homo_batching)
-binary_jitc_mv_homo_p.def_call(binary_jitc_mv_homo_p_call)
+binary_jitsmv_p = XLACustomKernel('binary_jitsmv')
+binary_jitsmv_p.def_numba_kernel(_jitsmv_numba_kernel)
+binary_jitsmv_p.def_warp_kernel(_jitsmv_warp_kernel)
+binary_jitsmv_p.def_pallas_kernel('gpu', _jitsmv_pallas_kernel)
+binary_jitsmv_p.def_pallas_kernel('tpu', _jitsmv_pallas_kernel)
+binary_jitsmv_p.def_jvp_rule2(_jitsmv_jvp_weights, None, _jitsmv_jvp_v, None, None)
+binary_jitsmv_p.def_transpose_rule(_jitsmv_transpose_rules)
+binary_jitsmv_p.def_batching_rule(_jitsmv_batching)
+binary_jitsmv_p.def_call(binary_jitsmv_p_call)
 
 
-def _jitc_mm_homo_numba_kernel_generator(
+def _jitsmm_numba_kernel(
     transpose: bool,
     corder: bool,
     B_info: jax.ShapeDtypeStruct,
@@ -829,14 +829,13 @@ def _jitc_mm_homo_numba_kernel_generator(
     return kernel
 
 
-def _jitc_mm_homo_warp_kernel_generator(
+def _jitsmm_warp_kernel(
     weight_info: jax.ShapeDtypeStruct,
     clen_info: jax.ShapeDtypeStruct,
     B_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
     TITLE_SIZE: int,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
@@ -949,10 +948,9 @@ def _jitc_mm_homo_warp_kernel_generator(
     return kernel
 
 
-def _jitc_mm_homo_pallas_kernel_generator(
+def _jitsmm_pallas_kernel(
     B_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
@@ -1037,15 +1035,15 @@ def _jitc_mm_homo_pallas_kernel_generator(
     return kernel
 
 
-def _jitc_mm_homo_jvp_w(w_dot, weight, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
-    return binary_jitc_mm_homo_p_call(w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder)
+def _jitsmm_jvp_w(w_dot, weight, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
+    return binary_jitsmm_p_call(w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitc_mm_homo_jvp_B(B_dot, weight, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
-    return float_jitc_mm_homo_p_call(weight, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder)
+def _jitsmm_jvp_B(B_dot, weight, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
+    return jitsmm_p_call(weight, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitc_mm_homo_transpose_rules(
+def _jitsmm_transpose_rules(
     ct,
     weight,
     clen,
@@ -1063,7 +1061,7 @@ def _jitc_mm_homo_transpose_rules(
 
     ct = ct[0]
     if ad.is_undefined_primal(B):
-        r = float_jitc_mm_homo_p_call(
+        r = jitsmm_p_call(
             weight,
             clen,
             ct,
@@ -1076,7 +1074,7 @@ def _jitc_mm_homo_transpose_rules(
         return weight, clen, r, seed, _
 
     elif ad.is_undefined_primal(weight):
-        r = float_jitc_mm_homo_p_call(
+        r = jitsmm_p_call(
             jnp.ones((1,), dtype=ct.dtype),
             clen,
             ct,
@@ -1099,7 +1097,7 @@ def _batching_axis1(args, axis=1, **kwargs):
     assert args[2].ndim == 3, 'Batching axis 0 requires 3D input.'
     m, maybe_batch1, maybe_batch2 = args[2].shape
     B = args[2].reshape(m, maybe_batch1 * maybe_batch2)
-    r = binary_jitc_mm_homo_p_call(
+    r = binary_jitsmm_p_call(
         args[0],
         args[1],
         B,
@@ -1112,7 +1110,7 @@ def _batching_axis1(args, axis=1, **kwargs):
     return [r], [axis]
 
 
-def _jitc_mm_homo_batching(args, axes, **kwargs):
+def _jitsmm_batching(args, axes, **kwargs):
     if tuple(axes) == (None, None, 0, None, None):
         assert args[2].ndim == 3, 'Batching axis 0 requires 3D input.'
         args = list(args)
@@ -1126,10 +1124,10 @@ def _jitc_mm_homo_batching(args, axes, **kwargs):
         return _batching_axis1(args, axis=2, **kwargs)
 
     else:
-        return general_batching_rule(binary_jitc_mm_homo_p, args, axes, **kwargs)
+        return general_batching_rule(binary_jitsmm_p, args, axes, **kwargs)
 
 
-def binary_jitc_mm_homo_p_call(
+def binary_jitsmm_p_call(
     weight,
     clen,
     B,
@@ -1161,7 +1159,7 @@ def binary_jitc_mm_homo_p_call(
         jax.ShapeDtypeStruct([shape[0], B.shape[1]], weight.dtype)
     )
 
-    return binary_jitc_mm_homo_p(
+    return binary_jitsmm_p(
         weight,
         clen,
         B,
@@ -1180,12 +1178,12 @@ def binary_jitc_mm_homo_p_call(
     )
 
 
-binary_jitc_mm_homo_p = XLACustomKernel('binary_jitc_mm_homo')
-binary_jitc_mm_homo_p.def_numba_kernel(_jitc_mm_homo_numba_kernel_generator)
-binary_jitc_mm_homo_p.def_warp_kernel(_jitc_mm_homo_warp_kernel_generator)
-binary_jitc_mm_homo_p.def_pallas_kernel('gpu', _jitc_mm_homo_pallas_kernel_generator)
-binary_jitc_mm_homo_p.def_pallas_kernel('tpu', _jitc_mm_homo_pallas_kernel_generator)
-binary_jitc_mm_homo_p.def_jvp_rule2(_jitc_mm_homo_jvp_w, None, _jitc_mm_homo_jvp_B, None, None)
-binary_jitc_mm_homo_p.def_transpose_rule(_jitc_mm_homo_transpose_rules)
-binary_jitc_mm_homo_p.def_batching_rule(_jitc_mm_homo_batching)
-binary_jitc_mm_homo_p.def_call(binary_jitc_mm_homo_p_call)
+binary_jitsmm_p = XLACustomKernel('binary_jitsmm')
+binary_jitsmm_p.def_numba_kernel(_jitsmm_numba_kernel)
+binary_jitsmm_p.def_warp_kernel(_jitsmm_warp_kernel)
+binary_jitsmm_p.def_pallas_kernel('gpu', _jitsmm_pallas_kernel)
+binary_jitsmm_p.def_pallas_kernel('tpu', _jitsmm_pallas_kernel)
+binary_jitsmm_p.def_jvp_rule2(_jitsmm_jvp_w, None, _jitsmm_jvp_B, None, None)
+binary_jitsmm_p.def_transpose_rule(_jitsmm_transpose_rules)
+binary_jitsmm_p.def_batching_rule(_jitsmm_batching)
+binary_jitsmm_p.def_call(binary_jitsmm_p_call)
