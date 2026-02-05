@@ -141,7 +141,7 @@ def _jitn_numba_kernel_generator(
             # - JIT matrix shape = [m, n]
             #
 
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel(w_loc, w_scale, clen, seed, posts):
                 posts[:] = 0.
                 m = posts.shape[1]
@@ -175,7 +175,7 @@ def _jitn_numba_kernel_generator(
             # - JIT matrix shape = [m, n]
             #
 
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel(w_loc, w_scale, clen, seed, posts):
                 posts[:] = 0.
                 m = posts.shape[0]
@@ -213,7 +213,7 @@ def _jitn_numba_kernel_generator(
             # - JIT matrix shape = [m, n]
             #
 
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel(w_loc, w_scale, clen, seed, posts):
                 posts[:] = 0.
                 m = posts.shape[1]
@@ -248,7 +248,7 @@ def _jitn_numba_kernel_generator(
             # - JIT matrix shape = [m, n]
             #
 
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel(w_loc, w_scale, clen, seed, posts):
                 posts[:] = 0.
                 m = posts.shape[0]  # Number of rows in the output matrix
@@ -645,7 +645,7 @@ def _jitnmv_numba_kernel_generator(
         # This means that the for loop is parallelized along the dimension of the output vector: ``post.shape[0]``.
 
         if transpose:
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel(w_loc, w_scale, clen, vector, seed, posts):
                 posts[:] = 0.
                 # Output vector dimension = number of columns in the matrix
@@ -684,7 +684,7 @@ def _jitnmv_numba_kernel_generator(
                     posts[i_col] = out
 
         else:
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel(w_loc, w_scale, clen, vector, seed, posts):
                 posts[:] = 0.
                 # Output vector dimension = number of rows in the matrix
@@ -734,7 +734,7 @@ def _jitnmv_numba_kernel_generator(
         # This means that the for loop is parallelized along the dimension of the vector: ``vector.shape[0]``.
 
         if transpose:
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel(w_loc, w_scale, clen, vector, seed, posts):
                 posts[:] = 0.
                 # Output vector dimension = number of columns in the matrix
@@ -777,7 +777,7 @@ def _jitnmv_numba_kernel_generator(
                         i_col += np.random.randint(1, clen0)
 
         else:
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel(w_loc, w_scale, clen, vector, seed, posts):
                 posts[:] = 0.
                 # Output vector dimension = number of rows in the matrix
@@ -1199,7 +1199,7 @@ def _jitnmm_numba_kernel_generator(
             # - JIT matrix: [k, m]
             # - B: [k, n]
 
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel(w_loc, w_scale, clen, B, seed, posts):
                 posts[:] = 0.
                 m = posts.shape[0]  # Number of rows in output matrix (columns in M)
@@ -1237,7 +1237,7 @@ def _jitnmm_numba_kernel_generator(
             # - JIT matrix: [m, k]
             # - B: [k, n]
 
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel(w_loc, w_scale, clen, B, seed, posts):
                 posts[:] = 0.
                 m = posts.shape[0]  # Number of rows in output matrix (rows in M)
@@ -1276,7 +1276,7 @@ def _jitnmm_numba_kernel_generator(
             # - JIT matrix: [k, m]
             # - B: [k, n]
 
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel(w_loc, w_scale, clen, B, seed, posts):
                 posts[:] = 0.
                 m = posts.shape[0]  # Number of rows in output matrix (columns in M)
@@ -1313,7 +1313,7 @@ def _jitnmm_numba_kernel_generator(
             # - JIT matrix: [m, k]
             # - B: [k, n]
 
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel(w_loc, w_scale, clen, B, seed, posts):
                 posts[:] = 0.
                 m = posts.shape[0]  # Number of rows in output matrix (rows in M)

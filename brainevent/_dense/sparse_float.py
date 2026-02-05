@@ -93,7 +93,7 @@ def dm_sfv(weights, spikes):
 def _dmsfv_numba_kernel(**kwargs):
     import numba
 
-    @numba.njit(fastmath=True, cache=True)
+    @numba.njit(fastmath=True)
     def kernel(weights, spikes, posts):
         posts[:] = 0.
         for i in range(spikes.shape[0]):
@@ -290,7 +290,7 @@ def sfv_dm(spikes, weights):
 def _sfvdm_numba_kernel(**kwargs):
     import numba
 
-    @numba.njit(fastmath=True, cache=True)
+    @numba.njit(fastmath=True)
     def kernel(spikes, weights, posts):
         posts[:] = 0.
         for i in range(spikes.shape[0]):
@@ -502,7 +502,7 @@ def _dmsfm_numba_kernel(**kwargs):
 
     import numba
 
-    @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+    @numba.njit(parallel=True, fastmath=True, nogil=True)
     def kernel(weights, spikes, posts):
         for i_n in numba.prange(spikes.shape[1]):
             out = np.zeros(weights.shape[0], dtype=weights.dtype)
@@ -751,7 +751,7 @@ def _sfm_dm_numba_kernel(**kwargs):
 
     import numba
 
-    @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+    @numba.njit(parallel=True, fastmath=True, nogil=True)
     def kernel(spikes, weights, posts):
         for i_m in numba.prange(spikes.shape[0]):
             out = np.zeros(weights.shape[1], dtype=posts.dtype)

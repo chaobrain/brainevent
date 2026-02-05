@@ -86,14 +86,9 @@ class XLACustomKernel:
     Attributes:
         primitive: The underlying JAX primitive created.
         name: The name assigned to the primitive.
-        enable_fallback: Whether to automatically try the next kernel when
-            one fails. Defaults to True.
-        defaults: A dictionary mapping platform names to their default backend.
 
     Args:
         name: The unique name for the custom JAX primitive.
-        enable_fallback: Whether to enable automatic fallback to the next
-            kernel when one fails. Defaults to True.
 
     Example:
         >>> kernel = XLACustomKernel('my_custom_op')
@@ -110,7 +105,7 @@ class XLACustomKernel:
 
     __module__ = 'brainevent'
 
-    def __init__(self, name: str, enable_fallback: bool = True):
+    def __init__(self, name: str):
         # primitive
         self.name = name
         self.primitive = Primitive(name)
@@ -129,9 +124,6 @@ class XLACustomKernel:
         self._defaults: Dict[str, str] = {}
         # tracks which platforms have had lowering registered
         self._registered_platforms: set = set()
-
-        # setting
-        self.enable_fallback = enable_fallback
 
         # call function for benchmarking
         self._call_fn: Optional[Callable] = None

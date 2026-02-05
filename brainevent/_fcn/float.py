@@ -42,7 +42,7 @@ def _fcnmv_numba_kernel(
     if transpose:
         # fixed pre connection number
         if weight_info.size == 1:
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def ell_mv(weights, indices, vector, _, posts):
                 posts[:] = 0.
                 w = weights[0]
@@ -51,7 +51,7 @@ def _fcnmv_numba_kernel(
                     for j in range(indices.shape[1]):
                         posts[indices[i, j]] += wv
         else:
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def ell_mv(weights, indices, vector, _, posts):
                 posts[:] = 0.
                 for i in range(vector.shape[0]):
@@ -61,13 +61,13 @@ def _fcnmv_numba_kernel(
     else:
         # fixed post connection number
         if weight_info.size == 1:
-            @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+            @numba.njit(parallel=True, fastmath=True, nogil=True)
             def ell_mv(weights, indices, vector, _, posts):
                 w = weights[0]
                 for i in numba.prange(indices.shape[0]):
                     posts[i] = w * np.sum(vector[indices[i]])
         else:
-            @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+            @numba.njit(parallel=True, fastmath=True, nogil=True)
             def ell_mv(weights, indices, vector, _, posts):
                 for i in numba.prange(indices.shape[0]):
                     posts[i] = np.sum(weights[i] * vector[indices[i]])
@@ -478,7 +478,7 @@ def _fcnmm_numba_kernel(
         #
 
         if weight_info.size == 1:
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def ell_mv(weights, indices, matrix, _, posts):
                 posts[:] = 0.
                 w = weights[0]
@@ -487,7 +487,7 @@ def _fcnmm_numba_kernel(
                     for i_conn in range(indices.shape[1]):
                         posts[indices[i_k, i_conn]] += wv
         else:
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def ell_mv(weights, indices, vector, _, posts):
                 posts[:] = 0.
                 for i in range(vector.shape[0]):
@@ -502,13 +502,13 @@ def _fcnmm_numba_kernel(
         #
 
         if weight_info.size == 1:
-            @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+            @numba.njit(parallel=True, fastmath=True, nogil=True)
             def ell_mv(weights, indices, matrix, _, posts):
                 w = weights[0]
                 for i_m in numba.prange(indices.shape[0]):
                     posts[i_m] = w * np.sum(matrix[indices[i_m]], axis=0)
         else:
-            @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+            @numba.njit(parallel=True, fastmath=True, nogil=True)
             def ell_mv(weights, indices, matrix, _, posts):
                 for i_m in numba.prange(indices.shape[0]):
                     posts[i_m] = weights[i_m] @ matrix[indices[i_m]]

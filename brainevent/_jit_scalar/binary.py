@@ -186,7 +186,7 @@ def _jitsmv_numba_kernel(
 
     if corder:
         if vector_info.dtype == jnp.bool_:
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel_impl(weight, clen, vector, seed, posts):
                 n_col = posts.shape[0]
                 n_row = vector.shape[0]
@@ -204,7 +204,7 @@ def _jitsmv_numba_kernel(
                     posts[i_col] = out * weight0
 
         else:
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel_impl(weight, clen, vector, seed, posts):
                 n_col = posts.shape[0]
                 n_row = vector.shape[0]
@@ -223,7 +223,7 @@ def _jitsmv_numba_kernel(
 
     else:
         if vector_info.dtype == jnp.bool_:
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel_impl(weight, clen, vector, seed, posts):
                 posts[:] = 0.
                 num_col = posts.shape[0]
@@ -241,7 +241,7 @@ def _jitsmv_numba_kernel(
                         i_col += np.random.randint(1, clen0)
 
         else:
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel_impl(weight, clen, vector, seed, posts):
                 posts[:] = 0.
                 num_col = posts.shape[0]
@@ -670,7 +670,7 @@ def _jitsmm_numba_kernel(
             # - JIT matrix: [k, m]
             # - B: [k, n]
             if B_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True, cache=True)
+                @numba.njit(fastmath=True)
                 def kernel_impl(weight, clen, B, seed, posts):
                     m = posts.shape[0]
                     n = posts.shape[1]
@@ -689,7 +689,7 @@ def _jitsmm_numba_kernel(
                             i_k += np.random.randint(1, clen0)
                         posts[i_m] = out * weight0
             else:
-                @numba.njit(fastmath=True, cache=True)
+                @numba.njit(fastmath=True)
                 def kernel_impl(weight, clen, B, seed, posts):
                     m = posts.shape[0]
                     n = posts.shape[1]
@@ -712,7 +712,7 @@ def _jitsmm_numba_kernel(
             # - JIT matrix: [m, k]
             # - B: [k, n]
             if B_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True, cache=True)
+                @numba.njit(fastmath=True)
                 def kernel_impl(weight, clen, B, seed, posts):
                     m = posts.shape[0]
                     n = posts.shape[1]
@@ -731,7 +731,7 @@ def _jitsmm_numba_kernel(
                             i_k += np.random.randint(1, clen0)
                         posts[i_m] = out * weight0
             else:
-                @numba.njit(fastmath=True, cache=True)
+                @numba.njit(fastmath=True)
                 def kernel_impl(weight, clen, B, seed, posts):
                     m = posts.shape[0]
                     n = posts.shape[1]
@@ -755,7 +755,7 @@ def _jitsmm_numba_kernel(
             # - JIT matrix: [k, m]
             # - B: [k, n]
             if B_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True, cache=True)
+                @numba.njit(fastmath=True)
                 def kernel_impl(weight, clen, B, seed, posts):
                     posts[:] = 0.
                     m = posts.shape[0]
@@ -771,7 +771,7 @@ def _jitsmm_numba_kernel(
                             posts[i_m, indices] += weight0
                             i_m += np.random.randint(1, clen0)
             else:
-                @numba.njit(fastmath=True, cache=True)
+                @numba.njit(fastmath=True)
                 def kernel_impl(weight, clen, B, seed, posts):
                     posts[:] = 0.
                     m = posts.shape[0]
@@ -791,7 +791,7 @@ def _jitsmm_numba_kernel(
             # - JIT matrix: [m, k]
             # - B: [k, n]
             if B_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True, cache=True)
+                @numba.njit(fastmath=True)
                 def kernel_impl(weight, clen, B, seed, posts):
                     posts[:] = 0.
                     m = posts.shape[0]
@@ -807,7 +807,7 @@ def _jitsmm_numba_kernel(
                             posts[i_m, indices] += weight0
                             i_m += np.random.randint(1, clen0)
             else:
-                @numba.njit(fastmath=True, cache=True)
+                @numba.njit(fastmath=True)
                 def kernel_impl(weight, clen, B, seed, posts):
                     posts[:] = 0.
                     m = posts.shape[0]

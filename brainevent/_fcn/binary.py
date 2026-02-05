@@ -46,7 +46,7 @@ def _binary_fcnmv_numba_kernel(
     if transpose:
         if weight_info.size == 1:
             if spike_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True, cache=True)
+                @numba.njit(fastmath=True)
                 def ell_mv(weights, indices, spikes, posts):
                     posts[:] = 0.
                     w = weights[0]
@@ -55,7 +55,7 @@ def _binary_fcnmv_numba_kernel(
                             for j in range(indices.shape[1]):
                                 posts[indices[i, j]] += w
             else:
-                @numba.njit(fastmath=True, cache=True)
+                @numba.njit(fastmath=True)
                 def ell_mv(weights, indices, spikes, posts):
                     posts[:] = 0.
                     w = weights[0]
@@ -65,7 +65,7 @@ def _binary_fcnmv_numba_kernel(
                                 posts[indices[i, j]] += w
         else:
             if spike_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True, cache=True)
+                @numba.njit(fastmath=True)
                 def ell_mv(weights, indices, spikes, posts):
                     posts[:] = 0.
                     for i in range(spikes.shape[0]):
@@ -73,7 +73,7 @@ def _binary_fcnmv_numba_kernel(
                             for j in range(indices.shape[1]):
                                 posts[indices[i, j]] += weights[i, j]
             else:
-                @numba.njit(fastmath=True, cache=True)
+                @numba.njit(fastmath=True)
                 def ell_mv(weights, indices, spikes, posts):
                     posts[:] = 0.
                     for i in range(spikes.shape[0]):
@@ -84,7 +84,7 @@ def _binary_fcnmv_numba_kernel(
     else:
         if weight_info.size == 1:
             if spike_info.dtype == jnp.bool_:
-                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def ell_mv(weights, indices, spikes, posts):
                     w = weights[0]
                     for i in numba.prange(indices.shape[0]):
@@ -95,7 +95,7 @@ def _binary_fcnmv_numba_kernel(
                                 r += w
                         posts[i] = r
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def ell_mv(weights, indices, spikes, posts):
                     spk_bool = spikes != 0.
                     w = weights[0]
@@ -108,7 +108,7 @@ def _binary_fcnmv_numba_kernel(
                         posts[i] = r
         else:
             if spike_info.dtype == jnp.bool_:
-                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def ell_mv(weights, indices, spikes, posts):
                     for i in numba.prange(indices.shape[0]):
                         r = 0.
@@ -118,7 +118,7 @@ def _binary_fcnmv_numba_kernel(
                                 r += weights[i, j]
                         posts[i] = r
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def ell_mv(weights, indices, spikes, posts):
                     spk_bool = spikes != 0.
                     for i in numba.prange(indices.shape[0]):
@@ -461,7 +461,6 @@ def _binary_fcnmv_batching(args, axes, **kwargs):
         return general_batching_rule(binary_fcnmv_p, args, axes, **kwargs)
 
 
-@namescoped_jit(static_argnames=("shape", "transpose"))
 def binary_fcnmv_p_call(
     weights,
     indices,
@@ -489,11 +488,11 @@ def binary_fcnmv_p_call(
     return (u.maybe_decimal(r * v_unit * w_unit),)
 
 
-binary_fcnmv_p = XLACustomKernel('binary_fcnmv', enable_fallback=True)
+binary_fcnmv_p = XLACustomKernel('binary_fcnmv',)
 binary_fcnmv_p.def_numba_kernel(_binary_fcnmv_numba_kernel)
 binary_fcnmv_p.def_warp_kernel(_binary_fcnmv_warp_kernel)
-# binary_fcnmv_p.def_pallas_kernel('gpu', _binary_fcnmv_pallas_kernel)
-# binary_fcnmv_p.def_pallas_kernel('tpu', _binary_fcnmv_pallas_kernel)
+binary_fcnmv_p.def_pallas_kernel('gpu', _binary_fcnmv_pallas_kernel)
+binary_fcnmv_p.def_pallas_kernel('tpu', _binary_fcnmv_pallas_kernel)
 binary_fcnmv_p.def_jvp_rule2(_binary_fcnmv_jvp_weights, None, _binary_fcnmv_jvp_spikes, None)
 binary_fcnmv_p.def_transpose_rule(_binary_fcnmv_transpose_rule)
 binary_fcnmv_p.def_batching_rule(_binary_fcnmv_batching)
@@ -517,7 +516,7 @@ def _binary_fcnmm_numba_kernel(
 
         if weight_info.size == 1:
             if matrix_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True, cache=True)
+                @numba.njit(fastmath=True)
                 def ell_mv(weights, indices, matrix, posts):
                     posts[:] = 0.
                     w = weights[0]
@@ -526,7 +525,7 @@ def _binary_fcnmm_numba_kernel(
                         for i_conn in range(indices.shape[1]):
                             posts[indices[i_k, i_conn], nonzero] += w
             else:
-                @numba.njit(fastmath=True, cache=True)
+                @numba.njit(fastmath=True)
                 def ell_mv(weights, indices, matrix, posts):
                     posts[:] = 0.
                     w = weights[0]
@@ -536,7 +535,7 @@ def _binary_fcnmm_numba_kernel(
                             posts[indices[i_k, i_conn], nonzero] += w
         else:
             if matrix_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True, cache=True)
+                @numba.njit(fastmath=True)
                 def ell_mv(weights, indices, matrix, posts):
                     posts[:] = 0.
                     for i in range(matrix.shape[0]):
@@ -544,7 +543,7 @@ def _binary_fcnmm_numba_kernel(
                         for j in range(indices.shape[1]):
                             posts[indices[i, j], nonzero] += weights[i, j]
             else:
-                @numba.njit(fastmath=True, cache=True)
+                @numba.njit(fastmath=True)
                 def ell_mv(weights, indices, matrix, posts):
                     posts[:] = 0.
                     for i in range(matrix.shape[0]):
@@ -560,13 +559,13 @@ def _binary_fcnmm_numba_kernel(
         #
 
         if weight_info.size == 1:
-            @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+            @numba.njit(parallel=True, fastmath=True, nogil=True)
             def ell_mv(weights, indices, matrix, posts):
                 w = weights[0]
                 for i_m in numba.prange(indices.shape[0]):
                     posts[i_m] = w * np.sum(matrix[indices[i_m]], axis=0)
         else:
-            @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+            @numba.njit(parallel=True, fastmath=True, nogil=True)
             def ell_mv(weights, indices, matrix, posts):
                 for i_m in numba.prange(indices.shape[0]):
                     posts[i_m] = weights[i_m] @ matrix[indices[i_m]]
@@ -805,7 +804,6 @@ def _binary_fcnmm_batching(args, axes, **kwargs):
         return general_batching_rule(binary_fcnmm_p, args, axes, **kwargs)
 
 
-@namescoped_jit(static_argnames=("shape", "transpose"))
 def binary_fcnmm_p_call(
     weights: Union[jax.Array, u.Quantity],
     indices: jax.Array,

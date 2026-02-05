@@ -80,7 +80,7 @@ def indexed_bv_dm(binary_index, weights):
 def _binary_vec_dot_dense_mat_numba_kernel(**kwargs):
     import numba
 
-    @numba.njit(fastmath=True, cache=True)
+    @numba.njit(fastmath=True)
     def kernel(spikes, indices, count, weights, out):
         out[:] = 0.
         for i in range(count[0]):
@@ -338,7 +338,7 @@ def indexed_bm_dm(binary_arr, weights):
 def _binary_mat_dot_dense_mat_numba_kernel(**kwargs):
     import numba
 
-    @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+    @numba.njit(parallel=True, fastmath=True, nogil=True)
     def kernel(spikes, indices, count, weights, out):
         for i_row in numba.prange(indices.shape[0]):
             temp = np.zeros(weights.shape[1], dtype=weights.dtype)

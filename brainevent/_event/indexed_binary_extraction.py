@@ -37,7 +37,7 @@ def _binary_1d_array_index_numba_kernel(
     import numba
 
     if spikes_info.dtype == jnp.bool_:
-        @numba.njit(fastmath=True, cache=True)
+        @numba.njit(fastmath=True)
         def mv(spikes, indices, count):
             idx = 0
             for i in range(spikes.shape[0]):
@@ -46,7 +46,7 @@ def _binary_1d_array_index_numba_kernel(
                     idx += 1
             count[0] = idx
     else:
-        @numba.njit(fastmath=True, cache=True)
+        @numba.njit(fastmath=True)
         def mv(spikes, indices, count):
             idx = 0
             for i in range(spikes.shape[0]):

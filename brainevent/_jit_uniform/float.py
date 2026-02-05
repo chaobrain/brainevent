@@ -138,7 +138,7 @@ def _jitu_numba_kernel_generator(
         if transpose:
             # JIT matrix.T
             # - JIT matrix shape = [m, n]
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel_impl(w_low, w_high, clen, seed, posts):
                 posts[:] = 0.
                 m = posts.shape[1]
@@ -157,7 +157,7 @@ def _jitu_numba_kernel_generator(
         else:
             # JIT matrix
             # - JIT matrix shape = [m, n]
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel_impl(w_low, w_high, clen, seed, posts):
                 posts[:] = 0.
                 m = posts.shape[0]
@@ -177,7 +177,7 @@ def _jitu_numba_kernel_generator(
         if transpose:
             # JIT matrix.T
             # - JIT matrix shape = [m, n]
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel_impl(w_low, w_high, clen, seed, posts):
                 posts[:] = 0.
                 m = posts.shape[1]
@@ -196,7 +196,7 @@ def _jitu_numba_kernel_generator(
         else:
             # JIT matrix
             # - JIT matrix shape = [m, n]
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel_impl(w_low, w_high, clen, seed, posts):
                 posts[:] = 0.
                 m = posts.shape[0]
@@ -540,7 +540,7 @@ def _jitumv_numba_kernel_generator(
 
     if corder:
         if transpose:
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel_impl(w_low, w_high, clen, vector, seed, posts):
                 n_col = posts.shape[0]
                 n_row = vector.shape[0]
@@ -558,7 +558,7 @@ def _jitumv_numba_kernel_generator(
                     posts[i_col] = out
 
         else:
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel_impl(w_low, w_high, clen, vector, seed, posts):
                 num_row = posts.shape[0]
                 num_col = vector.shape[0]
@@ -577,7 +577,7 @@ def _jitumv_numba_kernel_generator(
 
     else:
         if transpose:
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel_impl(w_low, w_high, clen, vector, seed, posts):
                 posts[:] = 0.
                 num_col = posts.shape[0]
@@ -595,7 +595,7 @@ def _jitumv_numba_kernel_generator(
                         i_col += np.random.randint(1, clen0)
 
         else:
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel_impl(w_low, w_high, clen, vector, seed, posts):
                 posts[:] = 0.
                 num_row = posts.shape[0]
@@ -994,7 +994,7 @@ def _jitumm_numba_kernel_generator(
             # JIT Matrix.T @ B
             # - JIT matrix: [k, m]
             # - B: [k, n]
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel_impl(w_low, w_high, clen, B, seed, posts):
                 m = posts.shape[0]
                 n = posts.shape[1]
@@ -1016,7 +1016,7 @@ def _jitumm_numba_kernel_generator(
             # JIT Matrix @ B
             # - JIT matrix: [m, k]
             # - B: [k, n]
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel_impl(w_low, w_high, clen, B, seed, posts):
                 m = posts.shape[0]
                 n = posts.shape[1]
@@ -1039,7 +1039,7 @@ def _jitumm_numba_kernel_generator(
             # JIT Matrix.T @ B
             # - JIT matrix: [k, m]
             # - B: [k, n]
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel_impl(w_low, w_high, clen, B, seed, posts):
                 posts[:] = 0.
                 m = posts.shape[0]
@@ -1060,7 +1060,7 @@ def _jitumm_numba_kernel_generator(
             # JIT Matrix @ B
             # - JIT matrix: [m, k]
             # - B: [k, n]
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def kernel_impl(w_low, w_high, clen, B, seed, posts):
                 posts[:] = 0.
                 m = posts.shape[0]

@@ -95,7 +95,7 @@ def _dmbv_numba_kernel(
     import numba
 
     if spk_info.dtype == jnp.bool_:
-        @numba.njit(fastmath=True, cache=True)
+        @numba.njit(fastmath=True)
         def kernel(weights, spikes, posts):
             posts[:] = 0.
             for i in range(spikes.shape[0]):
@@ -103,7 +103,7 @@ def _dmbv_numba_kernel(
                     posts += weights[:, i]
 
     else:
-        @numba.njit(fastmath=True, cache=True)
+        @numba.njit(fastmath=True)
         def kernel(weights, spikes, posts):
             posts[:] = 0.
             for i in range(spikes.shape[0]):
@@ -313,7 +313,7 @@ def _binary_vec_dot_dense_mat_numba_kernel(
     import numba
 
     if spk_info.dtype == jnp.bool_:
-        @numba.njit(fastmath=True, cache=True)
+        @numba.njit(fastmath=True)
         def kernel(spikes, weights, posts):
             posts[:] = 0.
             for i in range(spikes.shape[0]):
@@ -321,7 +321,7 @@ def _binary_vec_dot_dense_mat_numba_kernel(
                     posts += weights[i]
 
     else:
-        @numba.njit(fastmath=True, cache=True)
+        @numba.njit(fastmath=True)
         def kernel(spikes, weights, posts):
             posts[:] = 0.
             for i in range(spikes.shape[0]):
@@ -547,7 +547,7 @@ def _dense_mat_dot_binary_mat_numba_kernel(
     import numba
 
     if spk_info.dtype == jnp.bool_:
-        @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+        @numba.njit(parallel=True, fastmath=True, nogil=True)
         def kernel(weights, spikes, posts):
             for i_n in numba.prange(spikes.shape[1]):
                 out = np.zeros(weights.shape[0], dtype=weights.dtype)
@@ -557,7 +557,7 @@ def _dense_mat_dot_binary_mat_numba_kernel(
                 posts[:, i_n] = out
 
     else:
-        @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+        @numba.njit(parallel=True, fastmath=True, nogil=True)
         def kernel(weights, spikes, posts):
             for i_n in numba.prange(spikes.shape[1]):
                 out = np.zeros(weights.shape[0], dtype=weights.dtype)
@@ -820,7 +820,7 @@ def _binary_mat_dot_dense_mat_numba_kernel(
     import numba
 
     if spk_info.dtype == jnp.bool_:
-        @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+        @numba.njit(parallel=True, fastmath=True, nogil=True)
         def kernel(spikes, weights, posts):
             for i_m in numba.prange(spikes.shape[0]):
                 out = np.zeros(weights.shape[1], dtype=posts.dtype)
@@ -830,7 +830,7 @@ def _binary_mat_dot_dense_mat_numba_kernel(
                 posts[i_m] = out
 
     else:
-        @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+        @numba.njit(parallel=True, fastmath=True, nogil=True)
         def kernel(spikes, weights, posts):
             for i_m in numba.prange(spikes.shape[0]):
                 out = np.zeros(weights.shape[1], dtype=posts.dtype)

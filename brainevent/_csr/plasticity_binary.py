@@ -90,7 +90,7 @@ def _csr_on_pre_numba_kernel_generator(
     import numba
 
     if spike_info.dtype == jnp.bool_:
-        @numba.njit(fastmath=True, cache=True)
+        @numba.njit(fastmath=True)
         def kernel(weight, indices, indptr, pre_spike, post_trace, out_w):
             for i in range(pre_spike.shape[0]):
                 if pre_spike[i]:
@@ -98,7 +98,7 @@ def _csr_on_pre_numba_kernel_generator(
                     i_end = indptr[i + 1]
                     out_w[i_start: i_end] += post_trace[indices[i_start: i_end]]
     else:
-        @numba.njit(fastmath=True, cache=True)
+        @numba.njit(fastmath=True)
         def kernel(weight, indices, indptr, pre_spike, post_trace, out_w):
             for i in range(pre_spike.shape[0]):
                 if pre_spike[i] != 0.:
@@ -323,7 +323,7 @@ def _csr2csc_on_post_numba_kernel_generator(
 
     # Note: Cannot parallelize due to potential race conditions when updating out_w[weight_ids]
     if spike_info.dtype == jnp.bool_:
-        @numba.njit(fastmath=True, cache=True)
+        @numba.njit(fastmath=True)
         def kernel(weight, indices, indptr, weight_indices, pre_trace, post_spike, out_w):
             for i in range(post_spike.shape[0]):
                 if post_spike[i]:
@@ -333,7 +333,7 @@ def _csr2csc_on_post_numba_kernel_generator(
                     pre_ids = indices[index: index_end]
                     out_w[weight_ids] += pre_trace[pre_ids]
     else:
-        @numba.njit(fastmath=True, cache=True)
+        @numba.njit(fastmath=True)
         def kernel(weight, indices, indptr, weight_indices, pre_trace, post_spike, out_w):
             for i in range(post_spike.shape[0]):
                 if post_spike[i] != 0.:

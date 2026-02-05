@@ -45,7 +45,6 @@ def csrmv(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    backend: Optional[str] = None,
 ) -> Data:
     """
     Product of CSR sparse matrix and a dense vector.
@@ -66,7 +65,7 @@ def csrmv(
     """
     data, unitd = u.split_mantissa_unit(data)
     v, unitv = u.split_mantissa_unit(v)
-    res = csrmv_p_call(data, indices, indptr, v, shape=shape, transpose=transpose, backend=backend)[0]
+    res = csrmv_p_call(data, indices, indptr, v, shape=shape, transpose=transpose)[0]
     return u.maybe_decimal(res * unitd * unitv)
 
 
@@ -80,7 +79,7 @@ def _csrmv_numba_kernel_generator(
     if weight_info.size == 1:
         if transpose:
             # [m, k].T @ [m] - cannot parallelize due to race condition
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def mv(weights, indices, indptr, vector, posts):
                 posts[:] = 0.
                 w = weights[0]
@@ -91,7 +90,7 @@ def _csrmv_numba_kernel_generator(
 
         else:
             # [m, k] @ [k] - can parallelize by row
-            @numba.njit(parallel=True, fastmath=True, cache=True)
+            @numba.njit(parallel=True, fastmath=True)
             def mv(weights, indices, indptr, vector, posts):
                 w = weights[0]
                 for i_m in numba.prange(indptr.shape[0] - 1):
@@ -103,7 +102,7 @@ def _csrmv_numba_kernel_generator(
     else:
         if transpose:
             # [m, k].T @ [m] - cannot parallelize due to race condition
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def mv(weights, indices, indptr, vector, posts):
                 posts[:] = 0.
                 for i in range(vector.shape[0]):
@@ -113,7 +112,7 @@ def _csrmv_numba_kernel_generator(
 
         else:
             # [m, k] @ [k] - can parallelize by row
-            @numba.njit(parallel=True, fastmath=True, cache=True)
+            @numba.njit(parallel=True, fastmath=True)
             def mv(weights, indices, indptr, vector, posts):
                 for i in numba.prange(indptr.shape[0] - 1):
                     r = 0.0
@@ -484,7 +483,6 @@ def csrmv_p_call(
     *,
     shape: Sequence[int],
     transpose: bool,
-    backend: Optional[str] = None,
 ):
     assert indices.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indices must be int32 or int64."
     assert indptr.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indptr must be int32 or int64."
@@ -513,7 +511,6 @@ def csrmv_p_call(
         outs=[out_info],
         shape=shape,
         transpose=transpose,
-        backend=backend,
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
@@ -540,7 +537,6 @@ def csrmm(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    backend: Optional[str] = None,
 ) -> Data:
     """
     Product of CSR sparse matrix and a dense matrix.
@@ -568,7 +564,6 @@ def csrmm(
         B,
         shape=shape,
         transpose=transpose,
-        backend=backend,
     )[0]
     return u.maybe_decimal(res * (unitd * unitb))
 
@@ -587,7 +582,7 @@ def _csrmm_numba_kernel_generator(
             # CSR: [k, m]
             # B: [k, n]
             #
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def mm(weights, indices, indptr, B, posts):
                 posts[:] = 0.
                 w = weights[0]
@@ -603,7 +598,7 @@ def _csrmm_numba_kernel_generator(
             # CSR: [m, k]
             # B: [k, n]
             #
-            @numba.njit(parallel=True, fastmath=True, cache=True)
+            @numba.njit(parallel=True, fastmath=True)
             def mm(weights, indices, indptr, B, posts):
                 w = weights[0]
                 for i_m in numba.prange(indptr.shape[0] - 1):
@@ -620,7 +615,7 @@ def _csrmm_numba_kernel_generator(
             # CSR: [k, m]
             # B: [k, n]
             #
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def mm(weights, indices, indptr, B, posts):
                 posts[:] = 0.
                 for i_k in range(B.shape[0]):
@@ -635,7 +630,7 @@ def _csrmm_numba_kernel_generator(
             # CSR: [m, k]
             # B: [k, n]
             #
-            @numba.njit(parallel=True, fastmath=True, cache=True)
+            @numba.njit(parallel=True, fastmath=True)
             def mm(weights, indices, indptr, B, posts):
                 for i_m in numba.prange(indptr.shape[0] - 1):
                     r = np.zeros(B.shape[1], dtype=posts.dtype)
@@ -1036,7 +1031,6 @@ def csrmm_p_call(
     *,
     shape: Sequence[int],
     transpose: bool,
-    backend: Optional[str] = None,
 ):
     assert indices.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indices must be int32 or int64."
     assert indptr.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indptr must be int32 or int64."
@@ -1065,7 +1059,6 @@ def csrmm_p_call(
         outs=[out_info],
         shape=shape,
         transpose=transpose,
-        backend=backend,
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
@@ -1090,11 +1083,10 @@ def csrmv_yw2y(
     indptr: Indptr,
     *,
     shape, transpose: bool = False,
-    backend: Optional[str] = None,
 ) -> Data:
     w, w_unit = u.split_mantissa_unit(w)
     y, _ = u.split_mantissa_unit(y)
-    res = csrmv_yw2y_p_call(y, w, indices, indptr, shape=shape, transpose=transpose, backend=backend)[0]
+    res = csrmv_yw2y_p_call(y, w, indices, indptr, shape=shape, transpose=transpose)[0]
     return u.maybe_decimal(res * w_unit)
 
 
@@ -1223,7 +1215,6 @@ def csrmv_yw2y_p_call(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    backend: Optional[str] = None,
 ):
     assert y.dtype == w.dtype, f"y and w must have the same dtype, but got {y.dtype} and {w.dtype}."
     assert indptr.ndim == 1, "Indptr must be 1D."
@@ -1246,7 +1237,6 @@ def csrmv_yw2y_p_call(
         w,
         indices,
         indptr,
-        backend=backend,
         outs=[jax.ShapeDtypeStruct(w.shape, w.dtype)],
         shape=tuple(shape),
         transpose=transpose,

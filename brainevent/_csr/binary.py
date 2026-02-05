@@ -43,7 +43,6 @@ def binary_csrmv(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    backend: Optional[str] = None,
 ) -> Data:
     """
     Product of CSR sparse matrix and a dense vector.
@@ -71,7 +70,6 @@ def binary_csrmv(
         v,
         shape=shape,
         transpose=transpose,
-        backend=backend,
     )[0]
     return u.maybe_decimal(res * (unitd * unitv))
 
@@ -85,7 +83,6 @@ def binary_csrmm(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    backend: Optional[str] = None,
 ) -> Data:
     """
     Product of CSR sparse matrix and a dense matrix.
@@ -113,7 +110,6 @@ def binary_csrmm(
         B,
         shape=shape,
         transpose=transpose,
-        backend=backend,
     )[0]
     return u.maybe_decimal(res * (unitd * unitb))
 
@@ -129,7 +125,7 @@ def _csrmv_numba_kernel(
         if transpose:
             if vector_info.dtype == jnp.bool_:
                 # Cannot parallelize due to race condition on posts[indices[j]]
-                @numba.njit(fastmath=True, cache=True)
+                @numba.njit(fastmath=True)
                 def mv(weights, indices, indptr, v, posts):
                     posts[:] = 0.
                     w = weights[0]
@@ -139,7 +135,7 @@ def _csrmv_numba_kernel(
                                 posts[indices[j]] += w
 
             else:
-                @numba.njit(fastmath=True, cache=True)
+                @numba.njit(fastmath=True)
                 def mv(weights, indices, indptr, v, posts):
                     posts[:] = 0.
                     w = weights[0]
@@ -151,7 +147,7 @@ def _csrmv_numba_kernel(
         else:
             if vector_info.dtype == jnp.bool_:
                 # Can parallelize by row
-                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def mv(weights, indices, indptr, v, posts):
                     w = weights[0]
                     for i in numba.prange(indptr.shape[0] - 1):
@@ -162,7 +158,7 @@ def _csrmv_numba_kernel(
                         posts[i] = r
 
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def mv(weights, indices, indptr, v, posts):
                     w = weights[0]
                     for i in numba.prange(indptr.shape[0] - 1):
@@ -176,7 +172,7 @@ def _csrmv_numba_kernel(
         if transpose:
             if vector_info.dtype == jnp.bool_:
                 # Cannot parallelize due to race condition
-                @numba.njit(fastmath=True, cache=True)
+                @numba.njit(fastmath=True)
                 def mv(weights, indices, indptr, v, posts):
                     posts[:] = 0.
                     for i in range(v.shape[0]):
@@ -185,7 +181,7 @@ def _csrmv_numba_kernel(
                                 posts[indices[j]] += weights[j]
 
             else:
-                @numba.njit(fastmath=True, cache=True)
+                @numba.njit(fastmath=True)
                 def mv(weights, indices, indptr, v, posts):
                     posts[:] = 0.
                     for i in range(v.shape[0]):
@@ -196,7 +192,7 @@ def _csrmv_numba_kernel(
         else:
             if vector_info.dtype == jnp.bool_:
                 # Can parallelize by row
-                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def mv(weights, indices, indptr, v, posts):
                     for i in numba.prange(indptr.shape[0] - 1):
                         r = 0.0
@@ -206,7 +202,7 @@ def _csrmv_numba_kernel(
                         posts[i] = r
 
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def mv(weights, indices, indptr, v, posts):
                     for i in numba.prange(indptr.shape[0] - 1):
                         r = 0.0
@@ -681,7 +677,6 @@ def binary_csrmv_p_call(
     *,
     shape: MatrixShape,
     transpose: bool,
-    backend: Optional[str] = None,
 ):
     """
     Perform a call to the event CSR matrix-vector multiplication custom operation.
@@ -696,7 +691,6 @@ def binary_csrmv_p_call(
         vector (jax.Array): The dense vector to be multiplied with the sparse matrix.
         shape (Sequence[int]): A sequence of length 2, representing the shape of the sparse matrix.
         transpose (bool): Whether to transpose the sparse matrix before multiplication.
-        backend (str): Optional backend to use for the operation.
 
     Returns:
         jax.Array: The result of the matrix-vector multiplication.
@@ -734,7 +728,6 @@ def binary_csrmv_p_call(
         outs=[out_info],
         shape=shape,
         transpose=transpose,
-        backend=backend,
         # Provide shape and data type information for indices.
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         # Provide shape and data type information for indptr.
@@ -773,7 +766,7 @@ def _csrmm_numba_kernel(
             # [k, m] @ [k, n]
             #
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     w = weights[0]
                     posts[:] = 0.
@@ -784,7 +777,7 @@ def _csrmm_numba_kernel(
                                     posts[indices[j], k] += w
 
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     B = B != 0.
                     w = weights[0]
@@ -798,7 +791,7 @@ def _csrmm_numba_kernel(
         else:
             # csr @ B
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     w = weights[0]
                     posts[:] = 0.
@@ -812,7 +805,7 @@ def _csrmm_numba_kernel(
                         posts[i] = r
 
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     w = weights[0]
                     B = B != 0.
@@ -830,7 +823,7 @@ def _csrmm_numba_kernel(
             # csr.T @ B
 
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     posts[:] = 0.
                     for k in numba.prange(B.shape[1]):
@@ -840,7 +833,7 @@ def _csrmm_numba_kernel(
                                     posts[indices[j], k] += weights[j]
 
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     B = B != 0.
                     posts[:] = 0.
@@ -855,7 +848,7 @@ def _csrmm_numba_kernel(
             # Fixed: Changed range to prange for parallelization
 
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     n_cols = B.shape[1]
                     for i in numba.prange(indptr.shape[0] - 1):
@@ -870,7 +863,7 @@ def _csrmm_numba_kernel(
                         posts[i] = r
 
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     n_cols = B.shape[1]
                     for i in numba.prange(indptr.shape[0] - 1):
@@ -1407,7 +1400,6 @@ def binary_csrmm_p_call(
     *,
     shape: MatrixShape,
     transpose: bool,
-    backend: Optional[str] = None,
 ):
     """
     Perform a call to the event CSR matrix-matrix multiplication custom operation.
@@ -1419,7 +1411,6 @@ def binary_csrmm_p_call(
         B (jax.Array): A dense matrix.
         shape (Sequence[int]): A sequence of length 2, representing the shape of the sparse matrix.
         transpose (bool): A boolean indicating whether to transpose the sparse matrix before multiplication.
-        backend (str): Optional backend to use for the operation.
 
     Returns:
         jax.Array: The result of the matrix-matrix multiplication.
@@ -1456,7 +1447,6 @@ def binary_csrmm_p_call(
         outs=(out_info,),
         shape=shape,
         transpose=transpose,
-        backend=backend,
         # Provide shape and data type information for indices.
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         # Provide shape and data type information for indptr.

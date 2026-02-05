@@ -154,7 +154,7 @@ def _csr_diag_add_numba_kernel_generator(
     diag_value_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    @numba.njit(fastmath=True, cache=True)
+    @numba.njit(fastmath=True)
     def diag_add(csr_value, diag_position, diag_value, out):
         out[:] = csr_value[:]  # Copy input to output
         for i in range(diag_position.size):

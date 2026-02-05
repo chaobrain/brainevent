@@ -79,7 +79,7 @@ def _coo_on_pre_numba_kernel(
 ):
     import numba
 
-    @numba.njit(fastmath=True, cache=True)
+    @numba.njit(fastmath=True)
     def kernel(weight, pre_ids, post_ids, pre_spike, post_trace, out_w):
         out_w[:] = weight[:]
         for i in range(weight.shape[0]):
@@ -301,7 +301,7 @@ def _coo_on_post_numba_kernel(
 ):
     import numba
 
-    @numba.njit(fastmath=True, cache=True)
+    @numba.njit(fastmath=True)
     def kernel(weight, pre_ids, post_ids, pre_trace, post_spike, out_w):
         out_w[:] = weight[:]
         for i in range(weight.shape[0]):

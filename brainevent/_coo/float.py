@@ -114,7 +114,7 @@ def _coomv_numba_kernel(
     match (transpose, weight_info.size):
         # transpose=True, homogeneous
         case (True, 1):
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def mv(weights, row, col, v, posts):
                 posts[:] = 0.
                 w = weights[0]
@@ -123,7 +123,7 @@ def _coomv_numba_kernel(
 
         # transpose=True, heterogeneous
         case (True, _):
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def mv(weights, row, col, v, posts):
                 posts[:] = 0.
                 for i in range(row.shape[0]):
@@ -131,7 +131,7 @@ def _coomv_numba_kernel(
 
         # transpose=False, homogeneous
         case (False, 1):
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def mv(weights, row, col, v, posts):
                 posts[:] = 0.
                 w = weights[0]
@@ -140,7 +140,7 @@ def _coomv_numba_kernel(
 
         # transpose=False, heterogeneous
         case (False, _):
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def mv(weights, row, col, v, posts):
                 posts[:] = 0.
                 for i in range(row.shape[0]):
@@ -513,7 +513,7 @@ def _coomm_numba_kernel(
     match (transpose, weight_info.size):
         # transpose=True, homogeneous
         case (True, 1):
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def mm(weights, row, col, B, posts):
                 posts[:] = 0.
                 w = weights[0]
@@ -522,7 +522,7 @@ def _coomm_numba_kernel(
 
         # transpose=True, heterogeneous
         case (True, _):
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def mm(weights, row, col, B, posts):
                 posts[:] = 0.
                 for i in range(row.shape[0]):
@@ -530,7 +530,7 @@ def _coomm_numba_kernel(
 
         # transpose=False, homogeneous
         case (False, 1):
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def mm(weights, row, col, B, posts):
                 posts[:] = 0.
                 w = weights[0]
@@ -539,7 +539,7 @@ def _coomm_numba_kernel(
 
         # transpose=False, heterogeneous
         case (False, _):
-            @numba.njit(fastmath=True, cache=True)
+            @numba.njit(fastmath=True)
             def mm(weights, row, col, B, posts):
                 posts[:] = 0.
                 for i in range(row.shape[0]):
