@@ -35,7 +35,7 @@ from .plasticity import (
 )
 from .sparse_float import (
     dm_sfm,
-    sparse_float_mat_dot_dense_mat,
+    sfm_dm,
     dm_sfv,
     sfv_dm,
 )
@@ -48,7 +48,7 @@ __all__ = [
     'bv_dm',
     'dm_bv',
     'dm_sfm',
-    'sparse_float_mat_dot_dense_mat',
+    'sfm_dm',
     'dm_sfv',
     'sfv_dm',
 ]

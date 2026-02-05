@@ -19,7 +19,7 @@ from jax.tree_util import register_pytree_node_class
 
 from brainevent._dense import (
     dm_sfm,
-    sparse_float_mat_dot_dense_mat,
+    sfm_dm,
     dm_sfv,
     sfv_dm,
 )
@@ -91,7 +91,7 @@ class IndexedSparseFloat(BaseArray):
             if self.ndim == 1:
                 return sfv_dm(self.value, oc)
             else:  # self.ndim == 2
-                return sparse_float_mat_dot_dense_mat(self.value, oc)
+                return sfm_dm(self.value, oc)
         else:
             return oc.__rmatmul__(self)
 
