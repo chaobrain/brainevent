@@ -140,7 +140,7 @@ def _csrmv_numba_kernel(
                     posts[:] = 0.
                     w = weights[0]
                     for i in range(v.shape[0]):
-                        if v[i] != 0.:
+                        if v[i] > 0.:
                             for j in range(indptr[i], indptr[i + 1]):
                                 posts[indices[j]] += w
 
@@ -164,7 +164,7 @@ def _csrmv_numba_kernel(
                     for i in numba.prange(indptr.shape[0] - 1):
                         r = 0.0
                         for j in range(indptr[i], indptr[i + 1]):
-                            if v[indices[j]] != 0.:
+                            if v[indices[j]] > 0.:
                                 r += w
                         posts[i] = r
 
@@ -185,7 +185,7 @@ def _csrmv_numba_kernel(
                 def mv(weights, indices, indptr, v, posts):
                     posts[:] = 0.
                     for i in range(v.shape[0]):
-                        if v[i] != 0.:
+                        if v[i] > 0.:
                             for j in range(indptr[i], indptr[i + 1]):
                                 posts[indices[j]] += weights[j]
 
@@ -207,7 +207,7 @@ def _csrmv_numba_kernel(
                     for i in numba.prange(indptr.shape[0] - 1):
                         r = 0.0
                         for j in range(indptr[i], indptr[i + 1]):
-                            if v[indices[j]] != 0.:
+                            if v[indices[j]] > 0.:
                                 r += weights[j]
                         posts[i] = r
 
@@ -263,7 +263,7 @@ def _csrmv_warp_kernel(
                 ):
                     i = warp.tid()
                     w = weights[0]
-                    if v[i] != 0.:
+                    if v[i] > 0.:
                         for j in range(indptr[i], indptr[i + 1]):
                             posts[indices[j]] += w
 
@@ -293,7 +293,7 @@ def _csrmv_warp_kernel(
                     posts: out_warp_info,
                 ):
                     i = warp.tid()
-                    if v[i] != 0.:
+                    if v[i] > 0.:
                         for j in range(indptr[i], indptr[i + 1]):
                             posts[indices[j]] += weights[j]
 
@@ -340,7 +340,7 @@ def _csrmv_warp_kernel(
                     w = weights[0]
                     r = weights.dtype(0.)
                     for j in range(indptr[i], indptr[i + 1]):
-                        if v[indices[j]] != 0.:
+                        if v[indices[j]] > 0.:
                             r += w
                     posts[i] = r
 
@@ -373,7 +373,7 @@ def _csrmv_warp_kernel(
                     i = warp.tid()
                     r = weights.dtype(0.)
                     for j in range(indptr[i], indptr[i + 1]):
-                        if v[indices[j]] != 0.:
+                        if v[indices[j]] > 0.:
                             r += weights[j]
                     posts[i] = r
 
@@ -526,7 +526,7 @@ def _csrmv_pallas_gpu_kernel(
                 event = vector_ref[i_row]
                 data = jnp.ones((block_dim,), dtype=posts_ref.dtype) * data_ref[0]
 
-                @pl.when(event if vector_ref.dtype == jnp.bool_ else event != 0.)
+                @pl.when(event if vector_ref.dtype == jnp.bool_ else event > 0.)
                 def event_processing():
                     def loop_fn(index, _):
                         offset = row_start + index * block_dim
@@ -558,7 +558,7 @@ def _csrmv_pallas_gpu_kernel(
                 num_blocks = (row_nnz + block_dim - 1) // block_dim
                 event = vector_ref[i_row]
 
-                @pl.when(event if vector_ref.dtype == jnp.bool_ else event != 0.)
+                @pl.when(event if vector_ref.dtype == jnp.bool_ else event > 0.)
                 def event_processing():
                     def loop_fn(index, _):
                         offset = row_start + index * block_dim
@@ -779,7 +779,7 @@ def _csrmm_numba_kernel(
             else:
                 @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
-                    B = B != 0.
+                    B = B > 0.
                     w = weights[0]
                     posts[:] = 0.
                     for k in numba.prange(B.shape[1]):
@@ -808,7 +808,7 @@ def _csrmm_numba_kernel(
                 @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     w = weights[0]
-                    B = B != 0.
+                    B = B > 0.
                     for i in numba.prange(indptr.shape[0] - 1):
                         r = np.zeros(B.shape[1], dtype=weights.dtype)
                         for j in range(indptr[i], indptr[i + 1]):
@@ -835,7 +835,7 @@ def _csrmm_numba_kernel(
             else:
                 @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
-                    B = B != 0.
+                    B = B > 0.
                     posts[:] = 0.
                     for k in numba.prange(B.shape[1]):
                         for i in range(B.shape[0]):
@@ -872,7 +872,7 @@ def _csrmm_numba_kernel(
                             col_idx = indices[j]
                             w = weights[j]
                             for k in range(n_cols):
-                                if B[col_idx, k] != 0.:
+                                if B[col_idx, k] > 0.:
                                     r[k] += w
                         posts[i] = r
 
@@ -929,7 +929,7 @@ def _csrmm_warp_kernel(
                 ):
                     k, i = warp.tid()
                     w = weights[0]
-                    if B[i, k] != 0.:
+                    if B[i, k] > 0.:
                         for j in range(indptr[i], indptr[i + 1]):
                             posts[indices[j], k] += w
 
@@ -958,7 +958,7 @@ def _csrmm_warp_kernel(
                     posts: out_warp_info,
                 ):
                     k, i = warp.tid()
-                    if B[i, k] != 0.:
+                    if B[i, k] > 0.:
                         for j in range(indptr[i], indptr[i + 1]):
                             posts[indices[j], k] += weights[j]
 
@@ -1004,7 +1004,7 @@ def _csrmm_warp_kernel(
                     r = weights.dtype(0.)
                     for j in range(indptr[i], indptr[i + 1]):
                         index = indices[j]
-                        if B[index, k] != 0.:
+                        if B[index, k] > 0.:
                             r += w
                     posts[i, k] = r
 
@@ -1041,7 +1041,7 @@ def _csrmm_warp_kernel(
                     r = weights.dtype(0.)
                     for j in range(indptr[i], indptr[i + 1]):
                         index = indices[j]
-                        if B[index, k] != 0.:
+                        if B[index, k] > 0.:
                             r += weights[j]
                     posts[i, k] = r
 
@@ -1237,7 +1237,7 @@ def _csrmm_pallas_gpu_kernel(
                     mask = mask & events
                     val = jnp.where(events, data_ref[0], 0.)
                 else:
-                    mask = mask & (events != 0.)
+                    mask = mask & (events > 0.)
                     val = events * data_ref[0]
 
                 def loop_fn(index, _):
@@ -1271,7 +1271,7 @@ def _csrmm_pallas_gpu_kernel(
                 if B_ref.dtype == jnp.bool_:
                     mask = mask & events
                 else:
-                    mask = mask & (events != 0.)
+                    mask = mask & (events > 0.)
 
                 def loop_fn(index, _):
                     i_row = indices_ref[index]
@@ -1423,7 +1423,7 @@ def binary_csrmm_p_call(
     if transpose:
         assert shape[0] == B.shape[0], "Shape mismatch for non-transpose operation."
     else:
-        assert shape[1] == B.shape[0], f"Shape mismatch for transpose operation. {shape[1]} != {B.shape[0]} "
+        assert shape[1] == B.shape[0], f"Shape mismatch for transpose operation. {shape[1]} > {B.shape[0]} "
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
     # Check if weights is a scalar. If so, convert it to a one-dimensional array.

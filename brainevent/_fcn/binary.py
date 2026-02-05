@@ -60,7 +60,7 @@ def _binary_fcnmv_numba_kernel(
                     posts[:] = 0.
                     w = weights[0]
                     for i in range(spikes.shape[0]):
-                        if spikes[i] != 0.:
+                        if spikes[i] > 0.:
                             for j in range(indices.shape[1]):
                                 posts[indices[i, j]] += w
         else:
@@ -77,7 +77,7 @@ def _binary_fcnmv_numba_kernel(
                 def ell_mv(weights, indices, spikes, posts):
                     posts[:] = 0.
                     for i in range(spikes.shape[0]):
-                        if spikes[i] != 0.:
+                        if spikes[i] > 0.:
                             for j in range(indices.shape[1]):
                                 posts[indices[i, j]] += weights[i, j]
 
@@ -97,7 +97,7 @@ def _binary_fcnmv_numba_kernel(
             else:
                 @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def ell_mv(weights, indices, spikes, posts):
-                    spk_bool = spikes != 0.
+                    spk_bool = spikes > 0.
                     w = weights[0]
                     for i in numba.prange(indices.shape[0]):
                         r = 0.
@@ -120,7 +120,7 @@ def _binary_fcnmv_numba_kernel(
             else:
                 @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def ell_mv(weights, indices, spikes, posts):
-                    spk_bool = spikes != 0.
+                    spk_bool = spikes > 0.
                     for i in numba.prange(indices.shape[0]):
                         r = 0.
                         for j in range(indices.shape[1]):
@@ -175,7 +175,7 @@ def _binary_fcnmv_warp_kernel(
                 ):
                     i = warp.tid()
                     w = weights[0]
-                    if spikes[i] != 0.:
+                    if spikes[i] > 0.:
                         for j in range(indices.shape[1]):
                             warp.atomic_add(posts, indices[i, j], w)
         else:
@@ -200,7 +200,7 @@ def _binary_fcnmv_warp_kernel(
                     posts: out_warp_info
                 ):
                     i = warp.tid()
-                    if spikes[i] != 0.:
+                    if spikes[i] > 0.:
                         for j in range(indices.shape[1]):
                             warp.atomic_add(posts, indices[i, j], weights[i, j])
 
@@ -239,7 +239,7 @@ def _binary_fcnmv_warp_kernel(
                     w = weights[0]
                     r = weights.dtype(0.)
                     for j in range(indices.shape[1]):
-                        if spikes[indices[i, j]] != 0.:
+                        if spikes[indices[i, j]] > 0.:
                             r += w
                     posts[i] = r
         else:
@@ -268,7 +268,7 @@ def _binary_fcnmv_warp_kernel(
                     i = warp.tid()
                     r = weights.dtype(0.)
                     for j in range(indices.shape[1]):
-                        if spikes[indices[i, j]] != 0.:
+                        if spikes[indices[i, j]] > 0.:
                             r += weights[i, j]
                     posts[i] = r
 
@@ -291,7 +291,7 @@ def _binary_fcnmv_pallas_kernel(
     from jax.experimental import pallas as pl
     from jax.experimental.pallas.triton import atomic_add
 
-    if len(shape) != 2:
+    if len(shape) > 2:
         raise ValueError("shape must be a tuple of length 2")
     n_pre, n_post = shape
     n_conn = indices_info.shape[1]
@@ -312,7 +312,7 @@ def _binary_fcnmv_pallas_kernel(
             i_row = pl.program_id(0)
             vector = vector_ref[i_row]
 
-            @pl.when(vector != 0. if vector_ref.dtype != jnp.bool_ else vector)
+            @pl.when(vector > 0. if vector_ref.dtype > jnp.bool_ else vector)
             def run():
                 if homo:
                     wv = weight_ref[0]
@@ -362,7 +362,7 @@ def _binary_fcnmv_pallas_kernel(
                 ind = index_ref[i_row, pl.dslice(i_col, block_dim)]
                 ind = jnp.where(mask, ind, 0)
                 vec = vector_ref[ind]
-                vec = jnp.where(mask, vec, 0.0 if vector_ref.dtype != jnp.bool_ else False)
+                vec = jnp.where(mask, vec, 0.0 if vector_ref.dtype > jnp.bool_ else False)
                 if homo:
                     return out + jnp.sum(jnp.asarray(vec, dtype=out_ref.dtype))
                 else:
@@ -371,7 +371,7 @@ def _binary_fcnmv_pallas_kernel(
                     if vector_ref.dtype == jnp.bool_:
                         weight = jnp.where(vec, weight, 0.)
                     else:
-                        weight = jnp.where(vec != 0., weight, 0.)
+                        weight = jnp.where(vec > 0., weight, 0.)
                     return out + jnp.sum(weight)
 
             i_row_sum = jax.lax.fori_loop(0, pl.cdiv(n_conn, block_dim), loop_fn, 0.)
@@ -530,7 +530,7 @@ def _binary_fcnmm_numba_kernel(
                     posts[:] = 0.
                     w = weights[0]
                     for i_k in range(matrix.shape[0]):
-                        nonzero, = np.where(matrix[i_k] != 0.)
+                        nonzero, = np.where(matrix[i_k] > 0.)
                         for i_conn in range(indices.shape[1]):
                             posts[indices[i_k, i_conn], nonzero] += w
         else:
@@ -547,7 +547,7 @@ def _binary_fcnmm_numba_kernel(
                 def ell_mv(weights, indices, matrix, posts):
                     posts[:] = 0.
                     for i in range(matrix.shape[0]):
-                        nonzero, = np.where(matrix[i] != 0.)
+                        nonzero, = np.where(matrix[i] > 0.)
                         for j in range(indices.shape[1]):
                             posts[indices[i, j], nonzero] += weights[i, j]
 
@@ -587,7 +587,7 @@ def _binary_fcnmm_pallas_kernel(
     from jax.experimental import pallas as pl
     from jax.experimental.pallas.triton import atomic_add
 
-    if len(shape) != 2:
+    if len(shape) > 2:
         raise ValueError("shape must be a tuple of length 2")
     n_pre, n_post = shape
     n_conn = indices_info.shape[1]

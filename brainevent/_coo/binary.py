@@ -156,7 +156,7 @@ def _coomv_numba_kernel(
                 posts[:] = 0.
                 w = weights[0]
                 for i in range(row.shape[0]):
-                    if v[row[i]] != 0.:
+                    if v[row[i]] > 0.:
                         posts[col[i]] += w
 
         case (True, 1, _, False):
@@ -166,7 +166,7 @@ def _coomv_numba_kernel(
                 posts[:] = 0.
                 w = weights[0]
                 for i in range(row.shape[0]):
-                    if v[row[i]] != 0.:
+                    if v[row[i]] > 0.:
                         posts[col[i]] += w * v[row[i]]
 
         # transpose=True, heterogeneous
@@ -185,7 +185,7 @@ def _coomv_numba_kernel(
             def mv(weights, row, col, v, posts):
                 posts[:] = 0.
                 for i in range(row.shape[0]):
-                    if v[row[i]] != 0.:
+                    if v[row[i]] > 0.:
                         posts[col[i]] += weights[i]
 
         case (True, _, _, False):
@@ -194,7 +194,7 @@ def _coomv_numba_kernel(
             def mv(weights, row, col, v, posts):
                 posts[:] = 0.
                 for i in range(row.shape[0]):
-                    if v[row[i]] != 0.:
+                    if v[row[i]] > 0.:
                         posts[col[i]] += weights[i] * v[row[i]]
 
         # transpose=False, homogeneous
@@ -215,7 +215,7 @@ def _coomv_numba_kernel(
                 posts[:] = 0.
                 w = weights[0]
                 for i in range(row.shape[0]):
-                    if v[col[i]] != 0.:
+                    if v[col[i]] > 0.:
                         posts[row[i]] += w
 
         case (False, 1, _, False):
@@ -225,7 +225,7 @@ def _coomv_numba_kernel(
                 posts[:] = 0.
                 w = weights[0]
                 for i in range(row.shape[0]):
-                    if v[col[i]] != 0.:
+                    if v[col[i]] > 0.:
                         posts[row[i]] += w * v[col[i]]
 
         # transpose=False, heterogeneous
@@ -244,7 +244,7 @@ def _coomv_numba_kernel(
             def mv(weights, row, col, v, posts):
                 posts[:] = 0.
                 for i in range(row.shape[0]):
-                    if v[col[i]] != 0.:
+                    if v[col[i]] > 0.:
                         posts[row[i]] += weights[i]
 
         case (False, _, _, False):
@@ -253,7 +253,7 @@ def _coomv_numba_kernel(
             def mv(weights, row, col, v, posts):
                 posts[:] = 0.
                 for i in range(row.shape[0]):
-                    if v[col[i]] != 0.:
+                    if v[col[i]] > 0.:
                         posts[row[i]] += weights[i] * v[col[i]]
 
     def kernel(weights, row, col, v):
@@ -310,7 +310,7 @@ def _coomv_warp_kernel(
             ):
                 i = warp.tid()
                 w = weights[0]
-                if v[row[i]] != 0.:
+                if v[row[i]] > 0.:
                     posts[col[i]] += w
 
         case (True, 1, _, False):
@@ -325,7 +325,7 @@ def _coomv_warp_kernel(
             ):
                 i = warp.tid()
                 w = weights[0]
-                if v[row[i]] != 0.:
+                if v[row[i]] > 0.:
                     posts[col[i]] += w * v[row[i]]
 
         # transpose=True, heterogeneous
@@ -354,7 +354,7 @@ def _coomv_warp_kernel(
                 posts: out_warp_info
             ):
                 i = warp.tid()
-                if v[row[i]] != 0.:
+                if v[row[i]] > 0.:
                     posts[col[i]] += weights[i]
 
         case (True, _, _, False):
@@ -368,7 +368,7 @@ def _coomv_warp_kernel(
                 posts: out_warp_info
             ):
                 i = warp.tid()
-                if v[row[i]] != 0.:
+                if v[row[i]] > 0.:
                     posts[col[i]] += weights[i] * v[row[i]]
 
         # transpose=False, homogeneous
@@ -399,7 +399,7 @@ def _coomv_warp_kernel(
             ):
                 i = warp.tid()
                 w = weights[0]
-                if v[col[i]] != 0.:
+                if v[col[i]] > 0.:
                     posts[row[i]] += w
 
         case (False, 1, _, False):
@@ -414,7 +414,7 @@ def _coomv_warp_kernel(
             ):
                 i = warp.tid()
                 w = weights[0]
-                if v[col[i]] != 0.:
+                if v[col[i]] > 0.:
                     posts[row[i]] += w * v[col[i]]
 
         # transpose=False, heterogeneous
@@ -443,7 +443,7 @@ def _coomv_warp_kernel(
                 posts: out_warp_info
             ):
                 i = warp.tid()
-                if v[col[i]] != 0.:
+                if v[col[i]] > 0.:
                     posts[row[i]] += weights[i]
 
         case (False, _, _, False):
@@ -457,7 +457,7 @@ def _coomv_warp_kernel(
                 posts: out_warp_info
             ):
                 i = warp.tid()
-                if v[col[i]] != 0.:
+                if v[col[i]] > 0.:
                     posts[row[i]] += weights[i] * v[col[i]]
 
     dim = row_info.shape[0]
@@ -511,7 +511,7 @@ def _coomv_pallas_gpu_kernel(
                 if vector_ref.dtype == jnp.bool_:
                     event_mask = mask & events
                 else:
-                    event_mask = mask & (events != 0.)
+                    event_mask = mask & (events > 0.)
 
                 data = jnp.ones((block_dim,), dtype=posts_ref.dtype) * data_ref[0]
                 atomic_add(posts_ref, cols, data, mask=event_mask)
@@ -542,7 +542,7 @@ def _coomv_pallas_gpu_kernel(
                 if vector_ref.dtype == jnp.bool_:
                     event_mask = mask & events
                 else:
-                    event_mask = mask & (events != 0.)
+                    event_mask = mask & (events > 0.)
 
                 data = jnp.asarray(weights, dtype=posts_ref.dtype)
                 atomic_add(posts_ref, cols, data, mask=event_mask)
@@ -587,7 +587,7 @@ def _coomv_pallas_gpu_kernel(
                 if vector_ref.dtype == jnp.bool_:
                     event_mask = mask & events
                 else:
-                    event_mask = mask & (events != 0.)
+                    event_mask = mask & (events > 0.)
 
                 data = jnp.ones((block_dim,), dtype=posts_ref.dtype) * data_ref[0]
                 atomic_add(posts_ref, rows, data, mask=event_mask)
@@ -618,7 +618,7 @@ def _coomv_pallas_gpu_kernel(
                 if vector_ref.dtype == jnp.bool_:
                     event_mask = mask & events
                 else:
-                    event_mask = mask & (events != 0.)
+                    event_mask = mask & (events > 0.)
 
                 data = jnp.asarray(weights, dtype=posts_ref.dtype)
                 atomic_add(posts_ref, rows, data, mask=event_mask)
@@ -848,7 +848,7 @@ def _coomm_numba_kernel(
                 w = weights[0]
                 for i in range(row.shape[0]):
                     for j in range(B.shape[1]):
-                        if B[row[i], j] != 0.:
+                        if B[row[i], j] > 0.:
                             posts[col[i], j] += w
 
         case (True, 1, _, False):
@@ -859,7 +859,7 @@ def _coomm_numba_kernel(
                 w = weights[0]
                 for i in range(row.shape[0]):
                     for j in range(B.shape[1]):
-                        if B[row[i], j] != 0.:
+                        if B[row[i], j] > 0.:
                             posts[col[i], j] += w * B[row[i], j]
 
         # transpose=True, heterogeneous
@@ -880,7 +880,7 @@ def _coomm_numba_kernel(
                 posts[:] = 0.
                 for i in range(row.shape[0]):
                     for j in range(B.shape[1]):
-                        if B[row[i], j] != 0.:
+                        if B[row[i], j] > 0.:
                             posts[col[i], j] += weights[i]
 
         case (True, _, _, False):
@@ -890,7 +890,7 @@ def _coomm_numba_kernel(
                 posts[:] = 0.
                 for i in range(row.shape[0]):
                     for j in range(B.shape[1]):
-                        if B[row[i], j] != 0.:
+                        if B[row[i], j] > 0.:
                             posts[col[i], j] += weights[i] * B[row[i], j]
 
         # transpose=False, homogeneous
@@ -913,7 +913,7 @@ def _coomm_numba_kernel(
                 w = weights[0]
                 for i in range(row.shape[0]):
                     for j in range(B.shape[1]):
-                        if B[col[i], j] != 0.:
+                        if B[col[i], j] > 0.:
                             posts[row[i], j] += w
 
         case (False, 1, _, False):
@@ -924,7 +924,7 @@ def _coomm_numba_kernel(
                 w = weights[0]
                 for i in range(row.shape[0]):
                     for j in range(B.shape[1]):
-                        if B[col[i], j] != 0.:
+                        if B[col[i], j] > 0.:
                             posts[row[i], j] += w * B[col[i], j]
 
         # transpose=False, heterogeneous
@@ -945,7 +945,7 @@ def _coomm_numba_kernel(
                 posts[:] = 0.
                 for i in range(row.shape[0]):
                     for j in range(B.shape[1]):
-                        if B[col[i], j] != 0.:
+                        if B[col[i], j] > 0.:
                             posts[row[i], j] += weights[i]
 
         case (False, _, _, False):
@@ -955,7 +955,7 @@ def _coomm_numba_kernel(
                 posts[:] = 0.
                 for i in range(row.shape[0]):
                     for j in range(B.shape[1]):
-                        if B[col[i], j] != 0.:
+                        if B[col[i], j] > 0.:
                             posts[row[i], j] += weights[i] * B[col[i], j]
 
     def kernel(weights, row, col, B):
@@ -1012,7 +1012,7 @@ def _coomm_warp_kernel(
             ):
                 i, j = warp.tid()
                 w = weights[0]
-                if B[row[i], j] != 0.:
+                if B[row[i], j] > 0.:
                     posts[col[i], j] += w
 
         case (True, 1, _, False):
@@ -1027,7 +1027,7 @@ def _coomm_warp_kernel(
             ):
                 i, j = warp.tid()
                 w = weights[0]
-                if B[row[i], j] != 0.:
+                if B[row[i], j] > 0.:
                     posts[col[i], j] += w * B[row[i], j]
 
         # transpose=True, heterogeneous
@@ -1056,7 +1056,7 @@ def _coomm_warp_kernel(
                 posts: out_warp_info
             ):
                 i, j = warp.tid()
-                if B[row[i], j] != 0.:
+                if B[row[i], j] > 0.:
                     posts[col[i], j] += weights[i]
 
         case (True, _, _, False):
@@ -1070,7 +1070,7 @@ def _coomm_warp_kernel(
                 posts: out_warp_info
             ):
                 i, j = warp.tid()
-                if B[row[i], j] != 0.:
+                if B[row[i], j] > 0.:
                     posts[col[i], j] += weights[i] * B[row[i], j]
 
         # transpose=False, homogeneous
@@ -1101,7 +1101,7 @@ def _coomm_warp_kernel(
             ):
                 i, j = warp.tid()
                 w = weights[0]
-                if B[col[i], j] != 0.:
+                if B[col[i], j] > 0.:
                     posts[row[i], j] += w
 
         case (False, 1, _, False):
@@ -1116,7 +1116,7 @@ def _coomm_warp_kernel(
             ):
                 i, j = warp.tid()
                 w = weights[0]
-                if B[col[i], j] != 0.:
+                if B[col[i], j] > 0.:
                     posts[row[i], j] += w * B[col[i], j]
 
         # transpose=False, heterogeneous
@@ -1145,7 +1145,7 @@ def _coomm_warp_kernel(
                 posts: out_warp_info
             ):
                 i, j = warp.tid()
-                if B[col[i], j] != 0.:
+                if B[col[i], j] > 0.:
                     posts[row[i], j] += weights[i]
 
         case (False, _, _, False):
@@ -1159,7 +1159,7 @@ def _coomm_warp_kernel(
                 posts: out_warp_info
             ):
                 i, j = warp.tid()
-                if B[col[i], j] != 0.:
+                if B[col[i], j] > 0.:
                     posts[row[i], j] += weights[i] * B[col[i], j]
 
     dim = (row_info.shape[0], matrix_info.shape[1])
@@ -1225,7 +1225,7 @@ def _coomm_pallas_gpu_kernel(
                         if B_ref.dtype == jnp.bool_:
                             event_mask = col_mask & events
                         else:
-                            event_mask = col_mask & (events != 0.)
+                            event_mask = col_mask & (events > 0.)
                         data = jnp.ones((block_dim_n,), dtype=posts_ref.dtype) * data_ref[0]
                         atomic_add(posts_ref, (col_idx, pl.dslice(i_col_start, block_dim_n)), data, mask=event_mask)
 
@@ -1268,7 +1268,7 @@ def _coomm_pallas_gpu_kernel(
                         if B_ref.dtype == jnp.bool_:
                             event_mask = col_mask & events
                         else:
-                            event_mask = col_mask & (events != 0.)
+                            event_mask = col_mask & (events > 0.)
                         data = jnp.ones((block_dim_n,), dtype=posts_ref.dtype) * w
                         atomic_add(posts_ref, (col_idx, pl.dslice(i_col_start, block_dim_n)), data, mask=event_mask)
 
@@ -1323,7 +1323,7 @@ def _coomm_pallas_gpu_kernel(
                         if B_ref.dtype == jnp.bool_:
                             event_mask = col_mask & events
                         else:
-                            event_mask = col_mask & (events != 0.)
+                            event_mask = col_mask & (events > 0.)
                         data = jnp.ones((block_dim_n,), dtype=posts_ref.dtype) * data_ref[0]
                         atomic_add(posts_ref, (row_idx, pl.dslice(i_col_start, block_dim_n)), data, mask=event_mask)
 
@@ -1366,7 +1366,7 @@ def _coomm_pallas_gpu_kernel(
                         if B_ref.dtype == jnp.bool_:
                             event_mask = col_mask & events
                         else:
-                            event_mask = col_mask & (events != 0.)
+                            event_mask = col_mask & (events > 0.)
                         data = jnp.ones((block_dim_n,), dtype=posts_ref.dtype) * w
                         atomic_add(posts_ref, (row_idx, pl.dslice(i_col_start, block_dim_n)), data, mask=event_mask)
 

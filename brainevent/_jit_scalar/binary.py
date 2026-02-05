@@ -216,7 +216,7 @@ def _jitsmv_numba_kernel(
                     i_row = np.random.randint(0, clen0)
                     out = np.float64(0.)
                     while i_row < n_row:
-                        if vector[i_row] != 0:
+                        if vector[i_row] > 0:
                             out += vector[i_row]
                         i_row += np.random.randint(1, clen0)
                     posts[i_col] = out * weight0
@@ -251,7 +251,7 @@ def _jitsmv_numba_kernel(
                 seed0 = seed[0]
                 np.random.seed(seed0)
                 for i_row in range(num_row):
-                    is_event = vector[i_row] != 0.
+                    is_event = vector[i_row] > 0.
                     i_col = np.random.randint(0, clen0)
                     while i_col < num_col:
                         if is_event:
@@ -323,7 +323,7 @@ def _jitsmv_warp_kernel(
                 state = warp.rand_init(seed0 + i_col)
                 i_row = warp.randi(state, 0, clen0)
                 while i_row < num_row:
-                    if vector[i_row] != vector.dtype(0.):
+                    if vector[i_row] > vector.dtype(0.):
                         r += weight.dtype(1.)
                     i_row += warp.randi(state, 1, clen0)
                 posts[i_col] = r * weight0
@@ -367,7 +367,7 @@ def _jitsmv_warp_kernel(
                 clen0 = clen[0]
                 seed0 = seed[0]
                 i_row = warp.tid()
-                if vector[i_row] != vector.dtype(0.):
+                if vector[i_row] > vector.dtype(0.):
                     state = warp.rand_init(seed0 + i_row)
                     i_col = warp.randi(state, 0, clen0)
                     while i_col < num_col:
@@ -408,8 +408,8 @@ def _jitsmv_pallas_kernel(
                 i_rows, i_row_mask, rng, res = data
                 v = vector_ref[i_rows]
                 v = jnp.where(i_row_mask, v, jnp.zeros_like(v))
-                if vector_ref.dtype != jnp.bool_:
-                    v = v != 0.
+                if vector_ref.dtype > jnp.bool_:
+                    v = v > 0.
                 res = jnp.where(v, res + weight, res)
                 i_rows = i_rows + rng.random_integers(1, clen)
                 return i_rows, i_rows < num_row, rng, res
@@ -440,7 +440,7 @@ def _jitsmv_pallas_kernel(
             seed0 = seed_ref[0]
             i_row = pl.program_id(0)
             v = vector_ref[i_row]
-            is_event = v if vector_ref.dtype == jnp.bool_ else (v != 0.)
+            is_event = v if vector_ref.dtype == jnp.bool_ else (v > 0.)
 
             @pl.when(is_event)
             def run():
@@ -703,7 +703,7 @@ def _jitsmm_numba_kernel(
                         out = np.zeros(n, dtype=weight.dtype)
                         while i_k < k:
                             for j in range(B.shape[1]):
-                                if B[i_k, j] != 0.:
+                                if B[i_k, j] > 0.:
                                     out[j] += 1.0
                             i_k += np.random.randint(1, clen0)
                         posts[i_m] = out * weight0
@@ -745,7 +745,7 @@ def _jitsmm_numba_kernel(
                         out = np.zeros(n, dtype=weight.dtype)
                         while i_k < k:
                             for j in range(B.shape[1]):
-                                if B[i_k, j] != 0.:
+                                if B[i_k, j] > 0.:
                                     out[j] += 1.0
                             i_k += np.random.randint(1, clen0)
                         posts[i_m] = out * weight0
@@ -781,7 +781,7 @@ def _jitsmm_numba_kernel(
                     clen0 = clen[0]
                     np.random.seed(seed0)
                     for i_k in range(k):
-                        indices = np.where(B[i_k] != 0.)[0]
+                        indices = np.where(B[i_k] > 0.)[0]
                         i_m = np.random.randint(0, clen0)
                         while i_m < m:
                             posts[i_m, indices] += weight0
@@ -817,7 +817,7 @@ def _jitsmm_numba_kernel(
                     clen0 = clen[0]
                     np.random.seed(seed0)
                     for i_k in range(k):
-                        indices = np.where(B[i_k] != 0.)[0]
+                        indices = np.where(B[i_k] > 0.)[0]
                         i_m = np.random.randint(0, clen0)
                         while i_m < m:
                             posts[i_m, indices] += weight0

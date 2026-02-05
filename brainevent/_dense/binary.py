@@ -72,7 +72,7 @@ def dm_bv(weights, spikes):
 
     where the function `f(s)` is defined as:
     - If `spikes` is boolean: `f(s) = 1` if `s` is True, `0` otherwise.
-    - If `spikes` is float: `f(s) = 1` if `s != 0`, `0` otherwise.
+    - If `spikes` is float: `f(s) = 1` if `s > 0`, `0` otherwise.
 
     The function ensures inputs are JAX arrays and handles unit consistency
     using `brainunit`. The computation is delegated to a JAX primitive
@@ -107,7 +107,7 @@ def _dmbv_numba_kernel(
         def kernel(weights, spikes, posts):
             posts[:] = 0.
             for i in range(spikes.shape[0]):
-                if spikes[i] != 0.:
+                if spikes[i] > 0.:
                     posts += weights[:, i]
 
     def run(weights, spikes):
@@ -155,7 +155,7 @@ def _dmbv_warp_kernel(
             i = warp.tid()
             r = weights.dtype(0.)
             for j in range(spike_length):
-                if spikes[j] != 0.:
+                if spikes[j] > 0.:
                     r += weights[i, j]
             out[i] = r
 
@@ -187,7 +187,7 @@ def _dmbv_pallas_kernel(
             weight_col = weight_ref[pl.dslice(i_row_start, mat_block_dim), i_spike]
             weight_col = jnp.where(i_row_mask, weight_col, 0.0)
             return jax.lax.cond(
-                spike if spike_ref.dtype == jnp.bool_ else spike != 0.,
+                spike if spike_ref.dtype == jnp.bool_ else spike > 0.,
                 lambda out: out + weight_col,
                 lambda out: out,
                 temp
@@ -325,7 +325,7 @@ def _binary_vec_dot_dense_mat_numba_kernel(
         def kernel(spikes, weights, posts):
             posts[:] = 0.
             for i in range(spikes.shape[0]):
-                if spikes[i] != 0.:
+                if spikes[i] > 0.:
                     posts += weights[i]
 
     def run(spikes, weights):
@@ -373,7 +373,7 @@ def _binary_vec_dot_dense_mat_warp_kernel(
             j = warp.tid()
             r = weights.dtype(0.)
             for i in range(spike_length):
-                if spikes[i] != 0.:
+                if spikes[i] > 0.:
                     r += weights[i, j]
             out[j] = r
 
@@ -404,7 +404,7 @@ def _binary_vec_dot_dense_mat_pallas_kernel(
             weight_row = weight_ref[i_spike, pl.dslice(i_col_start, block_dim)]
             weight_row = jnp.where(i_col_mask, weight_row, 0.0)
             return jax.lax.cond(
-                spike if (spike_ref.dtype == jnp.bool_) else spike != 0.,
+                spike if (spike_ref.dtype == jnp.bool_) else spike > 0.,
                 lambda out: out + weight_row,
                 lambda out: out,
                 temp,
@@ -462,7 +462,7 @@ def _event_matrix_batching(args, axes, **kwargs):
 def bvdm_p_call(spikes, weights):
     assert spikes.shape[0] == weights.shape[0], (
         f"shapes {spikes.shape} and {weights.shape} not aligned: "
-        f"{spikes.shape[0]} (dim 0) != {weights.shape[0]} (dim 0)"
+        f"{spikes.shape[0]} (dim 0) > {weights.shape[0]} (dim 0)"
     )
     out = jax.ShapeDtypeStruct([weights.shape[1]], weights.dtype)
     return bv_dm_p(
@@ -520,7 +520,7 @@ def dm_bm(weights, spikes):
 
     where the function `f(s)` is defined as:
     - If `spikes` is boolean: `f(s) = 1` if `s` is True, `0` otherwise.
-    - If `spikes` is float: `f(s) = 1` if `s != 0`, `0` otherwise.
+    - If `spikes` is float: `f(s) = 1` if `s > 0`, `0` otherwise.
 
     The function ensures inputs are JAX arrays and handles unit consistency
     using `brainunit`. The computation is delegated to a JAX primitive
@@ -562,7 +562,7 @@ def _dense_mat_dot_binary_mat_numba_kernel(
             for i_n in numba.prange(spikes.shape[1]):
                 out = np.zeros(weights.shape[0], dtype=weights.dtype)
                 for i_k in range(spikes.shape[0]):
-                    if spikes[i_k, i_n] != 0.:
+                    if spikes[i_k, i_n] > 0.:
                         out += weights[:, i_k]
                 posts[:, i_n] = out
 
@@ -615,7 +615,7 @@ def _dense_mat_dot_binary_mat_warp_kernel(
             i_m, i_n = warp.tid()
             r = weights.dtype(0.)
             for i_k in range(k):
-                if spikes[i_k, i_n] != 0.:
+                if spikes[i_k, i_n] > 0.:
                     r += weights[i_m, i_k]
             out[i_m, i_n] = r
 
@@ -656,7 +656,7 @@ def _dense_mat_dot_binary_mat_pallas_kernel(
             weight_col = weight_ref[pl.dslice(i_m_start, block_dim), i_k]
             weight_col = jnp.where(i_m_mask, weight_col, 0.0)
             return jax.lax.cond(
-                spike if spike_ref.dtype == jnp.bool_ else spike != 0.,
+                spike if spike_ref.dtype == jnp.bool_ else spike > 0.,
                 lambda out: out + weight_col,
                 lambda out: out,
                 temp,
@@ -741,7 +741,7 @@ def _dense_mat_dot_binary_mat_batching(args, axes, **kwargs):
 
 def dmbm_p_call(weights, spikes):
     assert weights.shape[1] == spikes.shape[0], (
-        f"weights.shape[1] ({weights.shape[1]}) != spikes.shape[0] ({spikes.shape[0]})"
+        f"weights.shape[1] ({weights.shape[1]}) > spikes.shape[0] ({spikes.shape[0]})"
         f", weights: {weights.shape}, spikes: {spikes.shape} in dense_mat_dot_binary_mat_p_call"
     )
     out = jax.ShapeDtypeStruct([weights.shape[0], spikes.shape[1]], weights.dtype)
@@ -835,7 +835,7 @@ def _binary_mat_dot_dense_mat_numba_kernel(
             for i_m in numba.prange(spikes.shape[0]):
                 out = np.zeros(weights.shape[1], dtype=posts.dtype)
                 for i_k in range(spikes.shape[1]):
-                    if spikes[i_m, i_k] != 0.:
+                    if spikes[i_m, i_k] > 0.:
                         out += weights[i_k]
                 posts[i_m] = out
 
@@ -884,7 +884,7 @@ def _binary_mat_dot_dense_mat_warp_kernel(
             i_m, i_n = warp.tid()
             r = weights.dtype(0.)
             for i_k in range(k):
-                if spikes[i_m, i_k] != 0.:
+                if spikes[i_m, i_k] > 0.:
                     r += weights[i_k, i_n]
             out[i_m, i_n] = r
 
@@ -924,7 +924,7 @@ def _binary_mat_dot_dense_mat_pallas_kernel(
             weight_row = weight_ref[i_k, pl.dslice(i_n_start, block_dim)]
             weight_row = jnp.where(i_n_mask, weight_row, 0.0)
             return jax.lax.cond(
-                spike if spike_ref.dtype == jnp.bool_ else spike != 0.,
+                spike if spike_ref.dtype == jnp.bool_ else spike > 0.,
                 lambda out: out + weight_row,
                 lambda out: out,
                 temp,

@@ -184,7 +184,7 @@ def _jitc_mv_normal_numba_kernel_generator(
                         # Process all connected entries for this column
                         while i_row < n_row:
                             w = np.random.normal(loc=w_loc0, scale=w_scale0)
-                            if vector[i_row] != 0.:
+                            if vector[i_row] > 0.:
                                 out += w
 
                             # Skip ahead to next connected row (sparse sampling)
@@ -235,7 +235,7 @@ def _jitc_mv_normal_numba_kernel_generator(
                         out = np.asarray(0., dtype=posts.dtype)
                         while i_col < num_col:
                             w = np.random.normal(loc=w_loc0, scale=w_scale0)
-                            if vector[i_col] != 0.:
+                            if vector[i_col] > 0.:
                                 out += w
                             i_col += np.random.randint(1, clen0)
                         posts[i_row] = out
@@ -273,7 +273,7 @@ def _jitc_mv_normal_numba_kernel_generator(
                     seed0 = seed[0]  # Random seed for reproducible matrix generation
                     np.random.seed(seed0)
                     for i_row in range(num_row):
-                        v = vector[i_row] != 0.
+                        v = vector[i_row] > 0.
                         i_col = np.random.randint(0, clen0)
                         while i_col < num_col:
                             w = np.random.normal(loc=w_loc0, scale=w_scale0)
@@ -315,7 +315,7 @@ def _jitc_mv_normal_numba_kernel_generator(
                     seed0 = seed[0]  # Random seed for reproducible matrix generation
                     np.random.seed(seed0)
                     for i_col in range(num_col):
-                        v = vector[i_col] != 0.
+                        v = vector[i_col] > 0.
                         i_row = np.random.randint(0, clen0)
                         while i_row < num_row:
                             w = np.random.normal(loc=w_loc0, scale=w_scale0)
@@ -513,7 +513,7 @@ def _jitc_mv_normal_warp_kernel_generator(
                 # This avoids multiplying inside the inner loop for each connection
                 v = vector[i_col]
 
-                if v != 0.:
+                if v > 0.:
                     # Initialize random state with base seed plus thread ID to ensure
                     # different but reproducible random sequences across threads
                     state = warp.rand_init(seed0 + i_col)
@@ -581,7 +581,7 @@ def _jitc_mv_normal_pallas_kernel_generator(
                         v = jnp.where(i_row_mask, v, False)
                     else:
                         v = jnp.where(i_row_mask, v, 0)
-                        v = v != 0.
+                        v = v > 0.
                     w = rng.normal(w_loc, w_scale)
                     res = jnp.where(v, res + w, res)
                     i_rows += rng.random_integers(1, clen)
@@ -619,7 +619,7 @@ def _jitc_mv_normal_pallas_kernel_generator(
                     if vector_ref.dtype == jnp.bool_:
                         res = jnp.where(v, res + w, res)
                     else:
-                        res = jnp.where(v != 0., res + w, res)
+                        res = jnp.where(v > 0., res + w, res)
                     i += rng.random_integers(1, clen)
                     return i, rng, res
 
@@ -648,7 +648,7 @@ def _jitc_mv_normal_pallas_kernel_generator(
             i_row = pl.program_id(0)
             v = plt.load(vector_ref[i_row])
 
-            @pl.when(v if vector_ref.dtype == jnp.bool_ else v != 0.)
+            @pl.when(v if vector_ref.dtype == jnp.bool_ else v > 0.)
             def run():
                 def body(data):
                     i, rng = data
@@ -874,7 +874,7 @@ def _jitc_mm_normal_numba_kernel_generator(
                         while i_k < k:
                             w = np.random.normal(w_loc0, w_scale0)
                             for j in range(B.shape[1]):
-                                if B[i_k, j] != 0.:
+                                if B[i_k, j] > 0.:
                                     out[j] += w
                             i_k += np.random.randint(1, clen0)
                         posts[i_m] = out
@@ -930,7 +930,7 @@ def _jitc_mm_normal_numba_kernel_generator(
                         while i_k < k:
                             w = np.random.normal(w_loc0, w_scale0)
                             for j in range(B.shape[1]):
-                                if B[i_k, j] != 0.:
+                                if B[i_k, j] > 0.:
                                     out[j] += w
                             i_k += np.random.randint(1, clen0)
                         posts[i_m] = out
@@ -976,7 +976,7 @@ def _jitc_mm_normal_numba_kernel_generator(
                     np.random.seed(seed0)  # Initialize random number generator with seed
 
                     for i_k in range(k):
-                        indices = np.where(B[i_k] != 0.)[0]
+                        indices = np.where(B[i_k] > 0.)[0]
                         i_m = np.random.randint(0, clen0)
                         while i_m < m:
                             w = np.random.normal(w_loc0, w_scale0)
@@ -1022,7 +1022,7 @@ def _jitc_mm_normal_numba_kernel_generator(
                     clen0 = clen[0]  # Connection length parameter (controls sparsity)
                     np.random.seed(seed0)  # Initialize random number generator with seed
                     for i_k in range(k):
-                        indices = np.where(B[i_k] != 0.)[0]
+                        indices = np.where(B[i_k] > 0.)[0]
                         i_m = np.random.randint(0, clen0)
                         while i_m < m:
                             w = np.random.normal(w_loc0, w_scale0)

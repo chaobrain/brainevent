@@ -145,7 +145,7 @@ def _jitumv_numba_kernel_generator(
                         out = np.asarray(0., dtype=posts.dtype)
                         while i_row < n_row:
                             w = np.random.uniform(low=w_low0, high=w_high0)
-                            if vector[i_row] != 0.:
+                            if vector[i_row] > 0.:
                                 out += w
                             i_row += np.random.randint(1, clen0)
                         posts[i_col] = out
@@ -185,7 +185,7 @@ def _jitumv_numba_kernel_generator(
                         out = np.asarray(0., dtype=posts.dtype)
                         while i_col < num_col:
                             w = np.random.uniform(low=w_low0, high=w_high0)
-                            if vector[i_col] != 0.:
+                            if vector[i_col] > 0.:
                                 out += w
                             i_col += np.random.randint(1, clen0)
                         posts[i_row] = out
@@ -223,7 +223,7 @@ def _jitumv_numba_kernel_generator(
                     seed0 = seed[0]
                     np.random.seed(seed0)
                     for i_row in range(num_row):
-                        v = vector[i_row] != 0.
+                        v = vector[i_row] > 0.
                         i_col = np.random.randint(0, clen0)
                         while i_col < num_col:
                             w = np.random.uniform(low=w_low0, high=w_high0)
@@ -263,7 +263,7 @@ def _jitumv_numba_kernel_generator(
                     seed0 = seed[0]
                     np.random.seed(seed0)
                     for i_col in range(num_col):
-                        v = vector[i_col] != 0.
+                        v = vector[i_col] > 0.
                         i_row = np.random.randint(0, clen0)
                         while i_row < num_row:
                             w = np.random.uniform(low=w_low0, high=w_high0)
@@ -393,7 +393,7 @@ def _jitumv_warp_kernel_generator(
                 clen0 = clen[0]
                 seed0 = seed[0]
                 i_row = warp.tid()
-                v = vector[i_row] != 0.
+                v = vector[i_row] > 0.
                 if v:
                     state = warp.rand_init(seed0 + i_row)
                     i_col = warp.randi(state, 0, clen0)
@@ -436,8 +436,8 @@ def _jitumv_pallas_kernel_generator(
             def body(data):
                 i_rows, i_row_mask, rng, res = data
                 v = jnp.where(i_row_mask, vector_ref[i_rows], False if vector_info.dtype == jnp.bool_ else 0.)
-                if vector_info.dtype != jnp.bool_:
-                    v = v != 0.
+                if vector_info.dtype > jnp.bool_:
+                    v = v > 0.
                 w = rng.uniform(w_low, w_high)
                 res = jnp.where(v, res + w, res)
                 i_rows += rng.random_integers(1, clen)
@@ -463,7 +463,7 @@ def _jitumv_pallas_kernel_generator(
             i_row = pl.program_id(0)
             v = vector_ref[i_row]
 
-            @pl.when(v if vector_info.dtype == jnp.bool_ else v != 0.)
+            @pl.when(v if vector_info.dtype == jnp.bool_ else v > 0.)
             def run():
                 def body(data):
                     i, rng = data
@@ -695,7 +695,7 @@ def _jitumm_numba_kernel_generator(
                         while i_k < k:
                             w = np.random.uniform(low=w_low0, high=w_high0)
                             for j in range(B.shape[1]):
-                                if B[i_k, j] != 0.:
+                                if B[i_k, j] > 0.:
                                     out[j] += w
                             i_k += np.random.randint(1, clen0)
                         posts[i_m] = out
@@ -739,7 +739,7 @@ def _jitumm_numba_kernel_generator(
                         while i_k < k:
                             w = np.random.uniform(low=w_low0, high=w_high0)
                             for j in range(B.shape[1]):
-                                if B[i_k, j] != 0.:
+                                if B[i_k, j] > 0.:
                                     out[j] += w
                             i_k += np.random.randint(1, clen0)
                         posts[i_m] = out
@@ -776,7 +776,7 @@ def _jitumm_numba_kernel_generator(
                     clen0 = clen[0]
                     np.random.seed(seed0)
                     for i_k in range(k):
-                        indices = np.where(B[i_k] != 0.)[0]
+                        indices = np.where(B[i_k] > 0.)[0]
                         i_m = np.random.randint(0, clen0)
                         while i_m < m:
                             w = np.random.uniform(low=w_low0, high=w_high0)
@@ -814,7 +814,7 @@ def _jitumm_numba_kernel_generator(
                     clen0 = clen[0]
                     np.random.seed(seed0)
                     for i_k in range(k):
-                        indices = np.where(B[i_k] != 0.)[0]
+                        indices = np.where(B[i_k] > 0.)[0]
                         i_m = np.random.randint(0, clen0)
                         while i_m < m:
                             w = np.random.uniform(low=w_low0, high=w_high0)
@@ -1004,7 +1004,7 @@ def _jitumm_pallas_kernel_generator(
                     if B_info.dtype == jnp.bool_:
                         out = jnp.where(events, out + w, out)
                     else:
-                        out = jnp.where(events != 0., out + w, out)
+                        out = jnp.where(events > 0., out + w, out)
                     i += rng.random_integers(1, clen0)
                     return i, rng, out
 
@@ -1040,7 +1040,7 @@ def _jitumm_pallas_kernel_generator(
                     if B_info.dtype == jnp.bool_:
                         out = jnp.where(events, out + w, out)
                     else:
-                        out = jnp.where(events != 0., out + w, out)
+                        out = jnp.where(events > 0., out + w, out)
                     i += rng.random_integers(1, clen0)
                     return i, rng, out
 
