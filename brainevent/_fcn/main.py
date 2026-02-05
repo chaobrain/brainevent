@@ -28,7 +28,7 @@ from brainevent._event.binary import EventArray
 from brainevent._event.sparse_float import SparseFloat
 from brainevent._misc import _coo_todense, COOInfo
 from brainevent._typing import Data, MatrixShape, Index
-from .binary import binary_fixed_num_mv_p_call, binary_fixed_num_mm_p_call
+from .binary import binary_fcnmv_p_call, binary_fcnmm_p_call
 from .float import fcnmv_p_call, fcnmm_p_call
 from .sparse_float import spfloat_fcnmv_p_call, spfloat_fcnmm_p_call
 
@@ -425,9 +425,9 @@ class FixedPostNumConn(FixedNumConn):
         if isinstance(other, EventArray):
             other = other.data
             if other.ndim == 1:
-                return binary_fixed_num_mv_p_call(data, self.indices, other, shape=self.shape, transpose=False)[0]
+                return binary_fcnmv_p_call(data, self.indices, other, shape=self.shape, transpose=False)[0]
             elif other.ndim == 2:
-                return binary_fixed_num_mm_p_call(data, self.indices, other, shape=self.shape, transpose=False)[0]
+                return binary_fcnmm_p_call(data, self.indices, other, shape=self.shape, transpose=False)[0]
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -471,9 +471,9 @@ class FixedPostNumConn(FixedNumConn):
         if isinstance(other, EventArray):
             other = other.data
             if other.ndim == 1:
-                return binary_fixed_num_mv_p_call(data, self.indices, other, shape=self.shape, transpose=True)[0]
+                return binary_fcnmv_p_call(data, self.indices, other, shape=self.shape, transpose=True)[0]
             elif other.ndim == 2:
-                r = binary_fixed_num_mm_p_call(data, self.indices, other.T, shape=self.shape, transpose=True)[0]
+                r = binary_fcnmm_p_call(data, self.indices, other.T, shape=self.shape, transpose=True)[0]
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -828,11 +828,11 @@ class FixedPreNumConn(FixedNumConn):
 
         if isinstance(other, EventArray):
             if other.ndim == 1:
-                return binary_fixed_num_mv_p_call(data, self.indices, other.data,
-                                                  shape=self.shape[::-1], transpose=True)[0]
+                return binary_fcnmv_p_call(data, self.indices, other.data,
+                                           shape=self.shape[::-1], transpose=True)[0]
             elif other.ndim == 2:
-                return binary_fixed_num_mm_p_call(data, self.indices, other.data,
-                                                  shape=self.shape[::-1], transpose=True)[0]
+                return binary_fcnmm_p_call(data, self.indices, other.data,
+                                           shape=self.shape[::-1], transpose=True)[0]
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -877,9 +877,9 @@ class FixedPreNumConn(FixedNumConn):
         if isinstance(other, EventArray):
             other = other.data
             if other.ndim == 1:
-                return binary_fixed_num_mv_p_call(data, self.indices, other, shape=self.shape[::-1], transpose=False)[0]
+                return binary_fcnmv_p_call(data, self.indices, other, shape=self.shape[::-1], transpose=False)[0]
             elif other.ndim == 2:
-                r = binary_fixed_num_mm_p_call(data, self.indices, other.T, shape=self.shape[::-1], transpose=False)[0]
+                r = binary_fcnmm_p_call(data, self.indices, other.T, shape=self.shape[::-1], transpose=False)[0]
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
