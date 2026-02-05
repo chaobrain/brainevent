@@ -51,13 +51,13 @@ from ._fcn import (
     FixedPostNumConn,
     FixedPreNumConn,
 )
-from ._jit_scalar import (
-    JITCScalarR,
-    JITCScalarC,
-)
 from ._jit_normal import (
     JITCNormalR,
     JITCNormalC,
+)
+from ._jit_scalar import (
+    JITCScalarR,
+    JITCScalarC,
 )
 from ._jit_uniform import (
     JITCUniformR,

@@ -17,7 +17,6 @@
 
 import brainstate
 import jax.numpy as jnp
-import numpy as np
 
 import brainevent
 from brainevent._test_util import (

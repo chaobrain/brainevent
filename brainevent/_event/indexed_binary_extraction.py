@@ -17,7 +17,6 @@ import jax
 import jax.numpy as jnp
 from jax.interpreters import ad
 
-from brainevent._misc import generate_block_dim
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 
 

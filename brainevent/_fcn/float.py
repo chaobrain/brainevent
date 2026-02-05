@@ -26,7 +26,6 @@ from jax.interpreters import ad
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescoped_jit
 from brainevent._op import general_batching_rule, XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
 
-
 __all__ = [
     'fcnmv_p',
     'fcnmm_p',

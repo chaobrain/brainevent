@@ -47,7 +47,7 @@ def _binary_fcnmv_numba_kernel(
         if weight_info.size == 1:
             if spike_info.dtype == jnp.bool_:
                 @numba.njit(fastmath=True, cache=True)
-                def ell_mv(weights, indices, spikes, _, posts):
+                def ell_mv(weights, indices, spikes, posts):
                     posts[:] = 0.
                     w = weights[0]
                     for i in range(spikes.shape[0]):
@@ -56,7 +56,7 @@ def _binary_fcnmv_numba_kernel(
                                 posts[indices[i, j]] += w
             else:
                 @numba.njit(fastmath=True, cache=True)
-                def ell_mv(weights, indices, spikes, _, posts):
+                def ell_mv(weights, indices, spikes, posts):
                     posts[:] = 0.
                     w = weights[0]
                     for i in range(spikes.shape[0]):
@@ -66,7 +66,7 @@ def _binary_fcnmv_numba_kernel(
         else:
             if spike_info.dtype == jnp.bool_:
                 @numba.njit(fastmath=True, cache=True)
-                def ell_mv(weights, indices, spikes, _, posts):
+                def ell_mv(weights, indices, spikes, posts):
                     posts[:] = 0.
                     for i in range(spikes.shape[0]):
                         if spikes[i]:
@@ -74,7 +74,7 @@ def _binary_fcnmv_numba_kernel(
                                 posts[indices[i, j]] += weights[i, j]
             else:
                 @numba.njit(fastmath=True, cache=True)
-                def ell_mv(weights, indices, spikes, _, posts):
+                def ell_mv(weights, indices, spikes, posts):
                     posts[:] = 0.
                     for i in range(spikes.shape[0]):
                         if spikes[i] != 0.:
@@ -85,7 +85,7 @@ def _binary_fcnmv_numba_kernel(
         if weight_info.size == 1:
             if spike_info.dtype == jnp.bool_:
                 @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
-                def ell_mv(weights, indices, spikes, _, posts):
+                def ell_mv(weights, indices, spikes, posts):
                     w = weights[0]
                     for i in numba.prange(indices.shape[0]):
                         r = 0.
@@ -96,7 +96,7 @@ def _binary_fcnmv_numba_kernel(
                         posts[i] = r
             else:
                 @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
-                def ell_mv(weights, indices, spikes, _, posts):
+                def ell_mv(weights, indices, spikes, posts):
                     spk_bool = spikes != 0.
                     w = weights[0]
                     for i in numba.prange(indices.shape[0]):
@@ -109,7 +109,7 @@ def _binary_fcnmv_numba_kernel(
         else:
             if spike_info.dtype == jnp.bool_:
                 @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
-                def ell_mv(weights, indices, spikes, _, posts):
+                def ell_mv(weights, indices, spikes, posts):
                     for i in numba.prange(indices.shape[0]):
                         r = 0.
                         for j in range(indices.shape[1]):
@@ -119,7 +119,7 @@ def _binary_fcnmv_numba_kernel(
                         posts[i] = r
             else:
                 @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
-                def ell_mv(weights, indices, spikes, _, posts):
+                def ell_mv(weights, indices, spikes, posts):
                     spk_bool = spikes != 0.
                     for i in numba.prange(indices.shape[0]):
                         r = 0.
@@ -129,8 +129,8 @@ def _binary_fcnmv_numba_kernel(
                                 r += weights[i, j]
                         posts[i] = r
 
-    def kernel(weights, indices, spikes, _):
-        return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, spikes, _)
+    def kernel(weights, indices, spikes):
+        return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, spikes)
 
     return kernel
 
@@ -140,7 +140,6 @@ def _binary_fcnmv_warp_kernel(
     weight_info: jax.ShapeDtypeStruct,
     spike_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
-    shape: Tuple[int, int],
     **kwargs
 ):
     import warp
@@ -519,7 +518,7 @@ def _binary_fcnmm_numba_kernel(
         if weight_info.size == 1:
             if matrix_info.dtype == jnp.bool_:
                 @numba.njit(fastmath=True, cache=True)
-                def ell_mv(weights, indices, matrix, _, posts):
+                def ell_mv(weights, indices, matrix, posts):
                     posts[:] = 0.
                     w = weights[0]
                     for i_k in range(matrix.shape[0]):
@@ -528,7 +527,7 @@ def _binary_fcnmm_numba_kernel(
                             posts[indices[i_k, i_conn], nonzero] += w
             else:
                 @numba.njit(fastmath=True, cache=True)
-                def ell_mv(weights, indices, matrix, _, posts):
+                def ell_mv(weights, indices, matrix, posts):
                     posts[:] = 0.
                     w = weights[0]
                     for i_k in range(matrix.shape[0]):
@@ -538,7 +537,7 @@ def _binary_fcnmm_numba_kernel(
         else:
             if matrix_info.dtype == jnp.bool_:
                 @numba.njit(fastmath=True, cache=True)
-                def ell_mv(weights, indices, matrix, _, posts):
+                def ell_mv(weights, indices, matrix, posts):
                     posts[:] = 0.
                     for i in range(matrix.shape[0]):
                         nonzero, = np.where(matrix[i])
@@ -546,7 +545,7 @@ def _binary_fcnmm_numba_kernel(
                             posts[indices[i, j], nonzero] += weights[i, j]
             else:
                 @numba.njit(fastmath=True, cache=True)
-                def ell_mv(weights, indices, matrix, _, posts):
+                def ell_mv(weights, indices, matrix, posts):
                     posts[:] = 0.
                     for i in range(matrix.shape[0]):
                         nonzero, = np.where(matrix[i] != 0.)
@@ -562,18 +561,18 @@ def _binary_fcnmm_numba_kernel(
 
         if weight_info.size == 1:
             @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
-            def ell_mv(weights, indices, matrix, _, posts):
+            def ell_mv(weights, indices, matrix, posts):
                 w = weights[0]
                 for i_m in numba.prange(indices.shape[0]):
                     posts[i_m] = w * np.sum(matrix[indices[i_m]], axis=0)
         else:
             @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
-            def ell_mv(weights, indices, matrix, _, posts):
+            def ell_mv(weights, indices, matrix, posts):
                 for i_m in numba.prange(indices.shape[0]):
                     posts[i_m] = weights[i_m] @ matrix[indices[i_m]]
 
-    def kernel(weights, indices, matrix, _):
-        return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, matrix, _)
+    def kernel(weights, indices, matrix):
+        return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, matrix)
 
     return kernel
 
@@ -707,11 +706,11 @@ def _binary_fcnmm_pallas_kernel(
     return kernel
 
 
-def _binary_fcnmm_jvp_matrix(matrix_dot, weights, indices, matrix, _, *, shape, transpose, **kwargs):
+def _binary_fcnmm_jvp_matrix(matrix_dot, weights, indices, matrix, *, shape, transpose, **kwargs):
     return fcnmm_p_call(weights, indices, matrix_dot, shape=shape, transpose=transpose)
 
 
-def _binary_fcnmm_jvp_weights(weights_dot, weights, indices, matrix, _, *, shape, transpose, **kwargs):
+def _binary_fcnmm_jvp_weights(weights_dot, weights, indices, matrix,*, shape, transpose, **kwargs):
     return binary_fcnmm_p_call(weights_dot, indices, matrix, shape=shape, transpose=transpose)
 
 
@@ -720,7 +719,6 @@ def _binary_fcnmm_transpose_rule(
     weights,
     indices,
     matrix,
-    _,
     *,
     shape,
     transpose,
@@ -747,7 +745,7 @@ def _binary_fcnmm_transpose_rule(
                 transpose=not transpose
             )[0]
 
-        return weights, indices, ct_vector, _
+        return weights, indices, ct_vector
     else:
         # ∂L/∂w = ∂L/∂y * ∂y/∂w
         if type(ct) is ad.Zero:
@@ -772,7 +770,7 @@ def _binary_fcnmm_transpose_rule(
                 # inputs: [m, n] @ [m, n_conn]
                 # ct: [k, n]
                 ct_weight = jax.vmap(lambda c, ind: (matrix[ind] @ c))(ct, indices)
-        return ct_weight, indices, matrix, _
+        return ct_weight, indices, matrix
 
 
 def _batching_base_fn(args, axis=1, **kwargs):
@@ -791,16 +789,16 @@ def _batching_base_fn(args, axis=1, **kwargs):
 
 
 def _binary_fcnmm_batching(args, axes, **kwargs):
-    if tuple(axes) == (None, None, 0, None):
+    if tuple(axes) == (None, None, 0):
         assert args[2].ndim == 3, 'Batching axis 0 requires 3D input.'
         args = list(args)
         args[2] = jnp.transpose(args[2], (1, 0, 2))
         return _batching_base_fn(args, **kwargs)
 
-    elif tuple(axes) == (None, None, 1, None):
+    elif tuple(axes) == (None, None, 1):
         return _batching_base_fn(args, **kwargs)
 
-    elif tuple(axes) == (None, None, 2, None):
+    elif tuple(axes) == (None, None, 2):
         return _batching_base_fn(args, axis=2, **kwargs)
 
     else:
@@ -851,7 +849,6 @@ def binary_fcnmm_p_call(
         weights,
         indices,
         matrix,
-        jnp.zeros(out.shape, out.dtype),
         transpose=transpose,
         shape=shape,
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),

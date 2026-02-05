@@ -15,11 +15,10 @@
 
 # -*- coding: utf-8 -*-
 
+import brainstate
 import jax
 import jax.numpy as jnp
 import numpy as np
-
-import brainstate
 
 
 def get_csr(n_pre, n_post, prob, replace=True):

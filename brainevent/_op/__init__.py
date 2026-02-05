@@ -14,8 +14,8 @@
 # ==============================================================================
 
 from .main import XLACustomKernel, KernelEntry, DEFAULT_PRIORITIES, BenchmarkResult, BenchmarkReport
-from .numba_ffi import numba_kernel
 from .numba_cuda_ffi import numba_cuda_kernel
+from .numba_ffi import numba_kernel
 from .util import (
     defjvp,
     general_batching_rule,

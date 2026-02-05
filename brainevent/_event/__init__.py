@@ -18,8 +18,8 @@ from .base import BaseArray
 from .binary import BinaryArray, EventArray
 from .indexed_binary import IndexedBinary
 from .indexed_binary_extraction import binary_array_index
-from .sparse_float import SparseFloat
 from .indexed_sparse_float import IndexedSparseFloat
+from .sparse_float import SparseFloat
 
 __all__ = [
     'BaseArray',

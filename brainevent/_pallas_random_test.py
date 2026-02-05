@@ -13,11 +13,10 @@
 # limitations under the License.
 # ==============================================================================
 
-import pytest
-
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from brainevent._pallas_random import LFSR88RNG, LFSR113RNG, LFSR128RNG, LFSRBase
 

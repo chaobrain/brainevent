@@ -33,7 +33,6 @@ from brainevent._test_util import (
     ones_like,
 )
 
-
 if brainstate.environ.get_platform() == 'cpu':
     shapes = [
         (20, 40),
