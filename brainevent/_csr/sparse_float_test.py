@@ -34,8 +34,8 @@ import jax.numpy as jnp
 import pytest
 
 from brainevent._csr.sparse_float import (
-    sparse_float_csrmv,
-    sparse_float_csrmm,
+    spfloat_csrmv,
+    spfloat_csrmm,
 )
 from brainevent._csr.float import csrmv, csrmm
 from brainevent._csr.test_util import get_csr
@@ -60,7 +60,7 @@ class TestSparseFloatCSRMV:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         # Test implementation
-        result = sparse_float_csrmv(
+        result = spfloat_csrmv(
             data, indices, indptr, v,
             shape=(m, n), transpose=transpose
         )
@@ -90,7 +90,7 @@ class TestSparseFloatCSRMV:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         # Test implementation
-        result = sparse_float_csrmv(
+        result = spfloat_csrmv(
             data, indices, indptr, v,
             shape=(m, n), transpose=transpose
         )
@@ -112,7 +112,7 @@ class TestSparseFloatCSRMV:
         # Scalar weight
         data = 2.5
 
-        result = sparse_float_csrmv(
+        result = spfloat_csrmv(
             data, indices, indptr, v,
             shape=(m, n), transpose=False
         )
@@ -143,7 +143,7 @@ class TestSparseFloatCSRMM:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         # Test implementation
-        result = sparse_float_csrmm(
+        result = spfloat_csrmm(
             data, indices, indptr, B,
             shape=(m, n), transpose=transpose
         )
@@ -173,7 +173,7 @@ class TestSparseFloatCSRMM:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         # Test implementation
-        result = sparse_float_csrmm(
+        result = spfloat_csrmm(
             data, indices, indptr, B,
             shape=(m, n), transpose=transpose
         )
@@ -195,7 +195,7 @@ class TestSparseFloatCSRMM:
         # Scalar weight
         data = 2.5
 
-        result = sparse_float_csrmm(
+        result = spfloat_csrmm(
             data, indices, indptr, B,
             shape=(m, n), transpose=False
         )
@@ -226,7 +226,7 @@ class TestSparseFloatGradients:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         def f_test(v):
-            return sparse_float_csrmv(
+            return spfloat_csrmv(
                 data, indices, indptr, v,
                 shape=(m, n), transpose=transpose
             ).sum()
@@ -258,7 +258,7 @@ class TestSparseFloatGradients:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         def f_test(w):
-            return sparse_float_csrmv(
+            return spfloat_csrmv(
                 w, indices, indptr, v,
                 shape=(m, n), transpose=transpose
             ).sum()
@@ -291,7 +291,7 @@ class TestSparseFloatGradients:
         v_dot = jnp.ones_like(v)
 
         def f_test(v):
-            return sparse_float_csrmv(
+            return spfloat_csrmv(
                 data, indices, indptr, v,
                 shape=(m, n), transpose=transpose
             )
@@ -325,7 +325,7 @@ class TestSparseFloatGradients:
         data_dot = jnp.ones_like(data)
 
         def f_test(w):
-            return sparse_float_csrmv(
+            return spfloat_csrmv(
                 w, indices, indptr, v,
                 shape=(m, n), transpose=transpose
             )
@@ -358,7 +358,7 @@ class TestSparseFloatGradients:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         def f_test(B):
-            return sparse_float_csrmm(
+            return spfloat_csrmm(
                 data, indices, indptr, B,
                 shape=(m, n), transpose=transpose
             ).sum()
@@ -390,7 +390,7 @@ class TestSparseFloatGradients:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         def f_test(w):
-            return sparse_float_csrmm(
+            return spfloat_csrmm(
                 w, indices, indptr, B,
                 shape=(m, n), transpose=transpose
             ).sum()
@@ -423,7 +423,7 @@ class TestSparseFloatGradients:
         B_dot = jnp.ones_like(B)
 
         def f_test(B):
-            return sparse_float_csrmm(
+            return spfloat_csrmm(
                 data, indices, indptr, B,
                 shape=(m, n), transpose=transpose
             )
@@ -457,7 +457,7 @@ class TestSparseFloatGradients:
         data_dot = jnp.ones_like(data)
 
         def f_test(w):
-            return sparse_float_csrmm(
+            return spfloat_csrmm(
                 w, indices, indptr, B,
                 shape=(m, n), transpose=transpose
             )
@@ -489,7 +489,7 @@ class TestSparseFloatBatching:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         def f_test(v):
-            return sparse_float_csrmv(
+            return spfloat_csrmv(
                 data, indices, indptr, v,
                 shape=(m, n), transpose=False
             )
@@ -516,7 +516,7 @@ class TestSparseFloatBatching:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         def f_test(v):
-            return sparse_float_csrmv(
+            return spfloat_csrmv(
                 data, indices, indptr, v,
                 shape=(m, n), transpose=True
             )
@@ -546,7 +546,7 @@ class TestSparseFloatBatching:
             data = braintools.init.Normal(0., 1.)((b,) + indices.shape)
 
         def f_test(w):
-            return sparse_float_csrmv(
+            return spfloat_csrmv(
                 w, indices, indptr, v,
                 shape=(m, n), transpose=False
             )
@@ -573,7 +573,7 @@ class TestSparseFloatBatching:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         def f_test(B):
-            return sparse_float_csrmm(
+            return spfloat_csrmm(
                 data, indices, indptr, B,
                 shape=(m, n), transpose=False
             )
@@ -600,7 +600,7 @@ class TestSparseFloatBatching:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         def f_test(B):
-            return sparse_float_csrmm(
+            return spfloat_csrmm(
                 data, indices, indptr, B,
                 shape=(m, n), transpose=True
             )
@@ -627,7 +627,7 @@ class TestSparseFloatBatching:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         def f_test(v, w):
-            return sparse_float_csrmv(
+            return spfloat_csrmv(
                 w, indices, indptr, v,
                 shape=(m, n), transpose=False
             ).sum()
@@ -656,7 +656,7 @@ class TestSparseFloatBatching:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
         def f_test(v):
-            return sparse_float_csrmv(
+            return spfloat_csrmv(
                 data, indices, indptr, v,
                 shape=(m, n), transpose=False
             )

@@ -47,7 +47,7 @@ from ._event import (
     SparseFloat,
     IndexedSparseFloat,
 )
-from ._fixed_conn_num import (
+from ._fcn import (
     FixedPostNumConn,
     FixedPreNumConn,
 )

@@ -27,10 +27,15 @@ from jax.interpreters import ad
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescoped_jit
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, jaxinfo_to_warpinfo
 from brainevent._typing import MatrixShape
-from .float import fixed_num_mv_p_call, fixed_num_mm_p_call
+from .float import fcnmv_p_call, fcnmm_p_call
+
+__all__ = [
+    'spfloat_fcnmv_p',
+    'spfloat_fcnmm_p',
+]
 
 
-def _sparse_float_fixed_num_mv_numba_kernel_generator(
+def _spfloat_fcnmv_numba_kernel(
     weight_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs
@@ -64,24 +69,24 @@ def _sparse_float_fixed_num_mv_numba_kernel_generator(
             @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
             def ell_mv(weights, indices, spikes, _, posts):
                 w = weights[0]
-                spk_bool = spikes != 0.
                 for i in numba.prange(indices.shape[0]):
                     r = 0.
                     for j in range(indices.shape[1]):
                         index = indices[i, j]
-                        if spk_bool[index] != 0.:
-                            r += spikes[index]
+                        sp = spikes[index]
+                        if sp != 0.:
+                            r += sp
                     posts[i] = r * w
         else:
             @numba.njit(parallel=True, fastmath=True, nogil=True, cache=True)
             def ell_mv(weights, indices, spikes, _, posts):
-                spk_bool = spikes != 0.
                 for i in numba.prange(indices.shape[0]):
                     r = 0.
                     for j in range(indices.shape[1]):
                         index = indices[i, j]
-                        if spk_bool[index]:
-                            r += weights[i, j] * spikes[index]
+                        sp = spikes[index]
+                        if sp != 0.:
+                            r += weights[i, j] * sp
                     posts[i] = r
 
     def kernel(weights, indices, spikes, _):
@@ -90,7 +95,7 @@ def _sparse_float_fixed_num_mv_numba_kernel_generator(
     return kernel
 
 
-def _sparse_float_fixed_num_mv_warp_kernel_generator(
+def _spfloat_fcnmv_warp_kernel(
     transpose: bool,
     weight_info: jax.ShapeDtypeStruct,
     spike_info: jax.ShapeDtypeStruct,
@@ -180,7 +185,7 @@ def _sparse_float_fixed_num_mv_warp_kernel_generator(
     return kernel
 
 
-def _sparse_float_fixed_num_mv_pallas_kernel_generator(
+def _spfloat_fcnmv_pallas_kernel(
     transpose: int,
     shape: Tuple[int, int],
     weight_info: jax.ShapeDtypeStruct,
@@ -281,15 +286,15 @@ def _sparse_float_fixed_num_mv_pallas_kernel_generator(
     return kernel
 
 
-def _sparse_float_fixed_num_mv_jvp_spikes(spk_dot, weights, indices, spikes, _, *, shape, transpose, **kwargs):
-    return fixed_num_mv_p_call(weights, indices, spk_dot, shape=shape, transpose=transpose)
+def _spfloat_fcnmv_jvp_spikes(spk_dot, weights, indices, spikes, _, *, shape, transpose, **kwargs):
+    return fcnmv_p_call(weights, indices, spk_dot, shape=shape, transpose=transpose)
 
 
-def _sparse_float_fixed_num_mv_jvp_weights(w_dot, weights, indices, spikes, _, *, shape, transpose, **kwargs):
-    return sparse_float_fixed_num_mv_p_call(w_dot, indices, spikes, shape=shape, transpose=transpose)
+def _spfloat_fcnmv_jvp_weights(w_dot, weights, indices, spikes, _, *, shape, transpose, **kwargs):
+    return spfloat_fcnmv_p_call(w_dot, indices, spikes, shape=shape, transpose=transpose)
 
 
-def _sparse_float_fixed_num_mv_transpose_rule(
+def _spfloat_fcnmv_transpose_rule(
     ct,
     weights,
     indices,
@@ -326,7 +331,7 @@ def _sparse_float_fixed_num_mv_transpose_rule(
             ct_gmax = ad.Zero(weights)
         elif homo:
             # scalar
-            ct_gmax = sparse_float_fixed_num_mv_p_call(
+            ct_gmax = spfloat_fcnmv_p_call(
                 jnp.asarray(1., dtype=weight_info.dtype),
                 indices,
                 spikes,
@@ -342,10 +347,10 @@ def _sparse_float_fixed_num_mv_transpose_rule(
         return ct_gmax, indices, spikes, _
 
 
-def _sparse_float_fixed_num_mv_batching(args, axes, **kwargs):
+def _spfloat_fcnmv_batching(args, axes, **kwargs):
     if tuple(axes) == (None, None, 0, None):
         assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
-        r = sparse_float_fixed_num_mm_p_call(
+        r = spfloat_fcnmm_p_call(
             args[0],
             args[1],
             args[2].T,
@@ -355,7 +360,7 @@ def _sparse_float_fixed_num_mv_batching(args, axes, **kwargs):
         return r, [1]
     elif tuple(axes) == (None, None, 1, None):
         assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
-        r = sparse_float_fixed_num_mm_p_call(
+        r = spfloat_fcnmm_p_call(
             args[0],
             args[1],
             args[2],
@@ -364,11 +369,11 @@ def _sparse_float_fixed_num_mv_batching(args, axes, **kwargs):
         )
         return r, [1]
     else:
-        return general_batching_rule(sparse_float_fixed_num_mv_p, args, axes, **kwargs)
+        return general_batching_rule(spfloat_fcnmv_p, args, axes, **kwargs)
 
 
 @namescoped_jit(static_argnames=("shape", "transpose"))
-def sparse_float_fixed_num_mv_p_call(
+def spfloat_fcnmv_p_call(
     weights,
     indices,
     spikes,
@@ -381,7 +386,7 @@ def sparse_float_fixed_num_mv_p_call(
     spikes, v_unit = u.split_mantissa_unit(spikes)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
-    r = sparse_float_fixed_num_mv_p(
+    r = spfloat_fcnmv_p(
         weights,
         indices,
         spikes,
@@ -396,19 +401,18 @@ def sparse_float_fixed_num_mv_p_call(
     return (u.maybe_decimal(r * v_unit * w_unit),)
 
 
-sparse_float_fixed_num_mv_p = XLACustomKernel('sparse_float_fixed_num_mv')
-sparse_float_fixed_num_mv_p.def_numba_kernel(_sparse_float_fixed_num_mv_numba_kernel_generator)
-sparse_float_fixed_num_mv_p.def_warp_kernel(_sparse_float_fixed_num_mv_warp_kernel_generator)
-sparse_float_fixed_num_mv_p.def_pallas_kernel('gpu', _sparse_float_fixed_num_mv_pallas_kernel_generator)
-sparse_float_fixed_num_mv_p.def_pallas_kernel('tpu', _sparse_float_fixed_num_mv_pallas_kernel_generator)
-sparse_float_fixed_num_mv_p.def_jvp_rule2(_sparse_float_fixed_num_mv_jvp_weights, None,
-                                          _sparse_float_fixed_num_mv_jvp_spikes, None)
-sparse_float_fixed_num_mv_p.def_transpose_rule(_sparse_float_fixed_num_mv_transpose_rule)
-sparse_float_fixed_num_mv_p.def_batching_rule(_sparse_float_fixed_num_mv_batching)
-sparse_float_fixed_num_mv_p.def_call(sparse_float_fixed_num_mv_p_call)
+spfloat_fcnmv_p = XLACustomKernel('spfloat_fcnmv')
+spfloat_fcnmv_p.def_numba_kernel(_spfloat_fcnmv_numba_kernel)
+spfloat_fcnmv_p.def_warp_kernel(_spfloat_fcnmv_warp_kernel)
+spfloat_fcnmv_p.def_pallas_kernel('gpu', _spfloat_fcnmv_pallas_kernel)
+spfloat_fcnmv_p.def_pallas_kernel('tpu', _spfloat_fcnmv_pallas_kernel)
+spfloat_fcnmv_p.def_jvp_rule2(_spfloat_fcnmv_jvp_weights, None, _spfloat_fcnmv_jvp_spikes, None)
+spfloat_fcnmv_p.def_transpose_rule(_spfloat_fcnmv_transpose_rule)
+spfloat_fcnmv_p.def_batching_rule(_spfloat_fcnmv_batching)
+spfloat_fcnmv_p.def_call(spfloat_fcnmv_p_call)
 
 
-def _sparse_float_fixed_num_mm_numba_kernel_generator(
+def _spfloat_fcnmm_numba_kernel(
     weight_info: jax.ShapeDtypeStruct,
     matrix_info: jax.ShapeDtypeStruct,
     transpose: bool,
@@ -465,7 +469,7 @@ def _sparse_float_fixed_num_mm_numba_kernel_generator(
     return kernel
 
 
-def _sparse_float_fixed_num_mm_pallas_kernel_generator(
+def _spfloat_fcnmm_pallas_kernel(
     shape: MatrixShape,
     transpose: bool,
     weight_info: jax.ShapeDtypeStruct,
@@ -594,15 +598,15 @@ def _sparse_float_fixed_num_mm_pallas_kernel_generator(
     return kernel
 
 
-def _sparse_float_fixed_num_mm_jvp_matrix(matrix_dot, weights, indices, matrix, _, *, shape, transpose, **kwargs):
-    return fixed_num_mm_p_call(weights, indices, matrix_dot, shape=shape, transpose=transpose)
+def _spfloat_fcnmm_jvp_matrix(matrix_dot, weights, indices, matrix, _, *, shape, transpose, **kwargs):
+    return fcnmm_p_call(weights, indices, matrix_dot, shape=shape, transpose=transpose)
 
 
-def _sparse_float_fixed_num_mm_jvp_weights(weights_dot, weights, indices, matrix, _, *, shape, transpose, **kwargs):
-    return sparse_float_fixed_num_mm_p_call(weights_dot, indices, matrix, shape=shape, transpose=transpose)
+def _spfloat_fcnmm_jvp_weights(weights_dot, weights, indices, matrix, _, *, shape, transpose, **kwargs):
+    return spfloat_fcnmm_p_call(weights_dot, indices, matrix, shape=shape, transpose=transpose)
 
 
-def _sparse_float_fixed_num_mm_transpose_rule(
+def _spfloat_fcnmm_transpose_rule(
     ct,
     weights,
     indices,
@@ -626,7 +630,7 @@ def _sparse_float_fixed_num_mm_transpose_rule(
             ct_vector = ad.Zero(matrix)
 
         else:
-            ct_vector = fixed_num_mm_p_call(
+            ct_vector = fcnmm_p_call(
                 weights,
                 indices,
                 ct,
@@ -641,7 +645,7 @@ def _sparse_float_fixed_num_mm_transpose_rule(
             ct_weight = ad.Zero(weights)
 
         elif homo:
-            ct_weight = sparse_float_fixed_num_mm_p_call(
+            ct_weight = spfloat_fcnmm_p_call(
                 jnp.ones([1], dtype=weight_info.dtype),
                 indices,
                 matrix,
@@ -666,7 +670,7 @@ def _batching_base_fn(args, axis=1, **kwargs):
     assert args[2].ndim == 3, 'Batching axis 0 requires 3D input.'
     m, maybe_batch1, maybe_batch2 = args[2].shape
     B = args[2].reshape(m, maybe_batch1 * maybe_batch2)
-    r = sparse_float_fixed_num_mm_p_call(
+    r = spfloat_fcnmm_p_call(
         args[0],
         args[1],
         B,
@@ -677,7 +681,7 @@ def _batching_base_fn(args, axis=1, **kwargs):
     return [r], [axis]
 
 
-def _sparse_float_fixed_num_mm_batching(args, axes, **kwargs):
+def _spfloat_fcnmm_batching(args, axes, **kwargs):
     if tuple(axes) == (None, None, 0, None):
         assert args[2].ndim == 3, 'Batching axis 0 requires 3D input.'
         args = list(args)
@@ -691,11 +695,11 @@ def _sparse_float_fixed_num_mm_batching(args, axes, **kwargs):
         return _batching_base_fn(args, axis=2, **kwargs)
 
     else:
-        return general_batching_rule(sparse_float_fixed_num_mm_p, args, axes, **kwargs)
+        return general_batching_rule(spfloat_fcnmm_p, args, axes, **kwargs)
 
 
 @namescoped_jit(static_argnames=("shape", "transpose"))
-def sparse_float_fixed_num_mm_p_call(
+def spfloat_fcnmm_p_call(
     weights: Union[jax.Array, u.Quantity],
     indices: jax.Array,
     matrix: Union[jax.Array, u.Quantity],
@@ -734,7 +738,7 @@ def sparse_float_fixed_num_mm_p_call(
     matrix, m_unit = u.split_mantissa_unit(matrix)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
-    r = sparse_float_fixed_num_mm_p(
+    r = spfloat_fcnmm_p(
         weights,
         indices,
         matrix,
@@ -749,12 +753,12 @@ def sparse_float_fixed_num_mm_p_call(
     return (u.maybe_decimal(r * m_unit * w_unit),)
 
 
-sparse_float_fixed_num_mm_p = XLACustomKernel('sparse_float_fixed_num_mm')
-sparse_float_fixed_num_mm_p.def_numba_kernel(_sparse_float_fixed_num_mm_numba_kernel_generator)
-sparse_float_fixed_num_mm_p.def_pallas_kernel('gpu', _sparse_float_fixed_num_mm_pallas_kernel_generator)
-sparse_float_fixed_num_mm_p.def_pallas_kernel('tpu', _sparse_float_fixed_num_mm_pallas_kernel_generator)
-sparse_float_fixed_num_mm_p.def_jvp_rule2(_sparse_float_fixed_num_mm_jvp_weights, None,
-                                          _sparse_float_fixed_num_mm_jvp_matrix, None)
-sparse_float_fixed_num_mm_p.def_transpose_rule(_sparse_float_fixed_num_mm_transpose_rule)
-sparse_float_fixed_num_mm_p.def_batching_rule(_sparse_float_fixed_num_mm_batching)
-sparse_float_fixed_num_mm_p.def_call(sparse_float_fixed_num_mm_p_call)
+spfloat_fcnmm_p = XLACustomKernel('spfloat_fcnmm')
+spfloat_fcnmm_p.def_numba_kernel(_spfloat_fcnmm_numba_kernel)
+spfloat_fcnmm_p.def_pallas_kernel('gpu', _spfloat_fcnmm_pallas_kernel)
+spfloat_fcnmm_p.def_pallas_kernel('tpu', _spfloat_fcnmm_pallas_kernel)
+spfloat_fcnmm_p.def_jvp_rule2(_spfloat_fcnmm_jvp_weights, None,
+                              _spfloat_fcnmm_jvp_matrix, None)
+spfloat_fcnmm_p.def_transpose_rule(_spfloat_fcnmm_transpose_rule)
+spfloat_fcnmm_p.def_batching_rule(_spfloat_fcnmm_batching)
+spfloat_fcnmm_p.def_call(spfloat_fcnmm_p_call)

@@ -27,15 +27,15 @@ from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .float import csrmv, csrmm
 
 __all__ = [
-    'sparse_float_csrmv',
-    'sparse_float_csrmv_p',
-    'sparse_float_csrmm',
-    'sparse_float_csrmm_p',
+    'spfloat_csrmv',
+    'spfloat_csrmv_p',
+    'spfloat_csrmm',
+    'spfloat_csrmm_p',
 ]
 
 
 @namescoped_jit(static_argnames=("shape", "transpose"))
-def sparse_float_csrmv(
+def spfloat_csrmv(
     data: Data,
     indices: Index,
     indptr: Indptr,
@@ -77,7 +77,7 @@ def sparse_float_csrmv(
 
 
 @namescoped_jit(static_argnames=("shape", "transpose"))
-def sparse_float_csrmm(
+def spfloat_csrmm(
     data: Data,
     indices: Index,
     indptr: Indptr,
@@ -429,7 +429,7 @@ def _sparse_float_csrmv_batching(args, axes, **kwargs):
         return r, [1]
 
     else:
-        return general_batching_rule(sparse_float_csrmv_p, args, axes, **kwargs)
+        return general_batching_rule(spfloat_csrmv_p, args, axes, **kwargs)
 
 
 def sparse_float_csrmv_p_call(
@@ -445,7 +445,7 @@ def sparse_float_csrmv_p_call(
     """
     Perform a call to the event CSR matrix-vector multiplication custom operation.
 
-    This function prepares the inputs and calls the sparse_float_csrmv_p custom operation
+    This function prepares the inputs and calls the spfloat_csrmv_p custom operation
     to perform matrix-vector multiplication using a CSR (Compressed Sparse Row) format.
 
     Args:
@@ -482,8 +482,8 @@ def sparse_float_csrmv_p_call(
         # If transpose is False, the output shape is (shape[0],).
         jax.ShapeDtypeStruct([shape[0]], weights.dtype)
     )
-    # Call the sparse_float_csrmv_p custom operation to perform the matrix-vector multiplication.
-    return sparse_float_csrmv_p(
+    # Call the spfloat_csrmv_p custom operation to perform the matrix-vector multiplication.
+    return spfloat_csrmv_p(
         weights,
         indices,
         indptr,
@@ -503,14 +503,14 @@ def sparse_float_csrmv_p_call(
     )
 
 
-sparse_float_csrmv_p = XLACustomKernel('sparse_float_csrmv')
-sparse_float_csrmv_p.def_numba_kernel(_sparse_float_csrmv_numba_kernel)
-sparse_float_csrmv_p.def_pallas_kernel('gpu', _sparse_float_csrmv_pallas_kernel)
-sparse_float_csrmv_p.def_pallas_kernel('tpu', _sparse_float_csrmv_pallas_kernel)
-sparse_float_csrmv_p.def_jvp_rule2(_sparse_float_csrmv_jvp_weights, None, None, _sparse_float_csrmv_jvp_v)
-sparse_float_csrmv_p.def_transpose_rule(_sparse_float_csrmv_transpose_rule)
-sparse_float_csrmv_p.def_batching_rule(_sparse_float_csrmv_batching)
-sparse_float_csrmv_p.def_call(sparse_float_csrmv_p_call)
+spfloat_csrmv_p = XLACustomKernel('sparse_float_csrmv')
+spfloat_csrmv_p.def_numba_kernel(_sparse_float_csrmv_numba_kernel)
+spfloat_csrmv_p.def_pallas_kernel('gpu', _sparse_float_csrmv_pallas_kernel)
+spfloat_csrmv_p.def_pallas_kernel('tpu', _sparse_float_csrmv_pallas_kernel)
+spfloat_csrmv_p.def_jvp_rule2(_sparse_float_csrmv_jvp_weights, None, None, _sparse_float_csrmv_jvp_v)
+spfloat_csrmv_p.def_transpose_rule(_sparse_float_csrmv_transpose_rule)
+spfloat_csrmv_p.def_batching_rule(_sparse_float_csrmv_batching)
+spfloat_csrmv_p.def_call(sparse_float_csrmv_p_call)
 
 
 def _sparse_float_csrmm_numba_kernel(
@@ -865,7 +865,7 @@ def _sparse_float_csrmm_batching(args, axes, **kwargs):
         return [r], [2]
 
     else:
-        return general_batching_rule(sparse_float_csrmm_p, args, axes, **kwargs)
+        return general_batching_rule(spfloat_csrmm_p, args, axes, **kwargs)
 
 
 def sparse_float_csrmm_p_call(
@@ -915,8 +915,8 @@ def sparse_float_csrmm_p_call(
         # If transpose is False, the output shape is (shape[0], B.shape[1]).
         jax.ShapeDtypeStruct([shape[0], B.shape[1]], weights.dtype)
     )
-    # Call the sparse_float_csrmm_p custom operation to perform the matrix-matrix multiplication.
-    return sparse_float_csrmm_p(
+    # Call the spfloat_csrmm_p custom operation to perform the matrix-matrix multiplication.
+    return spfloat_csrmm_p(
         weights,
         indices,
         indptr,
@@ -936,11 +936,11 @@ def sparse_float_csrmm_p_call(
     )
 
 
-sparse_float_csrmm_p = XLACustomKernel('sparse_float_csrmm')
-sparse_float_csrmm_p.def_numba_kernel(_sparse_float_csrmm_numba_kernel)
-sparse_float_csrmm_p.def_pallas_kernel('gpu', _sparse_float_csrmm_pallas_kernel)
-sparse_float_csrmm_p.def_pallas_kernel('tpu', _sparse_float_csrmm_pallas_kernel)
-sparse_float_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
-sparse_float_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
-sparse_float_csrmm_p.def_batching_rule(_sparse_float_csrmm_batching)
-sparse_float_csrmm_p.def_call(sparse_float_csrmm_p_call)
+spfloat_csrmm_p = XLACustomKernel('sparse_float_csrmm')
+spfloat_csrmm_p.def_numba_kernel(_sparse_float_csrmm_numba_kernel)
+spfloat_csrmm_p.def_pallas_kernel('gpu', _sparse_float_csrmm_pallas_kernel)
+spfloat_csrmm_p.def_pallas_kernel('tpu', _sparse_float_csrmm_pallas_kernel)
+spfloat_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
+spfloat_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
+spfloat_csrmm_p.def_batching_rule(_sparse_float_csrmm_batching)
+spfloat_csrmm_p.def_call(sparse_float_csrmm_p_call)

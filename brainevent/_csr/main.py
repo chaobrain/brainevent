@@ -29,7 +29,7 @@ from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .binary import binary_csrmv, binary_csrmm
 from .diag_add import csr_diag_position_v2, csr_diag_add_v2
 from .float import csrmv, csrmm, csrmv_yw2y
-from .sparse_float import sparse_float_csrmv, sparse_float_csrmm
+from .sparse_float import spfloat_csrmv, spfloat_csrmm
 from .spsolve import csr_solve
 
 __all__ = [
@@ -515,9 +515,9 @@ class CSR(BaseCLS):
         elif isinstance(other, SparseFloat):
             other = other.data
             if other.ndim == 1:
-                return sparse_float_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
+                return spfloat_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
             elif other.ndim == 2:
-                return sparse_float_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape)
+                return spfloat_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape)
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -564,14 +564,14 @@ class CSR(BaseCLS):
         elif isinstance(other, SparseFloat):
             other = other.data
             if other.ndim == 1:
-                return sparse_float_csrmv(
+                return spfloat_csrmv(
                     self.data, self.indices, self.indptr, other,
                     shape=self.shape,
                     transpose=True
                 )
             elif other.ndim == 2:
                 other = other.T
-                r = sparse_float_csrmm(
+                r = spfloat_csrmm(
                     self.data, self.indices, self.indptr, other,
                     shape=self.shape,
                     transpose=True
@@ -966,13 +966,13 @@ class CSC(BaseCLS):
         elif isinstance(other, SparseFloat):
             other = other.value
             if other.ndim == 1:
-                return sparse_float_csrmv(
+                return spfloat_csrmv(
                     data, self.indices, self.indptr, other,
                     shape=self.shape[::-1],
                     transpose=True
                 )
             elif other.ndim == 2:
-                return sparse_float_csrmm(
+                return spfloat_csrmm(
                     data, self.indices, self.indptr, other,
                     shape=self.shape[::-1],
                     transpose=True
@@ -1026,13 +1026,13 @@ class CSC(BaseCLS):
         elif isinstance(other, SparseFloat):
             other = other.value
             if other.ndim == 1:
-                return sparse_float_csrmv(data, self.indices, self.indptr, other,
-                                          shape=self.shape[::-1],
-                                          transpose=False)
+                return spfloat_csrmv(data, self.indices, self.indptr, other,
+                                     shape=self.shape[::-1],
+                                     transpose=False)
             elif other.ndim == 2:
-                return sparse_float_csrmm(data, self.indices, self.indptr, other.T,
-                                          shape=self.shape[::-1],
-                                          transpose=False).T
+                return spfloat_csrmm(data, self.indices, self.indptr, other.T,
+                                     shape=self.shape[::-1],
+                                     transpose=False).T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
