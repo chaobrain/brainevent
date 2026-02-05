@@ -19,7 +19,7 @@ import jax.numpy as jnp
 import pytest
 
 import brainevent
-from brainevent._coo.plasticity_binary import coo_on_pre, coo_on_post
+from brainevent._coo.plasticity_binary import plast_coo_on_binary_pre, plast_coo_on_binary_post
 
 
 class Test_coo_on_pre:
@@ -33,7 +33,7 @@ class Test_coo_on_pre:
         post_trace = brainstate.random.random((n_post,))
 
         coo = brainevent.COO.fromdense(mat)
-        coo = coo.with_data(coo_on_pre(coo.data, coo.row, coo.col, pre_spike, post_trace))
+        coo = coo.with_data(plast_coo_on_binary_pre(coo.data, coo.row, coo.col, pre_spike, post_trace))
 
         mat = mat + jnp.outer(pre_spike, post_trace)
         mat = jnp.where(mask, mat, 0.)
@@ -53,7 +53,7 @@ class Test_coo_on_pre:
             post_trace = brainstate.random.random((n_post,)) * trace_unit
 
             coo = brainevent.COO.fromdense(mat)
-            coo = coo.with_data(coo_on_pre(coo.data, coo.row, coo.col, pre_spike, post_trace))
+            coo = coo.with_data(plast_coo_on_binary_pre(coo.data, coo.row, coo.col, pre_spike, post_trace))
 
             mat = mat + u.math.outer(pre_spike, post_trace)
             mat = u.math.where(mask, mat, 0. * mat_unit)
@@ -78,7 +78,7 @@ class Test_coo_on_pre:
         post_trace = brainstate.random.random((n_post,))
 
         coo = brainevent.COO.fromdense(mat)
-        coo = coo.with_data(coo_on_pre(coo.data, coo.row, coo.col, pre_spike, post_trace, w_in, w_max))
+        coo = coo.with_data(plast_coo_on_binary_pre(coo.data, coo.row, coo.col, pre_spike, post_trace, w_in, w_max))
 
         mat = mat + jnp.outer(pre_spike, post_trace)
         mat = jnp.clip(mat, w_in, w_max)
@@ -99,7 +99,7 @@ class Test_coo_on_post:
         post_spike = brainstate.random.random((n_post,)) < 0.1
 
         coo = brainevent.COO.fromdense(mat)
-        coo = coo.with_data(coo_on_post(coo.data, coo.row, coo.col, pre_trace, post_spike))
+        coo = coo.with_data(plast_coo_on_binary_post(coo.data, coo.row, coo.col, pre_trace, post_spike))
 
         mat = mat + jnp.outer(pre_trace, post_spike)
         mat = jnp.where(mask, mat, 0.)
@@ -119,7 +119,7 @@ class Test_coo_on_post:
             post_spike = brainstate.random.random((n_post,)) < 0.1
 
             coo = brainevent.COO.fromdense(mat)
-            coo = coo.with_data(coo_on_post(coo.data, coo.row, coo.col, pre_trace, post_spike))
+            coo = coo.with_data(plast_coo_on_binary_post(coo.data, coo.row, coo.col, pre_trace, post_spike))
 
             mat = mat + u.math.outer(pre_trace, post_spike)
             mat = u.math.where(mask, mat, 0. * mat_unit)
@@ -144,7 +144,7 @@ class Test_coo_on_post:
         post_spike = brainstate.random.random((n_post,)) < 0.1
 
         coo = brainevent.COO.fromdense(mat)
-        coo = coo.with_data(coo_on_post(coo.data, coo.row, coo.col, pre_trace, post_spike, w_in, w_max))
+        coo = coo.with_data(plast_coo_on_binary_post(coo.data, coo.row, coo.col, pre_trace, post_spike, w_in, w_max))
 
         mat = mat + jnp.outer(pre_trace, post_spike)
         mat = jnp.clip(mat, w_in, w_max)

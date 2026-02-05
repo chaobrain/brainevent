@@ -25,14 +25,14 @@ from brainevent._misc import generate_block_dim
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
 
 __all__ = [
-    'coo_on_pre',
-    'coo_on_post',
-    'coo_on_pre_p',
-    'coo_on_post_p',
+    'plast_coo_on_binary_pre',
+    'plast_coo_on_binary_post',
+    'plast_coo_on_binary_pre_p',
+    'plast_coo_on_binary_post_p',
 ]
 
 
-def coo_on_pre(
+def plast_coo_on_binary_pre(
     weight: Union[u.Quantity, jax.Array],
     pre_ids: jax.Array,
     post_ids: jax.Array,
@@ -230,7 +230,7 @@ def _coo_on_pre_prim_call(weight, pre_ids, post_ids, pre_spike, post_trace):
     )
     assert pre_spike.ndim == 1, 'pre_spike should be 1D.'
     assert post_trace.ndim == 1, 'post_trace should be 1D.'
-    return coo_on_pre_p(
+    return plast_coo_on_binary_pre_p(
         weight, pre_ids, post_ids, pre_spike, post_trace,
         outs=[jax.ShapeDtypeStruct(weight.shape, weight.dtype)],
         weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
@@ -241,12 +241,12 @@ def _coo_on_pre_prim_call(weight, pre_ids, post_ids, pre_spike, post_trace):
     )
 
 
-coo_on_pre_p = XLACustomKernel('coo_on_pre')
-coo_on_pre_p.def_numba_kernel(_coo_on_pre_numba_kernel)
-coo_on_pre_p.def_warp_kernel(_coo_on_pre_warp_kernel)
-coo_on_pre_p.def_pallas_kernel('gpu', _coo_on_pre_pallas_gpu_kernel)
-coo_on_pre_p.def_pallas_kernel('tpu', _coo_on_pre_pallas_gpu_kernel)
-coo_on_pre_p.def_call(_coo_on_pre_prim_call)
+plast_coo_on_binary_pre_p = XLACustomKernel('coo_on_pre')
+plast_coo_on_binary_pre_p.def_numba_kernel(_coo_on_pre_numba_kernel)
+plast_coo_on_binary_pre_p.def_warp_kernel(_coo_on_pre_warp_kernel)
+plast_coo_on_binary_pre_p.def_pallas_kernel('gpu', _coo_on_pre_pallas_gpu_kernel)
+plast_coo_on_binary_pre_p.def_pallas_kernel('tpu', _coo_on_pre_pallas_gpu_kernel)
+plast_coo_on_binary_pre_p.def_call(_coo_on_pre_prim_call)
 
 
 # =============================================================================
@@ -254,7 +254,7 @@ coo_on_pre_p.def_call(_coo_on_pre_prim_call)
 # =============================================================================
 
 
-def coo_on_post(
+def plast_coo_on_binary_post(
     weight: Union[u.Quantity, jax.Array],
     pre_ids: jax.Array,
     post_ids: jax.Array,
@@ -452,7 +452,7 @@ def _coo_on_post_prim_call(weight, pre_ids, post_ids, pre_trace, post_spike):
     )
     assert pre_trace.ndim == 1, 'pre_trace should be 1D.'
     assert post_spike.ndim == 1, 'post_spike should be 1D.'
-    return coo_on_post_p(
+    return plast_coo_on_binary_post_p(
         weight, pre_ids, post_ids, pre_trace, post_spike,
         outs=[jax.ShapeDtypeStruct(weight.shape, weight.dtype)],
         weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
@@ -463,9 +463,9 @@ def _coo_on_post_prim_call(weight, pre_ids, post_ids, pre_trace, post_spike):
     )
 
 
-coo_on_post_p = XLACustomKernel('coo_on_post')
-coo_on_post_p.def_numba_kernel(_coo_on_post_numba_kernel)
-coo_on_post_p.def_warp_kernel(_coo_on_post_warp_kernel)
-coo_on_post_p.def_pallas_kernel('gpu', _coo_on_post_pallas_gpu_kernel)
-coo_on_post_p.def_pallas_kernel('tpu', _coo_on_post_pallas_gpu_kernel)
-coo_on_post_p.def_call(_coo_on_post_prim_call)
+plast_coo_on_binary_post_p = XLACustomKernel('coo_on_post')
+plast_coo_on_binary_post_p.def_numba_kernel(_coo_on_post_numba_kernel)
+plast_coo_on_binary_post_p.def_warp_kernel(_coo_on_post_warp_kernel)
+plast_coo_on_binary_post_p.def_pallas_kernel('gpu', _coo_on_post_pallas_gpu_kernel)
+plast_coo_on_binary_post_p.def_pallas_kernel('tpu', _coo_on_post_pallas_gpu_kernel)
+plast_coo_on_binary_post_p.def_call(_coo_on_post_prim_call)
