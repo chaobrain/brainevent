@@ -163,11 +163,11 @@ See also the ecosystem
    :maxdepth: 2
    :caption: Tutorials
 
-   tutorials/01_eventarray_basics.ipynb
-   tutorials/02_sparse_matrices.ipynb
-   tutorials/03_jit_connectivity.ipynb
-   tutorials/04_fixed_connections.ipynb
-   tutorials/05_synaptic_plasticity.ipynb
+   tutorial/01_eventarray_basics.ipynb
+   tutorial/02_sparse_matrices.ipynb
+   tutorial/03_jit_connectivity.ipynb
+   tutorial/04_fixed_connections.ipynb
+   tutorial/05_synaptic_plasticity.ipynb
 
 
 .. toctree::
