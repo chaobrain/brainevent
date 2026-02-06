@@ -21,7 +21,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._misc import cdiv, generate_block_dim, namescoped_jit
+from brainevent._misc import cdiv, generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 
 __all__ = [
@@ -39,7 +39,7 @@ __all__ = [
 ]
 
 
-@namescoped_jit()
+@namescope()
 def dm_sfv(weights, spikes):
     """
     Performs event-driven matrix-vector multiplication: `weights @ spikes`.

@@ -21,7 +21,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._misc import cdiv, generate_block_dim, namescoped_jit
+from brainevent._misc import cdiv, generate_block_dim, namescope
 from brainevent._op import jaxinfo_to_warpinfo, numba_kernel, XLACustomKernel, general_batching_rule
 
 __all__ = [
@@ -36,7 +36,7 @@ __all__ = [
 ]
 
 
-@namescoped_jit(prefix='brainevent.dense')
+@namescope
 def dm_bv(weights, spikes):
     """
     Performs event-driven matrix-vector multiplication: `dense matrix @ binary vector`.
@@ -266,6 +266,7 @@ dm_bv_p.def_batching_rule(_dmbv_batching)
 dm_bv_p.def_call(dmbv_p_call)
 
 
+@namescope
 def bv_dm(spikes, weights):
     """Performs event-driven vector-matrix multiplication: `spikes @ weights`.
 
@@ -485,6 +486,7 @@ bv_dm_p.def_batching_rule(_event_matrix_batching)
 bv_dm_p.def_call(bvdm_p_call)
 
 
+@namescope
 def dm_bm(weights, spikes):
     """
     Performs event-driven matrix-matrix multiplication: `weights @ spikes`.
@@ -765,6 +767,7 @@ dm_bm_p.def_batching_rule(_dense_mat_dot_binary_mat_batching)
 dm_bm_p.def_call(dmbm_p_call)
 
 
+@namescope
 def bm_dm(spikes, weights):
     """
     Performs event-driven binary matrix - dense matrix multiplication: `spikes @ weights`.

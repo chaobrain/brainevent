@@ -18,8 +18,10 @@ import jax.numpy as jnp
 from jax.experimental import sparse
 from jax.experimental.sparse import BCOO
 
+from brainevent._misc import namescope
 
-@jax.jit
+
+@namescope
 def sddmm_indices(
     A: jax.Array,
     B: jax.Array,
@@ -54,7 +56,7 @@ def sddmm_indices(
     return BCOO((result_data, indices), shape=(A.shape[0], B.shape[1]))
 
 
-@jax.jit
+@namescope
 def sddmm_coo_indices(
     A: jax.Array,
     B: jax.Array,
@@ -85,7 +87,7 @@ def sddmm_coo_indices(
     return sddmm_indices(A, B, indices)
 
 
-@jax.jit
+@namescope
 def sddmm_bcoo(
     A: jax.Array,
     B: jax.Array,

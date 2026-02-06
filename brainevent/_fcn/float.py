@@ -23,7 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape
+from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
 from brainevent._op import general_batching_rule, XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
 
 __all__ = [
@@ -34,6 +34,7 @@ __all__ = [
 ]
 
 
+@namescope(static_argnames=['shape', 'transpose'])
 def fcnmv(
     weights: Union[jax.Array, u.Quantity],
     indices: jax.Array,
@@ -464,6 +465,7 @@ fcnmv_p.def_batching_rule(_fcnmv_batching)
 fcnmv_p.def_call(fcnmv_p_call)
 
 
+@namescope(static_argnames=['shape', 'transpose'])
 def fcnmm(
     weights: Union[jax.Array, u.Quantity],
     indices: jax.Array,

@@ -21,7 +21,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent._misc import generate_block_dim
+from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
 from brainevent._typing import MatrixShape
 
@@ -33,6 +33,7 @@ __all__ = [
 ]
 
 
+@namescope(static_argnames=['shape'])
 def plast_csr_on_binary_pre(
     weight: Union[u.Quantity, jax.Array, numbers.Number],
     indices: Union[np.ndarray, jax.Array],
@@ -263,6 +264,7 @@ plast_csr_on_binary_pre_p.def_pallas_kernel('gpu', _csr_on_pre_pallas_kernel_gen
 plast_csr_on_binary_pre_p.def_pallas_kernel('tpu', _csr_on_pre_pallas_kernel_generator)
 
 
+@namescope(static_argnames=['shape'])
 def plast_csr2csc_on_binary_post(
     weight: Union[u.Quantity, jax.Array],
     indices: Union[np.ndarray, jax.Array],
