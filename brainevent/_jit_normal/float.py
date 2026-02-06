@@ -621,12 +621,7 @@ jitn_p.def_numba_kernel(_jitn_numba_kernel_generator)
 jitn_p.def_warp_kernel(_jitn_warp_kernel_generator)
 jitn_p.def_pallas_kernel('gpu', _jitn_pallas_kernel_generator)
 jitn_p.def_pallas_kernel('tpu', _jitn_pallas_kernel_generator)
-jitn_p.def_jvp_rule2(
-    _jitn_jvp_wlow,
-    _jitn_jvp_whigh,
-    None,
-    None,
-)
+jitn_p.def_jvp_rule2(_jitn_jvp_wlow, _jitn_jvp_whigh, None, None)
 jitn_p.def_transpose_rule(_jitn_transpose)
 jitn_p.def_batching_rule(_jitn_batching)
 
@@ -1170,13 +1165,7 @@ jitnmv_p.def_numba_kernel(_jitnmv_numba_kernel_generator)
 jitnmv_p.def_warp_kernel(_jitnmv_warp_kernel_generator)
 jitnmv_p.def_pallas_kernel('gpu', _jitnmv_pallas_kernel_generator)
 jitnmv_p.def_pallas_kernel('tpu', _jitnmv_pallas_kernel_generator)
-jitnmv_p.def_jvp_rule2(
-    _jitnmv_jvp_wloc,
-    _jitnmv_jvp_wscale,
-    None,
-    _jitnmv_jvp_v,
-    None,
-)
+jitnmv_p.def_jvp_rule2(_jitnmv_jvp_wloc, _jitnmv_jvp_wscale, None, _jitnmv_jvp_v, None)
 jitnmv_p.def_transpose_rule(_jitnmv_transpose_rules)
 jitnmv_p.def_batching_rule(_jitnmv_batching)
 

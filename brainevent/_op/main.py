@@ -14,10 +14,9 @@
 # limitations under the License.
 # ==============================================================================
 
-import copy
 import functools
 import inspect
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Union
 
 import jax
@@ -258,8 +257,8 @@ class XLACustomKernel:
                         f"\n\nAlternative backends available for '{platform}':\n"
                         + "\n".join(f"  - {b}" for b in alternatives)
                         + f"\n\nTo use an alternative:\n"
-                        f"  1. Call with backend='{alternatives[0]}'\n"
-                        f"  2. Or set default: kernel.set_default('{platform}', '{alternatives[0]}')"
+                          f"  1. Call with backend='{alternatives[0]}'\n"
+                          f"  2. Or set default: kernel.set_default('{platform}', '{alternatives[0]}')"
                     )
                 raise KernelExecutionError(
                     f"Backend '{backend_to_use}' failed on platform '{platform}':\n"
