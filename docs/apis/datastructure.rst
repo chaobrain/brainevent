@@ -1,13 +1,24 @@
-Data Structures Interoperable with Events
-=========================================
+Sparse Matrix Data Structures
+=============================
 
 .. currentmodule:: brainevent
 .. automodule:: brainevent
    :no-index:
 
 
-Compressed Sparse Row matrix
-----------------------------
+COO (Coordinate Format)
+------------------------
+
+.. autosummary::
+   :toctree: generated/
+   :nosignatures:
+   :template: classtemplate.rst
+
+   COO
+
+
+CSR / CSC (Compressed Sparse Row / Column)
+-------------------------------------------
 
 .. autosummary::
    :toctree: generated/
@@ -18,58 +29,62 @@ Compressed Sparse Row matrix
    CSC
 
 
-
-Block Sparse Row matrix
------------------------
-
+JITC Base
+---------
 
 .. autosummary::
    :toctree: generated/
    :nosignatures:
    :template: classtemplate.rst
 
-   BlockCSR
+   JITCMatrix
 
 
-
-Coordinate Format matrix
-------------------------
-
+JITC Scalar
+-----------
 
 .. autosummary::
    :toctree: generated/
    :nosignatures:
    :template: classtemplate.rst
 
-   COO
+   JITScalarMatrix
+   JITCScalarR
+   JITCScalarC
 
 
-
-Fixed Number of Connections matrix
-----------------------------------
-
-.. autosummary::
-   :toctree: generated/
-   :nosignatures:
-   :template: classtemplate.rst
-
-   FixedPostNumConn
-   FixedPreNumConn
-
-
-
-Just-In-Time Connectivity matrix
---------------------------------
+JITC Normal
+-----------
 
 .. autosummary::
    :toctree: generated/
    :nosignatures:
    :template: classtemplate.rst
 
-   JITCHomoR
-   JITCHomoC
    JITCNormalR
    JITCNormalC
+
+
+JITC Uniform
+------------
+
+.. autosummary::
+   :toctree: generated/
+   :nosignatures:
+   :template: classtemplate.rst
+
    JITCUniformR
    JITCUniformC
 
+
+Fixed Connectivity
+------------------
+
+.. autosummary::
+   :toctree: generated/
+   :nosignatures:
+   :template: classtemplate.rst
+
+   FixedNumConn
+   FixedPreNumConn
+   FixedPostNumConn

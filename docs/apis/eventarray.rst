@@ -1,10 +1,19 @@
-Data Structures Representing Events
-===================================
-
+Event Array Types
+=================
 
 .. currentmodule:: brainevent
 .. automodule:: brainevent
    :no-index:
+
+
+Base
+----
+
+.. autosummary::
+   :toctree: generated/
+   :template: classtemplate.rst
+
+   BaseArray
 
 
 Binary Events
@@ -18,9 +27,8 @@ Binary Events
    EventArray
 
 
-
-Sparse Floating Point Events
-----------------------------
+Sparse Float Events
+-------------------
 
 .. autosummary::
    :toctree: generated/
@@ -29,12 +37,21 @@ Sparse Floating Point Events
    SparseFloat
 
 
-Binary Event Indices
---------------------
+Indexed Events
+--------------
 
 .. autosummary::
    :toctree: generated/
    :template: classtemplate.rst
 
-   BinaryArrayIndex
+   IndexedBinary
+   IndexedSparseFloat
 
+
+Utility
+-------
+
+.. autosummary::
+   :toctree: generated/
+
+   binary_array_index
