@@ -45,7 +45,7 @@ def binary_fcnmv(
     *,
     shape: Tuple[int, int],
     transpose: bool = False,
-) -> Tuple[Union[jax.Array, u.Quantity]]:
+) -> Union[jax.Array, u.Quantity]:
     weights, w_unit = u.split_mantissa_unit(weights)
     spikes, v_unit = u.split_mantissa_unit(spikes)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
@@ -56,7 +56,7 @@ def binary_fcnmv(
         shape=shape,
         transpose=transpose,
     )[0]
-    return (u.maybe_decimal(r * v_unit * w_unit),)
+    return u.maybe_decimal(r * v_unit * w_unit)
 
 
 def _binary_fcnmv_numba_kernel(
@@ -527,7 +527,7 @@ def binary_fcnmm(
     *,
     shape: Tuple[int, int],
     transpose: bool,
-) -> Tuple[Union[jax.Array, u.Quantity]]:
+) -> Union[jax.Array, u.Quantity]:
     weights, w_unit = u.split_mantissa_unit(weights)
     matrix, m_unit = u.split_mantissa_unit(matrix)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
@@ -538,7 +538,7 @@ def binary_fcnmm(
         transpose=transpose,
         shape=shape,
     )[0]
-    return (u.maybe_decimal(r * m_unit * w_unit),)
+    return u.maybe_decimal(r * m_unit * w_unit)
 
 
 def _binary_fcnmm_numba_kernel(
