@@ -25,8 +25,6 @@ import pytest
 import brainevent
 from brainevent._coo.test_util import _get_coo, vector_coo, matrix_coo, coo_vector, coo_matrix
 
-pytest.mark.skipif(brainstate.environ.get_platform() != 'cpu', allow_module_level=True)
-
 
 class TestCOO:
     def test_event_homo_bool(self):
@@ -107,7 +105,7 @@ class TestVectorCOO:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         coo = brainevent.COO([data, row, col], shape=(m, n))
         y = brainevent.EventArray(x) @ coo
-        y2 = vector_coo(x, coo.data, row, col, [m, n])
+        y2 = vector_coo(x, coo.data, row, col, (m, n))
         assert (jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
 
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -119,7 +117,7 @@ class TestVectorCOO:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         coo = brainevent.COO([data, row, col], shape=(m, n))
         y = jax.vmap(lambda x: brainevent.EventArray(x) @ coo)(xs)
-        y2 = jax.vmap(lambda x: vector_coo(x, coo.data, row, col, [m, n]))(xs)
+        y2 = jax.vmap(lambda x: vector_coo(x, coo.data, row, col, (m, n)))(xs)
         assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -131,7 +129,7 @@ class TestVectorCOO:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         coo = brainevent.COO([data, row, col], shape=(m, n))
         y = coo @ brainevent.EventArray(v)
-        y2 = coo_vector(v, coo.data, row, col, [m, n])
+        y2 = coo_vector(v, coo.data, row, col, (m, n))
         assert (jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
 
     def _test_vjp(self, homo_w, replace, transpose):
@@ -228,7 +226,7 @@ class TestMatrixCOO:
             data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
             coo = brainevent.COO([data, row, col], shape=(m, n))
             y = brainevent.EventArray(x) @ coo
-            y2 = matrix_coo(x.astype(float), coo.data, row, col, [m, n])
+            y2 = matrix_coo(x.astype(float), coo.data, row, col, (m, n))
             assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -240,5 +238,5 @@ class TestMatrixCOO:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         coo = brainevent.COO([data, row, col], shape=(m, n))
         y = coo @ brainevent.EventArray(matrix)
-        y2 = coo_matrix(matrix.astype(float), coo.data, row, col, [m, n])
+        y2 = coo_matrix(matrix.astype(float), coo.data, row, col, (m, n))
         assert (jnp.allclose(y, y2))

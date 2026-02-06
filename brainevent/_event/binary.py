@@ -17,11 +17,11 @@
 
 from jax.tree_util import register_pytree_node_class
 
-from brainevent._dense.binary import (
-    dense_mat_dot_binary_mat,
-    binary_mat_dot_dense_mat,
-    dense_mat_dot_binary_vec,
-    binary_vec_dot_dense_mat,
+from brainevent._dense import (
+    dm_bm,
+    bm_dm,
+    dm_bv,
+    bv_dm,
 )
 from brainevent._error import MathError
 from .base import (
@@ -98,9 +98,9 @@ class BinaryArray(BaseArray):
 
             # Perform the appropriate multiplication based on dimensions
             if self.ndim == 1:
-                return binary_vec_dot_dense_mat(self.value, oc)
+                return bv_dm(self.value, oc)
             else:  # self.ndim == 2
-                return binary_mat_dot_dense_mat(self.value, oc)
+                return bm_dm(self.value, oc)
         else:
             return oc.__rmatmul__(self)
 
@@ -153,9 +153,9 @@ class BinaryArray(BaseArray):
 
             # Perform the appropriate multiplication based on dimensions
             if self.ndim == 1:
-                return dense_mat_dot_binary_vec(oc, self.value)
+                return dm_bv(oc, self.value)
             else:
-                return dense_mat_dot_binary_mat(oc, self.value)
+                return dm_bm(oc, self.value)
         else:
             return oc.__matmul__(self)
 

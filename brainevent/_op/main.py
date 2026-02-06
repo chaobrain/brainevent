@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # Copyright 2024 BrainX Ecosystem Limited. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,103 +14,39 @@
 # limitations under the License.
 # ==============================================================================
 
-# -*- coding: utf-8 -*-
-
+import copy
 import functools
-from typing import Callable, Union, Optional, Dict
+import inspect
+from dataclasses import dataclass, field
+from typing import Callable, Dict, List, Optional, Union
 
-from jax.interpreters import xla, mlir, batching, ad
+import jax
+from jax.interpreters import xla, batching, ad, mlir
 
 from brainevent._compatible_import import Primitive
-from brainevent._config import config
+from brainevent._error import KernelFallbackExhaustedError, KernelExecutionError
 from brainevent._typing import KernelGenerator
-from .op_numba import register_numba_cpu_translation
-from .op_pallas import (
-    register_pallas_gpu_translation,
-    register_pallas_tpu_translation,
-)
-from .op_warp import register_warp_gpu_translation
+from .benchmark import BenchmarkResult, BenchmarkReport, benchmark_function
 from .util import general_batching_rule, defjvp, OutType, abstract_arguments
 
 __all__ = [
     'XLACustomKernel',
-    'GPUKernelChoice',
+    'KernelEntry',
 ]
 
 
-class GPUKernelChoice:
-    """A class to dynamically select between different GPU kernel implementations.
-
-    This class provides a mechanism to choose between Warp and Pallas kernel
-    implementations for GPU execution. It allows specifying a default kernel type
-    and dynamically selecting the appropriate kernel at runtime based on
-    configuration settings.
+@dataclass
+class KernelEntry:
+    """Represents a registered kernel for a specific backend and platform.
 
     Attributes:
-        default (str): The default kernel backend to use ('warp' or 'pallas').
-        warp_kernel (Optional[KernelGenerator]): The Warp kernel implementation.
-        pallas_kernel (Optional[KernelGenerator]): The Pallas kernel implementation.
-        _all_kernels (dict): Dictionary mapping backend names to kernel implementations.
+        backend: The backend name (e.g., 'numba', 'warp', 'pallas', 'triton').
+        platform: The platform name (e.g., 'cpu', 'gpu', 'tpu').
+        kernel_generator: A callable that generates the kernel function.
     """
-
-    def __init__(
-        self,
-        default: str,
-        warp_kernel: Optional[KernelGenerator] = None,
-        pallas_kernel: Optional[KernelGenerator] = None,
-    ):
-        """Initialize a GPU kernel choice with Warp and/or Pallas implementations.
-
-        Args:
-            default (str): The default kernel type to use. Must be either 'warp' or 'pallas',
-                and the corresponding kernel must be provided.
-            warp_kernel (Optional[KernelGenerator]): The Warp kernel implementation.
-                Defaults to None.
-            pallas_kernel (Optional[KernelGenerator]): The Pallas kernel implementation.
-                Defaults to None.
-
-        Raises:
-            ValueError: If neither warp_kernel nor pallas_kernel is provided.
-            AssertionError: If default is not 'warp' or 'pallas', or if the specified
-                default doesn't have a corresponding kernel implementation.
-        """
-        self.default = default
-        assert default in ['warp', 'pallas'], (
-            "default must be either 'warp' or 'pallas'."
-        )
-        self.warp_kernel = warp_kernel
-        self.pallas_kernel = pallas_kernel
-        if warp_kernel is None and pallas_kernel is None:
-            raise ValueError(
-                "At least one of warp_kernel or pallas_kernel must be provided."
-            )
-        self._all_kernels = {}
-        if warp_kernel is not None:
-            self._all_kernels['warp'] = warp_kernel
-        if pallas_kernel is not None:
-            self._all_kernels['pallas'] = pallas_kernel
-        assert default in self._all_kernels, (
-            f"default must be one of {list(self._all_kernels.keys())}."
-        )
-
-    def __call__(self, *args, **kwargs) -> Dict:
-        """Select and return the appropriate kernel implementation based on configuration.
-
-        This method allows the GPUKernelChoice instance to be called like a function.
-        It selects the appropriate kernel implementation based on the current
-        configuration settings.
-
-        Args:
-            *args: Variable positional arguments passed to the kernel implementation.
-            **kwargs: Variable keyword arguments passed to the kernel implementation.
-        """
-        if config.gpu_kernel_backend == 'default':
-            backend = self.default
-        elif config.gpu_kernel_backend in self._all_kernels:
-            backend = config.gpu_kernel_backend
-        else:
-            backend = self.default
-        return {backend: self._all_kernels[backend]}
+    backend: str
+    platform: str
+    kernel_generator: KernelGenerator
 
 
 class XLACustomKernel:
@@ -118,55 +55,57 @@ class XLACustomKernel:
     This class provides a high-level interface to define custom operations
     that can be executed efficiently on different backends (CPU, GPU, TPU)
     via XLA custom calls. It handles the registration of the JAX primitive,
-    its abstract evaluation rule, backend-specific kernel implementations
-    (using Numba for CPU, Pallas or Warp for GPU/TPU), and JAX transformation
-    rules like batching, JVP (forward-mode AD), and transpose (reverse-mode AD).
+    its abstract evaluation rule, backend-specific kernel implementations,
+    and JAX transformation rules like batching, JVP (forward-mode AD), and
+    transpose (reverse-mode AD).
 
-    The core idea is to define the computation logic once for each relevant
-    backend using specialized kernel generators (:class:`KernelGenerator`,
-    :class:`KernelGenerator`, :class:`KernelGenerator`) and then use this class
-    to bind everything together into a callable JAX operation.
+    Supported backends by platform:
+
+    - **CPU**: Numba, TVM FFI
+    - **GPU**: Pallas, TVM FFI, Numba CUDA, Warp, Triton
+    - **TPU**: Pallas
+
+    The workflow for using this class is:
+
+    1. Create an instance with a unique primitive name
+    2. Register kernel implementations using ``def_kernel`` or convenience
+       methods like ``def_numba_kernel``, ``def_pallas_kernel``, etc.
+    3. Optionally set default backends using ``set_default`` or ``asdefault=True``
+    4. Define JAX transformation rules (batching, JVP, transpose) as needed
+    5. Call the instance with input arrays and output specifications
+
+    The first kernel registered for a platform automatically becomes the default.
+    You can override this by calling ``set_default(platform, backend)`` or by
+    passing ``asdefault=True`` when registering a kernel.
+
+    If a kernel fails, the error message shows alternative backends available
+    for the platform and how to switch to them.
 
     Attributes:
-        primitive (jax.core.Primitive): The underlying JAX primitive created.
-        name (str): The name assigned to the primitive.
+        primitive: The underlying JAX primitive created.
+        name: The name assigned to the primitive.
 
     Args:
-        name (str): The unique name for the custom JAX primitive.
-        cpu_kernel (Optional[KernelGenerator]): An instance of
-            `KernelGenerator` defining the computation for the CPU backend.
-            Defaults to None.
-        gpu_kernel (Optional[Union[KernelGenerator, KernelGenerator]]):
-            An instance of `KernelGenerator` or `KernelGenerator`
-            defining the computation for the GPU backend. Defaults to None.
-        tpu_kernel (Optional[KernelGenerator]): An instance of
-            `KernelGenerator` defining the computation for the TPU backend.
-            Defaults to None.
-        batching_translation (Optional[Callable]): A function defining a custom
-            batching rule for the primitive. If None, a general batching rule
-            is usually registered by default. See `jax.interpreters.batching`.
-            Defaults to None.
-        jvp_translation (Optional[Callable]): A function defining a custom JVP
-            (Jacobian-Vector Product) rule for forward-mode automatic
-            differentiation. See `jax.interpreters.ad.primitive_jvps`.
-            Defaults to None.
-        transpose_translation (Optional[Callable]): A function defining a custom
-            transpose rule for reverse-mode automatic differentiation (used with
-            `jax.linear_transpose`). See `jax.interpreters.ad.primitive_transposes`.
-            Defaults to None.
+        name: The unique name for the custom JAX primitive.
 
+    Example:
+        >>> kernel = XLACustomKernel('my_custom_op')
+        >>> kernel.def_numba_kernel(numba_kernel_generator)  # CPU default
+        >>> kernel.def_pallas_kernel('gpu', pallas_kernel_generator, asdefault=True)
+        >>> kernel.def_warp_kernel(warp_kernel_generator)  # Alternative GPU backend
+        >>> print(kernel.defaults)  # {'cpu': 'numba', 'gpu': 'pallas'}
+        >>> kernel.set_default('gpu', 'warp')  # Change GPU default
+        >>> result = kernel(input_array, outs=[jax.ShapeDtypeStruct((10,), jnp.float32)])
+
+    See Also:
+        :class:`KernelEntry`: Represents a registered kernel.
     """
 
     __module__ = 'brainevent'
 
-    def __init__(
-        self,
-        name: str,
-        batching_translation: Callable = None,
-        jvp_translation: Callable = None,
-        transpose_translation: Callable = None,
-    ):
+    def __init__(self, name: str):
         # primitive
+        self.name = name
         self.primitive = Primitive(name)
         self.primitive.multiple_results = True
 
@@ -175,29 +114,19 @@ class XLACustomKernel:
         self.primitive.def_abstract_eval(self._abstract_eval)
 
         # batching rule
-        if batching_translation is not None:
-            batching.primitive_batchers[self.primitive] = batching_translation
-
-        # jvp rule
-        if jvp_translation is not None:
-            ad.primitive_jvps[self.primitive] = jvp_translation
-
-        # transpose rule
-        if transpose_translation is not None:
-            ad.primitive_transposes[self.primitive] = transpose_translation
-
-        # batching rule
         self.register_general_batching()
 
-        # multiple gpu kernels
-        self._gpu_kernel_choice = None
+        # kernel storage: platform -> backend -> KernelEntry
+        self._kernels: Dict[str, Dict[str, KernelEntry]] = {}
+        # default backends per platform: platform -> backend_name
+        self._defaults: Dict[str, str] = {}
+        # tracks which platforms have had lowering registered
+        self._registered_platforms: set = set()
 
-    def _abstract_eval(
-        self,
-        *ins,
-        outs: OutType,
-        **kwargs
-    ):
+        # call function for benchmarking
+        self._call_fn: Optional[Callable] = None
+
+    def _abstract_eval(self, *ins, outs: OutType, **kwargs):
         """
         Abstract evaluation rule for the JAX primitive.
 
@@ -223,211 +152,263 @@ class XLACustomKernel:
         """
         return tuple(outs)
 
-    def call(self, *ins, outs: OutType, **kwargs):
-        """
-        Public interface to call the custom operator.
-
-        This method serves as a user-friendly alias for the `__call__` method,
-        allowing the custom operator to be invoked similarly to a standard function.
-
-        Args:
-            *ins: Variable number of input arrays (operands) for the kernel.
-            outs: A single `ShapeDtype` object or a sequence of them, specifying
-                  the shape and dtype of the expected output(s).
-            **kwargs: Additional keyword arguments passed to the primitive binding.
-
-        Returns:
-            The result(s) of the custom operator execution, structured according
-            to the `outs` specification.
-        """
-        return self.__call__(*ins, outs=outs, **kwargs, )
-
-    def bind(self, *ins, outs: OutType, **kwargs):
-        """
-        Bind the primitive with the given inputs and parameters.
-
-        This method is another way to invoke the custom operator, often used
-        internally or when explicitly working with JAX primitives. It forwards
-        the call to the `__call__` method.
-
-        Args:
-            *ins: Variable number of input arrays (operands) for the kernel.
-            outs: A single `ShapeDtype` object or a sequence of them, specifying
-                  the shape and dtype of the expected output(s).
-            **kwargs: Additional keyword arguments passed to the primitive binding.
-
-        Returns:
-            The result(s) of the custom operator execution, structured according
-            to the `outs` specification.
-        """
-        return self.__call__(*ins, outs=outs, **kwargs, )
-
     def __call__(self, *ins, outs: OutType, **kwargs):
-        """
-        Core method to bind and execute the custom JAX primitive.
-
-        This method handles the actual binding of the JAX primitive defined by
-        this kernel. It processes the output specifications, binds the primitive
-        with the inputs and keyword arguments, and returns the results.
+        """Call the primitive with the given inputs.
 
         Args:
-            *ins: Variable number of input arrays (operands) for the kernel.
-            outs: A single `ShapeDtype` object or a sequence of them, specifying
-                  the shape and dtype of the expected output(s). These are
-                  transformed into `jax.core.ShapedArray` internally.
-            **kwargs: Additional keyword arguments passed directly to the
-                      `primitive.bind` call.
+            *ins: Input arrays to the primitive.
+            outs: Output specification (shapes and dtypes).
+            backend: Optional backend to use. If specified and a kernel
+                with that backend is available for the target platform,
+                it will be prioritized. If None, kernels are tried in
+                default priority order.
+            **kwargs: Additional keyword arguments passed to the kernel.
 
         Returns:
-            The result(s) of the primitive binding, potentially a single array or
-            a tuple/tree of arrays, matching the structure provided in `outs`.
-
-        Raises:
-            AssertionError: If the number of results returned by `primitive.bind`
-                            does not match the number of expected outputs defined
-                            by `outs`.
+            The output(s) of the primitive.
         """
-        self.ready_to_call()
-
         outs, tree_def = abstract_arguments(outs)
-        r = self.primitive.bind(
-            *ins,
-            **kwargs,
-            outs=tuple(outs),
-        )
+        r = self.primitive.bind(*ins, **kwargs, outs=tuple(outs))
         assert len(r) == len(outs), 'The number of outputs does not match the expected.'
         return tree_def.unflatten(r)
 
-    def ready_to_call(self):
-        if self._gpu_kernel_choice is not None:
-            self.def_gpu_kernel(**self._gpu_kernel_choice())
-
-    def def_cpu_kernel(self, numba: Callable):
-        """
-        Defines and registers the CPU kernel implementation using Numba.
-
-        This method associates a Numba kernel generator with the primitive for CPU execution.
-        The kernel generator should be a callable that produces a Numba-jitted function
-        that implements the operation's computation logic on CPU.
-
-        Args:
-            numba: A callable function that generates the Numba-jitted implementation.
-                This generator typically configures and returns a function optimized
-                for CPU execution using Numba's JIT compilation.
-
-        Raises:
-            TypeError: If the provided `numba` parameter is not callable.
-
-        Examples::
-
-            def my_numba_kernel_generator():
-                @numba.njit
-                def kernel_impl(inputs, outputs):
-                    # Implementation logic
-                    pass
-                return kernel_impl
-
-            custom_op = XLACustomKernel("my_custom_op")
-            custom_op.def_cpu_kernel(my_numba_kernel_generator)
-        """
-        if not callable(numba):
-            raise TypeError(
-                'The `numba` parameter must be a callable that generates '
-                'the Numba-jitted kernel function.'
-            )
-        register_numba_cpu_translation(self.primitive, numba)
-
-    def def_gpu_kernel(
+    def def_kernel(
         self,
-        warp: Callable = None,
-        pallas: Callable = None,
-        default: str = None
+        backend: str,
+        platform: str,
+        kg: KernelGenerator,
+        asdefault: bool = False
     ):
-        """
-        Defines and registers the GPU kernel implementation using Warp and/or Pallas.
-
-        This method associates GPU kernel implementations with the primitive. It supports
-        either a single implementation (Warp or Pallas) or both with a specified default.
-        When both implementations are provided, the selection is determined by the
-        `config.gpu_kernel_backend` setting at runtime.
+        """Register a kernel for a specific backend and platform.
 
         Args:
-            warp: A callable that generates the NVIDIA Warp kernel implementation.
-                Defaults to None.
-            pallas: A callable that generates the JAX Pallas kernel implementation.
-                Defaults to None.
-            default: The default kernel to use when both implementations are provided.
-                Must be either 'warp' or 'pallas'. Required when both warp and pallas
-                are provided. Defaults to None.
-
-        Raises:
-            AssertionError: If invalid combinations of arguments are provided:
-                - When warp is None, pallas must be provided
-                - When both warp and pallas are provided, default must be specified
-                - When default is provided, it must be either 'warp' or 'pallas'
+            backend: The backend name (e.g., 'numba', 'warp', 'pallas').
+            platform: The platform name (e.g., 'cpu', 'gpu', 'tpu').
+            kg: A kernel generator callable that creates the kernel function.
+            asdefault: If True, set this backend as the default for the platform.
+                The first kernel registered for a platform automatically becomes
+                the default unless another kernel is explicitly set as default.
         """
-        # Validate default if provided
-        if default is not None:
-            assert isinstance(default, str), (
-                f'The `default` should be a string, but got {type(default)}'
-            )
+        assert isinstance(backend, str), f'The `backend` should be a string, but got {type(backend)}.'
+        assert isinstance(platform, str), f'The `platform` should be a string, but got {type(platform)}.'
+        assert callable(kg), f'The `kg` should be a callable, but got {type(kg)}.'
 
-        # Case 1: Only Pallas implementation
-        if warp is None:
-            assert pallas is not None, 'The `pallas` should be provided when `warp` is not provided.'
-            register_pallas_gpu_translation(self.primitive, pallas)
-        # Cases 2 & 3: Warp only or both implementations
-        else:
-            if pallas is None:
-                # Case 2: Only Warp implementation
-                register_warp_gpu_translation(self.primitive, warp)
+        # Create kernel entry
+        entry = KernelEntry(
+            backend=backend,
+            platform=platform,
+            kernel_generator=kg,
+        )
+
+        # Store kernel in the platform's dict
+        if platform not in self._kernels:
+            self._kernels[platform] = {}
+        self._kernels[platform][backend] = entry
+
+        # Default logic:
+        # 1. First kernel for a platform becomes the default automatically
+        # 2. Explicit asdefault=True overrides any existing default
+        if asdefault or platform not in self._defaults:
+            self._defaults[platform] = backend
+
+        # Register fallback lowering once per platform
+        if platform not in self._registered_platforms:
+            self._register_fallback_lowering(platform)
+            self._registered_platforms.add(platform)
+
+    def _register_fallback_lowering(self, platform: str):
+        """Register a lowering function that uses the default backend.
+
+        This creates a lowering function that uses the default backend for the
+        platform, or a specific backend if requested via _preferred_backend.
+        On failure, it shows alternative backends available.
+
+        Args:
+            platform: The platform to register the lowering for.
+        """
+
+        def fallback_kernel_fn(*args, **kwargs):
+            # Get kernels dict for this platform
+            kernels = self._kernels.get(platform, {})
+            if not kernels:
+                raise KernelFallbackExhaustedError(
+                    f"No kernels registered for platform '{platform}' in primitive '{self.name}'."
+                )
+
+            # Determine which backend to use
+            backend_to_use = self._defaults.get(platform)
+
+            # Get the kernel entry
+            if backend_to_use and backend_to_use in kernels:
+                entry = kernels[backend_to_use]
             else:
-                # Case 3: Both implementations provided with a default
-                assert default is not None, (
-                    'The `default` should be provided when multiple kernel implementations are provided.'
-                )
-                assert default in ['warp', 'pallas'], (
-                    'The `default` should be either `warp` or `pallas`.'
-                )
-                self._gpu_kernel_choice = GPUKernelChoice(
-                    default=default,
-                    warp_kernel=warp,
-                    pallas_kernel=pallas,
-                )
+                # Fallback to first registered kernel
+                backend_to_use = next(iter(kernels))
+                entry = kernels[backend_to_use]
 
-    def def_tpu_kernel(self, pallas: Callable):
-        """
-        Defines and registers the TPU kernel implementation using JAX Pallas.
+            try:
+                kernel = entry.kernel_generator(**kwargs)
+                return kernel(*args)
+            except Exception as e:
+                # Build helpful error message with alternatives
+                alternatives = [b for b in kernels.keys() if b != backend_to_use]
+                alt_msg = ""
+                if alternatives:
+                    alt_msg = (
+                        f"\n\nAlternative backends available for '{platform}':\n"
+                        + "\n".join(f"  - {b}" for b in alternatives)
+                        + f"\n\nTo use an alternative:\n"
+                        f"  1. Call with backend='{alternatives[0]}'\n"
+                        f"  2. Or set default: kernel.set_default('{platform}', '{alternatives[0]}')"
+                    )
+                raise KernelExecutionError(
+                    f"Backend '{backend_to_use}' failed on platform '{platform}':\n"
+                    f"  {type(e).__name__}: {e}{alt_msg}"
+                ) from e
 
-        This method associates a Pallas kernel generator with the primitive for TPU execution.
-        TPU implementations must use the Pallas API, which provides optimized patterns for
-        XLA's MLIR-based TPU compiler.
+        # Register the lowering with JAX
+        lower = mlir.lower_fun(fallback_kernel_fn, multiple_results=True)
+        mlir.register_lowering(self.primitive, lower, platform=platform)
+
+    def def_numba_kernel(
+        self,
+        kg: KernelGenerator,
+        asdefault: bool = False
+    ):
+        """Register a Numba kernel for CPU platform.
+
+        This is a convenience method equivalent to:
+        ``self.def_kernel(backend='numba', platform='cpu', kg=kg, asdefault=asdefault)``
 
         Args:
-            pallas: A callable function that generates the Pallas implementation.
-                This generator should produce a TPU-optimized kernel using the
-                JAX Pallas API that implements the operation's computation logic.
+            kg: A kernel generator callable that creates the Numba kernel function.
+            asdefault: If True, set this as the default backend for CPU.
+        """
+        self.def_kernel(backend='numba', platform='cpu', kg=kg, asdefault=asdefault)
+
+    def def_warp_kernel(
+        self,
+        kg: KernelGenerator,
+        asdefault: bool = False
+    ):
+        """Register a Warp kernel for GPU platform.
+
+        This is a convenience method equivalent to:
+        ``self.def_kernel(backend='warp', platform='gpu', kg=kg, asdefault=asdefault)``
+
+        Args:
+            kg: A kernel generator callable that creates the Warp kernel function.
+            asdefault: If True, set this as the default backend for GPU.
+        """
+        self.def_kernel(backend='warp', platform='gpu', kg=kg, asdefault=asdefault)
+
+    def def_triton_kernel(
+        self,
+        kg: KernelGenerator,
+        asdefault: bool = False
+    ):
+        """Register a Triton kernel for GPU platform.
+
+        This is a convenience method equivalent to:
+        ``self.def_kernel(backend='triton', platform='gpu', kg=kg, asdefault=asdefault)``
+
+        Args:
+            kg: A kernel generator callable that creates the Triton kernel function.
+            asdefault: If True, set this as the default backend for GPU.
+        """
+        self.def_kernel(backend='triton', platform='gpu', kg=kg, asdefault=asdefault)
+
+    def def_pallas_kernel(
+        self,
+        platform: str,
+        kg: KernelGenerator,
+        asdefault: bool = False
+    ):
+        """Register a Pallas kernel for GPU or TPU platform.
+
+        This is a convenience method equivalent to:
+        ``self.def_kernel(backend='pallas', platform=platform, kg=kg, asdefault=asdefault)``
+
+        Args:
+            platform: The target platform, must be either 'gpu' or 'tpu'.
+            kg: A kernel generator callable that creates the Pallas kernel function.
+            asdefault: If True, set this as the default backend for the platform.
+        """
+        assert platform in ['gpu', 'tpu'], f'The `platform` should be either `gpu` or `tpu`, but got {platform}.'
+        self.def_kernel(backend='pallas', platform=platform, kg=kg, asdefault=asdefault)
+
+    def def_tvmffi_kernel(
+        self,
+        platform: str,
+        kg: KernelGenerator,
+        asdefault: bool = False
+    ):
+        """Register a TVM FFI kernel for CPU or GPU platform.
+
+        This is a convenience method equivalent to:
+        ``self.def_kernel(backend='tvmffi', platform=platform, kg=kg, asdefault=asdefault)``
+
+        Args:
+            platform: The target platform, must be either 'cpu' or 'gpu'.
+            kg: A kernel generator callable that creates the TVM FFI kernel function.
+            asdefault: If True, set this as the default backend for the platform.
+        """
+        assert platform in ['cpu', 'gpu'], f'The `platform` should be either `cpu` or `gpu`, but got {platform}.'
+        self.def_kernel(backend='tvmffi', platform=platform, kg=kg, asdefault=asdefault)
+
+    def def_numba_cuda_kernel(
+        self,
+        kg: KernelGenerator,
+        asdefault: bool = False
+    ):
+        """Register a Numba CUDA kernel for GPU platform.
+
+        Args:
+            kg: A kernel generator callable that creates the Numba CUDA kernel function.
+            asdefault: If True, set this as the default backend for GPU.
+        """
+        self.def_kernel(backend='numba_cuda', platform='gpu', kg=kg, asdefault=asdefault)
+
+    def set_default(self, platform: str, backend: str):
+        """Set the default backend for a platform.
+
+        Args:
+            platform: The platform name (e.g., 'cpu', 'gpu', 'tpu').
+            backend: The backend name to set as default.
 
         Raises:
-            TypeError: If the provided `pallas` parameter is not callable.
-
-        Examples::
-
-            def my_pallas_tpu_kernel():
-                def kernel_impl(inputs, outputs):
-                    # TPU-specific implementation logic using Pallas
-                    pass
-                return kernel_impl
-
-            custom_op = XLACustomKernel("my_custom_op")
-            custom_op.def_tpu_kernel(my_pallas_tpu_kernel)
+            ValueError: If no kernels registered for the platform or
+                the specified backend is not registered for the platform.
         """
-        if not callable(pallas):
-            raise TypeError(
-                'The `pallas` parameter must be a callable that generates '
-                'the Pallas TPU kernel implementation.'
+        if platform not in self._kernels:
+            raise ValueError(f"No kernels registered for platform '{platform}'")
+        if backend not in self._kernels[platform]:
+            available = list(self._kernels[platform].keys())
+            raise ValueError(
+                f"Backend '{backend}' not registered for platform '{platform}'. "
+                f"Available: {available}"
             )
-        register_pallas_tpu_translation(self.primitive, pallas)
+        self._defaults[platform] = backend
+
+    def get_default(self, platform: str) -> Optional[str]:
+        """Get the default backend for a platform.
+
+        Args:
+            platform: The platform name (e.g., 'cpu', 'gpu', 'tpu').
+
+        Returns:
+            The default backend name, or None if no default is set.
+        """
+        return self._defaults.get(platform)
+
+    @property
+    def defaults(self) -> Dict[str, str]:
+        """Get all default backends.
+
+        Returns:
+            A dictionary mapping platform names to their default backend names.
+        """
+        return self._defaults.copy()
 
     def def_batching_rule(self, fun: Callable):
         """
@@ -489,37 +470,6 @@ class XLACustomKernel:
         """
         ad.primitive_transposes[self.primitive] = fun
 
-    def def_xla_translation(self, platform: str, fun: Callable):
-        """
-        Defines a backend-specific XLA translation rule for the primitive.
-
-        This allows customizing how the primitive is compiled to an XLA HLO
-        computation for a specific platform (e.g., 'cpu', 'gpu', 'tpu').
-
-        Args:
-            platform: A string identifying the target platform (e.g., 'cpu', 'gpu').
-            fun: A callable that takes a `mlir.LoweringContext` and the operands
-                 as `mlir.Value`s, and returns the `mlir.Value`s representing the
-                 results of the lowered operation. See JAX XLA integration
-                 documentation.
-        """
-        xla.backend_specific_translations[platform][self.primitive] = fun
-
-    def def_mlir_lowering(self, platform: str, fun: Callable):
-        """
-        Defines a backend-specific MLIR lowering rule for the primitive.
-
-        This provides a way to directly specify how the primitive is lowered to
-        MLIR for a given platform, offering finer-grained control than XLA
-        translation rules.
-
-        Args:
-            platform: A string identifying the target platform (e.g., 'cpu', 'gpu', 'tpu').
-            fun: A callable responsible for the MLIR lowering. See JAX MLIR
-                 lowering documentation (`jax.interpreters.mlir.register_lowering`).
-        """
-        mlir.register_lowering(self.primitive, fun, platform)
-
     def register_general_batching(self):
         """
         Registers a predefined general-purpose batching rule for the primitive.
@@ -531,3 +481,176 @@ class XLACustomKernel:
         """
         prim = self.primitive
         batching.primitive_batchers[prim] = functools.partial(general_batching_rule, prim)
+
+    def def_call(self, fn: Callable):
+        """Associate a call function with this primitive.
+
+        The call function is automatically JIT-compiled with all keyword-only
+        arguments treated as static.
+
+        Args:
+            fn: The call function (e.g., binary_csrmv_p_call).
+        """
+
+        # Get all keyword-only parameter names from the function signature
+        sig = inspect.signature(fn)
+        static_argnames = [
+            name for name, param in sig.parameters.items()
+            if param.kind == inspect.Parameter.KEYWORD_ONLY
+        ]
+
+        # Wrap with JIT, treating all kwargs as static
+        self._call_fn = jax.jit(fn, static_argnames=static_argnames)
+
+    def call(self, *args, **kwargs):
+        """Call the associated call function.
+
+        Args:
+            *args: Positional arguments for the call function.
+            **kwargs: Keyword arguments for the call function.
+
+        Returns:
+            The result of the call function.
+        """
+        if self._call_fn is None:
+            raise ValueError(
+                f"No call function registered for '{self.name}'. "
+                "Use def_call() to register one before calling."
+            )
+        return self._call_fn(*args, **kwargs)
+
+    def available_backends(self, platform: str) -> List[str]:
+        """Return list of registered backend names for a platform.
+
+        Args:
+            platform: The platform name (e.g., 'cpu', 'gpu', 'tpu').
+
+        Returns:
+            A list of backend names registered for the given platform.
+        """
+        if platform not in self._kernels:
+            return []
+        return list(self._kernels[platform].keys())
+
+    def benchmark(
+        self,
+        *args,
+        platform: str,
+        backend: Optional[str] = None,
+        n_warmup: int = 5,
+        n_runs: int = 20,
+        batch_mode: bool = False,
+        compare_results: bool = True,
+        **kwargs
+    ) -> Union[BenchmarkResult, BenchmarkReport]:
+        """Benchmark kernel execution using the registered call function.
+
+        Args:
+            *args: Positional args passed to the call function.
+            platform: Target platform ('cpu', 'gpu', 'tpu').
+            backend: Specific backend to benchmark, or None for all.
+            n_warmup: Number of warmup runs.
+            n_runs: Number of timed runs.
+            batch_mode: If False (default), block after each function call and time
+                each run individually (measures per-call latency). If True, run all
+                n_runs calls first, then block once at the end and measure total time
+                (measures throughput, useful for async GPU/TPU execution).
+            compare_results: Verify outputs match across backends (not yet implemented).
+            **kwargs: Keyword args passed to the call function.
+
+        Returns:
+            BenchmarkResult if backend specified, else BenchmarkReport.
+
+        Raises:
+            ValueError: If no call function registered (use def_call first).
+        """
+        if self._call_fn is None:
+            raise ValueError(
+                f"No call function registered for '{self.name}'. "
+                "Use def_call() to register one before benchmarking."
+            )
+
+        # Get backends to benchmark
+        if backend is not None:
+            backends_to_test = [backend]
+        else:
+            backends_to_test = self.available_backends(platform)
+
+        if not backends_to_test:
+            raise ValueError(
+                f"No backends registered for platform '{platform}' in primitive '{self.name}'."
+            )
+
+        results = []
+        outputs = {}  # backend -> output for comparison
+        for be in backends_to_test:
+            try:
+                # Create a function that calls the primitive with the specified backend
+                def run_fn(be=be):
+                    return self._call_fn(*args, backend=be, **kwargs)
+
+                mean_time, std_time, min_time, max_time, output = benchmark_function(
+                    run_fn, n_warmup, n_runs, batch_mode=batch_mode
+                )
+
+                results.append(
+                    BenchmarkResult(
+                        backend=be,
+                        platform=platform,
+                        mean_time=mean_time,
+                        std_time=std_time,
+                        min_time=min_time,
+                        max_time=max_time,
+                        n_runs=n_runs,
+                        success=True,
+                        error=None,
+                    )
+                )
+                outputs[be] = output
+            except Exception as e:
+                results.append(
+                    BenchmarkResult(
+                        backend=be,
+                        platform=platform,
+                        mean_time=0.0,
+                        std_time=0.0,
+                        min_time=0.0,
+                        max_time=0.0,
+                        n_runs=0,
+                        success=False,
+                        error=str(e),
+                    )
+                )
+
+        # Compare results across backends if requested
+        mismatches = []
+        if compare_results and len(outputs) > 1:
+            import jax.numpy as jnp
+            backends_list = list(outputs.keys())
+            ref_backend = backends_list[0]
+            ref_output = outputs[ref_backend]
+
+            for other_backend in backends_list[1:]:
+                other_output = outputs[other_backend]
+                try:
+                    # Handle tuple/list outputs
+                    if isinstance(ref_output, (list, tuple)):
+                        for i, (r, o) in enumerate(zip(ref_output, other_output)):
+                            if not jnp.allclose(r, o, rtol=1e-5, atol=1e-5):
+                                mismatches.append(f"{ref_backend} vs {other_backend}: output[{i}] mismatch")
+                    else:
+                        if not jnp.allclose(ref_output, other_output, rtol=1e-5, atol=1e-5):
+                            mismatches.append(f"{ref_backend} vs {other_backend}: output mismatch")
+                except Exception as e:
+                    mismatches.append(f"{ref_backend} vs {other_backend}: comparison error: {e}")
+
+        # Return single result if specific backend was requested
+        if backend is not None:
+            return results[0]
+
+        return BenchmarkReport(
+            primitive_name=self.name,
+            platform=platform,
+            results=results,
+            mismatches=mismatches,
+        )

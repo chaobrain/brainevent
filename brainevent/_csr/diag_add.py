@@ -20,16 +20,13 @@ import brainstate
 import brainunit as u
 import jax
 import jax.numpy as jnp
+import numba
 import numpy as np
 from jax.interpreters import ad
 from jax.interpreters.partial_eval import DynamicJaxprTracer
 
-from brainevent._compatible_import import pallas as pl
 from brainevent._misc import generate_block_dim
-from brainevent._op.main import XLACustomKernel
-from brainevent._op.op_numba import numba_jit_fn, numba_kernel
-from brainevent._op.op_pallas import pallas_kernel
-from brainevent._op.op_warp import warp_kernel, jaxinfo_to_warpinfo
+from brainevent._op import numba_kernel, jaxinfo_to_warpinfo, XLACustomKernel
 
 
 def _is_tracer(x):
@@ -48,11 +45,11 @@ def csr_diag_position_v2(indptr, indices, shape: brainstate.typing.Size):
         raise ValueError('Cannot trace indices when finding diagonal position')
     n_size = min(shape)
 
-    @numba_jit_fn
-    def _find_diag_position(indptr_, indices_):
+    @numba.njit(cache=True)
+    def _find_diag_position(indptr_, indices_, n):
         csr_positions = []
         diag_positions = []
-        for i in range(n_size):
+        for i in range(n):
             start = indptr_[i]
             end = indptr_[i + 1]
             for j in range(start, end):
@@ -62,7 +59,7 @@ def csr_diag_position_v2(indptr, indices, shape: brainstate.typing.Size):
                     break
         return np.asarray(csr_positions, dtype=np.int32), np.asarray(diag_positions, dtype=np.int32)
 
-    csr_pos, diag_pos = _find_diag_position(np.asarray(indptr), np.asarray(indices))
+    csr_pos, diag_pos = _find_diag_position(np.asarray(indptr), np.asarray(indices), n_size)
 
     return (csr_pos, diag_pos) if len(csr_pos) == len(diag_pos) else (csr_pos, None)
 
@@ -110,10 +107,10 @@ def csr_diag_position(indptr, indices, shape: brainstate.typing.Size):
     if _is_tracer(indices):
         raise ValueError('Cannot trace indices when finding diagonal position')
 
-    @numba_jit_fn
-    def _find_diag_position(indptr_, indices_):
+    @numba.njit(cache=True)
+    def _find_diag_position(indptr_, indices_, n):
         results = []
-        for i in range(n_size):
+        for i in range(n):
             start = indptr_[i]
             end = indptr_[i + 1]
             for j in range(start, end):
@@ -125,7 +122,7 @@ def csr_diag_position(indptr, indices, shape: brainstate.typing.Size):
         return np.asarray(results, dtype=np.int32)
 
     return jnp.asarray(
-        _find_diag_position(np.asarray(indptr), np.asarray(indices))
+        _find_diag_position(np.asarray(indptr), np.asarray(indices), n_size)
     )
 
 
@@ -152,15 +149,23 @@ def csr_diag_add(csr_value, diag_position, diag_value):
 
 
 def _csr_diag_add_numba_kernel_generator(
+    csr_value_info: jax.ShapeDtypeStruct,
+    diag_pos_info: jax.ShapeDtypeStruct,
+    diag_value_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    def kernel(csr_value, diag_position, diag_value, out):
+    @numba.njit(fastmath=True)
+    def diag_add(csr_value, diag_position, diag_value, out):
+        out[:] = csr_value[:]  # Copy input to output
         for i in range(diag_position.size):
             pos = diag_position[i]
             if pos >= 0:
                 out[pos] += diag_value[i]
 
-    return numba_kernel(kernel, input_output_aliases={0: 0})
+    def kernel(csr_value, diag_position, diag_value):
+        return numba_kernel(diag_add, outs=kwargs['outs'])(csr_value, diag_position, diag_value)
+
+    return kernel
 
 
 def _csr_diag_add_warp_kernel_generator(
@@ -170,42 +175,64 @@ def _csr_diag_add_warp_kernel_generator(
     **kwargs
 ):
     import warp  # pylint: disable=import-outside-toplevel
+    from warp.jax_experimental import jax_kernel
 
-    csr_value_type = jaxinfo_to_warpinfo(csr_value_info)
-    diag_pos_type = jaxinfo_to_warpinfo(diag_pos_info)
-    diag_value_type = jaxinfo_to_warpinfo(diag_value_info)
+    csr_value_warp_info = jaxinfo_to_warpinfo(csr_value_info)
+    diag_pos_warp_info = jaxinfo_to_warpinfo(diag_pos_info)
+    diag_value_warp_info = jaxinfo_to_warpinfo(diag_value_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
 
-    def kernel(
-        csr_value: csr_value_type,
-        diag_position: diag_pos_type,
-        diag_value: diag_value_type,
-        out: csr_value_type
+    @warp.kernel
+    def diag_add_warp(
+        csr_value: csr_value_warp_info,
+        diag_position: diag_pos_warp_info,
+        diag_value: diag_value_warp_info,
+        out: out_warp_info
     ):
         i_diag = warp.tid()
         pos = diag_position[i_diag]
         if pos >= 0:
             out[pos] += diag_value[i_diag]
 
-    dim = diag_pos_info.shape[0]
-    return warp_kernel(kernel, dim=dim, input_output_aliases={0: 0})
+    def kernel(csr_value, diag_position, diag_value):
+        dim = diag_pos_info.shape[0]
+        fn = jax_kernel(diag_add_warp, launch_dims=[dim], num_outputs=1, in_out_argnames=['out'])
+        return fn(csr_value, diag_position, diag_value, jnp.array(csr_value))
+
+    return kernel
 
 
 def _csr_diag_add_pallas_kernel_generator(
+    csr_value_info: jax.ShapeDtypeStruct,
     diag_pos_info: jax.ShapeDtypeStruct,
+    diag_value_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
+    from jax.experimental import pallas as pl
+    from jax.experimental.pallas.triton import atomic_add
+
     total = diag_pos_info.shape[0]
     block_dim = generate_block_dim(total, 512)
 
-    def kernel(csr_value, diag_position, diag_value, out):
+    def diag_add_pallas(csr_value_ref, diag_position_ref, diag_value_ref, _, out_ref):
         i_tile = pl.program_id(0)
-        i_title_start = i_tile * block_dim
-        mask = (i_title_start + jnp.arange(block_dim)) < total
-        positions = pl.load(diag_position, pl.dslice(i_title_start, block_dim), mask=mask)
-        values = pl.load(diag_value, pl.dslice(i_title_start, block_dim), mask=mask)
-        pl.atomic_add(out, pl.dslice(i_title_start, block_dim), values, mask=mask & (positions >= 0))
+        i_tile_start = i_tile * block_dim
+        mask = (i_tile_start + jnp.arange(block_dim)) < total
+        positions = diag_position_ref[pl.dslice(i_tile_start, block_dim)]
+        values = diag_value_ref[pl.dslice(i_tile_start, block_dim)]
+        valid_mask = mask & (positions >= 0)
+        atomic_add(out_ref, positions, values, mask=valid_mask)
 
-    return pallas_kernel(kernel, outs=kwargs['outs'], tile=(pl.cdiv(total, block_dim),))
+    def kernel(csr_value, diag_position, diag_value):
+        fn = pl.pallas_call(
+            diag_add_pallas,
+            grid=(pl.cdiv(total, block_dim),),
+            input_output_aliases={3: 0},
+            out_shape=kwargs['outs']
+        )
+        return fn(csr_value, diag_position, diag_value, jnp.array(csr_value))
+
+    return kernel
 
 
 def _csr_diag_add_jvp_csr_value(dot, csr_value, diag_position, diag_value, **kwargs):
@@ -222,26 +249,28 @@ def _csr_diag_add_transpose_value(ct, csr_value, diag_position, diag_value, **kw
     raise NotImplementedError
 
 
-def csr_diag_add_call(csr_value, diag_position, diag_value):
+def csr_diag_add_call(csr_value, diag_position, diag_value, *, backend=None):
     assert csr_value.ndim == 1, "csr_value must be a 1D array"
     assert diag_position.ndim == 1, "diag_position must be a 1D array"
     assert diag_value.ndim == 1, "diag_value must be a 1D array"
-    assert diag_position.shape == diag_value.shape, "diag_position must have the same shape as csr_value"
+    assert diag_position.shape == diag_value.shape, "diag_position must have the same shape as diag_value"
     assert jnp.issubdtype(diag_position.dtype, jnp.integer), "diag_position must be an integer array"
     assert csr_value.dtype == diag_value.dtype, "csr_value and diag_value must have the same dtype"
 
     return csr_diag_add_p(
         csr_value, diag_position, diag_value,
-        outs=[jax.ShapeDtypeStruct(csr_value.shape, csr_value.dtype)]
+        outs=[jax.ShapeDtypeStruct(csr_value.shape, csr_value.dtype)],
+        backend=backend,
+        csr_value_info=jax.ShapeDtypeStruct(csr_value.shape, csr_value.dtype),
+        diag_pos_info=jax.ShapeDtypeStruct(diag_position.shape, diag_position.dtype),
+        diag_value_info=jax.ShapeDtypeStruct(diag_value.shape, diag_value.dtype),
     )
 
 
 csr_diag_add_p = XLACustomKernel('csr_diag_add')
-csr_diag_add_p.def_cpu_kernel(_csr_diag_add_numba_kernel_generator)
-csr_diag_add_p.def_gpu_kernel(
-    warp=_csr_diag_add_warp_kernel_generator,
-    pallas=_csr_diag_add_pallas_kernel_generator,
-    default='warp',
-)
-csr_diag_add_p.def_tpu_kernel(_csr_diag_add_pallas_kernel_generator)
+csr_diag_add_p.def_numba_kernel(_csr_diag_add_numba_kernel_generator)
+csr_diag_add_p.def_warp_kernel(_csr_diag_add_warp_kernel_generator)
+csr_diag_add_p.def_pallas_kernel('gpu', _csr_diag_add_pallas_kernel_generator)
+csr_diag_add_p.def_pallas_kernel('tpu', _csr_diag_add_pallas_kernel_generator)
 csr_diag_add_p.def_jvp_rule2(_csr_diag_add_jvp_csr_value, None, _csr_diag_add_jvp_diag_value)
+csr_diag_add_p.def_call(csr_diag_add_call)

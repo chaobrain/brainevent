@@ -16,7 +16,7 @@
 # -*- coding: utf-8 -*-
 
 import brainunit as u
-from jax.experimental.sparse.linalg import spsolve as raw_spsolve
+from jax.experimental.sparse.linalg import spsolve
 
 __all__ = [
     'csr_solve'
@@ -56,5 +56,5 @@ def csr_solve(data, indices, indptr, b, tol=1e-6, reorder=1):
     """
     data, data_unit = u.split_mantissa_unit(data)
     b, b_unit = u.split_mantissa_unit(b)
-    res = raw_spsolve(data, indices, indptr, b, tol=tol, reorder=reorder)
+    res = spsolve(data, indices, indptr, b, tol=tol, reorder=reorder)
     return u.maybe_decimal(res * b_unit / data_unit)

@@ -229,6 +229,8 @@ cython_debug/
 /benchmark/matrices/
 /benchmark/results/
 /dev/links.md
-/dev/
 /.claude/
-/dev/
+/dev/replace_all.py
+/dev/prompt/
+/old/
+/CLAUDE.md

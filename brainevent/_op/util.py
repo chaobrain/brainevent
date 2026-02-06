@@ -16,7 +16,8 @@
 # -*- coding: utf-8 -*-
 
 import functools
-from typing import Protocol, Union, Sequence, Tuple
+import importlib.util
+from typing import Protocol, Union, Tuple, Sequence
 
 import jax
 import numpy as np
@@ -25,11 +26,71 @@ from jax.interpreters import ad
 
 from brainevent._compatible_import import Primitive
 
+warp_installed = importlib.util.find_spec('warp') is not None
+tvmffi_installed = importlib.util.find_spec('jax_tvm_ffi') is not None
+
+# Try to import TVM FFI - will fail gracefully if not available
+if tvmffi_installed:
+    try:
+        import jax_tvm_ffi
+        import tvm_ffi.cpp
+    except:
+        tvmffi_installed = False
+
+# Try to import Warp - will fail gracefully if not available
+if warp_installed:
+    try:
+        import warp  # pylint: disable=import-error, import-outside-toplevel
+    except:
+        warp_installed = False
+
 __all__ = [
+    'register_cuda_kernels',
     'defjvp',
     'general_batching_rule',
-    'OutType',
+    'jaxtype_to_warptype',
+    'jaxinfo_to_warpinfo',
 ]
+
+
+def register_cuda_kernels(
+    source_code: str,
+    module: str,
+    functions: Sequence[str],
+):
+    """Compile CUDA kernels and register with JAX FFI."""
+
+    if not isinstance(source_code, str):
+        return ValueError("source_code must be a string")
+    if not isinstance(module, str):
+        return ValueError("module must be a string")
+    if not isinstance(functions, Sequence) or not all(isinstance(f, str) for f in functions):
+        return ValueError("functions must be a sequence of strings")
+
+    if not tvmffi_installed:
+        return False
+
+    try:
+        # Compile CUDA module
+        _cuda_module = tvm_ffi.cpp.load_inline(
+            name=module,
+            cuda_sources=source_code,
+            functions=functions,
+        )
+
+        # Register each kernel with JAX FFI
+        for name in functions:
+            jax_tvm_ffi.register_ffi_target(
+                f"{module}.{name}",
+                getattr(_cuda_module, name),
+                ["args", "rets", "ctx.stream"],
+                platform="gpu",
+            )
+
+        return True
+    except Exception as e:
+        print(f"Failed to compile/register CUDA kernels: {e}")
+        return False
 
 
 def defjvp(primitive, *jvp_rules):
@@ -159,7 +220,7 @@ def general_batching_rule(prim, args, axes, **kwargs):
             [(x[f'ax{i}'] if i in batch_axes else non_batch_args[f'ax{i}'])
              for i in range(len(axes))]
         )
-        return 0, prim.bind(*pars, **kwargs)
+        return 0, prim(*pars, **kwargs)
 
     _, outs = jax.lax.scan(f, 0, batch_args)
     out_vals, out_tree = jax.tree.flatten(outs)
@@ -226,3 +287,85 @@ def abstract_arguments(outs):
     outs = jax.tree.map(_transform_to_shapedarray, outs)
     outs, tree_def = jax.tree.flatten(outs)
     return outs, tree_def
+
+
+def jaxtype_to_warptype(dtype):
+    """
+    Convert the JAX dtype to the Warp type.
+
+    Args:
+        dtype: np.dtype. The JAX dtype.
+
+    Returns:
+        ``Warp`` type.
+    """
+    if not warp_installed:
+        raise ImportError('Warp is required to convert JAX dtypes to Warp types.')
+
+    # float
+    if dtype == np.float16:
+        return warp.float16
+    elif dtype == np.float32:
+        return warp.float32
+    elif dtype == np.float64:
+        return warp.float64
+
+    # integer
+    elif dtype == np.int8:
+        return warp.int8
+    elif dtype == np.int16:
+        return warp.int16
+    elif dtype == np.int32:
+        return warp.int32
+    elif dtype == np.int64:
+        return warp.int64
+
+    # unsigned integer
+    elif dtype == np.uint8:
+        return warp.uint8
+    elif dtype == np.uint16:
+        return warp.uint16
+    elif dtype == np.uint32:
+        return warp.uint32
+    elif dtype == np.uint64:
+        return warp.uint64
+
+    # boolean
+    elif dtype == np.bool_:
+        return warp.bool
+    else:
+        raise ValueError(f"Unsupported dtype: {dtype}")
+
+
+def jaxinfo_to_warpinfo(jax_info: jax.ShapeDtypeStruct):
+    """
+    Convert JAX shape and dtype information to a compatible Warp array type.
+
+    This function takes a JAX ShapeDtypeStruct object and creates an appropriate
+    Warp array type with the corresponding data type and dimensionality.
+    This is useful when interfacing between JAX and Warp, allowing JAX arrays
+    to be processed by Warp kernels.
+
+    Parameters
+    ----------
+    jax_info : jax.ShapeDtypeStruct
+        A JAX structure containing shape and dtype information for an array.
+
+    Returns
+    -------
+    warp.types.array
+        A Warp array type with matching data type and dimensionality that can be
+        used in Warp kernel definitions.
+
+    Examples
+    --------
+    >>> array_info = jax.ShapeDtypeStruct(shape=(32, 32), dtype=np.float32)
+    >>> warp_info = jaxinfo_to_warpinfo(array_info)
+    >>> # Use warp_info in kernel definition
+
+    See Also
+    --------
+    dtype_to_warp_type : Function to convert numpy/JAX dtypes to Warp types.
+    """
+    dtype = jaxtype_to_warptype(jax_info.dtype)
+    return warp.array(dtype=dtype, ndim=jax_info.ndim)

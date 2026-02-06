@@ -23,14 +23,13 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._compatible_import import JAXSparse
-from brainevent._event.binary import EventArray
-from brainevent._event.masked_float import MaskedFloat
+from brainevent._event import EventArray, SparseFloat
 from brainevent._misc import _csr_to_coo, _csr_todense
 from brainevent._typing import Data, Indptr, Index, MatrixShape
-from .binary import binary_csr_matvec, binary_csr_matmat
+from .binary import binary_csrmv, binary_csrmm
 from .diag_add import csr_diag_position_v2, csr_diag_add_v2
-from .float import csr_matvec, csr_matmat, csrmv_yw2y
-from .masked_float import masked_float_csr_matvec, masked_float_csr_matmat
+from .float import csrmv, csrmm, csrmv_yw2y
+from .sparse_float import spfloat_csrmv, spfloat_csrmm
 from .spsolve import csr_solve
 
 __all__ = [
@@ -507,18 +506,18 @@ class CSR(BaseCLS):
         if isinstance(other, EventArray):
             other = other.data
             if other.ndim == 1:
-                return binary_csr_matvec(self.data, self.indices, self.indptr, other, shape=self.shape)
+                return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
             elif other.ndim == 2:
-                return binary_csr_matmat(self.data, self.indices, self.indptr, other, shape=self.shape)
+                return binary_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape)
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
-        elif isinstance(other, MaskedFloat):
+        elif isinstance(other, SparseFloat):
             other = other.data
             if other.ndim == 1:
-                return masked_float_csr_matvec(self.data, self.indices, self.indptr, other, shape=self.shape)
+                return spfloat_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
             elif other.ndim == 2:
-                return masked_float_csr_matmat(self.data, self.indices, self.indptr, other, shape=self.shape)
+                return spfloat_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape)
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -526,7 +525,7 @@ class CSR(BaseCLS):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
-                return csr_matvec(
+                return csrmv(
                     data,
                     self.indices,
                     self.indptr,
@@ -535,7 +534,7 @@ class CSR(BaseCLS):
                     transpose=False
                 )
             elif other.ndim == 2:
-                return csr_matmat(
+                return csrmm(
                     data,
                     self.indices,
                     self.indptr,
@@ -554,25 +553,25 @@ class CSR(BaseCLS):
         if isinstance(other, EventArray):
             other = other.data
             if other.ndim == 1:
-                return binary_csr_matvec(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True)
+                return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True)
             elif other.ndim == 2:
                 other = other.T
-                r = binary_csr_matmat(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True)
+                r = binary_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True)
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
-        elif isinstance(other, MaskedFloat):
+        elif isinstance(other, SparseFloat):
             other = other.data
             if other.ndim == 1:
-                return masked_float_csr_matvec(
+                return spfloat_csrmv(
                     self.data, self.indices, self.indptr, other,
                     shape=self.shape,
                     transpose=True
                 )
             elif other.ndim == 2:
                 other = other.T
-                r = masked_float_csr_matmat(
+                r = spfloat_csrmm(
                     self.data, self.indices, self.indptr, other,
                     shape=self.shape,
                     transpose=True
@@ -585,7 +584,7 @@ class CSR(BaseCLS):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
-                return csr_matvec(
+                return csrmv(
                     data,
                     self.indices,
                     self.indptr,
@@ -595,7 +594,7 @@ class CSR(BaseCLS):
                 )
             elif other.ndim == 2:
                 other = other.T
-                r = csr_matmat(
+                r = csrmm(
                     data,
                     self.indices,
                     self.indptr,
@@ -950,13 +949,13 @@ class CSC(BaseCLS):
         if isinstance(other, EventArray):
             other = other.value
             if other.ndim == 1:
-                return binary_csr_matvec(
+                return binary_csrmv(
                     data, self.indices, self.indptr, other,
                     shape=self.shape[::-1],
                     transpose=True
                 )
             elif other.ndim == 2:
-                return binary_csr_matmat(
+                return binary_csrmm(
                     data, self.indices, self.indptr, other,
                     shape=self.shape[::-1],
                     transpose=True
@@ -964,16 +963,16 @@ class CSC(BaseCLS):
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
-        elif isinstance(other, MaskedFloat):
+        elif isinstance(other, SparseFloat):
             other = other.value
             if other.ndim == 1:
-                return masked_float_csr_matvec(
+                return spfloat_csrmv(
                     data, self.indices, self.indptr, other,
                     shape=self.shape[::-1],
                     transpose=True
                 )
             elif other.ndim == 2:
-                return masked_float_csr_matmat(
+                return spfloat_csrmm(
                     data, self.indices, self.indptr, other,
                     shape=self.shape[::-1],
                     transpose=True
@@ -986,7 +985,7 @@ class CSC(BaseCLS):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(data, other)
             if other.ndim == 1:
-                return csr_matvec(
+                return csrmv(
                     data,
                     self.indices,
                     self.indptr,
@@ -995,7 +994,7 @@ class CSC(BaseCLS):
                     transpose=True
                 )
             elif other.ndim == 2:
-                return csr_matmat(
+                return csrmm(
                     data,
                     self.indices,
                     self.indptr,
@@ -1014,26 +1013,26 @@ class CSC(BaseCLS):
         if isinstance(other, EventArray):
             other = other.value
             if other.ndim == 1:
-                return binary_csr_matvec(data, self.indices, self.indptr, other,
-                                         shape=self.shape[::-1],
-                                         transpose=False)
+                return binary_csrmv(data, self.indices, self.indptr, other,
+                                    shape=self.shape[::-1],
+                                    transpose=False)
             elif other.ndim == 2:
-                return binary_csr_matmat(data, self.indices, self.indptr, other.T,
-                                         shape=self.shape[::-1],
-                                         transpose=False).T
+                return binary_csrmm(data, self.indices, self.indptr, other.T,
+                                    shape=self.shape[::-1],
+                                    transpose=False).T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
-        elif isinstance(other, MaskedFloat):
+        elif isinstance(other, SparseFloat):
             other = other.value
             if other.ndim == 1:
-                return masked_float_csr_matvec(data, self.indices, self.indptr, other,
-                                               shape=self.shape[::-1],
-                                               transpose=False)
+                return spfloat_csrmv(data, self.indices, self.indptr, other,
+                                     shape=self.shape[::-1],
+                                     transpose=False)
             elif other.ndim == 2:
-                return masked_float_csr_matmat(data, self.indices, self.indptr, other.T,
-                                               shape=self.shape[::-1],
-                                               transpose=False).T
+                return spfloat_csrmm(data, self.indices, self.indptr, other.T,
+                                     shape=self.shape[::-1],
+                                     transpose=False).T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -1041,7 +1040,7 @@ class CSC(BaseCLS):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(data, other)
             if other.ndim == 1:
-                return csr_matvec(
+                return csrmv(
                     data,
                     self.indices,
                     self.indptr,
@@ -1051,7 +1050,7 @@ class CSC(BaseCLS):
                 )
             elif other.ndim == 2:
                 other = other.T
-                r = csr_matmat(
+                r = csrmm(
                     data,
                     self.indices,
                     self.indptr, other,

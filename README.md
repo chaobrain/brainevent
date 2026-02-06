@@ -1,4 +1,4 @@
-# Enabling Event-driven Computation in Brain Dynamics
+# Enabling Event-driven Computation in CPU/GPU/TPU
 
 <p align="center">
   	<img alt="Header image of brainevent." src="https://raw.githubusercontent.com/chaobrain/brainevent/main/docs/_static/brainevent.png" width=50%>
@@ -69,11 +69,10 @@ will take advantage of event-driven computations:
     - ``jax.numpy.ndarray``
     - ``numpy.ndarray``
 
-
 ```python
 data = jax.random.rand(...)  # normal dense array
 data = brainevent.CSR(...)  # CSR structure
-data = brainevent.JITCHomoR(...)  # JIT connectivity
+data = brainevent.JITCScalarR(...)  # JIT connectivity
 data = brainevent.FixedPostNumConn(...)  # fixed number of post-synaptic connections
 
 # event-driven matrix multiplication

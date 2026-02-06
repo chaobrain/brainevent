@@ -210,39 +210,39 @@ class LFSRBase(abc.ABC):
 
     def tree_flatten(self):
         """
-        Flatten the CSR matrix for JAX's tree utilities.
+        Flatten the RNG object for JAX's tree utilities.
 
-        This method is used by JAX's tree utilities to flatten the CSR matrix
+        This method is used by JAX's tree utilities to flatten the RNG object
         into a form suitable for transformation and reconstruction.
 
         Returns
         --------
         tuple
             A tuple containing two elements:
-            - A tuple with the CSR matrix's data as the only element.
-            - A tuple with the CSR matrix's indices, indptr, and shape.
+            - A tuple with the RNG's key as the only element.
+            - An empty tuple (no auxiliary data needed).
         """
         return (self.key,), ()
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
         """
-        Reconstruct a CSR matrix from flattened data.
+        Reconstruct an RNG object from flattened data.
 
         This class method is used by JAX's tree utilities to reconstruct
-        a CSR matrix from its flattened representation.
+        an RNG object from its flattened representation.
 
         Parameters
         -----------
         aux_data : tuple
-            A tuple containing the CSR matrix's indices, indptr, and shape.
+            An empty tuple (no auxiliary data needed).
         children : tuple
-            A tuple containing the CSR matrix's data as its only element.
+            A tuple containing the RNG's key as its only element.
 
         Returns
         --------
-        CSR
-            A new CSR matrix instance reconstructed from the flattened data.
+        LFSRBase
+            A new RNG instance reconstructed from the flattened data.
         """
         obj = object.__new__(cls)
         key, = children
@@ -483,13 +483,13 @@ class LFSR113RNG(LFSRBase):
         z3 = key[2]
         z4 = key[3]
         b1 = ((z1 << 6) ^ z1) >> 13
-        z1 = jnp.asarray(((z1 & jnp.asarray(4294967294, dtype=jnp.uint64)) << 18) ^ b1, dtype=jnp.uint32)
+        z1 = jnp.asarray(((z1 & jnp.asarray(4294967294, dtype=jnp.uint32)) << 18) ^ b1, dtype=jnp.uint32)
         b2 = ((z2 << 2) ^ z2) >> 27
-        z2 = jnp.asarray(((z2 & jnp.asarray(4294967288, dtype=jnp.uint64)) << 2) ^ b2, dtype=jnp.uint32)
+        z2 = jnp.asarray(((z2 & jnp.asarray(4294967288, dtype=jnp.uint32)) << 2) ^ b2, dtype=jnp.uint32)
         b3 = ((z3 << 13) ^ z3) >> 21
-        z3 = jnp.asarray(((z3 & jnp.asarray(4294967280, dtype=jnp.uint64)) << 7) ^ b3, dtype=jnp.uint32)
+        z3 = jnp.asarray(((z3 & jnp.asarray(4294967280, dtype=jnp.uint32)) << 7) ^ b3, dtype=jnp.uint32)
         b4 = ((z4 << 3) ^ z4) >> 12
-        z4 = jnp.asarray(((z4 & jnp.asarray(4294967168, dtype=jnp.uint64)) << 13) ^ b4, dtype=jnp.uint32)
+        z4 = jnp.asarray(((z4 & jnp.asarray(4294967168, dtype=jnp.uint32)) << 13) ^ b4, dtype=jnp.uint32)
         new_key = (
             jnp.asarray(z1, dtype=jnp.uint32),
             jnp.asarray(z2, dtype=jnp.uint32),
@@ -607,10 +607,11 @@ class LFSR128RNG(LFSRBase):
             starting points for the four components of the state.
         """
         # Use different transformations for each component to ensure diversity
-        s1 = seed + 123
-        s2 = seed ^ 0xfedc7890
-        s3 = (seed << 3) + 0x1a2b3c4d
-        s4 = ~(seed + 0x5f6e7d8c)
+        # Mask to ensure values fit in uint32
+        s1 = (seed + 123) & 0xFFFFFFFF
+        s2 = (seed ^ 0xfedc7890) & 0xFFFFFFFF
+        s3 = ((seed << 3) + 0x1a2b3c4d) & 0xFFFFFFFF
+        s4 = (~(seed + 0x5f6e7d8c)) & 0xFFFFFFFF
         return (
             jnp.asarray(s1, dtype=jnp.uint32),
             jnp.asarray(s2, dtype=jnp.uint32),
@@ -639,16 +640,16 @@ class LFSR128RNG(LFSRBase):
 
         # Apply different LFSR transformations to each component
         b1 = ((z1 << 7) ^ z1) >> 9
-        z1 = jnp.asarray(((z1 & jnp.asarray(4294967294, dtype=jnp.uint64)) << 15) ^ b1, dtype=jnp.uint32)
+        z1 = jnp.asarray(((z1 & jnp.asarray(4294967294, dtype=jnp.uint32)) << 15) ^ b1, dtype=jnp.uint32)
 
         b2 = ((z2 << 5) ^ z2) >> 23
-        z2 = jnp.asarray(((z2 & jnp.asarray(4294967280, dtype=jnp.uint64)) << 6) ^ b2, dtype=jnp.uint32)
+        z2 = jnp.asarray(((z2 & jnp.asarray(4294967280, dtype=jnp.uint32)) << 6) ^ b2, dtype=jnp.uint32)
 
         b3 = ((z3 << 11) ^ z3) >> 17
-        z3 = jnp.asarray(((z3 & jnp.asarray(4294967168, dtype=jnp.uint64)) << 8) ^ b3, dtype=jnp.uint32)
+        z3 = jnp.asarray(((z3 & jnp.asarray(4294967168, dtype=jnp.uint32)) << 8) ^ b3, dtype=jnp.uint32)
 
         b4 = ((z4 << 13) ^ z4) >> 7
-        z4 = jnp.asarray(((z4 & jnp.asarray(4294967264, dtype=jnp.uint64)) << 10) ^ b4, dtype=jnp.uint32)
+        z4 = jnp.asarray(((z4 & jnp.asarray(4294967264, dtype=jnp.uint32)) << 10) ^ b4, dtype=jnp.uint32)
 
         new_key = (
             jnp.asarray(z1, dtype=jnp.uint32),
