@@ -32,8 +32,6 @@ from .util import general_batching_rule, defjvp, OutType, abstract_arguments
 __all__ = [
     'XLACustomKernel',
     'KernelEntry',
-    'BenchmarkResult',
-    'BenchmarkReport',
 ]
 
 
@@ -230,9 +228,6 @@ class XLACustomKernel:
         """
 
         def fallback_kernel_fn(*args, **kwargs):
-            # Extract preferred backend hint if provided
-            preferred_backend = kwargs.pop('_preferred_backend', None)
-
             # Get kernels dict for this platform
             kernels = self._kernels.get(platform, {})
             if not kernels:
@@ -241,10 +236,7 @@ class XLACustomKernel:
                 )
 
             # Determine which backend to use
-            if preferred_backend is not None:
-                backend_to_use = preferred_backend
-            else:
-                backend_to_use = self._defaults.get(platform)
+            backend_to_use = self._defaults.get(platform)
 
             # Get the kernel entry
             if backend_to_use and backend_to_use in kernels:

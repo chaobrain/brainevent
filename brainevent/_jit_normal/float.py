@@ -587,11 +587,7 @@ def _jitn_batching(args, axes, **kwargs):
     return general_batching_rule(jitn_p, args, axes, **kwargs)
 
 
-def jitn_p_call(
-    w_loc, w_scale, clen, seed,
-    *,
-    shape, transpose: bool, corder: bool,
-):
+def jitn_p_call(w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool):
     w_loc = jnp.atleast_1d(w_loc)
     w_scale = jnp.atleast_1d(w_scale)
     clen = jnp.atleast_1d(clen)
@@ -1656,17 +1652,7 @@ def _jitnmm_batching(args, axes, **kwargs):
         return general_batching_rule(jitnmm_p, args, axes, **kwargs)
 
 
-def jitnmm_p_call(
-    w_loc,
-    w_scale,
-    clen,
-    B,
-    seed,
-    *,
-    shape: MatrixShape,
-    transpose: bool,
-    corder: bool,
-):
+def jitnmm_p_call(w_loc, w_scale, clen, B, seed, *, shape: MatrixShape, transpose: bool, corder: bool):
     w_loc = jnp.atleast_1d(w_loc)
     w_scale = jnp.atleast_1d(w_scale)
     clen = jnp.atleast_1d(clen)
@@ -1717,12 +1703,6 @@ jitnmm_p.def_numba_kernel(_jitnmm_numba_kernel_generator)
 jitnmm_p.def_warp_kernel(_jitnmm_warp_kernel_generator)
 jitnmm_p.def_pallas_kernel('gpu', _jitnmm_pallas_kernel_generator)
 jitnmm_p.def_pallas_kernel('tpu', _jitnmm_pallas_kernel_generator)
-jitnmm_p.def_jvp_rule2(
-    _jitnmm_jvp_wloc,
-    _jitnmm_jvp_wscale,
-    None,
-    _jitnmm_jvp_B,
-    None,
-)
+jitnmm_p.def_jvp_rule2(_jitnmm_jvp_wloc, _jitnmm_jvp_wscale, None, _jitnmm_jvp_B, None)
 jitnmm_p.def_transpose_rule(_jitnmm_transpose_rules)
 jitnmm_p.def_batching_rule(_jitnmm_batching)
