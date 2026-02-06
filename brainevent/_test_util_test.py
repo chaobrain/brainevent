@@ -215,7 +215,7 @@ class TestAllclose:
 
     def test_close_arrays(self):
         x = jnp.array([1.0, 2.0, 3.0])
-        y = jnp.array([1.00001, 2.00001, 3.00001])
+        y = jnp.array([1.0000001, 2.00000001, 3.0000001])
         assert allclose(x, y)
 
     def test_not_close_arrays(self):
