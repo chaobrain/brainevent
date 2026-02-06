@@ -36,7 +36,8 @@ __all__ = [
     'spfloat_fcnmm_p',
 ]
 
-@namescope
+
+@namescope(static_argnames=['shape', 'transpose'])
 def spfloat_fcnmv(
     weights,
     indices,
@@ -418,7 +419,8 @@ spfloat_fcnmv_p.def_transpose_rule(_spfloat_fcnmv_transpose_rule)
 spfloat_fcnmv_p.def_batching_rule(_spfloat_fcnmv_batching)
 spfloat_fcnmv_p.def_call(spfloat_fcnmv_p_call)
 
-@namescope
+
+@namescope(static_argnames=['shape', 'transpose'])
 def spfloat_fcnmm(
     weights: Union[jax.Array, u.Quantity],
     indices: jax.Array,

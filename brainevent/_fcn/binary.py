@@ -37,7 +37,7 @@ __all__ = [
 ]
 
 
-@namescope
+@namescope(static_argnames=['shape', 'transpose'])
 def binary_fcnmv(
     weights: Union[jax.Array, u.Quantity],
     indices: jax.Array,
@@ -519,7 +519,7 @@ binary_fcnmv_p.def_batching_rule(_binary_fcnmv_batching)
 binary_fcnmv_p.def_call(binary_fcnmv_p_call)
 
 
-@namescope
+@namescope(static_argnames=['shape', 'transpose'])
 def binary_fcnmm(
     weights: Union[jax.Array, u.Quantity],
     indices: jax.Array,

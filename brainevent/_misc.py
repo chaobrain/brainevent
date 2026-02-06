@@ -725,7 +725,7 @@ def namescope(
     if fn is None:
 
         def decorator(fun: Callable):
-            fn.__name__ = name if name is not None else f"{prefix}.{fn.__name__}"
+            fun.__name__ = name if name is not None else f"{prefix}.{fun.__name__}"
             return jax.jit(fun, static_argnums=static_argnums, static_argnames=static_argnames)
 
         return decorator
