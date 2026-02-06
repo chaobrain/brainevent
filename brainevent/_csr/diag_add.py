@@ -20,7 +20,6 @@ import brainstate
 import brainunit as u
 import jax
 import jax.numpy as jnp
-import numba
 import numpy as np
 from jax.interpreters import ad
 from jax.interpreters.partial_eval import DynamicJaxprTracer
@@ -44,6 +43,8 @@ def csr_diag_position_v2(indptr, indices, shape: brainstate.typing.Size):
     if _is_tracer(indices):
         raise ValueError('Cannot trace indices when finding diagonal position')
     n_size = min(shape)
+
+    import numba
 
     @numba.njit(cache=True)
     def _find_diag_position(indptr_, indices_, n):
@@ -107,6 +108,8 @@ def csr_diag_position(indptr, indices, shape: brainstate.typing.Size):
     if _is_tracer(indices):
         raise ValueError('Cannot trace indices when finding diagonal position')
 
+    import numba
+
     @numba.njit(cache=True)
     def _find_diag_position(indptr_, indices_, n):
         results = []
@@ -154,6 +157,8 @@ def _csr_diag_add_numba_kernel_generator(
     diag_value_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
+    import numba
+
     @numba.njit(fastmath=True)
     def diag_add(csr_value, diag_position, diag_value, out):
         out[:] = csr_value[:]  # Copy input to output
