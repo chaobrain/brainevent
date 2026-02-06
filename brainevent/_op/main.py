@@ -80,9 +80,10 @@ class XLACustomKernel:
     If a kernel fails, the error message shows alternative backends available
     for the platform and how to switch to them.
 
-    Attributes:
-        primitive: The underlying JAX primitive created.
-        name: The name assigned to the primitive.
+    Instance attributes:
+
+    - ``primitive``: The underlying JAX primitive created.
+    - ``name``: The name assigned to the primitive.
 
     Args:
         name: The unique name for the custom JAX primitive.

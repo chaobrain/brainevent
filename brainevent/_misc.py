@@ -592,6 +592,7 @@ def coo_to_csc_index(
     -------
     Tuple[Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray]]
         A tuple containing:
+
         - csc_indptr: Column pointers array in CSC format. For a matrix with n columns,
           this has length n+1. Each element represents the starting position of a column
           in the row indices array.
@@ -667,6 +668,7 @@ def csr_to_csc_index(
     -------
     Tuple[Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray]]
         A tuple containing:
+
         - csc_indptr: Column pointers array in CSC format
         - csc_indices: Row indices array in CSC format
         - post_positions: Array of indices that can be used to reorder the data values

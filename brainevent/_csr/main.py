@@ -264,7 +264,7 @@ class CSR(BaseCLS):
     row-wise operations and matrix-vector multiplications. It is compatible with
     JAX's tree utilities and supports unit-aware computations.
 
-    The class also supports various arithmetic operations (+, -, *, /, @) with
+    The class also supports various arithmetic operations (``+``, ``-``, ``*``, ``/``, ``@``) with
     other CSR matrices, dense arrays, and scalars.
 
     Attributes
@@ -707,7 +707,7 @@ class CSC(BaseCLS):
     column-wise operations. It is compatible with JAX's tree utilities and
     supports unit-aware computations.
 
-    The class also supports various arithmetic operations (+, -, *, /, @) with
+    The class also supports various arithmetic operations (``+``, ``-``, ``*``, ``/``, ``@``) with
     other CSC matrices, dense arrays, and scalars.
 
     Attributes
