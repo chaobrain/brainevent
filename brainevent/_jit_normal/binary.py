@@ -25,7 +25,7 @@ from jax.interpreters import ad
 from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescoped_jit
 from brainevent._op import XLACustomKernel, jaxinfo_to_warpinfo, numba_kernel, general_batching_rule
-from brainevent._pallas_random import LFSR88RNG
+from brainevent._pallas_random import PallasLFSR88RNG
 from brainevent._typing import Data, MatrixShape
 from .float import jitnmv_p_call, jitnmm_p_call
 
@@ -322,6 +322,7 @@ def _jitc_mv_normal_numba_kernel_generator(
                             if v:
                                 posts[i_row] += w
                             i_row += np.random.randint(1, clen0)
+
     def run(w_loc, w_scale, clen, vector, seed):
         return numba_kernel(kernel, outs=kwargs['outs'])(w_loc, w_scale, clen, vector, seed)
 
@@ -587,7 +588,7 @@ def _jitc_mv_normal_pallas_kernel_generator(
                     i_rows += rng.random_integers(1, clen)
                     return i_rows, i_rows < num_row, rng, res
 
-                rng = LFSR88RNG(seed + i_cols)
+                rng = PallasLFSR88RNG(seed + i_cols)
                 i_rows = rng.random_integers(0, clen)
                 i_row_mask = i_rows < num_row
                 out = jax.lax.while_loop(
@@ -623,7 +624,7 @@ def _jitc_mv_normal_pallas_kernel_generator(
                     i += rng.random_integers(1, clen)
                     return i, rng, res
 
-                rng = LFSR88RNG(seed + i_col)
+                rng = PallasLFSR88RNG(seed + i_col)
                 _, _, r = jax.lax.while_loop(
                     lambda data: data[0] < num_row,
                     body,
@@ -656,7 +657,7 @@ def _jitc_mv_normal_pallas_kernel_generator(
                     i += rng.random_integers(1, clen)
                     return i, rng
 
-                rng = LFSR88RNG(seed + i_row)
+                rng = PallasLFSR88RNG(seed + i_row)
                 jax.lax.while_loop(
                     lambda data: data[0] < num_col,
                     body,
@@ -801,13 +802,7 @@ binary_jitnmv_p.def_numba_kernel(_jitc_mv_normal_numba_kernel_generator)
 binary_jitnmv_p.def_warp_kernel(_jitc_mv_normal_warp_kernel_generator)
 binary_jitnmv_p.def_pallas_kernel('gpu', _jitc_mv_normal_pallas_kernel_generator)
 binary_jitnmv_p.def_pallas_kernel('tpu', _jitc_mv_normal_pallas_kernel_generator)
-binary_jitnmv_p.def_jvp_rule2(
-    _jitc_mv_normal_jvp_wloc,
-    _jitc_mv_normal_jvp_wscale,
-    None,
-    _jitc_mv_normal_jvp_v,
-    None,
-)
+binary_jitnmv_p.def_jvp_rule2(_jitc_mv_normal_jvp_wloc, _jitc_mv_normal_jvp_wscale, None, _jitc_mv_normal_jvp_v, None)
 binary_jitnmv_p.def_transpose_rule(_jitc_mv_normal_transpose_rules)
 binary_jitnmv_p.def_batching_rule(_jitc_mv_normal_batching)
 
@@ -1034,6 +1029,7 @@ def _jitc_mm_normal_numba_kernel_generator(
 
     return run
 
+
 def _jitc_mm_normal_warp_kernel_generator(
     w_loc_info: jax.ShapeDtypeStruct,
     w_scale_info: jax.ShapeDtypeStruct,
@@ -1222,7 +1218,7 @@ def _jitc_mm_normal_pallas_kernel_generator(
                 i += rng.random_integers(1, clen0)
                 return i, rng, out
 
-            rng = LFSR88RNG(seed0 + i_m)
+            rng = PallasLFSR88RNG(seed0 + i_m)
             out = jnp.zeros(block_dim, dtype=post_ref.dtype)
             _, _, out = jax.lax.while_loop(
                 lambda data: data[0] < k,
@@ -1260,7 +1256,7 @@ def _jitc_mm_normal_pallas_kernel_generator(
                 i += rng.random_integers(1, clen0)
                 return i, rng
 
-            rng = LFSR88RNG(seed0 + i_k)
+            rng = PallasLFSR88RNG(seed0 + i_k)
             jax.lax.while_loop(
                 lambda data: data[0] < m,
                 body,
@@ -1411,7 +1407,6 @@ binary_jitnmm_p.def_numba_kernel(_jitc_mm_normal_numba_kernel_generator)
 binary_jitnmm_p.def_warp_kernel(_jitc_mm_normal_warp_kernel_generator)
 binary_jitnmm_p.def_pallas_kernel('gpu', _jitc_mm_normal_pallas_kernel_generator)
 binary_jitnmm_p.def_pallas_kernel('tpu', _jitc_mm_normal_pallas_kernel_generator)
-binary_jitnmm_p.def_jvp_rule2(_jitc_mm_normal_jvp_wloc, _jitc_mm_normal_jvp_wscale,
-                              None, _jitc_mm_normal_jvp_B, None)
+binary_jitnmm_p.def_jvp_rule2(_jitc_mm_normal_jvp_wloc, _jitc_mm_normal_jvp_wscale, None, _jitc_mm_normal_jvp_B, None)
 binary_jitnmm_p.def_transpose_rule(_jitc_mm_normal_transpose_rules)
 binary_jitnmm_p.def_batching_rule(_jitc_mm_normal_batching)

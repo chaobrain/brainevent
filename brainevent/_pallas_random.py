@@ -22,9 +22,9 @@ import numpy as np
 from ._typing import PallasRandomKey
 
 __all__ = [
-    'LFSR88RNG',
-    'LFSR113RNG',
-    'LFSR128RNG',
+    'PallasLFSR88RNG',
+    'PallasLFSR113RNG',
+    'PallasLFSR128RNG',
 ]
 
 
@@ -47,7 +47,7 @@ class LFSRBase(abc.ABC):
 
     Example:
         # Create a concrete LFSR implementation
-        >>> rng = LFSR113RNG(seed=42)
+        >>> rng = PallasLFSR113RNG(seed=42)
         >>> random_float = rng.rand()
         >>> random_int = rng.randint()
     """
@@ -162,7 +162,7 @@ class LFSRBase(abc.ABC):
             jax.Array: A floating-point value in the range [low, high).
 
         Example:
-            >>> rng = LFSR88RNG(seed=42)
+            >>> rng = PallasLFSR88RNG(seed=42)
             >>> value = rng.uniform(10.0, 20.0)  # Random value between 10 and 20
         """
         r = self.rand()
@@ -183,7 +183,7 @@ class LFSRBase(abc.ABC):
             jax.Array: A random value from the normal distribution N(mu, sigma).
 
         Example:
-            >>> rng = LFSR113RNG(seed=42)
+            >>> rng = PallasLFSR113RNG(seed=42)
             >>> value = rng.normal(0.0, 1.0)  # Standard normal
             >>> value = rng.normal(5.0, 2.0)  # N(5, 4)
         """
@@ -201,7 +201,7 @@ class LFSRBase(abc.ABC):
             jax.Array: A random integer in the range [low, high].
 
         Example:
-            >>> rng = LFSR88RNG(seed=42)
+            >>> rng = PallasLFSR88RNG(seed=42)
             >>> dice_roll = rng.random_integers(1, 6)  # Random integer from 1 to 6
             >>> coin_flip = rng.random_integers(0, 1)  # 0 or 1
         """
@@ -255,7 +255,7 @@ class LFSRBase(abc.ABC):
 #############################################
 
 @jax.tree_util.register_pytree_node_class
-class LFSR88RNG(LFSRBase):
+class PallasLFSR88RNG(LFSRBase):
     """Combined LFSR random number generator by L'Ecuyer (LFSR88).
 
     This class implements the LFSR88 algorithm, a combined Linear Feedback Shift Register
@@ -271,7 +271,7 @@ class LFSR88RNG(LFSRBase):
             the first 3 are used in calculations).
 
     Example:
-        >>> rng = LFSR88RNG(seed=42)
+        >>> rng = PallasLFSR88RNG(seed=42)
         >>> rand_float = rng.rand()  # Generate a random float between 0 and 1
         >>> rand_int = rng.randint()  # Generate a random 32-bit integer
         >>> norm_val = rng.normal(0, 1)  # Generate a random value from N(0,1)
@@ -357,7 +357,7 @@ class LFSR88RNG(LFSRBase):
             jax.Array: A random value from the standard normal distribution.
 
         Example:
-            >>> rng = LFSR88RNG(seed=42)
+            >>> rng = PallasLFSR88RNG(seed=42)
             >>> value = rng.randn()  # Random value from standard normal distribution
 
         References:
@@ -384,7 +384,7 @@ class LFSR88RNG(LFSRBase):
             jax.Array: A random integer in the range [0, 2^32-1].
 
         Example:
-            >>> rng = LFSR88RNG(seed=42)
+            >>> rng = PallasLFSR88RNG(seed=42)
             >>> value = rng.randint()  # Might return 2846173195, for example
         """
         key = self.generate_next_key()
@@ -400,7 +400,7 @@ class LFSR88RNG(LFSRBase):
             jax.Array: A floating-point value in the range [0, 1).
 
         Example:
-            >>> rng = LFSR88RNG(seed=42)
+            >>> rng = PallasLFSR88RNG(seed=42)
             >>> value = rng.rand()  # Might return 0.27183515, for example
         """
         key = self.generate_next_key()
@@ -413,7 +413,7 @@ class LFSR88RNG(LFSRBase):
 ##############################################
 
 @jax.tree_util.register_pytree_node_class
-class LFSR113RNG(LFSRBase):
+class PallasLFSR113RNG(LFSRBase):
     """Combined LFSR random number generator by L'Ecuyer (LFSR113).
 
     This class implements the LFSR113 algorithm, a combined Linear Feedback Shift Register
@@ -428,7 +428,7 @@ class LFSR113RNG(LFSRBase):
             represented as an array of 4 unsigned 32-bit integers.
 
     Example:
-        >>> rng = LFSR113RNG(seed=42)
+        >>> rng = PallasLFSR113RNG(seed=42)
         >>> rand_float = rng.rand()  # Generate a random float between 0 and 1
         >>> rand_int = rng.randint()  # Generate a random 32-bit integer
         >>> norm_val = rng.normal(0, 1)  # Generate a random value from N(0,1)
@@ -509,7 +509,7 @@ class LFSR113RNG(LFSRBase):
             jax.Array: A floating-point value in the range [0, 1).
 
         Example:
-            >>> rng = LFSR113RNG(seed=42)
+            >>> rng = PallasLFSR113RNG(seed=42)
             >>> value = rng.rand()  # Might return 0.32415783, for example
         """
         key = self.generate_next_key()
@@ -525,7 +525,7 @@ class LFSR113RNG(LFSRBase):
             jax.Array: A random integer in the range [0, 2^32-1].
 
         Example:
-            >>> rng = LFSR113RNG(seed=42)
+            >>> rng = PallasLFSR113RNG(seed=42)
             >>> value = rng.randint()  # Might return 3829173452, for example
         """
         key = self.generate_next_key()
@@ -544,7 +544,7 @@ class LFSR113RNG(LFSRBase):
             jax.Array: A random value from the standard normal distribution.
 
         Example:
-            >>> rng = LFSR113RNG(seed=42)
+            >>> rng = PallasLFSR113RNG(seed=42)
             >>> value = rng.randn()  # Random value from standard normal distribution
 
         References:
@@ -568,7 +568,7 @@ class LFSR113RNG(LFSRBase):
 ##############################################
 
 @jax.tree_util.register_pytree_node_class
-class LFSR128RNG(LFSRBase):
+class PallasLFSR128RNG(LFSRBase):
     """Combined LFSR random number generator (LFSR128).
 
     This class implements the LFSR128 algorithm, an extension of the LFSR family of
@@ -581,7 +581,7 @@ class LFSR128RNG(LFSRBase):
             represented as an array of 4 unsigned 32-bit integers.
 
     Example:
-        >>> rng = LFSR128RNG(seed=42)
+        >>> rng = PallasLFSR128RNG(seed=42)
         >>> rand_float = rng.rand()  # Generate a random float between 0 and 1
         >>> rand_int = rng.randint()  # Generate a random 32-bit integer
         >>> norm_val = rng.normal(0, 1)  # Generate a random value from N(0,1)
@@ -670,7 +670,7 @@ class LFSR128RNG(LFSRBase):
             jax.Array: A floating-point value in the range [0, 1).
 
         Example:
-            >>> rng = LFSR128RNG(seed=42)
+            >>> rng = PallasLFSR128RNG(seed=42)
             >>> value = rng.rand()  # Returns a random float between 0 and 1
         """
         key = self.generate_next_key()
@@ -687,7 +687,7 @@ class LFSR128RNG(LFSRBase):
             jax.Array: A random integer in the range [0, 2^32-1].
 
         Example:
-            >>> rng = LFSR128RNG(seed=42)
+            >>> rng = PallasLFSR128RNG(seed=42)
             >>> value = rng.randint()  # Returns a random 32-bit integer
         """
         key = self.generate_next_key()
@@ -707,7 +707,7 @@ class LFSR128RNG(LFSRBase):
             jax.Array: A random value from the standard normal distribution.
 
         Example:
-            >>> rng = LFSR128RNG(seed=42)
+            >>> rng = PallasLFSR128RNG(seed=42)
             >>> value = rng.randn()  # Random value from standard normal distribution
         """
         u1 = self.rand()

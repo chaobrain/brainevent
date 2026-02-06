@@ -1,64 +1,76 @@
-Operation Customization Routines
-================================
+Custom Kernel Framework
+=======================
 
 .. currentmodule:: brainevent
 .. automodule:: brainevent
    :no-index:
 
 
-Define JAX Primitive
---------------------
+Custom Kernel
+-------------
 
 .. autosummary::
    :toctree: generated/
    :template: classtemplate.rst
 
-    XLACustomKernel
+   XLACustomKernel
+   KernelEntry
 
 
-
-Define JAX Kernel on CPU/GPU/TPU
---------------------------------
-
-
-CPU kernel definition using Numba.
+Benchmarking
+------------
 
 .. autosummary::
    :toctree: generated/
    :template: classtemplate.rst
 
-    numba_kernel
+   BenchmarkResult
+   BenchmarkReport
+
+.. autosummary::
+   :toctree: generated/
+
+   benchmark_function
 
 
-GPU kernel definition using Numba CUDA.
+CPU Kernel (Numba)
+------------------
+
+.. autosummary::
+   :toctree: generated/
+
+   numba_kernel
+
+
+GPU Kernel (Numba CUDA)
+-----------------------
+
+.. autosummary::
+   :toctree: generated/
+
+   numba_cuda_kernel
+
+
+GPU/TPU Kernel (Pallas)
+-----------------------
 
 .. autosummary::
    :toctree: generated/
    :template: classtemplate.rst
 
-    numba_cuda_kernel
+   PallasLFSR88RNG
+   PallasLFSR113RNG
+   PallasLFSR128RNG
 
 
-
-GPU/TPU kernel definition using JAX Pallas.
-
-.. autosummary::
-   :toctree: generated/
-   :template: classtemplate.rst
-
-    LFSR88RNG
-    LFSR113RNG
-    LFSR128RNG
-
-
-
-Kernel definition helper functions.
+Helpers
+-------
 
 .. autosummary::
    :toctree: generated/
 
-    defjvp
-    general_batching_rule
-    jaxtype_to_warptype
-    jaxinfo_to_warpinfo
-
+   register_cuda_kernels
+   defjvp
+   general_batching_rule
+   jaxtype_to_warptype
+   jaxinfo_to_warpinfo

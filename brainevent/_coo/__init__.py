@@ -14,6 +14,17 @@
 # ==============================================================================
 
 from .main import COO
-from .plasticity_binary import plast_coo_on_binary_pre, plast_coo_on_binary_post
+from .binary import binary_coomv, binary_coomv_p, binary_coomm, binary_coomm_p
+from .float import coomv, coomv_p, coomm, coomm_p
+from .plasticity_binary import (
+    plast_coo_on_binary_pre, plast_coo_on_binary_post,
+    plast_coo_on_binary_pre_p, plast_coo_on_binary_post_p,
+)
 
-__all__ = ['COO', 'plast_coo_on_binary_pre', 'plast_coo_on_binary_post']
+__all__ = [
+    'COO',
+    'binary_coomv', 'binary_coomv_p', 'binary_coomm', 'binary_coomm_p',
+    'coomv', 'coomv_p', 'coomm', 'coomm_p',
+    'plast_coo_on_binary_pre', 'plast_coo_on_binary_post',
+    'plast_coo_on_binary_pre_p', 'plast_coo_on_binary_post_p',
+]

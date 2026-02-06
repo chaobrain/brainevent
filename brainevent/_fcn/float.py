@@ -23,13 +23,58 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescoped_jit
+from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape
 from brainevent._op import general_batching_rule, XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
 
 __all__ = [
+    'fcnmv',
     'fcnmv_p',
+    'fcnmm',
     'fcnmm_p',
 ]
+
+
+def fcnmv(
+    weights: Union[jax.Array, u.Quantity],
+    indices: jax.Array,
+    vector: Union[jax.Array, u.Quantity],
+    *,
+    shape: Tuple[int, int],
+    transpose: bool,
+) -> Union[jax.Array, u.Quantity]:
+    """Perform a sparse matrix-vector multiplication with fixed connection number.
+
+    This function multiplies a sparse weight matrix against a dense vector, where the
+    sparse matrix is represented in a format with a fixed number of connections per row.
+    Depending on the transpose flag, it routes to either a GPU/TPU optimized implementation
+    (transpose=True) or a JAX-based implementation (transpose=False).
+
+    Args:
+        weights: The weight values for the sparse connections. Can be either a JAX array
+                 or a Quantity object. For homogeneous weights, this can be a scalar.
+        indices: The indices array specifying the sparse matrix pattern. For transpose=True,
+                 shape should be [n_pre, n_conn], otherwise [n_post, n_conn].
+        vector: The dense vector to multiply with. Can be either a JAX array or a Quantity object.
+        shape: A tuple of (n_pre, n_post) specifying the dimensions of the sparse weight matrix.
+        transpose: If True, performs computation for fixed pre connections using optimized kernels.
+                  If False, performs computation for fixed post connections using JAX implementation.
+
+    Returns:
+        A tuple containing a single element: the resulting vector after multiplication,
+        which will have the same type (JAX array or Quantity) as the inputs.
+    """
+    out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, vector, shape, transpose)
+    weights, w_unit = u.split_mantissa_unit(weights)
+    vector, v_unit = u.split_mantissa_unit(vector)
+    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
+    r = fcnmv_p_call(
+        weights,
+        indices,
+        vector,
+        transpose=transpose,
+        shape=shape,
+    )[0]
+    return u.maybe_decimal(r * v_unit * w_unit)
 
 
 def _fcnmv_numba_kernel(
@@ -43,7 +88,7 @@ def _fcnmv_numba_kernel(
         # fixed pre connection number
         if weight_info.size == 1:
             @numba.njit(fastmath=True)
-            def ell_mv(weights, indices, vector, _, posts):
+            def ell_mv(weights, indices, vector, posts):
                 posts[:] = 0.
                 w = weights[0]
                 for i in range(vector.shape[0]):
@@ -52,7 +97,7 @@ def _fcnmv_numba_kernel(
                         posts[indices[i, j]] += wv
         else:
             @numba.njit(fastmath=True)
-            def ell_mv(weights, indices, vector, _, posts):
+            def ell_mv(weights, indices, vector, posts):
                 posts[:] = 0.
                 for i in range(vector.shape[0]):
                     for j in range(indices.shape[1]):
@@ -62,18 +107,18 @@ def _fcnmv_numba_kernel(
         # fixed post connection number
         if weight_info.size == 1:
             @numba.njit(parallel=True, fastmath=True, nogil=True)
-            def ell_mv(weights, indices, vector, _, posts):
+            def ell_mv(weights, indices, vector, posts):
                 w = weights[0]
                 for i in numba.prange(indices.shape[0]):
                     posts[i] = w * np.sum(vector[indices[i]])
         else:
             @numba.njit(parallel=True, fastmath=True, nogil=True)
-            def ell_mv(weights, indices, vector, _, posts):
+            def ell_mv(weights, indices, vector, posts):
                 for i in numba.prange(indices.shape[0]):
                     posts[i] = np.sum(weights[i] * vector[indices[i]])
 
-    def kernel(weights, indices, vector, _):
-        return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, vector, _)
+    def kernel(weights, indices, vector):
+        return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, vector)
 
     return kernel
 
@@ -124,7 +169,7 @@ def _fcnmv_warp_kernel(
                 for j in range(indices.shape[1]):
                     warp.atomic_add(posts, indices[i, j], weights[i, j] * v)
 
-        def kernel(weights, indices, vector, _):
+        def kernel(weights, indices, vector):
             out_info = kwargs['outs'][0]
             dim = vector_info.shape[0]
             fn = jax_kernel(ell_mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
@@ -163,7 +208,7 @@ def _fcnmv_warp_kernel(
                     r += weights[i_m, j] * vector[indices[i_m, j]]
                 posts[i_m] = r
 
-        def kernel(weights, indices, vector, _):
+        def kernel(weights, indices, vector):
             out_info = kwargs['outs'][0]
             dim = indices_info.shape[0]
             fn = jax_kernel(ell_mv, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
@@ -220,7 +265,7 @@ def _fcnmv_pallas_kernel(
 
             jax.lax.fori_loop(0, pl.cdiv(n_conn, block_dim), loop_fn, None)
 
-        def kernel(weights, indices, vector, _):
+        def kernel(weights, indices, vector):
             fn = pl.pallas_call(
                 _raw_kernel,
                 grid=(n_pre,),
@@ -263,33 +308,22 @@ def _fcnmv_pallas_kernel(
                 i_row_sum = i_row_sum * weight_ref[0]
             out_ref[i_row] = i_row_sum
 
-        def kernel(weights, indices, vector, _):
+        def kernel(weights, indices, vector):
             fn = pl.pallas_call(_raw_kernel, grid=(n_pre,), out_shape=kwargs['outs'])
-            return fn(weights, indices, vector, _)
+            return fn(weights, indices, vector)
 
     return kernel
 
 
-def _fcnmv_jvp_vector(spk_dot, weights, indices, spikes, _, *, shape, transpose, **kwargs):
+def _fcnmv_jvp_vector(spk_dot, weights, indices, spikes, *, shape, transpose, **kwargs):
     return fcnmv_p_call(weights, indices, spk_dot, shape=shape, transpose=transpose)
 
 
-def _fcnmv_jvp_weights(w_dot, weights, indices, vector, _, *, shape, transpose, **kwargs):
+def _fcnmv_jvp_weights(w_dot, weights, indices, vector, *, shape, transpose, **kwargs):
     return fcnmv_p_call(w_dot, indices, vector, shape=shape, transpose=transpose)
 
 
-def _fcnmv_transpose_rule(
-    ct,
-    weights,
-    indices,
-    vector,
-    _,
-    *,
-    shape,
-    transpose,
-    weight_info,
-    **kwargs
-):
+def _fcnmv_transpose_rule(ct, weights, indices, vector, *, shape, transpose, weight_info, **kwargs):
     if ad.is_undefined_primal(indices):
         raise ValueError("Cannot transpose with respect to sparse indices.")
 
@@ -308,7 +342,7 @@ def _fcnmv_transpose_rule(
                 shape=shape,
                 transpose=not transpose
             )[0]
-        return weights, indices, ct_vector, _
+        return weights, indices, ct_vector
     else:
         # ∂L/∂w = ∂L/∂y * ∂y/∂w
         if type(ct) is ad.Zero:
@@ -328,36 +362,7 @@ def _fcnmv_transpose_rule(
                 ct_weight = jax.vmap(lambda v, ind: v * ct[ind])(vector, indices)
             else:
                 ct_weight = jax.vmap(lambda c, ind: c * vector[ind])(ct, indices)
-        return ct_weight, indices, vector, _
-
-
-@namescoped_jit(static_argnames=("shape", "transpose"))
-def _warp_fcnmv_call(
-    weights: Union[jax.Array, u.Quantity],
-    indices: jax.Array,
-    vector: Union[jax.Array, u.Quantity],
-    *,
-    shape: Tuple[int, int],
-    transpose: bool,
-) -> Tuple[Union[jax.Array, u.Quantity]]:
-    out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, vector, shape, transpose)
-    weights, w_unit = u.split_mantissa_unit(weights)
-    vector, v_unit = u.split_mantissa_unit(vector)
-    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
-
-    r = fcnmv_p(
-        weights,
-        indices,
-        vector,
-        jnp.zeros(out.shape, out.dtype),
-        transpose=transpose,
-        shape=shape,
-        weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
-        vector_info=jax.ShapeDtypeStruct(vector.shape, vector.dtype),
-        indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
-        outs=out
-    )
-    return (u.maybe_decimal(r * v_unit * w_unit),)
+        return ct_weight, indices, vector
 
 
 def _jax_fcnmv_call(
@@ -380,7 +385,7 @@ def _jax_fcnmv_call(
 
 
 def _fcnmv_batching(args, axes, **kwargs):
-    if tuple(axes) == (None, None, 0, None):
+    if tuple(axes) == (None, None, 0):
         assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
         r = fcnmm_p_call(
             args[0],
@@ -390,7 +395,7 @@ def _fcnmv_batching(args, axes, **kwargs):
             transpose=kwargs['transpose'],
         )
         return r, [1]
-    elif tuple(axes) == (None, None, 1, None):
+    elif tuple(axes) == (None, None, 1):
         assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
         r = fcnmm_p_call(
             args[0],
@@ -405,13 +410,13 @@ def _fcnmv_batching(args, axes, **kwargs):
 
 
 def fcnmv_p_call(
-    weights: Union[jax.Array, u.Quantity],
+    weights: jax.Array,
     indices: jax.Array,
-    vector: Union[jax.Array, u.Quantity],
+    vector: jax.Array,
     *,
     shape: Tuple[int, int],
     transpose: bool,
-):
+) -> Tuple[jax.Array]:
     """Perform a sparse matrix-vector multiplication with fixed connection number.
 
     This function multiplies a sparse weight matrix against a dense vector, where the
@@ -433,23 +438,19 @@ def fcnmv_p_call(
         A tuple containing a single element: the resulting vector after multiplication,
         which will have the same type (JAX array or Quantity) as the inputs.
     """
-    return _warp_fcnmv_call(
+    out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, vector, shape, transpose)
+    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
+    return fcnmv_p(
         weights,
         indices,
         vector,
+        transpose=transpose,
         shape=shape,
-        transpose=transpose
+        weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        vector_info=jax.ShapeDtypeStruct(vector.shape, vector.dtype),
+        indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
+        outs=[out]
     )
-    if transpose:
-        pass
-    else:
-        return _jax_fcnmv_call(
-            weights,
-            indices,
-            vector,
-            shape=shape,
-            transpose=transpose
-        )
 
 
 fcnmv_p = XLACustomKernel('fixed_num_mv')
@@ -461,6 +462,28 @@ fcnmv_p.def_jvp_rule2(_fcnmv_jvp_weights, None, _fcnmv_jvp_vector, None)
 fcnmv_p.def_transpose_rule(_fcnmv_transpose_rule)
 fcnmv_p.def_batching_rule(_fcnmv_batching)
 fcnmv_p.def_call(fcnmv_p_call)
+
+
+def fcnmm(
+    weights: Union[jax.Array, u.Quantity],
+    indices: jax.Array,
+    matrix: Union[jax.Array, u.Quantity],
+    *,
+    shape: Tuple[int, int],
+    transpose: bool,
+) -> Union[jax.Array, u.Quantity]:
+    out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, matrix, shape, transpose)
+    weights, w_unit = u.split_mantissa_unit(weights)
+    matrix, m_unit = u.split_mantissa_unit(matrix)
+    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
+    r = fcnmm_p_call(
+        weights,
+        indices,
+        matrix,
+        transpose=transpose,
+        shape=shape,
+    )[0]
+    return u.maybe_decimal(r * m_unit * w_unit)
 
 
 def _fcnmm_numba_kernel(
@@ -479,7 +502,7 @@ def _fcnmm_numba_kernel(
 
         if weight_info.size == 1:
             @numba.njit(fastmath=True)
-            def ell_mv(weights, indices, matrix, _, posts):
+            def ell_mv(weights, indices, matrix, posts):
                 posts[:] = 0.
                 w = weights[0]
                 for i_k in range(matrix.shape[0]):
@@ -488,7 +511,7 @@ def _fcnmm_numba_kernel(
                         posts[indices[i_k, i_conn]] += wv
         else:
             @numba.njit(fastmath=True)
-            def ell_mv(weights, indices, vector, _, posts):
+            def ell_mv(weights, indices, vector, posts):
                 posts[:] = 0.
                 for i in range(vector.shape[0]):
                     for j in range(indices.shape[1]):
@@ -503,18 +526,18 @@ def _fcnmm_numba_kernel(
 
         if weight_info.size == 1:
             @numba.njit(parallel=True, fastmath=True, nogil=True)
-            def ell_mv(weights, indices, matrix, _, posts):
+            def ell_mv(weights, indices, matrix, posts):
                 w = weights[0]
                 for i_m in numba.prange(indices.shape[0]):
                     posts[i_m] = w * np.sum(matrix[indices[i_m]], axis=0)
         else:
             @numba.njit(parallel=True, fastmath=True, nogil=True)
-            def ell_mv(weights, indices, matrix, _, posts):
+            def ell_mv(weights, indices, matrix, posts):
                 for i_m in numba.prange(indices.shape[0]):
                     posts[i_m] = weights[i_m] @ matrix[indices[i_m]]
 
-    def kernel(weights, indices, matrix, _):
-        return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, matrix, _)
+    def kernel(weights, indices, matrix):
+        return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, matrix)
 
     return kernel
 
@@ -588,7 +611,7 @@ def _fcnmm_pallas_kernel(
 
             jax.lax.fori_loop(0, pl.cdiv(n_conn, block_k), loop_fn, None)
 
-        def kernel(weights, indices, matrix, _):
+        def kernel(weights, indices, matrix):
             fn = pl.pallas_call(
                 _raw_kernel,
                 grid=(n_pre, pl.cdiv(matrix_info.shape[1], block_n)),
@@ -645,37 +668,26 @@ def _fcnmm_pallas_kernel(
                 final_out = final_out * weight_ref[0]
             out_ref[i_m, pl.dslice(i_n_start, block_n)] = jnp.where(i_n_mask, final_out, 0.0)
 
-        def kernel(weights, indices, matrix, _):
+        def kernel(weights, indices, matrix):
             fn = pl.pallas_call(
                 _raw_kernel,
                 grid=(n_pre, pl.cdiv(matrix_info.shape[1], block_n)),
                 out_shape=kwargs['outs']
             )
-            return fn(weights, indices, matrix, _)
+            return fn(weights, indices, matrix)
 
     return kernel
 
 
-def _fcnmm_jvp_matrix(matrix_dot, weights, indices, matrix, _, *, shape, transpose, **kwargs):
+def _fcnmm_jvp_matrix(matrix_dot, weights, indices, matrix, *, shape, transpose, **kwargs):
     return fcnmm_p_call(weights, indices, matrix_dot, shape=shape, transpose=transpose)
 
 
-def _fcnmm_jvp_weights(weights_dot, weights, indices, matrix, _, *, shape, transpose, **kwargs):
+def _fcnmm_jvp_weights(weights_dot, weights, indices, matrix, *, shape, transpose, **kwargs):
     return fcnmm_p_call(weights_dot, indices, matrix, shape=shape, transpose=transpose)
 
 
-def _fcnmm_transpose_rule(
-    ct,
-    weights,
-    indices,
-    matrix,
-    _,
-    *,
-    shape,
-    transpose,
-    weight_info,
-    **kwargs
-):
+def _fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpose, weight_info, **kwargs):
     if ad.is_undefined_primal(indices):
         raise ValueError("Cannot transpose with respect to sparse indices.")
 
@@ -696,7 +708,7 @@ def _fcnmm_transpose_rule(
                 transpose=not transpose
             )[0]
 
-        return weights, indices, ct_vector, _
+        return weights, indices, ct_vector
     else:
         # ∂L/∂w = ∂L/∂y * ∂y/∂w
         if type(ct) is ad.Zero:
@@ -721,7 +733,7 @@ def _fcnmm_transpose_rule(
                 # inputs: [m, n] @ [m, n_conn]
                 # ct: [k, n]
                 ct_weight = jax.vmap(lambda c, ind: (matrix[ind] @ c))(ct, indices)
-        return ct_weight, indices, matrix, _
+        return ct_weight, indices, matrix
 
 
 def _batching_base_fn(args, axis=1, **kwargs):
@@ -740,31 +752,30 @@ def _batching_base_fn(args, axis=1, **kwargs):
 
 
 def _fcnmm_batching(args, axes, **kwargs):
-    if tuple(axes) == (None, None, 0, None):
+    if tuple(axes) == (None, None, 0):
         assert args[2].ndim == 3, 'Batching axis 0 requires 3D input.'
         args = list(args)
         args[2] = jnp.transpose(args[2], (1, 0, 2))
         return _batching_base_fn(args, **kwargs)
 
-    elif tuple(axes) == (None, None, 1, None):
+    elif tuple(axes) == (None, None, 1):
         return _batching_base_fn(args, **kwargs)
 
-    elif tuple(axes) == (None, None, 2, None):
+    elif tuple(axes) == (None, None, 2):
         return _batching_base_fn(args, axis=2, **kwargs)
 
     else:
         return general_batching_rule(fcnmm_p, args, axes, **kwargs)
 
 
-@namescoped_jit(static_argnames=("shape", "transpose"))
 def fcnmm_p_call(
-    weights: Union[jax.Array, u.Quantity],
+    weights: jax.Array,
     indices: jax.Array,
-    matrix: Union[jax.Array, u.Quantity],
+    matrix: jax.Array,
     *,
     shape: Tuple[int, int],
     transpose: bool,
-) -> Tuple[Union[jax.Array, u.Quantity]]:
+) -> Tuple[jax.Array]:
     """
     Perform a sparse matrix-matrix multiplication with fixed connection number.
 
@@ -792,23 +803,18 @@ def fcnmm_p_call(
         uses a JAX-based implementation.
     """
     out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, matrix, shape, transpose)
-    weights, w_unit = u.split_mantissa_unit(weights)
-    matrix, m_unit = u.split_mantissa_unit(matrix)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
-
-    r = fcnmm_p(
+    return fcnmm_p(
         weights,
         indices,
         matrix,
-        jnp.zeros(out.shape, out.dtype),
         transpose=transpose,
         shape=shape,
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         matrix_info=jax.ShapeDtypeStruct(matrix.shape, matrix.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
-        outs=out,
+        outs=[out],
     )
-    return (u.maybe_decimal(r * m_unit * w_unit),)
 
 
 fcnmm_p = XLACustomKernel('fixed_num_mm')

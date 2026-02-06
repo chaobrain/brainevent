@@ -65,12 +65,11 @@ Core Components
 
   - ``COO`` (Coordinate format): Flexible format for constructing sparse matrices
   - ``CSR`` / ``CSC`` (Compressed Sparse Row/Column): Fast row/column-oriented operations
-  - ``BlockCSR`` / ``BlockELL``: Block-structured sparse formats for regular connectivity
 
 **3. Just-In-Time Connectivity**
   Generate connectivity matrices on-the-fly without storing full weight matrices (memory-efficient for large networks):
 
-  - ``JITCHomoR`` / ``JITCHomoC``: Homogeneous (constant) weights
+  - ``JITCScalarR`` / ``JITCScalarC``: Scalar (constant) weights
   - ``JITCNormalR`` / ``JITCNormalC``: Normally distributed weights
   - ``JITCUniformR`` / ``JITCUniformC``: Uniformly distributed weights
 
@@ -91,9 +90,9 @@ Core Components
 **6. Synaptic Plasticity**
   Built-in support for learning and plasticity rules:
 
-  - ``csr_on_pre`` / ``csr_on_post``: CSR-based plasticity updates
-  - ``coo_on_pre`` / ``coo_on_post``: COO-based plasticity updates
-  - ``dense_on_pre`` / ``dense_on_post``: Dense matrix plasticity
+  - ``plast_csr_on_binary_pre`` / ``plast_csr2csc_on_binary_post``: CSR-based plasticity updates
+  - ``plast_coo_on_binary_pre`` / ``plast_coo_on_binary_post``: COO-based plasticity updates
+  - ``plast_dense_on_binary_pre`` / ``plast_dense_on_binary_post``: Dense matrix plasticity
 
 **7. Unit-Aware Computation**
   Fully compatible with `BrainUnit <https://github.com/chaobrain/brainunit>`_ for physical unit tracking and dimensional analysis.
@@ -136,8 +135,8 @@ processing only the active (non-zero) events.
    coo_matrix = brainevent.COO(...)
 
    # Just-in-time connectivity (memory efficient)
-   jitc_conn = brainevent.JITCHomoR(num_pre=1000, num_post=1000,
-                             prob=0.1, weight=0.5, seed=0)
+   jitc_conn = brainevent.JITCScalarR(num_pre=1000, num_post=1000,
+                               prob=0.1, weight=0.5, seed=0)
 
    # Fixed connectivity patterns
    fixed_conn = brainevent.FixedPostNumConn(num_pre=1000, num_post=1000,
@@ -164,11 +163,11 @@ See also the ecosystem
    :maxdepth: 2
    :caption: Tutorials
 
-   Tutorials/01_eventarray_basics.ipynb
-   Tutorials/02_sparse_matrices.ipynb
-   Tutorials/03_jit_connectivity.ipynb
-   Tutorials/04_fixed_connections.ipynb
-   Tutorials/05_synaptic_plasticity.ipynb
+   tutorials/01_eventarray_basics.ipynb
+   tutorials/02_sparse_matrices.ipynb
+   tutorials/03_jit_connectivity.ipynb
+   tutorials/04_fixed_connections.ipynb
+   tutorials/05_synaptic_plasticity.ipynb
 
 
 .. toctree::
@@ -178,5 +177,8 @@ See also the ecosystem
 
    apis/eventarray.rst
    apis/datastructure.rst
+   apis/operations.rst
    apis/operator.rst
+   apis/errors.rst
+   apis/utilities.rst
 

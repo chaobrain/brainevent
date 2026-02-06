@@ -24,15 +24,38 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescoped_jit
+from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 from brainevent._typing import MatrixShape
 from .float import fcnmv_p_call, fcnmm_p_call
 
 __all__ = [
+    'binary_fcnmv',
     'binary_fcnmv_p',
+    'binary_fcnmm',
     'binary_fcnmm_p',
 ]
+
+
+def binary_fcnmv(
+    weights: Union[jax.Array, u.Quantity],
+    indices: jax.Array,
+    spikes: Union[jax.Array, u.Quantity],
+    *,
+    shape: Tuple[int, int],
+    transpose: bool = False,
+) -> Tuple[Union[jax.Array, u.Quantity]]:
+    weights, w_unit = u.split_mantissa_unit(weights)
+    spikes, v_unit = u.split_mantissa_unit(spikes)
+    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
+    r = binary_fcnmv_p_call(
+        weights,
+        indices,
+        spikes,
+        shape=shape,
+        transpose=transpose,
+    )[0]
+    return (u.maybe_decimal(r * v_unit * w_unit),)
 
 
 def _binary_fcnmv_numba_kernel(
@@ -462,33 +485,29 @@ def _binary_fcnmv_batching(args, axes, **kwargs):
 
 
 def binary_fcnmv_p_call(
-    weights,
-    indices,
-    spikes,
+    weights: jax.Array,
+    indices: jax.Array,
+    spikes: jax.Array,
     *,
     shape: Tuple[int, int],
     transpose: bool = False,
-) -> Tuple[Union[jax.Array, u.Quantity]]:
+) -> Tuple[jax.Array]:
     out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, spikes, shape, transpose)
-    weights, w_unit = u.split_mantissa_unit(weights)
-    spikes, v_unit = u.split_mantissa_unit(spikes)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
-
-    r = binary_fcnmv_p(
+    return binary_fcnmv_p(
         weights,
         indices,
         spikes,
-        outs=out,
+        outs=[out],
         shape=shape,
         transpose=transpose,
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         spike_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
     )
-    return (u.maybe_decimal(r * v_unit * w_unit),)
 
 
-binary_fcnmv_p = XLACustomKernel('binary_fcnmv',)
+binary_fcnmv_p = XLACustomKernel('binary_fcnmv', )
 binary_fcnmv_p.def_numba_kernel(_binary_fcnmv_numba_kernel)
 binary_fcnmv_p.def_warp_kernel(_binary_fcnmv_warp_kernel)
 binary_fcnmv_p.def_pallas_kernel('gpu', _binary_fcnmv_pallas_kernel)
@@ -497,6 +516,27 @@ binary_fcnmv_p.def_jvp_rule2(_binary_fcnmv_jvp_weights, None, _binary_fcnmv_jvp_
 binary_fcnmv_p.def_transpose_rule(_binary_fcnmv_transpose_rule)
 binary_fcnmv_p.def_batching_rule(_binary_fcnmv_batching)
 binary_fcnmv_p.def_call(binary_fcnmv_p_call)
+
+
+def binary_fcnmm(
+    weights: Union[jax.Array, u.Quantity],
+    indices: jax.Array,
+    matrix: Union[jax.Array, u.Quantity],
+    *,
+    shape: Tuple[int, int],
+    transpose: bool,
+) -> Tuple[Union[jax.Array, u.Quantity]]:
+    weights, w_unit = u.split_mantissa_unit(weights)
+    matrix, m_unit = u.split_mantissa_unit(matrix)
+    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
+    r = binary_fcnmm_p_call(
+        weights,
+        indices,
+        matrix,
+        transpose=transpose,
+        shape=shape,
+    )[0]
+    return (u.maybe_decimal(r * m_unit * w_unit),)
 
 
 def _binary_fcnmm_numba_kernel(
@@ -709,21 +749,11 @@ def _binary_fcnmm_jvp_matrix(matrix_dot, weights, indices, matrix, *, shape, tra
     return fcnmm_p_call(weights, indices, matrix_dot, shape=shape, transpose=transpose)
 
 
-def _binary_fcnmm_jvp_weights(weights_dot, weights, indices, matrix,*, shape, transpose, **kwargs):
+def _binary_fcnmm_jvp_weights(weights_dot, weights, indices, matrix, *, shape, transpose, **kwargs):
     return binary_fcnmm_p_call(weights_dot, indices, matrix, shape=shape, transpose=transpose)
 
 
-def _binary_fcnmm_transpose_rule(
-    ct,
-    weights,
-    indices,
-    matrix,
-    *,
-    shape,
-    transpose,
-    weight_info,
-    **kwargs
-):
+def _binary_fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpose, weight_info, **kwargs):
     if ad.is_undefined_primal(indices):
         raise ValueError("Cannot transpose with respect to sparse indices.")
 
@@ -805,13 +835,13 @@ def _binary_fcnmm_batching(args, axes, **kwargs):
 
 
 def binary_fcnmm_p_call(
-    weights: Union[jax.Array, u.Quantity],
+    weights: jax.Array,
     indices: jax.Array,
-    matrix: Union[jax.Array, u.Quantity],
+    matrix: jax.Array,
     *,
     shape: Tuple[int, int],
     transpose: bool,
-) -> Tuple[Union[jax.Array, u.Quantity]]:
+) -> Tuple[jax.Array]:
     """
     Perform a sparse matrix-matrix multiplication with fixed connection number.
 
@@ -839,11 +869,8 @@ def binary_fcnmm_p_call(
         uses a JAX-based implementation.
     """
     out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, matrix, shape, transpose)
-    weights, w_unit = u.split_mantissa_unit(weights)
-    matrix, m_unit = u.split_mantissa_unit(matrix)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
-
-    r = binary_fcnmm_p(
+    return binary_fcnmm_p(
         weights,
         indices,
         matrix,
@@ -852,9 +879,8 @@ def binary_fcnmm_p_call(
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         matrix_info=jax.ShapeDtypeStruct(matrix.shape, matrix.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
-        outs=out,
+        outs=[out],
     )
-    return (u.maybe_decimal(r * m_unit * w_unit),)
 
 
 binary_fcnmm_p = XLACustomKernel('binary_fcnmm')
