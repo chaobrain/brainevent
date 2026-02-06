@@ -217,16 +217,16 @@ def indexed_bvdm_p_call(spikes, indices, count, weights):
     assert indices.ndim == 1, "indices should be 1D (n_spikes,)"
     assert count.ndim == 1 and count.shape[0] == 1, "count should be 1D (1,)"
     assert weights.ndim == 2, "weights should be 2D (n_input, n_output)"
-    assert spikes.shape[0] == weights.shape[0], (f"spikes and weights dimension mismatch, "
-                                                 f"got {spikes.shape} and {weights.shape}")
+    assert spikes.shape[0] == weights.shape[0], (
+        f"spikes and weights dimension mismatch, "
+        f"got {spikes.shape} and {weights.shape}"
+    )
     return indexed_bv_dm_p(
         spikes,
         indices,
         count,
         weights,
-        outs=[
-            jax.ShapeDtypeStruct([weights.shape[1]], weights.dtype)
-        ],
+        outs=[jax.ShapeDtypeStruct([weights.shape[1]], weights.dtype)],
         spikes_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         count_info=jax.ShapeDtypeStruct(count.shape, count.dtype),
@@ -239,11 +239,7 @@ indexed_bv_dm_p.def_numba_kernel(_binary_vec_dot_dense_mat_numba_kernel)
 indexed_bv_dm_p.def_warp_kernel(_binary_vec_dot_dense_mat_warp_kernel)
 indexed_bv_dm_p.def_pallas_kernel('gpu', _binary_vec_dot_dense_mat_pallas_kernel)
 indexed_bv_dm_p.def_pallas_kernel('tpu', _binary_vec_dot_dense_mat_pallas_kernel)
-indexed_bv_dm_p.def_jvp_rule2(
-    _binary_vec_dot_dense_mat_jvp_spikes,
-    None, None,
-    _binary_vec_dot_dense_mat_jvp_weights,
-)
+indexed_bv_dm_p.def_jvp_rule2(_binary_vec_dot_dense_mat_jvp_spikes, None, None, _binary_vec_dot_dense_mat_jvp_weights)
 indexed_bv_dm_p.def_transpose_rule(_binary_vec_dot_dense_mat_transpose)
 indexed_bv_dm_p.def_batching_rule(_binary_vec_dot_dense_mat_batching)
 indexed_bv_dm_p.def_call(indexed_bvdm_p_call)
@@ -486,9 +482,7 @@ def indexed_bmdm_p_call(spikes, indices, count, weights):
         indices,
         count,
         weights,
-        outs=[
-            jax.ShapeDtypeStruct([spikes.shape[0], weights.shape[1]], weights.dtype)
-        ],
+        outs=[jax.ShapeDtypeStruct([spikes.shape[0], weights.shape[1]], weights.dtype)],
         spikes_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         count_info=jax.ShapeDtypeStruct(count.shape, count.dtype),
@@ -501,9 +495,7 @@ indexed_bm_dm_p.def_numba_kernel(_binary_mat_dot_dense_mat_numba_kernel)
 indexed_bm_dm_p.def_warp_kernel(_binary_mat_dot_dense_mat_warp_kernel)
 indexed_bm_dm_p.def_pallas_kernel('gpu', _binary_mat_dot_dense_mat_pallas_kernel)
 indexed_bm_dm_p.def_pallas_kernel('tpu', _binary_mat_dot_dense_mat_pallas_kernel)
-indexed_bm_dm_p.def_jvp_rule2(
-    _binary_mat_dot_dense_mat_jvp_spikes, None, None, _binary_mat_dot_dense_mat_jvp_weights,
-)
+indexed_bm_dm_p.def_jvp_rule2(_binary_mat_dot_dense_mat_jvp_spikes, None, None, _binary_mat_dot_dense_mat_jvp_weights)
 indexed_bm_dm_p.def_transpose_rule(_binary_mat_dot_dense_mat_transpose)
 indexed_bm_dm_p.def_batching_rule(_binary_mat_dot_dense_mat_batching)
 indexed_bm_dm_p.def_call(indexed_bmdm_p_call)
