@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Sequence, Optional
+from typing import Sequence
 
 import brainunit as u
 import jax
@@ -21,13 +21,13 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._misc import _csr_to_coo, generate_block_dim, namescoped_jit
+from brainevent._misc import _csr_to_coo, generate_block_dim, namescope
 from brainevent._op import jaxinfo_to_warpinfo, numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .float import csrmv, csrmm
 
-__all__  = [
+__all__ = [
     'binary_csrmv',
     'binary_csrmv_p',
     'binary_csrmm',
@@ -35,6 +35,7 @@ __all__  = [
 ]
 
 
+@namescope(static_argnames=("shape", "transpose"))
 def binary_csrmv(
     data: Data,
     indices: Index,
@@ -74,7 +75,7 @@ def binary_csrmv(
     return u.maybe_decimal(res * (unitd * unitv))
 
 
-@namescoped_jit(static_argnames=("shape", "transpose"))
+@namescope(static_argnames=("shape", "transpose"))
 def binary_csrmm(
     data: Data,
     indices: Index,
@@ -226,7 +227,7 @@ def _csrmv_warp_kernel(
     shape: MatrixShape,
     **kwargs
 ):
-    import warp 
+    import warp
     from warp.jax_experimental import jax_kernel
 
     weight_warp_info = jaxinfo_to_warpinfo(weight_info)
@@ -756,7 +757,7 @@ def _csrmm_numba_kernel(
     transpose: bool,
     **kwargs
 ):
-    import numba 
+    import numba
 
     if weight_info.size == 1:
         if transpose:
@@ -891,7 +892,7 @@ def _csrmm_warp_kernel(
     shape: MatrixShape,
     **kwargs
 ):
-    import warp 
+    import warp
     from warp.jax_experimental import jax_kernel
 
     weight_warp_info = jaxinfo_to_warpinfo(weight_info)

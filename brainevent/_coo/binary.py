@@ -23,7 +23,7 @@ import jax
 import jax.numpy as jnp
 from jax.interpreters import ad
 
-from brainevent._misc import generate_block_dim, namescoped_jit
+from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import jaxinfo_to_warpinfo, numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Row, Col, MatrixShape
@@ -79,7 +79,7 @@ def binary_coomv(
     return u.maybe_decimal(res * (unitd * unitv))
 
 
-@namescoped_jit(static_argnames=("shape", "transpose", "float_as_event"))
+@namescope(static_argnames=("shape", "transpose", "float_as_event"))
 def binary_coomm(
     data: Data,
     row: Row,
@@ -136,125 +136,118 @@ def _coomv_numba_kernel(
 ):
     import numba
 
-    match (transpose, weight_info.size, vector_info.dtype, float_as_event):
-
-        # transpose=True, homogeneous
-        case (True, 1, jnp.bool_, _):
-            # bool
-            @numba.njit(fastmath=True)
-            def mv(weights, row, col, v, posts):
-                posts[:] = 0.
-                w = weights[0]
-                for i in range(row.shape[0]):
-                    if v[row[i]]:
-                        posts[col[i]] += w
-
-        case (True, 1, _, True):
-            # float_as_event
-            @numba.njit(fastmath=True)
-            def mv(weights, row, col, v, posts):
-                posts[:] = 0.
-                w = weights[0]
-                for i in range(row.shape[0]):
-                    if v[row[i]] > 0.:
-                        posts[col[i]] += w
-
-        case (True, 1, _, False):
-            # other
-            @numba.njit(fastmath=True)
-            def mv(weights, row, col, v, posts):
-                posts[:] = 0.
-                w = weights[0]
-                for i in range(row.shape[0]):
-                    if v[row[i]] > 0.:
-                        posts[col[i]] += w * v[row[i]]
-
-        # transpose=True, heterogeneous
-        case (True, _, jnp.bool_, _):
-            # bool
-            @numba.njit(fastmath=True)
-            def mv(weights, row, col, v, posts):
-                posts[:] = 0.
-                for i in range(row.shape[0]):
-                    if v[row[i]]:
-                        posts[col[i]] += weights[i]
-
-        case (True, _, _, True):
-            # float_as_event
-            @numba.njit(fastmath=True)
-            def mv(weights, row, col, v, posts):
-                posts[:] = 0.
-                for i in range(row.shape[0]):
-                    if v[row[i]] > 0.:
-                        posts[col[i]] += weights[i]
-
-        case (True, _, _, False):
-            # other
-            @numba.njit(fastmath=True)
-            def mv(weights, row, col, v, posts):
-                posts[:] = 0.
-                for i in range(row.shape[0]):
-                    if v[row[i]] > 0.:
-                        posts[col[i]] += weights[i] * v[row[i]]
-
-        # transpose=False, homogeneous
-        case (False, 1, jnp.bool_, _):
-            # bool
-            @numba.njit(fastmath=True)
-            def mv(weights, row, col, v, posts):
-                posts[:] = 0.
-                w = weights[0]
-                for i in range(row.shape[0]):
-                    if v[col[i]]:
-                        posts[row[i]] += w
-
-        case (False, 1, _, True):
-            # float_as_event
-            @numba.njit(fastmath=True)
-            def mv(weights, row, col, v, posts):
-                posts[:] = 0.
-                w = weights[0]
-                for i in range(row.shape[0]):
-                    if v[col[i]] > 0.:
-                        posts[row[i]] += w
-
-        case (False, 1, _, False):
-            # other
-            @numba.njit(fastmath=True)
-            def mv(weights, row, col, v, posts):
-                posts[:] = 0.
-                w = weights[0]
-                for i in range(row.shape[0]):
-                    if v[col[i]] > 0.:
-                        posts[row[i]] += w * v[col[i]]
-
-        # transpose=False, heterogeneous
-        case (False, _, jnp.bool_, _):
-            # bool
-            @numba.njit(fastmath=True)
-            def mv(weights, row, col, v, posts):
-                posts[:] = 0.
-                for i in range(row.shape[0]):
-                    if v[col[i]]:
-                        posts[row[i]] += weights[i]
-
-        case (False, _, _, True):
-            # float_as_event
-            @numba.njit(fastmath=True)
-            def mv(weights, row, col, v, posts):
-                posts[:] = 0.
-                for i in range(row.shape[0]):
-                    if v[col[i]] > 0.:
-                        posts[row[i]] += weights[i]
-
-        case (False, _, _, False):
-            # other
-            @numba.njit(fastmath=True)
-            def mv(weights, row, col, v, posts):
-                posts[:] = 0.
-                for i in range(row.shape[0]):
-                    if v[col[i]] > 0.:
-                        posts[row[i]] += weights[i] * v[col[i]]
+    if transpose:
+        if weight_info.size == 1:
+            # transpose=True, homogeneous
+            if vector_info.dtype == jnp.bool_:
+                # bool
+                @numba.njit(fastmath=True)
+                def mv(weights, row, col, v, posts):
+                    posts[:] = 0.
+                    w = weights[0]
+                    for i in range(row.shape[0]):
+                        if v[row[i]]:
+                            posts[col[i]] += w
+            elif float_as_event:
+                # float_as_event
+                @numba.njit(fastmath=True)
+                def mv(weights, row, col, v, posts):
+                    posts[:] = 0.
+                    w = weights[0]
+                    for i in range(row.shape[0]):
+                        if v[row[i]] > 0.:
+                            posts[col[i]] += w
+            else:
+                # other
+                @numba.njit(fastmath=True)
+                def mv(weights, row, col, v, posts):
+                    posts[:] = 0.
+                    w = weights[0]
+                    for i in range(row.shape[0]):
+                        if v[row[i]] > 0.:
+                            posts[col[i]] += w * v[row[i]]
+        else:
+            # transpose=True, heterogeneous
+            if vector_info.dtype == jnp.bool_:
+                # bool
+                @numba.njit(fastmath=True)
+                def mv(weights, row, col, v, posts):
+                    posts[:] = 0.
+                    for i in range(row.shape[0]):
+                        if v[row[i]]:
+                            posts[col[i]] += weights[i]
+            elif float_as_event:
+                # float_as_event
+                @numba.njit(fastmath=True)
+                def mv(weights, row, col, v, posts):
+                    posts[:] = 0.
+                    for i in range(row.shape[0]):
+                        if v[row[i]] > 0.:
+                            posts[col[i]] += weights[i]
+            else:
+                # other
+                @numba.njit(fastmath=True)
+                def mv(weights, row, col, v, posts):
+                    posts[:] = 0.
+                    for i in range(row.shape[0]):
+                        if v[row[i]] > 0.:
+                            posts[col[i]] += weights[i] * v[row[i]]
+    else:
+        if weight_info.size == 1:
+            # transpose=False, homogeneous
+            if vector_info.dtype == jnp.bool_:
+                # bool
+                @numba.njit(fastmath=True)
+                def mv(weights, row, col, v, posts):
+                    posts[:] = 0.
+                    w = weights[0]
+                    for i in range(row.shape[0]):
+                        if v[col[i]]:
+                            posts[row[i]] += w
+            elif float_as_event:
+                # float_as_event
+                @numba.njit(fastmath=True)
+                def mv(weights, row, col, v, posts):
+                    posts[:] = 0.
+                    w = weights[0]
+                    for i in range(row.shape[0]):
+                        if v[col[i]] > 0.:
+                            posts[row[i]] += w
+            else:
+                # other
+                @numba.njit(fastmath=True)
+                def mv(weights, row, col, v, posts):
+                    posts[:] = 0.
+                    w = weights[0]
+                    for i in range(row.shape[0]):
+                        if v[col[i]] > 0.:
+                            posts[row[i]] += w * v[col[i]]
+        else:
+            # transpose=False, heterogeneous
+            if vector_info.dtype == jnp.bool_:
+                # bool
+                @numba.njit(fastmath=True)
+                def mv(weights, row, col, v, posts):
+                    posts[:] = 0.
+                    for i in range(row.shape[0]):
+                        if v[col[i]]:
+                            posts[row[i]] += weights[i]
+            elif float_as_event:
+                # float_as_event
+                @numba.njit(fastmath=True)
+                def mv(weights, row, col, v, posts):
+                    posts[:] = 0.
+                    for i in range(row.shape[0]):
+                        if v[col[i]] > 0.:
+                            posts[row[i]] += weights[i]
+            else:
+                # other
+                @numba.njit(fastmath=True)
+                def mv(weights, row, col, v, posts):
+                    posts[:] = 0.
+                    for i in range(row.shape[0]):
+                        if v[col[i]] > 0.:
+                            posts[row[i]] += weights[i] * v[col[i]]
 
     def kernel(weights, row, col, v):
         return numba_kernel(mv, outs=kwargs['outs'])(weights, row, col, v)
@@ -280,185 +273,178 @@ def _coomv_warp_kernel(
     spike_warp_info = jaxinfo_to_warpinfo(vector_info)
     out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
 
-    match (transpose, weight_info.size, vector_info.dtype, float_as_event):
-
-        # transpose=True, homogeneous
-        case (True, 1, jnp.bool_, _):
-            # bool
-            @warp.kernel
-            def mv(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                v: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i = warp.tid()
-                w = weights[0]
-                if v[row[i]]:
-                    posts[col[i]] += w
-
-        case (True, 1, _, True):
-            # float_as_event
-            @warp.kernel
-            def mv(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                v: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i = warp.tid()
-                w = weights[0]
-                if v[row[i]] > 0.:
-                    posts[col[i]] += w
-
-        case (True, 1, _, False):
-            # other
-            @warp.kernel
-            def mv(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                v: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i = warp.tid()
-                w = weights[0]
-                if v[row[i]] > 0.:
-                    posts[col[i]] += w * v[row[i]]
-
-        # transpose=True, heterogeneous
-        case (True, _, jnp.bool_, _):
-            # bool
-            @warp.kernel
-            def mv(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                v: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i = warp.tid()
-                if v[row[i]]:
-                    posts[col[i]] += weights[i]
-
-        case (True, _, _, True):
-            # float_as_event
-            @warp.kernel
-            def mv(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                v: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i = warp.tid()
-                if v[row[i]] > 0.:
-                    posts[col[i]] += weights[i]
-
-        case (True, _, _, False):
-            # other
-            @warp.kernel
-            def mv(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                v: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i = warp.tid()
-                if v[row[i]] > 0.:
-                    posts[col[i]] += weights[i] * v[row[i]]
-
-        # transpose=False, homogeneous
-        case (False, 1, jnp.bool_, _):
-            # bool
-            @warp.kernel
-            def mv(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                v: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i = warp.tid()
-                w = weights[0]
-                if v[col[i]]:
-                    posts[row[i]] += w
-
-        case (False, 1, _, True):
-            # float_as_event
-            @warp.kernel
-            def mv(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                v: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i = warp.tid()
-                w = weights[0]
-                if v[col[i]] > 0.:
-                    posts[row[i]] += w
-
-        case (False, 1, _, False):
-            # other
-            @warp.kernel
-            def mv(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                v: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i = warp.tid()
-                w = weights[0]
-                if v[col[i]] > 0.:
-                    posts[row[i]] += w * v[col[i]]
-
-        # transpose=False, heterogeneous
-        case (False, _, jnp.bool_, _):
-            # bool
-            @warp.kernel
-            def mv(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                v: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i = warp.tid()
-                if v[col[i]]:
-                    posts[row[i]] += weights[i]
-
-        case (False, _, _, True):
-            # float_as_event
-            @warp.kernel
-            def mv(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                v: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i = warp.tid()
-                if v[col[i]] > 0.:
-                    posts[row[i]] += weights[i]
-
-        case (False, _, _, False):
-            # other
-            @warp.kernel
-            def mv(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                v: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i = warp.tid()
-                if v[col[i]] > 0.:
-                    posts[row[i]] += weights[i] * v[col[i]]
+    if transpose:
+        if weight_info.size == 1:
+            # transpose=True, homogeneous
+            if vector_info.dtype == jnp.bool_:
+                # bool
+                @warp.kernel
+                def mv(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    v: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i = warp.tid()
+                    w = weights[0]
+                    if v[row[i]]:
+                        posts[col[i]] += w
+            elif float_as_event:
+                # float_as_event
+                @warp.kernel
+                def mv(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    v: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i = warp.tid()
+                    w = weights[0]
+                    if v[row[i]] > 0.:
+                        posts[col[i]] += w
+            else:
+                # other
+                @warp.kernel
+                def mv(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    v: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i = warp.tid()
+                    w = weights[0]
+                    if v[row[i]] > 0.:
+                        posts[col[i]] += w * v[row[i]]
+        else:
+            # transpose=True, heterogeneous
+            if vector_info.dtype == jnp.bool_:
+                # bool
+                @warp.kernel
+                def mv(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    v: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i = warp.tid()
+                    if v[row[i]]:
+                        posts[col[i]] += weights[i]
+            elif float_as_event:
+                # float_as_event
+                @warp.kernel
+                def mv(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    v: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i = warp.tid()
+                    if v[row[i]] > 0.:
+                        posts[col[i]] += weights[i]
+            else:
+                # other
+                @warp.kernel
+                def mv(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    v: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i = warp.tid()
+                    if v[row[i]] > 0.:
+                        posts[col[i]] += weights[i] * v[row[i]]
+    else:
+        if weight_info.size == 1:
+            # transpose=False, homogeneous
+            if vector_info.dtype == jnp.bool_:
+                # bool
+                @warp.kernel
+                def mv(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    v: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i = warp.tid()
+                    w = weights[0]
+                    if v[col[i]]:
+                        posts[row[i]] += w
+            elif float_as_event:
+                # float_as_event
+                @warp.kernel
+                def mv(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    v: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i = warp.tid()
+                    w = weights[0]
+                    if v[col[i]] > 0.:
+                        posts[row[i]] += w
+            else:
+                # other
+                @warp.kernel
+                def mv(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    v: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i = warp.tid()
+                    w = weights[0]
+                    if v[col[i]] > 0.:
+                        posts[row[i]] += w * v[col[i]]
+        else:
+            # transpose=False, heterogeneous
+            if vector_info.dtype == jnp.bool_:
+                # bool
+                @warp.kernel
+                def mv(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    v: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i = warp.tid()
+                    if v[col[i]]:
+                        posts[row[i]] += weights[i]
+            elif float_as_event:
+                # float_as_event
+                @warp.kernel
+                def mv(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    v: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i = warp.tid()
+                    if v[col[i]] > 0.:
+                        posts[row[i]] += weights[i]
+            else:
+                # other
+                @warp.kernel
+                def mv(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    v: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i = warp.tid()
+                    if v[col[i]] > 0.:
+                        posts[row[i]] += weights[i] * v[col[i]]
 
     dim = row_info.shape[0]
     out_info = kwargs['outs'][0]
@@ -826,137 +812,130 @@ def _coomm_numba_kernel(
 ):
     import numba
 
-    match (transpose, weight_info.size, matrix_info.dtype, float_as_event):
-
-        # transpose=True, homogeneous
-        case (True, 1, jnp.bool_, _):
-            # bool
-            @numba.njit(fastmath=True)
-            def mm(weights, row, col, B, posts):
-                posts[:] = 0.
-                w = weights[0]
-                for i in range(row.shape[0]):
-                    for j in range(B.shape[1]):
-                        if B[row[i], j]:
-                            posts[col[i], j] += w
-
-        case (True, 1, _, True):
-            # float_as_event
-            @numba.njit(fastmath=True)
-            def mm(weights, row, col, B, posts):
-                posts[:] = 0.
-                w = weights[0]
-                for i in range(row.shape[0]):
-                    for j in range(B.shape[1]):
-                        if B[row[i], j] > 0.:
-                            posts[col[i], j] += w
-
-        case (True, 1, _, False):
-            # other
-            @numba.njit(fastmath=True)
-            def mm(weights, row, col, B, posts):
-                posts[:] = 0.
-                w = weights[0]
-                for i in range(row.shape[0]):
-                    for j in range(B.shape[1]):
-                        if B[row[i], j] > 0.:
-                            posts[col[i], j] += w * B[row[i], j]
-
-        # transpose=True, heterogeneous
-        case (True, _, jnp.bool_, _):
-            # bool
-            @numba.njit(fastmath=True)
-            def mm(weights, row, col, B, posts):
-                posts[:] = 0.
-                for i in range(row.shape[0]):
-                    for j in range(B.shape[1]):
-                        if B[row[i], j]:
-                            posts[col[i], j] += weights[i]
-
-        case (True, _, _, True):
-            # float_as_event
-            @numba.njit(fastmath=True)
-            def mm(weights, row, col, B, posts):
-                posts[:] = 0.
-                for i in range(row.shape[0]):
-                    for j in range(B.shape[1]):
-                        if B[row[i], j] > 0.:
-                            posts[col[i], j] += weights[i]
-
-        case (True, _, _, False):
-            # other
-            @numba.njit(fastmath=True)
-            def mm(weights, row, col, B, posts):
-                posts[:] = 0.
-                for i in range(row.shape[0]):
-                    for j in range(B.shape[1]):
-                        if B[row[i], j] > 0.:
-                            posts[col[i], j] += weights[i] * B[row[i], j]
-
-        # transpose=False, homogeneous
-        case (False, 1, jnp.bool_, _):
-            # bool
-            @numba.njit(fastmath=True)
-            def mm(weights, row, col, B, posts):
-                posts[:] = 0.
-                w = weights[0]
-                for i in range(row.shape[0]):
-                    for j in range(B.shape[1]):
-                        if B[col[i], j]:
-                            posts[row[i], j] += w
-
-        case (False, 1, _, True):
-            # float_as_event
-            @numba.njit(fastmath=True)
-            def mm(weights, row, col, B, posts):
-                posts[:] = 0.
-                w = weights[0]
-                for i in range(row.shape[0]):
-                    for j in range(B.shape[1]):
-                        if B[col[i], j] > 0.:
-                            posts[row[i], j] += w
-
-        case (False, 1, _, False):
-            # other
-            @numba.njit(fastmath=True)
-            def mm(weights, row, col, B, posts):
-                posts[:] = 0.
-                w = weights[0]
-                for i in range(row.shape[0]):
-                    for j in range(B.shape[1]):
-                        if B[col[i], j] > 0.:
-                            posts[row[i], j] += w * B[col[i], j]
-
-        # transpose=False, heterogeneous
-        case (False, _, jnp.bool_, _):
-            # bool
-            @numba.njit(fastmath=True)
-            def mm(weights, row, col, B, posts):
-                posts[:] = 0.
-                for i in range(row.shape[0]):
-                    for j in range(B.shape[1]):
-                        if B[col[i], j]:
-                            posts[row[i], j] += weights[i]
-
-        case (False, _, _, True):
-            # float_as_event
-            @numba.njit(fastmath=True)
-            def mm(weights, row, col, B, posts):
-                posts[:] = 0.
-                for i in range(row.shape[0]):
-                    for j in range(B.shape[1]):
-                        if B[col[i], j] > 0.:
-                            posts[row[i], j] += weights[i]
-
-        case (False, _, _, False):
-            # other
-            @numba.njit(fastmath=True)
-            def mm(weights, row, col, B, posts):
-                posts[:] = 0.
-                for i in range(row.shape[0]):
-                    for j in range(B.shape[1]):
-                        if B[col[i], j] > 0.:
-                            posts[row[i], j] += weights[i] * B[col[i], j]
+    if transpose:
+        if weight_info.size == 1:
+            # transpose=True, homogeneous
+            if matrix_info.dtype == jnp.bool_:
+                # bool
+                @numba.njit(fastmath=True)
+                def mm(weights, row, col, B, posts):
+                    posts[:] = 0.
+                    w = weights[0]
+                    for i in range(row.shape[0]):
+                        for j in range(B.shape[1]):
+                            if B[row[i], j]:
+                                posts[col[i], j] += w
+            elif float_as_event:
+                # float_as_event
+                @numba.njit(fastmath=True)
+                def mm(weights, row, col, B, posts):
+                    posts[:] = 0.
+                    w = weights[0]
+                    for i in range(row.shape[0]):
+                        for j in range(B.shape[1]):
+                            if B[row[i], j] > 0.:
+                                posts[col[i], j] += w
+            else:
+                # other
+                @numba.njit(fastmath=True)
+                def mm(weights, row, col, B, posts):
+                    posts[:] = 0.
+                    w = weights[0]
+                    for i in range(row.shape[0]):
+                        for j in range(B.shape[1]):
+                            if B[row[i], j] > 0.:
+                                posts[col[i], j] += w * B[row[i], j]
+        else:
+            # transpose=True, heterogeneous
+            if matrix_info.dtype == jnp.bool_:
+                # bool
+                @numba.njit(fastmath=True)
+                def mm(weights, row, col, B, posts):
+                    posts[:] = 0.
+                    for i in range(row.shape[0]):
+                        for j in range(B.shape[1]):
+                            if B[row[i], j]:
+                                posts[col[i], j] += weights[i]
+            elif float_as_event:
+                # float_as_event
+                @numba.njit(fastmath=True)
+                def mm(weights, row, col, B, posts):
+                    posts[:] = 0.
+                    for i in range(row.shape[0]):
+                        for j in range(B.shape[1]):
+                            if B[row[i], j] > 0.:
+                                posts[col[i], j] += weights[i]
+            else:
+                # other
+                @numba.njit(fastmath=True)
+                def mm(weights, row, col, B, posts):
+                    posts[:] = 0.
+                    for i in range(row.shape[0]):
+                        for j in range(B.shape[1]):
+                            if B[row[i], j] > 0.:
+                                posts[col[i], j] += weights[i] * B[row[i], j]
+    else:
+        if weight_info.size == 1:
+            # transpose=False, homogeneous
+            if matrix_info.dtype == jnp.bool_:
+                # bool
+                @numba.njit(fastmath=True)
+                def mm(weights, row, col, B, posts):
+                    posts[:] = 0.
+                    w = weights[0]
+                    for i in range(row.shape[0]):
+                        for j in range(B.shape[1]):
+                            if B[col[i], j]:
+                                posts[row[i], j] += w
+            elif float_as_event:
+                # float_as_event
+                @numba.njit(fastmath=True)
+                def mm(weights, row, col, B, posts):
+                    posts[:] = 0.
+                    w = weights[0]
+                    for i in range(row.shape[0]):
+                        for j in range(B.shape[1]):
+                            if B[col[i], j] > 0.:
+                                posts[row[i], j] += w
+            else:
+                # other
+                @numba.njit(fastmath=True)
+                def mm(weights, row, col, B, posts):
+                    posts[:] = 0.
+                    w = weights[0]
+                    for i in range(row.shape[0]):
+                        for j in range(B.shape[1]):
+                            if B[col[i], j] > 0.:
+                                posts[row[i], j] += w * B[col[i], j]
+        else:
+            # transpose=False, heterogeneous
+            if matrix_info.dtype == jnp.bool_:
+                # bool
+                @numba.njit(fastmath=True)
+                def mm(weights, row, col, B, posts):
+                    posts[:] = 0.
+                    for i in range(row.shape[0]):
+                        for j in range(B.shape[1]):
+                            if B[col[i], j]:
+                                posts[row[i], j] += weights[i]
+            elif float_as_event:
+                # float_as_event
+                @numba.njit(fastmath=True)
+                def mm(weights, row, col, B, posts):
+                    posts[:] = 0.
+                    for i in range(row.shape[0]):
+                        for j in range(B.shape[1]):
+                            if B[col[i], j] > 0.:
+                                posts[row[i], j] += weights[i]
+            else:
+                # other
+                @numba.njit(fastmath=True)
+                def mm(weights, row, col, B, posts):
+                    posts[:] = 0.
+                    for i in range(row.shape[0]):
+                        for j in range(B.shape[1]):
+                            if B[col[i], j] > 0.:
+                                posts[row[i], j] += weights[i] * B[col[i], j]
 
     def kernel(weights, row, col, B):
         return numba_kernel(mm, outs=kwargs['outs'])(weights, row, col, B)
@@ -982,185 +961,178 @@ def _coomm_warp_kernel(
     spike_warp_info = jaxinfo_to_warpinfo(matrix_info)
     out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
 
-    match (transpose, weight_info.size, matrix_info.dtype, float_as_event):
-
-        # transpose=True, homogeneous
-        case (True, 1, jnp.bool_, _):
-            # bool
-            @warp.kernel
-            def mm(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                B: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i, j = warp.tid()
-                w = weights[0]
-                if B[row[i], j]:
-                    posts[col[i], j] += w
-
-        case (True, 1, _, True):
-            # float_as_event
-            @warp.kernel
-            def mm(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                B: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i, j = warp.tid()
-                w = weights[0]
-                if B[row[i], j] > 0.:
-                    posts[col[i], j] += w
-
-        case (True, 1, _, False):
-            # other
-            @warp.kernel
-            def mm(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                B: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i, j = warp.tid()
-                w = weights[0]
-                if B[row[i], j] > 0.:
-                    posts[col[i], j] += w * B[row[i], j]
-
-        # transpose=True, heterogeneous
-        case (True, _, jnp.bool_, _):
-            # bool
-            @warp.kernel
-            def mm(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                B: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i, j = warp.tid()
-                if B[row[i], j]:
-                    posts[col[i], j] += weights[i]
-
-        case (True, _, _, True):
-            # float_as_event
-            @warp.kernel
-            def mm(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                B: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i, j = warp.tid()
-                if B[row[i], j] > 0.:
-                    posts[col[i], j] += weights[i]
-
-        case (True, _, _, False):
-            # other
-            @warp.kernel
-            def mm(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                B: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i, j = warp.tid()
-                if B[row[i], j] > 0.:
-                    posts[col[i], j] += weights[i] * B[row[i], j]
-
-        # transpose=False, homogeneous
-        case (False, 1, jnp.bool_, _):
-            # bool
-            @warp.kernel
-            def mm(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                B: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i, j = warp.tid()
-                w = weights[0]
-                if B[col[i], j]:
-                    posts[row[i], j] += w
-
-        case (False, 1, _, True):
-            # float_as_event
-            @warp.kernel
-            def mm(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                B: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i, j = warp.tid()
-                w = weights[0]
-                if B[col[i], j] > 0.:
-                    posts[row[i], j] += w
-
-        case (False, 1, _, False):
-            # other
-            @warp.kernel
-            def mm(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                B: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i, j = warp.tid()
-                w = weights[0]
-                if B[col[i], j] > 0.:
-                    posts[row[i], j] += w * B[col[i], j]
-
-        # transpose=False, heterogeneous
-        case (False, _, jnp.bool_, _):
-            # bool
-            @warp.kernel
-            def mm(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                B: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i, j = warp.tid()
-                if B[col[i], j]:
-                    posts[row[i], j] += weights[i]
-
-        case (False, _, _, True):
-            # float_as_event
-            @warp.kernel
-            def mm(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                B: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i, j = warp.tid()
-                if B[col[i], j] > 0.:
-                    posts[row[i], j] += weights[i]
-
-        case (False, _, _, False):
-            # other
-            @warp.kernel
-            def mm(
-                weights: weight_warp_info,
-                row: row_warp_info,
-                col: col_warp_info,
-                B: spike_warp_info,
-                posts: out_warp_info
-            ):
-                i, j = warp.tid()
-                if B[col[i], j] > 0.:
-                    posts[row[i], j] += weights[i] * B[col[i], j]
+    if transpose:
+        if weight_info.size == 1:
+            # transpose=True, homogeneous
+            if matrix_info.dtype == jnp.bool_:
+                # bool
+                @warp.kernel
+                def mm(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    B: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i, j = warp.tid()
+                    w = weights[0]
+                    if B[row[i], j]:
+                        posts[col[i], j] += w
+            elif float_as_event:
+                # float_as_event
+                @warp.kernel
+                def mm(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    B: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i, j = warp.tid()
+                    w = weights[0]
+                    if B[row[i], j] > 0.:
+                        posts[col[i], j] += w
+            else:
+                # other
+                @warp.kernel
+                def mm(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    B: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i, j = warp.tid()
+                    w = weights[0]
+                    if B[row[i], j] > 0.:
+                        posts[col[i], j] += w * B[row[i], j]
+        else:
+            # transpose=True, heterogeneous
+            if matrix_info.dtype == jnp.bool_:
+                # bool
+                @warp.kernel
+                def mm(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    B: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i, j = warp.tid()
+                    if B[row[i], j]:
+                        posts[col[i], j] += weights[i]
+            elif float_as_event:
+                # float_as_event
+                @warp.kernel
+                def mm(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    B: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i, j = warp.tid()
+                    if B[row[i], j] > 0.:
+                        posts[col[i], j] += weights[i]
+            else:
+                # other
+                @warp.kernel
+                def mm(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    B: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i, j = warp.tid()
+                    if B[row[i], j] > 0.:
+                        posts[col[i], j] += weights[i] * B[row[i], j]
+    else:
+        if weight_info.size == 1:
+            # transpose=False, homogeneous
+            if matrix_info.dtype == jnp.bool_:
+                # bool
+                @warp.kernel
+                def mm(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    B: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i, j = warp.tid()
+                    w = weights[0]
+                    if B[col[i], j]:
+                        posts[row[i], j] += w
+            elif float_as_event:
+                # float_as_event
+                @warp.kernel
+                def mm(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    B: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i, j = warp.tid()
+                    w = weights[0]
+                    if B[col[i], j] > 0.:
+                        posts[row[i], j] += w
+            else:
+                # other
+                @warp.kernel
+                def mm(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    B: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i, j = warp.tid()
+                    w = weights[0]
+                    if B[col[i], j] > 0.:
+                        posts[row[i], j] += w * B[col[i], j]
+        else:
+            # transpose=False, heterogeneous
+            if matrix_info.dtype == jnp.bool_:
+                # bool
+                @warp.kernel
+                def mm(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    B: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i, j = warp.tid()
+                    if B[col[i], j]:
+                        posts[row[i], j] += weights[i]
+            elif float_as_event:
+                # float_as_event
+                @warp.kernel
+                def mm(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    B: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i, j = warp.tid()
+                    if B[col[i], j] > 0.:
+                        posts[row[i], j] += weights[i]
+            else:
+                # other
+                @warp.kernel
+                def mm(
+                    weights: weight_warp_info,
+                    row: row_warp_info,
+                    col: col_warp_info,
+                    B: spike_warp_info,
+                    posts: out_warp_info
+                ):
+                    i, j = warp.tid()
+                    if B[col[i], j] > 0.:
+                        posts[row[i], j] += weights[i] * B[col[i], j]
 
     dim = (row_info.shape[0], matrix_info.shape[1])
     out_info = kwargs['outs'][0]

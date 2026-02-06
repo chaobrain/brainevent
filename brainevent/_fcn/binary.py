@@ -24,7 +24,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape
+from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 from brainevent._typing import MatrixShape
 from .float import fcnmv_p_call, fcnmm_p_call
@@ -37,6 +37,7 @@ __all__ = [
 ]
 
 
+@namescope(static_argnames=['shape', 'transpose'])
 def binary_fcnmv(
     weights: Union[jax.Array, u.Quantity],
     indices: jax.Array,
@@ -44,7 +45,7 @@ def binary_fcnmv(
     *,
     shape: Tuple[int, int],
     transpose: bool = False,
-) -> Tuple[Union[jax.Array, u.Quantity]]:
+) -> Union[jax.Array, u.Quantity]:
     weights, w_unit = u.split_mantissa_unit(weights)
     spikes, v_unit = u.split_mantissa_unit(spikes)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
@@ -55,7 +56,7 @@ def binary_fcnmv(
         shape=shape,
         transpose=transpose,
     )[0]
-    return (u.maybe_decimal(r * v_unit * w_unit),)
+    return u.maybe_decimal(r * v_unit * w_unit)
 
 
 def _binary_fcnmv_numba_kernel(
@@ -518,6 +519,7 @@ binary_fcnmv_p.def_batching_rule(_binary_fcnmv_batching)
 binary_fcnmv_p.def_call(binary_fcnmv_p_call)
 
 
+@namescope(static_argnames=['shape', 'transpose'])
 def binary_fcnmm(
     weights: Union[jax.Array, u.Quantity],
     indices: jax.Array,
@@ -525,7 +527,7 @@ def binary_fcnmm(
     *,
     shape: Tuple[int, int],
     transpose: bool,
-) -> Tuple[Union[jax.Array, u.Quantity]]:
+) -> Union[jax.Array, u.Quantity]:
     weights, w_unit = u.split_mantissa_unit(weights)
     matrix, m_unit = u.split_mantissa_unit(matrix)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
@@ -536,7 +538,7 @@ def binary_fcnmm(
         transpose=transpose,
         shape=shape,
     )[0]
-    return (u.maybe_decimal(r * m_unit * w_unit),)
+    return u.maybe_decimal(r * m_unit * w_unit)
 
 
 def _binary_fcnmm_numba_kernel(
