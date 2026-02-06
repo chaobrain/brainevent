@@ -17,9 +17,11 @@ import jax
 import jax.numpy as jnp
 from jax.interpreters import ad
 
+from brainevent._misc import namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 
 
+@namescope
 def binary_array_index(spikes):
     if spikes.ndim == 1:
         indices, count = binary_1d_array_index_p_call(spikes)

@@ -24,7 +24,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape
+from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 from brainevent._typing import MatrixShape
 from .float import fcnmv_p_call, fcnmm_p_call
@@ -37,6 +37,7 @@ __all__ = [
 ]
 
 
+@namescope
 def binary_fcnmv(
     weights: Union[jax.Array, u.Quantity],
     indices: jax.Array,
@@ -518,6 +519,7 @@ binary_fcnmv_p.def_batching_rule(_binary_fcnmv_batching)
 binary_fcnmv_p.def_call(binary_fcnmv_p_call)
 
 
+@namescope
 def binary_fcnmm(
     weights: Union[jax.Array, u.Quantity],
     indices: jax.Array,

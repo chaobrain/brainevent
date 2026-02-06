@@ -23,7 +23,7 @@ from jax import numpy as jnp
 from jax.interpreters import ad
 
 from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
-from brainevent._misc import generate_block_dim, namescoped_jit
+from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 from brainevent._pallas_random import PallasLFSR88RNG
 from brainevent._typing import Data, MatrixShape
@@ -37,7 +37,7 @@ __all__ = [
 ]
 
 
-@namescoped_jit(static_argnames=("shape", "transpose", "corder"))
+@namescope(static_argnames=("shape", "transpose", "corder"))
 def binary_jitumv(
     w_low: Data,
     w_high: Data,
@@ -68,7 +68,7 @@ def binary_jitumv(
     return u.maybe_decimal(res * unitd * unitv)
 
 
-@namescoped_jit(static_argnames=("shape", "transpose", "corder"))
+@namescope(static_argnames=("shape", "transpose", "corder"))
 def binary_jitumm(
     w_low: Data,
     w_high: Data,

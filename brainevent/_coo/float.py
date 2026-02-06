@@ -22,7 +22,7 @@ import jax
 from jax import numpy as jnp
 from jax.interpreters import ad
 
-from brainevent._misc import generate_block_dim, namescoped_jit
+from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import jaxinfo_to_warpinfo, XLACustomKernel, general_batching_rule, numba_kernel
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Row, Col, MatrixShape
@@ -35,7 +35,7 @@ __all__ = [
 ]
 
 
-@namescoped_jit(static_argnames=("shape", "transpose"))
+@namescope(static_argnames=("shape", "transpose"))
 def coomv(
     data: Data,
     row: Row,
@@ -67,7 +67,7 @@ def coomv(
     return u.maybe_decimal(res * unitd * unitv)
 
 
-@namescoped_jit(static_argnames=("shape", "transpose"))
+@namescope(static_argnames=("shape", "transpose"))
 def coomm(
     data: Data,
     row: Row,

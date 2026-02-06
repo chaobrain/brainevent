@@ -20,7 +20,7 @@ import jax
 import jax.numpy as jnp
 from jax.interpreters import ad
 
-from brainevent._misc import generate_block_dim
+from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule
 
 __all__ = [
@@ -31,6 +31,7 @@ __all__ = [
 ]
 
 
+@namescope
 def plast_dense_on_binary_pre(
     weight: Union[u.Quantity, jax.Array],
     pre_spike: jax.Array,
@@ -181,6 +182,7 @@ plast_dense_on_binary_pre_p.def_batching_rule(_dense_on_pre_batching)
 plast_dense_on_binary_pre_p.def_call(_dense_on_pre_prim_call)
 
 
+@namescope
 def plast_dense_on_binary_post(
     weight: Union[u.Quantity, jax.Array],
     pre_trace: Union[u.Quantity, jax.Array],

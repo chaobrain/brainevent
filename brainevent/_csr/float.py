@@ -21,7 +21,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._misc import _csr_to_coo, generate_block_dim, namescoped_jit
+from brainevent._misc import _csr_to_coo, generate_block_dim, namescope
 from brainevent._op import numba_kernel, jaxinfo_to_warpinfo, XLACustomKernel, general_batching_rule
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
@@ -36,7 +36,7 @@ __all__ = [
 ]
 
 
-@namescoped_jit(static_argnames=("shape", "transpose"))
+@namescope(static_argnames=("shape", "transpose"))
 def csrmv(
     data: Data,
     indices: Index,
@@ -528,7 +528,7 @@ csrmv_p.def_batching_rule(_csrmv_batching)
 csrmv_p.def_call(csrmv_p_call)
 
 
-@namescoped_jit(static_argnames=("shape", "transpose"))
+@namescope(static_argnames=("shape", "transpose"))
 def csrmm(
     data: Data,
     indices: Index,
@@ -1076,6 +1076,7 @@ csrmm_p.def_batching_rule(_csrmm_batching)
 csrmm_p.def_call(csrmm_p_call)
 
 
+@namescope(static_argnames=['shape'])
 def csrmv_yw2y(
     y: Data,
     w: Data,

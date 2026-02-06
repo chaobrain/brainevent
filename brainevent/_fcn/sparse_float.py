@@ -24,7 +24,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape
+from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, jaxinfo_to_warpinfo
 from brainevent._typing import MatrixShape
 from .float import fcnmv_p_call, fcnmm_p_call
@@ -36,7 +36,7 @@ __all__ = [
     'spfloat_fcnmm_p',
 ]
 
-
+@namescope
 def spfloat_fcnmv(
     weights,
     indices,
@@ -418,7 +418,7 @@ spfloat_fcnmv_p.def_transpose_rule(_spfloat_fcnmv_transpose_rule)
 spfloat_fcnmv_p.def_batching_rule(_spfloat_fcnmv_batching)
 spfloat_fcnmv_p.def_call(spfloat_fcnmv_p_call)
 
-
+@namescope
 def spfloat_fcnmm(
     weights: Union[jax.Array, u.Quantity],
     indices: jax.Array,

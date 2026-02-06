@@ -19,7 +19,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._misc import cdiv, generate_block_dim
+from brainevent._misc import cdiv, generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 
 __all__ = [
@@ -32,6 +32,7 @@ __all__ = [
 ]
 
 
+@namescope
 def indexed_bv_dm(binary_index, weights):
     """
     Computes the dot product between a binary vector (in sparse format) and a dense matrix.
@@ -245,6 +246,7 @@ indexed_bv_dm_p.def_batching_rule(_binary_vec_dot_dense_mat_batching)
 indexed_bv_dm_p.def_call(indexed_bvdm_p_call)
 
 
+@namescope
 def indexed_dm_bv(weights, binary_arr):
     """
     Computes the dot product between a dense matrix and a binary vector (in sparse format).
@@ -285,6 +287,7 @@ def indexed_dm_bv(weights, binary_arr):
     return indexed_bv_dm(binary_arr, weights.T)
 
 
+@namescope
 def indexed_bm_dm(binary_arr, weights):
     """
     Computes the dot product between a batch of binary vectors (in sparse format) and a dense matrix.
@@ -501,6 +504,7 @@ indexed_bm_dm_p.def_batching_rule(_binary_mat_dot_dense_mat_batching)
 indexed_bm_dm_p.def_call(indexed_bmdm_p_call)
 
 
+@namescope
 def indexed_dm_bm(weights, binary_arr):
     weight_val, wunit = u.split_mantissa_unit(weights)
     spikes = binary_arr.value

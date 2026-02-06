@@ -21,7 +21,7 @@ import jax
 import jax.numpy as jnp
 from jax.interpreters import ad
 
-from brainevent._misc import _csr_to_coo, generate_block_dim, namescoped_jit
+from brainevent._misc import _csr_to_coo, generate_block_dim, namescope
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .float import csrmv, csrmm
@@ -34,7 +34,7 @@ __all__ = [
 ]
 
 
-@namescoped_jit(static_argnames=("shape", "transpose"))
+@namescope(static_argnames=("shape", "transpose"))
 def spfloat_csrmv(
     data: Data,
     indices: Index,
@@ -76,7 +76,7 @@ def spfloat_csrmv(
     return u.maybe_decimal(res * (unitd * unitv))
 
 
-@namescoped_jit(static_argnames=("shape", "transpose"))
+@namescope(static_argnames=("shape", "transpose"))
 def spfloat_csrmm(
     data: Data,
     indices: Index,

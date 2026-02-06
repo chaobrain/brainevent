@@ -693,11 +693,12 @@ def csr_to_csc_index(
     return csc_indptr, csc_indices, post_positions
 
 
-def namescoped_jit(
+def namescope(
+    fn: Callable = None,
     name: str = None,
     prefix: str = "brainevent",
-    static_argnums: Tuple[int, ...] = (),
-    static_argnames: Tuple[str, ...] = ()
+    static_argnums: Sequence[int] = (),
+    static_argnames: Sequence[str] = ()
 ):
     """Decorator that wraps a function with JAX's JIT compilation and sets its name.
     (For `brainstate.experimental.gdiist_bpu` module)
@@ -721,11 +722,14 @@ def namescoped_jit(
             return x + y
     """
 
-    def decorator(fun: Callable):
-        if name is not None:
-            fun.__name__ = name
-        else:
-            fun.__name__ = f"{prefix}.{fun.__name__}"
-        return jax.jit(fun, static_argnums=static_argnums, static_argnames=static_argnames)
+    if fn is None:
 
-    return decorator
+        def decorator(fun: Callable):
+            fn.__name__ = name if name is not None else f"{prefix}.{fn.__name__}"
+            return jax.jit(fun, static_argnums=static_argnums, static_argnames=static_argnames)
+
+        return decorator
+
+    else:
+        fn.__name__ = name if name is not None else f"{prefix}.{fn.__name__}"
+        return jax.jit(fn, static_argnums=static_argnums, static_argnames=static_argnames)
