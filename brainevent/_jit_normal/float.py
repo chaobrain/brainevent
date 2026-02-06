@@ -25,7 +25,7 @@ from jax.interpreters import ad
 from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescoped_jit
 from brainevent._op import XLACustomKernel, jaxinfo_to_warpinfo, numba_kernel, general_batching_rule
-from brainevent._pallas_random import LFSR88RNG
+from brainevent._pallas_random import PallasLFSR88RNG
 from brainevent._typing import Data, MatrixShape
 
 __all__ = [
@@ -441,7 +441,7 @@ def _jitn_pallas_kernel_generator(
                     i_cols += rng.random_integers(1, clen0)
                     return i_cols, i_cols < m, rng
 
-                rng = LFSR88RNG(seed0 + i_rows)
+                rng = PallasLFSR88RNG(seed0 + i_rows)
                 i_cols = rng.random_integers(0, clen0)
                 i_col_mask = i_cols < m
                 jax.lax.while_loop(
@@ -476,7 +476,7 @@ def _jitn_pallas_kernel_generator(
                     i_rows = i_rows + rng.random_integers(1, clen0)
                     return i_rows, i_rows < n, rng
 
-                rng = LFSR88RNG(seed0 + i_cols)
+                rng = PallasLFSR88RNG(seed0 + i_cols)
                 i_rows = rng.random_integers(0, clen0)
                 i_row_mask = i_rows < n
                 jax.lax.while_loop(
@@ -513,7 +513,7 @@ def _jitn_pallas_kernel_generator(
                     i_col = i_col + rng_.random_integers(1, clen0)
                     return i_col, rng_
 
-                rng = LFSR88RNG(seed0 + i_row)
+                rng = PallasLFSR88RNG(seed0 + i_row)
                 jax.lax.while_loop(
                     lambda data: data[0] < m,
                     body,
@@ -541,7 +541,7 @@ def _jitn_pallas_kernel_generator(
                     i_row = i_row + rng_.random_integers(1, clen0)
                     return i_row, rng_
 
-                rng = LFSR88RNG(seed0 + i_col)
+                rng = PallasLFSR88RNG(seed0 + i_col)
                 jax.lax.while_loop(
                     lambda data: data[0] < n,
                     body,
@@ -983,7 +983,7 @@ def _jitnmv_pallas_kernel_generator(
                     i_rows += rng.random_integers(1, clen)
                     return i_rows, i_rows < num_row, rng, out
 
-                rng = LFSR88RNG(seed + i_cols)
+                rng = PallasLFSR88RNG(seed + i_cols)
                 i_rows = rng.random_integers(0, clen)
                 i_row_mask = i_rows < num_row
                 out = jnp.zeros(block_size, dtype=post_ref.dtype)
@@ -1016,7 +1016,7 @@ def _jitnmv_pallas_kernel_generator(
                     i_cols += rng.random_integers(1, clen)
                     return i_cols, i_cols < num_col, rng
 
-                rng = LFSR88RNG(seed + i_rows)
+                rng = PallasLFSR88RNG(seed + i_rows)
                 i_cols = rng.random_integers(0, clen)
                 i_col_mask = i_cols < num_col
                 jax.lax.while_loop(
@@ -1519,7 +1519,7 @@ def _jitnmm_pallas_kernel_generator(
                 i += rng.random_integers(1, clen0)
                 return i, rng, out
 
-            rng = LFSR88RNG(seed0 + i_m)
+            rng = PallasLFSR88RNG(seed0 + i_m)
             out = jnp.zeros(block_dim, dtype=post_ref.dtype)
             _, _, out = jax.lax.while_loop(
                 lambda data: data[0] < k,
@@ -1552,7 +1552,7 @@ def _jitnmm_pallas_kernel_generator(
                 i += rng.random_integers(1, clen0)
                 return i, rng
 
-            rng = LFSR88RNG(seed0 + i_k)
+            rng = PallasLFSR88RNG(seed0 + i_k)
             jax.lax.while_loop(
                 lambda data: data[0] < m,
                 body,

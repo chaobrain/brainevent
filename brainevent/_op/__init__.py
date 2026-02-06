@@ -13,25 +13,16 @@
 # limitations under the License.
 # ==============================================================================
 
-from .main import XLACustomKernel, KernelEntry, BenchmarkResult, BenchmarkReport
+from .main import XLACustomKernel, KernelEntry
+from .benchmark import BenchmarkResult, BenchmarkReport, benchmark_function
 from .numba_cuda_ffi import numba_cuda_kernel
 from .numba_ffi import numba_kernel
-from .util import (
-    defjvp,
-    general_batching_rule,
-    jaxinfo_to_warpinfo,
-    jaxtype_to_warptype
-)
+from .util import register_cuda_kernels, defjvp, general_batching_rule, jaxinfo_to_warpinfo, jaxtype_to_warptype
 
 __all__ = [
-    'XLACustomKernel',
-    'KernelEntry',
-    'BenchmarkResult',
-    'BenchmarkReport',
-    'numba_kernel',
-    'numba_cuda_kernel',
-    'defjvp',
-    'general_batching_rule',
-    'jaxinfo_to_warpinfo',
-    'jaxtype_to_warptype',
+    'XLACustomKernel', 'KernelEntry',
+    'BenchmarkResult', 'BenchmarkReport', 'benchmark_function',
+    'numba_kernel', 'numba_cuda_kernel',
+    'register_cuda_kernels', 'defjvp', 'general_batching_rule',
+    'jaxinfo_to_warpinfo', 'jaxtype_to_warptype',
 ]

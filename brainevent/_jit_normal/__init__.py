@@ -15,5 +15,11 @@
 
 
 from .main import JITCNormalR, JITCNormalC
+from .binary import binary_jitnmv, binary_jitnmv_p, binary_jitnmm, binary_jitnmm_p
+from .float import jitn, jitn_p, jitnmv, jitnmv_p, jitnmm, jitnmm_p
 
-__all__ = ['JITCNormalR', 'JITCNormalC']
+__all__ = [
+    'JITCNormalR', 'JITCNormalC',
+    'binary_jitnmv', 'binary_jitnmv_p', 'binary_jitnmm', 'binary_jitnmm_p',
+    'jitn', 'jitn_p', 'jitnmv', 'jitnmv_p', 'jitnmm', 'jitnmm_p',
+]

@@ -15,5 +15,11 @@
 
 
 from .main import JITCUniformR, JITCUniformC
+from .binary import binary_jitumv, binary_jitumv_p, binary_jitumm, binary_jitumm_p
+from .float import jitu, jitu_p, jitumv, jitumv_p, jitumm, jitumm_p
 
-__all__ = ['JITCUniformR', 'JITCUniformC']
+__all__ = [
+    'JITCUniformR', 'JITCUniformC',
+    'binary_jitumv', 'binary_jitumv_p', 'binary_jitumm', 'binary_jitumm_p',
+    'jitu', 'jitu_p', 'jitumv', 'jitumv_p', 'jitumm', 'jitumm_p',
+]
