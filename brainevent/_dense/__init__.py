@@ -13,42 +13,24 @@
 # limitations under the License.
 # ==============================================================================
 
-from .binary import (
-    bv_dm,
-    bv_dm_p,
-    dm_bv,
-    dm_bv_p,
-    bm_dm,
-    bm_dm_p,
-    dm_bm,
-    dm_bm_p,
-)
+from .binary import dm_bv, dm_bv_p, bv_dm, bv_dm_p, dm_bm, dm_bm_p, bm_dm, bm_dm_p
 from .indexed_binary import (
-    indexed_dm_bm,
-    indexed_dm_bv,
-    indexed_bm_dm,
-    indexed_bv_dm,
+    indexed_bv_dm, indexed_bv_dm_p, indexed_dm_bv,
+    indexed_dm_bm, indexed_bm_dm, indexed_bm_dm_p,
 )
 from .plasticity import (
-    plast_dense_on_binary_pre,
-    plast_dense_on_binary_post,
+    plast_dense_on_binary_pre, plast_dense_on_binary_pre_p,
+    plast_dense_on_binary_post, plast_dense_on_binary_post_p,
 )
-from .sparse_float import (
-    dm_sfm,
-    sfm_dm,
-    dm_sfv,
-    sfv_dm,
-)
+from .sparse_float import dm_sfv, dm_sfv_p, sfv_dm, sfv_dm_p, dm_sfm, dm_sfm_p, sfm_dm, sfm_dm_p
 
 __all__ = [
-    'plast_dense_on_binary_pre',
-    'plast_dense_on_binary_post',
-    'dm_bm',
-    'bm_dm',
-    'bv_dm',
-    'dm_bv',
-    'dm_sfm',
-    'sfm_dm',
-    'dm_sfv',
-    'sfv_dm',
+    'dm_bv', 'dm_bv_p', 'bv_dm', 'bv_dm_p',
+    'dm_bm', 'dm_bm_p', 'bm_dm', 'bm_dm_p',
+    'indexed_bv_dm', 'indexed_bv_dm_p', 'indexed_dm_bv',
+    'indexed_dm_bm', 'indexed_bm_dm', 'indexed_bm_dm_p',
+    'plast_dense_on_binary_pre', 'plast_dense_on_binary_pre_p',
+    'plast_dense_on_binary_post', 'plast_dense_on_binary_post_p',
+    'dm_sfv', 'dm_sfv_p', 'sfv_dm', 'sfv_dm_p',
+    'dm_sfm', 'dm_sfm_p', 'sfm_dm', 'sfm_dm_p',
 ]

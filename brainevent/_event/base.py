@@ -1118,6 +1118,7 @@ class BaseArray:
         Python program proceeds past this call.
 
         This is primarily useful for:
+
         1.  Accurate timing (benchmarking) of JAX operations.
         2.  Ensuring data is ready before being used by non-JAX code (e.g.,
             saving to disk, passing to a different library).
@@ -2910,7 +2911,7 @@ class BaseArray:
         >>> import numpy as np
         >>> from brainevent import EventArray
 
-        # View with a new shape (using reshape behavior)
+        >>> # View with a new shape (using reshape behavior)
         >>> a = np.arange(6)
         >>> ea = EventArray(a)
         >>> ea.view(2, 3)
@@ -2919,7 +2920,7 @@ class BaseArray:
         >>> ea.view((6,))
         BaseArray(value=array([0, 1, 2, 3, 4, 5]), dtype=int32)
 
-        # View with a new dtype
+        >>> # View with a new dtype
         >>> x = np.array([(1, 2), (3, 4)], dtype=[('a', np.int8), ('b', np.int8)])
         >>> ex = EventArray(x)
         >>> # View as float32 (assuming compatible byte size)
@@ -3588,8 +3589,8 @@ class BaseArray:
 
         See Also
         --------
-        clamp_ : In-place version of this function
-        clip_ : Alias for clamp_
+        clamp_ : In-place version of this function.
+        clip_ : Alias for ``clamp_``.
 
         Examples
         --------

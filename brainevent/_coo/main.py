@@ -43,7 +43,7 @@ class COO(u.sparse.SparseMatrix):
     This class represents a sparse matrix in coordinate format, where non-zero
     elements are stored as triplets (row, column, value).
 
-    The class also supports various arithmetic operations (+, -, *, /, @, etc.)
+    The class also supports various arithmetic operations (``+``, ``-``, ``*``, ``/``, ``@``, etc.)
     and comparisons with other COO matrices, dense arrays, and scalars.
 
     Attributes

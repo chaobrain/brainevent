@@ -17,70 +17,78 @@
 __version__ = "0.0.6"
 __version_info__ = tuple(map(int, __version__.split(".")))
 
+from ._jitc_matrix import JITCMatrix
 from ._coo import (
     COO,
-    plast_coo_on_binary_pre,
-    plast_coo_on_binary_post,
+    binary_coomv, binary_coomv_p, binary_coomm, binary_coomm_p,
+    coomv, coomv_p, coomm, coomm_p,
+    plast_coo_on_binary_pre, plast_coo_on_binary_post,
+    plast_coo_on_binary_pre_p, plast_coo_on_binary_post_p,
 )
 from ._csr import (
-    CSR,
-    CSC,
-    plast_csr_on_binary_pre,
-    plast_csr2csc_on_binary_post,
-    binary_csrmv_p,
+    CSR, CSC,
+    binary_csrmv, binary_csrmv_p, binary_csrmm, binary_csrmm_p,
+    csrmv, csrmv_p, csrmm, csrmm_p, csrmv_yw2y, csrmv_yw2y_p,
+    plast_csr_on_binary_pre, plast_csr_on_binary_pre_p,
+    plast_csr2csc_on_binary_post, plast_csr2csc_on_binary_post_p,
+    spfloat_csrmv, spfloat_csrmv_p, spfloat_csrmm, spfloat_csrmm_p,
+    csr_solve,
 )
 from ._dense import (
-    plast_dense_on_binary_pre,
-    plast_dense_on_binary_post,
+    dm_bv, dm_bv_p, bv_dm, bv_dm_p,
+    dm_bm, dm_bm_p, bm_dm, bm_dm_p,
+    indexed_bv_dm, indexed_bv_dm_p, indexed_dm_bv,
+    indexed_dm_bm, indexed_bm_dm, indexed_bm_dm_p,
+    plast_dense_on_binary_pre, plast_dense_on_binary_pre_p,
+    plast_dense_on_binary_post, plast_dense_on_binary_post_p,
+    dm_sfv, dm_sfv_p, sfv_dm, sfv_dm_p,
+    dm_sfm, dm_sfm_p, sfm_dm, sfm_dm_p,
 )
 from ._error import (
     MathError,
     KernelNotAvailableError,
     KernelCompilationError,
     KernelFallbackExhaustedError,
+    KernelExecutionError,
 )
 from ._event import (
-    BaseArray,
-    BinaryArray,
-    EventArray,
-    IndexedBinary,
-    SparseFloat,
-    IndexedSparseFloat,
+    BaseArray, BinaryArray, EventArray,
+    IndexedBinary, SparseFloat, IndexedSparseFloat,
+    binary_array_index,
 )
 from ._fcn import (
-    FixedPostNumConn,
-    FixedPreNumConn,
+    FixedNumConn, FixedPreNumConn, FixedPostNumConn,
+    binary_fcnmv, binary_fcnmv_p, binary_fcnmm, binary_fcnmm_p,
+    fcnmv, fcnmv_p, fcnmm, fcnmm_p,
+    spfloat_fcnmv, spfloat_fcnmv_p, spfloat_fcnmm, spfloat_fcnmm_p,
 )
 from ._jit_normal import (
-    JITCNormalR,
-    JITCNormalC,
+    JITCNormalR, JITCNormalC,
+    binary_jitnmv, binary_jitnmv_p, binary_jitnmm, binary_jitnmm_p,
+    jitn, jitn_p, jitnmv, jitnmv_p, jitnmm, jitnmm_p,
 )
 from ._jit_scalar import (
-    JITCScalarR,
-    JITCScalarC,
+    JITScalarMatrix, JITCScalarR, JITCScalarC,
+    binary_jitsmv, binary_jitsmv_p, binary_jitsmm, binary_jitsmm_p,
+    jits, jits_p, jitsmv, jitsmv_p, jitsmm, jitsmm_p,
 )
 from ._jit_uniform import (
-    JITCUniformR,
-    JITCUniformC,
+    JITCUniformR, JITCUniformC,
+    binary_jitumv, binary_jitumv_p, binary_jitumm, binary_jitumm_p,
+    jitu, jitu_p, jitumv, jitumv_p, jitumm, jitumm_p,
 )
 from ._misc import (
-    csr_to_coo_index,
-    coo_to_csc_index,
-    csr_to_csc_index,
+    csr_to_coo_index, coo_to_csc_index, csr_to_csc_index,
 )
 from ._op import (
-    XLACustomKernel,
-    numba_kernel,
-    numba_cuda_kernel,
-    defjvp,
-    general_batching_rule,
-    jaxtype_to_warptype,
-    jaxinfo_to_warpinfo
+    XLACustomKernel, KernelEntry,
+    BenchmarkResult, BenchmarkReport, benchmark_function,
+    numba_kernel, numba_cuda_kernel,
+    register_cuda_kernels, defjvp, general_batching_rule,
+    jaxtype_to_warptype, jaxinfo_to_warpinfo,
 )
 from ._pallas_random import (
-    LFSR88RNG,
-    LFSR113RNG,
-    LFSR128RNG,
+    PallasLFSR88RNG, PallasLFSR113RNG, PallasLFSR128RNG,
 )
 
 __all__ = [
@@ -91,63 +99,71 @@ __all__ = [
     'IndexedBinary',
     'SparseFloat',
     'IndexedSparseFloat',
+    'binary_array_index',
 
     # --- COO --- #
     'COO',
-    'plast_coo_on_binary_pre',
-    'plast_coo_on_binary_post',
+    'binary_coomv', 'binary_coomv_p', 'binary_coomm', 'binary_coomm_p',
+    'coomv', 'coomv_p', 'coomm', 'coomm_p',
+    'plast_coo_on_binary_pre', 'plast_coo_on_binary_post',
+    'plast_coo_on_binary_pre_p', 'plast_coo_on_binary_post_p',
 
-    # CSR
-    'CSR',
-    'CSC',
-    'plast_csr_on_binary_pre',
-    'plast_csr2csc_on_binary_post',
+    # --- CSR --- #
+    'CSR', 'CSC',
+    'binary_csrmv', 'binary_csrmv_p', 'binary_csrmm', 'binary_csrmm_p',
+    'csrmv', 'csrmv_p', 'csrmm', 'csrmm_p', 'csrmv_yw2y', 'csrmv_yw2y_p',
+    'plast_csr_on_binary_pre', 'plast_csr_on_binary_pre_p',
+    'plast_csr2csc_on_binary_post', 'plast_csr2csc_on_binary_post_p',
+    'spfloat_csrmv', 'spfloat_csrmv_p', 'spfloat_csrmm', 'spfloat_csrmm_p',
+    'csr_solve',
 
-    # Just-In-Time Connectivity matrix
-    'JITCScalarR',  # row-oriented JITC matrix with homogeneous weight
-    'JITCScalarC',  # column-oriented JITC matrix with homogeneous weight
-    'JITCNormalR',  # row-oriented JITC matrix with normal weight
-    'JITCNormalC',  # column-oriented JITC matrix with normal weight
-    'JITCUniformR',  # row-oriented JITC matrix with uniform weight
-    'JITCUniformC',  # column-oriented JITC matrix with uniform weight
+    # --- dense matrix --- #
+    'dm_bv', 'dm_bv_p', 'bv_dm', 'bv_dm_p',
+    'dm_bm', 'dm_bm_p', 'bm_dm', 'bm_dm_p',
+    'indexed_bv_dm', 'indexed_bv_dm_p', 'indexed_dm_bv',
+    'indexed_dm_bm', 'indexed_bm_dm', 'indexed_bm_dm_p',
+    'plast_dense_on_binary_pre', 'plast_dense_on_binary_pre_p',
+    'plast_dense_on_binary_post', 'plast_dense_on_binary_post_p',
+    'dm_sfv', 'dm_sfv_p', 'sfv_dm', 'sfv_dm_p',
+    'dm_sfm', 'dm_sfm_p', 'sfm_dm', 'sfm_dm_p',
+
+    # --- Just-In-Time Connectivity matrix --- #
+    'JITCMatrix',
+    'JITScalarMatrix', 'JITCScalarR', 'JITCScalarC',
+    'binary_jitsmv', 'binary_jitsmv_p', 'binary_jitsmm', 'binary_jitsmm_p',
+    'jits', 'jits_p', 'jitsmv', 'jitsmv_p', 'jitsmm', 'jitsmm_p',
+    'JITCNormalR', 'JITCNormalC',
+    'binary_jitnmv', 'binary_jitnmv_p', 'binary_jitnmm', 'binary_jitnmm_p',
+    'jitn', 'jitn_p', 'jitnmv', 'jitnmv_p', 'jitnmm', 'jitnmm_p',
+    'JITCUniformR', 'JITCUniformC',
+    'binary_jitumv', 'binary_jitumv_p', 'binary_jitumm', 'binary_jitumm_p',
+    'jitu', 'jitu_p', 'jitumv', 'jitumv_p', 'jitumm', 'jitumm_p',
 
     # --- Fixed number connectivity --- #
-    'FixedPreNumConn',
-    'FixedPostNumConn',
-
-    # --- dense matrix ----- #
-    'plast_dense_on_binary_pre',
-    'plast_dense_on_binary_post',
+    'FixedNumConn', 'FixedPreNumConn', 'FixedPostNumConn',
+    'binary_fcnmv', 'binary_fcnmv_p', 'binary_fcnmm', 'binary_fcnmm_p',
+    'fcnmv', 'fcnmv_p', 'fcnmm', 'fcnmm_p',
+    'spfloat_fcnmv', 'spfloat_fcnmv_p', 'spfloat_fcnmm', 'spfloat_fcnmm_p',
 
     # --- operator customization routines --- #
+    'XLACustomKernel', 'KernelEntry',
+    'BenchmarkResult', 'BenchmarkReport', 'benchmark_function',
+    'numba_kernel', 'numba_cuda_kernel',
+    'register_cuda_kernels', 'defjvp', 'general_batching_rule',
+    'jaxtype_to_warptype', 'jaxinfo_to_warpinfo',
 
-    # 1. Custom kernel
-    'XLACustomKernel',
+    # --- Pallas kernel --- #
+    'PallasLFSR88RNG', 'PallasLFSR113RNG', 'PallasLFSR128RNG',
 
-    # 2. utilities
-    'defjvp',
-    'general_batching_rule',
-
-    # 3. Numba kernel
-    'numba_kernel',
-    'numba_cuda_kernel',
-
-    # 4. Warp kernel
-    'jaxtype_to_warptype',
-    'jaxinfo_to_warpinfo',
-
-    # 5. Pallas kernel
-    'LFSR88RNG',
-    'LFSR113RNG',
-    'LFSR128RNG',
-
-    # --- others --- #
-
+    # --- errors --- #
     'MathError',
-    'csr_to_coo_index',
-    'coo_to_csc_index',
-    'csr_to_csc_index',
+    'KernelNotAvailableError',
+    'KernelCompilationError',
+    'KernelFallbackExhaustedError',
+    'KernelExecutionError',
 
+    # --- utilities --- #
+    'csr_to_coo_index', 'coo_to_csc_index', 'csr_to_csc_index',
 ]
 
 
