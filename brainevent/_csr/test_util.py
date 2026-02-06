@@ -16,6 +16,7 @@
 # -*- coding: utf-8 -*-
 
 import brainstate
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -33,46 +34,100 @@ def get_csr(n_pre, n_post, prob, replace=True):
     return indptr, indices
 
 
-def vector_csr(x, w, indices, indptr, shape):
+def _get_n_conn(indptr):
+    """Extract n_conn from indptr as a concrete integer."""
+    if hasattr(indptr, '__array__'):
+        arr = np.asarray(indptr)
+        return int(arr[1] - arr[0])
+    return int(indptr[1] - indptr[0])
+
+
+def vector_csr(x, w, indices, indptr, shape, n_conn=None):
+    if n_conn is None:
+        n_conn = _get_n_conn(indptr)
+    return _vector_csr_impl(x, w, indices, indptr, shape, n_conn)
+
+
+@brainstate.transform.jit(static_argnums=(4, 5), static_argnames=['shape', 'n_conn'])
+def _vector_csr_impl(x, w, indices, indptr, shape, n_conn):
     homo_w = jnp.size(w) == 1
     post = jnp.zeros((shape[1],))
-    for i_pre in range(x.shape[0]):
-        ids = indices[indptr[i_pre]: indptr[i_pre + 1]]
-        inc = w * x[i_pre] if homo_w else w[indptr[i_pre]: indptr[i_pre + 1]] * x[i_pre]
+
+    def body_fn(i_pre, post):
+        start = indptr[i_pre]
+        ids = jax.lax.dynamic_slice(indices, (start,), (n_conn,))
+        if homo_w:
+            inc = w * x[i_pre]
+        else:
+            ws = jax.lax.dynamic_slice(w, (start,), (n_conn,))
+            inc = ws * x[i_pre]
         ids, inc = jnp.broadcast_arrays(ids, inc)
-        post = post.at[ids].add(inc)
-    return post
+        return post.at[ids].add(inc)
+
+    return jax.lax.fori_loop(0, x.shape[0], body_fn, post)
 
 
-def matrix_csr(xs, w, indices, indptr, shape):
+def matrix_csr(xs, w, indices, indptr, shape, n_conn=None):
+    if n_conn is None:
+        n_conn = _get_n_conn(indptr)
+    return _matrix_csr_impl(xs, w, indices, indptr, shape, n_conn)
+
+
+@brainstate.transform.jit(static_argnums=(4, 5), static_argnames=['shape', 'n_conn'])
+def _matrix_csr_impl(xs, w, indices, indptr, shape, n_conn):
     homo_w = jnp.size(w) == 1
     post = jnp.zeros((xs.shape[0], shape[1]))
-    for i_pre in range(xs.shape[1]):
-        ids = indices[indptr[i_pre]: indptr[i_pre + 1]]
-        post = post.at[:, ids].add(
-            w * xs[:, i_pre: i_pre + 1]
-            if homo_w else
-            (w[indptr[i_pre]: indptr[i_pre + 1]] * xs[:, i_pre: i_pre + 1])
-        )
-    return post
+
+    def body_fn(i_pre, post):
+        start = indptr[i_pre]
+        ids = jax.lax.dynamic_slice(indices, (start,), (n_conn,))
+        xs_col = jax.lax.dynamic_slice(xs, (0, i_pre), (xs.shape[0], 1))
+        if homo_w:
+            inc = w * xs_col
+        else:
+            ws = jax.lax.dynamic_slice(w, (start,), (n_conn,))
+            inc = ws * xs_col
+        return post.at[:, ids].add(inc)
+
+    return jax.lax.fori_loop(0, xs.shape[1], body_fn, post)
 
 
-def csr_vector(x, w, indices, indptr, shape):
+def csr_vector(x, w, indices, indptr, shape, n_conn=None):
+    if n_conn is None:
+        n_conn = _get_n_conn(indptr)
+    return _csr_vector_impl(x, w, indices, indptr, shape, n_conn)
+
+
+@brainstate.transform.jit(static_argnums=(4, 5), static_argnames=['shape', 'n_conn'])
+def _csr_vector_impl(x, w, indices, indptr, shape, n_conn):
     homo_w = jnp.size(w) == 1
     out = jnp.zeros([shape[0]])
-    for i in range(shape[0]):
-        ids = indices[indptr[i]: indptr[i + 1]]
-        ws = w if homo_w else w[indptr[i]: indptr[i + 1]]
-        out = out.at[i].set(jnp.sum(x[ids] * ws))
-    return out
+
+    def body_fn(i, out):
+        start = indptr[i]
+        ids = jax.lax.dynamic_slice(indices, (start,), (n_conn,))
+        ws = w if homo_w else jax.lax.dynamic_slice(w, (start,), (n_conn,))
+        return out.at[i].set(jnp.sum(x[ids] * ws))
+
+    return jax.lax.fori_loop(0, shape[0], body_fn, out)
 
 
-def csr_matrix(xs, w, indices, indptr, shape):
+def csr_matrix(xs, w, indices, indptr, shape, n_conn=None):
+    if n_conn is None:
+        n_conn = _get_n_conn(indptr)
+    return _csr_matrix_impl(xs, w, indices, indptr, shape, n_conn)
+
+
+@brainstate.transform.jit(static_argnums=(4, 5), static_argnames=['shape', 'n_conn'])
+def _csr_matrix_impl(xs, w, indices, indptr, shape, n_conn):
     # CSR @ matrix
     homo_w = jnp.size(w) == 1
     out = jnp.zeros([shape[0], xs.shape[1]])
-    for i in range(shape[0]):
-        ids = indices[indptr[i]: indptr[i + 1]]
-        ws = w if homo_w else jnp.expand_dims(w[indptr[i]: indptr[i + 1]], axis=1)
-        out = out.at[i].set(jnp.sum(xs[ids] * ws, axis=0))
-    return out
+
+    def body_fn(i, out):
+        start = indptr[i]
+        ids = jax.lax.dynamic_slice(indices, (start,), (n_conn,))
+        ws = w if homo_w else jnp.expand_dims(jax.lax.dynamic_slice(w, (start,), (n_conn,)), axis=1)
+        return out.at[i].set(jnp.sum(xs[ids] * ws, axis=0))
+
+    return jax.lax.fori_loop(0, shape[0], body_fn, out)

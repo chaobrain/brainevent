@@ -58,7 +58,7 @@ Core Components
 
   - ``EventArray``: Binary arrays representing spike events (1 = spike, 0 = no spike)
   - ``BinaryArray``: General binary data with event-aware operations
-  - ``MaskedFloat``: Float arrays with masking for sparse computations
+  - ``SparseFloat``: Float arrays with sparse semantics (zeros are skipped)
 
 **2. Sparse Data Structures**
   Multiple sparse matrix formats optimized for event-driven computation:

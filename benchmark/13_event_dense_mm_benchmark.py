@@ -24,8 +24,8 @@ import sys
 sys.path.append('../')
 
 from brainevent._dense import (
-    dense_mat_dot_binary_mat,
-    binary_mat_dot_dense_mat,
+    dm_bm,
+    bm_dm,
 )
 import braintools
 import brainstate
@@ -47,9 +47,9 @@ def matrix_event(m, k, n, spk_prob, as_float: bool, transpose: bool, n_run = 100
     @jax.jit
     def f1(spike, weight):
         return (
-            dense_mat_dot_binary_mat(weight, spike)
+            dm_bm(weight, spike)
             if transpose
-            else binary_mat_dot_dense_mat(spike, weight)
+            else bm_dm(spike, weight)
         )
 
     @jax.jit

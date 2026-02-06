@@ -14,6 +14,6 @@
 # ==============================================================================
 
 from .main import COO
-from .plasticity import coo_on_pre, coo_on_post
+from .plasticity_binary import plast_coo_on_binary_pre, plast_coo_on_binary_post
 
-__all__ = ['COO', 'coo_on_pre', 'coo_on_post']
+__all__ = ['COO', 'plast_coo_on_binary_pre', 'plast_coo_on_binary_post']

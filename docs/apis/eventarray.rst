@@ -19,14 +19,14 @@ Binary Events
 
 
 
-Masked Floating Point Events
+Sparse Floating Point Events
 ----------------------------
 
 .. autosummary::
    :toctree: generated/
    :template: classtemplate.rst
 
-   MaskedFloat
+   SparseFloat
 
 
 Binary Event Indices

@@ -58,11 +58,6 @@ def vector_fcn(x, weights, indices, shape):
         0, x.shape[0], loop_fn, post
     )
 
-    # for i_pre in range(x.shape[0]):
-    #     post_ids = indices[i_pre]
-    #     post = post.at[post_ids].add(weights * x[i_pre] if homo_w else weights[i_pre] * x[i_pre])
-    # return post
-
 
 @brainstate.transform.jit(static_argnums=(3,))
 def matrix_fcn(xs, weights, indices, shape):
@@ -87,15 +82,6 @@ def matrix_fcn(xs, weights, indices, shape):
         0, xs.shape[1], loop_fn, post
     )
 
-    # for i_pre in range(xs.shape[1]):
-    #     post_ids = indices[i_pre]
-    #     post = post.at[:, post_ids].add(
-    #         weights * xs[:, i_pre: i_pre + 1]
-    #         if homo_w else
-    #         (weights[i_pre] * xs[:, i_pre: i_pre + 1])
-    #     )
-    # return post
-
 
 @brainstate.transform.jit(static_argnums=(3,))
 def fcn_vector(x, weights, indices, shape):
@@ -115,12 +101,6 @@ def fcn_vector(x, weights, indices, shape):
     return jax.lax.fori_loop(
         0, shape[0], loop_fn, out
     )
-
-    # for i in range(shape[0]):
-    #     post_ids = indices[i]
-    #     ws = weights if homo_w else weights[i]
-    #     out = out.at[i].set(jnp.sum(x[post_ids] * ws))
-    # return out
 
 
 @brainstate.transform.jit(static_argnums=(3,))
@@ -143,14 +123,8 @@ def fcn_matrix(xs, weights, indices, shape):
         0, shape[0], loop_fn, out
     )
 
-    # for i in range(shape[0]):
-    #     post_ids = indices[i]
-    #     ws = weights if homo_w else jnp.expand_dims(weights[i], axis=1)
-    #     out = out.at[i].set(jnp.sum(xs[post_ids] * ws, axis=0))
-    # return out
 
-
-def allclose(x, y, rtol=1e-4, atol=1e-4):
+def allclose(x, y, rtol=1e-6, atol=1e-6):
     x = x.data if isinstance(x, brainevent.EventArray) else x
     y = y.data if isinstance(y, brainevent.EventArray) else y
     return jnp.allclose(x, y, rtol=rtol, atol=atol)
