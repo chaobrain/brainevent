@@ -111,35 +111,33 @@ def _coomv_numba_kernel(
 ):
     import numba
 
-    match (transpose, weight_info.size):
-        # transpose=True, homogeneous
-        case (True, 1):
+    if transpose:
+        if weight_info.size == 1:
+            # transpose=True, homogeneous
             @numba.njit(fastmath=True)
             def mv(weights, row, col, v, posts):
                 posts[:] = 0.
                 w = weights[0]
                 for i in range(row.shape[0]):
                     posts[col[i]] += w * v[row[i]]
-
-        # transpose=True, heterogeneous
-        case (True, _):
+        else:
+            # transpose=True, heterogeneous
             @numba.njit(fastmath=True)
             def mv(weights, row, col, v, posts):
                 posts[:] = 0.
                 for i in range(row.shape[0]):
                     posts[col[i]] += weights[i] * v[row[i]]
-
-        # transpose=False, homogeneous
-        case (False, 1):
+    else:
+        if weight_info.size == 1:
+            # transpose=False, homogeneous
             @numba.njit(fastmath=True)
             def mv(weights, row, col, v, posts):
                 posts[:] = 0.
                 w = weights[0]
                 for i in range(row.shape[0]):
                     posts[row[i]] += w * v[col[i]]
-
-        # transpose=False, heterogeneous
-        case (False, _):
+        else:
+            # transpose=False, heterogeneous
             @numba.njit(fastmath=True)
             def mv(weights, row, col, v, posts):
                 posts[:] = 0.
@@ -169,9 +167,9 @@ def _coomv_warp_kernel(
     vector_warp_info = jaxinfo_to_warpinfo(vector_info)
     out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
 
-    match (transpose, weight_info.size):
-        # transpose=True, homogeneous
-        case (True, 1):
+    if transpose:
+        if weight_info.size == 1:
+            # transpose=True, homogeneous
             @warp.kernel
             def mv(
                 weights: weight_warp_info,
@@ -183,9 +181,8 @@ def _coomv_warp_kernel(
                 i = warp.tid()
                 w = weights[0]
                 posts[col[i]] += w * v[row[i]]
-
-        # transpose=True, heterogeneous
-        case (True, _):
+        else:
+            # transpose=True, heterogeneous
             @warp.kernel
             def mv(
                 weights: weight_warp_info,
@@ -196,9 +193,9 @@ def _coomv_warp_kernel(
             ):
                 i = warp.tid()
                 posts[col[i]] += weights[i] * v[row[i]]
-
-        # transpose=False, homogeneous
-        case (False, 1):
+    else:
+        if weight_info.size == 1:
+            # transpose=False, homogeneous
             @warp.kernel
             def mv(
                 weights: weight_warp_info,
@@ -210,9 +207,8 @@ def _coomv_warp_kernel(
                 i = warp.tid()
                 w = weights[0]
                 posts[row[i]] += w * v[col[i]]
-
-        # transpose=False, heterogeneous
-        case (False, _):
+        else:
+            # transpose=False, heterogeneous
             @warp.kernel
             def mv(
                 weights: weight_warp_info,
@@ -510,35 +506,33 @@ def _coomm_numba_kernel(
 ):
     import numba
 
-    match (transpose, weight_info.size):
-        # transpose=True, homogeneous
-        case (True, 1):
+    if transpose:
+        if weight_info.size == 1:
+            # transpose=True, homogeneous
             @numba.njit(fastmath=True)
             def mm(weights, row, col, B, posts):
                 posts[:] = 0.
                 w = weights[0]
                 for i in range(row.shape[0]):
                     posts[col[i], :] += w * B[row[i], :]
-
-        # transpose=True, heterogeneous
-        case (True, _):
+        else:
+            # transpose=True, heterogeneous
             @numba.njit(fastmath=True)
             def mm(weights, row, col, B, posts):
                 posts[:] = 0.
                 for i in range(row.shape[0]):
                     posts[col[i], :] += weights[i] * B[row[i], :]
-
-        # transpose=False, homogeneous
-        case (False, 1):
+    else:
+        if weight_info.size == 1:
+            # transpose=False, homogeneous
             @numba.njit(fastmath=True)
             def mm(weights, row, col, B, posts):
                 posts[:] = 0.
                 w = weights[0]
                 for i in range(row.shape[0]):
                     posts[row[i], :] += w * B[col[i], :]
-
-        # transpose=False, heterogeneous
-        case (False, _):
+        else:
+            # transpose=False, heterogeneous
             @numba.njit(fastmath=True)
             def mm(weights, row, col, B, posts):
                 posts[:] = 0.
@@ -568,9 +562,9 @@ def _coomm_warp_kernel(
     matrix_warp_info = jaxinfo_to_warpinfo(matrix_info)
     out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
 
-    match (transpose, weight_info.size):
-        # transpose=True, weight.size==1
-        case (True, 1):
+    if transpose:
+        if weight_info.size == 1:
+            # transpose=True, weight.size==1
             @warp.kernel
             def mm(
                 weights: weight_warp_info,
@@ -582,9 +576,8 @@ def _coomm_warp_kernel(
                 i, j = warp.tid()
                 w = weights[0]
                 posts[col[i], j] += w * B[row[i], j]
-
-        # transpose=True, weight.size!=1
-        case (True, _):
+        else:
+            # transpose=True, weight.size!=1
             @warp.kernel
             def mm(
                 weights: weight_warp_info,
@@ -595,9 +588,9 @@ def _coomm_warp_kernel(
             ):
                 i, j = warp.tid()
                 posts[col[i], j] += weights[i] * B[row[i], j]
-
-        # transpose=False, weight.size==1
-        case (False, 1):
+    else:
+        if weight_info.size == 1:
+            # transpose=False, weight.size==1
             @warp.kernel
             def mm(
                 weights: weight_warp_info,
@@ -609,9 +602,8 @@ def _coomm_warp_kernel(
                 i, j = warp.tid()
                 w = weights[0]
                 posts[row[i], j] += w * B[col[i], j]
-
-        # transpose=False, weight.size!=1
-        case (False, _):
+        else:
+            # transpose=False, weight.size!=1
             @warp.kernel
             def mm(
                 weights: weight_warp_info,

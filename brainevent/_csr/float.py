@@ -1076,14 +1076,15 @@ csrmm_p.def_batching_rule(_csrmm_batching)
 csrmm_p.def_call(csrmm_p_call)
 
 
-@namescope(static_argnames=['shape'])
+@namescope(static_argnames=['shape', 'transpose'])
 def csrmv_yw2y(
     y: Data,
     w: Data,
     indices: Index,
     indptr: Indptr,
     *,
-    shape, transpose: bool = False,
+    shape,
+    transpose: bool = False,
 ) -> Data:
     w, w_unit = u.split_mantissa_unit(w)
     y, _ = u.split_mantissa_unit(y)
