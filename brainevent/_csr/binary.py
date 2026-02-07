@@ -436,7 +436,7 @@ def _csrmv_pallas_kernel(
                     events = jnp.asarray(events & mask, dtype=posts_ref.dtype)
                 else:
                     events = jnp.where(
-                        events > 0. & mask,
+                        (events > 0.) & mask,
                         jnp.ones(events.shape, dtype=posts_ref.dtype),
                         0.
                     )
@@ -480,7 +480,7 @@ def _csrmv_pallas_kernel(
                 if vector_ref.dtype == jnp.bool_:
                     events = jnp.asarray(events & mask, dtype=posts_ref.dtype)
                 else:
-                    events = jnp.where(events > 0. & mask, jnp.ones(events.shape, dtype=posts_ref.dtype), 0.)
+                    events = jnp.where((events > 0.) & mask, jnp.ones(events.shape, dtype=posts_ref.dtype), 0.)
                 sum_ += jnp.sum(val_A * events)
                 return sum_
 
