@@ -16,7 +16,7 @@
 
 from jax.tree_util import register_pytree_node_class
 
-from brainevent._dense import dm_sfm, sfm_dm, dm_sfv, sfv_dm
+from brainevent._dense import dsfmm, sfdmm, dsfmv, sfdvm
 from brainevent._error import MathError
 from .base import BaseArray
 from .base import extract_raw_value, is_known_type
@@ -71,9 +71,9 @@ class SparseFloat(BaseArray):
 
             # Perform the appropriate multiplication based on dimensions
             if self.ndim == 1:
-                return sfv_dm(self.value, oc)
+                return sfdvm(self.value, oc)
             else:  # self.ndim == 2
-                return sfm_dm(self.value, oc)
+                return sfdmm(self.value, oc)
         else:
             return oc.__rmatmul__(self)
 
@@ -101,9 +101,9 @@ class SparseFloat(BaseArray):
 
             # Perform the appropriate multiplication based on dimensions
             if self.ndim == 1:
-                return dm_sfv(oc, self.value)
+                return dsfmv(oc, self.value)
             else:
-                return dm_sfm(oc, self.value)
+                return dsfmm(oc, self.value)
         else:
             return oc.__matmul__(self)
 
