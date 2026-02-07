@@ -184,11 +184,11 @@ class XLACustomKernel:
         return tree_def.unflatten(r)
 
     def def_kernel(
-            self,
-            backend: str,
-            platform: str,
-            kg: KernelGenerator,
-            asdefault: bool = False
+        self,
+        backend: str,
+        platform: str,
+        kg: KernelGenerator,
+        asdefault: bool = False
     ):
         """Register a kernel for a specific backend and platform.
 
@@ -268,34 +268,35 @@ class XLACustomKernel:
                 backend_to_use = next(iter(kernels))
                 entry = kernels[backend_to_use]
 
-            try:
-                kernel = entry.kernel_generator(**kwargs)
-                return kernel(*args)
-            except Exception as e:
-                # Build helpful error message with alternatives
-                alternatives = [b for b in kernels.keys() if b != backend_to_use]
-                alt_msg = ""
-                if alternatives:
-                    alt_msg = (
-                            f"\n\nAlternative backends available for '{platform}':\n"
-                            + "\n".join(f"  - {b}" for b in alternatives)
-                            + f"\n\nTo use an alternative:\n"
-                              f"  1. Call with backend='{alternatives[0]}'\n"
-                              f"  2. Or set default: kernel.set_default('{platform}', '{alternatives[0]}')"
-                    )
-                raise KernelExecutionError(
-                    f"Backend '{backend_to_use}' failed on platform '{platform}':\n"
-                    f"  {type(e).__name__}: {e}{alt_msg}"
-                ) from e
+            kernel = entry.kernel_generator(**kwargs)
+            return kernel(*args)
+            # try:
+            #     pass
+            # except Exception as e:
+            #     # Build helpful error message with alternatives
+            #     alternatives = [b for b in kernels.keys() if b != backend_to_use]
+            #     alt_msg = ""
+            #     if alternatives:
+            #         alt_msg = (
+            #                 f"\n\nAlternative backends available for '{platform}':\n"
+            #                 + "\n".join(f"  - {b}" for b in alternatives)
+            #                 + f"\n\nTo use an alternative:\n"
+            #                   f"  1. Call with backend='{alternatives[0]}'\n"
+            #                   f"  2. Or set default: kernel.set_default('{platform}', '{alternatives[0]}')"
+            #         )
+            #     raise KernelExecutionError(
+            #         f"Backend '{backend_to_use}' failed on platform '{platform}':\n"
+            #         f"  {type(e).__name__}: {e}{alt_msg}"
+            #     ) from e
 
         # Register the lowering with JAX
         lower = mlir.lower_fun(fallback_kernel_fn, multiple_results=True)
         mlir.register_lowering(self.primitive, lower, platform=platform)
 
     def def_numba_kernel(
-            self,
-            kg: KernelGenerator,
-            asdefault: bool = False
+        self,
+        kg: KernelGenerator,
+        asdefault: bool = False
     ):
         """Register a Numba kernel for CPU platform.
 
@@ -309,9 +310,9 @@ class XLACustomKernel:
         self.def_kernel(backend='numba', platform='cpu', kg=kg, asdefault=asdefault)
 
     def def_warp_kernel(
-            self,
-            kg: KernelGenerator,
-            asdefault: bool = False
+        self,
+        kg: KernelGenerator,
+        asdefault: bool = False
     ):
         """Register a Warp kernel for GPU platform.
 
@@ -325,9 +326,9 @@ class XLACustomKernel:
         self.def_kernel(backend='warp', platform='gpu', kg=kg, asdefault=asdefault)
 
     def def_triton_kernel(
-            self,
-            kg: KernelGenerator,
-            asdefault: bool = False
+        self,
+        kg: KernelGenerator,
+        asdefault: bool = False
     ):
         """Register a Triton kernel for GPU platform.
 
@@ -341,10 +342,10 @@ class XLACustomKernel:
         self.def_kernel(backend='triton', platform='gpu', kg=kg, asdefault=asdefault)
 
     def def_pallas_kernel(
-            self,
-            platform: str,
-            kg: KernelGenerator,
-            asdefault: bool = False
+        self,
+        platform: str,
+        kg: KernelGenerator,
+        asdefault: bool = False
     ):
         """Register a Pallas kernel for GPU or TPU platform.
 
@@ -360,10 +361,10 @@ class XLACustomKernel:
         self.def_kernel(backend='pallas', platform=platform, kg=kg, asdefault=asdefault)
 
     def def_tvmffi_kernel(
-            self,
-            platform: str,
-            kg: KernelGenerator,
-            asdefault: bool = False
+        self,
+        platform: str,
+        kg: KernelGenerator,
+        asdefault: bool = False
     ):
         """Register a TVM FFI kernel for CPU or GPU platform.
 
@@ -379,9 +380,9 @@ class XLACustomKernel:
         self.def_kernel(backend='tvmffi', platform=platform, kg=kg, asdefault=asdefault)
 
     def def_numba_cuda_kernel(
-            self,
-            kg: KernelGenerator,
-            asdefault: bool = False
+        self,
+        kg: KernelGenerator,
+        asdefault: bool = False
     ):
         """Register a Numba CUDA kernel for GPU platform.
 
@@ -519,15 +520,7 @@ class XLACustomKernel:
             fn: The call function (e.g., binary_csrmv_p_call).
         """
 
-        # Get all keyword-only parameter names from the function signature
-        sig = inspect.signature(fn)
-        static_argnames = [
-            name for name, param in sig.parameters.items()
-            if param.kind == inspect.Parameter.KEYWORD_ONLY
-        ]
-
-        # Wrap with JIT, treating all kwargs as static
-        self._call_fn = jax.jit(fn, static_argnames=static_argnames)
+        self._call_fn = fn
 
     def call(self, *args, **kwargs):
         """Call the associated call function.
@@ -600,15 +593,16 @@ class XLACustomKernel:
         return list(self._kernels[platform].keys())
 
     def benchmark(
-            self,
-            *args,
-            platform: str,
-            backend: Optional[str] = None,
-            n_warmup: int = 5,
-            n_runs: int = 20,
-            batch_mode: bool = False,
-            compare_results: bool = True,
-            **kwargs
+        self,
+        *args,
+        platform: str,
+        backend: Optional[str] = None,
+        n_warmup: int = 5,
+        n_runs: int = 20,
+        batch_mode: bool = False,
+        compare_results: bool = True,
+        catch_error: bool = True,
+        **kwargs
     ) -> Union[BenchmarkResult, BenchmarkReport]:
         """Benchmark kernel execution using the registered call function.
 
@@ -622,6 +616,7 @@ class XLACustomKernel:
                 each run individually (measures per-call latency). If True, run all
                 n_runs calls first, then block once at the end and measure total time
                 (measures throughput, useful for async GPU/TPU execution).
+            catch_error: If True, catch exceptions during kernel execution and record them in the results.
             compare_results: Verify outputs match across backends (not yet implemented).
             **kwargs: Keyword args passed to the call function.
 
@@ -653,7 +648,8 @@ class XLACustomKernel:
         for be in backends_to_test:
             try:
                 # Create a function that calls the primitive with the specified backend
-                def run_fn(be=be):
+                @jax.jit
+                def run_fn():
                     return self._call_fn(*args, backend=be, **kwargs)
 
                 mean_time, std_time, min_time, max_time, output = benchmark_function(
@@ -675,19 +671,22 @@ class XLACustomKernel:
                 )
                 outputs[be] = output
             except Exception as e:
-                results.append(
-                    BenchmarkResult(
-                        backend=be,
-                        platform=platform,
-                        mean_time=0.0,
-                        std_time=0.0,
-                        min_time=0.0,
-                        max_time=0.0,
-                        n_runs=0,
-                        success=False,
-                        error=str(e),
+                if catch_error:
+                    results.append(
+                        BenchmarkResult(
+                            backend=be,
+                            platform=platform,
+                            mean_time=0.0,
+                            std_time=0.0,
+                            min_time=0.0,
+                            max_time=0.0,
+                            n_runs=0,
+                            success=False,
+                            error=str(e),
+                        )
                     )
-                )
+                else:
+                    raise e
 
         # Compare results across backends if requested
         mismatches = []

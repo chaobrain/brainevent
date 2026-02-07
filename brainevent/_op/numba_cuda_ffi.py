@@ -767,6 +767,17 @@ def numba_cuda_callable(
     num_outputs = len(out_info)
 
     def call(*inputs):
+        inputs = jax.tree.map(jax.numpy.array, inputs)
+
+        # Reject scalar (0-d) inputs — Numba CUDA kernels cannot operate on 0-d device arrays
+        for i, inp in enumerate(jax.tree.leaves(inputs)):
+            if jax.numpy.ndim(inp) == 0:
+                raise ValueError(
+                    f"numba_cuda_callable does not support 0-d (scalar) array inputs, "
+                    f"but input {i} has shape (). "
+                    f"Wrap scalars in a 1-d array, e.g. jnp.array([value])."
+                )
+
         # -- collect input metadata --------------------------------------------
         in_info, _ = abstract_arguments(inputs)
         input_dtypes = tuple(np.dtype(inp.dtype) for inp in in_info)
