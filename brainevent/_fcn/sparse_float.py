@@ -418,6 +418,7 @@ spfloat_fcnmv_p.def_jvp_rule2(_spfloat_fcnmv_jvp_weights, None, _spfloat_fcnmv_j
 spfloat_fcnmv_p.def_transpose_rule(_spfloat_fcnmv_transpose_rule)
 spfloat_fcnmv_p.def_batching_rule(_spfloat_fcnmv_batching)
 spfloat_fcnmv_p.def_call(spfloat_fcnmv_p_call)
+spfloat_fcnmv_p.def_tags('fcn', 'sparse_float')
 
 
 @namescope(static_argnames=['shape', 'transpose'])
@@ -801,3 +802,4 @@ spfloat_fcnmm_p.def_jvp_rule2(_spfloat_fcnmm_jvp_weights, None,
 spfloat_fcnmm_p.def_transpose_rule(_spfloat_fcnmm_transpose_rule)
 spfloat_fcnmm_p.def_batching_rule(_spfloat_fcnmm_batching)
 spfloat_fcnmm_p.def_call(spfloat_fcnmm_p_call)
+spfloat_fcnmm_p.def_tags('fcn', 'sparse_float')

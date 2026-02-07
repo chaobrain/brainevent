@@ -463,6 +463,7 @@ fcnmv_p.def_jvp_rule2(_fcnmv_jvp_weights, None, _fcnmv_jvp_vector, None)
 fcnmv_p.def_transpose_rule(_fcnmv_transpose_rule)
 fcnmv_p.def_batching_rule(_fcnmv_batching)
 fcnmv_p.def_call(fcnmv_p_call)
+fcnmv_p.def_tags('fcn', 'float')
 
 
 @namescope(static_argnames=['shape', 'transpose'])
@@ -827,3 +828,4 @@ fcnmm_p.def_jvp_rule2(_fcnmm_jvp_weights, None, _fcnmm_jvp_matrix, None)
 fcnmm_p.def_transpose_rule(_fcnmm_transpose_rule)
 fcnmm_p.def_batching_rule(_fcnmm_batching)
 fcnmm_p.def_call(fcnmm_p_call)
+fcnmm_p.def_tags('fcn', 'float')

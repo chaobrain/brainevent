@@ -517,6 +517,7 @@ binary_fcnmv_p.def_jvp_rule2(_binary_fcnmv_jvp_weights, None, _binary_fcnmv_jvp_
 binary_fcnmv_p.def_transpose_rule(_binary_fcnmv_transpose_rule)
 binary_fcnmv_p.def_batching_rule(_binary_fcnmv_batching)
 binary_fcnmv_p.def_call(binary_fcnmv_p_call)
+binary_fcnmv_p.def_tags('fcn', 'binary')
 
 
 @namescope(static_argnames=['shape', 'transpose'])
@@ -893,3 +894,4 @@ binary_fcnmm_p.def_jvp_rule2(_binary_fcnmm_jvp_weights, None, _binary_fcnmm_jvp_
 binary_fcnmm_p.def_transpose_rule(_binary_fcnmm_transpose_rule)
 binary_fcnmm_p.def_batching_rule(_binary_fcnmm_batching)
 binary_fcnmm_p.def_call(binary_fcnmm_p_call)
+binary_fcnmm_p.def_tags('fcn', 'binary')

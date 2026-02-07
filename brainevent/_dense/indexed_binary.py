@@ -244,6 +244,7 @@ indexed_bv_dm_p.def_jvp_rule2(_binary_vec_dot_dense_mat_jvp_spikes, None, None, 
 indexed_bv_dm_p.def_transpose_rule(_binary_vec_dot_dense_mat_transpose)
 indexed_bv_dm_p.def_batching_rule(_binary_vec_dot_dense_mat_batching)
 indexed_bv_dm_p.def_call(indexed_bvdm_p_call)
+indexed_bv_dm_p.def_tags('dense', 'indexed_binary')
 
 
 @namescope
@@ -502,6 +503,7 @@ indexed_bm_dm_p.def_jvp_rule2(_binary_mat_dot_dense_mat_jvp_spikes, None, None, 
 indexed_bm_dm_p.def_transpose_rule(_binary_mat_dot_dense_mat_transpose)
 indexed_bm_dm_p.def_batching_rule(_binary_mat_dot_dense_mat_batching)
 indexed_bm_dm_p.def_call(indexed_bmdm_p_call)
+indexed_bm_dm_p.def_tags('dense', 'indexed_binary')
 
 
 @namescope

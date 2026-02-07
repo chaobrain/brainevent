@@ -492,6 +492,20 @@ coomv_p.def_jvp_rule2(_coomv_jvp_weights, None, None, _coomv_jvp_vector)
 coomv_p.def_transpose_rule(_coomv_transpose_rule)
 coomv_p.def_batching_rule(_coomv_batching)
 coomv_p.def_call(coomv_p_call)
+coomv_p.def_tags('coo', 'float')
+
+
+def _coomv_benchmark_data(*, platform, n_pre, n_post, prob, dtype):
+    import numpy as _np
+    nnz = max(1, int(n_pre * n_post * prob))
+    row = _np.random.randint(0, n_pre, nnz, dtype=_np.int32)
+    col = _np.random.randint(0, n_post, nnz, dtype=_np.int32)
+    weights = jnp.asarray(_np.random.randn(nnz), dtype=dtype)
+    vector = jnp.asarray(_np.random.randn(n_post), dtype=dtype)
+    return (weights, jnp.asarray(row), jnp.asarray(col), vector), {'shape': (n_pre, n_post), 'transpose': False}
+
+
+coomv_p.def_benchmark_data(_coomv_benchmark_data)
 
 
 # =============================================================================
@@ -948,3 +962,17 @@ coomm_p.def_jvp_rule2(_coomm_jvp_left, None, None, _coomm_jvp_right)
 coomm_p.def_transpose_rule(_coomm_transpose_rule)
 coomm_p.def_batching_rule(_coomm_batching)
 coomm_p.def_call(coomm_p_call)
+coomm_p.def_tags('coo', 'float')
+
+
+def _coomm_benchmark_data(*, platform, n_pre, n_post, prob, dtype):
+    import numpy as _np
+    nnz = max(1, int(n_pre * n_post * prob))
+    row = _np.random.randint(0, n_pre, nnz, dtype=_np.int32)
+    col = _np.random.randint(0, n_post, nnz, dtype=_np.int32)
+    weights = jnp.asarray(_np.random.randn(nnz), dtype=dtype)
+    B = jnp.asarray(_np.random.randn(n_post, 10), dtype=dtype)
+    return (weights, jnp.asarray(row), jnp.asarray(col), B), {'shape': (n_pre, n_post), 'transpose': False}
+
+
+coomm_p.def_benchmark_data(_coomm_benchmark_data)

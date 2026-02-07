@@ -611,6 +611,7 @@ jits_p.def_jvp_rule2(_jitc_homo_matrix_jvp_weight, None, None)
 jits_p.def_transpose_rule(_jitc_homo_matrix_transpose)
 jits_p.def_batching_rule(_jitc_homo_matrix_batching)
 jits_p.def_call(jits_p_call)
+jits_p.def_tags('jit_scalar', 'float')
 
 
 def _jitsmv_numba_kernel(
@@ -1147,6 +1148,7 @@ jitsmv_p.def_jvp_rule2(_jitsmv_jvp_weights, None, _jitsmv_jvp_v, None, None)
 jitsmv_p.def_transpose_rule(_jitsmv_transpose_rules)
 jitsmv_p.def_batching_rule(_jitsmv_batching)
 jitsmv_p.def_call(jitsmv_p_call)
+jitsmv_p.def_tags('jit_scalar', 'float')
 
 
 def _jitsmm_numba_kernel(
@@ -1666,3 +1668,4 @@ jitsmm_p.def_jvp_rule2(_jitsmm_jvp_w, None, _jitsmm_jvp_B, None, None)
 jitsmm_p.def_transpose_rule(_jitsmm_transpose_rules)
 jitsmm_p.def_batching_rule(_jitsmm_batching)
 jitsmm_p.def_call(jitsmm_p_call)
+jitsmm_p.def_tags('jit_scalar', 'float')

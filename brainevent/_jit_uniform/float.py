@@ -527,6 +527,7 @@ jitu_p.def_jvp_rule2(_jitu_jvp_wlow, _jitu_jvp_whigh, None, None)
 jitu_p.def_transpose_rule(_jitu_transpose)
 jitu_p.def_batching_rule(_jitu_batching)
 jitu_p.def_call(jitu_p_call)
+jitu_p.def_tags('jit_uniform', 'float')
 
 
 # Kernel generators for JIT connection SPMV
@@ -974,6 +975,7 @@ jitumv_p.def_jvp_rule2(_jitumv_jvp_wlow, _jitumv_jvp_whigh, None, _jitumv_jvp_v,
 jitumv_p.def_transpose_rule(_jitumv_transpose_rules)
 jitumv_p.def_batching_rule(_jitumv_batching)
 jitumv_p.def_call(jitumv_p_call)
+jitumv_p.def_tags('jit_uniform', 'float')
 
 
 def _jitumm_numba_kernel_generator(
@@ -1528,3 +1530,4 @@ jitumm_p.def_jvp_rule2(_jitumm_jvp_wlow, _jitumm_jvp_whigh, None, _jitumm_jvp_B,
 jitumm_p.def_transpose_rule(_jitumm_transpose_rules)
 jitumm_p.def_batching_rule(_jitumm_batching)
 jitumm_p.def_call(jitumm_p_call)
+jitumm_p.def_tags('jit_uniform', 'float')

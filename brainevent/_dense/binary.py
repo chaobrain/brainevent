@@ -264,6 +264,17 @@ dm_bv_p.def_jvp_rule2(_dmbv_jvp_weights, _dmbv_jvp_spikes)
 dm_bv_p.def_transpose_rule(_dmbv_transpose_rule)
 dm_bv_p.def_batching_rule(_dmbv_batching)
 dm_bv_p.def_call(dmbv_p_call)
+dm_bv_p.def_tags('dense', 'binary')
+
+
+def _dm_bv_benchmark_data(*, platform, n_pre, n_post, prob, dtype):
+    import numpy as _np
+    weights = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
+    spikes = jnp.asarray(_np.random.rand(n_post) > (1 - prob), dtype=jnp.bool_)
+    return (weights, spikes), {}
+
+
+dm_bv_p.def_benchmark_data(_dm_bv_benchmark_data)
 
 
 @namescope
@@ -484,6 +495,17 @@ bv_dm_p.def_jvp_rule2(_binary_vec_dot_dense_mat_jvp_spikes, _binary_vec_dot_dens
 bv_dm_p.def_transpose_rule(_binary_vec_dot_dense_mat_transpose_rule)
 bv_dm_p.def_batching_rule(_event_matrix_batching)
 bv_dm_p.def_call(bvdm_p_call)
+bv_dm_p.def_tags('dense', 'binary')
+
+
+def _bv_dm_benchmark_data(*, platform, n_pre, n_post, prob, dtype):
+    import numpy as _np
+    spikes = jnp.asarray(_np.random.rand(n_pre) > (1 - prob), dtype=jnp.bool_)
+    weights = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
+    return (spikes, weights), {}
+
+
+bv_dm_p.def_benchmark_data(_bv_dm_benchmark_data)
 
 
 @namescope
@@ -765,6 +787,17 @@ dm_bm_p.def_jvp_rule2(_dense_mat_dot_binary_mat_jvp_weights, _dense_mat_dot_bina
 dm_bm_p.def_transpose_rule(_dense_mat_dot_binary_mat_transpose_rule)
 dm_bm_p.def_batching_rule(_dense_mat_dot_binary_mat_batching)
 dm_bm_p.def_call(dmbm_p_call)
+dm_bm_p.def_tags('dense', 'binary')
+
+
+def _dm_bm_benchmark_data(*, platform, n_pre, n_post, prob, dtype):
+    import numpy as _np
+    weights = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
+    spikes = jnp.asarray(_np.random.rand(n_post, 10) > (1 - prob), dtype=jnp.bool_)
+    return (weights, spikes), {}
+
+
+dm_bm_p.def_benchmark_data(_dm_bm_benchmark_data)
 
 
 @namescope
@@ -1034,3 +1067,14 @@ bm_dm_p.def_jvp_rule2(_binary_mat_dot_dense_mat_jvp_spikes, _binary_mat_dot_dens
 bm_dm_p.def_transpose_rule(_binary_mat_dot_dense_mat_transpose_rule)
 bm_dm_p.def_batching_rule(_binary_mat_dot_dense_mat_batching)
 bm_dm_p.def_call(bmdm_p_call)
+bm_dm_p.def_tags('dense', 'binary')
+
+
+def _bm_dm_benchmark_data(*, platform, n_pre, n_post, prob, dtype):
+    import numpy as _np
+    spikes = jnp.asarray(_np.random.rand(10, n_post) > (1 - prob), dtype=jnp.bool_)
+    weights = jnp.asarray(_np.random.randn(n_post, n_post), dtype=dtype)
+    return (spikes, weights), {}
+
+
+bm_dm_p.def_benchmark_data(_bm_dm_benchmark_data)

@@ -511,6 +511,21 @@ spfloat_csrmv_p.def_jvp_rule2(_sparse_float_csrmv_jvp_weights, None, None, _spar
 spfloat_csrmv_p.def_transpose_rule(_sparse_float_csrmv_transpose_rule)
 spfloat_csrmv_p.def_batching_rule(_sparse_float_csrmv_batching)
 spfloat_csrmv_p.def_call(sparse_float_csrmv_p_call)
+spfloat_csrmv_p.def_tags('csr', 'sparse_float')
+
+
+def _spfloat_csrmv_benchmark_data(*, platform, n_pre, n_post, prob, dtype):
+    import numpy as _np
+    n_conn = max(1, int(n_post * prob))
+    indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
+    indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
+    weights = jnp.ones(n_pre * n_conn, dtype=dtype)
+    vector_data = jnp.asarray(_np.random.randn(n_post), dtype=dtype)
+    vector_index = jnp.asarray(_np.sort(_np.random.choice(n_post, min(n_post // 5, n_post), replace=False)), dtype=jnp.int32)
+    return (weights, indices, jnp.asarray(indptr), vector_data, vector_index), {'shape': (n_pre, n_post), 'transpose': False}
+
+
+spfloat_csrmv_p.def_benchmark_data(_spfloat_csrmv_benchmark_data)
 
 
 def _sparse_float_csrmm_numba_kernel(
@@ -944,3 +959,4 @@ spfloat_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 spfloat_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 spfloat_csrmm_p.def_batching_rule(_sparse_float_csrmm_batching)
 spfloat_csrmm_p.def_call(sparse_float_csrmm_p_call)
+spfloat_csrmm_p.def_tags('csr', 'sparse_float')

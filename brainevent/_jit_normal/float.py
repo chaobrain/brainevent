@@ -624,6 +624,7 @@ jitn_p.def_pallas_kernel('tpu', _jitn_pallas_kernel_generator)
 jitn_p.def_jvp_rule2(_jitn_jvp_wlow, _jitn_jvp_whigh, None, None)
 jitn_p.def_transpose_rule(_jitn_transpose)
 jitn_p.def_batching_rule(_jitn_batching)
+jitn_p.def_tags('jit_normal', 'float')
 
 
 def _jitnmv_numba_kernel_generator(
@@ -1168,6 +1169,7 @@ jitnmv_p.def_pallas_kernel('tpu', _jitnmv_pallas_kernel_generator)
 jitnmv_p.def_jvp_rule2(_jitnmv_jvp_wloc, _jitnmv_jvp_wscale, None, _jitnmv_jvp_v, None)
 jitnmv_p.def_transpose_rule(_jitnmv_transpose_rules)
 jitnmv_p.def_batching_rule(_jitnmv_batching)
+jitnmv_p.def_tags('jit_normal', 'float')
 
 
 def _jitnmm_numba_kernel_generator(
@@ -1695,3 +1697,4 @@ jitnmm_p.def_pallas_kernel('tpu', _jitnmm_pallas_kernel_generator)
 jitnmm_p.def_jvp_rule2(_jitnmm_jvp_wloc, _jitnmm_jvp_wscale, None, _jitnmm_jvp_B, None)
 jitnmm_p.def_transpose_rule(_jitnmm_transpose_rules)
 jitnmm_p.def_batching_rule(_jitnmm_batching)
+jitnmm_p.def_tags('jit_normal', 'float')

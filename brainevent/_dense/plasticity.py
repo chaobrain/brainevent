@@ -180,6 +180,7 @@ plast_dense_on_binary_pre_p.def_jvp_rule2(_dense_on_pre_jvp_weight, None, None)
 plast_dense_on_binary_pre_p.def_transpose_rule(_dense_on_pre_transpose_rule)
 plast_dense_on_binary_pre_p.def_batching_rule(_dense_on_pre_batching)
 plast_dense_on_binary_pre_p.def_call(_dense_on_pre_prim_call)
+plast_dense_on_binary_pre_p.def_tags('dense', 'plasticity')
 
 
 @namescope
@@ -327,3 +328,4 @@ plast_dense_on_binary_post_p.def_jvp_rule2(_dense_on_post_jvp_weight, None, None
 plast_dense_on_binary_post_p.def_transpose_rule(_dense_on_post_transpose_rule)
 plast_dense_on_binary_post_p.def_batching_rule(_dense_on_post_batching)
 plast_dense_on_binary_post_p.def_call(_dense_one_post_prim_call)
+plast_dense_on_binary_post_p.def_tags('dense', 'plasticity')

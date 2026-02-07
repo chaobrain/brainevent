@@ -654,6 +654,7 @@ binary_jitsmv_p.def_jvp_rule2(_jitsmv_jvp_weights, None, _jitsmv_jvp_v, None, No
 binary_jitsmv_p.def_transpose_rule(_jitsmv_transpose_rules)
 binary_jitsmv_p.def_batching_rule(_jitsmv_batching)
 binary_jitsmv_p.def_call(binary_jitsmv_p_call)
+binary_jitsmv_p.def_tags('jit_scalar', 'binary')
 
 
 def _jitsmm_numba_kernel(
@@ -1187,3 +1188,4 @@ binary_jitsmm_p.def_jvp_rule2(_jitsmm_jvp_w, None, _jitsmm_jvp_B, None, None)
 binary_jitsmm_p.def_transpose_rule(_jitsmm_transpose_rules)
 binary_jitsmm_p.def_batching_rule(_jitsmm_batching)
 binary_jitsmm_p.def_call(binary_jitsmm_p_call)
+binary_jitsmm_p.def_tags('jit_scalar', 'binary')

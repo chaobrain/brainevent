@@ -749,6 +749,20 @@ binary_csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
 binary_csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
 binary_csrmv_p.def_batching_rule(_csrmv_batching)
 binary_csrmv_p.def_call(binary_csrmv_p_call)
+binary_csrmv_p.def_tags('csr', 'binary')
+
+
+def _binary_csrmv_benchmark_data(*, platform, n_pre, n_post, prob, dtype):
+    import numpy as _np
+    n_conn = max(1, int(n_post * prob))
+    indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
+    indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
+    weights = jnp.ones(1, dtype=dtype)
+    vector = jnp.asarray(_np.random.rand(n_post) > 0.5, dtype=jnp.bool_)
+    return (weights, indices, jnp.asarray(indptr), vector), {'shape': (n_pre, n_post), 'transpose': False}
+
+
+binary_csrmv_p.def_benchmark_data(_binary_csrmv_benchmark_data)
 
 
 def _csrmm_numba_kernel(
@@ -1468,3 +1482,17 @@ binary_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 binary_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 binary_csrmm_p.def_batching_rule(_csrmm_batching)
 binary_csrmm_p.def_call(binary_csrmm_p_call)
+binary_csrmm_p.def_tags('csr', 'binary')
+
+
+def _binary_csrmm_benchmark_data(*, platform, n_pre, n_post, prob, dtype):
+    import numpy as _np
+    n_conn = max(1, int(n_post * prob))
+    indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
+    indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
+    weights = jnp.ones(1, dtype=dtype)
+    B = jnp.asarray(_np.random.rand(n_post, 10) > 0.5, dtype=jnp.bool_)
+    return (weights, indices, jnp.asarray(indptr), B), {'shape': (n_pre, n_post), 'transpose': False}
+
+
+binary_csrmm_p.def_benchmark_data(_binary_csrmm_benchmark_data)

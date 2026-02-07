@@ -25,7 +25,7 @@ version = { attr = "brainevent.__version__" }
 
 [project]
 name = "brainevent"
-description = "Event-driven Computation in JAX for Brain Dynamics."
+description = "Enabling Event-driven Computation in CPU/GPU/TPU."
 readme = 'README.md'
 requires-python = '>=3.10'
 authors = [{ name = 'BrainEvent Developers', email = 'chao.brain@qq.com' }]
@@ -66,11 +66,12 @@ repository = 'https://github.com/chaobrain/brainevent'
 "Source Code" = 'https://github.com/chaobrain/brainevent'
 
 
+[project.scripts]
+brainevent = "brainevent._cli:main"
+
+
 [project.optional-dependencies]
-cpu = [
-    'jax[cpu]>=0.7.1',
-    'numba',
-]
+cpu = ['jax[cpu]>=0.7.1', 'numba']
 cuda12 = ['jax[cuda12]>=0.7.1']
 cuda13 = ['jax[cuda13]>=0.7.1']
 tpu = ['jax[tpu]>=0.7.1']

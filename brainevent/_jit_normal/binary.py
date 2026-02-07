@@ -805,6 +805,7 @@ binary_jitnmv_p.def_pallas_kernel('tpu', _jitc_mv_normal_pallas_kernel_generator
 binary_jitnmv_p.def_jvp_rule2(_jitc_mv_normal_jvp_wloc, _jitc_mv_normal_jvp_wscale, None, _jitc_mv_normal_jvp_v, None)
 binary_jitnmv_p.def_transpose_rule(_jitc_mv_normal_transpose_rules)
 binary_jitnmv_p.def_batching_rule(_jitc_mv_normal_batching)
+binary_jitnmv_p.def_tags('jit_normal', 'binary')
 
 
 def _jitc_mm_normal_numba_kernel_generator(
@@ -1410,3 +1411,4 @@ binary_jitnmm_p.def_pallas_kernel('tpu', _jitc_mm_normal_pallas_kernel_generator
 binary_jitnmm_p.def_jvp_rule2(_jitc_mm_normal_jvp_wloc, _jitc_mm_normal_jvp_wscale, None, _jitc_mm_normal_jvp_B, None)
 binary_jitnmm_p.def_transpose_rule(_jitc_mm_normal_transpose_rules)
 binary_jitnmm_p.def_batching_rule(_jitc_mm_normal_batching)
+binary_jitnmm_p.def_tags('jit_normal', 'binary')

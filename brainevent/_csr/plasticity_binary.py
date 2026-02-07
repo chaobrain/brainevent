@@ -262,6 +262,7 @@ plast_csr_on_binary_pre_p.def_numba_kernel(_csr_on_pre_numba_kernel_generator)
 plast_csr_on_binary_pre_p.def_warp_kernel(_csr_on_pre_warp_kernel_generator)
 plast_csr_on_binary_pre_p.def_pallas_kernel('gpu', _csr_on_pre_pallas_kernel_generator)
 plast_csr_on_binary_pre_p.def_pallas_kernel('tpu', _csr_on_pre_pallas_kernel_generator)
+plast_csr_on_binary_pre_p.def_tags('csr', 'plasticity')
 
 
 @namescope(static_argnames=['shape'])
@@ -523,3 +524,4 @@ plast_csr2csc_on_binary_post_p.def_numba_kernel(_csr2csc_on_post_numba_kernel_ge
 plast_csr2csc_on_binary_post_p.def_warp_kernel(_csr2csc_on_post_warp_kernel_generator)
 plast_csr2csc_on_binary_post_p.def_pallas_kernel('gpu', _csr2csc_on_post_pallas_kernel_generator)
 plast_csr2csc_on_binary_post_p.def_pallas_kernel('tpu', _csr2csc_on_post_pallas_kernel_generator)
+plast_csr2csc_on_binary_post_p.def_tags('csr', 'plasticity')

@@ -207,6 +207,7 @@ binary_1d_array_index_p.def_jvp_rule2(_binary_1d_array_index_jvp_spikes)
 binary_1d_array_index_p.def_transpose_rule(_binary_1d_array_index_transpose_rule)
 binary_1d_array_index_p.def_batching_rule(_binary_1d_array_index_batching)
 binary_1d_array_index_p.def_call(binary_1d_array_index_p_call)
+binary_1d_array_index_p.def_tags('event', 'binary')
 
 
 def binary_2d_array_index_p_call(spikes):

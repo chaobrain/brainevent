@@ -526,6 +526,20 @@ csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
 csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
 csrmv_p.def_batching_rule(_csrmv_batching)
 csrmv_p.def_call(csrmv_p_call)
+csrmv_p.def_tags('csr', 'float')
+
+
+def _csrmv_benchmark_data(*, platform, n_pre, n_post, prob, dtype):
+    import numpy as _np
+    n_conn = max(1, int(n_post * prob))
+    indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
+    indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
+    weights = jnp.ones(n_pre * n_conn, dtype=dtype)
+    vector = jnp.asarray(_np.random.randn(n_post), dtype=dtype)
+    return (weights, indices, jnp.asarray(indptr), vector), {'shape': (n_pre, n_post), 'transpose': False}
+
+
+csrmv_p.def_benchmark_data(_csrmv_benchmark_data)
 
 
 @namescope(static_argnames=("shape", "transpose"))
@@ -1074,6 +1088,20 @@ csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 csrmm_p.def_batching_rule(_csrmm_batching)
 csrmm_p.def_call(csrmm_p_call)
+csrmm_p.def_tags('csr', 'float')
+
+
+def _csrmm_benchmark_data(*, platform, n_pre, n_post, prob, dtype):
+    import numpy as _np
+    n_conn = max(1, int(n_post * prob))
+    indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
+    indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
+    weights = jnp.ones(n_pre * n_conn, dtype=dtype)
+    B = jnp.asarray(_np.random.randn(n_post, 10), dtype=dtype)
+    return (weights, indices, jnp.asarray(indptr), B), {'shape': (n_pre, n_post), 'transpose': False}
+
+
+csrmm_p.def_benchmark_data(_csrmm_benchmark_data)
 
 
 @namescope(static_argnames=['shape', 'transpose'])
@@ -1254,3 +1282,4 @@ csrmv_yw2y_p.def_numba_kernel(_csrmv_yw2y_numba_kernels)
 csrmv_yw2y_p.def_pallas_kernel('gpu', _csrmv_yw2y_pallas_kernels)
 csrmv_yw2y_p.def_jvp_rule2(_csrmv_yw2y_jvp_y, _csrmv_yw2y_jvp_w, None, None)
 csrmv_yw2y_p.def_call(csrmv_yw2y_p_call)
+csrmv_yw2y_p.def_tags('csr', 'float')

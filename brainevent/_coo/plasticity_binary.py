@@ -247,6 +247,7 @@ plast_coo_on_binary_pre_p.def_warp_kernel(_coo_on_pre_warp_kernel)
 plast_coo_on_binary_pre_p.def_pallas_kernel('gpu', _coo_on_pre_pallas_gpu_kernel)
 plast_coo_on_binary_pre_p.def_pallas_kernel('tpu', _coo_on_pre_pallas_gpu_kernel)
 plast_coo_on_binary_pre_p.def_call(_coo_on_pre_prim_call)
+plast_coo_on_binary_pre_p.def_tags('coo', 'plasticity')
 
 
 # =============================================================================
@@ -469,3 +470,4 @@ plast_coo_on_binary_post_p.def_warp_kernel(_coo_on_post_warp_kernel)
 plast_coo_on_binary_post_p.def_pallas_kernel('gpu', _coo_on_post_pallas_gpu_kernel)
 plast_coo_on_binary_post_p.def_pallas_kernel('tpu', _coo_on_post_pallas_gpu_kernel)
 plast_coo_on_binary_post_p.def_call(_coo_on_post_prim_call)
+plast_coo_on_binary_post_p.def_tags('coo', 'plasticity')

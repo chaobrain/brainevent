@@ -245,6 +245,7 @@ dm_sfv_p.def_jvp_rule2(_dmsfv_jvp_weights, _dmsfv_jvp_spikes)
 dm_sfv_p.def_transpose_rule(_dmsfv_transpose_rule)
 dm_sfv_p.def_batching_rule(_dmsfv_batching)
 dm_sfv_p.def_call(dmsfv_p_call)
+dm_sfv_p.def_tags('dense', 'sparse_float')
 
 
 def sfv_dm(spikes, weights):
@@ -442,6 +443,7 @@ sfv_dm_p.def_jvp_rule2(_sfvdm_jvp_spikes,
 sfv_dm_p.def_transpose_rule(_sfvdm_transpose_rule)
 sfv_dm_p.def_batching_rule(_event_matrix_batching)
 sfv_dm_p.def_call(sfvdm_p_call)
+sfv_dm_p.def_tags('dense', 'sparse_float')
 
 
 def dm_sfm(weights, spikes):
@@ -698,6 +700,7 @@ dm_sfm_p.def_jvp_rule2(_dmsfm_jvp_weights,
 dm_sfm_p.def_transpose_rule(_dmsfm_transpose_rule)
 dm_sfm_p.def_batching_rule(_dmsfm_batching)
 dm_sfm_p.def_call(dmsfm_p_call)
+dm_sfm_p.def_tags('dense', 'sparse_float')
 
 
 def sfm_dm(spikes, weights):
@@ -945,3 +948,4 @@ sfm_dm_p.def_jvp_rule2(_sfm_dm_jvp_spikes,
 sfm_dm_p.def_transpose_rule(_sfm_dm_transpose_rule)
 sfm_dm_p.def_batching_rule(_sfm_dm_batching)
 sfm_dm_p.def_call(sfm_dm_p_call)
+sfm_dm_p.def_tags('dense', 'sparse_float')
