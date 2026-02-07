@@ -24,7 +24,7 @@ import jax
 import numpy as np
 
 from brainevent._compatible_import import JAXSparse
-from brainevent._event import EventArray
+from brainevent._event import EventArray, SparseFloat
 from brainevent._misc import _coo_todense, COOInfo
 from brainevent._typing import MatrixShape, Data, Index, Row, Col
 from .binary import binary_coomv, binary_coomm
@@ -64,9 +64,9 @@ class COO(u.sparse.SparseMatrix):
         Additional information about the matrix structure (property).
     _bufs : tuple
         Tuple of (data, row, col) arrays (property).
-    _rows_sorted : bool
+    rows_sorted : bool
         Whether row indices are sorted.
-    _cols_sorted : bool
+    cols_sorted : bool
         Whether column indices are sorted within each row.
 
     Note
@@ -80,8 +80,8 @@ class COO(u.sparse.SparseMatrix):
     row: Index
     col: Index
     shape: MatrixShape
-    _rows_sorted: bool
-    _cols_sorted: bool
+    rows_sorted: bool
+    cols_sorted: bool
 
     def __init__(
         self,
@@ -106,13 +106,13 @@ class COO(u.sparse.SparseMatrix):
             Whether column indices are sorted within each row. Default is False.
         """
         self.data, self.row, self.col = map(u.math.asarray, args)
-        self._rows_sorted = rows_sorted
-        self._cols_sorted = cols_sorted
+        self.rows_sorted = rows_sorted
+        self.cols_sorted = cols_sorted
         super().__init__(args, shape=shape)
 
     @property
     def info(self):
-        return COOInfo(shape=self.shape, rows_sorted=self._rows_sorted, cols_sorted=self._cols_sorted)
+        return COOInfo(shape=self.shape, rows_sorted=self.rows_sorted, cols_sorted=self.cols_sorted)
 
     @property
     def dtype(self):
@@ -164,17 +164,13 @@ class COO(u.sparse.SparseMatrix):
         """Return a copy of the COO matrix with sorted indices.
 
         The matrix is sorted by row indices and column indices per row.
-        If self._rows_sorted is True, this returns ``self`` without a copy.
+        If self.rows_sorted is True, this returns ``self`` without a copy.
         """
-        if self._rows_sorted:
+        if self.rows_sorted:
             return self
         data, unit = u.split_mantissa_unit(self.data)
         row, col, data = jax.lax.sort((self.row, self.col, data), num_keys=2)
-        return self.__class__(
-            (u.maybe_decimal(data * unit), row, col),
-            shape=self.shape,
-            rows_sorted=True
-        )
+        return self.__class__((u.maybe_decimal(data * unit), row, col), shape=self.shape, rows_sorted=True)
 
     def with_data(self, data: Data) -> 'COO':
         """
@@ -217,6 +213,19 @@ class COO(u.sparse.SparseMatrix):
         """
         return _coo_todense(self.data, self.row, self.col, spinfo=self.info)
 
+    def tocsr(self) -> 'CSR':
+        """
+        Convert the COO matrix to CSR (Compressed Sparse Row) format.
+
+        Returns
+        -------
+        CSR
+            A CSR matrix containing the same data as the original COO matrix.
+        """
+        from brainevent._csr import CSR
+        dense = self.todense()
+        return CSR.fromdense(dense, nse=self.nse)
+
     @property
     def T(self):
         """
@@ -254,8 +263,8 @@ class COO(u.sparse.SparseMatrix):
         return COO(
             (self.data, self.col, self.row),
             shape=self.shape[::-1],
-            rows_sorted=self._cols_sorted,
-            cols_sorted=self._rows_sorted
+            rows_sorted=self.cols_sorted,
+            cols_sorted=self.rows_sorted
         )
 
     def tree_flatten(self) -> Tuple[
@@ -304,13 +313,8 @@ class COO(u.sparse.SparseMatrix):
         """
         obj = object.__new__(cls)
         obj.data, = children
-        if aux_data.keys() != {'shape', 'rows_sorted', 'cols_sorted', 'row', 'col'}:
-            raise ValueError(f"COO.tree_unflatten: invalid {aux_data=}")
-        obj.shape = aux_data['shape']
-        obj._rows_sorted = aux_data['rows_sorted']
-        obj._cols_sorted = aux_data['cols_sorted']
-        obj.row = aux_data['row']
-        obj.col = aux_data['col']
+        for k, v in aux_data.items():
+            setattr(obj, k, v)
         return obj
 
     def _unitary_op(self, op):
@@ -330,8 +334,8 @@ class COO(u.sparse.SparseMatrix):
         return COO(
             (op(self.data), self.row, self.col),
             shape=self.shape,
-            rows_sorted=self._rows_sorted,
-            cols_sorted=self._cols_sorted
+            rows_sorted=self.rows_sorted,
+            cols_sorted=self.cols_sorted
         )
 
     def __abs__(self):
@@ -344,14 +348,11 @@ class COO(u.sparse.SparseMatrix):
         return self._unitary_op(operator.pos)
 
     def _binary_op(self, other, op):
-        if isinstance(other, COO):
-            if id(self.row) == id(other.row) and id(self.col) == id(other.col):
-                return COO(
-                    (op(self.data, other.data), self.row, self.col),
-                    shape=self.shape,
-                    rows_sorted=self._rows_sorted,
-                    cols_sorted=self._cols_sorted
-                )
+        if op in [operator.add, operator.sub]:
+            other = u.math.asarray(other)
+            dense = self.todense()
+            return op(dense, other)
+
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
@@ -360,29 +361,26 @@ class COO(u.sparse.SparseMatrix):
             return COO(
                 (op(self.data, other), self.row, self.col),
                 shape=self.shape,
-                rows_sorted=self._rows_sorted,
-                cols_sorted=self._cols_sorted
+                rows_sorted=self.rows_sorted,
+                cols_sorted=self.cols_sorted
             )
         elif other.ndim == 2 and other.shape == self.shape:
             other = other[self.row, self.col]
             return COO(
                 (op(self.data, other), self.row, self.col),
                 shape=self.shape,
-                rows_sorted=self._rows_sorted,
-                cols_sorted=self._cols_sorted
+                rows_sorted=self.rows_sorted,
+                cols_sorted=self.cols_sorted
             )
         else:
-            raise NotImplementedError(f"mul with object of shape {other.shape}")
+            raise NotImplementedError(f"{op.__name__} with object of shape {other.shape}")
 
     def _binary_rop(self, other, op):
-        if isinstance(other, COO):
-            if id(self.row) == id(other.row) and id(self.col) == id(other.col):
-                return COO(
-                    (op(other.data, self.data), self.row, self.col),
-                    shape=self.shape,
-                    rows_sorted=self._rows_sorted,
-                    cols_sorted=self._cols_sorted
-                )
+        if op in [operator.add, operator.sub]:
+            other = u.math.asarray(other)
+            dense = self.todense()
+            return op(other, dense)
+
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
@@ -391,19 +389,19 @@ class COO(u.sparse.SparseMatrix):
             return COO(
                 (op(other, self.data), self.row, self.col),
                 shape=self.shape,
-                rows_sorted=self._rows_sorted,
-                cols_sorted=self._cols_sorted
+                rows_sorted=self.rows_sorted,
+                cols_sorted=self.cols_sorted
             )
         elif other.ndim == 2 and other.shape == self.shape:
             other = other[self.row, self.col]
             return COO(
                 (op(other, self.data), self.row, self.col),
                 shape=self.shape,
-                rows_sorted=self._rows_sorted,
-                cols_sorted=self._cols_sorted
+                rows_sorted=self.rows_sorted,
+                cols_sorted=self.cols_sorted
             )
         else:
-            raise NotImplementedError(f"mul with object of shape {other.shape}")
+            raise NotImplementedError(f"{op.__name__} with object of shape {other.shape}")
 
     def __mul__(self, other: Data) -> 'COO':
         """
@@ -673,6 +671,10 @@ class COO(u.sparse.SparseMatrix):
             else:
                 # Raise an error if the shape of the other object is unsupported
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
+        elif isinstance(other, SparseFloat):
+            other = other.data
+            data, other = u.math.promote_dtypes(self.data, other)
+            raise NotImplementedError(f"matmul with object of shape {other.shape}")
         else:
             # Convert the other object to an appropriate array type
             other = u.math.asarray(other)
@@ -732,6 +734,10 @@ class COO(u.sparse.SparseMatrix):
             else:
                 # Raise an error if the shape of the other object is unsupported
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
+        elif isinstance(other, SparseFloat):
+            other = other.data
+            data, other = u.math.promote_dtypes(self.data, other)
+            raise NotImplementedError(f"matmul with object of shape {other.shape}")
         else:
             # Convert the other object to an appropriate array type
             other = u.math.asarray(other)
