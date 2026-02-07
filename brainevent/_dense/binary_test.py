@@ -22,10 +22,10 @@ import pytest
 
 import brainevent
 from brainevent._dense.binary import (
-    dm_bm,
-    bm_dm,
-    dm_bv,
-    bv_dm,
+    dbmm,
+    bdmm,
+    dbmv,
+    bdvm,
 )
 
 
@@ -51,7 +51,7 @@ class TestMatrixEvent:
     def test_dense_mat_dot_binary_mat(self, m, k, n):
         matrix = brainstate.random.randn(m, k)
         events = u.math.asarray(brainstate.random.randn(k, n) < 0.5, dtype=float)
-        out1 = dm_bm(matrix, events)
+        out1 = dbmm(matrix, events)
         out2 = matrix @ events
         assert u.math.allclose(out1, out2, atol=1e-3, rtol=1e-3)
 
@@ -78,7 +78,7 @@ class TestEventMatrix:
     def test_dense_mat_dot_binary_mat(self, m, k, n):
         events = u.math.asarray(brainstate.random.randn(m, k) < 0.5, dtype=float)
         matrix = brainstate.random.randn(k, n)
-        out1 = bm_dm(events, matrix)
+        out1 = bdmm(events, matrix)
         out2 = events @ matrix
         assert u.math.allclose(out1, out2, atol=1e-3, rtol=1e-3)
 
@@ -103,7 +103,7 @@ class TestMatrixEvent_mv:
     def test_matrix_event_mv(self, m, k):
         matrix = brainstate.random.randn(m, k)
         events = u.math.asarray(brainstate.random.randn(k) < 0.5, dtype=float)
-        out1 = dm_bv(matrix, events)
+        out1 = dbmv(matrix, events)
         out2 = matrix @ events
         assert u.math.allclose(out1, out2, atol=1e-3, rtol=1e-3)
 
@@ -128,7 +128,7 @@ class TestEventMatrix_mv:
     def test_matrix_event_mv(self, m, k):
         events = u.math.asarray(brainstate.random.randn(m) < 0.5, dtype=float)
         matrix = brainstate.random.randn(m, k)
-        out1 = bv_dm(events, matrix)
+        out1 = bdvm(events, matrix)
         out2 = events @ matrix
         assert u.math.allclose(out1, out2, atol=1e-3, rtol=1e-3)
 
@@ -144,7 +144,7 @@ class TestForwardPass:
         spikes = brainstate.random.randn(k) < 0.3
         if dtype == float:
             spikes = u.math.asarray(spikes, dtype=float)
-        result = dm_bv(weights, spikes)
+        result = dbmv(weights, spikes)
         expected = weights @ u.math.asarray(spikes, dtype=float)
         assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
 
@@ -156,7 +156,7 @@ class TestForwardPass:
         if dtype == float:
             spikes = u.math.asarray(spikes, dtype=float)
         weights = brainstate.random.randn(k, n)
-        result = bv_dm(spikes, weights)
+        result = bdvm(spikes, weights)
         expected = u.math.asarray(spikes, dtype=float) @ weights
         assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
 
@@ -169,7 +169,7 @@ class TestForwardPass:
         spikes = brainstate.random.randn(k, n) < 0.3
         if dtype == float:
             spikes = u.math.asarray(spikes, dtype=float)
-        result = dm_bm(weights, spikes)
+        result = dbmm(weights, spikes)
         expected = weights @ u.math.asarray(spikes, dtype=float)
         assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
 
@@ -182,7 +182,7 @@ class TestForwardPass:
         if dtype == float:
             spikes = u.math.asarray(spikes, dtype=float)
         weights = brainstate.random.randn(k, n)
-        result = bm_dm(spikes, weights)
+        result = bdmm(spikes, weights)
         expected = u.math.asarray(spikes, dtype=float) @ weights
         assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
 
@@ -198,7 +198,7 @@ class TestGradient:
         spikes = u.math.asarray(brainstate.random.randn(k) < 0.3, dtype=float)
 
         def f(w):
-            return dm_bv(w, spikes).sum()
+            return dbmv(w, spikes).sum()
 
         grad = jax.grad(f)(weights)
         assert grad.shape == weights.shape
@@ -211,7 +211,7 @@ class TestGradient:
         weights = brainstate.random.randn(k, n)
 
         def f(w):
-            return bv_dm(spikes, w).sum()
+            return bdvm(spikes, w).sum()
 
         grad = jax.grad(f)(weights)
         assert grad.shape == weights.shape
@@ -225,7 +225,7 @@ class TestGradient:
         spikes = u.math.asarray(brainstate.random.randn(k, n) < 0.3, dtype=float)
 
         def f(w):
-            return dm_bm(w, spikes).sum()
+            return dbmm(w, spikes).sum()
 
         grad = jax.grad(f)(weights)
         assert grad.shape == weights.shape
@@ -239,7 +239,7 @@ class TestGradient:
         weights = brainstate.random.randn(k, n)
 
         def f(w):
-            return bm_dm(spikes, w).sum()
+            return bdmm(spikes, w).sum()
 
         grad = jax.grad(f)(weights)
         assert grad.shape == weights.shape
@@ -257,7 +257,7 @@ class TestBatching:
         batched_spikes = u.math.asarray(
             brainstate.random.randn(batch_size, k) < 0.3, dtype=float
         )
-        batched_fn = jax.vmap(dm_bv, in_axes=(None, 0))
+        batched_fn = jax.vmap(dbmv, in_axes=(None, 0))
         result = batched_fn(weights, batched_spikes)
         assert result.shape == (batch_size, m)
 
@@ -270,7 +270,7 @@ class TestBatching:
             brainstate.random.randn(batch_size, k) < 0.3, dtype=float
         )
         weights = brainstate.random.randn(k, n)
-        batched_fn = jax.vmap(bv_dm, in_axes=(0, None))
+        batched_fn = jax.vmap(bdvm, in_axes=(0, None))
         result = batched_fn(batched_spikes, weights)
         assert result.shape == (batch_size, n)
 
@@ -284,7 +284,7 @@ class TestBatching:
         batched_spikes = u.math.asarray(
             brainstate.random.randn(batch_size, k, n) < 0.3, dtype=float
         )
-        batched_fn = jax.vmap(dm_bm, in_axes=(None, 0))
+        batched_fn = jax.vmap(dbmm, in_axes=(None, 0))
         result = batched_fn(weights, batched_spikes)
         assert result.shape == (batch_size, m, n)
 
@@ -298,6 +298,6 @@ class TestBatching:
             brainstate.random.randn(batch_size, m, k) < 0.3, dtype=float
         )
         weights = brainstate.random.randn(k, n)
-        batched_fn = jax.vmap(bm_dm, in_axes=(0, None))
+        batched_fn = jax.vmap(bdmm, in_axes=(0, None))
         result = batched_fn(batched_spikes, weights)
         assert result.shape == (batch_size, m, n)
