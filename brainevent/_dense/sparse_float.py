@@ -26,22 +26,22 @@ from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, g
 from brainevent._op.benchmark import BenchmarkConfig
 
 __all__ = [
-    'dm_sfv',
-    'dm_sfv_p',
+    'dsfmv',
+    'dsfmv_p',
 
-    'sfv_dm',
-    'sfv_dm_p',
+    'sfdvm',
+    'sfdvm_p',
 
-    'dm_sfm',
-    'dm_sfm_p',
+    'dsfmm',
+    'dsfmm_p',
 
-    'sfm_dm',
-    'sfm_dm_p',
+    'sfdmm',
+    'sfdmm_p',
 ]
 
 
 @namescope()
-def dm_sfv(weights, spikes):
+def dsfmv(weights, spikes):
     """
     Performs event-driven matrix-vector multiplication: `weights @ spikes`.
 
@@ -80,18 +80,18 @@ def dm_sfv(weights, spikes):
 
     The function ensures inputs are JAX arrays and handles unit consistency
     using `brainunit`. The computation is delegated to a JAX primitive
-    `dm_sfv_p` for potential hardware acceleration.
+    `dsfmv_p` for potential hardware acceleration.
     """
     with jax.ensure_compile_time_eval():
         weights = u.math.asarray(weights)
         spikes = u.math.asarray(spikes)
     weight_val, wunit = u.split_mantissa_unit(weights)
     spk_val, spkunit = u.split_mantissa_unit(spikes)
-    r = dmsfv_p_call(weight_val, spk_val)
+    r = dsfmv_p_call(weight_val, spk_val)
     return u.maybe_decimal(r[0] * wunit * spkunit)
 
 
-def _dmsfv_numba_kernel(**kwargs):
+def _dsfmv_numba_kernel(**kwargs):
     import numba
 
     @numba.njit(fastmath=True)
@@ -108,7 +108,7 @@ def _dmsfv_numba_kernel(**kwargs):
     return run
 
 
-def _dmsfv_warp_kernel(
+def _dsfmv_warp_kernel(
     weight_info: jax.ShapeDtypeStruct,
     spk_info: jax.ShapeDtypeStruct,
     **kwargs
@@ -144,7 +144,7 @@ def _dmsfv_warp_kernel(
     return run
 
 
-def _dmsfv_pallas_kernel(
+def _dsfmv_pallas_kernel(
     weight_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
@@ -192,15 +192,15 @@ def _dmsfv_pallas_kernel(
     return run
 
 
-def _dmsfv_jvp_weights(w_dot, weights, spikes, **kwargs):
-    return dmsfv_p_call(w_dot, spikes)
+def _dsfmv_jvp_weights(w_dot, weights, spikes, **kwargs):
+    return dsfmv_p_call(w_dot, spikes)
 
 
-def _dmsfv_jvp_spikes(spk_dot, weights, spikes, **kwargs):
+def _dsfmv_jvp_spikes(spk_dot, weights, spikes, **kwargs):
     return [weights @ spk_dot]
 
 
-def _dmsfv_transpose_rule(ct, weights, spikes, **kwargs):
+def _dsfmv_transpose_rule(ct, weights, spikes, **kwargs):
     ct = ct[0]
     if ad.is_undefined_primal(spikes):
         ct_events = jnp.matmul(ct, weights)
@@ -210,7 +210,7 @@ def _dmsfv_transpose_rule(ct, weights, spikes, **kwargs):
         return (ad.Zero(weights) if type(ct[0]) is ad.Zero else ct_weights), spikes
 
 
-def _dmsfv_batching(args, axes, **kwargs):
+def _dsfmv_batching(args, axes, **kwargs):
     if axes == (None, 0):
         weights, spikes = args
         r = spikes @ weights.T
@@ -220,15 +220,23 @@ def _dmsfv_batching(args, axes, **kwargs):
         r = weights @ spikes
         return [r], [1]
     else:
-        return general_batching_rule(dm_sfv_p, args, axes, **kwargs)
+        return general_batching_rule(dsfmv_p, args, axes, **kwargs)
 
 
-def dmsfv_p_call(weights, spikes):
+def _dsfmv_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    weights = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
+    spikes = jnp.asarray(_np.random.randn(n_post), dtype=dtype)
+    return [BenchmarkConfig("default", (weights, spikes))]
+
+
+def dsfmv_p_call(weights, spikes):
     assert spikes.shape[0] == weights.shape[1], (
         f"spikes shape {spikes.shape} and weights shape {weights.shape} are not compatible"
     )
     out = jax.ShapeDtypeStruct([weights.shape[0]], weights.dtype)
-    return dm_sfv_p(
+    return dsfmv_p(
         weights,
         spikes,
         outs=[out],
@@ -237,30 +245,20 @@ def dmsfv_p_call(weights, spikes):
     )
 
 
-dm_sfv_p = XLACustomKernel('dmsfv')
-dm_sfv_p.def_numba_kernel(_dmsfv_numba_kernel)
-dm_sfv_p.def_warp_kernel(_dmsfv_warp_kernel)
-dm_sfv_p.def_pallas_kernel('gpu', _dmsfv_pallas_kernel)
-dm_sfv_p.def_pallas_kernel('tpu', _dmsfv_pallas_kernel)
-dm_sfv_p.def_jvp_rule2(_dmsfv_jvp_weights, _dmsfv_jvp_spikes)
-dm_sfv_p.def_transpose_rule(_dmsfv_transpose_rule)
-dm_sfv_p.def_batching_rule(_dmsfv_batching)
-dm_sfv_p.def_call(dmsfv_p_call)
-dm_sfv_p.def_tags('dense', 'sparse_float')
+dsfmv_p = XLACustomKernel('dmsfv')
+dsfmv_p.def_numba_kernel(_dsfmv_numba_kernel)
+dsfmv_p.def_warp_kernel(_dsfmv_warp_kernel)
+dsfmv_p.def_pallas_kernel('gpu', _dsfmv_pallas_kernel)
+dsfmv_p.def_pallas_kernel('tpu', _dsfmv_pallas_kernel)
+dsfmv_p.def_jvp_rule2(_dsfmv_jvp_weights, _dsfmv_jvp_spikes)
+dsfmv_p.def_transpose_rule(_dsfmv_transpose_rule)
+dsfmv_p.def_batching_rule(_dsfmv_batching)
+dsfmv_p.def_call(dsfmv_p_call)
+dsfmv_p.def_tags('dense', 'sparse_float')
+dsfmv_p.def_benchmark_data(_dsfmv_benchmark_data)
 
 
-def _dm_sfv_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    weights = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
-    spikes = jnp.asarray(_np.random.randn(n_post), dtype=dtype)
-    return [BenchmarkConfig("default", (weights, spikes))]
-
-
-dm_sfv_p.def_benchmark_data(_dm_sfv_benchmark_data)
-
-
-def sfv_dm(spikes, weights):
+def sfdvm(spikes, weights):
     """Performs event-driven vector-matrix multiplication: `spikes @ weights`.
 
     This function computes the vector-matrix product of a spike vector and a
@@ -300,7 +298,7 @@ def sfv_dm(spikes, weights):
     return u.maybe_decimal(r[0] * wunit * spkunit)
 
 
-def _sfvdm_numba_kernel(**kwargs):
+def _sfdvm_numba_kernel(**kwargs):
     import numba
 
     @numba.njit(fastmath=True)
@@ -317,7 +315,7 @@ def _sfvdm_numba_kernel(**kwargs):
     return run
 
 
-def _sfvdm_warp_kernel(
+def _sfdvm_warp_kernel(
     weight_info: jax.ShapeDtypeStruct,
     spk_info: jax.ShapeDtypeStruct,
     **kwargs
@@ -353,7 +351,7 @@ def _sfvdm_warp_kernel(
     return run
 
 
-def _sfvdm_pallas_kernel(
+def _sfdvm_pallas_kernel(
     weight_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
@@ -401,15 +399,15 @@ def _sfvdm_pallas_kernel(
     return run
 
 
-def _sfvdm_jvp_weights(w_dot, spikes, weights, **kwargs):
+def _sfdvm_jvp_weights(w_dot, spikes, weights, **kwargs):
     return sfvdm_p_call(spikes, w_dot)
 
 
-def _sfvdm_jvp_spikes(spk_dot, spikes, weights, **kwargs):
+def _sfdvm_jvp_spikes(spk_dot, spikes, weights, **kwargs):
     return [spk_dot @ weights]
 
 
-def _sfvdm_transpose_rule(ct, spikes, weights, **kwargs):
+def _sfdvm_transpose_rule(ct, spikes, weights, **kwargs):
     if ad.is_undefined_primal(spikes):
         ct_events = jnp.matmul(weights, ct[0])
         return (ad.Zero(spikes) if type(ct[0]) is ad.Zero else ct_events), weights
@@ -421,13 +419,21 @@ def _sfvdm_transpose_rule(ct, spikes, weights, **kwargs):
 
 def _event_matrix_batching(args, axes, **kwargs):
     if axes == (0, None):
-        r = sfm_dm(args[0], args[1])
+        r = sfdmm(args[0], args[1])
         return [r], [0]
     if axes == (1, None):
-        r = sfm_dm(args[0].T, args[1])
+        r = sfdmm(args[0].T, args[1])
         return [r], [0]
     else:
-        return general_batching_rule(sfv_dm_p, args, axes, **kwargs)
+        return general_batching_rule(sfdvm_p, args, axes, **kwargs)
+
+
+def _sfdvm_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    spikes = jnp.asarray(_np.random.randn(n_pre), dtype=dtype)
+    weights = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
+    return [BenchmarkConfig("default", (spikes, weights))]
 
 
 def sfvdm_p_call(spikes, weights):
@@ -436,7 +442,7 @@ def sfvdm_p_call(spikes, weights):
         f"{spikes.shape[0]} (dim 0) != {weights.shape[0]} (dim 0)"
     )
     out = jax.ShapeDtypeStruct([weights.shape[1]], weights.dtype)
-    return sfv_dm_p(
+    return sfdvm_p(
         spikes,
         weights,
         outs=[out],
@@ -445,31 +451,20 @@ def sfvdm_p_call(spikes, weights):
     )
 
 
-sfv_dm_p = XLACustomKernel('sparse_float_vector_dot_dense_matrix')
-sfv_dm_p.def_numba_kernel(_sfvdm_numba_kernel)
-sfv_dm_p.def_warp_kernel(_sfvdm_warp_kernel)
-sfv_dm_p.def_pallas_kernel('gpu', _sfvdm_pallas_kernel)
-sfv_dm_p.def_pallas_kernel('tpu', _sfvdm_pallas_kernel)
-sfv_dm_p.def_jvp_rule2(_sfvdm_jvp_spikes,
-                       _sfvdm_jvp_weights)
-sfv_dm_p.def_transpose_rule(_sfvdm_transpose_rule)
-sfv_dm_p.def_batching_rule(_event_matrix_batching)
-sfv_dm_p.def_call(sfvdm_p_call)
-sfv_dm_p.def_tags('dense', 'sparse_float')
+sfdvm_p = XLACustomKernel('sparse_float_vector_dot_dense_matrix')
+sfdvm_p.def_numba_kernel(_sfdvm_numba_kernel)
+sfdvm_p.def_warp_kernel(_sfdvm_warp_kernel)
+sfdvm_p.def_pallas_kernel('gpu', _sfdvm_pallas_kernel)
+sfdvm_p.def_pallas_kernel('tpu', _sfdvm_pallas_kernel)
+sfdvm_p.def_jvp_rule2(_sfdvm_jvp_spikes, _sfdvm_jvp_weights)
+sfdvm_p.def_transpose_rule(_sfdvm_transpose_rule)
+sfdvm_p.def_batching_rule(_event_matrix_batching)
+sfdvm_p.def_call(sfvdm_p_call)
+sfdvm_p.def_tags('dense', 'sparse_float')
+sfdvm_p.def_benchmark_data(_sfdvm_benchmark_data)
 
 
-def _sfv_dm_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    spikes = jnp.asarray(_np.random.randn(n_pre), dtype=dtype)
-    weights = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
-    return [BenchmarkConfig("default", (spikes, weights))]
-
-
-sfv_dm_p.def_benchmark_data(_sfv_dm_benchmark_data)
-
-
-def dm_sfm(weights, spikes):
+def dsfmm(weights, spikes):
     """
     Performs event-driven matrix-matrix multiplication: `weights @ spikes`.
 
@@ -508,7 +503,7 @@ def dm_sfm(weights, spikes):
 
     The function ensures inputs are JAX arrays and handles unit consistency
     using `brainunit`. The computation is delegated to a JAX primitive
-    `dm_sfm_p` for potential hardware acceleration.
+    `dsfmm_p` for potential hardware acceleration.
     """
     with jax.ensure_compile_time_eval():
         weights = u.math.asarray(weights)
@@ -521,7 +516,7 @@ def dm_sfm(weights, spikes):
     return u.maybe_decimal(r[0] * wunit * spkunit)
 
 
-def _dmsfm_numba_kernel(**kwargs):
+def _dsfmm_numba_kernel(**kwargs):
     # weights: [m, k]
     # spikes: [k, n]
 
@@ -543,7 +538,7 @@ def _dmsfm_numba_kernel(**kwargs):
     return run
 
 
-def _dmsfm_warp_kernel(
+def _dsfmm_warp_kernel(
     weight_info: jax.ShapeDtypeStruct,
     spk_info: jax.ShapeDtypeStruct,
     **kwargs
@@ -585,7 +580,7 @@ def _dmsfm_warp_kernel(
     return run
 
 
-def _dmsfm_pallas_kernel(
+def _dsfmm_pallas_kernel(
     weight_info: jax.ShapeDtypeStruct,
     spk_info: jax.ShapeDtypeStruct,
     **kwargs
@@ -636,24 +631,24 @@ def _dmsfm_pallas_kernel(
     return run
 
 
-def _dmsfm_jvp_weights(w_dot, weights, spikes, **kwargs):
+def _dsfmm_jvp_weights(w_dot, weights, spikes, **kwargs):
     return dmsfm_p_call(w_dot, spikes)
 
 
-def _dmsfm_jvp_spikes(spk_dot, weights, spikes, **kwargs):
+def _dsfmm_jvp_spikes(spk_dot, weights, spikes, **kwargs):
     return [weights @ spk_dot]
 
 
-def _dmsfm_transpose_rule(ct, weights, spikes, **kwargs):
+def _dsfmm_transpose_rule(ct, weights, spikes, **kwargs):
     if ad.is_undefined_primal(spikes):
         ct_events = weights.T @ ct[0]
         return weights, (ad.Zero(spikes) if type(ct[0]) is ad.Zero else ct_events)
     else:
-        ct_weights = dm_sfm(ct[0], spikes.T)
+        ct_weights = dsfmm(ct[0], spikes.T)
         return (ad.Zero(weights) if type(ct[0]) is ad.Zero else ct_weights), spikes
 
 
-def _dmsfm_batching_events_fn(args, axis=1, **kwargs):
+def _dsfmm_batching_events_fn(args, axis=1, **kwargs):
     assert args[0].ndim == 2, 'requires 2D input for weights'
     assert args[1].ndim == 3, 'requires 3D input for events'
     assert axis > 0, 'axis must be greater than 0'
@@ -664,7 +659,7 @@ def _dmsfm_batching_events_fn(args, axis=1, **kwargs):
     return [r], [axis]
 
 
-def _dmsfm_batching_weight_fn(args, axis=0, **kwargs):
+def _dsfmm_batching_weight_fn(args, axis=0, **kwargs):
     assert args[0].ndim == 3, 'requires 3D input for weights'
     assert args[1].ndim == 2, 'requires 2D input for events'
     assert axis < 2, 'axis must be less than 2'
@@ -675,27 +670,35 @@ def _dmsfm_batching_weight_fn(args, axis=0, **kwargs):
     return [r], [axis]
 
 
-def _dmsfm_batching(args, axes, **kwargs):
+def _dsfmm_batching(args, axes, **kwargs):
     if axes == (None, 0):
         args = list(args)
         args[1] = jnp.transpose(args[1], (1, 0, 2))
-        return _dmsfm_batching_events_fn(args, axis=1, **kwargs)
+        return _dsfmm_batching_events_fn(args, axis=1, **kwargs)
     elif axes == (None, 1):
-        return _dmsfm_batching_events_fn(args, axis=1, **kwargs)
+        return _dsfmm_batching_events_fn(args, axis=1, **kwargs)
     elif axes == (None, 2):
-        return _dmsfm_batching_events_fn(args, axs=2, **kwargs)
+        return _dsfmm_batching_events_fn(args, axs=2, **kwargs)
 
     elif axes == (0, None):
-        return _dmsfm_batching_weight_fn(args, axis=0, **kwargs)
+        return _dsfmm_batching_weight_fn(args, axis=0, **kwargs)
     elif axes == (1, None):
-        return _dmsfm_batching_weight_fn(args, axis=1, **kwargs)
+        return _dsfmm_batching_weight_fn(args, axis=1, **kwargs)
     elif axes == (2, None):
         args = list(args)
         args[0] = jnp.transpose(args[0], (0, 2, 1))
-        return _dmsfm_batching_weight_fn(args, axis=1, **kwargs)
+        return _dsfmm_batching_weight_fn(args, axis=1, **kwargs)
 
     else:
-        return general_batching_rule(dm_sfm_p, args, axes, **kwargs)
+        return general_batching_rule(dsfmm_p, args, axes, **kwargs)
+
+
+def _dsfmm_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    weights = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
+    spikes = jnp.asarray(_np.random.randn(n_post, 10), dtype=dtype)
+    return [BenchmarkConfig("default", (weights, spikes))]
 
 
 def dmsfm_p_call(weights, spikes):
@@ -704,7 +707,7 @@ def dmsfm_p_call(weights, spikes):
         f", weights: {weights.shape}, spikes: {spikes.shape} in dmsfm_p_call"
     )
     out = jax.ShapeDtypeStruct([weights.shape[0], spikes.shape[1]], weights.dtype)
-    return dm_sfm_p(
+    return dsfmm_p(
         weights,
         spikes,
         outs=[out],
@@ -713,31 +716,20 @@ def dmsfm_p_call(weights, spikes):
     )
 
 
-dm_sfm_p = XLACustomKernel('dense_matrix_dot_sparse_float_matrix')
-dm_sfm_p.def_numba_kernel(_dmsfm_numba_kernel)
-dm_sfm_p.def_warp_kernel(_dmsfm_warp_kernel)
-dm_sfm_p.def_pallas_kernel('gpu', _dmsfm_pallas_kernel)
-dm_sfm_p.def_pallas_kernel('tpu', _dmsfm_pallas_kernel)
-dm_sfm_p.def_jvp_rule2(_dmsfm_jvp_weights,
-                       _dmsfm_jvp_spikes)
-dm_sfm_p.def_transpose_rule(_dmsfm_transpose_rule)
-dm_sfm_p.def_batching_rule(_dmsfm_batching)
-dm_sfm_p.def_call(dmsfm_p_call)
-dm_sfm_p.def_tags('dense', 'sparse_float')
+dsfmm_p = XLACustomKernel('dense_matrix_dot_sparse_float_matrix')
+dsfmm_p.def_numba_kernel(_dsfmm_numba_kernel)
+dsfmm_p.def_warp_kernel(_dsfmm_warp_kernel)
+dsfmm_p.def_pallas_kernel('gpu', _dsfmm_pallas_kernel)
+dsfmm_p.def_pallas_kernel('tpu', _dsfmm_pallas_kernel)
+dsfmm_p.def_jvp_rule2(_dsfmm_jvp_weights, _dsfmm_jvp_spikes)
+dsfmm_p.def_transpose_rule(_dsfmm_transpose_rule)
+dsfmm_p.def_batching_rule(_dsfmm_batching)
+dsfmm_p.def_call(dmsfm_p_call)
+dsfmm_p.def_tags('dense', 'sparse_float')
+dsfmm_p.def_benchmark_data(_dsfmm_benchmark_data)
 
 
-def _dm_sfm_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    weights = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
-    spikes = jnp.asarray(_np.random.randn(n_post, 10), dtype=dtype)
-    return [BenchmarkConfig("default", (weights, spikes))]
-
-
-dm_sfm_p.def_benchmark_data(_dm_sfm_benchmark_data)
-
-
-def sfm_dm(spikes, weights):
+def sfdmm(spikes, weights):
     """
     Performs event-driven binary matrix - dense matrix multiplication: `spikes @ weights`.
 
@@ -776,13 +768,13 @@ def sfm_dm(spikes, weights):
     spk_val, spkunit = u.split_mantissa_unit(spikes)
     # Call the underlying primitive with unitless values
     # Perform the actual matrix multiplication using the unitless values
-    r = sfm_dm_p_call(spk_val, weight_val)
+    r = sfdmm_p_call(spk_val, weight_val)
     # Re-attach units to the result, handling potential Decimal types
     # Multiply the result by the units of spikes and weights, and handle Decimal types if necessary
     return u.maybe_decimal(r[0] * spkunit * wunit)
 
 
-def _sfm_dm_numba_kernel(**kwargs):
+def _sfdmm_numba_kernel(**kwargs):
     # spikes: [m, k]
     # weights: [k, n]
 
@@ -807,7 +799,7 @@ def _sfm_dm_numba_kernel(**kwargs):
     return run
 
 
-def _sfm_dm_warp_kernel(
+def _sfdmm_warp_kernel(
     weight_info: jax.ShapeDtypeStruct,
     spk_info: jax.ShapeDtypeStruct,
     **kwargs
@@ -845,7 +837,7 @@ def _sfm_dm_warp_kernel(
     return run
 
 
-def _sfm_dm_pallas_kernel(
+def _sfdmm_pallas_kernel(
     weight_info: jax.ShapeDtypeStruct,
     spk_info: jax.ShapeDtypeStruct,
     **kwargs
@@ -895,75 +887,83 @@ def _sfm_dm_pallas_kernel(
     return run
 
 
-def _sfm_dm_jvp_weights(w_dot, spikes, weights, **kwargs):
-    return sfm_dm_p_call(spikes, w_dot)
+def _sfdmm_jvp_weights(w_dot, spikes, weights, **kwargs):
+    return sfdmm_p_call(spikes, w_dot)
 
 
-def _sfm_dm_jvp_spikes(spk_dot, spikes, weights, **kwargs):
+def _sfdmm_jvp_spikes(spk_dot, spikes, weights, **kwargs):
     return [spk_dot @ weights]
 
 
-def _sfm_dm_transpose_rule(ct, spikes, weights, **kwargs):
+def _sfdmm_transpose_rule(ct, spikes, weights, **kwargs):
     if ad.is_undefined_primal(spikes):
         ct_events = ct[0] @ weights.T
         return (ad.Zero(spikes) if type(ct[0]) is ad.Zero else ct_events), weights
 
     else:
-        ct_weights = sfm_dm(spikes.T, ct[0])
+        ct_weights = sfdmm(spikes.T, ct[0])
         return spikes, (ad.Zero(weights) if type(ct[0]) is ad.Zero else ct_weights)
 
 
-def _sfm_dm_batching_spk_base_fn(args, axis=0, **kwargs):
+def _sfdmm_batching_spk_base_fn(args, axis=0, **kwargs):
     assert args[0].ndim == 3, 'requires 3D events.'
     assert args[1].ndim == 2, 'requires 3D weights.'
     maybe_batch1, maybe_batch2, n = args[0].shape
     events = args[0].reshape(maybe_batch1 * maybe_batch2, n)
-    r = sfm_dm_p_call(events, args[1])
+    r = sfdmm_p_call(events, args[1])
     r = jnp.reshape(r[0], [maybe_batch1, maybe_batch2, r[0].shape[1]])
     return [r], [axis]
 
 
-def _sfm_dm_batching_weight_base_fn(args, axis=0, **kwargs):
+def _sfdmm_batching_weight_base_fn(args, axis=0, **kwargs):
     assert args[0].ndim == 0, 'requires 2D events.'
     assert args[1].ndim == 3, 'requires 3D weights.'
     k, maybe_batch1, maybe_batch2 = args[1].shape
     events = args[0]
     weights = args[1].reshape(k, maybe_batch1 * maybe_batch2)
-    r = sfm_dm_p_call(events, weights)
+    r = sfdmm_p_call(events, weights)
     r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
     return [r], [axis]
 
 
-def _sfm_dm_batching(args, axes, **kwargs):
+def _sfdmm_batching(args, axes, **kwargs):
     if axes == (0, None):
-        return _sfm_dm_batching_spk_base_fn(args, axis=0, **kwargs)
+        return _sfdmm_batching_spk_base_fn(args, axis=0, **kwargs)
     elif axes == (1, None):
-        return _sfm_dm_batching_spk_base_fn(args, axis=1, **kwargs)
+        return _sfdmm_batching_spk_base_fn(args, axis=1, **kwargs)
     elif axes == (2, None):
         args = list(args)
         args[0] = jnp.transpose(args[0], (0, 2, 1))
-        return _sfm_dm_batching_spk_base_fn(args, axis=1, **kwargs)
+        return _sfdmm_batching_spk_base_fn(args, axis=1, **kwargs)
 
     elif axes == (None, 0):
         args = list(args)
         args[1] = jnp.transpose(args[0], (1, 0, 2))
-        return _sfm_dm_batching_weight_base_fn(args, axis=1, **kwargs)
+        return _sfdmm_batching_weight_base_fn(args, axis=1, **kwargs)
     elif axes == (None, 1):
-        return _sfm_dm_batching_weight_base_fn(args, axis=1, **kwargs)
+        return _sfdmm_batching_weight_base_fn(args, axis=1, **kwargs)
     elif axes == (None, 2):
-        return _sfm_dm_batching_weight_base_fn(args, axis=2, **kwargs)
+        return _sfdmm_batching_weight_base_fn(args, axis=2, **kwargs)
 
     else:
-        return general_batching_rule(sfm_dm_p, args, axes, **kwargs)
+        return general_batching_rule(sfdmm_p, args, axes, **kwargs)
 
 
-def sfm_dm_p_call(spikes, weights):
+def _sfdmm_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    spikes = jnp.asarray(_np.random.randn(10, n_post), dtype=dtype)
+    weights = jnp.asarray(_np.random.randn(n_post, n_post), dtype=dtype)
+    return [BenchmarkConfig("default", (spikes, weights))]
+
+
+def sfdmm_p_call(spikes, weights):
     assert spikes.shape[1] == weights.shape[0], (
         f"spikes shape {spikes.shape} and weights shape {weights.shape} do not match"
         f"for event matrix multiplication"
     )
     out = jax.ShapeDtypeStruct([spikes.shape[0], weights.shape[1]], weights.dtype)
-    return sfm_dm_p(
+    return sfdmm_p(
         spikes,
         weights,
         outs=[out],
@@ -972,25 +972,14 @@ def sfm_dm_p_call(spikes, weights):
     )
 
 
-sfm_dm_p = XLACustomKernel('sparse_float_matrix_dot_dense_matrix')
-sfm_dm_p.def_numba_kernel(_sfm_dm_numba_kernel)
-sfm_dm_p.def_warp_kernel(_sfm_dm_warp_kernel)
-sfm_dm_p.def_pallas_kernel('gpu', _sfm_dm_pallas_kernel)
-sfm_dm_p.def_pallas_kernel('tpu', _sfm_dm_pallas_kernel)
-sfm_dm_p.def_jvp_rule2(_sfm_dm_jvp_spikes,
-                                               _sfm_dm_jvp_weights)
-sfm_dm_p.def_transpose_rule(_sfm_dm_transpose_rule)
-sfm_dm_p.def_batching_rule(_sfm_dm_batching)
-sfm_dm_p.def_call(sfm_dm_p_call)
-sfm_dm_p.def_tags('dense', 'sparse_float')
-
-
-def _sfm_dm_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    spikes = jnp.asarray(_np.random.randn(10, n_post), dtype=dtype)
-    weights = jnp.asarray(_np.random.randn(n_post, n_post), dtype=dtype)
-    return [BenchmarkConfig("default", (spikes, weights))]
-
-
-sfm_dm_p.def_benchmark_data(_sfm_dm_benchmark_data)
+sfdmm_p = XLACustomKernel('sparse_float_matrix_dot_dense_matrix')
+sfdmm_p.def_numba_kernel(_sfdmm_numba_kernel)
+sfdmm_p.def_warp_kernel(_sfdmm_warp_kernel)
+sfdmm_p.def_pallas_kernel('gpu', _sfdmm_pallas_kernel)
+sfdmm_p.def_pallas_kernel('tpu', _sfdmm_pallas_kernel)
+sfdmm_p.def_jvp_rule2(_sfdmm_jvp_spikes, _sfdmm_jvp_weights)
+sfdmm_p.def_transpose_rule(_sfdmm_transpose_rule)
+sfdmm_p.def_batching_rule(_sfdmm_batching)
+sfdmm_p.def_call(sfdmm_p_call)
+sfdmm_p.def_tags('dense', 'sparse_float')
+sfdmm_p.def_benchmark_data(_sfdmm_benchmark_data)
