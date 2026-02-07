@@ -22,8 +22,9 @@ import numpy as np
 from jax import numpy as jnp
 from jax.interpreters import ad
 
+from brainevent._compatible_import import Tracer
 from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
-from brainevent._misc import generate_block_dim, namescope
+from brainevent._misc import generate_block_dim
 from brainevent._op import XLACustomKernel, jaxinfo_to_warpinfo, numba_kernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._pallas_random import PallasLFSR88RNG
@@ -39,7 +40,20 @@ __all__ = [
 ]
 
 
-@namescope(static_argnames=("shape", "transpose", "corder"))
+def _is_static_zero_prob(prob: float, *, op_name: str) -> bool:
+    if isinstance(prob, Tracer):
+        return False
+    prob_arr = np.asarray(prob)
+    if prob_arr.size != 1:
+        raise ValueError(f"{op_name}: prob must be a scalar, but got shape {prob_arr.shape}.")
+    prob_scalar = float(prob_arr.item())
+    if not np.isfinite(prob_scalar):
+        raise ValueError(f"{op_name}: prob must be finite, but got {prob_scalar}.")
+    if not (0. <= prob_scalar <= 1.):
+        raise ValueError(f"{op_name}: prob must be in [0, 1], but got {prob_scalar}.")
+    return prob_scalar == 0.
+
+
 def jitn(
     w_loc: Data,
     w_scale: Data,
@@ -53,6 +67,10 @@ def jitn(
     u.fail_for_dimension_mismatch(w_loc, w_scale, "w_loc and w_scale must have the same dimension.")
     w_loc, unitd = u.split_mantissa_unit(w_loc)
     w_scale = u.Quantity(w_scale).to(unitd).mantissa
+    out_dtype = jnp.asarray(w_loc).dtype
+    if _is_static_zero_prob(prob, op_name="jitn"):
+        out_shape = shape[::-1] if transpose else shape
+        return u.maybe_decimal(jnp.zeros(out_shape, dtype=out_dtype) * unitd)
     clen = _initialize_conn_length(prob)
     res = jitn_p_call(
         w_loc,
@@ -66,7 +84,6 @@ def jitn(
     return u.maybe_decimal(res * unitd)
 
 
-@namescope(static_argnames=("shape", "transpose", "corder"))
 def jitnmv(
     w_loc: Data,
     w_scale: Data,
@@ -83,6 +100,17 @@ def jitnmv(
     w_loc, unitd = u.split_mantissa_unit(w_loc)
     w_scale = u.Quantity(w_scale).to(unitd).mantissa
     vector, unitv = u.split_mantissa_unit(vector)
+    out_dtype = jnp.asarray(w_loc).dtype
+    if _is_static_zero_prob(prob, op_name="jitnmv"):
+        if vector.ndim != 1:
+            raise ValueError(f"jitnmv: vector must be 1D, but got {vector.ndim}D.")
+        expected = shape[0] if transpose else shape[1]
+        if vector.shape[0] != expected:
+            raise ValueError(
+                f"jitnmv: shape mismatch, got matrix shape {shape} and vector shape {vector.shape}."
+            )
+        out_size = shape[1] if transpose else shape[0]
+        return u.maybe_decimal(jnp.zeros((out_size,), dtype=out_dtype) * unitd * unitv)
     clen = _initialize_conn_length(prob)
     res = jitnmv_p_call(
         w_loc,
@@ -97,7 +125,6 @@ def jitnmv(
     return u.maybe_decimal(res * unitd * unitv)
 
 
-@namescope(static_argnames=("shape", "transpose", "corder"))
 def jitnmm(
     w_loc: Data,
     w_scale: Data,
@@ -114,6 +141,17 @@ def jitnmm(
     w_loc, unitd = u.split_mantissa_unit(w_loc)
     w_scale = u.Quantity(w_scale).to(unitd).mantissa
     B, unitB = u.split_mantissa_unit(B)
+    out_dtype = jnp.asarray(w_loc).dtype
+    if _is_static_zero_prob(prob, op_name="jitnmm"):
+        if B.ndim != 2:
+            raise ValueError(f"jitnmm: B must be 2D, but got {B.ndim}D.")
+        expected = shape[0] if transpose else shape[1]
+        if B.shape[0] != expected:
+            raise ValueError(
+                f"jitnmm: shape mismatch, got matrix shape {shape} and B shape {B.shape}."
+            )
+        out_shape = (shape[1], B.shape[1]) if transpose else (shape[0], B.shape[1])
+        return u.maybe_decimal(jnp.zeros(out_shape, dtype=out_dtype) * unitd * unitB)
     clen = _initialize_conn_length(prob)
     res = jitnmm_p_call(
         w_loc,
@@ -588,6 +626,22 @@ def _jitn_batching(args, axes, **kwargs):
     return general_batching_rule(jitn_p, args, axes, **kwargs)
 
 
+def _jitn_benchmark_data(*, platform):
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for corder in (True, False):
+            w_loc = jnp.ones(1, dtype=dtype)
+            w_scale = jnp.ones(1, dtype=dtype) * 0.1
+            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+            seed = jnp.asarray(42, dtype=jnp.uint32)
+            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
+            configs.append(BenchmarkConfig(name, (w_loc, w_scale, clen, seed), {
+                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
+            }))
+    return configs
+
+
 def jitn_p_call(w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool):
     w_loc = jnp.atleast_1d(w_loc)
     w_scale = jnp.atleast_1d(w_scale)
@@ -626,24 +680,6 @@ jitn_p.def_jvp_rule2(_jitn_jvp_wlow, _jitn_jvp_whigh, None, None)
 jitn_p.def_transpose_rule(_jitn_transpose)
 jitn_p.def_batching_rule(_jitn_batching)
 jitn_p.def_tags('jit_normal', 'float')
-
-
-def _jitn_benchmark_data(*, platform):
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for transpose in (False, True):
-        for corder in (True, False):
-            w_loc = jnp.ones(1, dtype=dtype)
-            w_scale = jnp.ones(1, dtype=dtype) * 0.1
-            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
-            seed = jnp.asarray(42, dtype=jnp.uint32)
-            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append(BenchmarkConfig(name, (w_loc, w_scale, clen, seed), {
-                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
-            }))
-    return configs
-
-
 jitn_p.def_benchmark_data(_jitn_benchmark_data)
 
 
@@ -1129,6 +1165,25 @@ def _jitnmv_batching(args, axes, **kwargs):
         )
 
 
+def _jitnmv_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for corder in (True, False):
+            w_loc = jnp.ones(1, dtype=dtype)
+            w_scale = jnp.ones(1, dtype=dtype) * 0.1
+            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+            v_size = n_post if not transpose else n_pre
+            vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
+            seed = jnp.asarray(42, dtype=jnp.uint32)
+            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
+            configs.append(BenchmarkConfig(name, (w_loc, w_scale, clen, vector, seed), {
+                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
+            }))
+    return configs
+
+
 def jitnmv_p_call(
     w_loc,
     w_scale,
@@ -1190,27 +1245,6 @@ jitnmv_p.def_jvp_rule2(_jitnmv_jvp_wloc, _jitnmv_jvp_wscale, None, _jitnmv_jvp_v
 jitnmv_p.def_transpose_rule(_jitnmv_transpose_rules)
 jitnmv_p.def_batching_rule(_jitnmv_batching)
 jitnmv_p.def_tags('jit_normal', 'float')
-
-
-def _jitnmv_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for transpose in (False, True):
-        for corder in (True, False):
-            w_loc = jnp.ones(1, dtype=dtype)
-            w_scale = jnp.ones(1, dtype=dtype) * 0.1
-            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
-            v_size = n_post if not transpose else n_pre
-            vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
-            seed = jnp.asarray(42, dtype=jnp.uint32)
-            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append(BenchmarkConfig(name, (w_loc, w_scale, clen, vector, seed), {
-                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
-            }))
-    return configs
-
-
 jitnmv_p.def_benchmark_data(_jitnmv_benchmark_data)
 
 
@@ -1685,6 +1719,25 @@ def _jitnmm_batching(args, axes, **kwargs):
         return general_batching_rule(jitnmm_p, args, axes, **kwargs)
 
 
+def _jitnmm_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for corder in (True, False):
+            w_loc = jnp.ones(1, dtype=dtype)
+            w_scale = jnp.ones(1, dtype=dtype) * 0.1
+            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+            b_rows = n_post if not transpose else n_pre
+            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
+            seed = jnp.asarray(42, dtype=jnp.uint32)
+            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
+            configs.append(BenchmarkConfig(name, (w_loc, w_scale, clen, B, seed), {
+                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
+            }))
+    return configs
+
+
 def jitnmm_p_call(w_loc, w_scale, clen, B, seed, *, shape: MatrixShape, transpose: bool, corder: bool):
     w_loc = jnp.atleast_1d(w_loc)
     w_scale = jnp.atleast_1d(w_scale)
@@ -1740,25 +1793,4 @@ jitnmm_p.def_jvp_rule2(_jitnmm_jvp_wloc, _jitnmm_jvp_wscale, None, _jitnmm_jvp_B
 jitnmm_p.def_transpose_rule(_jitnmm_transpose_rules)
 jitnmm_p.def_batching_rule(_jitnmm_batching)
 jitnmm_p.def_tags('jit_normal', 'float')
-
-
-def _jitnmm_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for transpose in (False, True):
-        for corder in (True, False):
-            w_loc = jnp.ones(1, dtype=dtype)
-            w_scale = jnp.ones(1, dtype=dtype) * 0.1
-            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
-            b_rows = n_post if not transpose else n_pre
-            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
-            seed = jnp.asarray(42, dtype=jnp.uint32)
-            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append(BenchmarkConfig(name, (w_loc, w_scale, clen, B, seed), {
-                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
-            }))
-    return configs
-
-
 jitnmm_p.def_benchmark_data(_jitnmm_benchmark_data)
