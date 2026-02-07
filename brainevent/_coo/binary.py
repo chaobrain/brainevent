@@ -799,14 +799,27 @@ binary_coomv_p.def_call(binary_coomv_p_call)
 binary_coomv_p.def_tags('coo', 'binary')
 
 
-def _binary_coomv_benchmark_data(*, platform, n_pre, n_post, prob, dtype):
+def _binary_coomv_benchmark_data(*, platform):
     import numpy as _np
-    nnz = max(1, int(n_pre * n_post * prob))
-    row = _np.random.randint(0, n_pre, nnz, dtype=_np.int32)
-    col = _np.random.randint(0, n_post, nnz, dtype=_np.int32)
-    weights = jnp.ones(1, dtype=dtype)
-    vector = jnp.asarray(_np.random.rand(n_post) > 0.5, dtype=jnp.bool_)
-    return (weights, jnp.asarray(row), jnp.asarray(col), vector), {'shape': (n_pre, n_post), 'transpose': False}
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for homo in (True, False):
+            for bool_event in (True, False):
+                nnz = max(1, int(n_pre * n_post * prob))
+                row = _np.random.randint(0, n_pre, nnz, dtype=_np.int32)
+                col = _np.random.randint(0, n_post, nnz, dtype=_np.int32)
+                weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(nnz, dtype=dtype)
+                v_size = n_post if not transpose else n_pre
+                if bool_event:
+                    vector = jnp.asarray(_np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
+                else:
+                    vector = jnp.asarray(_np.random.rand(v_size), dtype=dtype)
+                name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
+                configs.append((name, (weights, jnp.asarray(row), jnp.asarray(col), vector), {
+                    'shape': (n_pre, n_post), 'transpose': transpose
+                }))
+    return configs
 
 
 binary_coomv_p.def_benchmark_data(_binary_coomv_benchmark_data)
@@ -1545,14 +1558,27 @@ binary_coomm_p.def_call(binary_coomm_p_call)
 binary_coomm_p.def_tags('coo', 'binary')
 
 
-def _binary_coomm_benchmark_data(*, platform, n_pre, n_post, prob, dtype):
+def _binary_coomm_benchmark_data(*, platform):
     import numpy as _np
-    nnz = max(1, int(n_pre * n_post * prob))
-    row = _np.random.randint(0, n_pre, nnz, dtype=_np.int32)
-    col = _np.random.randint(0, n_post, nnz, dtype=_np.int32)
-    weights = jnp.ones(1, dtype=dtype)
-    B = jnp.asarray(_np.random.rand(n_post, 10) > 0.5, dtype=jnp.bool_)
-    return (weights, jnp.asarray(row), jnp.asarray(col), B), {'shape': (n_pre, n_post), 'transpose': False}
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for homo in (True, False):
+            for bool_event in (True, False):
+                nnz = max(1, int(n_pre * n_post * prob))
+                row = _np.random.randint(0, n_pre, nnz, dtype=_np.int32)
+                col = _np.random.randint(0, n_post, nnz, dtype=_np.int32)
+                weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(nnz, dtype=dtype)
+                b_rows = n_post if not transpose else n_pre
+                if bool_event:
+                    B = jnp.asarray(_np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
+                else:
+                    B = jnp.asarray(_np.random.rand(b_rows, 10), dtype=dtype)
+                name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
+                configs.append((name, (weights, jnp.asarray(row), jnp.asarray(col), B), {
+                    'shape': (n_pre, n_post), 'transpose': transpose
+                }))
+    return configs
 
 
 binary_coomm_p.def_benchmark_data(_binary_coomm_benchmark_data)

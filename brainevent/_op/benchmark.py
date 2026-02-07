@@ -23,10 +23,28 @@ import jax
 import numpy as np
 
 __all__ = [
+    'BenchmarkConfig',
     'BenchmarkResult',
     'BenchmarkReport',
     'benchmark_function',
 ]
+
+
+@dataclass
+class BenchmarkConfig:
+    """A single benchmark configuration for a primitive.
+
+    Returned by ``def_benchmark_data`` functions as part of a list.
+
+    Attributes:
+        name: A short descriptive name for this configuration
+            (e.g., ``"T,homo,bool"``).
+        args: Positional arguments to pass to the primitive's call function.
+        kwargs: Keyword arguments to pass to the primitive's call function.
+    """
+    name: str
+    args: tuple
+    kwargs: dict = field(default_factory=dict)
 
 
 @dataclass

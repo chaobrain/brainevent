@@ -280,3 +280,17 @@ csr_diag_add_p.def_pallas_kernel('tpu', _csr_diag_add_pallas_kernel_generator)
 csr_diag_add_p.def_jvp_rule2(_csr_diag_add_jvp_csr_value, None, _csr_diag_add_jvp_diag_value)
 csr_diag_add_p.def_call(csr_diag_add_call)
 csr_diag_add_p.def_tags('csr', 'diag')
+
+
+def _csr_diag_add_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    n_conn = max(1, int(n_post * prob))
+    csr_value = jnp.ones(n_pre * n_conn, dtype=dtype)
+    n_diag = min(n_pre, n_post)
+    diag_position = jnp.asarray(_np.arange(n_diag, dtype=_np.int32))
+    diag_value = jnp.ones(n_diag, dtype=dtype)
+    return [("default", (csr_value, diag_position, diag_value), {})]
+
+
+csr_diag_add_p.def_benchmark_data(_csr_diag_add_benchmark_data)

@@ -183,6 +183,25 @@ plast_dense_on_binary_pre_p.def_call(_dense_on_pre_prim_call)
 plast_dense_on_binary_pre_p.def_tags('dense', 'plasticity')
 
 
+def _plast_dense_pre_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for bool_event in (True, False):
+        weight = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
+        if bool_event:
+            pre_spike = jnp.asarray(_np.random.rand(n_pre) > 0.5, dtype=jnp.bool_)
+        else:
+            pre_spike = jnp.asarray(_np.random.rand(n_pre), dtype=dtype)
+        post_trace = jnp.asarray(_np.random.randn(n_post), dtype=dtype)
+        name = f"{'bool' if bool_event else 'float'}"
+        configs.append((name, (weight, pre_spike, post_trace), {}))
+    return configs
+
+
+plast_dense_on_binary_pre_p.def_benchmark_data(_plast_dense_pre_benchmark_data)
+
+
 @namescope
 def plast_dense_on_binary_post(
     weight: Union[u.Quantity, jax.Array],
@@ -329,3 +348,22 @@ plast_dense_on_binary_post_p.def_transpose_rule(_dense_on_post_transpose_rule)
 plast_dense_on_binary_post_p.def_batching_rule(_dense_on_post_batching)
 plast_dense_on_binary_post_p.def_call(_dense_one_post_prim_call)
 plast_dense_on_binary_post_p.def_tags('dense', 'plasticity')
+
+
+def _plast_dense_post_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for bool_event in (True, False):
+        weight = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
+        pre_trace = jnp.asarray(_np.random.randn(n_pre), dtype=dtype)
+        if bool_event:
+            post_spike = jnp.asarray(_np.random.rand(n_post) > 0.5, dtype=jnp.bool_)
+        else:
+            post_spike = jnp.asarray(_np.random.rand(n_post), dtype=dtype)
+        name = f"{'bool' if bool_event else 'float'}"
+        configs.append((name, (weight, pre_trace, post_spike), {}))
+    return configs
+
+
+plast_dense_on_binary_post_p.def_benchmark_data(_plast_dense_post_benchmark_data)

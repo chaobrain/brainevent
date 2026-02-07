@@ -18,7 +18,7 @@ import os
 
 import pytest
 
-from brainevent._cli import _build_parser, _filter_primitives, _resolve_dtype, main
+from brainevent._cli import _build_parser, _filter_primitives, main
 
 
 class TestBuildParser:
@@ -32,16 +32,10 @@ class TestBuildParser:
             'benchmark-performance',
             '--platform', 'cpu',
             '--data', 'csr',
-            '--n-pre', '100',
-            '--n-post', '200',
-            '--prob', '0.05',
         ])
         assert args.command == 'benchmark-performance'
         assert args.platform == 'cpu'
         assert args.data == 'csr'
-        assert args.n_pre == 100
-        assert args.n_post == 200
-        assert args.prob == 0.05
 
     def test_defaults(self):
         parser = _build_parser()
@@ -50,42 +44,9 @@ class TestBuildParser:
             '--platform', 'gpu',
         ])
         assert args.data == 'all'
-        assert args.n_pre == 1000
-        assert args.n_post == 1000
-        assert args.prob == 0.1
         assert args.n_warmup == 5
         assert args.n_runs == 20
-        assert args.dtype == 'float32'
         assert args.output is None
-        assert args.persist is False
-
-    def test_persist_flag(self):
-        parser = _build_parser()
-        args = parser.parse_args([
-            'benchmark-performance',
-            '--platform', 'cpu',
-            '--persist',
-        ])
-        assert args.persist is True
-
-    def test_no_persist_flag(self):
-        parser = _build_parser()
-        args = parser.parse_args([
-            'benchmark-performance',
-            '--platform', 'cpu',
-            '--no-persist',
-        ])
-        assert args.no_persist is True
-
-
-class TestResolveDtype:
-    def test_float32(self):
-        import jax.numpy as jnp
-        assert _resolve_dtype('float32') == jnp.float32
-
-    def test_float64(self):
-        import jax.numpy as jnp
-        assert _resolve_dtype('float64') == jnp.float64
 
 
 class TestFilterPrimitives:
@@ -192,6 +153,105 @@ class TestXLACustomKernelTags:
         import brainevent
         prim = brainevent.binary_csrmv_p
         assert prim._benchmark_data_fn is not None
+        assert callable(prim._benchmark_data_fn)
+
+
+class TestMultiBenchmarkData:
+    def test_def_benchmark_data_stores_fn(self):
+        """def_benchmark_data(fn) stores the function."""
+        from brainevent._op.main import XLACustomKernel
+        prim = XLACustomKernel('_test_stores_fn')
+        fn = lambda *, platform: [("default", (), {})]
+        prim.def_benchmark_data(fn)
+        assert prim._benchmark_data_fn is fn
+
+    def test_def_benchmark_data_none_initially(self):
+        """_benchmark_data_fn is None when no fn registered."""
+        from brainevent._op.main import XLACustomKernel
+        prim = XLACustomKernel('_test_none_initially')
+        assert prim._benchmark_data_fn is None
+
+    def test_def_benchmark_data_overwrite(self):
+        """Second def_benchmark_data call overwrites the first."""
+        from brainevent._op.main import XLACustomKernel
+        prim = XLACustomKernel('_test_overwrite')
+        fn1 = lambda *, platform: [("a", (), {})]
+        fn2 = lambda *, platform: [("b", (), {})]
+        prim.def_benchmark_data(fn1)
+        prim.def_benchmark_data(fn2)
+        assert prim._benchmark_data_fn is fn2
+
+    def test_benchmark_fn_returns_list(self):
+        """Benchmark data fn should return list of (name, args, kwargs) tuples."""
+        from brainevent._op.main import XLACustomKernel
+        prim = XLACustomKernel('_test_returns_list')
+
+        def bench_fn(*, platform):
+            return [
+                ("config_a", (1, 2), {"key": "val"}),
+                ("config_b", (3, 4), {"key": "val2"}),
+            ]
+
+        prim.def_benchmark_data(bench_fn)
+        configs = prim._benchmark_data_fn(platform='cpu')
+        assert len(configs) == 2
+        assert configs[0][0] == "config_a"
+        assert configs[1][0] == "config_b"
+        for config_name, args, kwargs in configs:
+            assert isinstance(config_name, str)
+            assert isinstance(args, tuple)
+            assert isinstance(kwargs, dict)
+
+
+class TestMultiBenchmarkIntegration:
+    def test_real_primitive_has_benchmark_data(self):
+        """Real primitives should have a benchmark data fn."""
+        import brainevent
+        prim = brainevent.binary_csrmv_p
+        assert prim._benchmark_data_fn is not None
+        assert callable(prim._benchmark_data_fn)
+
+    def test_benchmark_fn_returns_configs(self):
+        """Benchmark data fn should return list of config tuples."""
+        import brainevent
+        prim = brainevent.binary_csrmv_p
+        configs = prim._benchmark_data_fn(platform='cpu')
+        assert isinstance(configs, list)
+        assert len(configs) >= 1
+        for config_name, args, kwargs in configs:
+            assert isinstance(config_name, str)
+            assert isinstance(args, tuple)
+            assert isinstance(kwargs, dict)
+            assert 'shape' in kwargs
+
+    def test_registry_primitives_benchmark_data_structure(self):
+        """All primitives with benchmark data should return proper config lists."""
+        from brainevent._registry import get_registry
+        registry = get_registry()
+        for name, prim in registry.items():
+            if prim._benchmark_data_fn is None:
+                continue
+            assert callable(prim._benchmark_data_fn), (
+                f"Primitive '{name}': _benchmark_data_fn should be callable"
+            )
+            configs = prim._benchmark_data_fn(platform='cpu')
+            assert isinstance(configs, list), (
+                f"Primitive '{name}': benchmark data fn should return a list"
+            )
+            for entry in configs:
+                assert isinstance(entry, tuple) and len(entry) == 3, (
+                    f"Primitive '{name}': each entry should be a (name, args, kwargs) tuple"
+                )
+                config_name, args, kwargs = entry
+                assert isinstance(config_name, str), (
+                    f"Primitive '{name}': config name should be a string"
+                )
+                assert isinstance(args, tuple), (
+                    f"Primitive '{name}': args should be a tuple"
+                )
+                assert isinstance(kwargs, dict), (
+                    f"Primitive '{name}': kwargs should be a dict"
+                )
 
 
 class TestXLACustomKernelUserDefaults:

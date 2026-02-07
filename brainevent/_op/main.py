@@ -552,12 +552,14 @@ class XLACustomKernel:
     def def_benchmark_data(self, fn: Callable):
         """Register a benchmark data generator function.
 
-        The function should generate test data for benchmarking this primitive.
+        The function should return a list of benchmark configurations,
+        each covering a specific parameter combination for this primitive.
 
         Args:
             fn: A callable with signature
-                fn(*, platform, n_pre, n_post, prob, dtype) -> (args_tuple, kwargs_dict)
-                where args_tuple and kwargs_dict are passed to the call function.
+                fn(*, platform) -> List[Tuple[str, tuple, dict]]
+                where each entry is (config_name, args_tuple, kwargs_dict).
+                args_tuple and kwargs_dict are passed to the call function.
         """
         self._benchmark_data_fn = fn
 

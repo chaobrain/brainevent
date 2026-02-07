@@ -16,7 +16,7 @@
 """CLI entry point for brainevent.
 
 Usage:
-    brainevent benchmark-performance --platform {cpu|gpu|tpu} --data {all|csr|coo|dense|fcn|...}
+    brainevent benchmark-performance --platform {cpu|gpu|tpu} [--data {all|csr|coo|...}]
 """
 
 import argparse
@@ -51,37 +51,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help='Filter primitives by tag (e.g., csr, coo, dense, fcn, all). '
              'Comma-separated for multiple tags.',
     )
-    bench.add_argument('--n-pre', type=int, default=1000, help='Number of pre-synaptic neurons (rows).')
-    bench.add_argument('--n-post', type=int, default=1000, help='Number of post-synaptic neurons (columns).')
-    bench.add_argument('--prob', type=float, default=0.1, help='Connection probability.')
     bench.add_argument('--n-warmup', type=int, default=5, help='Number of warmup runs.')
     bench.add_argument('--n-runs', type=int, default=20, help='Number of timed runs.')
-    bench.add_argument(
-        '--dtype',
-        default='float32',
-        choices=['float32', 'float64'],
-        help='Data type for benchmark arrays.',
-    )
     bench.add_argument('--output', type=str, default=None, help='Output file path for JSON results.')
-    bench.add_argument(
-        '--persist',
-        action='store_true',
-        default=False,
-        help='Persist optimal backends to user config.',
-    )
-    bench.add_argument(
-        '--no-persist',
-        action='store_true',
-        default=False,
-        help='Do not persist (default behavior).',
-    )
 
     return parser
-
-
-def _resolve_dtype(dtype_str: str):
-    import jax.numpy as jnp
-    return {'float32': jnp.float32, 'float64': jnp.float64}[dtype_str]
 
 
 def _filter_primitives(registry: dict, data_filter: str) -> dict:
@@ -104,7 +78,6 @@ def _run_benchmark(args) -> int:
     from brainevent._registry import get_registry
     from brainevent._config import save_user_defaults
 
-    dtype = _resolve_dtype(args.dtype)
     registry = get_registry()
     filtered = _filter_primitives(registry, args.data)
 
@@ -113,8 +86,7 @@ def _run_benchmark(args) -> int:
         return 1
 
     print(f"BrainEvent Benchmark — platform={args.platform}, filter={args.data}")
-    print(f"Parameters: n_pre={args.n_pre}, n_post={args.n_post}, prob={args.prob}, "
-          f"dtype={args.dtype}, n_warmup={args.n_warmup}, n_runs={args.n_runs}")
+    print(f"Parameters: n_warmup={args.n_warmup}, n_runs={args.n_runs}")
     print()
 
     # Table header
@@ -128,7 +100,7 @@ def _run_benchmark(args) -> int:
     for name in sorted(filtered.keys()):
         prim = filtered[name]
 
-        # Skip primitives without a call function or benchmark data generator
+        # Skip primitives without a call function or benchmark data
         if prim._call_fn is None:
             continue
         if prim._benchmark_data_fn is None:
@@ -139,56 +111,60 @@ def _run_benchmark(args) -> int:
         if not backends:
             continue
 
-        # Generate benchmark data
+        # Generate all benchmark configs from the data function
         try:
-            bench_args, bench_kwargs = prim._benchmark_data_fn(
-                platform=args.platform,
-                n_pre=args.n_pre,
-                n_post=args.n_post,
-                prob=args.prob,
-                dtype=dtype,
-            )
+            configs = prim._benchmark_data_fn(platform=args.platform)
         except Exception as e:
             print(f"  {name:<35} {'SKIP':<15} Data generation failed: {e}")
             continue
 
-        # Run benchmark
-        try:
-            report = prim.benchmark(
-                *bench_args,
-                platform=args.platform,
-                n_warmup=args.n_warmup,
-                n_runs=args.n_runs,
-                **bench_kwargs,
-            )
-        except Exception as e:
-            print(f"  {name:<35} {'ERROR':<15} Benchmark failed: {e}")
-            continue
+        # Track wins per backend across all configs for voting
+        backend_wins: Dict[str, int] = {}
 
-        all_reports.append(report)
+        for config_name, bench_args, bench_kwargs in configs:
+            display_name = f"{name} [{config_name}]"
 
-        # Find winner
-        fastest = report.fastest()
-        for result in sorted(report.results, key=lambda r: (not r.success, r.mean_time)):
-            winner = '*' if (result.success and fastest and result.backend == fastest.backend) else ''
-            if result.success:
-                print(f"  {name:<35} {result.backend:<15} {result.mean_time * 1000:>12.3f} "
-                      f"{result.std_time * 1000:>12.3f} {result.min_time * 1000:>12.3f} {winner:>8}")
-            else:
-                error_short = result.error[:30] + '...' if result.error and len(result.error) > 30 else (result.error or '')
-                print(f"  {name:<35} {result.backend:<15} {'FAILED':>12} {'':>12} {'':>12} {error_short:>8}")
+            # Run benchmark
+            try:
+                report = prim.benchmark(
+                    *bench_args,
+                    platform=args.platform,
+                    n_warmup=args.n_warmup,
+                    n_runs=args.n_runs,
+                    **bench_kwargs,
+                )
+            except Exception as e:
+                print(f"  {display_name:<35} {'ERROR':<15} Benchmark failed: {e}")
+                continue
 
-        # Track optimal backend
-        if fastest:
+            all_reports.append(report)
+
+            # Find winner
+            fastest = report.fastest()
+            for result in sorted(report.results, key=lambda r: (not r.success, r.mean_time)):
+                winner = '*' if (result.success and fastest and result.backend == fastest.backend) else ''
+                if result.success:
+                    print(f"  {display_name:<35} {result.backend:<15} {result.mean_time * 1000:>12.3f} "
+                          f"{result.std_time * 1000:>12.3f} {result.min_time * 1000:>12.3f} {winner:>8}")
+                else:
+                    error_short = result.error[:30] + '...' if result.error and len(result.error) > 30 else (result.error or '')
+                    print(f"  {display_name:<35} {result.backend:<15} {'FAILED':>12} {'':>12} {'':>12} {error_short:>8}")
+
+            # Track wins for voting
+            if fastest:
+                backend_wins[fastest.backend] = backend_wins.get(fastest.backend, 0) + 1
+
+        # Always persist optimal backend via voting across all configs
+        if backend_wins:
+            best_backend = max(backend_wins, key=backend_wins.get)
             if name not in optimal_defaults:
                 optimal_defaults[name] = {}
-            optimal_defaults[name][args.platform] = fastest.backend
+            optimal_defaults[name][args.platform] = best_backend
 
     print()
 
-    # Persist optimal defaults if requested
-    should_persist = args.persist and not args.no_persist
-    if should_persist and optimal_defaults:
+    # Always persist optimal defaults
+    if optimal_defaults:
         metadata = {
             'last_run': datetime.now(timezone.utc).isoformat(),
             'platform': args.platform,
@@ -200,14 +176,6 @@ def _run_benchmark(args) -> int:
     if args.output:
         output_data = {
             'platform': args.platform,
-            'parameters': {
-                'n_pre': args.n_pre,
-                'n_post': args.n_post,
-                'prob': args.prob,
-                'dtype': args.dtype,
-                'n_warmup': args.n_warmup,
-                'n_runs': args.n_runs,
-            },
             'reports': [r.to_dict() for r in all_reports],
             'optimal_defaults': optimal_defaults,
         }

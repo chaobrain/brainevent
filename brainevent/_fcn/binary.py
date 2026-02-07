@@ -520,6 +520,34 @@ binary_fcnmv_p.def_call(binary_fcnmv_p_call)
 binary_fcnmv_p.def_tags('fcn', 'binary')
 
 
+def _binary_fcnmv_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for homo in (True, False):
+            for bool_event in (True, False):
+                n_conn = max(1, int(n_post * prob))
+                indices = jnp.asarray(_np.random.randint(0, n_post, (n_pre, n_conn), dtype=_np.int32))
+                if homo:
+                    weights = jnp.ones(1, dtype=dtype)
+                else:
+                    weights = jnp.ones((n_pre, n_conn), dtype=dtype)
+                v_size = n_post if not transpose else n_pre
+                if bool_event:
+                    spikes = jnp.asarray(_np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
+                else:
+                    spikes = jnp.asarray(_np.random.rand(v_size), dtype=dtype)
+                name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
+                configs.append((name, (weights, indices, spikes), {
+                    'shape': (n_pre, n_post), 'transpose': transpose
+                }))
+    return configs
+
+
+binary_fcnmv_p.def_benchmark_data(_binary_fcnmv_benchmark_data)
+
+
 @namescope(static_argnames=['shape', 'transpose'])
 def binary_fcnmm(
     weights: Union[jax.Array, u.Quantity],
@@ -895,3 +923,31 @@ binary_fcnmm_p.def_transpose_rule(_binary_fcnmm_transpose_rule)
 binary_fcnmm_p.def_batching_rule(_binary_fcnmm_batching)
 binary_fcnmm_p.def_call(binary_fcnmm_p_call)
 binary_fcnmm_p.def_tags('fcn', 'binary')
+
+
+def _binary_fcnmm_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for homo in (True, False):
+            for bool_event in (True, False):
+                n_conn = max(1, int(n_post * prob))
+                indices = jnp.asarray(_np.random.randint(0, n_post, (n_pre, n_conn), dtype=_np.int32))
+                if homo:
+                    weights = jnp.ones(1, dtype=dtype)
+                else:
+                    weights = jnp.ones((n_pre, n_conn), dtype=dtype)
+                b_rows = n_post if not transpose else n_pre
+                if bool_event:
+                    matrix = jnp.asarray(_np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
+                else:
+                    matrix = jnp.asarray(_np.random.rand(b_rows, 10), dtype=dtype)
+                name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
+                configs.append((name, (weights, indices, matrix), {
+                    'shape': (n_pre, n_post), 'transpose': transpose
+                }))
+    return configs
+
+
+binary_fcnmm_p.def_benchmark_data(_binary_fcnmm_benchmark_data)

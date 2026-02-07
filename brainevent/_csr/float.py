@@ -529,14 +529,23 @@ csrmv_p.def_call(csrmv_p_call)
 csrmv_p.def_tags('csr', 'float')
 
 
-def _csrmv_benchmark_data(*, platform, n_pre, n_post, prob, dtype):
+def _csrmv_benchmark_data(*, platform):
     import numpy as _np
-    n_conn = max(1, int(n_post * prob))
-    indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
-    indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
-    weights = jnp.ones(n_pre * n_conn, dtype=dtype)
-    vector = jnp.asarray(_np.random.randn(n_post), dtype=dtype)
-    return (weights, indices, jnp.asarray(indptr), vector), {'shape': (n_pre, n_post), 'transpose': False}
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for homo in (True, False):
+            n_conn = max(1, int(n_post * prob))
+            indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
+            indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
+            weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(n_pre * n_conn, dtype=dtype)
+            v_size = n_post if not transpose else n_pre
+            vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
+            name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
+            configs.append((name, (weights, indices, jnp.asarray(indptr), vector), {
+                'shape': (n_pre, n_post), 'transpose': transpose
+            }))
+    return configs
 
 
 csrmv_p.def_benchmark_data(_csrmv_benchmark_data)
@@ -1091,14 +1100,23 @@ csrmm_p.def_call(csrmm_p_call)
 csrmm_p.def_tags('csr', 'float')
 
 
-def _csrmm_benchmark_data(*, platform, n_pre, n_post, prob, dtype):
+def _csrmm_benchmark_data(*, platform):
     import numpy as _np
-    n_conn = max(1, int(n_post * prob))
-    indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
-    indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
-    weights = jnp.ones(n_pre * n_conn, dtype=dtype)
-    B = jnp.asarray(_np.random.randn(n_post, 10), dtype=dtype)
-    return (weights, indices, jnp.asarray(indptr), B), {'shape': (n_pre, n_post), 'transpose': False}
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for homo in (True, False):
+            n_conn = max(1, int(n_post * prob))
+            indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
+            indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
+            weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(n_pre * n_conn, dtype=dtype)
+            b_rows = n_post if not transpose else n_pre
+            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
+            name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
+            configs.append((name, (weights, indices, jnp.asarray(indptr), B), {
+                'shape': (n_pre, n_post), 'transpose': transpose
+            }))
+    return configs
 
 
 csrmm_p.def_benchmark_data(_csrmm_benchmark_data)
@@ -1283,3 +1301,24 @@ csrmv_yw2y_p.def_pallas_kernel('gpu', _csrmv_yw2y_pallas_kernels)
 csrmv_yw2y_p.def_jvp_rule2(_csrmv_yw2y_jvp_y, _csrmv_yw2y_jvp_w, None, None)
 csrmv_yw2y_p.def_call(csrmv_yw2y_p_call)
 csrmv_yw2y_p.def_tags('csr', 'float')
+
+
+def _csrmv_yw2y_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        n_conn = max(1, int(n_post * prob))
+        indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
+        indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
+        w = jnp.ones(n_pre * n_conn, dtype=dtype)
+        y_size = n_pre if not transpose else n_post
+        y = jnp.asarray(_np.random.randn(y_size), dtype=dtype)
+        name = f"{'T' if transpose else 'NT'}"
+        configs.append((name, (y, w, indices, jnp.asarray(indptr)), {
+            'shape': (n_pre, n_post), 'transpose': transpose
+        }))
+    return configs
+
+
+csrmv_yw2y_p.def_benchmark_data(_csrmv_yw2y_benchmark_data)

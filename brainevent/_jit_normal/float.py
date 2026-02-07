@@ -627,6 +627,25 @@ jitn_p.def_batching_rule(_jitn_batching)
 jitn_p.def_tags('jit_normal', 'float')
 
 
+def _jitn_benchmark_data(*, platform):
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for corder in (True, False):
+            w_loc = jnp.ones(1, dtype=dtype)
+            w_scale = jnp.ones(1, dtype=dtype) * 0.1
+            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+            seed = jnp.asarray(42, dtype=jnp.uint32)
+            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
+            configs.append((name, (w_loc, w_scale, clen, seed), {
+                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
+            }))
+    return configs
+
+
+jitn_p.def_benchmark_data(_jitn_benchmark_data)
+
+
 def _jitnmv_numba_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
@@ -1172,6 +1191,28 @@ jitnmv_p.def_batching_rule(_jitnmv_batching)
 jitnmv_p.def_tags('jit_normal', 'float')
 
 
+def _jitnmv_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for corder in (True, False):
+            w_loc = jnp.ones(1, dtype=dtype)
+            w_scale = jnp.ones(1, dtype=dtype) * 0.1
+            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+            v_size = n_post if not transpose else n_pre
+            vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
+            seed = jnp.asarray(42, dtype=jnp.uint32)
+            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
+            configs.append((name, (w_loc, w_scale, clen, vector, seed), {
+                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
+            }))
+    return configs
+
+
+jitnmv_p.def_benchmark_data(_jitnmv_benchmark_data)
+
+
 def _jitnmm_numba_kernel_generator(
     transpose: bool = False,
     corder: bool = True,
@@ -1698,3 +1739,25 @@ jitnmm_p.def_jvp_rule2(_jitnmm_jvp_wloc, _jitnmm_jvp_wscale, None, _jitnmm_jvp_B
 jitnmm_p.def_transpose_rule(_jitnmm_transpose_rules)
 jitnmm_p.def_batching_rule(_jitnmm_batching)
 jitnmm_p.def_tags('jit_normal', 'float')
+
+
+def _jitnmm_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for corder in (True, False):
+            w_loc = jnp.ones(1, dtype=dtype)
+            w_scale = jnp.ones(1, dtype=dtype) * 0.1
+            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+            b_rows = n_post if not transpose else n_pre
+            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
+            seed = jnp.asarray(42, dtype=jnp.uint32)
+            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
+            configs.append((name, (w_loc, w_scale, clen, B, seed), {
+                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
+            }))
+    return configs
+
+
+jitnmm_p.def_benchmark_data(_jitnmm_benchmark_data)

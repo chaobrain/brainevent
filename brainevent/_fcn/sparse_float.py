@@ -421,6 +421,34 @@ spfloat_fcnmv_p.def_call(spfloat_fcnmv_p_call)
 spfloat_fcnmv_p.def_tags('fcn', 'sparse_float')
 
 
+def _spfloat_fcnmv_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for homo in (True, False):
+            n_conn = max(1, int(n_post * prob))
+            indices = jnp.asarray(_np.random.randint(0, n_post, (n_pre, n_conn), dtype=_np.int32))
+            if homo:
+                weights = jnp.ones(1, dtype=dtype)
+            else:
+                weights = jnp.ones((n_pre, n_conn), dtype=dtype)
+            v_size = n_post if not transpose else n_pre
+            vector_data = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
+            vector_index = jnp.asarray(
+                _np.sort(_np.random.choice(v_size, min(v_size // 5, v_size), replace=False)),
+                dtype=jnp.int32,
+            )
+            name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
+            configs.append((name, (weights, indices, vector_data, vector_index), {
+                'shape': (n_pre, n_post), 'transpose': transpose
+            }))
+    return configs
+
+
+spfloat_fcnmv_p.def_benchmark_data(_spfloat_fcnmv_benchmark_data)
+
+
 @namescope(static_argnames=['shape', 'transpose'])
 def spfloat_fcnmm(
     weights: Union[jax.Array, u.Quantity],
@@ -803,3 +831,27 @@ spfloat_fcnmm_p.def_transpose_rule(_spfloat_fcnmm_transpose_rule)
 spfloat_fcnmm_p.def_batching_rule(_spfloat_fcnmm_batching)
 spfloat_fcnmm_p.def_call(spfloat_fcnmm_p_call)
 spfloat_fcnmm_p.def_tags('fcn', 'sparse_float')
+
+
+def _spfloat_fcnmm_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for homo in (True, False):
+            n_conn = max(1, int(n_post * prob))
+            indices = jnp.asarray(_np.random.randint(0, n_post, (n_pre, n_conn), dtype=_np.int32))
+            if homo:
+                weights = jnp.ones(1, dtype=dtype)
+            else:
+                weights = jnp.ones((n_pre, n_conn), dtype=dtype)
+            b_rows = n_post if not transpose else n_pre
+            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
+            name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
+            configs.append((name, (weights, indices, B), {
+                'shape': (n_pre, n_post), 'transpose': transpose
+            }))
+    return configs
+
+
+spfloat_fcnmm_p.def_benchmark_data(_spfloat_fcnmm_benchmark_data)
