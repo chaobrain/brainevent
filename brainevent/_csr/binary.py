@@ -432,8 +432,15 @@ def _csrmv_pallas_kernel(
                 mask = offset + jnp.arange(block_dim) < row_end
                 cols = indices_ref[pl.dslice(offset, block_dim)]
                 events = vector_ref[cols]
-                events = jnp.asarray(events, dtype=posts_ref.dtype)
-                sum_ += val_A * jnp.sum(jnp.where(mask, events, 0.))
+                if vector_ref.dtype == jnp.bool_:
+                    events = jnp.asarray(events & mask, dtype=posts_ref.dtype)
+                else:
+                    events = jnp.where(
+                        events > 0. & mask,
+                        jnp.ones(events.shape, dtype=posts_ref.dtype),
+                        0.
+                    )
+                sum_ += val_A * jnp.sum(events)
                 return sum_
 
             i_row_sum = jax.lax.fori_loop(
@@ -470,8 +477,11 @@ def _csrmv_pallas_kernel(
                 cols = indices_ref[pl.dslice(offset, block_dim)]
                 val_A = data_ref[pl.dslice(offset, block_dim)]
                 events = vector_ref[cols]
-                events = jnp.asarray(events, dtype=posts_ref.dtype)
-                sum_ += jnp.sum(jnp.where(mask, val_A * events, 0.))
+                if vector_ref.dtype == jnp.bool_:
+                    events = jnp.asarray(events & mask, dtype=posts_ref.dtype)
+                else:
+                    events = jnp.where(events > 0. & mask, jnp.ones(events.shape, dtype=posts_ref.dtype), 0.)
+                sum_ += jnp.sum(val_A * events)
                 return sum_
 
             i_row_sum = jax.lax.fori_loop(
@@ -1450,9 +1460,9 @@ def binary_csrmm_p_call(
     assert indices.ndim == 1, "Indices must be 1D."
     assert indptr.dtype == indices.dtype, "Indices and indptr must have the same dtype."
     if transpose:
-        assert shape[0] == B.shape[0], "Shape mismatch for non-transpose operation."
+        assert shape[0] == B.shape[0], "Shape mismatch for transpose operation."
     else:
-        assert shape[1] == B.shape[0], f"Shape mismatch for transpose operation. {shape[1]} > {B.shape[0]} "
+        assert shape[1] == B.shape[0], f"Shape mismatch for non-transpose operation. {shape[1]} != {B.shape[0]}"
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
     # Check if weights is a scalar. If so, convert it to a one-dimensional array.

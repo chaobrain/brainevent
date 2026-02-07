@@ -242,11 +242,11 @@ def _csr_diag_add_pallas_kernel_generator(
 
 
 def _csr_diag_add_jvp_csr_value(dot, csr_value, diag_position, diag_value, **kwargs):
-    return csr_diag_add_call(dot, diag_position, diag_value)
+    return (dot,)
 
 
 def _csr_diag_add_jvp_diag_value(dot, csr_value, diag_position, diag_value, **kwargs):
-    return csr_diag_add_call(csr_value, diag_position, dot)
+    return csr_diag_add_call(jnp.zeros_like(csr_value), diag_position, dot)
 
 
 def _csr_diag_add_transpose_value(ct, csr_value, diag_position, diag_value, **kwargs):
