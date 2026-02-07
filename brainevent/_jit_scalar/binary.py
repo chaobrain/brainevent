@@ -25,6 +25,7 @@ from jax.interpreters import ad
 from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
+from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._pallas_random import PallasLFSR88RNG
 from brainevent._typing import Data, MatrixShape
 from .float import jitsmv_p_call, jitsmm_p_call
@@ -654,6 +655,32 @@ binary_jitsmv_p.def_jvp_rule2(_jitsmv_jvp_weights, None, _jitsmv_jvp_v, None, No
 binary_jitsmv_p.def_transpose_rule(_jitsmv_transpose_rules)
 binary_jitsmv_p.def_batching_rule(_jitsmv_batching)
 binary_jitsmv_p.def_call(binary_jitsmv_p_call)
+binary_jitsmv_p.def_tags('jit_scalar', 'binary')
+
+
+def _binary_jitsmv_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for corder in (True, False):
+            for bool_event in (True, False):
+                weight = jnp.ones(1, dtype=dtype)
+                clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+                v_size = n_post if not transpose else n_pre
+                if bool_event:
+                    vector = jnp.asarray(_np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
+                else:
+                    vector = jnp.asarray(_np.random.rand(v_size), dtype=dtype)
+                seed = jnp.asarray(42, dtype=jnp.uint32)
+                name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'},{'bool' if bool_event else 'float'}"
+                configs.append(BenchmarkConfig(name, (weight, clen, vector, seed), {
+                    'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
+                }))
+    return configs
+
+
+binary_jitsmv_p.def_benchmark_data(_binary_jitsmv_benchmark_data)
 
 
 def _jitsmm_numba_kernel(
@@ -1187,3 +1214,29 @@ binary_jitsmm_p.def_jvp_rule2(_jitsmm_jvp_w, None, _jitsmm_jvp_B, None, None)
 binary_jitsmm_p.def_transpose_rule(_jitsmm_transpose_rules)
 binary_jitsmm_p.def_batching_rule(_jitsmm_batching)
 binary_jitsmm_p.def_call(binary_jitsmm_p_call)
+binary_jitsmm_p.def_tags('jit_scalar', 'binary')
+
+
+def _binary_jitsmm_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for corder in (True, False):
+            for bool_event in (True, False):
+                weight = jnp.ones(1, dtype=dtype)
+                clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+                b_rows = n_post if not transpose else n_pre
+                if bool_event:
+                    B = jnp.asarray(_np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
+                else:
+                    B = jnp.asarray(_np.random.rand(b_rows, 10), dtype=dtype)
+                seed = jnp.asarray(42, dtype=jnp.uint32)
+                name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'},{'bool' if bool_event else 'float'}"
+                configs.append(BenchmarkConfig(name, (weight, clen, B, seed), {
+                    'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
+                }))
+    return configs
+
+
+binary_jitsmm_p.def_benchmark_data(_binary_jitsmm_benchmark_data)

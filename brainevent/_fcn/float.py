@@ -25,6 +25,7 @@ from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
 from brainevent._op import general_batching_rule, XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
+from brainevent._op.benchmark import BenchmarkConfig
 
 __all__ = [
     'fcnmv',
@@ -463,6 +464,31 @@ fcnmv_p.def_jvp_rule2(_fcnmv_jvp_weights, None, _fcnmv_jvp_vector, None)
 fcnmv_p.def_transpose_rule(_fcnmv_transpose_rule)
 fcnmv_p.def_batching_rule(_fcnmv_batching)
 fcnmv_p.def_call(fcnmv_p_call)
+fcnmv_p.def_tags('fcn', 'float')
+
+
+def _fcnmv_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for homo in (True, False):
+            n_conn = max(1, int(n_post * prob))
+            indices = jnp.asarray(_np.random.randint(0, n_post, (n_pre, n_conn), dtype=_np.int32))
+            if homo:
+                weights = jnp.ones(1, dtype=dtype)
+            else:
+                weights = jnp.ones((n_pre, n_conn), dtype=dtype)
+            v_size = n_post if not transpose else n_pre
+            vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
+            name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
+            configs.append(BenchmarkConfig(name, (weights, indices, vector), {
+                'shape': (n_pre, n_post), 'transpose': transpose
+            }))
+    return configs
+
+
+fcnmv_p.def_benchmark_data(_fcnmv_benchmark_data)
 
 
 @namescope(static_argnames=['shape', 'transpose'])
@@ -827,3 +853,28 @@ fcnmm_p.def_jvp_rule2(_fcnmm_jvp_weights, None, _fcnmm_jvp_matrix, None)
 fcnmm_p.def_transpose_rule(_fcnmm_transpose_rule)
 fcnmm_p.def_batching_rule(_fcnmm_batching)
 fcnmm_p.def_call(fcnmm_p_call)
+fcnmm_p.def_tags('fcn', 'float')
+
+
+def _fcnmm_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for homo in (True, False):
+            n_conn = max(1, int(n_post * prob))
+            indices = jnp.asarray(_np.random.randint(0, n_post, (n_pre, n_conn), dtype=_np.int32))
+            if homo:
+                weights = jnp.ones(1, dtype=dtype)
+            else:
+                weights = jnp.ones((n_pre, n_conn), dtype=dtype)
+            b_rows = n_post if not transpose else n_pre
+            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
+            name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
+            configs.append(BenchmarkConfig(name, (weights, indices, B), {
+                'shape': (n_pre, n_post), 'transpose': transpose
+            }))
+    return configs
+
+
+fcnmm_p.def_benchmark_data(_fcnmm_benchmark_data)

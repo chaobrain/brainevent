@@ -25,6 +25,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+import brainstate
 
 from brainevent._op.numba_ffi import (
     _ensure_sequence,
@@ -273,7 +274,7 @@ class TestNumbaKernelDtypes(unittest.TestCase):
             outs=jax.ShapeDtypeStruct((n,), jnp.float64),
         )
 
-        with jax.enable_x64(True):
+        with brainstate.environ.context(precision=64):
             x = jnp.arange(n, dtype=jnp.float64)
             result = kernel(x)
             result = result[0] if isinstance(result, tuple) else result
@@ -316,7 +317,7 @@ class TestNumbaKernelDtypes(unittest.TestCase):
             outs=jax.ShapeDtypeStruct((n,), jnp.int64),
         )
 
-        with jax.enable_x64(True):
+        with brainstate.environ.context(precision=64):
             x = jnp.arange(n, dtype=jnp.int64)
             result = kernel(x)
             result = result[0] if isinstance(result, tuple) else result
@@ -507,7 +508,7 @@ class TestNumbaKernelMultipleOutputs(unittest.TestCase):
             ],
         )
 
-        with jax.enable_x64(True):
+        with brainstate.environ.context(precision=64):
             x = jnp.arange(n, dtype=jnp.float32)
             float_out, int_out = kernel(x)
 

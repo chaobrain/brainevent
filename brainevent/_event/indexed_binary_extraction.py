@@ -19,6 +19,7 @@ from jax.interpreters import ad
 
 from brainevent._misc import namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
+from brainevent._op.benchmark import BenchmarkConfig
 
 
 @namescope
@@ -207,6 +208,27 @@ binary_1d_array_index_p.def_jvp_rule2(_binary_1d_array_index_jvp_spikes)
 binary_1d_array_index_p.def_transpose_rule(_binary_1d_array_index_transpose_rule)
 binary_1d_array_index_p.def_batching_rule(_binary_1d_array_index_batching)
 binary_1d_array_index_p.def_call(binary_1d_array_index_p_call)
+binary_1d_array_index_p.def_tags('event', 'binary')
+
+
+def _binary_1d_array_index_benchmark_data(*, platform):
+    import numpy as _np
+    n = 1000
+    configs = []
+    for bool_event in (True, False):
+        if bool_event:
+            spikes = jnp.asarray(_np.random.rand(n) > 0.9, dtype=jnp.bool_)
+        else:
+            spikes = jnp.asarray(
+                _np.where(_np.random.rand(n) > 0.9, _np.random.rand(n), 0.0),
+                dtype=jnp.float32,
+            )
+        name = "bool" if bool_event else "float"
+        configs.append(BenchmarkConfig(name, (spikes,)))
+    return configs
+
+
+binary_1d_array_index_p.def_benchmark_data(_binary_1d_array_index_benchmark_data)
 
 
 def binary_2d_array_index_p_call(spikes):
