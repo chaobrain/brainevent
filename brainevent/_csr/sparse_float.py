@@ -527,14 +527,14 @@ def _spfloat_csrmv_benchmark_data(*, platform):
             weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(n_pre * n_conn, dtype=dtype)
             v_size = n_post if not transpose else n_pre
             vector_data = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
-            vector_index = jnp.asarray(
-                _np.sort(_np.random.choice(v_size, min(v_size // 5, v_size), replace=False)),
-                dtype=jnp.int32,
-            )
             name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
-            configs.append(BenchmarkConfig(name, (weights, indices, jnp.asarray(indptr), vector_data, vector_index), {
-                'shape': (n_pre, n_post), 'transpose': transpose
-            }))
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (weights, indices, jnp.asarray(indptr), vector_data),
+                    {'shape': (n_pre, n_post), 'transpose': transpose}
+                )
+            )
     return configs
 
 
@@ -927,9 +927,9 @@ def sparse_float_csrmm_p_call(
     assert indices.ndim == 1, "Indices must be 1D."
     assert indptr.dtype == indices.dtype, "Indices and indptr must have the same dtype."
     if transpose:
-        assert shape[0] == B.shape[0], "Shape mismatch for non-transpose operation."
+        assert shape[0] == B.shape[0], "Shape mismatch for transpose operation."
     else:
-        assert shape[1] == B.shape[0], "Shape mismatch for transpose operation."
+        assert shape[1] == B.shape[0], "Shape mismatch for non-transpose operation."
 
     # Check if weights is a scalar. If so, convert it to a one-dimensional array.
     if jnp.ndim(weights) == 0:
