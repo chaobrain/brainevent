@@ -556,7 +556,7 @@ class TestNumbaCudaKernelXLAStream(unittest.TestCase):
 class TestNumbaCudaCallableValidation(unittest.TestCase):
     """Validation tests that do not require a GPU."""
 
-    @pytest.mark.skipif(not numba_installed, reason="Numba not installed")
+    @pytest.mark.skipif(not numba_cuda_available, reason="Numba not installed")
     def test_non_callable_raises_typeerror(self):
         from brainevent import numba_cuda_callable
 
@@ -566,7 +566,7 @@ class TestNumbaCudaCallableValidation(unittest.TestCase):
                 outs=jax.ShapeDtypeStruct((10,), jnp.float32),
             )
 
-    @pytest.mark.skipif(not numba_installed, reason="Numba not installed")
+    @pytest.mark.skipif(not numba_cuda_available, reason="Numba not installed")
     def test_returns_callable(self):
         from brainevent import numba_cuda_callable
 
