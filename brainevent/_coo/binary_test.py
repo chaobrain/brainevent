@@ -135,7 +135,7 @@ class TestVectorCOO:
     def _test_vjp(self, homo_w, replace, transpose):
         n_in = 20
         n_out = 30
-        shape = [n_in, n_out]
+        shape = (n_in, n_out)
         x = brainstate.random.rand(n_in) if transpose else brainstate.random.rand(n_out)
         x = (x < 0.6).astype(float)
 
@@ -176,7 +176,7 @@ class TestVectorCOO:
     def _test_jvp(self, homo_w, replace, transpose):
         n_in = 20
         n_out = 30
-        shape = [n_in, n_out]
+        shape = (n_in, n_out)
         x = brainstate.random.rand(n_in if transpose else n_out)
         x = (x < 0.6).astype(float)
 

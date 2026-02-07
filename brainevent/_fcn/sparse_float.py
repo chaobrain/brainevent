@@ -441,9 +441,13 @@ def _spfloat_fcnmv_benchmark_data(*, platform):
                 dtype=jnp.int32,
             )
             name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
-            configs.append(BenchmarkConfig(name, (weights, indices, vector_data, vector_index), {
-                'shape': (n_pre, n_post), 'transpose': transpose
-            }))
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (weights, indices, vector_data, vector_index),
+                    {'shape': (n_pre, n_post), 'transpose': transpose}
+                )
+            )
     return configs
 
 

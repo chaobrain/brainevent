@@ -60,7 +60,7 @@ class COO(u.sparse.SparseMatrix):
         Number of stored elements (property).
     dtype : dtype
         Data type of the matrix elements (property).
-    _info : COOInfo
+    info : COOInfo
         Additional information about the matrix structure (property).
     _bufs : tuple
         Tuple of (data, row, col) arrays (property).
@@ -80,15 +80,6 @@ class COO(u.sparse.SparseMatrix):
     row: Index
     col: Index
     shape: MatrixShape
-    nse = property(lambda self: self.data.size)
-    dtype = property(lambda self: self.data.dtype)
-    _info = property(
-        lambda self: COOInfo(
-            shape=self.shape,
-            rows_sorted=self._rows_sorted,
-            cols_sorted=self._cols_sorted)
-    )
-    _bufs = property(lambda self: (self.data, self.row, self.col))
     _rows_sorted: bool
     _cols_sorted: bool
 
@@ -118,6 +109,22 @@ class COO(u.sparse.SparseMatrix):
         self._rows_sorted = rows_sorted
         self._cols_sorted = cols_sorted
         super().__init__(args, shape=shape)
+
+    @property
+    def info(self):
+        return COOInfo(shape=self.shape, rows_sorted=self._rows_sorted, cols_sorted=self._cols_sorted)
+
+    @property
+    def dtype(self):
+        return self.data.dtype
+
+    @property
+    def nse(self):
+        return self.data.size
+
+    @property
+    def _bufs(self):
+        return (self.data, self.row, self.col)
 
     @classmethod
     def fromdense(
@@ -153,7 +160,7 @@ class COO(u.sparse.SparseMatrix):
         coo = u.sparse.coo_fromdense(mat, nse=nse, index_dtype=index_dtype)
         return COO((coo.data, coo.row, coo.col), shape=coo.shape)
 
-    def _sort_indices(self) -> 'COO':
+    def sort_indices(self) -> 'COO':
         """Return a copy of the COO matrix with sorted indices.
 
         The matrix is sorted by row indices and column indices per row.
@@ -164,11 +171,7 @@ class COO(u.sparse.SparseMatrix):
         data, unit = u.split_mantissa_unit(self.data)
         row, col, data = jax.lax.sort((self.row, self.col, data), num_keys=2)
         return self.__class__(
-            (
-                u.maybe_decimal(u.Quantity(data, unit=unit)),
-                row,
-                col
-            ),
+            (u.maybe_decimal(data * unit), row, col),
             shape=self.shape,
             rows_sorted=True
         )
@@ -212,7 +215,7 @@ class COO(u.sparse.SparseMatrix):
         jax.Array
             A dense representation of the COO matrix.
         """
-        return _coo_todense(self.data, self.row, self.col, spinfo=self._info)
+        return _coo_todense(self.data, self.row, self.col, spinfo=self.info)
 
     @property
     def T(self):
@@ -270,7 +273,7 @@ class COO(u.sparse.SparseMatrix):
             - A tuple with the matrix data.
             - A dictionary with auxiliary data (shape, sorting information, row and column indices).
         """
-        aux = self._info._asdict()
+        aux = self.info._asdict()
         aux['row'] = self.row
         aux['col'] = self.col
         return (self.data,), aux
@@ -325,11 +328,7 @@ class COO(u.sparse.SparseMatrix):
             A new COO matrix with the operation applied to the data.
         """
         return COO(
-            (
-                op(self.data),
-                self.row,
-                self.col
-            ),
+            (op(self.data), self.row, self.col),
             shape=self.shape,
             rows_sorted=self._rows_sorted,
             cols_sorted=self._cols_sorted
@@ -348,11 +347,7 @@ class COO(u.sparse.SparseMatrix):
         if isinstance(other, COO):
             if id(self.row) == id(other.row) and id(self.col) == id(other.col):
                 return COO(
-                    (
-                        op(self.data, other.data),
-                        self.row,
-                        self.col
-                    ),
+                    (op(self.data, other.data), self.row, self.col),
                     shape=self.shape,
                     rows_sorted=self._rows_sorted,
                     cols_sorted=self._cols_sorted
@@ -363,11 +358,7 @@ class COO(u.sparse.SparseMatrix):
         other = u.math.asarray(other)
         if other.size == 1:
             return COO(
-                (
-                    op(self.data, other),
-                    self.row,
-                    self.col
-                ),
+                (op(self.data, other), self.row, self.col),
                 shape=self.shape,
                 rows_sorted=self._rows_sorted,
                 cols_sorted=self._cols_sorted
@@ -375,11 +366,7 @@ class COO(u.sparse.SparseMatrix):
         elif other.ndim == 2 and other.shape == self.shape:
             other = other[self.row, self.col]
             return COO(
-                (
-                    op(self.data, other),
-                    self.row,
-                    self.col
-                ),
+                (op(self.data, other), self.row, self.col),
                 shape=self.shape,
                 rows_sorted=self._rows_sorted,
                 cols_sorted=self._cols_sorted
@@ -391,11 +378,7 @@ class COO(u.sparse.SparseMatrix):
         if isinstance(other, COO):
             if id(self.row) == id(other.row) and id(self.col) == id(other.col):
                 return COO(
-                    (
-                        op(other.data, self.data),
-                        self.row,
-                        self.col
-                    ),
+                    (op(other.data, self.data), self.row, self.col),
                     shape=self.shape,
                     rows_sorted=self._rows_sorted,
                     cols_sorted=self._cols_sorted
@@ -406,11 +389,7 @@ class COO(u.sparse.SparseMatrix):
         other = u.math.asarray(other)
         if other.size == 1:
             return COO(
-                (
-                    op(other, self.data),
-                    self.row,
-                    self.col
-                ),
+                (op(other, self.data), self.row, self.col),
                 shape=self.shape,
                 rows_sorted=self._rows_sorted,
                 cols_sorted=self._cols_sorted
@@ -418,11 +397,7 @@ class COO(u.sparse.SparseMatrix):
         elif other.ndim == 2 and other.shape == self.shape:
             other = other[self.row, self.col]
             return COO(
-                (
-                    op(other, self.data),
-                    self.row,
-                    self.col
-                ),
+                (op(other, self.data), self.row, self.col),
                 shape=self.shape,
                 rows_sorted=self._rows_sorted,
                 cols_sorted=self._cols_sorted
@@ -691,22 +666,10 @@ class COO(u.sparse.SparseMatrix):
             other = other.data
             if other.ndim == 1:
                 # Perform matrix-vector multiplication with event data
-                return binary_coomv(
-                    data,
-                    self.row,
-                    self.col,
-                    other,
-                    shape=self.shape
-                )
+                return binary_coomv(data, self.row, self.col, other, shape=self.shape)
             elif other.ndim == 2:
                 # Perform matrix-matrix multiplication with event data
-                return binary_coomm(
-                    data,
-                    self.row,
-                    self.col,
-                    other,
-                    shape=self.shape
-                )
+                return binary_coomm(data, self.row, self.col, other, shape=self.shape)
             else:
                 # Raise an error if the shape of the other object is unsupported
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -717,22 +680,10 @@ class COO(u.sparse.SparseMatrix):
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
                 # Perform matrix-vector multiplication
-                return coomv(
-                    data,
-                    self.row,
-                    self.col,
-                    other,
-                    shape=self.shape
-                )
+                return coomv(data, self.row, self.col, other, shape=self.shape)
             elif other.ndim == 2:
                 # Perform matrix-matrix multiplication
-                return coomm(
-                    data,
-                    self.row,
-                    self.col,
-                    other,
-                    shape=self.shape
-                )
+                return coomm(data, self.row, self.col, other, shape=self.shape)
             else:
                 # Raise an error if the shape of the other object is unsupported
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -770,26 +721,12 @@ class COO(u.sparse.SparseMatrix):
             other = other.data
             if other.ndim == 1:
                 # Perform matrix-vector multiplication with event data
-                return binary_coomv(
-                    data,
-                    self.row,
-                    self.col,
-                    other,
-                    shape=self.shape,
-                    transpose=True
-                )
+                return binary_coomv(data, self.row, self.col, other, shape=self.shape, transpose=True)
             elif other.ndim == 2:
                 # Transpose the other matrix for multiplication
                 other = other.T
                 # Perform matrix-matrix multiplication with event data
-                r = binary_coomm(
-                    data,
-                    self.row,
-                    self.col,
-                    other,
-                    shape=self.shape,
-                    transpose=True
-                )
+                r = binary_coomm(data, self.row, self.col, other, shape=self.shape, transpose=True)
                 # Transpose the result back to the original orientation
                 return r.T
             else:
@@ -802,26 +739,12 @@ class COO(u.sparse.SparseMatrix):
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
                 # Perform matrix-vector multiplication
-                return coomv(
-                    data,
-                    self.row,
-                    self.col,
-                    other,
-                    shape=self.shape,
-                    transpose=True
-                )
+                return coomv(data, self.row, self.col, other, shape=self.shape, transpose=True)
             elif other.ndim == 2:
                 # Transpose the other matrix for multiplication
                 other = other.T
                 # Perform matrix-matrix multiplication
-                r = coomm(
-                    data,
-                    self.row,
-                    self.col,
-                    other,
-                    shape=self.shape,
-                    transpose=True
-                )
+                r = coomm(data, self.row, self.col, other, shape=self.shape, transpose=True)
                 # Transpose the result back to the original orientation
                 return r.T
             else:
