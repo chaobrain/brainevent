@@ -49,6 +49,7 @@ GPU Kernel (Numba CUDA)
    :toctree: generated/
 
    numba_cuda_kernel
+   numba_cuda_callable
 
 
 GPU/TPU Kernel (Pallas)
