@@ -184,11 +184,11 @@ class XLACustomKernel:
         return tree_def.unflatten(r)
 
     def def_kernel(
-        self,
-        backend: str,
-        platform: str,
-        kg: KernelGenerator,
-        asdefault: bool = False
+            self,
+            backend: str,
+            platform: str,
+            kg: KernelGenerator,
+            asdefault: bool = False
     ):
         """Register a kernel for a specific backend and platform.
 
@@ -250,7 +250,15 @@ class XLACustomKernel:
                 )
 
             # Determine which backend to use
-            backend_to_use = self._defaults.get(platform)
+            backend_to_use = kwargs.pop('backend', None)
+            if backend_to_use is not None:
+                if backend_to_use not in kernels:
+                    raise KernelFallbackExhaustedError(
+                        f'{backend_to_use} not available for platform {platform} in primitive '
+                        f'{self.name}.'
+                    )
+            else:
+                backend_to_use = self._defaults.get(platform)
 
             # Get the kernel entry
             if backend_to_use and backend_to_use in kernels:
@@ -269,11 +277,11 @@ class XLACustomKernel:
                 alt_msg = ""
                 if alternatives:
                     alt_msg = (
-                        f"\n\nAlternative backends available for '{platform}':\n"
-                        + "\n".join(f"  - {b}" for b in alternatives)
-                        + f"\n\nTo use an alternative:\n"
-                          f"  1. Call with backend='{alternatives[0]}'\n"
-                          f"  2. Or set default: kernel.set_default('{platform}', '{alternatives[0]}')"
+                            f"\n\nAlternative backends available for '{platform}':\n"
+                            + "\n".join(f"  - {b}" for b in alternatives)
+                            + f"\n\nTo use an alternative:\n"
+                              f"  1. Call with backend='{alternatives[0]}'\n"
+                              f"  2. Or set default: kernel.set_default('{platform}', '{alternatives[0]}')"
                     )
                 raise KernelExecutionError(
                     f"Backend '{backend_to_use}' failed on platform '{platform}':\n"
@@ -285,9 +293,9 @@ class XLACustomKernel:
         mlir.register_lowering(self.primitive, lower, platform=platform)
 
     def def_numba_kernel(
-        self,
-        kg: KernelGenerator,
-        asdefault: bool = False
+            self,
+            kg: KernelGenerator,
+            asdefault: bool = False
     ):
         """Register a Numba kernel for CPU platform.
 
@@ -301,9 +309,9 @@ class XLACustomKernel:
         self.def_kernel(backend='numba', platform='cpu', kg=kg, asdefault=asdefault)
 
     def def_warp_kernel(
-        self,
-        kg: KernelGenerator,
-        asdefault: bool = False
+            self,
+            kg: KernelGenerator,
+            asdefault: bool = False
     ):
         """Register a Warp kernel for GPU platform.
 
@@ -317,9 +325,9 @@ class XLACustomKernel:
         self.def_kernel(backend='warp', platform='gpu', kg=kg, asdefault=asdefault)
 
     def def_triton_kernel(
-        self,
-        kg: KernelGenerator,
-        asdefault: bool = False
+            self,
+            kg: KernelGenerator,
+            asdefault: bool = False
     ):
         """Register a Triton kernel for GPU platform.
 
@@ -333,10 +341,10 @@ class XLACustomKernel:
         self.def_kernel(backend='triton', platform='gpu', kg=kg, asdefault=asdefault)
 
     def def_pallas_kernel(
-        self,
-        platform: str,
-        kg: KernelGenerator,
-        asdefault: bool = False
+            self,
+            platform: str,
+            kg: KernelGenerator,
+            asdefault: bool = False
     ):
         """Register a Pallas kernel for GPU or TPU platform.
 
@@ -352,10 +360,10 @@ class XLACustomKernel:
         self.def_kernel(backend='pallas', platform=platform, kg=kg, asdefault=asdefault)
 
     def def_tvmffi_kernel(
-        self,
-        platform: str,
-        kg: KernelGenerator,
-        asdefault: bool = False
+            self,
+            platform: str,
+            kg: KernelGenerator,
+            asdefault: bool = False
     ):
         """Register a TVM FFI kernel for CPU or GPU platform.
 
@@ -371,9 +379,9 @@ class XLACustomKernel:
         self.def_kernel(backend='tvmffi', platform=platform, kg=kg, asdefault=asdefault)
 
     def def_numba_cuda_kernel(
-        self,
-        kg: KernelGenerator,
-        asdefault: bool = False
+            self,
+            kg: KernelGenerator,
+            asdefault: bool = False
     ):
         """Register a Numba CUDA kernel for GPU platform.
 
@@ -592,15 +600,15 @@ class XLACustomKernel:
         return list(self._kernels[platform].keys())
 
     def benchmark(
-        self,
-        *args,
-        platform: str,
-        backend: Optional[str] = None,
-        n_warmup: int = 5,
-        n_runs: int = 20,
-        batch_mode: bool = False,
-        compare_results: bool = True,
-        **kwargs
+            self,
+            *args,
+            platform: str,
+            backend: Optional[str] = None,
+            n_warmup: int = 5,
+            n_runs: int = 20,
+            batch_mode: bool = False,
+            compare_results: bool = True,
+            **kwargs
     ) -> Union[BenchmarkResult, BenchmarkReport]:
         """Benchmark kernel execution using the registered call function.
 

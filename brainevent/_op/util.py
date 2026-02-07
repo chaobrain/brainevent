@@ -41,6 +41,8 @@ if tvmffi_installed:
 if warp_installed:
     try:
         import warp  # pylint: disable=import-error, import-outside-toplevel
+
+        warp.config.quiet = True
     except:
         warp_installed = False
 
