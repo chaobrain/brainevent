@@ -24,6 +24,17 @@ This benchmark covers:
 - homogeneous (weights size == 1) and heterogeneous (weights size == nnz)
 - index distributions: uniform, hotspot-row, hotspot-col
 - duplicate COO indices (generated with replacement)
+
+
+### How to run on GPU
+
+> python benchmark/24_coomv_benchmark.py --platform gpu --n-warmup 20 --n-runs 80
+
+Quick run:
+
+> python benchmark/24_coomv_benchmark.py --platform gpu --n-warmup 5 --n-runs 20 --distributions uniform hotspot_row
+
+
 """
 
 import argparse
