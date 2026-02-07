@@ -237,6 +237,27 @@ def _csr_on_pre_pallas_kernel_generator(
     return kernel
 
 
+def _plast_csr_pre_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for bool_event in (True, False):
+        n_conn = max(1, int(n_post * prob))
+        indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
+        indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
+        weight = jnp.ones(n_pre * n_conn, dtype=dtype)
+        if bool_event:
+            pre_spike = jnp.asarray(_np.random.rand(n_pre) > 0.5, dtype=jnp.bool_)
+        else:
+            pre_spike = jnp.asarray(_np.random.rand(n_pre), dtype=dtype)
+        post_trace = jnp.asarray(_np.random.randn(n_post), dtype=dtype)
+        name = f"{'bool' if bool_event else 'float'}"
+        configs.append(BenchmarkConfig(name, (weight, indices, jnp.asarray(indptr), pre_spike, post_trace), {
+            'shape': (n_pre, n_post)
+        }))
+    return configs
+
+
 def _csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, shape):
     assert weight.ndim == 1, 'dense_one_pre only support 1D weight.'
     assert pre_spike.ndim == 1, 'pre_spike should be 1D.'
@@ -264,29 +285,6 @@ plast_csr_on_binary_pre_p.def_warp_kernel(_csr_on_pre_warp_kernel_generator)
 plast_csr_on_binary_pre_p.def_pallas_kernel('gpu', _csr_on_pre_pallas_kernel_generator)
 plast_csr_on_binary_pre_p.def_pallas_kernel('tpu', _csr_on_pre_pallas_kernel_generator)
 plast_csr_on_binary_pre_p.def_tags('csr', 'plasticity')
-
-
-def _plast_csr_pre_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for bool_event in (True, False):
-        n_conn = max(1, int(n_post * prob))
-        indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
-        indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
-        weight = jnp.ones(n_pre * n_conn, dtype=dtype)
-        if bool_event:
-            pre_spike = jnp.asarray(_np.random.rand(n_pre) > 0.5, dtype=jnp.bool_)
-        else:
-            pre_spike = jnp.asarray(_np.random.rand(n_pre), dtype=dtype)
-        post_trace = jnp.asarray(_np.random.randn(n_post), dtype=dtype)
-        name = f"{'bool' if bool_event else 'float'}"
-        configs.append(BenchmarkConfig(name, (weight, indices, jnp.asarray(indptr), pre_spike, post_trace), {
-            'shape': (n_pre, n_post)
-        }))
-    return configs
-
-
 plast_csr_on_binary_pre_p.def_benchmark_data(_plast_csr_pre_benchmark_data)
 
 
@@ -521,6 +519,31 @@ def _csr2csc_on_post_pallas_kernel_generator(
     return kernel
 
 
+def _plast_csr_post_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for bool_event in (True, False):
+        n_conn = max(1, int(n_post * prob))
+        indptr = _np.arange(n_post + 1, dtype=_np.int32) * n_conn
+        indices = _np.random.randint(0, n_pre, (n_post * n_conn,), dtype=_np.int32)
+        weight = jnp.ones(n_post * n_conn, dtype=dtype)
+        weight_indices = jnp.asarray(
+            _np.random.randint(0, n_post * n_conn, (n_post * n_conn,), dtype=_np.int32)
+        )
+        pre_trace = jnp.asarray(_np.random.randn(n_pre), dtype=dtype)
+        if bool_event:
+            post_spike = jnp.asarray(_np.random.rand(n_post) > 0.5, dtype=jnp.bool_)
+        else:
+            post_spike = jnp.asarray(_np.random.rand(n_post), dtype=dtype)
+        name = f"{'bool' if bool_event else 'float'}"
+        configs.append(
+            BenchmarkConfig(name, (weight, indices, jnp.asarray(indptr), weight_indices, pre_trace, post_spike), {
+                'shape': (n_pre, n_post)
+            }))
+    return configs
+
+
 def _csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace, post_spike, *, shape):
     assert weight.ndim == 1, 'dense_one_post only support 1D weight.'
     assert post_spike.ndim == 1, 'post_spike should be 1D.'
@@ -550,30 +573,4 @@ plast_csr2csc_on_binary_post_p.def_warp_kernel(_csr2csc_on_post_warp_kernel_gene
 plast_csr2csc_on_binary_post_p.def_pallas_kernel('gpu', _csr2csc_on_post_pallas_kernel_generator)
 plast_csr2csc_on_binary_post_p.def_pallas_kernel('tpu', _csr2csc_on_post_pallas_kernel_generator)
 plast_csr2csc_on_binary_post_p.def_tags('csr', 'plasticity')
-
-
-def _plast_csr_post_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for bool_event in (True, False):
-        n_conn = max(1, int(n_post * prob))
-        indptr = _np.arange(n_post + 1, dtype=_np.int32) * n_conn
-        indices = _np.random.randint(0, n_pre, (n_post * n_conn,), dtype=_np.int32)
-        weight = jnp.ones(n_post * n_conn, dtype=dtype)
-        weight_indices = jnp.asarray(
-            _np.random.randint(0, n_post * n_conn, (n_post * n_conn,), dtype=_np.int32)
-        )
-        pre_trace = jnp.asarray(_np.random.randn(n_pre), dtype=dtype)
-        if bool_event:
-            post_spike = jnp.asarray(_np.random.rand(n_post) > 0.5, dtype=jnp.bool_)
-        else:
-            post_spike = jnp.asarray(_np.random.rand(n_post), dtype=dtype)
-        name = f"{'bool' if bool_event else 'float'}"
-        configs.append(BenchmarkConfig(name, (weight, indices, jnp.asarray(indptr), weight_indices, pre_trace, post_spike), {
-            'shape': (n_pre, n_post)
-        }))
-    return configs
-
-
 plast_csr2csc_on_binary_post_p.def_benchmark_data(_plast_csr_post_benchmark_data)

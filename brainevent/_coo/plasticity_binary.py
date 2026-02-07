@@ -221,6 +221,26 @@ def _coo_on_pre_pallas_gpu_kernel(
     return run
 
 
+def _plast_coo_pre_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for bool_event in (True, False):
+        nnz = max(1, int(n_pre * n_post * prob))
+        pre_ids = _np.random.randint(0, n_pre, nnz, dtype=_np.int32)
+        post_ids = _np.random.randint(0, n_post, nnz, dtype=_np.int32)
+        weight = jnp.ones(nnz, dtype=dtype)
+        if bool_event:
+            pre_spike = jnp.asarray(_np.random.rand(n_pre) > 0.5, dtype=jnp.bool_)
+        else:
+            pre_spike = jnp.asarray(_np.random.rand(n_pre), dtype=dtype)
+        post_trace = jnp.asarray(_np.random.randn(n_post), dtype=dtype)
+        name = f"{'bool' if bool_event else 'float'}"
+        configs.append(
+            BenchmarkConfig(name, (weight, jnp.asarray(pre_ids), jnp.asarray(post_ids), pre_spike, post_trace)))
+    return configs
+
+
 def _coo_on_pre_prim_call(weight, pre_ids, post_ids, pre_spike, post_trace):
     assert weight.ndim == 1, 'coo_on_pre only supports 1D weight.'
     assert weight.shape == pre_ids.shape == post_ids.shape, (
@@ -249,27 +269,6 @@ plast_coo_on_binary_pre_p.def_pallas_kernel('gpu', _coo_on_pre_pallas_gpu_kernel
 plast_coo_on_binary_pre_p.def_pallas_kernel('tpu', _coo_on_pre_pallas_gpu_kernel)
 plast_coo_on_binary_pre_p.def_call(_coo_on_pre_prim_call)
 plast_coo_on_binary_pre_p.def_tags('coo', 'plasticity')
-
-
-def _plast_coo_pre_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for bool_event in (True, False):
-        nnz = max(1, int(n_pre * n_post * prob))
-        pre_ids = _np.random.randint(0, n_pre, nnz, dtype=_np.int32)
-        post_ids = _np.random.randint(0, n_post, nnz, dtype=_np.int32)
-        weight = jnp.ones(nnz, dtype=dtype)
-        if bool_event:
-            pre_spike = jnp.asarray(_np.random.rand(n_pre) > 0.5, dtype=jnp.bool_)
-        else:
-            pre_spike = jnp.asarray(_np.random.rand(n_pre), dtype=dtype)
-        post_trace = jnp.asarray(_np.random.randn(n_post), dtype=dtype)
-        name = f"{'bool' if bool_event else 'float'}"
-        configs.append(BenchmarkConfig(name, (weight, jnp.asarray(pre_ids), jnp.asarray(post_ids), pre_spike, post_trace)))
-    return configs
-
-
 plast_coo_on_binary_pre_p.def_benchmark_data(_plast_coo_pre_benchmark_data)
 
 
@@ -466,6 +465,26 @@ def _coo_on_post_pallas_gpu_kernel(
     return run
 
 
+def _plast_coo_post_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for bool_event in (True, False):
+        nnz = max(1, int(n_pre * n_post * prob))
+        pre_ids = _np.random.randint(0, n_pre, nnz, dtype=_np.int32)
+        post_ids = _np.random.randint(0, n_post, nnz, dtype=_np.int32)
+        weight = jnp.ones(nnz, dtype=dtype)
+        pre_trace = jnp.asarray(_np.random.randn(n_pre), dtype=dtype)
+        if bool_event:
+            post_spike = jnp.asarray(_np.random.rand(n_post) > 0.5, dtype=jnp.bool_)
+        else:
+            post_spike = jnp.asarray(_np.random.rand(n_post), dtype=dtype)
+        name = f"{'bool' if bool_event else 'float'}"
+        configs.append(
+            BenchmarkConfig(name, (weight, jnp.asarray(pre_ids), jnp.asarray(post_ids), pre_trace, post_spike)))
+    return configs
+
+
 def _coo_on_post_prim_call(weight, pre_ids, post_ids, pre_trace, post_spike):
     assert weight.ndim == 1, 'coo_on_post only supports 1D weight.'
     assert weight.shape == pre_ids.shape == post_ids.shape, (
@@ -494,25 +513,4 @@ plast_coo_on_binary_post_p.def_pallas_kernel('gpu', _coo_on_post_pallas_gpu_kern
 plast_coo_on_binary_post_p.def_pallas_kernel('tpu', _coo_on_post_pallas_gpu_kernel)
 plast_coo_on_binary_post_p.def_call(_coo_on_post_prim_call)
 plast_coo_on_binary_post_p.def_tags('coo', 'plasticity')
-
-
-def _plast_coo_post_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for bool_event in (True, False):
-        nnz = max(1, int(n_pre * n_post * prob))
-        pre_ids = _np.random.randint(0, n_pre, nnz, dtype=_np.int32)
-        post_ids = _np.random.randint(0, n_post, nnz, dtype=_np.int32)
-        weight = jnp.ones(nnz, dtype=dtype)
-        pre_trace = jnp.asarray(_np.random.randn(n_pre), dtype=dtype)
-        if bool_event:
-            post_spike = jnp.asarray(_np.random.rand(n_post) > 0.5, dtype=jnp.bool_)
-        else:
-            post_spike = jnp.asarray(_np.random.rand(n_post), dtype=dtype)
-        name = f"{'bool' if bool_event else 'float'}"
-        configs.append(BenchmarkConfig(name, (weight, jnp.asarray(pre_ids), jnp.asarray(post_ids), pre_trace, post_spike)))
-    return configs
-
-
 plast_coo_on_binary_post_p.def_benchmark_data(_plast_coo_post_benchmark_data)
