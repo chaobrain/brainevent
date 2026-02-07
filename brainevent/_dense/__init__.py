@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-from .binary import dm_bv, dm_bv_p, bv_dm, bv_dm_p, dm_bm, dm_bm_p, bm_dm, bm_dm_p
+from .binary import dbmv, dbmv_p, bdvm, bdvm_p, dbmm, dbmm_p, bdmm, bdmm_p
 from .indexed_binary import (
     indexed_bv_dm, indexed_bv_dm_p, indexed_dm_bv,
     indexed_dm_bm, indexed_bm_dm, indexed_bm_dm_p,
@@ -25,8 +25,8 @@ from .plasticity import (
 from .sparse_float import dm_sfv, dm_sfv_p, sfv_dm, sfv_dm_p, dm_sfm, dm_sfm_p, sfm_dm, sfm_dm_p
 
 __all__ = [
-    'dm_bv', 'dm_bv_p', 'bv_dm', 'bv_dm_p',
-    'dm_bm', 'dm_bm_p', 'bm_dm', 'bm_dm_p',
+    'dbmv', 'dbmv_p', 'bdvm', 'bdvm_p',
+    'dbmm', 'dbmm_p', 'bdmm', 'bdmm_p',
     'indexed_bv_dm', 'indexed_bv_dm_p', 'indexed_dm_bv',
     'indexed_dm_bm', 'indexed_bm_dm', 'indexed_bm_dm_p',
     'plast_dense_on_binary_pre', 'plast_dense_on_binary_pre_p',
