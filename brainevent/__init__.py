@@ -77,6 +77,11 @@ from ._jit_uniform import (
     binary_jitumv, binary_jitumv_p, binary_jitumm, binary_jitumm_p,
     jitu, jitu_p, jitumv, jitumv_p, jitumm, jitumm_p,
 )
+from ._config import (
+    load_user_defaults, save_user_defaults, get_user_default,
+    set_user_default, clear_user_defaults, get_config_path,
+    invalidate_cache,
+)
 from ._misc import (
     csr_to_coo_index, coo_to_csc_index, csr_to_csc_index,
 )
@@ -89,6 +94,9 @@ from ._op import (
 )
 from ._pallas_random import (
     PallasLFSR88RNG, PallasLFSR113RNG, PallasLFSR128RNG,
+)
+from ._registry import (
+    get_registry, get_primitives_by_tags, get_all_primitive_names,
 )
 
 __all__ = [
@@ -164,6 +172,12 @@ __all__ = [
 
     # --- utilities --- #
     'csr_to_coo_index', 'coo_to_csc_index', 'csr_to_csc_index',
+
+    # --- config & registry --- #
+    'load_user_defaults', 'save_user_defaults', 'get_user_default',
+    'set_user_default', 'clear_user_defaults', 'get_config_path',
+    'invalidate_cache',
+    'get_registry', 'get_primitives_by_tags', 'get_all_primitive_names',
 ]
 
 

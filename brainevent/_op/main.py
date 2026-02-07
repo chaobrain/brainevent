@@ -126,6 +126,17 @@ class XLACustomKernel:
         # call function for benchmarking
         self._call_fn: Optional[Callable] = None
 
+        # categorization tags (e.g., {'csr', 'binary'})
+        self._tags: set = set()
+        # benchmark data generator function
+        self._benchmark_data_fn: Optional[Callable] = None
+        # lazy flag for user defaults from config file
+        self._user_defaults_applied: bool = False
+
+        # Auto-register in global registry
+        from brainevent._registry import register_primitive
+        register_primitive(name, self)
+
     def _abstract_eval(self, *ins, outs: OutType, **kwargs):
         """
         Abstract evaluation rule for the JAX primitive.
@@ -228,6 +239,9 @@ class XLACustomKernel:
         """
 
         def fallback_kernel_fn(*args, **kwargs):
+            # Apply user defaults lazily on first dispatch
+            self._apply_user_defaults()
+
             # Get kernels dict for this platform
             kernels = self._kernels.get(platform, {})
             if not kernels:
@@ -369,12 +383,14 @@ class XLACustomKernel:
         """
         self.def_kernel(backend='numba_cuda', platform='gpu', kg=kg, asdefault=asdefault)
 
-    def set_default(self, platform: str, backend: str):
+    def set_default(self, platform: str, backend: str, persist: bool = False):
         """Set the default backend for a platform.
 
         Args:
             platform: The platform name (e.g., 'cpu', 'gpu', 'tpu').
             backend: The backend name to set as default.
+            persist: If True, save the default to the user config file
+                so it persists across sessions.
 
         Raises:
             ValueError: If no kernels registered for the platform or
@@ -389,6 +405,9 @@ class XLACustomKernel:
                 f"Available: {available}"
             )
         self._defaults[platform] = backend
+        if persist:
+            from brainevent._config import set_user_default
+            set_user_default(self.name, platform, backend)
 
     def get_default(self, platform: str) -> Optional[str]:
         """Get the default backend for a platform.
@@ -518,6 +537,46 @@ class XLACustomKernel:
                 "Use def_call() to register one before calling."
             )
         return self._call_fn(*args, **kwargs)
+
+    def def_tags(self, *tags: str):
+        """Set categorization tags for this primitive.
+
+        Tags are used by the CLI and registry to filter primitives
+        by format (e.g., 'csr', 'coo') and type (e.g., 'binary', 'float').
+
+        Args:
+            *tags: Tag strings (e.g., 'csr', 'binary').
+        """
+        self._tags = set(tags)
+
+    def def_benchmark_data(self, fn: Callable):
+        """Register a benchmark data generator function.
+
+        The function should return a list of :class:`BenchmarkConfig`
+        instances, each covering a specific parameter combination for
+        this primitive.
+
+        Args:
+            fn: A callable with signature
+                ``fn(*, platform) -> List[BenchmarkConfig]``.
+        """
+        self._benchmark_data_fn = fn
+
+    def _apply_user_defaults(self):
+        """Lazily apply user defaults from the config file.
+
+        Called once before the first kernel dispatch. Reads the user config
+        and sets defaults for any platforms that have a user preference and
+        a matching registered backend.
+        """
+        if self._user_defaults_applied:
+            return
+        self._user_defaults_applied = True
+        from brainevent._config import load_user_defaults
+        prim_defaults = load_user_defaults().get(self.name, {})
+        for plat, backend in prim_defaults.items():
+            if plat in self._kernels and backend in self._kernels[plat]:
+                self._defaults[plat] = backend
 
     def available_backends(self, platform: str) -> List[str]:
         """Return list of registered backend names for a platform.

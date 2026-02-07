@@ -24,6 +24,7 @@ from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import jaxinfo_to_warpinfo, XLACustomKernel, general_batching_rule, numba_kernel
+from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Row, Col, MatrixShape
 
@@ -487,11 +488,33 @@ coomv_p = XLACustomKernel('coomv')
 coomv_p.def_numba_kernel(_coomv_numba_kernel)
 coomv_p.def_warp_kernel(_coomv_warp_kernel)
 coomv_p.def_pallas_kernel('gpu', _coomv_pallas_gpu_kernel)
-coomv_p.def_pallas_kernel('tpu', _coomv_pallas_gpu_kernel)
 coomv_p.def_jvp_rule2(_coomv_jvp_weights, None, None, _coomv_jvp_vector)
 coomv_p.def_transpose_rule(_coomv_transpose_rule)
 coomv_p.def_batching_rule(_coomv_batching)
 coomv_p.def_call(coomv_p_call)
+coomv_p.def_tags('coo', 'float')
+
+
+def _coomv_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for homo in (True, False):
+            nnz = max(1, int(n_pre * n_post * prob))
+            row = _np.random.randint(0, n_pre, nnz, dtype=_np.int32)
+            col = _np.random.randint(0, n_post, nnz, dtype=_np.int32)
+            weights = jnp.ones(1, dtype=dtype) if homo else jnp.asarray(_np.random.randn(nnz), dtype=dtype)
+            v_size = n_post if not transpose else n_pre
+            vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
+            name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
+            configs.append(BenchmarkConfig(name, (weights, jnp.asarray(row), jnp.asarray(col), vector), {
+                'shape': (n_pre, n_post), 'transpose': transpose
+            }))
+    return configs
+
+
+coomv_p.def_benchmark_data(_coomv_benchmark_data)
 
 
 # =============================================================================
@@ -948,3 +971,26 @@ coomm_p.def_jvp_rule2(_coomm_jvp_left, None, None, _coomm_jvp_right)
 coomm_p.def_transpose_rule(_coomm_transpose_rule)
 coomm_p.def_batching_rule(_coomm_batching)
 coomm_p.def_call(coomm_p_call)
+coomm_p.def_tags('coo', 'float')
+
+
+def _coomm_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for homo in (True, False):
+            nnz = max(1, int(n_pre * n_post * prob))
+            row = _np.random.randint(0, n_pre, nnz, dtype=_np.int32)
+            col = _np.random.randint(0, n_post, nnz, dtype=_np.int32)
+            weights = jnp.ones(1, dtype=dtype) if homo else jnp.asarray(_np.random.randn(nnz), dtype=dtype)
+            b_rows = n_post if not transpose else n_pre
+            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
+            name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
+            configs.append(BenchmarkConfig(name, (weights, jnp.asarray(row), jnp.asarray(col), B), {
+                'shape': (n_pre, n_post), 'transpose': transpose
+            }))
+    return configs
+
+
+coomm_p.def_benchmark_data(_coomm_benchmark_data)

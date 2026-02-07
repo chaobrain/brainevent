@@ -21,6 +21,7 @@ from jax.interpreters import ad
 
 from brainevent._misc import cdiv, generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
+from brainevent._op.benchmark import BenchmarkConfig
 
 __all__ = [
     'indexed_bv_dm',
@@ -244,6 +245,24 @@ indexed_bv_dm_p.def_jvp_rule2(_binary_vec_dot_dense_mat_jvp_spikes, None, None, 
 indexed_bv_dm_p.def_transpose_rule(_binary_vec_dot_dense_mat_transpose)
 indexed_bv_dm_p.def_batching_rule(_binary_vec_dot_dense_mat_batching)
 indexed_bv_dm_p.def_call(indexed_bvdm_p_call)
+indexed_bv_dm_p.def_tags('dense', 'indexed_binary')
+
+
+def _indexed_bv_dm_benchmark_data(*, platform):
+    import numpy as _np
+    n_input, n_output = 1000, 1000
+    n_spikes = 100
+    dtype = jnp.float32
+    spikes = jnp.ones(n_input, dtype=dtype)
+    indices = jnp.asarray(_np.random.choice(n_input, n_spikes, replace=False).astype(_np.int32))
+    count = jnp.asarray([n_spikes], dtype=jnp.int32)
+    weights = jnp.asarray(_np.random.randn(n_input, n_output), dtype=dtype)
+    return [
+        BenchmarkConfig("default", (spikes, indices, count, weights)),
+    ]
+
+
+indexed_bv_dm_p.def_benchmark_data(_indexed_bv_dm_benchmark_data)
 
 
 @namescope
@@ -502,6 +521,26 @@ indexed_bm_dm_p.def_jvp_rule2(_binary_mat_dot_dense_mat_jvp_spikes, None, None, 
 indexed_bm_dm_p.def_transpose_rule(_binary_mat_dot_dense_mat_transpose)
 indexed_bm_dm_p.def_batching_rule(_binary_mat_dot_dense_mat_batching)
 indexed_bm_dm_p.def_call(indexed_bmdm_p_call)
+indexed_bm_dm_p.def_tags('dense', 'indexed_binary')
+
+
+def _indexed_bm_dm_benchmark_data(*, platform):
+    import numpy as _np
+    batch_size, n_input, n_output = 32, 1000, 1000
+    n_spikes = 100
+    dtype = jnp.float32
+    spikes = jnp.ones((batch_size, n_input), dtype=dtype)
+    indices = jnp.asarray(
+        _np.stack([_np.random.choice(n_input, n_spikes, replace=False) for _ in range(batch_size)]).astype(_np.int32)
+    )
+    count = jnp.full((batch_size,), n_spikes, dtype=jnp.int32)
+    weights = jnp.asarray(_np.random.randn(n_input, n_output), dtype=dtype)
+    return [
+        BenchmarkConfig("default", (spikes, indices, count, weights)),
+    ]
+
+
+indexed_bm_dm_p.def_benchmark_data(_indexed_bm_dm_benchmark_data)
 
 
 @namescope

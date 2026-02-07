@@ -25,6 +25,7 @@ from jax.interpreters import ad
 from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
+from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._pallas_random import PallasLFSR88RNG
 from brainevent._typing import Data, MatrixShape
 
@@ -527,6 +528,26 @@ jitu_p.def_jvp_rule2(_jitu_jvp_wlow, _jitu_jvp_whigh, None, None)
 jitu_p.def_transpose_rule(_jitu_transpose)
 jitu_p.def_batching_rule(_jitu_batching)
 jitu_p.def_call(jitu_p_call)
+jitu_p.def_tags('jit_uniform', 'float')
+
+
+def _jitu_benchmark_data(*, platform):
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for corder in (True, False):
+            w_low = jnp.zeros(1, dtype=dtype)
+            w_high = jnp.ones(1, dtype=dtype)
+            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+            seed = jnp.asarray(42, dtype=jnp.uint32)
+            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
+            configs.append(BenchmarkConfig(name, (w_low, w_high, clen, seed), {
+                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
+            }))
+    return configs
+
+
+jitu_p.def_benchmark_data(_jitu_benchmark_data)
 
 
 # Kernel generators for JIT connection SPMV
@@ -974,6 +995,29 @@ jitumv_p.def_jvp_rule2(_jitumv_jvp_wlow, _jitumv_jvp_whigh, None, _jitumv_jvp_v,
 jitumv_p.def_transpose_rule(_jitumv_transpose_rules)
 jitumv_p.def_batching_rule(_jitumv_batching)
 jitumv_p.def_call(jitumv_p_call)
+jitumv_p.def_tags('jit_uniform', 'float')
+
+
+def _jitumv_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for corder in (True, False):
+            w_low = jnp.zeros(1, dtype=dtype)
+            w_high = jnp.ones(1, dtype=dtype)
+            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+            v_size = n_post if not transpose else n_pre
+            vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
+            seed = jnp.asarray(42, dtype=jnp.uint32)
+            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
+            configs.append(BenchmarkConfig(name, (w_low, w_high, clen, vector, seed), {
+                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
+            }))
+    return configs
+
+
+jitumv_p.def_benchmark_data(_jitumv_benchmark_data)
 
 
 def _jitumm_numba_kernel_generator(
@@ -1528,3 +1572,26 @@ jitumm_p.def_jvp_rule2(_jitumm_jvp_wlow, _jitumm_jvp_whigh, None, _jitumm_jvp_B,
 jitumm_p.def_transpose_rule(_jitumm_transpose_rules)
 jitumm_p.def_batching_rule(_jitumm_batching)
 jitumm_p.def_call(jitumm_p_call)
+jitumm_p.def_tags('jit_uniform', 'float')
+
+
+def _jitumm_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for corder in (True, False):
+            w_low = jnp.zeros(1, dtype=dtype)
+            w_high = jnp.ones(1, dtype=dtype)
+            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+            b_rows = n_post if not transpose else n_pre
+            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
+            seed = jnp.asarray(42, dtype=jnp.uint32)
+            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
+            configs.append(BenchmarkConfig(name, (w_low, w_high, clen, B, seed), {
+                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
+            }))
+    return configs
+
+
+jitumm_p.def_benchmark_data(_jitumm_benchmark_data)
