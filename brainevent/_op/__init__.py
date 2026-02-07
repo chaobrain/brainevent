@@ -15,14 +15,14 @@
 
 from .main import XLACustomKernel, KernelEntry
 from .benchmark import BenchmarkConfig, BenchmarkResult, BenchmarkReport, benchmark_function
-from .numba_cuda_ffi import numba_cuda_kernel
+from .numba_cuda_ffi import numba_cuda_kernel, numba_cuda_callable
 from .numba_ffi import numba_kernel
 from .util import register_cuda_kernels, defjvp, general_batching_rule, jaxinfo_to_warpinfo, jaxtype_to_warptype
 
 __all__ = [
     'XLACustomKernel', 'KernelEntry',
     'BenchmarkConfig', 'BenchmarkResult', 'BenchmarkReport', 'benchmark_function',
-    'numba_kernel', 'numba_cuda_kernel',
+    'numba_kernel', 'numba_cuda_kernel', 'numba_cuda_callable',
     'register_cuda_kernels', 'defjvp', 'general_batching_rule',
     'jaxinfo_to_warpinfo', 'jaxtype_to_warptype',
 ]

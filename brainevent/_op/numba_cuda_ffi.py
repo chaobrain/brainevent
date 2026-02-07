@@ -18,7 +18,7 @@ import importlib.util
 import threading
 import traceback
 from ctypes import c_void_p, c_size_t, POINTER, CFUNCTYPE, Structure
-from typing import Dict, Tuple, Union
+from typing import Callable, Dict, Tuple, Union
 
 import jax
 import numpy as np
@@ -36,6 +36,7 @@ from .util import OutType, abstract_arguments
 
 __all__ = [
     'numba_cuda_kernel',
+    'numba_cuda_callable',
 ]
 
 numba_cuda_installed = importlib.util.find_spec('numba') is not None
@@ -512,6 +513,281 @@ def numba_cuda_kernel(
             input_output_aliases=input_output_aliases,
             vmap_method=vmap_method,
         )(*ins)
+
+        return jax.tree.unflatten(out_treedef, result)
+
+    return call
+
+
+# ===========================================================================
+# numba_cuda_callable: Multi-kernel callable wrapper
+# ===========================================================================
+
+_NUMBA_CUDA_CALLABLE_HANDLES: Dict[str, object] = {}
+_CUDA_CALLABLE_CALLBACK_COUNTER = 0
+_CUDA_CALLABLE_LOCK = threading.Lock()
+
+# The typed FFI callback signature: void* fn(XLA_FFI_CallFrame*)
+_CUDA_CALLABLE_CALLBACK_TYPE = CFUNCTYPE(c_void_p, POINTER(XLA_FFI_CallFrame))
+
+
+class NumbaCudaCallableHandler:
+    """Typed FFI handler that bridges XLA's typed FFI to an arbitrary Python
+    callable that launches Numba CUDA kernels.
+
+    Unlike :class:`NumbaCudaFfiHandler` (which wraps **one** ``@cuda.jit``
+    kernel with a fixed grid/block), this handler invokes a plain Python
+    function and passes it Numba device arrays + a Numba CUDA stream so the
+    function can launch an arbitrary number of kernels.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        func: Callable,
+        num_inputs: int,
+        num_outputs: int,
+        input_dtypes: Tuple[np.dtype, ...],
+        output_shapes: Tuple[Tuple[int, ...], ...],
+        output_dtypes: Tuple[np.dtype, ...],
+    ):
+        self.name = name
+        self.func = func
+        self.num_inputs = num_inputs
+        self.num_outputs = num_outputs
+        self.input_dtypes = input_dtypes
+        self.output_shapes = output_shapes
+        self.output_dtypes = output_dtypes
+
+        # Create the ctypes callback -- must be kept alive to prevent GC
+        self._callback = _CUDA_CALLABLE_CALLBACK_TYPE(self._ffi_callback)
+
+        # Register as an FFI target for CUDA platform
+        capsule = jax.ffi.pycapsule(ctypes.cast(self._callback, c_void_p).value)
+        jax.ffi.register_ffi_target(name, capsule, platform="CUDA")
+
+    def _ffi_callback(self, call_frame_ptr):
+        """Typed FFI callback matching the ``XLA_FFI_Handler`` signature."""
+        try:
+            call_frame = call_frame_ptr.contents
+
+            # Handle metadata extension query (API version / traits)
+            ext_ptr = call_frame.extension_start
+            if ext_ptr:
+                ext = ext_ptr.contents
+                if ext.type == int(XLA_FFI_Extension_Type.Metadata):
+                    metadata_ext = ctypes.cast(
+                        ext_ptr, POINTER(XLA_FFI_Metadata_Extension)
+                    ).contents
+                    metadata = metadata_ext.metadata.contents
+                    metadata.api_version.major_version = 0
+                    metadata.api_version.minor_version = 1
+                    metadata.traits = 0  # not command-buffer-compatible
+                    return None  # success
+
+            # Extract input buffers as Numba CUDA device arrays
+            n_inputs = call_frame.args.size
+            input_arrays = []
+            for i in range(n_inputs):
+                buf_ptr = ctypes.cast(
+                    call_frame.args.args[i], POINTER(XLA_FFI_Buffer)
+                ).contents
+                shape = tuple(buf_ptr.dims[d] for d in range(buf_ptr.rank))
+                dtype = _XLA_FFI_DTYPE_TO_NUMPY.get(buf_ptr.dtype)
+                if dtype is None and i < len(self.input_dtypes):
+                    dtype = self.input_dtypes[i]
+                elif dtype is None:
+                    dtype = np.dtype(np.float32)
+                input_arrays.append(_device_array_from_buffer(buf_ptr.data, shape, dtype))
+
+            # Extract output buffers as Numba CUDA device arrays
+            n_outputs = call_frame.rets.size
+            output_arrays = []
+            for i in range(n_outputs):
+                buf_ptr = ctypes.cast(
+                    call_frame.rets.rets[i], POINTER(XLA_FFI_Buffer)
+                ).contents
+                shape = tuple(buf_ptr.dims[d] for d in range(buf_ptr.rank))
+                dtype = _XLA_FFI_DTYPE_TO_NUMPY.get(buf_ptr.dtype)
+                if dtype is None and i < len(self.output_dtypes):
+                    dtype = self.output_dtypes[i]
+                elif dtype is None:
+                    dtype = np.dtype(np.float32)
+                output_arrays.append(_device_array_from_buffer(buf_ptr.data, shape, dtype))
+
+            # Extract XLA's CUDA stream and create Numba stream wrapper
+            stream_ptr = _get_stream_from_callframe(call_frame)
+            stream = _numba_stream_from_ptr(stream_ptr)
+
+            # Call the user function
+            # Signature: func(in1, in2, ..., out1, out2, ..., stream)
+            with _CUDA_CALLABLE_LOCK:
+                self.func(*input_arrays, *output_arrays, stream)
+
+        except Exception:
+            traceback.print_exc()
+
+        return None  # success
+
+
+def _register_numba_cuda_callable_target(
+    func: Callable,
+    num_inputs: int,
+    num_outputs: int,
+    input_dtypes: Tuple[np.dtype, ...],
+    output_shapes: Tuple[Tuple[int, ...], ...],
+    output_dtypes: Tuple[np.dtype, ...],
+):
+    """Register a Python callable as an XLA FFI target (CUDA).
+
+    Returns:
+        Tuple of (target_name, out_types) for use with ``jax.ffi.ffi_call``.
+    """
+    global _CUDA_CALLABLE_CALLBACK_COUNTER
+
+    if not numba_cuda_installed:
+        raise ImportError(
+            'Numba with CUDA support is required. '
+            'Please install numba and ensure CUDA is available.'
+        )
+
+    target_name = f'brainevent_numba_cuda_callable_{_CUDA_CALLABLE_CALLBACK_COUNTER}'
+    _CUDA_CALLABLE_CALLBACK_COUNTER += 1
+
+    handler = NumbaCudaCallableHandler(
+        name=target_name,
+        func=func,
+        num_inputs=num_inputs,
+        num_outputs=num_outputs,
+        input_dtypes=input_dtypes,
+        output_shapes=output_shapes,
+        output_dtypes=output_dtypes,
+    )
+
+    # Keep the handler alive to prevent GC of the ctypes callback
+    _NUMBA_CUDA_CALLABLE_HANDLES[target_name] = handler
+
+    out_types = tuple(
+        jax.ShapeDtypeStruct(shape, dtype)
+        for shape, dtype in zip(output_shapes, output_dtypes)
+    )
+    return target_name, out_types
+
+
+def numba_cuda_callable(
+    func: Callable,
+    outs: OutType,
+    *,
+    vmap_method: str | None = None,
+    input_output_aliases: dict[int, int] | None = None,
+):
+    """Create a JAX-callable from a Python function that launches Numba CUDA kernels.
+
+    The wrapped function has the signature::
+
+        func(input_1, input_2, ..., output_1, output_2, ..., stream)
+
+    where every ``input_*`` and ``output_*`` is a Numba CUDA device array and
+    ``stream`` is a Numba CUDA stream obtained from XLA.  Inside the function
+    you may launch any number of ``@cuda.jit`` kernels on that stream, allocate
+    temporary device memory, etc.
+
+    Args:
+        func: A Python function with the signature described above.  The
+            function must accept inputs, outputs, and a Numba CUDA stream as
+            the last positional argument.
+        outs: Output specification. Can be a single jax.ShapeDtypeStruct or a
+            sequence of them for multiple outputs.
+        vmap_method: How to handle ``jax.vmap``.  Passed directly to
+            ``jax.ffi.ffi_call``.
+        input_output_aliases: Map from input index to output index for
+            in-place operations.  Passed directly to ``jax.ffi.ffi_call``.
+
+    Returns:
+        A callable that takes JAX arrays as inputs and returns JAX arrays as outputs.
+
+    Example::
+
+        from numba import cuda
+        import jax, jax.numpy as jnp
+        from brainevent import numba_cuda_callable
+
+        @cuda.jit
+        def add_kernel(x, y, temp, n):
+            i = cuda.grid(1)
+            if i < n:
+                temp[i] = x[i] + y[i]
+
+        @cuda.jit
+        def scale_kernel(temp, out, scale, n):
+            i = cuda.grid(1)
+            if i < n:
+                out[i] = temp[i] * scale
+
+        def my_op(x, y, out, stream):
+            n = x.shape[0]
+            temp = cuda.device_array(n, dtype=x.dtype)
+            threads = 256
+            blocks = (n + threads - 1) // threads
+            add_kernel[blocks, threads, stream](x, y, temp, n)
+            scale_kernel[blocks, threads, stream](temp, out, 2.0, n)
+
+        fn = numba_cuda_callable(
+            my_op,
+            outs=jax.ShapeDtypeStruct((1024,), jnp.float32),
+        )
+
+        @jax.jit
+        def f(a, b):
+            return fn(a, b)
+
+    Raises:
+        ImportError: If Numba with CUDA support is not available.
+        TypeError: If *func* is not callable.
+    """
+
+    if not numba_cuda_installed:
+        raise ImportError(
+            'Numba with CUDA support is required to use numba_cuda_callable. '
+            'Please install numba and ensure CUDA is available.'
+        )
+
+    if not callable(func):
+        raise TypeError(
+            f'func must be callable, but got {type(func).__name__}.'
+        )
+
+    # Output information
+    out_info, out_treedef = abstract_arguments(outs)
+    output_shapes, output_dtypes = _normalize_shapes_and_dtypes(
+        tuple(out.shape for out in out_info),
+        tuple(out.dtype for out in out_info),
+        'output',
+    )
+    num_outputs = len(out_info)
+
+    def call(*inputs):
+        # -- collect input metadata --------------------------------------------
+        in_info, _ = abstract_arguments(inputs)
+        input_dtypes = tuple(np.dtype(inp.dtype) for inp in in_info)
+
+        # -- register the FFI target -------------------------------------------
+        target_name, out_types = _register_numba_cuda_callable_target(
+            func,
+            num_inputs=len(inputs),
+            num_outputs=num_outputs,
+            input_dtypes=input_dtypes,
+            output_shapes=output_shapes,
+            output_dtypes=output_dtypes,
+        )
+
+        # -- invoke via jax.ffi.ffi_call ---------------------------------------
+        result = jax.ffi.ffi_call(
+            target_name,
+            out_types,
+            input_output_aliases=input_output_aliases,
+            vmap_method=vmap_method,
+        )(*inputs)
 
         return jax.tree.unflatten(out_treedef, result)
 

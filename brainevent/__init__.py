@@ -88,7 +88,7 @@ from ._misc import (
 from ._op import (
     XLACustomKernel, KernelEntry,
     BenchmarkResult, BenchmarkReport, benchmark_function,
-    numba_kernel, numba_cuda_kernel,
+    numba_kernel, numba_cuda_kernel, numba_cuda_callable,
     register_cuda_kernels, defjvp, general_batching_rule,
     jaxtype_to_warptype, jaxinfo_to_warpinfo,
 )
@@ -156,7 +156,7 @@ __all__ = [
     # --- operator customization routines --- #
     'XLACustomKernel', 'KernelEntry',
     'BenchmarkResult', 'BenchmarkReport', 'benchmark_function',
-    'numba_kernel', 'numba_cuda_kernel',
+    'numba_kernel', 'numba_cuda_kernel', 'numba_cuda_callable',
     'register_cuda_kernels', 'defjvp', 'general_batching_rule',
     'jaxtype_to_warptype', 'jaxinfo_to_warpinfo',
 
