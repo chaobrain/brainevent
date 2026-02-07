@@ -69,7 +69,6 @@ def binary_jitnmv(
     return u.maybe_decimal(res * unitd * unitv)
 
 
-@namescope(static_argnames=("shape", "transpose", "corder"))
 def binary_jitnmm(
     w_loc: Data,
     w_scale: Data,
@@ -746,6 +745,29 @@ def _jitc_mv_normal_batching(args, axes, **kwargs):
         )
 
 
+def _binary_jitnmv_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for corder in (True, False):
+            for bool_event in (True, False):
+                w_loc = jnp.ones(1, dtype=dtype)
+                w_scale = jnp.ones(1, dtype=dtype) * 0.1
+                clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+                v_size = n_post if not transpose else n_pre
+                if bool_event:
+                    vector = jnp.asarray(_np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
+                else:
+                    vector = jnp.asarray(_np.random.rand(v_size), dtype=dtype)
+                seed = jnp.asarray(42, dtype=jnp.uint32)
+                name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'},{'bool' if bool_event else 'float'}"
+                configs.append(BenchmarkConfig(name, (w_loc, w_scale, clen, vector, seed), {
+                    'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
+                }))
+    return configs
+
+
 def binary_jitnmv_p_call(
     w_loc,
     w_scale,
@@ -807,31 +829,6 @@ binary_jitnmv_p.def_jvp_rule2(_jitc_mv_normal_jvp_wloc, _jitc_mv_normal_jvp_wsca
 binary_jitnmv_p.def_transpose_rule(_jitc_mv_normal_transpose_rules)
 binary_jitnmv_p.def_batching_rule(_jitc_mv_normal_batching)
 binary_jitnmv_p.def_tags('jit_normal', 'binary')
-
-
-def _binary_jitnmv_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for transpose in (False, True):
-        for corder in (True, False):
-            for bool_event in (True, False):
-                w_loc = jnp.ones(1, dtype=dtype)
-                w_scale = jnp.ones(1, dtype=dtype) * 0.1
-                clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
-                v_size = n_post if not transpose else n_pre
-                if bool_event:
-                    vector = jnp.asarray(_np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
-                else:
-                    vector = jnp.asarray(_np.random.rand(v_size), dtype=dtype)
-                seed = jnp.asarray(42, dtype=jnp.uint32)
-                name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'},{'bool' if bool_event else 'float'}"
-                configs.append(BenchmarkConfig(name, (w_loc, w_scale, clen, vector, seed), {
-                    'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
-                }))
-    return configs
-
-
 binary_jitnmv_p.def_benchmark_data(_binary_jitnmv_benchmark_data)
 
 
@@ -1374,6 +1371,33 @@ def _jitc_mm_normal_batching(args, axes, **kwargs):
         return general_batching_rule(binary_jitnmm_p, args, axes, **kwargs)
 
 
+def _binary_jitnmm_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for corder in (True, False):
+            for bool_event in (True, False):
+                w_loc = jnp.ones(1, dtype=dtype)
+                w_scale = jnp.ones(1, dtype=dtype) * 0.1
+                clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+                b_rows = n_post if not transpose else n_pre
+                if bool_event:
+                    B = jnp.asarray(_np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
+                else:
+                    B = jnp.asarray(_np.random.rand(b_rows, 10), dtype=dtype)
+                seed = jnp.asarray(42, dtype=jnp.uint32)
+                name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'},{'bool' if bool_event else 'float'}"
+                configs.append(
+                    BenchmarkConfig(
+                        name,
+                        (w_loc, w_scale, clen, B, seed),
+                        {'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder}
+                    )
+                )
+    return configs
+
+
 def binary_jitnmm_p_call(
     w_loc,
     w_scale,
@@ -1439,29 +1463,4 @@ binary_jitnmm_p.def_jvp_rule2(_jitc_mm_normal_jvp_wloc, _jitc_mm_normal_jvp_wsca
 binary_jitnmm_p.def_transpose_rule(_jitc_mm_normal_transpose_rules)
 binary_jitnmm_p.def_batching_rule(_jitc_mm_normal_batching)
 binary_jitnmm_p.def_tags('jit_normal', 'binary')
-
-
-def _binary_jitnmm_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for transpose in (False, True):
-        for corder in (True, False):
-            for bool_event in (True, False):
-                w_loc = jnp.ones(1, dtype=dtype)
-                w_scale = jnp.ones(1, dtype=dtype) * 0.1
-                clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
-                b_rows = n_post if not transpose else n_pre
-                if bool_event:
-                    B = jnp.asarray(_np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
-                else:
-                    B = jnp.asarray(_np.random.rand(b_rows, 10), dtype=dtype)
-                seed = jnp.asarray(42, dtype=jnp.uint32)
-                name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'},{'bool' if bool_event else 'float'}"
-                configs.append(BenchmarkConfig(name, (w_loc, w_scale, clen, B, seed), {
-                    'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
-                }))
-    return configs
-
-
 binary_jitnmm_p.def_benchmark_data(_binary_jitnmm_benchmark_data)
