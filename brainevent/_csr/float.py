@@ -1062,9 +1062,9 @@ def csrmm_p_call(
     assert indices.ndim == 1, "Indices must be 1D."
     assert indptr.dtype == indices.dtype, "Indices and indptr must have the same dtype."
     if transpose:
-        assert shape[0] == B.shape[0], "Shape mismatch for non-transpose operation."
+        assert shape[0] == B.shape[0], "Shape mismatch for transpose operation."
     else:
-        assert shape[1] == B.shape[0], "Shape mismatch for transpose operation."
+        assert shape[1] == B.shape[0], "Shape mismatch for non-transpose operation."
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
     if jnp.ndim(weights) == 0:
@@ -1211,7 +1211,7 @@ def _csrmv_yw2y_pallas_kernels(
         def kernel(y, w, indices, indptr):
             fn = pl.pallas_call(
                 mm,
-                grid=(shape[1] if transpose else shape[0],),
+                grid=(shape[0],),
                 out_shape=kwargs['outs']
             )
             return fn(y, w, indices, indptr)
@@ -1238,7 +1238,7 @@ def _csrmv_yw2y_pallas_kernels(
             jax.lax.fori_loop(0, num_blocks, loop_fn, None)
 
         def kernel(y, w, indices, indptr):
-            fn = pl.pallas_call(mm, grid=(shape[1] if transpose else shape[0],), out_shape=kwargs['outs'])
+            fn = pl.pallas_call(mm, grid=(shape[0],), out_shape=kwargs['outs'])
             return fn(y, w, indptr)
 
     return kernel
