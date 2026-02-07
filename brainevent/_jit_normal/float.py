@@ -25,6 +25,7 @@ from jax.interpreters import ad
 from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, jaxinfo_to_warpinfo, numba_kernel, general_batching_rule
+from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._pallas_random import PallasLFSR88RNG
 from brainevent._typing import Data, MatrixShape
 
@@ -637,7 +638,7 @@ def _jitn_benchmark_data(*, platform):
             clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
             seed = jnp.asarray(42, dtype=jnp.uint32)
             name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append((name, (w_loc, w_scale, clen, seed), {
+            configs.append(BenchmarkConfig(name, (w_loc, w_scale, clen, seed), {
                 'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
             }))
     return configs
@@ -1204,7 +1205,7 @@ def _jitnmv_benchmark_data(*, platform):
             vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
             seed = jnp.asarray(42, dtype=jnp.uint32)
             name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append((name, (w_loc, w_scale, clen, vector, seed), {
+            configs.append(BenchmarkConfig(name, (w_loc, w_scale, clen, vector, seed), {
                 'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
             }))
     return configs
@@ -1754,7 +1755,7 @@ def _jitnmm_benchmark_data(*, platform):
             B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
             seed = jnp.asarray(42, dtype=jnp.uint32)
             name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append((name, (w_loc, w_scale, clen, B, seed), {
+            configs.append(BenchmarkConfig(name, (w_loc, w_scale, clen, B, seed), {
                 'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
             }))
     return configs

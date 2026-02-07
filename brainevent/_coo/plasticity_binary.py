@@ -23,6 +23,7 @@ import jax.numpy as jnp
 
 from brainevent._misc import generate_block_dim
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
+from brainevent._op.benchmark import BenchmarkConfig
 
 __all__ = [
     'plast_coo_on_binary_pre',
@@ -265,7 +266,7 @@ def _plast_coo_pre_benchmark_data(*, platform):
             pre_spike = jnp.asarray(_np.random.rand(n_pre), dtype=dtype)
         post_trace = jnp.asarray(_np.random.randn(n_post), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
-        configs.append((name, (weight, jnp.asarray(pre_ids), jnp.asarray(post_ids), pre_spike, post_trace), {}))
+        configs.append(BenchmarkConfig(name, (weight, jnp.asarray(pre_ids), jnp.asarray(post_ids), pre_spike, post_trace)))
     return configs
 
 
@@ -510,7 +511,7 @@ def _plast_coo_post_benchmark_data(*, platform):
         else:
             post_spike = jnp.asarray(_np.random.rand(n_post), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
-        configs.append((name, (weight, jnp.asarray(pre_ids), jnp.asarray(post_ids), pre_trace, post_spike), {}))
+        configs.append(BenchmarkConfig(name, (weight, jnp.asarray(pre_ids), jnp.asarray(post_ids), pre_trace, post_spike)))
     return configs
 
 

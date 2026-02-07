@@ -22,6 +22,7 @@ from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule
+from brainevent._op.benchmark import BenchmarkConfig
 
 __all__ = [
     'plast_dense_on_binary_pre',
@@ -195,7 +196,7 @@ def _plast_dense_pre_benchmark_data(*, platform):
             pre_spike = jnp.asarray(_np.random.rand(n_pre), dtype=dtype)
         post_trace = jnp.asarray(_np.random.randn(n_post), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
-        configs.append((name, (weight, pre_spike, post_trace), {}))
+        configs.append(BenchmarkConfig(name, (weight, pre_spike, post_trace)))
     return configs
 
 
@@ -362,7 +363,7 @@ def _plast_dense_post_benchmark_data(*, platform):
         else:
             post_spike = jnp.asarray(_np.random.rand(n_post), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
-        configs.append((name, (weight, pre_trace, post_spike), {}))
+        configs.append(BenchmarkConfig(name, (weight, pre_trace, post_spike)))
     return configs
 
 

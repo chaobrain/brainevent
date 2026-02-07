@@ -23,6 +23,7 @@ from jax.interpreters import ad
 
 from brainevent._misc import cdiv, generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
+from brainevent._op.benchmark import BenchmarkConfig
 
 __all__ = [
     'dm_sfv',
@@ -253,7 +254,7 @@ def _dm_sfv_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     weights = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
     spikes = jnp.asarray(_np.random.randn(n_post), dtype=dtype)
-    return [("default", (weights, spikes), {})]
+    return [BenchmarkConfig("default", (weights, spikes))]
 
 
 dm_sfv_p.def_benchmark_data(_dm_sfv_benchmark_data)
@@ -462,7 +463,7 @@ def _sfv_dm_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     spikes = jnp.asarray(_np.random.randn(n_pre), dtype=dtype)
     weights = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
-    return [("default", (spikes, weights), {})]
+    return [BenchmarkConfig("default", (spikes, weights))]
 
 
 sfv_dm_p.def_benchmark_data(_sfv_dm_benchmark_data)
@@ -730,7 +731,7 @@ def _dm_sfm_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     weights = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
     spikes = jnp.asarray(_np.random.randn(n_post, 10), dtype=dtype)
-    return [("default", (weights, spikes), {})]
+    return [BenchmarkConfig("default", (weights, spikes))]
 
 
 dm_sfm_p.def_benchmark_data(_dm_sfm_benchmark_data)
@@ -989,7 +990,7 @@ def _sfm_dm_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     spikes = jnp.asarray(_np.random.randn(10, n_post), dtype=dtype)
     weights = jnp.asarray(_np.random.randn(n_post, n_post), dtype=dtype)
-    return [("default", (spikes, weights), {})]
+    return [BenchmarkConfig("default", (spikes, weights))]
 
 
 sfm_dm_p.def_benchmark_data(_sfm_dm_benchmark_data)

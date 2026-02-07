@@ -21,6 +21,7 @@ from jax.interpreters import ad
 
 from brainevent._misc import cdiv, generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
+from brainevent._op.benchmark import BenchmarkConfig
 
 __all__ = [
     'indexed_bv_dm',
@@ -257,7 +258,7 @@ def _indexed_bv_dm_benchmark_data(*, platform):
     count = jnp.asarray([n_spikes], dtype=jnp.int32)
     weights = jnp.asarray(_np.random.randn(n_input, n_output), dtype=dtype)
     return [
-        ("default", (spikes, indices, count, weights), {}),
+        BenchmarkConfig("default", (spikes, indices, count, weights)),
     ]
 
 
@@ -535,7 +536,7 @@ def _indexed_bm_dm_benchmark_data(*, platform):
     count = jnp.full((batch_size,), n_spikes, dtype=jnp.int32)
     weights = jnp.asarray(_np.random.randn(n_input, n_output), dtype=dtype)
     return [
-        ("default", (spikes, indices, count, weights), {}),
+        BenchmarkConfig("default", (spikes, indices, count, weights)),
     ]
 
 

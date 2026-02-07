@@ -23,6 +23,7 @@ from jax.interpreters import ad
 
 from brainevent._misc import cdiv, generate_block_dim, namescope
 from brainevent._op import jaxinfo_to_warpinfo, numba_kernel, XLACustomKernel, general_batching_rule
+from brainevent._op.benchmark import BenchmarkConfig
 
 __all__ = [
     'dm_bv',
@@ -278,7 +279,7 @@ def _dm_bv_benchmark_data(*, platform):
         else:
             spikes = jnp.asarray(_np.random.rand(n_post), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
-        configs.append((name, (weights, spikes), {}))
+        configs.append(BenchmarkConfig(name, (weights, spikes)))
     return configs
 
 
@@ -517,7 +518,7 @@ def _bv_dm_benchmark_data(*, platform):
             spikes = jnp.asarray(_np.random.rand(n_pre), dtype=dtype)
         weights = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
-        configs.append((name, (spikes, weights), {}))
+        configs.append(BenchmarkConfig(name, (spikes, weights)))
     return configs
 
 
@@ -817,7 +818,7 @@ def _dm_bm_benchmark_data(*, platform):
         else:
             spikes = jnp.asarray(_np.random.rand(n_post, 10), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
-        configs.append((name, (weights, spikes), {}))
+        configs.append(BenchmarkConfig(name, (weights, spikes)))
     return configs
 
 
@@ -1105,7 +1106,7 @@ def _bm_dm_benchmark_data(*, platform):
             spikes = jnp.asarray(_np.random.rand(10, n_post), dtype=dtype)
         weights = jnp.asarray(_np.random.randn(n_post, n_post), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
-        configs.append((name, (spikes, weights), {}))
+        configs.append(BenchmarkConfig(name, (spikes, weights)))
     return configs
 
 

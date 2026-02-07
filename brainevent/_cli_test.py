@@ -160,8 +160,9 @@ class TestMultiBenchmarkData:
     def test_def_benchmark_data_stores_fn(self):
         """def_benchmark_data(fn) stores the function."""
         from brainevent._op.main import XLACustomKernel
+        from brainevent._op.benchmark import BenchmarkConfig
         prim = XLACustomKernel('_test_stores_fn')
-        fn = lambda *, platform: [("default", (), {})]
+        fn = lambda *, platform: [BenchmarkConfig("default", ())]
         prim.def_benchmark_data(fn)
         assert prim._benchmark_data_fn is fn
 
@@ -174,33 +175,36 @@ class TestMultiBenchmarkData:
     def test_def_benchmark_data_overwrite(self):
         """Second def_benchmark_data call overwrites the first."""
         from brainevent._op.main import XLACustomKernel
+        from brainevent._op.benchmark import BenchmarkConfig
         prim = XLACustomKernel('_test_overwrite')
-        fn1 = lambda *, platform: [("a", (), {})]
-        fn2 = lambda *, platform: [("b", (), {})]
+        fn1 = lambda *, platform: [BenchmarkConfig("a", ())]
+        fn2 = lambda *, platform: [BenchmarkConfig("b", ())]
         prim.def_benchmark_data(fn1)
         prim.def_benchmark_data(fn2)
         assert prim._benchmark_data_fn is fn2
 
     def test_benchmark_fn_returns_list(self):
-        """Benchmark data fn should return list of (name, args, kwargs) tuples."""
+        """Benchmark data fn should return list of BenchmarkConfig instances."""
         from brainevent._op.main import XLACustomKernel
+        from brainevent._op.benchmark import BenchmarkConfig
         prim = XLACustomKernel('_test_returns_list')
 
         def bench_fn(*, platform):
             return [
-                ("config_a", (1, 2), {"key": "val"}),
-                ("config_b", (3, 4), {"key": "val2"}),
+                BenchmarkConfig("config_a", (1, 2), {"key": "val"}),
+                BenchmarkConfig("config_b", (3, 4), {"key": "val2"}),
             ]
 
         prim.def_benchmark_data(bench_fn)
         configs = prim._benchmark_data_fn(platform='cpu')
         assert len(configs) == 2
-        assert configs[0][0] == "config_a"
-        assert configs[1][0] == "config_b"
-        for config_name, args, kwargs in configs:
-            assert isinstance(config_name, str)
-            assert isinstance(args, tuple)
-            assert isinstance(kwargs, dict)
+        assert configs[0].name == "config_a"
+        assert configs[1].name == "config_b"
+        for config in configs:
+            assert isinstance(config, BenchmarkConfig)
+            assert isinstance(config.name, str)
+            assert isinstance(config.args, tuple)
+            assert isinstance(config.kwargs, dict)
 
 
 class TestMultiBenchmarkIntegration:
@@ -212,21 +216,24 @@ class TestMultiBenchmarkIntegration:
         assert callable(prim._benchmark_data_fn)
 
     def test_benchmark_fn_returns_configs(self):
-        """Benchmark data fn should return list of config tuples."""
+        """Benchmark data fn should return list of BenchmarkConfig instances."""
         import brainevent
+        from brainevent._op.benchmark import BenchmarkConfig
         prim = brainevent.binary_csrmv_p
         configs = prim._benchmark_data_fn(platform='cpu')
         assert isinstance(configs, list)
         assert len(configs) >= 1
-        for config_name, args, kwargs in configs:
-            assert isinstance(config_name, str)
-            assert isinstance(args, tuple)
-            assert isinstance(kwargs, dict)
-            assert 'shape' in kwargs
+        for config in configs:
+            assert isinstance(config, BenchmarkConfig)
+            assert isinstance(config.name, str)
+            assert isinstance(config.args, tuple)
+            assert isinstance(config.kwargs, dict)
+            assert 'shape' in config.kwargs
 
     def test_registry_primitives_benchmark_data_structure(self):
-        """All primitives with benchmark data should return proper config lists."""
+        """All primitives with benchmark data should return proper BenchmarkConfig lists."""
         from brainevent._registry import get_registry
+        from brainevent._op.benchmark import BenchmarkConfig
         registry = get_registry()
         for name, prim in registry.items():
             if prim._benchmark_data_fn is None:
@@ -238,18 +245,17 @@ class TestMultiBenchmarkIntegration:
             assert isinstance(configs, list), (
                 f"Primitive '{name}': benchmark data fn should return a list"
             )
-            for entry in configs:
-                assert isinstance(entry, tuple) and len(entry) == 3, (
-                    f"Primitive '{name}': each entry should be a (name, args, kwargs) tuple"
+            for config in configs:
+                assert isinstance(config, BenchmarkConfig), (
+                    f"Primitive '{name}': each entry should be a BenchmarkConfig instance"
                 )
-                config_name, args, kwargs = entry
-                assert isinstance(config_name, str), (
+                assert isinstance(config.name, str), (
                     f"Primitive '{name}': config name should be a string"
                 )
-                assert isinstance(args, tuple), (
+                assert isinstance(config.args, tuple), (
                     f"Primitive '{name}': args should be a tuple"
                 )
-                assert isinstance(kwargs, dict), (
+                assert isinstance(config.kwargs, dict), (
                     f"Primitive '{name}': kwargs should be a dict"
                 )
 

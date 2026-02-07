@@ -23,6 +23,7 @@ from jax.interpreters import ad
 
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescope
 from brainevent._op import numba_kernel, jaxinfo_to_warpinfo, XLACustomKernel, general_batching_rule
+from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 
@@ -542,7 +543,7 @@ def _csrmv_benchmark_data(*, platform):
             v_size = n_post if not transpose else n_pre
             vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
             name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
-            configs.append((name, (weights, indices, jnp.asarray(indptr), vector), {
+            configs.append(BenchmarkConfig(name, (weights, indices, jnp.asarray(indptr), vector), {
                 'shape': (n_pre, n_post), 'transpose': transpose
             }))
     return configs
@@ -1113,7 +1114,7 @@ def _csrmm_benchmark_data(*, platform):
             b_rows = n_post if not transpose else n_pre
             B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
             name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
-            configs.append((name, (weights, indices, jnp.asarray(indptr), B), {
+            configs.append(BenchmarkConfig(name, (weights, indices, jnp.asarray(indptr), B), {
                 'shape': (n_pre, n_post), 'transpose': transpose
             }))
     return configs
@@ -1315,7 +1316,7 @@ def _csrmv_yw2y_benchmark_data(*, platform):
         y_size = n_pre if not transpose else n_post
         y = jnp.asarray(_np.random.randn(y_size), dtype=dtype)
         name = f"{'T' if transpose else 'NT'}"
-        configs.append((name, (y, w, indices, jnp.asarray(indptr)), {
+        configs.append(BenchmarkConfig(name, (y, w, indices, jnp.asarray(indptr)), {
             'shape': (n_pre, n_post), 'transpose': transpose
         }))
     return configs

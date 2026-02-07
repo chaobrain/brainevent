@@ -26,6 +26,7 @@ from jax.interpreters.partial_eval import DynamicJaxprTracer
 
 from brainevent._misc import generate_block_dim
 from brainevent._op import numba_kernel, jaxinfo_to_warpinfo, XLACustomKernel
+from brainevent._op.benchmark import BenchmarkConfig
 
 
 def _is_tracer(x):
@@ -290,7 +291,7 @@ def _csr_diag_add_benchmark_data(*, platform):
     n_diag = min(n_pre, n_post)
     diag_position = jnp.asarray(_np.arange(n_diag, dtype=_np.int32))
     diag_value = jnp.ones(n_diag, dtype=dtype)
-    return [("default", (csr_value, diag_position, diag_value), {})]
+    return [BenchmarkConfig("default", (csr_value, diag_position, diag_value))]
 
 
 csr_diag_add_p.def_benchmark_data(_csr_diag_add_benchmark_data)

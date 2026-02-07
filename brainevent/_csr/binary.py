@@ -23,6 +23,7 @@ from jax.interpreters import ad
 
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescope
 from brainevent._op import jaxinfo_to_warpinfo, numba_kernel, XLACustomKernel, general_batching_rule
+from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .float import csrmv, csrmm
@@ -769,7 +770,7 @@ def _binary_csrmv_benchmark_data(*, platform):
                 else:
                     vector = jnp.asarray(_np.random.rand(v_size), dtype=dtype)
                 name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
-                configs.append((name, (weights, indices, jnp.asarray(indptr), vector), {
+                configs.append(BenchmarkConfig(name, (weights, indices, jnp.asarray(indptr), vector), {
                     'shape': (n_pre, n_post), 'transpose': transpose
                 }))
     return configs
@@ -1515,7 +1516,7 @@ def _binary_csrmm_benchmark_data(*, platform):
                 else:
                     B = jnp.asarray(_np.random.rand(b_rows, 10), dtype=dtype)
                 name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
-                configs.append((name, (weights, indices, jnp.asarray(indptr), B), {
+                configs.append(BenchmarkConfig(name, (weights, indices, jnp.asarray(indptr), B), {
                     'shape': (n_pre, n_post), 'transpose': transpose
                 }))
     return configs

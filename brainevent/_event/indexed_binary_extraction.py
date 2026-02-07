@@ -19,6 +19,7 @@ from jax.interpreters import ad
 
 from brainevent._misc import namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
+from brainevent._op.benchmark import BenchmarkConfig
 
 
 @namescope
@@ -223,7 +224,7 @@ def _binary_1d_array_index_benchmark_data(*, platform):
                 dtype=jnp.float32,
             )
         name = "bool" if bool_event else "float"
-        configs.append((name, (spikes,), {}))
+        configs.append(BenchmarkConfig(name, (spikes,)))
     return configs
 
 

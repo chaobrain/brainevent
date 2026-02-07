@@ -25,6 +25,7 @@ from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import jaxinfo_to_warpinfo, numba_kernel, XLACustomKernel, general_batching_rule
+from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Row, Col, MatrixShape
 from .float import coomv, coomm
@@ -816,7 +817,7 @@ def _binary_coomv_benchmark_data(*, platform):
                 else:
                     vector = jnp.asarray(_np.random.rand(v_size), dtype=dtype)
                 name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
-                configs.append((name, (weights, jnp.asarray(row), jnp.asarray(col), vector), {
+                configs.append(BenchmarkConfig(name, (weights, jnp.asarray(row), jnp.asarray(col), vector), {
                     'shape': (n_pre, n_post), 'transpose': transpose
                 }))
     return configs
@@ -1575,7 +1576,7 @@ def _binary_coomm_benchmark_data(*, platform):
                 else:
                     B = jnp.asarray(_np.random.rand(b_rows, 10), dtype=dtype)
                 name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
-                configs.append((name, (weights, jnp.asarray(row), jnp.asarray(col), B), {
+                configs.append(BenchmarkConfig(name, (weights, jnp.asarray(row), jnp.asarray(col), B), {
                     'shape': (n_pre, n_post), 'transpose': transpose
                 }))
     return configs

@@ -121,17 +121,17 @@ def _run_benchmark(args) -> int:
         # Track wins per backend across all configs for voting
         backend_wins: Dict[str, int] = {}
 
-        for config_name, bench_args, bench_kwargs in configs:
-            display_name = f"{name} [{config_name}]"
+        for config in configs:
+            display_name = f"{name} [{config.name}]"
 
             # Run benchmark
             try:
                 report = prim.benchmark(
-                    *bench_args,
+                    *config.args,
                     platform=args.platform,
                     n_warmup=args.n_warmup,
                     n_runs=args.n_runs,
-                    **bench_kwargs,
+                    **config.kwargs,
                 )
             except Exception as e:
                 print(f"  {display_name:<35} {'ERROR':<15} Benchmark failed: {e}")

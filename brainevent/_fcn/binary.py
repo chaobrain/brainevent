@@ -26,6 +26,7 @@ from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
+from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
 from .float import fcnmv_p_call, fcnmm_p_call
 
@@ -539,7 +540,7 @@ def _binary_fcnmv_benchmark_data(*, platform):
                 else:
                     spikes = jnp.asarray(_np.random.rand(v_size), dtype=dtype)
                 name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
-                configs.append((name, (weights, indices, spikes), {
+                configs.append(BenchmarkConfig(name, (weights, indices, spikes), {
                     'shape': (n_pre, n_post), 'transpose': transpose
                 }))
     return configs
@@ -944,7 +945,7 @@ def _binary_fcnmm_benchmark_data(*, platform):
                 else:
                     matrix = jnp.asarray(_np.random.rand(b_rows, 10), dtype=dtype)
                 name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
-                configs.append((name, (weights, indices, matrix), {
+                configs.append(BenchmarkConfig(name, (weights, indices, matrix), {
                     'shape': (n_pre, n_post), 'transpose': transpose
                 }))
     return configs

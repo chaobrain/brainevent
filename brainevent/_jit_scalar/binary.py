@@ -25,6 +25,7 @@ from jax.interpreters import ad
 from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
+from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._pallas_random import PallasLFSR88RNG
 from brainevent._typing import Data, MatrixShape
 from .float import jitsmv_p_call, jitsmm_p_call
@@ -673,7 +674,7 @@ def _binary_jitsmv_benchmark_data(*, platform):
                     vector = jnp.asarray(_np.random.rand(v_size), dtype=dtype)
                 seed = jnp.asarray(42, dtype=jnp.uint32)
                 name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'},{'bool' if bool_event else 'float'}"
-                configs.append((name, (weight, clen, vector, seed), {
+                configs.append(BenchmarkConfig(name, (weight, clen, vector, seed), {
                     'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
                 }))
     return configs
@@ -1232,7 +1233,7 @@ def _binary_jitsmm_benchmark_data(*, platform):
                     B = jnp.asarray(_np.random.rand(b_rows, 10), dtype=dtype)
                 seed = jnp.asarray(42, dtype=jnp.uint32)
                 name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'},{'bool' if bool_event else 'float'}"
-                configs.append((name, (weight, clen, B, seed), {
+                configs.append(BenchmarkConfig(name, (weight, clen, B, seed), {
                     'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
                 }))
     return configs
