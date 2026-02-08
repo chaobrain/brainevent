@@ -15,6 +15,7 @@
 
 import jax
 import jax.numpy as jnp
+from typing import Optional
 from jax.interpreters import ad
 
 from brainevent._misc import namescope
@@ -162,7 +163,7 @@ def _binary_1d_array_index_pallas_kernel(
     return kernel
 
 
-def binary_1d_array_index_p_call(spikes):
+def binary_1d_array_index_p_call(spikes, *, backend: Optional[str] = None):
     indices_info = jax.ShapeDtypeStruct([spikes.shape[0]], jnp.int32)
     count_info = jax.ShapeDtypeStruct([1], jnp.int32)
     return binary_1d_array_index_p(
@@ -171,6 +172,7 @@ def binary_1d_array_index_p_call(spikes):
         spikes_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
         indices_info=indices_info,
         count_info=count_info,
+        backend=backend,
     )
 
 
@@ -231,6 +233,6 @@ def _binary_1d_array_index_benchmark_data(*, platform):
 binary_1d_array_index_p.def_benchmark_data(_binary_1d_array_index_benchmark_data)
 
 
-def binary_2d_array_index_p_call(spikes):
+def binary_2d_array_index_p_call(spikes, *, backend: Optional[str] = None):
     out = jax.ShapeDtypeStruct([spikes.shape[0]], jnp.int32)
     raise NotImplementedError("2D binary array index extraction is not implemented yet.")

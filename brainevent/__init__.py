@@ -17,7 +17,11 @@
 __version__ = "0.0.6"
 __version_info__ = tuple(map(int, __version__.split(".")))
 
-from ._jitc_matrix import JITCMatrix
+from ._config import (
+    load_user_defaults, save_user_defaults, get_user_default,
+    set_user_default, clear_user_defaults, get_config_path,
+    invalidate_cache,
+)
 from ._coo import (
     COO,
     binary_coomv, binary_coomv_p, binary_coomm, binary_coomm_p,
@@ -35,14 +39,13 @@ from ._csr import (
     csr_solve,
 )
 from ._dense import (
-    dm_bv, dm_bv_p, bv_dm, bv_dm_p,
-    dm_bm, dm_bm_p, bm_dm, bm_dm_p,
-    indexed_bv_dm, indexed_bv_dm_p, indexed_dm_bv,
-    indexed_dm_bm, indexed_bm_dm, indexed_bm_dm_p,
+    dbmv, dbmv_p, bdvm, bdvm_p,
+    dbmm, dbmm_p, bdmm, bdmm_p,
+    indexed_bdvm, indexed_bdvm_p, indexed_dbmv, indexed_dbmm, indexed_bdmm, indexed_bdmm_p,
     plast_dense_on_binary_pre, plast_dense_on_binary_pre_p,
     plast_dense_on_binary_post, plast_dense_on_binary_post_p,
-    dm_sfv, dm_sfv_p, sfv_dm, sfv_dm_p,
-    dm_sfm, dm_sfm_p, sfm_dm, sfm_dm_p,
+    dsfmv, dsfmv_p, sfdvm, sfdvm_p,
+    dsfmm, dsfmm_p, sfdmm, sfdmm_p,
 )
 from ._error import (
     MathError,
@@ -77,11 +80,7 @@ from ._jit_uniform import (
     binary_jitumv, binary_jitumv_p, binary_jitumm, binary_jitumm_p,
     jitu, jitu_p, jitumv, jitumv_p, jitumm, jitumm_p,
 )
-from ._config import (
-    load_user_defaults, save_user_defaults, get_user_default,
-    set_user_default, clear_user_defaults, get_config_path,
-    invalidate_cache,
-)
+from ._jitc_matrix import JITCMatrix
 from ._misc import (
     csr_to_coo_index, coo_to_csc_index, csr_to_csc_index,
 )
@@ -126,14 +125,13 @@ __all__ = [
     'csr_solve',
 
     # --- dense matrix --- #
-    'dm_bv', 'dm_bv_p', 'bv_dm', 'bv_dm_p',
-    'dm_bm', 'dm_bm_p', 'bm_dm', 'bm_dm_p',
-    'indexed_bv_dm', 'indexed_bv_dm_p', 'indexed_dm_bv',
-    'indexed_dm_bm', 'indexed_bm_dm', 'indexed_bm_dm_p',
+    'dbmv', 'dbmv_p', 'bdvm', 'bdvm_p',
+    'dbmm', 'dbmm_p', 'bdmm', 'bdmm_p',
+    'indexed_bdvm', 'indexed_bdvm_p', 'indexed_dbmv', 'indexed_dbmm', 'indexed_bdmm', 'indexed_bdmm_p',
     'plast_dense_on_binary_pre', 'plast_dense_on_binary_pre_p',
     'plast_dense_on_binary_post', 'plast_dense_on_binary_post_p',
-    'dm_sfv', 'dm_sfv_p', 'sfv_dm', 'sfv_dm_p',
-    'dm_sfm', 'dm_sfm_p', 'sfm_dm', 'sfm_dm_p',
+    'dsfmv', 'dsfmv_p', 'sfdvm', 'sfdvm_p',
+    'dsfmm', 'dsfmm_p', 'sfdmm', 'sfdmm_p',
 
     # --- Just-In-Time Connectivity matrix --- #
     'JITCMatrix',

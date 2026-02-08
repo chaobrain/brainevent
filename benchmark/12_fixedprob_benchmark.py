@@ -52,18 +52,15 @@
 #
 #
 
+import sys
+import time
+from pathlib import Path
 
-import os
-
-# os.environ['XLA_FLAGS'] = '--xla_cpu_use_thunk_runtime=false'
-os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import jax
-#
-# jax.config.update('jax_cpu_enable_async_dispatch', False)
-
-import time
 import brainstate
+import braintools
 from utils import visualize
 import brainevent
 

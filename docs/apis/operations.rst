@@ -101,40 +101,40 @@ Dense-matrix @ binary-vector / binary-matrix.
 .. autosummary::
    :toctree: generated/
 
-   dm_bv
-   dm_bv_p
-   bv_dm
-   bv_dm_p
-   dm_bm
-   dm_bm_p
-   bm_dm
-   bm_dm_p
+   dbmv
+   dbmv_p
+   bdvm
+   bdvm_p
+   dbmm
+   dbmm_p
+   bdmm
+   bdmm_p
 
 Indexed binary operations.
 
 .. autosummary::
    :toctree: generated/
 
-   indexed_bv_dm
-   indexed_bv_dm_p
-   indexed_dm_bv
-   indexed_dm_bm
-   indexed_bm_dm
-   indexed_bm_dm_p
+   indexed_bdvm
+   indexed_bdvm_p
+   indexed_dbmv
+   indexed_dbmm
+   indexed_bdmm
+   indexed_bdmm_p
 
 Dense-matrix @ sparse-float-vector / sparse-float-matrix.
 
 .. autosummary::
    :toctree: generated/
 
-   dm_sfv
-   dm_sfv_p
-   sfv_dm
-   sfv_dm_p
-   dm_sfm
-   dm_sfm_p
-   sfm_dm
-   sfm_dm_p
+   dsfmv
+   dsfmv_p
+   sfdvm
+   sfdvm_p
+   dsfmm
+   dsfmm_p
+   sfdmm
+   sfdmm_p
 
 Plasticity operations.
 

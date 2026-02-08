@@ -16,7 +16,7 @@
 # -*- coding: utf-8 -*-
 
 
-from typing import Tuple, Union
+from typing import Optional, Tuple, Union
 
 import brainunit as u
 import jax
@@ -431,12 +431,7 @@ def _binary_fcnmv_transpose_rule(ct, weights, indices, spikes, *, shape, transpo
         if type(ct) is ad.Zero:
             ct_spk = ad.Zero(spikes)
         else:
-            if homo:
-                # homogeneous weight
-                ct_spk = jax.vmap(lambda idx: jnp.sum(ct[idx] * weights))(indices)
-            else:
-                # heterogeneous weight
-                ct_spk = jax.vmap(lambda idx, w: jnp.inner(ct[idx], w))(indices, weights)
+            ct_spk = fcnmv_p_call(weights, indices, ct, shape=shape, transpose=not transpose)[0]
         return weights, indices, ct_spk
 
     else:
@@ -486,41 +481,6 @@ def _binary_fcnmv_batching(args, axes, **kwargs):
         return general_batching_rule(binary_fcnmv_p, args, axes, **kwargs)
 
 
-def binary_fcnmv_p_call(
-    weights: jax.Array,
-    indices: jax.Array,
-    spikes: jax.Array,
-    *,
-    shape: Tuple[int, int],
-    transpose: bool = False,
-) -> Tuple[jax.Array]:
-    out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, spikes, shape, transpose)
-    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
-    return binary_fcnmv_p(
-        weights,
-        indices,
-        spikes,
-        outs=[out],
-        shape=shape,
-        transpose=transpose,
-        weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
-        indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
-        spike_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
-    )
-
-
-binary_fcnmv_p = XLACustomKernel('binary_fcnmv', )
-binary_fcnmv_p.def_numba_kernel(_binary_fcnmv_numba_kernel)
-binary_fcnmv_p.def_warp_kernel(_binary_fcnmv_warp_kernel)
-binary_fcnmv_p.def_pallas_kernel('gpu', _binary_fcnmv_pallas_kernel)
-binary_fcnmv_p.def_pallas_kernel('tpu', _binary_fcnmv_pallas_kernel)
-binary_fcnmv_p.def_jvp_rule2(_binary_fcnmv_jvp_weights, None, _binary_fcnmv_jvp_spikes, None)
-binary_fcnmv_p.def_transpose_rule(_binary_fcnmv_transpose_rule)
-binary_fcnmv_p.def_batching_rule(_binary_fcnmv_batching)
-binary_fcnmv_p.def_call(binary_fcnmv_p_call)
-binary_fcnmv_p.def_tags('fcn', 'binary')
-
-
 def _binary_fcnmv_benchmark_data(*, platform):
     import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
@@ -540,12 +500,51 @@ def _binary_fcnmv_benchmark_data(*, platform):
                 else:
                     spikes = jnp.asarray(_np.random.rand(v_size), dtype=dtype)
                 name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
-                configs.append(BenchmarkConfig(name, (weights, indices, spikes), {
-                    'shape': (n_pre, n_post), 'transpose': transpose
-                }))
+                configs.append(
+                    BenchmarkConfig(
+                        name,
+                        (weights, indices, spikes),
+                        {'shape': (n_pre, n_post), 'transpose': transpose}
+                    )
+                )
     return configs
 
 
+def binary_fcnmv_p_call(
+    weights: jax.Array,
+    indices: jax.Array,
+    spikes: jax.Array,
+    *,
+    shape: Tuple[int, int],
+    transpose: bool = False,
+    backend: Optional[str] = None,
+) -> Tuple[jax.Array]:
+    out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, spikes, shape, transpose)
+    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
+    return binary_fcnmv_p(
+        weights,
+        indices,
+        spikes,
+        outs=[out],
+        shape=shape,
+        transpose=transpose,
+        weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
+        spike_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
+        backend=backend,
+    )
+
+
+binary_fcnmv_p = XLACustomKernel('binary_fcnmv', )
+binary_fcnmv_p.def_numba_kernel(_binary_fcnmv_numba_kernel)
+binary_fcnmv_p.def_warp_kernel(_binary_fcnmv_warp_kernel)
+binary_fcnmv_p.def_pallas_kernel('gpu', _binary_fcnmv_pallas_kernel)
+binary_fcnmv_p.def_pallas_kernel('tpu', _binary_fcnmv_pallas_kernel)
+binary_fcnmv_p.def_jvp_rule2(_binary_fcnmv_jvp_weights, None, _binary_fcnmv_jvp_spikes, None)
+binary_fcnmv_p.def_transpose_rule(_binary_fcnmv_transpose_rule)
+binary_fcnmv_p.def_batching_rule(_binary_fcnmv_batching)
+binary_fcnmv_p.def_call(binary_fcnmv_p_call)
+binary_fcnmv_p.def_tags('fcn', 'binary')
 binary_fcnmv_p.def_benchmark_data(_binary_fcnmv_benchmark_data)
 
 
@@ -631,16 +630,31 @@ def _binary_fcnmm_numba_kernel(
         #
 
         if weight_info.size == 1:
-            @numba.njit(parallel=True, fastmath=True, nogil=True)
-            def ell_mv(weights, indices, matrix, posts):
-                w = weights[0]
-                for i_m in numba.prange(indices.shape[0]):
-                    posts[i_m] = w * np.sum(matrix[indices[i_m]], axis=0)
+            if matrix_info.dtype == jnp.bool_:
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                def ell_mv(weights, indices, matrix, posts):
+                    w = weights[0]
+                    for i_m in numba.prange(indices.shape[0]):
+                        posts[i_m] = w * np.sum(matrix[indices[i_m]], axis=0)
+            else:
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                def ell_mv(weights, indices, matrix, posts):
+                    w = weights[0]
+                    for i_m in numba.prange(indices.shape[0]):
+                        events = matrix[indices[i_m]] > 0.
+                        posts[i_m] = w * np.sum(events, axis=0)
         else:
-            @numba.njit(parallel=True, fastmath=True, nogil=True)
-            def ell_mv(weights, indices, matrix, posts):
-                for i_m in numba.prange(indices.shape[0]):
-                    posts[i_m] = weights[i_m] @ matrix[indices[i_m]]
+            if matrix_info.dtype == jnp.bool_:
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                def ell_mv(weights, indices, matrix, posts):
+                    for i_m in numba.prange(indices.shape[0]):
+                        posts[i_m] = weights[i_m] @ (matrix[indices[i_m]]).astype(weights.dtype)
+            else:
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                def ell_mv(weights, indices, matrix, posts):
+                    for i_m in numba.prange(indices.shape[0]):
+                        events = (matrix[indices[i_m]] > 0.).astype(weights.dtype)
+                        posts[i_m] = weights[i_m] @ events
 
     def kernel(weights, indices, matrix):
         return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, matrix)
@@ -866,6 +880,35 @@ def _binary_fcnmm_batching(args, axes, **kwargs):
         return general_batching_rule(binary_fcnmm_p, args, axes, **kwargs)
 
 
+def _binary_fcnmm_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for homo in (True, False):
+            for bool_event in (True, False):
+                n_conn = max(1, int(n_post * prob))
+                indices = jnp.asarray(_np.random.randint(0, n_post, (n_pre, n_conn), dtype=_np.int32))
+                if homo:
+                    weights = jnp.ones(1, dtype=dtype)
+                else:
+                    weights = jnp.ones((n_pre, n_conn), dtype=dtype)
+                b_rows = n_post if not transpose else n_pre
+                if bool_event:
+                    matrix = jnp.asarray(_np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
+                else:
+                    matrix = jnp.asarray(_np.random.rand(b_rows, 10), dtype=dtype)
+                name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
+                configs.append(
+                    BenchmarkConfig(
+                        name,
+                        (weights, indices, matrix),
+                        {'shape': (n_pre, n_post), 'transpose': transpose}
+                    )
+                )
+    return configs
+
+
 def binary_fcnmm_p_call(
     weights: jax.Array,
     indices: jax.Array,
@@ -873,6 +916,7 @@ def binary_fcnmm_p_call(
     *,
     shape: Tuple[int, int],
     transpose: bool,
+    backend: Optional[str] = None,
 ) -> Tuple[jax.Array]:
     """
     Perform a sparse matrix-matrix multiplication with fixed connection number.
@@ -912,6 +956,7 @@ def binary_fcnmm_p_call(
         matrix_info=jax.ShapeDtypeStruct(matrix.shape, matrix.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         outs=[out],
+        backend=backend,
     )
 
 
@@ -924,31 +969,4 @@ binary_fcnmm_p.def_transpose_rule(_binary_fcnmm_transpose_rule)
 binary_fcnmm_p.def_batching_rule(_binary_fcnmm_batching)
 binary_fcnmm_p.def_call(binary_fcnmm_p_call)
 binary_fcnmm_p.def_tags('fcn', 'binary')
-
-
-def _binary_fcnmm_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for transpose in (False, True):
-        for homo in (True, False):
-            for bool_event in (True, False):
-                n_conn = max(1, int(n_post * prob))
-                indices = jnp.asarray(_np.random.randint(0, n_post, (n_pre, n_conn), dtype=_np.int32))
-                if homo:
-                    weights = jnp.ones(1, dtype=dtype)
-                else:
-                    weights = jnp.ones((n_pre, n_conn), dtype=dtype)
-                b_rows = n_post if not transpose else n_pre
-                if bool_event:
-                    matrix = jnp.asarray(_np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
-                else:
-                    matrix = jnp.asarray(_np.random.rand(b_rows, 10), dtype=dtype)
-                name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
-                configs.append(BenchmarkConfig(name, (weights, indices, matrix), {
-                    'shape': (n_pre, n_post), 'transpose': transpose
-                }))
-    return configs
-
-
 binary_fcnmm_p.def_benchmark_data(_binary_fcnmm_benchmark_data)

@@ -52,7 +52,26 @@ __all__ = [
     'general_batching_rule',
     'jaxtype_to_warptype',
     'jaxinfo_to_warpinfo',
+    'check_pallas_jax_version',
 ]
+
+
+_MIN_JAX_VERSION_FOR_PALLAS = (0, 7, 1)
+
+
+def check_pallas_jax_version():
+    """Check that JAX version is >= 0.7.1 for Pallas kernel support.
+
+    Raises:
+        RuntimeError: If the installed JAX version is older than 0.7.1.
+    """
+    if jax.__version_info__ < _MIN_JAX_VERSION_FOR_PALLAS:
+        min_ver = '.'.join(str(v) for v in _MIN_JAX_VERSION_FOR_PALLAS)
+        raise RuntimeError(
+            f"Pallas kernels require JAX >= {min_ver}, "
+            f"but found JAX {jax.__version__}. "
+            f"Please upgrade JAX: pip install --upgrade jax"
+        )
 
 
 def register_cuda_kernels(

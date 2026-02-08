@@ -24,9 +24,10 @@ multiplication across different:
 - Weight types (homogeneous vs heterogeneous)
 """
 
-import sys, os
+import sys
+from pathlib import Path
 
-sys.path.append(os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import argparse
 import jax.numpy as jnp
@@ -91,8 +92,7 @@ def run_benchmark(
         platform=platform,
         n_warmup=n_warmup,
         n_runs=n_runs,
-        # batch_mode=batch_mode,
-        batch_mode=True,
+        batch_mode=batch_mode,
         compare_results=True,
         catch_error=False,
     )

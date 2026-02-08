@@ -26,7 +26,7 @@ from brainevent._compatible_import import Primitive
 from brainevent._error import KernelFallbackExhaustedError, KernelExecutionError
 from brainevent._typing import KernelGenerator
 from .benchmark import BenchmarkResult, BenchmarkReport, benchmark_function
-from .util import general_batching_rule, defjvp, OutType, abstract_arguments
+from .util import general_batching_rule, defjvp, OutType, abstract_arguments, check_pallas_jax_version
 
 __all__ = [
     'XLACustomKernel',
@@ -262,32 +262,17 @@ class XLACustomKernel:
 
             # Get the kernel entry
             if backend_to_use and backend_to_use in kernels:
-                entry = kernels[backend_to_use]
+                pass
             else:
                 # Fallback to first registered kernel
                 backend_to_use = next(iter(kernels))
-                entry = kernels[backend_to_use]
 
+            if backend_to_use == 'pallas':
+                check_pallas_jax_version()
+
+            entry = kernels[backend_to_use]
             kernel = entry.kernel_generator(**kwargs)
             return kernel(*args)
-            # try:
-            #     pass
-            # except Exception as e:
-            #     # Build helpful error message with alternatives
-            #     alternatives = [b for b in kernels.keys() if b != backend_to_use]
-            #     alt_msg = ""
-            #     if alternatives:
-            #         alt_msg = (
-            #                 f"\n\nAlternative backends available for '{platform}':\n"
-            #                 + "\n".join(f"  - {b}" for b in alternatives)
-            #                 + f"\n\nTo use an alternative:\n"
-            #                   f"  1. Call with backend='{alternatives[0]}'\n"
-            #                   f"  2. Or set default: kernel.set_default('{platform}', '{alternatives[0]}')"
-            #         )
-            #     raise KernelExecutionError(
-            #         f"Backend '{backend_to_use}' failed on platform '{platform}':\n"
-            #         f"  {type(e).__name__}: {e}{alt_msg}"
-            #     ) from e
 
         # Register the lowering with JAX
         lower = mlir.lower_fun(fallback_kernel_fn, multiple_results=True)
@@ -519,7 +504,6 @@ class XLACustomKernel:
         Args:
             fn: The call function (e.g., binary_csrmv_p_call).
         """
-
         self._call_fn = fn
 
     def call(self, *args, **kwargs):
