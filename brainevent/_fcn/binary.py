@@ -628,16 +628,31 @@ def _binary_fcnmm_numba_kernel(
         #
 
         if weight_info.size == 1:
-            @numba.njit(parallel=True, fastmath=True, nogil=True)
-            def ell_mv(weights, indices, matrix, posts):
-                w = weights[0]
-                for i_m in numba.prange(indices.shape[0]):
-                    posts[i_m] = w * np.sum(matrix[indices[i_m]], axis=0)
+            if matrix_info.dtype == jnp.bool_:
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                def ell_mv(weights, indices, matrix, posts):
+                    w = weights[0]
+                    for i_m in numba.prange(indices.shape[0]):
+                        posts[i_m] = w * np.sum(matrix[indices[i_m]], axis=0)
+            else:
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                def ell_mv(weights, indices, matrix, posts):
+                    w = weights[0]
+                    for i_m in numba.prange(indices.shape[0]):
+                        events = matrix[indices[i_m]] > 0.
+                        posts[i_m] = w * np.sum(events, axis=0)
         else:
-            @numba.njit(parallel=True, fastmath=True, nogil=True)
-            def ell_mv(weights, indices, matrix, posts):
-                for i_m in numba.prange(indices.shape[0]):
-                    posts[i_m] = weights[i_m] @ matrix[indices[i_m]]
+            if matrix_info.dtype == jnp.bool_:
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                def ell_mv(weights, indices, matrix, posts):
+                    for i_m in numba.prange(indices.shape[0]):
+                        posts[i_m] = weights[i_m] @ matrix[indices[i_m]]
+            else:
+                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                def ell_mv(weights, indices, matrix, posts):
+                    for i_m in numba.prange(indices.shape[0]):
+                        events = matrix[indices[i_m]] > 0.
+                        posts[i_m] = weights[i_m] @ events
 
     def kernel(weights, indices, matrix):
         return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, matrix)
