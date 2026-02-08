@@ -46,8 +46,9 @@ def indexed_bdvm(binary_index, weights):
 
     Parameters
     ----------
-    binary_index : IndexedBinary
+    binary_index : BinaryArray
         An object representing a binary vector in sparse format. It must have the attributes:
+
         - value: the spike values (typically all ones for binary)
         - spike_indices: indices of nonzero (spike) elements
         - spike_count: number of spikes (nonzero elements)
@@ -279,7 +280,7 @@ def indexed_dbmv(weights, binary_arr):
     weights : ndarray or compatible
         A dense matrix of shape (N, M), where N is the input dimension and M is the output dimension.
         May be a unit-aware array.
-    binary_arr : IndexedBinary
+    binary_arr : BinaryArray
         An object representing a binary vector in sparse format. It must have the attributes:
         - value: the spike values (typically all ones for binary)
         - spike_indices: indices of nonzero (spike) elements
@@ -317,7 +318,7 @@ def indexed_bdmm(binary_arr, weights):
 
     Parameters
     ----------
-    binary_arr : IndexedBinary
+    binary_arr : BinaryArray
         An object representing a batch of binary vectors in sparse format. It must have the attributes:
         - value: the spike values (typically all ones for binary), shape (batch_size, n_spikes)
         - spike_indices: indices of nonzero (spike) elements, shape (batch_size, n_spikes)

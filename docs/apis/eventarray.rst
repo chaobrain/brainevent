@@ -37,17 +37,6 @@ Sparse Float Events
    SparseFloat
 
 
-Indexed Events
---------------
-
-.. autosummary::
-   :toctree: generated/
-   :template: classtemplate.rst
-
-   IndexedBinary
-   IndexedSparseFloat
-
-
 Utility
 -------
 

@@ -56,7 +56,7 @@ from ._error import (
 )
 from ._event import (
     BaseArray, BinaryArray, EventArray,
-    IndexedBinary, SparseFloat, IndexedSparseFloat,
+    SparseFloat,
     binary_array_index,
 )
 from ._fcn import (
@@ -103,9 +103,7 @@ __all__ = [
     'BaseArray',
     'EventArray',
     'BinaryArray',
-    'IndexedBinary',
     'SparseFloat',
-    'IndexedSparseFloat',
     'binary_array_index',
 
     # --- COO --- #

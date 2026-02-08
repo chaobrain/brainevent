@@ -14,6 +14,7 @@
 # ==============================================================================
 
 
+import jax
 from jax.tree_util import register_pytree_node_class
 
 from brainevent._dense import dsfmm, sfdmm, dsfmv, sfdvm
@@ -41,11 +42,44 @@ class SparseFloat(BaseArray):
     The class is registered as a PyTree node for compatibility with JAX's
     functional transformations.
 
-    Attributes:
-        value: The underlying sparse float array data
+    Parameters
+    ----------
+    value : array_like
+        The underlying sparse float array data.
+    dtype : jax.typing.DTypeLike, optional
+        The data type of the array.
+    indexed : bool, optional
+        If True, mark the array as indexed and make it immutable.
+        Default is False.
     """
-    __slots__ = ('_value',)
+    __slots__ = ('_value', '_indexed', '_indices')
     __module__ = 'brainevent'
+
+    def __init__(self, value, dtype: jax.typing.DTypeLike = None, indexed: bool = False):
+        super().__init__(value, dtype=dtype)
+        self._indexed = indexed
+        if indexed:
+            self._indices = ...
+        else:
+            self._indices = None
+
+    @property
+    def indexed(self) -> bool:
+        return self._indexed
+
+    @property
+    def indices(self):
+        return self._indices
+
+    def __setitem__(self, index, value):
+        if self._indexed:
+            raise NotImplementedError('Setting items in an indexed SparseFloat is not supported.')
+        super().__setitem__(index, value)
+
+    def _update(self, value):
+        if self._indexed:
+            raise NotImplementedError('Updating an indexed SparseFloat is not supported.')
+        super()._update(value)
 
     def __matmul__(self, oc):
         if is_known_type(oc):
@@ -113,3 +147,20 @@ class SparseFloat(BaseArray):
         else:
             self.value = oc.__rmatmul__(self)
         return self
+
+    def tree_flatten(self):
+        if self._indexed:
+            return (self._value,), (True, self._indices)
+        return (self._value,), (False,)
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, flat_contents):
+        value, = flat_contents
+        if aux_data[0]:  # indexed=True
+            _, indices = aux_data
+            obj = object.__new__(cls)
+            obj._value = value
+            obj._indexed = True
+            obj._indices = indices
+            return obj
+        return cls(value)

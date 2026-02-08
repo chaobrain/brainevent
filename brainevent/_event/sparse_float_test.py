@@ -88,3 +88,64 @@ class TestSparseFloatMatMul:
         with pytest.raises(AssertionError) as excinfo:
             _ = self.matrix @ vector
         assert "Right operand must be a 2D array" in str(excinfo.value)
+
+
+class TestSparseFloatIndexed:
+    def test_indexed_construction(self):
+        """Test that indexed=True sets indices placeholder."""
+        data = np.array([1.0, 0.0, 3.0], dtype=np.float32)
+        arr = SparseFloat(data, indexed=True)
+        assert arr.indexed is True
+        assert arr.indices is ...
+
+    def test_non_indexed_construction(self):
+        """Test that indexed=False (default) has no indices."""
+        data = np.array([1.0, 0.0, 3.0], dtype=np.float32)
+        arr = SparseFloat(data)
+        assert arr.indexed is False
+        assert arr.indices is None
+
+    def test_indexed_immutability_setitem(self):
+        """Test that __setitem__ raises for indexed arrays."""
+        data = np.array([1.0, 0.0, 3.0], dtype=np.float32)
+        arr = SparseFloat(data, indexed=True)
+        with pytest.raises(NotImplementedError):
+            arr[0] = 1.0
+
+    def test_indexed_immutability_update(self):
+        """Test that _update raises for indexed arrays."""
+        data = np.array([1.0, 0.0, 3.0], dtype=np.float32)
+        arr = SparseFloat(data, indexed=True)
+        with pytest.raises(NotImplementedError):
+            arr.value = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+
+    def test_non_indexed_mutable(self):
+        """Test that non-indexed arrays allow mutation."""
+        import jax.numpy as jnp
+        data = jnp.array([1.0, 0.0, 3.0], dtype=jnp.float32)
+        arr = SparseFloat(data)
+        arr.value = jnp.array([0.0, 1.0, 0.0], dtype=jnp.float32)
+        assert np.allclose(arr.value, np.array([0.0, 1.0, 0.0]))
+
+    def test_pytree_roundtrip_non_indexed(self):
+        """Test JAX pytree flatten/unflatten for non-indexed arrays."""
+        import jax
+        data = np.array([1.0, 0.0, 3.0], dtype=np.float32)
+        arr = SparseFloat(data)
+        leaves, treedef = jax.tree.flatten(arr)
+        arr2 = jax.tree.unflatten(treedef, leaves)
+        assert isinstance(arr2, SparseFloat)
+        assert arr2.indexed is False
+        assert np.allclose(arr2.value, data)
+
+    def test_pytree_roundtrip_indexed(self):
+        """Test JAX pytree flatten/unflatten for indexed arrays."""
+        import jax
+        data = np.array([1.0, 0.0, 3.0], dtype=np.float32)
+        arr = SparseFloat(data, indexed=True)
+        leaves, treedef = jax.tree.flatten(arr)
+        arr2 = jax.tree.unflatten(treedef, leaves)
+        assert isinstance(arr2, SparseFloat)
+        assert arr2.indexed is True
+        assert arr2.indices is ...
+        assert np.allclose(arr2.value, data)

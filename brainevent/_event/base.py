@@ -156,13 +156,6 @@ class BaseArray:
                 f"while we got {value.shape}."
             )
 
-        # # Check if the dtype of the new value matches the original value
-        # if value.dtype != self_value.dtype:
-        #     raise MathError(
-        #         f"The dtype of the original data is {self_value.dtype}, "
-        #         f"while we got {value.dtype}."
-        #     )
-
         # Set the new value after passing the check
         self._value = value
 

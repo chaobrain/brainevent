@@ -134,3 +134,75 @@ class TestBinaryArray:
 
         with pytest.raises(AssertionError):
             _ = binary_mat @ dense_vec
+
+
+class TestBinaryArrayIndexed:
+    @pytest.mark.xfail(reason="binary_array_index kernel not available on all platforms")
+    def test_indexed_construction(self):
+        """Test that indexed=True computes spike_indices and spike_count."""
+        import jax.numpy as jnp
+        data = jnp.array([0, 1, 0, 1, 1], dtype=jnp.float32)
+        arr = BinaryArray(data, indexed=True)
+        assert arr.indexed is True
+        assert arr.spike_indices is not None
+        assert arr.spike_count is not None
+
+    def test_non_indexed_construction(self):
+        """Test that indexed=False (default) has no spike_indices/spike_count."""
+        data = np.array([0, 1, 0, 1], dtype=np.float32)
+        arr = BinaryArray(data)
+        assert arr.indexed is False
+        assert arr.spike_indices is None
+        assert arr.spike_count is None
+
+    @pytest.mark.xfail(reason="binary_array_index kernel not available on all platforms")
+    def test_indexed_immutability_setitem(self):
+        """Test that __setitem__ raises for indexed arrays."""
+        import jax.numpy as jnp
+        data = jnp.array([0, 1, 0, 1], dtype=jnp.float32)
+        arr = BinaryArray(data, indexed=True)
+        with pytest.raises(NotImplementedError):
+            arr[0] = 1
+
+    @pytest.mark.xfail(reason="binary_array_index kernel not available on all platforms")
+    def test_indexed_immutability_update(self):
+        """Test that _update raises for indexed arrays."""
+        import jax.numpy as jnp
+        data = jnp.array([0, 1, 0, 1], dtype=jnp.float32)
+        arr = BinaryArray(data, indexed=True)
+        with pytest.raises(NotImplementedError):
+            arr.value = jnp.array([1, 0, 1, 0], dtype=jnp.float32)
+
+    def test_non_indexed_mutable(self):
+        """Test that non-indexed arrays allow mutation."""
+        import jax.numpy as jnp
+        data = jnp.array([0, 1, 0, 1], dtype=jnp.float32)
+        arr = BinaryArray(data)
+        arr.value = jnp.array([1, 0, 1, 0], dtype=jnp.float32)
+        assert np.array_equal(arr.value, np.array([1, 0, 1, 0]))
+
+    def test_pytree_roundtrip_non_indexed(self):
+        """Test JAX pytree flatten/unflatten for non-indexed arrays."""
+        import jax
+        data = np.array([0, 1, 0, 1], dtype=np.float32)
+        arr = BinaryArray(data)
+        leaves, treedef = jax.tree.flatten(arr)
+        arr2 = jax.tree.unflatten(treedef, leaves)
+        assert isinstance(arr2, BinaryArray)
+        assert arr2.indexed is False
+        assert np.array_equal(arr2.value, data)
+
+    @pytest.mark.xfail(reason="binary_array_index kernel not available on all platforms")
+    def test_pytree_roundtrip_indexed(self):
+        """Test JAX pytree flatten/unflatten for indexed arrays."""
+        import jax
+        import jax.numpy as jnp
+        data = jnp.array([0, 1, 0, 1, 1], dtype=jnp.float32)
+        arr = BinaryArray(data, indexed=True)
+        leaves, treedef = jax.tree.flatten(arr)
+        arr2 = jax.tree.unflatten(treedef, leaves)
+        assert isinstance(arr2, BinaryArray)
+        assert arr2.indexed is True
+        assert arr2.spike_indices is not None
+        assert arr2.spike_count is not None
+        assert np.array_equal(arr2.value, data)
