@@ -550,33 +550,36 @@ class JITCUniformR(JITUniformMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
-            other = other.value
-            if other.ndim == 1:
-                # JIT matrix @ events
-                return binary_jitumv(
-                    self.wlow,
-                    self.whigh,
-                    self.prob,
-                    other,
-                    self.seed,
-                    shape=self.shape,
-                    transpose=False,
-                    corder=self.corder,
-                )
-            elif other.ndim == 2:
-                # JIT matrix @ events
-                return binary_jitumm(
-                    self.wlow,
-                    self.whigh,
-                    self.prob,
-                    other,
-                    self.seed,
-                    shape=self.shape,
-                    transpose=False,
-                    corder=self.corder,
-                )
+            if other.indexed:
+                other = other.value
+                if other.ndim == 1:
+                    # JIT matrix @ events
+                    return binary_jitumv(
+                        self.wlow,
+                        self.whigh,
+                        self.prob,
+                        other,
+                        self.seed,
+                        shape=self.shape,
+                        transpose=False,
+                        corder=self.corder,
+                    )
+                elif other.ndim == 2:
+                    # JIT matrix @ events
+                    return binary_jitumm(
+                        self.wlow,
+                        self.whigh,
+                        self.prob,
+                        other,
+                        self.seed,
+                        shape=self.shape,
+                        transpose=False,
+                        corder=self.corder,
+                    )
+                else:
+                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                raise NotImplementedError
 
         else:
             other = u.math.asarray(other)
@@ -615,42 +618,45 @@ class JITCUniformR(JITUniformMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
-            other = other.value
-            if other.ndim == 1:
-                #
-                # vector @ JIT matrix
-                # ==
-                # JIT matrix.T @ vector
-                #
-                return binary_jitumv(
-                    self.wlow,
-                    self.whigh,
-                    self.prob,
-                    other,
-                    self.seed,
-                    shape=self.shape,
-                    transpose=True,
-                    corder=not self.corder,
-                )
-            elif other.ndim == 2:
-                #
-                # matrix @ JIT matrix
-                # ==
-                # (JIT matrix.T @ matrix.T).T
-                #
-                r = binary_jitumm(
-                    self.wlow,
-                    self.whigh,
-                    self.prob,
-                    other.T,
-                    self.seed,
-                    shape=self.shape,
-                    transpose=True,
-                    corder=not self.corder,
-                )
-                return r.T
+            if other.indexed:
+                other = other.value
+                if other.ndim == 1:
+                    #
+                    # vector @ JIT matrix
+                    # ==
+                    # JIT matrix.T @ vector
+                    #
+                    return binary_jitumv(
+                        self.wlow,
+                        self.whigh,
+                        self.prob,
+                        other,
+                        self.seed,
+                        shape=self.shape,
+                        transpose=True,
+                        corder=not self.corder,
+                    )
+                elif other.ndim == 2:
+                    #
+                    # matrix @ JIT matrix
+                    # ==
+                    # (JIT matrix.T @ matrix.T).T
+                    #
+                    r = binary_jitumm(
+                        self.wlow,
+                        self.whigh,
+                        self.prob,
+                        other.T,
+                        self.seed,
+                        shape=self.shape,
+                        transpose=True,
+                        corder=not self.corder,
+                    )
+                    return r.T
+                else:
+                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                raise NotImplementedError
 
         else:
             other = u.math.asarray(other)
@@ -925,37 +931,40 @@ class JITCUniformC(JITUniformMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
-            other = other.value
-            if other.ndim == 1:
-                # JITC_R matrix.T @ vector
-                # ==
-                # vector @ JITC_R matrix
-                return binary_jitumv(
-                    self.wlow,
-                    self.whigh,
-                    self.prob,
-                    other,
-                    self.seed,
-                    shape=self.shape[::-1],
-                    transpose=True,
-                    corder=self.corder,
-                )
-            elif other.ndim == 2:
-                # JITC_R matrix.T @ matrix
-                # ==
-                # (matrix.T @ JITC_R matrix).T
-                return binary_jitumm(
-                    self.wlow,
-                    self.whigh,
-                    self.prob,
-                    other,
-                    self.seed,
-                    shape=self.shape[::-1],
-                    transpose=True,
-                    corder=self.corder,
-                )
+            if other.indexed:
+                other = other.value
+                if other.ndim == 1:
+                    # JITC_R matrix.T @ vector
+                    # ==
+                    # vector @ JITC_R matrix
+                    return binary_jitumv(
+                        self.wlow,
+                        self.whigh,
+                        self.prob,
+                        other,
+                        self.seed,
+                        shape=self.shape[::-1],
+                        transpose=True,
+                        corder=self.corder,
+                    )
+                elif other.ndim == 2:
+                    # JITC_R matrix.T @ matrix
+                    # ==
+                    # (matrix.T @ JITC_R matrix).T
+                    return binary_jitumm(
+                        self.wlow,
+                        self.whigh,
+                        self.prob,
+                        other,
+                        self.seed,
+                        shape=self.shape[::-1],
+                        transpose=True,
+                        corder=self.corder,
+                    )
+                else:
+                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                raise NotImplementedError
 
         else:
             other = u.math.asarray(other)
@@ -997,42 +1006,45 @@ class JITCUniformC(JITUniformMatrix):
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         if isinstance(other, BinaryArray):
-            other = other.value
-            if other.ndim == 1:
-                #
-                # vector @ JITC_R matrix.T
-                # ==
-                # JITC_R matrix @ vector
-                #
-                return binary_jitumv(
-                    self.wlow,
-                    self.whigh,
-                    self.prob,
-                    other,
-                    self.seed,
-                    shape=self.shape[::-1],
-                    transpose=False,
-                    corder=not self.corder,
-                )
-            elif other.ndim == 2:
-                #
-                # matrix @ JITC_R matrix.T
-                # ==
-                # (JITC_R matrix @ matrix.T).T
-                #
-                r = binary_jitumm(
-                    self.wlow,
-                    self.whigh,
-                    self.prob,
-                    other.T,
-                    self.seed,
-                    shape=self.shape[::-1],
-                    transpose=False,
-                    corder=not self.corder,
-                )
-                return r.T
+            if other.indexed:
+                other = other.value
+                if other.ndim == 1:
+                    #
+                    # vector @ JITC_R matrix.T
+                    # ==
+                    # JITC_R matrix @ vector
+                    #
+                    return binary_jitumv(
+                        self.wlow,
+                        self.whigh,
+                        self.prob,
+                        other,
+                        self.seed,
+                        shape=self.shape[::-1],
+                        transpose=False,
+                        corder=not self.corder,
+                    )
+                elif other.ndim == 2:
+                    #
+                    # matrix @ JITC_R matrix.T
+                    # ==
+                    # (JITC_R matrix @ matrix.T).T
+                    #
+                    r = binary_jitumm(
+                        self.wlow,
+                        self.whigh,
+                        self.prob,
+                        other.T,
+                        self.seed,
+                        shape=self.shape[::-1],
+                        transpose=False,
+                        corder=not self.corder,
+                    )
+                    return r.T
+                else:
+                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                raise NotImplementedError
 
         else:
             other = u.math.asarray(other)

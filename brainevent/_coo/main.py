@@ -42,8 +42,9 @@ class COO(u.sparse.SparseMatrix):
     This class represents a sparse matrix in coordinate format, where non-zero
     elements are stored as triplets (row, column, value).
 
-    The class also supports various arithmetic operations (``+``, ``-``, ``*``, ``/``, ``@``, etc.)
-    and comparisons with other COO matrices, dense arrays, and scalars.
+    The class supports arithmetic with dense arrays and scalars, and sparse-dense
+    matrix multiplication via ``@``. Sparse-sparse operations are intentionally
+    limited and may raise ``NotImplementedError``.
 
     Attributes
     ----------
@@ -659,21 +660,27 @@ class COO(u.sparse.SparseMatrix):
         data = self.data
 
         if isinstance(other, BinaryArray):
-            # Extract the data from the BaseArray
-            other = other.value
-            if other.ndim == 1:
-                # Perform matrix-vector multiplication with event data
-                return binary_coomv(data, self.row, self.col, other, shape=self.shape)
-            elif other.ndim == 2:
-                # Perform matrix-matrix multiplication with event data
-                return binary_coomm(data, self.row, self.col, other, shape=self.shape)
+            if other.indexed:
+                # Extract the data from the BaseArray
+                other = other.value
+                if other.ndim == 1:
+                    # Perform matrix-vector multiplication with event data
+                    return binary_coomv(data, self.row, self.col, other, shape=self.shape)
+                elif other.ndim == 2:
+                    # Perform matrix-matrix multiplication with event data
+                    return binary_coomm(data, self.row, self.col, other, shape=self.shape)
+                else:
+                    # Raise an error if the shape of the other object is unsupported
+                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
-                # Raise an error if the shape of the other object is unsupported
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                raise NotImplementedError
         elif isinstance(other, SparseFloat):
-            other = other.value
-            data, other = u.math.promote_dtypes(self.data, other)
-            raise NotImplementedError(f"matmul with object of shape {other.shape}")
+            if other.indexed:
+                other = other.value
+                data, other = u.math.promote_dtypes(self.data, other)
+                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+            else:
+                raise NotImplementedError
         else:
             # Convert the other object to an appropriate array type
             other = u.math.asarray(other)
@@ -718,9 +725,9 @@ class COO(u.sparse.SparseMatrix):
         data = self.data
 
         if isinstance(other, BinaryArray):
-            # Extract the data from the BaseArray
-            other = other.value
             if other.indexed:
+                # Extract the data from the BaseArray
+                other = other.value
                 if other.ndim == 1:
                     # Perform matrix-vector multiplication with event data
                     return binary_coomv(data, self.row, self.col, other, shape=self.shape, transpose=True)
@@ -738,9 +745,12 @@ class COO(u.sparse.SparseMatrix):
                 raise NotImplementedError
 
         elif isinstance(other, SparseFloat):
-            other = other.value
-            data, other = u.math.promote_dtypes(self.data, other)
-            raise NotImplementedError(f"matmul with object of shape {other.shape}")
+            if other.indexed:
+                other = other.value
+                data, other = u.math.promote_dtypes(self.data, other)
+                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+            else:
+                raise NotImplementedError
 
         else:
             # Convert the other object to an appropriate array type

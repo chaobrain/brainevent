@@ -76,7 +76,7 @@ class FixedNumConn(u.sparse.SparseMatrix):
 
     def tree_flatten(self):
         """
-        Flattens the FixedConnNum object into its constituent parts for JAX PyTree processing.
+        Flattens the FixedNumConn object into its constituent parts for JAX PyTree processing.
 
         Returns:
             A tuple containing:
@@ -88,14 +88,14 @@ class FixedNumConn(u.sparse.SparseMatrix):
     @classmethod
     def tree_unflatten(cls, aux_data, children):
         """
-        Reconstructs a FixedConnNum object from its flattened representation.
+        Reconstructs a FixedNumConn object from its flattened representation.
 
         Args:
             aux_data: A tuple containing the auxiliary data (indices, shape).
             children: A tuple containing the children nodes (data,).
 
         Returns:
-            An instance of the FixedConnNum class reconstructed from the provided data.
+            An instance of the FixedNumConn class reconstructed from the provided data.
         """
         data, = children
         indices, shape = aux_data
@@ -237,7 +237,7 @@ class FixedPostNumConn(FixedNumConn):
          [[1. 2. 0.]
           [0. 3. 4.]]
         >>>
-        >>> # Transpose to FixedPreConnNum
+        >>> # Transpose to FixedPreNumConn
         >>> mat_t = mat.transpose()
         >>> print("Transposed shape:", mat_t.shape)
         Transposed shape: (3, 2)
@@ -273,13 +273,13 @@ class FixedPostNumConn(FixedNumConn):
 
     def with_data(self, data: Data) -> 'FixedPostNumConn':
         """
-        Creates a new FixedPostConnNum instance with the same indices and shape but different data.
+        Creates a new FixedPostNumConn instance with the same indices and shape but different data.
 
         Args:
             data: The new data array. Must have the same shape, dtype, and unit as the original data.
 
         Returns:
-            A new FixedPostConnNum instance with the provided data.
+            A new FixedPostNumConn instance with the provided data.
 
         Raises:
             AssertionError: If the provided data does not match the shape, dtype, or unit of the original data.
@@ -291,7 +291,7 @@ class FixedPostNumConn(FixedNumConn):
 
     def todense(self):
         """
-        Converts the FixedPostConnNum sparse matrix to a dense JAX NumPy array.
+        Converts the FixedPostNumConn sparse matrix to a dense JAX NumPy array.
 
         This method first converts the internal representation to Coordinate (COO)
         format using `fixed_post_num_to_coo` to obtain the row and column indices
@@ -320,7 +320,7 @@ class FixedPostNumConn(FixedNumConn):
 
     def tocoo(self) -> COO:
         """
-        Converts the FixedPostConnNum sparse matrix to Coordinate (COO) format.
+        Converts the FixedPostNumConn sparse matrix to Coordinate (COO) format.
 
         This method generates the pre-synaptic (row) and post-synaptic (column)
         index arrays corresponding to the stored `data` array based on the
@@ -360,12 +360,12 @@ class FixedPostNumConn(FixedNumConn):
 
     def transpose(self, axes=None) -> 'FixedPreNumConn':
         """
-        Transposes the matrix, returning a FixedPreConnNum representation.
+        Transposes the matrix, returning a FixedPreNumConn representation.
 
         This operation swaps the dimensions of the matrix shape. The underlying
         `data` array remains the same. The `indices` array, which represents
-        post-synaptic indices in FixedPostConnNum, is reinterpreted as
-        pre-synaptic indices in the resulting FixedPreConnNum matrix.
+        post-synaptic indices in FixedPostNumConn, is reinterpreted as
+        pre-synaptic indices in the resulting FixedPreNumConn matrix.
 
         Note:
             The `axes` argument is not supported and must be None.
@@ -397,17 +397,17 @@ class FixedPostNumConn(FixedNumConn):
             >>> print("Transposed Data:", mat_t.data)
             Transposed Data: [[1. 2.]
              [3. 4.]]
-            >>> # Note: indices are reinterpreted in FixedPreConnNum context
+            >>> # Note: indices are reinterpreted in FixedPreNumConn context
             >>> print("Transposed Indices:", mat_t.indices)
             Transposed Indices: [[0 1]
              [1 0]]
         """
         assert axes is None, "transpose does not support axes argument."
         # The indices array meaning changes:
-        # In FixedPostConnNum: indices[i] are the post-synaptic targets for pre-synaptic neuron i.
-        # In FixedPreConnNum: indices[j] are the pre-synaptic sources for post-synaptic neuron j.
+        # In FixedPostNumConn: indices[i] are the post-synaptic targets for pre-synaptic neuron i.
+        # In FixedPreNumConn: indices[j] are the pre-synaptic sources for post-synaptic neuron j.
         # When transposing, the roles of pre/post are swapped, so the same indices array
-        # correctly represents the connections in the transposed view for FixedPreConnNum.
+        # correctly represents the connections in the transposed view for FixedPreNumConn.
         return FixedPreNumConn((self.data, self.indices), shape=self.shape[::-1])
 
     def _unitary_op(self, op):
@@ -450,22 +450,28 @@ class FixedPostNumConn(FixedNumConn):
         data = self.data
 
         if isinstance(other, BinaryArray):
-            other = other.value
-            if other.ndim == 1:
-                return binary_fcnmv(data, self.indices, other, shape=self.shape, transpose=False)
-            elif other.ndim == 2:
-                return binary_fcnmm(data, self.indices, other, shape=self.shape, transpose=False)
+            if other.indexed:
+                other = other.value
+                if other.ndim == 1:
+                    return binary_fcnmv(data, self.indices, other, shape=self.shape, transpose=False)
+                elif other.ndim == 2:
+                    return binary_fcnmm(data, self.indices, other, shape=self.shape, transpose=False)
+                else:
+                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                raise NotImplementedError
 
         elif isinstance(other, SparseFloat):
-            other = other.value
-            if other.ndim == 1:
-                return spfloat_fcnmv(data, self.indices, other, shape=self.shape, transpose=False)
-            elif other.ndim == 2:
-                return spfloat_fcnmm(data, self.indices, other, shape=self.shape, transpose=False)
+            if other.indexed:
+                other = other.value
+                if other.ndim == 1:
+                    return spfloat_fcnmv(data, self.indices, other, shape=self.shape, transpose=False)
+                elif other.ndim == 2:
+                    return spfloat_fcnmm(data, self.indices, other, shape=self.shape, transpose=False)
+                else:
+                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                raise NotImplementedError
 
         else:
             other = u.math.asarray(other)
@@ -484,24 +490,30 @@ class FixedPostNumConn(FixedNumConn):
         data = self.data
 
         if isinstance(other, BinaryArray):
-            other = other.value
-            if other.ndim == 1:
-                return binary_fcnmv(data, self.indices, other, shape=self.shape, transpose=True)
-            elif other.ndim == 2:
-                r = binary_fcnmm(data, self.indices, other.T, shape=self.shape, transpose=True)
-                return r.T
+            if other.indexed:
+                other = other.value
+                if other.ndim == 1:
+                    return binary_fcnmv(data, self.indices, other, shape=self.shape, transpose=True)
+                elif other.ndim == 2:
+                    r = binary_fcnmm(data, self.indices, other.T, shape=self.shape, transpose=True)
+                    return r.T
+                else:
+                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                raise NotImplementedError
 
         elif isinstance(other, SparseFloat):
-            other = other.value
-            if other.ndim == 1:
-                return spfloat_fcnmv(data, self.indices, other, shape=self.shape, transpose=True)
-            elif other.ndim == 2:
-                r = spfloat_fcnmm(data, self.indices, other.T, shape=self.shape, transpose=True)
-                return r.T
+            if other.indexed:
+                other = other.value
+                if other.ndim == 1:
+                    return spfloat_fcnmv(data, self.indices, other, shape=self.shape, transpose=True)
+                elif other.ndim == 2:
+                    r = spfloat_fcnmm(data, self.indices, other.T, shape=self.shape, transpose=True)
+                    return r.T
+                else:
+                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                raise NotImplementedError
 
         else:
             other = u.math.asarray(other)
@@ -601,7 +613,7 @@ class FixedPreNumConn(FixedNumConn):
           [2. 3. 0.]
           [0. 0. 6.]]
         >>>
-        >>> # Transpose to FixedPostConnNum
+        >>> # Transpose to FixedPostNumConn
         >>> mat_t = mat.transpose()
         >>> print("Transposed shape:", mat_t.shape)
         Transposed shape: (3, 3)
@@ -643,13 +655,13 @@ class FixedPreNumConn(FixedNumConn):
 
     def with_data(self, data: Data) -> 'FixedPreNumConn':
         """
-        Creates a new FixedPreConnNum instance with the same indices and shape but different data.
+        Creates a new FixedPreNumConn instance with the same indices and shape but different data.
 
         Args:
             data: The new data array. Must have the same shape, dtype, and unit as the original data.
 
         Returns:
-            A new FixedPreConnNum instance with the provided data.
+            A new FixedPreNumConn instance with the provided data.
 
         Raises:
             AssertionError: If the provided data does not match the shape, dtype, or unit of the original data.
@@ -661,7 +673,7 @@ class FixedPreNumConn(FixedNumConn):
 
     def todense(self):
         """
-        Converts the FixedPreConnNum sparse matrix to a dense JAX NumPy array.
+        Converts the FixedPreNumConn sparse matrix to a dense JAX NumPy array.
 
         This method first converts the internal representation to Coordinate (COO)
         format using `fixed_pre_num_to_coo` to obtain the row and column indices
@@ -695,7 +707,7 @@ class FixedPreNumConn(FixedNumConn):
 
     def tocoo(self) -> COO:
         """
-        Converts the FixedPreConnNum sparse matrix to Coordinate (COO) format.
+        Converts the FixedPreNumConn sparse matrix to Coordinate (COO) format.
 
         This method generates the pre-synaptic (row) and post-synaptic (column)
         index arrays corresponding to the stored `data` array based on the
@@ -738,12 +750,12 @@ class FixedPreNumConn(FixedNumConn):
 
     def transpose(self, axes=None) -> FixedPostNumConn:
         """
-        Transposes the matrix, returning a FixedPostConnNum representation.
+        Transposes the matrix, returning a FixedPostNumConn representation.
 
         This operation swaps the dimensions of the matrix shape. The underlying
         `data` array remains the same. The `indices` array, which represents
-        pre-synaptic indices in FixedPreConnNum, is reinterpreted as
-        post-synaptic indices in the resulting FixedPostConnNum matrix.
+        pre-synaptic indices in FixedPreNumConn, is reinterpreted as
+        post-synaptic indices in the resulting FixedPostNumConn matrix.
 
         Note:
             The `axes` argument is not supported and must be None.
@@ -779,7 +791,7 @@ class FixedPreNumConn(FixedNumConn):
             Transposed Data: [[1. 2.]
              [3. 4.]
              [5. 6.]]
-            >>> # Note: indices are reinterpreted in FixedPostConnNum context
+            >>> # Note: indices are reinterpreted in FixedPostNumConn context
             >>> print("Transposed Indices:", mat_t.indices)
             Transposed Indices: [[0 1]
              [1 0]
@@ -787,10 +799,10 @@ class FixedPreNumConn(FixedNumConn):
         """
         assert axes is None, "transpose does not support axes argument."
         # The indices array meaning changes:
-        # In FixedPreConnNum: indices[j] are the pre-synaptic sources for post-synaptic neuron j.
-        # In FixedPostConnNum: indices[i] are the post-synaptic targets for pre-synaptic neuron i.
+        # In FixedPreNumConn: indices[j] are the pre-synaptic sources for post-synaptic neuron j.
+        # In FixedPostNumConn: indices[i] are the post-synaptic targets for pre-synaptic neuron i.
         # When transposing, the roles of pre/post are swapped, so the same indices array
-        # correctly represents the connections in the transposed view for FixedPostConnNum.
+        # correctly represents the connections in the transposed view for FixedPostNumConn.
         return FixedPostNumConn((self.data, self.indices), shape=self.shape[::-1])
 
     def _unitary_op(self, op):
@@ -834,20 +846,28 @@ class FixedPreNumConn(FixedNumConn):
         data = self.data
 
         if isinstance(other, BinaryArray):
-            if other.ndim == 1:
-                return binary_fcnmv(data, self.indices, other.value, shape=self.shape[::-1], transpose=True)
-            elif other.ndim == 2:
-                return binary_fcnmm(data, self.indices, other.value, shape=self.shape[::-1], transpose=True)
+            if other.indexed:
+                other = other.value
+                if other.ndim == 1:
+                    return binary_fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=True)
+                elif other.ndim == 2:
+                    return binary_fcnmm(data, self.indices, other, shape=self.shape[::-1], transpose=True)
+                else:
+                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                raise NotImplementedError
 
         elif isinstance(other, SparseFloat):
-            if other.ndim == 1:
-                return spfloat_fcnmv(data, self.indices, other.value, shape=self.shape[::-1], transpose=True)
-            elif other.ndim == 2:
-                return spfloat_fcnmm(data, self.indices, other.value, shape=self.shape[::-1], transpose=True)
+            if other.indexed:
+                other = other.value
+                if other.ndim == 1:
+                    return spfloat_fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=True)
+                elif other.ndim == 2:
+                    return spfloat_fcnmm(data, self.indices, other, shape=self.shape[::-1], transpose=True)
+                else:
+                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                raise NotImplementedError
 
         else:
             other = u.math.asarray(other)
@@ -866,24 +886,30 @@ class FixedPreNumConn(FixedNumConn):
         data = self.data
 
         if isinstance(other, BinaryArray):
-            other = other.value
-            if other.ndim == 1:
-                return binary_fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=False)
-            elif other.ndim == 2:
-                r = binary_fcnmm(data, self.indices, other.T, shape=self.shape[::-1], transpose=False)
-                return r.T
+            if other.indexed:
+                other = other.value
+                if other.ndim == 1:
+                    return binary_fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=False)
+                elif other.ndim == 2:
+                    r = binary_fcnmm(data, self.indices, other.T, shape=self.shape[::-1], transpose=False)
+                    return r.T
+                else:
+                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                raise NotImplementedError
 
         elif isinstance(other, SparseFloat):
-            other = other.value
-            if other.ndim == 1:
-                return spfloat_fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=False)
-            elif other.ndim == 2:
-                r = spfloat_fcnmm(data, self.indices, other.T, shape=self.shape[::-1], transpose=False)
-                return r.T
+            if other.indexed:
+                other = other.value
+                if other.ndim == 1:
+                    return spfloat_fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=False)
+                elif other.ndim == 2:
+                    r = spfloat_fcnmm(data, self.indices, other.T, shape=self.shape[::-1], transpose=False)
+                    return r.T
+                else:
+                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                raise NotImplementedError
 
         else:
             other = u.math.asarray(other)
@@ -900,14 +926,14 @@ class FixedPreNumConn(FixedNumConn):
 
 def fixed_post_num_to_coo(self: FixedPostNumConn):
     """
-    Converts a FixedPostConnNum sparse matrix representation to COO format.
+    Converts a FixedPostNumConn sparse matrix representation to COO format.
 
-    In FixedPostConnNum, `indices` stores the post-synaptic indices for each
+    In FixedPostNumConn, `indices` stores the post-synaptic indices for each
     pre-synaptic neuron. This function generates the corresponding pre-synaptic
     and post-synaptic index arrays needed for the COO format.
 
     Args:
-        self: The FixedPostConnNum instance.
+        self: The FixedPostNumConn instance.
 
     Returns:
         A tuple containing:
@@ -923,14 +949,14 @@ def fixed_post_num_to_coo(self: FixedPostNumConn):
 
 def fixed_pre_num_to_coo(self: FixedPreNumConn):
     """
-    Converts a FixedPreConnNum sparse matrix representation to COO format.
+    Converts a FixedPreNumConn sparse matrix representation to COO format.
 
-    In FixedPreConnNum, `indices` stores the pre-synaptic indices for each
+    In FixedPreNumConn, `indices` stores the pre-synaptic indices for each
     post-synaptic neuron. This function generates the corresponding pre-synaptic
     and post-synaptic index arrays needed for the COO format.
 
     Args:
-        self: The FixedPreConnNum instance.
+        self: The FixedPreNumConn instance.
 
     Returns:
         A tuple containing:

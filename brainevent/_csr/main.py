@@ -52,17 +52,17 @@ class BaseCLS(u.sparse.SparseMatrix):
         shape: MatrixShape
     ):
         """
-        Initialize a :class:`CSC` / :class:`CSR` matrix.
-
-        This constructor creates a :class:`CSC` / :class:`CSR` matrix from the given arguments and shape.
+        Initialize a compressed sparse matrix base instance.
 
         Parameters
         ----------
         args : Sequence[Union[jax.Array, np.ndarray, u.Quantity]]
-            A sequence of three arrays representing the CSC matrix:
+            A sequence of three arrays representing compressed sparse storage:
             - data: Contains the non-zero values of the matrix.
-            - indices: Contains the row indices for each non-zero element.
-            - indptr: Contains the column pointers indicating where each column starts in the data and indices arrays.
+            - indices: Contains the secondary-axis indices for each stored element
+              (column indices for CSR, row indices for CSC).
+            - indptr: Contains the primary-axis pointers indicating where each
+              row/column starts in the data and indices arrays.
 
         shape : Tuple[int, int]
             The shape of the matrix as a tuple of (num_rows, num_columns).
@@ -77,34 +77,34 @@ class BaseCLS(u.sparse.SparseMatrix):
 
     def tree_flatten(self):
         """
-        Flatten the CSC matrix for JAX's tree utilities.
+        Flatten the compressed sparse matrix for JAX's tree utilities.
 
-        This method is used by JAX's tree utilities to flatten the CSC matrix
+        This method is used by JAX's tree utilities to flatten the matrix
         into a form suitable for transformation and reconstruction.
 
         Returns
         --------
         tuple
             A tuple containing two elements:
-            - A tuple with the CSC matrix's data as the only element.
-            - A tuple with the CSC matrix's indices, indptr, and shape.
+            - A tuple with the matrix data as the only element.
+            - A tuple with indices, indptr, shape, and cached diagonal positions.
         """
         return (self.data,), (self.indices, self.indptr, self.shape, self.diag_positions)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
         """
-        Reconstruct a CSC matrix from flattened data.
+        Reconstruct a compressed sparse matrix from flattened data.
 
         This class method is used by JAX's tree utilities to reconstruct
-        a CSC matrix from its flattened representation.
+        a matrix from its flattened representation.
 
         Parameters
         -----------
         aux_data : tuple
-            A tuple containing the CSC matrix's indices, indptr, and shape.
+            A tuple containing indices, indptr, shape, and diagonal positions.
         children : tuple
-            A tuple containing the CSC matrix's data as its only element.
+            A tuple containing matrix data as its only element.
         """
         data, = children
         indices, indptr, shape, diag_positions = aux_data
@@ -195,7 +195,7 @@ class BaseCLS(u.sparse.SparseMatrix):
 
     def diag_add(self, other):
         """
-        Add a diagonal value to the current sparse matrix.
+        Add values to the matrix diagonal and return a new sparse matrix.
 
         This method adds the provided diagonal value to the diagonal elements of the
         sparse matrix represented in Compressed Sparse Row (CSR) format. If the diagonal
@@ -209,8 +209,8 @@ class BaseCLS(u.sparse.SparseMatrix):
 
         Returns
         -------
-        ndarray
-            The result of adding the diagonal value to the sparse matrix.
+        BaseCLS
+            A new sparse matrix with updated diagonal entries.
 
         Raises
         ------
@@ -263,8 +263,8 @@ class CSR(BaseCLS):
     row-wise operations and matrix-vector multiplications. It is compatible with
     JAX's tree utilities and supports unit-aware computations.
 
-    The class also supports various arithmetic operations (``+``, ``-``, ``*``, ``/``, ``@``) with
-    other CSR matrices, dense arrays, and scalars.
+    The class supports arithmetic with scalars and dense arrays, plus sparse-dense
+    matrix multiplication via ``@``. Sparse-sparse operations are limited.
 
     Attributes
     -----------
@@ -503,22 +503,28 @@ class CSR(BaseCLS):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
-            other = other.value
-            if other.ndim == 1:
-                return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
-            elif other.ndim == 2:
-                return binary_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape)
+            if other.indexed:
+                other = other.value
+                if other.ndim == 1:
+                    return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
+                elif other.ndim == 2:
+                    return binary_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape)
+                else:
+                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                raise NotImplementedError
 
         elif isinstance(other, SparseFloat):
-            other = other.value
-            if other.ndim == 1:
-                return spfloat_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
-            elif other.ndim == 2:
-                return spfloat_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape)
+            if other.indexed:
+                other = other.value
+                if other.ndim == 1:
+                    return spfloat_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
+                elif other.ndim == 2:
+                    return spfloat_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape)
+                else:
+                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                raise NotImplementedError
 
         else:
             other = u.math.asarray(other)
@@ -550,34 +556,40 @@ class CSR(BaseCLS):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
-            other = other.value
-            if other.ndim == 1:
-                return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True)
-            elif other.ndim == 2:
-                other = other.T
-                r = binary_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True)
-                return r.T
+            if other.indexed:
+                other = other.value
+                if other.ndim == 1:
+                    return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True)
+                elif other.ndim == 2:
+                    other = other.T
+                    r = binary_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True)
+                    return r.T
+                else:
+                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                raise NotImplementedError
 
         elif isinstance(other, SparseFloat):
-            other = other.value
-            if other.ndim == 1:
-                return spfloat_csrmv(
-                    self.data, self.indices, self.indptr, other,
-                    shape=self.shape,
-                    transpose=True
-                )
-            elif other.ndim == 2:
-                other = other.T
-                r = spfloat_csrmm(
-                    self.data, self.indices, self.indptr, other,
-                    shape=self.shape,
-                    transpose=True
-                )
-                return r.T
+            if other.indexed:
+                other = other.value
+                if other.ndim == 1:
+                    return spfloat_csrmv(
+                        self.data, self.indices, self.indptr, other,
+                        shape=self.shape,
+                        transpose=True
+                    )
+                elif other.ndim == 2:
+                    other = other.T
+                    r = spfloat_csrmm(
+                        self.data, self.indices, self.indptr, other,
+                        shape=self.shape,
+                        transpose=True
+                    )
+                    return r.T
+                else:
+                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                raise NotImplementedError
 
         else:
             other = u.math.asarray(other)
@@ -706,8 +718,8 @@ class CSC(BaseCLS):
     column-wise operations. It is compatible with JAX's tree utilities and
     supports unit-aware computations.
 
-    The class also supports various arithmetic operations (``+``, ``-``, ``*``, ``/``, ``@``) with
-    other CSC matrices, dense arrays, and scalars.
+    The class supports arithmetic with scalars and dense arrays, plus sparse-dense
+    matrix multiplication via ``@``. Sparse-sparse operations are limited.
 
     Attributes
     -----------
@@ -946,38 +958,44 @@ class CSC(BaseCLS):
         data = self.data
 
         if isinstance(other, BinaryArray):
-            other = other.value
-            if other.ndim == 1:
-                return binary_csrmv(
-                    data, self.indices, self.indptr, other,
-                    shape=self.shape[::-1],
-                    transpose=True
-                )
-            elif other.ndim == 2:
-                return binary_csrmm(
-                    data, self.indices, self.indptr, other,
-                    shape=self.shape[::-1],
-                    transpose=True
-                )
+            if other.indexed:
+                other = other.value
+                if other.ndim == 1:
+                    return binary_csrmv(
+                        data, self.indices, self.indptr, other,
+                        shape=self.shape[::-1],
+                        transpose=True
+                    )
+                elif other.ndim == 2:
+                    return binary_csrmm(
+                        data, self.indices, self.indptr, other,
+                        shape=self.shape[::-1],
+                        transpose=True
+                    )
+                else:
+                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                raise NotImplementedError
 
         elif isinstance(other, SparseFloat):
-            other = other.value
-            if other.ndim == 1:
-                return spfloat_csrmv(
-                    data, self.indices, self.indptr, other,
-                    shape=self.shape[::-1],
-                    transpose=True
-                )
-            elif other.ndim == 2:
-                return spfloat_csrmm(
-                    data, self.indices, self.indptr, other,
-                    shape=self.shape[::-1],
-                    transpose=True
-                )
+            if other.indexed:
+                other = other.value
+                if other.ndim == 1:
+                    return spfloat_csrmv(
+                        data, self.indices, self.indptr, other,
+                        shape=self.shape[::-1],
+                        transpose=True
+                    )
+                elif other.ndim == 2:
+                    return spfloat_csrmm(
+                        data, self.indices, self.indptr, other,
+                        shape=self.shape[::-1],
+                        transpose=True
+                    )
+                else:
+                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                raise NotImplementedError
 
         else:
 
@@ -1010,30 +1028,36 @@ class CSC(BaseCLS):
         data = self.data
 
         if isinstance(other, BinaryArray):
-            other = other.value
-            if other.ndim == 1:
-                return binary_csrmv(data, self.indices, self.indptr, other,
-                                    shape=self.shape[::-1],
-                                    transpose=False)
-            elif other.ndim == 2:
-                return binary_csrmm(data, self.indices, self.indptr, other.T,
-                                    shape=self.shape[::-1],
-                                    transpose=False).T
+            if other.indexed:
+                other = other.value
+                if other.ndim == 1:
+                    return binary_csrmv(data, self.indices, self.indptr, other,
+                                        shape=self.shape[::-1],
+                                        transpose=False)
+                elif other.ndim == 2:
+                    return binary_csrmm(data, self.indices, self.indptr, other.T,
+                                        shape=self.shape[::-1],
+                                        transpose=False).T
+                else:
+                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                raise NotImplementedError
 
         elif isinstance(other, SparseFloat):
-            other = other.value
-            if other.ndim == 1:
-                return spfloat_csrmv(data, self.indices, self.indptr, other,
-                                     shape=self.shape[::-1],
-                                     transpose=False)
-            elif other.ndim == 2:
-                return spfloat_csrmm(data, self.indices, self.indptr, other.T,
-                                     shape=self.shape[::-1],
-                                     transpose=False).T
+            if other.indexed:
+                other = other.value
+                if other.ndim == 1:
+                    return spfloat_csrmv(data, self.indices, self.indptr, other,
+                                         shape=self.shape[::-1],
+                                         transpose=False)
+                elif other.ndim == 2:
+                    return spfloat_csrmm(data, self.indices, self.indptr, other.T,
+                                         shape=self.shape[::-1],
+                                         transpose=False).T
+                else:
+                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                raise NotImplementedError
 
         else:
             other = u.math.asarray(other)
