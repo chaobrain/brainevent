@@ -21,7 +21,7 @@ from typing import Union, Tuple
 import brainunit as u
 import jax
 
-from brainevent._compatible_import import JAXSparse, Tracer
+from brainevent._compatible_import import Tracer
 from brainevent._event.binary import BinaryArray
 from brainevent._jitc_matrix import JITCMatrix
 from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
@@ -444,7 +444,7 @@ class JITCNormalR(JITNormalMatrix):
         return self._new_mat(op(self.wloc), self.wscale)
 
     def _binary_op(self, other, op) -> 'JITCNormalR':
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -455,7 +455,7 @@ class JITCNormalR(JITNormalMatrix):
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
     def _binary_rop(self, other, op) -> 'JITCNormalR':
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -466,7 +466,7 @@ class JITCNormalR(JITNormalMatrix):
 
     def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
         # csr @ other
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
@@ -531,7 +531,7 @@ class JITCNormalR(JITNormalMatrix):
 
     def __rmatmul__(self, other) -> Union[jax.Array, u.Quantity]:
         # other @ csr
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
@@ -783,7 +783,7 @@ class JITCNormalC(JITNormalMatrix):
         return self._new_mat(op(self.wloc), self.wscale)
 
     def _binary_op(self, other, op) -> 'JITCNormalC':
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -794,7 +794,7 @@ class JITCNormalC(JITNormalMatrix):
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
     def _binary_rop(self, other, op) -> 'JITCNormalC':
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -805,7 +805,7 @@ class JITCNormalC(JITNormalMatrix):
 
     def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
         # csr @ other
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
@@ -878,7 +878,7 @@ class JITCNormalC(JITNormalMatrix):
 
     def __rmatmul__(self, other) -> Union[jax.Array, u.Quantity]:
         # other @ csr
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         if isinstance(other, BinaryArray):
             other = other.value

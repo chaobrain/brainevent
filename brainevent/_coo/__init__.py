@@ -13,9 +13,9 @@
 # limitations under the License.
 # ==============================================================================
 
-from .main import COO
 from .binary import binary_coomv, binary_coomv_p, binary_coomm, binary_coomm_p
 from .float import coomv, coomv_p, coomm, coomm_p
+from .main import COO
 from .plasticity_binary import (
     plast_coo_on_binary_pre, plast_coo_on_binary_post,
     plast_coo_on_binary_pre_p, plast_coo_on_binary_post_p,

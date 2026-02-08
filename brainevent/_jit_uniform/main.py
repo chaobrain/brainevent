@@ -22,7 +22,7 @@ import brainunit as u
 import jax
 import numpy as np
 
-from brainevent._compatible_import import JAXSparse, Tracer
+from brainevent._compatible_import import Tracer
 from brainevent._event.binary import BinaryArray
 from brainevent._jitc_matrix import JITCMatrix
 from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
@@ -524,7 +524,7 @@ class JITCUniformR(JITUniformMatrix):
         return self._new_mat(op(self.wlow), op(self.whigh))
 
     def _binary_op(self, other, op) -> 'JITCUniformR':
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -535,7 +535,7 @@ class JITCUniformR(JITUniformMatrix):
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
     def _binary_rop(self, other, op) -> 'JITCUniformR':
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -546,7 +546,7 @@ class JITCUniformR(JITUniformMatrix):
 
     def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
         # csr @ other
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
@@ -611,7 +611,7 @@ class JITCUniformR(JITUniformMatrix):
 
     def __rmatmul__(self, other) -> Union[jax.Array, u.Quantity]:
         # other @ csr
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
@@ -899,7 +899,7 @@ class JITCUniformC(JITUniformMatrix):
         return self._new_mat(op(self.wlow), op(self.whigh))
 
     def _binary_op(self, other, op) -> 'JITCUniformC':
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -910,7 +910,7 @@ class JITCUniformC(JITUniformMatrix):
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
     def _binary_rop(self, other, op) -> 'JITCUniformC':
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -921,7 +921,7 @@ class JITCUniformC(JITUniformMatrix):
 
     def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
         # csr @ other
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
@@ -994,7 +994,7 @@ class JITCUniformC(JITUniformMatrix):
 
     def __rmatmul__(self, other) -> Union[jax.Array, u.Quantity]:
         # other @ csr
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         if isinstance(other, BinaryArray):
             other = other.value

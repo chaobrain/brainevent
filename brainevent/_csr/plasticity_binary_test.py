@@ -37,7 +37,8 @@ class Test_csr_on_pre:
         post_trace = brainstate.random.random((n_post,))
 
         csr = brainevent.CSR.fromdense(mat)
-        csr2 = csr.with_data(plast_csr_on_binary_pre(csr.data, csr.indices, csr.indptr, pre_spike, post_trace, shape=csr.shape))
+        csr2 = csr.with_data(
+            plast_csr_on_binary_pre(csr.data, csr.indices, csr.indptr, pre_spike, post_trace, shape=csr.shape))
         dense2 = jnp.where(mask, mat + jnp.outer(pre_spike.astype(float), post_trace), 0.)
 
         assert jnp.allclose(csr2.todense(), dense2)
@@ -55,7 +56,8 @@ class Test_csr_on_pre:
             post_trace = brainstate.random.random((n_post,)) * trace_unit
 
             csr = brainevent.CSR.fromdense(mat)
-            csr = csr.with_data(plast_csr_on_binary_pre(csr.data, csr.indices, csr.indptr, pre_spike, post_trace, shape=csr.shape))
+            csr = csr.with_data(
+                plast_csr_on_binary_pre(csr.data, csr.indices, csr.indptr, pre_spike, post_trace, shape=csr.shape))
 
             dense = mat + u.math.outer(pre_spike.astype(float), post_trace)
             dense = u.math.where(mask, dense, 0. * mat_unit)

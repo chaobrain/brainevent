@@ -1741,7 +1741,8 @@ def _jitnmm_benchmark_data(*, platform):
     return configs
 
 
-def jitnmm_p_call(w_loc, w_scale, clen, B, seed, *, shape: MatrixShape, transpose: bool, corder: bool, backend: Optional[str] = None):
+def jitnmm_p_call(w_loc, w_scale, clen, B, seed, *, shape: MatrixShape, transpose: bool, corder: bool,
+                  backend: Optional[str] = None):
     w_loc = jnp.atleast_1d(w_loc)
     w_scale = jnp.atleast_1d(w_scale)
     clen = jnp.atleast_1d(clen)

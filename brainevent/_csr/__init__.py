@@ -14,9 +14,9 @@
 # ==============================================================================
 
 
-from .main import CSR, CSC
 from .binary import binary_csrmv, binary_csrmv_p, binary_csrmm, binary_csrmm_p
 from .float import csrmv, csrmv_p, csrmm, csrmm_p, csrmv_yw2y, csrmv_yw2y_p
+from .main import CSR, CSC
 from .plasticity_binary import (
     plast_csr_on_binary_pre, plast_csr_on_binary_pre_p,
     plast_csr2csc_on_binary_post, plast_csr2csc_on_binary_post_p,

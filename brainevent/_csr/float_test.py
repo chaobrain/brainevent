@@ -14,6 +14,7 @@
 # ==============================================================================
 
 import os
+
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
 import brainstate

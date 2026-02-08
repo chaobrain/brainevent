@@ -22,7 +22,7 @@ import brainunit as u
 import jax
 import numpy as np
 
-from brainevent._compatible_import import JAXSparse, Tracer
+from brainevent._compatible_import import Tracer
 from brainevent._event.binary import BinaryArray
 from brainevent._jitc_matrix import JITCMatrix
 from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
@@ -475,7 +475,7 @@ class JITCScalarR(JITScalarMatrix):
             self._check(other, op)
             return self._new_mat(op(self.weight, other.weight))
 
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -490,7 +490,7 @@ class JITCScalarR(JITScalarMatrix):
             self._check(other, op)
             return self._new_mat(op(other.weight, self.weight))
 
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -501,7 +501,7 @@ class JITCScalarR(JITScalarMatrix):
 
     def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
         # csr @ other
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         weight = self.weight
 
@@ -548,7 +548,7 @@ class JITCScalarR(JITScalarMatrix):
 
     def __rmatmul__(self, other) -> Union[jax.Array, u.Quantity]:
         # other @ csr
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         weight = self.weight
 
@@ -815,7 +815,7 @@ class JITCScalarC(JITScalarMatrix):
             self._check(other, op)
             return self._new_mat(op(self.weight, other.weight))
 
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -830,7 +830,7 @@ class JITCScalarC(JITScalarMatrix):
             self._check(other, op)
             return self._new_mat(op(other.weight, self.weight))
 
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -841,7 +841,7 @@ class JITCScalarC(JITScalarMatrix):
 
     def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
         # csr @ other
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         weight = self.weight
 
@@ -910,7 +910,7 @@ class JITCScalarC(JITScalarMatrix):
 
     def __rmatmul__(self, other) -> Union[jax.Array, u.Quantity]:
         # other @ csr
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         weight = self.weight
 

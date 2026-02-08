@@ -13,9 +13,10 @@
 # limitations under the License.
 # ==============================================================================
 
+from typing import Optional
+
 import jax
 import jax.numpy as jnp
-from typing import Optional
 from jax.interpreters import ad
 
 from brainevent._misc import namescope

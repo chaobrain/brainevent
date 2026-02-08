@@ -1,7 +1,6 @@
 import numpy as np
 import pytest
 
-import brainevent
 from brainevent import SparseFloat, MathError
 
 

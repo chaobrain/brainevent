@@ -23,7 +23,6 @@ import brainunit as u
 import jax
 import numpy as np
 
-from brainevent._compatible_import import JAXSparse
 from brainevent._event import BinaryArray, SparseFloat
 from brainevent._misc import _coo_todense, COOInfo
 from brainevent._typing import MatrixShape, Data, Index, Row, Col
@@ -353,7 +352,7 @@ class COO(u.sparse.SparseMatrix):
             dense = self.todense()
             return op(dense, other)
 
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -381,7 +380,7 @@ class COO(u.sparse.SparseMatrix):
             dense = self.todense()
             return op(other, dense)
 
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -652,7 +651,7 @@ class COO(u.sparse.SparseMatrix):
             If the `other` object is a sparse matrix or has an unsupported shape.
         """
         # coo @ other
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             # Raise an error if attempting matrix multiplication between two sparse objects
             raise NotImplementedError("matmul between two sparse objects.")
 
@@ -713,7 +712,7 @@ class COO(u.sparse.SparseMatrix):
             If the `other` object is a sparse matrix or has an unsupported shape.
         """
         # other @ coo
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             # Raise an error if attempting matrix multiplication between two sparse objects
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data

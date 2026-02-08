@@ -16,13 +16,12 @@
 # -*- coding: utf-8 -*-
 
 
+import braintools
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-import braintools
-import brainevent
 from brainevent._fcn.binary import binary_fcnmm_p_call
 from brainevent._fcn.float_test import TestVector, TestMatrix
 from brainevent._test_util import (

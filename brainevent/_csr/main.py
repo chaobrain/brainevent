@@ -22,7 +22,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent._compatible_import import JAXSparse
 from brainevent._event import BinaryArray, SparseFloat
 from brainevent._misc import _csr_to_coo, _csr_todense
 from brainevent._typing import Data, Indptr, Index, MatrixShape
@@ -228,7 +227,7 @@ class BaseCLS(u.sparse.SparseMatrix):
         """
         if self.diag_positions is None:
             self.diag_positions = csr_diag_position_v2(self.indptr, self.indices, self.shape)
-        assert not isinstance(other, JAXSparse), "diag_add does not support JAXSparse objects."
+        assert not isinstance(other, u.sparse.SparseMatrix), "diag_add does not support JAXSparse objects."
         return self.with_data(csr_diag_add_v2(self.data, self.diag_positions, other))
 
     def solve(self, b: Union[jax.Array, u.Quantity]) -> Union[jax.Array, u.Quantity]:
@@ -437,7 +436,7 @@ class CSR(BaseCLS):
                      self.indptr),
                     shape=self.shape
                 )._diag_pos(self.diag_positions)
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -475,7 +474,7 @@ class CSR(BaseCLS):
                      self.indptr),
                     shape=self.shape
                 )._diag_pos(self.diag_positions)
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -500,7 +499,7 @@ class CSR(BaseCLS):
 
     def __matmul__(self, other):
         # csr @ other
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
@@ -547,7 +546,7 @@ class CSR(BaseCLS):
 
     def __rmatmul__(self, other):
         # other @ csr
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
@@ -881,7 +880,7 @@ class CSC(BaseCLS):
                      self.indptr),
                     shape=self.shape
                 )._diag_pos(self.diag_positions)
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -918,7 +917,7 @@ class CSC(BaseCLS):
                      self.indptr),
                     shape=self.shape
                 )._diag_pos(self.diag_positions)
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -942,7 +941,7 @@ class CSC(BaseCLS):
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
     def __matmul__(self, other):
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
 
@@ -1006,7 +1005,7 @@ class CSC(BaseCLS):
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
     def __rmatmul__(self, other):
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
 

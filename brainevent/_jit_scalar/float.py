@@ -527,13 +527,13 @@ def _jitc_homo_matrix_pallas_kernel(
 
 
 def _jitc_homo_matrix_jvp_weight(
-    weight_dot, weight, clen, seed, *, shape: Sequence[int], transpose: bool,  corder: bool, **kwargs
+    weight_dot, weight, clen, seed, *, shape: Sequence[int], transpose: bool, corder: bool, **kwargs
 ):
     return jits_p_call(weight_dot, clen, seed, shape=shape, transpose=transpose, corder=corder)
 
 
 def _jitc_homo_matrix_transpose(
-    ct, weight, clen, seed,  *, shape: Sequence[int], transpose: bool, corder: bool, **kwargs
+    ct, weight, clen, seed, *, shape: Sequence[int], transpose: bool, corder: bool, **kwargs
 ):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)

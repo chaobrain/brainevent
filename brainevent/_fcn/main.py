@@ -23,7 +23,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent._compatible_import import JAXSparse
 from brainevent._coo import COO
 from brainevent._event.binary import BinaryArray
 from brainevent._event.sparse_float import SparseFloat
@@ -415,7 +414,7 @@ class FixedPostNumConn(FixedNumConn):
         return FixedPostNumConn((op(self.data), self.indices), shape=self.shape)
 
     def _binary_op(self, other, op):
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -431,7 +430,7 @@ class FixedPostNumConn(FixedNumConn):
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
     def _binary_rop(self, other, op):
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -446,7 +445,7 @@ class FixedPostNumConn(FixedNumConn):
 
     def __matmul__(self, other):
         # csr @ other
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
 
@@ -480,7 +479,7 @@ class FixedPostNumConn(FixedNumConn):
 
     def __rmatmul__(self, other):
         # other @ csr
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
 
@@ -798,7 +797,7 @@ class FixedPreNumConn(FixedNumConn):
         return FixedPreNumConn((op(self.data), self.indices), shape=self.shape)
 
     def _binary_op(self, other, op):
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -814,7 +813,7 @@ class FixedPreNumConn(FixedNumConn):
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
     def _binary_rop(self, other, op):
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -830,7 +829,7 @@ class FixedPreNumConn(FixedNumConn):
 
     def __matmul__(self, other):
         # csr @ other
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
 
@@ -862,7 +861,7 @@ class FixedPreNumConn(FixedNumConn):
 
     def __rmatmul__(self, other):
         # other @ csr
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
 

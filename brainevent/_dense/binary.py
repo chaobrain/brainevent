@@ -15,10 +15,11 @@
 
 # -*- coding: utf-8 -*-
 
+from typing import Optional
+
 import brainunit as u
 import jax
 import jax.numpy as jnp
-from typing import Optional
 import numpy as np
 from jax.interpreters import ad
 

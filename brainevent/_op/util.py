@@ -55,7 +55,6 @@ __all__ = [
     'check_pallas_jax_version',
 ]
 
-
 _MIN_JAX_VERSION_FOR_PALLAS = (0, 7, 1)
 
 

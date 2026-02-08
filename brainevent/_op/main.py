@@ -15,7 +15,6 @@
 # ==============================================================================
 
 import functools
-import inspect
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Union
 
@@ -23,7 +22,7 @@ import jax
 from jax.interpreters import xla, batching, ad, mlir
 
 from brainevent._compatible_import import Primitive
-from brainevent._error import KernelFallbackExhaustedError, KernelExecutionError
+from brainevent._error import KernelFallbackExhaustedError
 from brainevent._typing import KernelGenerator
 from .benchmark import BenchmarkResult, BenchmarkReport, benchmark_function
 from .util import general_batching_rule, defjvp, OutType, abstract_arguments, check_pallas_jax_version

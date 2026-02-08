@@ -15,10 +15,10 @@
 
 # -*- coding: utf-8 -*-
 
+import jax
 import numpy as np
 import pytest
 
-import jax
 from brainevent import BaseArray, BinaryArray
 
 
