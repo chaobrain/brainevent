@@ -13,9 +13,11 @@
 # limitations under the License.
 # ==============================================================================
 
+from typing import Optional
+
 import jax
 import jax.numpy as jnp
-from typing import Optional
+import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import namescope
@@ -24,11 +26,11 @@ from brainevent._op.benchmark import BenchmarkConfig
 
 
 @namescope
-def binary_array_index(spikes):
+def binary_array_index(spikes, *, backend: Optional[str] = None):
     if spikes.ndim == 1:
-        indices, count = binary_1d_array_index_p_call(spikes)
+        indices, count = binary_1d_array_index_p_call(spikes, backend=backend)
     elif spikes.ndim == 2:
-        indices, count = binary_2d_array_index_p_call(spikes)
+        indices, count = binary_2d_array_index_p_call(spikes, backend=backend)
     else:
         raise ValueError("Only 1D and 2D binary arrays are supported for index extraction.")
     return indices, count
@@ -102,10 +104,15 @@ def _binary_1d_array_index_warp_kernel(
                 idx = warp.atomic_add(count, 0, 1)
                 indices[idx] = i_col_block
 
-    def kernel(spikes, indices, count):
+    def kernel(spikes):
         dim = spikes_info.shape[0]
-        fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['count'])
-        return fn(spikes, indices, count, jnp.zeros(count_info.shape, count_info.dtype))
+        fn = jax_kernel(
+            mv,
+            launch_dims=[dim],
+            num_outputs=2,
+            output_dims={'indices': (dim,), 'count': (1,), },
+        )
+        return fn(spikes)
 
     return kernel
 
@@ -163,19 +170,6 @@ def _binary_1d_array_index_pallas_kernel(
     return kernel
 
 
-def binary_1d_array_index_p_call(spikes, *, backend: Optional[str] = None):
-    indices_info = jax.ShapeDtypeStruct([spikes.shape[0]], jnp.int32)
-    count_info = jax.ShapeDtypeStruct([1], jnp.int32)
-    return binary_1d_array_index_p(
-        spikes,
-        outs=[indices_info, count_info],
-        spikes_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
-        indices_info=indices_info,
-        count_info=count_info,
-        backend=backend,
-    )
-
-
 def _binary_1d_array_index_jvp_spikes(spikes_dot, spikes, **kwargs):
     return binary_1d_array_index_p_call(spikes_dot)
 
@@ -201,6 +195,35 @@ def _binary_1d_array_index_batching(args, axes, **kwargs):
     return general_batching_rule(binary_1d_array_index_p, args, axes, **kwargs)
 
 
+def _binary_1d_array_index_benchmark_data(*, platform):
+    n = 1000
+    configs = []
+    for bool_event in (True, False):
+        if bool_event:
+            spikes = jnp.asarray(np.random.rand(n) > 0.9, dtype=jnp.bool_)
+        else:
+            spikes = jnp.asarray(
+                np.where(np.random.rand(n) > 0.9, np.random.rand(n), 0.0),
+                dtype=jnp.float32,
+            )
+        name = "bool" if bool_event else "float"
+        configs.append(BenchmarkConfig(name, (spikes,)))
+    return configs
+
+
+def binary_1d_array_index_p_call(spikes, *, backend: Optional[str] = None):
+    indices_info = jax.ShapeDtypeStruct([spikes.shape[0]], jnp.int32)
+    count_info = jax.ShapeDtypeStruct([1], jnp.int32)
+    return binary_1d_array_index_p(
+        spikes,
+        outs=[indices_info, count_info],
+        spikes_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
+        indices_info=indices_info,
+        count_info=count_info,
+        backend=backend,
+    )
+
+
 binary_1d_array_index_p = XLACustomKernel('binary_1d_array_index')
 binary_1d_array_index_p.def_numba_kernel(_binary_1d_array_index_numba_kernel)
 binary_1d_array_index_p.def_warp_kernel(_binary_1d_array_index_warp_kernel)
@@ -211,25 +234,6 @@ binary_1d_array_index_p.def_transpose_rule(_binary_1d_array_index_transpose_rule
 binary_1d_array_index_p.def_batching_rule(_binary_1d_array_index_batching)
 binary_1d_array_index_p.def_call(binary_1d_array_index_p_call)
 binary_1d_array_index_p.def_tags('event', 'binary')
-
-
-def _binary_1d_array_index_benchmark_data(*, platform):
-    import numpy as _np
-    n = 1000
-    configs = []
-    for bool_event in (True, False):
-        if bool_event:
-            spikes = jnp.asarray(_np.random.rand(n) > 0.9, dtype=jnp.bool_)
-        else:
-            spikes = jnp.asarray(
-                _np.where(_np.random.rand(n) > 0.9, _np.random.rand(n), 0.0),
-                dtype=jnp.float32,
-            )
-        name = "bool" if bool_event else "float"
-        configs.append(BenchmarkConfig(name, (spikes,)))
-    return configs
-
-
 binary_1d_array_index_p.def_benchmark_data(_binary_1d_array_index_benchmark_data)
 
 

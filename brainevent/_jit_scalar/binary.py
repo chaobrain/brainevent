@@ -48,6 +48,7 @@ def binary_jitsmv(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    backend: Optional[str] = None,
 ) -> Data:
     r"""
     Perform the :math:`y=M@v` or :math:`y=M.T@v` operation,
@@ -104,7 +105,8 @@ def binary_jitsmv(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder
+        corder=corder,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitv)
 
@@ -119,6 +121,7 @@ def binary_jitsmm(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    backend: Optional[str] = None,
 ) -> Data:
     r"""
     Perform the :math:`y=M@B` or :math:`y=M.T@B` operation,
@@ -173,7 +176,8 @@ def binary_jitsmm(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder
+        corder=corder,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitB)
 
@@ -478,10 +482,7 @@ def _jitsmv_jvp_weights(w_dot, weight, clen, vector, seed, _, *, shape, transpos
     return binary_jitsmv_p_call(w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitsmv_transpose_rules(
-    ct, weight, clen, vector, seed, _, *,
-    shape, transpose, corder, **kwargs
-):
+def _jitsmv_transpose_rules(ct, weight, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
 
@@ -546,7 +547,6 @@ def _jitsmv_batching(args, axes, **kwargs):
 
 
 def _jitsmv_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -556,9 +556,9 @@ def _jitsmv_benchmark_data(*, platform):
                 clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
                 v_size = n_post if not transpose else n_pre
                 if bool_event:
-                    vector = jnp.asarray(_np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
+                    vector = jnp.asarray(np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
                 else:
-                    vector = jnp.asarray(_np.random.rand(v_size), dtype=dtype)
+                    vector = jnp.asarray(np.random.rand(v_size), dtype=dtype)
                 seed = jnp.asarray(42, dtype=jnp.uint32)
                 name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'},{'bool' if bool_event else 'float'}"
                 configs.append(
@@ -1081,19 +1081,7 @@ def _jitsmm_jvp_B(B_dot, weight, clen, B, seed, _, *, shape, transpose, corder, 
     return jitsmm_p_call(weight, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitsmm_transpose_rules(
-    ct,
-    weight,
-    clen,
-    B,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
+def _jitsmm_transpose_rules(ct, weight, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
 
@@ -1166,7 +1154,6 @@ def _jitsmm_batching(args, axes, **kwargs):
 
 
 def _jitsmm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -1176,9 +1163,9 @@ def _jitsmm_benchmark_data(*, platform):
                 clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
                 b_rows = n_post if not transpose else n_pre
                 if bool_event:
-                    B = jnp.asarray(_np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
+                    B = jnp.asarray(np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
                 else:
-                    B = jnp.asarray(_np.random.rand(b_rows, 10), dtype=dtype)
+                    B = jnp.asarray(np.random.rand(b_rows, 10), dtype=dtype)
                 seed = jnp.asarray(42, dtype=jnp.uint32)
                 name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'},{'bool' if bool_event else 'float'}"
                 configs.append(BenchmarkConfig(name, (weight, clen, B, seed), {

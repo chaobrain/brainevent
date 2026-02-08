@@ -17,33 +17,36 @@
 
 from jax.tree_util import register_pytree_node_class
 
-from brainevent._dense import (
-    dbmm,
-    bdmm,
-    dbmv,
-    bdvm,
-)
+from brainevent._dense import dbmm, bdmm, dbmv, bdvm
 from brainevent._error import MathError
-from .base import (
-    BaseArray,
-    extract_raw_value,
-    is_known_type,
-)
+from .base import EventRepresentation, extract_raw_value, is_known_type
 
 __all__ = [
-    'BinaryArray',
     'BinaryArray',
 ]
 
 
 @register_pytree_node_class
-class BinaryArray(BaseArray):
+class BinaryArray(EventRepresentation):
     """
     A binary array is a special case of an event array where the events are binary (0 or 1).
 
+    Parameters
+    ----------
+    value : array_like
+        The input binary array data.
     """
-    __slots__ = ('_value',)
     __module__ = 'brainevent'
+
+    def __init__(self, value):
+        super().__init__(value)
+
+    @property
+    def T(self):
+        return self.value.T
+
+    def transpose(self, *axes):
+        return self.value.transpose(*axes)
 
     def __matmul__(self, oc):
         """
@@ -159,22 +162,15 @@ class BinaryArray(BaseArray):
         else:
             return oc.__matmul__(self)
 
-    def __imatmul__(self, oc):
-        """
-        Perform matrix multiplication on the array with another object in-place.
+    def tree_flatten(self):
+        aux = dict()
+        return (self._value,), aux
 
-        Args:
-            oc: The object to multiply.
-
-        Returns:
-            The updated array.
-        """
-        # a @= b
-        if is_known_type(oc):
-            self.value = self.__matmul__(oc)
-        else:
-            self.value = oc.__rmatmul__(self)
-        return self
-
-
-BinaryArray = BinaryArray
+    @classmethod
+    def tree_unflatten(cls, aux_data, flat_contents):
+        value, = flat_contents
+        obj = object.__new__(cls)
+        obj._value = value
+        for k, v in aux_data.items():
+            setattr(obj, k, v)
+        return obj

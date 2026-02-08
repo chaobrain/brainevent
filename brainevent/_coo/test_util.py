@@ -74,6 +74,7 @@ def matrix_coo(xs, w, row, col, shape):
     output = jnp.zeros((xs.shape[0], shape[1]), dtype=xs.dtype)
     if data.shape[0] == 0:
         return output
+
     def body(i, o):
         r = row[i]
         c = col[i]
@@ -93,6 +94,7 @@ def coo_matrix(xs, w, row, col, shape):
     output = jnp.zeros((shape[0], xs.shape[1]), dtype=xs.dtype)
     if data.shape[0] == 0:
         return output
+
     def body(i, o):
         r = row[i]
         c = col[i]

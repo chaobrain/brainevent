@@ -24,6 +24,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
+from brainevent._config import get_numba_parallel
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
@@ -46,6 +47,7 @@ def spfloat_fcnmv(
     *,
     shape: Tuple[int, int],
     transpose: bool = False,
+    backend: Optional[str] = None,
 ) -> Union[jax.Array, u.Quantity]:
     out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, spikes, shape, transpose)
     weights, w_unit = u.split_mantissa_unit(weights)
@@ -57,6 +59,7 @@ def spfloat_fcnmv(
         spikes,
         shape=shape,
         transpose=transpose,
+        backend=backend,
     )[0]
     return u.maybe_decimal(r * v_unit * w_unit)
 
@@ -92,7 +95,7 @@ def _spfloat_fcnmv_numba_kernel(
 
     else:
         if weight_info.size == 1:
-            @numba.njit(parallel=True, fastmath=True, nogil=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
             def ell_mv(weights, indices, spikes, posts):
                 w = weights[0]
                 for i in numba.prange(indices.shape[0]):
@@ -104,7 +107,7 @@ def _spfloat_fcnmv_numba_kernel(
                             r += sp
                     posts[i] = r * w
         else:
-            @numba.njit(parallel=True, fastmath=True, nogil=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
             def ell_mv(weights, indices, spikes, posts):
                 for i in numba.prange(indices.shape[0]):
                     r = 0.
@@ -382,21 +385,20 @@ def _spfloat_fcnmv_batching(args, axes, **kwargs):
 
 
 def _spfloat_fcnmv_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
         for homo in (True, False):
             n_conn = max(1, int(n_post * prob))
-            indices = jnp.asarray(_np.random.randint(0, n_post, (n_pre, n_conn), dtype=_np.int32))
+            indices = jnp.asarray(np.random.randint(0, n_post, (n_pre, n_conn), dtype=np.int32))
             if homo:
                 weights = jnp.ones(1, dtype=dtype)
             else:
                 weights = jnp.ones((n_pre, n_conn), dtype=dtype)
             v_size = n_post if not transpose else n_pre
-            vector_data = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
+            vector_data = jnp.asarray(np.random.randn(v_size), dtype=dtype)
             vector_index = jnp.asarray(
-                _np.sort(_np.random.choice(v_size, min(v_size // 5, v_size), replace=False)),
+                np.sort(np.random.choice(v_size, min(v_size // 5, v_size), replace=False)),
                 dtype=jnp.int32,
             )
             name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
@@ -456,6 +458,7 @@ def spfloat_fcnmm(
     *,
     shape: Tuple[int, int],
     transpose: bool,
+    backend=None,
 ) -> Union[jax.Array, u.Quantity]:
     """
     Perform a sparse matrix-matrix multiplication with fixed connection number.
@@ -536,13 +539,13 @@ def _spfloat_fcnmm_numba_kernel(
         #
 
         if weight_info.size == 1:
-            @numba.njit(parallel=True, fastmath=True, nogil=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
             def ell_mv(weights, indices, matrix, posts):
                 w = weights[0]
                 for i_m in numba.prange(indices.shape[0]):
                     posts[i_m] = w * np.sum(matrix[indices[i_m]], axis=0)
         else:
-            @numba.njit(parallel=True, fastmath=True, nogil=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
             def ell_mv(weights, indices, matrix, posts):
                 for i_m in numba.prange(indices.shape[0]):
                     posts[i_m] = weights[i_m] @ matrix[indices[i_m]]
@@ -772,23 +775,26 @@ def _spfloat_fcnmm_batching(args, axes, **kwargs):
 
 
 def _spfloat_fcnmm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
         for homo in (True, False):
             n_conn = max(1, int(n_post * prob))
-            indices = jnp.asarray(_np.random.randint(0, n_post, (n_pre, n_conn), dtype=_np.int32))
+            indices = jnp.asarray(np.random.randint(0, n_post, (n_pre, n_conn), dtype=np.int32))
             if homo:
                 weights = jnp.ones(1, dtype=dtype)
             else:
                 weights = jnp.ones((n_pre, n_conn), dtype=dtype)
             b_rows = n_post if not transpose else n_pre
-            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
+            B = jnp.asarray(np.random.randn(b_rows, 10), dtype=dtype)
             name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
-            configs.append(BenchmarkConfig(name, (weights, indices, B), {
-                'shape': (n_pre, n_post), 'transpose': transpose
-            }))
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (weights, indices, B),
+                    {'shape': (n_pre, n_post), 'transpose': transpose}
+                )
+            )
     return configs
 
 

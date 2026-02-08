@@ -19,6 +19,7 @@ from typing import Sequence, Optional
 
 import brainunit as u
 import jax
+import numpy as np
 from jax import numpy as jnp
 from jax.interpreters import ad
 
@@ -30,8 +31,8 @@ from brainevent._typing import Data, Row, Col, MatrixShape
 
 __all__ = [
     "coomv",
-    "coomm",
     "coomv_p",
+    "coomm",
     "coomm_p",
 ]
 
@@ -57,14 +58,21 @@ def coomv(
         vector: The dense vector to multiply.
         shape: The shape of the sparse matrix (rows, cols).
         transpose: If True, multiply by the transposed matrix.
-        backend: Optional backend to use.
 
     Returns:
         The result of the matrix-vector multiplication.
     """
     data, unitd = u.split_mantissa_unit(data)
     vector, unitv = u.split_mantissa_unit(vector)
-    res = coomv_p_call(data, row, col, vector, shape=shape, transpose=transpose, backend=backend)[0]
+    res = coomv_p_call(
+        data,
+        row,
+        col,
+        vector,
+        shape=shape,
+        transpose=transpose,
+        backend=backend,
+    )[0]
     return u.maybe_decimal(res * unitd * unitv)
 
 
@@ -89,7 +97,6 @@ def coomm(
         B: The dense matrix to multiply.
         shape: The shape of the sparse matrix (rows, cols).
         transpose: If True, multiply by the transposed matrix.
-        backend: Optional backend to use.
 
     Returns:
         The result of the matrix-matrix multiplication.
@@ -146,6 +153,7 @@ def _coomv_numba_kernel(
                     posts[row[i]] += weights[i] * v[col[i]]
 
     def kernel(weights, row, col, v):
+        # row_ptr is unused for numba backend; present for signature parity
         return numba_kernel(mv, outs=kwargs['outs'])(weights, row, col, v)
 
     return kernel
@@ -168,6 +176,15 @@ def _coomv_warp_kernel(
     vector_warp_info = jaxinfo_to_warpinfo(vector_info)
     out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
 
+    # Process multiple nnz per thread to cut the number of global atomics. Each thread
+    # walks a small, contiguous chunk and locally accumulates runs of identical output
+    # indices before issuing a single atomic_add. This preserves correctness for
+    # duplicate indices while reducing contention on popular rows/cols.
+    WORK_PER_THREAD = 4
+
+    # ------------------------------------------------------------------
+    # Unsorted path: chunked processing + atomics.
+    # ------------------------------------------------------------------
     if transpose:
         if weight_info.size == 1:
             # transpose=True, homogeneous
@@ -179,9 +196,35 @@ def _coomv_warp_kernel(
                 v: vector_warp_info,
                 posts: out_warp_info,
             ):
-                i = warp.tid()
+                tid = warp.tid()
+                start = tid * WORK_PER_THREAD
+                nnz = row.shape[0]
+                if start >= nnz:
+                    return
+
                 w = weights[0]
-                posts[col[i]] += w * v[row[i]]
+                acc = float(0.0)
+                dst = int(0)
+
+                for k in range(WORK_PER_THREAD):
+                    idx = start + k
+                    if idx >= nnz:
+                        break
+                    dst_idx = col[idx]
+                    val = w * v[row[idx]]
+
+                    if k == 0:
+                        dst = dst_idx
+                        acc = val
+                    else:
+                        if dst_idx == dst:
+                            acc += val
+                        else:
+                            warp.atomic_add(posts, dst, acc)
+                            dst = dst_idx
+                            acc = val
+
+                warp.atomic_add(posts, dst, acc)
         else:
             # transpose=True, heterogeneous
             @warp.kernel
@@ -192,8 +235,34 @@ def _coomv_warp_kernel(
                 v: vector_warp_info,
                 posts: out_warp_info,
             ):
-                i = warp.tid()
-                posts[col[i]] += weights[i] * v[row[i]]
+                tid = warp.tid()
+                start = tid * WORK_PER_THREAD
+                nnz = row.shape[0]
+                if start >= nnz:
+                    return
+
+                acc = float(0.0)
+                dst = int(0)
+
+                for k in range(WORK_PER_THREAD):
+                    idx = start + k
+                    if idx >= nnz:
+                        break
+                    dst_idx = col[idx]
+                    val = weights[idx] * v[row[idx]]
+
+                    if k == 0:
+                        dst = dst_idx
+                        acc = val
+                    else:
+                        if dst_idx == dst:
+                            acc += val
+                        else:
+                            warp.atomic_add(posts, dst, acc)
+                            dst = dst_idx
+                            acc = val
+
+                warp.atomic_add(posts, dst, acc)
     else:
         if weight_info.size == 1:
             # transpose=False, homogeneous
@@ -205,9 +274,35 @@ def _coomv_warp_kernel(
                 v: vector_warp_info,
                 posts: out_warp_info,
             ):
-                i = warp.tid()
+                tid = warp.tid()
+                start = tid * WORK_PER_THREAD
+                nnz = row.shape[0]
+                if start >= nnz:
+                    return
+
                 w = weights[0]
-                posts[row[i]] += w * v[col[i]]
+                acc = float(0.0)
+                dst = int(0)
+
+                for k in range(WORK_PER_THREAD):
+                    idx = start + k
+                    if idx >= nnz:
+                        break
+                    dst_idx = row[idx]
+                    val = w * v[col[idx]]
+
+                    if k == 0:
+                        dst = dst_idx
+                        acc = val
+                    else:
+                        if dst_idx == dst:
+                            acc += val
+                        else:
+                            warp.atomic_add(posts, dst, acc)
+                            dst = dst_idx
+                            acc = val
+
+                warp.atomic_add(posts, dst, acc)
         else:
             # transpose=False, heterogeneous
             @warp.kernel
@@ -218,14 +313,40 @@ def _coomv_warp_kernel(
                 v: vector_warp_info,
                 posts: out_warp_info,
             ):
-                i = warp.tid()
-                posts[row[i]] += weights[i] * v[col[i]]
+                tid = warp.tid()
+                start = tid * WORK_PER_THREAD
+                nnz = row.shape[0]
+                if start >= nnz:
+                    return
 
-    dim = row_info.shape[0]
+                acc = float(0.0)
+                dst = int(0)
+
+                for k in range(WORK_PER_THREAD):
+                    idx = start + k
+                    if idx >= nnz:
+                        break
+                    dst_idx = row[idx]
+                    val = weights[idx] * v[col[idx]]
+
+                    if k == 0:
+                        dst = dst_idx
+                        acc = val
+                    else:
+                        if dst_idx == dst:
+                            acc += val
+                        else:
+                            warp.atomic_add(posts, dst, acc)
+                            dst = dst_idx
+                            acc = val
+
+                warp.atomic_add(posts, dst, acc)
+
+    dim = (row_info.shape[0] + WORK_PER_THREAD - 1) // WORK_PER_THREAD
     out_info = kwargs['outs'][0]
 
     def kernel(weights, row, col, v):
-        fn = jax_kernel(mv, launch_dims=dim, num_outputs=1, in_out_argnames=['posts'])
+        fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
         return fn(weights, row, col, v, jnp.zeros(out_info.shape, out_info.dtype))
 
     return kernel
@@ -234,7 +355,6 @@ def _coomv_warp_kernel(
 def _coomv_pallas_gpu_kernel(
     weight_info: jax.ShapeDtypeStruct,
     row_info: jax.ShapeDtypeStruct,
-    shape: MatrixShape,
     transpose: bool,
     **kwargs
 ):
@@ -352,7 +472,7 @@ def _coomv_pallas_gpu_kernel(
 
 
 def _coomv_jvp_vector(vector_dot, data, row, col, vector, *, shape, transpose, **kwargs):
-    return [coomv(data, row, col, vector_dot, shape=shape, transpose=transpose)]
+    return coomv_p_call(data, row, col, vector_dot, shape=shape, transpose=transpose)
 
 
 def _coomv_jvp_weights(data_dot, data, row, col, vector, *, shape, transpose, **kwargs):
@@ -374,7 +494,7 @@ def _coomv_transpose_rule(ct, data, row, col, v, *, shape, transpose, **kwargs):
                 col,
                 ct,
                 shape=shape,
-                transpose=not transpose
+                transpose=not transpose,
             )
         return data, row, col, ct_events
     else:
@@ -403,7 +523,7 @@ def _coomv_batching(args, axes, **kwargs):
             args[2],
             args[3].T,
             shape=kwargs['shape'],
-            transpose=kwargs['transpose']
+            transpose=kwargs['transpose'],
         )
         return r, [1]
 
@@ -415,7 +535,7 @@ def _coomv_batching(args, axes, **kwargs):
             args[2],
             args[3],
             shape=kwargs['shape'],
-            transpose=kwargs['transpose']
+            transpose=kwargs['transpose'],
         )
         return r, [1]
 
@@ -424,21 +544,24 @@ def _coomv_batching(args, axes, **kwargs):
 
 
 def _coomv_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
         for homo in (True, False):
             nnz = max(1, int(n_pre * n_post * prob))
-            row = _np.random.randint(0, n_pre, nnz, dtype=_np.int32)
-            col = _np.random.randint(0, n_post, nnz, dtype=_np.int32)
-            weights = jnp.ones(1, dtype=dtype) if homo else jnp.asarray(_np.random.randn(nnz), dtype=dtype)
+            row = np.random.randint(0, n_pre, nnz, dtype=np.int32)
+            col = np.random.randint(0, n_post, nnz, dtype=np.int32)
+            weights = jnp.ones(1, dtype=dtype) if homo else jnp.asarray(np.random.randn(nnz), dtype=dtype)
             v_size = n_post if not transpose else n_pre
-            vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
+            vector = jnp.asarray(np.random.randn(v_size), dtype=dtype)
             name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
-            configs.append(BenchmarkConfig(name, (weights, jnp.asarray(row), jnp.asarray(col), vector), {
-                'shape': (n_pre, n_post), 'transpose': transpose
-            }))
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (weights, jnp.asarray(row), jnp.asarray(col), vector),
+                    {'shape': (n_pre, n_post), 'transpose': transpose}
+                )
+            )
     return configs
 
 
@@ -901,17 +1024,16 @@ def _coomm_batching(args, axes, **kwargs):
 
 
 def _coomm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
         for homo in (True, False):
             nnz = max(1, int(n_pre * n_post * prob))
-            row = _np.random.randint(0, n_pre, nnz, dtype=_np.int32)
-            col = _np.random.randint(0, n_post, nnz, dtype=_np.int32)
-            weights = jnp.ones(1, dtype=dtype) if homo else jnp.asarray(_np.random.randn(nnz), dtype=dtype)
+            row = np.random.randint(0, n_pre, nnz, dtype=np.int32)
+            col = np.random.randint(0, n_post, nnz, dtype=np.int32)
+            weights = jnp.ones(1, dtype=dtype) if homo else jnp.asarray(np.random.randn(nnz), dtype=dtype)
             b_rows = n_post if not transpose else n_pre
-            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
+            B = jnp.asarray(np.random.randn(b_rows, 10), dtype=dtype)
             name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
             configs.append(BenchmarkConfig(name, (weights, jnp.asarray(row), jnp.asarray(col), B), {
                 'shape': (n_pre, n_post), 'transpose': transpose

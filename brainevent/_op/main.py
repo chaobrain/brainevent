@@ -15,7 +15,6 @@
 # ==============================================================================
 
 import functools
-import inspect
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Union
 
@@ -23,7 +22,7 @@ import jax
 from jax.interpreters import xla, batching, ad, mlir
 
 from brainevent._compatible_import import Primitive
-from brainevent._error import KernelFallbackExhaustedError, KernelExecutionError
+from brainevent._error import KernelFallbackExhaustedError
 from brainevent._typing import KernelGenerator
 from .benchmark import BenchmarkResult, BenchmarkReport, benchmark_function
 from .util import general_batching_rule, defjvp, OutType, abstract_arguments, check_pallas_jax_version
@@ -250,38 +249,29 @@ class XLACustomKernel:
                 )
 
             # Determine which backend to use
-            backend_to_use = self._defaults.get(platform)
+            backend_to_use = kwargs.pop('backend', None)
+            if backend_to_use is not None:
+                if backend_to_use not in kernels:
+                    raise KernelFallbackExhaustedError(
+                        f'{backend_to_use} not available for platform {platform} in primitive '
+                        f'{self.name}.'
+                    )
+            else:
+                backend_to_use = self._defaults.get(platform)
 
             # Get the kernel entry
             if backend_to_use and backend_to_use in kernels:
-                entry = kernels[backend_to_use]
+                pass
             else:
                 # Fallback to first registered kernel
                 backend_to_use = next(iter(kernels))
-                entry = kernels[backend_to_use]
 
             if backend_to_use == 'pallas':
                 check_pallas_jax_version()
 
-            try:
-                kernel = entry.kernel_generator(**kwargs)
-                return kernel(*args)
-            except Exception as e:
-                # Build helpful error message with alternatives
-                alternatives = [b for b in kernels.keys() if b != backend_to_use]
-                alt_msg = ""
-                if alternatives:
-                    alt_msg = (
-                        f"\n\nAlternative backends available for '{platform}':\n"
-                        + "\n".join(f"  - {b}" for b in alternatives)
-                        + f"\n\nTo use an alternative:\n"
-                          f"  1. Call with backend='{alternatives[0]}'\n"
-                          f"  2. Or set default: kernel.set_default('{platform}', '{alternatives[0]}')"
-                    )
-                raise KernelExecutionError(
-                    f"Backend '{backend_to_use}' failed on platform '{platform}':\n"
-                    f"  {type(e).__name__}: {e}{alt_msg}"
-                ) from e
+            entry = kernels[backend_to_use]
+            kernel = entry.kernel_generator(**kwargs)
+            return kernel(*args)
 
         # Register the lowering with JAX
         lower = mlir.lower_fun(fallback_kernel_fn, multiple_results=True)
@@ -513,16 +503,7 @@ class XLACustomKernel:
         Args:
             fn: The call function (e.g., binary_csrmv_p_call).
         """
-
-        # Get all keyword-only parameter names from the function signature
-        sig = inspect.signature(fn)
-        static_argnames = [
-            name for name, param in sig.parameters.items()
-            if param.kind == inspect.Parameter.KEYWORD_ONLY
-        ]
-
-        # Wrap with JIT, treating all kwargs as static
-        self._call_fn = jax.jit(fn, static_argnames=static_argnames)
+        self._call_fn = fn
 
     def call(self, *args, **kwargs):
         """Call the associated call function.
@@ -603,6 +584,7 @@ class XLACustomKernel:
         n_runs: int = 20,
         batch_mode: bool = False,
         compare_results: bool = True,
+        catch_error: bool = True,
         **kwargs
     ) -> Union[BenchmarkResult, BenchmarkReport]:
         """Benchmark kernel execution using the registered call function.
@@ -617,6 +599,7 @@ class XLACustomKernel:
                 each run individually (measures per-call latency). If True, run all
                 n_runs calls first, then block once at the end and measure total time
                 (measures throughput, useful for async GPU/TPU execution).
+            catch_error: If True, catch exceptions during kernel execution and record them in the results.
             compare_results: Verify outputs match across backends (not yet implemented).
             **kwargs: Keyword args passed to the call function.
 
@@ -648,7 +631,8 @@ class XLACustomKernel:
         for be in backends_to_test:
             try:
                 # Create a function that calls the primitive with the specified backend
-                def run_fn(be=be):
+                @jax.jit
+                def run_fn():
                     return self._call_fn(*args, backend=be, **kwargs)
 
                 mean_time, std_time, min_time, max_time, output = benchmark_function(
@@ -670,19 +654,22 @@ class XLACustomKernel:
                 )
                 outputs[be] = output
             except Exception as e:
-                results.append(
-                    BenchmarkResult(
-                        backend=be,
-                        platform=platform,
-                        mean_time=0.0,
-                        std_time=0.0,
-                        min_time=0.0,
-                        max_time=0.0,
-                        n_runs=0,
-                        success=False,
-                        error=str(e),
+                if catch_error:
+                    results.append(
+                        BenchmarkResult(
+                            backend=be,
+                            platform=platform,
+                            mean_time=0.0,
+                            std_time=0.0,
+                            min_time=0.0,
+                            max_time=0.0,
+                            n_runs=0,
+                            success=False,
+                            error=str(e),
+                        )
                     )
-                )
+                else:
+                    raise e
 
         # Compare results across backends if requested
         mismatches = []

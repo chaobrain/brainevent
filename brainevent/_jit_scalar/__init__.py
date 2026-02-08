@@ -14,9 +14,9 @@
 # ==============================================================================
 
 
-from .main import JITScalarMatrix, JITCScalarC, JITCScalarR
 from .binary import binary_jitsmv, binary_jitsmv_p, binary_jitsmm, binary_jitsmm_p
 from .float import jits, jits_p, jitsmv, jitsmv_p, jitsmm, jitsmm_p
+from .main import JITScalarMatrix, JITCScalarC, JITCScalarR
 
 __all__ = [
     'JITScalarMatrix', 'JITCScalarR', 'JITCScalarC',

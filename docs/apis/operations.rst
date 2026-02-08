@@ -34,10 +34,10 @@ Plasticity operations.
 .. autosummary::
    :toctree: generated/
 
-   plast_coo_on_binary_pre
-   plast_coo_on_binary_post
-   plast_coo_on_binary_pre_p
-   plast_coo_on_binary_post_p
+   update_coo_on_binary_pre
+   update_coo_on_binary_post
+   update_coo_on_binary_pre_p
+   update_coo_on_binary_post_p
 
 
 CSR Operations
@@ -80,10 +80,10 @@ Plasticity operations.
 .. autosummary::
    :toctree: generated/
 
-   plast_csr_on_binary_pre
-   plast_csr_on_binary_pre_p
-   plast_csr2csc_on_binary_post
-   plast_csr2csc_on_binary_post_p
+   update_csr_on_binary_pre
+   update_csr_on_binary_pre_p
+   update_csr_on_binary_post
+   update_csr_on_binary_post_p
 
 Sparse linear solver.
 
@@ -141,10 +141,10 @@ Plasticity operations.
 .. autosummary::
    :toctree: generated/
 
-   plast_dense_on_binary_pre
-   plast_dense_on_binary_pre_p
-   plast_dense_on_binary_post
-   plast_dense_on_binary_post_p
+   update_dense_on_binary_pre
+   update_dense_on_binary_pre_p
+   update_dense_on_binary_post
+   update_dense_on_binary_post_p
 
 
 JITC Scalar Operations

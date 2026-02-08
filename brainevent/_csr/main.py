@@ -22,7 +22,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent._compatible_import import JAXSparse
 from brainevent._event import BinaryArray, SparseFloat
 from brainevent._misc import _csr_to_coo, _csr_todense
 from brainevent._typing import Data, Indptr, Index, MatrixShape
@@ -48,124 +47,152 @@ class BaseCLS(u.sparse.SparseMatrix):
 
     def __init__(
         self,
-        args: Tuple[Data, Index, Indptr],
+        data,
+        indices=None,
+        indptr=None,
         *,
         shape: MatrixShape
     ):
         """
-        Initialize a :class:`CSC` / :class:`CSR` matrix.
+        Initialize a compressed sparse matrix base instance.
 
-        This constructor creates a :class:`CSC` / :class:`CSR` matrix from the given arguments and shape.
+        Supports two calling conventions::
+
+            # Tuple syntax (original)
+            CSR((data, indices, indptr), shape=(m, n))
+
+            # Positional-argument syntax
+            CSR(data, indices, indptr, shape=(m, n))
 
         Parameters
         ----------
-        args : Sequence[Union[jax.Array, np.ndarray, u.Quantity]]
-            A sequence of three arrays representing the CSC matrix:
-            - data: Contains the non-zero values of the matrix.
-            - indices: Contains the row indices for each non-zero element.
-            - indptr: Contains the column pointers indicating where each column starts in the data and indices arrays.
-
+        data : array or Sequence
+            Either a single array (the ``data`` values) when ``indices`` and
+            ``indptr`` are also provided, or a sequence of three arrays
+            ``(data, indices, indptr)`` when used with the tuple syntax.
+        indices : array, optional
+            Secondary-axis indices for each stored element (column indices for
+            CSR, row indices for CSC). Required when ``data`` is the
+            data array.
+        indptr : array, optional
+            Primary-axis pointers indicating where each row/column starts in
+            the data and indices arrays. Required when ``data`` is the
+            data array.
         shape : Tuple[int, int]
-            The shape of the matrix as a tuple of (num_rows, num_columns).
+            The shape of the matrix as ``(num_rows, num_columns)``.
         """
-        # Convert each element in args to a jax array using u.math.asarray
+        if indices is None and indptr is None:
+            # Tuple syntax: CSR((data, indices, indptr), shape=...)
+            args = data
+        else:
+            # Positional syntax: CSR(data, indices, indptr, shape=...)
+            args = (data, indices, indptr)
+
+        assert len(args) == 3, "Expected three arguments: data, indices, indptr."
         self.data, self.indices, self.indptr = map(u.math.asarray, args)
-
-        # Call the constructor of the superclass to initialize the object with the given args and shape
         super().__init__(args, shape=shape)
-
         self.diag_positions = None
 
     def tree_flatten(self):
-        """
-        Flatten the CSC matrix for JAX's tree utilities.
-
-        This method is used by JAX's tree utilities to flatten the CSC matrix
-        into a form suitable for transformation and reconstruction.
-
-        Returns
-        --------
-        tuple
-            A tuple containing two elements:
-            - A tuple with the CSC matrix's data as the only element.
-            - A tuple with the CSC matrix's indices, indptr, and shape.
-        """
-        return (self.data,), (self.indices, self.indptr, self.shape, self.diag_positions)
+        aux = {
+            'indices': self.indices,
+            'indptr': self.indptr,
+            'shape': self.shape,
+            'diag_positions': self.diag_positions,
+        }
+        return (self.data,), aux
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
-        """
-        Reconstruct a CSC matrix from flattened data.
-
-        This class method is used by JAX's tree utilities to reconstruct
-        a CSC matrix from its flattened representation.
-
-        Parameters
-        -----------
-        aux_data : tuple
-            A tuple containing the CSC matrix's indices, indptr, and shape.
-        children : tuple
-            A tuple containing the CSC matrix's data as its only element.
-        """
-        data, = children
-        indices, indptr, shape, diag_positions = aux_data
-        obj = cls((data, indices, indptr), shape=shape)
-        obj.diag_positions = diag_positions
+        obj = object.__new__(cls)
+        obj.data, = children
+        for k, v in aux_data.items():
+            setattr(obj, k, v)
         return obj
 
-    def _unitary_op(self, op):
+    def apply(self, fn):
+        """
+        Apply a function to the data and return a new sparse matrix with the same structure.
+
+        Unlike :meth:`with_data`, which requires the new data to have the same
+        shape, dtype, and unit, ``apply`` allows transformations that change
+        dtype or unit.
+
+        Parameters
+        ----------
+        fn : callable
+            A function to apply to ``self.data``.
+
+        Returns
+        -------
+        CSR or CSC
+            A new sparse matrix with ``fn(self.data)`` and the same structure.
+        """
         raise NotImplementedError
 
     def __abs__(self):
-        return self._unitary_op(operator.abs)
+        return self.apply(operator.abs)
 
     def __neg__(self):
-        return self._unitary_op(operator.neg)
+        return self.apply(operator.neg)
 
     def __pos__(self):
-        return self._unitary_op(operator.pos)
+        return self.apply(operator.pos)
 
     def _binary_op(self, other, op):
         raise NotImplementedError
 
-    def __mul__(self, other: Data):
-        return self._binary_op(other, operator.mul)
+    def apply2(self, other, fn, *, reverse: bool = False):
+        """
+        Apply a binary function while preserving sparse structure semantics.
 
-    def __div__(self, other: Data):
-        return self._binary_op(other, operator.truediv)
+        Parameters
+        ----------
+        other : Any
+            Right-hand operand for normal operations, or left-hand operand when
+            ``reverse=True``.
+        fn : callable
+            Binary function from ``operator`` or a compatible callable.
+        reverse : bool, optional
+            If False, compute ``fn(self, other)`` semantics using ``_binary_op``.
+            If True, compute ``fn(other, self)`` semantics using ``_binary_rop``.
+            Defaults to False.
+
+        Returns
+        -------
+        CSR or CSC or Data
+            Result of the operation.
+        """
+        if reverse:
+            return self._binary_rop(other, fn)
+        return self._binary_op(other, fn)
+
+    def __mul__(self, other: Data):
+        return self.apply2(other, operator.mul)
 
     def __truediv__(self, other):
-        return self.__div__(other)
+        return self.apply2(other, operator.truediv)
 
     def __add__(self, other):
-        return self._binary_op(other, operator.add)
+        return self.apply2(other, operator.add)
 
     def __sub__(self, other):
-        return self._binary_op(other, operator.sub)
-
-    def __mod__(self, other):
-        return self._binary_op(other, operator.mod)
+        return self.apply2(other, operator.sub)
 
     def _binary_rop(self, other, op):
         raise NotImplementedError
 
     def __rmul__(self, other: Data):
-        return self._binary_rop(other, operator.mul)
-
-    def __rdiv__(self, other: Data):
-        return self._binary_rop(other, operator.truediv)
+        return self.apply2(other, operator.mul, reverse=True)
 
     def __rtruediv__(self, other):
-        return self.__rdiv__(other)
+        return self.apply2(other, operator.truediv, reverse=True)
 
     def __radd__(self, other):
-        return self._binary_rop(other, operator.add)
+        return self.apply2(other, operator.add, reverse=True)
 
     def __rsub__(self, other):
-        return self._binary_rop(other, operator.sub)
-
-    def __rmod__(self, other):
-        return self._binary_rop(other, operator.mod)
+        return self.apply2(other, operator.sub, reverse=True)
 
     def yw_to_w(
         self,
@@ -196,7 +223,7 @@ class BaseCLS(u.sparse.SparseMatrix):
 
     def diag_add(self, other):
         """
-        Add a diagonal value to the current sparse matrix.
+        Add values to the matrix diagonal and return a new sparse matrix.
 
         This method adds the provided diagonal value to the diagonal elements of the
         sparse matrix represented in Compressed Sparse Row (CSR) format. If the diagonal
@@ -207,11 +234,6 @@ class BaseCLS(u.sparse.SparseMatrix):
         other : array-like
             The diagonal value to be added to the sparse matrix. It should be compatible
             with the data type of the matrix's non-zero elements.
-
-        Returns
-        -------
-        ndarray
-            The result of adding the diagonal value to the sparse matrix.
 
         Raises
         ------
@@ -228,7 +250,7 @@ class BaseCLS(u.sparse.SparseMatrix):
         """
         if self.diag_positions is None:
             self.diag_positions = csr_diag_position_v2(self.indptr, self.indices, self.shape)
-        assert not isinstance(other, JAXSparse), "diag_add does not support JAXSparse objects."
+        assert not isinstance(other, u.sparse.SparseMatrix), "diag_add does not support JAXSparse objects."
         return self.with_data(csr_diag_add_v2(self.data, self.diag_positions, other))
 
     def solve(self, b: Union[jax.Array, u.Quantity]) -> Union[jax.Array, u.Quantity]:
@@ -264,11 +286,11 @@ class CSR(BaseCLS):
     row-wise operations and matrix-vector multiplications. It is compatible with
     JAX's tree utilities and supports unit-aware computations.
 
-    The class also supports various arithmetic operations (``+``, ``-``, ``*``, ``/``, ``@``) with
-    other CSR matrices, dense arrays, and scalars.
+    The class supports arithmetic with scalars and dense arrays, plus sparse-dense
+    matrix multiplication via ``@``. Sparse-sparse operations are limited.
 
     Attributes
-    -----------
+    ----------
     data : Data
         Array of the non-zero values in the matrix.
     indices : jax.Array
@@ -292,7 +314,7 @@ class CSR(BaseCLS):
         This method converts a dense matrix to a Compressed Sparse Row (CSR) format.
 
         Parameters
-        -----------
+        ----------
         mat : array_like
             The dense matrix to be converted to CSR format.
         nse : int, optional
@@ -302,7 +324,7 @@ class CSR(BaseCLS):
             The data type to be used for index arrays (default is jnp.int32).
 
         Returns
-        --------
+        -------
         CSR
             A new CSR matrix object created from the input dense matrix.
         """
@@ -319,13 +341,13 @@ class CSR(BaseCLS):
         maintaining the original indices, indptr, and shape.
 
         Parameters
-        -----------
+        ----------
         data : Data
             The new data array to replace the existing data in the CSR matrix.
             It must have the same shape, dtype, and unit as the original data.
 
         Returns
-        --------
+        -------
         CSR
             A new CSR matrix instance with updated data and the same structure as the original.
 
@@ -347,7 +369,7 @@ class CSR(BaseCLS):
         into a full dense matrix.
 
         Returns
-        --------
+        -------
         array_like
             A dense matrix representation of the CSR matrix.
         """
@@ -386,13 +408,13 @@ class CSR(BaseCLS):
         This method returns the transpose of the CSR matrix as a CSC matrix.
 
         Parameters
-        -----------
+        ----------
         axes : None
             This parameter is not used and must be None. Included for compatibility
             with numpy's transpose function signature.
 
         Returns
-        --------
+        -------
         CSC
             The transpose of the CSR matrix as a CSC (Compressed Sparse Column) matrix.
 
@@ -404,23 +426,8 @@ class CSR(BaseCLS):
         assert axes is None, "transpose does not support axes argument."
         return CSC((self.data, self.indices, self.indptr), shape=self.shape[::-1])._diag_pos(self.diag_positions)
 
-    def _unitary_op(self, op) -> 'CSR':
-        """
-        Apply a unary operation to the data of the CSR matrix.
-
-        This method applies a given unary operation to the data array of the CSR matrix.
-
-        Parameters
-        ----------
-        op : callable
-            A unary operation to apply to the data array (e.g., abs, neg, pos).
-
-        Returns
-        -------
-        CSR
-            A new CSR matrix with the result of applying the operation to its data.
-        """
-        return CSR((op(self.data), self.indices, self.indptr), shape=self.shape)._diag_pos(self.diag_positions)
+    def apply(self, fn) -> 'CSR':
+        return CSR(fn(self.data), self.indices, self.indptr, shape=self.shape)._diag_pos(self.diag_positions)
 
     def _binary_op(self, other, op) -> 'CSR':
         if op in [operator.add, operator.sub]:
@@ -437,7 +444,7 @@ class CSR(BaseCLS):
                      self.indptr),
                     shape=self.shape
                 )._diag_pos(self.diag_positions)
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -475,7 +482,7 @@ class CSR(BaseCLS):
                      self.indptr),
                     shape=self.shape
                 )._diag_pos(self.diag_positions)
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -500,11 +507,11 @@ class CSR(BaseCLS):
 
     def __matmul__(self, other):
         # csr @ other
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
-            other = other.data
+            other = other.value
             if other.ndim == 1:
                 return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
             elif other.ndim == 2:
@@ -513,7 +520,7 @@ class CSR(BaseCLS):
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
         elif isinstance(other, SparseFloat):
-            other = other.data
+            other = other.value
             if other.ndim == 1:
                 return spfloat_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
             elif other.ndim == 2:
@@ -547,11 +554,11 @@ class CSR(BaseCLS):
 
     def __rmatmul__(self, other):
         # other @ csr
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
-            other = other.data
+            other = other.value
             if other.ndim == 1:
                 return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True)
             elif other.ndim == 2:
@@ -562,7 +569,7 @@ class CSR(BaseCLS):
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
         elif isinstance(other, SparseFloat):
-            other = other.data
+            other = other.value
             if other.ndim == 1:
                 return spfloat_csrmv(
                     self.data, self.indices, self.indptr, other,
@@ -707,11 +714,11 @@ class CSC(BaseCLS):
     column-wise operations. It is compatible with JAX's tree utilities and
     supports unit-aware computations.
 
-    The class also supports various arithmetic operations (``+``, ``-``, ``*``, ``/``, ``@``) with
-    other CSC matrices, dense arrays, and scalars.
+    The class supports arithmetic with scalars and dense arrays, plus sparse-dense
+    matrix multiplication via ``@``. Sparse-sparse operations are limited.
 
     Attributes
-    -----------
+    ----------
     data : Data
         Array of the non-zero values in the matrix.
     indices : jax.Array
@@ -737,7 +744,7 @@ class CSC(BaseCLS):
         storage format for sparse matrices.
 
         Parameters
-        -----------
+        ----------
         mat : array_like
             The dense matrix to be converted to CSC format.
         nse : int, optional
@@ -747,7 +754,7 @@ class CSC(BaseCLS):
             The data type to be used for index arrays (default is jnp.int32).
 
         Returns
-        --------
+        -------
         CSC
             A new CSC matrix instance created from the input dense matrix.
         """
@@ -764,13 +771,13 @@ class CSC(BaseCLS):
         maintaining the original indices, indptr, and shape.
 
         Parameters
-        -----------
+        ----------
         data : Data
             The new data array to replace the existing data in the CSC matrix.
             It must have the same shape, dtype, and unit as the original data.
 
         Returns
-        --------
+        -------
         CSC
             A new CSC matrix instance with updated data and the same structure as the original.
 
@@ -792,7 +799,7 @@ class CSC(BaseCLS):
         into a full dense matrix.
 
         Returns
-        --------
+        -------
         array_like
             A dense matrix representation of the CSC matrix.
         """
@@ -831,13 +838,13 @@ class CSC(BaseCLS):
         This method returns the transpose of the CSC matrix as a CSR matrix.
 
         Parameters
-        -----------
+        ----------
         axes : None
             This parameter is not used and must be None. Included for compatibility
             with numpy's transpose function signature.
 
         Returns
-        --------
+        -------
         CSR
             The transpose of the CSC matrix as a CSR (Compressed Sparse Row) matrix.
 
@@ -849,23 +856,8 @@ class CSC(BaseCLS):
         assert axes is None
         return CSR((self.data, self.indices, self.indptr), shape=self.shape[::-1])._diag_pos(self.diag_positions)
 
-    def _unitary_op(self, op) -> 'CSC':
-        """
-        Apply a unary operation to the data of the CSC matrix.
-
-        This method applies a given unary operation to the data array of the CSC matrix.
-
-        Parameters
-        ----------
-        op : callable
-            A unary operation to apply to the data array (e.g., abs, neg, pos).
-
-        Returns
-        -------
-        CSC
-            A new CSC matrix with the result of applying the operation to its data.
-        """
-        return CSC((op(self.data), self.indices, self.indptr), shape=self.shape)._diag_pos(self.diag_positions)
+    def apply(self, fn) -> 'CSC':
+        return CSC((fn(self.data), self.indices, self.indptr), shape=self.shape)._diag_pos(self.diag_positions)
 
     def _binary_op(self, other, op) -> 'CSC':
         if op in [operator.add, operator.sub]:
@@ -881,7 +873,7 @@ class CSC(BaseCLS):
                      self.indptr),
                     shape=self.shape
                 )._diag_pos(self.diag_positions)
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -918,7 +910,7 @@ class CSC(BaseCLS):
                      self.indptr),
                     shape=self.shape
                 )._diag_pos(self.diag_positions)
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -942,7 +934,7 @@ class CSC(BaseCLS):
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
     def __matmul__(self, other):
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
 
@@ -1006,7 +998,7 @@ class CSC(BaseCLS):
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
     def __rmatmul__(self, other):
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
 

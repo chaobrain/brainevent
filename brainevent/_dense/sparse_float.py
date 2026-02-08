@@ -15,13 +15,15 @@
 
 # -*- coding: utf-8 -*-
 
+from typing import Optional
+
 import brainunit as u
 import jax
 import jax.numpy as jnp
-from typing import Optional
 import numpy as np
 from jax.interpreters import ad
 
+from brainevent._config import get_numba_parallel
 from brainevent._misc import cdiv, generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
@@ -42,7 +44,7 @@ __all__ = [
 
 
 @namescope()
-def dsfmv(weights, spikes):
+def dsfmv(weights, spikes, *, backend: Optional[str] = None):
     """
     Performs event-driven matrix-vector multiplication: `weights @ spikes`.
 
@@ -88,7 +90,7 @@ def dsfmv(weights, spikes):
         spikes = u.math.asarray(spikes)
     weight_val, wunit = u.split_mantissa_unit(weights)
     spk_val, spkunit = u.split_mantissa_unit(spikes)
-    r = dsfmv_p_call(weight_val, spk_val)
+    r = dsfmv_p_call(weight_val, spk_val, backend=backend)
     return u.maybe_decimal(r[0] * wunit * spkunit)
 
 
@@ -225,10 +227,9 @@ def _dsfmv_batching(args, axes, **kwargs):
 
 
 def _dsfmv_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    weights = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
-    spikes = jnp.asarray(_np.random.randn(n_post), dtype=dtype)
+    weights = jnp.asarray(np.random.randn(n_pre, n_post), dtype=dtype)
+    spikes = jnp.asarray(np.random.randn(n_post), dtype=dtype)
     return [BenchmarkConfig("default", (weights, spikes))]
 
 
@@ -431,10 +432,9 @@ def _event_matrix_batching(args, axes, **kwargs):
 
 
 def _sfdvm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    spikes = jnp.asarray(_np.random.randn(n_pre), dtype=dtype)
-    weights = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
+    spikes = jnp.asarray(np.random.randn(n_pre), dtype=dtype)
+    weights = jnp.asarray(np.random.randn(n_pre, n_post), dtype=dtype)
     return [BenchmarkConfig("default", (spikes, weights))]
 
 
@@ -525,7 +525,7 @@ def _dsfmm_numba_kernel(**kwargs):
 
     import numba
 
-    @numba.njit(parallel=True, fastmath=True, nogil=True)
+    @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
     def kernel(weights, spikes, posts):
         for i_n in numba.prange(spikes.shape[1]):
             out = np.zeros(weights.shape[0], dtype=weights.dtype)
@@ -697,10 +697,9 @@ def _dsfmm_batching(args, axes, **kwargs):
 
 
 def _dsfmm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    weights = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
-    spikes = jnp.asarray(_np.random.randn(n_post, 10), dtype=dtype)
+    weights = jnp.asarray(np.random.randn(n_pre, n_post), dtype=dtype)
+    spikes = jnp.asarray(np.random.randn(n_post, 10), dtype=dtype)
     return [BenchmarkConfig("default", (weights, spikes))]
 
 
@@ -784,7 +783,7 @@ def _sfdmm_numba_kernel(**kwargs):
 
     import numba
 
-    @numba.njit(parallel=True, fastmath=True, nogil=True)
+    @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
     def kernel(spikes, weights, posts):
         for i_m in numba.prange(spikes.shape[0]):
             out = np.zeros(weights.shape[1], dtype=posts.dtype)
@@ -954,10 +953,9 @@ def _sfdmm_batching(args, axes, **kwargs):
 
 
 def _sfdmm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    spikes = jnp.asarray(_np.random.randn(10, n_post), dtype=dtype)
-    weights = jnp.asarray(_np.random.randn(n_post, n_post), dtype=dtype)
+    spikes = jnp.asarray(np.random.randn(10, n_post), dtype=dtype)
+    weights = jnp.asarray(np.random.randn(n_post, n_post), dtype=dtype)
     return [BenchmarkConfig("default", (spikes, weights))]
 
 

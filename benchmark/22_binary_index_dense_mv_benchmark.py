@@ -43,7 +43,7 @@ def forward(n_pre, n_post, spk_prob):
     @jax.jit
     def f1(spikes, weights):
         return (
-            brainevent.IndexedBinary(spikes) @ weights
+            brainevent.BinaryArray(spikes, indexed=True) @ weights
         )
 
     @jax.jit

@@ -32,6 +32,7 @@ numba_cuda_available = False
 if numba_installed:
     try:
         from numba import cuda
+
         numba_cuda_available = cuda.is_available()
     except ImportError:
         pass

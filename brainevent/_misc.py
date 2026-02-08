@@ -12,9 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-
-# -*- coding: utf-8 -*-
-
+import functools
+import inspect
 from functools import partial
 from typing import Tuple, NamedTuple, Sequence, Union, Callable
 
@@ -25,12 +24,15 @@ import jax.numpy as jnp
 import numpy as np
 from jax.experimental.sparse import csr_todense_p, coo_todense_p
 
-from ._event.base import BaseArray
 from ._typing import MatrixShape, Data, Index
 
 
+# -*- coding: utf-8 -*-
+
+
 def is_known_type(x):
-    return isinstance(x, (u.Quantity, jax.Array, np.ndarray, BaseArray))
+    from ._event.base import EventRepresentation
+    return isinstance(x, (u.Quantity, jax.Array, np.ndarray, EventRepresentation))
 
 
 class COOInfo(NamedTuple):
@@ -693,6 +695,58 @@ def csr_to_csc_index(
     return csc_indptr, csc_indices, post_positions
 
 
+class NameScope:
+    """A callable that caches a separate JIT-compiled function per unique `backend` value.
+
+    This enables efficient per-backend caching without relying on JAX's static argument mechanism.
+    """
+
+    def __init__(
+        self,
+        fn,
+        name=None,
+        prefix="brainevent",
+        static_argnums=(),
+        static_argnames=(),
+    ):
+        self._fn = fn
+        self._static_argnums = static_argnums
+        self._static_argnames = static_argnames
+        fn.__name__ = name if name is not None else f"{prefix}.{fn.__name__}"
+        self._cache = {}  # backend -> jit_compiled_fn
+        # Check whether the wrapped function accepts a 'backend' keyword.
+        # True when the function either has an explicit backend parameter or accepts **kwargs.
+        sig = inspect.signature(fn)
+        self._has_backend = (
+            'backend' in sig.parameters or
+            any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        )
+        # Copy function metadata
+        self.__name__ = fn.__name__
+        self.__qualname__ = getattr(fn, '__qualname__', self.__name__)
+        self.__doc__ = fn.__doc__
+        self.__module__ = getattr(fn, '__module__', None)
+        self.__wrapped__ = fn
+
+    def _get_jit_fn(self, backend):
+        if backend not in self._cache:
+            fn = functools.partial(self._fn, backend=backend) if self._has_backend else self._fn
+            self._cache[backend] = jax.jit(
+                fn,
+                static_argnums=self._static_argnums,
+                static_argnames=self._static_argnames,
+            )
+        return self._cache[backend]
+
+    def __call__(self, *args, **kwargs):
+        backend = kwargs.pop('backend', None)
+        jit_fn = self._get_jit_fn(backend)
+        return jit_fn(*args, **kwargs)
+
+    def __repr__(self):
+        return f"<NameScope({self.__name__})>"
+
+
 def namescope(
     fn: Callable = None,
     name: str = None,
@@ -701,7 +755,9 @@ def namescope(
     static_argnames: Sequence[str] = ()
 ):
     """Decorator that wraps a function with JAX's JIT compilation and sets its name.
-    (For `brainstate.experimental.gdiist_bpu` module)
+
+    Returns a ``NameScope`` instance that caches a separate JIT-compiled function
+    per unique ``backend`` keyword argument value.
 
     Args:
         name: Optional name to set for the function. If None, uses the original function name.
@@ -710,26 +766,31 @@ def namescope(
         static_argnames: Tuple of keyword argument names to be treated as static.
 
     Returns:
-        Decorated function with JAX JIT compilation applied.
+        A ``NameScope`` instance wrapping the function with per-backend JIT caching.
 
     Example:
-        @warp_jit_fun("my_function", static_argnums=(0,))
+        @namescope(static_argnums=(0,))
         def my_func(x, y):
             return x + y
 
-        @warp_jit_fun(static_argnames=("shape", "transpose"))
+        @namescope(static_argnames=("shape", "transpose"))
         def my_func2(x, y, *, shape, transpose=False):
             return x + y
     """
 
     if fn is None:
-
         def decorator(fun: Callable):
-            fun.__name__ = name if name is not None else f"{prefix}.{fun.__name__}"
-            return jax.jit(fun, static_argnums=static_argnums, static_argnames=static_argnames)
+            return NameScope(fun,
+                             name=name,
+                             prefix=prefix,
+                             static_argnums=static_argnums,
+                             static_argnames=static_argnames)
 
         return decorator
 
     else:
-        fn.__name__ = name if name is not None else f"{prefix}.{fn.__name__}"
-        return jax.jit(fn, static_argnums=static_argnums, static_argnames=static_argnames)
+        return NameScope(fn,
+                         name=name,
+                         prefix=prefix,
+                         static_argnums=static_argnums,
+                         static_argnames=static_argnames)

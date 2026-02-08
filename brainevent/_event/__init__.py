@@ -14,19 +14,14 @@
 # ==============================================================================
 
 
-from .base import BaseArray
-from .binary import BinaryArray, BinaryArray
-from .indexed_binary import IndexedBinary
+from .base import EventRepresentation
+from .binary import BinaryArray
 from .indexed_binary_extraction import binary_array_index
-from .indexed_sparse_float import IndexedSparseFloat
 from .sparse_float import SparseFloat
 
 __all__ = [
-    'BaseArray',
-    'BinaryArray',
-    'IndexedBinary',
+    'EventRepresentation',
     'BinaryArray',
     'SparseFloat',
-    'IndexedSparseFloat',
     'binary_array_index',
 ]

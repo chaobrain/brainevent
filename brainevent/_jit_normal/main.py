@@ -21,7 +21,7 @@ from typing import Union, Tuple
 import brainunit as u
 import jax
 
-from brainevent._compatible_import import JAXSparse, Tracer
+from brainevent._compatible_import import Tracer
 from brainevent._event.binary import BinaryArray
 from brainevent._jitc_matrix import JITCMatrix
 from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
@@ -85,7 +85,10 @@ class JITNormalMatrix(JITCMatrix):
 
     def __init__(
         self,
-        data: Tuple[WeightScalar, WeightScalar, Prob, Seed],
+        loc,
+        scale=None,
+        prob=None,
+        seed=None,
         *,
         shape: MatrixShape,
         corder: bool = False,
@@ -95,12 +98,16 @@ class JITNormalMatrix(JITCMatrix):
 
         Parameters
         ----------
-        data : Tuple[WeightScalar, WeightScalar, Prob, Seed]
-            A tuple containing four elements:
-            - loc: Location (mean) parameter of the normal distribution
-            - scale: Scale (standard deviation) parameter of the normal distribution
-            - prob: Connection probability determining matrix sparsity
-            - seed: Random seed for reproducible sparse structure generation
+        loc : WeightScalar or Tuple[WeightScalar, WeightScalar, Prob, Seed]
+            Either the location (mean) parameter of the normal distribution,
+            or a tuple containing (loc, scale, prob, seed).
+        scale : WeightScalar, optional
+            Scale (standard deviation) parameter of the normal distribution.
+            If None, ``loc`` is treated as a tuple of (loc, scale, prob, seed).
+        prob : Prob, optional
+            Connection probability determining matrix sparsity.
+        seed : Seed, optional
+            Random seed for reproducible sparse structure generation.
         shape : MatrixShape
             The shape of the matrix as a tuple (rows, columns).
         corder : bool, optional
@@ -115,6 +122,10 @@ class JITNormalMatrix(JITCMatrix):
         dtypes and are verified to have matching dimensions before being converted
         to JAX arrays, preserving any attached units.
         """
+        if scale is None and prob is None and seed is None:
+            data = loc
+        else:
+            data = (loc, scale, prob, seed)
         loc, scale, self.prob, self.seed = data
         loc, scale = u.math.promote_dtypes(loc, scale)
         u.fail_for_dimension_mismatch(loc, scale, "loc and scale must have the same dimension.")
@@ -209,47 +220,15 @@ class JITNormalMatrix(JITCMatrix):
         )
 
     def tree_flatten(self):
-        """
-        Flattens the JITHomo object for JAX transformation compatibility.
-
-        This method is part of JAX's pytree protocol that enables JAX transformations
-        on custom classes. It separates the object into arrays that should be traced
-        through JAX transformations (children) and auxiliary static data.
-
-        Returns:
-            tuple: A tuple with two elements:
-                - A tuple of JAX-traceable arrays (only self.data in this case)
-                - A dictionary of auxiliary data (shape, indices, and indptr)
-        """
-        return (self.wloc, self.wscale, self.prob, self.seed), {"shape": self.shape, 'corder': self.corder}
+        aux = {'shape': self.shape, 'corder': self.corder}
+        return (self.wloc, self.wscale, self.prob, self.seed), aux
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
-        """
-        Reconstructs a JITHomo object from flattened data.
-
-        This method is part of JAX's pytree protocol that enables JAX transformations
-        on custom classes. It rebuilds the JITHomo object from the flattened representation
-        produced by tree_flatten.
-
-        Args:
-            aux_data (dict): Dictionary containing auxiliary static data (shape, indices, indptr)
-            children (tuple): Tuple of JAX arrays that were transformed (contains only data)
-
-        Returns:
-            JITCNormalR: Reconstructed JITHomo object
-
-        Raises:
-            ValueError: If the aux_data dictionary doesn't contain the expected keys
-        """
         obj = object.__new__(cls)
         obj.wloc, obj.wscale, obj.prob, obj.seed = children
-        if aux_data.keys() != {'shape', 'corder'}:
-            raise ValueError(
-                "aux_data must contain 'shape', 'corder' keys. "
-                f"But got: {aux_data.keys()}"
-            )
-        obj.__dict__.update(**aux_data)
+        for k, v in aux_data.items():
+            setattr(obj, k, v)
         return obj
 
     def _check(self, other, op):
@@ -444,7 +423,7 @@ class JITCNormalR(JITNormalMatrix):
         return self._new_mat(op(self.wloc), self.wscale)
 
     def _binary_op(self, other, op) -> 'JITCNormalR':
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -455,7 +434,7 @@ class JITCNormalR(JITNormalMatrix):
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
     def _binary_rop(self, other, op) -> 'JITCNormalR':
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -466,11 +445,11 @@ class JITCNormalR(JITNormalMatrix):
 
     def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
         # csr @ other
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
-            other = other.data
+            other = other.value
             if other.ndim == 1:
                 # JIT matrix @ events
                 return binary_jitnmv(
@@ -531,11 +510,11 @@ class JITCNormalR(JITNormalMatrix):
 
     def __rmatmul__(self, other) -> Union[jax.Array, u.Quantity]:
         # other @ csr
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
-            other = other.data
+            other = other.value
             if other.ndim == 1:
                 #
                 # vector @ JIT matrix
@@ -783,7 +762,7 @@ class JITCNormalC(JITNormalMatrix):
         return self._new_mat(op(self.wloc), self.wscale)
 
     def _binary_op(self, other, op) -> 'JITCNormalC':
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -794,7 +773,7 @@ class JITCNormalC(JITNormalMatrix):
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
     def _binary_rop(self, other, op) -> 'JITCNormalC':
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -805,11 +784,11 @@ class JITCNormalC(JITNormalMatrix):
 
     def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
         # csr @ other
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
-            other = other.data
+            other = other.value
             if other.ndim == 1:
                 # JITC_R matrix.T @ vector
                 # ==
@@ -878,10 +857,10 @@ class JITCNormalC(JITNormalMatrix):
 
     def __rmatmul__(self, other) -> Union[jax.Array, u.Quantity]:
         # other @ csr
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         if isinstance(other, BinaryArray):
-            other = other.data
+            other = other.value
             if other.ndim == 1:
                 #
                 # vector @ JITC_R matrix.T

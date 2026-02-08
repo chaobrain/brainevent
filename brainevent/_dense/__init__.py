@@ -18,8 +18,8 @@ from .indexed_binary import (
     indexed_bdvm, indexed_bdvm_p, indexed_dbmv, indexed_dbmm, indexed_bdmm, indexed_bdmm_p,
 )
 from .plasticity import (
-    plast_dense_on_binary_pre, plast_dense_on_binary_pre_p,
-    plast_dense_on_binary_post, plast_dense_on_binary_post_p,
+    update_dense_on_binary_pre, update_dense_on_binary_pre_p,
+    update_dense_on_binary_post, update_dense_on_binary_post_p,
 )
 from .sparse_float import dsfmv, dsfmv_p, sfdvm, sfdvm_p, dsfmm, dsfmm_p, sfdmm, sfdmm_p
 
@@ -27,8 +27,8 @@ __all__ = [
     'dbmv', 'dbmv_p', 'bdvm', 'bdvm_p',
     'dbmm', 'dbmm_p', 'bdmm', 'bdmm_p',
     'indexed_bdvm', 'indexed_bdvm_p', 'indexed_dbmv', 'indexed_dbmm', 'indexed_bdmm', 'indexed_bdmm_p',
-    'plast_dense_on_binary_pre', 'plast_dense_on_binary_pre_p',
-    'plast_dense_on_binary_post', 'plast_dense_on_binary_post_p',
+    'update_dense_on_binary_pre', 'update_dense_on_binary_pre_p',
+    'update_dense_on_binary_post', 'update_dense_on_binary_post_p',
     'dsfmv', 'dsfmv_p', 'sfdvm', 'sfdvm_p',
     'dsfmm', 'dsfmm_p', 'sfdmm', 'sfdmm_p',
 ]

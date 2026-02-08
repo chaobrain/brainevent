@@ -24,6 +24,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
+from brainevent._config import get_numba_parallel
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
@@ -46,6 +47,7 @@ def binary_fcnmv(
     *,
     shape: Tuple[int, int],
     transpose: bool = False,
+    backend: Optional[str] = None,
 ) -> Union[jax.Array, u.Quantity]:
     weights, w_unit = u.split_mantissa_unit(weights)
     spikes, v_unit = u.split_mantissa_unit(spikes)
@@ -56,6 +58,7 @@ def binary_fcnmv(
         spikes,
         shape=shape,
         transpose=transpose,
+        backend=backend,
     )[0]
     return u.maybe_decimal(r * v_unit * w_unit)
 
@@ -109,7 +112,7 @@ def _binary_fcnmv_numba_kernel(
     else:
         if weight_info.size == 1:
             if spike_info.dtype == jnp.bool_:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def ell_mv(weights, indices, spikes, posts):
                     w = weights[0]
                     for i in numba.prange(indices.shape[0]):
@@ -120,7 +123,7 @@ def _binary_fcnmv_numba_kernel(
                                 r += w
                         posts[i] = r
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def ell_mv(weights, indices, spikes, posts):
                     spk_bool = spikes > 0.
                     w = weights[0]
@@ -133,7 +136,7 @@ def _binary_fcnmv_numba_kernel(
                         posts[i] = r
         else:
             if spike_info.dtype == jnp.bool_:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def ell_mv(weights, indices, spikes, posts):
                     for i in numba.prange(indices.shape[0]):
                         r = 0.
@@ -143,7 +146,7 @@ def _binary_fcnmv_numba_kernel(
                                 r += weights[i, j]
                         posts[i] = r
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def ell_mv(weights, indices, spikes, posts):
                     spk_bool = spikes > 0.
                     for i in numba.prange(indices.shape[0]):
@@ -482,23 +485,22 @@ def _binary_fcnmv_batching(args, axes, **kwargs):
 
 
 def _binary_fcnmv_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
         for homo in (True, False):
             for bool_event in (True, False):
                 n_conn = max(1, int(n_post * prob))
-                indices = jnp.asarray(_np.random.randint(0, n_post, (n_pre, n_conn), dtype=_np.int32))
+                indices = jnp.asarray(np.random.randint(0, n_post, (n_pre, n_conn), dtype=np.int32))
                 if homo:
                     weights = jnp.ones(1, dtype=dtype)
                 else:
                     weights = jnp.ones((n_pre, n_conn), dtype=dtype)
                 v_size = n_post if not transpose else n_pre
                 if bool_event:
-                    spikes = jnp.asarray(_np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
+                    spikes = jnp.asarray(np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
                 else:
-                    spikes = jnp.asarray(_np.random.rand(v_size), dtype=dtype)
+                    spikes = jnp.asarray(np.random.rand(v_size), dtype=dtype)
                 name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
                 configs.append(
                     BenchmarkConfig(
@@ -556,6 +558,7 @@ def binary_fcnmm(
     *,
     shape: Tuple[int, int],
     transpose: bool,
+    backend=None,
 ) -> Union[jax.Array, u.Quantity]:
     weights, w_unit = u.split_mantissa_unit(weights)
     matrix, m_unit = u.split_mantissa_unit(matrix)
@@ -631,13 +634,13 @@ def _binary_fcnmm_numba_kernel(
 
         if weight_info.size == 1:
             if matrix_info.dtype == jnp.bool_:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def ell_mv(weights, indices, matrix, posts):
                     w = weights[0]
                     for i_m in numba.prange(indices.shape[0]):
                         posts[i_m] = w * np.sum(matrix[indices[i_m]], axis=0)
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def ell_mv(weights, indices, matrix, posts):
                     w = weights[0]
                     for i_m in numba.prange(indices.shape[0]):
@@ -645,12 +648,12 @@ def _binary_fcnmm_numba_kernel(
                         posts[i_m] = w * np.sum(events, axis=0)
         else:
             if matrix_info.dtype == jnp.bool_:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def ell_mv(weights, indices, matrix, posts):
                     for i_m in numba.prange(indices.shape[0]):
                         posts[i_m] = weights[i_m] @ (matrix[indices[i_m]]).astype(weights.dtype)
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def ell_mv(weights, indices, matrix, posts):
                     for i_m in numba.prange(indices.shape[0]):
                         events = (matrix[indices[i_m]] > 0.).astype(weights.dtype)
@@ -881,23 +884,22 @@ def _binary_fcnmm_batching(args, axes, **kwargs):
 
 
 def _binary_fcnmm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
         for homo in (True, False):
             for bool_event in (True, False):
                 n_conn = max(1, int(n_post * prob))
-                indices = jnp.asarray(_np.random.randint(0, n_post, (n_pre, n_conn), dtype=_np.int32))
+                indices = jnp.asarray(np.random.randint(0, n_post, (n_pre, n_conn), dtype=np.int32))
                 if homo:
                     weights = jnp.ones(1, dtype=dtype)
                 else:
                     weights = jnp.ones((n_pre, n_conn), dtype=dtype)
                 b_rows = n_post if not transpose else n_pre
                 if bool_event:
-                    matrix = jnp.asarray(_np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
+                    matrix = jnp.asarray(np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
                 else:
-                    matrix = jnp.asarray(_np.random.rand(b_rows, 10), dtype=dtype)
+                    matrix = jnp.asarray(np.random.rand(b_rows, 10), dtype=dtype)
                 name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
                 configs.append(
                     BenchmarkConfig(

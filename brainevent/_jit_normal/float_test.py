@@ -14,8 +14,6 @@
 # ==============================================================================
 
 
-from typing import Tuple
-
 import brainstate
 import brainunit as u
 import jax
@@ -23,1537 +21,591 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-import brainevent
-
-
-class Test_JITCNormalR:
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
-    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matvec(self, prob, weight, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.01, prob, 123), shape=shape)
-        vector = jnp.asarray(np.random.rand(shape[1]))
-        out1 = jitc @ vector
-        out2 = jitc.todense() @ vector
-        assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4 * u.get_unit(out1))
-
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
-    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_vecmat(self, prob, weight, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.01, prob, 123), shape=shape)
-        vector = jnp.asarray(np.random.rand(shape[0]))
-        out1 = vector @ jitc
-        out2 = vector @ jitc.todense()
-        assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4 * u.get_unit(out1))
-
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
-    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_jitmat(self, prob, weight, shape: Tuple[int, int], k):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.01, prob, 123), shape=shape)
-        matrix = jnp.asarray(np.random.rand(shape[1], k))
-        out1 = jitc @ matrix
-        out2 = jitc.todense() @ matrix
-        assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4 * u.get_unit(out1))
-
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
-    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matjit(self, k, prob, weight, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.01, prob, 123), shape=shape)
-        matrix = jnp.asarray(np.random.rand(k, shape[0]))
-        out1 = matrix @ jitc
-        out2 = matrix @ jitc.todense()
-        assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4 * u.get_unit(out1))
-
-    def test_todense_weight_batching(self):
-        def f(weight):
-            jitc = brainevent.JITCNormalR((weight, weight * 0.01, 0.1, 123), shape=(100, 50))
-            return jitc.todense()
-
-        weights = brainstate.random.rand(10)
-
-        matrices = jax.vmap(f)(weights)
-        assert matrices.shape == (10, 100, 50)
-
-        matrices_loop = brainstate.transform.for_loop(f, weights)
-        assert matrices_loop.shape == (10, 100, 50)
-
-        assert u.math.allclose(matrices, matrices_loop)
-
-    def test_todense_prob_batching(self):
-        def f(prob):
-            jitc = brainevent.JITCNormalR((1.5, 0.1, prob, 123), shape=(100, 50))
-            return jitc.todense()
-
-        probs = brainstate.random.rand(10)
-
-        matrices = jax.vmap(f)(probs)
-        assert matrices.shape == (10, 100, 50)
-
-        matrices_loop = brainstate.transform.for_loop(f, probs)
-        assert matrices_loop.shape == (10, 100, 50)
-
-        assert u.math.allclose(matrices, matrices_loop)
-
-    def test_todense_seed_batching(self):
-        def f(seed):
-            jitc = brainevent.JITCNormalR((1.5, 0.1, 0.1, seed), shape=(100, 50))
-            return jitc.todense()
-
-        seeds = brainstate.random.randint(0, 100000, 10)
-
-        matrices = jax.vmap(f)(seeds)
-        assert matrices.shape == (10, 100, 50)
-
-        matrices_loop = brainstate.transform.for_loop(f, seeds)
-        assert matrices_loop.shape == (10, 100, 50)
-
-        assert u.math.allclose(matrices, matrices_loop)
-
-    @pytest.mark.skipif(
-        brainstate.environ.get_platform() == 'cpu',
-        reason="CPU no need to test large matrix."
-    )
-    def test_large_matrix(self):
-        m = 10000
-        jitc = brainevent.JITCNormalR((1.5, 0.1, 0.1, 123), shape=(m, m))
-        vector = jnp.asarray(np.random.rand(m))
-        out1 = jitc @ vector
-        out2 = jitc.todense() @ vector
-        assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4 * u.get_unit(out1))
+from brainevent._jit_normal.float import jitn, jitn_p, jitnmv, jitnmv_p, jitnmm, jitnmm_p
+
+platform = jax.default_backend()
+JITN_IMPLEMENTATIONS = tuple(jitn_p.available_backends(platform))
+JITNMV_IMPLEMENTATIONS = tuple(jitnmv_p.available_backends(platform))
+JITNMM_IMPLEMENTATIONS = tuple(jitnmm_p.available_backends(platform))
+
+
+# ---- Forward: jitnmv (matrix @ vector, transpose=False) ----
+
+@pytest.mark.parametrize("implementation", JITNMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+def test_jitnmv_forward(implementation, shape, corder):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    vector = jnp.asarray(np.random.rand(shape[1]))
+    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, corder=corder)
+    out = jitnmv(w_loc, w_scale, prob, vector, seed, shape=shape, corder=corder, backend=implementation)
+    expected = dense @ vector
+    assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
+
+
+# ---- Forward: jitnmv (vector @ matrix, transpose=True) ----
+
+@pytest.mark.parametrize("implementation", JITNMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+def test_jitnmv_transpose_forward(implementation, shape, corder):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    vector = jnp.asarray(np.random.rand(shape[0]))
+    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, transpose=True, corder=corder)
+    out = jitnmv(w_loc, w_scale, prob, vector, seed, shape=shape, transpose=True, corder=corder, backend=implementation)
+    expected = dense @ vector
+    assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
+
+
+# ---- Forward: jitnmm (matrix @ matrix, transpose=False) ----
+
+@pytest.mark.parametrize("implementation", JITNMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('k', [10])
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+def test_jitnmm_forward(implementation, k, shape, corder):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    B = jnp.asarray(np.random.rand(shape[1], k))
+    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, corder=corder)
+    out = jitnmm(w_loc, w_scale, prob, B, seed, shape=shape, corder=corder, backend=implementation)
+    expected = dense @ B
+    assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
+
+
+# ---- Forward: jitnmm (matrix.T @ matrix, transpose=True) ----
+
+@pytest.mark.parametrize("implementation", JITNMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('k', [10])
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+def test_jitnmm_transpose_forward(implementation, k, shape, corder):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    B = jnp.asarray(np.random.rand(shape[0], k))
+    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, transpose=True, corder=corder)
+    out = jitnmm(w_loc, w_scale, prob, B, seed, shape=shape, transpose=True, corder=corder, backend=implementation)
+    expected = dense @ B
+    assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
+
+
+# ---- Gradient JVP: jitnmv ----
+
+@pytest.mark.parametrize("implementation", JITNMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_jitnmv_jvp(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    vec_size = shape[0] if transpose else shape[1]
+    x = jnp.asarray(np.random.rand(vec_size))
+    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, transpose=transpose, corder=corder)
+
+    def f_fn(x):
+        return jitnmv(w_loc, w_scale, prob, x, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
+
+    def f_dense(x):
+        return (dense @ x).sum()
+
+    out1, jvp1 = jax.jvp(f_fn, (x,), (jnp.ones_like(x),))
+    out2, jvp2 = jax.jvp(f_dense, (x,), (jnp.ones_like(x),))
+    assert jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4)
+    assert jnp.allclose(jvp1, jvp2, rtol=1e-4, atol=1e-4)
 
+
+# ---- Gradient VJP: jitnmv ----
+
+@pytest.mark.parametrize("implementation", JITNMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_jitnmv_vjp(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    vec_size = shape[0] if transpose else shape[1]
+    x = jnp.asarray(np.random.rand(vec_size))
+    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, transpose=transpose, corder=corder)
 
-class Test_JITCNormalR_Gradients:
+    def f_fn(x):
+        return jitnmv(w_loc, w_scale, prob, x, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
 
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matvec_jvp(self, weight, prob, corder, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.1, prob, 123), shape=shape, corder=corder)
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[1]))
+    def f_dense(x):
+        return (dense @ x).sum()
 
-        def f_brainevent(x):
-            return (jitc @ x).sum()
+    out1, (vjp1,) = jax.value_and_grad(f_fn, argnums=(0,))(x)
+    out2, (vjp2,) = jax.value_and_grad(f_dense, argnums=(0,))(x)
+    assert jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4)
+    assert jnp.allclose(vjp1, vjp2, rtol=1e-4, atol=1e-4)
 
-        def f_dense(x):
-            return (dense @ x).sum()
 
-        out1, jvp_x1 = jax.jvp(f_brainevent, (x,), (jnp.ones_like(x),))
+# ---- Gradient JVP: jitnmm ----
 
-        out2, jvp_x2 = jax.jvp(f_dense, (x,), (jnp.ones_like(x),))
+@pytest.mark.parametrize("implementation", JITNMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('k', [10])
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_jitnmm_jvp(implementation, k, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    mat_rows = shape[0] if transpose else shape[1]
+    x = jnp.asarray(np.random.rand(mat_rows, k))
+    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, transpose=transpose, corder=corder)
 
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-4, atol=1e-4))
+    def f_fn(x):
+        return jitnmm(w_loc, w_scale, prob, x, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
 
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matvec_vjp(self, weight, prob, corder, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.1, prob, 123), shape=shape, corder=corder)
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[1]))
+    def f_dense(x):
+        return (dense @ x).sum()
 
-        def f_brainevent(x):
-            return (jitc @ x).sum()
+    out1, jvp1 = jax.jvp(f_fn, (x,), (jnp.ones_like(x),))
+    out2, jvp2 = jax.jvp(f_dense, (x,), (jnp.ones_like(x),))
+    assert jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4)
+    assert jnp.allclose(jvp1, jvp2, rtol=1e-4, atol=1e-4)
 
-        def f_dense(x):
-            return (dense @ x).sum()
 
-        out1, (vjp_x1,) = jax.value_and_grad(f_brainevent, argnums=(0,))(x)
-        out2, (vjp_x2,) = jax.value_and_grad(f_dense, argnums=(0,))(x)
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(vjp_x1, vjp_x2, rtol=1e-4, atol=1e-4))
+# ---- Gradient VJP: jitnmm ----
 
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_vecmat_jvp(self, weight, prob, corder, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.1, prob, 123), shape=shape, corder=corder)
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[0]))
+@pytest.mark.parametrize("implementation", JITNMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('k', [10])
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_jitnmm_vjp(implementation, k, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    mat_rows = shape[0] if transpose else shape[1]
+    x = jnp.asarray(np.random.rand(mat_rows, k))
+    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, transpose=transpose, corder=corder)
 
-        def f_brainevent(x):
-            return (x @ jitc).sum()
+    def f_fn(x):
+        return jitnmm(w_loc, w_scale, prob, x, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
 
-        def f_dense(x, ):
-            return (x @ dense).sum()
+    def f_dense(x):
+        return (dense @ x).sum()
 
-        out1, jvp_x1 = jax.jvp(f_brainevent, (x,), (jnp.ones_like(x),))
-
-        out2, jvp_x2 = jax.jvp(f_dense, (x,), (jnp.ones_like(x),))
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-4, atol=1e-4))
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_vecmat_vjp(self, weight, prob, corder, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.1, prob, 123), shape=shape, corder=corder)
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[0]))
+    out1, (vjp1,) = jax.value_and_grad(f_fn, argnums=(0,))(x)
+    out2, (vjp2,) = jax.value_and_grad(f_dense, argnums=(0,))(x)
+    assert jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4)
+    assert jnp.allclose(vjp1, vjp2, rtol=1e-4, atol=1e-4)
 
-        def f_brainevent(x, ):
-            return (x @ jitc).sum()
 
-        def f_dense(x, ):
-            return (x @ dense).sum()
+# ---- Batching: jitnmv over vectors ----
 
-        out1, (vjp_x1,) = jax.value_and_grad(f_brainevent, argnums=(0,))(x, )
-        out2, (vjp_x2,) = jax.value_and_grad(f_dense, argnums=(0,))(x, )
+@pytest.mark.parametrize("implementation", JITNMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('batch_size', [10])
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+def test_jitnmv_vmap_over_vectors(implementation, batch_size, shape, corder):
+    w_loc, w_scale, prob, seed = 1.05, 0.1, 0.1, 123
+    vectors = brainstate.random.rand(batch_size, shape[1])
 
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(vjp_x1, vjp_x2, rtol=1e-4, atol=1e-4))
+    def f(vector):
+        return jitnmv(w_loc, w_scale, prob, vector, seed, shape=shape, corder=corder, backend=implementation)
 
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_jitmat_jvp(self, weight, prob, corder, k, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.1, prob, 123), shape=shape, corder=corder)
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[1], k))
+    results = jax.vmap(f)(vectors)
+    assert results.shape == (batch_size, shape[0])
 
-        def f_brainevent(x):
-            return (jitc @ x).sum()
+    results_loop = brainstate.transform.for_loop(f, vectors)
+    assert results_loop.shape == (batch_size, shape[0])
 
-        def f_dense(x):
-            return (dense @ x).sum()
+    assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
 
-        out1, jvp_x1 = jax.jvp(f_brainevent, (x,), (jnp.ones_like(x),))
 
-        out2, jvp_x2 = jax.jvp(f_dense, (x,), (jnp.ones_like(x),))
+# ---- Batching: jitnmv over vectors (transpose) ----
 
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-4, atol=1e-4))
+@pytest.mark.parametrize("implementation", JITNMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('batch_size', [10])
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+def test_jitnmv_transpose_vmap_over_vectors(implementation, batch_size, shape, corder):
+    w_loc, w_scale, prob, seed = 1.05, 0.1, 0.1, 123
+    vectors = brainstate.random.rand(batch_size, shape[0])
 
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_jitmat_vjp(self, weight, prob, corder, k, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.1, prob, 123), shape=shape, corder=corder)
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[1], k))
+    def f(vector):
+        return jitnmv(w_loc, w_scale, prob, vector, seed, shape=shape, transpose=True, corder=corder, backend=implementation)
 
-        def f_brainevent(x, ):
-            return (jitc @ x).sum()
+    results = jax.vmap(f)(vectors)
+    assert results.shape == (batch_size, shape[1])
 
-        def f_dense(x, ):
-            return (dense @ x).sum()
+    results_loop = brainstate.transform.for_loop(f, vectors)
+    assert results_loop.shape == (batch_size, shape[1])
 
-        out1, (vjp_x1,) = jax.value_and_grad(f_brainevent, argnums=(0,))(x, )
-        out2, (vjp_x2,) = jax.value_and_grad(f_dense, argnums=(0,))(x, )
+    assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
 
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(vjp_x1, vjp_x2, rtol=1e-4, atol=1e-4))
 
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matjit_jvp(self, weight, prob, corder, k, shape: Tuple[int, int]):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.1, prob, 123), shape=shape, corder=corder)
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(k, shape[0]))
+# ---- Batching: jitnmv over w_loc ----
 
-        def f_brainevent(x, ):
-            return (x @ jitc).sum()
+@pytest.mark.parametrize("implementation", JITNMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('batch_size', [10])
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+def test_jitnmv_vmap_over_wloc(implementation, batch_size, shape, corder):
+    w_scale, prob, seed = 0.1, 0.1, 123
+    w_locs = brainstate.random.rand(batch_size)
+    vector = brainstate.random.rand(shape[1])
 
-        def f_dense(x, ):
-            return (x @ dense).sum()
+    def f(w_loc):
+        return jitnmv(w_loc, w_scale, prob, vector, seed, shape=shape, corder=corder, backend=implementation)
 
-        out1, jvp_x1 = jax.jvp(f_brainevent, (x,), (jnp.ones_like(x),))
-        out2, jvp_x2 = jax.jvp(f_dense, (x,), (jnp.ones_like(x),))
+    results = jax.vmap(f)(w_locs)
+    assert results.shape == (batch_size, shape[0])
 
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-4, atol=1e-4))
+    results_loop = brainstate.transform.for_loop(f, w_locs)
+    assert results_loop.shape == (batch_size, shape[0])
 
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matjit_vjp(self, weight, prob, corder, k, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.1, prob, 123), shape=shape, corder=corder)
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(k, shape[0]))
+    assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
 
-        def f_brainevent(x, ):
-            return (x @ jitc).sum()
 
-        def f_dense(x, ):
-            return (x @ dense).sum()
+# ---- Batching: jitnmm over matrices ----
 
-        out1, (vjp_x1,) = jax.value_and_grad(f_brainevent, argnums=(0,))(x, )
-        out2, (vjp_x2,) = jax.value_and_grad(f_dense, argnums=(0,))(x, )
+@pytest.mark.parametrize("implementation", JITNMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('batch_size', [10])
+@pytest.mark.parametrize('k', [5])
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+def test_jitnmm_vmap_over_matrices(implementation, batch_size, k, shape, corder):
+    w_loc, w_scale, prob, seed = 1.05, 0.1, 0.1, 123
+    matrices = brainstate.random.rand(batch_size, shape[1], k)
 
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(vjp_x1, vjp_x2, rtol=1e-4, atol=1e-4))
+    def f(mat):
+        return jitnmm(w_loc, w_scale, prob, mat, seed, shape=shape, corder=corder, backend=implementation)
 
+    outs = jax.vmap(f)(matrices)
+    assert outs.shape == (batch_size, shape[0], k)
 
-class Test_JITCNormalR_Batching:
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_matvec_batching_vector(self, batch_size, shape: Tuple[int, int], corder):
-        vectors = brainstate.random.rand(batch_size, shape[1])
+    outs_loop = brainstate.transform.for_loop(f, matrices)
+    assert outs_loop.shape == (batch_size, shape[0], k)
 
-        def f(vector):
-            jitc = brainevent.JITCNormalR((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
-            return jitc @ vector
+    assert jnp.allclose(outs, outs_loop, rtol=1e-4, atol=1e-4)
 
-        matrices = jax.vmap(f)(vectors)
-        assert matrices.shape == (batch_size, shape[0])
 
-        matrices_loop = brainstate.transform.for_loop(f, vectors)
-        assert matrices_loop.shape == (batch_size, shape[0])
+# ---- Batching: jitnmm over matrices (transpose) ----
 
-        assert u.math.allclose(matrices, matrices_loop)
+@pytest.mark.parametrize("implementation", JITNMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('batch_size', [10])
+@pytest.mark.parametrize('k', [5])
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+def test_jitnmm_transpose_vmap_over_matrices(implementation, batch_size, k, shape, corder):
+    w_loc, w_scale, prob, seed = 1.05, 0.1, 0.1, 123
+    matrices = brainstate.random.rand(batch_size, shape[0], k)
 
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_matvec_batching_vector_axis1(self, batch_size, shape: Tuple[int, int], corder):
-        vectors = brainstate.random.rand(shape[1], batch_size)
+    def f(mat):
+        return jitnmm(w_loc, w_scale, prob, mat, seed, shape=shape, transpose=True, corder=corder, backend=implementation)
 
-        def f(vector):
-            jitc = brainevent.JITCNormalR((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
-            return jitc @ vector
+    outs = jax.vmap(f)(matrices)
+    assert outs.shape == (batch_size, shape[1], k)
 
-        matrices = jax.vmap(f, in_axes=1, out_axes=1)(vectors)
-        assert matrices.shape == (shape[0], batch_size)
+    outs_loop = brainstate.transform.for_loop(f, matrices)
+    assert outs_loop.shape == (batch_size, shape[1], k)
 
-        matrices_loop = brainstate.transform.for_loop(f, vectors.T)
-        assert matrices_loop.shape == (batch_size, shape[0])
+    assert jnp.allclose(outs, outs_loop, rtol=1e-4, atol=1e-4)
 
-        assert u.math.allclose(matrices, matrices_loop.T)
 
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_matvec_batching_weight(self, batch_size, shape: Tuple[int, int], corder):
-        weights = brainstate.random.rand(batch_size)
-        vector = brainstate.random.rand(shape[1], )
+# ---- Batching: jitnmm over w_loc ----
 
-        def f(w):
-            jitc = brainevent.JITCNormalR((w, 0.1, 0.1, 123), shape=shape, corder=corder)
-            return jitc @ vector
+@pytest.mark.parametrize("implementation", JITNMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('batch_size', [10])
+@pytest.mark.parametrize('k', [5])
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+def test_jitnmm_vmap_over_wloc(implementation, batch_size, k, shape, corder):
+    w_scale, prob, seed = 0.1, 0.1, 123
+    w_locs = brainstate.random.rand(batch_size)
+    matrix = brainstate.random.rand(shape[1], k)
 
-        matrices = jax.vmap(f)(weights)
-        assert matrices.shape == (batch_size, shape[0])
+    def f(w_loc):
+        return jitnmm(w_loc, w_scale, prob, matrix, seed, shape=shape, corder=corder, backend=implementation)
 
-        matrices_loop = brainstate.transform.for_loop(f, weights)
-        assert matrices_loop.shape == (batch_size, shape[0])
+    results = jax.vmap(f)(w_locs)
+    assert results.shape == (batch_size, shape[0], k)
 
-        assert u.math.allclose(matrices, matrices_loop)
+    results_loop = brainstate.transform.for_loop(f, w_locs)
+    assert results_loop.shape == (batch_size, shape[0], k)
 
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_vecmat_batching_vector(self, batch_size, shape: Tuple[int, int], corder):
-        vectors = brainstate.random.rand(batch_size, shape[0])
+    assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
 
-        def f(vector):
-            jitc = brainevent.JITCNormalR((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
-            return vector @ jitc
 
-        matrices = jax.vmap(f)(vectors)
-        assert matrices.shape == (batch_size, shape[1])
+# ---- Batching: jitn over w_loc ----
 
-        matrices_loop = brainstate.transform.for_loop(f, vectors)
-        assert matrices_loop.shape == (batch_size, shape[1])
+@pytest.mark.parametrize("implementation", JITN_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(100, 50)])
+def test_jitn_vmap_over_wloc(implementation, shape):
+    w_scale, prob, seed = 0.1, 0.1, 123
 
-        assert u.math.allclose(matrices, matrices_loop)
+    def f(w_loc):
+        return jitn(w_loc, w_scale, prob, seed, shape=shape, backend=implementation)
 
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_vecmat_batching_vector_axis1(self, batch_size, shape: Tuple[int, int], corder):
-        vectors = brainstate.random.rand(shape[0], batch_size)
+    w_locs = brainstate.random.rand(10)
+    results = jax.vmap(f)(w_locs)
+    assert results.shape == (10,) + shape
 
-        def f(vector):
-            jitc = brainevent.JITCNormalR((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
-            return vector @ jitc
+    results_loop = brainstate.transform.for_loop(f, w_locs)
+    assert results_loop.shape == (10,) + shape
 
-        matrices = jax.vmap(f, in_axes=1, out_axes=1)(vectors)
-        assert matrices.shape == (shape[1], batch_size)
+    assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
 
-        matrices_loop = brainstate.transform.for_loop(f, vectors.T)
-        assert matrices_loop.shape == (batch_size, shape[1])
 
-        assert u.math.allclose(matrices, matrices_loop.T)
+# ---- Batching: jitn over prob ----
 
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_vecmat_batching_weight(self, batch_size, shape: Tuple[int, int], corder):
-        weights = brainstate.random.rand(batch_size)
-        vector = brainstate.random.rand(shape[0], )
+@pytest.mark.parametrize("implementation", JITN_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(100, 50)])
+def test_jitn_vmap_over_prob(implementation, shape):
+    w_loc, w_scale, seed = 1.5, 0.1, 123
 
-        def f(w):
-            jitc = brainevent.JITCNormalR((w, 0.1, 0.1, 123), shape=shape, corder=corder)
-            return vector @ jitc
+    def f(prob):
+        return jitn(w_loc, w_scale, prob, seed, shape=shape, backend=implementation)
 
-        matrices = jax.vmap(f)(weights)
-        assert matrices.shape == (batch_size, shape[1])
+    probs = brainstate.random.rand(10)
+    results = jax.vmap(f)(probs)
+    assert results.shape == (10,) + shape
 
-        matrices_loop = brainstate.transform.for_loop(f, weights)
-        assert matrices_loop.shape == (batch_size, shape[1])
+    results_loop = brainstate.transform.for_loop(f, probs)
+    assert results_loop.shape == (10,) + shape
 
-        assert u.math.allclose(matrices, matrices_loop)
+    assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
 
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('k', [5])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_jitmat_batching_matrix(self, batch_size, k, shape: Tuple[int, int], corder):
-        matrices = brainstate.random.rand(batch_size, shape[1], k)
 
-        def f(mat):
-            jitc = brainevent.JITCNormalR((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
-            return jitc @ mat
+# ---- Batching: jitn over seed ----
 
-        outs = jax.vmap(f)(matrices)
-        assert outs.shape == (batch_size, shape[0], k)
+@pytest.mark.parametrize("implementation", JITN_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(100, 50)])
+def test_jitn_vmap_over_seed(implementation, shape):
+    w_loc, w_scale, prob = 1.5, 0.1, 0.1
 
-        outs_loop = brainstate.transform.for_loop(f, matrices)
-        assert outs_loop.shape == (batch_size, shape[0], k)
+    def f(seed):
+        return jitn(w_loc, w_scale, prob, seed, shape=shape, backend=implementation)
 
-        assert u.math.allclose(outs, outs_loop)
+    seeds = brainstate.random.randint(0, 100000, 10)
+    results = jax.vmap(f)(seeds)
+    assert results.shape == (10,) + shape
 
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('k', [5])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_jitmat_batching_matrix_axis1(self, batch_size, k, shape: Tuple[int, int], corder):
-        matrices = brainstate.random.rand(shape[1], batch_size, k)
+    results_loop = brainstate.transform.for_loop(f, seeds)
+    assert results_loop.shape == (10,) + shape
 
-        def f(mat):
-            jitc = brainevent.JITCNormalR((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
-            return jitc @ mat
+    assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
 
-        outs = jax.vmap(f, in_axes=1)(matrices)
-        assert outs.shape == (batch_size, shape[0], k)
 
-        matrices_loop = brainstate.transform.for_loop(f, jnp.transpose(matrices, axes=(1, 0, 2)))
-        assert matrices_loop.shape == (batch_size, shape[0], k)
+# ---- Gradient VJP: jitnmv w.r.t. w_loc ----
 
-        assert u.math.allclose(outs, matrices_loop)
+@pytest.mark.parametrize("implementation", JITNMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_jitnmv_vjp_wloc(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    vec_size = shape[0] if transpose else shape[1]
+    vector = jnp.asarray(np.random.rand(vec_size))
+    w_loc_arr = jnp.array([w_loc])
+    # Build fixed dense components: mask and Z*mask
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
 
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('k', [5])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_jitmat_batching_matrix_axis2(self, batch_size, k, shape: Tuple[int, int], corder):
-        matrices = brainstate.random.rand(shape[1], k, batch_size, )
+    def f_fn(wl):
+        return jitnmv(wl, w_scale, prob, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
 
-        def f(mat):
-            jitc = brainevent.JITCNormalR((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
-            return jitc @ mat
+    def f_ref(wl):
+        M = wl * mask + w_scale * z_mask
+        return (M @ vector).sum()
 
-        outs = jax.vmap(f, in_axes=2)(matrices)
-        assert outs.shape == (batch_size, shape[0], k)
+    grad1 = jax.grad(f_fn)(w_loc_arr)
+    grad2 = jax.grad(f_ref)(w_loc_arr)
+    assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
 
-        matrices_loop = brainstate.transform.for_loop(f, jnp.transpose(matrices, axes=(2, 0, 1)))
-        assert matrices_loop.shape == (batch_size, shape[0], k)
 
-        assert u.math.allclose(outs, matrices_loop)
+# ---- Gradient VJP: jitnmv w.r.t. w_scale ----
 
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('k', [5])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_jitmat_batching_weight(self, batch_size, k, shape: Tuple[int, int], corder):
-        weights = brainstate.random.rand(batch_size)
-        matrix = brainstate.random.rand(shape[1], k)
+@pytest.mark.parametrize("implementation", JITNMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_jitnmv_vjp_wscale(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    vec_size = shape[0] if transpose else shape[1]
+    vector = jnp.asarray(np.random.rand(vec_size))
+    w_scale_arr = jnp.array([w_scale])
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
 
-        def f(w):
-            jitc = brainevent.JITCNormalR((w, 0.1, 0.1, 123), shape=shape, corder=corder)
-            return jitc @ matrix
+    def f_fn(ws):
+        return jitnmv(w_loc, ws, prob, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
 
-        matrices = jax.vmap(f)(weights)
-        assert matrices.shape == (batch_size, shape[0], k)
+    def f_ref(ws):
+        M = w_loc * mask + ws * z_mask
+        return (M @ vector).sum()
 
-        matrices_loop = brainstate.transform.for_loop(f, weights)
-        assert matrices_loop.shape == (batch_size, shape[0], k)
+    grad1 = jax.grad(f_fn)(w_scale_arr)
+    grad2 = jax.grad(f_ref)(w_scale_arr)
+    assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
 
-        assert u.math.allclose(matrices, matrices_loop)
 
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('k', [5])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_matjit_batching_matrix(self, batch_size, k, shape: Tuple[int, int], corder):
-        matrix = brainstate.random.rand(batch_size, k, shape[0])
+# ---- End-to-end VJP: jitnmv w.r.t. w_loc with loss ----
 
-        def f(mat):
-            jitc = brainevent.JITCNormalR((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
-            return mat @ jitc
+@pytest.mark.parametrize("implementation", JITNMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_jitnmv_vjp_wloc_with_loss(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    vec_size = shape[0] if transpose else shape[1]
+    out_size = shape[1] if transpose else shape[0]
+    vector = jnp.asarray(np.random.rand(vec_size))
+    target = jnp.asarray(np.random.rand(out_size))
+    w_loc_arr = jnp.array([w_loc])
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
 
-        matrices = jax.vmap(f)(matrix)
-        assert matrices.shape == (batch_size, k, shape[1])
+    def loss_fn(wl):
+        out = jitnmv(wl, w_scale, prob, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+        return jnp.sum((out - target) ** 2)
 
-        matrices_loop = brainstate.transform.for_loop(f, matrix)
-        assert matrices_loop.shape == (batch_size, k, shape[1])
-
-        assert u.math.allclose(matrices, matrices_loop)
-
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('k', [5])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_matjit_batching_matrix_axis1(self, batch_size, k, shape: Tuple[int, int], corder):
-        matrix = brainstate.random.rand(k, batch_size, shape[0])
+    def loss_ref(wl):
+        M = wl * mask + w_scale * z_mask
+        out = M @ vector
+        return jnp.sum((out - target) ** 2)
 
-        def f(mat):
-            jitc = brainevent.JITCNormalR((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
-            return mat @ jitc
-
-        matrices = jax.vmap(f, in_axes=1)(matrix)
-        assert matrices.shape == (batch_size, k, shape[1])
-
-        matrices_loop = brainstate.transform.for_loop(f, jnp.transpose(matrix, (1, 0, 2)))
-        assert matrices_loop.shape == (batch_size, k, shape[1])
-
-        assert u.math.allclose(matrices, matrices_loop)
-
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('k', [5])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_matjit_batching_matrix_axis2(self, batch_size, k, shape: Tuple[int, int], corder):
-        matrix = brainstate.random.rand(k, shape[0], batch_size)
+    grad1 = jax.grad(loss_fn)(w_loc_arr)
+    grad2 = jax.grad(loss_ref)(w_loc_arr)
+    assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
 
-        def f(mat):
-            jitc = brainevent.JITCNormalR((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
-            return mat @ jitc
 
-        matrices = jax.vmap(f, in_axes=2)(matrix)
-        assert matrices.shape == (batch_size, k, shape[1],)
-
-        matrices_loop = brainstate.transform.for_loop(f, jnp.transpose(matrix, (2, 0, 1)))
-        assert matrices_loop.shape == (batch_size, k, shape[1])
-
-        assert u.math.allclose(matrices, matrices_loop)
-
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('k', [5])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_matjit_batching_weight(self, batch_size, k, shape: Tuple[int, int], corder):
-        weights = brainstate.random.rand(batch_size)
-        mat = brainstate.random.rand(k, shape[0], )
+# ---- End-to-end VJP: jitnmv w.r.t. w_scale with loss ----
 
-        def f(w):
-            jitc = brainevent.JITCNormalR((w, 0.1, 0.1, 123), shape=shape, corder=corder)
-            return mat @ jitc
+@pytest.mark.parametrize("implementation", JITNMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_jitnmv_vjp_wscale_with_loss(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    vec_size = shape[0] if transpose else shape[1]
+    out_size = shape[1] if transpose else shape[0]
+    vector = jnp.asarray(np.random.rand(vec_size))
+    target = jnp.asarray(np.random.rand(out_size))
+    w_scale_arr = jnp.array([w_scale])
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
 
-        matrices = jax.vmap(f)(weights)
-        assert matrices.shape == (batch_size, k, shape[1])
-
-        matrices_loop = brainstate.transform.for_loop(f, weights)
-        assert matrices_loop.shape == (batch_size, k, shape[1])
-
-        assert u.math.allclose(matrices, matrices_loop)
-
-
-class Test_JITCNormalR_Transpose:
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
-    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matvec(self, prob, weight, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.1, prob, 123), shape=shape).T
-        vector = jnp.asarray(np.random.rand(shape[0]))
-        out1 = jitc @ vector
-        out2 = jitc.todense() @ vector
-        assert u.math.allclose(out1, out2)
+    def loss_fn(ws):
+        out = jitnmv(w_loc, ws, prob, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+        return jnp.sum((out - target) ** 2)
 
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
-    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_vecmat(self, prob, weight, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.1, prob, 123), shape=shape).T
-        vector = jnp.asarray(np.random.rand(shape[1]))
-        out1 = vector @ jitc
-        out2 = vector @ jitc.todense()
-        assert u.math.allclose(out1, out2)
+    def loss_ref(ws):
+        M = w_loc * mask + ws * z_mask
+        out = M @ vector
+        return jnp.sum((out - target) ** 2)
 
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
-    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_jitmat(self, prob, weight, shape: Tuple[int, int], k):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.1, prob, 123), shape=shape).T
-        matrix = jnp.asarray(np.random.rand(shape[0], k))
-        out1 = jitc @ matrix
-        out2 = jitc.todense() @ matrix
-        assert u.math.allclose(out1, out2)
+    grad1 = jax.grad(loss_fn)(w_scale_arr)
+    grad2 = jax.grad(loss_ref)(w_scale_arr)
+    assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
 
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
-    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matjit(self, k, prob, weight, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.1, prob, 123), shape=shape).T
-        matrix = jnp.asarray(np.random.rand(k, shape[1]))
-        out1 = matrix @ jitc
-        out2 = matrix @ jitc.todense()
-        assert u.math.allclose(out1, out2)
-
-
-class Test_JITCNormalR_Transpose_Gradients:
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matvec_jvp(self, weight, prob, corder, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.1, prob, 123), shape=shape, corder=corder).T
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[0]))
 
-        def f_brainevent(x):
-            return (jitc @ x).sum()
+# ---- Gradient VJP: jitnmm w.r.t. w_loc ----
 
-        def f_dense(x):
-            return (dense @ x).sum()
+@pytest.mark.parametrize("implementation", JITNMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_jitnmm_vjp_wloc(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    k = 10
+    mat_rows = shape[0] if transpose else shape[1]
+    B = jnp.asarray(np.random.rand(mat_rows, k))
+    w_loc_arr = jnp.array([w_loc])
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
 
-        out1, jvp_x1 = jax.jvp(f_brainevent, (x,), (jnp.ones_like(x),))
-
-        out2, jvp_x2 = jax.jvp(f_dense, (x,), (jnp.ones_like(x),))
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-4, atol=1e-4))
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matvec_vjp(self, weight, prob, corder, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.1, prob, 123), shape=shape, corder=corder).T
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[0]))
+    def f_fn(wl):
+        return jitnmm(wl, w_scale, prob, B, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
 
-        def f_brainevent(x):
-            return (jitc @ x).sum()
+    def f_ref(wl):
+        M = wl * mask + w_scale * z_mask
+        return (M @ B).sum()
 
-        def f_dense(x):
-            return (dense @ x).sum()
-
-        out1, (vjp_x1,) = jax.value_and_grad(f_brainevent, argnums=(0,))(x)
-        out2, (vjp_x2,) = jax.value_and_grad(f_dense, argnums=(0,))(x)
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(vjp_x1, vjp_x2, rtol=1e-4, atol=1e-4))
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_vecmat_jvp(self, weight, prob, corder, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.1, prob, 123), shape=shape, corder=corder).T
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[1]))
-
-        def f_brainevent(x):
-            return (x @ jitc).sum()
+    grad1 = jax.grad(f_fn)(w_loc_arr)
+    grad2 = jax.grad(f_ref)(w_loc_arr)
+    assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
 
-        def f_dense(x, ):
-            return (x @ dense).sum()
-
-        out1, jvp_x1 = jax.jvp(f_brainevent, (x,), (jnp.ones_like(x),))
-
-        out2, jvp_x2 = jax.jvp(f_dense, (x,), (jnp.ones_like(x),))
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-4, atol=1e-4))
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_vecmat_vjp(self, weight, prob, corder, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.1, prob, 123), shape=shape, corder=corder).T
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[1]))
-
-        def f_brainevent(x, ):
-            return (x @ jitc).sum()
 
-        def f_dense(x, ):
-            return (x @ dense).sum()
-
-        out1, (vjp_x1,) = jax.value_and_grad(f_brainevent, argnums=(0,))(x, )
-        out2, (vjp_x2,) = jax.value_and_grad(f_dense, argnums=(0,))(x, )
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(vjp_x1, vjp_x2, rtol=1e-4, atol=1e-4))
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_jitmat_jvp(self, weight, prob, corder, k, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.1, prob, 123), shape=shape, corder=corder).T
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[0], k))
-
-        def f_brainevent(x):
-            return (jitc @ x).sum()
-
-        def f_dense(x):
-            return (dense @ x).sum()
-
-        out1, jvp_x1 = jax.jvp(f_brainevent, (x,), (jnp.ones_like(x),))
-
-        out2, jvp_x2 = jax.jvp(f_dense, (x,), (jnp.ones_like(x),))
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-4, atol=1e-4))
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_jitmat_vjp(self, weight, prob, corder, k, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.1, prob, 123), shape=shape, corder=corder).T
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[0], k))
-
-        def f_brainevent(x, ):
-            return (jitc @ x).sum()
-
-        def f_dense(x, ):
-            return (dense @ x).sum()
-
-        out1, (vjp_x1,) = jax.value_and_grad(f_brainevent, argnums=(0,))(x, )
-        out2, (vjp_x2,) = jax.value_and_grad(f_dense, argnums=(0,))(x, )
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(vjp_x1, vjp_x2, rtol=1e-4, atol=1e-4))
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matjit_jvp(self, weight, prob, corder, k, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.1, prob, 123), shape=shape, corder=corder).T
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(k, shape[1]))
-
-        def f_brainevent(x, ):
-            return (x @ jitc).sum()
-
-        def f_dense(x, ):
-            return (x @ dense).sum()
-
-        out1, jvp_x1 = jax.jvp(f_brainevent, (x,), (jnp.ones_like(x),))
-        out2, jvp_x2 = jax.jvp(f_dense, (x,), (jnp.ones_like(x),))
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-4, atol=1e-4))
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matjit_vjp(self, weight, prob, corder, k, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalR((weight, weight * 0.1, prob, 123), shape=shape, corder=corder).T
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(k, shape[1]))
-
-        def f_brainevent(x, ):
-            return (x @ jitc).sum()
-
-        def f_dense(x, ):
-            return (x @ dense).sum()
-
-        out1, (vjp_x1,) = jax.value_and_grad(f_brainevent, argnums=(0,))(x, )
-        out2, (vjp_x2,) = jax.value_and_grad(f_dense, argnums=(0,))(x, )
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(vjp_x1, vjp_x2, rtol=1e-4, atol=1e-4))
-
-
-class Test_JITCNormalC:
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
-    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matvec(self, prob, weight, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape)
-        vector = jnp.asarray(np.random.rand(shape[1]))
-        out1 = jitc @ vector
-        out2 = jitc.todense() @ vector
-        assert u.math.allclose(out1, out2)
-
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
-    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_vecmat(self, prob, weight, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape)
-        vector = jnp.asarray(np.random.rand(shape[0]))
-        out1 = vector @ jitc
-        out2 = vector @ jitc.todense()
-        assert u.math.allclose(out1, out2)
-
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
-    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_jitmat(self, prob, weight, shape: Tuple[int, int], k):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape)
-        matrix = jnp.asarray(np.random.rand(shape[1], k))
-        out1 = jitc @ matrix
-        out2 = jitc.todense() @ matrix
-        assert u.math.allclose(out1, out2)
-
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
-    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matjit(self, k, prob, weight, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape)
-        matrix = jnp.asarray(np.random.rand(k, shape[0]))
-        out1 = matrix @ jitc
-        out2 = matrix @ jitc.todense()
-        assert u.math.allclose(out1, out2)
-
-    def test_todense_weight_batching(self):
-        def f(weight):
-            jitc = brainevent.JITCNormalC((weight, 0.1, 0.1, 123), shape=(100, 50))
-            return jitc.todense()
-
-        weights = brainstate.random.rand(10)
-
-        matrices = jax.vmap(f)(weights)
-        assert matrices.shape == (10, 100, 50)
-
-        matrices_loop = brainstate.transform.for_loop(f, weights)
-        assert matrices_loop.shape == (10, 100, 50)
-
-        assert u.math.allclose(matrices, matrices_loop)
-
-    def test_todense_prob_batching(self):
-        def f(prob):
-            jitc = brainevent.JITCNormalC((1.5, 0.1, prob, 123), shape=(100, 50))
-            return jitc.todense()
-
-        probs = brainstate.random.rand(10)
-
-        matrices = jax.vmap(f)(probs)
-        assert matrices.shape == (10, 100, 50)
-
-        matrices_loop = brainstate.transform.for_loop(f, probs)
-        assert matrices_loop.shape == (10, 100, 50)
-
-        assert u.math.allclose(matrices, matrices_loop)
-
-    def test_todense_seed_batching(self):
-        def f(seed):
-            jitc = brainevent.JITCNormalC((1.5, 0.1, 0.1, seed), shape=(100, 50))
-            return jitc.todense()
-
-        seeds = brainstate.random.randint(0, 100000, 10)
-
-        matrices = jax.vmap(f)(seeds)
-        assert matrices.shape == (10, 100, 50)
-
-        matrices_loop = brainstate.transform.for_loop(f, seeds)
-        assert matrices_loop.shape == (10, 100, 50)
-
-        assert u.math.allclose(matrices, matrices_loop)
-
-    @pytest.mark.skipif(
-        brainstate.environ.get_platform() == 'cpu',
-        reason="CPU no need to test large matrix."
-    )
-    def test_large_matrix(self):
-        m = 10000
-        jitc = brainevent.JITCNormalC((1.5, 0.1, 0.1, 123), shape=(m, m))
-        vector = jnp.asarray(np.random.rand(m))
-        out1 = jitc @ vector
-        out2 = jitc.todense() @ vector
-        assert u.math.allclose(out1, out2, rtol=1e-4 * u.get_unit(out1), atol=1e-4 * u.get_unit(out1))
-
-
-class Test_JITCNormalC_Gradients:
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matvec_jvp(self, weight, prob, corder, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape, corder=corder)
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[1]))
-
-        def f_brainevent(x):
-            return (jitc @ x).sum()
-
-        def f_dense(x):
-            return (dense @ x).sum()
-
-        out1, jvp_x1 = jax.jvp(f_brainevent, (x,), (jnp.ones_like(x),))
-
-        out2, jvp_x2 = jax.jvp(f_dense, (x,), (jnp.ones_like(x),))
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-4, atol=1e-4))
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matvec_vjp(self, weight, prob, corder, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape, corder=corder)
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[1]))
-
-        def f_brainevent(x):
-            return (jitc @ x).sum()
-
-        def f_dense(x):
-            return (dense @ x).sum()
-
-        out1, (vjp_x1,) = jax.value_and_grad(f_brainevent, argnums=(0,))(x)
-        out2, (vjp_x2,) = jax.value_and_grad(f_dense, argnums=(0,))(x)
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(vjp_x1, vjp_x2, rtol=1e-4, atol=1e-4))
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_vecmat_jvp(self, weight, prob, corder, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape, corder=corder)
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[0]))
-
-        def f_brainevent(x):
-            return (x @ jitc).sum()
-
-        def f_dense(x, ):
-            return (x @ dense).sum()
-
-        out1, jvp_x1 = jax.jvp(f_brainevent, (x,), (jnp.ones_like(x),))
-
-        out2, jvp_x2 = jax.jvp(f_dense, (x,), (jnp.ones_like(x),))
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-4, atol=1e-4))
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_vecmat_vjp(self, weight, prob, corder, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape, corder=corder)
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[0]))
-
-        def f_brainevent(x, ):
-            return (x @ jitc).sum()
-
-        def f_dense(x, ):
-            return (x @ dense).sum()
-
-        out1, (vjp_x1,) = jax.value_and_grad(f_brainevent, argnums=(0,))(x, )
-        out2, (vjp_x2,) = jax.value_and_grad(f_dense, argnums=(0,))(x, )
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(vjp_x1, vjp_x2, rtol=1e-4, atol=1e-4))
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_jitmat_jvp(self, weight, prob, corder, k, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape, corder=corder)
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[1], k))
-
-        def f_brainevent(x):
-            return (jitc @ x).sum()
-
-        def f_dense(x):
-            return (dense @ x).sum()
-
-        out1, jvp_x1 = jax.jvp(f_brainevent, (x,), (jnp.ones_like(x),))
-
-        out2, jvp_x2 = jax.jvp(f_dense, (x,), (jnp.ones_like(x),))
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-4, atol=1e-4))
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_jitmat_vjp(self, weight, prob, corder, k, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape, corder=corder)
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[1], k))
-
-        def f_brainevent(x, ):
-            return (jitc @ x).sum()
-
-        def f_dense(x, ):
-            return (dense @ x).sum()
-
-        out1, (vjp_x1,) = jax.value_and_grad(f_brainevent, argnums=(0,))(x, )
-        out2, (vjp_x2,) = jax.value_and_grad(f_dense, argnums=(0,))(x, )
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(vjp_x1, vjp_x2, rtol=1e-4, atol=1e-4))
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matjit_jvp(self, weight, prob, corder, k, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape, corder=corder)
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(k, shape[0]))
-
-        def f_brainevent(x, ):
-            return (x @ jitc).sum()
-
-        def f_dense(x, ):
-            return (x @ dense).sum()
-
-        out1, jvp_x1 = jax.jvp(f_brainevent, (x,), (jnp.ones_like(x),))
-        out2, jvp_x2 = jax.jvp(f_dense, (x,), (jnp.ones_like(x),))
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-4, atol=1e-4))
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matjit_vjp(self, weight, prob, corder, k, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape, corder=corder)
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(k, shape[0]))
-
-        def f_brainevent(x, ):
-            return (x @ jitc).sum()
-
-        def f_dense(x, ):
-            return (x @ dense).sum()
-
-        out1, (vjp_x1,) = jax.value_and_grad(f_brainevent, argnums=(0,))(x, )
-        out2, (vjp_x2,) = jax.value_and_grad(f_dense, argnums=(0,))(x, )
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(vjp_x1, vjp_x2, rtol=1e-4, atol=1e-4))
-
-
-class Test_JITCNormalC_Batching:
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_matvec_batching_vector(self, batch_size, shape: Tuple[int, int], corder):
-        vectors = brainstate.random.rand(batch_size, shape[1])
-
-        def f(vector):
-            jitc = brainevent.JITCNormalC((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
-            return jitc @ vector
-
-        matrices = jax.vmap(f)(vectors)
-        assert matrices.shape == (batch_size, shape[0])
-
-        matrices_loop = brainstate.transform.for_loop(f, vectors)
-        assert matrices_loop.shape == (batch_size, shape[0])
-
-        assert u.math.allclose(matrices, matrices_loop)
-
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_matvec_batching_vector_axis1(self, batch_size, shape: Tuple[int, int], corder):
-        vectors = brainstate.random.rand(shape[1], batch_size)
-
-        def f(vector):
-            jitc = brainevent.JITCNormalC((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
-            return jitc @ vector
-
-        matrices = jax.vmap(f, in_axes=1, out_axes=1)(vectors)
-        assert matrices.shape == (shape[0], batch_size)
-
-        matrices_loop = brainstate.transform.for_loop(f, vectors.T)
-        assert matrices_loop.shape == (batch_size, shape[0])
-
-        assert u.math.allclose(matrices, matrices_loop.T)
-
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_matvec_batching_weight(self, batch_size, shape: Tuple[int, int], corder):
-        weights = brainstate.random.rand(batch_size)
-        vector = brainstate.random.rand(shape[1], )
-
-        def f(w):
-            jitc = brainevent.JITCNormalC((w, 0.1, 0.1, 123), shape=shape, corder=corder)
-            return jitc @ vector
-
-        matrices = jax.vmap(f)(weights)
-        assert matrices.shape == (batch_size, shape[0])
-
-        matrices_loop = brainstate.transform.for_loop(f, weights)
-        assert matrices_loop.shape == (batch_size, shape[0])
-
-        assert u.math.allclose(matrices, matrices_loop)
-
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_vecmat_batching_vector(self, batch_size, shape: Tuple[int, int], corder):
-        vectors = brainstate.random.rand(batch_size, shape[0])
-
-        def f(vector):
-            jitc = brainevent.JITCNormalC((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
-            return vector @ jitc
-
-        matrices = jax.vmap(f)(vectors)
-        assert matrices.shape == (batch_size, shape[1])
-
-        matrices_loop = brainstate.transform.for_loop(f, vectors)
-        assert matrices_loop.shape == (batch_size, shape[1])
-
-        assert u.math.allclose(matrices, matrices_loop)
-
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_vecmat_batching_vector_axis1(self, batch_size, shape: Tuple[int, int], corder):
-        vectors = brainstate.random.rand(shape[0], batch_size)
-
-        def f(vector):
-            jitc = brainevent.JITCNormalC((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
-            return vector @ jitc
-
-        matrices = jax.vmap(f, in_axes=1, out_axes=1)(vectors)
-        assert matrices.shape == (shape[1], batch_size)
-
-        matrices_loop = brainstate.transform.for_loop(f, vectors.T)
-        assert matrices_loop.shape == (batch_size, shape[1])
-
-        assert u.math.allclose(matrices, matrices_loop.T)
-
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_vecmat_batching_weight(self, batch_size, shape: Tuple[int, int], corder):
-        weights = brainstate.random.rand(batch_size)
-        vector = brainstate.random.rand(shape[0], )
-
-        def f(w):
-            jitc = brainevent.JITCNormalC((w, 0.1, 0.1, 123), shape=shape, corder=corder)
-            return vector @ jitc
-
-        matrices = jax.vmap(f)(weights)
-        assert matrices.shape == (batch_size, shape[1])
-
-        matrices_loop = brainstate.transform.for_loop(f, weights)
-        assert matrices_loop.shape == (batch_size, shape[1])
-
-        assert u.math.allclose(matrices, matrices_loop)
-
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('k', [5])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_jitmat_batching_matrix(self, batch_size, k, shape: Tuple[int, int], corder):
-        matrices = brainstate.random.rand(batch_size, shape[1], k)
-
-        def f(mat):
-            jitc = brainevent.JITCNormalC((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
-            return jitc @ mat
-
-        outs = jax.vmap(f)(matrices)
-        assert outs.shape == (batch_size, shape[0], k)
-
-        outs_loop = brainstate.transform.for_loop(f, matrices)
-        assert outs_loop.shape == (batch_size, shape[0], k)
+# ---- Gradient VJP: jitnmm w.r.t. w_scale ----
 
-        assert u.math.allclose(outs, outs_loop)
-
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('k', [5])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_jitmat_batching_matrix_axis1(self, batch_size, k, shape: Tuple[int, int], corder):
-        matrices = brainstate.random.rand(shape[1], batch_size, k)
-
-        def f(mat):
-            jitc = brainevent.JITCNormalC((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
-            return jitc @ mat
-
-        outs = jax.vmap(f, in_axes=1)(matrices)
-        assert outs.shape == (batch_size, shape[0], k)
+@pytest.mark.parametrize("implementation", JITNMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_jitnmm_vjp_wscale(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    k = 10
+    mat_rows = shape[0] if transpose else shape[1]
+    B = jnp.asarray(np.random.rand(mat_rows, k))
+    w_scale_arr = jnp.array([w_scale])
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
 
-        matrices_loop = brainstate.transform.for_loop(f, jnp.transpose(matrices, axes=(1, 0, 2)))
-        assert matrices_loop.shape == (batch_size, shape[0], k)
+    def f_fn(ws):
+        return jitnmm(w_loc, ws, prob, B, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
 
-        assert u.math.allclose(outs, matrices_loop)
-
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('k', [5])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_jitmat_batching_matrix_axis2(self, batch_size, k, shape: Tuple[int, int], corder):
-        matrices = brainstate.random.rand(shape[1], k, batch_size, )
-
-        def f(mat):
-            jitc = brainevent.JITCNormalC((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
-            return jitc @ mat
-
-        outs = jax.vmap(f, in_axes=2)(matrices)
-        assert outs.shape == (batch_size, shape[0], k)
-
-        matrices_loop = brainstate.transform.for_loop(f, jnp.transpose(matrices, axes=(2, 0, 1)))
-        assert matrices_loop.shape == (batch_size, shape[0], k)
+    def f_ref(ws):
+        M = w_loc * mask + ws * z_mask
+        return (M @ B).sum()
 
-        assert u.math.allclose(outs, matrices_loop)
+    grad1 = jax.grad(f_fn)(w_scale_arr)
+    grad2 = jax.grad(f_ref)(w_scale_arr)
+    assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
 
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('k', [5])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_jitmat_batching_weight(self, batch_size, k, shape: Tuple[int, int], corder):
-        weights = brainstate.random.rand(batch_size)
-        matrix = brainstate.random.rand(shape[1], k)
-
-        def f(w):
-            jitc = brainevent.JITCNormalC((w, 0.1, 0.1, 123), shape=shape, corder=corder)
-            return jitc @ matrix
-
-        matrices = jax.vmap(f)(weights)
-        assert matrices.shape == (batch_size, shape[0], k)
-
-        matrices_loop = brainstate.transform.for_loop(f, weights)
-        assert matrices_loop.shape == (batch_size, shape[0], k)
-
-        assert u.math.allclose(matrices, matrices_loop)
-
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('k', [5])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_matjit_batching_matrix(self, batch_size, k, shape: Tuple[int, int], corder):
-        matrix = brainstate.random.rand(batch_size, k, shape[0])
-
-        def f(mat):
-            jitc = brainevent.JITCNormalC((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
-            return mat @ jitc
-
-        matrices = jax.vmap(f)(matrix)
-        assert matrices.shape == (batch_size, k, shape[1])
-
-        matrices_loop = brainstate.transform.for_loop(f, matrix)
-        assert matrices_loop.shape == (batch_size, k, shape[1])
-
-        assert u.math.allclose(matrices, matrices_loop)
-
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('k', [5])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_matjit_batching_matrix_axis1(self, batch_size, k, shape: Tuple[int, int], corder):
-        matrix = brainstate.random.rand(k, batch_size, shape[0])
-
-        def f(mat):
-            jitc = brainevent.JITCNormalC((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
-            return mat @ jitc
-
-        matrices = jax.vmap(f, in_axes=1)(matrix)
-        assert matrices.shape == (batch_size, k, shape[1])
-
-        matrices_loop = brainstate.transform.for_loop(f, jnp.transpose(matrix, (1, 0, 2)))
-        assert matrices_loop.shape == (batch_size, k, shape[1])
-
-        assert u.math.allclose(matrices, matrices_loop)
-
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('k', [5])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_matjit_batching_matrix_axis2(self, batch_size, k, shape: Tuple[int, int], corder):
-        matrix = brainstate.random.rand(k, shape[0], batch_size)
-
-        def f(mat):
-            jitc = brainevent.JITCNormalC((1.05 * u.mA, 0.1 * u.mA, 0.1, 123), shape=shape, corder=corder)
-            return mat @ jitc
-
-        matrices = jax.vmap(f, in_axes=2)(matrix)
-        assert matrices.shape == (batch_size, k, shape[1],)
-
-        matrices_loop = brainstate.transform.for_loop(f, jnp.transpose(matrix, (2, 0, 1)))
-        assert matrices_loop.shape == (batch_size, k, shape[1])
-
-        assert u.math.allclose(matrices, matrices_loop)
-
-    @pytest.mark.parametrize('batch_size', [10])
-    @pytest.mark.parametrize('k', [5])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_matjit_batching_weight(self, batch_size, k, shape: Tuple[int, int], corder):
-        weights = brainstate.random.rand(batch_size)
-        mat = brainstate.random.rand(k, shape[0], )
-
-        def f(w):
-            jitc = brainevent.JITCNormalC((w, 0.1, 0.1, 123), shape=shape, corder=corder)
-            return mat @ jitc
-
-        matrices = jax.vmap(f)(weights)
-        assert matrices.shape == (batch_size, k, shape[1])
-
-        matrices_loop = brainstate.transform.for_loop(f, weights)
-        assert matrices_loop.shape == (batch_size, k, shape[1])
-
-        assert u.math.allclose(matrices, matrices_loop)
-
-
-class Test_JITCNormalC_Transpose:
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
-    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matvec(self, prob, weight, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape).T
-        vector = jnp.asarray(np.random.rand(shape[0]))
-        out1 = jitc @ vector
-        out2 = jitc.todense() @ vector
-        assert u.math.allclose(out1, out2)
-
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
-    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_vecmat(self, prob, weight, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape).T
-        vector = jnp.asarray(np.random.rand(shape[1]))
-        out1 = vector @ jitc
-        out2 = vector @ jitc.todense()
-        assert u.math.allclose(out1, out2)
-
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
-    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_jitmat(self, prob, weight, shape: Tuple[int, int], k):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape).T
-        matrix = jnp.asarray(np.random.rand(shape[0], k))
-        out1 = jitc @ matrix
-        out2 = jitc.todense() @ matrix
-        assert u.math.allclose(out1, out2)
-
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('prob', [0.1, 0.2])
-    @pytest.mark.parametrize('weight', [1.5, 2.1 * u.mV])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matjit(self, k, prob, weight, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape).T
-        matrix = jnp.asarray(np.random.rand(k, shape[1]))
-        out1 = matrix @ jitc
-        out2 = matrix @ jitc.todense()
-        assert u.math.allclose(out1, out2)
-
-
-class Test_JITCNormalC_Transpose_Gradients:
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matvec_jvp(self, weight, prob, corder, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape, corder=corder).T
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[0]))
-
-        def f_brainevent(x):
-            return (jitc @ x).sum()
-
-        def f_dense(x):
-            return (dense @ x).sum()
-
-        out1, jvp_x1 = jax.jvp(f_brainevent, (x,), (jnp.ones_like(x),))
-        out2, jvp_x2 = jax.jvp(f_dense, (x,), (jnp.ones_like(x),))
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-4, atol=1e-4))
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matvec_vjp(self, weight, prob, corder, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape, corder=corder).T
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[0]))
-
-        def f_brainevent(x):
-            return (jitc @ x).sum()
-
-        def f_dense(x):
-            return (dense @ x).sum()
-
-        out1, (vjp_x1,) = jax.value_and_grad(f_brainevent, argnums=(0,))(x)
-        out2, (vjp_x2,) = jax.value_and_grad(f_dense, argnums=(0,))(x)
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(vjp_x1, vjp_x2, rtol=1e-4, atol=1e-4))
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_vecmat_jvp(self, weight, prob, corder, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape, corder=corder).T
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[1]))
-
-        def f_brainevent(x):
-            return (x @ jitc).sum()
-
-        def f_dense(x, ):
-            return (x @ dense).sum()
-
-        out1, jvp_x1 = jax.jvp(f_brainevent, (x,), (jnp.ones_like(x),))
-
-        out2, jvp_x2 = jax.jvp(f_dense, (x,), (jnp.ones_like(x),))
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-4, atol=1e-4))
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_vecmat_vjp(self, weight, prob, corder, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape, corder=corder).T
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[1]))
-
-        def f_brainevent(x, ):
-            return (x @ jitc).sum()
-
-        def f_dense(x, ):
-            return (x @ dense).sum()
-
-        out1, (vjp_x1,) = jax.value_and_grad(f_brainevent, argnums=(0,))(x, )
-        out2, (vjp_x2,) = jax.value_and_grad(f_dense, argnums=(0,))(x, )
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(vjp_x1, vjp_x2, rtol=1e-4, atol=1e-4))
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_jitmat_jvp(self, weight, prob, corder, k, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape, corder=corder).T
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[0], k))
-
-        def f_brainevent(x):
-            return (jitc @ x).sum()
-
-        def f_dense(x):
-            return (dense @ x).sum()
-
-        out1, jvp_x1 = jax.jvp(f_brainevent, (x,), (jnp.ones_like(x),))
-
-        out2, jvp_x2 = jax.jvp(f_dense, (x,), (jnp.ones_like(x),))
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-4, atol=1e-4))
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_jitmat_vjp(self, weight, prob, corder, k, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape, corder=corder).T
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(shape[0], k))
-
-        def f_brainevent(x, ):
-            return (jitc @ x).sum()
-
-        def f_dense(x, ):
-            return (dense @ x).sum()
-
-        out1, (vjp_x1,) = jax.value_and_grad(f_brainevent, argnums=(0,))(x, )
-        out2, (vjp_x2,) = jax.value_and_grad(f_dense, argnums=(0,))(x, )
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(vjp_x1, vjp_x2, rtol=1e-4, atol=1e-4))
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matjit_jvp(self, weight, prob, corder, k, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape, corder=corder).T
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(k, shape[1]))
-
-        def f_brainevent(x, ):
-            return (x @ jitc).sum()
-
-        def f_dense(x, ):
-            return (x @ dense).sum()
-
-        out1, jvp_x1 = jax.jvp(f_brainevent, (x,), (jnp.ones_like(x),))
-        out2, jvp_x2 = jax.jvp(f_dense, (x,), (jnp.ones_like(x),))
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(jvp_x1, jvp_x2, rtol=1e-4, atol=1e-4))
-
-    @pytest.mark.parametrize('weight', [1.5])
-    @pytest.mark.parametrize('prob', [0.1])
-    @pytest.mark.parametrize('k', [10])
-    @pytest.mark.parametrize('corder', [True, False])
-    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
-    def test_matjit_vjp(self, weight, prob, corder, k, shape: Tuple[int, int], ):
-        jitc = brainevent.JITCNormalC((weight, weight * 0.1, prob, 123), shape=shape, corder=corder).T
-        dense = jitc.todense()
-        x = jnp.asarray(np.random.rand(k, shape[1]))
-
-        def f_brainevent(x, ):
-            return (x @ jitc).sum()
-
-        def f_dense(x, ):
-            return (x @ dense).sum()
-
-        out1, (vjp_x1,) = jax.value_and_grad(f_brainevent, argnums=(0,))(x, )
-        out2, (vjp_x2,) = jax.value_and_grad(f_dense, argnums=(0,))(x, )
-
-        assert (jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4))
-        assert (jnp.allclose(vjp_x1, vjp_x2, rtol=1e-4, atol=1e-4))
+
+# ---- End-to-end VJP: jitnmm w.r.t. w_loc with loss ----
+
+@pytest.mark.parametrize("implementation", JITNMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_jitnmm_vjp_wloc_with_loss(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    k = 10
+    mat_rows = shape[0] if transpose else shape[1]
+    out_rows = shape[1] if transpose else shape[0]
+    B = jnp.asarray(np.random.rand(mat_rows, k))
+    target = jnp.asarray(np.random.rand(out_rows, k))
+    w_loc_arr = jnp.array([w_loc])
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
+
+    def loss_fn(wl):
+        out = jitnmm(wl, w_scale, prob, B, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+        return jnp.sum((out - target) ** 2)
+
+    def loss_ref(wl):
+        M = wl * mask + w_scale * z_mask
+        out = M @ B
+        return jnp.sum((out - target) ** 2)
+
+    grad1 = jax.grad(loss_fn)(w_loc_arr)
+    grad2 = jax.grad(loss_ref)(w_loc_arr)
+    assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
+
+
+# ---- End-to-end VJP: jitnmm w.r.t. w_scale with loss ----
+
+@pytest.mark.parametrize("implementation", JITNMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_jitnmm_vjp_wscale_with_loss(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    k = 10
+    mat_rows = shape[0] if transpose else shape[1]
+    out_rows = shape[1] if transpose else shape[0]
+    B = jnp.asarray(np.random.rand(mat_rows, k))
+    target = jnp.asarray(np.random.rand(out_rows, k))
+    w_scale_arr = jnp.array([w_scale])
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
+
+    def loss_fn(ws):
+        out = jitnmm(w_loc, ws, prob, B, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+        return jnp.sum((out - target) ** 2)
+
+    def loss_ref(ws):
+        M = w_loc * mask + ws * z_mask
+        out = M @ B
+        return jnp.sum((out - target) ** 2)
+
+    grad1 = jax.grad(loss_fn)(w_scale_arr)
+    grad2 = jax.grad(loss_ref)(w_scale_arr)
+    assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)

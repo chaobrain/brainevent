@@ -18,7 +18,7 @@ from jax.tree_util import register_pytree_node_class
 
 from brainevent._dense import dsfmm, sfdmm, dsfmv, sfdvm
 from brainevent._error import MathError
-from .base import BaseArray
+from .base import EventRepresentation
 from .base import extract_raw_value, is_known_type
 
 __all__ = [
@@ -27,11 +27,11 @@ __all__ = [
 
 
 @register_pytree_node_class
-class SparseFloat(BaseArray):
+class SparseFloat(EventRepresentation):
     """
     A specialized array class for sparse floating-point values (0 or floating points).
 
-    ``SparseFloat`` extends ``BaseArray`` to provide functionality for arrays with sparse
+    ``SparseFloat`` extends ``EventRepresentation`` to provide functionality for arrays with sparse
     floating-point values, where zeros are treated as sparse (skipped during computation).
 
     This class supports matrix multiplication operations with other arrays:
@@ -41,11 +41,15 @@ class SparseFloat(BaseArray):
     The class is registered as a PyTree node for compatibility with JAX's
     functional transformations.
 
-    Attributes:
-        value: The underlying sparse float array data
+    Parameters
+    ----------
+    value : array_like
+        The underlying sparse float array data.
     """
-    __slots__ = ('_value',)
     __module__ = 'brainevent'
+
+    def __init__(self, value):
+        super().__init__(value)
 
     def __matmul__(self, oc):
         if is_known_type(oc):
@@ -109,7 +113,18 @@ class SparseFloat(BaseArray):
 
     def __imatmul__(self, oc):
         if is_known_type(oc):
-            self.value = self.__matmul__(oc)
-        else:
-            self.value = oc.__rmatmul__(self)
-        return self
+            return self.with_value(self.__matmul__(oc))
+        return self.with_value(oc.__rmatmul__(self))
+
+    def tree_flatten(self):
+        aux = dict()
+        return (self._value,), aux
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, flat_contents):
+        value, = flat_contents
+        obj = object.__new__(cls)
+        obj._value = value
+        for k, v in aux_data.items():
+            setattr(obj, k, v)
+        return obj

@@ -14,129 +14,125 @@
 # ==============================================================================
 # -*- coding: utf-8 -*-
 
-import os
-
-os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
 import brainstate
 import braintools
-import brainunit as u
 import jax
 import jax.numpy as jnp
 import pytest
 
-import brainevent
+from brainevent._csr.binary import binary_csrmv, binary_csrmv_p, binary_csrmm, binary_csrmm_p
 from brainevent._csr.test_util import get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
 
+platform = jax.default_backend()
+CSRMV_IMPLEMENTATIONS = tuple(binary_csrmv_p.available_backends(platform))
+CSRMM_IMPLEMENTATIONS = tuple(binary_csrmm_p.available_backends(platform))
 
-class TestCSR:
-    def test_event_homo_bool(self):
-        for dat in [1., 2., 3.]:
-            mask = (brainstate.random.rand(10, 20) < 0.1).astype(float) * dat
-            csr = u.sparse.CSR.fromdense(mask)
-            csr = brainevent.CSR((dat, csr.indices, csr.indptr), shape=mask.shape)
 
-            v = brainevent.BinaryArray(brainstate.random.rand(20) < 0.5)
-            assert (
-                u.math.allclose(
-                    mask.astype(float) @ v.data.astype(float),
-                    csr @ v
-                )
-            )
+def _require_implementations(implementations, op_name: str):
+    if not implementations:
+        pytest.skip(f'No {op_name} implementation on platform={platform}')
 
-            v = brainevent.BinaryArray(brainstate.random.rand(10) < 0.5)
-            assert (
-                u.math.allclose(
-                    v.data.astype(float) @ mask.astype(float),
-                    v @ csr
-                )
-            )
 
-    def test_event_homo_heter(self):
-        mat = brainstate.random.rand(10, 20)
-        mask = (brainstate.random.rand(10, 20) < 0.1) * mat
-        csr = u.sparse.CSR.fromdense(mask)
-        csr = brainevent.CSR((csr.data, csr.indices, csr.indptr), shape=mask.shape)
+def _vector_csr_api(x, data, indices, indptr, shape, implementation):
+    return binary_csrmv(
+        data,
+        indices,
+        indptr,
+        x,
+        shape=shape,
+        transpose=True,
+        backend=implementation,
+    )
 
-        v = brainevent.BinaryArray(brainstate.random.rand(20) < 0.5)
-        assert (
-            u.math.allclose(
-                mask.astype(float) @ v.data.astype(float),
-                csr @ v
-            )
-        )
 
-        v = brainevent.BinaryArray(brainstate.random.rand(10) < 0.5)
-        assert (
-            u.math.allclose(
-                v.data.astype(float) @ mask.astype(float),
-                v @ csr
-            )
-        )
+def _csr_vector_api(x, data, indices, indptr, shape, implementation):
+    return binary_csrmv(
+        data,
+        indices,
+        indptr,
+        x,
+        shape=shape,
+        transpose=False,
+        backend=implementation,
+    )
 
-    def test_event_heter_float_as_bool(self):
-        mat = brainstate.random.rand(10, 20)
-        mask = (mat < 0.1).astype(float) * mat
-        csr = u.sparse.CSR.fromdense(mask)
-        csr = brainevent.CSR((csr.data, csr.indices, csr.indptr), shape=mask.shape)
 
-        v = brainevent.BinaryArray((brainstate.random.rand(20) < 0.5).astype(float))
-        assert (
-            u.math.allclose(
-                mask.astype(float) @ v.data.astype(float),
-                csr @ v
-            )
-        )
+def _matrix_csr_api(x, data, indices, indptr, shape, implementation):
+    # x @ csr: csrmm expects input as [shape[0], cols] for transpose=True.
+    return binary_csrmm(
+        data,
+        indices,
+        indptr,
+        x.T,
+        shape=shape,
+        transpose=True,
+        backend=implementation,
+    ).T
 
-        v = brainevent.BinaryArray((brainstate.random.rand(10) < 0.5).astype(float))
-        assert (
-            u.math.allclose(
-                v.data.astype(float) @ mask.astype(float),
-                v @ csr
-            )
-        )
+
+def _csr_matrix_api(x, data, indices, indptr, shape, implementation):
+    return binary_csrmm(
+        data,
+        indices,
+        indptr,
+        x,
+        shape=shape,
+        transpose=False,
+        backend=implementation,
+    )
 
 
 class TestVectorCSR:
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vector_csr(self, homo_w):
+        _require_implementations(CSRMV_IMPLEMENTATIONS, 'binary_csrmv')
+
         m, n = 20, 40
         x = brainstate.random.rand(m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
-        print(f'homo_w = {homo_w}')
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-        y = brainevent.BinaryArray(x) @ csr
-        y2 = vector_csr(x, csr.data, indices, indptr, (m, n))
-        assert (jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
+        y2 = vector_csr(x, data, indices, indptr, (m, n))
+
+        for implementation in CSRMV_IMPLEMENTATIONS:
+            y = _vector_csr_api(x, data, indices, indptr, (m, n), implementation)
+            assert jnp.allclose(y, y2, rtol=1e-5, atol=1e-5)
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vector_csr_vmap_vector(self, homo_w):
+        _require_implementations(CSRMV_IMPLEMENTATIONS, 'binary_csrmv')
+
         with jax.checking_leaks():
             n_batch, m, n = 10, 20, 40
             xs = brainstate.random.rand(n_batch, m) < 0.1
             indptr, indices = get_csr(m, n, 0.1)
 
             data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-            csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-            y = brainstate.transform.vmap2(lambda x: brainevent.BinaryArray(x) @ csr)(xs)
-            y2 = brainstate.transform.vmap2(lambda x: vector_csr(x, csr.data, indices, indptr, (m, n)))(xs)
-            assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+            y2 = brainstate.transform.vmap2(lambda x: vector_csr(x, data, indices, indptr, (m, n)))(xs)
+
+            for implementation in CSRMV_IMPLEMENTATIONS:
+                y = brainstate.transform.vmap2(
+                    lambda x: _vector_csr_api(x, data, indices, indptr, (m, n), implementation)
+                )(xs)
+                assert jnp.allclose(y, y2, rtol=1e-3, atol=1e-3)
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_csr_vector(self, homo_w):
+        _require_implementations(CSRMV_IMPLEMENTATIONS, 'binary_csrmv')
+
         m, n = 20, 40
         v = brainstate.random.rand(n) < 0.1
         indptr, indices = get_csr(m, n, 0.2)
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-        y = csr @ brainevent.BinaryArray(v)
-        y2 = csr_vector(v, csr.data, indices, indptr, (m, n))
-        assert (jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
+        y2 = csr_vector(v, data, indices, indptr, (m, n))
 
-    def _test_vjp(self, homo_w, replace, transpose):
+        for implementation in CSRMV_IMPLEMENTATIONS:
+            y = _csr_vector_api(v, data, indices, indptr, (m, n), implementation)
+            assert jnp.allclose(y, y2, rtol=1e-5, atol=1e-5)
+
+    def _test_vjp(self, implementation, homo_w, replace, transpose):
         n_in = 20
         n_out = 30
         shape = (n_in, n_out)
@@ -145,19 +141,15 @@ class TestVectorCSR:
 
         indptr, indices = get_csr(n_in, n_out, 0.2, replace=replace)
         w = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        csr = brainevent.CSR((w, indices, indptr), shape=shape)
 
-        def f_brainevent(x, w):
+        def f_api(x, w):
             if transpose:
-                r = brainevent.BinaryArray(x) @ csr.with_data(w)
+                r = _vector_csr_api(x, w, indices, indptr, shape, implementation)
             else:
-                r = csr.with_data(w) @ brainevent.BinaryArray(x)
+                r = _csr_vector_api(x, w, indices, indptr, shape, implementation)
             return r.sum()
 
-        r = jax.grad(f_brainevent, argnums=(0, 1))(x, w)
-
-        # -------------------
-        # TRUE gradients
+        r = jax.grad(f_api, argnums=(0, 1))(x, w)
 
         def f_jax(x, w):
             if transpose:
@@ -167,17 +159,23 @@ class TestVectorCSR:
             return r.sum()
 
         r2 = jax.grad(f_jax, argnums=(0, 1))(x, w)
-        assert (jnp.allclose(r[0], r2[0], rtol=1e-3, atol=1e-3))
-        assert (jnp.allclose(r[1], r2[1], rtol=1e-3, atol=1e-3))
+        assert jnp.allclose(r[0], r2[0], rtol=1e-3, atol=1e-3)
+        assert jnp.allclose(r[1], r2[1], rtol=1e-3, atol=1e-3)
 
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
     def test_vjp(self, homo_w, replace, transpose):
-        print(f'replace = {replace}, transpose = {transpose}, homo_w = {homo_w}')
-        self._test_vjp(homo_w=homo_w, replace=replace, transpose=transpose)
+        _require_implementations(CSRMV_IMPLEMENTATIONS, 'binary_csrmv')
+        for implementation in CSRMV_IMPLEMENTATIONS:
+            self._test_vjp(
+                implementation=implementation,
+                homo_w=homo_w,
+                replace=replace,
+                transpose=transpose,
+            )
 
-    def _test_jvp(self, homo_w, replace, transpose):
+    def _test_jvp(self, implementation, homo_w, replace, transpose):
         n_in = 20
         n_out = 30
         shape = (n_in, n_out)
@@ -187,19 +185,15 @@ class TestVectorCSR:
         indptr, indices = get_csr(n_in, n_out, 0.1, replace=replace)
 
         w = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        csr = brainevent.CSR((w, indices, indptr), shape=shape)
 
-        def f_brainevent(x, w):
+        def f_api(x, w):
             if transpose:
-                r = brainevent.BinaryArray(x) @ csr.with_data(w)
+                r = _vector_csr_api(x, w, indices, indptr, shape, implementation)
             else:
-                r = csr.with_data(w) @ brainevent.BinaryArray(x)
+                r = _csr_vector_api(x, w, indices, indptr, shape, implementation)
             return r
 
-        o1, r1 = jax.jvp(f_brainevent, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
-
-        # -------------------
-        # TRUE gradients
+        o1, r1 = jax.jvp(f_api, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
 
         def f_jax(x, w):
             if transpose:
@@ -209,71 +203,89 @@ class TestVectorCSR:
             return r
 
         o2, r2 = jax.jvp(f_jax, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
-        assert (jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3))
-        assert (jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3))
+        assert jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3)
+        assert jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3)
 
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
     def test_jvp(self, homo_w, replace, transpose):
-        print(f'replace = {replace}, transpose = {transpose}, homo_w = {homo_w}')
-        self._test_jvp(homo_w=homo_w, replace=replace, transpose=transpose)
+        _require_implementations(CSRMV_IMPLEMENTATIONS, 'binary_csrmv')
+        for implementation in CSRMV_IMPLEMENTATIONS:
+            self._test_jvp(
+                implementation=implementation,
+                homo_w=homo_w,
+                replace=replace,
+                transpose=transpose,
+            )
 
 
 class TestBatchingVectorCSR:
     def _run(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
+        implementation = self._implementation
         if transpose:
-            y1 = brainevent.BinaryArray(x) @ csr
-            y2 = vector_csr(x, csr.data, indices, indptr, (m, n))
+            y1 = _vector_csr_api(x, data, indices, indptr, (m, n), implementation)
+            y2 = vector_csr(x, data, indices, indptr, (m, n))
         else:
-            y1 = csr @ brainevent.BinaryArray(x)
-            y2 = csr_vector(x, csr.data, indices, indptr, (m, n))
+            y1 = _csr_vector_api(x, data, indices, indptr, (m, n), implementation)
+            y2 = csr_vector(x, data, indices, indptr, (m, n))
         return jnp.allclose(y1, y2)
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_vector(self, homo_w):
+        _require_implementations(CSRMV_IMPLEMENTATIONS, 'binary_csrmv')
+
         b, m, n = 10, 20, 40
         xs = brainstate.random.rand(b, m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        res = brainstate.transform.vmap2(lambda x: self._run(x, data, indices, indptr, m, n))(xs)
-        assert jnp.all(res)
+        for implementation in CSRMV_IMPLEMENTATIONS:
+            self._implementation = implementation
+            res = brainstate.transform.vmap2(lambda x: self._run(x, data, indices, indptr, m, n))(xs)
+            assert jnp.all(res)
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_data(self, homo_w):
+        _require_implementations(CSRMV_IMPLEMENTATIONS, 'binary_csrmv')
+
         b, m, n = 10, 20, 40
         x = brainstate.random.rand(m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
         data = brainstate.random.rand(b) if homo_w else braintools.init.Normal(0., 1.)((b,) + indices.shape)
-        res = brainstate.transform.vmap2(lambda data: self._run(x, data, indices, indptr, m, n))(data)
-        assert jnp.all(res)
+        for implementation in CSRMV_IMPLEMENTATIONS:
+            self._implementation = implementation
+            res = brainstate.transform.vmap2(lambda data: self._run(x, data, indices, indptr, m, n))(data)
+            assert jnp.all(res)
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_indices(self, homo_w):
-        b, m, n, p = 10, 20, 40, 0.1
+        _require_implementations(CSRMV_IMPLEMENTATIONS, 'binary_csrmv')
+
+        b, m, n = 10, 20, 40
         x = brainstate.random.rand(m) < 0.1
         indptr, indices = brainstate.transform.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
         indptr = indptr[0]
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
-        res = brainstate.transform.vmap2(lambda ind: self._run(x, data, ind, indptr, m, n))(indices)
-        assert jnp.all(res)
+        for implementation in CSRMV_IMPLEMENTATIONS:
+            self._implementation = implementation
+            res = brainstate.transform.vmap2(lambda ind: self._run(x, data, ind, indptr, m, n))(indices)
+            assert jnp.all(res)
 
     def _run_vjp(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
         x = x.astype(float)
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
+        implementation = self._implementation
 
-        def f_brainevent(x, w):
+        def f_api(x, w):
             if transpose:
-                r = brainevent.BinaryArray(x) @ csr.with_data(w)
+                r = _vector_csr_api(x, w, indices, indptr, (m, n), implementation)
             else:
-                r = csr.with_data(w) @ brainevent.BinaryArray(x)
+                r = _csr_vector_api(x, w, indices, indptr, (m, n), implementation)
             return r.sum()
 
-        r1 = jax.grad(f_brainevent, argnums=(0, 1))(x, csr.data)
+        r1 = jax.grad(f_api, argnums=(0, 1))(x, data)
 
         def f_jax(x, w):
             if transpose:
@@ -282,59 +294,68 @@ class TestBatchingVectorCSR:
                 r = csr_vector(x, w, indices, indptr, shape=(m, n))
             return r.sum()
 
-        r2 = jax.grad(f_jax, argnums=(0, 1))(x, csr.data)
+        r2 = jax.grad(f_jax, argnums=(0, 1))(x, data)
 
         return r1, r2
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_vector_vjp(self, homo_w):
+        _require_implementations(CSRMV_IMPLEMENTATIONS, 'binary_csrmv')
+
         b, m, n = 10, 20, 40
         xs = brainstate.random.rand(b, m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        r1, r2 = brainstate.transform.vmap2(lambda x: self._run_vjp(x, data, indices, indptr, m, n))(xs)
-
-        assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
-        assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
+        for implementation in CSRMV_IMPLEMENTATIONS:
+            self._implementation = implementation
+            r1, r2 = brainstate.transform.vmap2(lambda x: self._run_vjp(x, data, indices, indptr, m, n))(xs)
+            assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
+            assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_data_vjp(self, homo_w):
+        _require_implementations(CSRMV_IMPLEMENTATIONS, 'binary_csrmv')
+
         b, m, n = 10, 20, 40
         x = brainstate.random.rand(m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
         data = brainstate.random.rand(b) if homo_w else braintools.init.Normal(0., 1.)((b,) + indices.shape)
-        r1, r2 = brainstate.transform.vmap2(lambda data: self._run_vjp(x, data, indices, indptr, m, n))(data)
-
-        assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
-        assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
+        for implementation in CSRMV_IMPLEMENTATIONS:
+            self._implementation = implementation
+            r1, r2 = brainstate.transform.vmap2(lambda data: self._run_vjp(x, data, indices, indptr, m, n))(data)
+            assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
+            assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_indices_vjp(self, homo_w):
-        b, m, n, p = 10, 20, 40, 0.1
+        _require_implementations(CSRMV_IMPLEMENTATIONS, 'binary_csrmv')
+
+        b, m, n = 10, 20, 40
         x = brainstate.random.rand(m) < 0.1
         indptr, indices = brainstate.transform.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
         indptr = indptr[0]
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
-        r1, r2 = brainstate.transform.vmap2(lambda ind: self._run_vjp(x, data, ind, indptr, m, n))(indices)
-
-        assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
-        assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
+        for implementation in CSRMV_IMPLEMENTATIONS:
+            self._implementation = implementation
+            r1, r2 = brainstate.transform.vmap2(lambda ind: self._run_vjp(x, data, ind, indptr, m, n))(indices)
+            assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
+            assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
 
     def _run_jvp(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
         x = x.astype(float)
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
+        implementation = self._implementation
 
-        def f_brainevent(x, w):
+        def f_api(x, w):
             if transpose:
-                r = brainevent.BinaryArray(x) @ csr.with_data(w)
+                r = _vector_csr_api(x, w, indices, indptr, (m, n), implementation)
             else:
-                r = csr.with_data(w) @ brainevent.BinaryArray(x)
+                r = _csr_vector_api(x, w, indices, indptr, (m, n), implementation)
             return r
 
-        r1 = jax.jvp(f_brainevent, (x, data), (jnp.ones_like(x), jnp.ones_like(data)))
+        r1 = jax.jvp(f_api, (x, data), (jnp.ones_like(x), jnp.ones_like(data)))
 
         def f_jax(x, w):
             if transpose:
@@ -349,122 +370,149 @@ class TestBatchingVectorCSR:
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_vector_jvp(self, homo_w):
+        _require_implementations(CSRMV_IMPLEMENTATIONS, 'binary_csrmv')
+
         b, m, n = 10, 20, 40
         xs = brainstate.random.rand(b, m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        r1, r2 = brainstate.transform.vmap2(lambda x: self._run_jvp(x, data, indices, indptr, m, n))(xs)
-
-        assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
-        assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
+        for implementation in CSRMV_IMPLEMENTATIONS:
+            self._implementation = implementation
+            r1, r2 = brainstate.transform.vmap2(lambda x: self._run_jvp(x, data, indices, indptr, m, n))(xs)
+            assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
+            assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_data_jvp(self, homo_w):
+        _require_implementations(CSRMV_IMPLEMENTATIONS, 'binary_csrmv')
+
         b, m, n = 10, 20, 40
         x = brainstate.random.rand(m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
         data = brainstate.random.rand(b) if homo_w else braintools.init.Normal(0., 1.)((b,) + indices.shape)
-        r1, r2 = brainstate.transform.vmap2(lambda data: self._run_jvp(x, data, indices, indptr, m, n))(data)
-
-        assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
-        assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
+        for implementation in CSRMV_IMPLEMENTATIONS:
+            self._implementation = implementation
+            r1, r2 = brainstate.transform.vmap2(lambda data: self._run_jvp(x, data, indices, indptr, m, n))(data)
+            assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
+            assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_indices_jvp(self, homo_w):
-        b, m, n, p = 10, 20, 40, 0.1
+        _require_implementations(CSRMV_IMPLEMENTATIONS, 'binary_csrmv')
+
+        b, m, n = 10, 20, 40
         x = brainstate.random.rand(m) < 0.1
         indptr, indices = brainstate.transform.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
         indptr = indptr[0]
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
-        r1, r2 = brainstate.transform.vmap2(lambda ind: self._run_jvp(x, data, ind, indptr, m, n))(indices)
-
-        assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
-        assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
+        for implementation in CSRMV_IMPLEMENTATIONS:
+            self._implementation = implementation
+            r1, r2 = brainstate.transform.vmap2(lambda ind: self._run_jvp(x, data, ind, indptr, m, n))(indices)
+            assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
+            assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
 
 
 class TestMatrixCSR:
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_matrix_csr(self, homo_w):
+        _require_implementations(CSRMM_IMPLEMENTATIONS, 'binary_csrmm')
+
         k, m, n = 10, 20, 40
         x = brainstate.random.rand(k, m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-        y = brainevent.BinaryArray(x) @ csr
-        y2 = matrix_csr(x, csr.data, indices, indptr, (m, n))
-        assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+        y2 = matrix_csr(x, data, indices, indptr, (m, n))
+
+        for implementation in CSRMM_IMPLEMENTATIONS:
+            y = _matrix_csr_api(x, data, indices, indptr, (m, n), implementation)
+            assert jnp.allclose(y, y2, rtol=1e-3, atol=1e-3)
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_csr_matrix(self, homo_w):
+        _require_implementations(CSRMM_IMPLEMENTATIONS, 'binary_csrmm')
+
         m, n, k = 20, 40, 10
         matrix = brainstate.random.rand(n, k) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-        y = csr @ brainevent.BinaryArray(matrix)
-        y2 = csr_matrix(matrix, csr.data, indices, indptr, (m, n))
-        assert (jnp.allclose(y, y2))
+        y2 = csr_matrix(matrix, data, indices, indptr, (m, n))
+
+        for implementation in CSRMM_IMPLEMENTATIONS:
+            y = _csr_matrix_api(matrix, data, indices, indptr, (m, n), implementation)
+            assert jnp.allclose(y, y2)
 
 
 class TestBatchingMatrixCSR:
     def _run(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
+        implementation = self._implementation
         if transpose:
-            y1 = brainevent.BinaryArray(x) @ csr
-            y2 = matrix_csr(x, csr.data, indices, indptr, (m, n))
+            y1 = _matrix_csr_api(x, data, indices, indptr, (m, n), implementation)
+            y2 = matrix_csr(x, data, indices, indptr, (m, n))
         else:
-            y1 = csr @ brainevent.BinaryArray(x)
-            y2 = csr_matrix(x, csr.data, indices, indptr, (m, n))
+            y1 = _csr_matrix_api(x, data, indices, indptr, (m, n), implementation)
+            y2 = csr_matrix(x, data, indices, indptr, (m, n))
         return jnp.allclose(y1, y2)
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_matrix(self, homo_w):
+        _require_implementations(CSRMM_IMPLEMENTATIONS, 'binary_csrmm')
+
         b, k, m, n = 10, 15, 20, 40
         xs = brainstate.random.rand(b, k, m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        res = brainstate.transform.vmap2(lambda x: self._run(x, data, indices, indptr, m, n))(xs)
-        assert jnp.all(res)
+        for implementation in CSRMM_IMPLEMENTATIONS:
+            self._implementation = implementation
+            res = brainstate.transform.vmap2(lambda x: self._run(x, data, indices, indptr, m, n))(xs)
+            assert jnp.all(res)
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_data(self, homo_w):
+        _require_implementations(CSRMM_IMPLEMENTATIONS, 'binary_csrmm')
+
         b, k, m, n = 10, 15, 20, 40
         x = brainstate.random.rand(k, m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
         data = brainstate.random.rand(b) if homo_w else braintools.init.Normal(0., 1.)((b,) + indices.shape)
-        res = brainstate.transform.vmap2(lambda data: self._run(x, data, indices, indptr, m, n))(data)
-        assert jnp.all(res)
+        for implementation in CSRMM_IMPLEMENTATIONS:
+            self._implementation = implementation
+            res = brainstate.transform.vmap2(lambda data: self._run(x, data, indices, indptr, m, n))(data)
+            assert jnp.all(res)
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_indices(self, homo_w):
-        b, k, m, n, p = 10, 15, 20, 40, 0.1
+        _require_implementations(CSRMM_IMPLEMENTATIONS, 'binary_csrmm')
+
+        b, k, m, n = 10, 15, 20, 40
         x = brainstate.random.rand(k, m) < 0.1
         indptr, indices = brainstate.transform.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
         indptr = indptr[0]
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
-        res = brainstate.transform.vmap2(lambda ind: self._run(x, data, ind, indptr, m, n))(indices)
-        assert jnp.all(res)
+        for implementation in CSRMM_IMPLEMENTATIONS:
+            self._implementation = implementation
+            res = brainstate.transform.vmap2(lambda ind: self._run(x, data, ind, indptr, m, n))(indices)
+            assert jnp.all(res)
 
     def _run_vjp(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
         x = x.astype(float)
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
+        implementation = self._implementation
 
-        def f_brainevent(x, w):
+        def f_api(x, w):
             if transpose:
-                r = brainevent.BinaryArray(x) @ csr.with_data(w)
+                r = _matrix_csr_api(x, w, indices, indptr, (m, n), implementation)
             else:
-                r = csr.with_data(w) @ brainevent.BinaryArray(x)
+                r = _csr_matrix_api(x, w, indices, indptr, (m, n), implementation)
             return r.sum()
 
-        r1 = jax.grad(f_brainevent, argnums=(0, 1))(x, csr.data)
+        r1 = jax.grad(f_api, argnums=(0, 1))(x, data)
 
         def f_jax(x, w):
             if transpose:
@@ -473,12 +521,14 @@ class TestBatchingMatrixCSR:
                 r = csr_matrix(x, w, indices, indptr, shape=(m, n))
             return r.sum()
 
-        r2 = jax.grad(f_jax, argnums=(0, 1))(x, csr.data)
+        r2 = jax.grad(f_jax, argnums=(0, 1))(x, data)
 
         return r1, r2
 
     @pytest.mark.parametrize('transpose', [True, False])
     def test_vmap_matrix_vjp(self, transpose):
+        _require_implementations(CSRMM_IMPLEMENTATIONS, 'binary_csrmm')
+
         b, k, m, n = 10, 15, 20, 40
         if transpose:
             xs = brainstate.random.rand(b, n, m) < 0.1
@@ -487,50 +537,57 @@ class TestBatchingMatrixCSR:
         indptr, indices = get_csr(m, n, 0.1)
 
         data = braintools.init.Normal(0., 1.)(indices.shape)
-        r1, r2 = brainstate.transform.vmap2(
-            lambda x: self._run_vjp(x, data, indices, indptr, m, n, transpose=transpose)
-        )(xs)
-
-        assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
-        assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
+        for implementation in CSRMM_IMPLEMENTATIONS:
+            self._implementation = implementation
+            r1, r2 = brainstate.transform.vmap2(
+                lambda x: self._run_vjp(x, data, indices, indptr, m, n, transpose=transpose)
+            )(xs)
+            assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
+            assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_data_vjp(self, homo_w):
+        _require_implementations(CSRMM_IMPLEMENTATIONS, 'binary_csrmm')
+
         b, k, m, n = 10, 15, 20, 40
         x = brainstate.random.rand(k, m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
         data = brainstate.random.rand(b) if homo_w else braintools.init.Normal(0., 1.)((b,) + indices.shape)
-        r1, r2 = brainstate.transform.vmap2(lambda data: self._run_vjp(x, data, indices, indptr, m, n))(data)
-
-        assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
-        assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
+        for implementation in CSRMM_IMPLEMENTATIONS:
+            self._implementation = implementation
+            r1, r2 = brainstate.transform.vmap2(lambda data: self._run_vjp(x, data, indices, indptr, m, n))(data)
+            assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
+            assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_indices_vjp(self, homo_w):
-        b, k, m, n, p = 10, 15, 20, 40, 0.1
+        _require_implementations(CSRMM_IMPLEMENTATIONS, 'binary_csrmm')
+
+        b, k, m, n = 10, 15, 20, 40
         x = brainstate.random.rand(k, m) < 0.1
         indptr, indices = brainstate.transform.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
         indptr = indptr[0]
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
-        r1, r2 = brainstate.transform.vmap2(lambda ind: self._run_vjp(x, data, ind, indptr, m, n))(indices)
-
-        assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
-        assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
+        for implementation in CSRMM_IMPLEMENTATIONS:
+            self._implementation = implementation
+            r1, r2 = brainstate.transform.vmap2(lambda ind: self._run_vjp(x, data, ind, indptr, m, n))(indices)
+            assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
+            assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
 
     def _run_jvp(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
         x = x.astype(float)
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
+        implementation = self._implementation
 
-        def f_brainevent(x, w):
+        def f_api(x, w):
             if transpose:
-                r = brainevent.BinaryArray(x) @ csr.with_data(w)
+                r = _matrix_csr_api(x, w, indices, indptr, (m, n), implementation)
             else:
-                r = csr.with_data(w) @ brainevent.BinaryArray(x)
+                r = _csr_matrix_api(x, w, indices, indptr, (m, n), implementation)
             return r
 
-        r1 = jax.jvp(f_brainevent, (x, data), (jnp.ones_like(x), jnp.ones_like(data)))
+        r1 = jax.jvp(f_api, (x, data), (jnp.ones_like(x), jnp.ones_like(data)))
 
         def f_jax(x, w):
             if transpose:
@@ -545,37 +602,46 @@ class TestBatchingMatrixCSR:
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_vector_jvp(self, homo_w):
+        _require_implementations(CSRMM_IMPLEMENTATIONS, 'binary_csrmm')
+
         b, k, m, n = 10, 15, 20, 40
         xs = brainstate.random.rand(b, k, m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        r1, r2 = brainstate.transform.vmap2(lambda x: self._run_jvp(x, data, indices, indptr, m, n))(xs)
-
-        assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
-        assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
+        for implementation in CSRMM_IMPLEMENTATIONS:
+            self._implementation = implementation
+            r1, r2 = brainstate.transform.vmap2(lambda x: self._run_jvp(x, data, indices, indptr, m, n))(xs)
+            assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
+            assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_data_jvp(self, homo_w):
+        _require_implementations(CSRMM_IMPLEMENTATIONS, 'binary_csrmm')
+
         b, k, m, n = 10, 15, 20, 40
         x = brainstate.random.rand(k, m) < 0.1
         indptr, indices = get_csr(m, n, 0.1)
 
         data = brainstate.random.rand(b) if homo_w else braintools.init.Normal(0., 1.)((b,) + indices.shape)
-        r1, r2 = brainstate.transform.vmap2(lambda data: self._run_jvp(x, data, indices, indptr, m, n))(data)
-
-        assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
-        assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
+        for implementation in CSRMM_IMPLEMENTATIONS:
+            self._implementation = implementation
+            r1, r2 = brainstate.transform.vmap2(lambda data: self._run_jvp(x, data, indices, indptr, m, n))(data)
+            assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
+            assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_indices_jvp(self, homo_w):
-        b, k, m, n, p = 10, 15, 20, 40, 0.1
+        _require_implementations(CSRMM_IMPLEMENTATIONS, 'binary_csrmm')
+
+        b, k, m, n = 10, 15, 20, 40
         x = brainstate.random.rand(k, m) < 0.1
         indptr, indices = brainstate.transform.for_loop(lambda *a: get_csr(m, n, 0.1), length=b)
         indptr = indptr[0]
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape[1:])
-        r1, r2 = brainstate.transform.vmap2(lambda ind: self._run_jvp(x, data, ind, indptr, m, n))(indices)
-
-        assert (jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3))
-        assert (jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3))
+        for implementation in CSRMM_IMPLEMENTATIONS:
+            self._implementation = implementation
+            r1, r2 = brainstate.transform.vmap2(lambda ind: self._run_jvp(x, data, ind, indptr, m, n))(indices)
+            assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
+            assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)

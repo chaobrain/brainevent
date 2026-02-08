@@ -22,7 +22,7 @@ import pytest
 import scipy.sparse as sp
 
 import brainevent
-from brainevent._csr.plasticity_binary import plast_csr_on_binary_pre, plast_csr2csc_on_binary_post
+from brainevent._csr.plasticity_binary import update_csr_on_binary_pre, update_csr_on_binary_post
 
 
 class Test_csr_on_pre:
@@ -37,7 +37,8 @@ class Test_csr_on_pre:
         post_trace = brainstate.random.random((n_post,))
 
         csr = brainevent.CSR.fromdense(mat)
-        csr2 = csr.with_data(plast_csr_on_binary_pre(csr.data, csr.indices, csr.indptr, pre_spike, post_trace, shape=csr.shape))
+        csr2 = csr.with_data(
+            update_csr_on_binary_pre(csr.data, csr.indices, csr.indptr, pre_spike, post_trace, shape=csr.shape))
         dense2 = jnp.where(mask, mat + jnp.outer(pre_spike.astype(float), post_trace), 0.)
 
         assert jnp.allclose(csr2.todense(), dense2)
@@ -55,7 +56,8 @@ class Test_csr_on_pre:
             post_trace = brainstate.random.random((n_post,)) * trace_unit
 
             csr = brainevent.CSR.fromdense(mat)
-            csr = csr.with_data(plast_csr_on_binary_pre(csr.data, csr.indices, csr.indptr, pre_spike, post_trace, shape=csr.shape))
+            csr = csr.with_data(
+                update_csr_on_binary_pre(csr.data, csr.indices, csr.indptr, pre_spike, post_trace, shape=csr.shape))
 
             dense = mat + u.math.outer(pre_spike.astype(float), post_trace)
             dense = u.math.where(mask, dense, 0. * mat_unit)
@@ -81,8 +83,8 @@ class Test_csr_on_pre:
 
         csr = brainevent.CSR.fromdense(mat)
         csr = csr.with_data(
-            plast_csr_on_binary_pre(csr.data, csr.indices, csr.indptr, pre_spike, post_trace,
-                                    w_min=w_in, w_max=w_max, shape=csr.shape)
+            update_csr_on_binary_pre(csr.data, csr.indices, csr.indptr, pre_spike, post_trace,
+                                     w_min=w_in, w_max=w_max, shape=csr.shape)
         )
 
         mat = mat + jnp.outer(pre_spike.astype(float), post_trace)
@@ -151,7 +153,7 @@ class Test_on_post:
             csr.data, csr.indices, csr.indptr, csr.shape
         )
 
-        new_weights = plast_csr2csc_on_binary_post(
+        new_weights = update_csr_on_binary_post(
             csr.data, csc_indices, csc_indptr, weight_indices,
             pre_trace, post_spike, shape=csr.shape
         )
@@ -178,7 +180,7 @@ class Test_on_post:
                 csr.data, csr.indices, csr.indptr, csr.shape
             )
 
-            new_weights = plast_csr2csc_on_binary_post(
+            new_weights = update_csr_on_binary_post(
                 csr.data, csc_indices, csc_indptr, weight_indices,
                 pre_trace, post_spike, shape=csr.shape
             )
@@ -212,7 +214,7 @@ class Test_on_post:
             csr.data, csr.indices, csr.indptr, csr.shape
         )
 
-        new_weights = plast_csr2csc_on_binary_post(
+        new_weights = update_csr_on_binary_post(
             csr.data, csc_indices, csc_indptr, weight_indices,
             pre_trace, post_spike, w_min=w_in, w_max=w_max, shape=csr.shape
         )
