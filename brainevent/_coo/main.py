@@ -721,23 +721,28 @@ class COO(u.sparse.SparseMatrix):
         if isinstance(other, BinaryArray):
             # Extract the data from the BaseArray
             other = other.value
-            if other.ndim == 1:
-                # Perform matrix-vector multiplication with event data
-                return binary_coomv(data, self.row, self.col, other, shape=self.shape, transpose=True)
-            elif other.ndim == 2:
-                # Transpose the other matrix for multiplication
-                other = other.T
-                # Perform matrix-matrix multiplication with event data
-                r = binary_coomm(data, self.row, self.col, other, shape=self.shape, transpose=True)
-                # Transpose the result back to the original orientation
-                return r.T
+            if other.indexed:
+                if other.ndim == 1:
+                    # Perform matrix-vector multiplication with event data
+                    return binary_coomv(data, self.row, self.col, other, shape=self.shape, transpose=True)
+                elif other.ndim == 2:
+                    # Transpose the other matrix for multiplication
+                    other = other.T
+                    # Perform matrix-matrix multiplication with event data
+                    r = binary_coomm(data, self.row, self.col, other, shape=self.shape, transpose=True)
+                    # Transpose the result back to the original orientation
+                    return r.T
+                else:
+                    # Raise an error if the shape of the other object is unsupported
+                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
-                # Raise an error if the shape of the other object is unsupported
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                raise NotImplementedError
+
         elif isinstance(other, SparseFloat):
-            other = other.data
+            other = other.value
             data, other = u.math.promote_dtypes(self.data, other)
             raise NotImplementedError(f"matmul with object of shape {other.shape}")
+
         else:
             # Convert the other object to an appropriate array type
             other = u.math.asarray(other)

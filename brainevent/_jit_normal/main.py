@@ -809,7 +809,7 @@ class JITCNormalC(JITNormalMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
-            other = other.data
+            other = other.value
             if other.ndim == 1:
                 # JITC_R matrix.T @ vector
                 # ==
@@ -881,7 +881,7 @@ class JITCNormalC(JITNormalMatrix):
         if isinstance(other, JAXSparse):
             raise NotImplementedError("matmul between two sparse objects.")
         if isinstance(other, BinaryArray):
-            other = other.data
+            other = other.value
             if other.ndim == 1:
                 #
                 # vector @ JITC_R matrix.T

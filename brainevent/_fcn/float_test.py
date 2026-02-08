@@ -51,7 +51,7 @@ else:
 
 def _remove_event_array(x):
     if isinstance(x, brainevent.BinaryArray):
-        return x.data
+        return x.value
     return x
 
 

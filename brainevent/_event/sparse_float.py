@@ -55,7 +55,13 @@ class SparseFloat(BaseArray):
     __slots__ = ('_value', '_indexed', '_indices')
     __module__ = 'brainevent'
 
-    def __init__(self, value, dtype: jax.typing.DTypeLike = None, indexed: bool = False):
+    def __init__(
+        self,
+        value,
+        *,
+        dtype: jax.typing.DTypeLike = None,
+        indexed: bool = False,
+    ):
         super().__init__(value, dtype=dtype)
         self._indexed = indexed
         if indexed:

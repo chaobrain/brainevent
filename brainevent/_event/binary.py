@@ -46,7 +46,13 @@ class BinaryArray(BaseArray):
     __slots__ = ('_value', '_indexed', '_spike_indices', '_spike_count')
     __module__ = 'brainevent'
 
-    def __init__(self, value, dtype: jax.typing.DTypeLike = None, indexed: bool = False):
+    def __init__(
+        self,
+        value,
+        *,
+        dtype: jax.typing.DTypeLike = None,
+        indexed: bool = False,
+    ):
         super().__init__(value, dtype=dtype)
         self._indexed = indexed
         if indexed:

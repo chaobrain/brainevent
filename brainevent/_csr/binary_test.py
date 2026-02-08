@@ -39,7 +39,7 @@ class TestCSR:
             v = brainevent.BinaryArray(brainstate.random.rand(20) < 0.5)
             assert (
                 u.math.allclose(
-                    mask.astype(float) @ v.data.astype(float),
+                    mask.astype(float) @ v.value.astype(float),
                     csr @ v
                 )
             )
@@ -47,7 +47,7 @@ class TestCSR:
             v = brainevent.BinaryArray(brainstate.random.rand(10) < 0.5)
             assert (
                 u.math.allclose(
-                    v.data.astype(float) @ mask.astype(float),
+                    v.value.astype(float) @ mask.astype(float),
                     v @ csr
                 )
             )
@@ -61,7 +61,7 @@ class TestCSR:
         v = brainevent.BinaryArray(brainstate.random.rand(20) < 0.5)
         assert (
             u.math.allclose(
-                mask.astype(float) @ v.data.astype(float),
+                mask.astype(float) @ v.value.astype(float),
                 csr @ v
             )
         )
@@ -69,7 +69,7 @@ class TestCSR:
         v = brainevent.BinaryArray(brainstate.random.rand(10) < 0.5)
         assert (
             u.math.allclose(
-                v.data.astype(float) @ mask.astype(float),
+                v.value.astype(float) @ mask.astype(float),
                 v @ csr
             )
         )
@@ -83,7 +83,7 @@ class TestCSR:
         v = brainevent.BinaryArray((brainstate.random.rand(20) < 0.5).astype(float))
         assert (
             u.math.allclose(
-                mask.astype(float) @ v.data.astype(float),
+                mask.astype(float) @ v.value.astype(float),
                 csr @ v
             )
         )
@@ -91,7 +91,7 @@ class TestCSR:
         v = brainevent.BinaryArray((brainstate.random.rand(10) < 0.5).astype(float))
         assert (
             u.math.allclose(
-                v.data.astype(float) @ mask.astype(float),
+                v.value.astype(float) @ mask.astype(float),
                 v @ csr
             )
         )

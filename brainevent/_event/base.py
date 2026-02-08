@@ -96,9 +96,6 @@ class BaseArray(ABC):
     def __getitem__(self, index):
         return self._value[_normalize_index(index)]
 
-    def __array__(self, dtype=None):
-        return np.asarray(self._value, dtype=dtype)
-
     def tree_flatten(self):
         return (self._value,), None
 

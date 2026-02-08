@@ -36,7 +36,7 @@ class TestCOO:
             v = brainevent.BinaryArray(brainstate.random.rand(20) < 0.5)
             assert (
                 u.math.allclose(
-                    mask.astype(float) @ v.data.astype(float),
+                    mask.astype(float) @ v.value.astype(float),
                     coo @ v
                 )
             )
@@ -44,7 +44,7 @@ class TestCOO:
             v = brainevent.BinaryArray(brainstate.random.rand(10) < 0.5)
             assert (
                 u.math.allclose(
-                    v.data.astype(float) @ mask.astype(float),
+                    v.value.astype(float) @ mask.astype(float),
                     v @ coo
                 )
             )
@@ -58,7 +58,7 @@ class TestCOO:
         v = brainevent.BinaryArray((brainstate.random.rand(20) < 0.5).astype(float))
         assert (
             u.math.allclose(
-                mask.astype(float) @ v.data.astype(float),
+                mask.astype(float) @ v.value.astype(float),
                 coo @ v
             )
         )
@@ -66,7 +66,7 @@ class TestCOO:
         v = brainevent.BinaryArray((brainstate.random.rand(10) < 0.5).astype(float))
         assert (
             u.math.allclose(
-                v.data.astype(float) @ mask.astype(float),
+                v.value.astype(float) @ mask.astype(float),
                 v @ coo
             )
         )
@@ -80,7 +80,7 @@ class TestCOO:
         v = brainevent.BinaryArray(brainstate.random.rand(20) < 0.5)
         assert (
             u.math.allclose(
-                mask.astype(float) @ v.data.astype(float),
+                mask.astype(float) @ v.value.astype(float),
                 coo @ v
             )
         )
@@ -88,7 +88,7 @@ class TestCOO:
         v = brainevent.BinaryArray(brainstate.random.rand(10) < 0.5)
         assert (
             u.math.allclose(
-                v.data.astype(float) @ mask.astype(float),
+                v.value.astype(float) @ mask.astype(float),
                 v @ coo
             )
         )

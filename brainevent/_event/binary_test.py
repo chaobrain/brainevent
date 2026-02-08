@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 
 import brainevent
-from brainevent import BinaryArray, BinaryArray
+from brainevent import BinaryArray
 
 
 class TestBinaryArray:
