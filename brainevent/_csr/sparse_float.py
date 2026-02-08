@@ -19,15 +19,15 @@ from typing import Sequence, Optional
 import brainunit as u
 import jax
 import jax.numpy as jnp
-from jax.interpreters import ad
 import numpy as np
+from jax.interpreters import ad
 
+from brainevent._config import get_numba_parallel
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescope
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .float import csrmv, csrmm
-from brainevent._config import get_numba_parallel
 
 __all__ = [
     'spfloat_csrmv',

@@ -23,355 +23,305 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-import brainevent
-from brainevent._csr.binary_test import TestBatchingVectorCSR, TestBatchingMatrixCSR
-from brainevent._csr.float import csrmv_yw2y
-from brainevent._csr.test_util import get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
+from brainevent._csr.float import (
+    csrmv,
+    csrmv_p,
+    csrmm,
+    csrmm_p,
+    csrmv_yw2y,
+    csrmv_yw2y_p,
+)
+from brainevent._csr.test_util import (
+    get_csr,
+    vector_csr,
+    matrix_csr,
+    csr_vector,
+    csr_matrix,
+)
+
+platform = jax.default_backend()
+CSRMV_IMPLEMENTATIONS = tuple(csrmv_p.available_backends(platform))
+CSRMM_IMPLEMENTATIONS = tuple(csrmm_p.available_backends(platform))
+CSRMV_YW2Y_IMPLEMENTATIONS = tuple(csrmv_yw2y_p.available_backends(platform))
 
 
-class TestVectorCSR:
+def _make_data(homo_w, shape):
+    if homo_w:
+        return jnp.asarray(1.5, dtype=jnp.float32)
+    return braintools.init.Normal(0.0, 1.0)(shape)
+
+
+def _vector_csr_api(x, data, indices, indptr, shape, implementation):
+    return csrmv(
+        data,
+        indices,
+        indptr,
+        x,
+        shape=shape,
+        transpose=True,
+        backend=implementation,
+    )
+
+
+def _csr_vector_api(x, data, indices, indptr, shape, implementation):
+    return csrmv(
+        data,
+        indices,
+        indptr,
+        x,
+        shape=shape,
+        transpose=False,
+        backend=implementation,
+    )
+
+
+def _matrix_csr_api(x, data, indices, indptr, shape, implementation):
+    return csrmm(
+        data,
+        indices,
+        indptr,
+        x.T,
+        shape=shape,
+        transpose=True,
+        backend=implementation,
+    ).T
+
+
+def _csr_matrix_api(x, data, indices, indptr, shape, implementation):
+    return csrmm(
+        data,
+        indices,
+        indptr,
+        x,
+        shape=shape,
+        transpose=False,
+        backend=implementation,
+    )
+
+
+def _row_ids_from_indptr(indptr):
+    indptr = jnp.asarray(indptr)
+    counts = jnp.diff(indptr)
+    return jnp.repeat(jnp.arange(counts.shape[0], dtype=indptr.dtype), counts)
+
+
+@pytest.mark.skipif(
+    not CSRMV_IMPLEMENTATIONS,
+    reason=f'No csrmv implementation on platform={platform}',
+)
+class TestFloatCSRMV:
+    @pytest.mark.parametrize('implementation', CSRMV_IMPLEMENTATIONS)
     @pytest.mark.parametrize('homo_w', [True, False])
-    def test_vector_csr(self, homo_w):
+    def test_vector_csr(self, implementation, homo_w):
         m, n = 20, 40
         x = brainstate.random.rand(m)
         indptr, indices = get_csr(m, n, 0.1)
+        data = _make_data(homo_w, indices.shape)
 
-        print(f'homo_w = {homo_w}')
-        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-        y = x @ csr
-        y2 = vector_csr(x, csr.data, indices, indptr, (m, n))
-        assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+        y = _vector_csr_api(x, data, indices, indptr, (m, n), implementation)
+        y_ref = vector_csr(x, data, indices, indptr, (m, n))
+        assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
 
+    @pytest.mark.parametrize('implementation', CSRMV_IMPLEMENTATIONS)
     @pytest.mark.parametrize('homo_w', [True, False])
-    def test_csr_vector(self, homo_w):
+    def test_csr_vector(self, implementation, homo_w):
         m, n = 20, 40
         v = brainstate.random.rand(n)
         indptr, indices = get_csr(m, n, 0.1)
+        data = _make_data(homo_w, indices.shape)
 
-        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-        y = csr @ v
-        y2 = csr_vector(v, csr.data, indices, indptr, (m, n))
-        assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+        y = _csr_vector_api(v, data, indices, indptr, (m, n), implementation)
+        y_ref = csr_vector(v, data, indices, indptr, (m, n))
+        assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
 
+    @pytest.mark.parametrize('implementation', CSRMV_IMPLEMENTATIONS)
     @pytest.mark.parametrize('homo_w', [True, False])
-    def test_vector_csr_vmap_vector(self, homo_w):
+    def test_vector_csr_vmap_vector(self, implementation, homo_w):
         n_batch, m, n = 10, 20, 40
         xs = brainstate.random.rand(n_batch, m)
         indptr, indices = get_csr(m, n, 0.1)
+        data = _make_data(homo_w, indices.shape)
 
-        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-        y = brainstate.transform.vmap2(lambda x: x @ csr)(xs)
-        y2 = brainstate.transform.vmap2(lambda x: vector_csr(x, csr.data, indices, indptr, (m, n)))(xs)
+        y = brainstate.transform.vmap2(
+            lambda x: _vector_csr_api(x, data, indices, indptr, (m, n), implementation)
+        )(xs)
+        y_ref = brainstate.transform.vmap2(lambda x: vector_csr(x, data, indices, indptr, (m, n)))(xs)
+        assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
 
-        print(y.shape, y2.shape)
-        assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
-
-    def _test_vjp(self, homo_w, replace, transpose):
+    @pytest.mark.parametrize('implementation', CSRMV_IMPLEMENTATIONS)
+    @pytest.mark.parametrize('homo_w', [True, False])
+    @pytest.mark.parametrize('replace', [True, False])
+    @pytest.mark.parametrize('transpose', [True, False])
+    def test_vjp(self, implementation, homo_w, replace, transpose):
         n_in = 20
         n_out = 30
         shape = (n_in, n_out)
         x = brainstate.random.rand(n_in) if transpose else brainstate.random.rand(n_out)
 
         indptr, indices = get_csr(n_in, n_out, 0.2, replace=replace)
-        w = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        csr = brainevent.CSR((w, indices, indptr), shape=shape)
+        w = _make_data(homo_w, indices.shape)
 
-        def f_brainevent(x, w):
+        def f_api(x_arg, w_arg):
             if transpose:
-                r = x @ csr.with_data(w)
-            else:
-                r = csr.with_data(w) @ x
-            return r.sum()
+                return _vector_csr_api(x_arg, w_arg, indices, indptr, shape, implementation).sum()
+            return _csr_vector_api(x_arg, w_arg, indices, indptr, shape, implementation).sum()
 
-        r = jax.jit(lambda: jax.grad(f_brainevent, argnums=(0, 1))(x, w))()
-
-        # -------------------
-        # TRUE gradients
-
-        def f_jax(x, w):
+        def f_ref(x_arg, w_arg):
             if transpose:
-                r = vector_csr(x, w, indices, indptr, shape=shape)
-            else:
-                r = csr_vector(x, w, indices, indptr, shape=shape)
-            return r.sum()
+                return vector_csr(x_arg, w_arg, indices, indptr, shape=shape).sum()
+            return csr_vector(x_arg, w_arg, indices, indptr, shape=shape).sum()
 
-        r2 = jax.jit(lambda: jax.grad(f_jax, argnums=(0, 1))(x, w))()
-        assert (jnp.allclose(r[0], r2[0], rtol=1e-3, atol=1e-3))
-        assert (jnp.allclose(r[1], r2[1], rtol=1e-3, atol=1e-3))
+        r = jax.grad(f_api, argnums=(0, 1))(x, w)
+        r_ref = jax.grad(f_ref, argnums=(0, 1))(x, w)
+        assert jnp.allclose(r[0], r_ref[0], rtol=1e-3, atol=1e-3)
+        assert jnp.allclose(r[1], r_ref[1], rtol=1e-3, atol=1e-3)
 
+    @pytest.mark.parametrize('implementation', CSRMV_IMPLEMENTATIONS)
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
-    def test_vjp(self, homo_w, replace, transpose):
-        print(f'replace = {replace}, transpose = {transpose}, homo_w = {homo_w}')
-        self._test_vjp(homo_w=homo_w, replace=replace, transpose=transpose)
-
-    def _test_jvp(self, homo_w, replace, transpose):
+    def test_jvp(self, implementation, homo_w, replace, transpose):
         n_in = 20
         n_out = 30
         shape = (n_in, n_out)
         x = brainstate.random.rand(n_in if transpose else n_out)
+
         indptr, indices = get_csr(n_in, n_out, 0.1, replace=replace)
+        w = _make_data(homo_w, indices.shape)
 
-        w = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        csr = brainevent.CSR((w, indices, indptr), shape=shape)
-
-        def f_brainevent(x, w):
+        def f_api(x_arg, w_arg):
             if transpose:
-                r = x @ csr.with_data(w)
-            else:
-                r = csr.with_data(w) @ x
-            return r
+                return _vector_csr_api(x_arg, w_arg, indices, indptr, shape, implementation)
+            return _csr_vector_api(x_arg, w_arg, indices, indptr, shape, implementation)
 
-        o1, r1 = jax.jit(lambda: jax.jvp(f_brainevent, (x, w), (jnp.ones_like(x), jnp.ones_like(w))))()
-
-        # -------------------
-        # TRUE gradients
-
-        def f_jax(x, w):
+        def f_ref(x_arg, w_arg):
             if transpose:
-                r = vector_csr(x, w, indices, indptr, shape=shape)
-            else:
-                r = csr_vector(x, w, indices, indptr, shape=shape)
-            return r
+                return vector_csr(x_arg, w_arg, indices, indptr, shape=shape)
+            return csr_vector(x_arg, w_arg, indices, indptr, shape=shape)
 
-        o2, r2 = jax.jit(lambda: jax.jvp(f_jax, (x, w), (jnp.ones_like(x), jnp.ones_like(w))))()
-        assert (jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3))
-        assert (jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3))
+        o1, r1 = jax.jvp(f_api, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
+        o2, r2 = jax.jvp(f_ref, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
+        assert jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3)
+        assert jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3)
 
+
+@pytest.mark.skipif(
+    not CSRMM_IMPLEMENTATIONS,
+    reason=f'No csrmm implementation on platform={platform}',
+)
+class TestFloatCSRMM:
+    @pytest.mark.parametrize('implementation', CSRMM_IMPLEMENTATIONS)
     @pytest.mark.parametrize('homo_w', [True, False])
-    @pytest.mark.parametrize('replace', [True, False])
-    @pytest.mark.parametrize('transpose', [True, False])
-    def test_jvp(self, homo_w, replace, transpose):
-        print(f'replace = {replace}, transpose = {transpose}, homo_w = {homo_w}')
-        self._test_jvp(homo_w=homo_w, replace=replace, transpose=transpose)
-
-
-class TestBatchingVectorCSRFloat(TestBatchingVectorCSR):
-    def _run(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-        if transpose:
-            y1 = x @ csr
-            y2 = vector_csr(x, csr.data, indices, indptr, (m, n))
-        else:
-            y1 = csr @ x
-            y2 = csr_vector(x, csr.data, indices, indptr, (m, n))
-        return jnp.allclose(y1, y2)
-
-    def _run_vjp(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
-        x = x.astype(float)
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-
-        def f_brainevent(x, w):
-            if transpose:
-                r = x @ csr.with_data(w)
-            else:
-                r = csr.with_data(w) @ x
-            return r.sum()
-
-        r1 = jax.grad(f_brainevent, argnums=(0, 1))(x, csr.data)
-
-        def f_jax(x, w):
-            if transpose:
-                r = vector_csr(x, w, indices, indptr, shape=(m, n))
-            else:
-                r = csr_vector(x, w, indices, indptr, shape=(m, n))
-            return r.sum()
-
-        r2 = jax.jit(lambda: jax.grad(f_jax, argnums=(0, 1))(x, csr.data))()
-
-        return r1, r2
-
-    def _run_jvp(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
-        x = x.astype(float)
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-
-        def f_brainevent(x, w):
-            if transpose:
-                r = x @ csr.with_data(w)
-            else:
-                r = csr.with_data(w) @ x
-            return r
-
-        r1 = jax.jvp(f_brainevent, (x, data), (jnp.ones_like(x), jnp.ones_like(data)))
-
-        def f_jax(x, w):
-            if transpose:
-                r = vector_csr(x, w, indices, indptr, shape=(m, n))
-            else:
-                r = csr_vector(x, w, indices, indptr, shape=(m, n))
-            return r
-
-        r2 = jax.jit(lambda: jax.jvp(f_jax, (x, data), (jnp.ones_like(x), jnp.ones_like(data))))()
-
-        return r1, r2
-
-
-class TestMatrixCSR:
-    @pytest.mark.parametrize('homo_w', [True, False])
-    def test_matrix_csr(self, homo_w):
+    def test_matrix_csr(self, implementation, homo_w):
         k, m, n = 10, 20, 40
         x = brainstate.random.rand(k, m)
         indptr, indices = get_csr(m, n, 0.1)
+        data = _make_data(homo_w, indices.shape)
 
-        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-        y = x @ csr
-        y2 = matrix_csr(x, csr.data, indices, indptr, (m, n))
-        assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+        y = _matrix_csr_api(x, data, indices, indptr, (m, n), implementation)
+        y_ref = matrix_csr(x, data, indices, indptr, (m, n))
+        assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
 
+    @pytest.mark.parametrize('implementation', CSRMM_IMPLEMENTATIONS)
     @pytest.mark.parametrize('homo_w', [True, False])
-    def test_csr_matrix(self, homo_w):
+    def test_csr_matrix(self, implementation, homo_w):
         m, n, k = 20, 40, 10
-        matrix = brainstate.random.rand(n, k)
+        x = brainstate.random.rand(n, k)
         indptr, indices = get_csr(m, n, 0.1)
+        data = _make_data(homo_w, indices.shape)
 
-        data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-        y = csr @ matrix
-        y2 = csr_matrix(matrix, csr.data, indices, indptr, (m, n))
-        assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
+        y = _csr_matrix_api(x, data, indices, indptr, (m, n), implementation)
+        y_ref = csr_matrix(x, data, indices, indptr, (m, n))
+        assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
 
+    @pytest.mark.parametrize('implementation', CSRMM_IMPLEMENTATIONS)
+    @pytest.mark.parametrize('homo_w', [True, False])
+    @pytest.mark.parametrize('replace', [True, False])
+    @pytest.mark.parametrize('transpose', [True, False])
+    def test_vjp(self, implementation, homo_w, replace, transpose):
+        m, n, k = 20, 30, 8
+        shape = (m, n)
+        x = brainstate.random.rand(m, k) if transpose else brainstate.random.rand(n, k)
 
-class TestBatchingMatrixCSRFloat(TestBatchingMatrixCSR):
-    def _run(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-        if transpose:
-            y1 = x @ csr
-            y2 = matrix_csr(x, csr.data, indices, indptr, (m, n))
-        else:
-            y1 = csr @ x
-            y2 = csr_matrix(x, csr.data, indices, indptr, (m, n))
-        return jnp.allclose(y1, y2)
+        indptr, indices = get_csr(m, n, 0.2, replace=replace)
+        w = _make_data(homo_w, indices.shape)
 
-    def _run_vjp(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
-        x = x.astype(float)
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
+        def f_api(x_arg, w_arg):
+            return csrmm(
+                w_arg,
+                indices,
+                indptr,
+                x_arg,
+                shape=shape,
+                transpose=transpose,
+                backend=implementation,
+            ).sum()
 
-        def f_brainevent(x, w):
+        def f_ref(x_arg, w_arg):
             if transpose:
-                r = x @ csr.with_data(w)
-            else:
-                r = csr.with_data(w) @ x
-            return r.sum()
+                return matrix_csr(x_arg.T, w_arg, indices, indptr, shape).T.sum()
+            return csr_matrix(x_arg, w_arg, indices, indptr, shape).sum()
 
-        r1 = jax.grad(f_brainevent, argnums=(0, 1))(x, csr.data)
+        r = jax.grad(f_api, argnums=(0, 1))(x, w)
+        r_ref = jax.grad(f_ref, argnums=(0, 1))(x, w)
+        assert jnp.allclose(r[0], r_ref[0], rtol=1e-3, atol=1e-3)
+        assert jnp.allclose(r[1], r_ref[1], rtol=1e-3, atol=1e-3)
 
-        def f_jax(x, w):
+    @pytest.mark.parametrize('implementation', CSRMM_IMPLEMENTATIONS)
+    @pytest.mark.parametrize('homo_w', [True, False])
+    @pytest.mark.parametrize('replace', [True, False])
+    @pytest.mark.parametrize('transpose', [True, False])
+    def test_jvp(self, implementation, homo_w, replace, transpose):
+        m, n, k = 20, 30, 8
+        shape = (m, n)
+        x = brainstate.random.rand(m, k) if transpose else brainstate.random.rand(n, k)
+
+        indptr, indices = get_csr(m, n, 0.1, replace=replace)
+        w = _make_data(homo_w, indices.shape)
+
+        def f_api(x_arg, w_arg):
+            return csrmm(
+                w_arg,
+                indices,
+                indptr,
+                x_arg,
+                shape=shape,
+                transpose=transpose,
+                backend=implementation,
+            )
+
+        def f_ref(x_arg, w_arg):
             if transpose:
-                r = matrix_csr(x, w, indices, indptr, shape=(m, n))
-            else:
-                r = csr_matrix(x, w, indices, indptr, shape=(m, n))
-            return r.sum()
+                return matrix_csr(x_arg.T, w_arg, indices, indptr, shape).T
+            return csr_matrix(x_arg, w_arg, indices, indptr, shape)
 
-        r2 = jax.jit(lambda: jax.grad(f_jax, argnums=(0, 1))(x, csr.data))()
-
-        return r1, r2
-
-    def _run_jvp(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
-        x = x.astype(float)
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-
-        def f_brainevent(x, w):
-            if transpose:
-                r = x @ csr.with_data(w)
-            else:
-                r = csr.with_data(w) @ x
-            return r
-
-        r1 = jax.jvp(f_brainevent, (x, data), (jnp.ones_like(x), jnp.ones_like(data)))
-
-        def f_jax(x, w):
-            if transpose:
-                r = matrix_csr(x, w, indices, indptr, shape=(m, n))
-            else:
-                r = csr_matrix(x, w, indices, indptr, shape=(m, n))
-            return r
-
-        r2 = jax.jit(lambda: jax.jvp(f_jax, (x, data), (jnp.ones_like(x), jnp.ones_like(data))))()
-
-        return r1, r2
+        o1, r1 = jax.jvp(f_api, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
+        o2, r2 = jax.jvp(f_ref, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
+        assert jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3)
+        assert jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3)
 
 
-class Test_csrmv_yw2y:
+@pytest.mark.skipif(
+    not CSRMV_YW2Y_IMPLEMENTATIONS,
+    reason=f'No csrmv_yw2y implementation on platform={platform}',
+)
+class TestCSRMVYw2y:
+    @pytest.mark.parametrize('implementation', CSRMV_YW2Y_IMPLEMENTATIONS)
     @pytest.mark.parametrize('shape', [(100, 200), (200, 400)])
     @pytest.mark.parametrize('transpose', [True, False])
-    def test_csr(self, shape, transpose):
+    def test_csr(self, implementation, shape, transpose):
         m, n = shape
         indptr, indices = get_csr(m, n, 0.5)
 
-        data = braintools.init.Normal(0., 1.)(indices.shape)
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-        dense = csr.todense()
+        data = braintools.init.Normal(0.0, 1.0)(indices.shape)
+        y = brainstate.random.rand(n) if transpose else brainstate.random.rand(m)
+
+        result = csrmv_yw2y(y, data, indices, indptr, shape=(m, n), transpose=transpose, backend=implementation)
 
         if transpose:
-            y = brainstate.random.rand(n)
+            expected = data * y[indices]
         else:
-            y = brainstate.random.rand(m)
+            row_ids = _row_ids_from_indptr(indptr)
+            expected = data * y[row_ids]
 
-        res1 = csrmv_yw2y(y, csr.data, indices, indptr, shape=(m, n), transpose=transpose)
-        dense_res1 = csr.with_data(res1).todense()
-        if transpose:
-            print(dense)
-            dense_res2 = dense * jnp.expand_dims(y, axis=0)
-        else:
-            dense_res2 = dense * jnp.expand_dims(y, axis=1)
-
-        assert (jnp.allclose(dense_res1, dense_res2, rtol=1e-2, atol=1e-2))
-
-    def test_csr2(self):
-        for shape in [(100, 200), (200, 400)]:
-            # for shape in [(200, 400)]:
-            m, n = shape
-            indptr, indices = get_csr(m, n, 0.5)
-            data = braintools.init.Normal(0., 1.)(indices.shape)
-            csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-            dense = csr.todense()
-
-            for transpose in [True, False]:
-                if transpose:
-                    y = brainstate.random.rand(n)
-                else:
-                    y = brainstate.random.rand(m)
-
-                res1 = csrmv_yw2y(y, csr.data, indices, indptr, shape=(m, n), transpose=transpose)
-                dense_res1 = csr.with_data(res1).todense()
-                if transpose:
-                    dense_res2 = dense * jnp.expand_dims(y, axis=0)
-                else:
-                    dense_res2 = dense * jnp.expand_dims(y, axis=1)
-
-                print(jnp.abs(dense_res1 - dense_res2).max())
-                # assert (jnp.allclose(dense_res1, dense_res2))
-
-    def test_csr_no_transpose(self):
-        m, n = 10, 8
-        m, n = 1000, 800
-        indptr, indices = get_csr(m, n, 0.5)
-
-        data = braintools.init.Normal(0., 1.)(indices.shape)
-        csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-        dense = csr.todense()
-        print()
-        print('original csr')
-        print(dense)
-
-        y = jnp.ones(m)
-
-        res1 = csrmv_yw2y(y, csr.data, indices, indptr, shape=(m, n), transpose=False)
-        dense_res1 = csr.with_data(res1).todense()
-        dense_res2 = dense * jnp.expand_dims(y, axis=1)
-        print('csr')
-        print(dense_res1)
-        print(csr.indptr)
-
-        print('dense')
-        print(dense_res2)
-
-        print('diff')
-        print(dense_res1 - dense_res2)
-        # print(jnp.abs(dense_res1 - dense_res2).max())
-        # assert (jnp.allclose(dense_res1, dense_res2))
+        assert jnp.allclose(result, expected, rtol=1e-3, atol=1e-3)
