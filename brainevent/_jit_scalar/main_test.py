@@ -203,3 +203,55 @@ class Test_JITC_To_Dense:
         primals, true_grad = jax.jvp(f_dense_jvp, (weight,), tagents)
         primals, jitc_grad = jax.jvp(f_jitc_jvp, (weight,), tagents)
         assert allclose(true_grad, jitc_grad)
+
+
+class Test_JITC_Scalar_Validation:
+    @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
+    @pytest.mark.parametrize('prob', [-0.1, 1.1, float('nan')])
+    def test_invalid_prob_raises(self, cls, prob):
+        with pytest.raises(ValueError, match='prob'):
+            cls((1.5, prob, 123), shape=(8, 6))
+
+    @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_zero_prob_dense_matvec_matmat(self, cls, corder):
+        shape = (8, 6)
+        mat = cls((1.5, 0.0, 123), shape=shape, corder=corder)
+
+        dense = mat.todense()
+        assert allclose(dense, jnp.zeros_like(dense))
+
+        vec = jnp.ones(shape[1])
+        out_mv = mat @ vec
+        assert allclose(out_mv, jnp.zeros_like(out_mv))
+
+        B = jnp.ones((shape[1], 4))
+        out_mm = mat @ B
+        assert allclose(out_mm, jnp.zeros_like(out_mm))
+
+    def test_with_data_accepts_scalar(self):
+        mat = brainevent.JITCScalarR((1.5, 0.1, 123), shape=(8, 6))
+        updated = mat.with_data(2.0)
+        assert allclose(updated.weight, 2.0)
+        assert updated.prob == mat.prob
+        assert updated.seed == mat.seed
+        assert updated.shape == mat.shape
+
+    def test_functional_api_prob_validation_and_zero(self):
+        shape = (8, 6)
+        vec = jnp.ones(shape[1])
+        B = jnp.ones((shape[1], 4))
+
+        with pytest.raises(ValueError, match='prob'):
+            brainevent.jits(1.5, -0.1, 123, shape=shape)
+        with pytest.raises(ValueError, match='prob'):
+            brainevent.jitsmv(1.5, 1.1, vec, 123, shape=shape)
+        with pytest.raises(ValueError, match='prob'):
+            brainevent.binary_jitsmm(1.5, float('nan'), B, 123, shape=shape)
+
+        out_dense = brainevent.jits(1.5, 0.0, 123, shape=shape)
+        out_mv = brainevent.jitsmv(1.5, 0.0, vec, 123, shape=shape)
+        out_mm = brainevent.jitsmm(1.5, 0.0, B, 123, shape=shape)
+        assert allclose(out_dense, jnp.zeros_like(out_dense))
+        assert allclose(out_mv, jnp.zeros_like(out_mv))
+        assert allclose(out_mm, jnp.zeros_like(out_mm))
