@@ -29,6 +29,7 @@ from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, g
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
 from .float import fcnmv_p_call, fcnmm_p_call
+from brainevent._config import get_numba_parallel
 
 __all__ = [
     'binary_fcnmv',
@@ -111,7 +112,7 @@ def _binary_fcnmv_numba_kernel(
     else:
         if weight_info.size == 1:
             if spike_info.dtype == jnp.bool_:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def ell_mv(weights, indices, spikes, posts):
                     w = weights[0]
                     for i in numba.prange(indices.shape[0]):
@@ -122,7 +123,7 @@ def _binary_fcnmv_numba_kernel(
                                 r += w
                         posts[i] = r
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def ell_mv(weights, indices, spikes, posts):
                     spk_bool = spikes > 0.
                     w = weights[0]
@@ -135,7 +136,7 @@ def _binary_fcnmv_numba_kernel(
                         posts[i] = r
         else:
             if spike_info.dtype == jnp.bool_:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def ell_mv(weights, indices, spikes, posts):
                     for i in numba.prange(indices.shape[0]):
                         r = 0.
@@ -145,7 +146,7 @@ def _binary_fcnmv_numba_kernel(
                                 r += weights[i, j]
                         posts[i] = r
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def ell_mv(weights, indices, spikes, posts):
                     spk_bool = spikes > 0.
                     for i in numba.prange(indices.shape[0]):
@@ -633,13 +634,13 @@ def _binary_fcnmm_numba_kernel(
 
         if weight_info.size == 1:
             if matrix_info.dtype == jnp.bool_:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def ell_mv(weights, indices, matrix, posts):
                     w = weights[0]
                     for i_m in numba.prange(indices.shape[0]):
                         posts[i_m] = w * np.sum(matrix[indices[i_m]], axis=0)
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def ell_mv(weights, indices, matrix, posts):
                     w = weights[0]
                     for i_m in numba.prange(indices.shape[0]):
@@ -647,12 +648,12 @@ def _binary_fcnmm_numba_kernel(
                         posts[i_m] = w * np.sum(events, axis=0)
         else:
             if matrix_info.dtype == jnp.bool_:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def ell_mv(weights, indices, matrix, posts):
                     for i_m in numba.prange(indices.shape[0]):
                         posts[i_m] = weights[i_m] @ (matrix[indices[i_m]]).astype(weights.dtype)
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def ell_mv(weights, indices, matrix, posts):
                     for i_m in numba.prange(indices.shape[0]):
                         events = (matrix[indices[i_m]] > 0.).astype(weights.dtype)

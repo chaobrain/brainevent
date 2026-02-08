@@ -26,6 +26,7 @@ from jax.interpreters import ad
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
 from brainevent._op import general_batching_rule, XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
+from brainevent._config import get_numba_parallel
 
 __all__ = [
     'fcnmv',
@@ -110,13 +111,13 @@ def _fcnmv_numba_kernel(
     else:
         # fixed post connection number
         if weight_info.size == 1:
-            @numba.njit(parallel=True, fastmath=True, nogil=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
             def ell_mv(weights, indices, vector, posts):
                 w = weights[0]
                 for i in numba.prange(indices.shape[0]):
                     posts[i] = w * np.sum(vector[indices[i]])
         else:
-            @numba.njit(parallel=True, fastmath=True, nogil=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
             def ell_mv(weights, indices, vector, posts):
                 for i in numba.prange(indices.shape[0]):
                     posts[i] = np.sum(weights[i] * vector[indices[i]])
@@ -559,13 +560,13 @@ def _fcnmm_numba_kernel(
         #
 
         if weight_info.size == 1:
-            @numba.njit(parallel=True, fastmath=True, nogil=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
             def ell_mv(weights, indices, matrix, posts):
                 w = weights[0]
                 for i_m in numba.prange(indices.shape[0]):
                     posts[i_m] = w * np.sum(matrix[indices[i_m]], axis=0)
         else:
-            @numba.njit(parallel=True, fastmath=True, nogil=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
             def ell_mv(weights, indices, matrix, posts):
                 for i_m in numba.prange(indices.shape[0]):
                     posts[i_m] = weights[i_m] @ matrix[indices[i_m]]

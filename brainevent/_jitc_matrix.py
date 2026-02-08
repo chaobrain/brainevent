@@ -39,12 +39,11 @@ class JITCMatrix(u.sparse.SparseMatrix):
     connectivity patterns might be large but follow specific patterns that
     can be efficiently computed rather than explicitly stored in memory.
 
-    Attributes:
-        Inherits all attributes from ``brainunit.sparse.SparseMatrix``
-
-    Note:
-        This is a base class and should be subclassed for specific
-        implementations of JITC matrices.
+    Notes
+    -----
+    This is a base class and should be subclassed for specific
+    implementations of JITC matrices. All attributes from
+    :class:`brainunit.sparse.SparseMatrix` are inherited.
     """
     __module__ = 'brainevent'
 
@@ -55,11 +54,15 @@ class JITCMatrix(u.sparse.SparseMatrix):
         This is an internal method that should be implemented by subclasses
         to handle unary operations like absolute value, negation, etc.
 
-        Args:
-            op (callable): A function from the operator module to apply to the matrix
+        Parameters
+        ----------
+        op : callable
+            Function from ``operator`` or compatible callable to apply.
 
-        Raises:
-            NotImplementedError: This is a base method that must be implemented by subclasses
+        Raises
+        ------
+        NotImplementedError
+            Raised because this base method must be implemented by subclasses.
         """
         raise NotImplementedError("unitary operation not implemented.")
 
@@ -95,12 +98,17 @@ class JITCMatrix(u.sparse.SparseMatrix):
         This is an internal method that should be implemented by subclasses
         to handle binary operations like addition, subtraction, etc.
 
-        Args:
-            other (Union[jax.typing.ArrayLike, u.Quantity]): The other operand
-            op (callable): A function from the operator module to apply
+        Parameters
+        ----------
+        other : jax.typing.ArrayLike or u.Quantity
+            Right-hand operand.
+        op : callable
+            Function from ``operator`` or compatible callable to apply.
 
-        Raises:
-            NotImplementedError: This is a base method that must be implemented by subclasses
+        Raises
+        ------
+        NotImplementedError
+            Raised because this base method must be implemented by subclasses.
         """
         raise NotImplementedError("binary operation not implemented.")
 
@@ -111,12 +119,17 @@ class JITCMatrix(u.sparse.SparseMatrix):
         This is an internal method that should be implemented by subclasses
         to handle reflected binary operations (right-side operations).
 
-        Args:
-            other (Union[jax.typing.ArrayLike, u.Quantity]): The left operand
-            op (callable): A function from the operator module to apply
+        Parameters
+        ----------
+        other : jax.typing.ArrayLike or u.Quantity
+            Left-hand operand.
+        op : callable
+            Function from ``operator`` or compatible callable to apply.
 
-        Raises:
-            NotImplementedError: This is a base method that must be implemented by subclasses
+        Raises
+        ------
+        NotImplementedError
+            Raised because this base method must be implemented by subclasses.
         """
         raise NotImplementedError("binary operation not implemented.")
 

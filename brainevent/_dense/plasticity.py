@@ -24,6 +24,7 @@ from jax.interpreters import ad
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
+from brainevent._config import get_numba_parallel
 
 __all__ = [
     'update_dense_on_binary_pre',
@@ -73,14 +74,14 @@ def _dense_on_pre_numba_kernel(spike_info: jax.ShapeDtypeStruct, **kwargs):
     import numba
 
     if spike_info.dtype == jnp.bool_:
-        @numba.njit(parallel=True, fastmath=True, nogil=True)
+        @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
         def kernel(weight, spike, trace, out_w):
             for i in numba.prange(spike.shape[0]):
                 if spike[i]:
                     out_w[i] += trace
 
     else:
-        @numba.njit(parallel=True, fastmath=True, nogil=True)
+        @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
         def kernel(weight, spike, trace, out_w):
             for i in numba.prange(spike.shape[0]):
                 if spike[i] != 0.:
@@ -243,14 +244,14 @@ def _dense_on_post_numba_kernel(spike_info: jax.ShapeDtypeStruct, **kwargs):
     import numba
 
     if spike_info.dtype == jnp.bool_:
-        @numba.njit(parallel=True, fastmath=True, nogil=True)
+        @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
         def kernel(weight, trace, spike, out_w):
             for i in numba.prange(spike.shape[0]):
                 if spike[i]:
                     out_w[:, i] += trace
 
     else:
-        @numba.njit(parallel=True, fastmath=True, nogil=True)
+        @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
         def kernel(weight, trace, spike, out_w):
             for i in numba.prange(spike.shape[0]):
                 if spike[i] != 0.:

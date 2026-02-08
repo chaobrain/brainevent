@@ -29,6 +29,7 @@ from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule,
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
 from .float import fcnmv_p_call, fcnmm_p_call
+from brainevent._config import get_numba_parallel
 
 __all__ = [
     'spfloat_fcnmv',
@@ -94,7 +95,7 @@ def _spfloat_fcnmv_numba_kernel(
 
     else:
         if weight_info.size == 1:
-            @numba.njit(parallel=True, fastmath=True, nogil=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
             def ell_mv(weights, indices, spikes, posts):
                 w = weights[0]
                 for i in numba.prange(indices.shape[0]):
@@ -106,7 +107,7 @@ def _spfloat_fcnmv_numba_kernel(
                             r += sp
                     posts[i] = r * w
         else:
-            @numba.njit(parallel=True, fastmath=True, nogil=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
             def ell_mv(weights, indices, spikes, posts):
                 for i in numba.prange(indices.shape[0]):
                     r = 0.
@@ -538,13 +539,13 @@ def _spfloat_fcnmm_numba_kernel(
         #
 
         if weight_info.size == 1:
-            @numba.njit(parallel=True, fastmath=True, nogil=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
             def ell_mv(weights, indices, matrix, posts):
                 w = weights[0]
                 for i_m in numba.prange(indices.shape[0]):
                     posts[i_m] = w * np.sum(matrix[indices[i_m]], axis=0)
         else:
-            @numba.njit(parallel=True, fastmath=True, nogil=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
             def ell_mv(weights, indices, matrix, posts):
                 for i_m in numba.prange(indices.shape[0]):
                     posts[i_m] = weights[i_m] @ matrix[indices[i_m]]

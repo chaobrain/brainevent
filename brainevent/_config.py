@@ -40,6 +40,9 @@ __all__ = [
     'clear_user_defaults',
     'get_config_path',
     'invalidate_cache',
+    'set_numba_parallel',
+    'get_numba_parallel',
+    'get_numba_num_threads',
 ]
 
 _SCHEMA_VERSION = 1
@@ -230,3 +233,27 @@ def clear_user_defaults():
             stacklevel=3,
         )
     _cache = None
+
+
+_numba_parallel: bool = False
+_numba_num_threads: Optional[int] = None
+
+
+def set_numba_parallel(parallel: bool = True, num_threads: Optional[int] = None):
+    """Enable/disable numba parallel mode and optionally set thread count."""
+    global _numba_parallel, _numba_num_threads
+    _numba_parallel = parallel
+    _numba_num_threads = num_threads
+    if num_threads is not None:
+        import numba
+        numba.set_num_threads(num_threads)
+
+
+def get_numba_parallel() -> bool:
+    """Return current numba parallel setting."""
+    return _numba_parallel
+
+
+def get_numba_num_threads() -> Optional[int]:
+    """Return configured numba thread count, or None for numba default."""
+    return _numba_num_threads

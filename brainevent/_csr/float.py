@@ -26,6 +26,7 @@ from brainevent._op import numba_kernel, jaxinfo_to_warpinfo, XLACustomKernel, g
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
+from brainevent._config import get_numba_parallel
 
 __all__ = [
     'csrmv',
@@ -92,7 +93,7 @@ def _csrmv_numba_kernel_generator(
 
         else:
             # [m, k] @ [k] - can parallelize by row
-            @numba.njit(parallel=True, fastmath=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True)
             def mv(weights, indices, indptr, vector, posts):
                 w = weights[0]
                 for i_m in numba.prange(indptr.shape[0] - 1):
@@ -114,7 +115,7 @@ def _csrmv_numba_kernel_generator(
 
         else:
             # [m, k] @ [k] - can parallelize by row
-            @numba.njit(parallel=True, fastmath=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True)
             def mv(weights, indices, indptr, vector, posts):
                 for i in numba.prange(indptr.shape[0] - 1):
                     r = 0.0
@@ -623,7 +624,7 @@ def _csrmm_numba_kernel_generator(
             # CSR: [m, k]
             # B: [k, n]
             #
-            @numba.njit(parallel=True, fastmath=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True)
             def mm(weights, indices, indptr, B, posts):
                 w = weights[0]
                 for i_m in numba.prange(indptr.shape[0] - 1):
@@ -655,7 +656,7 @@ def _csrmm_numba_kernel_generator(
             # CSR: [m, k]
             # B: [k, n]
             #
-            @numba.njit(parallel=True, fastmath=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True)
             def mm(weights, indices, indptr, B, posts):
                 for i_m in numba.prange(indptr.shape[0] - 1):
                     r = np.zeros(B.shape[1], dtype=posts.dtype)

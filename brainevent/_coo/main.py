@@ -201,7 +201,7 @@ class COO(u.sparse.SparseMatrix):
             Default is np.int32.
 
         Returns
-        --------
+        -------
         COO
             A new COO sparse matrix object representing the input dense matrix.
         """
@@ -236,7 +236,7 @@ class COO(u.sparse.SparseMatrix):
             dtype, and unit as the current matrix's data.
 
         Returns
-        --------
+        -------
         COO
             A new COO matrix with the provided data and the same structure as
             the current matrix.
@@ -262,7 +262,7 @@ class COO(u.sparse.SparseMatrix):
         Convert the COO matrix to a dense array.
 
         Returns
-        --------
+        -------
         jax.Array
             A dense representation of the COO matrix.
         """
@@ -286,7 +286,7 @@ class COO(u.sparse.SparseMatrix):
         Get the transpose of the COO matrix.
 
         Returns
-        --------
+        -------
         COO
             The transposed COO matrix.
         """
@@ -303,7 +303,7 @@ class COO(u.sparse.SparseMatrix):
             raise a NotImplementedError if provided.
 
         Returns
-        --------
+        -------
         COO
             The transposed COO matrix.
 
@@ -330,7 +330,7 @@ class COO(u.sparse.SparseMatrix):
         This method is used by JAX to serialize the COO matrix object.
 
         Returns
-        --------
+        -------
         Tuple[Tuple[jax.Array | u.Quantity,], dict[str, Any]]
             A tuple containing:
             - A tuple with the matrix data.
@@ -361,7 +361,7 @@ class COO(u.sparse.SparseMatrix):
             A tuple containing the matrix data.
 
         Returns
-        --------
+        -------
         COO
             The reconstructed COO matrix.
 
@@ -504,7 +504,7 @@ class COO(u.sparse.SparseMatrix):
             The object to be multiplied with the COO matrix.
 
         Returns
-        --------
+        -------
         COO
             A new COO matrix resulting from the element-wise multiplication.
         """
@@ -523,7 +523,7 @@ class COO(u.sparse.SparseMatrix):
             The object to be multiplied with the COO matrix.
 
         Returns
-        --------
+        -------
         COO
             A new COO matrix resulting from the element-wise multiplication.
         """
@@ -566,7 +566,7 @@ class COO(u.sparse.SparseMatrix):
             The object to be multiplied with the COO matrix.
 
         Returns
-        --------
+        -------
         jax.Array | u.Quantity
             The result of the matrix multiplication.
 
@@ -655,7 +655,7 @@ class COO(u.sparse.SparseMatrix):
             The object to be multiplied with the COO matrix.
 
         Returns
-        --------
+        -------
         jax.Array | u.Quantity
             The result of the matrix multiplication.
 

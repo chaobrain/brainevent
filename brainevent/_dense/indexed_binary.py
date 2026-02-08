@@ -24,6 +24,7 @@ from jax.interpreters import ad
 from brainevent._misc import cdiv, generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
+from brainevent._config import get_numba_parallel
 
 __all__ = [
     'indexed_bdvm',
@@ -357,7 +358,7 @@ def indexed_bdmm(binary_arr, weights, *, backend: Optional[str] = None):
 def _bdmm_numba_kernel(**kwargs):
     import numba
 
-    @numba.njit(parallel=True, fastmath=True, nogil=True)
+    @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
     def kernel(spikes, indices, count, weights, out):
         for i_row in numba.prange(indices.shape[0]):
             temp = np.zeros(weights.shape[1], dtype=weights.dtype)

@@ -298,14 +298,20 @@ class FixedPostNumConn(FixedNumConn):
         """
         Creates a new FixedPostNumConn instance with the same indices and shape but different data.
 
-        Args:
-            data: The new data array. Must have the same shape, dtype, and unit as the original data.
+        Parameters
+        ----------
+        data : Data
+            New data array with the same shape, dtype, and unit as ``self.data``.
 
-        Returns:
-            A new FixedPostNumConn instance with the provided data.
+        Returns
+        -------
+        FixedPostNumConn
+            New matrix with the provided data and unchanged connectivity.
 
-        Raises:
-            AssertionError: If the provided data does not match the shape, dtype, or unit of the original data.
+        Raises
+        ------
+        AssertionError
+            If ``data`` shape, dtype, or unit differs from ``self.data``.
         """
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
@@ -321,10 +327,13 @@ class FixedPostNumConn(FixedNumConn):
         corresponding to the stored data. Then, it uses these indices and the
         data to construct a dense matrix of the specified shape.
 
-        Returns:
-            jax.numpy.ndarray: The dense matrix representation.
+        Returns
+        -------
+        jax.Array or u.Quantity
+            Dense matrix representation.
 
-        Examples:
+        Examples
+        --------
             >>> import jax.numpy as jnp
             >>> from brainevent import FixedPostNumConn
             >>>
@@ -351,10 +360,13 @@ class FixedPostNumConn(FixedNumConn):
         It then packages the `data`, `row` indices, and `col` indices into a
         `COO` sparse matrix object.
 
-        Returns:
-            COO: A COO sparse matrix object representing the same matrix.
+        Returns
+        -------
+        COO
+            COO matrix representing the same sparse structure and values.
 
-        Examples:
+        Examples
+        --------
             >>> import jax.numpy as jnp
             >>> from brainevent import FixedPostNumConn
             >>>
@@ -390,20 +402,27 @@ class FixedPostNumConn(FixedNumConn):
         post-synaptic indices in FixedPostNumConn, is reinterpreted as
         pre-synaptic indices in the resulting FixedPreNumConn matrix.
 
-        Note:
-            The `axes` argument is not supported and must be None.
+        Notes
+        -----
+        The ``axes`` argument is not supported and must be ``None``.
 
-        Args:
-            axes: Must be None. Included for compatibility with NumPy's transpose
-                  method signature but is not used.
+        Parameters
+        ----------
+        axes : None, optional
+            Included for compatibility with NumPy; must be ``None``.
 
-        Returns:
-            FixedPreNumConn: The transposed matrix.
+        Returns
+        -------
+        FixedPreNumConn
+            Transposed matrix view in fixed-pre format.
 
-        Raises:
-            AssertionError: If `axes` is not None.
+        Raises
+        ------
+        AssertionError
+            If ``axes`` is not ``None``.
 
-        Examples:
+        Examples
+        --------
             >>> import jax.numpy as jnp
             >>> from brainevent import FixedPostNumConn, FixedPreNumConn
             >>>
@@ -680,14 +699,20 @@ class FixedPreNumConn(FixedNumConn):
         """
         Creates a new FixedPreNumConn instance with the same indices and shape but different data.
 
-        Args:
-            data: The new data array. Must have the same shape, dtype, and unit as the original data.
+        Parameters
+        ----------
+        data : Data
+            New data array with the same shape, dtype, and unit as ``self.data``.
 
-        Returns:
-            A new FixedPreNumConn instance with the provided data.
+        Returns
+        -------
+        FixedPreNumConn
+            New matrix with the provided data and unchanged connectivity.
 
-        Raises:
-            AssertionError: If the provided data does not match the shape, dtype, or unit of the original data.
+        Raises
+        ------
+        AssertionError
+            If ``data`` shape, dtype, or unit differs from ``self.data``.
         """
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
@@ -703,10 +728,13 @@ class FixedPreNumConn(FixedNumConn):
         corresponding to the stored data. Then, it uses these indices and the
         data to construct a dense matrix of the specified shape.
 
-        Returns:
-            jax.numpy.ndarray: The dense matrix representation.
+        Returns
+        -------
+        jax.Array or u.Quantity
+            Dense matrix representation.
 
-        Examples:
+        Examples
+        --------
 
         .. code-block:: python
 
@@ -738,10 +766,13 @@ class FixedPreNumConn(FixedNumConn):
         It then packages the `data`, `row` indices, and `col` indices into a
         `COO` sparse matrix object.
 
-        Returns:
-            COO: A COO sparse matrix object representing the same matrix.
+        Returns
+        -------
+        COO
+            COO matrix representing the same sparse structure and values.
 
-        Examples:
+        Examples
+        --------
 
         .. code-block:: python
 
@@ -780,20 +811,27 @@ class FixedPreNumConn(FixedNumConn):
         pre-synaptic indices in FixedPreNumConn, is reinterpreted as
         post-synaptic indices in the resulting FixedPostNumConn matrix.
 
-        Note:
-            The `axes` argument is not supported and must be None.
+        Notes
+        -----
+        The ``axes`` argument is not supported and must be ``None``.
 
-        Args:
-            axes: Must be None. Included for compatibility with NumPy's transpose
-                  method signature but is not used.
+        Parameters
+        ----------
+        axes : None, optional
+            Included for compatibility with NumPy; must be ``None``.
 
-        Returns:
-            FixedPostNumConn: The transposed matrix.
+        Returns
+        -------
+        FixedPostNumConn
+            Transposed matrix view in fixed-post format.
 
-        Raises:
-            AssertionError: If `axes` is not None.
+        Raises
+        ------
+        AssertionError
+            If ``axes`` is not ``None``.
 
-        Examples:
+        Examples
+        --------
 
         .. code-block:: python
 
@@ -955,14 +993,15 @@ def fixed_post_num_to_coo(self: FixedPostNumConn):
     pre-synaptic neuron. This function generates the corresponding pre-synaptic
     and post-synaptic index arrays needed for the COO format.
 
-    Args:
-        self: The FixedPostNumConn instance.
+    Parameters
+    ----------
+    self : FixedPostNumConn
+        Fixed-post sparse matrix.
 
-    Returns:
-        A tuple containing:
-            - pre_ids (jax.numpy.ndarray): The array of pre-synaptic indices.
-            - post_ids (jax.numpy.ndarray): The array of post-synaptic indices.
-            - spinfo (COOInfo): Information about the COO matrix properties.
+    Returns
+    -------
+    tuple[jax.Array, jax.Array, COOInfo]
+        ``(pre_ids, post_ids, spinfo)`` in COO-compatible form.
     """
     pre_ids = jnp.repeat(jnp.arange(self.indices.shape[0]), self.indices.shape[1])
     post_ids = self.indices.flatten()
@@ -978,14 +1017,15 @@ def fixed_pre_num_to_coo(self: FixedPreNumConn):
     post-synaptic neuron. This function generates the corresponding pre-synaptic
     and post-synaptic index arrays needed for the COO format.
 
-    Args:
-        self: The FixedPreNumConn instance.
+    Parameters
+    ----------
+    self : FixedPreNumConn
+        Fixed-pre sparse matrix.
 
-    Returns:
-        A tuple containing:
-            - pre_ids (jax.numpy.ndarray): The array of pre-synaptic indices.
-            - post_ids (jax.numpy.ndarray): The array of post-synaptic indices.
-            - spinfo (COOInfo): Information about the COO matrix properties.
+    Returns
+    -------
+    tuple[jax.Array, jax.Array, COOInfo]
+        ``(pre_ids, post_ids, spinfo)`` in COO-compatible form.
     """
     pre_ids = self.indices.flatten()
     post_ids = jnp.repeat(jnp.arange(self.indices.shape[0]), self.indices.shape[1])

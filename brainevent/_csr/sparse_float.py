@@ -27,6 +27,7 @@ from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .float import csrmv, csrmm
+from brainevent._config import get_numba_parallel
 
 __all__ = [
     'spfloat_csrmv',
@@ -142,7 +143,7 @@ def _sparse_float_csrmv_numba_kernel(
                             posts[indices[j]] += wsp
 
         else:
-            @numba.njit(parallel=True, fastmath=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True)
             def mv(weights, indices, indptr, v, posts):
                 w = weights[0]
                 for i in numba.prange(indptr.shape[0] - 1):
@@ -165,7 +166,7 @@ def _sparse_float_csrmv_numba_kernel(
                             posts[indices[j]] += weights[j] * sp
 
         else:
-            @numba.njit(parallel=True, fastmath=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True)
             def mv(weights, indices, indptr, v, posts):
                 for i in numba.prange(indptr.shape[0] - 1):
                     r = 0.
@@ -554,7 +555,7 @@ def _sparse_float_csrmm_numba_kernel(
             #
             # [k, m] @ [k, n]
             #
-            @numba.njit(parallel=True, fastmath=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True)
             def mm(weights, indices, indptr, B, posts):
                 posts[:] = 0.
                 w = weights[0]
@@ -568,7 +569,7 @@ def _sparse_float_csrmm_numba_kernel(
 
         else:
             # csr @ B
-            @numba.njit(parallel=True, fastmath=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True)
             def mm(weights, indices, indptr, B, posts):
                 w = weights[0]
                 for i in numba.prange(indptr.shape[0] - 1):
@@ -583,7 +584,7 @@ def _sparse_float_csrmm_numba_kernel(
     else:
         if transpose:
             # csr.T @ B
-            @numba.njit(parallel=True, fastmath=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True)
             def mm(weights, indices, indptr, B, posts):
                 posts[:] = 0.
                 for k in numba.prange(B.shape[1]):
@@ -595,7 +596,7 @@ def _sparse_float_csrmm_numba_kernel(
 
         else:
             # csr @ B
-            @numba.njit(parallel=True, fastmath=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True)
             def mm(weights, indices, indptr, B, posts):
                 for i in numba.prange(indptr.shape[0] - 1):
                     for k in range(B.shape[1]):

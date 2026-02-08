@@ -26,6 +26,7 @@ from jax.interpreters import ad
 from brainevent._misc import cdiv, generate_block_dim, namescope
 from brainevent._op import jaxinfo_to_warpinfo, numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
+from brainevent._config import get_numba_parallel
 
 __all__ = [
     'dbmv',
@@ -586,7 +587,7 @@ def _dbmm_numba_kernel(
     import numba
 
     if spk_info.dtype == jnp.bool_:
-        @numba.njit(parallel=True, fastmath=True, nogil=True)
+        @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
         def kernel(weights, spikes, posts):
             for i_n in numba.prange(spikes.shape[1]):
                 out = np.zeros(weights.shape[0], dtype=weights.dtype)
@@ -596,7 +597,7 @@ def _dbmm_numba_kernel(
                 posts[:, i_n] = out
 
     else:
-        @numba.njit(parallel=True, fastmath=True, nogil=True)
+        @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
         def kernel(weights, spikes, posts):
             for i_n in numba.prange(spikes.shape[1]):
                 out = np.zeros(weights.shape[0], dtype=weights.dtype)
@@ -877,7 +878,7 @@ def _bdmm_numba_kernel(
     import numba
 
     if spk_info.dtype == jnp.bool_:
-        @numba.njit(parallel=True, fastmath=True, nogil=True)
+        @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
         def kernel(spikes, weights, posts):
             for i_m in numba.prange(spikes.shape[0]):
                 out = np.zeros(weights.shape[1], dtype=posts.dtype)
@@ -887,7 +888,7 @@ def _bdmm_numba_kernel(
                 posts[i_m] = out
 
     else:
-        @numba.njit(parallel=True, fastmath=True, nogil=True)
+        @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
         def kernel(spikes, weights, posts):
             for i_m in numba.prange(spikes.shape[0]):
                 out = np.zeros(weights.shape[1], dtype=posts.dtype)

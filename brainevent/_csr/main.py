@@ -290,7 +290,7 @@ class CSR(BaseCLS):
     matrix multiplication via ``@``. Sparse-sparse operations are limited.
 
     Attributes
-    -----------
+    ----------
     data : Data
         Array of the non-zero values in the matrix.
     indices : jax.Array
@@ -314,7 +314,7 @@ class CSR(BaseCLS):
         This method converts a dense matrix to a Compressed Sparse Row (CSR) format.
 
         Parameters
-        -----------
+        ----------
         mat : array_like
             The dense matrix to be converted to CSR format.
         nse : int, optional
@@ -324,7 +324,7 @@ class CSR(BaseCLS):
             The data type to be used for index arrays (default is jnp.int32).
 
         Returns
-        --------
+        -------
         CSR
             A new CSR matrix object created from the input dense matrix.
         """
@@ -341,13 +341,13 @@ class CSR(BaseCLS):
         maintaining the original indices, indptr, and shape.
 
         Parameters
-        -----------
+        ----------
         data : Data
             The new data array to replace the existing data in the CSR matrix.
             It must have the same shape, dtype, and unit as the original data.
 
         Returns
-        --------
+        -------
         CSR
             A new CSR matrix instance with updated data and the same structure as the original.
 
@@ -369,7 +369,7 @@ class CSR(BaseCLS):
         into a full dense matrix.
 
         Returns
-        --------
+        -------
         array_like
             A dense matrix representation of the CSR matrix.
         """
@@ -408,13 +408,13 @@ class CSR(BaseCLS):
         This method returns the transpose of the CSR matrix as a CSC matrix.
 
         Parameters
-        -----------
+        ----------
         axes : None
             This parameter is not used and must be None. Included for compatibility
             with numpy's transpose function signature.
 
         Returns
-        --------
+        -------
         CSC
             The transpose of the CSR matrix as a CSC (Compressed Sparse Column) matrix.
 
@@ -730,7 +730,7 @@ class CSC(BaseCLS):
     matrix multiplication via ``@``. Sparse-sparse operations are limited.
 
     Attributes
-    -----------
+    ----------
     data : Data
         Array of the non-zero values in the matrix.
     indices : jax.Array
@@ -756,7 +756,7 @@ class CSC(BaseCLS):
         storage format for sparse matrices.
 
         Parameters
-        -----------
+        ----------
         mat : array_like
             The dense matrix to be converted to CSC format.
         nse : int, optional
@@ -766,7 +766,7 @@ class CSC(BaseCLS):
             The data type to be used for index arrays (default is jnp.int32).
 
         Returns
-        --------
+        -------
         CSC
             A new CSC matrix instance created from the input dense matrix.
         """
@@ -783,13 +783,13 @@ class CSC(BaseCLS):
         maintaining the original indices, indptr, and shape.
 
         Parameters
-        -----------
+        ----------
         data : Data
             The new data array to replace the existing data in the CSC matrix.
             It must have the same shape, dtype, and unit as the original data.
 
         Returns
-        --------
+        -------
         CSC
             A new CSC matrix instance with updated data and the same structure as the original.
 
@@ -811,7 +811,7 @@ class CSC(BaseCLS):
         into a full dense matrix.
 
         Returns
-        --------
+        -------
         array_like
             A dense matrix representation of the CSC matrix.
         """
@@ -850,13 +850,13 @@ class CSC(BaseCLS):
         This method returns the transpose of the CSC matrix as a CSR matrix.
 
         Parameters
-        -----------
+        ----------
         axes : None
             This parameter is not used and must be None. Included for compatibility
             with numpy's transpose function signature.
 
         Returns
-        --------
+        -------
         CSR
             The transpose of the CSC matrix as a CSR (Compressed Sparse Row) matrix.
 

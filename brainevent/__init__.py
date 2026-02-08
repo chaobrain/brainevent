@@ -21,6 +21,7 @@ from ._config import (
     load_user_defaults, save_user_defaults, get_user_default,
     set_user_default, clear_user_defaults, get_config_path,
     invalidate_cache,
+    set_numba_parallel, get_numba_parallel, get_numba_num_threads,
 )
 from ._coo import (
     COO,
@@ -172,6 +173,7 @@ __all__ = [
     'load_user_defaults', 'save_user_defaults', 'get_user_default',
     'set_user_default', 'clear_user_defaults', 'get_config_path',
     'invalidate_cache',
+    'set_numba_parallel', 'get_numba_parallel', 'get_numba_num_threads',
     'get_registry', 'get_primitives_by_tags', 'get_all_primitive_names',
 ]
 
