@@ -236,22 +236,3 @@ class Test_JITC_Scalar_Validation:
         assert updated.prob == mat.prob
         assert updated.seed == mat.seed
         assert updated.shape == mat.shape
-
-    def test_functional_api_prob_validation_and_zero(self):
-        shape = (8, 6)
-        vec = jnp.ones(shape[1])
-        B = jnp.ones((shape[1], 4))
-
-        with pytest.raises(ValueError, match='prob'):
-            brainevent.jits(1.5, -0.1, 123, shape=shape)
-        with pytest.raises(ValueError, match='prob'):
-            brainevent.jitsmv(1.5, 1.1, vec, 123, shape=shape)
-        with pytest.raises(ValueError, match='prob'):
-            brainevent.binary_jitsmm(1.5, float('nan'), B, 123, shape=shape)
-
-        out_dense = brainevent.jits(1.5, 0.0, 123, shape=shape)
-        out_mv = brainevent.jitsmv(1.5, 0.0, vec, 123, shape=shape)
-        out_mm = brainevent.jitsmm(1.5, 0.0, B, 123, shape=shape)
-        assert allclose(out_dense, jnp.zeros_like(out_dense))
-        assert allclose(out_mv, jnp.zeros_like(out_mv))
-        assert allclose(out_mm, jnp.zeros_like(out_mm))

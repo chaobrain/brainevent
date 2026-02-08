@@ -273,6 +273,16 @@ class JITScalarMatrix(JITCMatrix):
                 f"binary operation {op} between two {self.__class__.__name__} objects with different corder "
                 f"is not implemented currently."
             )
+        if self.prob != other.prob:
+            raise NotImplementedError(
+                f"binary operation {op} between two {self.__class__.__name__} objects "
+                f"with different prob is not supported."
+            )
+        if self.shape != other.shape:
+            raise NotImplementedError(
+                f"binary operation {op} between two {self.__class__.__name__} objects "
+                f"with different shapes is not supported."
+            )
 
 
 @jax.tree_util.register_pytree_node_class

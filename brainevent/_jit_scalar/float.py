@@ -335,7 +335,7 @@ def _jitc_homo_matrix_numba_kernel(
                         posts[i_row, i_col] = weight0
                         i_row += np.random.randint(1, clen0)
 
-    def kernel(weight, clen, seed, _):
+    def kernel(weight, clen, seed):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(weight, clen, seed)
 
     return kernel
@@ -398,7 +398,7 @@ def _jitc_homo_matrix_warp_kernel(
                     posts[i_row, i_col] = weight0
                     i_col += warp.randi(state, 1, clen0)
 
-        def kernel(weight, clen, seed, _):
+        def kernel(weight, clen, seed):
             dim = out_info.shape[0]
             fn = jax_kernel(mat, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
             return fn(weight, clen, seed)
@@ -442,7 +442,7 @@ def _jitc_homo_matrix_warp_kernel(
                     posts[i_row, i_col] = weight0
                     i_row += warp.randi(state, 1, clen0)
 
-        def kernel(weight, clen, seed, _):
+        def kernel(weight, clen, seed):
             dim = out_info.shape[1]
             fn = jax_kernel(mat, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
             return fn(weight, clen, seed)
@@ -513,25 +513,27 @@ def _jitc_homo_matrix_pallas_kernel(
                 (i_rows, i_row_mask, rng)
             )
 
-    def kernel(weight, clen, seed, _):
+    def kernel(weight, clen, seed):
         fn = pl.pallas_call(
             pallas_kernel_fn,
             grid=(pl.cdiv(dim, block_size),),
             input_output_aliases={3: 0},
             out_shape=kwargs['outs']
         )
-        return fn(weight, clen, seed, _)
+        out = kwargs['outs'][0]
+        return fn(weight, clen, seed, jnp.zeros(out.shape, out.dtype))
 
     return kernel
 
 
-def _jitc_homo_matrix_jvp_weight(weight_dot, weight, clen, seed, _, *, shape: Sequence[int], transpose: bool,
-                                 corder: bool, **kwargs):
+def _jitc_homo_matrix_jvp_weight(
+    weight_dot, weight, clen, seed, *, shape: Sequence[int], transpose: bool,  corder: bool, **kwargs
+):
     return jits_p_call(weight_dot, clen, seed, shape=shape, transpose=transpose, corder=corder)
 
 
 def _jitc_homo_matrix_transpose(
-    ct, weight, clen, seed, _, *, shape: Sequence[int], transpose: bool, corder: bool, **kwargs
+    ct, weight, clen, seed,  *, shape: Sequence[int], transpose: bool, corder: bool, **kwargs
 ):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
@@ -541,7 +543,7 @@ def _jitc_homo_matrix_transpose(
             1., clen, seed, shape=shape, transpose=transpose, corder=corder
         )[0]
         dw = jnp.expand_dims((ct * forward).sum(), axis=0)
-        return (dw, clen, seed, _)
+        return (dw, clen, seed)
 
     else:
         raise NotImplementedError(
@@ -550,7 +552,7 @@ def _jitc_homo_matrix_transpose(
 
 
 def _jitc_homo_matrix_batching(args, axes, **kwargs):
-    if tuple(axes)[1:] == (None, None, None):
+    if tuple(axes)[1:] == (None, None):
         # vmap on weight data
         r = jits_p_call(
             jnp.asarray([1.], dtype=args[0].dtype),
@@ -606,7 +608,6 @@ def jits_p_call(
         weight,
         clen,
         seed,
-        jnp.zeros(out_info.shape, out_info.dtype),
         outs=[out_info],
         weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
         clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
