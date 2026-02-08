@@ -38,6 +38,7 @@ __all__ = [
 ]
 
 
+@namescope(static_argnames=("shape", "transpose"))
 def binary_coomv(
     data: Data,
     row: Row,
@@ -46,8 +47,6 @@ def binary_coomv(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    float_as_event: bool = True,
-    backend: Optional[str] = None,
 ) -> Data:
     """
     Perform a COO sparse matrix-vector multiplication with event-based inputs.
@@ -62,8 +61,6 @@ def binary_coomv(
         v: The dense vector to multiply (treated as events).
         shape: The shape of the sparse matrix (rows, cols).
         transpose: If True, multiply by the transposed matrix.
-        float_as_event: If True, treat non-zero floats as binary events.
-        backend: Optional backend to use ('numba', 'warp', 'pallas', etc.).
 
     Returns:
         The result of the matrix-vector multiplication.
@@ -74,13 +71,11 @@ def binary_coomv(
         data, row, col, v,
         shape=shape,
         transpose=transpose,
-        float_as_event=float_as_event,
-        backend=backend,
     )[0]
     return u.maybe_decimal(res * (unitd * unitv))
 
 
-@namescope(static_argnames=("shape", "transpose", "float_as_event"))
+@namescope(static_argnames=("shape", "transpose"))
 def binary_coomm(
     data: Data,
     row: Row,
@@ -89,8 +84,6 @@ def binary_coomm(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    float_as_event: bool = True,
-    backend: Optional[str] = None,
 ) -> Data:
     """
     Perform a COO sparse matrix-matrix multiplication with event-based inputs.
@@ -105,8 +98,6 @@ def binary_coomm(
         B: The dense matrix to multiply (treated as events).
         shape: The shape of the sparse matrix (rows, cols).
         transpose: If True, multiply by the transposed matrix.
-        float_as_event: If True, treat non-zero floats as binary events.
-        backend: Optional backend to use ('numba', 'warp', 'pallas', etc.).
 
     Returns:
         The result of the matrix-matrix multiplication.
@@ -117,8 +108,6 @@ def binary_coomm(
         data, row, col, B,
         shape=shape,
         transpose=transpose,
-        float_as_event=float_as_event,
-        backend=backend,
     )[0]
     return u.maybe_decimal(res * (unitd * unitb))
 
@@ -129,7 +118,6 @@ def binary_coomm(
 
 
 def _coomv_numba_kernel(
-    float_as_event: bool,
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     transpose: bool,
@@ -149,8 +137,7 @@ def _coomv_numba_kernel(
                     for i in range(row.shape[0]):
                         if v[row[i]]:
                             posts[col[i]] += w
-            elif float_as_event:
-                # float_as_event
+            else:
                 @numba.njit(fastmath=True)
                 def mv(weights, row, col, v, posts):
                     posts[:] = 0.
@@ -158,15 +145,6 @@ def _coomv_numba_kernel(
                     for i in range(row.shape[0]):
                         if v[row[i]] > 0.:
                             posts[col[i]] += w
-            else:
-                # other
-                @numba.njit(fastmath=True)
-                def mv(weights, row, col, v, posts):
-                    posts[:] = 0.
-                    w = weights[0]
-                    for i in range(row.shape[0]):
-                        if v[row[i]] > 0.:
-                            posts[col[i]] += w * v[row[i]]
         else:
             # transpose=True, heterogeneous
             if vector_info.dtype == jnp.bool_:
@@ -177,22 +155,13 @@ def _coomv_numba_kernel(
                     for i in range(row.shape[0]):
                         if v[row[i]]:
                             posts[col[i]] += weights[i]
-            elif float_as_event:
-                # float_as_event
+            else:
                 @numba.njit(fastmath=True)
                 def mv(weights, row, col, v, posts):
                     posts[:] = 0.
                     for i in range(row.shape[0]):
                         if v[row[i]] > 0.:
                             posts[col[i]] += weights[i]
-            else:
-                # other
-                @numba.njit(fastmath=True)
-                def mv(weights, row, col, v, posts):
-                    posts[:] = 0.
-                    for i in range(row.shape[0]):
-                        if v[row[i]] > 0.:
-                            posts[col[i]] += weights[i] * v[row[i]]
     else:
         if weight_info.size == 1:
             # transpose=False, homogeneous
@@ -205,8 +174,7 @@ def _coomv_numba_kernel(
                     for i in range(row.shape[0]):
                         if v[col[i]]:
                             posts[row[i]] += w
-            elif float_as_event:
-                # float_as_event
+            else:
                 @numba.njit(fastmath=True)
                 def mv(weights, row, col, v, posts):
                     posts[:] = 0.
@@ -214,15 +182,6 @@ def _coomv_numba_kernel(
                     for i in range(row.shape[0]):
                         if v[col[i]] > 0.:
                             posts[row[i]] += w
-            else:
-                # other
-                @numba.njit(fastmath=True)
-                def mv(weights, row, col, v, posts):
-                    posts[:] = 0.
-                    w = weights[0]
-                    for i in range(row.shape[0]):
-                        if v[col[i]] > 0.:
-                            posts[row[i]] += w * v[col[i]]
         else:
             # transpose=False, heterogeneous
             if vector_info.dtype == jnp.bool_:
@@ -233,22 +192,13 @@ def _coomv_numba_kernel(
                     for i in range(row.shape[0]):
                         if v[col[i]]:
                             posts[row[i]] += weights[i]
-            elif float_as_event:
-                # float_as_event
+            else:
                 @numba.njit(fastmath=True)
                 def mv(weights, row, col, v, posts):
                     posts[:] = 0.
                     for i in range(row.shape[0]):
                         if v[col[i]] > 0.:
                             posts[row[i]] += weights[i]
-            else:
-                # other
-                @numba.njit(fastmath=True)
-                def mv(weights, row, col, v, posts):
-                    posts[:] = 0.
-                    for i in range(row.shape[0]):
-                        if v[col[i]] > 0.:
-                            posts[row[i]] += weights[i] * v[col[i]]
 
     def kernel(weights, row, col, v):
         return numba_kernel(mv, outs=kwargs['outs'])(weights, row, col, v)
@@ -257,7 +207,6 @@ def _coomv_numba_kernel(
 
 
 def _coomv_warp_kernel(
-    float_as_event: bool,
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     row_info: jax.ShapeDtypeStruct,
@@ -291,8 +240,7 @@ def _coomv_warp_kernel(
                     w = weights[0]
                     if v[row[i]]:
                         posts[col[i]] += w
-            elif float_as_event:
-                # float_as_event
+            else:
                 @warp.kernel
                 def mv(
                     weights: weight_warp_info,
@@ -305,20 +253,6 @@ def _coomv_warp_kernel(
                     w = weights[0]
                     if v[row[i]] > 0.:
                         posts[col[i]] += w
-            else:
-                # other
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i = warp.tid()
-                    w = weights[0]
-                    if v[row[i]] > 0.:
-                        posts[col[i]] += w * v[row[i]]
         else:
             # transpose=True, heterogeneous
             if vector_info.dtype == jnp.bool_:
@@ -334,8 +268,7 @@ def _coomv_warp_kernel(
                     i = warp.tid()
                     if v[row[i]]:
                         posts[col[i]] += weights[i]
-            elif float_as_event:
-                # float_as_event
+            else:
                 @warp.kernel
                 def mv(
                     weights: weight_warp_info,
@@ -347,19 +280,6 @@ def _coomv_warp_kernel(
                     i = warp.tid()
                     if v[row[i]] > 0.:
                         posts[col[i]] += weights[i]
-            else:
-                # other
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i = warp.tid()
-                    if v[row[i]] > 0.:
-                        posts[col[i]] += weights[i] * v[row[i]]
     else:
         if weight_info.size == 1:
             # transpose=False, homogeneous
@@ -377,8 +297,7 @@ def _coomv_warp_kernel(
                     w = weights[0]
                     if v[col[i]]:
                         posts[row[i]] += w
-            elif float_as_event:
-                # float_as_event
+            else:
                 @warp.kernel
                 def mv(
                     weights: weight_warp_info,
@@ -391,20 +310,6 @@ def _coomv_warp_kernel(
                     w = weights[0]
                     if v[col[i]] > 0.:
                         posts[row[i]] += w
-            else:
-                # other
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i = warp.tid()
-                    w = weights[0]
-                    if v[col[i]] > 0.:
-                        posts[row[i]] += w * v[col[i]]
         else:
             # transpose=False, heterogeneous
             if vector_info.dtype == jnp.bool_:
@@ -420,8 +325,7 @@ def _coomv_warp_kernel(
                     i = warp.tid()
                     if v[col[i]]:
                         posts[row[i]] += weights[i]
-            elif float_as_event:
-                # float_as_event
+            else:
                 @warp.kernel
                 def mv(
                     weights: weight_warp_info,
@@ -433,19 +337,6 @@ def _coomv_warp_kernel(
                     i = warp.tid()
                     if v[col[i]] > 0.:
                         posts[row[i]] += weights[i]
-            else:
-                # other
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i = warp.tid()
-                    if v[col[i]] > 0.:
-                        posts[row[i]] += weights[i] * v[col[i]]
 
     dim = row_info.shape[0]
     out_info = kwargs['outs'][0]
@@ -459,9 +350,7 @@ def _coomv_warp_kernel(
 
 def _coomv_pallas_gpu_kernel(
     weight_info: jax.ShapeDtypeStruct,
-    vector_info: jax.ShapeDtypeStruct,
     row_info: jax.ShapeDtypeStruct,
-    shape: MatrixShape,
     transpose: bool,
     **kwargs
 ):
@@ -627,8 +516,8 @@ def _coomv_jvp_vector(v_dot, data, row, col, v, *, shape, transpose, **kwargs):
     return [coomv(data, row, col, v_dot, shape=shape, transpose=transpose)]
 
 
-def _coomv_jvp_weights(data_dot, data, row, col, v, *, shape, transpose, float_as_event, **kwargs):
-    return binary_coomv_p_call(data_dot, row, col, v, shape=shape, transpose=transpose, float_as_event=float_as_event)
+def _coomv_jvp_weights(data_dot, data, row, col, v, *, shape, transpose, **kwargs):
+    return binary_coomv_p_call(data_dot, row, col, v, shape=shape, transpose=transpose)
 
 
 def _coomv_transpose_rule(
@@ -639,7 +528,6 @@ def _coomv_transpose_rule(
     events,
     *,
     shape,
-    float_as_event,
     transpose,
     **kwargs
 ):
@@ -672,7 +560,6 @@ def _coomv_transpose_rule(
                     events,
                     shape=shape,
                     transpose=transpose,
-                    float_as_event=float_as_event
                 )[0]
                 ct_values = jnp.inner(ct, ct_values).reshape(*data.aval.shape)
             else:
@@ -690,7 +577,6 @@ def _coomv_batching(args, axes, **kwargs):
             args[3].T,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
-            float_as_event=kwargs['float_as_event'],
         )
         return r, [1]
 
@@ -703,7 +589,6 @@ def _coomv_batching(args, axes, **kwargs):
             args[3].T,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
-            float_as_event=kwargs['float_as_event'],
         )
         return r, [1]
 
@@ -742,7 +627,6 @@ def binary_coomv_p_call(
     *,
     shape: Sequence[int],
     transpose: bool,
-    float_as_event: bool = True,
     backend: Optional[str] = None,
 ):
     """
@@ -765,8 +649,6 @@ def binary_coomv_p_call(
         The shape of the sparse matrix.
     transpose : bool
         Whether to transpose the sparse matrix before multiplication.
-    float_as_event : bool
-        Treat floating-point values as events.
     backend : str, optional
         Backend to use for computation.
 
@@ -796,7 +678,6 @@ def binary_coomv_p_call(
         col,
         v,
         outs=[out_info],
-        float_as_event=float_as_event,
         shape=shape,
         transpose=transpose,
         backend=backend,
@@ -830,7 +711,6 @@ binary_coomv_p.def_benchmark_data(_binary_coomv_benchmark_data)
 
 
 def _coomm_numba_kernel(
-    float_as_event: bool,
     weight_info: jax.ShapeDtypeStruct,
     matrix_info: jax.ShapeDtypeStruct,
     transpose: bool,
@@ -851,8 +731,7 @@ def _coomm_numba_kernel(
                         for j in range(B.shape[1]):
                             if B[row[i], j]:
                                 posts[col[i], j] += w
-            elif float_as_event:
-                # float_as_event
+            else:
                 @numba.njit(fastmath=True)
                 def mm(weights, row, col, B, posts):
                     posts[:] = 0.
@@ -861,16 +740,6 @@ def _coomm_numba_kernel(
                         for j in range(B.shape[1]):
                             if B[row[i], j] > 0.:
                                 posts[col[i], j] += w
-            else:
-                # other
-                @numba.njit(fastmath=True)
-                def mm(weights, row, col, B, posts):
-                    posts[:] = 0.
-                    w = weights[0]
-                    for i in range(row.shape[0]):
-                        for j in range(B.shape[1]):
-                            if B[row[i], j] > 0.:
-                                posts[col[i], j] += w * B[row[i], j]
         else:
             # transpose=True, heterogeneous
             if matrix_info.dtype == jnp.bool_:
@@ -882,8 +751,7 @@ def _coomm_numba_kernel(
                         for j in range(B.shape[1]):
                             if B[row[i], j]:
                                 posts[col[i], j] += weights[i]
-            elif float_as_event:
-                # float_as_event
+            else:
                 @numba.njit(fastmath=True)
                 def mm(weights, row, col, B, posts):
                     posts[:] = 0.
@@ -891,15 +759,6 @@ def _coomm_numba_kernel(
                         for j in range(B.shape[1]):
                             if B[row[i], j] > 0.:
                                 posts[col[i], j] += weights[i]
-            else:
-                # other
-                @numba.njit(fastmath=True)
-                def mm(weights, row, col, B, posts):
-                    posts[:] = 0.
-                    for i in range(row.shape[0]):
-                        for j in range(B.shape[1]):
-                            if B[row[i], j] > 0.:
-                                posts[col[i], j] += weights[i] * B[row[i], j]
     else:
         if weight_info.size == 1:
             # transpose=False, homogeneous
@@ -913,8 +772,7 @@ def _coomm_numba_kernel(
                         for j in range(B.shape[1]):
                             if B[col[i], j]:
                                 posts[row[i], j] += w
-            elif float_as_event:
-                # float_as_event
+            else:
                 @numba.njit(fastmath=True)
                 def mm(weights, row, col, B, posts):
                     posts[:] = 0.
@@ -923,16 +781,6 @@ def _coomm_numba_kernel(
                         for j in range(B.shape[1]):
                             if B[col[i], j] > 0.:
                                 posts[row[i], j] += w
-            else:
-                # other
-                @numba.njit(fastmath=True)
-                def mm(weights, row, col, B, posts):
-                    posts[:] = 0.
-                    w = weights[0]
-                    for i in range(row.shape[0]):
-                        for j in range(B.shape[1]):
-                            if B[col[i], j] > 0.:
-                                posts[row[i], j] += w * B[col[i], j]
         else:
             # transpose=False, heterogeneous
             if matrix_info.dtype == jnp.bool_:
@@ -944,8 +792,7 @@ def _coomm_numba_kernel(
                         for j in range(B.shape[1]):
                             if B[col[i], j]:
                                 posts[row[i], j] += weights[i]
-            elif float_as_event:
-                # float_as_event
+            else:
                 @numba.njit(fastmath=True)
                 def mm(weights, row, col, B, posts):
                     posts[:] = 0.
@@ -953,15 +800,6 @@ def _coomm_numba_kernel(
                         for j in range(B.shape[1]):
                             if B[col[i], j] > 0.:
                                 posts[row[i], j] += weights[i]
-            else:
-                # other
-                @numba.njit(fastmath=True)
-                def mm(weights, row, col, B, posts):
-                    posts[:] = 0.
-                    for i in range(row.shape[0]):
-                        for j in range(B.shape[1]):
-                            if B[col[i], j] > 0.:
-                                posts[row[i], j] += weights[i] * B[col[i], j]
 
     def kernel(weights, row, col, B):
         return numba_kernel(mm, outs=kwargs['outs'])(weights, row, col, B)
@@ -970,7 +808,6 @@ def _coomm_numba_kernel(
 
 
 def _coomm_warp_kernel(
-    float_as_event: bool,
     weight_info: jax.ShapeDtypeStruct,
     matrix_info: jax.ShapeDtypeStruct,
     row_info: jax.ShapeDtypeStruct,
@@ -1004,8 +841,7 @@ def _coomm_warp_kernel(
                     w = weights[0]
                     if B[row[i], j]:
                         posts[col[i], j] += w
-            elif float_as_event:
-                # float_as_event
+            else:
                 @warp.kernel
                 def mm(
                     weights: weight_warp_info,
@@ -1018,20 +854,6 @@ def _coomm_warp_kernel(
                     w = weights[0]
                     if B[row[i], j] > 0.:
                         posts[col[i], j] += w
-            else:
-                # other
-                @warp.kernel
-                def mm(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    B: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i, j = warp.tid()
-                    w = weights[0]
-                    if B[row[i], j] > 0.:
-                        posts[col[i], j] += w * B[row[i], j]
         else:
             # transpose=True, heterogeneous
             if matrix_info.dtype == jnp.bool_:
@@ -1047,8 +869,7 @@ def _coomm_warp_kernel(
                     i, j = warp.tid()
                     if B[row[i], j]:
                         posts[col[i], j] += weights[i]
-            elif float_as_event:
-                # float_as_event
+            else:
                 @warp.kernel
                 def mm(
                     weights: weight_warp_info,
@@ -1060,19 +881,6 @@ def _coomm_warp_kernel(
                     i, j = warp.tid()
                     if B[row[i], j] > 0.:
                         posts[col[i], j] += weights[i]
-            else:
-                # other
-                @warp.kernel
-                def mm(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    B: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i, j = warp.tid()
-                    if B[row[i], j] > 0.:
-                        posts[col[i], j] += weights[i] * B[row[i], j]
     else:
         if weight_info.size == 1:
             # transpose=False, homogeneous
@@ -1090,8 +898,7 @@ def _coomm_warp_kernel(
                     w = weights[0]
                     if B[col[i], j]:
                         posts[row[i], j] += w
-            elif float_as_event:
-                # float_as_event
+            else:
                 @warp.kernel
                 def mm(
                     weights: weight_warp_info,
@@ -1104,20 +911,6 @@ def _coomm_warp_kernel(
                     w = weights[0]
                     if B[col[i], j] > 0.:
                         posts[row[i], j] += w
-            else:
-                # other
-                @warp.kernel
-                def mm(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    B: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i, j = warp.tid()
-                    w = weights[0]
-                    if B[col[i], j] > 0.:
-                        posts[row[i], j] += w * B[col[i], j]
         else:
             # transpose=False, heterogeneous
             if matrix_info.dtype == jnp.bool_:
@@ -1133,8 +926,7 @@ def _coomm_warp_kernel(
                     i, j = warp.tid()
                     if B[col[i], j]:
                         posts[row[i], j] += weights[i]
-            elif float_as_event:
-                # float_as_event
+            else:
                 @warp.kernel
                 def mm(
                     weights: weight_warp_info,
@@ -1146,19 +938,6 @@ def _coomm_warp_kernel(
                     i, j = warp.tid()
                     if B[col[i], j] > 0.:
                         posts[row[i], j] += weights[i]
-            else:
-                # other
-                @warp.kernel
-                def mm(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    B: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i, j = warp.tid()
-                    if B[col[i], j] > 0.:
-                        posts[row[i], j] += weights[i] * B[col[i], j]
 
     dim = (row_info.shape[0], matrix_info.shape[1])
     out_info = kwargs['outs'][0]
@@ -1432,7 +1211,6 @@ def _coomm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
-            float_as_event=kwargs['float_as_event']
         )
         r = jnp.reshape(r[0], [r[0].shape[0], batch_size, n])
         return [r], [1]
@@ -1448,7 +1226,6 @@ def _coomm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
-            float_as_event=kwargs['float_as_event']
         )
         r = jnp.reshape(r[0], [r[0].shape[0], batch_size, n])
         return [r], [1]
@@ -1464,7 +1241,6 @@ def _coomm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
-            float_as_event=kwargs['float_as_event']
         )
         r = jnp.reshape(r[0], [r[0].shape[0], n, batch_size])
         return [r], [2]
@@ -1504,7 +1280,6 @@ def binary_coomm_p_call(
     *,
     shape: Sequence[int],
     transpose: bool,
-    float_as_event: bool = True,
     backend: Optional[str] = None,
 ):
     """
@@ -1527,8 +1302,6 @@ def binary_coomm_p_call(
         The shape of the sparse matrix.
     transpose : bool
         Whether to transpose the sparse matrix before multiplication.
-    float_as_event : bool
-        Treat floating-point values as events.
     backend : str, optional
         Backend to use for computation.
 
@@ -1559,7 +1332,6 @@ def binary_coomm_p_call(
         outs=[out_info],
         shape=shape,
         transpose=transpose,
-        float_as_event=float_as_event,
         backend=backend,
         row_info=jax.ShapeDtypeStruct(row.shape, row.dtype),
         col_info=jax.ShapeDtypeStruct(col.shape, col.dtype),

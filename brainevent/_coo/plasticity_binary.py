@@ -27,8 +27,8 @@ from brainevent._op.benchmark import BenchmarkConfig
 
 __all__ = [
     'plast_coo_on_binary_pre',
-    'plast_coo_on_binary_post',
     'plast_coo_on_binary_pre_p',
+    'plast_coo_on_binary_post',
     'plast_coo_on_binary_post_p',
 ]
 
