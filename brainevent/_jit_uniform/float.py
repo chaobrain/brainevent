@@ -479,6 +479,22 @@ def _jitu_batching(args, axes, **kwargs):
     return general_batching_rule(jitu_p, args, axes, **kwargs)
 
 
+def _jitu_benchmark_data(*, platform):
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for corder in (True, False):
+            w_low = jnp.zeros(1, dtype=dtype)
+            w_high = jnp.ones(1, dtype=dtype)
+            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+            seed = jnp.asarray(42, dtype=jnp.uint32)
+            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
+            configs.append(BenchmarkConfig(name, (w_low, w_high, clen, seed), {
+                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
+            }))
+    return configs
+
+
 def jitu_p_call(
     w_low,
     w_high,
@@ -488,6 +504,7 @@ def jitu_p_call(
     shape,
     transpose: bool,
     corder: bool,
+    backend: Optional[str] = None,
 ):
     w_low = jnp.atleast_1d(w_low)
     w_high = jnp.atleast_1d(w_high)
@@ -516,6 +533,7 @@ def jitu_p_call(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        backend=backend,
     )
 
 
@@ -529,24 +547,6 @@ jitu_p.def_transpose_rule(_jitu_transpose)
 jitu_p.def_batching_rule(_jitu_batching)
 jitu_p.def_call(jitu_p_call)
 jitu_p.def_tags('jit_uniform', 'float')
-
-
-def _jitu_benchmark_data(*, platform):
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for transpose in (False, True):
-        for corder in (True, False):
-            w_low = jnp.zeros(1, dtype=dtype)
-            w_high = jnp.ones(1, dtype=dtype)
-            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
-            seed = jnp.asarray(42, dtype=jnp.uint32)
-            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append(BenchmarkConfig(name, (w_low, w_high, clen, seed), {
-                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
-            }))
-    return configs
-
-
 jitu_p.def_benchmark_data(_jitu_benchmark_data)
 
 
@@ -932,6 +932,25 @@ def _jitumv_batching(args, axes, **kwargs):
         return general_batching_rule(jitumv_p, args, axes, **kwargs)
 
 
+def _jitumv_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for corder in (True, False):
+            w_low = jnp.zeros(1, dtype=dtype)
+            w_high = jnp.ones(1, dtype=dtype)
+            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+            v_size = n_post if not transpose else n_pre
+            vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
+            seed = jnp.asarray(42, dtype=jnp.uint32)
+            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
+            configs.append(BenchmarkConfig(name, (w_low, w_high, clen, vector, seed), {
+                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
+            }))
+    return configs
+
+
 def jitumv_p_call(
     w_low,
     w_high,
@@ -942,6 +961,7 @@ def jitumv_p_call(
     shape,
     transpose: bool,
     corder: bool,
+    backend: Optional[str] = None,
 ):
     w_low = jnp.atleast_1d(w_low)
     w_high = jnp.atleast_1d(w_high)
@@ -983,6 +1003,7 @@ def jitumv_p_call(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        backend=backend,
     )
 
 
@@ -996,27 +1017,6 @@ jitumv_p.def_transpose_rule(_jitumv_transpose_rules)
 jitumv_p.def_batching_rule(_jitumv_batching)
 jitumv_p.def_call(jitumv_p_call)
 jitumv_p.def_tags('jit_uniform', 'float')
-
-
-def _jitumv_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for transpose in (False, True):
-        for corder in (True, False):
-            w_low = jnp.zeros(1, dtype=dtype)
-            w_high = jnp.ones(1, dtype=dtype)
-            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
-            v_size = n_post if not transpose else n_pre
-            vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
-            seed = jnp.asarray(42, dtype=jnp.uint32)
-            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append(BenchmarkConfig(name, (w_low, w_high, clen, vector, seed), {
-                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
-            }))
-    return configs
-
-
 jitumv_p.def_benchmark_data(_jitumv_benchmark_data)
 
 
@@ -1505,6 +1505,25 @@ def _jitumm_batching(args, axes, **kwargs):
         return general_batching_rule(jitumm_p, args, axes, **kwargs)
 
 
+def _jitumm_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for corder in (True, False):
+            w_low = jnp.zeros(1, dtype=dtype)
+            w_high = jnp.ones(1, dtype=dtype)
+            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+            b_rows = n_post if not transpose else n_pre
+            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
+            seed = jnp.asarray(42, dtype=jnp.uint32)
+            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
+            configs.append(BenchmarkConfig(name, (w_low, w_high, clen, B, seed), {
+                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
+            }))
+    return configs
+
+
 def jitumm_p_call(
     w_low,
     w_high,
@@ -1515,6 +1534,7 @@ def jitumm_p_call(
     shape: MatrixShape,
     transpose: bool,
     corder: bool,
+    backend: Optional[str] = None,
 ):
     w_low = jnp.atleast_1d(w_low)
     w_high = jnp.atleast_1d(w_high)
@@ -1560,6 +1580,7 @@ def jitumm_p_call(
         transpose=transpose,
         corder=corder,
         TITLE_SIZE=B.shape[1],
+        backend=backend,
     )
 
 
@@ -1573,25 +1594,4 @@ jitumm_p.def_transpose_rule(_jitumm_transpose_rules)
 jitumm_p.def_batching_rule(_jitumm_batching)
 jitumm_p.def_call(jitumm_p_call)
 jitumm_p.def_tags('jit_uniform', 'float')
-
-
-def _jitumm_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for transpose in (False, True):
-        for corder in (True, False):
-            w_low = jnp.zeros(1, dtype=dtype)
-            w_high = jnp.ones(1, dtype=dtype)
-            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
-            b_rows = n_post if not transpose else n_pre
-            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
-            seed = jnp.asarray(42, dtype=jnp.uint32)
-            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append(BenchmarkConfig(name, (w_low, w_high, clen, B, seed), {
-                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
-            }))
-    return configs
-
-
 jitumm_p.def_benchmark_data(_jitumm_benchmark_data)

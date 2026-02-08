@@ -18,6 +18,7 @@ import brainstate
 import brainunit as u
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 import brainevent
@@ -1739,3 +1740,95 @@ class Test_JITCHomoC_Transpose_Gradients:
         assert (allclose(out1, out2, rtol=1e-4, atol=1e-4))
         assert (allclose(vjp_x1, vjp_x2, rtol=1e-4, atol=1e-4))
         assert (allclose(vjp_w1, vjp_w2, rtol=1e-4, atol=1e-4))
+
+
+class TestBinaryMVFloatThresholding:
+    """Float events must be treated as binary (0/1), not raw values in binary MV."""
+
+    @pytest.mark.parametrize('shape', [(20, 30), (50, 40)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_float_events_thresholded_matvec(self, shape, corder):
+        rng = np.random.RandomState(42)
+        raw = rng.rand(shape[1]).astype(np.float32)
+        mask = rng.rand(shape[1]) > 0.5
+        float_events = jnp.array(raw * mask)
+        binary_events = jnp.where(float_events > 0., 1.0, 0.).astype(jnp.float32)
+
+        jitc = brainevent.JITCScalarR((1.5, 0.1, 123), shape=shape, corder=corder)
+
+        out_float = jitc @ brainevent.EventArray(float_events)
+        out_binary = jitc @ brainevent.EventArray(binary_events)
+        assert allclose(out_float, out_binary, rtol=1e-5, atol=1e-5)
+
+    @pytest.mark.parametrize('shape', [(20, 30), (50, 40)])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_float_events_thresholded_vecmat(self, shape, corder):
+        rng = np.random.RandomState(42)
+        raw = rng.rand(shape[0]).astype(np.float32)
+        mask = rng.rand(shape[0]) > 0.5
+        float_events = jnp.array(raw * mask)
+        binary_events = jnp.where(float_events > 0., 1.0, 0.).astype(jnp.float32)
+
+        jitc = brainevent.JITCScalarR((1.5, 0.1, 123), shape=shape, corder=corder)
+
+        out_float = brainevent.EventArray(float_events) @ jitc
+        out_binary = brainevent.EventArray(binary_events) @ jitc
+        assert allclose(out_float, out_binary, rtol=1e-5, atol=1e-5)
+
+
+class TestBinaryMMFloatThresholding:
+    """Float event matrix must be thresholded in binary MM."""
+
+    @pytest.mark.parametrize('shape', [(20, 30), (50, 40)])
+    @pytest.mark.parametrize('k', [10])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_float_events_thresholded_jitmat(self, shape, k, corder):
+        rng = np.random.RandomState(42)
+        raw = rng.rand(shape[1], k).astype(np.float32)
+        mask = rng.rand(shape[1], k) > 0.5
+        float_events = jnp.array(raw * mask)
+        binary_events = jnp.where(float_events > 0., 1.0, 0.).astype(jnp.float32)
+
+        jitc = brainevent.JITCScalarR((1.5, 0.1, 123), shape=shape, corder=corder)
+
+        out_float = jitc @ brainevent.EventArray(float_events)
+        out_binary = jitc @ brainevent.EventArray(binary_events)
+        assert allclose(out_float, out_binary, rtol=1e-5, atol=1e-5)
+
+    @pytest.mark.parametrize('shape', [(20, 30), (50, 40)])
+    @pytest.mark.parametrize('k', [10])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_float_events_thresholded_matjit(self, shape, k, corder):
+        rng = np.random.RandomState(42)
+        raw = rng.rand(k, shape[0]).astype(np.float32)
+        mask = rng.rand(k, shape[0]) > 0.5
+        float_events = jnp.array(raw * mask)
+        binary_events = jnp.where(float_events > 0., 1.0, 0.).astype(jnp.float32)
+
+        jitc = brainevent.JITCScalarR((1.5, 0.1, 123), shape=shape, corder=corder)
+
+        out_float = brainevent.EventArray(float_events) @ jitc
+        out_binary = brainevent.EventArray(binary_events) @ jitc
+        assert allclose(out_float, out_binary, rtol=1e-5, atol=1e-5)
+
+
+class TestCheckValidation:
+    """_check method should reject incompatible JITScalarMatrix operands."""
+
+    def test_different_prob_raises(self):
+        a = brainevent.JITCScalarR((1.0, 0.1, 42), shape=(10, 10))
+        b = brainevent.JITCScalarR((1.0, 0.2, 42), shape=(10, 10))
+        with pytest.raises(NotImplementedError, match="different prob"):
+            a + b
+
+    def test_different_shape_raises(self):
+        a = brainevent.JITCScalarR((1.0, 0.1, 42), shape=(10, 10))
+        b = brainevent.JITCScalarR((1.0, 0.1, 42), shape=(10, 20))
+        with pytest.raises(NotImplementedError, match="different shapes"):
+            a + b
+
+    def test_same_params_works(self):
+        a = brainevent.JITCScalarR((1.0, 0.1, 42), shape=(10, 10))
+        b = brainevent.JITCScalarR((2.0, 0.1, 42), shape=(10, 10))
+        result = a + b
+        assert result.shape == (10, 10)

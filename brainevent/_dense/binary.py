@@ -18,6 +18,7 @@
 import brainunit as u
 import jax
 import jax.numpy as jnp
+from typing import Optional
 import numpy as np
 from jax.interpreters import ad
 
@@ -257,7 +258,7 @@ def _dbmv_benchmark_data(*, platform):
     return configs
 
 
-def dbmv_p_call(weights, spikes):
+def dbmv_p_call(weights, spikes, *, backend: Optional[str] = None):
     assert spikes.shape[0] == weights.shape[1], (
         f"spikes shape {spikes.shape} and weights shape {weights.shape} are not compatible"
     )
@@ -268,6 +269,7 @@ def dbmv_p_call(weights, spikes):
         outs=[out],
         spk_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        backend=backend,
     )
 
 
@@ -493,7 +495,7 @@ def _bdvm_benchmark_data(*, platform):
     return configs
 
 
-def bdvm_p_call(spikes, weights):
+def bdvm_p_call(spikes, weights, *, backend: Optional[str] = None):
     assert spikes.shape[0] == weights.shape[0], (
         f"shapes {spikes.shape} and {weights.shape} not aligned: "
         f"{spikes.shape[0]} (dim 0) > {weights.shape[0]} (dim 0)"
@@ -505,6 +507,7 @@ def bdvm_p_call(spikes, weights):
         outs=[out],
         spk_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        backend=backend,
     )
 
 
@@ -791,7 +794,7 @@ def _dbmm_benchmark_data(*, platform):
     return configs
 
 
-def dbmm_p_call(weights, spikes):
+def dbmm_p_call(weights, spikes, *, backend: Optional[str] = None):
     assert weights.shape[1] == spikes.shape[0], (
         f"weights.shape[1] ({weights.shape[1]}) > spikes.shape[0] ({spikes.shape[0]})"
         f", weights: {weights.shape}, spikes: {spikes.shape} in dense_mat_dot_binary_mat_p_call"
@@ -803,6 +806,7 @@ def dbmm_p_call(weights, spikes):
         outs=[out],
         spk_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        backend=backend,
     )
 
 
@@ -1077,7 +1081,7 @@ def _bdmm_benchmark_data(*, platform):
     return configs
 
 
-def bdmm_p_call(spikes, weights):
+def bdmm_p_call(spikes, weights, *, backend: Optional[str] = None):
     assert spikes.shape[1] == weights.shape[0], (
         f"spikes shape {spikes.shape} and weights shape {weights.shape} do not match"
         f"for event matrix multiplication"
@@ -1089,6 +1093,7 @@ def bdmm_p_call(spikes, weights):
         outs=[out],
         spk_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        backend=backend,
     )
 
 

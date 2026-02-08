@@ -165,6 +165,26 @@ class TestCSRDiagAddGradients:
         assert primals.shape == csr_value.shape
         assert tangents.shape == csr_value.shape
 
+    def test_jvp_csr_value_is_identity(self):
+        """Test that JVP w.r.t. csr_value is the identity (tangent == perturbation)."""
+        m, n = 5, 5
+        indptr, indices = get_csr(m, n, 0.5)
+        nse = indices.shape[0]
+
+        csr_value = brainstate.random.rand(nse).astype(jnp.float32)
+        diag_position = csr_diag_position(indptr, indices, (m, n))
+        diag_value = brainstate.random.rand(m).astype(jnp.float32)
+
+        perturbation = brainstate.random.rand(nse).astype(jnp.float32)
+
+        def f(x):
+            return csr_diag_add(x, diag_position, diag_value)
+
+        _, tangents = jax.jvp(f, (csr_value,), (perturbation,))
+        assert jnp.allclose(tangents, perturbation), (
+            "JVP w.r.t. csr_value should be identity: tangent must equal perturbation"
+        )
+
     def test_jvp_diag_value(self):
         """Test JVP with respect to diag_value."""
         m, n = 5, 5
@@ -182,6 +202,34 @@ class TestCSRDiagAddGradients:
 
         assert primals.shape == csr_value.shape
         assert tangents.shape == csr_value.shape
+
+    def test_jvp_diag_value_scatter(self):
+        """Test that JVP w.r.t. diag_value scatters the perturbation correctly."""
+        m, n = 5, 5
+        indptr, indices = get_csr(m, n, 0.5)
+        nse = indices.shape[0]
+
+        csr_value = brainstate.random.rand(nse).astype(jnp.float32)
+        diag_position = csr_diag_position(indptr, indices, (m, n))
+        diag_value = brainstate.random.rand(m).astype(jnp.float32)
+
+        perturbation = brainstate.random.rand(m).astype(jnp.float32)
+
+        def f(x):
+            return csr_diag_add(csr_value, diag_position, x)
+
+        _, tangents = jax.jvp(f, (diag_value,), (perturbation,))
+
+        # Expected: zeros.at[diag_position].add(perturbation)
+        expected = jnp.zeros_like(csr_value)
+        for i in range(m):
+            pos = int(diag_position[i])
+            if pos >= 0:
+                expected = expected.at[pos].add(perturbation[i])
+
+        assert jnp.allclose(tangents, expected), (
+            "JVP w.r.t. diag_value should scatter perturbation to diag positions"
+        )
 
     def test_jvp_both(self):
         """Test JVP with respect to both csr_value and diag_value."""
@@ -204,6 +252,35 @@ class TestCSRDiagAddGradients:
 
         assert primals.shape == csr_value.shape
         assert tangents.shape == csr_value.shape
+
+    def test_jvp_combined_vs_reference(self):
+        """Test combined JVP against manual reference computation."""
+        m, n = 5, 5
+        indptr, indices = get_csr(m, n, 0.5)
+        nse = indices.shape[0]
+
+        csr_value = brainstate.random.rand(nse).astype(jnp.float32)
+        diag_position = csr_diag_position(indptr, indices, (m, n))
+        diag_value = brainstate.random.rand(m).astype(jnp.float32)
+
+        csr_dot = brainstate.random.rand(nse).astype(jnp.float32)
+        diag_dot = brainstate.random.rand(m).astype(jnp.float32)
+
+        def f(csr, diag):
+            return csr_diag_add(csr, diag_position, diag)
+
+        _, tangents = jax.jvp(f, (csr_value, diag_value), (csr_dot, diag_dot))
+
+        # Reference: d/dt [csr + scatter(diag)] = csr_dot + scatter(diag_dot)
+        expected = csr_dot
+        for i in range(m):
+            pos = int(diag_position[i])
+            if pos >= 0:
+                expected = expected.at[pos].add(diag_dot[i])
+
+        assert jnp.allclose(tangents, expected, atol=1e-6), (
+            "Combined JVP should equal csr_dot + scatter(diag_dot)"
+        )
 
 
 class TestCSRDiagAddJIT:

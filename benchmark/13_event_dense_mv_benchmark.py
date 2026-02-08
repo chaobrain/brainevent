@@ -13,15 +13,13 @@
 # limitations under the License.
 # ==============================================================================
 
-import os
+import sys
 import time
+from pathlib import Path
 
-os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import jax
-import sys
-
-sys.path.append('../')
 
 import brainstate
 from utils import visualize
@@ -32,6 +30,8 @@ from brainevent._dense import (
 )
 
 brainevent.config.gpu_kernel_backend = 'warp'
+
+
 # brainevent.config.gpu_kernel_backend = 'pallas'
 
 

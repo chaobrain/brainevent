@@ -18,6 +18,7 @@
 import brainunit as u
 import jax
 import jax.numpy as jnp
+from typing import Optional
 import numpy as np
 from jax.interpreters import ad
 
@@ -231,7 +232,7 @@ def _dsfmv_benchmark_data(*, platform):
     return [BenchmarkConfig("default", (weights, spikes))]
 
 
-def dsfmv_p_call(weights, spikes):
+def dsfmv_p_call(weights, spikes, *, backend: Optional[str] = None):
     assert spikes.shape[0] == weights.shape[1], (
         f"spikes shape {spikes.shape} and weights shape {weights.shape} are not compatible"
     )
@@ -242,6 +243,7 @@ def dsfmv_p_call(weights, spikes):
         outs=[out],
         spk_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        backend=backend,
     )
 
 
@@ -436,7 +438,7 @@ def _sfdvm_benchmark_data(*, platform):
     return [BenchmarkConfig("default", (spikes, weights))]
 
 
-def sfvdm_p_call(spikes, weights):
+def sfvdm_p_call(spikes, weights, *, backend: Optional[str] = None):
     assert spikes.shape[0] == weights.shape[0], (
         f"shapes {spikes.shape} and {weights.shape} not aligned: "
         f"{spikes.shape[0]} (dim 0) != {weights.shape[0]} (dim 0)"
@@ -448,6 +450,7 @@ def sfvdm_p_call(spikes, weights):
         outs=[out],
         spk_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        backend=backend,
     )
 
 
@@ -701,7 +704,7 @@ def _dsfmm_benchmark_data(*, platform):
     return [BenchmarkConfig("default", (weights, spikes))]
 
 
-def dmsfm_p_call(weights, spikes):
+def dmsfm_p_call(weights, spikes, *, backend: Optional[str] = None):
     assert weights.shape[1] == spikes.shape[0], (
         f"weights.shape[1] ({weights.shape[1]}) != spikes.shape[0] ({spikes.shape[0]})"
         f", weights: {weights.shape}, spikes: {spikes.shape} in dmsfm_p_call"
@@ -713,6 +716,7 @@ def dmsfm_p_call(weights, spikes):
         outs=[out],
         spk_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        backend=backend,
     )
 
 
@@ -957,7 +961,7 @@ def _sfdmm_benchmark_data(*, platform):
     return [BenchmarkConfig("default", (spikes, weights))]
 
 
-def sfdmm_p_call(spikes, weights):
+def sfdmm_p_call(spikes, weights, *, backend: Optional[str] = None):
     assert spikes.shape[1] == weights.shape[0], (
         f"spikes shape {spikes.shape} and weights shape {weights.shape} do not match"
         f"for event matrix multiplication"
@@ -969,6 +973,7 @@ def sfdmm_p_call(spikes, weights):
         outs=[out],
         spk_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        backend=backend,
     )
 
 

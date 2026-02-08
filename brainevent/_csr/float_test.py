@@ -71,7 +71,7 @@ class TestVectorCSR:
     def _test_vjp(self, homo_w, replace, transpose):
         n_in = 20
         n_out = 30
-        shape = [n_in, n_out]
+        shape = (n_in, n_out)
         x = brainstate.random.rand(n_in) if transpose else brainstate.random.rand(n_out)
 
         indptr, indices = get_csr(n_in, n_out, 0.2, replace=replace)
@@ -111,7 +111,7 @@ class TestVectorCSR:
     def _test_jvp(self, homo_w, replace, transpose):
         n_in = 20
         n_out = 30
-        shape = [n_in, n_out]
+        shape = (n_in, n_out)
         x = brainstate.random.rand(n_in if transpose else n_out)
         indptr, indices = get_csr(n_in, n_out, 0.1, replace=replace)
 

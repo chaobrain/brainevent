@@ -21,6 +21,7 @@ from typing import Tuple
 import brainunit as u
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from brainevent._compatible_import import JAXSparse
 from brainevent._coo import COO
@@ -36,6 +37,34 @@ __all__ = [
     'FixedPostNumConn',
     'FixedPreNumConn',
 ]
+
+
+def _validate_fixed_conn_indices(
+    indices: Index,
+    *,
+    expected_rows: int,
+    kind: str,
+):
+    if indices.ndim != 2:
+        raise ValueError(f'{kind} indices must be 2D, got {indices.ndim}D.')
+    if indices.shape[0] != expected_rows:
+        raise ValueError(
+            f'{kind} row number mismatch. '
+            f'{indices.shape[0]} != {expected_rows}'
+        )
+    if not jnp.issubdtype(indices.dtype, jnp.integer):
+        raise ValueError(f'{kind} indices must be integer type, got {indices.dtype}.')
+
+
+def _contains_invalid_indices(indices: Index, *, upper_bound: int) -> bool:
+    with jax.ensure_compile_time_eval():
+        indices_np = np.asarray(indices)
+        if bool(np.any(indices_np < 0) or np.any(indices_np >= upper_bound)):
+            raise ValueError(
+                f'Found invalid indices in the connection matrix. '
+                f'All indices must be in the range [0, {upper_bound - 1}]. '
+                f'But found indices with min {indices_np.min()} and max {indices_np.max()}.'
+            )
 
 
 class FixedNumConn(u.sparse.SparseMatrix):
@@ -233,13 +262,15 @@ class FixedPostNumConn(FixedNumConn):
 
     def __init__(self, args: Tuple[Data, Index], *, shape: MatrixShape):
         self.data, self.indices = map(u.math.asarray, args)
-        assert self.indices.shape[0] == shape[0], \
-            f'Pre-synaptic neuron number mismatch. {self.indices.shape[0]} != {shape[0]}'
-        if self.data.size != 1:
-            assert self.data.shape == self.indices.shape, \
-                (f"Data shape {self.data.shape} must match indices shape {self.indices.shape}. "
-                 f"But got {self.data.shape} != {self.indices.shape}")
+        _validate_fixed_conn_indices(self.indices, expected_rows=shape[0], kind='Post-synaptic')
+        if self.data.size != 1 and self.data.shape != self.indices.shape:
+            raise ValueError(
+                f"Data shape {self.data.shape} must match indices shape {self.indices.shape}. "
+                f"But got {self.data.shape} != {self.indices.shape}"
+            )
         super().__init__(args, shape=shape)
+
+        _contains_invalid_indices(self.indices, upper_bound=self.shape[1])
 
     def with_data(self, data: Data) -> 'FixedPostNumConn':
         """
@@ -321,7 +352,12 @@ class FixedPostNumConn(FixedNumConn):
             Shape: (2, 2)
         """
         pre_ids, post_ids, spinfo = fixed_post_num_to_coo(self)
-        return COO((self.data, (pre_ids, post_ids)), shape=self.shape, spinfo=spinfo)
+        return COO(
+            (self.data.flatten(), pre_ids, post_ids),
+            shape=self.shape,
+            rows_sorted=spinfo.rows_sorted,
+            cols_sorted=spinfo.cols_sorted,
+        )
 
     def transpose(self, axes=None) -> 'FixedPreNumConn':
         """
@@ -379,10 +415,6 @@ class FixedPostNumConn(FixedNumConn):
         return FixedPostNumConn((op(self.data), self.indices), shape=self.shape)
 
     def _binary_op(self, other, op):
-        if isinstance(other, FixedPostNumConn):
-            if id(other.indices) == id(self.indices):
-                return FixedPostNumConn((op(self.data, other.data), self.indices), shape=self.shape)
-
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
@@ -399,10 +431,6 @@ class FixedPostNumConn(FixedNumConn):
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
     def _binary_rop(self, other, op):
-        if isinstance(other, FixedPostNumConn):
-            if id(other.indices) == id(self.indices):
-                return FixedPostNumConn((op(other.data, self.data), self.indices), shape=self.shape)
-
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
@@ -600,12 +628,19 @@ class FixedPreNumConn(FixedNumConn):
 
     def __init__(self, args: Tuple[Data, Index], *, shape: MatrixShape):
         self.data, self.indices = map(u.math.asarray, args)
-        assert self.indices.shape[0] == shape[1], 'Post-synaptic neuron number mismatch.'
-        if self.data.size != 1:
-            assert self.data.shape == self.indices.shape, \
-                (f"Data shape {self.data.shape} must match indices shape {self.indices.shape}. "
-                 f"But got {self.data.shape} != {self.indices.shape}")
+        _validate_fixed_conn_indices(
+            self.indices,
+            expected_rows=shape[1],
+            kind='Pre-synaptic'
+        )
+        if self.data.size != 1 and self.data.shape != self.indices.shape:
+            raise ValueError(
+                f"Data shape {self.data.shape} must match indices shape {self.indices.shape}. "
+                f"But got {self.data.shape} != {self.indices.shape}"
+            )
         super().__init__(args, shape=shape)
+
+        _contains_invalid_indices(self.indices, upper_bound=self.shape[0])
 
     def with_data(self, data: Data) -> 'FixedPreNumConn':
         """
@@ -695,7 +730,12 @@ class FixedPreNumConn(FixedNumConn):
             Shape: (3, 3)
         """
         pre_ids, post_ids, spinfo = fixed_pre_num_to_coo(self)
-        return COO((self.data, (pre_ids, post_ids)), shape=self.shape, spinfo=spinfo)
+        return COO(
+            (self.data.flatten(), pre_ids, post_ids),
+            shape=self.shape,
+            rows_sorted=spinfo.rows_sorted,
+            cols_sorted=spinfo.cols_sorted,
+        )
 
     def transpose(self, axes=None) -> FixedPostNumConn:
         """
@@ -758,10 +798,6 @@ class FixedPreNumConn(FixedNumConn):
         return FixedPreNumConn((op(self.data), self.indices), shape=self.shape)
 
     def _binary_op(self, other, op):
-        if isinstance(other, FixedPreNumConn):
-            if id(other.indices) == id(self.indices):
-                return FixedPreNumConn((op(self.data, other.data), self.indices), shape=self.shape)
-
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
@@ -778,10 +814,6 @@ class FixedPreNumConn(FixedNumConn):
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
     def _binary_rop(self, other, op):
-        if isinstance(other, FixedPreNumConn):
-            if id(other.indices) == id(self.indices):
-                return FixedPreNumConn((op(other.data, self.data), self.indices), shape=self.shape)
-
         if isinstance(other, JAXSparse):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 

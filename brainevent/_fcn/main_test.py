@@ -17,6 +17,7 @@
 
 import brainstate
 import braintools
+import jax.numpy as jnp
 import pytest
 
 import brainevent
@@ -53,3 +54,77 @@ class Test_To_Dense:
         assert allclose(out1, out2)
         assert allclose(out1, out3)
         assert allclose(out1, out4)
+
+
+class Test_To_COO:
+    def test_tocoo_round_trip(self):
+        post_indices = jnp.array([[0, 1, 2, 2], [1, 3, 3, 1], [2, 0, 3, 1]], dtype=jnp.int32)
+        post_data = jnp.array([[1., 9., 2., 3.], [4., 5., 6., 7.], [8., 9., 10., 11.]], dtype=jnp.float32)
+        post = brainevent.FixedPostNumConn((post_data, post_indices), shape=(3, 4))
+        assert allclose(post.tocoo().todense(), post.todense())
+
+        pre_indices = jnp.array([[0, 1, 2, 2], [1, 3, 3, 1], [2, 0, 3, 1]], dtype=jnp.int32)
+        pre_data = jnp.array([[1., 9., 2., 3.], [4., 5., 6., 7.], [8., 9., 10., 11.]], dtype=jnp.float32)
+        pre = brainevent.FixedPreNumConn((pre_data, pre_indices), shape=(4, 3))
+        assert allclose(pre.tocoo().todense(), pre.todense())
+
+
+class Test_Illegal_Slots:
+    def test_invalid_indices_rejected_post(self):
+        idx = jnp.array([[0, -1, 2, 2], [1, 4, 3, 1], [2, 0, -3, 1]], dtype=jnp.int32)
+        data = jnp.array([[1., 9., 2., 3.], [4., 5., 6., 7.], [8., 9., 10., 11.]], dtype=jnp.float32)
+        with pytest.raises(ValueError, match="invalid indices"):
+            brainevent.FixedPostNumConn((data, idx), shape=(3, 4))
+
+    def test_invalid_indices_rejected_pre(self):
+        idx = jnp.array([[0, -1, 2, 2], [1, 4, 3, 1], [2, 0, -3, 1]], dtype=jnp.int32)
+        data = jnp.array([[1., 9., 2., 3.], [4., 5., 6., 7.], [8., 9., 10., 11.]], dtype=jnp.float32)
+        with pytest.raises(ValueError, match="invalid indices"):
+            brainevent.FixedPreNumConn((data, idx), shape=(4, 3))
+
+    def test_invalid_indices_rejected_homo(self):
+        idx = jnp.array([[0, -1, 2], [1, 5, 1]], dtype=jnp.int32)
+        with pytest.raises(ValueError, match="invalid indices"):
+            brainevent.FixedPostNumConn((jnp.array(1.5, dtype=jnp.float32), idx), shape=(2, 4))
+
+    def test_duplicates_are_supported_post(self):
+        idx = jnp.array([[0, 1, 2, 2], [1, 3, 3, 1], [2, 0, 3, 1]], dtype=jnp.int32)
+        data = jnp.array([[1., 9., 2., 3.], [4., 5., 6., 7.], [8., 9., 10., 11.]], dtype=jnp.float32)
+        conn = brainevent.FixedPostNumConn((data, idx), shape=(3, 4))
+
+        dense = conn.todense()
+        x = jnp.array([1., 2., 3.], dtype=jnp.float32)
+        v = jnp.array([1., 2., 3., 4.], dtype=jnp.float32)
+        X = jnp.array([[1., 2., 3.], [4., 5., 6.]], dtype=jnp.float32)
+        V = jnp.array([[1., 2.], [3., 4.], [5., 6.], [7., 8.]], dtype=jnp.float32)
+
+        assert allclose(x @ conn, x @ dense)
+        assert allclose(conn @ v, dense @ v)
+        assert allclose(X @ conn, X @ dense)
+        assert allclose(conn @ V, dense @ V)
+
+    def test_duplicates_are_supported_pre(self):
+        idx = jnp.array([[0, 1, 2, 2], [1, 3, 3, 1], [2, 0, 3, 1]], dtype=jnp.int32)
+        data = jnp.array([[1., 9., 2., 3.], [4., 5., 6., 7.], [8., 9., 10., 11.]], dtype=jnp.float32)
+        conn = brainevent.FixedPreNumConn((data, idx), shape=(4, 3))
+
+        dense = conn.todense()
+        x = jnp.array([1., 2., 3., 4.], dtype=jnp.float32)
+        v = jnp.array([1., 2., 3.], dtype=jnp.float32)
+        X = jnp.array([[1., 2., 3., 4.], [5., 6., 7., 8.]], dtype=jnp.float32)
+        V = jnp.array([[1., 2.], [3., 4.], [5., 6.]], dtype=jnp.float32)
+
+        assert allclose(x @ conn, x @ dense)
+        assert allclose(conn @ v, dense @ v)
+        assert allclose(X @ conn, X @ dense)
+        assert allclose(conn @ V, dense @ V)
+
+    def test_homo_weight_with_duplicates(self):
+        idx = jnp.array([[0, 1, 2], [1, 3, 1]], dtype=jnp.int32)
+        conn = brainevent.FixedPostNumConn((jnp.array(1.5, dtype=jnp.float32), idx), shape=(2, 4))
+        dense = conn.todense()
+        x = jnp.array([1., 2.], dtype=jnp.float32)
+        v = jnp.array([1., 2., 3., 4.], dtype=jnp.float32)
+
+        assert allclose(x @ conn, x @ dense)
+        assert allclose(conn @ v, dense @ v)

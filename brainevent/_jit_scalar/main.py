@@ -20,6 +20,7 @@ from typing import Union, Tuple
 
 import brainunit as u
 import jax
+import numpy as np
 
 from brainevent._compatible_import import JAXSparse, Tracer
 from brainevent._event.binary import EventArray
@@ -109,6 +110,15 @@ class JITScalarMatrix(JITCMatrix):
         already one, preserving any attached units.
         """
         weight, self.prob, self.seed = data
+        if not isinstance(self.prob, Tracer):
+            prob = np.asarray(self.prob)
+            if prob.size != 1:
+                raise ValueError(f"prob must be a scalar, but got shape {prob.shape}.")
+            prob = float(prob.item())
+            if not np.isfinite(prob):
+                raise ValueError(f"prob must be finite, but got {prob}.")
+            if not (0. <= prob <= 1.):
+                raise ValueError(f"prob must be in [0, 1], but got {prob}.")
         self.weight = u.math.asarray(weight)
         self.corder = corder
         super().__init__(data, shape=shape)
@@ -193,6 +203,7 @@ class JITScalarMatrix(JITCMatrix):
         AssertionError
             If the provided weight has a different shape or unit than the current weight.
         """
+        weight = u.math.asarray(weight)
         assert weight.shape == self.weight.shape
         assert u.get_unit(weight) == u.get_unit(self.weight)
         return type(self)(
@@ -261,6 +272,16 @@ class JITScalarMatrix(JITCMatrix):
             raise NotImplementedError(
                 f"binary operation {op} between two {self.__class__.__name__} objects with different corder "
                 f"is not implemented currently."
+            )
+        if self.prob != other.prob:
+            raise NotImplementedError(
+                f"binary operation {op} between two {self.__class__.__name__} objects "
+                f"with different prob is not supported."
+            )
+        if self.shape != other.shape:
+            raise NotImplementedError(
+                f"binary operation {op} between two {self.__class__.__name__} objects "
+                f"with different shapes is not supported."
             )
 
 
@@ -697,8 +718,7 @@ class JITCScalarC(JITScalarMatrix):
 
         This method generates a full dense representation of the sparse matrix by
         using the homogeneous weight value for all connections determined by the
-        probability and seed. Since this is a column-oriented matrix (JITCHomoC),
-        the transpose flag is set to True to ensure proper conversion.
+        probability and seed. The generated dense matrix always has ``self.shape``.
 
         Returns
         -------

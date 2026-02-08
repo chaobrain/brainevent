@@ -16,7 +16,7 @@
 # -*- coding: utf-8 -*-
 
 
-from typing import Tuple, Union
+from typing import Optional, Tuple, Union
 
 import brainunit as u
 import jax
@@ -270,8 +270,7 @@ def _spfloat_fcnmv_pallas_kernel(
                 out_shape=kwargs['outs']
             )
             out_info = kwargs['outs'][0]
-            placeholder = jnp.zeros(out_info.shape, out_info.dtype)
-            return fn(weights, indices, vector, placeholder)
+            return fn(weights, indices, vector, jnp.zeros(out_info.shape, out_info.dtype))
 
     else:
         # Sparse Matrix: [m, k]
@@ -332,12 +331,7 @@ def _spfloat_fcnmv_transpose_rule(ct, weights, indices, spikes, *, shape, transp
         if type(ct) is ad.Zero:
             ct_spk = ad.Zero(spikes)
         else:
-            if homo:
-                # homogeneous weight
-                ct_spk = jax.vmap(lambda idx: jnp.sum(ct[idx] * weights))(indices)
-            else:
-                # heterogeneous weight
-                ct_spk = jax.vmap(lambda idx, w: jnp.inner(ct[idx], w))(indices, weights)
+            ct_spk = fcnmv_p_call(weights, indices, ct, shape=shape, transpose=not transpose)[0]
         return weights, indices, ct_spk
 
     else:
@@ -387,41 +381,6 @@ def _spfloat_fcnmv_batching(args, axes, **kwargs):
         return general_batching_rule(spfloat_fcnmv_p, args, axes, **kwargs)
 
 
-def spfloat_fcnmv_p_call(
-    weights,
-    indices,
-    spikes,
-    *,
-    shape: Tuple[int, int],
-    transpose: bool = False,
-) -> Tuple[jax.Array]:
-    out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, spikes, shape, transpose)
-    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
-    return spfloat_fcnmv_p(
-        weights,
-        indices,
-        spikes,
-        outs=[out],
-        shape=shape,
-        transpose=transpose,
-        weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
-        indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
-        spike_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
-    )
-
-
-spfloat_fcnmv_p = XLACustomKernel('spfloat_fcnmv')
-spfloat_fcnmv_p.def_numba_kernel(_spfloat_fcnmv_numba_kernel)
-spfloat_fcnmv_p.def_warp_kernel(_spfloat_fcnmv_warp_kernel)
-spfloat_fcnmv_p.def_pallas_kernel('gpu', _spfloat_fcnmv_pallas_kernel)
-spfloat_fcnmv_p.def_pallas_kernel('tpu', _spfloat_fcnmv_pallas_kernel)
-spfloat_fcnmv_p.def_jvp_rule2(_spfloat_fcnmv_jvp_weights, None, _spfloat_fcnmv_jvp_spikes, None)
-spfloat_fcnmv_p.def_transpose_rule(_spfloat_fcnmv_transpose_rule)
-spfloat_fcnmv_p.def_batching_rule(_spfloat_fcnmv_batching)
-spfloat_fcnmv_p.def_call(spfloat_fcnmv_p_call)
-spfloat_fcnmv_p.def_tags('fcn', 'sparse_float')
-
-
 def _spfloat_fcnmv_benchmark_data(*, platform):
     import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
@@ -441,12 +400,51 @@ def _spfloat_fcnmv_benchmark_data(*, platform):
                 dtype=jnp.int32,
             )
             name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
-            configs.append(BenchmarkConfig(name, (weights, indices, vector_data, vector_index), {
-                'shape': (n_pre, n_post), 'transpose': transpose
-            }))
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (weights, indices, vector_data),
+                    {'shape': (n_pre, n_post), 'transpose': transpose}
+                )
+            )
     return configs
 
 
+def spfloat_fcnmv_p_call(
+    weights,
+    indices,
+    spikes,
+    *,
+    shape: Tuple[int, int],
+    transpose: bool = False,
+    backend: Optional[str] = None,
+) -> Tuple[jax.Array]:
+    out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, spikes, shape, transpose)
+    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
+    return spfloat_fcnmv_p(
+        weights,
+        indices,
+        spikes,
+        outs=[out],
+        shape=shape,
+        transpose=transpose,
+        weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
+        spike_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
+        backend=backend,
+    )
+
+
+spfloat_fcnmv_p = XLACustomKernel('spfloat_fcnmv')
+spfloat_fcnmv_p.def_numba_kernel(_spfloat_fcnmv_numba_kernel)
+spfloat_fcnmv_p.def_warp_kernel(_spfloat_fcnmv_warp_kernel)
+spfloat_fcnmv_p.def_pallas_kernel('gpu', _spfloat_fcnmv_pallas_kernel)
+spfloat_fcnmv_p.def_pallas_kernel('tpu', _spfloat_fcnmv_pallas_kernel)
+spfloat_fcnmv_p.def_jvp_rule2(_spfloat_fcnmv_jvp_weights, None, _spfloat_fcnmv_jvp_spikes, None)
+spfloat_fcnmv_p.def_transpose_rule(_spfloat_fcnmv_transpose_rule)
+spfloat_fcnmv_p.def_batching_rule(_spfloat_fcnmv_batching)
+spfloat_fcnmv_p.def_call(spfloat_fcnmv_p_call)
+spfloat_fcnmv_p.def_tags('fcn', 'sparse_float')
 spfloat_fcnmv_p.def_benchmark_data(_spfloat_fcnmv_benchmark_data)
 
 
@@ -773,6 +771,27 @@ def _spfloat_fcnmm_batching(args, axes, **kwargs):
         return general_batching_rule(spfloat_fcnmm_p, args, axes, **kwargs)
 
 
+def _spfloat_fcnmm_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for homo in (True, False):
+            n_conn = max(1, int(n_post * prob))
+            indices = jnp.asarray(_np.random.randint(0, n_post, (n_pre, n_conn), dtype=_np.int32))
+            if homo:
+                weights = jnp.ones(1, dtype=dtype)
+            else:
+                weights = jnp.ones((n_pre, n_conn), dtype=dtype)
+            b_rows = n_post if not transpose else n_pre
+            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
+            name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
+            configs.append(BenchmarkConfig(name, (weights, indices, B), {
+                'shape': (n_pre, n_post), 'transpose': transpose
+            }))
+    return configs
+
+
 def spfloat_fcnmm_p_call(
     weights: Union[jax.Array, u.Quantity],
     indices: jax.Array,
@@ -780,6 +799,7 @@ def spfloat_fcnmm_p_call(
     *,
     shape: Tuple[int, int],
     transpose: bool,
+    backend: Optional[str] = None,
 ) -> Tuple[jax.Array]:
     """
     Perform a sparse matrix-matrix multiplication with fixed connection number.
@@ -819,6 +839,7 @@ def spfloat_fcnmm_p_call(
         matrix_info=jax.ShapeDtypeStruct(matrix.shape, matrix.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         outs=[out],
+        backend=backend,
     )
 
 
@@ -826,33 +847,9 @@ spfloat_fcnmm_p = XLACustomKernel('spfloat_fcnmm')
 spfloat_fcnmm_p.def_numba_kernel(_spfloat_fcnmm_numba_kernel)
 spfloat_fcnmm_p.def_pallas_kernel('gpu', _spfloat_fcnmm_pallas_kernel)
 spfloat_fcnmm_p.def_pallas_kernel('tpu', _spfloat_fcnmm_pallas_kernel)
-spfloat_fcnmm_p.def_jvp_rule2(_spfloat_fcnmm_jvp_weights, None,
-                              _spfloat_fcnmm_jvp_matrix, None)
+spfloat_fcnmm_p.def_jvp_rule2(_spfloat_fcnmm_jvp_weights, None, _spfloat_fcnmm_jvp_matrix, None)
 spfloat_fcnmm_p.def_transpose_rule(_spfloat_fcnmm_transpose_rule)
 spfloat_fcnmm_p.def_batching_rule(_spfloat_fcnmm_batching)
 spfloat_fcnmm_p.def_call(spfloat_fcnmm_p_call)
 spfloat_fcnmm_p.def_tags('fcn', 'sparse_float')
-
-
-def _spfloat_fcnmm_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for transpose in (False, True):
-        for homo in (True, False):
-            n_conn = max(1, int(n_post * prob))
-            indices = jnp.asarray(_np.random.randint(0, n_post, (n_pre, n_conn), dtype=_np.int32))
-            if homo:
-                weights = jnp.ones(1, dtype=dtype)
-            else:
-                weights = jnp.ones((n_pre, n_conn), dtype=dtype)
-            b_rows = n_post if not transpose else n_pre
-            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
-            name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
-            configs.append(BenchmarkConfig(name, (weights, indices, B), {
-                'shape': (n_pre, n_post), 'transpose': transpose
-            }))
-    return configs
-
-
 spfloat_fcnmm_p.def_benchmark_data(_spfloat_fcnmm_benchmark_data)
