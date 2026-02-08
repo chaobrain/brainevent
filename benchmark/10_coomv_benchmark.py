@@ -233,6 +233,7 @@ def run_case(
     )
     jax_coo = JaxCOO((weights_dense, row, col), shape=(case.n_rows, case.n_cols))
 
+    @jax.jit
     def warp_fn(w, r, c, v):
         return brainevent.coomv_p.call(
             w,
