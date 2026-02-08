@@ -31,8 +31,8 @@ from brainevent._typing import Data, Row, Col, MatrixShape
 
 __all__ = [
     "coomv",
-    "coomm",
     "coomv_p",
+    "coomm",
     "coomm_p",
 ]
 
