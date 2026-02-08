@@ -222,7 +222,7 @@ def _coo_on_pre_pallas_gpu_kernel(
     return run
 
 
-def _update_coo_pre_benchmark_data(*, platform):
+def _coo_pre_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for bool_event in (True, False):
@@ -269,7 +269,7 @@ update_coo_on_binary_pre_p.def_pallas_kernel('gpu', _coo_on_pre_pallas_gpu_kerne
 update_coo_on_binary_pre_p.def_pallas_kernel('tpu', _coo_on_pre_pallas_gpu_kernel)
 update_coo_on_binary_pre_p.def_call(_coo_on_pre_prim_call)
 update_coo_on_binary_pre_p.def_tags('coo', 'plasticity')
-update_coo_on_binary_pre_p.def_benchmark_data(_update_coo_pre_benchmark_data)
+update_coo_on_binary_pre_p.def_benchmark_data(_coo_pre_benchmark_data)
 
 
 # =============================================================================
@@ -465,7 +465,7 @@ def _coo_on_post_pallas_gpu_kernel(
     return run
 
 
-def _update_coo_post_benchmark_data(*, platform):
+def _coo_post_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for bool_event in (True, False):
@@ -512,4 +512,4 @@ update_coo_on_binary_post_p.def_pallas_kernel('gpu', _coo_on_post_pallas_gpu_ker
 update_coo_on_binary_post_p.def_pallas_kernel('tpu', _coo_on_post_pallas_gpu_kernel)
 update_coo_on_binary_post_p.def_call(_coo_on_post_prim_call)
 update_coo_on_binary_post_p.def_tags('coo', 'plasticity')
-update_coo_on_binary_post_p.def_benchmark_data(_update_coo_post_benchmark_data)
+update_coo_on_binary_post_p.def_benchmark_data(_coo_post_benchmark_data)
