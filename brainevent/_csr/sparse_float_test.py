@@ -33,10 +33,8 @@ from brainevent._csr.sparse_float import (
 from brainevent._csr.test_util import get_csr
 
 platform = jax.default_backend()
-SPFLOAT_CSRMV_IMPLEMENTATIONS = tuple(spfloat_csrmv_p.available_backends(platform))
-SPFLOAT_CSRMM_IMPLEMENTATIONS = tuple(spfloat_csrmm_p.available_backends(platform))
-SPFLOAT_CSRMV_PARAMS = SPFLOAT_CSRMV_IMPLEMENTATIONS or (None,)
-SPFLOAT_CSRMM_PARAMS = SPFLOAT_CSRMM_IMPLEMENTATIONS or (None,)
+SPFLOAT_CSRMV_PARAMS = tuple(spfloat_csrmv_p.available_backends(platform))
+SPFLOAT_CSRMM_PARAMS = tuple(spfloat_csrmm_p.available_backends(platform))
 
 
 def _make_data(homo_w, shape):
@@ -74,7 +72,7 @@ def _spfloat_csrmm_api(data, indices, indptr, B, shape, transpose, implementatio
 
 
 @pytest.mark.skipif(
-    not SPFLOAT_CSRMV_IMPLEMENTATIONS,
+    not SPFLOAT_CSRMV_PARAMS,
     reason=f'No spfloat_csrmv implementation on platform={platform}',
 )
 @pytest.mark.parametrize('implementation', SPFLOAT_CSRMV_PARAMS)
@@ -271,7 +269,7 @@ class TestSparseFloatCSRMV:
 
 
 @pytest.mark.skipif(
-    not SPFLOAT_CSRMM_IMPLEMENTATIONS,
+    not SPFLOAT_CSRMM_PARAMS,
     reason=f'No spfloat_csrmm implementation on platform={platform}',
 )
 @pytest.mark.parametrize('implementation', SPFLOAT_CSRMM_PARAMS)
