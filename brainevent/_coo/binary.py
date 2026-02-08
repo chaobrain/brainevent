@@ -601,7 +601,7 @@ def _coomv_batching(args, axes, **kwargs):
         return general_batching_rule(binary_coomv_p_call, args, axes, **kwargs)
 
 
-def _binary_coomv_benchmark_data(*, platform):
+def _coomv_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -706,7 +706,7 @@ binary_coomv_p.def_transpose_rule(_coomv_transpose_rule)
 binary_coomv_p.def_batching_rule(_coomv_batching)
 binary_coomv_p.def_call(binary_coomv_p_call)
 binary_coomv_p.def_tags('coo', 'binary')
-binary_coomv_p.def_benchmark_data(_binary_coomv_benchmark_data)
+binary_coomv_p.def_benchmark_data(_coomv_benchmark_data)
 
 
 # =============================================================================
@@ -1253,7 +1253,7 @@ def _coomm_batching(args, axes, **kwargs):
         return general_batching_rule(binary_coomm_p_call, args, axes, **kwargs)
 
 
-def _binary_coomm_benchmark_data(*, platform):
+def _coomm_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -1353,4 +1353,4 @@ binary_coomm_p.def_transpose_rule(_coomm_transpose_rule)
 binary_coomm_p.def_batching_rule(_coomm_batching)
 binary_coomm_p.def_call(binary_coomm_p_call)
 binary_coomm_p.def_tags('coo', 'binary')
-binary_coomm_p.def_benchmark_data(_binary_coomm_benchmark_data)
+binary_coomm_p.def_benchmark_data(_coomm_benchmark_data)
