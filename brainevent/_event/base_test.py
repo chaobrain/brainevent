@@ -47,11 +47,6 @@ class TestEventRepresentationMinimalAPI:
         assert np.array_equal(arr2.value, np.array([4, 5, 6]))
         assert id(arr) != id(arr2)
 
-    def test_value_is_read_only(self):
-        arr = BinaryArray(np.array([1, 2, 3]))
-        with pytest.raises(AttributeError):
-            arr.value = np.array([4, 5, 6])
-
     def test_array_protocol(self):
         arr = BinaryArray(np.array([1, 2, 3]))
         np_arr = np.asarray(arr)

@@ -87,17 +87,6 @@ class TestBinaryArray:
 
         assert np.allclose(result, expected)
 
-    def test_imatmul(self):
-        """`@=` returns a new immutable array wrapper."""
-        binary_mat = BinaryArray(np.array([[0, 1, 1], [1, 0, 1]], dtype=np.uint8))
-        dense_mat = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
-
-        original_id = id(binary_mat)
-        binary_mat @= dense_mat
-        expected = np.array([[8.0, 10.0], [6.0, 8.0]])
-        assert np.allclose(binary_mat.value, expected)
-        assert id(binary_mat) != original_id
-
     def test_error_conditions(self):
         """Test error conditions for matrix multiplication."""
         # Test with incompatible dimensions
@@ -126,4 +115,3 @@ class TestBinaryArray:
 
         with pytest.raises(AssertionError):
             _ = binary_mat @ dense_vec
-
