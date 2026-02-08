@@ -18,341 +18,211 @@
 
 import brainstate
 import brainunit as u
+import jax
 import pytest
 
-import brainevent
-from brainevent._dense.binary import dbmm, bdmm, dbmv, bdvm
+from brainevent._dense.binary import dbmm, dbmm_p, bdmm, bdmm_p, dbmv, dbmv_p, bdvm, bdvm_p
+
+platform = jax.default_backend()
+DBMV_IMPLEMENTATIONS = tuple(dbmv_p.available_backends(platform))
+BDVM_IMPLEMENTATIONS = tuple(bdvm_p.available_backends(platform))
+DBMM_IMPLEMENTATIONS = tuple(dbmm_p.available_backends(platform))
+BDMM_IMPLEMENTATIONS = tuple(bdmm_p.available_backends(platform))
 
 
-class TestMatrixEvent:
-    @pytest.mark.parametrize("m", [10])
-    @pytest.mark.parametrize("k", [15, 20])
-    @pytest.mark.parametrize("n", [30])
-    @pytest.mark.parametrize("asbool", [True, False])
-    def test_mm(self, m, k, n, asbool):
-        matrix = brainstate.random.randn(m, k)
-        events = brainevent.BinaryArray(brainstate.random.randn(k, n) < 0.5)
-        if not asbool:
-            events.value = u.math.asarray(events.value, dtype=float)
-        out1 = matrix @ events
-        out2 = matrix @ (events.value).astype(float)
-        assert u.math.allclose(out1, out2, atol=1e-3, rtol=1e-3)
+# ---- Forward: dense matrix @ binary vector (dbmv) ----
 
-    @pytest.mark.parametrize("m", [10])
-    @pytest.mark.parametrize("k", [15, 20])
-    @pytest.mark.parametrize("n", [30])
-    def test_dense_mat_dot_binary_mat(self, m, k, n):
-        matrix = brainstate.random.randn(m, k)
-        events = u.math.asarray(brainstate.random.randn(k, n) < 0.5, dtype=float)
-        out1 = dbmm(matrix, events)
-        out2 = matrix @ events
-        assert u.math.allclose(out1, out2, atol=1e-3, rtol=1e-3)
+@pytest.mark.parametrize("implementation", DBMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize("m", [10])
+@pytest.mark.parametrize("k", [15, 20])
+@pytest.mark.parametrize("dtype", [bool, float])
+def test_dbmv_forward(implementation, m, k, dtype):
+    weights = brainstate.random.randn(m, k)
+    spikes = brainstate.random.randn(k) < 0.3
+    if dtype == float:
+        spikes = u.math.asarray(spikes, dtype=float)
+    result = dbmv(weights, spikes, backend=implementation)
+    expected = weights @ u.math.asarray(spikes, dtype=float)
+    assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
 
 
-class TestEventMatrix:
-    @pytest.mark.parametrize("m", [10])
-    @pytest.mark.parametrize("k", [15, 20])
-    @pytest.mark.parametrize("n", [30])
-    @pytest.mark.parametrize("asbool", [True, False])
-    def test_mm(self, m, k, n, asbool):
-        events = brainevent.BinaryArray(brainstate.random.randn(m, k) < 0.5)
-        if not asbool:
-            events.value = u.math.asarray(events.value, dtype=float)
-        matrix = brainstate.random.randn(k, n)
-        out1 = events @ matrix
-        out2 = events.value @ matrix
-        assert u.math.allclose(out1, out2, atol=1e-3, rtol=1e-3)
+# ---- Forward: binary vector @ dense matrix (bdvm) ----
 
-    @pytest.mark.parametrize("m", [10])
-    @pytest.mark.parametrize("k", [15, 20])
-    @pytest.mark.parametrize("n", [30])
-    def test_dense_mat_dot_binary_mat(self, m, k, n):
-        events = u.math.asarray(brainstate.random.randn(m, k) < 0.5, dtype=float)
-        matrix = brainstate.random.randn(k, n)
-        out1 = bdmm(events, matrix)
-        out2 = events @ matrix
-        assert u.math.allclose(out1, out2, atol=1e-3, rtol=1e-3)
+@pytest.mark.parametrize("implementation", BDVM_IMPLEMENTATIONS)
+@pytest.mark.parametrize("k", [15, 20])
+@pytest.mark.parametrize("n", [20])
+@pytest.mark.parametrize("dtype", [bool, float])
+def test_bdvm_forward(implementation, k, n, dtype):
+    spikes = brainstate.random.randn(k) < 0.3
+    if dtype == float:
+        spikes = u.math.asarray(spikes, dtype=float)
+    weights = brainstate.random.randn(k, n)
+    result = bdvm(spikes, weights, backend=implementation)
+    expected = u.math.asarray(spikes, dtype=float) @ weights
+    assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
 
 
-class TestMatrixEvent_mv:
-    @pytest.mark.parametrize("m", [10])
-    @pytest.mark.parametrize("k", [15, 20])
-    @pytest.mark.parametrize("asbool", [True, False])
-    def test_mm(self, m, k, asbool):
-        matrix = brainstate.random.randn(m, k)
-        events = brainevent.BinaryArray(brainstate.random.randn(k) < 0.5)
-        if not asbool:
-            events.value = u.math.asarray(events.value, dtype=float)
-        out1 = matrix @ events
-        out2 = matrix @ events.value
-        assert u.math.allclose(out1, out2, atol=1e-3, rtol=1e-3)
+# ---- Forward: dense matrix @ binary matrix (dbmm) ----
 
-    @pytest.mark.parametrize("m", [10])
-    @pytest.mark.parametrize("k", [15, 20])
-    def test_matrix_event_mv(self, m, k):
-        matrix = brainstate.random.randn(m, k)
-        events = u.math.asarray(brainstate.random.randn(k) < 0.5, dtype=float)
-        out1 = dbmv(matrix, events)
-        out2 = matrix @ events
-        assert u.math.allclose(out1, out2, atol=1e-3, rtol=1e-3)
+@pytest.mark.parametrize("implementation", DBMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize("m", [10])
+@pytest.mark.parametrize("k", [15, 20])
+@pytest.mark.parametrize("n", [30])
+@pytest.mark.parametrize("dtype", [bool, float])
+def test_dbmm_forward(implementation, m, k, n, dtype):
+    weights = brainstate.random.randn(m, k)
+    spikes = brainstate.random.randn(k, n) < 0.3
+    if dtype == float:
+        spikes = u.math.asarray(spikes, dtype=float)
+    result = dbmm(weights, spikes, backend=implementation)
+    expected = weights @ u.math.asarray(spikes, dtype=float)
+    assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
 
 
-class TestEventMatrix_mv:
-    @pytest.mark.parametrize("m", [10])
-    @pytest.mark.parametrize("k", [15, 20])
-    @pytest.mark.parametrize("asbool", [True, False])
-    def test_mm(self, m, k, asbool):
-        events = brainevent.BinaryArray(brainstate.random.randn(k) < 0.5)
-        if not asbool:
-            events.value = u.math.asarray(events.value, dtype=float)
-        matrix = brainstate.random.randn(k, m)
-        out1 = events @ matrix
-        out2 = events.value @ matrix
-        assert u.math.allclose(out1, out2, atol=1e-3, rtol=1e-3)
+# ---- Forward: binary matrix @ dense matrix (bdmm) ----
 
-    @pytest.mark.parametrize("m", [10])
-    @pytest.mark.parametrize("k", [15, 20])
-    def test_matrix_event_mv(self, m, k):
-        events = u.math.asarray(brainstate.random.randn(m) < 0.5, dtype=float)
-        matrix = brainstate.random.randn(m, k)
-        out1 = bdvm(events, matrix)
-        out2 = events @ matrix
-        assert u.math.allclose(out1, out2, atol=1e-3, rtol=1e-3)
+@pytest.mark.parametrize("implementation", BDMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize("m", [10])
+@pytest.mark.parametrize("k", [15, 20])
+@pytest.mark.parametrize("n", [30])
+@pytest.mark.parametrize("dtype", [bool, float])
+def test_bdmm_forward(implementation, m, k, n, dtype):
+    spikes = brainstate.random.randn(m, k) < 0.3
+    if dtype == float:
+        spikes = u.math.asarray(spikes, dtype=float)
+    weights = brainstate.random.randn(k, n)
+    result = bdmm(spikes, weights, backend=implementation)
+    expected = u.math.asarray(spikes, dtype=float) @ weights
+    assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
 
 
-class TestForwardPass:
-    """Test forward pass for all 4 operations with boolean and float spikes."""
+# ---- Gradient: dbmv ----
 
-    @pytest.mark.parametrize("m", [10])
-    @pytest.mark.parametrize("k", [15])
-    @pytest.mark.parametrize("dtype", [bool, float])
-    def test_dense_mat_dot_binary_vec(self, m, k, dtype):
-        weights = brainstate.random.randn(m, k)
-        spikes = brainstate.random.randn(k) < 0.3
-        if dtype == float:
-            spikes = u.math.asarray(spikes, dtype=float)
-        result = dbmv(weights, spikes)
-        expected = weights @ u.math.asarray(spikes, dtype=float)
-        assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
+@pytest.mark.parametrize("implementation", DBMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize("m", [10])
+@pytest.mark.parametrize("k", [15])
+def test_dbmv_grad_weights(implementation, m, k):
+    weights = brainstate.random.randn(m, k)
+    spikes = u.math.asarray(brainstate.random.randn(k) < 0.3, dtype=float)
 
-    @pytest.mark.parametrize("k", [15])
-    @pytest.mark.parametrize("n", [20])
-    @pytest.mark.parametrize("dtype", [bool, float])
-    def test_binary_vec_dot_dense_mat(self, k, n, dtype):
-        spikes = brainstate.random.randn(k) < 0.3
-        if dtype == float:
-            spikes = u.math.asarray(spikes, dtype=float)
-        weights = brainstate.random.randn(k, n)
-        result = bdvm(spikes, weights)
-        expected = u.math.asarray(spikes, dtype=float) @ weights
-        assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
+    def f(w):
+        return dbmv(w, spikes, backend=implementation).sum()
 
-    @pytest.mark.parametrize("m", [10])
-    @pytest.mark.parametrize("k", [15])
-    @pytest.mark.parametrize("n", [20])
-    @pytest.mark.parametrize("dtype", [bool, float])
-    def test_dense_mat_dot_binary_mat(self, m, k, n, dtype):
-        weights = brainstate.random.randn(m, k)
-        spikes = brainstate.random.randn(k, n) < 0.3
-        if dtype == float:
-            spikes = u.math.asarray(spikes, dtype=float)
-        result = dbmm(weights, spikes)
-        expected = weights @ u.math.asarray(spikes, dtype=float)
-        assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
-
-    @pytest.mark.parametrize("m", [10])
-    @pytest.mark.parametrize("k", [15])
-    @pytest.mark.parametrize("n", [20])
-    @pytest.mark.parametrize("dtype", [bool, float])
-    def test_binary_mat_dot_dense_mat(self, m, k, n, dtype):
-        spikes = brainstate.random.randn(m, k) < 0.3
-        if dtype == float:
-            spikes = u.math.asarray(spikes, dtype=float)
-        weights = brainstate.random.randn(k, n)
-        result = bdmm(spikes, weights)
-        expected = u.math.asarray(spikes, dtype=float) @ weights
-        assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
+    grad = jax.grad(f)(weights)
+    assert grad.shape == weights.shape
 
 
-class TestGradient:
-    """Test gradient computation (JVP/VJP) for all 4 operations."""
+# ---- Gradient: bdvm ----
 
-    @pytest.mark.parametrize("m", [10])
-    @pytest.mark.parametrize("k", [15])
-    def test_dense_mat_dot_binary_vec_grad_weights(self, m, k):
-        import jax
-        weights = brainstate.random.randn(m, k)
-        spikes = u.math.asarray(brainstate.random.randn(k) < 0.3, dtype=float)
+@pytest.mark.parametrize("implementation", BDVM_IMPLEMENTATIONS)
+@pytest.mark.parametrize("k", [15])
+@pytest.mark.parametrize("n", [20])
+def test_bdvm_grad_weights(implementation, k, n):
+    spikes = u.math.asarray(brainstate.random.randn(k) < 0.3, dtype=float)
+    weights = brainstate.random.randn(k, n)
 
-        def f(w):
-            return dbmv(w, spikes).sum()
+    def f(w):
+        return bdvm(spikes, w, backend=implementation).sum()
 
-        grad = jax.grad(f)(weights)
-        assert grad.shape == weights.shape
-
-    @pytest.mark.parametrize("k", [15])
-    @pytest.mark.parametrize("n", [20])
-    def test_binary_vec_dot_dense_mat_grad_weights(self, k, n):
-        import jax
-        spikes = u.math.asarray(brainstate.random.randn(k) < 0.3, dtype=float)
-        weights = brainstate.random.randn(k, n)
-
-        def f(w):
-            return bdvm(spikes, w).sum()
-
-        grad = jax.grad(f)(weights)
-        assert grad.shape == weights.shape
-
-    @pytest.mark.parametrize("m", [10])
-    @pytest.mark.parametrize("k", [15])
-    @pytest.mark.parametrize("n", [20])
-    def test_dense_mat_dot_binary_mat_grad_weights(self, m, k, n):
-        import jax
-        weights = brainstate.random.randn(m, k)
-        spikes = u.math.asarray(brainstate.random.randn(k, n) < 0.3, dtype=float)
-
-        def f(w):
-            return dbmm(w, spikes).sum()
-
-        grad = jax.grad(f)(weights)
-        assert grad.shape == weights.shape
-
-    @pytest.mark.parametrize("m", [10])
-    @pytest.mark.parametrize("k", [15])
-    @pytest.mark.parametrize("n", [20])
-    def test_binary_mat_dot_dense_mat_grad_weights(self, m, k, n):
-        import jax
-        spikes = u.math.asarray(brainstate.random.randn(m, k) < 0.3, dtype=float)
-        weights = brainstate.random.randn(k, n)
-
-        def f(w):
-            return bdmm(spikes, w).sum()
-
-        grad = jax.grad(f)(weights)
-        assert grad.shape == weights.shape
+    grad = jax.grad(f)(weights)
+    assert grad.shape == weights.shape
 
 
-class TestBackendSpecific:
-    """Test specific backends (pallas, warp) directly via backend= parameter."""
+# ---- Gradient: dbmm ----
 
-    @pytest.mark.parametrize("m", [10])
-    @pytest.mark.parametrize("k", [15])
-    @pytest.mark.parametrize("n", [20])
-    @pytest.mark.parametrize("dtype", [bool, float])
-    def test_pallas_dbmm(self, m, k, n, dtype):
-        import jax
-        if jax.default_backend() not in ('gpu', 'tpu'):
-            pytest.skip("pallas backend requires GPU or TPU")
-        weights = brainstate.random.randn(m, k)
-        spikes = brainstate.random.randn(k, n) < 0.3
-        if dtype == float:
-            spikes = u.math.asarray(spikes, dtype=float)
-        result = dbmm(weights, spikes, backend='pallas')
-        expected = weights @ u.math.asarray(spikes, dtype=float)
-        assert u.math.allclose(result, expected, atol=1e-2, rtol=1e-2)
+@pytest.mark.parametrize("implementation", DBMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize("m", [10])
+@pytest.mark.parametrize("k", [15])
+@pytest.mark.parametrize("n", [20])
+def test_dbmm_grad_weights(implementation, m, k, n):
+    weights = brainstate.random.randn(m, k)
+    spikes = u.math.asarray(brainstate.random.randn(k, n) < 0.3, dtype=float)
 
-    @pytest.mark.parametrize("m", [10])
-    @pytest.mark.parametrize("k", [15])
-    @pytest.mark.parametrize("n", [20])
-    @pytest.mark.parametrize("dtype", [bool, float])
-    def test_pallas_bdmm(self, m, k, n, dtype):
-        import jax
-        if jax.default_backend() not in ('gpu', 'tpu'):
-            pytest.skip("pallas backend requires GPU or TPU")
-        spikes = brainstate.random.randn(m, k) < 0.3
-        if dtype == float:
-            spikes = u.math.asarray(spikes, dtype=float)
-        weights = brainstate.random.randn(k, n)
-        result = bdmm(spikes, weights, backend='pallas')
-        expected = u.math.asarray(spikes, dtype=float) @ weights
-        assert u.math.allclose(result, expected, atol=1e-2, rtol=1e-2)
+    def f(w):
+        return dbmm(w, spikes, backend=implementation).sum()
 
-    @pytest.mark.parametrize("m", [10])
-    @pytest.mark.parametrize("k", [15])
-    @pytest.mark.parametrize("n", [20])
-    @pytest.mark.parametrize("dtype", [bool, float])
-    def test_warp_dbmm(self, m, k, n, dtype):
-        import jax
-        if jax.default_backend() != 'gpu':
-            pytest.skip("warp backend requires GPU")
-        weights = brainstate.random.randn(m, k)
-        spikes = brainstate.random.randn(k, n) < 0.3
-        if dtype == float:
-            spikes = u.math.asarray(spikes, dtype=float)
-        result = dbmm(weights, spikes, backend='warp')
-        expected = weights @ u.math.asarray(spikes, dtype=float)
-        assert u.math.allclose(result, expected, atol=1e-2, rtol=1e-2)
-
-    @pytest.mark.parametrize("m", [10])
-    @pytest.mark.parametrize("k", [15])
-    @pytest.mark.parametrize("n", [20])
-    @pytest.mark.parametrize("dtype", [bool, float])
-    def test_warp_bdmm(self, m, k, n, dtype):
-        import jax
-        if jax.default_backend() != 'gpu':
-            pytest.skip("warp backend requires GPU")
-        spikes = brainstate.random.randn(m, k) < 0.3
-        if dtype == float:
-            spikes = u.math.asarray(spikes, dtype=float)
-        weights = brainstate.random.randn(k, n)
-        result = bdmm(spikes, weights, backend='warp')
-        expected = u.math.asarray(spikes, dtype=float) @ weights
-        assert u.math.allclose(result, expected, atol=1e-2, rtol=1e-2)
+    grad = jax.grad(f)(weights)
+    assert grad.shape == weights.shape
 
 
-class TestBatching:
-    """Test vmap batching for all 4 operations."""
+# ---- Gradient: bdmm ----
 
-    @pytest.mark.parametrize("m", [10])
-    @pytest.mark.parametrize("k", [15])
-    @pytest.mark.parametrize("batch_size", [5])
-    def test_dense_mat_dot_binary_vec_vmap_over_spikes(self, m, k, batch_size):
-        import jax
-        weights = brainstate.random.randn(m, k)
-        batched_spikes = u.math.asarray(
-            brainstate.random.randn(batch_size, k) < 0.3, dtype=float
-        )
-        batched_fn = jax.vmap(dbmv, in_axes=(None, 0))
-        result = batched_fn(weights, batched_spikes)
-        assert result.shape == (batch_size, m)
+@pytest.mark.parametrize("implementation", BDMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize("m", [10])
+@pytest.mark.parametrize("k", [15])
+@pytest.mark.parametrize("n", [20])
+def test_bdmm_grad_weights(implementation, m, k, n):
+    spikes = u.math.asarray(brainstate.random.randn(m, k) < 0.3, dtype=float)
+    weights = brainstate.random.randn(k, n)
 
-    @pytest.mark.parametrize("k", [15])
-    @pytest.mark.parametrize("n", [20])
-    @pytest.mark.parametrize("batch_size", [5])
-    def test_binary_vec_dot_dense_mat_vmap_over_spikes(self, k, n, batch_size):
-        import jax
-        batched_spikes = u.math.asarray(
-            brainstate.random.randn(batch_size, k) < 0.3, dtype=float
-        )
-        weights = brainstate.random.randn(k, n)
-        batched_fn = jax.vmap(bdvm, in_axes=(0, None))
-        result = batched_fn(batched_spikes, weights)
-        assert result.shape == (batch_size, n)
+    def f(w):
+        return bdmm(spikes, w, backend=implementation).sum()
 
-    @pytest.mark.parametrize("m", [10])
-    @pytest.mark.parametrize("k", [15])
-    @pytest.mark.parametrize("n", [20])
-    @pytest.mark.parametrize("batch_size", [5])
-    def test_dense_mat_dot_binary_mat_vmap_over_spikes(self, m, k, n, batch_size):
-        import jax
-        weights = brainstate.random.randn(m, k)
-        batched_spikes = u.math.asarray(
-            brainstate.random.randn(batch_size, k, n) < 0.3, dtype=float
-        )
-        batched_fn = jax.vmap(dbmm, in_axes=(None, 0))
-        result = batched_fn(weights, batched_spikes)
-        assert result.shape == (batch_size, m, n)
+    grad = jax.grad(f)(weights)
+    assert grad.shape == weights.shape
 
-    @pytest.mark.parametrize("m", [10])
-    @pytest.mark.parametrize("k", [15])
-    @pytest.mark.parametrize("n", [20])
-    @pytest.mark.parametrize("batch_size", [5])
-    def test_binary_mat_dot_dense_mat_vmap_over_spikes(self, m, k, n, batch_size):
-        import jax
-        batched_spikes = u.math.asarray(
-            brainstate.random.randn(batch_size, m, k) < 0.3, dtype=float
-        )
-        weights = brainstate.random.randn(k, n)
-        batched_fn = jax.vmap(bdmm, in_axes=(0, None))
-        result = batched_fn(batched_spikes, weights)
-        assert result.shape == (batch_size, m, n)
+
+# ---- Batching (vmap): dbmv ----
+
+@pytest.mark.parametrize("implementation", DBMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize("m", [10])
+@pytest.mark.parametrize("k", [15])
+@pytest.mark.parametrize("batch_size", [5])
+def test_dbmv_vmap_over_spikes(implementation, m, k, batch_size):
+    weights = brainstate.random.randn(m, k)
+    batched_spikes = u.math.asarray(
+        brainstate.random.randn(batch_size, k) < 0.3, dtype=float
+    )
+    batched_fn = jax.vmap(lambda s: dbmv(weights, s, backend=implementation))
+    result = batched_fn(batched_spikes)
+    assert result.shape == (batch_size, m)
+
+
+# ---- Batching (vmap): bdvm ----
+
+@pytest.mark.parametrize("implementation", BDVM_IMPLEMENTATIONS)
+@pytest.mark.parametrize("k", [15])
+@pytest.mark.parametrize("n", [20])
+@pytest.mark.parametrize("batch_size", [5])
+def test_bdvm_vmap_over_spikes(implementation, k, n, batch_size):
+    batched_spikes = u.math.asarray(
+        brainstate.random.randn(batch_size, k) < 0.3, dtype=float
+    )
+    weights = brainstate.random.randn(k, n)
+    batched_fn = jax.vmap(lambda s: bdvm(s, weights, backend=implementation))
+    result = batched_fn(batched_spikes)
+    assert result.shape == (batch_size, n)
+
+
+# ---- Batching (vmap): dbmm ----
+
+@pytest.mark.parametrize("implementation", DBMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize("m", [10])
+@pytest.mark.parametrize("k", [15])
+@pytest.mark.parametrize("n", [20])
+@pytest.mark.parametrize("batch_size", [5])
+def test_dbmm_vmap_over_spikes(implementation, m, k, n, batch_size):
+    weights = brainstate.random.randn(m, k)
+    batched_spikes = u.math.asarray(
+        brainstate.random.randn(batch_size, k, n) < 0.3, dtype=float
+    )
+    batched_fn = jax.vmap(lambda s: dbmm(weights, s, backend=implementation))
+    result = batched_fn(batched_spikes)
+    assert result.shape == (batch_size, m, n)
+
+
+# ---- Batching (vmap): bdmm ----
+
+@pytest.mark.parametrize("implementation", BDMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize("m", [10])
+@pytest.mark.parametrize("k", [15])
+@pytest.mark.parametrize("n", [20])
+@pytest.mark.parametrize("batch_size", [5])
+def test_bdmm_vmap_over_spikes(implementation, m, k, n, batch_size):
+    batched_spikes = u.math.asarray(
+        brainstate.random.randn(batch_size, m, k) < 0.3, dtype=float
+    )
+    weights = brainstate.random.randn(k, n)
+    batched_fn = jax.vmap(lambda s: bdmm(s, weights, backend=implementation))
+    result = batched_fn(batched_spikes)
+    assert result.shape == (batch_size, m, n)
