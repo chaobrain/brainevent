@@ -63,23 +63,39 @@ class JITCMatrix(u.sparse.SparseMatrix):
         """
         raise NotImplementedError("unitary operation not implemented.")
 
+    def apply(self, fn):
+        """
+        Apply a function to matrix value parameters while keeping structure.
+
+        Parameters
+        ----------
+        fn : callable
+            Unary callable applied by subclasses to their value parameters.
+
+        Returns
+        -------
+        JITCMatrix
+            A new matrix-like object with transformed values.
+        """
+        return self._unitary_op(fn)
+
     def __abs__(self):
         """
         Implement the absolute value operation for the matrix.
         """
-        return self._unitary_op(operator.abs)
+        return self.apply(operator.abs)
 
     def __neg__(self):
         """
         Implement the negation operation for the matrix.
         """
-        return self._unitary_op(operator.neg)
+        return self.apply(operator.neg)
 
     def __pos__(self):
         """
         Implement the unary plus operation for the matrix.
         """
-        return self._unitary_op(operator.pos)
+        return self.apply(operator.pos)
 
     def _binary_op(self, other, op):
         """
@@ -97,6 +113,31 @@ class JITCMatrix(u.sparse.SparseMatrix):
         """
         raise NotImplementedError("binary operation not implemented.")
 
+    def apply2(self, other, fn, *, reverse: bool = False):
+        """
+        Apply a binary function with consistent sparse-matrix semantics.
+
+        Parameters
+        ----------
+        other : Any
+            Right-hand operand for normal operations, or left-hand operand when
+            ``reverse=True``.
+        fn : callable
+            Binary function from ``operator`` or a compatible callable.
+        reverse : bool, optional
+            If False, compute ``fn(self, other)`` via ``_binary_op``.
+            If True, compute ``fn(other, self)`` via ``_binary_rop``.
+            Defaults to False.
+
+        Returns
+        -------
+        JITCMatrix or Data
+            Result of the operation.
+        """
+        if reverse:
+            return self._binary_rop(other, fn)
+        return self._binary_op(other, fn)
+
     def __mul__(self, other: Union[jax.typing.ArrayLike, u.Quantity]):
         """
         Implement multiplication with another value.
@@ -104,7 +145,7 @@ class JITCMatrix(u.sparse.SparseMatrix):
         Args:
             other (Union[jax.typing.ArrayLike, u.Quantity]): The value to multiply by
         """
-        return self._binary_op(other, operator.mul)
+        return self.apply2(other, operator.mul)
 
     def __div__(self, other: Union[jax.typing.ArrayLike, u.Quantity]):
         """
@@ -113,7 +154,7 @@ class JITCMatrix(u.sparse.SparseMatrix):
         Args:
             other (Union[jax.typing.ArrayLike, u.Quantity]): The value to divide by
         """
-        return self._binary_op(other, operator.truediv)
+        return self.apply2(other, operator.truediv)
 
     def __truediv__(self, other):
         """
@@ -122,7 +163,7 @@ class JITCMatrix(u.sparse.SparseMatrix):
         Args:
             other (Union[jax.typing.ArrayLike, u.Quantity]): The value to divide by
         """
-        return self.__div__(other)
+        return self.apply2(other, operator.truediv)
 
     def __add__(self, other):
         """
@@ -131,7 +172,7 @@ class JITCMatrix(u.sparse.SparseMatrix):
         Args:
             other: The value to add
         """
-        return self._binary_op(other, operator.add)
+        return self.apply2(other, operator.add)
 
     def __sub__(self, other):
         """
@@ -140,7 +181,7 @@ class JITCMatrix(u.sparse.SparseMatrix):
         Args:
             other: The value to subtract
         """
-        return self._binary_op(other, operator.sub)
+        return self.apply2(other, operator.sub)
 
     def __mod__(self, other):
         """
@@ -149,7 +190,7 @@ class JITCMatrix(u.sparse.SparseMatrix):
         Args:
             other: The value to use for modulo
         """
-        return self._binary_op(other, operator.mod)
+        return self.apply2(other, operator.mod)
 
     def _binary_rop(self, other, op):
         """
@@ -174,7 +215,7 @@ class JITCMatrix(u.sparse.SparseMatrix):
         Args:
             other (Union[jax.typing.ArrayLike, u.Quantity]): The value multiplying this matrix
         """
-        return self._binary_rop(other, operator.mul)
+        return self.apply2(other, operator.mul, reverse=True)
 
     def __rdiv__(self, other: Union[jax.typing.ArrayLike, u.Quantity]):
         """
@@ -183,7 +224,7 @@ class JITCMatrix(u.sparse.SparseMatrix):
         Args:
             other (Union[jax.typing.ArrayLike, u.Quantity]): The value being divided
         """
-        return self._binary_rop(other, operator.truediv)
+        return self.apply2(other, operator.truediv, reverse=True)
 
     def __rtruediv__(self, other):
         """
@@ -192,7 +233,7 @@ class JITCMatrix(u.sparse.SparseMatrix):
         Args:
             other: The value being divided
         """
-        return self.__rdiv__(other)
+        return self.apply2(other, operator.truediv, reverse=True)
 
     def __radd__(self, other):
         """
@@ -201,7 +242,7 @@ class JITCMatrix(u.sparse.SparseMatrix):
         Args:
             other: The value being added to this matrix
         """
-        return self._binary_rop(other, operator.add)
+        return self.apply2(other, operator.add, reverse=True)
 
     def __rsub__(self, other):
         """
@@ -210,7 +251,7 @@ class JITCMatrix(u.sparse.SparseMatrix):
         Args:
             other: The value from which this matrix is subtracted
         """
-        return self._binary_rop(other, operator.sub)
+        return self.apply2(other, operator.sub, reverse=True)
 
     def __rmod__(self, other):
         """
@@ -219,7 +260,7 @@ class JITCMatrix(u.sparse.SparseMatrix):
         Args:
             other: The value to use as the left operand in the modulo operation
         """
-        return self._binary_rop(other, operator.mod)
+        return self.apply2(other, operator.mod, reverse=True)
 
 
 def _initialize_seed(seed=None):

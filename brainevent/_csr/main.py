@@ -110,59 +110,89 @@ class BaseCLS(u.sparse.SparseMatrix):
             setattr(obj, k, v)
         return obj
 
-    def _unitary_op(self, op):
+    def apply(self, fn):
+        """
+        Apply a function to the data and return a new sparse matrix with the same structure.
+
+        Unlike :meth:`with_data`, which requires the new data to have the same
+        shape, dtype, and unit, ``apply`` allows transformations that change
+        dtype or unit.
+
+        Parameters
+        ----------
+        fn : callable
+            A function to apply to ``self.data``.
+
+        Returns
+        -------
+        CSR or CSC
+            A new sparse matrix with ``fn(self.data)`` and the same structure.
+        """
         raise NotImplementedError
 
     def __abs__(self):
-        return self._unitary_op(operator.abs)
+        return self.apply(operator.abs)
 
     def __neg__(self):
-        return self._unitary_op(operator.neg)
+        return self.apply(operator.neg)
 
     def __pos__(self):
-        return self._unitary_op(operator.pos)
+        return self.apply(operator.pos)
 
     def _binary_op(self, other, op):
         raise NotImplementedError
 
-    def __mul__(self, other: Data):
-        return self._binary_op(other, operator.mul)
+    def apply2(self, other, fn, *, reverse: bool = False):
+        """
+        Apply a binary function while preserving sparse structure semantics.
 
-    def __div__(self, other: Data):
-        return self._binary_op(other, operator.truediv)
+        Parameters
+        ----------
+        other : Any
+            Right-hand operand for normal operations, or left-hand operand when
+            ``reverse=True``.
+        fn : callable
+            Binary function from ``operator`` or a compatible callable.
+        reverse : bool, optional
+            If False, compute ``fn(self, other)`` semantics using ``_binary_op``.
+            If True, compute ``fn(other, self)`` semantics using ``_binary_rop``.
+            Defaults to False.
+
+        Returns
+        -------
+        CSR or CSC or Data
+            Result of the operation.
+        """
+        if reverse:
+            return self._binary_rop(other, fn)
+        return self._binary_op(other, fn)
+
+    def __mul__(self, other: Data):
+        return self.apply2(other, operator.mul)
 
     def __truediv__(self, other):
-        return self.__div__(other)
+        return self.apply2(other, operator.truediv)
 
     def __add__(self, other):
-        return self._binary_op(other, operator.add)
+        return self.apply2(other, operator.add)
 
     def __sub__(self, other):
-        return self._binary_op(other, operator.sub)
-
-    def __mod__(self, other):
-        return self._binary_op(other, operator.mod)
+        return self.apply2(other, operator.sub)
 
     def _binary_rop(self, other, op):
         raise NotImplementedError
 
     def __rmul__(self, other: Data):
-        return self._binary_rop(other, operator.mul)
-
-    def __rdiv__(self, other: Data):
-        return self._binary_rop(other, operator.truediv)
+        return self.apply2(other, operator.mul, reverse=True)
 
     def __rtruediv__(self, other):
-        return self.__rdiv__(other)
+        return self.apply2(other, operator.truediv, reverse=True)
 
     def __radd__(self, other):
-        return self._binary_rop(other, operator.add)
+        return self.apply2(other, operator.add, reverse=True)
 
     def __rsub__(self, other):
-        return self._binary_rop(other, operator.sub)
-
-    def __rmod__(self, other):
-        return self._binary_rop(other, operator.mod)
+        return self.apply2(other, operator.sub, reverse=True)
 
     def yw_to_w(
         self,
@@ -396,23 +426,8 @@ class CSR(BaseCLS):
         assert axes is None, "transpose does not support axes argument."
         return CSC((self.data, self.indices, self.indptr), shape=self.shape[::-1])._diag_pos(self.diag_positions)
 
-    def _unitary_op(self, op) -> 'CSR':
-        """
-        Apply a unary operation to the data of the CSR matrix.
-
-        This method applies a given unary operation to the data array of the CSR matrix.
-
-        Parameters
-        ----------
-        op : callable
-            A unary operation to apply to the data array (e.g., abs, neg, pos).
-
-        Returns
-        -------
-        CSR
-            A new CSR matrix with the result of applying the operation to its data.
-        """
-        return CSR((op(self.data), self.indices, self.indptr), shape=self.shape)._diag_pos(self.diag_positions)
+    def apply(self, fn) -> 'CSR':
+        return CSR(fn(self.data), self.indices, self.indptr, shape=self.shape)._diag_pos(self.diag_positions)
 
     def _binary_op(self, other, op) -> 'CSR':
         if op in [operator.add, operator.sub]:
@@ -853,23 +868,8 @@ class CSC(BaseCLS):
         assert axes is None
         return CSR((self.data, self.indices, self.indptr), shape=self.shape[::-1])._diag_pos(self.diag_positions)
 
-    def _unitary_op(self, op) -> 'CSC':
-        """
-        Apply a unary operation to the data of the CSC matrix.
-
-        This method applies a given unary operation to the data array of the CSC matrix.
-
-        Parameters
-        ----------
-        op : callable
-            A unary operation to apply to the data array (e.g., abs, neg, pos).
-
-        Returns
-        -------
-        CSC
-            A new CSC matrix with the result of applying the operation to its data.
-        """
-        return CSC((op(self.data), self.indices, self.indptr), shape=self.shape)._diag_pos(self.diag_positions)
+    def apply(self, fn) -> 'CSC':
+        return CSC((fn(self.data), self.indices, self.indptr), shape=self.shape)._diag_pos(self.diag_positions)
 
     def _binary_op(self, other, op) -> 'CSC':
         if op in [operator.add, operator.sub]:

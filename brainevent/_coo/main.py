@@ -376,35 +376,39 @@ class COO(u.sparse.SparseMatrix):
             setattr(obj, k, v)
         return obj
 
-    def _unitary_op(self, op):
+    def apply(self, fn):
         """
-        Helper function for unary operations.
+        Apply a function to the data and return a new sparse matrix with the same structure.
+
+        Unlike :meth:`with_data`, which requires the new data to have the same
+        shape, dtype, and unit, ``apply`` allows transformations that change
+        dtype or unit.
 
         Parameters
         ----------
-        op : function
-            The unary operation to apply to the data.
+        fn : callable
+            A function to apply to ``self.data``.
 
         Returns
         -------
         COO
-            A new COO matrix with the operation applied to the data.
+            A new COO matrix with ``fn(self.data)`` and the same structure.
         """
         return COO(
-            op(self.data), self.row, self.col, self.ptr,
+            fn(self.data), self.row, self.col, self.ptr,
             shape=self.shape,
             rows_sorted=self.rows_sorted,
             cols_sorted=self.cols_sorted,
         )
 
     def __abs__(self):
-        return self._unitary_op(operator.abs)
+        return self.apply(operator.abs)
 
     def __neg__(self):
-        return self._unitary_op(operator.neg)
+        return self.apply(operator.neg)
 
     def __pos__(self):
-        return self._unitary_op(operator.pos)
+        return self.apply(operator.pos)
 
     def _binary_op(self, other, op):
         if op in [operator.add, operator.sub]:
@@ -462,6 +466,31 @@ class COO(u.sparse.SparseMatrix):
         else:
             raise NotImplementedError(f"{op.__name__} with object of shape {other.shape}")
 
+    def apply2(self, other, fn, *, reverse: bool = False):
+        """
+        Apply a binary function while preserving sparse structure semantics.
+
+        Parameters
+        ----------
+        other : Any
+            Right-hand operand for normal operations, or left-hand operand when
+            ``reverse=True``.
+        fn : callable
+            Binary function from ``operator`` or a compatible callable.
+        reverse : bool, optional
+            If False, compute ``fn(self, other)`` semantics using ``_binary_op``.
+            If True, compute ``fn(other, self)`` semantics using ``_binary_rop``.
+            Defaults to False.
+
+        Returns
+        -------
+        COO or Data
+            Result of the operation.
+        """
+        if reverse:
+            return self._binary_rop(other, fn)
+        return self._binary_op(other, fn)
+
     def __mul__(self, other: Data) -> 'COO':
         """
         Perform element-wise multiplication of the COO matrix with another object.
@@ -479,7 +508,7 @@ class COO(u.sparse.SparseMatrix):
         COO
             A new COO matrix resulting from the element-wise multiplication.
         """
-        return self._binary_op(other, operator.mul)
+        return self.apply2(other, operator.mul)
 
     def __rmul__(self, other: Data) -> 'COO':
         """
@@ -498,195 +527,37 @@ class COO(u.sparse.SparseMatrix):
         COO
             A new COO matrix resulting from the element-wise multiplication.
         """
-        return self._binary_rop(other, operator.mul)
-
-    def __div__(self, other: Data) -> 'COO':
-        """
-        Perform element-wise division of the COO matrix by another object.
-
-        This method is called when the COO matrix is on the left side of the
-        division operator.
-
-        Parameters
-        ----------
-        other : jax.Array | u.Quantity
-            The object to divide the COO matrix by.
-
-        Returns
-        --------
-        COO
-            A new COO matrix resulting from the element-wise division.
-        """
-        return self._binary_op(other, operator.truediv)
-
-    def __rdiv__(self, other: Data) -> 'COO':
-        """
-        Perform right element-wise division of the COO matrix by another object.
-
-        This method is called when the COO matrix is on the right side of the
-        division operator.
-
-        Parameters
-        ----------
-        other : jax.Array | u.Quantity
-            The object to divide the COO matrix by.
-
-        Returns
-        --------
-        COO
-            A new COO matrix resulting from the element-wise division.
-        """
-        return self._binary_rop(other, operator.truediv)
+        return self.apply2(other, operator.mul, reverse=True)
 
     def __truediv__(self, other: Data) -> 'COO':
-        """
-        Perform true division of the COO matrix by another object.
-
-        This method is an alias for __div__.
-
-        Parameters
-        ----------
-        other : jax.Array | u.Quantity
-            The object to divide the COO matrix by.
-
-        Returns
-        --------
-        COO
-            A new COO matrix resulting from the true division.
-        """
-        return self.__div__(other)
+        return self.apply2(other, operator.truediv)
 
     def __rtruediv__(self, other: Data) -> 'COO':
-        """
-        Perform right true division of the COO matrix by another object.
+        return self.apply2(other, operator.truediv, reverse=True)
 
-        This method is an alias for __rdiv__.
+    def __div__(self, other: Data) -> 'COO':
+        return self.apply2(other, operator.truediv)
 
-        Parameters
-        ----------
-        other : jax.Array | u.Quantity
-            The object to divide the COO matrix by.
-
-        Returns
-        --------
-        COO
-            A new COO matrix resulting from the right true division.
-        """
-        return self.__rdiv__(other)
+    def __rdiv__(self, other: Data) -> 'COO':
+        return self.apply2(other, operator.truediv, reverse=True)
 
     def __add__(self, other: Data) -> 'COO':
-        """
-        Perform element-wise addition of the COO matrix with another object.
-
-        This method is called when the COO matrix is on the left side of the
-        addition operator.
-
-        Parameters
-        ----------
-        other : jax.Array | u.Quantity
-            The object to be added to the COO matrix.
-
-        Returns
-        --------
-        COO
-            A new COO matrix resulting from the element-wise addition.
-        """
-        return self._binary_op(other, operator.add)
+        return self.apply2(other, operator.add)
 
     def __radd__(self, other: Data) -> 'COO':
-        """
-        Perform right element-wise addition of the COO matrix with another object.
-
-        This method is called when the COO matrix is on the right side of the
-        addition operator.
-
-        Parameters
-        ----------
-        other : jax.Array | u.Quantity
-            The object to be added to the COO matrix.
-
-        Returns
-        --------
-        COO
-            A new COO matrix resulting from the element-wise addition.
-        """
-        return self._binary_rop(other, operator.add)
+        return self.apply2(other, operator.add, reverse=True)
 
     def __sub__(self, other: Data) -> 'COO':
-        """
-        Perform element-wise subtraction of another object from the COO matrix.
-
-        This method is called when the COO matrix is on the left side of the
-        subtraction operator.
-
-        Parameters
-        ----------
-        other : jax.Array | u.Quantity
-            The object to be subtracted from the COO matrix.
-
-        Returns
-        --------
-        COO
-            A new COO matrix resulting from the element-wise subtraction.
-        """
-        return self._binary_op(other, operator.sub)
+        return self.apply2(other, operator.sub)
 
     def __rsub__(self, other: Data) -> 'COO':
-        """
-        Perform right element-wise subtraction of the COO matrix from another object.
-
-        This method is called when the COO matrix is on the right side of the
-        subtraction operator.
-
-        Parameters
-        ----------
-        other : jax.Array | u.Quantity
-            The object to subtract the COO matrix from.
-
-        Returns
-        --------
-        COO
-            A new COO matrix resulting from the element-wise subtraction.
-        """
-        return self._binary_rop(other, operator.sub)
+        return self.apply2(other, operator.sub, reverse=True)
 
     def __mod__(self, other: Data) -> 'COO':
-        """
-        Perform element-wise modulo operation of the COO matrix with another object.
-
-        This method is called when the COO matrix is on the left side of the
-        modulo operator.
-
-        Parameters
-        ----------
-        other : jax.Array | u.Quantity
-            The object to perform the modulo operation with the COO matrix.
-
-        Returns
-        --------
-        COO
-            A new COO matrix resulting from the element-wise modulo operation.
-        """
-        return self._binary_op(other, operator.mod)
+        return self.apply2(other, operator.mod)
 
     def __rmod__(self, other: Data) -> 'COO':
-        """
-        Perform right element-wise modulo operation of the COO matrix with another object.
-
-        This method is called when the COO matrix is on the right side of the
-        modulo operator.
-
-        Parameters
-        ----------
-        other : jax.Array | u.Quantity
-            The object to perform the modulo operation with the COO matrix.
-
-        Returns
-        --------
-        COO
-            A new COO matrix resulting from the element-wise modulo operation.
-        """
-        return self._binary_rop(other, operator.mod)
+        return self.apply2(other, operator.mod, reverse=True)
 
     def __matmul__(self, other: Data) -> Data:
         """

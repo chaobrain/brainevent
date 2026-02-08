@@ -92,56 +92,97 @@ class FixedNumConn(u.sparse.SparseMatrix):
     def _unitary_op(self, op):
         raise NotImplementedError
 
+    def apply(self, fn):
+        """
+        Apply a function to the value buffer and keep connectivity structure.
+
+        Parameters
+        ----------
+        fn : callable
+            A function applied to ``self.data``.
+
+        Returns
+        -------
+        FixedNumConn
+            A new matrix-like object with transformed values.
+        """
+        return self._unitary_op(fn)
+
     def __abs__(self):
-        return self._unitary_op(operator.abs)
+        return self.apply(operator.abs)
 
     def __neg__(self):
-        return self._unitary_op(operator.neg)
+        return self.apply(operator.neg)
 
     def __pos__(self):
-        return self._unitary_op(operator.pos)
+        return self.apply(operator.pos)
 
     def _binary_op(self, other, op):
         raise NotImplementedError
 
+    def apply2(self, other, fn, *, reverse: bool = False):
+        """
+        Apply a binary function while preserving fixed-connectivity semantics.
+
+        Parameters
+        ----------
+        other : Any
+            Right-hand operand for normal operations, or left-hand operand when
+            ``reverse=True``.
+        fn : callable
+            Binary function from ``operator`` or a compatible callable.
+        reverse : bool, optional
+            If False, compute ``fn(self, other)`` via ``_binary_op``.
+            If True, compute ``fn(other, self)`` via ``_binary_rop``.
+            Defaults to False.
+
+        Returns
+        -------
+        FixedNumConn or Data
+            Result of the operation.
+        """
+        if reverse:
+            return self._binary_rop(other, fn)
+        return self._binary_op(other, fn)
+
     def __mul__(self, other: Data):
-        return self._binary_op(other, operator.mul)
+        return self.apply2(other, operator.mul)
 
     def __div__(self, other: Data):
-        return self._binary_op(other, operator.truediv)
+        return self.apply2(other, operator.truediv)
 
     def __truediv__(self, other):
-        return self.__div__(other)
+        return self.apply2(other, operator.truediv)
 
     def __add__(self, other):
-        return self._binary_op(other, operator.add)
+        return self.apply2(other, operator.add)
 
     def __sub__(self, other):
-        return self._binary_op(other, operator.sub)
+        return self.apply2(other, operator.sub)
 
     def __mod__(self, other):
-        return self._binary_op(other, operator.mod)
+        return self.apply2(other, operator.mod)
 
     def _binary_rop(self, other, op):
         raise NotImplementedError
 
     def __rmul__(self, other: Data):
-        return self._binary_rop(other, operator.mul)
+        return self.apply2(other, operator.mul, reverse=True)
 
     def __rdiv__(self, other: Data):
-        return self._binary_rop(other, operator.truediv)
+        return self.apply2(other, operator.truediv, reverse=True)
 
     def __rtruediv__(self, other):
-        return self.__rdiv__(other)
+        return self.apply2(other, operator.truediv, reverse=True)
 
     def __radd__(self, other):
-        return self._binary_rop(other, operator.add)
+        return self.apply2(other, operator.add, reverse=True)
 
     def __rsub__(self, other):
-        return self._binary_rop(other, operator.sub)
+        return self.apply2(other, operator.sub, reverse=True)
 
     def __rmod__(self, other):
-        return self._binary_rop(other, operator.mod)
+        return self.apply2(other, operator.mod, reverse=True)
 
 
 @jax.tree_util.register_pytree_node_class
