@@ -21,6 +21,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
+from brainevent._config import get_numba_parallel
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescope
 from brainevent._op import numba_kernel, jaxinfo_to_warpinfo, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
@@ -46,6 +47,7 @@ def csrmv(
     *,
     shape: MatrixShape,
     transpose: bool = False,
+    backend: Optional[str] = None,
 ) -> Data:
     """
     Product of CSR sparse matrix and a dense vector.
@@ -66,7 +68,7 @@ def csrmv(
     """
     data, unitd = u.split_mantissa_unit(data)
     v, unitv = u.split_mantissa_unit(v)
-    res = csrmv_p_call(data, indices, indptr, v, shape=shape, transpose=transpose)[0]
+    res = csrmv_p_call(data, indices, indptr, v, shape=shape, transpose=transpose, backend=backend)[0]
     return u.maybe_decimal(res * unitd * unitv)
 
 
@@ -91,7 +93,7 @@ def _csrmv_numba_kernel_generator(
 
         else:
             # [m, k] @ [k] - can parallelize by row
-            @numba.njit(parallel=True, fastmath=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True)
             def mv(weights, indices, indptr, vector, posts):
                 w = weights[0]
                 for i_m in numba.prange(indptr.shape[0] - 1):
@@ -113,7 +115,7 @@ def _csrmv_numba_kernel_generator(
 
         else:
             # [m, k] @ [k] - can parallelize by row
-            @numba.njit(parallel=True, fastmath=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True)
             def mv(weights, indices, indptr, vector, posts):
                 for i in numba.prange(indptr.shape[0] - 1):
                     r = 0.0
@@ -477,17 +479,16 @@ def _csrmv_batching(args, axes, **kwargs):
 
 
 def _csrmv_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
         for homo in (True, False):
             n_conn = max(1, int(n_post * prob))
-            indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
-            indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
+            indptr = np.arange(n_pre + 1, dtype=np.int32) * n_conn
+            indices = np.random.randint(0, n_post, (n_pre * n_conn,), dtype=np.int32)
             weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(n_pre * n_conn, dtype=dtype)
             v_size = n_post if not transpose else n_pre
-            vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
+            vector = jnp.asarray(np.random.randn(v_size), dtype=dtype)
             name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
             configs.append(BenchmarkConfig(name, (weights, indices, jnp.asarray(indptr), vector), {
                 'shape': (n_pre, n_post), 'transpose': transpose
@@ -561,6 +562,7 @@ def csrmm(
     *,
     shape: MatrixShape,
     transpose: bool = False,
+    backend=None,
 ) -> Data:
     """
     Product of CSR sparse matrix and a dense matrix.
@@ -622,7 +624,7 @@ def _csrmm_numba_kernel_generator(
             # CSR: [m, k]
             # B: [k, n]
             #
-            @numba.njit(parallel=True, fastmath=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True)
             def mm(weights, indices, indptr, B, posts):
                 w = weights[0]
                 for i_m in numba.prange(indptr.shape[0] - 1):
@@ -654,7 +656,7 @@ def _csrmm_numba_kernel_generator(
             # CSR: [m, k]
             # B: [k, n]
             #
-            @numba.njit(parallel=True, fastmath=True)
+            @numba.njit(parallel=get_numba_parallel(), fastmath=True)
             def mm(weights, indices, indptr, B, posts):
                 for i_m in numba.prange(indptr.shape[0] - 1):
                     r = np.zeros(B.shape[1], dtype=posts.dtype)
@@ -1048,17 +1050,16 @@ def _csrmm_batching(args, axes, **kwargs):
 
 
 def _csrmm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
         for homo in (True, False):
             n_conn = max(1, int(n_post * prob))
-            indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
-            indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
+            indptr = np.arange(n_pre + 1, dtype=np.int32) * n_conn
+            indices = np.random.randint(0, n_post, (n_pre * n_conn,), dtype=np.int32)
             weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(n_pre * n_conn, dtype=dtype)
             b_rows = n_post if not transpose else n_pre
-            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
+            B = jnp.asarray(np.random.randn(b_rows, 10), dtype=dtype)
             name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
             configs.append(BenchmarkConfig(name, (weights, indices, jnp.asarray(indptr), B), {
                 'shape': (n_pre, n_post), 'transpose': transpose
@@ -1132,6 +1133,7 @@ def csrmv_yw2y(
     *,
     shape,
     transpose: bool = False,
+    backend=None,
 ) -> Data:
     w, w_unit = u.split_mantissa_unit(w)
     y, _ = u.split_mantissa_unit(y)
@@ -1257,16 +1259,15 @@ def _csrmv_yw2y_transpose_rule(ct, y, w, indices, indptr, *, shape, transpose, *
 
 
 def _csrmv_yw2y_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
         n_conn = max(1, int(n_post * prob))
-        indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
-        indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
+        indptr = np.arange(n_pre + 1, dtype=np.int32) * n_conn
+        indices = np.random.randint(0, n_post, (n_pre * n_conn,), dtype=np.int32)
         w = jnp.ones(n_pre * n_conn, dtype=dtype)
         y_size = n_pre if not transpose else n_post
-        y = jnp.asarray(_np.random.randn(y_size), dtype=dtype)
+        y = jnp.asarray(np.random.randn(y_size), dtype=dtype)
         name = f"{'T' if transpose else 'NT'}"
         configs.append(BenchmarkConfig(name, (y, w, indices, jnp.asarray(indptr)), {
             'shape': (n_pre, n_post), 'transpose': transpose

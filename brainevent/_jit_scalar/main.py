@@ -22,7 +22,7 @@ import brainunit as u
 import jax
 import numpy as np
 
-from brainevent._compatible_import import JAXSparse, Tracer
+from brainevent._compatible_import import Tracer
 from brainevent._event.binary import BinaryArray
 from brainevent._jitc_matrix import JITCMatrix
 from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
@@ -81,7 +81,9 @@ class JITScalarMatrix(JITCMatrix):
 
     def __init__(
         self,
-        data: Tuple[WeightScalar, Prob, Seed],
+        weight,
+        prob=None,
+        seed=None,
         *,
         shape: MatrixShape,
         corder: bool = False,
@@ -91,11 +93,14 @@ class JITScalarMatrix(JITCMatrix):
 
         Parameters
         ----------
-        data : Tuple[WeightScalar, Prob, Seed]
-            A tuple containing three elements:
-            - weight: Homogeneous weight value for all non-zero elements
-            - prob: Connection probability determining matrix sparsity
-            - seed: Random seed for reproducible sparse structure generation
+        weight : WeightScalar or Tuple[WeightScalar, Prob, Seed]
+            Either the homogeneous weight value for all non-zero elements,
+            or a tuple containing (weight, prob, seed).
+        prob : Prob, optional
+            Connection probability determining matrix sparsity.
+            If None, ``weight`` is treated as a tuple of (weight, prob, seed).
+        seed : Seed, optional
+            Random seed for reproducible sparse structure generation.
         shape : MatrixShape
             The shape of the matrix as a tuple (rows, columns).
         corder : bool, optional
@@ -109,6 +114,10 @@ class JITScalarMatrix(JITCMatrix):
         as instance attributes. The weight is converted to a JAX array if it's not
         already one, preserving any attached units.
         """
+        if prob is None and seed is None:
+            data = weight
+        else:
+            data = (weight, prob, seed)
         weight, self.prob, self.seed = data
         if not isinstance(self.prob, Tracer):
             prob = np.asarray(self.prob)
@@ -213,47 +222,15 @@ class JITScalarMatrix(JITCMatrix):
         )
 
     def tree_flatten(self):
-        """
-        Flattens the JITHomo object for JAX transformation compatibility.
-
-        This method is part of JAX's pytree protocol that enables JAX transformations
-        on custom classes. It separates the object into arrays that should be traced
-        through JAX transformations (children) and auxiliary static data.
-
-        Returns:
-            tuple: A tuple with two elements:
-                - A tuple of JAX-traceable arrays (only self.data in this case)
-                - A dictionary of auxiliary data (shape, indices, and indptr)
-        """
-        return (self.weight, self.prob, self.seed), {"shape": self.shape, 'corder': self.corder}
+        aux = {'shape': self.shape, 'corder': self.corder}
+        return (self.weight, self.prob, self.seed), aux
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
-        """
-        Reconstructs a JITHomo object from flattened data.
-
-        This method is part of JAX's pytree protocol that enables JAX transformations
-        on custom classes. It rebuilds the JITHomo object from the flattened representation
-        produced by tree_flatten.
-
-        Args:
-            aux_data (dict): Dictionary containing auxiliary static data (shape, indices, indptr)
-            children (tuple): Tuple of JAX arrays that were transformed (contains only data)
-
-        Returns:
-            JITCScalarR: Reconstructed JITHomo object
-
-        Raises:
-            ValueError: If the aux_data dictionary doesn't contain the expected keys
-        """
         obj = object.__new__(cls)
         obj.weight, obj.prob, obj.seed = children
-        if aux_data.keys() != {'shape', 'corder'}:
-            raise ValueError(
-                "aux_data must contain 'shape', 'corder' keys. "
-                f"But got: {aux_data.keys()}"
-            )
-        obj.__dict__.update(**aux_data)
+        for k, v in aux_data.items():
+            setattr(obj, k, v)
         return obj
 
     def _check(self, other, op):
@@ -475,7 +452,7 @@ class JITCScalarR(JITScalarMatrix):
             self._check(other, op)
             return self._new_mat(op(self.weight, other.weight))
 
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -490,7 +467,7 @@ class JITCScalarR(JITScalarMatrix):
             self._check(other, op)
             return self._new_mat(op(other.weight, self.weight))
 
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -501,12 +478,12 @@ class JITCScalarR(JITScalarMatrix):
 
     def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
         # csr @ other
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         weight = self.weight
 
         if isinstance(other, BinaryArray):
-            other = other.data
+            other = other.value
             if other.ndim == 1:
                 # JIT matrix @ events
                 return binary_jitsmv(weight, self.prob, other, self.seed, shape=self.shape,
@@ -548,12 +525,12 @@ class JITCScalarR(JITScalarMatrix):
 
     def __rmatmul__(self, other) -> Union[jax.Array, u.Quantity]:
         # other @ csr
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         weight = self.weight
 
         if isinstance(other, BinaryArray):
-            other = other.data
+            other = other.value
             if other.ndim == 1:
                 #
                 # vector @ JIT matrix
@@ -815,7 +792,7 @@ class JITCScalarC(JITScalarMatrix):
             self._check(other, op)
             return self._new_mat(op(self.weight, other.weight))
 
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -830,7 +807,7 @@ class JITCScalarC(JITScalarMatrix):
             self._check(other, op)
             return self._new_mat(op(other.weight, self.weight))
 
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
@@ -841,12 +818,12 @@ class JITCScalarC(JITScalarMatrix):
 
     def __matmul__(self, other) -> Union[jax.Array, u.Quantity]:
         # csr @ other
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         weight = self.weight
 
         if isinstance(other, BinaryArray):
-            other = other.data
+            other = other.value
             if other.ndim == 1:
                 # JITC_R matrix.T @ vector
                 # ==
@@ -910,12 +887,12 @@ class JITCScalarC(JITScalarMatrix):
 
     def __rmatmul__(self, other) -> Union[jax.Array, u.Quantity]:
         # other @ csr
-        if isinstance(other, JAXSparse):
+        if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         weight = self.weight
 
         if isinstance(other, BinaryArray):
-            other = other.data
+            other = other.value
             if other.ndim == 1:
                 #
                 # vector @ JITC_R matrix.T

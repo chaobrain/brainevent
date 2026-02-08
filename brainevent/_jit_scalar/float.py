@@ -48,6 +48,7 @@ def jits(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    backend: Optional[str] = None,
 ) -> Data:
     r"""Generate a homogeneous sparse random matrix on-the-fly.
 
@@ -116,7 +117,8 @@ def jits(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder
+        corder=corder,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd)
 
@@ -131,6 +133,7 @@ def jitsmv(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    backend: Optional[str] = None,
 ) -> Data:
     r"""
     Perform the :math:`y=M@v` or :math:`y=M.T@v` operation,
@@ -187,7 +190,8 @@ def jitsmv(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder
+        corder=corder,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitv)
 
@@ -202,6 +206,7 @@ def jitsmm(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    backend: Optional[str] = None,
 ) -> Data:
     r"""
     Perform the :math:`y=M@B` or :math:`y=M.T@B` operation,
@@ -256,7 +261,8 @@ def jitsmm(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder
+        corder=corder,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitB)
 
@@ -526,29 +532,21 @@ def _jitc_homo_matrix_pallas_kernel(
     return kernel
 
 
-def _jitc_homo_matrix_jvp_weight(
-    weight_dot, weight, clen, seed, *, shape: Sequence[int], transpose: bool,  corder: bool, **kwargs
-):
+def _jitc_homo_matrix_jvp_weight(weight_dot, weight, clen, seed, *, shape, transpose: bool, corder: bool, **kwargs):
     return jits_p_call(weight_dot, clen, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitc_homo_matrix_transpose(
-    ct, weight, clen, seed,  *, shape: Sequence[int], transpose: bool, corder: bool, **kwargs
-):
+def _jitc_homo_matrix_transpose(ct, weight, clen, seed, *, shape, transpose: bool, corder: bool, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
     ct = ct[0]
     if ad.is_undefined_primal(weight):
-        forward = jits_p_call(
-            1., clen, seed, shape=shape, transpose=transpose, corder=corder
-        )[0]
+        forward = jits_p_call(1., clen, seed, shape=shape, transpose=transpose, corder=corder)[0]
         dw = jnp.expand_dims((ct * forward).sum(), axis=0)
         return (dw, clen, seed)
 
     else:
-        raise NotImplementedError(
-            'JITC matrix transpose is only implemented for the weight arguments.'
-        )
+        raise NotImplementedError('JITC matrix transpose is only implemented for the weight arguments.')
 
 
 def _jitc_homo_matrix_batching(args, axes, **kwargs):
@@ -579,9 +577,13 @@ def _jits_benchmark_data(*, platform):
             clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
             seed = jnp.asarray(42, dtype=jnp.uint32)
             name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append(BenchmarkConfig(name, (weight, clen, seed), {
-                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
-            }))
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (weight, clen, seed),
+                    {'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder}
+                )
+            )
     return configs
 
 
@@ -590,7 +592,7 @@ def jits_p_call(
     clen,
     seed,
     *,
-    shape: Sequence[int],
+    shape,
     transpose: bool,
     corder: bool,
     backend: Optional[str] = None,
@@ -978,19 +980,7 @@ def _jitsmv_jvp_weights(w_dot, weight, clen, vector, seed, _, *, shape, transpos
     return jitsmv_p_call(w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitsmv_transpose_rules(
-    ct,
-    weight,
-    clen,
-    vector,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
+def _jitsmv_transpose_rules(ct, weight, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
 
@@ -1059,7 +1049,6 @@ def _jitsmv_batching(
 
 
 def _jitsmv_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -1067,7 +1056,7 @@ def _jitsmv_benchmark_data(*, platform):
             weight = jnp.ones(1, dtype=dtype)
             clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
             v_size = n_post if not transpose else n_pre
-            vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
+            vector = jnp.asarray(np.random.randn(v_size), dtype=dtype)
             seed = jnp.asarray(42, dtype=jnp.uint32)
             name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
             configs.append(BenchmarkConfig(name, (weight, clen, vector, seed), {
@@ -1082,7 +1071,7 @@ def jitsmv_p_call(
     vector,
     seed,
     *,
-    shape: Sequence[int],
+    shape,
     transpose: bool,
     corder: bool,
     backend: Optional[str] = None,
@@ -1565,19 +1554,7 @@ def _jitsmm_jvp_B(B_dot, weight, clen, B, seed, _, *, shape, transpose, corder, 
     return jitsmm_p_call(weight, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitsmm_transpose_rules(
-    ct,
-    weight,
-    clen,
-    B,
-    seed,
-    _,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
+def _jitsmm_transpose_rules(ct, weight, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
 
@@ -1650,7 +1627,6 @@ def _jitsmm_batching(args, axes, **kwargs):
 
 
 def _jitsmm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -1658,7 +1634,7 @@ def _jitsmm_benchmark_data(*, platform):
             weight = jnp.ones(1, dtype=dtype)
             clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
             b_rows = n_post if not transpose else n_pre
-            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
+            B = jnp.asarray(np.random.randn(b_rows, 10), dtype=dtype)
             seed = jnp.asarray(42, dtype=jnp.uint32)
             name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
             configs.append(BenchmarkConfig(name, (weight, clen, B, seed), {

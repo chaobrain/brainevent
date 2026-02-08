@@ -41,18 +41,19 @@ if tvmffi_installed:
 if warp_installed:
     try:
         import warp  # pylint: disable=import-error, import-outside-toplevel
+
+        warp.config.quiet = True
     except:
         warp_installed = False
 
 __all__ = [
-    'register_cuda_kernels',
+    'register_tvm_cuda_kernels',
     'defjvp',
     'general_batching_rule',
     'jaxtype_to_warptype',
     'jaxinfo_to_warpinfo',
     'check_pallas_jax_version',
 ]
-
 
 _MIN_JAX_VERSION_FOR_PALLAS = (0, 7, 1)
 
@@ -72,12 +73,15 @@ def check_pallas_jax_version():
         )
 
 
-def register_cuda_kernels(
+def register_tvm_cuda_kernels(
     source_code: str,
     module: str,
     functions: Sequence[str],
 ):
     """Compile CUDA kernels and register with JAX FFI."""
+
+    if not tvmffi_installed:
+        return
 
     if not isinstance(source_code, str):
         return ValueError("source_code must be a string")
@@ -86,30 +90,21 @@ def register_cuda_kernels(
     if not isinstance(functions, Sequence) or not all(isinstance(f, str) for f in functions):
         return ValueError("functions must be a sequence of strings")
 
-    if not tvmffi_installed:
-        return False
+    # Compile CUDA module
+    _cuda_module = tvm_ffi.cpp.load_inline(
+        name=module,
+        cuda_sources=source_code,
+        functions=functions,
+    )
 
-    try:
-        # Compile CUDA module
-        _cuda_module = tvm_ffi.cpp.load_inline(
-            name=module,
-            cuda_sources=source_code,
-            functions=functions,
+    # Register each kernel with JAX FFI
+    for name in functions:
+        jax_tvm_ffi.register_ffi_target(
+            f"{module}.{name}",
+            getattr(_cuda_module, name),
+            ["args", "rets", "ctx.stream"],
+            platform="gpu",
         )
-
-        # Register each kernel with JAX FFI
-        for name in functions:
-            jax_tvm_ffi.register_ffi_target(
-                f"{module}.{name}",
-                getattr(_cuda_module, name),
-                ["args", "rets", "ctx.stream"],
-                platform="gpu",
-            )
-
-        return True
-    except Exception as e:
-        print(f"Failed to compile/register CUDA kernels: {e}")
-        return False
 
 
 def defjvp(primitive, *jvp_rules):

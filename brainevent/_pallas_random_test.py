@@ -34,7 +34,7 @@ class TestLFSRBase:
         rng88 = PallasLFSR88RNG(seed=42)
         rng113 = PallasLFSR113RNG(seed=42)
         rng128 = PallasLFSR128RNG(seed=42)
-        
+
         assert isinstance(rng88, LFSRBase)
         assert isinstance(rng113, LFSRBase)
         assert isinstance(rng128, LFSRBase)
@@ -121,7 +121,7 @@ class TestTreeUtilities:
         """Test that tree_flatten returns correct structure."""
         rng = PallasLFSR88RNG(seed=42)
         children, aux_data = rng.tree_flatten()
-        
+
         assert isinstance(children, tuple)
         assert len(children) == 1
         assert isinstance(aux_data, tuple)
@@ -131,9 +131,9 @@ class TestTreeUtilities:
         """Test that tree_unflatten reconstructs the object correctly."""
         rng1 = PallasLFSR88RNG(seed=42)
         children, aux_data = rng1.tree_flatten()
-        
+
         rng2 = PallasLFSR88RNG.tree_unflatten(aux_data, children)
-        
+
         assert isinstance(rng2, PallasLFSR88RNG)
         assert rng2.key == rng1.key
 
@@ -141,9 +141,9 @@ class TestTreeUtilities:
         """Test that tree_unflatten preserves the correct class."""
         rng113 = PallasLFSR113RNG(seed=42)
         children, aux_data = rng113.tree_flatten()
-        
+
         reconstructed = PallasLFSR113RNG.tree_unflatten(aux_data, children)
-        
+
         assert isinstance(reconstructed, PallasLFSR113RNG)
         assert not isinstance(reconstructed, PallasLFSR88RNG)
 
@@ -151,10 +151,10 @@ class TestTreeUtilities:
         """Test that tree utilities work after state changes."""
         rng = PallasLFSR88RNG(seed=42)
         rng.rand()  # Change state
-        
+
         children, aux_data = rng.tree_flatten()
         reconstructed = PallasLFSR88RNG.tree_unflatten(aux_data, children)
-        
+
         assert reconstructed.key == rng.key
 
 
@@ -171,7 +171,7 @@ class TestLFSR88RNG:
         """Test that different seeds produce different initial states."""
         rng1 = PallasLFSR88RNG(seed=42)
         rng2 = PallasLFSR88RNG(seed=100)
-        
+
         assert rng1.key != rng2.key
 
     def test_initialization_zero_seed(self):
@@ -214,7 +214,7 @@ class TestLFSR88RNG:
         """Test that rand() is deterministic with same seed."""
         rng1 = PallasLFSR88RNG(seed=42)
         rng2 = PallasLFSR88RNG(seed=42)
-        
+
         for _ in range(10):
             val1 = rng1.rand()
             val2 = rng2.rand()
@@ -234,7 +234,7 @@ class TestLFSR88RNG:
             value = rng.randint()
             # Convert to Python int for comparison to avoid JAX overflow
             value_int = int(value)
-            assert 0 <= value_int <= 2**32 - 1
+            assert 0 <= value_int <= 2 ** 32 - 1
 
     def test_randint_updates_state(self):
         """Test that randint() updates the internal state."""
@@ -248,7 +248,7 @@ class TestLFSR88RNG:
         """Test that randint() is deterministic with same seed."""
         rng1 = PallasLFSR88RNG(seed=42)
         rng2 = PallasLFSR88RNG(seed=42)
-        
+
         for _ in range(10):
             val1 = rng1.randint()
             val2 = rng2.randint()
@@ -273,7 +273,7 @@ class TestLFSR88RNG:
         """Test that randn() is deterministic with same seed."""
         rng1 = PallasLFSR88RNG(seed=42)
         rng2 = PallasLFSR88RNG(seed=42)
-        
+
         for _ in range(10):
             val1 = rng1.randn()
             val2 = rng2.randn()
@@ -337,10 +337,10 @@ class TestLFSR88RNG:
         """Test that rand() produces values with correct statistical properties."""
         rng = PallasLFSR88RNG(seed=42)
         samples = [float(rng.rand()) for _ in range(10000)]
-        
+
         mean = np.mean(samples)
         std = np.std(samples)
-        
+
         # For uniform [0,1), mean should be ~0.5, std should be ~1/sqrt(12) ≈ 0.289
         assert 0.45 <= mean <= 0.55, f"Mean {mean} outside expected range"
         assert 0.25 <= std <= 0.33, f"Std {std} outside expected range"
@@ -349,10 +349,10 @@ class TestLFSR88RNG:
         """Test that randn() produces values with correct statistical properties."""
         rng = PallasLFSR88RNG(seed=42)
         samples = [float(rng.randn()) for _ in range(10000)]
-        
+
         mean = np.mean(samples)
         std = np.std(samples)
-        
+
         # For N(0,1), mean should be ~0, std should be ~1
         assert -0.1 <= mean <= 0.1, f"Mean {mean} outside expected range"
         assert 0.9 <= std <= 1.1, f"Std {std} outside expected range"
@@ -385,7 +385,7 @@ class TestLFSR113RNG:
         """Test that LFSR113 produces different initial state than LFSR88."""
         rng88 = PallasLFSR88RNG(seed=42)
         rng113 = PallasLFSR113RNG(seed=42)
-        
+
         assert rng88.key != rng113.key
 
     def test_initialization_fourth_element(self):
@@ -406,7 +406,7 @@ class TestLFSR113RNG:
         for _ in range(100):
             value = rng.randint()
             value_int = int(value)
-            assert 0 <= value_int <= 2**32 - 1
+            assert 0 <= value_int <= 2 ** 32 - 1
 
     def test_randn_returns_float(self):
         """Test that randn() returns a float."""
@@ -418,7 +418,7 @@ class TestLFSR113RNG:
         """Test that LFSR113 is deterministic with same seed."""
         rng1 = PallasLFSR113RNG(seed=42)
         rng2 = PallasLFSR113RNG(seed=42)
-        
+
         for _ in range(10):
             val1 = rng1.rand()
             val2 = rng2.rand()
@@ -428,20 +428,20 @@ class TestLFSR113RNG:
         """Test that LFSR113 produces different values than LFSR88."""
         rng88 = PallasLFSR88RNG(seed=42)
         rng113 = PallasLFSR113RNG(seed=42)
-        
+
         val88 = rng88.rand()
         val113 = rng113.rand()
-        
+
         assert val88 != val113
 
     def test_statistical_uniform_distribution(self):
         """Test that rand() produces correct statistical properties."""
         rng = PallasLFSR113RNG(seed=42)
         samples = [float(rng.rand()) for _ in range(10000)]
-        
+
         mean = np.mean(samples)
         std = np.std(samples)
-        
+
         assert 0.45 <= mean <= 0.55, f"Mean {mean} outside expected range"
         assert 0.25 <= std <= 0.33, f"Std {std} outside expected range"
 
@@ -460,7 +460,7 @@ class TestLFSR128RNG:
         rng88 = PallasLFSR88RNG(seed=42)
         rng113 = PallasLFSR113RNG(seed=42)
         rng128 = PallasLFSR128RNG(seed=42)
-        
+
         assert rng88.key != rng128.key
         assert rng113.key != rng128.key
 
@@ -477,7 +477,7 @@ class TestLFSR128RNG:
         for _ in range(100):
             value = rng.randint()
             value_int = int(value)
-            assert 0 <= value_int <= 2**32 - 1
+            assert 0 <= value_int <= 2 ** 32 - 1
 
     def test_randn_returns_float(self):
         """Test that randn() returns a float."""
@@ -489,7 +489,7 @@ class TestLFSR128RNG:
         """Test that LFSR128 is deterministic with same seed."""
         rng1 = PallasLFSR128RNG(seed=42)
         rng2 = PallasLFSR128RNG(seed=42)
-        
+
         for _ in range(10):
             val1 = rng1.rand()
             val2 = rng2.rand()
@@ -500,11 +500,11 @@ class TestLFSR128RNG:
         rng88 = PallasLFSR88RNG(seed=42)
         rng113 = PallasLFSR113RNG(seed=42)
         rng128 = PallasLFSR128RNG(seed=42)
-        
+
         val88 = rng88.rand()
         val113 = rng113.rand()
         val128 = rng128.rand()
-        
+
         # All three should produce different values
         assert val88 != val113
         assert val88 != val128
@@ -514,10 +514,10 @@ class TestLFSR128RNG:
         """Test that rand() produces correct statistical properties."""
         rng = PallasLFSR128RNG(seed=42)
         samples = [float(rng.rand()) for _ in range(10000)]
-        
+
         mean = np.mean(samples)
         std = np.std(samples)
-        
+
         assert 0.45 <= mean <= 0.55, f"Mean {mean} outside expected range"
         assert 0.25 <= std <= 0.33, f"Std {std} outside expected range"
 
@@ -525,10 +525,10 @@ class TestLFSR128RNG:
         """Test that randn() produces correct statistical properties."""
         rng = PallasLFSR128RNG(seed=42)
         samples = [float(rng.randn()) for _ in range(10000)]
-        
+
         mean = np.mean(samples)
         std = np.std(samples)
-        
+
         assert -0.1 <= mean <= 0.1, f"Mean {mean} outside expected range"
         assert 0.9 <= std <= 1.1, f"Std {std} outside expected range"
 
@@ -539,7 +539,7 @@ class TestCrossImplementationComparison:
     def test_all_implementations_produce_valid_uniform(self):
         """Test that all implementations produce valid uniform [0,1) values."""
         rngs = [PallasLFSR88RNG(seed=42), PallasLFSR113RNG(seed=42), PallasLFSR128RNG(seed=42)]
-        
+
         for rng in rngs:
             for _ in range(100):
                 value = rng.rand()
@@ -548,19 +548,19 @@ class TestCrossImplementationComparison:
     def test_all_implementations_produce_valid_integers(self):
         """Test that all implementations produce valid uint32 integers."""
         rngs = [PallasLFSR88RNG(seed=42), PallasLFSR113RNG(seed=42), PallasLFSR128RNG(seed=42)]
-        
+
         for rng in rngs:
             for _ in range(100):
                 value = rng.randint()
                 value_int = int(value)
-                assert 0 <= value_int <= 2**32 - 1
+                assert 0 <= value_int <= 2 ** 32 - 1
 
     def test_all_implementations_deterministic(self):
         """Test that all implementations are deterministic."""
         for rng_class in [PallasLFSR88RNG, PallasLFSR113RNG, PallasLFSR128RNG]:
             rng1 = rng_class(seed=42)
             rng2 = rng_class(seed=42)
-            
+
             for _ in range(10):
                 val1 = rng1.rand()
                 val2 = rng2.rand()
@@ -571,10 +571,10 @@ class TestCrossImplementationComparison:
         for rng_class in [PallasLFSR88RNG, PallasLFSR113RNG, PallasLFSR128RNG]:
             rng = rng_class(seed=42)
             samples = [float(rng.rand()) for _ in range(5000)]
-            
+
             mean = np.mean(samples)
             std = np.std(samples)
-            
+
             assert 0.45 <= mean <= 0.55, f"{rng_class.__name__}: Mean {mean} outside expected range"
             assert 0.25 <= std <= 0.33, f"{rng_class.__name__}: Std {std} outside expected range"
 
@@ -648,8 +648,8 @@ class TestSequenceProperties:
         """Test that LFSR88 doesn't produce many consecutive duplicates."""
         rng = PallasLFSR88RNG(seed=42)
         samples = [rng.rand() for _ in range(1000)]
-        
-        consecutive_duplicates = sum(1 for i in range(len(samples)-1) if samples[i] == samples[i+1])
+
+        consecutive_duplicates = sum(1 for i in range(len(samples) - 1) if samples[i] == samples[i + 1])
         # Should have very few or no consecutive duplicates
         assert consecutive_duplicates < 5, f"Too many consecutive duplicates: {consecutive_duplicates}"
 
@@ -657,23 +657,23 @@ class TestSequenceProperties:
         """Test that LFSR113 doesn't produce many consecutive duplicates."""
         rng = PallasLFSR113RNG(seed=42)
         samples = [rng.rand() for _ in range(1000)]
-        
-        consecutive_duplicates = sum(1 for i in range(len(samples)-1) if samples[i] == samples[i+1])
+
+        consecutive_duplicates = sum(1 for i in range(len(samples) - 1) if samples[i] == samples[i + 1])
         assert consecutive_duplicates < 5, f"Too many consecutive duplicates: {consecutive_duplicates}"
 
     def test_no_consecutive_duplicates_lfsr128(self):
         """Test that LFSR128 doesn't produce many consecutive duplicates."""
         rng = PallasLFSR128RNG(seed=42)
         samples = [rng.rand() for _ in range(1000)]
-        
-        consecutive_duplicates = sum(1 for i in range(len(samples)-1) if samples[i] == samples[i+1])
+
+        consecutive_duplicates = sum(1 for i in range(len(samples) - 1) if samples[i] == samples[i + 1])
         assert consecutive_duplicates < 5, f"Too many consecutive duplicates: {consecutive_duplicates}"
 
     def test_sequence_diversity_lfsr88(self):
         """Test that LFSR88 produces diverse sequences."""
         rng = PallasLFSR88RNG(seed=42)
         samples = [float(rng.rand()) for _ in range(1000)]
-        
+
         unique_values = len(set(samples))
         # Should have many unique values
         assert unique_values > 900, f"Not enough unique values: {unique_values}/1000"
@@ -682,7 +682,7 @@ class TestSequenceProperties:
         """Test that LFSR113 produces diverse sequences."""
         rng = PallasLFSR113RNG(seed=42)
         samples = [float(rng.rand()) for _ in range(1000)]
-        
+
         unique_values = len(set(samples))
         assert unique_values > 900, f"Not enough unique values: {unique_values}/1000"
 
@@ -690,7 +690,7 @@ class TestSequenceProperties:
         """Test that LFSR128 produces diverse sequences."""
         rng = PallasLFSR128RNG(seed=42)
         samples = [float(rng.rand()) for _ in range(1000)]
-        
+
         unique_values = len(set(samples))
         assert unique_values > 900, f"Not enough unique values: {unique_values}/1000"
 
@@ -700,21 +700,23 @@ class TestJAXIntegration:
 
     def test_jit_compilation_lfsr88(self):
         """Test that LFSR88 can be JIT compiled."""
+
         @jax.jit
         def generate_random(seed):
             rng = PallasLFSR88RNG(seed=seed)
             return rng.rand()
-        
+
         result = generate_random(42)
         assert 0.0 <= result < 1.0
 
     def test_jit_compilation_lfsr113(self):
         """Test that LFSR113 can be JIT compiled."""
+
         @jax.jit
         def generate_random(seed):
             rng = PallasLFSR113RNG(seed=seed)
             return rng.rand()
-        
+
         result = generate_random(42)
         assert 0.0 <= result < 1.0
 
@@ -727,7 +729,7 @@ class TestJAXIntegration:
         rng = PallasLFSR88RNG(seed=42)
         # Use the class's own tree_flatten method
         children, aux_data = rng.tree_flatten()
-        
+
         # The class's tree_flatten returns the key tuple as children
         assert len(children) == 1  # The key tuple
         assert len(aux_data) == 0
@@ -737,9 +739,9 @@ class TestJAXIntegration:
         rng1 = PallasLFSR88RNG(seed=42)
         # Use the class's tree_flatten method, not jax.tree_util.tree_flatten
         children, aux_data = rng1.tree_flatten()
-        
+
         rng2 = PallasLFSR88RNG.tree_unflatten(aux_data, children)
-        
+
         assert rng2.key == rng1.key
 
 

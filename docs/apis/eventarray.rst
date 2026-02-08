@@ -13,7 +13,7 @@ Base
    :toctree: generated/
    :template: classtemplate.rst
 
-   BaseArray
+   EventRepresentation
 
 
 Binary Events
@@ -35,17 +35,6 @@ Sparse Float Events
    :template: classtemplate.rst
 
    SparseFloat
-
-
-Indexed Events
---------------
-
-.. autosummary::
-   :toctree: generated/
-   :template: classtemplate.rst
-
-   IndexedBinary
-   IndexedSparseFloat
 
 
 Utility

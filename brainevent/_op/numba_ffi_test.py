@@ -675,6 +675,7 @@ class TestNumbaKernelErrors(unittest.TestCase):
 
     def test_non_numba_function_raises(self):
         """Test that non-Numba function raises AssertionError."""
+
         def regular_function(x, out):
             pass
 

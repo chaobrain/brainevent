@@ -49,6 +49,7 @@ def jitu(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    backend: Optional[str] = None,
 ) -> Data:
     u.fail_for_dimension_mismatch(w_low, w_high, "w_low and w_high must have the same dimension.")
     w_low, unitd = u.split_mantissa_unit(w_low)
@@ -61,7 +62,8 @@ def jitu(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder
+        corder=corder,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd)
 
@@ -77,6 +79,7 @@ def jitumv(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    backend: Optional[str] = None,
 ) -> Data:
     u.fail_for_dimension_mismatch(w_low, w_high, "w_low and w_high must have the same dimension.")
     seed = _initialize_seed(seed)
@@ -92,7 +95,8 @@ def jitumv(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder
+        corder=corder,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitv)
 
@@ -108,6 +112,7 @@ def jitumm(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    backend: Optional[str] = None,
 ) -> Data:
     u.fail_for_dimension_mismatch(w_low, w_high, "w_low and w_high must have the same dimension.")
     seed = _initialize_seed(seed)
@@ -123,7 +128,8 @@ def jitumm(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder
+        corder=corder,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitB)
 
@@ -433,14 +439,12 @@ def _jitu_jvp_whigh(w_high_dot, w_low, w_high, clen, seed, *, shape, transpose: 
 
 def _wlow_tranpose(ct, seed, clen, **kwargs):
     # JITC * (high - low) + low
-    # TODO: optimize memory
     forward = jitu_p_call(0., 1., clen, seed, **kwargs)[0]
     return jnp.expand_dims((ct * (-forward + 1.)).sum(), axis=0)
 
 
 def _whigh_tranpose(ct, seed, clen, **kwargs):
     # JITC * (high - low) + low
-    # TODO: optimize memory
     forward = jitu_p_call(0., 1., clen, seed, **kwargs)[0]
     return jnp.expand_dims((ct * forward).sum(), axis=0)
 
@@ -849,37 +853,20 @@ def _jitumv_pallas_kernel_generator(
 
 
 def _jitumv_jvp_v(v_dot, w_low, w_high, clen, vector, seed, *, shape, transpose, corder, **kwargs):
-    return jitumv_p_call(w_low, w_high, clen, v_dot, seed, shape=shape, transpose=transpose,
-                         corder=corder)
+    return jitumv_p_call(w_low, w_high, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder)
 
 
 def _jitumv_jvp_wlow(w_dot, w_low, w_high, clen, vector, seed, *, shape, transpose, corder, **kwargs):
-    return jitumv_p_call(w_dot, w_high, clen, vector, seed, shape=shape, transpose=transpose,
-                         corder=corder)
+    return jitumv_p_call(w_dot, w_high, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
 
 
 def _jitumv_jvp_whigh(w_dot, w_low, w_high, clen, vector, seed, *, shape, transpose, corder, **kwargs):
-    return jitumv_p_call(w_low, w_dot, clen, vector, seed, shape=shape, transpose=transpose,
-                         corder=corder)
+    return jitumv_p_call(w_low, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitumv_transpose_rules(
-    ct,
-    w_low,
-    w_high,
-    clen,
-    vector,
-    seed,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
+def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, transpose, corder, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
-    assert not ad.is_undefined_primal(w_low)
-    assert not ad.is_undefined_primal(w_high)
 
     ct = ct[0]
     if ad.is_undefined_primal(vector):
@@ -894,6 +881,56 @@ def _jitumv_transpose_rules(
             corder=not corder
         )[0]
         return w_low, w_high, clen, r, seed
+    elif ad.is_undefined_primal(w_low):
+        # Fix the sampled connectivity and RNG stream (same `clen/seed/shape/transpose/corder`).
+        # For each active entry:
+        #   w_ij = w_low + (w_high - w_low) * u_ij,  u_ij in [0, 1).
+        # The linear map output is therefore affine in (w_low, w_high):
+        #   y = w_low * C(v) + (w_high - w_low) * U(v),
+        # where
+        #   U(v) = y(0, 1)  and  C(v) = y(1, 1).
+        # Given cotangent ct, with inner product <a, b> = sum(a * b):
+        #   dL/dw_high = <ct, U(v)>
+        #   dL/dw_low  = <ct, C(v) - U(v)>.
+        ones = jnp.ones((1,), dtype=ct.dtype)
+        zeros = jnp.zeros((1,), dtype=ct.dtype)
+        u_basis = jitumv_p_call(
+            zeros,
+            ones,
+            clen,
+            vector,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder
+        )[0]
+        c_basis = jitumv_p_call(
+            ones,
+            ones,
+            clen,
+            vector,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder
+        )[0]
+        dw_low = jnp.expand_dims(jnp.sum(ct * (c_basis - u_basis)), axis=0)
+        return dw_low, w_high, clen, vector, seed
+    elif ad.is_undefined_primal(w_high):
+        zeros = jnp.zeros((1,), dtype=ct.dtype)
+        ones = jnp.ones((1,), dtype=ct.dtype)
+        u_basis = jitumv_p_call(
+            zeros,
+            ones,
+            clen,
+            vector,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder
+        )[0]
+        dw_high = jnp.expand_dims(jnp.sum(ct * u_basis), axis=0)
+        return w_low, dw_high, clen, vector, seed
     else:
         raise NotImplementedError(
             f"Transpose rule for {ct} not implemented "
@@ -933,7 +970,6 @@ def _jitumv_batching(args, axes, **kwargs):
 
 
 def _jitumv_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -942,12 +978,16 @@ def _jitumv_benchmark_data(*, platform):
             w_high = jnp.ones(1, dtype=dtype)
             clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
             v_size = n_post if not transpose else n_pre
-            vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
+            vector = jnp.asarray(np.random.randn(v_size), dtype=dtype)
             seed = jnp.asarray(42, dtype=jnp.uint32)
             name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append(BenchmarkConfig(name, (w_low, w_high, clen, vector, seed), {
-                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
-            }))
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (w_low, w_high, clen, vector, seed),
+                    {'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder}
+                )
+            )
     return configs
 
 
@@ -1428,27 +1468,12 @@ def _jitumm_jvp_whigh(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose, 
 
 
 def _jitumm_jvp_B(B_dot, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
-    return jitumm_p_call(w_low, w_high, clen, B_dot, seed, shape=shape, transpose=transpose,
-                         corder=corder)
+    return jitumm_p_call(w_low, w_high, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitumm_transpose_rules(
-    ct,
-    w_low,
-    w_high,
-    clen,
-    B,
-    seed,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
+def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
-    assert not ad.is_undefined_primal(w_low)
-    assert not ad.is_undefined_primal(w_high)
 
     ct = ct[0]
     if ad.is_undefined_primal(B):
@@ -1463,6 +1488,52 @@ def _jitumm_transpose_rules(
             corder=not corder,
         )[0]
         return w_low, w_high, clen, dB, seed
+    elif ad.is_undefined_primal(w_low):
+        # Same affine decomposition as _jitumv_transpose_rules, now for matrix right operand B:
+        #   Y = w_low * C(B) + (w_high - w_low) * U(B),
+        #   U(B) = Y(0, 1), C(B) = Y(1, 1).
+        # Hence:
+        #   dL/dw_high = <ct, U(B)>
+        #   dL/dw_low  = <ct, C(B) - U(B)>.
+        ones = jnp.ones((1,), dtype=ct.dtype)
+        zeros = jnp.zeros((1,), dtype=ct.dtype)
+        u_basis = jitumm_p_call(
+            zeros,
+            ones,
+            clen,
+            B,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder
+        )[0]
+        c_basis = jitumm_p_call(
+            ones,
+            ones,
+            clen,
+            B,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder
+        )[0]
+        dw_low = jnp.expand_dims(jnp.sum(ct * (c_basis - u_basis)), axis=0)
+        return dw_low, w_high, clen, B, seed
+    elif ad.is_undefined_primal(w_high):
+        zeros = jnp.zeros((1,), dtype=ct.dtype)
+        ones = jnp.ones((1,), dtype=ct.dtype)
+        u_basis = jitumm_p_call(
+            zeros,
+            ones,
+            clen,
+            B,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder
+        )[0]
+        dw_high = jnp.expand_dims(jnp.sum(ct * u_basis), axis=0)
+        return w_low, dw_high, clen, B, seed
     else:
         raise NotImplementedError(
             'Transpose rules for jitc_matmat_uniform not implemented for '
@@ -1506,7 +1577,6 @@ def _jitumm_batching(args, axes, **kwargs):
 
 
 def _jitumm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -1515,12 +1585,16 @@ def _jitumm_benchmark_data(*, platform):
             w_high = jnp.ones(1, dtype=dtype)
             clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
             b_rows = n_post if not transpose else n_pre
-            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
+            B = jnp.asarray(np.random.randn(b_rows, 10), dtype=dtype)
             seed = jnp.asarray(42, dtype=jnp.uint32)
             name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append(BenchmarkConfig(name, (w_low, w_high, clen, B, seed), {
-                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
-            }))
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (w_low, w_high, clen, B, seed),
+                    {'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder}
+                )
+            )
     return configs
 
 

@@ -63,6 +63,7 @@ def jitn(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    backend: Optional[str] = None,
 ) -> Data:
     u.fail_for_dimension_mismatch(w_loc, w_scale, "w_loc and w_scale must have the same dimension.")
     w_loc, unitd = u.split_mantissa_unit(w_loc)
@@ -79,7 +80,8 @@ def jitn(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder
+        corder=corder,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd)
 
@@ -94,6 +96,7 @@ def jitnmv(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    backend: Optional[str] = None,
 ) -> Data:
     u.fail_for_dimension_mismatch(w_loc, w_scale, "w_loc and w_scale must have the same dimension.")
     seed = _initialize_seed(seed)
@@ -120,7 +123,8 @@ def jitnmv(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder
+        corder=corder,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitv)
 
@@ -135,6 +139,7 @@ def jitnmm(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    backend: Optional[str] = None,
 ) -> Data:
     u.fail_for_dimension_mismatch(w_loc, w_scale, "w_loc and w_scale must have the same dimension.")
     seed = _initialize_seed(seed)
@@ -161,7 +166,8 @@ def jitnmm(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder
+        corder=corder,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitB)
 
@@ -610,11 +616,12 @@ def _jitn_transpose(ct, w_loc, w_scale, clen, seed, *, shape, transpose: bool, c
     if ad.is_undefined_primal(w_loc):
         dwlow = jnp.expand_dims(ct.sum(), axis=0)
         return (dwlow, w_scale, clen, seed)
+
     elif ad.is_undefined_primal(w_scale):
         # TODO: optimize memory
         forward = jitn_p_call(0., 1., clen, seed, shape=shape, transpose=transpose, corder=corder)[0]
-        dwhigh = jnp.expand_dims((ct * forward).sum(), axis=0)
-        return (w_loc, dwhigh, clen, seed)
+        dwscale = jnp.expand_dims((ct * forward).sum(), axis=0)
+        return (w_loc, dwscale, clen, seed)
 
     else:
         raise NotImplementedError(
@@ -1107,11 +1114,10 @@ def _jitnmv_jvp_wscale(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, tran
 def _jitnmv_transpose_rules(ct, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
-    assert not ad.is_undefined_primal(w_loc)
-    assert not ad.is_undefined_primal(w_scale)
 
     ct = ct[0]
     if ad.is_undefined_primal(vector):
+        # Gradient w.r.t. vector: d(loss)/d(v) = M^T @ ct
         r = jitnmv_p_call(
             w_loc,
             w_scale,
@@ -1123,10 +1129,32 @@ def _jitnmv_transpose_rules(ct, w_loc, w_scale, clen, vector, seed, *, shape, tr
             corder=not corder
         )[0]
         return w_loc, w_scale, clen, r, seed
+    elif ad.is_undefined_primal(w_loc):
+        # M = (w_loc + w_scale * Z) * mask
+        # d(M @ v)/d(w_loc) = mask @ v
+        # d(loss)/d(w_loc) = ct^T @ (mask @ v) = (mask^T @ ct) . v
+        # mask^T @ ct = jitnmv(1., 0., ...) with transposed shape
+        r = jitnmv_p_call(
+            1., 0., clen, ct, seed,
+            shape=shape, transpose=not transpose, corder=not corder
+        )[0]
+        dw_loc = jnp.expand_dims(jnp.sum(r * vector), axis=0)
+        return dw_loc, w_scale, clen, vector, seed
+    elif ad.is_undefined_primal(w_scale):
+        # M = (w_loc + w_scale * Z) * mask
+        # d(M @ v)/d(w_scale) = (Z * mask) @ v
+        # d(loss)/d(w_scale) = ct^T @ ((Z * mask) @ v) = ((Z * mask)^T @ ct) . v
+        # (Z * mask)^T @ ct = jitnmv(0., 1., ...) with transposed shape
+        r = jitnmv_p_call(
+            0., 1., clen, ct, seed,
+            shape=shape, transpose=not transpose, corder=not corder
+        )[0]
+        dw_scale = jnp.expand_dims(jnp.sum(r * vector), axis=0)
+        return w_loc, dw_scale, clen, vector, seed
     else:
         raise NotImplementedError(
-            f"Transpose rule for {ct} not implemented "
-            f"for event-driven COO matrix-vector product."
+            f"Transpose rule for jitnmv not implemented "
+            f"when none of vector/w_loc/w_scale is an undefined primal."
         )
 
 
@@ -1167,7 +1195,6 @@ def _jitnmv_batching(args, axes, **kwargs):
 
 
 def _jitnmv_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -1176,12 +1203,16 @@ def _jitnmv_benchmark_data(*, platform):
             w_scale = jnp.ones(1, dtype=dtype) * 0.1
             clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
             v_size = n_post if not transpose else n_pre
-            vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
+            vector = jnp.asarray(np.random.randn(v_size), dtype=dtype)
             seed = jnp.asarray(42, dtype=jnp.uint32)
             name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append(BenchmarkConfig(name, (w_loc, w_scale, clen, vector, seed), {
-                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
-            }))
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (w_loc, w_scale, clen, vector, seed),
+                    {'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder}
+                )
+            )
     return configs
 
 
@@ -1662,8 +1693,6 @@ def _jitnmm_jvp_B(B_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, cor
 def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
-    assert not ad.is_undefined_primal(w_loc)
-    assert not ad.is_undefined_primal(w_scale)
 
     ct = ct[0]
     if ad.is_undefined_primal(B):
@@ -1677,9 +1706,27 @@ def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpo
             transpose=not transpose,
             corder=not corder,
         )[0]
-
         return w_loc, w_scale, clen, r, seed
-
+    elif ad.is_undefined_primal(w_loc):
+        # M = (w_loc + w_scale * Z) * mask
+        # d(M @ B)/d(w_loc) = mask @ B
+        # d(loss)/d(w_loc) = sum((mask^T @ ct) * B)
+        r = jitnmm_p_call(
+            1., 0., clen, ct, seed,
+            shape=shape, transpose=not transpose, corder=not corder,
+        )[0]
+        dw_loc = jnp.expand_dims(jnp.sum(r * B), axis=0)
+        return dw_loc, w_scale, clen, B, seed
+    elif ad.is_undefined_primal(w_scale):
+        # M = (w_loc + w_scale * Z) * mask
+        # d(M @ B)/d(w_scale) = (Z * mask) @ B
+        # d(loss)/d(w_scale) = sum(((Z*mask)^T @ ct) * B)
+        r = jitnmm_p_call(
+            0., 1., clen, ct, seed,
+            shape=shape, transpose=not transpose, corder=not corder,
+        )[0]
+        dw_scale = jnp.expand_dims(jnp.sum(r * B), axis=0)
+        return w_loc, dw_scale, clen, B, seed
     else:
         raise NotImplementedError(
             'Transpose rules for jitc_matmat_normal not implemented for '
@@ -1723,7 +1770,6 @@ def _jitnmm_batching(args, axes, **kwargs):
 
 
 def _jitnmm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -1732,7 +1778,7 @@ def _jitnmm_benchmark_data(*, platform):
             w_scale = jnp.ones(1, dtype=dtype) * 0.1
             clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
             b_rows = n_post if not transpose else n_pre
-            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
+            B = jnp.asarray(np.random.randn(b_rows, 10), dtype=dtype)
             seed = jnp.asarray(42, dtype=jnp.uint32)
             name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
             configs.append(BenchmarkConfig(name, (w_loc, w_scale, clen, B, seed), {
@@ -1741,7 +1787,8 @@ def _jitnmm_benchmark_data(*, platform):
     return configs
 
 
-def jitnmm_p_call(w_loc, w_scale, clen, B, seed, *, shape: MatrixShape, transpose: bool, corder: bool, backend: Optional[str] = None):
+def jitnmm_p_call(w_loc, w_scale, clen, B, seed, *, shape: MatrixShape, transpose: bool, corder: bool,
+                  backend: Optional[str] = None):
     w_loc = jnp.atleast_1d(w_loc)
     w_scale = jnp.atleast_1d(w_scale)
     clen = jnp.atleast_1d(clen)

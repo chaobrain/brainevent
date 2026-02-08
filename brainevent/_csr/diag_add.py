@@ -256,12 +256,11 @@ def _csr_diag_add_transpose_value(ct, csr_value, diag_position, diag_value, **kw
 
 
 def _csr_diag_add_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     n_conn = max(1, int(n_post * prob))
     csr_value = jnp.ones(n_pre * n_conn, dtype=dtype)
     n_diag = min(n_pre, n_post)
-    diag_position = jnp.asarray(_np.arange(n_diag, dtype=_np.int32))
+    diag_position = jnp.asarray(np.arange(n_diag, dtype=np.int32))
     diag_value = jnp.ones(n_diag, dtype=dtype)
     return [BenchmarkConfig("default", (csr_value, diag_position, diag_value))]
 

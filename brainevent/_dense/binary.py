@@ -15,13 +15,15 @@
 
 # -*- coding: utf-8 -*-
 
+from typing import Optional
+
 import brainunit as u
 import jax
 import jax.numpy as jnp
-from typing import Optional
 import numpy as np
 from jax.interpreters import ad
 
+from brainevent._config import get_numba_parallel
 from brainevent._misc import cdiv, generate_block_dim, namescope
 from brainevent._op import jaxinfo_to_warpinfo, numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
@@ -39,7 +41,7 @@ __all__ = [
 
 
 @namescope
-def dbmv(weights, spikes):
+def dbmv(weights, spikes, *, backend: Optional[str] = None):
     """
     Performs event-driven matrix-vector multiplication: `dense matrix @ binary vector`.
 
@@ -86,7 +88,7 @@ def dbmv(weights, spikes):
         spikes = u.math.asarray(spikes)
     weight_val, wunit = u.split_mantissa_unit(weights)
     spk_val, spkunit = u.split_mantissa_unit(spikes)
-    r = dbmv_p_call(weight_val, spk_val)
+    r = dbmv_p_call(weight_val, spk_val, backend=backend)
     return u.maybe_decimal(r[0] * wunit * spkunit)
 
 
@@ -244,15 +246,14 @@ def _dbmv_batching(args, axes, **kwargs):
 
 
 def _dbmv_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for bool_event in (True, False):
-        weights = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
+        weights = jnp.asarray(np.random.randn(n_pre, n_post), dtype=dtype)
         if bool_event:
-            spikes = jnp.asarray(_np.random.rand(n_post) > (1 - prob), dtype=jnp.bool_)
+            spikes = jnp.asarray(np.random.rand(n_post) > (1 - prob), dtype=jnp.bool_)
         else:
-            spikes = jnp.asarray(_np.random.rand(n_post), dtype=dtype)
+            spikes = jnp.asarray(np.random.rand(n_post), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
         configs.append(BenchmarkConfig(name, (weights, spikes)))
     return configs
@@ -287,7 +288,7 @@ dbmv_p.def_benchmark_data(_dbmv_benchmark_data)
 
 
 @namescope
-def bdvm(spikes, weights):
+def bdvm(spikes, weights, *, backend: Optional[str] = None):
     """Performs event-driven vector-matrix multiplication: `spikes @ weights`.
 
     This function computes the vector-matrix product of a spike vector and a
@@ -323,7 +324,7 @@ def bdvm(spikes, weights):
         spikes = u.math.asarray(spikes)
     weight_val, wunit = u.split_mantissa_unit(weights)
     spk_val, spkunit = u.split_mantissa_unit(spikes)
-    r = bdvm_p_call(spk_val, weight_val)
+    r = bdvm_p_call(spk_val, weight_val, backend=backend)
     return u.maybe_decimal(r[0] * wunit * spkunit)
 
 
@@ -481,15 +482,14 @@ def _event_matrix_batching(args, axes, **kwargs):
 
 
 def _bdvm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for bool_event in (True, False):
         if bool_event:
-            spikes = jnp.asarray(_np.random.rand(n_pre) > (1 - prob), dtype=jnp.bool_)
+            spikes = jnp.asarray(np.random.rand(n_pre) > (1 - prob), dtype=jnp.bool_)
         else:
-            spikes = jnp.asarray(_np.random.rand(n_pre), dtype=dtype)
-        weights = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
+            spikes = jnp.asarray(np.random.rand(n_pre), dtype=dtype)
+        weights = jnp.asarray(np.random.randn(n_pre, n_post), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
         configs.append(BenchmarkConfig(name, (spikes, weights)))
     return configs
@@ -525,7 +525,7 @@ bdvm_p.def_benchmark_data(_bdvm_benchmark_data)
 
 
 @namescope
-def dbmm(weights, spikes):
+def dbmm(weights, spikes, *, backend=None):
     """
     Performs event-driven matrix-matrix multiplication: `weights @ spikes`.
 
@@ -587,7 +587,7 @@ def _dbmm_numba_kernel(
     import numba
 
     if spk_info.dtype == jnp.bool_:
-        @numba.njit(parallel=True, fastmath=True, nogil=True)
+        @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
         def kernel(weights, spikes, posts):
             for i_n in numba.prange(spikes.shape[1]):
                 out = np.zeros(weights.shape[0], dtype=weights.dtype)
@@ -597,7 +597,7 @@ def _dbmm_numba_kernel(
                 posts[:, i_n] = out
 
     else:
-        @numba.njit(parallel=True, fastmath=True, nogil=True)
+        @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
         def kernel(weights, spikes, posts):
             for i_n in numba.prange(spikes.shape[1]):
                 out = np.zeros(weights.shape[0], dtype=weights.dtype)
@@ -628,24 +628,13 @@ def _dbmm_warp_kernel(
     m = weight_info.shape[0]
 
     weight_warp_info = jaxinfo_to_warpinfo(weight_info)
-    spike_warp_info = jaxinfo_to_warpinfo(spk_info)
     out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
 
     if spk_info.dtype == jnp.bool_:
-        @warp.kernel
-        def kernel(
-            weights: weight_warp_info,
-            spikes: spike_warp_info,
-            out: out_warp_info
-        ):
-            i_m, i_n = warp.tid()
-            r = weights.dtype(0.)
-            for i_k in range(k):
-                if spikes[i_k, i_n]:
-                    r += weights[i_m, i_k]
-            out[i_m, i_n] = r
+        # Cast bool spikes to float32 to avoid 2D boolean array indexing bug in warp
+        spk_float_info = jax.ShapeDtypeStruct(spk_info.shape, jnp.float32)
+        spike_warp_info = jaxinfo_to_warpinfo(spk_float_info)
 
-    else:
         @warp.kernel
         def kernel(
             weights: weight_warp_info,
@@ -659,10 +648,32 @@ def _dbmm_warp_kernel(
                     r += weights[i_m, i_k]
             out[i_m, i_n] = r
 
-    def run(weights, spikes):
-        out_info = kwargs['outs'][0]
-        fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out': out_info.shape})
-        return fn(weights, spikes)
+        def run(weights, spikes):
+            spikes = spikes.astype(jnp.float32)
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out': out_info.shape})
+            return fn(weights, spikes)
+
+    else:
+        spike_warp_info = jaxinfo_to_warpinfo(spk_info)
+
+        @warp.kernel
+        def kernel(
+            weights: weight_warp_info,
+            spikes: spike_warp_info,
+            out: out_warp_info
+        ):
+            i_m, i_n = warp.tid()
+            r = weights.dtype(0.)
+            for i_k in range(k):
+                if spikes[i_k, i_n] > 0.:
+                    r += weights[i_m, i_k]
+            out[i_m, i_n] = r
+
+        def run(weights, spikes):
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out': out_info.shape})
+            return fn(weights, spikes)
 
     return run
 
@@ -780,15 +791,14 @@ def _dbmm_batching(args, axes, **kwargs):
 
 
 def _dbmm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for bool_event in (True, False):
-        weights = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
+        weights = jnp.asarray(np.random.randn(n_pre, n_post), dtype=dtype)
         if bool_event:
-            spikes = jnp.asarray(_np.random.rand(n_post, 10) > (1 - prob), dtype=jnp.bool_)
+            spikes = jnp.asarray(np.random.rand(n_post, 10) > (1 - prob), dtype=jnp.bool_)
         else:
-            spikes = jnp.asarray(_np.random.rand(n_post, 10), dtype=dtype)
+            spikes = jnp.asarray(np.random.rand(n_post, 10), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
         configs.append(BenchmarkConfig(name, (weights, spikes)))
     return configs
@@ -824,7 +834,7 @@ dbmm_p.def_benchmark_data(_dbmm_benchmark_data)
 
 
 @namescope
-def bdmm(spikes, weights):
+def bdmm(spikes, weights, *, backend=None):
     """
     Performs event-driven binary matrix - dense matrix multiplication: `spikes @ weights`.
 
@@ -879,7 +889,7 @@ def _bdmm_numba_kernel(
     import numba
 
     if spk_info.dtype == jnp.bool_:
-        @numba.njit(parallel=True, fastmath=True, nogil=True)
+        @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
         def kernel(spikes, weights, posts):
             for i_m in numba.prange(spikes.shape[0]):
                 out = np.zeros(weights.shape[1], dtype=posts.dtype)
@@ -889,7 +899,7 @@ def _bdmm_numba_kernel(
                 posts[i_m] = out
 
     else:
-        @numba.njit(parallel=True, fastmath=True, nogil=True)
+        @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
         def kernel(spikes, weights, posts):
             for i_m in numba.prange(spikes.shape[0]):
                 out = np.zeros(weights.shape[1], dtype=posts.dtype)
@@ -915,25 +925,14 @@ def _bdmm_warp_kernel(
     m, k = spk_info.shape
     n = weight_info.shape[1]
 
-    spike_warp_info = jaxinfo_to_warpinfo(spk_info)
     weight_warp_info = jaxinfo_to_warpinfo(weight_info)
     out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
 
     if spk_info.dtype == jnp.bool_:
-        @warp.kernel
-        def kernel(
-            spikes: spike_warp_info,
-            weights: weight_warp_info,
-            out: out_warp_info,
-        ):
-            i_m, i_n = warp.tid()
-            r = weights.dtype(0.)
-            for i_k in range(k):
-                if spikes[i_m, i_k]:
-                    r += weights[i_k, i_n]
-            out[i_m, i_n] = r
+        # Cast bool spikes to float32 to avoid 2D boolean array indexing bug in warp
+        spk_float_info = jax.ShapeDtypeStruct(spk_info.shape, jnp.float32)
+        spike_warp_info = jaxinfo_to_warpinfo(spk_float_info)
 
-    else:
         @warp.kernel
         def kernel(
             spikes: spike_warp_info,
@@ -947,10 +946,32 @@ def _bdmm_warp_kernel(
                     r += weights[i_k, i_n]
             out[i_m, i_n] = r
 
-    def run(spikes, weights):
-        out_info = kwargs['outs'][0]
-        fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out': out_info.shape})
-        return fn(spikes, weights)
+        def run(spikes, weights):
+            spikes = spikes.astype(jnp.float32)
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out': out_info.shape})
+            return fn(spikes, weights)
+
+    else:
+        spike_warp_info = jaxinfo_to_warpinfo(spk_info)
+
+        @warp.kernel
+        def kernel(
+            spikes: spike_warp_info,
+            weights: weight_warp_info,
+            out: out_warp_info,
+        ):
+            i_m, i_n = warp.tid()
+            r = weights.dtype(0.)
+            for i_k in range(k):
+                if spikes[i_m, i_k] > 0.:
+                    r += weights[i_k, i_n]
+            out[i_m, i_n] = r
+
+        def run(spikes, weights):
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out': out_info.shape})
+            return fn(spikes, weights)
 
     return run
 
@@ -970,7 +991,7 @@ def _bdmm_pallas_kernel(
 
     def kernel(
         spike_ref,  # [m, k]
-        weight_ref,  # [k, n]
+        weight_t_ref,  # [n, k] (transposed)
         out_ref,  # [m, n]
     ):
         i_m = pl.program_id(0)
@@ -980,7 +1001,8 @@ def _bdmm_pallas_kernel(
 
         def loop_fn(i_k, temp):
             spike = spike_ref[i_m, i_k]
-            weight_row = weight_ref[i_k, pl.dslice(i_n_start, block_dim)]
+            # Use block slice on first dim (working pattern on GPU triton)
+            weight_row = weight_t_ref[pl.dslice(i_n_start, block_dim), i_k]
             weight_row = jnp.where(i_n_mask, weight_row, 0.0)
             return jax.lax.cond(
                 spike if spike_ref.dtype == jnp.bool_ else spike > 0.,
@@ -989,16 +1011,17 @@ def _bdmm_pallas_kernel(
                 temp,
             )
 
-        final_out = jax.lax.fori_loop(0, k, loop_fn, jnp.zeros(block_dim, dtype=weight_ref.dtype))
+        final_out = jax.lax.fori_loop(0, k, loop_fn, jnp.zeros(block_dim, dtype=weight_t_ref.dtype))
         out_ref[i_m, pl.dslice(i_n_start, block_dim)] = jnp.where(i_n_mask, final_out, 0.0)
 
     def run(spikes, weights):
+        weights_t = weights.T  # [k, n] -> [n, k]
         fn = pl.pallas_call(
             kernel,
             grid=(m, cdiv(n, block_dim)),
             out_shape=kwargs['outs']
         )
-        return fn(spikes, weights)
+        return fn(spikes, weights_t)
 
     return run
 
@@ -1067,15 +1090,14 @@ def _bdmm_batching(args, axes, **kwargs):
 
 
 def _bdmm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for bool_event in (True, False):
         if bool_event:
-            spikes = jnp.asarray(_np.random.rand(10, n_post) > (1 - prob), dtype=jnp.bool_)
+            spikes = jnp.asarray(np.random.rand(10, n_post) > (1 - prob), dtype=jnp.bool_)
         else:
-            spikes = jnp.asarray(_np.random.rand(10, n_post), dtype=dtype)
-        weights = jnp.asarray(_np.random.randn(n_post, n_post), dtype=dtype)
+            spikes = jnp.asarray(np.random.rand(10, n_post), dtype=dtype)
+        weights = jnp.asarray(np.random.randn(n_post, n_post), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
         configs.append(BenchmarkConfig(name, (spikes, weights)))
     return configs

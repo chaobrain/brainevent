@@ -22,7 +22,9 @@ import pytest
 import brainevent
 from brainevent._test_util import allclose, gen_events
 
-if brainstate.environ.get_platform() == 'cpu':
+platform = jax.default_backend()
+
+if platform == 'cpu':
     shapes = [
         (200, 300),
         (100, 500)
@@ -123,7 +125,7 @@ class Test_JITC_RC_Conversion:
         matrix = gen_events([shape[1], k], asbool=asbool)
 
         out1 = jitcr @ matrix
-        out2 = (matrix.T @ jitcc).T
+        out2 = (matrix.value.T @ jitcc).T
         assert allclose(out1, out2)
 
     @pytest.mark.parametrize('k', [10])
@@ -137,9 +139,93 @@ class Test_JITC_RC_Conversion:
         matrix = gen_events([k, shape[0]], asbool=asbool)
 
         out1 = matrix @ jitcr
-        out2 = (jitcc @ matrix.T).T
+        out2 = (jitcc @ matrix.value.T).T
         print(out1 - out2)
         assert allclose(out1, out2, atol=1e-4, rtol=1e-4)
+
+
+class Test_JITC_Operator_Behavior:
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_jitc_scalar_r_operator_behavior(self, corder):
+        shape = (20, 30)
+        mat = brainevent.JITCScalarR((1.5, 0.1, 123), shape=shape, corder=corder)
+        dense = mat.todense()
+
+        left_vec = gen_events(shape[0], asbool=False).value
+        right_vec = gen_events(shape[1], asbool=False).value
+        left_mat = gen_events((5, shape[0]), asbool=False).value
+        right_mat = gen_events((shape[1], 4), asbool=False).value
+
+        assert allclose(left_vec @ mat, left_vec @ dense, atol=1e-4, rtol=1e-4)
+        assert allclose(mat @ right_vec, dense @ right_vec, atol=1e-4, rtol=1e-4)
+        assert allclose(left_mat @ mat, left_mat @ dense, atol=1e-4, rtol=1e-4)
+        assert allclose(mat @ right_mat, dense @ right_mat, atol=1e-4, rtol=1e-4)
+
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_jitc_scalar_c_operator_behavior(self, corder):
+        shape = (20, 30)
+        mat = brainevent.JITCScalarC((1.5, 0.1, 123), shape=shape, corder=corder)
+        dense = mat.todense()
+
+        left_vec = gen_events(shape[0], asbool=False).value
+        right_vec = gen_events(shape[1], asbool=False).value
+        left_mat = gen_events((5, shape[0]), asbool=False).value
+        right_mat = gen_events((shape[1], 4), asbool=False).value
+
+        assert allclose(left_vec @ mat, left_vec @ dense, atol=1e-4, rtol=1e-4)
+        assert allclose(mat @ right_vec, dense @ right_vec, atol=1e-4, rtol=1e-4)
+        assert allclose(left_mat @ mat, left_mat @ dense, atol=1e-4, rtol=1e-4)
+        assert allclose(mat @ right_mat, dense @ right_mat, atol=1e-4, rtol=1e-4)
+
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_jitc_scalar_r_transpose_operator_behavior(self, corder):
+        shape = (20, 30)
+        mat = brainevent.JITCScalarR((1.5, 0.1, 123), shape=shape, corder=corder).T
+        dense = mat.todense()
+
+        left_vec = jnp.asarray(np.random.rand(shape[1]))
+        right_vec = jnp.asarray(np.random.rand(shape[0]))
+        left_mat = jnp.asarray(np.random.rand(5, shape[1]))
+        right_mat = jnp.asarray(np.random.rand(shape[0], 4))
+
+        assert allclose(left_vec @ mat, left_vec @ dense, atol=1e-4, rtol=1e-4)
+        assert allclose(mat @ right_vec, dense @ right_vec, atol=1e-4, rtol=1e-4)
+        assert allclose(left_mat @ mat, left_mat @ dense, atol=1e-4, rtol=1e-4)
+        assert allclose(mat @ right_mat, dense @ right_mat, atol=1e-4, rtol=1e-4)
+
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_jitc_scalar_c_transpose_operator_behavior(self, corder):
+        shape = (20, 30)
+        mat = brainevent.JITCScalarC((1.5, 0.1, 123), shape=shape, corder=corder).T
+        dense = mat.todense()
+
+        left_vec = jnp.asarray(np.random.rand(shape[1]))
+        right_vec = jnp.asarray(np.random.rand(shape[0]))
+        left_mat = jnp.asarray(np.random.rand(5, shape[1]))
+        right_mat = jnp.asarray(np.random.rand(shape[0], 4))
+
+        assert allclose(left_vec @ mat, left_vec @ dense, atol=1e-4, rtol=1e-4)
+        assert allclose(mat @ right_vec, dense @ right_vec, atol=1e-4, rtol=1e-4)
+        assert allclose(left_mat @ mat, left_mat @ dense, atol=1e-4, rtol=1e-4)
+        assert allclose(mat @ right_mat, dense @ right_mat, atol=1e-4, rtol=1e-4)
+
+    @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
+    def test_jitc_scalar_unit_operator_behavior(self, cls):
+        import brainunit as u
+        shape = (20, 30)
+        weight = 2.1 * u.mV
+        mat = cls((weight, 0.2, 123), shape=shape)
+        dense = mat.todense()
+
+        right_vec = jnp.asarray(np.random.rand(shape[1]))
+        left_vec = jnp.asarray(np.random.rand(shape[0]))
+
+        assert u.math.allclose(mat @ right_vec, dense @ right_vec,
+                               rtol=1e-4 * u.get_unit(dense @ right_vec),
+                               atol=1e-4 * u.get_unit(dense @ right_vec))
+        assert u.math.allclose(left_vec @ mat, left_vec @ dense,
+                               rtol=1e-4 * u.get_unit(left_vec @ dense),
+                               atol=1e-4 * u.get_unit(left_vec @ dense))
 
 
 class Test_JITC_To_Dense:

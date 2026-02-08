@@ -16,7 +16,6 @@
 __all__ = [
     'Primitive',
     'Tracer',
-    'JAXSparse',
 ]
 
 import jax
@@ -27,6 +26,3 @@ else:
     from jax.extend.core import Primitive
 
 from jax.core import Tracer
-
-# import experimental module in JAX for compatibility
-from jax.experimental.sparse import JAXSparse

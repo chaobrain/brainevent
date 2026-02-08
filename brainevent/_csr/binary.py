@@ -21,6 +21,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
+from brainevent._config import get_numba_parallel
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescope
 from brainevent._op import jaxinfo_to_warpinfo, numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
@@ -45,6 +46,7 @@ def binary_csrmv(
     *,
     shape: MatrixShape,
     transpose: bool = False,
+    backend: Optional[str] = None,
 ) -> Data:
     """
     Product of CSR sparse matrix and a dense vector.
@@ -72,6 +74,7 @@ def binary_csrmv(
         v,
         shape=shape,
         transpose=transpose,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * (unitd * unitv))
 
@@ -85,6 +88,7 @@ def binary_csrmm(
     *,
     shape: MatrixShape,
     transpose: bool = False,
+    backend: Optional[str] = None,
 ) -> Data:
     """
     Product of CSR sparse matrix and a dense matrix.
@@ -112,6 +116,7 @@ def binary_csrmm(
         B,
         shape=shape,
         transpose=transpose,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * (unitd * unitb))
 
@@ -149,7 +154,7 @@ def _csrmv_numba_kernel(
         else:
             if vector_info.dtype == jnp.bool_:
                 # Can parallelize by row
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def mv(weights, indices, indptr, v, posts):
                     w = weights[0]
                     for i in numba.prange(indptr.shape[0] - 1):
@@ -160,7 +165,7 @@ def _csrmv_numba_kernel(
                         posts[i] = r
 
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def mv(weights, indices, indptr, v, posts):
                     w = weights[0]
                     for i in numba.prange(indptr.shape[0] - 1):
@@ -194,7 +199,7 @@ def _csrmv_numba_kernel(
         else:
             if vector_info.dtype == jnp.bool_:
                 # Can parallelize by row
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def mv(weights, indices, indptr, v, posts):
                     for i in numba.prange(indptr.shape[0] - 1):
                         r = 0.0
@@ -204,7 +209,7 @@ def _csrmv_numba_kernel(
                         posts[i] = r
 
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def mv(weights, indices, indptr, v, posts):
                     for i in numba.prange(indptr.shape[0] - 1):
                         r = 0.0
@@ -307,7 +312,7 @@ def _csrmv_warp_kernel(
             )
             dim = vector_info.shape[0] if transpose else indptr_info.shape[0] - 1
             fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
-            return fn(weights, indices, indptr, v, jnp.zeros(out_info.dtype, out_info.shape))
+            return fn(weights, indices, indptr, v, jnp.zeros(out_info.shape, out_info.dtype))
 
 
     else:
@@ -583,23 +588,14 @@ def _csrmv_pallas_gpu_kernel(
                     jax.lax.fori_loop(0, num_blocks, loop_fn, None)
 
         def kernel(data, indices, indptr, vector):
-            fn = pl.pallas_call(
-                mm,
-                grid=(m,),
-                input_output_aliases={4: 0},
-                out_shape=kwargs['outs']
-            )
-            posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
-            return fn(data, indices, indptr, vector, posts)
+            fn = pl.pallas_call(mm, grid=(m,), input_output_aliases={4: 0}, out_shape=kwargs['outs'])
+            out = kwargs['outs'][0]
+            return fn(data, indices, indptr, vector, jnp.zeros(out.shape, dtype=out.dtype))
 
         return kernel
     else:
         return _csrmv_pallas_kernel(
-            weight_info=weight_info,
-            indices_info=indices_info,
-            shape=shape,
-            transpose=transpose,
-            **kwargs
+            weight_info=weight_info, indices_info=indices_info, shape=shape, transpose=transpose, **kwargs
         )
 
 
@@ -623,14 +619,7 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, events, *, shape, transpose
         if type(ct) is ad.Zero:
             ct_events = ad.Zero(events)
         else:
-            ct_events = csrmv(
-                data,
-                indices,
-                indptr,
-                ct,
-                shape=shape,
-                transpose=not transpose
-            )
+            ct_events = csrmv(data, indices, indptr, ct, shape=shape, transpose=not transpose)
         return data, indices, indptr, ct_events
     else:
         if type(ct) is ad.Zero:
@@ -682,25 +671,28 @@ def _csrmv_batching(args, axes, **kwargs):
 
 
 def _binary_csrmv_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
         for homo in (True, False):
             for bool_event in (True, False):
                 n_conn = max(1, int(n_post * prob))
-                indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
-                indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
+                indptr = np.arange(n_pre + 1, dtype=np.int32) * n_conn
+                indices = np.random.randint(0, n_post, (n_pre * n_conn,), dtype=np.int32)
                 weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(n_pre * n_conn, dtype=dtype)
                 v_size = n_post if not transpose else n_pre
                 if bool_event:
-                    vector = jnp.asarray(_np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
+                    vector = jnp.asarray(np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
                 else:
-                    vector = jnp.asarray(_np.random.rand(v_size), dtype=dtype)
+                    vector = jnp.asarray(np.random.rand(v_size), dtype=dtype)
                 name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
-                configs.append(BenchmarkConfig(name, (weights, indices, jnp.asarray(indptr), vector), {
-                    'shape': (n_pre, n_post), 'transpose': transpose
-                }))
+                configs.append(
+                    BenchmarkConfig(
+                        name,
+                        (weights, indices, jnp.asarray(indptr), vector),
+                        {'shape': (n_pre, n_post), 'transpose': transpose}
+                    )
+                )
     return configs
 
 
@@ -806,7 +798,7 @@ def _csrmm_numba_kernel(
             # [k, m] @ [k, n]
             #
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     w = weights[0]
                     posts[:] = 0.
@@ -817,7 +809,7 @@ def _csrmm_numba_kernel(
                                     posts[indices[j], k] += w
 
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     B = B > 0.
                     w = weights[0]
@@ -831,7 +823,7 @@ def _csrmm_numba_kernel(
         else:
             # csr @ B
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     w = weights[0]
                     posts[:] = 0.
@@ -845,7 +837,7 @@ def _csrmm_numba_kernel(
                         posts[i] = r
 
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     w = weights[0]
                     B = B > 0.
@@ -863,7 +855,7 @@ def _csrmm_numba_kernel(
             # csr.T @ B
 
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     posts[:] = 0.
                     for k in numba.prange(B.shape[1]):
@@ -873,7 +865,7 @@ def _csrmm_numba_kernel(
                                     posts[indices[j], k] += weights[j]
 
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     B = B > 0.
                     posts[:] = 0.
@@ -888,7 +880,7 @@ def _csrmm_numba_kernel(
             # Fixed: Changed range to prange for parallelization
 
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     n_cols = B.shape[1]
                     for i in numba.prange(indptr.shape[0] - 1):
@@ -903,7 +895,7 @@ def _csrmm_numba_kernel(
                         posts[i] = r
 
             else:
-                @numba.njit(parallel=True, fastmath=True, nogil=True)
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
                 def mm(weights, indices, indptr, B, posts):
                     n_cols = B.shape[1]
                     for i in numba.prange(indptr.shape[0] - 1):
@@ -1338,11 +1330,7 @@ def _csrmm_pallas_gpu_kernel(
         return kernel
     else:
         return _csrmm_pallas_kernel(
-            weight_info=weight_info,
-            indices_info=indices_info,
-            vector_info=vector_info,
-            shape=shape,
-            **kwargs
+            weight_info=weight_info, indices_info=indices_info, vector_info=vector_info, shape=shape, **kwargs
         )
 
 
@@ -1433,25 +1421,28 @@ def _csrmm_batching(args, axes, **kwargs):
 
 
 def _binary_csrmm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
         for homo in (True, False):
             for bool_event in (True, False):
                 n_conn = max(1, int(n_post * prob))
-                indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
-                indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
+                indptr = np.arange(n_pre + 1, dtype=np.int32) * n_conn
+                indices = np.random.randint(0, n_post, (n_pre * n_conn,), dtype=np.int32)
                 weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(n_pre * n_conn, dtype=dtype)
                 b_rows = n_post if not transpose else n_pre
                 if bool_event:
-                    B = jnp.asarray(_np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
+                    B = jnp.asarray(np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
                 else:
-                    B = jnp.asarray(_np.random.rand(b_rows, 10), dtype=dtype)
+                    B = jnp.asarray(np.random.rand(b_rows, 10), dtype=dtype)
                 name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
-                configs.append(BenchmarkConfig(name, (weights, indices, jnp.asarray(indptr), B), {
-                    'shape': (n_pre, n_post), 'transpose': transpose
-                }))
+                configs.append(
+                    BenchmarkConfig(
+                        name,
+                        (weights, indices, jnp.asarray(indptr), B),
+                        {'shape': (n_pre, n_post), 'transpose': transpose}
+                    )
+                )
     return configs
 
 

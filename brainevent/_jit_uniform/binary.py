@@ -49,6 +49,7 @@ def binary_jitumv(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    backend: Optional[str] = None,
 ) -> Data:
     u.fail_for_dimension_mismatch(w_low, w_high, "w_low and w_high must have the same dimension.")
     seed = _initialize_seed(seed)
@@ -64,7 +65,8 @@ def binary_jitumv(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder
+        corder=corder,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitv)
 
@@ -80,6 +82,7 @@ def binary_jitumm(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    backend: Optional[str] = None,
 ) -> Data:
     u.fail_for_dimension_mismatch(w_low, w_high, "w_low and w_high must have the same dimension.")
     seed = _initialize_seed(seed)
@@ -95,7 +98,8 @@ def binary_jitumm(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder
+        corder=corder,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitB)
 
@@ -504,23 +508,9 @@ def _jitumv_jvp_wscale(w_dot, w_low, w_high, clen, vector, seed, *, shape, trans
     return binary_jitumv_p_call(w_low, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitumv_transpose_rules(
-    ct,
-    w_low,
-    w_high,
-    clen,
-    vector,
-    seed,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
+def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, transpose, corder, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
-    assert not ad.is_undefined_primal(w_low)
-    assert not ad.is_undefined_primal(w_high)
 
     ct = ct[0]
     if ad.is_undefined_primal(vector):
@@ -535,6 +525,56 @@ def _jitumv_transpose_rules(
             corder=not corder
         )[0]
         return w_low, w_high, clen, r, seed
+    elif ad.is_undefined_primal(w_low):
+        # With fixed connectivity/event masks for this primitive call:
+        #   w_ij = w_low + (w_high - w_low) * u_ij
+        # so the output is affine in (w_low, w_high):
+        #   y = w_low * C + (w_high - w_low) * U
+        # where:
+        #   U = y(w_low=0, w_high=1)
+        #   C = y(w_low=1, w_high=1)  (active connection counts)
+        # For cotangent ct:
+        #   dL/dw_high = <ct, U>
+        #   dL/dw_low  = <ct, C - U>
+        ones = jnp.ones((1,), dtype=ct.dtype)
+        zeros = jnp.zeros((1,), dtype=ct.dtype)
+        high_basis = binary_jitumv_p_call(
+            zeros,
+            ones,
+            clen,
+            vector,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder,
+        )[0]
+        count_basis = binary_jitumv_p_call(
+            ones,
+            ones,
+            clen,
+            vector,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder,
+        )[0]
+        dw_low = jnp.expand_dims(jnp.sum(ct * (count_basis - high_basis)), axis=0)
+        return dw_low, w_high, clen, vector, seed
+    elif ad.is_undefined_primal(w_high):
+        zeros = jnp.zeros((1,), dtype=ct.dtype)
+        ones = jnp.ones((1,), dtype=ct.dtype)
+        high_basis = binary_jitumv_p_call(
+            zeros,
+            ones,
+            clen,
+            vector,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder,
+        )[0]
+        dw_high = jnp.expand_dims(jnp.sum(ct * high_basis), axis=0)
+        return w_low, dw_high, clen, vector, seed
     else:
         raise NotImplementedError(
             f"Transpose rule for {ct} not implemented "
@@ -578,7 +618,6 @@ def _jitumv_batching(
 
 
 def _binary_jitumv_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -589,9 +628,9 @@ def _binary_jitumv_benchmark_data(*, platform):
                 clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
                 v_size = n_post if not transpose else n_pre
                 if bool_event:
-                    vector = jnp.asarray(_np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
+                    vector = jnp.asarray(np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
                 else:
-                    vector = jnp.asarray(_np.random.rand(v_size), dtype=dtype)
+                    vector = jnp.asarray(np.random.rand(v_size), dtype=dtype)
                 seed = jnp.asarray(42, dtype=jnp.uint32)
                 name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'},{'bool' if bool_event else 'float'}"
                 configs.append(BenchmarkConfig(name, (w_low, w_high, clen, vector, seed), {
@@ -1170,23 +1209,9 @@ def _jitumm_jvp_B(B_dot, w_low, w_high, clen, B, seed, *, shape, transpose, cord
     return jitumm_p_call(w_low, w_high, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitumm_transpose_rules(
-    ct,
-    w_low,
-    w_high,
-    clen,
-    B,
-    seed,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
+def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
-    assert not ad.is_undefined_primal(w_low)
-    assert not ad.is_undefined_primal(w_high)
 
     ct = ct[0]
     if ad.is_undefined_primal(B):
@@ -1201,6 +1226,48 @@ def _jitumm_transpose_rules(
             corder=not corder,
         )[0]
         return w_low, w_high, clen, r, seed
+    elif ad.is_undefined_primal(w_low):
+        # Same affine decomposition as in _jitumv_transpose_rules:
+        # y = w_low * C + (w_high - w_low) * U.
+        ones = jnp.ones((1,), dtype=ct.dtype)
+        zeros = jnp.zeros((1,), dtype=ct.dtype)
+        high_basis = binary_jitumm_p_call(
+            zeros,
+            ones,
+            clen,
+            B,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder,
+        )[0]
+        count_basis = binary_jitumm_p_call(
+            ones,
+            ones,
+            clen,
+            B,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder,
+        )[0]
+        dw_low = jnp.expand_dims(jnp.sum(ct * (count_basis - high_basis)), axis=0)
+        return dw_low, w_high, clen, B, seed
+    elif ad.is_undefined_primal(w_high):
+        zeros = jnp.zeros((1,), dtype=ct.dtype)
+        ones = jnp.ones((1,), dtype=ct.dtype)
+        high_basis = binary_jitumm_p_call(
+            zeros,
+            ones,
+            clen,
+            B,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder,
+        )[0]
+        dw_high = jnp.expand_dims(jnp.sum(ct * high_basis), axis=0)
+        return w_low, dw_high, clen, B, seed
     else:
         raise NotImplementedError(
             'Transpose rules for jitc_matmat_uniform not implemented for '
@@ -1244,7 +1311,6 @@ def _jitumm_batching(args, axes, **kwargs):
 
 
 def _binary_jitumm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -1255,9 +1321,9 @@ def _binary_jitumm_benchmark_data(*, platform):
                 clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
                 b_rows = n_post if not transpose else n_pre
                 if bool_event:
-                    B = jnp.asarray(_np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
+                    B = jnp.asarray(np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
                 else:
-                    B = jnp.asarray(_np.random.rand(b_rows, 10), dtype=dtype)
+                    B = jnp.asarray(np.random.rand(b_rows, 10), dtype=dtype)
                 seed = jnp.asarray(42, dtype=jnp.uint32)
                 name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'},{'bool' if bool_event else 'float'}"
                 configs.append(BenchmarkConfig(name, (w_low, w_high, clen, B, seed), {

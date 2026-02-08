@@ -13,13 +13,15 @@
 # limitations under the License.
 # ==============================================================================
 
+from typing import Optional
+
 import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
-from typing import Optional
 
+from brainevent._config import get_numba_parallel
 from brainevent._misc import cdiv, generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
@@ -35,7 +37,7 @@ __all__ = [
 
 
 @namescope
-def indexed_bdvm(binary_index, weights):
+def indexed_bdvm(binary_index, weights, *, backend: Optional[str] = None):
     """
     Computes the dot product between a binary vector (in sparse format) and a dense matrix.
 
@@ -46,8 +48,9 @@ def indexed_bdvm(binary_index, weights):
 
     Parameters
     ----------
-    binary_index : IndexedBinary
+    binary_index : BinaryArray
         An object representing a binary vector in sparse format. It must have the attributes:
+
         - value: the spike values (typically all ones for binary)
         - spike_indices: indices of nonzero (spike) elements
         - spike_count: number of spikes (nonzero elements)
@@ -76,7 +79,7 @@ def indexed_bdvm(binary_index, weights):
     spikes = binary_index.value
     indices = binary_index.spike_indices
     count = binary_index.spike_count
-    r = ibdvm_p_call(spikes, indices, count, weight_val)
+    r = ibdvm_p_call(spikes, indices, count, weight_val, backend=backend)
     return u.maybe_decimal(r[0] * wunit)
 
 
@@ -265,7 +268,7 @@ indexed_bdvm_p.def_benchmark_data(_bdvm_benchmark_data)
 
 
 @namescope
-def indexed_dbmv(weights, binary_arr):
+def indexed_dbmv(weights, binary_arr, *, backend: Optional[str] = None):
     """
     Computes the dot product between a dense matrix and a binary vector (in sparse format).
 
@@ -279,7 +282,7 @@ def indexed_dbmv(weights, binary_arr):
     weights : ndarray or compatible
         A dense matrix of shape (N, M), where N is the input dimension and M is the output dimension.
         May be a unit-aware array.
-    binary_arr : IndexedBinary
+    binary_arr : BinaryArray
         An object representing a binary vector in sparse format. It must have the attributes:
         - value: the spike values (typically all ones for binary)
         - spike_indices: indices of nonzero (spike) elements
@@ -306,7 +309,7 @@ def indexed_dbmv(weights, binary_arr):
 
 
 @namescope
-def indexed_bdmm(binary_arr, weights):
+def indexed_bdmm(binary_arr, weights, *, backend: Optional[str] = None):
     """
     Computes the dot product between a batch of binary vectors (in sparse format) and a dense matrix.
 
@@ -317,7 +320,7 @@ def indexed_bdmm(binary_arr, weights):
 
     Parameters
     ----------
-    binary_arr : IndexedBinary
+    binary_arr : BinaryArray
         An object representing a batch of binary vectors in sparse format. It must have the attributes:
         - value: the spike values (typically all ones for binary), shape (batch_size, n_spikes)
         - spike_indices: indices of nonzero (spike) elements, shape (batch_size, n_spikes)
@@ -348,14 +351,14 @@ def indexed_bdmm(binary_arr, weights):
     spikes = binary_arr.value
     indices = binary_arr.spike_indices
     count = binary_arr.spike_count
-    r = indexed_bdmm_p_call(spikes, indices, count, weights)
+    r = indexed_bdmm_p_call(spikes, indices, count, weights, backend=backend)
     return u.maybe_decimal(r[0] * wunit)
 
 
 def _bdmm_numba_kernel(**kwargs):
     import numba
 
-    @numba.njit(parallel=True, fastmath=True, nogil=True)
+    @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
     def kernel(spikes, indices, count, weights, out):
         for i_row in numba.prange(indices.shape[0]):
             temp = np.zeros(weights.shape[1], dtype=weights.dtype)
@@ -542,7 +545,7 @@ indexed_bdmm_p.def_benchmark_data(_bdmm_benchmark_data)
 
 
 @namescope
-def indexed_dbmm(weights, binary_arr):
+def indexed_dbmm(weights, binary_arr, *, backend=None):
     weight_val, wunit = u.split_mantissa_unit(weights)
     spikes = binary_arr.value
     indices = binary_arr.spike_indices

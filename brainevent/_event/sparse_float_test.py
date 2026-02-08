@@ -1,7 +1,6 @@
 import numpy as np
 import pytest
 
-import brainevent
 from brainevent import SparseFloat, MathError
 
 
@@ -42,12 +41,13 @@ class TestSparseFloatMatMul:
     #     assert np.allclose(result, expected, rtol=1e-3, atol=1e-3)
 
     def test_imatmul(self):
-        # Test in-place matrix multiplication
-        with pytest.raises(brainevent.MathError):
-            matrix_copy = SparseFloat(self.matrix.value.copy())
-            matrix_copy @= self.dense_matrix2
-            expected = np.array([[9.0, 12.0, 15.0], [19.0, 26.0, 33.0], [29.0, 40.0, 51.0]])
-            assert np.array_equal(matrix_copy.value, expected)
+        # `@=` returns a new immutable wrapper.
+        matrix_copy = SparseFloat(self.matrix.value.copy())
+        original_id = id(matrix_copy)
+        matrix_copy @= self.dense_matrix2
+        expected = np.array([[9.0, 12.0, 15.0], [19.0, 26.0, 33.0], [29.0, 40.0, 51.0]])
+        assert np.array_equal(matrix_copy.value, expected)
+        assert id(matrix_copy) != original_id
 
     def test_scalar_matmul_error(self):
         # Test error for scalar in matrix multiplication

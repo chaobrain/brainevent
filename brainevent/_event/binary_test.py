@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 
 import brainevent
-from brainevent import BinaryArray, BinaryArray
+from brainevent import BinaryArray
 
 
 class TestBinaryArray:
@@ -86,25 +86,6 @@ class TestBinaryArray:
             [[5.0, 4.0], [11.0, 10.0]])  # [[1*0 + 2*1 + 3*1, 1*1 + 2*0 + 3*1], [4*0 + 5*1 + 6*1, 4*1 + 5*0 + 6*1]]
 
         assert np.allclose(result, expected)
-
-    def test_imatmul(self):
-        """Test in-place matrix multiplication."""
-        binary_mat = BinaryArray(np.array([[0, 1, 1], [1, 0, 1]], dtype=np.uint8))
-        dense_mat = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
-
-        # Store original value for comparison
-        original_id = id(binary_mat)
-
-        # Perform in-place operation
-        with pytest.raises(brainevent.MathError):
-            binary_mat @= dense_mat
-
-            # Check result
-            expected = np.array([[8.0, 10.0], [6.0, 8.0]])
-            assert np.allclose(binary_mat.value, expected)
-
-            # Ensure it's the same object (in-place)
-            assert id(binary_mat) == original_id
 
     def test_error_conditions(self):
         """Test error conditions for matrix multiplication."""

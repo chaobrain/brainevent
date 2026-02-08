@@ -13,9 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 
-import pytest
-
-import brainevent
 from brainevent._registry import (
     _PRIMITIVE_REGISTRY,
     register_primitive,

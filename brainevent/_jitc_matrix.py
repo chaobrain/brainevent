@@ -39,47 +39,57 @@ class JITCMatrix(u.sparse.SparseMatrix):
     connectivity patterns might be large but follow specific patterns that
     can be efficiently computed rather than explicitly stored in memory.
 
-    Attributes:
-        Inherits all attributes from ``brainunit.sparse.SparseMatrix``
-
-    Note:
-        This is a base class and should be subclassed for specific
-        implementations of JITC matrices.
+    Notes
+    -----
+    This is a base class and should be subclassed for specific
+    implementations of JITC matrices. All attributes from
+    :class:`brainunit.sparse.SparseMatrix` are inherited.
     """
     __module__ = 'brainevent'
 
     def _unitary_op(self, op):
         """
-        Apply a unitary operation to the matrix.
+        Apply a unary operation to the matrix.
 
         This is an internal method that should be implemented by subclasses
-        to handle unitary operations like absolute value, negation, etc.
+        to handle unary operations like absolute value, negation, etc.
 
-        Args:
-            op (callable): A function from the operator module to apply to the matrix
+        Parameters
+        ----------
+        op : callable
+            Function from ``operator`` or compatible callable to apply.
 
-        Raises:
-            NotImplementedError: This is a base method that must be implemented by subclasses
+        Raises
+        ------
+        NotImplementedError
+            Raised because this base method must be implemented by subclasses.
         """
         raise NotImplementedError("unitary operation not implemented.")
 
+    def apply(self, fn):
+        """
+        Apply a function to matrix value parameters while keeping structure.
+
+        Parameters
+        ----------
+        fn : callable
+            Unary callable applied by subclasses to their value parameters.
+
+        Returns
+        -------
+        JITCMatrix
+            A new matrix-like object with transformed values.
+        """
+        return self._unitary_op(fn)
+
     def __abs__(self):
-        """
-        Implement the absolute value operation for the matrix.
-        """
-        return self._unitary_op(operator.abs)
+        return self.apply(operator.abs)
 
     def __neg__(self):
-        """
-        Implement the negation operation for the matrix.
-        """
-        return self._unitary_op(operator.neg)
+        return self.apply(operator.neg)
 
     def __pos__(self):
-        """
-        Implement the unary plus operation for the matrix.
-        """
-        return self._unitary_op(operator.pos)
+        return self.apply(operator.pos)
 
     def _binary_op(self, other, op):
         """
@@ -88,68 +98,19 @@ class JITCMatrix(u.sparse.SparseMatrix):
         This is an internal method that should be implemented by subclasses
         to handle binary operations like addition, subtraction, etc.
 
-        Args:
-            other (Union[jax.typing.ArrayLike, u.Quantity]): The other operand
-            op (callable): A function from the operator module to apply
+        Parameters
+        ----------
+        other : jax.typing.ArrayLike or u.Quantity
+            Right-hand operand.
+        op : callable
+            Function from ``operator`` or compatible callable to apply.
 
-        Raises:
-            NotImplementedError: This is a base method that must be implemented by subclasses
+        Raises
+        ------
+        NotImplementedError
+            Raised because this base method must be implemented by subclasses.
         """
         raise NotImplementedError("binary operation not implemented.")
-
-    def __mul__(self, other: Union[jax.typing.ArrayLike, u.Quantity]):
-        """
-        Implement multiplication with another value.
-
-        Args:
-            other (Union[jax.typing.ArrayLike, u.Quantity]): The value to multiply by
-        """
-        return self._binary_op(other, operator.mul)
-
-    def __div__(self, other: Union[jax.typing.ArrayLike, u.Quantity]):
-        """
-        Implement division by another value (Python 2 compatibility).
-
-        Args:
-            other (Union[jax.typing.ArrayLike, u.Quantity]): The value to divide by
-        """
-        return self._binary_op(other, operator.truediv)
-
-    def __truediv__(self, other):
-        """
-        Implement true division by another value.
-
-        Args:
-            other (Union[jax.typing.ArrayLike, u.Quantity]): The value to divide by
-        """
-        return self.__div__(other)
-
-    def __add__(self, other):
-        """
-        Implement addition with another value.
-
-        Args:
-            other: The value to add
-        """
-        return self._binary_op(other, operator.add)
-
-    def __sub__(self, other):
-        """
-        Implement subtraction with another value.
-
-        Args:
-            other: The value to subtract
-        """
-        return self._binary_op(other, operator.sub)
-
-    def __mod__(self, other):
-        """
-        Implement modulo operation with another value.
-
-        Args:
-            other: The value to use for modulo
-        """
-        return self._binary_op(other, operator.mod)
 
     def _binary_rop(self, other, op):
         """
@@ -158,68 +119,74 @@ class JITCMatrix(u.sparse.SparseMatrix):
         This is an internal method that should be implemented by subclasses
         to handle reflected binary operations (right-side operations).
 
-        Args:
-            other (Union[jax.typing.ArrayLike, u.Quantity]): The left operand
-            op (callable): A function from the operator module to apply
+        Parameters
+        ----------
+        other : jax.typing.ArrayLike or u.Quantity
+            Left-hand operand.
+        op : callable
+            Function from ``operator`` or compatible callable to apply.
 
-        Raises:
-            NotImplementedError: This is a base method that must be implemented by subclasses
+        Raises
+        ------
+        NotImplementedError
+            Raised because this base method must be implemented by subclasses.
         """
         raise NotImplementedError("binary operation not implemented.")
 
+    def apply2(self, other, fn, *, reverse: bool = False):
+        """
+        Apply a binary function with consistent sparse-matrix semantics.
+
+        Parameters
+        ----------
+        other : Any
+            Right-hand operand for normal operations, or left-hand operand when
+            ``reverse=True``.
+        fn : callable
+            Binary function from ``operator`` or a compatible callable.
+        reverse : bool, optional
+            If False, compute ``fn(self, other)`` via ``_binary_op``.
+            If True, compute ``fn(other, self)`` via ``_binary_rop``.
+            Defaults to False.
+
+        Returns
+        -------
+        JITCMatrix or Any
+            Result of the operation.
+        """
+        if reverse:
+            return self._binary_rop(other, fn)
+        return self._binary_op(other, fn)
+
+    def __mul__(self, other: Union[jax.typing.ArrayLike, u.Quantity]):
+        return self.apply2(other, operator.mul)
+
+    def __truediv__(self, other):
+        return self.apply2(other, operator.truediv)
+
+    def __add__(self, other):
+        return self.apply2(other, operator.add)
+
+    def __sub__(self, other):
+        return self.apply2(other, operator.sub)
+
+    def __mod__(self, other):
+        return self.apply2(other, operator.mod)
+
     def __rmul__(self, other: Union[jax.typing.ArrayLike, u.Quantity]):
-        """
-        Implement right multiplication (other * self).
-
-        Args:
-            other (Union[jax.typing.ArrayLike, u.Quantity]): The value multiplying this matrix
-        """
-        return self._binary_rop(other, operator.mul)
-
-    def __rdiv__(self, other: Union[jax.typing.ArrayLike, u.Quantity]):
-        """
-        Implement right division (other / self) (Python 2 compatibility).
-
-        Args:
-            other (Union[jax.typing.ArrayLike, u.Quantity]): The value being divided
-        """
-        return self._binary_rop(other, operator.truediv)
+        return self.apply2(other, operator.mul, reverse=True)
 
     def __rtruediv__(self, other):
-        """
-        Implement right true division (other / self).
-
-        Args:
-            other: The value being divided
-        """
-        return self.__rdiv__(other)
+        return self.apply2(other, operator.truediv, reverse=True)
 
     def __radd__(self, other):
-        """
-        Implement right addition (other + self).
-
-        Args:
-            other: The value being added to this matrix
-        """
-        return self._binary_rop(other, operator.add)
+        return self.apply2(other, operator.add, reverse=True)
 
     def __rsub__(self, other):
-        """
-        Implement right subtraction (other - self).
-
-        Args:
-            other: The value from which this matrix is subtracted
-        """
-        return self._binary_rop(other, operator.sub)
+        return self.apply2(other, operator.sub, reverse=True)
 
     def __rmod__(self, other):
-        """
-        Implement right modulo (other % self).
-
-        Args:
-            other: The value to use as the left operand in the modulo operation
-        """
-        return self._binary_rop(other, operator.mod)
+        return self.apply2(other, operator.mod, reverse=True)
 
 
 def _initialize_seed(seed=None):

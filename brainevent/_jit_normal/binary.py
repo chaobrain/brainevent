@@ -49,6 +49,7 @@ def binary_jitnmv(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    backend: Optional[str] = None,
 ) -> Data:
     u.fail_for_dimension_mismatch(w_loc, w_scale, "w_loc and w_scale must have the same dimension.")
     seed = _initialize_seed(seed)
@@ -64,7 +65,8 @@ def binary_jitnmv(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder
+        corder=corder,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitv)
 
@@ -686,8 +688,6 @@ def _jitc_mv_normal_jvp_wscale(w_dot, w_loc, w_scale, clen, vector, seed, *, sha
 def _jitc_mv_normal_transpose_rules(ct, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
-    assert not ad.is_undefined_primal(w_loc)
-    assert not ad.is_undefined_primal(w_scale)
 
     ct = ct[0]
     if ad.is_undefined_primal(vector):
@@ -702,10 +702,27 @@ def _jitc_mv_normal_transpose_rules(ct, w_loc, w_scale, clen, vector, seed, *, s
             corder=not corder
         )[0]
         return w_loc, w_scale, clen, r, seed
+    elif ad.is_undefined_primal(w_loc):
+        # M = (w_loc + w_scale * Z) * mask, forward: M @ event(v)
+        # d(loss)/d(w_loc) = sum((mask^T @ ct) * vector)
+        r = jitnmv_p_call(
+            1., 0., clen, ct, seed,
+            shape=shape, transpose=not transpose, corder=not corder
+        )[0]
+        dw_loc = jnp.expand_dims(jnp.sum(r * vector), axis=0)
+        return dw_loc, w_scale, clen, vector, seed
+    elif ad.is_undefined_primal(w_scale):
+        # d(loss)/d(w_scale) = sum(((Z*mask)^T @ ct) * vector)
+        r = jitnmv_p_call(
+            0., 1., clen, ct, seed,
+            shape=shape, transpose=not transpose, corder=not corder
+        )[0]
+        dw_scale = jnp.expand_dims(jnp.sum(r * vector), axis=0)
+        return w_loc, dw_scale, clen, vector, seed
     else:
         raise NotImplementedError(
-            f"Transpose rule for {ct} not implemented "
-            f"for event-driven COO matrix-vector product."
+            f"Transpose rule for binary_jitnmv not implemented "
+            f"when none of vector/w_loc/w_scale is an undefined primal."
         )
 
 
@@ -746,7 +763,6 @@ def _jitc_mv_normal_batching(args, axes, **kwargs):
 
 
 def _binary_jitnmv_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -757,9 +773,9 @@ def _binary_jitnmv_benchmark_data(*, platform):
                 clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
                 v_size = n_post if not transpose else n_pre
                 if bool_event:
-                    vector = jnp.asarray(_np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
+                    vector = jnp.asarray(np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
                 else:
-                    vector = jnp.asarray(_np.random.rand(v_size), dtype=dtype)
+                    vector = jnp.asarray(np.random.rand(v_size), dtype=dtype)
                 seed = jnp.asarray(42, dtype=jnp.uint32)
                 name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'},{'bool' if bool_event else 'float'}"
                 configs.append(BenchmarkConfig(name, (w_loc, w_scale, clen, vector, seed), {
@@ -1306,15 +1322,12 @@ def _jitc_mm_normal_jvp_wscale(w_dot, w_loc, w_scale, clen, B, seed, *, shape, t
 
 
 def _jitc_mm_normal_jvp_B(B_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
-    return jitnmm_p_call(w_loc, w_scale, clen, B_dot, seed, shape=shape, transpose=transpose,
-                         corder=corder)
+    return jitnmm_p_call(w_loc, w_scale, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder)
 
 
 def _jitc_mm_normal_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
-    assert not ad.is_undefined_primal(w_loc)
-    assert not ad.is_undefined_primal(w_scale)
 
     ct = ct[0]
     if ad.is_undefined_primal(B):
@@ -1328,12 +1341,27 @@ def _jitc_mm_normal_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape,
             transpose=not transpose,
             corder=not corder,
         )[0]
-
         return w_loc, w_scale, clen, r, seed
-
+    elif ad.is_undefined_primal(w_loc):
+        # M = (w_loc + w_scale * Z) * mask, forward: M @ event(B)
+        # d(loss)/d(w_loc) = sum((mask^T @ ct) * B)
+        r = jitnmm_p_call(
+            1., 0., clen, ct, seed,
+            shape=shape, transpose=not transpose, corder=not corder,
+        )[0]
+        dw_loc = jnp.expand_dims(jnp.sum(r * B), axis=0)
+        return dw_loc, w_scale, clen, B, seed
+    elif ad.is_undefined_primal(w_scale):
+        # d(loss)/d(w_scale) = sum(((Z*mask)^T @ ct) * B)
+        r = jitnmm_p_call(
+            0., 1., clen, ct, seed,
+            shape=shape, transpose=not transpose, corder=not corder,
+        )[0]
+        dw_scale = jnp.expand_dims(jnp.sum(r * B), axis=0)
+        return w_loc, dw_scale, clen, B, seed
     else:
         raise NotImplementedError(
-            'Transpose rules for jitc_matmat_normal not implemented for '
+            'Transpose rules for binary_jitc_matmat_normal not implemented for '
             'non-undefined primals.'
         )
 
@@ -1374,7 +1402,6 @@ def _jitc_mm_normal_batching(args, axes, **kwargs):
 
 
 def _binary_jitnmm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -1385,9 +1412,9 @@ def _binary_jitnmm_benchmark_data(*, platform):
                 clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
                 b_rows = n_post if not transpose else n_pre
                 if bool_event:
-                    B = jnp.asarray(_np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
+                    B = jnp.asarray(np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
                 else:
-                    B = jnp.asarray(_np.random.rand(b_rows, 10), dtype=dtype)
+                    B = jnp.asarray(np.random.rand(b_rows, 10), dtype=dtype)
                 seed = jnp.asarray(42, dtype=jnp.uint32)
                 name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'},{'bool' if bool_event else 'float'}"
                 configs.append(

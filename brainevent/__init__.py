@@ -21,20 +21,21 @@ from ._config import (
     load_user_defaults, save_user_defaults, get_user_default,
     set_user_default, clear_user_defaults, get_config_path,
     invalidate_cache,
+    set_numba_parallel, get_numba_parallel, get_numba_num_threads,
 )
 from ._coo import (
     COO,
     binary_coomv, binary_coomv_p, binary_coomm, binary_coomm_p,
     coomv, coomv_p, coomm, coomm_p,
-    plast_coo_on_binary_pre, plast_coo_on_binary_post,
-    plast_coo_on_binary_pre_p, plast_coo_on_binary_post_p,
+    update_coo_on_binary_pre, update_coo_on_binary_post,
+    update_coo_on_binary_pre_p, update_coo_on_binary_post_p,
 )
 from ._csr import (
     CSR, CSC,
     binary_csrmv, binary_csrmv_p, binary_csrmm, binary_csrmm_p,
     csrmv, csrmv_p, csrmm, csrmm_p, csrmv_yw2y, csrmv_yw2y_p,
-    plast_csr_on_binary_pre, plast_csr_on_binary_pre_p,
-    plast_csr2csc_on_binary_post, plast_csr2csc_on_binary_post_p,
+    update_csr_on_binary_pre, update_csr_on_binary_pre_p,
+    update_csr_on_binary_post, update_csr_on_binary_post_p,
     spfloat_csrmv, spfloat_csrmv_p, spfloat_csrmm, spfloat_csrmm_p,
     csr_solve,
 )
@@ -42,8 +43,8 @@ from ._dense import (
     dbmv, dbmv_p, bdvm, bdvm_p,
     dbmm, dbmm_p, bdmm, bdmm_p,
     indexed_bdvm, indexed_bdvm_p, indexed_dbmv, indexed_dbmm, indexed_bdmm, indexed_bdmm_p,
-    plast_dense_on_binary_pre, plast_dense_on_binary_pre_p,
-    plast_dense_on_binary_post, plast_dense_on_binary_post_p,
+    update_dense_on_binary_pre, update_dense_on_binary_pre_p,
+    update_dense_on_binary_post, update_dense_on_binary_post_p,
     dsfmv, dsfmv_p, sfdvm, sfdvm_p,
     dsfmm, dsfmm_p, sfdmm, sfdmm_p,
 )
@@ -55,8 +56,8 @@ from ._error import (
     KernelExecutionError,
 )
 from ._event import (
-    BaseArray, BinaryArray, BinaryArray,
-    IndexedBinary, SparseFloat, IndexedSparseFloat,
+    EventRepresentation, BinaryArray,
+    SparseFloat,
     binary_array_index,
 )
 from ._fcn import (
@@ -88,7 +89,7 @@ from ._op import (
     XLACustomKernel, KernelEntry,
     BenchmarkResult, BenchmarkReport, benchmark_function,
     numba_kernel, numba_cuda_kernel, numba_cuda_callable,
-    register_cuda_kernels, defjvp, general_batching_rule,
+    register_tvm_cuda_kernels, defjvp, general_batching_rule,
     jaxtype_to_warptype, jaxinfo_to_warpinfo,
 )
 from ._pallas_random import (
@@ -100,27 +101,24 @@ from ._registry import (
 
 __all__ = [
     # --- data representing events --- #
-    'BaseArray',
+    'EventRepresentation',
     'BinaryArray',
-    'BinaryArray',
-    'IndexedBinary',
     'SparseFloat',
-    'IndexedSparseFloat',
     'binary_array_index',
 
     # --- COO --- #
     'COO',
     'binary_coomv', 'binary_coomv_p', 'binary_coomm', 'binary_coomm_p',
     'coomv', 'coomv_p', 'coomm', 'coomm_p',
-    'plast_coo_on_binary_pre', 'plast_coo_on_binary_post',
-    'plast_coo_on_binary_pre_p', 'plast_coo_on_binary_post_p',
+    'update_coo_on_binary_pre', 'update_coo_on_binary_post',
+    'update_coo_on_binary_pre_p', 'update_coo_on_binary_post_p',
 
     # --- CSR --- #
     'CSR', 'CSC',
     'binary_csrmv', 'binary_csrmv_p', 'binary_csrmm', 'binary_csrmm_p',
     'csrmv', 'csrmv_p', 'csrmm', 'csrmm_p', 'csrmv_yw2y', 'csrmv_yw2y_p',
-    'plast_csr_on_binary_pre', 'plast_csr_on_binary_pre_p',
-    'plast_csr2csc_on_binary_post', 'plast_csr2csc_on_binary_post_p',
+    'update_csr_on_binary_pre', 'update_csr_on_binary_pre_p',
+    'update_csr_on_binary_post', 'update_csr_on_binary_post_p',
     'spfloat_csrmv', 'spfloat_csrmv_p', 'spfloat_csrmm', 'spfloat_csrmm_p',
     'csr_solve',
 
@@ -128,8 +126,8 @@ __all__ = [
     'dbmv', 'dbmv_p', 'bdvm', 'bdvm_p',
     'dbmm', 'dbmm_p', 'bdmm', 'bdmm_p',
     'indexed_bdvm', 'indexed_bdvm_p', 'indexed_dbmv', 'indexed_dbmm', 'indexed_bdmm', 'indexed_bdmm_p',
-    'plast_dense_on_binary_pre', 'plast_dense_on_binary_pre_p',
-    'plast_dense_on_binary_post', 'plast_dense_on_binary_post_p',
+    'update_dense_on_binary_pre', 'update_dense_on_binary_pre_p',
+    'update_dense_on_binary_post', 'update_dense_on_binary_post_p',
     'dsfmv', 'dsfmv_p', 'sfdvm', 'sfdvm_p',
     'dsfmm', 'dsfmm_p', 'sfdmm', 'sfdmm_p',
 
@@ -155,7 +153,7 @@ __all__ = [
     'XLACustomKernel', 'KernelEntry',
     'BenchmarkResult', 'BenchmarkReport', 'benchmark_function',
     'numba_kernel', 'numba_cuda_kernel', 'numba_cuda_callable',
-    'register_cuda_kernels', 'defjvp', 'general_batching_rule',
+    'register_tvm_cuda_kernels', 'defjvp', 'general_batching_rule',
     'jaxtype_to_warptype', 'jaxinfo_to_warpinfo',
 
     # --- Pallas kernel --- #
@@ -175,6 +173,7 @@ __all__ = [
     'load_user_defaults', 'save_user_defaults', 'get_user_default',
     'set_user_default', 'clear_user_defaults', 'get_config_path',
     'invalidate_cache',
+    'set_numba_parallel', 'get_numba_parallel', 'get_numba_num_threads',
     'get_registry', 'get_primitives_by_tags', 'get_all_primitive_names',
 ]
 
@@ -183,16 +182,16 @@ def __getattr__(name):
     import warnings
     if name == 'csr_on_pre':
         warnings.warn(
-            f'csr_on_pre is deprecated, use {plast_csr_on_binary_pre.__name__} instead',
+            f'csr_on_pre is deprecated, use {update_csr_on_binary_pre.__name__} instead',
         )
-        return plast_csr_on_binary_pre
+        return update_csr_on_binary_pre
     if name == 'csr2csc_on_post':
         warnings.warn(
-            f'csr2csc_on_post is deprecated, use {plast_csr2csc_on_binary_post.__name__} instead',
+            f'csr2csc_on_post is deprecated, use {update_csr_on_binary_post.__name__} instead',
         )
-        return plast_csr2csc_on_binary_post
+        return update_csr_on_binary_post
     if name == 'dense_on_pre':
-        return plast_dense_on_binary_pre
+        return update_dense_on_binary_pre
     if name == 'dense_on_post':
-        return plast_dense_on_binary_post
+        return update_dense_on_binary_post
     raise AttributeError(name)
