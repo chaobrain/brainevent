@@ -205,11 +205,6 @@ class BaseCLS(u.sparse.SparseMatrix):
             The diagonal value to be added to the sparse matrix. It should be compatible
             with the data type of the matrix's non-zero elements.
 
-        Returns
-        -------
-        BaseCLS
-            A new sparse matrix with updated diagonal entries.
-
         Raises
         ------
         AssertionError
