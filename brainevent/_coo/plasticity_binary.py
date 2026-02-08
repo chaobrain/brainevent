@@ -20,6 +20,7 @@ from typing import Union, Optional
 import brainunit as u
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from brainevent._misc import generate_block_dim
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo

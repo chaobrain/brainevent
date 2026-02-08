@@ -19,6 +19,7 @@ from typing import Sequence, Optional
 
 import brainunit as u
 import jax
+import numpy as np
 from jax import numpy as jnp
 from jax.interpreters import ad
 
