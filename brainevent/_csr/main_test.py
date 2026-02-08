@@ -29,7 +29,7 @@ def gen_events(shape, prob=0.5, asbool=True):
     events = brainstate.random.random(shape) < prob
     if not asbool:
         events = jnp.asarray(events, dtype=float)
-    return brainevent.EventArray(events)
+    return brainevent.BinaryArray(events)
 
 
 def gen_sparse_matrix(shape, prob=0.2):
@@ -476,8 +476,8 @@ class Test_CSR_Event:
         r1, (g00, g01) = jax.jit(lambda: jax.value_and_grad(f_brainevent, argnums=(0, 1))(xs, csr.data))()
         r2, (g10, g11) = jax.jit(lambda: jax.value_and_grad(f_dense, argnums=(0, 1))(xs, csr.data))()
 
-        assert isinstance(g00, brainevent.EventArray)
-        assert isinstance(g10, brainevent.EventArray)
+        assert isinstance(g00, brainevent.BinaryArray)
+        assert isinstance(g10, brainevent.BinaryArray)
 
         assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
         assert jnp.allclose(g00.value, g10.value, rtol=1e-2, atol=1e-2)
@@ -511,8 +511,8 @@ class Test_CSR_Event:
         r1, (g00, g01) = jax.jit(lambda: jax.value_and_grad(f_brainevent, argnums=(0, 1))(xs, csr.data))()
         r2, (g10, g11) = jax.jit(lambda: jax.value_and_grad(f_dense, argnums=(0, 1))(xs, csr.data))()
 
-        assert isinstance(g00, brainevent.EventArray)
-        assert isinstance(g10, brainevent.EventArray)
+        assert isinstance(g00, brainevent.BinaryArray)
+        assert isinstance(g10, brainevent.BinaryArray)
 
         assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
         assert jnp.allclose(g00.value, g10.value, rtol=1e-2, atol=1e-2)
@@ -544,8 +544,8 @@ class Test_CSR_Event:
         r1, (g00, g01) = jax.jit(lambda: jax.value_and_grad(f_brainevent, argnums=(0, 1))(xs, csr.data))()
         r2, (g10, g11) = jax.jit(lambda: jax.value_and_grad(f_dense, argnums=(0, 1))(xs, csr.data))()
 
-        assert isinstance(g00, brainevent.EventArray)
-        assert isinstance(g10, brainevent.EventArray)
+        assert isinstance(g00, brainevent.BinaryArray)
+        assert isinstance(g10, brainevent.BinaryArray)
 
         assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
         assert jnp.allclose(g00.value, g10.value, rtol=1e-2, atol=1e-2)
@@ -578,8 +578,8 @@ class Test_CSR_Event:
         r1, (g00, g01) = jax.jit(lambda: jax.value_and_grad(f_brainevent, argnums=(0, 1))(xs, csr.data))()
         r2, (g10, g11) = jax.jit(lambda: jax.value_and_grad(f_dense, argnums=(0, 1))(xs, csr.data))()
 
-        assert isinstance(g00, brainevent.EventArray)
-        assert isinstance(g10, brainevent.EventArray)
+        assert isinstance(g00, brainevent.BinaryArray)
+        assert isinstance(g10, brainevent.BinaryArray)
 
         assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
         assert jnp.allclose(g00.value, g10.value, rtol=1e-2, atol=1e-2)

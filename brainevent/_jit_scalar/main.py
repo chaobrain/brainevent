@@ -23,7 +23,7 @@ import jax
 import numpy as np
 
 from brainevent._compatible_import import JAXSparse, Tracer
-from brainevent._event.binary import EventArray
+from brainevent._event.binary import BinaryArray
 from brainevent._jitc_matrix import JITCMatrix
 from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
 from .binary import (
@@ -505,8 +505,8 @@ class JITCScalarR(JITScalarMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         weight = self.weight
 
-        if isinstance(other, EventArray):
-            other = other.data
+        if isinstance(other, BinaryArray):
+            other = other.value
             if other.ndim == 1:
                 # JIT matrix @ events
                 return binary_jitsmv(weight, self.prob, other, self.seed, shape=self.shape,
@@ -552,8 +552,8 @@ class JITCScalarR(JITScalarMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         weight = self.weight
 
-        if isinstance(other, EventArray):
-            other = other.data
+        if isinstance(other, BinaryArray):
+            other = other.value
             if other.ndim == 1:
                 #
                 # vector @ JIT matrix
@@ -845,8 +845,8 @@ class JITCScalarC(JITScalarMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         weight = self.weight
 
-        if isinstance(other, EventArray):
-            other = other.data
+        if isinstance(other, BinaryArray):
+            other = other.value
             if other.ndim == 1:
                 # JITC_R matrix.T @ vector
                 # ==
@@ -914,8 +914,8 @@ class JITCScalarC(JITScalarMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         weight = self.weight
 
-        if isinstance(other, EventArray):
-            other = other.data
+        if isinstance(other, BinaryArray):
+            other = other.value
             if other.ndim == 1:
                 #
                 # vector @ JITC_R matrix.T

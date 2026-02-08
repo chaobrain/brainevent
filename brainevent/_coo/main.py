@@ -24,7 +24,7 @@ import jax
 import numpy as np
 
 from brainevent._compatible_import import JAXSparse
-from brainevent._event import EventArray, SparseFloat
+from brainevent._event import BinaryArray, SparseFloat
 from brainevent._misc import _coo_todense, COOInfo
 from brainevent._typing import MatrixShape, Data, Index, Row, Col
 from .binary import binary_coomv, binary_coomm
@@ -659,9 +659,9 @@ class COO(u.sparse.SparseMatrix):
         # Get the data of the COO matrix
         data = self.data
 
-        if isinstance(other, EventArray):
+        if isinstance(other, BinaryArray):
             # Extract the data from the BaseArray
-            other = other.data
+            other = other.value
             if other.ndim == 1:
                 # Perform matrix-vector multiplication with event data
                 return binary_coomv(data, self.row, self.col, other, shape=self.shape)
@@ -672,7 +672,7 @@ class COO(u.sparse.SparseMatrix):
                 # Raise an error if the shape of the other object is unsupported
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
         elif isinstance(other, SparseFloat):
-            other = other.data
+            other = other.value
             data, other = u.math.promote_dtypes(self.data, other)
             raise NotImplementedError(f"matmul with object of shape {other.shape}")
         else:
@@ -718,9 +718,9 @@ class COO(u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
 
-        if isinstance(other, EventArray):
+        if isinstance(other, BinaryArray):
             # Extract the data from the BaseArray
-            other = other.data
+            other = other.value
             if other.ndim == 1:
                 # Perform matrix-vector multiplication with event data
                 return binary_coomv(data, self.row, self.col, other, shape=self.shape, transpose=True)

@@ -23,7 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._compatible_import import JAXSparse
-from brainevent._event import EventArray, SparseFloat
+from brainevent._event import BinaryArray, SparseFloat
 from brainevent._misc import _csr_to_coo, _csr_todense
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .binary import binary_csrmv, binary_csrmm
@@ -503,8 +503,8 @@ class CSR(BaseCLS):
         if isinstance(other, JAXSparse):
             raise NotImplementedError("matmul between two sparse objects.")
 
-        if isinstance(other, EventArray):
-            other = other.data
+        if isinstance(other, BinaryArray):
+            other = other.value
             if other.ndim == 1:
                 return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
             elif other.ndim == 2:
@@ -513,7 +513,7 @@ class CSR(BaseCLS):
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
         elif isinstance(other, SparseFloat):
-            other = other.data
+            other = other.value
             if other.ndim == 1:
                 return spfloat_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
             elif other.ndim == 2:
@@ -550,8 +550,8 @@ class CSR(BaseCLS):
         if isinstance(other, JAXSparse):
             raise NotImplementedError("matmul between two sparse objects.")
 
-        if isinstance(other, EventArray):
-            other = other.data
+        if isinstance(other, BinaryArray):
+            other = other.value
             if other.ndim == 1:
                 return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True)
             elif other.ndim == 2:
@@ -562,7 +562,7 @@ class CSR(BaseCLS):
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
         elif isinstance(other, SparseFloat):
-            other = other.data
+            other = other.value
             if other.ndim == 1:
                 return spfloat_csrmv(
                     self.data, self.indices, self.indptr, other,
@@ -946,7 +946,7 @@ class CSC(BaseCLS):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
 
-        if isinstance(other, EventArray):
+        if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
                 return binary_csrmv(
@@ -1010,7 +1010,7 @@ class CSC(BaseCLS):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
 
-        if isinstance(other, EventArray):
+        if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
                 return binary_csrmv(data, self.indices, self.indptr, other,

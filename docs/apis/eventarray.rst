@@ -24,7 +24,7 @@ Binary Events
    :template: classtemplate.rst
 
    BinaryArray
-   EventArray
+   BinaryArray
 
 
 Sparse Float Events

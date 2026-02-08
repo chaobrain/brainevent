@@ -15,14 +15,13 @@
 
 
 from .base import BaseArray
-from .binary import BinaryArray, EventArray
+from .binary import BinaryArray
 from .indexed_binary_extraction import binary_array_index
 from .sparse_float import SparseFloat
 
 __all__ = [
     'BaseArray',
     'BinaryArray',
-    'EventArray',
     'SparseFloat',
     'binary_array_index',
 ]

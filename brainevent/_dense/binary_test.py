@@ -36,7 +36,7 @@ class TestMatrixEvent:
     @pytest.mark.parametrize("asbool", [True, False])
     def test_mm(self, m, k, n, asbool):
         matrix = brainstate.random.randn(m, k)
-        events = brainevent.EventArray(
+        events = brainevent.BinaryArray(
             brainstate.random.randn(k, n) < 0.5
         )
         if not asbool:
@@ -62,7 +62,7 @@ class TestEventMatrix:
     @pytest.mark.parametrize("n", [30])
     @pytest.mark.parametrize("asbool", [True, False])
     def test_mm(self, m, k, n, asbool):
-        events = brainevent.EventArray(
+        events = brainevent.BinaryArray(
             brainstate.random.randn(m, k) < 0.5
         )
         if not asbool:
@@ -89,7 +89,7 @@ class TestMatrixEvent_mv:
     @pytest.mark.parametrize("asbool", [True, False])
     def test_mm(self, m, k, asbool):
         matrix = brainstate.random.randn(m, k)
-        events = brainevent.EventArray(
+        events = brainevent.BinaryArray(
             brainstate.random.randn(k) < 0.5
         )
         if not asbool:
@@ -113,7 +113,7 @@ class TestEventMatrix_mv:
     @pytest.mark.parametrize("k", [15, 20])
     @pytest.mark.parametrize("asbool", [True, False])
     def test_mm(self, m, k, asbool):
-        events = brainevent.EventArray(
+        events = brainevent.BinaryArray(
             brainstate.random.randn(k) < 0.5
         )
         if not asbool:
