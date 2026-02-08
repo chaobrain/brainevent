@@ -62,7 +62,7 @@ class Test_csr_on_pre:
             dense = mat + u.math.outer(pre_spike.astype(float), post_trace)
             dense = u.math.where(mask, dense, 0. * mat_unit)
 
-            assert u.math.allclose(csr.todense(), dense, atol=1e-3, rtol=1e-3)
+            assert u.math.allclose(csr.todense(), dense)
 
         if mat_unit.has_same_dim(trace_unit):
             run()
