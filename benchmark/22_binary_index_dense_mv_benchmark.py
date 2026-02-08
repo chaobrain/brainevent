@@ -12,9 +12,6 @@ import brainstate
 from utils import visualize
 import brainevent
 
-import jax.numpy as jnp
-brainevent.config.gpu_kernel_backend = 'warp'
-
 
 def forward(n_pre, n_post, spk_prob):
     weight = brainstate.random.randn(n_pre, n_post)

@@ -12,7 +12,6 @@ import brainstate
 from utils import visualize
 import brainevent
 
-brainevent.config.gpu_kernel_backend = 'pallas'
 from brainevent._event import binary_array_index
 
 
