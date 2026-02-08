@@ -535,12 +535,6 @@ class COO(u.sparse.SparseMatrix):
     def __rtruediv__(self, other: Data) -> 'COO':
         return self.apply2(other, operator.truediv, reverse=True)
 
-    def __div__(self, other: Data) -> 'COO':
-        return self.apply2(other, operator.truediv)
-
-    def __rdiv__(self, other: Data) -> 'COO':
-        return self.apply2(other, operator.truediv, reverse=True)
-
     def __add__(self, other: Data) -> 'COO':
         return self.apply2(other, operator.add)
 

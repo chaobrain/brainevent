@@ -148,9 +148,6 @@ class FixedNumConn(u.sparse.SparseMatrix):
     def __mul__(self, other: Data):
         return self.apply2(other, operator.mul)
 
-    def __div__(self, other: Data):
-        return self.apply2(other, operator.truediv)
-
     def __truediv__(self, other):
         return self.apply2(other, operator.truediv)
 
@@ -168,9 +165,6 @@ class FixedNumConn(u.sparse.SparseMatrix):
 
     def __rmul__(self, other: Data):
         return self.apply2(other, operator.mul, reverse=True)
-
-    def __rdiv__(self, other: Data):
-        return self.apply2(other, operator.truediv, reverse=True)
 
     def __rtruediv__(self, other):
         return self.apply2(other, operator.truediv, reverse=True)

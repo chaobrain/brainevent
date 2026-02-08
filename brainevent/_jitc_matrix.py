@@ -80,21 +80,12 @@ class JITCMatrix(u.sparse.SparseMatrix):
         return self._unitary_op(fn)
 
     def __abs__(self):
-        """
-        Implement the absolute value operation for the matrix.
-        """
         return self.apply(operator.abs)
 
     def __neg__(self):
-        """
-        Implement the negation operation for the matrix.
-        """
         return self.apply(operator.neg)
 
     def __pos__(self):
-        """
-        Implement the unary plus operation for the matrix.
-        """
         return self.apply(operator.pos)
 
     def _binary_op(self, other, op):
@@ -106,6 +97,22 @@ class JITCMatrix(u.sparse.SparseMatrix):
 
         Args:
             other (Union[jax.typing.ArrayLike, u.Quantity]): The other operand
+            op (callable): A function from the operator module to apply
+
+        Raises:
+            NotImplementedError: This is a base method that must be implemented by subclasses
+        """
+        raise NotImplementedError("binary operation not implemented.")
+
+    def _binary_rop(self, other, op):
+        """
+        Apply a binary operation with the matrix as the right operand.
+
+        This is an internal method that should be implemented by subclasses
+        to handle reflected binary operations (right-side operations).
+
+        Args:
+            other (Union[jax.typing.ArrayLike, u.Quantity]): The left operand
             op (callable): A function from the operator module to apply
 
         Raises:
@@ -139,127 +146,33 @@ class JITCMatrix(u.sparse.SparseMatrix):
         return self._binary_op(other, fn)
 
     def __mul__(self, other: Union[jax.typing.ArrayLike, u.Quantity]):
-        """
-        Implement multiplication with another value.
-
-        Args:
-            other (Union[jax.typing.ArrayLike, u.Quantity]): The value to multiply by
-        """
         return self.apply2(other, operator.mul)
 
-    def __div__(self, other: Union[jax.typing.ArrayLike, u.Quantity]):
-        """
-        Implement division by another value (Python 2 compatibility).
-
-        Args:
-            other (Union[jax.typing.ArrayLike, u.Quantity]): The value to divide by
-        """
-        return self.apply2(other, operator.truediv)
-
     def __truediv__(self, other):
-        """
-        Implement true division by another value.
-
-        Args:
-            other (Union[jax.typing.ArrayLike, u.Quantity]): The value to divide by
-        """
         return self.apply2(other, operator.truediv)
 
     def __add__(self, other):
-        """
-        Implement addition with another value.
-
-        Args:
-            other: The value to add
-        """
         return self.apply2(other, operator.add)
 
     def __sub__(self, other):
-        """
-        Implement subtraction with another value.
-
-        Args:
-            other: The value to subtract
-        """
         return self.apply2(other, operator.sub)
 
     def __mod__(self, other):
-        """
-        Implement modulo operation with another value.
-
-        Args:
-            other: The value to use for modulo
-        """
         return self.apply2(other, operator.mod)
 
-    def _binary_rop(self, other, op):
-        """
-        Apply a binary operation with the matrix as the right operand.
-
-        This is an internal method that should be implemented by subclasses
-        to handle reflected binary operations (right-side operations).
-
-        Args:
-            other (Union[jax.typing.ArrayLike, u.Quantity]): The left operand
-            op (callable): A function from the operator module to apply
-
-        Raises:
-            NotImplementedError: This is a base method that must be implemented by subclasses
-        """
-        raise NotImplementedError("binary operation not implemented.")
-
     def __rmul__(self, other: Union[jax.typing.ArrayLike, u.Quantity]):
-        """
-        Implement right multiplication (other * self).
-
-        Args:
-            other (Union[jax.typing.ArrayLike, u.Quantity]): The value multiplying this matrix
-        """
         return self.apply2(other, operator.mul, reverse=True)
 
-    def __rdiv__(self, other: Union[jax.typing.ArrayLike, u.Quantity]):
-        """
-        Implement right division (other / self) (Python 2 compatibility).
-
-        Args:
-            other (Union[jax.typing.ArrayLike, u.Quantity]): The value being divided
-        """
-        return self.apply2(other, operator.truediv, reverse=True)
-
     def __rtruediv__(self, other):
-        """
-        Implement right true division (other / self).
-
-        Args:
-            other: The value being divided
-        """
         return self.apply2(other, operator.truediv, reverse=True)
 
     def __radd__(self, other):
-        """
-        Implement right addition (other + self).
-
-        Args:
-            other: The value being added to this matrix
-        """
         return self.apply2(other, operator.add, reverse=True)
 
     def __rsub__(self, other):
-        """
-        Implement right subtraction (other - self).
-
-        Args:
-            other: The value from which this matrix is subtracted
-        """
         return self.apply2(other, operator.sub, reverse=True)
 
     def __rmod__(self, other):
-        """
-        Implement right modulo (other % self).
-
-        Args:
-            other: The value to use as the left operand in the modulo operation
-        """
         return self.apply2(other, operator.mod, reverse=True)
 
 
