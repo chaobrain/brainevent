@@ -508,19 +508,7 @@ def _jitumv_jvp_wscale(w_dot, w_low, w_high, clen, vector, seed, *, shape, trans
     return binary_jitumv_p_call(w_low, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitumv_transpose_rules(
-    ct,
-    w_low,
-    w_high,
-    clen,
-    vector,
-    seed,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
+def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, transpose, corder, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
     assert not ad.is_undefined_primal(w_low)
@@ -1173,19 +1161,7 @@ def _jitumm_jvp_B(B_dot, w_low, w_high, clen, B, seed, *, shape, transpose, cord
     return jitumm_p_call(w_low, w_high, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder)
 
 
-def _jitumm_transpose_rules(
-    ct,
-    w_low,
-    w_high,
-    clen,
-    B,
-    seed,
-    *,
-    shape,
-    transpose,
-    corder,
-    **kwargs
-):
+def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
     assert not ad.is_undefined_primal(w_low)

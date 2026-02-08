@@ -545,9 +545,7 @@ def _jitc_homo_matrix_transpose(
     assert not ad.is_undefined_primal(seed)
     ct = ct[0]
     if ad.is_undefined_primal(weight):
-        forward = jits_p_call(
-            1., clen, seed, shape=shape, transpose=transpose, corder=corder
-        )[0]
+        forward = jits_p_call(1., clen, seed, shape=shape, transpose=transpose, corder=corder)[0]
         dw = jnp.expand_dims((ct * forward).sum(), axis=0)
         return (dw, clen, seed)
 
