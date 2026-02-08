@@ -628,24 +628,13 @@ def _dbmm_warp_kernel(
     m = weight_info.shape[0]
 
     weight_warp_info = jaxinfo_to_warpinfo(weight_info)
-    spike_warp_info = jaxinfo_to_warpinfo(spk_info)
     out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
 
     if spk_info.dtype == jnp.bool_:
-        @warp.kernel
-        def kernel(
-            weights: weight_warp_info,
-            spikes: spike_warp_info,
-            out: out_warp_info
-        ):
-            i_m, i_n = warp.tid()
-            r = weights.dtype(0.)
-            for i_k in range(k):
-                if spikes[i_k, i_n]:
-                    r += weights[i_m, i_k]
-            out[i_m, i_n] = r
+        # Cast bool spikes to float32 to avoid 2D boolean array indexing bug in warp
+        spk_float_info = jax.ShapeDtypeStruct(spk_info.shape, jnp.float32)
+        spike_warp_info = jaxinfo_to_warpinfo(spk_float_info)
 
-    else:
         @warp.kernel
         def kernel(
             weights: weight_warp_info,
@@ -659,10 +648,32 @@ def _dbmm_warp_kernel(
                     r += weights[i_m, i_k]
             out[i_m, i_n] = r
 
-    def run(weights, spikes):
-        out_info = kwargs['outs'][0]
-        fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out': out_info.shape})
-        return fn(weights, spikes)
+        def run(weights, spikes):
+            spikes = spikes.astype(jnp.float32)
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out': out_info.shape})
+            return fn(weights, spikes)
+
+    else:
+        spike_warp_info = jaxinfo_to_warpinfo(spk_info)
+
+        @warp.kernel
+        def kernel(
+            weights: weight_warp_info,
+            spikes: spike_warp_info,
+            out: out_warp_info
+        ):
+            i_m, i_n = warp.tid()
+            r = weights.dtype(0.)
+            for i_k in range(k):
+                if spikes[i_k, i_n] > 0.:
+                    r += weights[i_m, i_k]
+            out[i_m, i_n] = r
+
+        def run(weights, spikes):
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out': out_info.shape})
+            return fn(weights, spikes)
 
     return run
 
@@ -914,25 +925,14 @@ def _bdmm_warp_kernel(
     m, k = spk_info.shape
     n = weight_info.shape[1]
 
-    spike_warp_info = jaxinfo_to_warpinfo(spk_info)
     weight_warp_info = jaxinfo_to_warpinfo(weight_info)
     out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
 
     if spk_info.dtype == jnp.bool_:
-        @warp.kernel
-        def kernel(
-            spikes: spike_warp_info,
-            weights: weight_warp_info,
-            out: out_warp_info,
-        ):
-            i_m, i_n = warp.tid()
-            r = weights.dtype(0.)
-            for i_k in range(k):
-                if spikes[i_m, i_k]:
-                    r += weights[i_k, i_n]
-            out[i_m, i_n] = r
+        # Cast bool spikes to float32 to avoid 2D boolean array indexing bug in warp
+        spk_float_info = jax.ShapeDtypeStruct(spk_info.shape, jnp.float32)
+        spike_warp_info = jaxinfo_to_warpinfo(spk_float_info)
 
-    else:
         @warp.kernel
         def kernel(
             spikes: spike_warp_info,
@@ -946,10 +946,32 @@ def _bdmm_warp_kernel(
                     r += weights[i_k, i_n]
             out[i_m, i_n] = r
 
-    def run(spikes, weights):
-        out_info = kwargs['outs'][0]
-        fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out': out_info.shape})
-        return fn(spikes, weights)
+        def run(spikes, weights):
+            spikes = spikes.astype(jnp.float32)
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out': out_info.shape})
+            return fn(spikes, weights)
+
+    else:
+        spike_warp_info = jaxinfo_to_warpinfo(spk_info)
+
+        @warp.kernel
+        def kernel(
+            spikes: spike_warp_info,
+            weights: weight_warp_info,
+            out: out_warp_info,
+        ):
+            i_m, i_n = warp.tid()
+            r = weights.dtype(0.)
+            for i_k in range(k):
+                if spikes[i_m, i_k] > 0.:
+                    r += weights[i_k, i_n]
+            out[i_m, i_n] = r
+
+        def run(spikes, weights):
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out': out_info.shape})
+            return fn(spikes, weights)
 
     return run
 
@@ -969,7 +991,7 @@ def _bdmm_pallas_kernel(
 
     def kernel(
         spike_ref,  # [m, k]
-        weight_ref,  # [k, n]
+        weight_t_ref,  # [n, k] (transposed)
         out_ref,  # [m, n]
     ):
         i_m = pl.program_id(0)
@@ -979,7 +1001,8 @@ def _bdmm_pallas_kernel(
 
         def loop_fn(i_k, temp):
             spike = spike_ref[i_m, i_k]
-            weight_row = weight_ref[i_k, pl.dslice(i_n_start, block_dim)]
+            # Use block slice on first dim (working pattern on GPU triton)
+            weight_row = weight_t_ref[pl.dslice(i_n_start, block_dim), i_k]
             weight_row = jnp.where(i_n_mask, weight_row, 0.0)
             return jax.lax.cond(
                 spike if spike_ref.dtype == jnp.bool_ else spike > 0.,
@@ -988,16 +1011,17 @@ def _bdmm_pallas_kernel(
                 temp,
             )
 
-        final_out = jax.lax.fori_loop(0, k, loop_fn, jnp.zeros(block_dim, dtype=weight_ref.dtype))
+        final_out = jax.lax.fori_loop(0, k, loop_fn, jnp.zeros(block_dim, dtype=weight_t_ref.dtype))
         out_ref[i_m, pl.dslice(i_n_start, block_dim)] = jnp.where(i_n_mask, final_out, 0.0)
 
     def run(spikes, weights):
+        weights_t = weights.T  # [k, n] -> [n, k]
         fn = pl.pallas_call(
             kernel,
             grid=(m, cdiv(n, block_dim)),
             out_shape=kwargs['outs']
         )
-        return fn(spikes, weights)
+        return fn(spikes, weights_t)
 
     return run
 

@@ -15,7 +15,6 @@
 
 # -*- coding: utf-8 -*-
 
-import jax
 from jax.tree_util import register_pytree_node_class
 
 from brainevent._dense import dbmm, bdmm, dbmv, bdvm
@@ -36,18 +35,11 @@ class BinaryArray(EventRepresentation):
     ----------
     value : array_like
         The input binary array data.
-    dtype : jax.typing.DTypeLike, optional
-        The data type of the array.
     """
     __module__ = 'brainevent'
 
-    def __init__(
-        self,
-        value,
-        *,
-        dtype: jax.typing.DTypeLike = None,
-    ):
-        super().__init__(value, dtype=dtype)
+    def __init__(self, value):
+        super().__init__(value)
 
     @property
     def T(self):

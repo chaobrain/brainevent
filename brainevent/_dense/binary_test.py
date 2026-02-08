@@ -232,6 +232,74 @@ class TestGradient:
         assert grad.shape == weights.shape
 
 
+class TestBackendSpecific:
+    """Test specific backends (pallas, warp) directly via backend= parameter."""
+
+    @pytest.mark.parametrize("m", [10])
+    @pytest.mark.parametrize("k", [15])
+    @pytest.mark.parametrize("n", [20])
+    @pytest.mark.parametrize("dtype", [bool, float])
+    def test_pallas_dbmm(self, m, k, n, dtype):
+        import jax
+        if jax.default_backend() not in ('gpu', 'tpu'):
+            pytest.skip("pallas backend requires GPU or TPU")
+        weights = brainstate.random.randn(m, k)
+        spikes = brainstate.random.randn(k, n) < 0.3
+        if dtype == float:
+            spikes = u.math.asarray(spikes, dtype=float)
+        result = dbmm(weights, spikes, backend='pallas')
+        expected = weights @ u.math.asarray(spikes, dtype=float)
+        assert u.math.allclose(result, expected, atol=1e-2, rtol=1e-2)
+
+    @pytest.mark.parametrize("m", [10])
+    @pytest.mark.parametrize("k", [15])
+    @pytest.mark.parametrize("n", [20])
+    @pytest.mark.parametrize("dtype", [bool, float])
+    def test_pallas_bdmm(self, m, k, n, dtype):
+        import jax
+        if jax.default_backend() not in ('gpu', 'tpu'):
+            pytest.skip("pallas backend requires GPU or TPU")
+        spikes = brainstate.random.randn(m, k) < 0.3
+        if dtype == float:
+            spikes = u.math.asarray(spikes, dtype=float)
+        weights = brainstate.random.randn(k, n)
+        result = bdmm(spikes, weights, backend='pallas')
+        expected = u.math.asarray(spikes, dtype=float) @ weights
+        assert u.math.allclose(result, expected, atol=1e-2, rtol=1e-2)
+
+    @pytest.mark.parametrize("m", [10])
+    @pytest.mark.parametrize("k", [15])
+    @pytest.mark.parametrize("n", [20])
+    @pytest.mark.parametrize("dtype", [bool, float])
+    def test_warp_dbmm(self, m, k, n, dtype):
+        import jax
+        if jax.default_backend() != 'gpu':
+            pytest.skip("warp backend requires GPU")
+        weights = brainstate.random.randn(m, k)
+        spikes = brainstate.random.randn(k, n) < 0.3
+        if dtype == float:
+            spikes = u.math.asarray(spikes, dtype=float)
+        result = dbmm(weights, spikes, backend='warp')
+        expected = weights @ u.math.asarray(spikes, dtype=float)
+        assert u.math.allclose(result, expected, atol=1e-2, rtol=1e-2)
+
+    @pytest.mark.parametrize("m", [10])
+    @pytest.mark.parametrize("k", [15])
+    @pytest.mark.parametrize("n", [20])
+    @pytest.mark.parametrize("dtype", [bool, float])
+    def test_warp_bdmm(self, m, k, n, dtype):
+        import jax
+        if jax.default_backend() != 'gpu':
+            pytest.skip("warp backend requires GPU")
+        spikes = brainstate.random.randn(m, k) < 0.3
+        if dtype == float:
+            spikes = u.math.asarray(spikes, dtype=float)
+        weights = brainstate.random.randn(k, n)
+        result = bdmm(spikes, weights, backend='warp')
+        expected = u.math.asarray(spikes, dtype=float) @ weights
+        assert u.math.allclose(result, expected, atol=1e-2, rtol=1e-2)
+
+
 class TestBatching:
     """Test vmap batching for all 4 operations."""
 
