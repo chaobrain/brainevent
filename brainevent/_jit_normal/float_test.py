@@ -380,3 +380,232 @@ def test_jitn_vmap_over_seed(implementation, shape):
     assert results_loop.shape == (10,) + shape
 
     assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
+
+
+# ---- Gradient VJP: jitnmv w.r.t. w_loc ----
+
+@pytest.mark.parametrize("implementation", JITNMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_jitnmv_vjp_wloc(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    vec_size = shape[0] if transpose else shape[1]
+    vector = jnp.asarray(np.random.rand(vec_size))
+    w_loc_arr = jnp.array([w_loc])
+    # Build fixed dense components: mask and Z*mask
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
+
+    def f_fn(wl):
+        return jitnmv(wl, w_scale, prob, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
+
+    def f_ref(wl):
+        M = wl * mask + w_scale * z_mask
+        return (M @ vector).sum()
+
+    grad1 = jax.grad(f_fn)(w_loc_arr)
+    grad2 = jax.grad(f_ref)(w_loc_arr)
+    assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
+
+
+# ---- Gradient VJP: jitnmv w.r.t. w_scale ----
+
+@pytest.mark.parametrize("implementation", JITNMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_jitnmv_vjp_wscale(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    vec_size = shape[0] if transpose else shape[1]
+    vector = jnp.asarray(np.random.rand(vec_size))
+    w_scale_arr = jnp.array([w_scale])
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
+
+    def f_fn(ws):
+        return jitnmv(w_loc, ws, prob, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
+
+    def f_ref(ws):
+        M = w_loc * mask + ws * z_mask
+        return (M @ vector).sum()
+
+    grad1 = jax.grad(f_fn)(w_scale_arr)
+    grad2 = jax.grad(f_ref)(w_scale_arr)
+    assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
+
+
+# ---- End-to-end VJP: jitnmv w.r.t. w_loc with loss ----
+
+@pytest.mark.parametrize("implementation", JITNMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_jitnmv_vjp_wloc_with_loss(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    vec_size = shape[0] if transpose else shape[1]
+    out_size = shape[1] if transpose else shape[0]
+    vector = jnp.asarray(np.random.rand(vec_size))
+    target = jnp.asarray(np.random.rand(out_size))
+    w_loc_arr = jnp.array([w_loc])
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
+
+    def loss_fn(wl):
+        out = jitnmv(wl, w_scale, prob, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+        return jnp.sum((out - target) ** 2)
+
+    def loss_ref(wl):
+        M = wl * mask + w_scale * z_mask
+        out = M @ vector
+        return jnp.sum((out - target) ** 2)
+
+    grad1 = jax.grad(loss_fn)(w_loc_arr)
+    grad2 = jax.grad(loss_ref)(w_loc_arr)
+    assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
+
+
+# ---- End-to-end VJP: jitnmv w.r.t. w_scale with loss ----
+
+@pytest.mark.parametrize("implementation", JITNMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_jitnmv_vjp_wscale_with_loss(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    vec_size = shape[0] if transpose else shape[1]
+    out_size = shape[1] if transpose else shape[0]
+    vector = jnp.asarray(np.random.rand(vec_size))
+    target = jnp.asarray(np.random.rand(out_size))
+    w_scale_arr = jnp.array([w_scale])
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
+
+    def loss_fn(ws):
+        out = jitnmv(w_loc, ws, prob, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+        return jnp.sum((out - target) ** 2)
+
+    def loss_ref(ws):
+        M = w_loc * mask + ws * z_mask
+        out = M @ vector
+        return jnp.sum((out - target) ** 2)
+
+    grad1 = jax.grad(loss_fn)(w_scale_arr)
+    grad2 = jax.grad(loss_ref)(w_scale_arr)
+    assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
+
+
+# ---- Gradient VJP: jitnmm w.r.t. w_loc ----
+
+@pytest.mark.parametrize("implementation", JITNMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_jitnmm_vjp_wloc(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    k = 10
+    mat_rows = shape[0] if transpose else shape[1]
+    B = jnp.asarray(np.random.rand(mat_rows, k))
+    w_loc_arr = jnp.array([w_loc])
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
+
+    def f_fn(wl):
+        return jitnmm(wl, w_scale, prob, B, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
+
+    def f_ref(wl):
+        M = wl * mask + w_scale * z_mask
+        return (M @ B).sum()
+
+    grad1 = jax.grad(f_fn)(w_loc_arr)
+    grad2 = jax.grad(f_ref)(w_loc_arr)
+    assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
+
+
+# ---- Gradient VJP: jitnmm w.r.t. w_scale ----
+
+@pytest.mark.parametrize("implementation", JITNMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_jitnmm_vjp_wscale(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    k = 10
+    mat_rows = shape[0] if transpose else shape[1]
+    B = jnp.asarray(np.random.rand(mat_rows, k))
+    w_scale_arr = jnp.array([w_scale])
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
+
+    def f_fn(ws):
+        return jitnmm(w_loc, ws, prob, B, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
+
+    def f_ref(ws):
+        M = w_loc * mask + ws * z_mask
+        return (M @ B).sum()
+
+    grad1 = jax.grad(f_fn)(w_scale_arr)
+    grad2 = jax.grad(f_ref)(w_scale_arr)
+    assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
+
+
+# ---- End-to-end VJP: jitnmm w.r.t. w_loc with loss ----
+
+@pytest.mark.parametrize("implementation", JITNMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_jitnmm_vjp_wloc_with_loss(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    k = 10
+    mat_rows = shape[0] if transpose else shape[1]
+    out_rows = shape[1] if transpose else shape[0]
+    B = jnp.asarray(np.random.rand(mat_rows, k))
+    target = jnp.asarray(np.random.rand(out_rows, k))
+    w_loc_arr = jnp.array([w_loc])
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
+
+    def loss_fn(wl):
+        out = jitnmm(wl, w_scale, prob, B, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+        return jnp.sum((out - target) ** 2)
+
+    def loss_ref(wl):
+        M = wl * mask + w_scale * z_mask
+        out = M @ B
+        return jnp.sum((out - target) ** 2)
+
+    grad1 = jax.grad(loss_fn)(w_loc_arr)
+    grad2 = jax.grad(loss_ref)(w_loc_arr)
+    assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
+
+
+# ---- End-to-end VJP: jitnmm w.r.t. w_scale with loss ----
+
+@pytest.mark.parametrize("implementation", JITNMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_jitnmm_vjp_wscale_with_loss(implementation, shape, corder, transpose):
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
+    k = 10
+    mat_rows = shape[0] if transpose else shape[1]
+    out_rows = shape[1] if transpose else shape[0]
+    B = jnp.asarray(np.random.rand(mat_rows, k))
+    target = jnp.asarray(np.random.rand(out_rows, k))
+    w_scale_arr = jnp.array([w_scale])
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
+
+    def loss_fn(ws):
+        out = jitnmm(w_loc, ws, prob, B, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+        return jnp.sum((out - target) ** 2)
+
+    def loss_ref(ws):
+        M = w_loc * mask + ws * z_mask
+        out = M @ B
+        return jnp.sum((out - target) ** 2)
+
+    grad1 = jax.grad(loss_fn)(w_scale_arr)
+    grad2 = jax.grad(loss_ref)(w_scale_arr)
+    assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)

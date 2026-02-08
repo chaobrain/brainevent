@@ -688,8 +688,6 @@ def _jitc_mv_normal_jvp_wscale(w_dot, w_loc, w_scale, clen, vector, seed, *, sha
 def _jitc_mv_normal_transpose_rules(ct, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
-    assert not ad.is_undefined_primal(w_loc)
-    assert not ad.is_undefined_primal(w_scale)
 
     ct = ct[0]
     if ad.is_undefined_primal(vector):
@@ -704,10 +702,27 @@ def _jitc_mv_normal_transpose_rules(ct, w_loc, w_scale, clen, vector, seed, *, s
             corder=not corder
         )[0]
         return w_loc, w_scale, clen, r, seed
+    elif ad.is_undefined_primal(w_loc):
+        # M = (w_loc + w_scale * Z) * mask, forward: M @ event(v)
+        # d(loss)/d(w_loc) = sum((mask^T @ ct) * vector)
+        r = jitnmv_p_call(
+            1., 0., clen, ct, seed,
+            shape=shape, transpose=not transpose, corder=not corder
+        )[0]
+        dw_loc = jnp.expand_dims(jnp.sum(r * vector), axis=0)
+        return dw_loc, w_scale, clen, vector, seed
+    elif ad.is_undefined_primal(w_scale):
+        # d(loss)/d(w_scale) = sum(((Z*mask)^T @ ct) * vector)
+        r = jitnmv_p_call(
+            0., 1., clen, ct, seed,
+            shape=shape, transpose=not transpose, corder=not corder
+        )[0]
+        dw_scale = jnp.expand_dims(jnp.sum(r * vector), axis=0)
+        return w_loc, dw_scale, clen, vector, seed
     else:
         raise NotImplementedError(
-            f"Transpose rule for {ct} not implemented "
-            f"for event-driven COO matrix-vector product."
+            f"Transpose rule for binary_jitnmv not implemented "
+            f"when none of vector/w_loc/w_scale is an undefined primal."
         )
 
 
@@ -1313,8 +1328,6 @@ def _jitc_mm_normal_jvp_B(B_dot, w_loc, w_scale, clen, B, seed, *, shape, transp
 def _jitc_mm_normal_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
-    assert not ad.is_undefined_primal(w_loc)
-    assert not ad.is_undefined_primal(w_scale)
 
     ct = ct[0]
     if ad.is_undefined_primal(B):
@@ -1328,12 +1341,27 @@ def _jitc_mm_normal_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape,
             transpose=not transpose,
             corder=not corder,
         )[0]
-
         return w_loc, w_scale, clen, r, seed
-
+    elif ad.is_undefined_primal(w_loc):
+        # M = (w_loc + w_scale * Z) * mask, forward: M @ event(B)
+        # d(loss)/d(w_loc) = sum((mask^T @ ct) * B)
+        r = jitnmm_p_call(
+            1., 0., clen, ct, seed,
+            shape=shape, transpose=not transpose, corder=not corder,
+        )[0]
+        dw_loc = jnp.expand_dims(jnp.sum(r * B), axis=0)
+        return dw_loc, w_scale, clen, B, seed
+    elif ad.is_undefined_primal(w_scale):
+        # d(loss)/d(w_scale) = sum(((Z*mask)^T @ ct) * B)
+        r = jitnmm_p_call(
+            0., 1., clen, ct, seed,
+            shape=shape, transpose=not transpose, corder=not corder,
+        )[0]
+        dw_scale = jnp.expand_dims(jnp.sum(r * B), axis=0)
+        return w_loc, dw_scale, clen, B, seed
     else:
         raise NotImplementedError(
-            'Transpose rules for jitc_matmat_normal not implemented for '
+            'Transpose rules for binary_jitc_matmat_normal not implemented for '
             'non-undefined primals.'
         )
 

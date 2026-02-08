@@ -439,14 +439,12 @@ def _jitu_jvp_whigh(w_high_dot, w_low, w_high, clen, seed, *, shape, transpose: 
 
 def _wlow_tranpose(ct, seed, clen, **kwargs):
     # JITC * (high - low) + low
-    # TODO: optimize memory
     forward = jitu_p_call(0., 1., clen, seed, **kwargs)[0]
     return jnp.expand_dims((ct * (-forward + 1.)).sum(), axis=0)
 
 
 def _whigh_tranpose(ct, seed, clen, **kwargs):
     # JITC * (high - low) + low
-    # TODO: optimize memory
     forward = jitu_p_call(0., 1., clen, seed, **kwargs)[0]
     return jnp.expand_dims((ct * forward).sum(), axis=0)
 
