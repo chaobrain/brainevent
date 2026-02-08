@@ -36,7 +36,7 @@ class TestCSR:
             csr = u.sparse.CSR.fromdense(mask)
             csr = brainevent.CSR((dat, csr.indices, csr.indptr), shape=mask.shape)
 
-            v = brainevent.EventArray(brainstate.random.rand(20) < 0.5)
+            v = brainevent.BinaryArray(brainstate.random.rand(20) < 0.5)
             assert (
                 u.math.allclose(
                     mask.astype(float) @ v.data.astype(float),
@@ -44,7 +44,7 @@ class TestCSR:
                 )
             )
 
-            v = brainevent.EventArray(brainstate.random.rand(10) < 0.5)
+            v = brainevent.BinaryArray(brainstate.random.rand(10) < 0.5)
             assert (
                 u.math.allclose(
                     v.data.astype(float) @ mask.astype(float),
@@ -58,7 +58,7 @@ class TestCSR:
         csr = u.sparse.CSR.fromdense(mask)
         csr = brainevent.CSR((csr.data, csr.indices, csr.indptr), shape=mask.shape)
 
-        v = brainevent.EventArray(brainstate.random.rand(20) < 0.5)
+        v = brainevent.BinaryArray(brainstate.random.rand(20) < 0.5)
         assert (
             u.math.allclose(
                 mask.astype(float) @ v.data.astype(float),
@@ -66,7 +66,7 @@ class TestCSR:
             )
         )
 
-        v = brainevent.EventArray(brainstate.random.rand(10) < 0.5)
+        v = brainevent.BinaryArray(brainstate.random.rand(10) < 0.5)
         assert (
             u.math.allclose(
                 v.data.astype(float) @ mask.astype(float),
@@ -80,7 +80,7 @@ class TestCSR:
         csr = u.sparse.CSR.fromdense(mask)
         csr = brainevent.CSR((csr.data, csr.indices, csr.indptr), shape=mask.shape)
 
-        v = brainevent.EventArray((brainstate.random.rand(20) < 0.5).astype(float))
+        v = brainevent.BinaryArray((brainstate.random.rand(20) < 0.5).astype(float))
         assert (
             u.math.allclose(
                 mask.astype(float) @ v.data.astype(float),
@@ -88,7 +88,7 @@ class TestCSR:
             )
         )
 
-        v = brainevent.EventArray((brainstate.random.rand(10) < 0.5).astype(float))
+        v = brainevent.BinaryArray((brainstate.random.rand(10) < 0.5).astype(float))
         assert (
             u.math.allclose(
                 v.data.astype(float) @ mask.astype(float),
@@ -107,7 +107,7 @@ class TestVectorCSR:
         print(f'homo_w = {homo_w}')
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-        y = brainevent.EventArray(x) @ csr
+        y = brainevent.BinaryArray(x) @ csr
         y2 = vector_csr(x, csr.data, indices, indptr, (m, n))
         assert (jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
 
@@ -120,7 +120,7 @@ class TestVectorCSR:
 
             data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
             csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-            y = brainstate.transform.vmap2(lambda x: brainevent.EventArray(x) @ csr)(xs)
+            y = brainstate.transform.vmap2(lambda x: brainevent.BinaryArray(x) @ csr)(xs)
             y2 = brainstate.transform.vmap2(lambda x: vector_csr(x, csr.data, indices, indptr, (m, n)))(xs)
             assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
@@ -132,7 +132,7 @@ class TestVectorCSR:
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-        y = csr @ brainevent.EventArray(v)
+        y = csr @ brainevent.BinaryArray(v)
         y2 = csr_vector(v, csr.data, indices, indptr, (m, n))
         assert (jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
 
@@ -149,9 +149,9 @@ class TestVectorCSR:
 
         def f_brainevent(x, w):
             if transpose:
-                r = brainevent.EventArray(x) @ csr.with_data(w)
+                r = brainevent.BinaryArray(x) @ csr.with_data(w)
             else:
-                r = csr.with_data(w) @ brainevent.EventArray(x)
+                r = csr.with_data(w) @ brainevent.BinaryArray(x)
             return r.sum()
 
         r = jax.grad(f_brainevent, argnums=(0, 1))(x, w)
@@ -191,9 +191,9 @@ class TestVectorCSR:
 
         def f_brainevent(x, w):
             if transpose:
-                r = brainevent.EventArray(x) @ csr.with_data(w)
+                r = brainevent.BinaryArray(x) @ csr.with_data(w)
             else:
-                r = csr.with_data(w) @ brainevent.EventArray(x)
+                r = csr.with_data(w) @ brainevent.BinaryArray(x)
             return r
 
         o1, r1 = jax.jvp(f_brainevent, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
@@ -224,10 +224,10 @@ class TestBatchingVectorCSR:
     def _run(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         if transpose:
-            y1 = brainevent.EventArray(x) @ csr
+            y1 = brainevent.BinaryArray(x) @ csr
             y2 = vector_csr(x, csr.data, indices, indptr, (m, n))
         else:
-            y1 = csr @ brainevent.EventArray(x)
+            y1 = csr @ brainevent.BinaryArray(x)
             y2 = csr_vector(x, csr.data, indices, indptr, (m, n))
         return jnp.allclose(y1, y2)
 
@@ -268,9 +268,9 @@ class TestBatchingVectorCSR:
 
         def f_brainevent(x, w):
             if transpose:
-                r = brainevent.EventArray(x) @ csr.with_data(w)
+                r = brainevent.BinaryArray(x) @ csr.with_data(w)
             else:
-                r = csr.with_data(w) @ brainevent.EventArray(x)
+                r = csr.with_data(w) @ brainevent.BinaryArray(x)
             return r.sum()
 
         r1 = jax.grad(f_brainevent, argnums=(0, 1))(x, csr.data)
@@ -329,9 +329,9 @@ class TestBatchingVectorCSR:
 
         def f_brainevent(x, w):
             if transpose:
-                r = brainevent.EventArray(x) @ csr.with_data(w)
+                r = brainevent.BinaryArray(x) @ csr.with_data(w)
             else:
-                r = csr.with_data(w) @ brainevent.EventArray(x)
+                r = csr.with_data(w) @ brainevent.BinaryArray(x)
             return r
 
         r1 = jax.jvp(f_brainevent, (x, data), (jnp.ones_like(x), jnp.ones_like(data)))
@@ -394,7 +394,7 @@ class TestMatrixCSR:
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-        y = brainevent.EventArray(x) @ csr
+        y = brainevent.BinaryArray(x) @ csr
         y2 = matrix_csr(x, csr.data, indices, indptr, (m, n))
         assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
@@ -406,7 +406,7 @@ class TestMatrixCSR:
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
-        y = csr @ brainevent.EventArray(matrix)
+        y = csr @ brainevent.BinaryArray(matrix)
         y2 = csr_matrix(matrix, csr.data, indices, indptr, (m, n))
         assert (jnp.allclose(y, y2))
 
@@ -415,10 +415,10 @@ class TestBatchingMatrixCSR:
     def _run(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
         csr = brainevent.CSR((data, indices, indptr), shape=(m, n))
         if transpose:
-            y1 = brainevent.EventArray(x) @ csr
+            y1 = brainevent.BinaryArray(x) @ csr
             y2 = matrix_csr(x, csr.data, indices, indptr, (m, n))
         else:
-            y1 = csr @ brainevent.EventArray(x)
+            y1 = csr @ brainevent.BinaryArray(x)
             y2 = csr_matrix(x, csr.data, indices, indptr, (m, n))
         return jnp.allclose(y1, y2)
 
@@ -459,9 +459,9 @@ class TestBatchingMatrixCSR:
 
         def f_brainevent(x, w):
             if transpose:
-                r = brainevent.EventArray(x) @ csr.with_data(w)
+                r = brainevent.BinaryArray(x) @ csr.with_data(w)
             else:
-                r = csr.with_data(w) @ brainevent.EventArray(x)
+                r = csr.with_data(w) @ brainevent.BinaryArray(x)
             return r.sum()
 
         r1 = jax.grad(f_brainevent, argnums=(0, 1))(x, csr.data)
@@ -525,9 +525,9 @@ class TestBatchingMatrixCSR:
 
         def f_brainevent(x, w):
             if transpose:
-                r = brainevent.EventArray(x) @ csr.with_data(w)
+                r = brainevent.BinaryArray(x) @ csr.with_data(w)
             else:
-                r = csr.with_data(w) @ brainevent.EventArray(x)
+                r = csr.with_data(w) @ brainevent.BinaryArray(x)
             return r
 
         r1 = jax.jvp(f_brainevent, (x, data), (jnp.ones_like(x), jnp.ones_like(data)))

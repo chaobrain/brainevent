@@ -25,7 +25,7 @@ import numpy as np
 
 from brainevent._compatible_import import JAXSparse
 from brainevent._coo import COO
-from brainevent._event.binary import EventArray
+from brainevent._event.binary import BinaryArray
 from brainevent._event.sparse_float import SparseFloat
 from brainevent._misc import _coo_todense, COOInfo
 from brainevent._typing import Data, MatrixShape, Index
@@ -450,7 +450,7 @@ class FixedPostNumConn(FixedNumConn):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
 
-        if isinstance(other, EventArray):
+        if isinstance(other, BinaryArray):
             other = other.data
             if other.ndim == 1:
                 return binary_fcnmv(data, self.indices, other, shape=self.shape, transpose=False)
@@ -484,7 +484,7 @@ class FixedPostNumConn(FixedNumConn):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
 
-        if isinstance(other, EventArray):
+        if isinstance(other, BinaryArray):
             other = other.data
             if other.ndim == 1:
                 return binary_fcnmv(data, self.indices, other, shape=self.shape, transpose=True)
@@ -834,7 +834,7 @@ class FixedPreNumConn(FixedNumConn):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
 
-        if isinstance(other, EventArray):
+        if isinstance(other, BinaryArray):
             if other.ndim == 1:
                 return binary_fcnmv(data, self.indices, other.data, shape=self.shape[::-1], transpose=True)
             elif other.ndim == 2:
@@ -866,7 +866,7 @@ class FixedPreNumConn(FixedNumConn):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
 
-        if isinstance(other, EventArray):
+        if isinstance(other, BinaryArray):
             other = other.data
             if other.ndim == 1:
                 return binary_fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=False)

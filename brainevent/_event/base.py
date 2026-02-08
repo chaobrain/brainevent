@@ -1084,8 +1084,8 @@ class BaseArray:
         Examples
         --------
         >>> import jax.numpy as jnp
-        >>> from brainevent import EventArray
-        >>> a = EventArray(jnp.array([1, 2, 3, 4]))
+        >>> from brainevent import BinaryArray
+        >>> a = BinaryArray(jnp.array([1, 2, 3, 4]))
 
         >>> # Set the element at index 1 to 10
         >>> b = a.at[1].set(10)
@@ -1139,10 +1139,10 @@ class BaseArray:
         >>> import jax
         >>> import jax.numpy as jnp
         >>> import time
-        >>> from brainevent import EventArray
+        >>> from brainevent import BinaryArray
 
         >>> # Assume 'a' is on a GPU/TPU where operations might be async
-        >>> a = EventArray(jnp.arange(1000000)).cuda() # Move to GPU if available
+        >>> a = BinaryArray(jnp.arange(1000000)).cuda() # Move to GPU if available
 
         >>> # Perform some computation
         >>> start_time = time.time()
@@ -1152,7 +1152,7 @@ class BaseArray:
         >>> end_time_async = time.time()
 
         >>> # Now, ensure computation is done before recording time
-        >>> b_event = EventArray(b)
+        >>> b_event = BinaryArray(b)
         >>> b_event.block_until_ready()
         >>> end_time_sync = time.time()
 
@@ -1210,8 +1210,8 @@ class BaseArray:
         Examples
         --------
         >>> import jax.numpy as jnp
-        >>> from brainevent import EventArray
-        >>> a = EventArray(jnp.array([[True, False], [True, True]]))
+        >>> from brainevent import BinaryArray
+        >>> a = BinaryArray(jnp.array([[True, False], [True, True]]))
         >>> a.all()
         Array(False, dtype=bool)
         >>> a.all(axis=0)
@@ -1260,8 +1260,8 @@ class BaseArray:
         Examples
         --------
         >>> import jax.numpy as jnp
-        >>> from brainevent import EventArray
-        >>> a = EventArray(jnp.array([[True, False], [False, False]]))
+        >>> from brainevent import BinaryArray
+        >>> a = BinaryArray(jnp.array([[True, False], [False, False]]))
         >>> a.any()
         Array(True, dtype=bool)
         >>> a.any(axis=0)
@@ -1299,8 +1299,8 @@ class BaseArray:
         Examples
         --------
         >>> import jax.numpy as jnp
-        >>> from brainevent import EventArray
-        >>> a = EventArray(jnp.arange(6).reshape(2,3) + 10)
+        >>> from brainevent import BinaryArray
+        >>> a = BinaryArray(jnp.arange(6).reshape(2,3) + 10)
         >>> a.value
         Array([[10, 11, 12],
                [13, 14, 15]], dtype=int32)
@@ -1339,8 +1339,8 @@ class BaseArray:
         Examples
         --------
         >>> import jax.numpy as jnp
-        >>> from brainevent import EventArray
-        >>> a = EventArray(jnp.arange(6).reshape(2,3) + 10)
+        >>> from brainevent import BinaryArray
+        >>> a = BinaryArray(jnp.arange(6).reshape(2,3) + 10)
         >>> a.value
         Array([[10, 11, 12],
                [13, 14, 15]], dtype=int32)
@@ -1390,15 +1390,15 @@ class BaseArray:
         Examples
         --------
         >>> import jax.numpy as jnp
-        >>> from brainevent import EventArray
-        >>> x = EventArray(jnp.array([3, 4, 2, 1]))
+        >>> from brainevent import BinaryArray
+        >>> x = BinaryArray(jnp.array([3, 4, 2, 1]))
         >>> x.argpartition(1) # Index of the 2nd smallest element
         Array([3, 2, 0, 1], dtype=int32) # Indices that put 2nd smallest (value 2) in place
         >>> x.argpartition((1, 2)) # Indices of the 2nd and 3rd smallest elements
         Array([3, 2, 0, 1], dtype=int32) # Indices that put 2nd (value 2) and 3rd (value 3) in place
 
         >>> # Partition along axis 1
-        >>> y = EventArray(jnp.array([[3, 4, 2], [1, 3, 5]]))
+        >>> y = BinaryArray(jnp.array([[3, 4, 2], [1, 3, 5]]))
         >>> y.argpartition(1, axis=1)
         Array([[2, 0, 1],
                [0, 1, 2]], dtype=int32)
@@ -1443,12 +1443,12 @@ class BaseArray:
         Examples
         --------
         >>> import jax.numpy as jnp
-        >>> from brainevent import EventArray
-        >>> x = EventArray(jnp.array([3, 1, 2]))
+        >>> from brainevent import BinaryArray
+        >>> x = BinaryArray(jnp.array([3, 1, 2]))
         >>> x.argsort()
         Array([1, 2, 0], dtype=int32)
 
-        >>> y = EventArray(jnp.array([[0, 3], [2, 2]]))
+        >>> y = BinaryArray(jnp.array([[0, 3], [2, 2]]))
         >>> y.argsort(axis=0) # Sort indices along columns
         Array([[0, 1],
                [1, 0]], dtype=int32)
@@ -1491,8 +1491,8 @@ class BaseArray:
         Examples
         --------
         >>> import jax.numpy as jnp
-        >>> from brainevent import EventArray
-        >>> x = EventArray(jnp.array([1, 2, 2.5]))
+        >>> from brainevent import BinaryArray
+        >>> x = BinaryArray(jnp.array([1, 2, 2.5]))
         >>> x.value
         Array([1. , 2. , 2.5], dtype=float32)
         >>> x.astype(jnp.int32)
@@ -1835,12 +1835,12 @@ class BaseArray:
         Examples
         --------
         >>> import jax.numpy as jnp
-        >>> from brainevent import EventArray
-        >>> x = EventArray(jnp.array([[1, 0, 3], [0, 5, 0]]))
+        >>> from brainevent import BinaryArray
+        >>> x = BinaryArray(jnp.array([[1, 0, 3], [0, 5, 0]]))
         >>> x.nonzero()
         (Array([0, 0, 1], dtype=int32), Array([0, 2, 1], dtype=int32))
 
-        >>> y = EventArray(jnp.array([1, 0, 0, 4, 0]))
+        >>> y = BinaryArray(jnp.array([1, 0, 0, 4, 0]))
         >>> y.nonzero()
         (Array([0, 3], dtype=int32),)
         """
@@ -1890,8 +1890,8 @@ class BaseArray:
         Examples
         --------
         >>> import jax.numpy as jnp
-        >>> from brainevent import EventArray
-        >>> x = EventArray(jnp.array([[1, 2], [3, 4]]))
+        >>> from brainevent import BinaryArray
+        >>> x = BinaryArray(jnp.array([[1, 2], [3, 4]]))
         >>> x.prod()
         Array(24, dtype=int32)
         >>> x.prod(axis=0)
@@ -1942,8 +1942,8 @@ class BaseArray:
         Examples
         --------
         >>> import jax.numpy as jnp
-        >>> from brainevent import EventArray
-        >>> x = EventArray(jnp.arange(12).reshape((3, 4)))
+        >>> from brainevent import BinaryArray
+        >>> x = BinaryArray(jnp.arange(12).reshape((3, 4)))
         >>> x
         BaseArray(value=Array([[ 0,  1,  2,  3],
                [ 4,  5,  6,  7],
@@ -1999,8 +1999,8 @@ class BaseArray:
         Examples
         --------
         >>> import jax.numpy as jnp
-        >>> from brainevent import EventArray
-        >>> x = EventArray(jnp.array([[1, 2, 3], [4, 5, 6]]))
+        >>> from brainevent import BinaryArray
+        >>> x = BinaryArray(jnp.array([[1, 2, 3], [4, 5, 6]]))
         >>> x.ravel()
         Array([1, 2, 3, 4, 5, 6], dtype=int32)
 
@@ -2041,8 +2041,8 @@ class BaseArray:
         Examples
         --------
         >>> import jax.numpy as jnp
-        >>> from brainevent import EventArray
-        >>> x = EventArray(jnp.array([[1, 2], [3, 4]]))
+        >>> from brainevent import BinaryArray
+        >>> x = BinaryArray(jnp.array([[1, 2], [3, 4]]))
 
         >>> x.repeat(2) # Repeat elements of flattened array
         Array([1, 1, 2, 2, 3, 3, 4, 4], dtype=int32)
@@ -2110,9 +2110,9 @@ class BaseArray:
         Examples
         --------
         >>> import numpy as np
-        >>> from brainevent import EventArray
+        >>> from brainevent import BinaryArray
         >>> a = np.arange(6)
-        >>> ea = EventArray(a)
+        >>> ea = BinaryArray(a)
         >>> print(ea.shape)
         (6,)
         >>> ea.resize((2, 3)) # Reassigns self.value
@@ -2159,9 +2159,9 @@ class BaseArray:
         Examples
         --------
         >>> import numpy as np
-        >>> from brainevent import EventArray
+        >>> from brainevent import BinaryArray
         >>> a = np.array([0.37, 1.64, 0.5])
-        >>> ea = EventArray(a)
+        >>> ea = BinaryArray(a)
         >>> ea.round()
         BaseArray(value=array([0., 2., 0.]), dtype=float64)
         >>> ea.round(decimals=1)
@@ -2170,7 +2170,7 @@ class BaseArray:
         BaseArray(value=array([0., 0., 0.]), dtype=float64)
 
         >>> b = np.array([12.34, 98.76])
-        >>> eb = EventArray(b)
+        >>> eb = BinaryArray(b)
         >>> eb.round(decimals=-1)
         BaseArray(value=array([ 10., 100.]), dtype=float64)
         """
@@ -2208,9 +2208,9 @@ class BaseArray:
         Examples
         --------
         >>> import numpy as np
-        >>> from brainevent import EventArray
+        >>> from brainevent import BinaryArray
         >>> a = np.array([1, 2, 3, 4, 5])
-        >>> ea = EventArray(a) # Assumes ea.value is sorted
+        >>> ea = BinaryArray(a) # Assumes ea.value is sorted
         >>> ea.searchsorted(3)
         Array(2, dtype=int32)
         >>> ea.searchsorted([0, 6])
@@ -2219,12 +2219,12 @@ class BaseArray:
         Array(3, dtype=int32)
 
         >>> b = np.array([0, 1, 1, 2, 3, 5, 8])
-        >>> eb = EventArray(b)
-        >>> indices_to_insert = EventArray(np.array([-1, 1, 4, 8]))
+        >>> eb = BinaryArray(b)
+        >>> indices_to_insert = BinaryArray(np.array([-1, 1, 4, 8]))
         >>> eb.searchsorted(indices_to_insert)
         Array([0, 1, 4, 6], dtype=int32)
         """
-        # Ensure 'v' is unwrapped if it's an EventArray
+        # Ensure 'v' is unwrapped if it's an BinaryArray
         # Delegates to the underlying array's searchsorted method.
         v = extract_raw_value(v)
         return self.value.searchsorted(v=u.math.asarray(v), side=side, sorter=sorter)
@@ -2263,16 +2263,16 @@ class BaseArray:
         Examples
         --------
         >>> import numpy as np
-        >>> from brainevent import EventArray
+        >>> from brainevent import BinaryArray
         >>> a = np.array([[1, 4], [3, 1]])
-        >>> ea = EventArray(a)
+        >>> ea = BinaryArray(a)
         >>> ea.sort(axis=1) # Sort each row
         >>> print(ea)
         BaseArray(value=array([[1, 4],
                [1, 3]]), dtype=int32)
 
         >>> b = np.array([3, 1, 4, 1, 5, 9])
-        >>> eb = EventArray(b)
+        >>> eb = BinaryArray(b)
         >>> eb.sort() # Sort the flattened array
         >>> print(eb)
         BaseArray(value=array([1, 1, 3, 4, 5, 9]), dtype=int32)
@@ -2318,11 +2318,11 @@ class BaseArray:
         Examples
         --------
         >>> import numpy as np
-        >>> from brainevent import EventArray
+        >>> from brainevent import BinaryArray
         >>> x = np.array([[[0], [1], [2]]])
         >>> x.shape
         (1, 3, 1)
-        >>> ex = EventArray(x)
+        >>> ex = BinaryArray(x)
         >>> ex.squeeze().shape
         (3,)
         >>> ex.squeeze(axis=0).shape
@@ -2376,9 +2376,9 @@ class BaseArray:
         Examples
         --------
         >>> import numpy as np
-        >>> from brainevent import EventArray
+        >>> from brainevent import BinaryArray
         >>> a = np.array([[1, 2], [3, 4]])
-        >>> ea = EventArray(a)
+        >>> ea = BinaryArray(a)
         >>> ea.std()
         1.118033988749895
         >>> ea.std(axis=0)
@@ -2433,9 +2433,9 @@ class BaseArray:
         Examples
         --------
         >>> import numpy as np
-        >>> from brainevent import EventArray
+        >>> from brainevent import BinaryArray
         >>> a = np.array([[0, 1], [0, 5]])
-        >>> ea = EventArray(a)
+        >>> ea = BinaryArray(a)
         >>> ea.sum()
         6
         >>> ea.sum(axis=0)
@@ -2472,16 +2472,16 @@ class BaseArray:
         Examples
         --------
         >>> import numpy as np
-        >>> from brainevent import EventArray
+        >>> from brainevent import BinaryArray
         >>> x = np.array([[1, 2, 3]])
-        >>> ex = EventArray(x)
+        >>> ex = BinaryArray(x)
         >>> ex.swapaxes(0, 1)
         BaseArray(value=array([[1],
                [2],
                [3]]), dtype=int32)
 
         >>> y = np.array([[[0, 1], [2, 3]], [[4, 5], [6, 7]]])
-        >>> ey = EventArray(y)
+        >>> ey = BinaryArray(y)
         >>> ey.swapaxes(0, 2)
         BaseArray(value=array([[[0, 4],
                 [2, 6]],
@@ -2526,23 +2526,23 @@ class BaseArray:
         Examples
         --------
         >>> import numpy as np
-        >>> from brainevent import EventArray
+        >>> from brainevent import BinaryArray
         >>> x = np.arange(9.0)
-        >>> ex = EventArray(x)
+        >>> ex = BinaryArray(x)
         >>> ex.split(3)
         [BaseArray(value=array([0., 1., 2.]), dtype=float64), BaseArray(value=array([3., 4., 5.]), dtype=float64), BaseArray(value=array([6., 7., 8.]), dtype=float64)]
         >>> ex.split([3, 5, 6, 10])
         [BaseArray(value=array([0., 1., 2.]), dtype=float64), BaseArray(value=array([3., 4.]), dtype=float64), BaseArray(value=array([5.]), dtype=float64), BaseArray(value=array([6., 7., 8.]), dtype=float64), BaseArray(value=array([], dtype=float64), dtype=float64)]
 
         >>> y = np.arange(8.0).reshape(2, 4)
-        >>> ey = EventArray(y)
+        >>> ey = BinaryArray(y)
         >>> ey.split(2, axis=1)
         [array([[0., 1.],
                [4., 5.]]), dtype=float64), 
          array([[2., 3.],
                [6., 7.]]), dtype=float64)]
         """
-        # Wrap results in EventArray
+        # Wrap results in BinaryArray
         return [a for a in u.math.split(self.value, indices_or_sections, axis=axis)]
 
     def take(self, indices, axis=None, mode=None):
@@ -2572,15 +2572,15 @@ class BaseArray:
         Examples
         --------
         >>> import numpy as np
-        >>> from brainevent import EventArray
+        >>> from brainevent import BinaryArray
         >>> a = np.array([4, 3, 5, 7, 6, 8])
-        >>> ea = EventArray(a)
+        >>> ea = BinaryArray(a)
         >>> indices = [0, 1, 4]
         >>> ea.take(indices)
         array([4, 3, 6])
 
         >>> b = np.array([[1, 2], [3, 4]])
-        >>> eb = EventArray(b)
+        >>> eb = BinaryArray(b)
         >>> eb.take([0, 1], axis=1)
         BaseArray(value=array([[1, 2],
                [3, 4]]), dtype=int32)
@@ -2613,9 +2613,9 @@ class BaseArray:
         Examples
         --------
         >>> import numpy as np
-        >>> from brainevent import EventArray
+        >>> from brainevent import BinaryArray
         >>> x = np.array([[0, 1], [2, 3]], dtype=np.uint8)
-        >>> ex = EventArray(x)
+        >>> ex = BinaryArray(x)
         >>> ex.tobytes()
         b'\\x00\\x01\\x02\\x03'
         >>> ex.tobytes(order='F')
@@ -2640,19 +2640,19 @@ class BaseArray:
         Examples
         --------
         >>> import numpy as np
-        >>> from brainevent import EventArray
+        >>> from brainevent import BinaryArray
         >>> a = np.array([1, 2])
-        >>> ea = EventArray(a)
+        >>> ea = BinaryArray(a)
         >>> ea.tolist()
         [1, 2]
 
         >>> b = np.array([[1, 2], [3, 4]])
-        >>> eb = EventArray(b)
+        >>> eb = BinaryArray(b)
         >>> eb.tolist()
         [[1, 2], [3, 4]]
 
         >>> c = np.array(5)
-        >>> ec = EventArray(c)
+        >>> ec = BinaryArray(c)
         >>> ec.tolist()
         5
         """
@@ -2688,9 +2688,9 @@ class BaseArray:
         Examples
         --------
         >>> import numpy as np
-        >>> from brainevent import EventArray
+        >>> from brainevent import BinaryArray
         >>> a = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-        >>> ea = EventArray(a)
+        >>> ea = BinaryArray(a)
         >>> ea.trace()
         15
         >>> ea.trace(offset=1)
@@ -2731,9 +2731,9 @@ class BaseArray:
         Examples
         --------
         >>> import numpy as np
-        >>> from brainevent import EventArray
+        >>> from brainevent import BinaryArray
         >>> a = np.array([[1, 2], [3, 4]])
-        >>> ea = EventArray(a)
+        >>> ea = BinaryArray(a)
         >>> ea.transpose()
         BaseArray(value=array([[1, 3],
                [2, 4]]), dtype=int32)
@@ -2742,12 +2742,12 @@ class BaseArray:
                [2, 4]]), dtype=int32)
 
         >>> b = np.array([1, 2, 3, 4])
-        >>> eb = EventArray(b)
+        >>> eb = BinaryArray(b)
         >>> eb.transpose() # 1-D array is unaffected
         BaseArray(value=array([1, 2, 3, 4]), dtype=int32)
 
         >>> c = np.arange(16).reshape((2, 2, 4))
-        >>> ec = EventArray(c)
+        >>> ec = BinaryArray(c)
         >>> ec.transpose((1, 0, 2))
         BaseArray(value=array([[[ 0,  1,  2,  3],
                 [ 8,  9, 10, 11]],
@@ -2788,10 +2788,10 @@ class BaseArray:
         Examples
         --------
         >>> import numpy as np
-        >>> from brainevent import EventArray
+        >>> from brainevent import BinaryArray
         >>> import brainunit as u # Assuming brainunit is imported as u
         >>> a = np.array([0, 1, 2])
-        >>> ea = EventArray(a)
+        >>> ea = BinaryArray(a)
         >>> ea.tile(2)
         BaseArray(value=array([0, 1, 2, 0, 1, 2]), dtype=int32)
         >>> ea.tile((2, 2))
@@ -2803,7 +2803,7 @@ class BaseArray:
                [[0, 1, 2, 0, 1, 2]]]), dtype=int32)
 
         >>> b = np.array([[1, 2], [3, 4]])
-        >>> eb = EventArray(b)
+        >>> eb = BinaryArray(b)
         >>> eb.tile(2)
         BaseArray(value=array([[1, 2, 1, 2],
                [3, 4, 3, 4]]), dtype=int32)
@@ -2853,9 +2853,9 @@ class BaseArray:
         Examples
         --------
         >>> import numpy as np
-        >>> from brainevent import EventArray
+        >>> from brainevent import BinaryArray
         >>> a = np.array([[1, 2], [3, 4]])
-        >>> ea = EventArray(a)
+        >>> ea = BinaryArray(a)
         >>> ea.var()
         1.25
         >>> ea.var(axis=0)
@@ -2909,11 +2909,11 @@ class BaseArray:
         Examples
         --------
         >>> import numpy as np
-        >>> from brainevent import EventArray
+        >>> from brainevent import BinaryArray
 
         >>> # View with a new shape (using reshape behavior)
         >>> a = np.arange(6)
-        >>> ea = EventArray(a)
+        >>> ea = BinaryArray(a)
         >>> ea.view(2, 3)
         BaseArray(value=array([[0, 1, 2],
                [3, 4, 5]]), dtype=int32)
@@ -2922,7 +2922,7 @@ class BaseArray:
 
         >>> # View with a new dtype
         >>> x = np.array([(1, 2), (3, 4)], dtype=[('a', np.int8), ('b', np.int8)])
-        >>> ex = EventArray(x)
+        >>> ex = BinaryArray(x)
         >>> # View as float32 (assuming compatible byte size)
         >>> # Note: Behavior depends on underlying array implementation (NumPy/JAX)
         >>> # and byte compatibility. Example assumes standard NumPy behavior.
@@ -3027,7 +3027,7 @@ class BaseArray:
 
         Examples
         --------
-        >>> a = EventArray([1, 2, 3])  # Shape: (3,)
+        >>> a = BinaryArray([1, 2, 3])  # Shape: (3,)
         >>> a.unsqueeze(0).shape  # Shape: (1, 3)
         (1, 3)
         >>> a.unsqueeze(1).shape  # Shape: (3, 1)
@@ -3059,7 +3059,7 @@ class BaseArray:
 
         Examples
         --------
-        >>> a = EventArray([1, 2, 3])  # Shape: (3,)
+        >>> a = BinaryArray([1, 2, 3])  # Shape: (3,)
         >>> a.expand_dims(0).shape  # Shape: (1, 3)
         (1, 3)
         >>> a a.expand_dims([0, 2]).shape  # Shape: (1, 3, 1)
@@ -3087,14 +3087,14 @@ class BaseArray:
 
         Returns
         -------
-        EventArray
+        BinaryArray
             A new LowBitArray with the expanded shape. This is a view of the original
             data when possible.
 
         Examples
         --------
-        >>> a = EventArray([1, 2, 3])  # Shape: (3,)
-        >>> b = EventArray([[0, 0], [0, 0], [0, 0]])  # Shape: (3, 2)
+        >>> a = BinaryArray([1, 2, 3])  # Shape: (3,)
+        >>> b = BinaryArray([[0, 0], [0, 0], [0, 0]])  # Shape: (3, 2)
         >>> a.expand_as(b).shape  # Shape: (3, 2)
         (3, 2)
 
@@ -3132,7 +3132,7 @@ class BaseArray:
 
         Examples
         --------
-        >>> a = EventArray([1, 2, 3, 4])
+        >>> a = BinaryArray([1, 2, 3, 4])
         >>> a.pow(2)
         BaseArray([1, 4, 9, 16])
         >>> a.pow([2, 3, 2, 3])
@@ -3173,14 +3173,14 @@ class BaseArray:
 
         Returns
         -------
-        Union[EventArray, u.Quantity, jax.Array, None]
+        Union[BinaryArray, u.Quantity, jax.Array, None]
             The result of the operation. If out is provided, returns None.
 
         Examples
         --------
-        >>> a = EventArray([[1, 2], [3, 4]])
-        >>> x = EventArray([1, 2])
-        >>> y = EventArray([3, 4])
+        >>> a = BinaryArray([[1, 2], [3, 4]])
+        >>> x = BinaryArray([1, 2])
+        >>> y = BinaryArray([3, 4])
         >>> a.addr(x, y, alpha=1.0, beta=1.0)
         LowBitArray([[ 4, 9],
                     [ 9, 17]])
@@ -3214,13 +3214,13 @@ class BaseArray:
 
         Returns
         -------
-        EventArray
+        BinaryArray
             A new array containing the outer product.
 
         Examples
         --------
-        >>> a = EventArray([1, 2, 3])
-        >>> b = EventArray([4, 5])
+        >>> a = BinaryArray([1, 2, 3])
+        >>> b = BinaryArray([4, 5])
         >>> a.outer(b)
         LowBitArray([[ 4,  5],
                     [ 8, 10],
@@ -3245,18 +3245,18 @@ class BaseArray:
 
         Returns
         -------
-        Union[EventArray, u.Quantity, jax.Array, None]
+        Union[BinaryArray, u.Quantity, jax.Array, None]
             A new array with the absolute value of each element.
             If out is provided, returns None.
 
         Examples
         --------
-        >>> a = EventArray([-1, -2, 3])
+        >>> a = BinaryArray([-1, -2, 3])
         >>> a.abs()
         BaseArray([1, 2, 3])
 
         >>> # Using out parameter
-        >>> result = EventArray(np.zeros(3))
+        >>> result = BinaryArray(np.zeros(3))
         >>> a.abs(out=result)
         >>> result
         BaseArray([1, 2, 3])
@@ -3278,12 +3278,12 @@ class BaseArray:
 
         Returns
         -------
-        EventArray
+        BinaryArray
             Self, after taking the absolute value of each element.
 
         Examples
         --------
-        >>> a = EventArray([-1, -2, 3])
+        >>> a = BinaryArray([-1, -2, 3])
         >>> a.abs_()  # Modifies a in-place
         BaseArray([1, 2, 3])
 
@@ -3309,7 +3309,7 @@ class BaseArray:
 
         Examples
         --------
-        >>> a = EventArray([-1, -2, 3])
+        >>> a = BinaryArray([-1, -2, 3])
         >>> a.absolute()
         LowBitArray([1, 2, 3])
 
@@ -3333,7 +3333,7 @@ class BaseArray:
 
         Examples
         --------
-        >>> a = EventArray([-1, -2, 3])
+        >>> a = BinaryArray([-1, -2, 3])
         >>> a.absolute_()  # Modifies a in-place
         LowBitArray([1, 2, 3])
 
@@ -3360,11 +3360,11 @@ class BaseArray:
 
         Examples
         --------
-        >>> a = EventArray([1, 2, 3])
+        >>> a = BinaryArray([1, 2, 3])
         >>> a.mul(10)
         LowBitArray([10, 20, 30])
 
-        >>> a.mul(EventArray([2, 3, 4]))
+        >>> a.mul(BinaryArray([2, 3, 4]))
         LowBitArray([2, 6, 12])
 
         See Also
@@ -3393,7 +3393,7 @@ class BaseArray:
 
         Examples
         --------
-        >>> a = EventArray([1, 2, 3])
+        >>> a = BinaryArray([1, 2, 3])
         >>> a.multiply(10)
         LowBitArray([10, 20, 30])
 
@@ -3595,7 +3595,7 @@ class BaseArray:
         Examples
         --------
         >>> import jax.numpy as jnp
-        >>> a = EventArray(jnp.arange(10))
+        >>> a = BinaryArray(jnp.arange(10))
         >>> a.clamp(3, 7)  # all values < 3 become 3, all values > 7 become 7
         array([3, 3, 3, 3, 4, 5, 6, 7, 7, 7])
         >>> a.clamp(None, 7)  # only clip from above
@@ -3624,7 +3624,7 @@ class BaseArray:
         Examples
         --------
         >>> import jax.numpy as jnp
-        >>> a = EventArray(jnp.array([1, 2, 3]))
+        >>> a = BinaryArray(jnp.array([1, 2, 3]))
         >>> b = a.clone()
         >>> b.value[0] = 5
         >>> a  # original array is unchanged
@@ -3681,12 +3681,12 @@ class BaseArray:
         Examples
         --------
         >>> import jax.numpy as jnp
-        >>> x = EventArray(jnp.array([[0, 2], [1, 1], [2, 0]]).T)
+        >>> x = BinaryArray(jnp.array([[0, 2], [1, 1], [2, 0]]).T)
         >>> x.cov_with()  # covariance matrix of x
         array([[ 1., -1.],
                [-1.,  1.]])
 
-        >>> y = EventArray(jnp.array([[3, 2, 1], [4, 2, 0]]))
+        >>> y = BinaryArray(jnp.array([[3, 2, 1], [4, 2, 0]]))
         >>> x.cov_with(y)  # cross-covariance between x and y
         array([[ 1.5, -1.5],
                [-1.5,  1.5]])
@@ -3733,16 +3733,16 @@ class BaseArray:
         Examples
         --------
         >>> import jax.numpy as jnp
-        >>> a = EventArray(jnp.ones((2, 3)))
+        >>> a = BinaryArray(jnp.ones((2, 3)))
         >>> a.expand(4, 2, 3).shape  # adds a new dimension of size 4
         (4, 2, 3)
 
-        >>> b = EventArray(jnp.ones((1, 3)))
+        >>> b = BinaryArray(jnp.ones((1, 3)))
         >>> b.expand(2, 3).shape  # expands dimension 0 from 1 to 2
         (2, 3)
 
         >>> # Using -1 to keep original dimensions
-        >>> c = EventArray(jnp.ones((2, 3)))
+        >>> c = BinaryArray(jnp.ones((2, 3)))
         >>> c.expand(5, -1, -1).shape
         (5, 2, 3)
         """
@@ -3795,7 +3795,7 @@ class BaseArray:
         --------
         >>> import jax.numpy as jnp
         >>> from jax.tree_util import tree_flatten
-        >>> a = EventArray(jnp.array([1, 2, 3]))
+        >>> a = BinaryArray(jnp.array([1, 2, 3]))
         >>> dynamic_values, static_metadata = tree_flatten(a)
         >>> dynamic_values
         (Array([1, 2, 3], dtype=int32),)
@@ -3821,7 +3821,7 @@ class BaseArray:
 
         Returns
         -------
-        EventArray
+        BinaryArray
             A reconstructed BaseArray instance
 
         See Also
@@ -3832,9 +3832,9 @@ class BaseArray:
         --------
         >>> import jax.numpy as jnp
         >>> from jax.tree_util import tree_flatten, tree_unflatten
-        >>> a = EventArray(jnp.array([1, 2, 3]))
+        >>> a = BinaryArray(jnp.array([1, 2, 3]))
         >>> dynamic_values, static_metadata = tree_flatten(a)
-        >>> b = EventArray.tree_unflatten(static_metadata, dynamic_values)
+        >>> b = BinaryArray.tree_unflatten(static_metadata, dynamic_values)
         >>> b.value
         Array([1, 2, 3], dtype=int32)
         """

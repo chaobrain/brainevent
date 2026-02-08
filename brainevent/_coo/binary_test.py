@@ -33,7 +33,7 @@ class TestCOO:
             coo = u.sparse.COO.fromdense(mask)
             coo = brainevent.COO((dat, coo.row, coo.col), shape=mask.shape)
 
-            v = brainevent.EventArray(brainstate.random.rand(20) < 0.5)
+            v = brainevent.BinaryArray(brainstate.random.rand(20) < 0.5)
             assert (
                 u.math.allclose(
                     mask.astype(float) @ v.data.astype(float),
@@ -41,7 +41,7 @@ class TestCOO:
                 )
             )
 
-            v = brainevent.EventArray(brainstate.random.rand(10) < 0.5)
+            v = brainevent.BinaryArray(brainstate.random.rand(10) < 0.5)
             assert (
                 u.math.allclose(
                     v.data.astype(float) @ mask.astype(float),
@@ -55,7 +55,7 @@ class TestCOO:
         coo = u.sparse.COO.fromdense(mask)
         coo = brainevent.COO((coo.data, coo.row, coo.col), shape=mask.shape)
 
-        v = brainevent.EventArray((brainstate.random.rand(20) < 0.5).astype(float))
+        v = brainevent.BinaryArray((brainstate.random.rand(20) < 0.5).astype(float))
         assert (
             u.math.allclose(
                 mask.astype(float) @ v.data.astype(float),
@@ -63,7 +63,7 @@ class TestCOO:
             )
         )
 
-        v = brainevent.EventArray((brainstate.random.rand(10) < 0.5).astype(float))
+        v = brainevent.BinaryArray((brainstate.random.rand(10) < 0.5).astype(float))
         assert (
             u.math.allclose(
                 v.data.astype(float) @ mask.astype(float),
@@ -77,7 +77,7 @@ class TestCOO:
         coo = u.sparse.COO.fromdense(mask)
         coo = brainevent.COO((coo.data, coo.row, coo.col), shape=mask.shape)
 
-        v = brainevent.EventArray(brainstate.random.rand(20) < 0.5)
+        v = brainevent.BinaryArray(brainstate.random.rand(20) < 0.5)
         assert (
             u.math.allclose(
                 mask.astype(float) @ v.data.astype(float),
@@ -85,7 +85,7 @@ class TestCOO:
             )
         )
 
-        v = brainevent.EventArray(brainstate.random.rand(10) < 0.5)
+        v = brainevent.BinaryArray(brainstate.random.rand(10) < 0.5)
         assert (
             u.math.allclose(
                 v.data.astype(float) @ mask.astype(float),
@@ -104,7 +104,7 @@ class TestVectorCOO:
         print(f'homo_w = {homo_w}')
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         coo = brainevent.COO([data, row, col], shape=(m, n))
-        y = brainevent.EventArray(x) @ coo
+        y = brainevent.BinaryArray(x) @ coo
         y2 = vector_coo(x, coo.data, row, col, (m, n))
         assert (jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
 
@@ -116,7 +116,7 @@ class TestVectorCOO:
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         coo = brainevent.COO([data, row, col], shape=(m, n))
-        y = jax.vmap(lambda x: brainevent.EventArray(x) @ coo)(xs)
+        y = jax.vmap(lambda x: brainevent.BinaryArray(x) @ coo)(xs)
         y2 = jax.vmap(lambda x: vector_coo(x, coo.data, row, col, (m, n)))(xs)
         assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
@@ -128,7 +128,7 @@ class TestVectorCOO:
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         coo = brainevent.COO([data, row, col], shape=(m, n))
-        y = coo @ brainevent.EventArray(v)
+        y = coo @ brainevent.BinaryArray(v)
         y2 = coo_vector(v, coo.data, row, col, (m, n))
         assert (jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
 
@@ -145,9 +145,9 @@ class TestVectorCOO:
 
         def f_brainevent(x, w):
             if transpose:
-                r = brainevent.EventArray(x) @ coo.with_data(w)
+                r = brainevent.BinaryArray(x) @ coo.with_data(w)
             else:
-                r = coo.with_data(w) @ brainevent.EventArray(x)
+                r = coo.with_data(w) @ brainevent.BinaryArray(x)
             return r.sum()
 
         r = jax.grad(f_brainevent, argnums=(0, 1))(x, w)
@@ -187,9 +187,9 @@ class TestVectorCOO:
 
         def f_brainevent(x, w):
             if transpose:
-                r = brainevent.EventArray(x) @ coo.with_data(w)
+                r = brainevent.BinaryArray(x) @ coo.with_data(w)
             else:
-                r = coo.with_data(w) @ brainevent.EventArray(x)
+                r = coo.with_data(w) @ brainevent.BinaryArray(x)
             return r
 
         o1, r1 = jax.jvp(f_brainevent, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
@@ -225,7 +225,7 @@ class TestMatrixCOO:
         for homo_w in [True, False]:
             data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
             coo = brainevent.COO([data, row, col], shape=(m, n))
-            y = brainevent.EventArray(x) @ coo
+            y = brainevent.BinaryArray(x) @ coo
             y2 = matrix_coo(x.astype(float), coo.data, row, col, (m, n))
             assert (jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
 
@@ -237,6 +237,6 @@ class TestMatrixCOO:
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         coo = brainevent.COO([data, row, col], shape=(m, n))
-        y = coo @ brainevent.EventArray(matrix)
+        y = coo @ brainevent.BinaryArray(matrix)
         y2 = coo_matrix(matrix.astype(float), coo.data, row, col, (m, n))
         assert (jnp.allclose(y, y2))

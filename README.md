@@ -26,7 +26,7 @@ efficient and biologically plausible way.
 
 Particularly, it provides the following class to represent binary events in the brain:
 
-- ``EventArray``: representing array with a vector/matrix of events.
+- ``BinaryArray``: representing array with a vector/matrix of events.
 
 Furthermore, it implements the following commonly used data structures for event-driven computation
 of the above class:
@@ -48,13 +48,13 @@ in [BrainUnit](https://github.com/chaobrain/brainunit).
 
 ## Usage
 
-If you want to take advantage of event-driven computations, you must warp your data with ``brainevent.EventArray``:
+If you want to take advantage of event-driven computations, you must warp your data with ``brainevent.BinaryArray``:
 
 ```python
 import brainevent
 
-# wrap your array with EventArray
-event_array = brainevent.EventArray(your_array)
+# wrap your array with BinaryArray
+event_array = brainevent.BinaryArray(your_array)
 ```
 
 Then, the matrix multiplication with the following data structures, $\mathrm{event\ array} @ \mathrm{data}$,

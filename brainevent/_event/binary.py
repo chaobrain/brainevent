@@ -32,7 +32,7 @@ from .base import (
 
 __all__ = [
     'BinaryArray',
-    'EventArray',
+    'BinaryArray',
 ]
 
 
@@ -50,19 +50,19 @@ class BinaryArray(BaseArray):
         Perform matrix multiplication on the array with another object.
 
         This special method implements the matrix multiplication operator (@)
-        for EventArray instances. It handles matrix multiplication with different
+        for BinaryArray instances. It handles matrix multiplication with different
         array types and dimensions, performing appropriate validation checks.
 
         Parameters
         ----------
         oc : array_like
             The right operand of the matrix multiplication. This object will be
-            multiplied with the current EventArray instance.
+            multiplied with the current BinaryArray instance.
 
         Returns
         -------
-        ndarray or EventArray
-            The result of the matrix multiplication between this EventArray instance
+        ndarray or BinaryArray
+            The result of the matrix multiplication between this BinaryArray instance
             and the other object.
 
         Raises
@@ -109,20 +109,20 @@ class BinaryArray(BaseArray):
         Perform matrix multiplication on another object with the array.
 
         This special method implements the reverse matrix multiplication operator (@)
-        when the left operand is not an EventArray. It handles the case where
-        another object is matrix-multiplied with this EventArray instance.
+        when the left operand is not an BinaryArray. It handles the case where
+        another object is matrix-multiplied with this BinaryArray instance.
 
         Parameters
         ----------
         oc : array_like
             The left operand of the matrix multiplication. This object will be
-            multiplied with the current EventArray instance.
+            multiplied with the current BinaryArray instance.
 
         Returns
         -------
-        ndarray or EventArray
+        ndarray or BinaryArray
             The result of the matrix multiplication between the other object and this
-            EventArray instance.
+            BinaryArray instance.
 
         Raises
         ------
@@ -177,4 +177,4 @@ class BinaryArray(BaseArray):
         return self
 
 
-EventArray = BinaryArray
+BinaryArray = BinaryArray

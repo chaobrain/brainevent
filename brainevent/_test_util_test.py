@@ -86,7 +86,7 @@ class TestVectorFcn:
 
     def test_with_event_array_input(self):
         n_pre, n_post, n_conn = 10, 20, 5
-        x = brainevent.EventArray(jnp.ones(n_pre))
+        x = brainevent.BinaryArray(jnp.ones(n_pre))
         weights = jnp.array(1.0)
         indices = generate_fixed_conn_num_indices(n_pre, n_post, n_conn, replace=True)
         shape = (n_pre, n_post)
@@ -131,7 +131,7 @@ class TestMatrixFcn:
     def test_with_event_array_input(self):
         n_pre, n_post, n_conn = 10, 20, 5
         batch_size = 3
-        xs = brainevent.EventArray(jnp.ones((batch_size, n_pre)))
+        xs = brainevent.BinaryArray(jnp.ones((batch_size, n_pre)))
         weights = jnp.array(1.0)
         indices = generate_fixed_conn_num_indices(n_pre, n_post, n_conn, replace=True)
         shape = (n_pre, n_post)
@@ -163,7 +163,7 @@ class TestFcnVector:
 
     def test_with_event_array_input(self):
         n_pre, n_post, n_conn = 10, 20, 5
-        x = brainevent.EventArray(jnp.ones(n_post))
+        x = brainevent.BinaryArray(jnp.ones(n_post))
         weights = jnp.array(1.0)
         indices = generate_fixed_conn_num_indices(n_pre, n_post, n_conn, replace=True)
         shape = (n_pre, n_post)
@@ -198,7 +198,7 @@ class TestFcnMatrix:
     def test_with_event_array_input(self):
         n_pre, n_post, n_conn = 10, 20, 5
         batch_size = 3
-        xs = brainevent.EventArray(jnp.ones((n_post, batch_size)))
+        xs = brainevent.BinaryArray(jnp.ones((n_post, batch_size)))
         weights = jnp.array(1.0)
         indices = generate_fixed_conn_num_indices(n_pre, n_post, n_conn, replace=True)
         shape = (n_pre, n_post)
@@ -224,12 +224,12 @@ class TestAllclose:
         assert not allclose(x, y)
 
     def test_with_event_arrays(self):
-        x = brainevent.EventArray(jnp.array([1.0, 2.0, 3.0]))
-        y = brainevent.EventArray(jnp.array([1.0, 2.0, 3.0]))
+        x = brainevent.BinaryArray(jnp.array([1.0, 2.0, 3.0]))
+        y = brainevent.BinaryArray(jnp.array([1.0, 2.0, 3.0]))
         assert allclose(x, y)
 
     def test_mixed_event_and_jax_array(self):
-        x = brainevent.EventArray(jnp.array([1.0, 2.0, 3.0]))
+        x = brainevent.BinaryArray(jnp.array([1.0, 2.0, 3.0]))
         y = jnp.array([1.0, 2.0, 3.0])
         assert allclose(x, y)
 
@@ -248,7 +248,7 @@ class TestGenEvents:
 
     def test_returns_event_array(self):
         events = gen_events((10,))
-        assert isinstance(events, brainevent.EventArray)
+        assert isinstance(events, brainevent.BinaryArray)
 
     def test_asbool_true(self):
         events = gen_events((100,), asbool=True)

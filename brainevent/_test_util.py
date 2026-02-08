@@ -125,8 +125,8 @@ def fcn_matrix(xs, weights, indices, shape):
 
 
 def allclose(x, y, rtol=1e-6, atol=1e-6):
-    x = x.data if isinstance(x, brainevent.EventArray) else x
-    y = y.data if isinstance(y, brainevent.EventArray) else y
+    x = x.data if isinstance(x, brainevent.BinaryArray) else x
+    y = y.data if isinstance(y, brainevent.BinaryArray) else y
     return jnp.allclose(x, y, rtol=rtol, atol=atol)
 
 
@@ -134,7 +134,7 @@ def gen_events(shape, prob=0.5, asbool=True):
     events = brainstate.random.random(shape) < prob
     if not asbool:
         events = jnp.asarray(events, dtype=float)
-    return brainevent.EventArray(events)
+    return brainevent.BinaryArray(events)
 
 
 def ones_like(x):

@@ -1756,8 +1756,8 @@ class TestBinaryMVFloatThresholding:
 
         jitc = brainevent.JITCScalarR((1.5, 0.1, 123), shape=shape, corder=corder)
 
-        out_float = jitc @ brainevent.EventArray(float_events)
-        out_binary = jitc @ brainevent.EventArray(binary_events)
+        out_float = jitc @ brainevent.BinaryArray(float_events)
+        out_binary = jitc @ brainevent.BinaryArray(binary_events)
         assert allclose(out_float, out_binary, rtol=1e-5, atol=1e-5)
 
     @pytest.mark.parametrize('shape', [(20, 30), (50, 40)])
@@ -1771,8 +1771,8 @@ class TestBinaryMVFloatThresholding:
 
         jitc = brainevent.JITCScalarR((1.5, 0.1, 123), shape=shape, corder=corder)
 
-        out_float = brainevent.EventArray(float_events) @ jitc
-        out_binary = brainevent.EventArray(binary_events) @ jitc
+        out_float = brainevent.BinaryArray(float_events) @ jitc
+        out_binary = brainevent.BinaryArray(binary_events) @ jitc
         assert allclose(out_float, out_binary, rtol=1e-5, atol=1e-5)
 
 
@@ -1791,8 +1791,8 @@ class TestBinaryMMFloatThresholding:
 
         jitc = brainevent.JITCScalarR((1.5, 0.1, 123), shape=shape, corder=corder)
 
-        out_float = jitc @ brainevent.EventArray(float_events)
-        out_binary = jitc @ brainevent.EventArray(binary_events)
+        out_float = jitc @ brainevent.BinaryArray(float_events)
+        out_binary = jitc @ brainevent.BinaryArray(binary_events)
         assert allclose(out_float, out_binary, rtol=1e-5, atol=1e-5)
 
     @pytest.mark.parametrize('shape', [(20, 30), (50, 40)])
@@ -1807,8 +1807,8 @@ class TestBinaryMMFloatThresholding:
 
         jitc = brainevent.JITCScalarR((1.5, 0.1, 123), shape=shape, corder=corder)
 
-        out_float = brainevent.EventArray(float_events) @ jitc
-        out_binary = brainevent.EventArray(binary_events) @ jitc
+        out_float = brainevent.BinaryArray(float_events) @ jitc
+        out_binary = brainevent.BinaryArray(binary_events) @ jitc
         assert allclose(out_float, out_binary, rtol=1e-5, atol=1e-5)
 
 

@@ -23,7 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._compatible_import import JAXSparse
-from brainevent._event import EventArray, SparseFloat
+from brainevent._event import BinaryArray, SparseFloat
 from brainevent._misc import _csr_to_coo, _csr_todense
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .binary import binary_csrmv, binary_csrmm
@@ -503,7 +503,7 @@ class CSR(BaseCLS):
         if isinstance(other, JAXSparse):
             raise NotImplementedError("matmul between two sparse objects.")
 
-        if isinstance(other, EventArray):
+        if isinstance(other, BinaryArray):
             other = other.data
             if other.ndim == 1:
                 return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
@@ -550,7 +550,7 @@ class CSR(BaseCLS):
         if isinstance(other, JAXSparse):
             raise NotImplementedError("matmul between two sparse objects.")
 
-        if isinstance(other, EventArray):
+        if isinstance(other, BinaryArray):
             other = other.data
             if other.ndim == 1:
                 return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True)
@@ -946,7 +946,7 @@ class CSC(BaseCLS):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
 
-        if isinstance(other, EventArray):
+        if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
                 return binary_csrmv(
@@ -1010,7 +1010,7 @@ class CSC(BaseCLS):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
 
-        if isinstance(other, EventArray):
+        if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
                 return binary_csrmv(data, self.indices, self.indptr, other,
