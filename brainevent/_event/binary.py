@@ -18,22 +18,12 @@
 import jax
 from jax.tree_util import register_pytree_node_class
 
-from brainevent._dense import (
-    dbmm,
-    bdmm,
-    dbmv,
-    bdvm,
-)
+from brainevent._dense import dbmm, bdmm, dbmv, bdvm
 from brainevent._error import MathError
-from .base import (
-    BaseArray,
-    extract_raw_value,
-    is_known_type,
-)
+from .base import BaseArray, extract_raw_value, is_known_type
 from .indexed_binary_extraction import binary_array_index
 
 __all__ = [
-    'BinaryArray',
     'BinaryArray',
 ]
 
@@ -216,6 +206,3 @@ class BinaryArray(BaseArray):
             obj._spike_count = spike_count
             return obj
         return cls(value)
-
-
-BinaryArray = BinaryArray
