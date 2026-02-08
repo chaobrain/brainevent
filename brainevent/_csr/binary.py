@@ -307,7 +307,7 @@ def _csrmv_warp_kernel(
             )
             dim = vector_info.shape[0] if transpose else indptr_info.shape[0] - 1
             fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
-            return fn(weights, indices, indptr, v, jnp.zeros(out_info.dtype, out_info.shape))
+            return fn(weights, indices, indptr, v, jnp.zeros(out_info.shape, out_info.dtype))
 
 
     else:
@@ -579,17 +579,13 @@ def _csrmv_pallas_gpu_kernel(
                 input_output_aliases={4: 0},
                 out_shape=kwargs['outs']
             )
-            posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
-            return fn(data, indices, indptr, vector, posts)
+            out = kwargs['outs'][0]
+            return fn(data, indices, indptr, vector, jnp.zeros(out.shape, dtype=out.dtype))
 
         return kernel
     else:
         return _csrmv_pallas_kernel(
-            weight_info=weight_info,
-            indices_info=indices_info,
-            shape=shape,
-            transpose=transpose,
-            **kwargs
+            weight_info=weight_info, indices_info=indices_info, shape=shape, transpose=transpose, **kwargs
         )
 
 
@@ -671,6 +667,33 @@ def _csrmv_batching(args, axes, **kwargs):
         return general_batching_rule(binary_csrmv_p, args, axes, **kwargs)
 
 
+def _binary_csrmv_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for homo in (True, False):
+            for bool_event in (True, False):
+                n_conn = max(1, int(n_post * prob))
+                indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
+                indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
+                weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(n_pre * n_conn, dtype=dtype)
+                v_size = n_post if not transpose else n_pre
+                if bool_event:
+                    vector = jnp.asarray(_np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
+                else:
+                    vector = jnp.asarray(_np.random.rand(v_size), dtype=dtype)
+                name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
+                configs.append(
+                    BenchmarkConfig(
+                        name,
+                        (weights, indices, jnp.asarray(indptr), vector),
+                        {'shape': (n_pre, n_post), 'transpose': transpose}
+                    )
+                )
+    return configs
+
+
 def binary_csrmv_p_call(
     weights,
     indices,
@@ -679,6 +702,7 @@ def binary_csrmv_p_call(
     *,
     shape: MatrixShape,
     transpose: bool,
+    backend: str = None,
 ):
     """
     Perform a call to the event CSR matrix-vector multiplication custom operation.
@@ -693,6 +717,7 @@ def binary_csrmv_p_call(
         vector (jax.Array): The dense vector to be multiplied with the sparse matrix.
         shape (Sequence[int]): A sequence of length 2, representing the shape of the sparse matrix.
         transpose (bool): Whether to transpose the sparse matrix before multiplication.
+        backend (str): Optional backend specification for the custom operation.
 
     Returns:
         jax.Array: The result of the matrix-vector multiplication.
@@ -738,6 +763,7 @@ def binary_csrmv_p_call(
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         # Provide shape and data type information for v.
         vector_info=jax.ShapeDtypeStruct(vector.shape, vector.dtype),
+        backend=backend,
     )
 
 
@@ -751,31 +777,6 @@ binary_csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
 binary_csrmv_p.def_batching_rule(_csrmv_batching)
 binary_csrmv_p.def_call(binary_csrmv_p_call)
 binary_csrmv_p.def_tags('csr', 'binary')
-
-
-def _binary_csrmv_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for transpose in (False, True):
-        for homo in (True, False):
-            for bool_event in (True, False):
-                n_conn = max(1, int(n_post * prob))
-                indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
-                indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
-                weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(n_pre * n_conn, dtype=dtype)
-                v_size = n_post if not transpose else n_pre
-                if bool_event:
-                    vector = jnp.asarray(_np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
-                else:
-                    vector = jnp.asarray(_np.random.rand(v_size), dtype=dtype)
-                name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
-                configs.append(BenchmarkConfig(name, (weights, indices, jnp.asarray(indptr), vector), {
-                    'shape': (n_pre, n_post), 'transpose': transpose
-                }))
-    return configs
-
-
 binary_csrmv_p.def_benchmark_data(_binary_csrmv_benchmark_data)
 
 
@@ -1327,11 +1328,7 @@ def _csrmm_pallas_gpu_kernel(
         return kernel
     else:
         return _csrmm_pallas_kernel(
-            weight_info=weight_info,
-            indices_info=indices_info,
-            vector_info=vector_info,
-            shape=shape,
-            **kwargs
+            weight_info=weight_info, indices_info=indices_info, vector_info=vector_info, shape=shape, **kwargs
         )
 
 
@@ -1421,6 +1418,35 @@ def _csrmm_batching(args, axes, **kwargs):
         return general_batching_rule(binary_csrmm_p, args, axes, **kwargs)
 
 
+def _binary_csrmm_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for homo in (True, False):
+            for bool_event in (True, False):
+                n_conn = max(1, int(n_post * prob))
+                indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
+                indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
+                weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(n_pre * n_conn, dtype=dtype)
+                b_rows = n_post if not transpose else n_pre
+                if bool_event:
+                    B = jnp.asarray(_np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
+                else:
+                    B = jnp.asarray(_np.random.rand(b_rows, 10), dtype=dtype)
+                name = (f"{'T' if transpose else 'NT'},"
+                        f"{'homo' if homo else 'hetero'},"
+                        f"{'bool' if bool_event else 'float'}")
+                configs.append(
+                    BenchmarkConfig(
+                        name,
+                        (weights, indices, jnp.asarray(indptr), B),
+                        {'shape': (n_pre, n_post), 'transpose': transpose}
+                    )
+                )
+    return configs
+
+
 def binary_csrmm_p_call(
     weights,
     indices,
@@ -1429,6 +1455,7 @@ def binary_csrmm_p_call(
     *,
     shape: MatrixShape,
     transpose: bool,
+    backend: str = None,
 ):
     """
     Perform a call to the event CSR matrix-matrix multiplication custom operation.
@@ -1484,6 +1511,7 @@ def binary_csrmm_p_call(
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         # Provide shape and data type information for B.
         vector_info=jax.ShapeDtypeStruct(B.shape, B.dtype),
+        backend=backend,
     )
 
 
@@ -1497,29 +1525,4 @@ binary_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 binary_csrmm_p.def_batching_rule(_csrmm_batching)
 binary_csrmm_p.def_call(binary_csrmm_p_call)
 binary_csrmm_p.def_tags('csr', 'binary')
-
-
-def _binary_csrmm_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for transpose in (False, True):
-        for homo in (True, False):
-            for bool_event in (True, False):
-                n_conn = max(1, int(n_post * prob))
-                indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
-                indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
-                weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(n_pre * n_conn, dtype=dtype)
-                b_rows = n_post if not transpose else n_pre
-                if bool_event:
-                    B = jnp.asarray(_np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
-                else:
-                    B = jnp.asarray(_np.random.rand(b_rows, 10), dtype=dtype)
-                name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
-                configs.append(BenchmarkConfig(name, (weights, indices, jnp.asarray(indptr), B), {
-                    'shape': (n_pre, n_post), 'transpose': transpose
-                }))
-    return configs
-
-
 binary_csrmm_p.def_benchmark_data(_binary_csrmm_benchmark_data)
