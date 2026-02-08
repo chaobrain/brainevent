@@ -19,13 +19,13 @@ import jax
 import numpy as np
 import pytest
 
-from brainevent import BaseArray, BinaryArray
+from brainevent import EventRepresentation, BinaryArray
 
 
-class TestBaseArrayMinimalAPI:
+class TestEventRepresentationMinimalAPI:
     def test_base_array_is_abstract(self):
         with pytest.raises(TypeError):
-            BaseArray(np.array([1, 2, 3]))
+            EventRepresentation(np.array([1, 2, 3]))
 
     def test_construction_and_core_properties(self):
         arr = BinaryArray(np.array([1, 2, 3]))

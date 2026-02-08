@@ -13,7 +13,7 @@ Base
    :toctree: generated/
    :template: classtemplate.rst
 
-   BaseArray
+   EventRepresentation
 
 
 Binary Events

@@ -23,19 +23,19 @@ import numpy as np
 from jax.tree_util import register_pytree_node_class
 
 __all__ = [
-    'BaseArray',
+    'EventRepresentation',
 ]
 
 ArrayValue = Union[jax.Array, u.Quantity]
-ArrayLike = Union['BaseArray', jax.Array, np.ndarray, u.Quantity, list, tuple, int, float, bool]
+ArrayLike = Union['EventRepresentation', jax.Array, np.ndarray, u.Quantity, list, tuple, int, float, bool]
 
 
 def extract_raw_value(obj):
-    return obj.value if isinstance(obj, BaseArray) else obj
+    return obj.value if isinstance(obj, EventRepresentation) else obj
 
 
 def is_known_type(x):
-    return isinstance(x, (u.Quantity, jax.Array, np.ndarray, BaseArray))
+    return isinstance(x, (u.Quantity, jax.Array, np.ndarray, EventRepresentation))
 
 
 def _normalize_index(index):
@@ -45,7 +45,7 @@ def _normalize_index(index):
 
 
 @register_pytree_node_class
-class BaseArray(ABC):
+class EventRepresentation(ABC):
     """Minimal array wrapper protocol for event array subclasses."""
 
     __slots__ = ('_value',)

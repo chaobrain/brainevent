@@ -29,8 +29,8 @@ from ._typing import MatrixShape, Data, Index
 
 
 def is_known_type(x):
-    from ._event.base import BaseArray
-    return isinstance(x, (u.Quantity, jax.Array, np.ndarray, BaseArray))
+    from ._event.base import EventRepresentation
+    return isinstance(x, (u.Quantity, jax.Array, np.ndarray, EventRepresentation))
 
 
 class COOInfo(NamedTuple):

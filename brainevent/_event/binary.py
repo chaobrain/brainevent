@@ -20,7 +20,7 @@ from jax.tree_util import register_pytree_node_class
 
 from brainevent._dense import dbmm, bdmm, dbmv, bdvm
 from brainevent._error import MathError
-from .base import BaseArray, extract_raw_value, is_known_type
+from .base import EventRepresentation, extract_raw_value, is_known_type
 from .indexed_binary_extraction import binary_array_index
 
 __all__ = [
@@ -29,7 +29,7 @@ __all__ = [
 
 
 @register_pytree_node_class
-class BinaryArray(BaseArray):
+class BinaryArray(EventRepresentation):
     """
     A binary array is a special case of an event array where the events are binary (0 or 1).
 
@@ -43,7 +43,6 @@ class BinaryArray(BaseArray):
         If True, pre-compute spike indices and spike count for efficient
         indexed operations, and make the array immutable. Default is False.
     """
-    __slots__ = ('_value', '_indexed', '_spike_indices', '_spike_count')
     __module__ = 'brainevent'
 
     def __init__(
@@ -196,19 +195,18 @@ class BinaryArray(BaseArray):
         return self.with_value(oc.__rmatmul__(self))
 
     def tree_flatten(self):
-        if self._indexed:
-            return (self._value,), (True, self._spike_indices, self._spike_count)
-        return (self._value,), (False,)
+        aux = {
+            '_indexed': self._indexed,
+            '_spike_indices': self._spike_indices,
+            '_spike_count': self._spike_count,
+        }
+        return (self._value,), aux
 
     @classmethod
     def tree_unflatten(cls, aux_data, flat_contents):
         value, = flat_contents
-        if aux_data[0]:  # indexed=True
-            _, spike_indices, spike_count = aux_data
-            obj = object.__new__(cls)
-            obj._value = value
-            obj._indexed = True
-            obj._spike_indices = spike_indices
-            obj._spike_count = spike_count
-            return obj
-        return cls(value)
+        obj = object.__new__(cls)
+        obj._value = value
+        for k, v in aux_data.items():
+            setattr(obj, k, v)
+        return obj

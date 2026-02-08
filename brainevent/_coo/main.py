@@ -661,7 +661,7 @@ class COO(u.sparse.SparseMatrix):
 
         if isinstance(other, BinaryArray):
             if not other.indexed:
-                # Extract the data from the BaseArray
+                # Extract the data from the EventRepresentation
                 other = other.value
                 if other.ndim == 1:
                     # Perform matrix-vector multiplication with event data
@@ -726,7 +726,7 @@ class COO(u.sparse.SparseMatrix):
 
         if isinstance(other, BinaryArray):
             if not other.indexed:
-                # Extract the data from the BaseArray
+                # Extract the data from the EventRepresentation
                 other = other.value
                 if other.ndim == 1:
                     # Perform matrix-vector multiplication with event data

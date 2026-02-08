@@ -19,7 +19,7 @@ from jax.tree_util import register_pytree_node_class
 
 from brainevent._dense import dsfmm, sfdmm, dsfmv, sfdvm
 from brainevent._error import MathError
-from .base import BaseArray
+from .base import EventRepresentation
 from .base import extract_raw_value, is_known_type
 
 __all__ = [
@@ -28,11 +28,11 @@ __all__ = [
 
 
 @register_pytree_node_class
-class SparseFloat(BaseArray):
+class SparseFloat(EventRepresentation):
     """
     A specialized array class for sparse floating-point values (0 or floating points).
 
-    ``SparseFloat`` extends ``BaseArray`` to provide functionality for arrays with sparse
+    ``SparseFloat`` extends ``EventRepresentation`` to provide functionality for arrays with sparse
     floating-point values, where zeros are treated as sparse (skipped during computation).
 
     This class supports matrix multiplication operations with other arrays:

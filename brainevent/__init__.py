@@ -55,7 +55,7 @@ from ._error import (
     KernelExecutionError,
 )
 from ._event import (
-    BaseArray, BinaryArray,
+    EventRepresentation, BinaryArray,
     SparseFloat,
     binary_array_index,
 )
@@ -100,7 +100,7 @@ from ._registry import (
 
 __all__ = [
     # --- data representing events --- #
-    'BaseArray',
+    'EventRepresentation',
     'BinaryArray',
     'SparseFloat',
     'binary_array_index',
