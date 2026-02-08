@@ -42,9 +42,9 @@ def generate_fixed_conn_num_indices(
 
 @brainstate.transform.jit(static_argnums=(3,), )
 def vector_fcn(x, weights, indices, shape):
-    x = x.data if isinstance(x, brainevent.EventRepresentation) else x
-    weights = weights.data if isinstance(weights, brainevent.EventRepresentation) else weights
-    indices = indices.data if isinstance(indices, brainevent.EventRepresentation) else indices
+    x = x.value if isinstance(x, brainevent.EventRepresentation) else x
+    weights = weights.value if isinstance(weights, brainevent.EventRepresentation) else weights
+    indices = indices.value if isinstance(indices, brainevent.EventRepresentation) else indices
 
     homo_w = jnp.size(weights) == 1
     post = jnp.zeros((shape[1],))
@@ -61,9 +61,9 @@ def vector_fcn(x, weights, indices, shape):
 
 @brainstate.transform.jit(static_argnums=(3,))
 def matrix_fcn(xs, weights, indices, shape):
-    xs = xs.data if isinstance(xs, brainevent.EventRepresentation) else xs
-    weights = weights.data if isinstance(weights, brainevent.EventRepresentation) else weights
-    indices = indices.data if isinstance(indices, brainevent.EventRepresentation) else indices
+    xs = xs.value if isinstance(xs, brainevent.EventRepresentation) else xs
+    weights = weights.value if isinstance(weights, brainevent.EventRepresentation) else weights
+    indices = indices.value if isinstance(indices, brainevent.EventRepresentation) else indices
 
     homo_w = jnp.size(weights) == 1
     post = jnp.zeros((xs.shape[0], shape[1]))
@@ -85,9 +85,9 @@ def matrix_fcn(xs, weights, indices, shape):
 
 @brainstate.transform.jit(static_argnums=(3,))
 def fcn_vector(x, weights, indices, shape):
-    x = x.data if isinstance(x, brainevent.EventRepresentation) else x
-    weights = weights.data if isinstance(weights, brainevent.EventRepresentation) else weights
-    indices = indices.data if isinstance(indices, brainevent.EventRepresentation) else indices
+    x = x.value if isinstance(x, brainevent.EventRepresentation) else x
+    weights = weights.value if isinstance(weights, brainevent.EventRepresentation) else weights
+    indices = indices.value if isinstance(indices, brainevent.EventRepresentation) else indices
 
     homo_w = jnp.size(weights) == 1
     out = jnp.zeros([shape[0]])
@@ -105,9 +105,9 @@ def fcn_vector(x, weights, indices, shape):
 
 @brainstate.transform.jit(static_argnums=(3,))
 def fcn_matrix(xs, weights, indices, shape):
-    xs = xs.data if isinstance(xs, brainevent.EventRepresentation) else xs
-    weights = weights.data if isinstance(weights, brainevent.EventRepresentation) else weights
-    indices = indices.data if isinstance(indices, brainevent.EventRepresentation) else indices
+    xs = xs.value if isinstance(xs, brainevent.EventRepresentation) else xs
+    weights = weights.value if isinstance(weights, brainevent.EventRepresentation) else weights
+    indices = indices.value if isinstance(indices, brainevent.EventRepresentation) else indices
 
     # CSR @ matrix
     homo_w = jnp.size(weights) == 1
@@ -125,8 +125,8 @@ def fcn_matrix(xs, weights, indices, shape):
 
 
 def allclose(x, y, rtol=1e-6, atol=1e-6):
-    x = x.data if isinstance(x, brainevent.BinaryArray) else x
-    y = y.data if isinstance(y, brainevent.BinaryArray) else y
+    x = x.value if isinstance(x, brainevent.BinaryArray) else x
+    y = y.value if isinstance(y, brainevent.BinaryArray) else y
     return jnp.allclose(x, y, rtol=rtol, atol=atol)
 
 

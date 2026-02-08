@@ -262,17 +262,17 @@ class TestGenEvents:
         shape = (10000,)
         prob = 0.3
         events = gen_events(shape, prob=prob, asbool=True)
-        actual_prob = jnp.mean(events.data.astype(float))
+        actual_prob = jnp.mean(events.value.astype(float))
         assert jnp.abs(actual_prob - prob) < 0.05
 
     def test_high_probability(self):
         events = gen_events((10000,), prob=0.9)
-        actual_prob = jnp.mean(events.data.astype(float))
+        actual_prob = jnp.mean(events.value.astype(float))
         assert actual_prob > 0.85
 
     def test_low_probability(self):
         events = gen_events((10000,), prob=0.1)
-        actual_prob = jnp.mean(events.data.astype(float))
+        actual_prob = jnp.mean(events.value.astype(float))
         assert actual_prob < 0.15
 
 

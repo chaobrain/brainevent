@@ -42,7 +42,7 @@ class TestMatrixEvent:
         if not asbool:
             events.value = u.math.asarray(events.value, dtype=float)
         out1 = matrix @ events
-        out2 = matrix @ (events.data).astype(float)
+        out2 = matrix @ (events.value).astype(float)
         assert u.math.allclose(out1, out2, atol=1e-3, rtol=1e-3)
 
     @pytest.mark.parametrize("m", [10])
@@ -69,7 +69,7 @@ class TestEventMatrix:
             events.value = u.math.asarray(events.value, dtype=float)
         matrix = brainstate.random.randn(k, n)
         out1 = events @ matrix
-        out2 = events.data @ matrix
+        out2 = events.value @ matrix
         assert u.math.allclose(out1, out2, atol=1e-3, rtol=1e-3)
 
     @pytest.mark.parametrize("m", [10])
@@ -95,7 +95,7 @@ class TestMatrixEvent_mv:
         if not asbool:
             events.value = u.math.asarray(events.value, dtype=float)
         out1 = matrix @ events
-        out2 = matrix @ events.data
+        out2 = matrix @ events.value
         assert u.math.allclose(out1, out2, atol=1e-3, rtol=1e-3)
 
     @pytest.mark.parametrize("m", [10])
@@ -120,7 +120,7 @@ class TestEventMatrix_mv:
             events.value = u.math.asarray(events.value, dtype=float)
         matrix = brainstate.random.randn(k, m)
         out1 = events @ matrix
-        out2 = events.data @ matrix
+        out2 = events.value @ matrix
         assert u.math.allclose(out1, out2, atol=1e-3, rtol=1e-3)
 
     @pytest.mark.parametrize("m", [10])
