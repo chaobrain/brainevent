@@ -255,3 +255,57 @@ class Test_JITC_To_Dense:
 
         primals, jitc_grad = jax.jvp(f_jitc_jvp, (whigh,), (dw_high,))
         assert allclose(true_grad, jitc_grad)
+
+
+class Test_JITC_Uniform_Validation:
+    @pytest.mark.parametrize('cls', [brainevent.JITCUniformR, brainevent.JITCUniformC])
+    @pytest.mark.parametrize('prob', [-0.1, 1.1, float('nan')])
+    def test_invalid_prob_raises(self, cls, prob):
+        with pytest.raises(ValueError, match='prob'):
+            cls((-1.0, 1.0, prob, 123), shape=(8, 6))
+
+    @pytest.mark.parametrize('cls', [brainevent.JITCUniformR, brainevent.JITCUniformC])
+    def test_invalid_bounds_raises(self, cls):
+        with pytest.raises(ValueError, match='wlow'):
+            cls((1.0, -1.0, 0.1, 123), shape=(8, 6))
+
+    @pytest.mark.parametrize('cls', [brainevent.JITCUniformR, brainevent.JITCUniformC])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_zero_prob_dense_matvec_matmat(self, cls, corder):
+        shape = (8, 6)
+        mat = cls((-1.0, 1.0, 0.0, 123), shape=shape, corder=corder)
+
+        dense = mat.todense()
+        assert allclose(dense, jnp.zeros_like(dense))
+
+        vec = jnp.ones(shape[1])
+        out_mv = mat @ vec
+        assert allclose(out_mv, jnp.zeros_like(out_mv))
+
+        B = jnp.ones((shape[1], 4))
+        out_mm = mat @ B
+        assert allclose(out_mm, jnp.zeros_like(out_mm))
+
+    def test_functional_api_validation_and_zero(self):
+        shape = (8, 6)
+        vec = jnp.ones(shape[1])
+        B = jnp.ones((shape[1], 4))
+
+        with pytest.raises(ValueError, match='prob'):
+            brainevent.jitu(-1.0, 1.0, -0.1, 123, shape=shape)
+        with pytest.raises(ValueError, match='prob'):
+            brainevent.jitumv(-1.0, 1.0, 1.1, vec, 123, shape=shape)
+        with pytest.raises(ValueError, match='prob'):
+            brainevent.binary_jitumm(-1.0, 1.0, float('nan'), B, 123, shape=shape)
+
+        with pytest.raises(ValueError, match='w_low'):
+            brainevent.jitu(1.0, -1.0, 0.1, 123, shape=shape)
+        with pytest.raises(ValueError, match='w_low'):
+            brainevent.binary_jitumv(1.0, -1.0, 0.1, vec, 123, shape=shape)
+
+        out_dense = brainevent.jitu(-1.0, 1.0, 0.0, 123, shape=shape)
+        out_mv = brainevent.jitumv(-1.0, 1.0, 0.0, vec, 123, shape=shape)
+        out_mm = brainevent.jitumm(-1.0, 1.0, 0.0, B, 123, shape=shape)
+        assert allclose(out_dense, jnp.zeros_like(out_dense))
+        assert allclose(out_mv, jnp.zeros_like(out_mv))
+        assert allclose(out_mm, jnp.zeros_like(out_mm))
