@@ -49,6 +49,7 @@ def jitu(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    backend: Optional[str] = None,
 ) -> Data:
     u.fail_for_dimension_mismatch(w_low, w_high, "w_low and w_high must have the same dimension.")
     w_low, unitd = u.split_mantissa_unit(w_low)
@@ -61,7 +62,8 @@ def jitu(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder
+        corder=corder,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd)
 
@@ -77,6 +79,7 @@ def jitumv(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    backend: Optional[str] = None,
 ) -> Data:
     u.fail_for_dimension_mismatch(w_low, w_high, "w_low and w_high must have the same dimension.")
     seed = _initialize_seed(seed)
@@ -92,7 +95,8 @@ def jitumv(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder
+        corder=corder,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitv)
 
@@ -108,6 +112,7 @@ def jitumm(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    backend: Optional[str] = None,
 ) -> Data:
     u.fail_for_dimension_mismatch(w_low, w_high, "w_low and w_high must have the same dimension.")
     seed = _initialize_seed(seed)
@@ -123,7 +128,8 @@ def jitumm(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder
+        corder=corder,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitB)
 
@@ -933,7 +939,6 @@ def _jitumv_batching(args, axes, **kwargs):
 
 
 def _jitumv_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -942,12 +947,16 @@ def _jitumv_benchmark_data(*, platform):
             w_high = jnp.ones(1, dtype=dtype)
             clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
             v_size = n_post if not transpose else n_pre
-            vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
+            vector = jnp.asarray(np.random.randn(v_size), dtype=dtype)
             seed = jnp.asarray(42, dtype=jnp.uint32)
             name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append(BenchmarkConfig(name, (w_low, w_high, clen, vector, seed), {
-                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
-            }))
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (w_low, w_high, clen, vector, seed),
+                    {'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder}
+                )
+            )
     return configs
 
 
@@ -1506,7 +1515,6 @@ def _jitumm_batching(args, axes, **kwargs):
 
 
 def _jitumm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -1515,12 +1523,16 @@ def _jitumm_benchmark_data(*, platform):
             w_high = jnp.ones(1, dtype=dtype)
             clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
             b_rows = n_post if not transpose else n_pre
-            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
+            B = jnp.asarray(np.random.randn(b_rows, 10), dtype=dtype)
             seed = jnp.asarray(42, dtype=jnp.uint32)
             name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append(BenchmarkConfig(name, (w_low, w_high, clen, B, seed), {
-                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
-            }))
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (w_low, w_high, clen, B, seed),
+                    {'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder}
+                )
+            )
     return configs
 
 

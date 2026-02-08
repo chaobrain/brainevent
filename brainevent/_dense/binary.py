@@ -40,7 +40,7 @@ __all__ = [
 
 
 @namescope
-def dbmv(weights, spikes):
+def dbmv(weights, spikes, *, backend: Optional[str] = None):
     """
     Performs event-driven matrix-vector multiplication: `dense matrix @ binary vector`.
 
@@ -87,7 +87,7 @@ def dbmv(weights, spikes):
         spikes = u.math.asarray(spikes)
     weight_val, wunit = u.split_mantissa_unit(weights)
     spk_val, spkunit = u.split_mantissa_unit(spikes)
-    r = dbmv_p_call(weight_val, spk_val)
+    r = dbmv_p_call(weight_val, spk_val, backend=backend)
     return u.maybe_decimal(r[0] * wunit * spkunit)
 
 
@@ -245,15 +245,14 @@ def _dbmv_batching(args, axes, **kwargs):
 
 
 def _dbmv_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for bool_event in (True, False):
-        weights = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
+        weights = jnp.asarray(np.random.randn(n_pre, n_post), dtype=dtype)
         if bool_event:
-            spikes = jnp.asarray(_np.random.rand(n_post) > (1 - prob), dtype=jnp.bool_)
+            spikes = jnp.asarray(np.random.rand(n_post) > (1 - prob), dtype=jnp.bool_)
         else:
-            spikes = jnp.asarray(_np.random.rand(n_post), dtype=dtype)
+            spikes = jnp.asarray(np.random.rand(n_post), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
         configs.append(BenchmarkConfig(name, (weights, spikes)))
     return configs
@@ -288,7 +287,7 @@ dbmv_p.def_benchmark_data(_dbmv_benchmark_data)
 
 
 @namescope
-def bdvm(spikes, weights):
+def bdvm(spikes, weights, *, backend: Optional[str] = None):
     """Performs event-driven vector-matrix multiplication: `spikes @ weights`.
 
     This function computes the vector-matrix product of a spike vector and a
@@ -324,7 +323,7 @@ def bdvm(spikes, weights):
         spikes = u.math.asarray(spikes)
     weight_val, wunit = u.split_mantissa_unit(weights)
     spk_val, spkunit = u.split_mantissa_unit(spikes)
-    r = bdvm_p_call(spk_val, weight_val)
+    r = bdvm_p_call(spk_val, weight_val, backend=backend)
     return u.maybe_decimal(r[0] * wunit * spkunit)
 
 
@@ -482,15 +481,14 @@ def _event_matrix_batching(args, axes, **kwargs):
 
 
 def _bdvm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for bool_event in (True, False):
         if bool_event:
-            spikes = jnp.asarray(_np.random.rand(n_pre) > (1 - prob), dtype=jnp.bool_)
+            spikes = jnp.asarray(np.random.rand(n_pre) > (1 - prob), dtype=jnp.bool_)
         else:
-            spikes = jnp.asarray(_np.random.rand(n_pre), dtype=dtype)
-        weights = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
+            spikes = jnp.asarray(np.random.rand(n_pre), dtype=dtype)
+        weights = jnp.asarray(np.random.randn(n_pre, n_post), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
         configs.append(BenchmarkConfig(name, (spikes, weights)))
     return configs
@@ -526,7 +524,7 @@ bdvm_p.def_benchmark_data(_bdvm_benchmark_data)
 
 
 @namescope
-def dbmm(weights, spikes):
+def dbmm(weights, spikes, *, backend=None):
     """
     Performs event-driven matrix-matrix multiplication: `weights @ spikes`.
 
@@ -781,15 +779,14 @@ def _dbmm_batching(args, axes, **kwargs):
 
 
 def _dbmm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for bool_event in (True, False):
-        weights = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
+        weights = jnp.asarray(np.random.randn(n_pre, n_post), dtype=dtype)
         if bool_event:
-            spikes = jnp.asarray(_np.random.rand(n_post, 10) > (1 - prob), dtype=jnp.bool_)
+            spikes = jnp.asarray(np.random.rand(n_post, 10) > (1 - prob), dtype=jnp.bool_)
         else:
-            spikes = jnp.asarray(_np.random.rand(n_post, 10), dtype=dtype)
+            spikes = jnp.asarray(np.random.rand(n_post, 10), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
         configs.append(BenchmarkConfig(name, (weights, spikes)))
     return configs
@@ -825,7 +822,7 @@ dbmm_p.def_benchmark_data(_dbmm_benchmark_data)
 
 
 @namescope
-def bdmm(spikes, weights):
+def bdmm(spikes, weights, *, backend=None):
     """
     Performs event-driven binary matrix - dense matrix multiplication: `spikes @ weights`.
 
@@ -1068,15 +1065,14 @@ def _bdmm_batching(args, axes, **kwargs):
 
 
 def _bdmm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for bool_event in (True, False):
         if bool_event:
-            spikes = jnp.asarray(_np.random.rand(10, n_post) > (1 - prob), dtype=jnp.bool_)
+            spikes = jnp.asarray(np.random.rand(10, n_post) > (1 - prob), dtype=jnp.bool_)
         else:
-            spikes = jnp.asarray(_np.random.rand(10, n_post), dtype=dtype)
-        weights = jnp.asarray(_np.random.randn(n_post, n_post), dtype=dtype)
+            spikes = jnp.asarray(np.random.rand(10, n_post), dtype=dtype)
+        weights = jnp.asarray(np.random.randn(n_post, n_post), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
         configs.append(BenchmarkConfig(name, (spikes, weights)))
     return configs

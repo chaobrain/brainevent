@@ -36,7 +36,7 @@ __all__ = [
 
 
 @namescope
-def indexed_bdvm(binary_index, weights):
+def indexed_bdvm(binary_index, weights, *, backend: Optional[str] = None):
     """
     Computes the dot product between a binary vector (in sparse format) and a dense matrix.
 
@@ -78,7 +78,7 @@ def indexed_bdvm(binary_index, weights):
     spikes = binary_index.value
     indices = binary_index.spike_indices
     count = binary_index.spike_count
-    r = ibdvm_p_call(spikes, indices, count, weight_val)
+    r = ibdvm_p_call(spikes, indices, count, weight_val, backend=backend)
     return u.maybe_decimal(r[0] * wunit)
 
 
@@ -267,7 +267,7 @@ indexed_bdvm_p.def_benchmark_data(_bdvm_benchmark_data)
 
 
 @namescope
-def indexed_dbmv(weights, binary_arr):
+def indexed_dbmv(weights, binary_arr, *, backend: Optional[str] = None):
     """
     Computes the dot product between a dense matrix and a binary vector (in sparse format).
 
@@ -308,7 +308,7 @@ def indexed_dbmv(weights, binary_arr):
 
 
 @namescope
-def indexed_bdmm(binary_arr, weights):
+def indexed_bdmm(binary_arr, weights, *, backend: Optional[str] = None):
     """
     Computes the dot product between a batch of binary vectors (in sparse format) and a dense matrix.
 
@@ -350,7 +350,7 @@ def indexed_bdmm(binary_arr, weights):
     spikes = binary_arr.value
     indices = binary_arr.spike_indices
     count = binary_arr.spike_count
-    r = indexed_bdmm_p_call(spikes, indices, count, weights)
+    r = indexed_bdmm_p_call(spikes, indices, count, weights, backend=backend)
     return u.maybe_decimal(r[0] * wunit)
 
 
@@ -544,7 +544,7 @@ indexed_bdmm_p.def_benchmark_data(_bdmm_benchmark_data)
 
 
 @namescope
-def indexed_dbmm(weights, binary_arr):
+def indexed_dbmm(weights, binary_arr, *, backend=None):
     weight_val, wunit = u.split_mantissa_unit(weights)
     spikes = binary_arr.value
     indices = binary_arr.spike_indices

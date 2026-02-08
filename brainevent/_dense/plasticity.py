@@ -39,6 +39,8 @@ def plast_dense_on_binary_pre(
     post_trace: Union[u.Quantity, jax.Array],
     w_min: Optional[Union[u.Quantity, jax.Array]] = None,
     w_max: Optional[Union[u.Quantity, jax.Array]] = None,
+    *,
+    backend: Optional[str] = None,
 ):
     """Updates synaptic weights based on presynaptic spike events and postsynaptic traces.
 
@@ -61,7 +63,7 @@ def plast_dense_on_binary_pre(
     """
     weight, wunit = u.split_mantissa_unit(weight)
     post_trace = u.Quantity(post_trace).to(wunit).mantissa
-    weight = u.maybe_decimal(_dense_on_pre_prim_call(weight, pre_spike, post_trace)[0] * wunit)
+    weight = u.maybe_decimal(_dense_on_pre_prim_call(weight, pre_spike, post_trace, backend=backend)[0] * wunit)
     weight = u.math.clip(weight, w_min, w_max)
     return weight
 
@@ -127,7 +129,7 @@ def _dense_on_pre_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, *
     return run
 
 
-def _dense_on_pre_prim_call(weight, pre_spike, post_trace):
+def _dense_on_pre_prim_call(weight, pre_spike, post_trace, backend=None):
     assert weight.ndim == 2, f'dense_one_pre only support 2D weight. But got shape: {weight.shape}.'
     assert pre_spike.ndim == 1, f'pre_spike should be 1D, But got shape: {pre_spike.shape}.'
     assert post_trace.ndim == 1, f'post_trace should be 1D. But got shape: {post_trace.shape}.'
@@ -145,6 +147,7 @@ def _dense_on_pre_prim_call(weight, pre_spike, post_trace):
         weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
         spike_info=jax.ShapeDtypeStruct(pre_spike.shape, pre_spike.dtype),
         trace_info=jax.ShapeDtypeStruct(post_trace.shape, post_trace.dtype),
+        backend=backend,
     )
 
 
@@ -159,6 +162,20 @@ def _dense_on_pre_transpose_rule(ct, weight, pre_spike, post_trace, **kwargs):
     if ad.is_undefined_primal(weight):
         return (ad.Zero(weight) if type(ct) is ad.Zero else ct), pre_spike, post_trace
     return weight, pre_spike, post_trace
+
+def _plast_dense_pre_benchmark_data(*, platform):
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for bool_event in (True, False):
+        weight = jnp.asarray(np.random.randn(n_pre, n_post), dtype=dtype)
+        if bool_event:
+            pre_spike = jnp.asarray(np.random.rand(n_pre) > 0.5, dtype=jnp.bool_)
+        else:
+            pre_spike = jnp.asarray(np.random.rand(n_pre), dtype=dtype)
+        post_trace = jnp.asarray(np.random.randn(n_post), dtype=dtype)
+        name = f"{'bool' if bool_event else 'float'}"
+        configs.append(BenchmarkConfig(name, (weight, pre_spike, post_trace)))
+    return configs
 
 
 def _dense_on_pre_batching(args, axes, **kwargs):
@@ -182,24 +199,6 @@ plast_dense_on_binary_pre_p.def_transpose_rule(_dense_on_pre_transpose_rule)
 plast_dense_on_binary_pre_p.def_batching_rule(_dense_on_pre_batching)
 plast_dense_on_binary_pre_p.def_call(_dense_on_pre_prim_call)
 plast_dense_on_binary_pre_p.def_tags('dense', 'plasticity')
-
-
-def _plast_dense_pre_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for bool_event in (True, False):
-        weight = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
-        if bool_event:
-            pre_spike = jnp.asarray(_np.random.rand(n_pre) > 0.5, dtype=jnp.bool_)
-        else:
-            pre_spike = jnp.asarray(_np.random.rand(n_pre), dtype=dtype)
-        post_trace = jnp.asarray(_np.random.randn(n_post), dtype=dtype)
-        name = f"{'bool' if bool_event else 'float'}"
-        configs.append(BenchmarkConfig(name, (weight, pre_spike, post_trace)))
-    return configs
-
-
 plast_dense_on_binary_pre_p.def_benchmark_data(_plast_dense_pre_benchmark_data)
 
 
@@ -210,6 +209,8 @@ def plast_dense_on_binary_post(
     post_spike: jax.Array,
     w_min: Optional[Union[u.Quantity, jax.Array]] = None,
     w_max: Optional[Union[u.Quantity, jax.Array]] = None,
+    *,
+    backend: Optional[str] = None,
 ):
     """Updates synaptic weights based on postsynaptic spike events and presynaptic traces.
 
@@ -232,7 +233,7 @@ def plast_dense_on_binary_post(
     """
     weight, wunit = u.split_mantissa_unit(weight)
     pre_trace = u.Quantity(pre_trace).to(wunit).mantissa
-    weight = u.maybe_decimal(_dense_one_post_prim_call(weight, pre_trace, post_spike)[0] * wunit)
+    weight = u.maybe_decimal(_dense_one_post_prim_call(weight, pre_trace, post_spike, backend=backend)[0] * wunit)
     weight = u.math.clip(weight, w_min, w_max)
     return weight
 
@@ -298,7 +299,7 @@ def _dense_on_post_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, 
     return run
 
 
-def _dense_one_post_prim_call(weight, pre_trace, post_spike):
+def _dense_one_post_prim_call(weight, pre_trace, post_spike, backend=None):
     assert weight.ndim == 2, f'dense_one_pre only support 2D weight. But got shape: {weight.shape}.'
     assert pre_trace.ndim == 1, f'pre_trace should be 1D. But got shape: {pre_trace.shape}.'
     assert post_spike.ndim == 1, f'post_spike should be 1D. But got shape: {post_spike.shape}.'
@@ -312,6 +313,7 @@ def _dense_one_post_prim_call(weight, pre_trace, post_spike):
         weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
         spike_info=jax.ShapeDtypeStruct(post_spike.shape, post_spike.dtype),
         trace_info=jax.ShapeDtypeStruct(pre_trace.shape, pre_trace.dtype),
+        backend=backend,
     )
 
 
@@ -339,6 +341,19 @@ def _dense_on_post_batching(args, axes, **kwargs):
         return [weight + update[None, :, :]], [0]
     return general_batching_rule(plast_dense_on_binary_post_p, args, axes, **kwargs)
 
+def _plast_dense_post_benchmark_data(*, platform):
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for bool_event in (True, False):
+        weight = jnp.asarray(np.random.randn(n_pre, n_post), dtype=dtype)
+        pre_trace = jnp.asarray(np.random.randn(n_pre), dtype=dtype)
+        if bool_event:
+            post_spike = jnp.asarray(np.random.rand(n_post) > 0.5, dtype=jnp.bool_)
+        else:
+            post_spike = jnp.asarray(np.random.rand(n_post), dtype=dtype)
+        name = f"{'bool' if bool_event else 'float'}"
+        configs.append(BenchmarkConfig(name, (weight, pre_trace, post_spike)))
+    return configs
 
 plast_dense_on_binary_post_p = XLACustomKernel('dense_on_post')
 plast_dense_on_binary_post_p.def_numba_kernel(_dense_on_post_numba_kernel)
@@ -349,22 +364,4 @@ plast_dense_on_binary_post_p.def_transpose_rule(_dense_on_post_transpose_rule)
 plast_dense_on_binary_post_p.def_batching_rule(_dense_on_post_batching)
 plast_dense_on_binary_post_p.def_call(_dense_one_post_prim_call)
 plast_dense_on_binary_post_p.def_tags('dense', 'plasticity')
-
-
-def _plast_dense_post_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for bool_event in (True, False):
-        weight = jnp.asarray(_np.random.randn(n_pre, n_post), dtype=dtype)
-        pre_trace = jnp.asarray(_np.random.randn(n_pre), dtype=dtype)
-        if bool_event:
-            post_spike = jnp.asarray(_np.random.rand(n_post) > 0.5, dtype=jnp.bool_)
-        else:
-            post_spike = jnp.asarray(_np.random.rand(n_post), dtype=dtype)
-        name = f"{'bool' if bool_event else 'float'}"
-        configs.append(BenchmarkConfig(name, (weight, pre_trace, post_spike)))
-    return configs
-
-
 plast_dense_on_binary_post_p.def_benchmark_data(_plast_dense_post_benchmark_data)

@@ -17,6 +17,7 @@ from typing import Optional
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import namescope
@@ -25,11 +26,11 @@ from brainevent._op.benchmark import BenchmarkConfig
 
 
 @namescope
-def binary_array_index(spikes):
+def binary_array_index(spikes, *, backend: Optional[str] = None):
     if spikes.ndim == 1:
-        indices, count = binary_1d_array_index_p_call(spikes)
+        indices, count = binary_1d_array_index_p_call(spikes, backend=backend)
     elif spikes.ndim == 2:
-        indices, count = binary_2d_array_index_p_call(spikes)
+        indices, count = binary_2d_array_index_p_call(spikes, backend=backend)
     else:
         raise ValueError("Only 1D and 2D binary arrays are supported for index extraction.")
     return indices, count
@@ -195,15 +196,14 @@ def _binary_1d_array_index_batching(args, axes, **kwargs):
 
 
 def _binary_1d_array_index_benchmark_data(*, platform):
-    import numpy as _np
     n = 1000
     configs = []
     for bool_event in (True, False):
         if bool_event:
-            spikes = jnp.asarray(_np.random.rand(n) > 0.9, dtype=jnp.bool_)
+            spikes = jnp.asarray(np.random.rand(n) > 0.9, dtype=jnp.bool_)
         else:
             spikes = jnp.asarray(
-                _np.where(_np.random.rand(n) > 0.9, _np.random.rand(n), 0.0),
+                np.where(np.random.rand(n) > 0.9, np.random.rand(n), 0.0),
                 dtype=jnp.float32,
             )
         name = "bool" if bool_event else "float"

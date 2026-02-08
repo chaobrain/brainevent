@@ -46,6 +46,7 @@ def binary_fcnmv(
     *,
     shape: Tuple[int, int],
     transpose: bool = False,
+    backend: Optional[str] = None,
 ) -> Union[jax.Array, u.Quantity]:
     weights, w_unit = u.split_mantissa_unit(weights)
     spikes, v_unit = u.split_mantissa_unit(spikes)
@@ -56,6 +57,7 @@ def binary_fcnmv(
         spikes,
         shape=shape,
         transpose=transpose,
+        backend=backend,
     )[0]
     return u.maybe_decimal(r * v_unit * w_unit)
 
@@ -482,23 +484,22 @@ def _binary_fcnmv_batching(args, axes, **kwargs):
 
 
 def _binary_fcnmv_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
         for homo in (True, False):
             for bool_event in (True, False):
                 n_conn = max(1, int(n_post * prob))
-                indices = jnp.asarray(_np.random.randint(0, n_post, (n_pre, n_conn), dtype=_np.int32))
+                indices = jnp.asarray(np.random.randint(0, n_post, (n_pre, n_conn), dtype=np.int32))
                 if homo:
                     weights = jnp.ones(1, dtype=dtype)
                 else:
                     weights = jnp.ones((n_pre, n_conn), dtype=dtype)
                 v_size = n_post if not transpose else n_pre
                 if bool_event:
-                    spikes = jnp.asarray(_np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
+                    spikes = jnp.asarray(np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
                 else:
-                    spikes = jnp.asarray(_np.random.rand(v_size), dtype=dtype)
+                    spikes = jnp.asarray(np.random.rand(v_size), dtype=dtype)
                 name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
                 configs.append(
                     BenchmarkConfig(
@@ -556,6 +557,7 @@ def binary_fcnmm(
     *,
     shape: Tuple[int, int],
     transpose: bool,
+    backend=None,
 ) -> Union[jax.Array, u.Quantity]:
     weights, w_unit = u.split_mantissa_unit(weights)
     matrix, m_unit = u.split_mantissa_unit(matrix)
@@ -881,23 +883,22 @@ def _binary_fcnmm_batching(args, axes, **kwargs):
 
 
 def _binary_fcnmm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
         for homo in (True, False):
             for bool_event in (True, False):
                 n_conn = max(1, int(n_post * prob))
-                indices = jnp.asarray(_np.random.randint(0, n_post, (n_pre, n_conn), dtype=_np.int32))
+                indices = jnp.asarray(np.random.randint(0, n_post, (n_pre, n_conn), dtype=np.int32))
                 if homo:
                     weights = jnp.ones(1, dtype=dtype)
                 else:
                     weights = jnp.ones((n_pre, n_conn), dtype=dtype)
                 b_rows = n_post if not transpose else n_pre
                 if bool_event:
-                    matrix = jnp.asarray(_np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
+                    matrix = jnp.asarray(np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
                 else:
-                    matrix = jnp.asarray(_np.random.rand(b_rows, 10), dtype=dtype)
+                    matrix = jnp.asarray(np.random.rand(b_rows, 10), dtype=dtype)
                 name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
                 configs.append(
                     BenchmarkConfig(

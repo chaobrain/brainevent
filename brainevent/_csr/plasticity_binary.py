@@ -45,6 +45,7 @@ def plast_csr_on_binary_pre(
     w_max: Optional[Union[u.Quantity, jax.Array, numbers.Number]] = None,
     *,
     shape: MatrixShape,
+    backend: Optional[str] = None,
 ):
     """Updates synaptic weights in CSR format based on presynaptic spike events and postsynaptic traces.
 
@@ -78,7 +79,7 @@ def plast_csr_on_binary_pre(
     post_trace = u.Quantity(post_trace).to(wunit).mantissa
     weight = u.maybe_decimal(
         _csr_on_pre_prim_call(
-            weight, indices, indptr, pre_spike, post_trace, shape=shape
+            weight, indices, indptr, pre_spike, post_trace, shape=shape, backend=backend
         )[0] * wunit
     )
     weight = u.math.clip(weight, w_min, w_max)
@@ -238,19 +239,18 @@ def _csr_on_pre_pallas_kernel_generator(
 
 
 def _plast_csr_pre_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for bool_event in (True, False):
         n_conn = max(1, int(n_post * prob))
-        indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
-        indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
+        indptr = np.arange(n_pre + 1, dtype=np.int32) * n_conn
+        indices = np.random.randint(0, n_post, (n_pre * n_conn,), dtype=np.int32)
         weight = jnp.ones(n_pre * n_conn, dtype=dtype)
         if bool_event:
-            pre_spike = jnp.asarray(_np.random.rand(n_pre) > 0.5, dtype=jnp.bool_)
+            pre_spike = jnp.asarray(np.random.rand(n_pre) > 0.5, dtype=jnp.bool_)
         else:
-            pre_spike = jnp.asarray(_np.random.rand(n_pre), dtype=dtype)
-        post_trace = jnp.asarray(_np.random.randn(n_post), dtype=dtype)
+            pre_spike = jnp.asarray(np.random.rand(n_pre), dtype=dtype)
+        post_trace = jnp.asarray(np.random.randn(n_post), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
         configs.append(BenchmarkConfig(name, (weight, indices, jnp.asarray(indptr), pre_spike, post_trace), {
             'shape': (n_pre, n_post)
@@ -258,7 +258,7 @@ def _plast_csr_pre_benchmark_data(*, platform):
     return configs
 
 
-def _csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, shape):
+def _csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, shape, backend=None):
     assert weight.ndim == 1, 'dense_one_pre only support 1D weight.'
     assert pre_spike.ndim == 1, 'pre_spike should be 1D.'
     assert post_trace.ndim == 1, 'post_trace should be 1D.'
@@ -276,6 +276,7 @@ def _csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, sha
         indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
         spike_info=jax.ShapeDtypeStruct(pre_spike.shape, pre_spike.dtype),
         trace_info=jax.ShapeDtypeStruct(post_trace.shape, post_trace.dtype),
+        backend=backend,
     )
 
 
@@ -300,6 +301,7 @@ def plast_csr2csc_on_binary_post(
     w_max: Optional[Union[u.Quantity, jax.Array, numbers.Number]] = None,
     *,
     shape: MatrixShape,
+    backend: Optional[str] = None,
 ):
     """Updates synaptic weights in CSC format based on postsynaptic spike events and presynaptic traces.
 
@@ -334,7 +336,7 @@ def plast_csr2csc_on_binary_post(
     pre_trace = u.Quantity(pre_trace).to(wunit).mantissa
     weight = u.maybe_decimal(
         _csr2csc_on_post_prim_call(
-            weight, indices, indptr, weight_indices, pre_trace, post_spike, shape=shape
+            weight, indices, indptr, weight_indices, pre_trace, post_spike, shape=shape, backend=backend
         )[0] * wunit
     )
     weight = u.math.clip(weight, w_min, w_max)
@@ -520,22 +522,21 @@ def _csr2csc_on_post_pallas_kernel_generator(
 
 
 def _plast_csr_post_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for bool_event in (True, False):
         n_conn = max(1, int(n_post * prob))
-        indptr = _np.arange(n_post + 1, dtype=_np.int32) * n_conn
-        indices = _np.random.randint(0, n_pre, (n_post * n_conn,), dtype=_np.int32)
+        indptr = np.arange(n_post + 1, dtype=np.int32) * n_conn
+        indices = np.random.randint(0, n_pre, (n_post * n_conn,), dtype=np.int32)
         weight = jnp.ones(n_post * n_conn, dtype=dtype)
         weight_indices = jnp.asarray(
-            _np.random.randint(0, n_post * n_conn, (n_post * n_conn,), dtype=_np.int32)
+            np.random.randint(0, n_post * n_conn, (n_post * n_conn,), dtype=np.int32)
         )
-        pre_trace = jnp.asarray(_np.random.randn(n_pre), dtype=dtype)
+        pre_trace = jnp.asarray(np.random.randn(n_pre), dtype=dtype)
         if bool_event:
-            post_spike = jnp.asarray(_np.random.rand(n_post) > 0.5, dtype=jnp.bool_)
+            post_spike = jnp.asarray(np.random.rand(n_post) > 0.5, dtype=jnp.bool_)
         else:
-            post_spike = jnp.asarray(_np.random.rand(n_post), dtype=dtype)
+            post_spike = jnp.asarray(np.random.rand(n_post), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
         configs.append(
             BenchmarkConfig(name, (weight, indices, jnp.asarray(indptr), weight_indices, pre_trace, post_spike), {
@@ -544,7 +545,7 @@ def _plast_csr_post_benchmark_data(*, platform):
     return configs
 
 
-def _csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace, post_spike, *, shape):
+def _csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace, post_spike, *, shape, backend=None):
     assert weight.ndim == 1, 'dense_one_post only support 1D weight.'
     assert post_spike.ndim == 1, 'post_spike should be 1D.'
     assert pre_trace.ndim == 1, 'pre_trace should be 1D.'
@@ -564,6 +565,7 @@ def _csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trac
         weight_indices_info=jax.ShapeDtypeStruct(weight_indices.shape, weight_indices.dtype),
         trace_info=jax.ShapeDtypeStruct(pre_trace.shape, pre_trace.dtype),
         spike_info=jax.ShapeDtypeStruct(post_spike.shape, post_spike.dtype),
+        backend=backend,
     )
 
 

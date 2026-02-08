@@ -1167,7 +1167,6 @@ def _jitnmv_batching(args, axes, **kwargs):
 
 
 def _jitnmv_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -1176,12 +1175,16 @@ def _jitnmv_benchmark_data(*, platform):
             w_scale = jnp.ones(1, dtype=dtype) * 0.1
             clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
             v_size = n_post if not transpose else n_pre
-            vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
+            vector = jnp.asarray(np.random.randn(v_size), dtype=dtype)
             seed = jnp.asarray(42, dtype=jnp.uint32)
             name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append(BenchmarkConfig(name, (w_loc, w_scale, clen, vector, seed), {
-                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
-            }))
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (w_loc, w_scale, clen, vector, seed),
+                    {'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder}
+                )
+            )
     return configs
 
 
@@ -1723,7 +1726,6 @@ def _jitnmm_batching(args, axes, **kwargs):
 
 
 def _jitnmm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -1732,7 +1734,7 @@ def _jitnmm_benchmark_data(*, platform):
             w_scale = jnp.ones(1, dtype=dtype) * 0.1
             clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
             b_rows = n_post if not transpose else n_pre
-            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
+            B = jnp.asarray(np.random.randn(b_rows, 10), dtype=dtype)
             seed = jnp.asarray(42, dtype=jnp.uint32)
             name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
             configs.append(BenchmarkConfig(name, (w_loc, w_scale, clen, B, seed), {

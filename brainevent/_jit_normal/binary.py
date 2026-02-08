@@ -49,6 +49,7 @@ def binary_jitnmv(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    backend: Optional[str] = None,
 ) -> Data:
     u.fail_for_dimension_mismatch(w_loc, w_scale, "w_loc and w_scale must have the same dimension.")
     seed = _initialize_seed(seed)
@@ -64,7 +65,8 @@ def binary_jitnmv(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder
+        corder=corder,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitv)
 
@@ -746,7 +748,6 @@ def _jitc_mv_normal_batching(args, axes, **kwargs):
 
 
 def _binary_jitnmv_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -757,9 +758,9 @@ def _binary_jitnmv_benchmark_data(*, platform):
                 clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
                 v_size = n_post if not transpose else n_pre
                 if bool_event:
-                    vector = jnp.asarray(_np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
+                    vector = jnp.asarray(np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
                 else:
-                    vector = jnp.asarray(_np.random.rand(v_size), dtype=dtype)
+                    vector = jnp.asarray(np.random.rand(v_size), dtype=dtype)
                 seed = jnp.asarray(42, dtype=jnp.uint32)
                 name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'},{'bool' if bool_event else 'float'}"
                 configs.append(BenchmarkConfig(name, (w_loc, w_scale, clen, vector, seed), {
@@ -1374,7 +1375,6 @@ def _jitc_mm_normal_batching(args, axes, **kwargs):
 
 
 def _binary_jitnmm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -1385,9 +1385,9 @@ def _binary_jitnmm_benchmark_data(*, platform):
                 clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
                 b_rows = n_post if not transpose else n_pre
                 if bool_event:
-                    B = jnp.asarray(_np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
+                    B = jnp.asarray(np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
                 else:
-                    B = jnp.asarray(_np.random.rand(b_rows, 10), dtype=dtype)
+                    B = jnp.asarray(np.random.rand(b_rows, 10), dtype=dtype)
                 seed = jnp.asarray(42, dtype=jnp.uint32)
                 name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'},{'bool' if bool_event else 'float'}"
                 configs.append(

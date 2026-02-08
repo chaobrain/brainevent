@@ -46,6 +46,7 @@ def coomv(
     shape: MatrixShape,
     transpose: bool = False,
     sorted_by_output: bool = False,
+    backend: Optional[str] = None,
 ) -> Data:
     """
     Perform COO sparse matrix-vector multiplication.
@@ -74,6 +75,7 @@ def coomv(
         shape=shape,
         transpose=transpose,
         sorted_by_output=sorted_by_output,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitv)
 
@@ -87,6 +89,7 @@ def coomm(
     *,
     shape: MatrixShape,
     transpose: bool = False,
+    backend: Optional[str] = None,
 ):
     """
     Perform COO sparse matrix-matrix multiplication.
@@ -104,7 +107,7 @@ def coomm(
     """
     data, unitd = u.split_mantissa_unit(data)
     B, unitb = u.split_mantissa_unit(B)
-    res = coomm_p_call(data, row, col, B, shape=shape, transpose=transpose)[0]
+    res = coomm_p_call(data, row, col, B, shape=shape, transpose=transpose, backend=backend)[0]
     return u.maybe_decimal(res * (unitd * unitb))
 
 
@@ -654,21 +657,24 @@ def _coomv_batching(args, axes, **kwargs):
 
 
 def _coomv_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
         for homo in (True, False):
             nnz = max(1, int(n_pre * n_post * prob))
-            row = _np.random.randint(0, n_pre, nnz, dtype=_np.int32)
-            col = _np.random.randint(0, n_post, nnz, dtype=_np.int32)
-            weights = jnp.ones(1, dtype=dtype) if homo else jnp.asarray(_np.random.randn(nnz), dtype=dtype)
+            row = np.random.randint(0, n_pre, nnz, dtype=np.int32)
+            col = np.random.randint(0, n_post, nnz, dtype=np.int32)
+            weights = jnp.ones(1, dtype=dtype) if homo else jnp.asarray(np.random.randn(nnz), dtype=dtype)
             v_size = n_post if not transpose else n_pre
-            vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
+            vector = jnp.asarray(np.random.randn(v_size), dtype=dtype)
             name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
-            configs.append(BenchmarkConfig(name, (weights, jnp.asarray(row), jnp.asarray(col), vector), {
-                'shape': (n_pre, n_post), 'transpose': transpose
-            }))
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (weights, jnp.asarray(row), jnp.asarray(col), vector),
+                    {'shape': (n_pre, n_post), 'transpose': transpose}
+                )
+            )
     return configs
 
 
@@ -1146,17 +1152,16 @@ def _coomm_batching(args, axes, **kwargs):
 
 
 def _coomm_benchmark_data(*, platform):
-    import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
         for homo in (True, False):
             nnz = max(1, int(n_pre * n_post * prob))
-            row = _np.random.randint(0, n_pre, nnz, dtype=_np.int32)
-            col = _np.random.randint(0, n_post, nnz, dtype=_np.int32)
-            weights = jnp.ones(1, dtype=dtype) if homo else jnp.asarray(_np.random.randn(nnz), dtype=dtype)
+            row = np.random.randint(0, n_pre, nnz, dtype=np.int32)
+            col = np.random.randint(0, n_post, nnz, dtype=np.int32)
+            weights = jnp.ones(1, dtype=dtype) if homo else jnp.asarray(np.random.randn(nnz), dtype=dtype)
             b_rows = n_post if not transpose else n_pre
-            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
+            B = jnp.asarray(np.random.randn(b_rows, 10), dtype=dtype)
             name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
             configs.append(BenchmarkConfig(name, (weights, jnp.asarray(row), jnp.asarray(col), B), {
                 'shape': (n_pre, n_post), 'transpose': transpose
