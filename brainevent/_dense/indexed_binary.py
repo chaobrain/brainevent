@@ -18,6 +18,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
+from typing import Optional
 
 from brainevent._misc import cdiv, generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
@@ -227,7 +228,7 @@ def _bdvm_benchmark_data(*, platform):
     ]
 
 
-def ibdvm_p_call(spikes, indices, count, weights):
+def ibdvm_p_call(spikes, indices, count, weights, *, backend: Optional[str] = None):
     assert spikes.ndim == 1, "spikes should be 1D (n_spikes,)"
     assert indices.ndim == 1, "indices should be 1D (n_spikes,)"
     assert count.ndim == 1 and count.shape[0] == 1, "count should be 1D (1,)"
@@ -246,6 +247,7 @@ def ibdvm_p_call(spikes, indices, count, weights):
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         count_info=jax.ShapeDtypeStruct(count.shape, count.dtype),
         weights_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        backend=backend,
     )
 
 
@@ -505,7 +507,7 @@ def _bdmm_benchmark_data(*, platform):
     ]
 
 
-def indexed_bdmm_p_call(spikes, indices, count, weights):
+def indexed_bdmm_p_call(spikes, indices, count, weights, *, backend: Optional[str] = None):
     assert spikes.ndim == 2, "spikes should be 2D (batch_size, n_spikes)"
     assert indices.ndim == 2, "indices should be 2D (batch_size, n_spikes)"
     assert count.ndim == 1 and count.shape[0] == spikes.shape[0], "count should be 1D (batch_size,)"
@@ -522,6 +524,7 @@ def indexed_bdmm_p_call(spikes, indices, count, weights):
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         count_info=jax.ShapeDtypeStruct(count.shape, count.dtype),
         weights_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        backend=backend,
     )
 
 

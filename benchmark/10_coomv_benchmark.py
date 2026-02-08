@@ -28,11 +28,11 @@ This benchmark covers:
 
 ### How to run on GPU
 
-> python benchmark/24_coomv_benchmark.py --platform gpu --n-warmup 20 --n-runs 80
+> python benchmark/10_coomv_benchmark.py --platform gpu --n-warmup 20 --n-runs 80
 
 Quick run:
 
-> python benchmark/24_coomv_benchmark.py --platform gpu --n-warmup 5 --n-runs 20 --distributions uniform hotspot_row
+> python benchmark/10_coomv_benchmark.py --platform gpu --n-warmup 5 --n-runs 20 --distributions uniform hotspot_row
 
 
 """
@@ -233,6 +233,7 @@ def run_case(
     )
     jax_coo = JaxCOO((weights_dense, row, col), shape=(case.n_rows, case.n_cols))
 
+    @jax.jit
     def warp_fn(w, r, c, v):
         return brainevent.coomv_p.call(
             w,

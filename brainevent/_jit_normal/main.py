@@ -688,8 +688,7 @@ class JITCNormalC(JITNormalMatrix):
 
         This method generates a full dense representation of the sparse matrix by
         using the homogeneous weight value for all connections determined by the
-        probability and seed. Since this is a column-oriented matrix (JITCHomoC),
-        the transpose flag is set to True to ensure proper conversion.
+        probability and seed. The generated dense matrix always has ``self.shape``.
 
         Returns
         -------

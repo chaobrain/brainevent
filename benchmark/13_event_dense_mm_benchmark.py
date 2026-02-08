@@ -13,15 +13,13 @@
 # limitations under the License.
 # ==============================================================================
 
-import os
+import sys
 import time
-
-os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
+from pathlib import Path
 
 import jax
-import sys
 
-sys.path.append('../')
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from brainevent._dense import (
     dbmm,
@@ -30,11 +28,13 @@ from brainevent._dense import (
 import braintools
 import brainstate
 from utils import visualize
+
+
 # brainstate.environ.set_platform('cpu')
 # brainevent.config.gpu_kernel_backend = 'pallas'
 
 
-def matrix_event(m, k, n, spk_prob, as_float: bool, transpose: bool, n_run = 100):
+def matrix_event(m, k, n, spk_prob, as_float: bool, transpose: bool, n_run=100):
     if transpose:
         weight = braintools.init.KaimingUniform()((m, k))
         spike = (brainstate.random.rand(k, n) < spk_prob)
@@ -110,4 +110,3 @@ if __name__ == '__main__':
     # benchmark(0.01, transpose=False)
     benchmark(0.001, transpose=True)
     benchmark(0.001, transpose=False)
-

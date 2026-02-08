@@ -20,6 +20,7 @@ from typing import Union, Tuple
 
 import brainunit as u
 import jax
+import numpy as np
 
 from brainevent._compatible_import import JAXSparse, Tracer
 from brainevent._event.binary import EventArray
@@ -115,8 +116,25 @@ class JITUniformMatrix(JITCMatrix):
         to JAX arrays, preserving any attached units.
         """
         low, high, self.prob, self.seed = data
+        if not isinstance(self.prob, Tracer):
+            prob = np.asarray(self.prob)
+            if prob.size != 1:
+                raise ValueError(f"prob must be a scalar, but got shape {prob.shape}.")
+            prob = float(prob.item())
+            if not np.isfinite(prob):
+                raise ValueError(f"prob must be finite, but got {prob}.")
+            if not (0. <= prob <= 1.):
+                raise ValueError(f"prob must be in [0, 1], but got {prob}.")
+
         low, high = u.math.promote_dtypes(low, high)
-        u.fail_for_dimension_mismatch(low, high, "loc and scale must have the same dimension.")
+        u.fail_for_dimension_mismatch(low, high, "wlow and whigh must have the same dimension.")
+        low_m = u.get_mantissa(low)
+        high_m = u.get_mantissa(high)
+        if not (isinstance(low_m, Tracer) or isinstance(high_m, Tracer)):
+            low_arr = np.asarray(low_m)
+            high_arr = np.asarray(high_m)
+            if np.any(low_arr > high_arr):
+                raise ValueError("wlow must be <= whigh element-wise.")
         self.wlow = u.math.asarray(low)
         self.whigh = u.math.asarray(high)
         self.corder = corder
@@ -786,8 +804,7 @@ class JITCUniformC(JITUniformMatrix):
 
         This method generates a full dense representation of the sparse matrix by
         using the homogeneous weight value for all connections determined by the
-        probability and seed. Since this is a column-oriented matrix (JITCHomoC),
-        the transpose flag is set to True to ensure proper conversion.
+        probability and seed. The generated dense matrix always has ``self.shape``.
 
         Returns
         -------

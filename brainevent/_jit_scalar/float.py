@@ -335,7 +335,7 @@ def _jitc_homo_matrix_numba_kernel(
                         posts[i_row, i_col] = weight0
                         i_row += np.random.randint(1, clen0)
 
-    def kernel(weight, clen, seed, _):
+    def kernel(weight, clen, seed):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(weight, clen, seed)
 
     return kernel
@@ -398,7 +398,7 @@ def _jitc_homo_matrix_warp_kernel(
                     posts[i_row, i_col] = weight0
                     i_col += warp.randi(state, 1, clen0)
 
-        def kernel(weight, clen, seed, _):
+        def kernel(weight, clen, seed):
             dim = out_info.shape[0]
             fn = jax_kernel(mat, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
             return fn(weight, clen, seed)
@@ -442,7 +442,7 @@ def _jitc_homo_matrix_warp_kernel(
                     posts[i_row, i_col] = weight0
                     i_row += warp.randi(state, 1, clen0)
 
-        def kernel(weight, clen, seed, _):
+        def kernel(weight, clen, seed):
             dim = out_info.shape[1]
             fn = jax_kernel(mat, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
             return fn(weight, clen, seed)
@@ -513,25 +513,27 @@ def _jitc_homo_matrix_pallas_kernel(
                 (i_rows, i_row_mask, rng)
             )
 
-    def kernel(weight, clen, seed, _):
+    def kernel(weight, clen, seed):
         fn = pl.pallas_call(
             pallas_kernel_fn,
             grid=(pl.cdiv(dim, block_size),),
             input_output_aliases={3: 0},
             out_shape=kwargs['outs']
         )
-        return fn(weight, clen, seed, _)
+        out = kwargs['outs'][0]
+        return fn(weight, clen, seed, jnp.zeros(out.shape, out.dtype))
 
     return kernel
 
 
-def _jitc_homo_matrix_jvp_weight(weight_dot, weight, clen, seed, _, *, shape: Sequence[int], transpose: bool,
-                                 corder: bool, **kwargs):
+def _jitc_homo_matrix_jvp_weight(
+    weight_dot, weight, clen, seed, *, shape: Sequence[int], transpose: bool,  corder: bool, **kwargs
+):
     return jits_p_call(weight_dot, clen, seed, shape=shape, transpose=transpose, corder=corder)
 
 
 def _jitc_homo_matrix_transpose(
-    ct, weight, clen, seed, _, *, shape: Sequence[int], transpose: bool, corder: bool, **kwargs
+    ct, weight, clen, seed,  *, shape: Sequence[int], transpose: bool, corder: bool, **kwargs
 ):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
@@ -541,7 +543,7 @@ def _jitc_homo_matrix_transpose(
             1., clen, seed, shape=shape, transpose=transpose, corder=corder
         )[0]
         dw = jnp.expand_dims((ct * forward).sum(), axis=0)
-        return (dw, clen, seed, _)
+        return (dw, clen, seed)
 
     else:
         raise NotImplementedError(
@@ -550,7 +552,7 @@ def _jitc_homo_matrix_transpose(
 
 
 def _jitc_homo_matrix_batching(args, axes, **kwargs):
-    if tuple(axes)[1:] == (None, None, None):
+    if tuple(axes)[1:] == (None, None):
         # vmap on weight data
         r = jits_p_call(
             jnp.asarray([1.], dtype=args[0].dtype),
@@ -568,53 +570,6 @@ def _jitc_homo_matrix_batching(args, axes, **kwargs):
         return general_batching_rule(jits_p, args, axes, **kwargs)
 
 
-def jits_p_call(
-    weight,
-    clen,
-    seed,
-    *,
-    shape: Sequence[int],
-    transpose: bool,
-    corder: bool,
-):
-    weight = jnp.atleast_1d(weight)
-    clen = jnp.atleast_1d(clen)
-    seed = jnp.atleast_1d(seed)
-
-    out_info = (
-        jax.ShapeDtypeStruct(shape[::-1], dtype=weight.dtype)
-        if transpose else
-        jax.ShapeDtypeStruct(shape, dtype=weight.dtype)
-    )
-
-    return jits_p(
-        weight,
-        clen,
-        seed,
-        jnp.zeros(out_info.shape, out_info.dtype),
-        outs=[out_info],
-        weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
-        clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
-        seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
-        out_info=out_info,
-        shape=shape,
-        transpose=transpose,
-        corder=corder,
-    )
-
-
-jits_p = XLACustomKernel('float_jitc_homo_matrix')
-jits_p.def_numba_kernel(_jitc_homo_matrix_numba_kernel)
-jits_p.def_warp_kernel(_jitc_homo_matrix_warp_kernel)
-jits_p.def_pallas_kernel('gpu', _jitc_homo_matrix_pallas_kernel)
-jits_p.def_pallas_kernel('tpu', _jitc_homo_matrix_pallas_kernel)
-jits_p.def_jvp_rule2(_jitc_homo_matrix_jvp_weight, None, None)
-jits_p.def_transpose_rule(_jitc_homo_matrix_transpose)
-jits_p.def_batching_rule(_jitc_homo_matrix_batching)
-jits_p.def_call(jits_p_call)
-jits_p.def_tags('jit_scalar', 'float')
-
-
 def _jits_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
@@ -630,6 +585,52 @@ def _jits_benchmark_data(*, platform):
     return configs
 
 
+def jits_p_call(
+    weight,
+    clen,
+    seed,
+    *,
+    shape: Sequence[int],
+    transpose: bool,
+    corder: bool,
+    backend: Optional[str] = None,
+):
+    weight = jnp.atleast_1d(weight)
+    clen = jnp.atleast_1d(clen)
+    seed = jnp.atleast_1d(seed)
+
+    out_info = (
+        jax.ShapeDtypeStruct(shape[::-1], dtype=weight.dtype)
+        if transpose else
+        jax.ShapeDtypeStruct(shape, dtype=weight.dtype)
+    )
+
+    return jits_p(
+        weight,
+        clen,
+        seed,
+        outs=[out_info],
+        weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
+        clen_info=jax.ShapeDtypeStruct(clen.shape, clen.dtype),
+        seed_info=jax.ShapeDtypeStruct(seed.shape, seed.dtype),
+        out_info=out_info,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        backend=backend,
+    )
+
+
+jits_p = XLACustomKernel('float_jitc_homo_matrix')
+jits_p.def_numba_kernel(_jitc_homo_matrix_numba_kernel)
+jits_p.def_warp_kernel(_jitc_homo_matrix_warp_kernel)
+jits_p.def_pallas_kernel('gpu', _jitc_homo_matrix_pallas_kernel)
+jits_p.def_pallas_kernel('tpu', _jitc_homo_matrix_pallas_kernel)
+jits_p.def_jvp_rule2(_jitc_homo_matrix_jvp_weight, None, None)
+jits_p.def_transpose_rule(_jitc_homo_matrix_transpose)
+jits_p.def_batching_rule(_jitc_homo_matrix_batching)
+jits_p.def_call(jits_p_call)
+jits_p.def_tags('jit_scalar', 'float')
 jits_p.def_benchmark_data(_jits_benchmark_data)
 
 
@@ -1057,6 +1058,24 @@ def _jitsmv_batching(
         return general_batching_rule(jitsmv_p, args, axes, **kwargs)
 
 
+def _jitsmv_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for corder in (True, False):
+            weight = jnp.ones(1, dtype=dtype)
+            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+            v_size = n_post if not transpose else n_pre
+            vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
+            seed = jnp.asarray(42, dtype=jnp.uint32)
+            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
+            configs.append(BenchmarkConfig(name, (weight, clen, vector, seed), {
+                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
+            }))
+    return configs
+
+
 def jitsmv_p_call(
     weight,
     clen,
@@ -1066,6 +1085,7 @@ def jitsmv_p_call(
     shape: Sequence[int],
     transpose: bool,
     corder: bool,
+    backend: Optional[str] = None,
 ):
     r"""
     Low-level implementation function for just-in-time generated sparse matrix-vector multiplication
@@ -1155,6 +1175,7 @@ def jitsmv_p_call(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        backend=backend,
     )
 
 
@@ -1168,26 +1189,6 @@ jitsmv_p.def_transpose_rule(_jitsmv_transpose_rules)
 jitsmv_p.def_batching_rule(_jitsmv_batching)
 jitsmv_p.def_call(jitsmv_p_call)
 jitsmv_p.def_tags('jit_scalar', 'float')
-
-
-def _jitsmv_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for transpose in (False, True):
-        for corder in (True, False):
-            weight = jnp.ones(1, dtype=dtype)
-            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
-            v_size = n_post if not transpose else n_pre
-            vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
-            seed = jnp.asarray(42, dtype=jnp.uint32)
-            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append(BenchmarkConfig(name, (weight, clen, vector, seed), {
-                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
-            }))
-    return configs
-
-
 jitsmv_p.def_benchmark_data(_jitsmv_benchmark_data)
 
 
@@ -1648,6 +1649,24 @@ def _jitsmm_batching(args, axes, **kwargs):
         return general_batching_rule(jitsmm_p, args, axes, **kwargs)
 
 
+def _jitsmm_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for corder in (True, False):
+            weight = jnp.ones(1, dtype=dtype)
+            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
+            b_rows = n_post if not transpose else n_pre
+            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
+            seed = jnp.asarray(42, dtype=jnp.uint32)
+            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
+            configs.append(BenchmarkConfig(name, (weight, clen, B, seed), {
+                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
+            }))
+    return configs
+
+
 def jitsmm_p_call(
     weight,
     clen,
@@ -1657,6 +1676,7 @@ def jitsmm_p_call(
     shape: MatrixShape,
     transpose: bool,
     corder: bool,
+    backend: Optional[str] = None,
 ):
     weight = jnp.atleast_1d(weight)
     clen = jnp.atleast_1d(clen)
@@ -1696,6 +1716,7 @@ def jitsmm_p_call(
         transpose=transpose,
         corder=corder,
         TITLE_SIZE=B.shape[1],  # Assuming B is [k, n], we want to process n columns at once
+        backend=backend,
     )
 
 
@@ -1709,24 +1730,4 @@ jitsmm_p.def_transpose_rule(_jitsmm_transpose_rules)
 jitsmm_p.def_batching_rule(_jitsmm_batching)
 jitsmm_p.def_call(jitsmm_p_call)
 jitsmm_p.def_tags('jit_scalar', 'float')
-
-
-def _jitsmm_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for transpose in (False, True):
-        for corder in (True, False):
-            weight = jnp.ones(1, dtype=dtype)
-            clen = jnp.atleast_1d(jnp.asarray(2.0 / prob, dtype=dtype))
-            b_rows = n_post if not transpose else n_pre
-            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
-            seed = jnp.asarray(42, dtype=jnp.uint32)
-            name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append(BenchmarkConfig(name, (weight, clen, B, seed), {
-                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
-            }))
-    return configs
-
-
 jitsmm_p.def_benchmark_data(_jitsmm_benchmark_data)

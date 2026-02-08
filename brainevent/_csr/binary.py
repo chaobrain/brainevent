@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Sequence
+from typing import Optional, Sequence
 
 import brainunit as u
 import jax
@@ -432,8 +432,15 @@ def _csrmv_pallas_kernel(
                 mask = offset + jnp.arange(block_dim) < row_end
                 cols = indices_ref[pl.dslice(offset, block_dim)]
                 events = vector_ref[cols]
-                events = jnp.asarray(events, dtype=posts_ref.dtype)
-                sum_ += val_A * jnp.sum(jnp.where(mask, events, 0.))
+                if vector_ref.dtype == jnp.bool_:
+                    events = jnp.asarray(events & mask, dtype=posts_ref.dtype)
+                else:
+                    events = jnp.where(
+                        (events > 0.) & mask,
+                        jnp.ones(events.shape, dtype=posts_ref.dtype),
+                        0.
+                    )
+                sum_ += val_A * jnp.sum(events)
                 return sum_
 
             i_row_sum = jax.lax.fori_loop(
@@ -470,8 +477,11 @@ def _csrmv_pallas_kernel(
                 cols = indices_ref[pl.dslice(offset, block_dim)]
                 val_A = data_ref[pl.dslice(offset, block_dim)]
                 events = vector_ref[cols]
-                events = jnp.asarray(events, dtype=posts_ref.dtype)
-                sum_ += jnp.sum(jnp.where(mask, val_A * events, 0.))
+                if vector_ref.dtype == jnp.bool_:
+                    events = jnp.asarray(events & mask, dtype=posts_ref.dtype)
+                else:
+                    events = jnp.where((events > 0.) & mask, jnp.ones(events.shape, dtype=posts_ref.dtype), 0.)
+                sum_ += jnp.sum(val_A * events)
                 return sum_
 
             i_row_sum = jax.lax.fori_loop(
@@ -671,6 +681,29 @@ def _csrmv_batching(args, axes, **kwargs):
         return general_batching_rule(binary_csrmv_p, args, axes, **kwargs)
 
 
+def _binary_csrmv_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for homo in (True, False):
+            for bool_event in (True, False):
+                n_conn = max(1, int(n_post * prob))
+                indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
+                indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
+                weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(n_pre * n_conn, dtype=dtype)
+                v_size = n_post if not transpose else n_pre
+                if bool_event:
+                    vector = jnp.asarray(_np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
+                else:
+                    vector = jnp.asarray(_np.random.rand(v_size), dtype=dtype)
+                name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
+                configs.append(BenchmarkConfig(name, (weights, indices, jnp.asarray(indptr), vector), {
+                    'shape': (n_pre, n_post), 'transpose': transpose
+                }))
+    return configs
+
+
 def binary_csrmv_p_call(
     weights,
     indices,
@@ -679,6 +712,7 @@ def binary_csrmv_p_call(
     *,
     shape: MatrixShape,
     transpose: bool,
+    backend: Optional[str] = None,
 ):
     """
     Perform a call to the event CSR matrix-vector multiplication custom operation.
@@ -693,6 +727,7 @@ def binary_csrmv_p_call(
         vector (jax.Array): The dense vector to be multiplied with the sparse matrix.
         shape (Sequence[int]): A sequence of length 2, representing the shape of the sparse matrix.
         transpose (bool): Whether to transpose the sparse matrix before multiplication.
+        backend (str, optional): Backend to use for computation.
 
     Returns:
         jax.Array: The result of the matrix-vector multiplication.
@@ -730,6 +765,7 @@ def binary_csrmv_p_call(
         outs=[out_info],
         shape=shape,
         transpose=transpose,
+        backend=backend,
         # Provide shape and data type information for indices.
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         # Provide shape and data type information for indptr.
@@ -751,31 +787,6 @@ binary_csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
 binary_csrmv_p.def_batching_rule(_csrmv_batching)
 binary_csrmv_p.def_call(binary_csrmv_p_call)
 binary_csrmv_p.def_tags('csr', 'binary')
-
-
-def _binary_csrmv_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for transpose in (False, True):
-        for homo in (True, False):
-            for bool_event in (True, False):
-                n_conn = max(1, int(n_post * prob))
-                indptr = _np.arange(n_pre + 1, dtype=_np.int32) * n_conn
-                indices = _np.random.randint(0, n_post, (n_pre * n_conn,), dtype=_np.int32)
-                weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(n_pre * n_conn, dtype=dtype)
-                v_size = n_post if not transpose else n_pre
-                if bool_event:
-                    vector = jnp.asarray(_np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
-                else:
-                    vector = jnp.asarray(_np.random.rand(v_size), dtype=dtype)
-                name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
-                configs.append(BenchmarkConfig(name, (weights, indices, jnp.asarray(indptr), vector), {
-                    'shape': (n_pre, n_post), 'transpose': transpose
-                }))
-    return configs
-
-
 binary_csrmv_p.def_benchmark_data(_binary_csrmv_benchmark_data)
 
 
@@ -1421,84 +1432,6 @@ def _csrmm_batching(args, axes, **kwargs):
         return general_batching_rule(binary_csrmm_p, args, axes, **kwargs)
 
 
-def binary_csrmm_p_call(
-    weights,
-    indices,
-    indptr,
-    B,
-    *,
-    shape: MatrixShape,
-    transpose: bool,
-):
-    """
-    Perform a call to the event CSR matrix-matrix multiplication custom operation.
-
-    Args:
-        weights (jax.Array): Non-zero elements of the CSR sparse matrix.
-        indices (jax.Array): Column indices of non-zero elements in the CSR sparse matrix.
-        indptr (jax.Array): Index pointers of the CSR sparse matrix, indicating the start of each row.
-        B (jax.Array): A dense matrix.
-        shape (Sequence[int]): A sequence of length 2, representing the shape of the sparse matrix.
-        transpose (bool): A boolean indicating whether to transpose the sparse matrix before multiplication.
-
-    Returns:
-        jax.Array: The result of the matrix-matrix multiplication.
-    """
-    assert indices.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indices must be int32 or int64."
-    assert indptr.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indptr must be int32 or int64."
-    assert indptr.ndim == 1, "Indptr must be 1D."
-    assert indices.ndim == 1, "Indices must be 1D."
-    assert indptr.dtype == indices.dtype, "Indices and indptr must have the same dtype."
-    if transpose:
-        assert shape[0] == B.shape[0], "Shape mismatch for non-transpose operation."
-    else:
-        assert shape[1] == B.shape[0], f"Shape mismatch for transpose operation. {shape[1]} > {B.shape[0]} "
-    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
-
-    # Check if weights is a scalar. If so, convert it to a one-dimensional array.
-    if jnp.ndim(weights) == 0:
-        weights = jnp.asarray([weights])
-
-    # Determine the output shape and data type based on whether the sparse matrix is transposed.
-    out_info = (
-        # If transpose is True, the output shape is (shape[1], B.shape[1]).
-        jax.ShapeDtypeStruct([shape[1], B.shape[1]], weights.dtype)
-        if transpose else
-        # If transpose is False, the output shape is (shape[0], B.shape[1]).
-        jax.ShapeDtypeStruct([shape[0], B.shape[1]], weights.dtype)
-    )
-    # Call the binary_csrmm_p custom operation to perform the matrix-matrix multiplication.
-    return binary_csrmm_p(
-        weights,
-        indices,
-        indptr,
-        B,
-        outs=(out_info,),
-        shape=shape,
-        transpose=transpose,
-        # Provide shape and data type information for indices.
-        indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
-        # Provide shape and data type information for indptr.
-        indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
-        # Provide shape and data type information for weights.
-        weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
-        # Provide shape and data type information for B.
-        vector_info=jax.ShapeDtypeStruct(B.shape, B.dtype),
-    )
-
-
-binary_csrmm_p = XLACustomKernel('binary_csrmm')
-binary_csrmm_p.def_numba_kernel(_csrmm_numba_kernel)
-binary_csrmm_p.def_warp_kernel(_csrmm_warp_kernel)
-binary_csrmm_p.def_pallas_kernel('gpu', _csrmm_pallas_gpu_kernel)
-binary_csrmm_p.def_pallas_kernel('tpu', _csrmm_pallas_gpu_kernel)
-binary_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
-binary_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
-binary_csrmm_p.def_batching_rule(_csrmm_batching)
-binary_csrmm_p.def_call(binary_csrmm_p_call)
-binary_csrmm_p.def_tags('csr', 'binary')
-
-
 def _binary_csrmm_benchmark_data(*, platform):
     import numpy as _np
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
@@ -1522,4 +1455,83 @@ def _binary_csrmm_benchmark_data(*, platform):
     return configs
 
 
+def binary_csrmm_p_call(
+    weights,
+    indices,
+    indptr,
+    B,
+    *,
+    shape: MatrixShape,
+    transpose: bool,
+    backend: Optional[str] = None,
+):
+    """
+    Perform a call to the event CSR matrix-matrix multiplication custom operation.
+
+    Args:
+        weights (jax.Array): Non-zero elements of the CSR sparse matrix.
+        indices (jax.Array): Column indices of non-zero elements in the CSR sparse matrix.
+        indptr (jax.Array): Index pointers of the CSR sparse matrix, indicating the start of each row.
+        B (jax.Array): A dense matrix.
+        shape (Sequence[int]): A sequence of length 2, representing the shape of the sparse matrix.
+        transpose (bool): A boolean indicating whether to transpose the sparse matrix before multiplication.
+        backend (str, optional): Backend to use for computation.
+
+    Returns:
+        jax.Array: The result of the matrix-matrix multiplication.
+    """
+    assert indices.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indices must be int32 or int64."
+    assert indptr.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indptr must be int32 or int64."
+    assert indptr.ndim == 1, "Indptr must be 1D."
+    assert indices.ndim == 1, "Indices must be 1D."
+    assert indptr.dtype == indices.dtype, "Indices and indptr must have the same dtype."
+    if transpose:
+        assert shape[0] == B.shape[0], "Shape mismatch for transpose operation."
+    else:
+        assert shape[1] == B.shape[0], f"Shape mismatch for non-transpose operation. {shape[1]} != {B.shape[0]}"
+    assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
+
+    # Check if weights is a scalar. If so, convert it to a one-dimensional array.
+    if jnp.ndim(weights) == 0:
+        weights = jnp.asarray([weights])
+
+    # Determine the output shape and data type based on whether the sparse matrix is transposed.
+    out_info = (
+        # If transpose is True, the output shape is (shape[1], B.shape[1]).
+        jax.ShapeDtypeStruct([shape[1], B.shape[1]], weights.dtype)
+        if transpose else
+        # If transpose is False, the output shape is (shape[0], B.shape[1]).
+        jax.ShapeDtypeStruct([shape[0], B.shape[1]], weights.dtype)
+    )
+    # Call the binary_csrmm_p custom operation to perform the matrix-matrix multiplication.
+    return binary_csrmm_p(
+        weights,
+        indices,
+        indptr,
+        B,
+        outs=(out_info,),
+        shape=shape,
+        transpose=transpose,
+        backend=backend,
+        # Provide shape and data type information for indices.
+        indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
+        # Provide shape and data type information for indptr.
+        indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
+        # Provide shape and data type information for weights.
+        weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        # Provide shape and data type information for B.
+        vector_info=jax.ShapeDtypeStruct(B.shape, B.dtype),
+    )
+
+
+binary_csrmm_p = XLACustomKernel('binary_csrmm')
+binary_csrmm_p.def_numba_kernel(_csrmm_numba_kernel)
+binary_csrmm_p.def_warp_kernel(_csrmm_warp_kernel)
+binary_csrmm_p.def_pallas_kernel('gpu', _csrmm_pallas_gpu_kernel)
+binary_csrmm_p.def_pallas_kernel('tpu', _csrmm_pallas_gpu_kernel)
+binary_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
+binary_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
+binary_csrmm_p.def_batching_rule(_csrmm_batching)
+binary_csrmm_p.def_call(binary_csrmm_p_call)
+binary_csrmm_p.def_tags('csr', 'binary')
 binary_csrmm_p.def_benchmark_data(_binary_csrmm_benchmark_data)

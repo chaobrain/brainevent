@@ -15,7 +15,7 @@
 
 # -*- coding: utf-8 -*-
 
-from typing import Union, Tuple, Sequence
+from typing import Optional, Union, Tuple, Sequence
 
 import brainunit as u
 import jax
@@ -411,6 +411,31 @@ def _fcnmv_batching(args, axes, **kwargs):
         return general_batching_rule(fcnmv_p, args, axes, **kwargs)
 
 
+def _fcnmv_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for homo in (True, False):
+            n_conn = max(1, int(n_post * prob))
+            indices = jnp.asarray(_np.random.randint(0, n_post, (n_pre, n_conn), dtype=_np.int32))
+            if homo:
+                weights = jnp.ones(1, dtype=dtype)
+            else:
+                weights = jnp.ones((n_pre, n_conn), dtype=dtype)
+            v_size = n_post if not transpose else n_pre
+            vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
+            name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (weights, indices, vector),
+                    {'shape': (n_pre, n_post), 'transpose': transpose}
+                )
+            )
+    return configs
+
+
 def fcnmv_p_call(
     weights: jax.Array,
     indices: jax.Array,
@@ -418,6 +443,7 @@ def fcnmv_p_call(
     *,
     shape: Tuple[int, int],
     transpose: bool,
+    backend: Optional[str] = None,
 ) -> Tuple[jax.Array]:
     """Perform a sparse matrix-vector multiplication with fixed connection number.
 
@@ -451,7 +477,8 @@ def fcnmv_p_call(
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         vector_info=jax.ShapeDtypeStruct(vector.shape, vector.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
-        outs=[out]
+        outs=[out],
+        backend=backend,
     )
 
 
@@ -465,29 +492,6 @@ fcnmv_p.def_transpose_rule(_fcnmv_transpose_rule)
 fcnmv_p.def_batching_rule(_fcnmv_batching)
 fcnmv_p.def_call(fcnmv_p_call)
 fcnmv_p.def_tags('fcn', 'float')
-
-
-def _fcnmv_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for transpose in (False, True):
-        for homo in (True, False):
-            n_conn = max(1, int(n_post * prob))
-            indices = jnp.asarray(_np.random.randint(0, n_post, (n_pre, n_conn), dtype=_np.int32))
-            if homo:
-                weights = jnp.ones(1, dtype=dtype)
-            else:
-                weights = jnp.ones((n_pre, n_conn), dtype=dtype)
-            v_size = n_post if not transpose else n_pre
-            vector = jnp.asarray(_np.random.randn(v_size), dtype=dtype)
-            name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
-            configs.append(BenchmarkConfig(name, (weights, indices, vector), {
-                'shape': (n_pre, n_post), 'transpose': transpose
-            }))
-    return configs
-
-
 fcnmv_p.def_benchmark_data(_fcnmv_benchmark_data)
 
 
@@ -796,6 +800,31 @@ def _fcnmm_batching(args, axes, **kwargs):
         return general_batching_rule(fcnmm_p, args, axes, **kwargs)
 
 
+def _fcnmm_benchmark_data(*, platform):
+    import numpy as _np
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    for transpose in (False, True):
+        for homo in (True, False):
+            n_conn = max(1, int(n_post * prob))
+            indices = jnp.asarray(_np.random.randint(0, n_post, (n_pre, n_conn), dtype=_np.int32))
+            if homo:
+                weights = jnp.ones(1, dtype=dtype)
+            else:
+                weights = jnp.ones((n_pre, n_conn), dtype=dtype)
+            b_rows = n_post if not transpose else n_pre
+            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
+            name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (weights, indices, B),
+                    {'shape': (n_pre, n_post), 'transpose': transpose}
+                )
+            )
+    return configs
+
+
 def fcnmm_p_call(
     weights: jax.Array,
     indices: jax.Array,
@@ -803,6 +832,7 @@ def fcnmm_p_call(
     *,
     shape: Tuple[int, int],
     transpose: bool,
+    backend: Optional[str] = None,
 ) -> Tuple[jax.Array]:
     """
     Perform a sparse matrix-matrix multiplication with fixed connection number.
@@ -842,6 +872,7 @@ def fcnmm_p_call(
         matrix_info=jax.ShapeDtypeStruct(matrix.shape, matrix.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         outs=[out],
+        backend=backend,
     )
 
 
@@ -854,27 +885,4 @@ fcnmm_p.def_transpose_rule(_fcnmm_transpose_rule)
 fcnmm_p.def_batching_rule(_fcnmm_batching)
 fcnmm_p.def_call(fcnmm_p_call)
 fcnmm_p.def_tags('fcn', 'float')
-
-
-def _fcnmm_benchmark_data(*, platform):
-    import numpy as _np
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for transpose in (False, True):
-        for homo in (True, False):
-            n_conn = max(1, int(n_post * prob))
-            indices = jnp.asarray(_np.random.randint(0, n_post, (n_pre, n_conn), dtype=_np.int32))
-            if homo:
-                weights = jnp.ones(1, dtype=dtype)
-            else:
-                weights = jnp.ones((n_pre, n_conn), dtype=dtype)
-            b_rows = n_post if not transpose else n_pre
-            B = jnp.asarray(_np.random.randn(b_rows, 10), dtype=dtype)
-            name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
-            configs.append(BenchmarkConfig(name, (weights, indices, B), {
-                'shape': (n_pre, n_post), 'transpose': transpose
-            }))
-    return configs
-
-
 fcnmm_p.def_benchmark_data(_fcnmm_benchmark_data)

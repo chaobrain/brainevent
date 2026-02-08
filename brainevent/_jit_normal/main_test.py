@@ -259,3 +259,22 @@ class Test_JITC_To_Dense:
 
         primals, jitc_grad = jax.jvp(f_jitc_jvp, (wscale,), (dw_high,))
         assert allclose(true_grad, jitc_grad)
+
+
+class Test_JITC_Normal_Validation:
+    @pytest.mark.parametrize('cls', [brainevent.JITCNormalR, brainevent.JITCNormalC])
+    @pytest.mark.parametrize('corder', [True, False])
+    def test_zero_prob_dense_matvec_matmat(self, cls, corder):
+        shape = (8, 6)
+        mat = cls((1.5, 0.1, 0.0, 123), shape=shape, corder=corder)
+
+        dense = mat.todense()
+        assert allclose(dense, jnp.zeros_like(dense))
+
+        vec = jnp.ones(shape[1])
+        out_mv = mat @ vec
+        assert allclose(out_mv, jnp.zeros_like(out_mv))
+
+        B = jnp.ones((shape[1], 4))
+        out_mm = mat @ B
+        assert allclose(out_mm, jnp.zeros_like(out_mm))
