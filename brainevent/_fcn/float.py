@@ -216,7 +216,7 @@ def _fcnmv_warp_kernel(
         def kernel(weights, indices, vector):
             out_info = kwargs['outs'][0]
             dim = indices_info.shape[0]
-            fn = jax_kernel(ell_mv, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
+            fn = jax_kernel(ell_mv, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
             return fn(weights, indices, vector)
 
     return kernel

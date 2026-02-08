@@ -52,12 +52,10 @@ class EventRepresentation(ABC):
     __array_priority__ = 100
     __module__ = 'brainevent'
 
-    def __init__(self, value: ArrayLike, *, dtype: jax.typing.DTypeLike = None):
+    def __init__(self, value: ArrayLike):
         value = extract_raw_value(value)
         if isinstance(value, (list, tuple, np.ndarray)):
             value = u.math.asarray(value)
-        if dtype is not None:
-            value = u.math.asarray(value, dtype=dtype)
         self._value = value
 
     @property

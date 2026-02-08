@@ -130,11 +130,11 @@ def allclose(x, y, rtol=1e-6, atol=1e-6):
     return jnp.allclose(x, y, rtol=rtol, atol=atol)
 
 
-def gen_events(shape, prob=0.5, asbool=True, indexed=False):
+def gen_events(shape, prob=0.5, asbool=True):
     events = brainstate.random.random(shape) < prob
     if not asbool:
         events = jnp.asarray(events, dtype=float)
-    return brainevent.BinaryArray(events, indexed=indexed)
+    return brainevent.BinaryArray(events)
 
 
 def ones_like(x):

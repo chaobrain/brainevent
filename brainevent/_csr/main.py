@@ -511,28 +511,22 @@ class CSR(BaseCLS):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
-            if not other.indexed:
-                other = other.value
-                if other.ndim == 1:
-                    return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
-                elif other.ndim == 2:
-                    return binary_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape)
-                else:
-                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
+            other = other.value
+            if other.ndim == 1:
+                return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
+            elif other.ndim == 2:
+                return binary_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape)
             else:
-                raise NotImplementedError
+                raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
         elif isinstance(other, SparseFloat):
-            if not other.indexed:
-                other = other.value
-                if other.ndim == 1:
-                    return spfloat_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
-                elif other.ndim == 2:
-                    return spfloat_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape)
-                else:
-                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
+            other = other.value
+            if other.ndim == 1:
+                return spfloat_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
+            elif other.ndim == 2:
+                return spfloat_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape)
             else:
-                raise NotImplementedError
+                raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
         else:
             other = u.math.asarray(other)
@@ -564,40 +558,34 @@ class CSR(BaseCLS):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
-            if not other.indexed:
-                other = other.value
-                if other.ndim == 1:
-                    return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True)
-                elif other.ndim == 2:
-                    other = other.T
-                    r = binary_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True)
-                    return r.T
-                else:
-                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
+            other = other.value
+            if other.ndim == 1:
+                return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True)
+            elif other.ndim == 2:
+                other = other.T
+                r = binary_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True)
+                return r.T
             else:
-                raise NotImplementedError
+                raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
         elif isinstance(other, SparseFloat):
-            if not other.indexed:
-                other = other.value
-                if other.ndim == 1:
-                    return spfloat_csrmv(
-                        self.data, self.indices, self.indptr, other,
-                        shape=self.shape,
-                        transpose=True
-                    )
-                elif other.ndim == 2:
-                    other = other.T
-                    r = spfloat_csrmm(
-                        self.data, self.indices, self.indptr, other,
-                        shape=self.shape,
-                        transpose=True
-                    )
-                    return r.T
-                else:
-                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
+            other = other.value
+            if other.ndim == 1:
+                return spfloat_csrmv(
+                    self.data, self.indices, self.indptr, other,
+                    shape=self.shape,
+                    transpose=True
+                )
+            elif other.ndim == 2:
+                other = other.T
+                r = spfloat_csrmm(
+                    self.data, self.indices, self.indptr, other,
+                    shape=self.shape,
+                    transpose=True
+                )
+                return r.T
             else:
-                raise NotImplementedError
+                raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
         else:
             other = u.math.asarray(other)
@@ -951,44 +939,38 @@ class CSC(BaseCLS):
         data = self.data
 
         if isinstance(other, BinaryArray):
-            if not other.indexed:
-                other = other.value
-                if other.ndim == 1:
-                    return binary_csrmv(
-                        data, self.indices, self.indptr, other,
-                        shape=self.shape[::-1],
-                        transpose=True
-                    )
-                elif other.ndim == 2:
-                    return binary_csrmm(
-                        data, self.indices, self.indptr, other,
-                        shape=self.shape[::-1],
-                        transpose=True
-                    )
-                else:
-                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
+            other = other.value
+            if other.ndim == 1:
+                return binary_csrmv(
+                    data, self.indices, self.indptr, other,
+                    shape=self.shape[::-1],
+                    transpose=True
+                )
+            elif other.ndim == 2:
+                return binary_csrmm(
+                    data, self.indices, self.indptr, other,
+                    shape=self.shape[::-1],
+                    transpose=True
+                )
             else:
-                raise NotImplementedError
+                raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
         elif isinstance(other, SparseFloat):
-            if not other.indexed:
-                other = other.value
-                if other.ndim == 1:
-                    return spfloat_csrmv(
-                        data, self.indices, self.indptr, other,
-                        shape=self.shape[::-1],
-                        transpose=True
-                    )
-                elif other.ndim == 2:
-                    return spfloat_csrmm(
-                        data, self.indices, self.indptr, other,
-                        shape=self.shape[::-1],
-                        transpose=True
-                    )
-                else:
-                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
+            other = other.value
+            if other.ndim == 1:
+                return spfloat_csrmv(
+                    data, self.indices, self.indptr, other,
+                    shape=self.shape[::-1],
+                    transpose=True
+                )
+            elif other.ndim == 2:
+                return spfloat_csrmm(
+                    data, self.indices, self.indptr, other,
+                    shape=self.shape[::-1],
+                    transpose=True
+                )
             else:
-                raise NotImplementedError
+                raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
         else:
 
@@ -1021,36 +1003,30 @@ class CSC(BaseCLS):
         data = self.data
 
         if isinstance(other, BinaryArray):
-            if not other.indexed:
-                other = other.value
-                if other.ndim == 1:
-                    return binary_csrmv(data, self.indices, self.indptr, other,
-                                        shape=self.shape[::-1],
-                                        transpose=False)
-                elif other.ndim == 2:
-                    return binary_csrmm(data, self.indices, self.indptr, other.T,
-                                        shape=self.shape[::-1],
-                                        transpose=False).T
-                else:
-                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
+            other = other.value
+            if other.ndim == 1:
+                return binary_csrmv(data, self.indices, self.indptr, other,
+                                    shape=self.shape[::-1],
+                                    transpose=False)
+            elif other.ndim == 2:
+                return binary_csrmm(data, self.indices, self.indptr, other.T,
+                                    shape=self.shape[::-1],
+                                    transpose=False).T
             else:
-                raise NotImplementedError
+                raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
         elif isinstance(other, SparseFloat):
-            if not other.indexed:
-                other = other.value
-                if other.ndim == 1:
-                    return spfloat_csrmv(data, self.indices, self.indptr, other,
-                                         shape=self.shape[::-1],
-                                         transpose=False)
-                elif other.ndim == 2:
-                    return spfloat_csrmm(data, self.indices, self.indptr, other.T,
-                                         shape=self.shape[::-1],
-                                         transpose=False).T
-                else:
-                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
+            other = other.value
+            if other.ndim == 1:
+                return spfloat_csrmv(data, self.indices, self.indptr, other,
+                                     shape=self.shape[::-1],
+                                     transpose=False)
+            elif other.ndim == 2:
+                return spfloat_csrmm(data, self.indices, self.indptr, other.T,
+                                     shape=self.shape[::-1],
+                                     transpose=False).T
             else:
-                raise NotImplementedError
+                raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
         else:
             other = u.math.asarray(other)

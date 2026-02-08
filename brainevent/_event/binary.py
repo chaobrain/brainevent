@@ -21,7 +21,6 @@ from jax.tree_util import register_pytree_node_class
 from brainevent._dense import dbmm, bdmm, dbmv, bdvm
 from brainevent._error import MathError
 from .base import EventRepresentation, extract_raw_value, is_known_type
-from .indexed_binary_extraction import binary_array_index
 
 __all__ = [
     'BinaryArray',
@@ -39,9 +38,6 @@ class BinaryArray(EventRepresentation):
         The input binary array data.
     dtype : jax.typing.DTypeLike, optional
         The data type of the array.
-    indexed : bool, optional
-        If True, pre-compute spike indices and spike count for efficient
-        indexed operations, and make the array immutable. Default is False.
     """
     __module__ = 'brainevent'
 
@@ -50,30 +46,15 @@ class BinaryArray(EventRepresentation):
         value,
         *,
         dtype: jax.typing.DTypeLike = None,
-        indexed: bool = False,
     ):
         super().__init__(value, dtype=dtype)
-        self._indexed = indexed
-        if indexed:
-            self._spike_indices, self._spike_count = binary_array_index(self._value)
-        else:
-            self._spike_indices = None
-            self._spike_count = None
 
     @property
-    def indexed(self) -> bool:
-        return self._indexed
+    def T(self):
+        return self.value.T
 
-    @property
-    def spike_indices(self):
-        return self._spike_indices
-
-    @property
-    def spike_count(self):
-        return self._spike_count
-
-    def with_value(self, value):
-        return type(self)(value, indexed=self._indexed)
+    def transpose(self, *axes):
+        return self.value.transpose(*axes)
 
     def __matmul__(self, oc):
         """
@@ -189,17 +170,8 @@ class BinaryArray(EventRepresentation):
         else:
             return oc.__matmul__(self)
 
-    def __imatmul__(self, oc):
-        if is_known_type(oc):
-            return self.with_value(self.__matmul__(oc))
-        return self.with_value(oc.__rmatmul__(self))
-
     def tree_flatten(self):
-        aux = {
-            '_indexed': self._indexed,
-            '_spike_indices': self._spike_indices,
-            '_spike_count': self._spike_count,
-        }
+        aux = dict()
         return (self._value,), aux
 
     @classmethod

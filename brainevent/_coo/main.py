@@ -587,23 +587,17 @@ class COO(u.sparse.SparseMatrix):
             actual_transpose = False ^ flip
 
             if isinstance(other, BinaryArray):
-                if not other.indexed:
-                    other = other.value
-                    if other.ndim == 1:
-                        return binary_csrmv(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose)
-                    elif other.ndim == 2:
-                        return binary_csrmm(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose)
-                    else:
-                        raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                other = other.value
+                if other.ndim == 1:
+                    return binary_csrmv(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose)
+                elif other.ndim == 2:
+                    return binary_csrmm(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose)
                 else:
-                    raise NotImplementedError
-            elif isinstance(other, SparseFloat):
-                if not other.indexed:
-                    other = other.value
-                    data, other = u.math.promote_dtypes(self.data, other)
                     raise NotImplementedError(f"matmul with object of shape {other.shape}")
-                else:
-                    raise NotImplementedError
+            elif isinstance(other, SparseFloat):
+                other = other.value
+                data, other = u.math.promote_dtypes(self.data, other)
+                raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
                 other = u.math.asarray(other)
                 data, other = u.math.promote_dtypes(self.data, other)
@@ -615,23 +609,17 @@ class COO(u.sparse.SparseMatrix):
                     raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
         if isinstance(other, BinaryArray):
-            if not other.indexed:
-                other = other.value
-                if other.ndim == 1:
-                    return binary_coomv(data, self.row, self.col, other, shape=self.shape)
-                elif other.ndim == 2:
-                    return binary_coomm(data, self.row, self.col, other, shape=self.shape)
-                else:
-                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
+            other = other.value
+            if other.ndim == 1:
+                return binary_coomv(data, self.row, self.col, other, shape=self.shape)
+            elif other.ndim == 2:
+                return binary_coomm(data, self.row, self.col, other, shape=self.shape)
             else:
-                raise NotImplementedError
-        elif isinstance(other, SparseFloat):
-            if not other.indexed:
-                other = other.value
-                data, other = u.math.promote_dtypes(self.data, other)
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
-            else:
-                raise NotImplementedError
+        elif isinstance(other, SparseFloat):
+            other = other.value
+            data, other = u.math.promote_dtypes(self.data, other)
+            raise NotImplementedError(f"matmul with object of shape {other.shape}")
         else:
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
@@ -675,25 +663,19 @@ class COO(u.sparse.SparseMatrix):
             actual_transpose = True ^ flip
 
             if isinstance(other, BinaryArray):
-                if not other.indexed:
-                    other = other.value
-                    if other.ndim == 1:
-                        return binary_csrmv(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose)
-                    elif other.ndim == 2:
-                        other = other.T
-                        r = binary_csrmm(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose)
-                        return r.T
-                    else:
-                        raise NotImplementedError(f"matmul with object of shape {other.shape}")
+                other = other.value
+                if other.ndim == 1:
+                    return binary_csrmv(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose)
+                elif other.ndim == 2:
+                    other = other.T
+                    r = binary_csrmm(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose)
+                    return r.T
                 else:
-                    raise NotImplementedError
-            elif isinstance(other, SparseFloat):
-                if not other.indexed:
-                    other = other.value
-                    data, other = u.math.promote_dtypes(self.data, other)
                     raise NotImplementedError(f"matmul with object of shape {other.shape}")
-                else:
-                    raise NotImplementedError
+            elif isinstance(other, SparseFloat):
+                other = other.value
+                data, other = u.math.promote_dtypes(self.data, other)
+                raise NotImplementedError(f"matmul with object of shape {other.shape}")
             else:
                 other = u.math.asarray(other)
                 data, other = u.math.promote_dtypes(self.data, other)
@@ -707,26 +689,20 @@ class COO(u.sparse.SparseMatrix):
                     raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
         if isinstance(other, BinaryArray):
-            if not other.indexed:
-                other = other.value
-                if other.ndim == 1:
-                    return binary_coomv(data, self.row, self.col, other, shape=self.shape, transpose=True)
-                elif other.ndim == 2:
-                    other = other.T
-                    r = binary_coomm(data, self.row, self.col, other, shape=self.shape, transpose=True)
-                    return r.T
-                else:
-                    raise NotImplementedError(f"matmul with object of shape {other.shape}")
+            other = other.value
+            if other.ndim == 1:
+                return binary_coomv(data, self.row, self.col, other, shape=self.shape, transpose=True)
+            elif other.ndim == 2:
+                other = other.T
+                r = binary_coomm(data, self.row, self.col, other, shape=self.shape, transpose=True)
+                return r.T
             else:
-                raise NotImplementedError
+                raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
         elif isinstance(other, SparseFloat):
-            if not other.indexed:
-                other = other.value
-                data, other = u.math.promote_dtypes(self.data, other)
-                raise NotImplementedError(f"matmul with object of shape {other.shape}")
-            else:
-                raise NotImplementedError
+            other = other.value
+            data, other = u.math.promote_dtypes(self.data, other)
+            raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
         else:
             other = u.math.asarray(other)

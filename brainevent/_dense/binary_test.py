@@ -21,7 +21,7 @@ import brainunit as u
 import pytest
 
 import brainevent
-from brainevent._dense.binary import  dbmm,  bdmm,  dbmv,  bdvm
+from brainevent._dense.binary import dbmm, bdmm, dbmv, bdvm
 
 
 class TestMatrixEvent:
@@ -31,9 +31,7 @@ class TestMatrixEvent:
     @pytest.mark.parametrize("asbool", [True, False])
     def test_mm(self, m, k, n, asbool):
         matrix = brainstate.random.randn(m, k)
-        events = brainevent.BinaryArray(
-            brainstate.random.randn(k, n) < 0.5
-        )
+        events = brainevent.BinaryArray(brainstate.random.randn(k, n) < 0.5)
         if not asbool:
             events.value = u.math.asarray(events.value, dtype=float)
         out1 = matrix @ events
@@ -57,9 +55,7 @@ class TestEventMatrix:
     @pytest.mark.parametrize("n", [30])
     @pytest.mark.parametrize("asbool", [True, False])
     def test_mm(self, m, k, n, asbool):
-        events = brainevent.BinaryArray(
-            brainstate.random.randn(m, k) < 0.5
-        )
+        events = brainevent.BinaryArray(brainstate.random.randn(m, k) < 0.5)
         if not asbool:
             events.value = u.math.asarray(events.value, dtype=float)
         matrix = brainstate.random.randn(k, n)
@@ -84,9 +80,7 @@ class TestMatrixEvent_mv:
     @pytest.mark.parametrize("asbool", [True, False])
     def test_mm(self, m, k, asbool):
         matrix = brainstate.random.randn(m, k)
-        events = brainevent.BinaryArray(
-            brainstate.random.randn(k) < 0.5
-        )
+        events = brainevent.BinaryArray(brainstate.random.randn(k) < 0.5)
         if not asbool:
             events.value = u.math.asarray(events.value, dtype=float)
         out1 = matrix @ events
@@ -108,9 +102,7 @@ class TestEventMatrix_mv:
     @pytest.mark.parametrize("k", [15, 20])
     @pytest.mark.parametrize("asbool", [True, False])
     def test_mm(self, m, k, asbool):
-        events = brainevent.BinaryArray(
-            brainstate.random.randn(k) < 0.5
-        )
+        events = brainevent.BinaryArray(brainstate.random.randn(k) < 0.5)
         if not asbool:
             events.value = u.math.asarray(events.value, dtype=float)
         matrix = brainstate.random.randn(k, m)

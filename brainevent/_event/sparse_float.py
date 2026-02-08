@@ -46,39 +46,11 @@ class SparseFloat(EventRepresentation):
     ----------
     value : array_like
         The underlying sparse float array data.
-    dtype : jax.typing.DTypeLike, optional
-        The data type of the array.
-    indexed : bool, optional
-        If True, mark the array as indexed and make it immutable.
-        Default is False.
     """
-    __slots__ = ('_value', '_indexed', '_indices')
     __module__ = 'brainevent'
 
-    def __init__(
-        self,
-        value,
-        *,
-        dtype: jax.typing.DTypeLike = None,
-        indexed: bool = False,
-    ):
-        super().__init__(value, dtype=dtype)
-        self._indexed = indexed
-        if indexed:
-            self._indices = ...
-        else:
-            self._indices = None
-
-    @property
-    def indexed(self) -> bool:
-        return self._indexed
-
-    @property
-    def indices(self):
-        return self._indices
-
-    def with_value(self, value):
-        return type(self)(value, indexed=self._indexed)
+    def __init__( self, value ):
+        super().__init__(value)
 
     def __matmul__(self, oc):
         if is_known_type(oc):
@@ -146,10 +118,7 @@ class SparseFloat(EventRepresentation):
         return self.with_value(oc.__rmatmul__(self))
 
     def tree_flatten(self):
-        aux = {
-            '_indexed': self._indexed,
-            '_indices': self._indices,
-        }
+        aux = dict()
         return (self._value,), aux
 
     @classmethod

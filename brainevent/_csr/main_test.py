@@ -25,11 +25,11 @@ import pytest
 import brainevent
 
 
-def gen_events(shape, prob=0.5, asbool=True, indexed=False):
+def gen_events(shape, prob=0.5, asbool=True):
     events = brainstate.random.random(shape) < prob
     if not asbool:
         events = jnp.asarray(events, dtype=float)
-    return brainevent.BinaryArray(events, indexed=indexed)
+    return brainevent.BinaryArray(events)
 
 
 def gen_sparse_matrix(shape, prob=0.2):

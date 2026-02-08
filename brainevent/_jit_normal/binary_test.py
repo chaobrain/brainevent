@@ -299,7 +299,7 @@ class Test_JITCNormalR_Batching:
         matrices = jax.vmap(f, in_axes=1, out_axes=1)(vectors)
         assert matrices.shape == (shape[0], batch_size)
 
-        matrices_loop = brainstate.transform.for_loop(f, vectors.T)
+        matrices_loop = brainstate.transform.for_loop(f, vectors.value.T)
         assert matrices_loop.shape == (batch_size, shape[0])
 
         assert u.math.allclose(matrices, matrices_loop.T)
@@ -357,7 +357,7 @@ class Test_JITCNormalR_Batching:
         matrices = jax.vmap(f, in_axes=1, out_axes=1)(vectors)
         assert matrices.shape == (shape[1], batch_size)
 
-        matrices_loop = brainstate.transform.for_loop(f, vectors.T)
+        matrices_loop = brainstate.transform.for_loop(f, vectors.value.T)
         assert matrices_loop.shape == (batch_size, shape[1])
 
         assert u.math.allclose(matrices, matrices_loop.T)
@@ -1033,7 +1033,7 @@ class Test_JITCNormalC_Batching:
         matrices = jax.vmap(f, in_axes=1, out_axes=1)(vectors)
         assert matrices.shape == (shape[0], batch_size)
 
-        matrices_loop = brainstate.transform.for_loop(f, vectors.T)
+        matrices_loop = brainstate.transform.for_loop(f, vectors.value.T)
         assert matrices_loop.shape == (batch_size, shape[0])
 
         assert u.math.allclose(matrices, matrices_loop.T)
@@ -1088,7 +1088,7 @@ class Test_JITCNormalC_Batching:
         matrices = jax.vmap(f, in_axes=1, out_axes=1)(vectors)
         assert matrices.shape == (shape[1], batch_size)
 
-        matrices_loop = brainstate.transform.for_loop(f, vectors.T)
+        matrices_loop = brainstate.transform.for_loop(f, vectors.value.T)
         assert matrices_loop.shape == (batch_size, shape[1])
 
         assert u.math.allclose(matrices, matrices_loop.T)
