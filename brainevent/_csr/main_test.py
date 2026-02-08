@@ -16,13 +16,19 @@
 # -*- coding: utf-8 -*-
 
 
+from contextlib import contextmanager
+
 import brainstate
+import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 import brainevent
+
+platform = jax.default_backend()
+BINARY_CSRMV_IMPLEMENTATIONS = tuple(brainevent.binary_csrmv_p.available_backends(platform))
 
 
 def gen_events(shape, prob=0.5, asbool=True):
@@ -43,6 +49,83 @@ def gen_sparse_matrix(shape, prob=0.2):
 
 def ones_like(x):
     return jax.tree.map(jnp.ones_like, x)
+
+
+@contextmanager
+def _binary_csrmv_backend(implementation: str):
+    default_backend = brainevent.binary_csrmv_p.get_default(platform)
+    brainevent.binary_csrmv_p.set_default(platform, implementation, persist=False)
+    try:
+        yield
+    finally:
+        if default_backend is not None:
+            brainevent.binary_csrmv_p.set_default(platform, default_backend, persist=False)
+
+
+@pytest.mark.skipif(
+    not BINARY_CSRMV_IMPLEMENTATIONS,
+    reason=f'No binary_csrmv implementation on platform={platform}',
+)
+class Test_CSR_BinaryOperator:
+    def test_event_homo_bool(self):
+        for implementation in BINARY_CSRMV_IMPLEMENTATIONS:
+            with _binary_csrmv_backend(implementation):
+                for dat in [1., 2., 3.]:
+                    mask = (brainstate.random.rand(10, 20) < 0.1).astype(float) * dat
+                    csr = u.sparse.CSR.fromdense(mask)
+                    csr = brainevent.CSR((dat, csr.indices, csr.indptr), shape=mask.shape)
+
+                    v = brainevent.BinaryArray(brainstate.random.rand(20) < 0.5)
+                    assert u.math.allclose(
+                        mask.astype(float) @ v.value.astype(float),
+                        csr @ v,
+                    )
+
+                    v = brainevent.BinaryArray(brainstate.random.rand(10) < 0.5)
+                    assert u.math.allclose(
+                        v.value.astype(float) @ mask.astype(float),
+                        v @ csr,
+                    )
+
+    def test_event_homo_heter(self):
+        for implementation in BINARY_CSRMV_IMPLEMENTATIONS:
+            with _binary_csrmv_backend(implementation):
+                mat = brainstate.random.rand(10, 20)
+                mask = (brainstate.random.rand(10, 20) < 0.1) * mat
+                csr = u.sparse.CSR.fromdense(mask)
+                csr = brainevent.CSR((csr.data, csr.indices, csr.indptr), shape=mask.shape)
+
+                v = brainevent.BinaryArray(brainstate.random.rand(20) < 0.5)
+                assert u.math.allclose(
+                    mask.astype(float) @ v.value.astype(float),
+                    csr @ v,
+                )
+
+                v = brainevent.BinaryArray(brainstate.random.rand(10) < 0.5)
+                assert u.math.allclose(
+                    v.value.astype(float) @ mask.astype(float),
+                    v @ csr,
+                )
+
+    def test_event_heter_float_as_bool(self):
+        for implementation in BINARY_CSRMV_IMPLEMENTATIONS:
+            with _binary_csrmv_backend(implementation):
+                mat = brainstate.random.rand(10, 20)
+                mask = (mat < 0.1).astype(float) * mat
+                csr = u.sparse.CSR.fromdense(mask)
+                csr = brainevent.CSR((csr.data, csr.indices, csr.indptr), shape=mask.shape)
+
+                v = brainevent.BinaryArray((brainstate.random.rand(20) < 0.5).astype(float))
+                assert u.math.allclose(
+                    mask.astype(float) @ v.value.astype(float),
+                    csr @ v,
+                )
+
+                v = brainevent.BinaryArray((brainstate.random.rand(10) < 0.5).astype(float))
+                assert u.math.allclose(
+                    v.value.astype(float) @ mask.astype(float),
+                    v @ csr,
+                )
 
 
 class Test_CSC_CSR_Conversion:
