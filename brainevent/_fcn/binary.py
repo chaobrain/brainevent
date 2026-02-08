@@ -646,12 +646,12 @@ def _binary_fcnmm_numba_kernel(
                 @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def ell_mv(weights, indices, matrix, posts):
                     for i_m in numba.prange(indices.shape[0]):
-                        posts[i_m] = weights[i_m] @ matrix[indices[i_m]]
+                        posts[i_m] = weights[i_m] @ (matrix[indices[i_m]]).astype(weights.dtype)
             else:
                 @numba.njit(parallel=True, fastmath=True, nogil=True)
                 def ell_mv(weights, indices, matrix, posts):
                     for i_m in numba.prange(indices.shape[0]):
-                        events = matrix[indices[i_m]] > 0.
+                        events = (matrix[indices[i_m]] > 0.).astype(weights.dtype)
                         posts[i_m] = weights[i_m] @ events
 
     def kernel(weights, indices, matrix):
