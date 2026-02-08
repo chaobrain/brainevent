@@ -16,6 +16,7 @@
 # -*- coding: utf-8 -*-
 
 
+import brainstate
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -86,3 +87,61 @@ class TestCOOToCsr:
         csr = coo.tocsr()
         assert isinstance(csr, brainevent.CSR)
         assert jnp.allclose(csr.todense(), coo.todense())
+
+
+class TestCOOMatmul:
+    """Test COO.__matmul__ and COO.__rmatmul__ operator dispatch."""
+
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_matmul_binary_vector(self, shape):
+        matrix = gen_sparse_matrix(shape)
+        coo = brainevent.COO.fromdense(matrix)
+        v = brainevent.BinaryArray(brainstate.random.rand(shape[1]) < 0.5)
+        result = coo @ v
+        expected = matrix @ v.value.astype(float)
+        assert jnp.allclose(result, expected)
+
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_rmatmul_binary_vector(self, shape):
+        matrix = gen_sparse_matrix(shape)
+        coo = brainevent.COO.fromdense(matrix)
+        v = brainevent.BinaryArray(brainstate.random.rand(shape[0]) < 0.5)
+        result = v @ coo
+        expected = v.value.astype(float) @ matrix
+        assert jnp.allclose(result, expected)
+
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_matmul_binary_matrix(self, shape):
+        matrix = gen_sparse_matrix(shape)
+        coo = brainevent.COO.fromdense(matrix)
+        B = brainevent.BinaryArray(brainstate.random.rand(shape[1], 10) < 0.5)
+        result = coo @ B
+        expected = matrix @ B.value.astype(float)
+        assert jnp.allclose(result, expected, rtol=1e-3, atol=1e-3)
+
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_rmatmul_binary_matrix(self, shape):
+        matrix = gen_sparse_matrix(shape)
+        coo = brainevent.COO.fromdense(matrix)
+        B = brainevent.BinaryArray(brainstate.random.rand(10, shape[0]) < 0.5)
+        result = B @ coo
+        expected = B.value.astype(float) @ matrix
+        assert jnp.allclose(result, expected, rtol=1e-3, atol=1e-3)
+
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_matmul_dense_vector(self, shape):
+        matrix = gen_sparse_matrix(shape)
+        coo = brainevent.COO.fromdense(matrix)
+        v = jnp.asarray(np.random.rand(shape[1]))
+        result = coo @ v
+        expected = matrix @ v
+        assert jnp.allclose(result, expected, rtol=1e-3, atol=1e-3)
+
+    @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
+    def test_rmatmul_dense_vector(self, shape):
+        matrix = gen_sparse_matrix(shape)
+        coo = brainevent.COO.fromdense(matrix)
+        v = jnp.asarray(np.random.rand(shape[0]))
+        result = v @ coo
+        expected = v @ matrix
+        assert jnp.allclose(result, expected, rtol=1e-3, atol=1e-3)
