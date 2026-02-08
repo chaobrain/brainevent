@@ -18,6 +18,7 @@ from typing import Optional, Union
 import brainunit as u
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, namescope

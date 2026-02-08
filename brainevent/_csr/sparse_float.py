@@ -20,6 +20,7 @@ import brainunit as u
 import jax
 import jax.numpy as jnp
 from jax.interpreters import ad
+import numpy as np
 
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescope
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
