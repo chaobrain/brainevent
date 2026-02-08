@@ -37,7 +37,7 @@ __all__ = [
 ]
 
 
-@namescope(static_argnames=("shape", "transpose", "sorted_by_output"))
+@namescope(static_argnames=("shape", "transpose"))
 def coomv(
     data: Data,
     row: Row,
@@ -46,7 +46,6 @@ def coomv(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    sorted_by_output: bool = False,
     backend: Optional[str] = None,
 ) -> Data:
     """
@@ -59,9 +58,6 @@ def coomv(
         vector: The dense vector to multiply.
         shape: The shape of the sparse matrix (rows, cols).
         transpose: If True, multiply by the transposed matrix.
-        sorted_by_output: If True, indices are sorted by the output dimension
-            (row for non-transpose, col for transpose), enabling fewer atomics
-            in the Warp backend.
 
     Returns:
         The result of the matrix-vector multiplication.
@@ -75,7 +71,6 @@ def coomv(
         vector,
         shape=shape,
         transpose=transpose,
-        sorted_by_output=sorted_by_output,
         backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitv)
@@ -157,7 +152,7 @@ def _coomv_numba_kernel(
                 for i in range(row.shape[0]):
                     posts[row[i]] += weights[i] * v[col[i]]
 
-    def kernel(weights, row, col, row_ptr, v):
+    def kernel(weights, row, col, v):
         # row_ptr is unused for numba backend; present for signature parity
         return numba_kernel(mv, outs=kwargs['outs'])(weights, row, col, v)
 
@@ -170,8 +165,6 @@ def _coomv_warp_kernel(
     row_info: jax.ShapeDtypeStruct,
     col_info: jax.ShapeDtypeStruct,
     transpose: bool,
-    row_ptr_info: jax.ShapeDtypeStruct,
-    sorted_by_output: bool,
     **kwargs
 ):
     import warp
@@ -181,93 +174,7 @@ def _coomv_warp_kernel(
     row_warp_info = jaxinfo_to_warpinfo(row_info)
     col_warp_info = jaxinfo_to_warpinfo(col_info)
     vector_warp_info = jaxinfo_to_warpinfo(vector_info)
-    row_ptr_warp_info = jaxinfo_to_warpinfo(row_ptr_info)
     out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    # ------------------------------------------------------------------
-    # Sorted path: one thread per output index, no atomics needed.
-    # ------------------------------------------------------------------
-    if sorted_by_output:
-        if transpose:
-            if weight_info.size == 1:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    row_ptr: row_ptr_warp_info,
-                    v: vector_warp_info,
-                    posts: out_warp_info,
-                ):
-                    o = warp.tid()
-                    start = row_ptr[o]
-                    end = row_ptr[o + 1]
-                    w = weights[0]
-                    acc = float(0.0)
-                    for idx in range(start, end):
-                        acc += w * v[row[idx]]
-                    posts[o] = acc
-            else:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    row_ptr: row_ptr_warp_info,
-                    v: vector_warp_info,
-                    posts: out_warp_info,
-                ):
-                    o = warp.tid()
-                    start = row_ptr[o]
-                    end = row_ptr[o + 1]
-                    acc = float(0.0)
-                    for idx in range(start, end):
-                        acc += weights[idx] * v[row[idx]]
-                    posts[o] = acc
-        else:
-            if weight_info.size == 1:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    row_ptr: row_ptr_warp_info,
-                    v: vector_warp_info,
-                    posts: out_warp_info,
-                ):
-                    o = warp.tid()
-                    start = row_ptr[o]
-                    end = row_ptr[o + 1]
-                    w = weights[0]
-                    acc = float(0.0)
-                    for idx in range(start, end):
-                        acc += w * v[col[idx]]
-                    posts[o] = acc
-            else:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    row_ptr: row_ptr_warp_info,
-                    v: vector_warp_info,
-                    posts: out_warp_info,
-                ):
-                    o = warp.tid()
-                    start = row_ptr[o]
-                    end = row_ptr[o + 1]
-                    acc = float(0.0)
-                    for idx in range(start, end):
-                        acc += weights[idx] * v[col[idx]]
-                    posts[o] = acc
-
-        dim = kwargs['outs'][0].shape[0]
-
-        def kernel(weights, row, col, row_ptr, v):
-            fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
-            return fn(weights, row, col, row_ptr, v, jnp.zeros(kwargs['outs'][0].shape, kwargs['outs'][0].dtype))
-
-        return kernel
 
     # Process multiple nnz per thread to cut the number of global atomics. Each thread
     # walks a small, contiguous chunk and locally accumulates runs of identical output
@@ -286,7 +193,6 @@ def _coomv_warp_kernel(
                 weights: weight_warp_info,
                 row: row_warp_info,
                 col: col_warp_info,
-                row_ptr: row_ptr_warp_info,
                 v: vector_warp_info,
                 posts: out_warp_info,
             ):
@@ -326,7 +232,6 @@ def _coomv_warp_kernel(
                 weights: weight_warp_info,
                 row: row_warp_info,
                 col: col_warp_info,
-                row_ptr: row_ptr_warp_info,
                 v: vector_warp_info,
                 posts: out_warp_info,
             ):
@@ -366,7 +271,6 @@ def _coomv_warp_kernel(
                 weights: weight_warp_info,
                 row: row_warp_info,
                 col: col_warp_info,
-                row_ptr: row_ptr_warp_info,
                 v: vector_warp_info,
                 posts: out_warp_info,
             ):
@@ -406,7 +310,6 @@ def _coomv_warp_kernel(
                 weights: weight_warp_info,
                 row: row_warp_info,
                 col: col_warp_info,
-                row_ptr: row_ptr_warp_info,
                 v: vector_warp_info,
                 posts: out_warp_info,
             ):
@@ -442,9 +345,9 @@ def _coomv_warp_kernel(
     dim = (row_info.shape[0] + WORK_PER_THREAD - 1) // WORK_PER_THREAD
     out_info = kwargs['outs'][0]
 
-    def kernel(weights, row, col, row_ptr, v):
+    def kernel(weights, row, col, v):
         fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
-        return fn(weights, row, col, row_ptr, v, jnp.zeros(out_info.shape, out_info.dtype))
+        return fn(weights, row, col, v, jnp.zeros(out_info.shape, out_info.dtype))
 
     return kernel
 
@@ -452,10 +355,7 @@ def _coomv_warp_kernel(
 def _coomv_pallas_gpu_kernel(
     weight_info: jax.ShapeDtypeStruct,
     row_info: jax.ShapeDtypeStruct,
-    row_ptr_info: jax.ShapeDtypeStruct,
-    shape: MatrixShape,
     transpose: bool,
-    sorted_by_output: bool,
     **kwargs
 ):
     from jax.experimental import pallas as pl
@@ -472,7 +372,6 @@ def _coomv_pallas_gpu_kernel(
                 data_ref,  # [1]
                 row_ref,  # [nnz]
                 col_ref,  # [nnz]
-                row_ptr_ref,  # [out+1]
                 vector_ref,  # [m]
                 _,  # [k]
                 posts_ref,  # [k]
@@ -492,7 +391,6 @@ def _coomv_pallas_gpu_kernel(
                 data_ref,  # [nnz]
                 row_ref,  # [nnz]
                 col_ref,  # [nnz]
-                row_ptr_ref,  # [out+1]
                 vector_ref,  # [m]
                 _,  # [k]
                 posts_ref,  # [k]
@@ -507,7 +405,7 @@ def _coomv_pallas_gpu_kernel(
                 data = jnp.asarray(vals, dtype=posts_ref.dtype) * weights
                 atomic_add(posts_ref, cols, data, mask=mask)
 
-        def kernel(data, row, col, row_ptr, vector):
+        def kernel(data, row, col, vector):
             fn = pl.pallas_call(
                 mv,
                 grid=(pl.cdiv(nnz, block_dim),),
@@ -515,7 +413,7 @@ def _coomv_pallas_gpu_kernel(
                 out_shape=kwargs['outs']
             )
             posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
-            return fn(data, row, col, row_ptr, vector, posts)
+            return fn(data, row, col, vector, posts)
 
         return kernel
 
@@ -527,7 +425,6 @@ def _coomv_pallas_gpu_kernel(
                 data_ref,  # [1]
                 row_ref,  # [nnz]
                 col_ref,  # [nnz]
-                row_ptr_ref,  # [out+1]
                 vector_ref,  # [k]
                 _,  # [m]
                 posts_ref,  # [m]
@@ -547,7 +444,6 @@ def _coomv_pallas_gpu_kernel(
                 data_ref,  # [nnz]
                 row_ref,  # [nnz]
                 col_ref,  # [nnz]
-                row_ptr_ref,  # [out+1]
                 vector_ref,  # [k]
                 _,  # [m]
                 posts_ref,  # [m]
@@ -562,7 +458,7 @@ def _coomv_pallas_gpu_kernel(
                 data = jnp.asarray(vals, dtype=posts_ref.dtype) * weights
                 atomic_add(posts_ref, rows, data, mask=mask)
 
-        def kernel(data, row, col, row_ptr, vector):
+        def kernel(data, row, col, vector):
             fn = pl.pallas_call(
                 mv,
                 grid=(pl.cdiv(nnz, block_dim),),
@@ -570,23 +466,17 @@ def _coomv_pallas_gpu_kernel(
                 out_shape=kwargs['outs']
             )
             posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
-            return fn(data, row, col, row_ptr, vector, posts)
+            return fn(data, row, col, vector, posts)
 
         return kernel
 
 
 def _coomv_jvp_vector(vector_dot, data, row, col, vector, *, shape, transpose, **kwargs):
-    return [coomv(data, row, col, vector_dot, shape=shape, transpose=transpose,
-                  sorted_by_output=kwargs.get('sorted_by_output', False))]
+    return coomv_p_call(data, row, col, vector_dot, shape=shape, transpose=transpose)
 
 
 def _coomv_jvp_weights(data_dot, data, row, col, vector, *, shape, transpose, **kwargs):
-    return coomv_p_call(
-        data_dot, row, col, vector,
-        shape=shape,
-        transpose=transpose,
-        sorted_by_output=kwargs.get('sorted_by_output', False)
-    )
+    return coomv_p_call(data_dot, row, col, vector, shape=shape, transpose=transpose)
 
 
 def _coomv_transpose_rule(ct, data, row, col, v, *, shape, transpose, **kwargs):
@@ -605,7 +495,6 @@ def _coomv_transpose_rule(ct, data, row, col, v, *, shape, transpose, **kwargs):
                 ct,
                 shape=shape,
                 transpose=not transpose,
-                sorted_by_output=kwargs.get('sorted_by_output', False)
             )
         return data, row, col, ct_events
     else:
@@ -618,7 +507,6 @@ def _coomv_transpose_rule(ct, data, row, col, v, *, shape, transpose, **kwargs):
                 v,
                 shape=shape,
                 transpose=transpose,
-                sorted_by_output=kwargs.get('sorted_by_output', False),
             )[0]
             ct_values = jnp.inner(ct, ct_values).reshape(*data.aval.shape)
         else:
@@ -636,7 +524,6 @@ def _coomv_batching(args, axes, **kwargs):
             args[3].T,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
-            sorted_by_output=kwargs.get('sorted_by_output', False)
         )
         return r, [1]
 
@@ -649,7 +536,6 @@ def _coomv_batching(args, axes, **kwargs):
             args[3],
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
-            sorted_by_output=kwargs.get('sorted_by_output', False)
         )
         return r, [1]
 
@@ -687,7 +573,6 @@ def coomv_p_call(
     *,
     shape: Sequence[int],
     transpose: bool,
-    sorted_by_output: bool = False,
     backend: Optional[str] = None,
 ):
     """
@@ -707,9 +592,6 @@ def coomv_p_call(
         The shape of the sparse matrix.
     transpose : bool
         Whether to transpose the sparse matrix.
-    sorted_by_output : bool
-        If True, (row, col) are sorted by the output dimension (row for
-        non-transpose, col for transpose), enabling a no-atomic Warp kernel.
     backend : str, optional
         Backend to use for computation.
 
@@ -721,14 +603,6 @@ def coomv_p_call(
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
-
-    index_dtype = row.dtype
-    out_dim = shape[1] if transpose else shape[0]
-    # Row pointer for fast, atomic-free Warp path; inexpensive histogram otherwise.
-    counts = jnp.bincount(col if transpose else row, length=out_dim)
-    row_ptr = jnp.concatenate(
-        [jnp.asarray([0], dtype=index_dtype), jnp.cumsum(counts, dtype=index_dtype)]
-    )
 
     out_info = (
         jax.ShapeDtypeStruct([shape[1]], weights.dtype)
@@ -744,12 +618,10 @@ def coomv_p_call(
         outs=[out_info],
         shape=shape,
         transpose=transpose,
-        sorted_by_output=sorted_by_output,
         backend=backend,
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         row_info=jax.ShapeDtypeStruct(row.shape, row.dtype),
         col_info=jax.ShapeDtypeStruct(col.shape, col.dtype),
-        row_ptr_info=jax.ShapeDtypeStruct(row_ptr.shape, row_ptr.dtype),
         vector_info=jax.ShapeDtypeStruct(v.shape, v.dtype),
     )
 
@@ -1177,7 +1049,6 @@ def coomm_p_call(
     *,
     shape: Sequence[int],
     transpose: bool,
-    sorted_by_output: bool = False,
     backend: Optional[str] = None,
 ):
     """
@@ -1197,8 +1068,6 @@ def coomm_p_call(
         The shape of the sparse matrix.
     transpose : bool
         Whether to transpose the sparse matrix.
-    sorted_by_output : bool
-        Unused placeholder to keep signature aligned with coomv batching paths.
     backend : str, optional
         Backend to use for computation.
 
@@ -1224,7 +1093,6 @@ def coomm_p_call(
         outs=[out_info],
         shape=shape,
         transpose=transpose,
-        sorted_by_output=sorted_by_output,
         backend=backend,
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         matrix_info=jax.ShapeDtypeStruct(B.shape, B.dtype),
