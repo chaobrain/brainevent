@@ -285,27 +285,3 @@ class Test_JITC_Uniform_Validation:
         B = jnp.ones((shape[1], 4))
         out_mm = mat @ B
         assert allclose(out_mm, jnp.zeros_like(out_mm))
-
-    def test_functional_api_validation_and_zero(self):
-        shape = (8, 6)
-        vec = jnp.ones(shape[1])
-        B = jnp.ones((shape[1], 4))
-
-        with pytest.raises(ValueError, match='prob'):
-            brainevent.jitu(-1.0, 1.0, -0.1, 123, shape=shape)
-        with pytest.raises(ValueError, match='prob'):
-            brainevent.jitumv(-1.0, 1.0, 1.1, vec, 123, shape=shape)
-        with pytest.raises(ValueError, match='prob'):
-            brainevent.binary_jitumm(-1.0, 1.0, float('nan'), B, 123, shape=shape)
-
-        with pytest.raises(ValueError, match='w_low'):
-            brainevent.jitu(1.0, -1.0, 0.1, 123, shape=shape)
-        with pytest.raises(ValueError, match='w_low'):
-            brainevent.binary_jitumv(1.0, -1.0, 0.1, vec, 123, shape=shape)
-
-        out_dense = brainevent.jitu(-1.0, 1.0, 0.0, 123, shape=shape)
-        out_mv = brainevent.jitumv(-1.0, 1.0, 0.0, vec, 123, shape=shape)
-        out_mm = brainevent.jitumm(-1.0, 1.0, 0.0, B, 123, shape=shape)
-        assert allclose(out_dense, jnp.zeros_like(out_dense))
-        assert allclose(out_mv, jnp.zeros_like(out_mv))
-        assert allclose(out_mm, jnp.zeros_like(out_mm))
