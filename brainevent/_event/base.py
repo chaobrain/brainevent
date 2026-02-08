@@ -64,6 +64,10 @@ class EventRepresentation(ABC):
     def value(self) -> ArrayValue:
         return self._value
 
+    @value.setter
+    def value(self, val) -> None:
+        self._value = val
+
     def with_value(self, value: ArrayLike) -> Self:
         return type(self)(value)
 

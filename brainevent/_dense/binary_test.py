@@ -21,12 +21,7 @@ import brainunit as u
 import pytest
 
 import brainevent
-from brainevent._dense.binary import (
-    dbmm,
-    bdmm,
-    dbmv,
-    bdvm,
-)
+from brainevent._dense.binary import  dbmm,  bdmm,  dbmv,  bdvm
 
 
 class TestMatrixEvent:
