@@ -778,6 +778,7 @@ def binary_jitnmv_p_call(
     shape: Sequence[int],
     transpose: bool,
     corder: bool,
+    backend: Optional[str] = None,
 ):
     w_loc = jnp.atleast_1d(w_loc)
     w_scale = jnp.atleast_1d(w_scale)
@@ -817,6 +818,7 @@ def binary_jitnmv_p_call(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        backend=backend,
     )
 
 
@@ -1408,6 +1410,7 @@ def binary_jitnmm_p_call(
     shape: MatrixShape,
     transpose: bool,
     corder: bool,
+    backend: Optional[str] = None,
 ):
     w_loc = jnp.atleast_1d(w_loc)
     w_scale = jnp.atleast_1d(w_scale)
@@ -1451,6 +1454,7 @@ def binary_jitnmm_p_call(
         transpose=transpose,
         corder=corder,
         TITLE_SIZE=B.shape[1],  # Assuming B is [k, n], we want to process n columns at once
+        backend=backend,
     )
 
 

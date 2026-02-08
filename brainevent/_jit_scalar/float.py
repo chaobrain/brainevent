@@ -593,6 +593,7 @@ def jits_p_call(
     shape: Sequence[int],
     transpose: bool,
     corder: bool,
+    backend: Optional[str] = None,
 ):
     weight = jnp.atleast_1d(weight)
     clen = jnp.atleast_1d(clen)
@@ -616,6 +617,7 @@ def jits_p_call(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        backend=backend,
     )
 
 
@@ -1083,6 +1085,7 @@ def jitsmv_p_call(
     shape: Sequence[int],
     transpose: bool,
     corder: bool,
+    backend: Optional[str] = None,
 ):
     r"""
     Low-level implementation function for just-in-time generated sparse matrix-vector multiplication
@@ -1172,6 +1175,7 @@ def jitsmv_p_call(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        backend=backend,
     )
 
 
@@ -1672,6 +1676,7 @@ def jitsmm_p_call(
     shape: MatrixShape,
     transpose: bool,
     corder: bool,
+    backend: Optional[str] = None,
 ):
     weight = jnp.atleast_1d(weight)
     clen = jnp.atleast_1d(clen)
@@ -1711,6 +1716,7 @@ def jitsmm_p_call(
         transpose=transpose,
         corder=corder,
         TITLE_SIZE=B.shape[1],  # Assuming B is [k, n], we want to process n columns at once
+        backend=backend,
     )
 
 

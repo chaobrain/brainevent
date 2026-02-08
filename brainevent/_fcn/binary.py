@@ -16,7 +16,7 @@
 # -*- coding: utf-8 -*-
 
 
-from typing import Tuple, Union
+from typing import Optional, Tuple, Union
 
 import brainunit as u
 import jax
@@ -517,6 +517,7 @@ def binary_fcnmv_p_call(
     *,
     shape: Tuple[int, int],
     transpose: bool = False,
+    backend: Optional[str] = None,
 ) -> Tuple[jax.Array]:
     out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, spikes, shape, transpose)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
@@ -530,6 +531,7 @@ def binary_fcnmv_p_call(
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         spike_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
+        backend=backend,
     )
 
 
@@ -914,6 +916,7 @@ def binary_fcnmm_p_call(
     *,
     shape: Tuple[int, int],
     transpose: bool,
+    backend: Optional[str] = None,
 ) -> Tuple[jax.Array]:
     """
     Perform a sparse matrix-matrix multiplication with fixed connection number.
@@ -953,6 +956,7 @@ def binary_fcnmm_p_call(
         matrix_info=jax.ShapeDtypeStruct(matrix.shape, matrix.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         outs=[out],
+        backend=backend,
     )
 
 

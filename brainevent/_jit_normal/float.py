@@ -642,7 +642,7 @@ def _jitn_benchmark_data(*, platform):
     return configs
 
 
-def jitn_p_call(w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool):
+def jitn_p_call(w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool, backend: Optional[str] = None):
     w_loc = jnp.atleast_1d(w_loc)
     w_scale = jnp.atleast_1d(w_scale)
     clen = jnp.atleast_1d(clen)
@@ -668,6 +668,7 @@ def jitn_p_call(w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: b
         shape=shape,
         transpose=transpose,
         corder=corder,
+        backend=backend,
     )
 
 
@@ -1194,6 +1195,7 @@ def jitnmv_p_call(
     shape,
     transpose: bool,
     corder: bool,
+    backend: Optional[str] = None,
 ):
     w_loc = jnp.atleast_1d(w_loc)
     w_scale = jnp.atleast_1d(w_scale)
@@ -1233,6 +1235,7 @@ def jitnmv_p_call(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        backend=backend,
     )
 
 
@@ -1738,7 +1741,7 @@ def _jitnmm_benchmark_data(*, platform):
     return configs
 
 
-def jitnmm_p_call(w_loc, w_scale, clen, B, seed, *, shape: MatrixShape, transpose: bool, corder: bool):
+def jitnmm_p_call(w_loc, w_scale, clen, B, seed, *, shape: MatrixShape, transpose: bool, corder: bool, backend: Optional[str] = None):
     w_loc = jnp.atleast_1d(w_loc)
     w_scale = jnp.atleast_1d(w_scale)
     clen = jnp.atleast_1d(clen)
@@ -1781,6 +1784,7 @@ def jitnmm_p_call(w_loc, w_scale, clen, B, seed, *, shape: MatrixShape, transpos
         transpose=transpose,
         corder=corder,
         TITLE_SIZE=B.shape[1],  # Assuming B is [k, n], we want to process n columns at once
+        backend=backend,
     )
 
 

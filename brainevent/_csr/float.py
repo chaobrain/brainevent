@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Sequence
+from typing import Optional, Sequence
 
 import brainunit as u
 import jax
@@ -503,6 +503,7 @@ def csrmv_p_call(
     *,
     shape: Sequence[int],
     transpose: bool,
+    backend: Optional[str] = None,
 ):
     assert indices.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indices must be int32 or int64."
     assert indptr.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indptr must be int32 or int64."
@@ -531,6 +532,7 @@ def csrmv_p_call(
         outs=[out_info],
         shape=shape,
         transpose=transpose,
+        backend=backend,
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
@@ -1072,6 +1074,7 @@ def csrmm_p_call(
     *,
     shape: Sequence[int],
     transpose: bool,
+    backend: Optional[str] = None,
 ):
     assert indices.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indices must be int32 or int64."
     assert indptr.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indptr must be int32 or int64."
@@ -1100,6 +1103,7 @@ def csrmm_p_call(
         outs=[out_info],
         shape=shape,
         transpose=transpose,
+        backend=backend,
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
@@ -1278,6 +1282,7 @@ def csrmv_yw2y_p_call(
     *,
     shape: MatrixShape,
     transpose: bool = False,
+    backend: Optional[str] = None,
 ):
     assert y.dtype == w.dtype, f"y and w must have the same dtype, but got {y.dtype} and {w.dtype}."
     assert indptr.ndim == 1, "Indptr must be 1D."
@@ -1303,6 +1308,7 @@ def csrmv_yw2y_p_call(
         outs=[jax.ShapeDtypeStruct(w.shape, w.dtype)],
         shape=tuple(shape),
         transpose=transpose,
+        backend=backend,
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
         y_info=jax.ShapeDtypeStruct(y.shape, y.dtype),

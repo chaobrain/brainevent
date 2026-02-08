@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Sequence
+from typing import Optional, Sequence
 
 import brainunit as u
 import jax
@@ -712,6 +712,7 @@ def binary_csrmv_p_call(
     *,
     shape: MatrixShape,
     transpose: bool,
+    backend: Optional[str] = None,
 ):
     """
     Perform a call to the event CSR matrix-vector multiplication custom operation.
@@ -726,6 +727,7 @@ def binary_csrmv_p_call(
         vector (jax.Array): The dense vector to be multiplied with the sparse matrix.
         shape (Sequence[int]): A sequence of length 2, representing the shape of the sparse matrix.
         transpose (bool): Whether to transpose the sparse matrix before multiplication.
+        backend (str, optional): Backend to use for computation.
 
     Returns:
         jax.Array: The result of the matrix-vector multiplication.
@@ -763,6 +765,7 @@ def binary_csrmv_p_call(
         outs=[out_info],
         shape=shape,
         transpose=transpose,
+        backend=backend,
         # Provide shape and data type information for indices.
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         # Provide shape and data type information for indptr.
@@ -1460,6 +1463,7 @@ def binary_csrmm_p_call(
     *,
     shape: MatrixShape,
     transpose: bool,
+    backend: Optional[str] = None,
 ):
     """
     Perform a call to the event CSR matrix-matrix multiplication custom operation.
@@ -1471,6 +1475,7 @@ def binary_csrmm_p_call(
         B (jax.Array): A dense matrix.
         shape (Sequence[int]): A sequence of length 2, representing the shape of the sparse matrix.
         transpose (bool): A boolean indicating whether to transpose the sparse matrix before multiplication.
+        backend (str, optional): Backend to use for computation.
 
     Returns:
         jax.Array: The result of the matrix-matrix multiplication.
@@ -1507,6 +1512,7 @@ def binary_csrmm_p_call(
         outs=(out_info,),
         shape=shape,
         transpose=transpose,
+        backend=backend,
         # Provide shape and data type information for indices.
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         # Provide shape and data type information for indptr.

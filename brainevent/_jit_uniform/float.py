@@ -504,6 +504,7 @@ def jitu_p_call(
     shape,
     transpose: bool,
     corder: bool,
+    backend: Optional[str] = None,
 ):
     w_low = jnp.atleast_1d(w_low)
     w_high = jnp.atleast_1d(w_high)
@@ -532,6 +533,7 @@ def jitu_p_call(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        backend=backend,
     )
 
 
@@ -959,6 +961,7 @@ def jitumv_p_call(
     shape,
     transpose: bool,
     corder: bool,
+    backend: Optional[str] = None,
 ):
     w_low = jnp.atleast_1d(w_low)
     w_high = jnp.atleast_1d(w_high)
@@ -1000,6 +1003,7 @@ def jitumv_p_call(
         shape=shape,
         transpose=transpose,
         corder=corder,
+        backend=backend,
     )
 
 
@@ -1530,6 +1534,7 @@ def jitumm_p_call(
     shape: MatrixShape,
     transpose: bool,
     corder: bool,
+    backend: Optional[str] = None,
 ):
     w_low = jnp.atleast_1d(w_low)
     w_high = jnp.atleast_1d(w_high)
@@ -1575,6 +1580,7 @@ def jitumm_p_call(
         transpose=transpose,
         corder=corder,
         TITLE_SIZE=B.shape[1],
+        backend=backend,
     )
 
 

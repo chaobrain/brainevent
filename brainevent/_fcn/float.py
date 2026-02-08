@@ -15,7 +15,7 @@
 
 # -*- coding: utf-8 -*-
 
-from typing import Union, Tuple, Sequence
+from typing import Optional, Union, Tuple, Sequence
 
 import brainunit as u
 import jax
@@ -443,6 +443,7 @@ def fcnmv_p_call(
     *,
     shape: Tuple[int, int],
     transpose: bool,
+    backend: Optional[str] = None,
 ) -> Tuple[jax.Array]:
     """Perform a sparse matrix-vector multiplication with fixed connection number.
 
@@ -476,7 +477,8 @@ def fcnmv_p_call(
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         vector_info=jax.ShapeDtypeStruct(vector.shape, vector.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
-        outs=[out]
+        outs=[out],
+        backend=backend,
     )
 
 
@@ -830,6 +832,7 @@ def fcnmm_p_call(
     *,
     shape: Tuple[int, int],
     transpose: bool,
+    backend: Optional[str] = None,
 ) -> Tuple[jax.Array]:
     """
     Perform a sparse matrix-matrix multiplication with fixed connection number.
@@ -869,6 +872,7 @@ def fcnmm_p_call(
         matrix_info=jax.ShapeDtypeStruct(matrix.shape, matrix.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         outs=[out],
+        backend=backend,
     )
 
 
