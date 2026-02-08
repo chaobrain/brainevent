@@ -50,7 +50,7 @@ else:
 
 
 def _remove_event_array(x):
-    if isinstance(x, brainevent.EventArray):
+    if isinstance(x, brainevent.BinaryArray):
         return x.data
     return x
 

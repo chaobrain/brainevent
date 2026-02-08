@@ -82,9 +82,9 @@ def event_matrix(n_pre, n_post, conn_prob, spk_prob, as_float: bool, transpose: 
     @jax.jit
     def f1(spike):
         if transpose:
-            return brainevent.EventArray(spike) @ csr
+            return brainevent.BinaryArray(spike) @ csr
         else:
-            return csr @ brainevent.EventArray(spike)
+            return csr @ brainevent.BinaryArray(spike)
 
     weight2 = braintools.init.Normal()([n_pre, n_post])
 

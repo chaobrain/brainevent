@@ -22,7 +22,7 @@ import brainunit as u
 import jax
 
 from brainevent._compatible_import import JAXSparse, Tracer
-from brainevent._event.binary import EventArray
+from brainevent._event.binary import BinaryArray
 from brainevent._jitc_matrix import JITCMatrix
 from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
 from .binary import (
@@ -469,7 +469,7 @@ class JITCNormalR(JITNormalMatrix):
         if isinstance(other, JAXSparse):
             raise NotImplementedError("matmul between two sparse objects.")
 
-        if isinstance(other, EventArray):
+        if isinstance(other, BinaryArray):
             other = other.data
             if other.ndim == 1:
                 # JIT matrix @ events
@@ -534,7 +534,7 @@ class JITCNormalR(JITNormalMatrix):
         if isinstance(other, JAXSparse):
             raise NotImplementedError("matmul between two sparse objects.")
 
-        if isinstance(other, EventArray):
+        if isinstance(other, BinaryArray):
             other = other.data
             if other.ndim == 1:
                 #
@@ -808,7 +808,7 @@ class JITCNormalC(JITNormalMatrix):
         if isinstance(other, JAXSparse):
             raise NotImplementedError("matmul between two sparse objects.")
 
-        if isinstance(other, EventArray):
+        if isinstance(other, BinaryArray):
             other = other.data
             if other.ndim == 1:
                 # JITC_R matrix.T @ vector
@@ -880,7 +880,7 @@ class JITCNormalC(JITNormalMatrix):
         # other @ csr
         if isinstance(other, JAXSparse):
             raise NotImplementedError("matmul between two sparse objects.")
-        if isinstance(other, EventArray):
+        if isinstance(other, BinaryArray):
             other = other.data
             if other.ndim == 1:
                 #

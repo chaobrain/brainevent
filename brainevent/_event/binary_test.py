@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 
 import brainevent
-from brainevent import BinaryArray, EventArray
+from brainevent import BinaryArray, BinaryArray
 
 
 class TestBinaryArray:
@@ -31,8 +31,8 @@ class TestBinaryArray:
         assert binary_array.shape == (4,)
         assert np.array_equal(binary_array.value, data)
 
-        # Test if EventArray is an alias for BinaryArray
-        event_array = EventArray(data)
+        # Test if BinaryArray is an alias for BinaryArray
+        event_array = BinaryArray(data)
         assert type(event_array) == type(binary_array)
 
         # Test with 2D array

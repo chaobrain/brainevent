@@ -77,7 +77,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improved GPU/TPU backend selection for JITC operators (#28)
 - Refactored COO and CSR implementations with new type aliases for readability (#14)
 - Integrated general batching rule for all operator implementations (#13)
-- Enhanced EventArray with additional built-in functions (#5, #24)
+- Enhanced BinaryArray with additional built-in functions (#5, #24)
 - Restructured brainevent module documentation (#21)
 - Improved code formatting and replaced deprecated references (#22)
 
@@ -101,9 +101,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic CSR matrix operations
 - CSR float tests
 - CSRMM (CSR Matrix-Matrix multiplication) VJP and JVP rules (#1)
-- Basic EventArray implementation
+- Basic BinaryArray implementation
 - FixedPostNumConn event and float implementations (#4)
-- EventArray built-in functions
+- BinaryArray built-in functions
 - CSR spmv gradient computation (#5)
 - README and project documentation (#3, #6)
 

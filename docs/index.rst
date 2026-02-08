@@ -56,7 +56,7 @@ Core Components
 **1. Event Representation**
   BrainEvent provides specialized array types for representing neural events:
 
-  - ``EventArray``: Binary arrays representing spike events (1 = spike, 0 = no spike)
+  - ``BinaryArray``: Binary arrays representing spike events (1 = spike, 0 = no spike)
   - ``BinaryArray``: General binary data with event-aware operations
   - ``SparseFloat``: Float arrays with sparse semantics (zeros are skipped)
 
@@ -104,7 +104,7 @@ Quick Start
 
 **Basic Usage**
 
-To use event-driven computation, wrap your spike arrays with ``EventArray``:
+To use event-driven computation, wrap your spike arrays with ``BinaryArray``:
 
 .. code-block:: python
 
@@ -112,7 +112,7 @@ To use event-driven computation, wrap your spike arrays with ``EventArray``:
    import jax.numpy
 
    # Create spike events (binary array)
-   spikes = brainevent.EventArray(jax.numpy.array([1, 0, 1, 0, 1]))
+   spikes = brainevent.BinaryArray(jax.numpy.array([1, 0, 1, 0, 1]))
 
    # Create a sparse connectivity matrix
    conn = brainevent.CSR(...)
@@ -120,7 +120,7 @@ To use event-driven computation, wrap your spike arrays with ``EventArray``:
    # Event-driven matrix multiplication
    output = spikes @ conn
 
-BrainEvent automatically optimizes computations when ``EventArray`` is involved,
+BrainEvent automatically optimizes computations when ``BinaryArray`` is involved,
 processing only the active (non-zero) events.
 
 **Working with Different Data Structures**
@@ -143,7 +143,7 @@ processing only the active (non-zero) events.
                                      conn_num=100, weight=0.5, seed=0)
 
    # Event-driven computations work with all structures
-   spikes = brainevent.EventArray(jax.numpy.array([...]))
+   spikes = brainevent.BinaryArray(jax.numpy.array([...]))
    output = spikes @ jitc_conn  # Only active spikes are processed
 
 
