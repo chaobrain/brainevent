@@ -163,19 +163,6 @@ def _binary_1d_array_index_pallas_kernel(
     return kernel
 
 
-def binary_1d_array_index_p_call(spikes, *, backend: Optional[str] = None):
-    indices_info = jax.ShapeDtypeStruct([spikes.shape[0]], jnp.int32)
-    count_info = jax.ShapeDtypeStruct([1], jnp.int32)
-    return binary_1d_array_index_p(
-        spikes,
-        outs=[indices_info, count_info],
-        spikes_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
-        indices_info=indices_info,
-        count_info=count_info,
-        backend=backend,
-    )
-
-
 def _binary_1d_array_index_jvp_spikes(spikes_dot, spikes, **kwargs):
     return binary_1d_array_index_p_call(spikes_dot)
 
@@ -201,18 +188,6 @@ def _binary_1d_array_index_batching(args, axes, **kwargs):
     return general_batching_rule(binary_1d_array_index_p, args, axes, **kwargs)
 
 
-binary_1d_array_index_p = XLACustomKernel('binary_1d_array_index')
-binary_1d_array_index_p.def_numba_kernel(_binary_1d_array_index_numba_kernel)
-binary_1d_array_index_p.def_warp_kernel(_binary_1d_array_index_warp_kernel)
-binary_1d_array_index_p.def_pallas_kernel('gpu', _binary_1d_array_index_pallas_kernel)
-binary_1d_array_index_p.def_pallas_kernel('tpu', _binary_1d_array_index_pallas_kernel)
-binary_1d_array_index_p.def_jvp_rule2(_binary_1d_array_index_jvp_spikes)
-binary_1d_array_index_p.def_transpose_rule(_binary_1d_array_index_transpose_rule)
-binary_1d_array_index_p.def_batching_rule(_binary_1d_array_index_batching)
-binary_1d_array_index_p.def_call(binary_1d_array_index_p_call)
-binary_1d_array_index_p.def_tags('event', 'binary')
-
-
 def _binary_1d_array_index_benchmark_data(*, platform):
     import numpy as _np
     n = 1000
@@ -230,6 +205,29 @@ def _binary_1d_array_index_benchmark_data(*, platform):
     return configs
 
 
+def binary_1d_array_index_p_call(spikes, *, backend: Optional[str] = None):
+    indices_info = jax.ShapeDtypeStruct([spikes.shape[0]], jnp.int32)
+    count_info = jax.ShapeDtypeStruct([1], jnp.int32)
+    return binary_1d_array_index_p(
+        spikes,
+        outs=[indices_info, count_info],
+        spikes_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
+        indices_info=indices_info,
+        count_info=count_info,
+        backend=backend,
+    )
+
+
+binary_1d_array_index_p = XLACustomKernel('binary_1d_array_index')
+binary_1d_array_index_p.def_numba_kernel(_binary_1d_array_index_numba_kernel)
+binary_1d_array_index_p.def_warp_kernel(_binary_1d_array_index_warp_kernel)
+binary_1d_array_index_p.def_pallas_kernel('gpu', _binary_1d_array_index_pallas_kernel)
+binary_1d_array_index_p.def_pallas_kernel('tpu', _binary_1d_array_index_pallas_kernel)
+binary_1d_array_index_p.def_jvp_rule2(_binary_1d_array_index_jvp_spikes)
+binary_1d_array_index_p.def_transpose_rule(_binary_1d_array_index_transpose_rule)
+binary_1d_array_index_p.def_batching_rule(_binary_1d_array_index_batching)
+binary_1d_array_index_p.def_call(binary_1d_array_index_p_call)
+binary_1d_array_index_p.def_tags('event', 'binary')
 binary_1d_array_index_p.def_benchmark_data(_binary_1d_array_index_benchmark_data)
 
 

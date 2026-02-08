@@ -88,23 +88,15 @@ class TestBinaryArray:
         assert np.allclose(result, expected)
 
     def test_imatmul(self):
-        """Test in-place matrix multiplication."""
+        """`@=` returns a new immutable array wrapper."""
         binary_mat = BinaryArray(np.array([[0, 1, 1], [1, 0, 1]], dtype=np.uint8))
         dense_mat = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
 
-        # Store original value for comparison
         original_id = id(binary_mat)
-
-        # Perform in-place operation
-        with pytest.raises(brainevent.MathError):
-            binary_mat @= dense_mat
-
-            # Check result
-            expected = np.array([[8.0, 10.0], [6.0, 8.0]])
-            assert np.allclose(binary_mat.value, expected)
-
-            # Ensure it's the same object (in-place)
-            assert id(binary_mat) == original_id
+        binary_mat @= dense_mat
+        expected = np.array([[8.0, 10.0], [6.0, 8.0]])
+        assert np.allclose(binary_mat.value, expected)
+        assert id(binary_mat) != original_id
 
     def test_error_conditions(self):
         """Test error conditions for matrix multiplication."""
@@ -157,29 +149,30 @@ class TestBinaryArrayIndexed:
 
     @pytest.mark.xfail(reason="binary_array_index kernel not available on all platforms")
     def test_indexed_immutability_setitem(self):
-        """Test that __setitem__ raises for indexed arrays."""
+        """Item assignment is unsupported for immutable event arrays."""
         import jax.numpy as jnp
         data = jnp.array([0, 1, 0, 1], dtype=jnp.float32)
         arr = BinaryArray(data, indexed=True)
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(TypeError):
             arr[0] = 1
 
     @pytest.mark.xfail(reason="binary_array_index kernel not available on all platforms")
     def test_indexed_immutability_update(self):
-        """Test that _update raises for indexed arrays."""
+        """Direct `value` assignment is unsupported for immutable event arrays."""
         import jax.numpy as jnp
         data = jnp.array([0, 1, 0, 1], dtype=jnp.float32)
         arr = BinaryArray(data, indexed=True)
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(AttributeError):
             arr.value = jnp.array([1, 0, 1, 0], dtype=jnp.float32)
 
-    def test_non_indexed_mutable(self):
-        """Test that non-indexed arrays allow mutation."""
+    def test_non_indexed_with_value(self):
+        """Non-indexed arrays are still immutable and replaced via `with_value`."""
         import jax.numpy as jnp
         data = jnp.array([0, 1, 0, 1], dtype=jnp.float32)
         arr = BinaryArray(data)
-        arr.value = jnp.array([1, 0, 1, 0], dtype=jnp.float32)
-        assert np.array_equal(arr.value, np.array([1, 0, 1, 0]))
+        arr2 = arr.with_value(jnp.array([1, 0, 1, 0], dtype=jnp.float32))
+        assert np.array_equal(arr2.value, np.array([1, 0, 1, 0]))
+        assert np.array_equal(arr.value, np.array([0, 1, 0, 1]))
 
     def test_pytree_roundtrip_non_indexed(self):
         """Test JAX pytree flatten/unflatten for non-indexed arrays."""

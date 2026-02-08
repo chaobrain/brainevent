@@ -42,12 +42,13 @@ class TestSparseFloatMatMul:
     #     assert np.allclose(result, expected, rtol=1e-3, atol=1e-3)
 
     def test_imatmul(self):
-        # Test in-place matrix multiplication
-        with pytest.raises(brainevent.MathError):
-            matrix_copy = SparseFloat(self.matrix.value.copy())
-            matrix_copy @= self.dense_matrix2
-            expected = np.array([[9.0, 12.0, 15.0], [19.0, 26.0, 33.0], [29.0, 40.0, 51.0]])
-            assert np.array_equal(matrix_copy.value, expected)
+        # `@=` returns a new immutable wrapper.
+        matrix_copy = SparseFloat(self.matrix.value.copy())
+        original_id = id(matrix_copy)
+        matrix_copy @= self.dense_matrix2
+        expected = np.array([[9.0, 12.0, 15.0], [19.0, 26.0, 33.0], [29.0, 40.0, 51.0]])
+        assert np.array_equal(matrix_copy.value, expected)
+        assert id(matrix_copy) != original_id
 
     def test_scalar_matmul_error(self):
         # Test error for scalar in matrix multiplication
@@ -106,26 +107,27 @@ class TestSparseFloatIndexed:
         assert arr.indices is None
 
     def test_indexed_immutability_setitem(self):
-        """Test that __setitem__ raises for indexed arrays."""
+        """Item assignment is unsupported for immutable event arrays."""
         data = np.array([1.0, 0.0, 3.0], dtype=np.float32)
         arr = SparseFloat(data, indexed=True)
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(TypeError):
             arr[0] = 1.0
 
     def test_indexed_immutability_update(self):
-        """Test that _update raises for indexed arrays."""
+        """Direct `value` assignment is unsupported for immutable event arrays."""
         data = np.array([1.0, 0.0, 3.0], dtype=np.float32)
         arr = SparseFloat(data, indexed=True)
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(AttributeError):
             arr.value = np.array([0.0, 1.0, 0.0], dtype=np.float32)
 
-    def test_non_indexed_mutable(self):
-        """Test that non-indexed arrays allow mutation."""
+    def test_non_indexed_with_value(self):
+        """Non-indexed arrays are still immutable and replaced via `with_value`."""
         import jax.numpy as jnp
         data = jnp.array([1.0, 0.0, 3.0], dtype=jnp.float32)
         arr = SparseFloat(data)
-        arr.value = jnp.array([0.0, 1.0, 0.0], dtype=jnp.float32)
-        assert np.allclose(arr.value, np.array([0.0, 1.0, 0.0]))
+        arr2 = arr.with_value(jnp.array([0.0, 1.0, 0.0], dtype=jnp.float32))
+        assert np.allclose(arr2.value, np.array([0.0, 1.0, 0.0]))
+        assert np.allclose(arr.value, np.array([1.0, 0.0, 3.0]))
 
     def test_pytree_roundtrip_non_indexed(self):
         """Test JAX pytree flatten/unflatten for non-indexed arrays."""

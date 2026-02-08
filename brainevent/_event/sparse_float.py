@@ -71,15 +71,8 @@ class SparseFloat(BaseArray):
     def indices(self):
         return self._indices
 
-    def __setitem__(self, index, value):
-        if self._indexed:
-            raise NotImplementedError('Setting items in an indexed SparseFloat is not supported.')
-        super().__setitem__(index, value)
-
-    def _update(self, value):
-        if self._indexed:
-            raise NotImplementedError('Updating an indexed SparseFloat is not supported.')
-        super()._update(value)
+    def with_value(self, value):
+        return type(self)(value, indexed=self._indexed)
 
     def __matmul__(self, oc):
         if is_known_type(oc):
@@ -143,10 +136,8 @@ class SparseFloat(BaseArray):
 
     def __imatmul__(self, oc):
         if is_known_type(oc):
-            self.value = self.__matmul__(oc)
-        else:
-            self.value = oc.__rmatmul__(self)
-        return self
+            return self.with_value(self.__matmul__(oc))
+        return self.with_value(oc.__rmatmul__(self))
 
     def tree_flatten(self):
         if self._indexed:
