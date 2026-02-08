@@ -75,31 +75,19 @@ class FixedNumConn(u.sparse.SparseMatrix):
     shape: MatrixShape
 
     def tree_flatten(self):
-        """
-        Flattens the FixedNumConn object into its constituent parts for JAX PyTree processing.
-
-        Returns:
-            A tuple containing:
-                - A tuple of children nodes (dynamic data, i.e., self.data).
-                - A tuple of auxiliary data (static data, i.e., self.indices and self.shape).
-        """
-        return (self.data,), (self.indices, self.shape)
+        aux = {
+            'indices': self.indices,
+            'shape': self.shape,
+        }
+        return (self.data,), aux
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
-        """
-        Reconstructs a FixedNumConn object from its flattened representation.
-
-        Args:
-            aux_data: A tuple containing the auxiliary data (indices, shape).
-            children: A tuple containing the children nodes (data,).
-
-        Returns:
-            An instance of the FixedNumConn class reconstructed from the provided data.
-        """
-        data, = children
-        indices, shape = aux_data
-        return cls((data, indices), shape=shape)
+        obj = object.__new__(cls)
+        obj.data, = children
+        for k, v in aux_data.items():
+            setattr(obj, k, v)
+        return obj
 
     def _unitary_op(self, op):
         raise NotImplementedError

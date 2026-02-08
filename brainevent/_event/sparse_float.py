@@ -146,18 +146,17 @@ class SparseFloat(EventRepresentation):
         return self.with_value(oc.__rmatmul__(self))
 
     def tree_flatten(self):
-        if self._indexed:
-            return (self._value,), (True, self._indices)
-        return (self._value,), (False,)
+        aux = {
+            '_indexed': self._indexed,
+            '_indices': self._indices,
+        }
+        return (self._value,), aux
 
     @classmethod
     def tree_unflatten(cls, aux_data, flat_contents):
         value, = flat_contents
-        if aux_data[0]:  # indexed=True
-            _, indices = aux_data
-            obj = object.__new__(cls)
-            obj._value = value
-            obj._indexed = True
-            obj._indices = indices
-            return obj
-        return cls(value)
+        obj = object.__new__(cls)
+        obj._value = value
+        for k, v in aux_data.items():
+            setattr(obj, k, v)
+        return obj

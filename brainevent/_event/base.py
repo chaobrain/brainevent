@@ -97,12 +97,16 @@ class EventRepresentation(ABC):
         return self._value[_normalize_index(index)]
 
     def tree_flatten(self):
-        return (self._value,), None
+        return (self._value,), {}
 
     @classmethod
     def tree_unflatten(cls, aux_data, flat_contents):
-        (value,) = flat_contents
-        return cls(value)
+        value, = flat_contents
+        obj = object.__new__(cls)
+        obj._value = value
+        for k, v in aux_data.items():
+            setattr(obj, k, v)
+        return obj
 
     @abstractmethod
     def __matmul__(self, other):

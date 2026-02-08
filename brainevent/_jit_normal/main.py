@@ -209,47 +209,15 @@ class JITNormalMatrix(JITCMatrix):
         )
 
     def tree_flatten(self):
-        """
-        Flattens the JITHomo object for JAX transformation compatibility.
-
-        This method is part of JAX's pytree protocol that enables JAX transformations
-        on custom classes. It separates the object into arrays that should be traced
-        through JAX transformations (children) and auxiliary static data.
-
-        Returns:
-            tuple: A tuple with two elements:
-                - A tuple of JAX-traceable arrays (only self.data in this case)
-                - A dictionary of auxiliary data (shape, indices, and indptr)
-        """
-        return (self.wloc, self.wscale, self.prob, self.seed), {"shape": self.shape, 'corder': self.corder}
+        aux = {'shape': self.shape, 'corder': self.corder}
+        return (self.wloc, self.wscale, self.prob, self.seed), aux
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
-        """
-        Reconstructs a JITHomo object from flattened data.
-
-        This method is part of JAX's pytree protocol that enables JAX transformations
-        on custom classes. It rebuilds the JITHomo object from the flattened representation
-        produced by tree_flatten.
-
-        Args:
-            aux_data (dict): Dictionary containing auxiliary static data (shape, indices, indptr)
-            children (tuple): Tuple of JAX arrays that were transformed (contains only data)
-
-        Returns:
-            JITCNormalR: Reconstructed JITHomo object
-
-        Raises:
-            ValueError: If the aux_data dictionary doesn't contain the expected keys
-        """
         obj = object.__new__(cls)
         obj.wloc, obj.wscale, obj.prob, obj.seed = children
-        if aux_data.keys() != {'shape', 'corder'}:
-            raise ValueError(
-                "aux_data must contain 'shape', 'corder' keys. "
-                f"But got: {aux_data.keys()}"
-            )
-        obj.__dict__.update(**aux_data)
+        for k, v in aux_data.items():
+            setattr(obj, k, v)
         return obj
 
     def _check(self, other, op):

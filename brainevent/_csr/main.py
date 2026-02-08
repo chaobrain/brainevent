@@ -76,40 +76,20 @@ class BaseCLS(u.sparse.SparseMatrix):
         self.diag_positions = None
 
     def tree_flatten(self):
-        """
-        Flatten the compressed sparse matrix for JAX's tree utilities.
-
-        This method is used by JAX's tree utilities to flatten the matrix
-        into a form suitable for transformation and reconstruction.
-
-        Returns
-        --------
-        tuple
-            A tuple containing two elements:
-            - A tuple with the matrix data as the only element.
-            - A tuple with indices, indptr, shape, and cached diagonal positions.
-        """
-        return (self.data,), (self.indices, self.indptr, self.shape, self.diag_positions)
+        aux = {
+            'indices': self.indices,
+            'indptr': self.indptr,
+            'shape': self.shape,
+            'diag_positions': self.diag_positions,
+        }
+        return (self.data,), aux
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
-        """
-        Reconstruct a compressed sparse matrix from flattened data.
-
-        This class method is used by JAX's tree utilities to reconstruct
-        a matrix from its flattened representation.
-
-        Parameters
-        -----------
-        aux_data : tuple
-            A tuple containing indices, indptr, shape, and diagonal positions.
-        children : tuple
-            A tuple containing matrix data as its only element.
-        """
-        data, = children
-        indices, indptr, shape, diag_positions = aux_data
-        obj = cls((data, indices, indptr), shape=shape)
-        obj.diag_positions = diag_positions
+        obj = object.__new__(cls)
+        obj.data, = children
+        for k, v in aux_data.items():
+            setattr(obj, k, v)
         return obj
 
     def _unitary_op(self, op):
