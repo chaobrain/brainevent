@@ -25,11 +25,11 @@ import jax.numpy as jnp
 import numpy as np
 from jax.experimental.sparse import csr_todense_p, coo_todense_p
 
-from ._event.base import BaseArray
 from ._typing import MatrixShape, Data, Index
 
 
 def is_known_type(x):
+    from ._event.base import BaseArray
     return isinstance(x, (u.Quantity, jax.Array, np.ndarray, BaseArray))
 
 
