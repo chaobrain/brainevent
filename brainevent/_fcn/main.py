@@ -450,7 +450,7 @@ class FixedPostNumConn(FixedNumConn):
         data = self.data
 
         if isinstance(other, BinaryArray):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     return binary_fcnmv(data, self.indices, other, shape=self.shape, transpose=False)
@@ -462,7 +462,7 @@ class FixedPostNumConn(FixedNumConn):
                 raise NotImplementedError
 
         elif isinstance(other, SparseFloat):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     return spfloat_fcnmv(data, self.indices, other, shape=self.shape, transpose=False)
@@ -490,7 +490,7 @@ class FixedPostNumConn(FixedNumConn):
         data = self.data
 
         if isinstance(other, BinaryArray):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     return binary_fcnmv(data, self.indices, other, shape=self.shape, transpose=True)
@@ -503,7 +503,7 @@ class FixedPostNumConn(FixedNumConn):
                 raise NotImplementedError
 
         elif isinstance(other, SparseFloat):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     return spfloat_fcnmv(data, self.indices, other, shape=self.shape, transpose=True)
@@ -846,7 +846,7 @@ class FixedPreNumConn(FixedNumConn):
         data = self.data
 
         if isinstance(other, BinaryArray):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     return binary_fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=True)
@@ -858,7 +858,7 @@ class FixedPreNumConn(FixedNumConn):
                 raise NotImplementedError
 
         elif isinstance(other, SparseFloat):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     return spfloat_fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=True)
@@ -886,7 +886,7 @@ class FixedPreNumConn(FixedNumConn):
         data = self.data
 
         if isinstance(other, BinaryArray):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     return binary_fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=False)
@@ -899,7 +899,7 @@ class FixedPreNumConn(FixedNumConn):
                 raise NotImplementedError
 
         elif isinstance(other, SparseFloat):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     return spfloat_fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=False)

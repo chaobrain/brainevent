@@ -660,7 +660,7 @@ class COO(u.sparse.SparseMatrix):
         data = self.data
 
         if isinstance(other, BinaryArray):
-            if other.indexed:
+            if not other.indexed:
                 # Extract the data from the BaseArray
                 other = other.value
                 if other.ndim == 1:
@@ -675,7 +675,7 @@ class COO(u.sparse.SparseMatrix):
             else:
                 raise NotImplementedError
         elif isinstance(other, SparseFloat):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 data, other = u.math.promote_dtypes(self.data, other)
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -725,7 +725,7 @@ class COO(u.sparse.SparseMatrix):
         data = self.data
 
         if isinstance(other, BinaryArray):
-            if other.indexed:
+            if not other.indexed:
                 # Extract the data from the BaseArray
                 other = other.value
                 if other.ndim == 1:
@@ -745,7 +745,7 @@ class COO(u.sparse.SparseMatrix):
                 raise NotImplementedError
 
         elif isinstance(other, SparseFloat):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 data, other = u.math.promote_dtypes(self.data, other)
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")

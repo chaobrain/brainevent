@@ -470,7 +470,7 @@ class JITCNormalR(JITNormalMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     # JIT matrix @ events
@@ -538,7 +538,7 @@ class JITCNormalR(JITNormalMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     #
@@ -815,7 +815,7 @@ class JITCNormalC(JITNormalMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     # JITC_R matrix.T @ vector
@@ -890,7 +890,7 @@ class JITCNormalC(JITNormalMatrix):
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         if isinstance(other, BinaryArray):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     #

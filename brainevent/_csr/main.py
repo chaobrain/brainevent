@@ -503,7 +503,7 @@ class CSR(BaseCLS):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
@@ -515,7 +515,7 @@ class CSR(BaseCLS):
                 raise NotImplementedError
 
         elif isinstance(other, SparseFloat):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     return spfloat_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
@@ -556,7 +556,7 @@ class CSR(BaseCLS):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True)
@@ -570,7 +570,7 @@ class CSR(BaseCLS):
                 raise NotImplementedError
 
         elif isinstance(other, SparseFloat):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     return spfloat_csrmv(
@@ -958,7 +958,7 @@ class CSC(BaseCLS):
         data = self.data
 
         if isinstance(other, BinaryArray):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     return binary_csrmv(
@@ -978,7 +978,7 @@ class CSC(BaseCLS):
                 raise NotImplementedError
 
         elif isinstance(other, SparseFloat):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     return spfloat_csrmv(
@@ -1028,7 +1028,7 @@ class CSC(BaseCLS):
         data = self.data
 
         if isinstance(other, BinaryArray):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     return binary_csrmv(data, self.indices, self.indptr, other,
@@ -1044,7 +1044,7 @@ class CSC(BaseCLS):
                 raise NotImplementedError
 
         elif isinstance(other, SparseFloat):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     return spfloat_csrmv(data, self.indices, self.indptr, other,

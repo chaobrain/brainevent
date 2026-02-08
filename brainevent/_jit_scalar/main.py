@@ -506,7 +506,7 @@ class JITCScalarR(JITScalarMatrix):
         weight = self.weight
 
         if isinstance(other, BinaryArray):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     # JIT matrix @ events
@@ -556,7 +556,7 @@ class JITCScalarR(JITScalarMatrix):
         weight = self.weight
 
         if isinstance(other, BinaryArray):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     #
@@ -852,7 +852,7 @@ class JITCScalarC(JITScalarMatrix):
         weight = self.weight
 
         if isinstance(other, BinaryArray):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     # JITC_R matrix.T @ vector
@@ -924,7 +924,7 @@ class JITCScalarC(JITScalarMatrix):
         weight = self.weight
 
         if isinstance(other, BinaryArray):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     #

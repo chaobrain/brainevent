@@ -550,7 +550,7 @@ class JITCUniformR(JITUniformMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     # JIT matrix @ events
@@ -618,7 +618,7 @@ class JITCUniformR(JITUniformMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     #
@@ -931,7 +931,7 @@ class JITCUniformC(JITUniformMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
 
         if isinstance(other, BinaryArray):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     # JITC_R matrix.T @ vector
@@ -1006,7 +1006,7 @@ class JITCUniformC(JITUniformMatrix):
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         if isinstance(other, BinaryArray):
-            if other.indexed:
+            if not other.indexed:
                 other = other.value
                 if other.ndim == 1:
                     #
