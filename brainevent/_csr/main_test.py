@@ -148,7 +148,7 @@ class Test_CSC_CSR_Conversion:
         matrix = gen_events([shape[1], k])
 
         out1 = jax.jit(lambda: csr @ matrix)()
-        out2 = jax.jit(lambda: (matrix.T @ csc).T)()
+        out2 = jax.jit(lambda: (matrix.value.T @ csc).T)()
         assert jnp.allclose(out1, out2)
 
     # TODO: GPU test error: CUDA_ERROR_ILLEGAL_ADDRESS
@@ -162,7 +162,7 @@ class Test_CSC_CSR_Conversion:
         matrix = gen_events([k, shape[0]])
 
         out1 = jax.jit(lambda: matrix @ csr)()
-        out2 = jax.jit(lambda: (csc @ matrix.T).T)()
+        out2 = jax.jit(lambda: (csc @ matrix.value.T).T)()
         assert jnp.allclose(out1, out2, atol=1e-4, rtol=1e-4)
 
 

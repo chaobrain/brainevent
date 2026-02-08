@@ -122,7 +122,7 @@ class Test_JITC_RC_Conversion:
         matrix = gen_events([shape[1], k], asbool=asbool)
 
         out1 = jitcr @ matrix
-        out2 = (matrix.T @ jitcc).T
+        out2 = (matrix.value.T @ jitcc).T
         assert allclose(out1, out2)
 
     @pytest.mark.parametrize('k', [10])
@@ -136,7 +136,7 @@ class Test_JITC_RC_Conversion:
         matrix = gen_events([k, shape[0]], asbool=asbool)
 
         out1 = matrix @ jitcr
-        out2 = (jitcc @ matrix.T).T
+        out2 = (jitcc @ matrix.value.T).T
         assert allclose(out1, out2, atol=1e-4, rtol=1e-4)
 
 
