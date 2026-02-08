@@ -77,6 +77,11 @@ def _sample_matrix(rows: int, cols: int, event_dtype, seed: int):
     return jnp.asarray(raw * mask)
 
 
+def _sample_cotangent(shape, seed: int):
+    rng = np.random.RandomState(seed)
+    return jnp.asarray(rng.randn(*shape).astype(np.float32))
+
+
 @pytest.mark.parametrize('implementation', JITUMV_PARAMS)
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('transpose', [True, False])
@@ -337,6 +342,102 @@ def test_binary_jitumm_jvp_matches_reference(implementation, transpose, corder):
     out2, jvp2 = jax.jvp(f_ref, primals, tangents)
     assert allclose(out1, out2, rtol=1e-2, atol=1e-2)
     assert allclose(jvp1, jvp2, rtol=1e-2, atol=1e-2)
+
+    g_B1 = jax.grad(lambda B: f_binary(primals[0], primals[1], B).sum())(primals[2])
+    g_B2 = jax.grad(lambda B: f_ref(primals[0], primals[1], B).sum())(primals[2])
+    assert allclose(g_B1, g_B2, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize('implementation', JITUMV_PARAMS)
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('event_dtype', [bool, float])
+def test_binary_jitumv_grad_w_bounds_match_reference_and_finite_difference(
+    implementation,
+    transpose,
+    corder,
+    event_dtype,
+):
+    shape = (20, 30)
+    seed = 123
+    prob = 0.1
+    eps = jnp.asarray(1e-3, dtype=jnp.float32)
+    vector_size = shape[0] if transpose else shape[1]
+    vector = _sample_vector(vector_size, event_dtype, seed + 47)
+    cotangent = _sample_cotangent((shape[1] if transpose else shape[0],), seed + 99)
+
+    def scalar_binary(wl, wh):
+        out = binary_jitumv(
+            wl,
+            wh,
+            prob,
+            vector,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder,
+            backend=implementation,
+        )
+        return jnp.sum(out * cotangent)
+
+    w_low = jnp.asarray(-1.5, dtype=jnp.float32)
+    w_high = jnp.asarray(1.5, dtype=jnp.float32)
+
+    grad_w_low = jax.grad(scalar_binary, argnums=0)(w_low, w_high)
+    grad_w_high = jax.grad(scalar_binary, argnums=1)(w_low, w_high)
+
+    fd_w_low = (scalar_binary(w_low + eps, w_high) - scalar_binary(w_low - eps, w_high)) / (2.0 * eps)
+    fd_w_high = (scalar_binary(w_low, w_high + eps) - scalar_binary(w_low, w_high - eps)) / (2.0 * eps)
+
+    assert allclose(grad_w_low, fd_w_low, rtol=1e-2, atol=1e-2)
+    assert allclose(grad_w_high, fd_w_high, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize('implementation', JITUMM_PARAMS)
+@pytest.mark.parametrize('transpose', [True, False])
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('event_dtype', [bool, float])
+def test_binary_jitumm_grad_w_bounds_match_reference_and_finite_difference(
+    implementation,
+    transpose,
+    corder,
+    event_dtype,
+):
+    shape = (20, 30)
+    seed = 123
+    prob = 0.1
+    eps = jnp.asarray(1e-3, dtype=jnp.float32)
+    k = 8
+    rows = shape[0] if transpose else shape[1]
+    matrix = _sample_matrix(rows, k, event_dtype, seed + 53)
+    out_rows = shape[1] if transpose else shape[0]
+    cotangent = _sample_cotangent((out_rows, k), seed + 101)
+
+    def scalar_binary(wl, wh):
+        out = binary_jitumm(
+            wl,
+            wh,
+            prob,
+            matrix,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder,
+            backend=implementation,
+        )
+        return jnp.sum(out * cotangent)
+
+    w_low = jnp.asarray(-1.5, dtype=jnp.float32)
+    w_high = jnp.asarray(1.5, dtype=jnp.float32)
+
+    grad_w_low = jax.grad(scalar_binary, argnums=0)(w_low, w_high)
+    grad_w_high = jax.grad(scalar_binary, argnums=1)(w_low, w_high)
+
+    fd_w_low = (scalar_binary(w_low + eps, w_high) - scalar_binary(w_low - eps, w_high)) / (2.0 * eps)
+    fd_w_high = (scalar_binary(w_low, w_high + eps) - scalar_binary(w_low, w_high - eps)) / (2.0 * eps)
+
+    assert allclose(grad_w_low, fd_w_low, rtol=1e-2, atol=1e-2)
+    assert allclose(grad_w_high, fd_w_high, rtol=1e-2, atol=1e-2)
 
 
 @pytest.mark.parametrize('implementation', JITUMV_PARAMS)

@@ -41,6 +41,11 @@ def _assert_allclose(a, b, rtol=1e-4, atol=1e-4):
     assert jnp.allclose(a, b, rtol=rtol, atol=atol)
 
 
+def _sample_cotangent(shape, seed: int):
+    rng = np.random.RandomState(seed)
+    return jnp.asarray(rng.randn(*shape).astype(np.float32))
+
+
 @pytest.mark.skipif(
     not JITUMV_IMPLEMENTATIONS,
     reason=f'No jitumv implementation on platform={platform}',
@@ -277,6 +282,159 @@ def test_jitumm_vjp(implementation, k, shape, corder, transpose):
     out2, (vjp2,) = jax.value_and_grad(f_dense, argnums=(0,))(matrix)
     _assert_allclose(out1, out2)
     _assert_allclose(vjp1, vjp2)
+
+
+@pytest.mark.skipif(
+    not JITUMV_IMPLEMENTATIONS,
+    reason=f'No jitumv implementation on platform={platform}',
+)
+@pytest.mark.parametrize('implementation', JITUMV_PARAMS)
+@pytest.mark.parametrize('shape', SHAPES)
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_jitumv_vjp_w_bounds_match_affine_reference_and_finite_difference(
+    implementation,
+    shape,
+    corder,
+    transpose,
+):
+    vec_size = shape[0] if transpose else shape[1]
+    out_size = shape[1] if transpose else shape[0]
+    rng = np.random.RandomState(1001)
+    vector = jnp.asarray(rng.rand(vec_size).astype(np.float32))
+    cotangent = _sample_cotangent((out_size,), seed=1002)
+    w_low = jnp.asarray(W_LOW, dtype=jnp.float32)
+    w_high = jnp.asarray(W_HIGH, dtype=jnp.float32)
+    eps = jnp.asarray(1e-3, dtype=jnp.float32)
+
+    def scalar_sparse(wl, wh):
+        out = jitumv(
+            wl,
+            wh,
+            PROB,
+            vector,
+            SEED,
+            shape=shape,
+            transpose=transpose,
+            corder=corder,
+            backend=implementation,
+        )
+        return jnp.sum(out * cotangent)
+
+    g_w_low = jax.grad(scalar_sparse, argnums=0)(w_low, w_high)
+    g_w_high = jax.grad(scalar_sparse, argnums=1)(w_low, w_high)
+
+    # Affine decomposition with fixed random graph:
+    # y = w_low * C(v) + (w_high - w_low) * U(v),
+    # U(v) = jitumv(0, 1, ...), C(v) = jitumv(1, 1, ...).
+    U = jitu(
+        0.0,
+        1.0,
+        PROB,
+        SEED,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        backend=implementation,
+    )
+    C = jitu(
+        1.0,
+        1.0,
+        PROB,
+        SEED,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        backend=implementation,
+    )
+    u_out = U @ vector
+    c_out = C @ vector
+    ref_w_high = jnp.sum(cotangent * u_out)
+    ref_w_low = jnp.sum(cotangent * (c_out - u_out))
+
+    fd_w_low = (scalar_sparse(w_low + eps, w_high) - scalar_sparse(w_low - eps, w_high)) / (2.0 * eps)
+    fd_w_high = (scalar_sparse(w_low, w_high + eps) - scalar_sparse(w_low, w_high - eps)) / (2.0 * eps)
+
+    _assert_allclose(g_w_low, ref_w_low, rtol=1e-2, atol=1e-2)
+    _assert_allclose(g_w_high, ref_w_high, rtol=1e-2, atol=1e-2)
+    _assert_allclose(g_w_low, fd_w_low, rtol=1e-2, atol=1e-2)
+    _assert_allclose(g_w_high, fd_w_high, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.skipif(
+    not JITUMM_IMPLEMENTATIONS,
+    reason=f'No jitumm implementation on platform={platform}',
+)
+@pytest.mark.parametrize('implementation', JITUMM_PARAMS)
+@pytest.mark.parametrize('k', [10])
+@pytest.mark.parametrize('shape', SHAPES)
+@pytest.mark.parametrize('corder', [True, False])
+@pytest.mark.parametrize('transpose', [True, False])
+def test_jitumm_vjp_w_bounds_match_affine_reference_and_finite_difference(
+    implementation,
+    k,
+    shape,
+    corder,
+    transpose,
+):
+    mat_rows = shape[0] if transpose else shape[1]
+    out_rows = shape[1] if transpose else shape[0]
+    rng = np.random.RandomState(1003)
+    matrix = jnp.asarray(rng.rand(mat_rows, k).astype(np.float32))
+    cotangent = _sample_cotangent((out_rows, k), seed=1004)
+    w_low = jnp.asarray(W_LOW, dtype=jnp.float32)
+    w_high = jnp.asarray(W_HIGH, dtype=jnp.float32)
+    eps = jnp.asarray(1e-3, dtype=jnp.float32)
+
+    def scalar_sparse(wl, wh):
+        out = jitumm(
+            wl,
+            wh,
+            PROB,
+            matrix,
+            SEED,
+            shape=shape,
+            transpose=transpose,
+            corder=corder,
+            backend=implementation,
+        )
+        return jnp.sum(out * cotangent)
+
+    g_w_low = jax.grad(scalar_sparse, argnums=0)(w_low, w_high)
+    g_w_high = jax.grad(scalar_sparse, argnums=1)(w_low, w_high)
+
+    U = jitu(
+        0.0,
+        1.0,
+        PROB,
+        SEED,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        backend=implementation,
+    )
+    C = jitu(
+        1.0,
+        1.0,
+        PROB,
+        SEED,
+        shape=shape,
+        transpose=transpose,
+        corder=corder,
+        backend=implementation,
+    )
+    u_out = U @ matrix
+    c_out = C @ matrix
+    ref_w_high = jnp.sum(cotangent * u_out)
+    ref_w_low = jnp.sum(cotangent * (c_out - u_out))
+
+    fd_w_low = (scalar_sparse(w_low + eps, w_high) - scalar_sparse(w_low - eps, w_high)) / (2.0 * eps)
+    fd_w_high = (scalar_sparse(w_low, w_high + eps) - scalar_sparse(w_low, w_high - eps)) / (2.0 * eps)
+
+    _assert_allclose(g_w_low, ref_w_low, rtol=1e-2, atol=1e-2)
+    _assert_allclose(g_w_high, ref_w_high, rtol=1e-2, atol=1e-2)
+    _assert_allclose(g_w_low, fd_w_low, rtol=1e-2, atol=1e-2)
+    _assert_allclose(g_w_high, fd_w_high, rtol=1e-2, atol=1e-2)
 
 
 @pytest.mark.skipif(

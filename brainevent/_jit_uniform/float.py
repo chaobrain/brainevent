@@ -869,8 +869,6 @@ def _jitumv_jvp_whigh(w_dot, w_low, w_high, clen, vector, seed, *, shape, transp
 def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, transpose, corder, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
-    assert not ad.is_undefined_primal(w_low)
-    assert not ad.is_undefined_primal(w_high)
 
     ct = ct[0]
     if ad.is_undefined_primal(vector):
@@ -885,6 +883,56 @@ def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, tra
             corder=not corder
         )[0]
         return w_low, w_high, clen, r, seed
+    elif ad.is_undefined_primal(w_low):
+        # Fix the sampled connectivity and RNG stream (same `clen/seed/shape/transpose/corder`).
+        # For each active entry:
+        #   w_ij = w_low + (w_high - w_low) * u_ij,  u_ij in [0, 1).
+        # The linear map output is therefore affine in (w_low, w_high):
+        #   y = w_low * C(v) + (w_high - w_low) * U(v),
+        # where
+        #   U(v) = y(0, 1)  and  C(v) = y(1, 1).
+        # Given cotangent ct, with inner product <a, b> = sum(a * b):
+        #   dL/dw_high = <ct, U(v)>
+        #   dL/dw_low  = <ct, C(v) - U(v)>.
+        ones = jnp.ones((1,), dtype=ct.dtype)
+        zeros = jnp.zeros((1,), dtype=ct.dtype)
+        u_basis = jitumv_p_call(
+            zeros,
+            ones,
+            clen,
+            vector,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder
+        )[0]
+        c_basis = jitumv_p_call(
+            ones,
+            ones,
+            clen,
+            vector,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder
+        )[0]
+        dw_low = jnp.expand_dims(jnp.sum(ct * (c_basis - u_basis)), axis=0)
+        return dw_low, w_high, clen, vector, seed
+    elif ad.is_undefined_primal(w_high):
+        zeros = jnp.zeros((1,), dtype=ct.dtype)
+        ones = jnp.ones((1,), dtype=ct.dtype)
+        u_basis = jitumv_p_call(
+            zeros,
+            ones,
+            clen,
+            vector,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder
+        )[0]
+        dw_high = jnp.expand_dims(jnp.sum(ct * u_basis), axis=0)
+        return w_low, dw_high, clen, vector, seed
     else:
         raise NotImplementedError(
             f"Transpose rule for {ct} not implemented "
@@ -1422,15 +1470,12 @@ def _jitumm_jvp_whigh(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose, 
 
 
 def _jitumm_jvp_B(B_dot, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
-    return jitumm_p_call(w_low, w_high, clen, B_dot, seed, shape=shape, transpose=transpose,
-                         corder=corder)
+    return jitumm_p_call(w_low, w_high, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder)
 
 
 def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
-    assert not ad.is_undefined_primal(w_low)
-    assert not ad.is_undefined_primal(w_high)
 
     ct = ct[0]
     if ad.is_undefined_primal(B):
@@ -1445,6 +1490,52 @@ def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpos
             corder=not corder,
         )[0]
         return w_low, w_high, clen, dB, seed
+    elif ad.is_undefined_primal(w_low):
+        # Same affine decomposition as _jitumv_transpose_rules, now for matrix right operand B:
+        #   Y = w_low * C(B) + (w_high - w_low) * U(B),
+        #   U(B) = Y(0, 1), C(B) = Y(1, 1).
+        # Hence:
+        #   dL/dw_high = <ct, U(B)>
+        #   dL/dw_low  = <ct, C(B) - U(B)>.
+        ones = jnp.ones((1,), dtype=ct.dtype)
+        zeros = jnp.zeros((1,), dtype=ct.dtype)
+        u_basis = jitumm_p_call(
+            zeros,
+            ones,
+            clen,
+            B,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder
+        )[0]
+        c_basis = jitumm_p_call(
+            ones,
+            ones,
+            clen,
+            B,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder
+        )[0]
+        dw_low = jnp.expand_dims(jnp.sum(ct * (c_basis - u_basis)), axis=0)
+        return dw_low, w_high, clen, B, seed
+    elif ad.is_undefined_primal(w_high):
+        zeros = jnp.zeros((1,), dtype=ct.dtype)
+        ones = jnp.ones((1,), dtype=ct.dtype)
+        u_basis = jitumm_p_call(
+            zeros,
+            ones,
+            clen,
+            B,
+            seed,
+            shape=shape,
+            transpose=transpose,
+            corder=corder
+        )[0]
+        dw_high = jnp.expand_dims(jnp.sum(ct * u_basis), axis=0)
+        return w_low, dw_high, clen, B, seed
     else:
         raise NotImplementedError(
             'Transpose rules for jitc_matmat_uniform not implemented for '
