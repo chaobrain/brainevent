@@ -1,5 +1,5 @@
 numpy
-jax>=0.7.1
+jax>=0.5.0
 brainunit>=0.0.4
 brainstate
 absl-py
