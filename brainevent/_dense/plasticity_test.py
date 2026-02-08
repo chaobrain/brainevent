@@ -19,7 +19,7 @@ import brainunit as u
 import jax.numpy as jnp
 import pytest
 
-from brainevent._dense.plasticity import plast_dense_on_binary_pre, plast_dense_on_binary_post
+from brainevent._dense.plasticity import update_dense_on_binary_pre, update_dense_on_binary_post
 
 
 class Test_dense_on_pre:
@@ -31,7 +31,7 @@ class Test_dense_on_pre:
         pre_spike = brainstate.random.random((n_pre,)) < 0.1
         post_trace = brainstate.random.random((n_post,))
 
-        mat2 = plast_dense_on_binary_pre(mat, pre_spike, post_trace)
+        mat2 = update_dense_on_binary_pre(mat, pre_spike, post_trace)
 
         mat = mat + jnp.outer(pre_spike, post_trace)
         assert jnp.allclose(mat2, mat)
@@ -48,7 +48,7 @@ class Test_dense_on_pre:
             pre_spike = brainstate.random.random((n_pre,)) < 0.1
             post_trace = brainstate.random.random((n_post,)) * trace_unit
 
-            mat2 = plast_dense_on_binary_pre(mat, pre_spike, post_trace)
+            mat2 = update_dense_on_binary_pre(mat, pre_spike, post_trace)
 
             mat = mat + u.math.outer(pre_spike, post_trace)
             assert u.math.allclose(mat2, mat)
@@ -69,7 +69,7 @@ class Test_dense_on_pre:
         pre_spike = brainstate.random.random((n_pre,)) < 0.1
         post_trace = brainstate.random.random((n_post,))
 
-        mat2 = plast_dense_on_binary_pre(mat, pre_spike, post_trace, w_min=w_min, w_max=w_max)
+        mat2 = update_dense_on_binary_pre(mat, pre_spike, post_trace, w_min=w_min, w_max=w_max)
 
         mat = mat + jnp.outer(pre_spike, post_trace)
         if w_min is not None:
@@ -89,7 +89,7 @@ class Test_dense_on_post:
         pre_trace = brainstate.random.random((n_pre,))
         post_spike = brainstate.random.random((n_post,)) < 0.1
 
-        mat2 = plast_dense_on_binary_post(mat, pre_trace, post_spike)
+        mat2 = update_dense_on_binary_post(mat, pre_trace, post_spike)
 
         mat = mat + jnp.outer(pre_trace, post_spike)
         assert jnp.allclose(mat2, mat)
@@ -106,7 +106,7 @@ class Test_dense_on_post:
             pre_trace = brainstate.random.random((n_pre,)) * trace_unit
             post_spike = brainstate.random.random((n_post,)) < 0.1
 
-            mat2 = plast_dense_on_binary_post(mat, pre_trace, post_spike)
+            mat2 = update_dense_on_binary_post(mat, pre_trace, post_spike)
 
             mat = mat + u.math.outer(pre_trace, post_spike)
             assert u.math.allclose(mat2, mat)
@@ -125,7 +125,7 @@ class Test_dense_on_post:
         mat = brainstate.random.random((n_pre, n_post))
         pre_trace = brainstate.random.random((n_pre,))
         post_spike = brainstate.random.random((n_post,)) < 0.1
-        mat2 = plast_dense_on_binary_post(mat, pre_trace, post_spike, w_min=w_min, w_max=w_max)
+        mat2 = update_dense_on_binary_post(mat, pre_trace, post_spike, w_min=w_min, w_max=w_max)
         mat = mat + jnp.outer(pre_trace, post_spike)
         if w_min is not None:
             mat = jnp.maximum(mat, w_min)

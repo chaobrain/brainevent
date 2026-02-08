@@ -90,9 +90,9 @@ Core Components
 **6. Synaptic Plasticity**
   Built-in support for learning and plasticity rules:
 
-  - ``plast_csr_on_binary_pre`` / ``plast_csr2csc_on_binary_post``: CSR-based plasticity updates
-  - ``plast_coo_on_binary_pre`` / ``plast_coo_on_binary_post``: COO-based plasticity updates
-  - ``plast_dense_on_binary_pre`` / ``plast_dense_on_binary_post``: Dense matrix plasticity
+  - ``update_csr_on_binary_pre`` / ``update_csr2csc_on_binary_post``: CSR-based plasticity updates
+  - ``update_coo_on_binary_pre`` / ``update_coo_on_binary_post``: COO-based plasticity updates
+  - ``update_dense_on_binary_pre`` / ``update_dense_on_binary_post``: Dense matrix plasticity
 
 **7. Unit-Aware Computation**
   Fully compatible with `BrainUnit <https://github.com/chaobrain/brainunit>`_ for physical unit tracking and dimensional analysis.

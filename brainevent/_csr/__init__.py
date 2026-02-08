@@ -18,8 +18,8 @@ from .binary import binary_csrmv, binary_csrmv_p, binary_csrmm, binary_csrmm_p
 from .float import csrmv, csrmv_p, csrmm, csrmm_p, csrmv_yw2y, csrmv_yw2y_p
 from .main import CSR, CSC
 from .plasticity_binary import (
-    plast_csr_on_binary_pre, plast_csr_on_binary_pre_p,
-    plast_csr2csc_on_binary_post, plast_csr2csc_on_binary_post_p,
+    update_csr_on_binary_pre, update_csr_on_binary_pre_p,
+    update_csr_on_binary_post, update_csr_on_binary_post_p,
 )
 from .sparse_float import spfloat_csrmv, spfloat_csrmv_p, spfloat_csrmm, spfloat_csrmm_p
 from .spsolve import csr_solve
@@ -28,8 +28,8 @@ __all__ = [
     'CSR', 'CSC',
     'binary_csrmv', 'binary_csrmv_p', 'binary_csrmm', 'binary_csrmm_p',
     'csrmv', 'csrmv_p', 'csrmm', 'csrmm_p', 'csrmv_yw2y', 'csrmv_yw2y_p',
-    'plast_csr_on_binary_pre', 'plast_csr_on_binary_pre_p',
-    'plast_csr2csc_on_binary_post', 'plast_csr2csc_on_binary_post_p',
+    'update_csr_on_binary_pre', 'update_csr_on_binary_pre_p',
+    'update_csr_on_binary_post', 'update_csr_on_binary_post_p',
     'spfloat_csrmv', 'spfloat_csrmv_p', 'spfloat_csrmm', 'spfloat_csrmm_p',
     'csr_solve',
 ]

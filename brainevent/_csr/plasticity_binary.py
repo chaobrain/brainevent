@@ -27,15 +27,15 @@ from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
 
 __all__ = [
-    'plast_csr_on_binary_pre',
-    'plast_csr_on_binary_pre_p',
-    'plast_csr2csc_on_binary_post',
-    'plast_csr2csc_on_binary_post_p',
+    'update_csr_on_binary_pre',
+    'update_csr_on_binary_pre_p',
+    'update_csr_on_binary_post',
+    'update_csr_on_binary_post_p',
 ]
 
 
 @namescope(static_argnames=['shape'])
-def plast_csr_on_binary_pre(
+def update_csr_on_binary_pre(
     weight: Union[u.Quantity, jax.Array, numbers.Number],
     indices: Union[np.ndarray, jax.Array],
     indptr: Union[np.ndarray, jax.Array],
@@ -238,7 +238,7 @@ def _csr_on_pre_pallas_kernel_generator(
     return kernel
 
 
-def _plast_csr_pre_benchmark_data(*, platform):
+def _update_csr_pre_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for bool_event in (True, False):
@@ -267,7 +267,7 @@ def _csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, sha
     assert weight.shape[0] == indices.shape[0], (
         f'weight shape {weight.shape}, indices shape {indices.shape}, indptr shape {indptr.shape} do not match.'
     )
-    return plast_csr_on_binary_pre_p(
+    return update_csr_on_binary_pre_p(
         weight, indices, indptr, pre_spike, post_trace,
         outs=[jax.ShapeDtypeStruct(weight.shape, weight.dtype)],
         shape=shape,
@@ -280,17 +280,17 @@ def _csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, sha
     )
 
 
-plast_csr_on_binary_pre_p = XLACustomKernel('binary_csr_plast')
-plast_csr_on_binary_pre_p.def_numba_kernel(_csr_on_pre_numba_kernel_generator)
-plast_csr_on_binary_pre_p.def_warp_kernel(_csr_on_pre_warp_kernel_generator)
-plast_csr_on_binary_pre_p.def_pallas_kernel('gpu', _csr_on_pre_pallas_kernel_generator)
-plast_csr_on_binary_pre_p.def_pallas_kernel('tpu', _csr_on_pre_pallas_kernel_generator)
-plast_csr_on_binary_pre_p.def_tags('csr', 'plasticity')
-plast_csr_on_binary_pre_p.def_benchmark_data(_plast_csr_pre_benchmark_data)
+update_csr_on_binary_pre_p = XLACustomKernel('binary_csr_plast')
+update_csr_on_binary_pre_p.def_numba_kernel(_csr_on_pre_numba_kernel_generator)
+update_csr_on_binary_pre_p.def_warp_kernel(_csr_on_pre_warp_kernel_generator)
+update_csr_on_binary_pre_p.def_pallas_kernel('gpu', _csr_on_pre_pallas_kernel_generator)
+update_csr_on_binary_pre_p.def_pallas_kernel('tpu', _csr_on_pre_pallas_kernel_generator)
+update_csr_on_binary_pre_p.def_tags('csr', 'plasticity')
+update_csr_on_binary_pre_p.def_benchmark_data(_update_csr_pre_benchmark_data)
 
 
 @namescope(static_argnames=['shape'])
-def plast_csr2csc_on_binary_post(
+def update_csr_on_binary_post(
     weight: Union[u.Quantity, jax.Array],
     indices: Union[np.ndarray, jax.Array],
     indptr: Union[np.ndarray, jax.Array],
@@ -521,7 +521,7 @@ def _csr2csc_on_post_pallas_kernel_generator(
     return kernel
 
 
-def _plast_csr_post_benchmark_data(*, platform):
+def _update_csr_post_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for bool_event in (True, False):
@@ -555,7 +555,7 @@ def _csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trac
         f'weight shape {weight.shape}, weight_indices shape {weight_indices.shape}, '
         f'indices shape {indices.shape}, indptr shape {indptr.shape} do not match.'
     )
-    return plast_csr2csc_on_binary_post_p(
+    return update_csr_on_binary_post_p(
         weight, indices, indptr, weight_indices, pre_trace, post_spike,
         outs=[jax.ShapeDtypeStruct(weight.shape, weight.dtype)],
         shape=shape,
@@ -569,10 +569,10 @@ def _csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trac
     )
 
 
-plast_csr2csc_on_binary_post_p = XLACustomKernel('csr2csc_on_post')
-plast_csr2csc_on_binary_post_p.def_numba_kernel(_csr2csc_on_post_numba_kernel_generator)
-plast_csr2csc_on_binary_post_p.def_warp_kernel(_csr2csc_on_post_warp_kernel_generator)
-plast_csr2csc_on_binary_post_p.def_pallas_kernel('gpu', _csr2csc_on_post_pallas_kernel_generator)
-plast_csr2csc_on_binary_post_p.def_pallas_kernel('tpu', _csr2csc_on_post_pallas_kernel_generator)
-plast_csr2csc_on_binary_post_p.def_tags('csr', 'plasticity')
-plast_csr2csc_on_binary_post_p.def_benchmark_data(_plast_csr_post_benchmark_data)
+update_csr_on_binary_post_p = XLACustomKernel('csr2csc_on_post')
+update_csr_on_binary_post_p.def_numba_kernel(_csr2csc_on_post_numba_kernel_generator)
+update_csr_on_binary_post_p.def_warp_kernel(_csr2csc_on_post_warp_kernel_generator)
+update_csr_on_binary_post_p.def_pallas_kernel('gpu', _csr2csc_on_post_pallas_kernel_generator)
+update_csr_on_binary_post_p.def_pallas_kernel('tpu', _csr2csc_on_post_pallas_kernel_generator)
+update_csr_on_binary_post_p.def_tags('csr', 'plasticity')
+update_csr_on_binary_post_p.def_benchmark_data(_update_csr_post_benchmark_data)
