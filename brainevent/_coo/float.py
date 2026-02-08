@@ -740,7 +740,6 @@ def coomv_p_call(
         weights,
         row,
         col,
-        row_ptr,
         v,
         outs=[out_info],
         shape=shape,

@@ -47,32 +47,50 @@ class BaseCLS(u.sparse.SparseMatrix):
 
     def __init__(
         self,
-        args: Tuple[Data, Index, Indptr],
+        data,
+        indices=None,
+        indptr=None,
         *,
         shape: MatrixShape
     ):
         """
         Initialize a compressed sparse matrix base instance.
 
+        Supports two calling conventions::
+
+            # Tuple syntax (original)
+            CSR((data, indices, indptr), shape=(m, n))
+
+            # Positional-argument syntax
+            CSR(data, indices, indptr, shape=(m, n))
+
         Parameters
         ----------
-        args : Sequence[Union[jax.Array, np.ndarray, u.Quantity]]
-            A sequence of three arrays representing compressed sparse storage:
-            - data: Contains the non-zero values of the matrix.
-            - indices: Contains the secondary-axis indices for each stored element
-              (column indices for CSR, row indices for CSC).
-            - indptr: Contains the primary-axis pointers indicating where each
-              row/column starts in the data and indices arrays.
-
+        data : array or Sequence
+            Either a single array (the ``data`` values) when ``indices`` and
+            ``indptr`` are also provided, or a sequence of three arrays
+            ``(data, indices, indptr)`` when used with the tuple syntax.
+        indices : array, optional
+            Secondary-axis indices for each stored element (column indices for
+            CSR, row indices for CSC). Required when ``data_or_args`` is the
+            data array.
+        indptr : array, optional
+            Primary-axis pointers indicating where each row/column starts in
+            the data and indices arrays. Required when ``data_or_args`` is the
+            data array.
         shape : Tuple[int, int]
-            The shape of the matrix as a tuple of (num_rows, num_columns).
+            The shape of the matrix as ``(num_rows, num_columns)``.
         """
-        # Convert each element in args to a jax array using u.math.asarray
+        if indices is None and indptr is None:
+            # Tuple syntax: CSR((data, indices, indptr), shape=...)
+            args = data
+        else:
+            # Positional syntax: CSR(data, indices, indptr, shape=...)
+            args = (data, indices, indptr)
+
+        assert len(args) == 3, "Expected three arguments: data, indices, indptr."
         self.data, self.indices, self.indptr = map(u.math.asarray, args)
-
-        # Call the constructor of the superclass to initialize the object with the given args and shape
         super().__init__(args, shape=shape)
-
         self.diag_positions = None
 
     def tree_flatten(self):

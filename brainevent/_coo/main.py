@@ -21,6 +21,7 @@ from typing import Any, Tuple
 
 import brainunit as u
 import jax
+import jax.numpy as jnp
 import numpy as np
 
 from brainevent._event import BinaryArray, SparseFloat
@@ -85,7 +86,9 @@ class COO(u.sparse.SparseMatrix):
 
     def __init__(
         self,
-        args: Tuple[Data, Row, Col],
+        data,
+        row=None,
+        col=None,
         *,
         shape: MatrixShape,
         rows_sorted: bool = False,
@@ -94,25 +97,46 @@ class COO(u.sparse.SparseMatrix):
         """
         Initialize a COO matrix.
 
+        Supports two calling conventions::
+
+            # Tuple syntax (original)
+            COO((data, row, col), shape=(m, n))
+
+            # Positional-argument syntax
+            COO(data, row, col, shape=(m, n))
+
         Parameters
         ----------
-        args : Tuple[jax.Array | u.Quantity, jax.Array, jax.Array]
-            Tuple containing (data, row indices, column indices).
-        shape : Shape
-            Shape of the matrix (rows, columns).
+        data : array or Sequence
+            Either a single array (the non-zero values) when ``row`` and
+            ``col`` are also provided, or a sequence of three arrays
+            ``(data, row, col)`` when used with the tuple syntax.
+        row : array, optional
+            Row indices for each non-zero element. Required when ``data``
+            is the values array.
+        col : array, optional
+            Column indices for each non-zero element. Required when ``data``
+            is the values array.
+        shape : Tuple[int, int]
+            Shape of the matrix as ``(num_rows, num_columns)``.
         rows_sorted : bool, optional
             Whether row indices are sorted. Default is False.
         cols_sorted : bool, optional
             Whether column indices are sorted within each row. Default is False.
         """
+        if row is None and col is None:
+            # Tuple syntax: COO((data, row, col), shape=...)
+            args = data
+        else:
+            # Positional syntax: COO(data, row, col, shape=...)
+            args = (data, row, col)
+
+        assert len(args) == 3, "Expected three arguments: data, row, col."
         self.data, self.row, self.col = map(u.math.asarray, args)
         self.rows_sorted = rows_sorted
         self.cols_sorted = cols_sorted
-        super().__init__(args, shape=shape)
 
-    @property
-    def info(self):
-        return COOInfo(shape=self.shape, rows_sorted=self.rows_sorted, cols_sorted=self.cols_sorted)
+        super().__init__(args, shape=shape)
 
     @property
     def dtype(self):
@@ -282,7 +306,11 @@ class COO(u.sparse.SparseMatrix):
             - A tuple with the matrix data.
             - A dictionary with auxiliary data (shape, sorting information, row and column indices).
         """
-        aux = self.info._asdict()
+        aux = dict(
+            shape=self.shape,
+            rows_sorted=self.rows_sorted,
+            cols_sorted=self.cols_sorted,
+        )
         aux['row'] = self.row
         aux['col'] = self.col
         return (self.data,), aux
