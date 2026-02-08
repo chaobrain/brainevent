@@ -15,8 +15,6 @@
 
 # -*- coding: utf-8 -*-
 
-import functools
-
 import brainstate
 import braintools
 import jax

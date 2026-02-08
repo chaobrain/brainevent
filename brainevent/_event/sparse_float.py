@@ -14,7 +14,6 @@
 # ==============================================================================
 
 
-import jax
 from jax.tree_util import register_pytree_node_class
 
 from brainevent._dense import dsfmm, sfdmm, dsfmv, sfdvm
@@ -49,7 +48,7 @@ class SparseFloat(EventRepresentation):
     """
     __module__ = 'brainevent'
 
-    def __init__( self, value ):
+    def __init__(self, value):
         super().__init__(value)
 
     def __matmul__(self, oc):

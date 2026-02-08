@@ -245,6 +245,7 @@ class Test_Operator_Behavior:
         assert allclose(left_matrix @ conn, left_matrix.value @ dense)
         assert allclose(conn @ right_matrix, dense @ right_matrix.value)
 
+
 class TestVector:
     def _generate_x(self, shape, require_float=False):
         if isinstance(shape, (tuple, list)):

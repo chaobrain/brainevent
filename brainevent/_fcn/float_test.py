@@ -17,10 +17,10 @@
 
 import functools
 
-import jax
-import jax.numpy as jnp
 import brainstate
 import braintools
+import jax
+import jax.numpy as jnp
 import pytest
 
 from brainevent._fcn.float import fcnmv, fcnmv_p, fcnmm_p, fcnmm_p_call

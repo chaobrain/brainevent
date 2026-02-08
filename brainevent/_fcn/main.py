@@ -16,7 +16,6 @@
 # -*- coding: utf-8 -*-
 
 import operator
-from typing import Tuple
 
 import brainunit as u
 import jax

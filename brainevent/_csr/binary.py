@@ -21,13 +21,13 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
+from brainevent._config import get_numba_parallel
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescope
 from brainevent._op import jaxinfo_to_warpinfo, numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .float import csrmv, csrmm
-from brainevent._config import get_numba_parallel
 
 __all__ = [
     'binary_csrmv',
@@ -46,7 +46,7 @@ def binary_csrmv(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    backend: Optional[str]=None,
+    backend: Optional[str] = None,
 ) -> Data:
     """
     Product of CSR sparse matrix and a dense vector.

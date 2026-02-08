@@ -84,7 +84,7 @@ class Test_csr_on_pre:
         csr = brainevent.CSR.fromdense(mat)
         csr = csr.with_data(
             update_csr_on_binary_pre(csr.data, csr.indices, csr.indptr, pre_spike, post_trace,
-                                    w_min=w_in, w_max=w_max, shape=csr.shape)
+                                     w_min=w_in, w_max=w_max, shape=csr.shape)
         )
 
         mat = mat + jnp.outer(pre_spike.astype(float), post_trace)

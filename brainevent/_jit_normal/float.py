@@ -63,6 +63,7 @@ def jitn(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    backend: Optional[str] = None,
 ) -> Data:
     u.fail_for_dimension_mismatch(w_loc, w_scale, "w_loc and w_scale must have the same dimension.")
     w_loc, unitd = u.split_mantissa_unit(w_loc)
@@ -79,7 +80,8 @@ def jitn(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder
+        corder=corder,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd)
 
@@ -94,6 +96,7 @@ def jitnmv(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    backend: Optional[str] = None,
 ) -> Data:
     u.fail_for_dimension_mismatch(w_loc, w_scale, "w_loc and w_scale must have the same dimension.")
     seed = _initialize_seed(seed)
@@ -120,7 +123,8 @@ def jitnmv(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder
+        corder=corder,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitv)
 
@@ -135,6 +139,7 @@ def jitnmm(
     shape: MatrixShape,
     transpose: bool = False,
     corder: bool = True,
+    backend: Optional[str] = None,
 ) -> Data:
     u.fail_for_dimension_mismatch(w_loc, w_scale, "w_loc and w_scale must have the same dimension.")
     seed = _initialize_seed(seed)
@@ -161,7 +166,8 @@ def jitnmm(
         seed,
         shape=shape,
         transpose=transpose,
-        corder=corder
+        corder=corder,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * unitd * unitB)
 
@@ -610,11 +616,12 @@ def _jitn_transpose(ct, w_loc, w_scale, clen, seed, *, shape, transpose: bool, c
     if ad.is_undefined_primal(w_loc):
         dwlow = jnp.expand_dims(ct.sum(), axis=0)
         return (dwlow, w_scale, clen, seed)
+
     elif ad.is_undefined_primal(w_scale):
         # TODO: optimize memory
         forward = jitn_p_call(0., 1., clen, seed, shape=shape, transpose=transpose, corder=corder)[0]
-        dwhigh = jnp.expand_dims((ct * forward).sum(), axis=0)
-        return (w_loc, dwhigh, clen, seed)
+        dwscale = jnp.expand_dims((ct * forward).sum(), axis=0)
+        return (w_loc, dwscale, clen, seed)
 
     else:
         raise NotImplementedError(

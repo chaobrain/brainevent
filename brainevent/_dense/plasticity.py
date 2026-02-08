@@ -21,10 +21,10 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
+from brainevent._config import get_numba_parallel
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
-from brainevent._config import get_numba_parallel
 
 __all__ = [
     'update_dense_on_binary_pre',
@@ -164,6 +164,7 @@ def _dense_on_pre_transpose_rule(ct, weight, pre_spike, post_trace, **kwargs):
     if ad.is_undefined_primal(weight):
         return (ad.Zero(weight) if type(ct) is ad.Zero else ct), pre_spike, post_trace
     return weight, pre_spike, post_trace
+
 
 def _update_dense_pre_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
@@ -343,6 +344,7 @@ def _dense_on_post_batching(args, axes, **kwargs):
         return [weight + update[None, :, :]], [0]
     return general_batching_rule(update_dense_on_binary_post_p, args, axes, **kwargs)
 
+
 def _update_dense_post_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
@@ -356,6 +358,7 @@ def _update_dense_post_benchmark_data(*, platform):
         name = f"{'bool' if bool_event else 'float'}"
         configs.append(BenchmarkConfig(name, (weight, pre_trace, post_spike)))
     return configs
+
 
 update_dense_on_binary_post_p = XLACustomKernel('dense_on_post')
 update_dense_on_binary_post_p.def_numba_kernel(_dense_on_post_numba_kernel)
