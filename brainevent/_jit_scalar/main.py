@@ -81,7 +81,9 @@ class JITScalarMatrix(JITCMatrix):
 
     def __init__(
         self,
-        data: Tuple[WeightScalar, Prob, Seed],
+        weight,
+        prob=None,
+        seed=None,
         *,
         shape: MatrixShape,
         corder: bool = False,
@@ -91,11 +93,14 @@ class JITScalarMatrix(JITCMatrix):
 
         Parameters
         ----------
-        data : Tuple[WeightScalar, Prob, Seed]
-            A tuple containing three elements:
-            - weight: Homogeneous weight value for all non-zero elements
-            - prob: Connection probability determining matrix sparsity
-            - seed: Random seed for reproducible sparse structure generation
+        weight : WeightScalar or Tuple[WeightScalar, Prob, Seed]
+            Either the homogeneous weight value for all non-zero elements,
+            or a tuple containing (weight, prob, seed).
+        prob : Prob, optional
+            Connection probability determining matrix sparsity.
+            If None, ``weight`` is treated as a tuple of (weight, prob, seed).
+        seed : Seed, optional
+            Random seed for reproducible sparse structure generation.
         shape : MatrixShape
             The shape of the matrix as a tuple (rows, columns).
         corder : bool, optional
@@ -109,6 +114,10 @@ class JITScalarMatrix(JITCMatrix):
         as instance attributes. The weight is converted to a JAX array if it's not
         already one, preserving any attached units.
         """
+        if prob is None and seed is None:
+            data = weight
+        else:
+            data = (weight, prob, seed)
         weight, self.prob, self.seed = data
         if not isinstance(self.prob, Tracer):
             prob = np.asarray(self.prob)

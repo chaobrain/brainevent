@@ -282,7 +282,11 @@ class FixedPostNumConn(FixedNumConn):
     nse = property(lambda self: self.indices.size)
     dtype = property(lambda self: self.data.dtype)
 
-    def __init__(self, args: Tuple[Data, Index], *, shape: MatrixShape):
+    def __init__(self, data, indices=None, *, shape: MatrixShape):
+        if indices is None:
+            args = data
+        else:
+            args = (data, indices)
         self.data, self.indices = map(u.math.asarray, args)
         _validate_fixed_conn_indices(self.indices, expected_rows=shape[0], kind='Post-synaptic')
         if self.data.size != 1 and self.data.shape != self.indices.shape:
@@ -679,7 +683,11 @@ class FixedPreNumConn(FixedNumConn):
     nse = property(lambda self: self.indices.size)
     dtype = property(lambda self: self.data.dtype)
 
-    def __init__(self, args: Tuple[Data, Index], *, shape: MatrixShape):
+    def __init__(self, data, indices=None, *, shape: MatrixShape):
+        if indices is None:
+            args = data
+        else:
+            args = (data, indices)
         self.data, self.indices = map(u.math.asarray, args)
         _validate_fixed_conn_indices(
             self.indices,

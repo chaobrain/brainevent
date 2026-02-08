@@ -85,7 +85,10 @@ class JITNormalMatrix(JITCMatrix):
 
     def __init__(
         self,
-        data: Tuple[WeightScalar, WeightScalar, Prob, Seed],
+        loc,
+        scale=None,
+        prob=None,
+        seed=None,
         *,
         shape: MatrixShape,
         corder: bool = False,
@@ -95,12 +98,16 @@ class JITNormalMatrix(JITCMatrix):
 
         Parameters
         ----------
-        data : Tuple[WeightScalar, WeightScalar, Prob, Seed]
-            A tuple containing four elements:
-            - loc: Location (mean) parameter of the normal distribution
-            - scale: Scale (standard deviation) parameter of the normal distribution
-            - prob: Connection probability determining matrix sparsity
-            - seed: Random seed for reproducible sparse structure generation
+        loc : WeightScalar or Tuple[WeightScalar, WeightScalar, Prob, Seed]
+            Either the location (mean) parameter of the normal distribution,
+            or a tuple containing (loc, scale, prob, seed).
+        scale : WeightScalar, optional
+            Scale (standard deviation) parameter of the normal distribution.
+            If None, ``loc`` is treated as a tuple of (loc, scale, prob, seed).
+        prob : Prob, optional
+            Connection probability determining matrix sparsity.
+        seed : Seed, optional
+            Random seed for reproducible sparse structure generation.
         shape : MatrixShape
             The shape of the matrix as a tuple (rows, columns).
         corder : bool, optional
@@ -115,6 +122,10 @@ class JITNormalMatrix(JITCMatrix):
         dtypes and are verified to have matching dimensions before being converted
         to JAX arrays, preserving any attached units.
         """
+        if scale is None and prob is None and seed is None:
+            data = loc
+        else:
+            data = (loc, scale, prob, seed)
         loc, scale, self.prob, self.seed = data
         loc, scale = u.math.promote_dtypes(loc, scale)
         u.fail_for_dimension_mismatch(loc, scale, "loc and scale must have the same dimension.")

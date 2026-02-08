@@ -85,7 +85,10 @@ class JITUniformMatrix(JITCMatrix):
 
     def __init__(
         self,
-        data: Tuple[WeightScalar, WeightScalar, Prob, Seed],
+        low,
+        high=None,
+        prob=None,
+        seed=None,
         *,
         shape: MatrixShape,
         corder: bool = False,
@@ -95,12 +98,16 @@ class JITUniformMatrix(JITCMatrix):
 
         Parameters
         ----------
-        data : Tuple[WeightScalar, WeightScalar, Prob, Seed]
-            A tuple containing four elements:
-            - low: Lower bound of the uniform distribution
-            - high: Upper bound of the uniform distribution
-            - prob: Connection probability determining matrix sparsity
-            - seed: Random seed for reproducible sparse structure generation
+        low : WeightScalar or Tuple[WeightScalar, WeightScalar, Prob, Seed]
+            Either the lower bound of the uniform distribution,
+            or a tuple containing (low, high, prob, seed).
+        high : WeightScalar, optional
+            Upper bound of the uniform distribution.
+            If None, ``low`` is treated as a tuple of (low, high, prob, seed).
+        prob : Prob, optional
+            Connection probability determining matrix sparsity.
+        seed : Seed, optional
+            Random seed for reproducible sparse structure generation.
         shape : MatrixShape
             The shape of the matrix as a tuple (rows, columns).
         corder : bool, optional
@@ -115,6 +122,10 @@ class JITUniformMatrix(JITCMatrix):
         dtypes and are verified to have matching dimensions before being converted
         to JAX arrays, preserving any attached units.
         """
+        if high is None and prob is None and seed is None:
+            data = low
+        else:
+            data = (low, high, prob, seed)
         low, high, self.prob, self.seed = data
         if not isinstance(self.prob, Tracer):
             prob = np.asarray(self.prob)
