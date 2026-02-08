@@ -24,9 +24,9 @@ multiplication across different:
 - Weight types (homogeneous vs heterogeneous)
 """
 
-import sys
+import sys, os
 
-sys.path.append('..')
+sys.path.append(os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
 import argparse
 import jax.numpy as jnp
@@ -94,6 +94,7 @@ def run_benchmark(
         # batch_mode=batch_mode,
         batch_mode=True,
         compare_results=True,
+        catch_error=False,
     )
 
     return report, nnz
@@ -150,27 +151,27 @@ def main():
                 print(f"Config: {n_rows}x{n_cols}, density={density}, "
                       f"transpose={trans_str}, weight={weight_type}")
 
-                try:
-                    report, nnz = run_benchmark(
-                        n_rows=n_rows,
-                        n_cols=n_cols,
-                        density=density,
-                        transpose=transpose,
-                        homo_weight=homo_weight,
-                        platform=args.platform,
-                        n_warmup=args.n_warmup,
-                        n_runs=args.n_runs,
-                        batch_mode=args.batch_mode,
-                    )
-                    print(report.summary())
+                report, nnz = run_benchmark(
+                    n_rows=n_rows,
+                    n_cols=n_cols,
+                    density=density,
+                    transpose=transpose,
+                    homo_weight=homo_weight,
+                    platform=args.platform,
+                    n_warmup=args.n_warmup,
+                    n_runs=args.n_runs,
+                    batch_mode=args.batch_mode,
+                )
+                print(report.summary())
 
-                    fastest = report.fastest()
-                    if fastest:
-                        print(f"  nnz={nnz:,}, fastest={fastest.backend}, "
-                              f"mean={fastest.mean_time * 1000:.3f}ms, "
-                              f"std={fastest.std_time * 1000:.3f}ms")
+                fastest = report.fastest()
+                if fastest:
+                    print(f"  nnz={nnz:,}, fastest={fastest.backend}, "
+                          f"mean={fastest.mean_time * 1000:.3f}ms, "
+                          f"std={fastest.std_time * 1000:.3f}ms")
 
-                        results_table.append({
+                    results_table.append(
+                        {
                             'shape': f"{n_rows}x{n_cols}",
                             'density': density,
                             'nnz': nnz,
@@ -179,13 +180,11 @@ def main():
                             'backend': fastest.backend,
                             'mean_ms': fastest.mean_time * 1000,
                             'std_ms': fastest.std_time * 1000,
-                        })
+                        }
+                    )
 
-                    if report.mismatches:
-                        print(f"  WARNING: Result mismatches: {report.mismatches}")
-
-                except Exception as e:
-                    print(f"  ERROR: {e}")
+                if report.mismatches:
+                    print(f"  WARNING: Result mismatches: {report.mismatches}")
 
                 print()
 
@@ -193,12 +192,16 @@ def main():
     print("=" * 80)
     print("SUMMARY TABLE")
     print("=" * 80)
-    print(f"{'Shape':<15} {'Density':<10} {'NNZ':<12} {'Trans':<6} {'Weight':<6} "
-          f"{'Backend':<10} {'Mean(ms)':<10} {'Std(ms)':<10}")
+    print(
+        f"{'Shape':<15} {'Density':<10} {'NNZ':<12} {'Trans':<6} {'Weight':<6} "
+        f"{'Backend':<10} {'Mean(ms)':<10} {'Std(ms)':<10}"
+    )
     print("-" * 80)
     for r in results_table:
-        print(f"{r['shape']:<15} {r['density']:<10} {r['nnz']:<12,} {r['transpose']:<6} "
-              f"{r['weight']:<6} {r['backend']:<10} {r['mean_ms']:<10.3f} {r['std_ms']:<10.3f}")
+        print(
+            f"{r['shape']:<15} {r['density']:<10} {r['nnz']:<12,} {r['transpose']:<6} "
+            f"{r['weight']:<6} {r['backend']:<10} {r['mean_ms']:<10.3f} {r['std_ms']:<10.3f}"
+        )
 
 
 if __name__ == '__main__':
