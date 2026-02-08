@@ -77,6 +77,7 @@ class BenchmarkRow:
     dist: str
     transpose: bool
     homo_weight: bool
+    sorted_output: bool
     warp_ms: float
     cusparse_ms: float
     warp_gbs: float
@@ -196,6 +197,7 @@ def run_case(
     dist: str,
     transpose: bool,
     homo_weight: bool,
+    sorted_output: bool,
     seed: int,
     n_warmup: int,
     n_runs: int,
@@ -221,6 +223,16 @@ def run_case(
     vec_size = case.n_rows if transpose else case.n_cols
     vector_np = rng.standard_normal(vec_size).astype(dtype)
 
+    if sorted_output:
+        if transpose:
+            order = np.lexsort((row_np, col_np))
+        else:
+            order = np.lexsort((col_np, row_np))
+        row_np = row_np[order]
+        col_np = col_np[order]
+        if not homo_weight:
+            weights_np = weights_np[order]
+
     row = jnp.asarray(row_np, dtype=index_dtype)
     col = jnp.asarray(col_np, dtype=index_dtype)
     weights = jnp.asarray(weights_np, dtype=dtype)
@@ -232,17 +244,20 @@ def run_case(
         weights
     )
     jax_coo = JaxCOO((weights_dense, row, col), shape=(case.n_rows, case.n_cols))
+    jax_coo = jax_coo._sort_indices()
 
+    @jax.jit
     def warp_fn(w, r, c, v):
-        return brainevent.coomv_p.call(
+        return brainevent.coomv(
             w,
             r,
             c,
             v,
             shape=(case.n_rows, case.n_cols),
             transpose=transpose,
+            sorted_by_output=sorted_output,
             backend="warp",
-        )[0]
+        )
 
     @jax.jit
     def cusparse_fn(v):
@@ -273,6 +288,7 @@ def run_case(
         dist=dist,
         transpose=transpose,
         homo_weight=homo_weight,
+        sorted_output=sorted_output,
         warp_ms=warp_ms,
         cusparse_ms=cusparse_ms,
         warp_gbs=warp_gbs,
@@ -299,7 +315,7 @@ def _print_header(args):
         )
     print("-" * 140)
     print(
-        f"{'case':<10} {'shape':<14} {'nnz':>10} {'dist':<12} {'T':<2} {'W':<3} "
+        f"{'case':<10} {'shape':<14} {'nnz':>10} {'dist':<12} {'T':<2} {'W':<3} {'S':<2} "
         f"{'warp(ms)':>10} {'cusp(ms)':>10} {'warp GB/s':>10} {'cusp GB/s':>10} "
         f"{'warp/cusp t':>11} {'warp/cusp bw':>12} {'allclose':>9} {'max|diff|':>12}"
     )
@@ -311,6 +327,7 @@ def _print_row(r: BenchmarkRow):
         f"{r.case:<10} {r.shape:<14} {r.nnz:>10,} {r.dist:<12} "
         f"{('T' if r.transpose else 'N'):<2} "
         f"{('H' if r.homo_weight else 'X'):<3} "
+        f"{('S' if r.sorted_output else 'U'):<2} "
         f"{r.warp_ms:>10.3f} {r.cusparse_ms:>10.3f} "
         f"{r.warp_gbs:>10.3f} {r.cusparse_gbs:>10.3f} "
         f"{r.warp_over_cusparse_time:>11.3f} {r.warp_over_cusparse_gbs:>12.3f} "
@@ -322,14 +339,14 @@ def _save_csv(rows: List[BenchmarkRow], out_path: Path):
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as f:
         f.write(
-            "case,shape,nnz,density,dist,transpose,homo_weight,warp_ms,cusparse_ms,"
+            "case,shape,nnz,density,dist,transpose,homo_weight,sorted_output,warp_ms,cusparse_ms,"
             "warp_gbs,cusparse_gbs,warp_over_cusparse_time,warp_over_cusparse_gbs,"
             "allclose,max_abs_diff\n"
         )
         for r in rows:
             f.write(
                 f"{r.case},{r.shape},{r.nnz},{r.density:.8f},{r.dist},"
-                f"{int(r.transpose)},{int(r.homo_weight)},"
+                f"{int(r.transpose)},{int(r.homo_weight)},{int(r.sorted_output)},"
                 f"{r.warp_ms:.8f},{r.cusparse_ms:.8f},"
                 f"{r.warp_gbs:.8f},{r.cusparse_gbs:.8f},"
                 f"{r.warp_over_cusparse_time:.8f},{r.warp_over_cusparse_gbs:.8f},"
@@ -354,6 +371,11 @@ def parse_args():
         nargs="+",
         default=list(DEFAULT_DISTRIBUTIONS),
         choices=list(DEFAULT_DISTRIBUTIONS),
+    )
+    parser.add_argument(
+        "--sorted-output",
+        action="store_true",
+        help="Sort COO entries by output dim (row for NT, col for T) to unlock atomics-free Warp kernel.",
     )
     parser.add_argument(
         "--output-csv",
@@ -407,6 +429,7 @@ def main():
                             dist=dist,
                             transpose=transpose,
                             homo_weight=homo_weight,
+                            sorted_output=args.sorted_output,
                             seed=case_seed,
                             n_warmup=args.n_warmup,
                             n_runs=args.n_runs,
@@ -430,7 +453,7 @@ def main():
                                 )
                             )
                     except Exception as e:
-                        tag = f"{case.name}/{dist}/T={transpose}/H={homo_weight}"
+                        tag = f"{case.name}/{dist}/T={transpose}/H={homo_weight}/S={args.sorted_output}"
                         print(f"{tag:<70} ERROR: {type(e).__name__}: {e}")
                         failures.append((case.name, dist, transpose, homo_weight, str(e)))
 
