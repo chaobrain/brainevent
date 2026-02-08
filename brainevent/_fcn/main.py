@@ -352,7 +352,12 @@ class FixedPostNumConn(FixedNumConn):
             Shape: (2, 2)
         """
         pre_ids, post_ids, spinfo = fixed_post_num_to_coo(self)
-        return COO((self.data, (pre_ids, post_ids)), shape=self.shape, spinfo=spinfo)
+        return COO(
+            (self.data.flatten(), pre_ids, post_ids),
+            shape=self.shape,
+            rows_sorted=spinfo.rows_sorted,
+            cols_sorted=spinfo.cols_sorted,
+        )
 
     def transpose(self, axes=None) -> 'FixedPreNumConn':
         """
@@ -725,7 +730,12 @@ class FixedPreNumConn(FixedNumConn):
             Shape: (3, 3)
         """
         pre_ids, post_ids, spinfo = fixed_pre_num_to_coo(self)
-        return COO((self.data, (pre_ids, post_ids)), shape=self.shape, spinfo=spinfo)
+        return COO(
+            (self.data.flatten(), pre_ids, post_ids),
+            shape=self.shape,
+            rows_sorted=spinfo.rows_sorted,
+            cols_sorted=spinfo.cols_sorted,
+        )
 
     def transpose(self, axes=None) -> FixedPostNumConn:
         """
