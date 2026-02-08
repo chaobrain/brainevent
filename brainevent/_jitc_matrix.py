@@ -50,10 +50,10 @@ class JITCMatrix(u.sparse.SparseMatrix):
 
     def _unitary_op(self, op):
         """
-        Apply a unitary operation to the matrix.
+        Apply a unary operation to the matrix.
 
         This is an internal method that should be implemented by subclasses
-        to handle unitary operations like absolute value, negation, etc.
+        to handle unary operations like absolute value, negation, etc.
 
         Args:
             op (callable): A function from the operator module to apply to the matrix
@@ -138,7 +138,7 @@ class JITCMatrix(u.sparse.SparseMatrix):
 
         Returns
         -------
-        JITCMatrix or Data
+        JITCMatrix or Any
             Result of the operation.
         """
         if reverse:

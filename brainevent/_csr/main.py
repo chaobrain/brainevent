@@ -72,11 +72,11 @@ class BaseCLS(u.sparse.SparseMatrix):
             ``(data, indices, indptr)`` when used with the tuple syntax.
         indices : array, optional
             Secondary-axis indices for each stored element (column indices for
-            CSR, row indices for CSC). Required when ``data_or_args`` is the
+            CSR, row indices for CSC). Required when ``data`` is the
             data array.
         indptr : array, optional
             Primary-axis pointers indicating where each row/column starts in
-            the data and indices arrays. Required when ``data_or_args`` is the
+            the data and indices arrays. Required when ``data`` is the
             data array.
         shape : Tuple[int, int]
             The shape of the matrix as ``(num_rows, num_columns)``.

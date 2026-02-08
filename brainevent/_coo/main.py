@@ -65,7 +65,7 @@ class COO(u.sparse.SparseMatrix):
     info : COOInfo
         Additional information about the matrix structure (property).
     _bufs : tuple
-        Tuple of (data, row, col) arrays (property).
+        Tuple of ``(data, row, col, ptr)`` arrays (property).
     rows_sorted : bool
         Whether row indices are sorted.
     cols_sorted : bool
@@ -121,10 +121,10 @@ class COO(u.sparse.SparseMatrix):
             is the values array.
         col : array, optional
             Column indices for each non-zero element. Required when ``data``
+            is the values array.
         ptr : array, optional
             Pre-computed row (or column) pointer array. If None and indices
             are sorted, it will be computed automatically.
-            is the values array.
         shape : Tuple[int, int]
             Shape of the matrix as ``(num_rows, num_columns)``.
         rows_sorted : bool, optional
