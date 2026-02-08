@@ -588,12 +588,7 @@ def _csrmv_pallas_gpu_kernel(
                     jax.lax.fori_loop(0, num_blocks, loop_fn, None)
 
         def kernel(data, indices, indptr, vector):
-            fn = pl.pallas_call(
-                mm,
-                grid=(m,),
-                input_output_aliases={4: 0},
-                out_shape=kwargs['outs']
-            )
+            fn = pl.pallas_call(mm, grid=(m,), input_output_aliases={4: 0}, out_shape=kwargs['outs'])
             out = kwargs['outs'][0]
             return fn(data, indices, indptr, vector, jnp.zeros(out.shape, dtype=out.dtype))
 
@@ -624,14 +619,7 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, events, *, shape, transpose
         if type(ct) is ad.Zero:
             ct_events = ad.Zero(events)
         else:
-            ct_events = csrmv(
-                data,
-                indices,
-                indptr,
-                ct,
-                shape=shape,
-                transpose=not transpose
-            )
+            ct_events = csrmv(data, indices, indptr, ct, shape=shape, transpose=not transpose)
         return data, indices, indptr, ct_events
     else:
         if type(ct) is ad.Zero:
@@ -698,9 +686,13 @@ def _binary_csrmv_benchmark_data(*, platform):
                 else:
                     vector = jnp.asarray(np.random.rand(v_size), dtype=dtype)
                 name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
-                configs.append(BenchmarkConfig(name, (weights, indices, jnp.asarray(indptr), vector), {
-                    'shape': (n_pre, n_post), 'transpose': transpose
-                }))
+                configs.append(
+                    BenchmarkConfig(
+                        name,
+                        (weights, indices, jnp.asarray(indptr), vector),
+                        {'shape': (n_pre, n_post), 'transpose': transpose}
+                    )
+                )
     return configs
 
 
@@ -1444,9 +1436,13 @@ def _binary_csrmm_benchmark_data(*, platform):
                 else:
                     B = jnp.asarray(np.random.rand(b_rows, 10), dtype=dtype)
                 name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
-                configs.append(BenchmarkConfig(name, (weights, indices, jnp.asarray(indptr), B), {
-                    'shape': (n_pre, n_post), 'transpose': transpose
-                }))
+                configs.append(
+                    BenchmarkConfig(
+                        name,
+                        (weights, indices, jnp.asarray(indptr), B),
+                        {'shape': (n_pre, n_post), 'transpose': transpose}
+                    )
+                )
     return configs
 
 
