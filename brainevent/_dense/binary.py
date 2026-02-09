@@ -206,11 +206,7 @@ def _dbmv_pallas_kernel(
         out_ref[pl.dslice(i_row_start, mat_block_dim)] = jnp.where(i_row_mask, i_row_out, 0.0)
 
     def run(weights, spikes):
-        fn = pl.pallas_call(
-            kernel,
-            grid=(cdiv(m, mat_block_dim),),
-            out_shape=kwargs['outs']
-        )
+        fn = pl.pallas_call(kernel, grid=(cdiv(m, mat_block_dim),), out_shape=kwargs['outs'])
         return fn(weights, spikes)
 
     return run
@@ -441,11 +437,7 @@ def _bdvm_pallas_kernel(
         out_ref[pl.dslice(i_col_start, block_dim)] = jnp.where(i_col_mask, i_col_out, 0.0)
 
     def run(spikes, weights):
-        fn = pl.pallas_call(
-            kernel,
-            grid=(cdiv(n, block_dim),),
-            out_shape=kwargs['outs']
-        )
+        fn = pl.pallas_call(kernel, grid=(cdiv(n, block_dim),), out_shape=kwargs['outs'])
         return fn(spikes, weights)
 
     return run
@@ -717,11 +709,7 @@ def _dbmm_pallas_kernel(
         out_ref[pl.dslice(i_m_start, block_dim), i_n] = jnp.where(i_m_mask, final_out, 0.0)
 
     def run(weights, spikes):
-        fn = pl.pallas_call(
-            kernel,
-            grid=(n, cdiv(m, block_dim)),
-            out_shape=kwargs['outs']
-        )
+        fn = pl.pallas_call(kernel, grid=(n, cdiv(m, block_dim)), out_shape=kwargs['outs'])
         return fn(weights, spikes)
 
     return run
@@ -1016,11 +1004,7 @@ def _bdmm_pallas_kernel(
 
     def run(spikes, weights):
         weights_t = weights.T  # [k, n] -> [n, k]
-        fn = pl.pallas_call(
-            kernel,
-            grid=(m, cdiv(n, block_dim)),
-            out_shape=kwargs['outs']
-        )
+        fn = pl.pallas_call(kernel, grid=(m, cdiv(n, block_dim)), out_shape=kwargs['outs'])
         return fn(spikes, weights_t)
 
     return run

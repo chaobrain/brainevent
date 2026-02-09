@@ -185,11 +185,7 @@ def _dsfmv_pallas_kernel(
         plt.store(out_ref[safe_rows], i_row_out, mask=mask)
 
     def run(weights, spikes):
-        fn = pl.pallas_call(
-            kernel,
-            grid=(cdiv(weight_info.shape[0], mat_block_dim),),
-            out_shape=kwargs['outs'],
-        )
+        fn = pl.pallas_call(kernel, grid=(cdiv(weight_info.shape[0], mat_block_dim),), out_shape=kwargs['outs'])
         return fn(weights, spikes)
 
     return run
@@ -392,11 +388,7 @@ def _sfdvm_pallas_kernel(
         plt.store(out_ref[safe_cols], i_col_out, mask=mask)
 
     def run(spikes, weights):
-        fn = pl.pallas_call(
-            kernel,
-            grid=(cdiv(weight_info.shape[1], block_dim),),
-            out_shape=kwargs['outs'],
-        )
+        fn = pl.pallas_call(kernel, grid=(cdiv(weight_info.shape[1], block_dim),), out_shape=kwargs['outs'])
         return fn(spikes, weights)
 
     return run

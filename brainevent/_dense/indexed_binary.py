@@ -87,13 +87,13 @@ def _bdvm_numba_kernel(**kwargs):
     import numba
 
     @numba.njit(fastmath=True)
-    def kernel(spikes, indices, count, weights, out):
+    def kernel(indices, count, weights, out):
         out[:] = 0.
         for i in range(count[0]):
             out += weights[indices[i]]
 
     def run(spikes, indices, count, weights):
-        return numba_kernel(kernel, outs=kwargs['outs'])(spikes, indices, count, weights)
+        return numba_kernel(kernel, outs=kwargs['outs'])(indices, count, weights)
 
     return run
 
@@ -109,7 +109,6 @@ def _bdvm_warp_kernel(
     from warp.jax_experimental import jax_kernel
 
     n = weights_info.shape[1]
-    spike_warp_info = jaxinfo_to_warpinfo(spikes_info)
     indices_warp_info = jaxinfo_to_warpinfo(indices_info)
     count_warp_info = jaxinfo_to_warpinfo(count_info)
     weight_warp_info = jaxinfo_to_warpinfo(weights_info)
@@ -117,7 +116,6 @@ def _bdvm_warp_kernel(
 
     @warp.kernel
     def kernel(
-        spikes: spike_warp_info,
         indices: indices_warp_info,
         count: count_warp_info,
         weights: weight_warp_info,
@@ -132,7 +130,7 @@ def _bdvm_warp_kernel(
     def run(spikes, indices, count, weights):
         out_info = kwargs['outs'][0]
         fn = jax_kernel(kernel, launch_dims=[n], num_outputs=1, output_dims={'out': out_info.shape})
-        return fn(spikes, indices, count, weights)
+        return fn(indices, count, weights)
 
     return run
 
@@ -147,7 +145,6 @@ def _bdvm_pallas_kernel(
     block_dim = generate_block_dim(weights_info.shape[1], maximum=128)
 
     def kernel(
-        spikes_ref,  # [n_neuron]
         indices_ref,  # [n_neuron]
         count_ref,  # [1]
         weights_ref,  # [n_neuron, n_output]
@@ -175,7 +172,7 @@ def _bdvm_pallas_kernel(
 
     def run(spikes, indices, count, weights):
         fn = pl.pallas_call(kernel, grid=(cdiv(weights_info.shape[1], block_dim),), out_shape=kwargs['outs'])
-        return fn(spikes, indices, count, weights)
+        return fn(indices, count, weights)
 
     return run
 
@@ -359,7 +356,7 @@ def _bdmm_numba_kernel(**kwargs):
     import numba
 
     @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
-    def kernel(spikes, indices, count, weights, out):
+    def kernel(indices, count, weights, out):
         for i_row in numba.prange(indices.shape[0]):
             temp = np.zeros(weights.shape[1], dtype=weights.dtype)
             for i_col in range(count[i_row]):
@@ -367,7 +364,7 @@ def _bdmm_numba_kernel(**kwargs):
             out[i_row] = temp
 
     def run(spikes, indices, count, weights):
-        return numba_kernel(kernel, outs=kwargs['outs'])(spikes, indices, count, weights)
+        return numba_kernel(kernel, outs=kwargs['outs'])(indices, count, weights)
 
     return run
 
@@ -392,7 +389,6 @@ def _bdmm_warp_kernel(
 
     @warp.kernel
     def kernel(
-        spikes: spike_warp_info,
         indices: indices_warp_info,
         count: count_warp_info,
         weights: weight_warp_info,
@@ -408,7 +404,7 @@ def _bdmm_warp_kernel(
     def run(spikes, indices, count, weights):
         out_info = kwargs['outs'][0]
         fn = jax_kernel(kernel, launch_dims=[batch], num_outputs=1, output_dims={'out': out_info.shape})
-        return fn(spikes, indices, count, weights)
+        return fn(indices, count, weights)
 
     return run
 
@@ -424,7 +420,6 @@ def _bdmm_pallas_kernel(
     block_dim = generate_block_dim(weights_info.shape[1], maximum=128)
 
     def kernel(
-        spikes_ref,  # [batch, n_spikes]
         indices_ref,  # [batch, n_spikes]
         count_ref,  # [batch]
         weights_ref,  # [n_input, n_output]
@@ -453,12 +448,9 @@ def _bdmm_pallas_kernel(
         plt.store(out_ref[i_row, safe_cols], out, mask=mask)
 
     def run(spikes, indices, count, weights):
-        fn = pl.pallas_call(
-            kernel,
-            grid=(spikes_info.shape[0], cdiv(weights_info.shape[1], block_dim)),
-            out_shape=kwargs['outs'],
-        )
-        return fn(spikes, indices, count, weights)
+        grid = (spikes_info.shape[0], cdiv(weights_info.shape[1], block_dim))
+        fn = pl.pallas_call(kernel, grid=grid, out_shape=kwargs['outs'])
+        return fn(indices, count, weights)
 
     return run
 
