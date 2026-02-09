@@ -28,7 +28,6 @@ from brainevent._coo.plasticity_binary import (
     update_coo_on_binary_post_p,
 )
 
-
 PLATFORM = jax.default_backend()
 PRE_BACKENDS = tuple(update_coo_on_binary_pre_p.available_backends(PLATFORM))
 POST_BACKENDS = tuple(update_coo_on_binary_post_p.available_backends(PLATFORM))
@@ -272,8 +271,8 @@ class Test_coo_gpu_backend_parity:
         pre_spike = jnp.asarray(rng.random(n_pre) > 0.5, dtype=jnp.bool_)
         post_spike = jnp.asarray(rng.random(n_post) > 0.5, dtype=jnp.bool_)
 
-        out_pre = jax.jit(lambda: update_coo_on_binary_pre(weight, pre_ids, post_ids, pre_spike, post_trace))()
-        out_post = jax.jit(lambda: update_coo_on_binary_post(weight, pre_ids, post_ids, pre_trace, post_spike))()
+        out_pre = update_coo_on_binary_pre(weight, pre_ids, post_ids, pre_spike, post_trace, backend='pallas')
+        out_post = update_coo_on_binary_post(weight, pre_ids, post_ids, pre_trace, post_spike, backend='pallas')
 
         ref_pre = weight + jnp.where(pre_spike[pre_ids], post_trace[post_ids], 0)
         ref_post = weight + jnp.where(post_spike[post_ids], pre_trace[pre_ids], 0)

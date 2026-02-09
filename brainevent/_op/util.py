@@ -348,7 +348,7 @@ def jaxtype_to_warptype(dtype):
     elif dtype == np.bool_:
         return warp.bool
     else:
-        raise ValueError(f"Unsupported dtype: {dtype}")
+        raise ValueError(f"Warp does not support computations with dtype: {dtype}")
 
 
 def jaxinfo_to_warpinfo(jax_info: jax.ShapeDtypeStruct):
