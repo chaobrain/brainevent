@@ -91,7 +91,7 @@ def test_pallas_coomv_matches_dense(shape, nnz, mode, transpose, homo_w, dtype):
     dense = _dense_from_coo(weights, row, col, shape)
     ref = dense.T @ v if transpose else dense @ v
 
-    rtol, atol = _tol_mm(dtype)
+    rtol, atol = _tol(dtype)
     assert jnp.allclose(out, ref, rtol=rtol, atol=atol)
 
 
