@@ -46,7 +46,7 @@ class TestVectorCOO:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         y = binary_coomv(data, row, col, x, shape=(m, n), transpose=True, backend=implementation)
         y2 = vector_coo(x, data, row, col, (m, n))
-        assert jnp.allclose(y, y2, rtol=1e-5, atol=1e-5)
+        assert jax.block_until_ready(jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
         jax.block_until_ready((x, row, col, y, y2))
 
     @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
@@ -61,7 +61,7 @@ class TestVectorCOO:
             lambda x: binary_coomv(data, row, col, x, shape=(m, n), transpose=True, backend=implementation)
         )(xs)
         y2 = jax.vmap(lambda x: vector_coo(x, data, row, col, (m, n)))(xs)
-        assert jnp.allclose(y, y2, rtol=1e-3, atol=1e-3)
+        assert jax.block_until_ready(jnp.allclose(y, y2, rtol=1e-3, atol=1e-3))
         jax.block_until_ready((xs, row, col, y, y2))
 
     @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
@@ -74,7 +74,7 @@ class TestVectorCOO:
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         y = binary_coomv(data, row, col, v, shape=(m, n), transpose=False, backend=implementation)
         y2 = coo_vector(v, data, row, col, (m, n))
-        assert jnp.allclose(y, y2, rtol=1e-5, atol=1e-5)
+        assert jax.block_until_ready(jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
         jax.block_until_ready((v, row, col, y, y2))
 
     def _test_vjp(self, implementation, homo_w, replace, transpose):
@@ -101,8 +101,8 @@ class TestVectorCOO:
             return r.sum()
 
         r2 = jax.grad(f_jax, argnums=(0, 1))(x, w)
-        assert jnp.allclose(r[0], r2[0], rtol=1e-3, atol=1e-3)
-        assert jnp.allclose(r[1], r2[1], rtol=1e-3, atol=1e-3)
+        assert jax.block_until_ready(jnp.allclose(r[0], r2[0], rtol=1e-3, atol=1e-3))
+        assert jax.block_until_ready(jnp.allclose(r[1], r2[1], rtol=1e-3, atol=1e-3))
         jax.block_until_ready((x, row, col, r, r2))
 
     @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
@@ -141,8 +141,8 @@ class TestVectorCOO:
             return r
 
         o2, r2 = jax.jvp(f_jax, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
-        assert jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3)
-        assert jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3)
+        assert jax.block_until_ready(jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3))
+        assert jax.block_until_ready(jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3))
         jax.block_until_ready((x, row, col, o1, r1, o2, r2))
 
     @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
