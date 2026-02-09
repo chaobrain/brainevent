@@ -244,7 +244,7 @@ def _coomv_warp_kernel(
                     i = warp.tid()
                     w = weights[0]
                     if v[row[i]]:
-                        posts[col[i]] += w
+                        warp.atomic_add(posts, col[i], w)
             else:
                 @warp.kernel
                 def mv(
@@ -257,7 +257,7 @@ def _coomv_warp_kernel(
                     i = warp.tid()
                     w = weights[0]
                     if v[row[i]] > 0.:
-                        posts[col[i]] += w
+                        warp.atomic_add(posts, col[i], w)
         else:
             # transpose=True, heterogeneous
             if vector_info.dtype == jnp.bool_:
@@ -272,7 +272,7 @@ def _coomv_warp_kernel(
                 ):
                     i = warp.tid()
                     if v[row[i]]:
-                        posts[col[i]] += weights[i]
+                        warp.atomic_add(posts, col[i], weights[i])
             else:
                 @warp.kernel
                 def mv(
@@ -284,7 +284,7 @@ def _coomv_warp_kernel(
                 ):
                     i = warp.tid()
                     if v[row[i]] > 0.:
-                        posts[col[i]] += weights[i]
+                        warp.atomic_add(posts, col[i], weights[i])
     else:
         if weight_info.size == 1:
             # transpose=False, homogeneous
@@ -301,7 +301,7 @@ def _coomv_warp_kernel(
                     i = warp.tid()
                     w = weights[0]
                     if v[col[i]]:
-                        posts[row[i]] += w
+                        warp.atomic_add(posts, row[i], w)
             else:
                 @warp.kernel
                 def mv(
@@ -314,7 +314,7 @@ def _coomv_warp_kernel(
                     i = warp.tid()
                     w = weights[0]
                     if v[col[i]] > 0.:
-                        posts[row[i]] += w
+                        warp.atomic_add(posts, row[i], w)
         else:
             # transpose=False, heterogeneous
             if vector_info.dtype == jnp.bool_:
@@ -329,7 +329,7 @@ def _coomv_warp_kernel(
                 ):
                     i = warp.tid()
                     if v[col[i]]:
-                        posts[row[i]] += weights[i]
+                        warp.atomic_add(posts, row[i], weights[i])
             else:
                 @warp.kernel
                 def mv(
@@ -341,7 +341,7 @@ def _coomv_warp_kernel(
                 ):
                     i = warp.tid()
                     if v[col[i]] > 0.:
-                        posts[row[i]] += weights[i]
+                        warp.atomic_add(posts, row[i], weights[i])
 
     dim = row_info.shape[0]
     out_info = kwargs['outs'][0]
@@ -385,16 +385,16 @@ def _coomv_pallas_gpu_kernel(
                 i = pl.program_id(0)
                 i_start = i * block_dim
                 mask = i_start + jnp.arange(block_dim) < nnz
-                rows = row_ref[pl.dslice(i_start, block_dim)]
-                cols = col_ref[pl.dslice(i_start, block_dim)]
-                events = vector_ref[rows]
+                rows = pl.load(row_ref, pl.dslice(i_start, block_dim), mask=mask, other=0)
+                cols = pl.load(col_ref, pl.dslice(i_start, block_dim), mask=mask, other=0)
+                events = pl.load(vector_ref, rows, mask=mask, other=False if vector_ref.dtype == jnp.bool_ else 0)
 
                 if vector_ref.dtype == jnp.bool_:
                     event_mask = mask & events
                 else:
                     event_mask = mask & (events > 0.)
 
-                data = jnp.ones((block_dim,), dtype=posts_ref.dtype) * data_ref[0]
+                data = jnp.full((block_dim,), jnp.asarray(data_ref[0], dtype=posts_ref.dtype), dtype=posts_ref.dtype)
                 atomic_add(posts_ref, cols, data, mask=event_mask)
 
         else:
@@ -415,10 +415,10 @@ def _coomv_pallas_gpu_kernel(
                 i = pl.program_id(0)
                 i_start = i * block_dim
                 mask = i_start + jnp.arange(block_dim) < nnz
-                rows = row_ref[pl.dslice(i_start, block_dim)]
-                cols = col_ref[pl.dslice(i_start, block_dim)]
-                weights = data_ref[pl.dslice(i_start, block_dim)]
-                events = vector_ref[rows]
+                rows = pl.load(row_ref, pl.dslice(i_start, block_dim), mask=mask, other=0)
+                cols = pl.load(col_ref, pl.dslice(i_start, block_dim), mask=mask, other=0)
+                weights = pl.load(data_ref, pl.dslice(i_start, block_dim), mask=mask, other=0)
+                events = pl.load(vector_ref, rows, mask=mask, other=False if vector_ref.dtype == jnp.bool_ else 0)
 
                 if vector_ref.dtype == jnp.bool_:
                     event_mask = mask & events
@@ -461,16 +461,16 @@ def _coomv_pallas_gpu_kernel(
                 i = pl.program_id(0)
                 i_start = i * block_dim
                 mask = i_start + jnp.arange(block_dim) < nnz
-                rows = row_ref[pl.dslice(i_start, block_dim)]
-                cols = col_ref[pl.dslice(i_start, block_dim)]
-                events = vector_ref[cols]
+                rows = pl.load(row_ref, pl.dslice(i_start, block_dim), mask=mask, other=0)
+                cols = pl.load(col_ref, pl.dslice(i_start, block_dim), mask=mask, other=0)
+                events = pl.load(vector_ref, cols, mask=mask, other=False if vector_ref.dtype == jnp.bool_ else 0)
 
                 if vector_ref.dtype == jnp.bool_:
                     event_mask = mask & events
                 else:
                     event_mask = mask & (events > 0.)
 
-                data = jnp.ones((block_dim,), dtype=posts_ref.dtype) * data_ref[0]
+                data = jnp.full((block_dim,), jnp.asarray(data_ref[0], dtype=posts_ref.dtype), dtype=posts_ref.dtype)
                 atomic_add(posts_ref, rows, data, mask=event_mask)
 
         else:
@@ -491,10 +491,10 @@ def _coomv_pallas_gpu_kernel(
                 i = pl.program_id(0)
                 i_start = i * block_dim
                 mask = i_start + jnp.arange(block_dim) < nnz
-                rows = row_ref[pl.dslice(i_start, block_dim)]
-                cols = col_ref[pl.dslice(i_start, block_dim)]
-                weights = data_ref[pl.dslice(i_start, block_dim)]
-                events = vector_ref[cols]
+                rows = pl.load(row_ref, pl.dslice(i_start, block_dim), mask=mask, other=0)
+                cols = pl.load(col_ref, pl.dslice(i_start, block_dim), mask=mask, other=0)
+                weights = pl.load(data_ref, pl.dslice(i_start, block_dim), mask=mask, other=0)
+                events = pl.load(vector_ref, cols, mask=mask, other=False if vector_ref.dtype == jnp.bool_ else 0)
 
                 if vector_ref.dtype == jnp.bool_:
                     event_mask = mask & events
@@ -661,19 +661,37 @@ def binary_coomv_p_call(
     jax.Array
         The result of the sparse matrix-vector multiplication.
     """
-    # Convert scalar weights to a single-element array
+    row = jnp.asarray(row)
+    col = jnp.asarray(col)
+    v = jnp.asarray(v)
+    if row.ndim != 1 or col.ndim != 1:
+        raise ValueError(f'`row` and `col` must be 1D arrays, got row.ndim={row.ndim}, col.ndim={col.ndim}.')
+    if row.shape[0] != col.shape[0]:
+        raise ValueError(f'`row` and `col` must have the same length, got {row.shape[0]} and {col.shape[0]}.')
+    if v.ndim != 1:
+        raise ValueError(f'`v` must be a 1D array, got ndim={v.ndim}.')
+
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
+    else:
+        weights = jnp.asarray(weights)
+    if weights.ndim != 1:
+        raise ValueError(f'`weights` must be a scalar or 1D array, got ndim={weights.ndim}.')
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
-    # Determine the output shape based on whether the sparse matrix is transposed
-    out_info = (
-        # If transposed, the output shape is [shape[1]]
-        jax.ShapeDtypeStruct([shape[1]], weights.dtype)
-        if transpose else
-        # If not transposed, the output shape is [shape[0]]
-        jax.ShapeDtypeStruct([shape[0]], weights.dtype)
-    )
+    nnz = row.shape[0]
+    if weights.shape[0] not in (1, nnz):
+        raise ValueError(f'`weights` length must be 1 or nnz={nnz}, got {weights.shape[0]}.')
+
+    expected_v = shape[0] if transpose else shape[1]
+    if v.shape[0] != expected_v:
+        raise ValueError(f'`v` has incompatible length {v.shape[0]} for shape={tuple(shape)}, transpose={transpose}.')
+
+    out_len = shape[1] if transpose else shape[0]
+    if nnz == 0:
+        return [jnp.zeros((out_len,), dtype=weights.dtype)]
+
+    out_info = jax.ShapeDtypeStruct([out_len], weights.dtype)
 
     # Call the custom kernel with the provided arguments and output information
     return binary_coomv_p(
@@ -844,7 +862,7 @@ def _coomm_warp_kernel(
                     i, j = warp.tid()
                     w = weights[0]
                     if B[row[i], j]:
-                        posts[col[i], j] += w
+                        warp.atomic_add(posts, col[i], j, w)
             else:
                 @warp.kernel
                 def mm(
@@ -857,7 +875,7 @@ def _coomm_warp_kernel(
                     i, j = warp.tid()
                     w = weights[0]
                     if B[row[i], j] > 0.:
-                        posts[col[i], j] += w
+                        warp.atomic_add(posts, col[i], j, w)
         else:
             # transpose=True, heterogeneous
             if matrix_info.dtype == jnp.bool_:
@@ -872,7 +890,7 @@ def _coomm_warp_kernel(
                 ):
                     i, j = warp.tid()
                     if B[row[i], j]:
-                        posts[col[i], j] += weights[i]
+                        warp.atomic_add(posts, col[i], j, weights[i])
             else:
                 @warp.kernel
                 def mm(
@@ -884,7 +902,7 @@ def _coomm_warp_kernel(
                 ):
                     i, j = warp.tid()
                     if B[row[i], j] > 0.:
-                        posts[col[i], j] += weights[i]
+                        warp.atomic_add(posts, col[i], j, weights[i])
     else:
         if weight_info.size == 1:
             # transpose=False, homogeneous
@@ -901,7 +919,7 @@ def _coomm_warp_kernel(
                     i, j = warp.tid()
                     w = weights[0]
                     if B[col[i], j]:
-                        posts[row[i], j] += w
+                        warp.atomic_add(posts, row[i], j, w)
             else:
                 @warp.kernel
                 def mm(
@@ -914,7 +932,7 @@ def _coomm_warp_kernel(
                     i, j = warp.tid()
                     w = weights[0]
                     if B[col[i], j] > 0.:
-                        posts[row[i], j] += w
+                        warp.atomic_add(posts, row[i], j, w)
         else:
             # transpose=False, heterogeneous
             if matrix_info.dtype == jnp.bool_:
@@ -929,7 +947,7 @@ def _coomm_warp_kernel(
                 ):
                     i, j = warp.tid()
                     if B[col[i], j]:
-                        posts[row[i], j] += weights[i]
+                        warp.atomic_add(posts, row[i], j, weights[i])
             else:
                 @warp.kernel
                 def mm(
@@ -941,7 +959,7 @@ def _coomm_warp_kernel(
                 ):
                     i, j = warp.tid()
                     if B[col[i], j] > 0.:
-                        posts[row[i], j] += weights[i]
+                        warp.atomic_add(posts, row[i], j, weights[i])
 
     dim = (row_info.shape[0], matrix_info.shape[1])
     out_info = kwargs['outs'][0]
@@ -992,23 +1010,25 @@ def _coomm_pallas_gpu_kernel(
                 col_mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
 
                 i_start = i * block_dim
-                mask = i_start + jnp.arange(block_dim) < nnz
-                rows = row_ref[pl.dslice(i_start, block_dim)]
-                cols = col_ref[pl.dslice(i_start, block_dim)]
+                scalar_w = jnp.asarray(data_ref[0], dtype=posts_ref.dtype)
 
                 def loop_fn(idx, _):
-                    row_idx = rows[idx]
-                    col_idx = cols[idx]
-                    events = B_ref[row_idx, pl.dslice(i_col_start, block_dim_n)]
-
-                    @pl.when(mask[idx])
-                    def process():
-                        if B_ref.dtype == jnp.bool_:
-                            event_mask = col_mask & events
-                        else:
-                            event_mask = col_mask & (events > 0.)
-                        data = jnp.ones((block_dim_n,), dtype=posts_ref.dtype) * data_ref[0]
-                        atomic_add(posts_ref, (col_idx, pl.dslice(i_col_start, block_dim_n)), data, mask=event_mask)
+                    elem = i_start + idx
+                    valid = elem < nnz
+                    row_idx = pl.load(row_ref, elem, mask=valid, other=0)
+                    col_idx = pl.load(col_ref, elem, mask=valid, other=0)
+                    events = pl.load(
+                        B_ref,
+                        (row_idx, pl.dslice(i_col_start, block_dim_n)),
+                        mask=col_mask,
+                        other=False if B_ref.dtype == jnp.bool_ else 0
+                    )
+                    if B_ref.dtype == jnp.bool_:
+                        event_mask = col_mask & events & valid
+                    else:
+                        event_mask = col_mask & (events > 0.) & valid
+                    data = jnp.full((block_dim_n,), scalar_w, dtype=posts_ref.dtype)
+                    atomic_add(posts_ref, (col_idx, pl.dslice(i_col_start, block_dim_n)), data, mask=event_mask)
 
                 jax.lax.fori_loop(0, block_dim, loop_fn, None)
 
@@ -1033,25 +1053,25 @@ def _coomm_pallas_gpu_kernel(
                 col_mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
 
                 i_start = i * block_dim
-                mask = i_start + jnp.arange(block_dim) < nnz
-                rows = row_ref[pl.dslice(i_start, block_dim)]
-                cols = col_ref[pl.dslice(i_start, block_dim)]
-                weights = data_ref[pl.dslice(i_start, block_dim)]
 
                 def loop_fn(idx, _):
-                    row_idx = rows[idx]
-                    col_idx = cols[idx]
-                    w = weights[idx]
-                    events = B_ref[row_idx, pl.dslice(i_col_start, block_dim_n)]
-
-                    @pl.when(mask[idx])
-                    def process():
-                        if B_ref.dtype == jnp.bool_:
-                            event_mask = col_mask & events
-                        else:
-                            event_mask = col_mask & (events > 0.)
-                        data = jnp.ones((block_dim_n,), dtype=posts_ref.dtype) * w
-                        atomic_add(posts_ref, (col_idx, pl.dslice(i_col_start, block_dim_n)), data, mask=event_mask)
+                    elem = i_start + idx
+                    valid = elem < nnz
+                    row_idx = pl.load(row_ref, elem, mask=valid, other=0)
+                    col_idx = pl.load(col_ref, elem, mask=valid, other=0)
+                    w = jnp.asarray(pl.load(data_ref, elem, mask=valid, other=0), dtype=posts_ref.dtype)
+                    events = pl.load(
+                        B_ref,
+                        (row_idx, pl.dslice(i_col_start, block_dim_n)),
+                        mask=col_mask,
+                        other=False if B_ref.dtype == jnp.bool_ else 0
+                    )
+                    if B_ref.dtype == jnp.bool_:
+                        event_mask = col_mask & events & valid
+                    else:
+                        event_mask = col_mask & (events > 0.) & valid
+                    data = jnp.full((block_dim_n,), w, dtype=posts_ref.dtype)
+                    atomic_add(posts_ref, (col_idx, pl.dslice(i_col_start, block_dim_n)), data, mask=event_mask)
 
                 jax.lax.fori_loop(0, block_dim, loop_fn, None)
 
@@ -1090,23 +1110,25 @@ def _coomm_pallas_gpu_kernel(
                 col_mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
 
                 i_start = i * block_dim
-                mask = i_start + jnp.arange(block_dim) < nnz
-                rows = row_ref[pl.dslice(i_start, block_dim)]
-                cols = col_ref[pl.dslice(i_start, block_dim)]
+                scalar_w = jnp.asarray(data_ref[0], dtype=posts_ref.dtype)
 
                 def loop_fn(idx, _):
-                    row_idx = rows[idx]
-                    col_idx = cols[idx]
-                    events = B_ref[col_idx, pl.dslice(i_col_start, block_dim_n)]
-
-                    @pl.when(mask[idx])
-                    def process():
-                        if B_ref.dtype == jnp.bool_:
-                            event_mask = col_mask & events
-                        else:
-                            event_mask = col_mask & (events > 0.)
-                        data = jnp.ones((block_dim_n,), dtype=posts_ref.dtype) * data_ref[0]
-                        atomic_add(posts_ref, (row_idx, pl.dslice(i_col_start, block_dim_n)), data, mask=event_mask)
+                    elem = i_start + idx
+                    valid = elem < nnz
+                    row_idx = pl.load(row_ref, elem, mask=valid, other=0)
+                    col_idx = pl.load(col_ref, elem, mask=valid, other=0)
+                    events = pl.load(
+                        B_ref,
+                        (col_idx, pl.dslice(i_col_start, block_dim_n)),
+                        mask=col_mask,
+                        other=False if B_ref.dtype == jnp.bool_ else 0
+                    )
+                    if B_ref.dtype == jnp.bool_:
+                        event_mask = col_mask & events & valid
+                    else:
+                        event_mask = col_mask & (events > 0.) & valid
+                    data = jnp.full((block_dim_n,), scalar_w, dtype=posts_ref.dtype)
+                    atomic_add(posts_ref, (row_idx, pl.dslice(i_col_start, block_dim_n)), data, mask=event_mask)
 
                 jax.lax.fori_loop(0, block_dim, loop_fn, None)
 
@@ -1131,25 +1153,25 @@ def _coomm_pallas_gpu_kernel(
                 col_mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
 
                 i_start = i * block_dim
-                mask = i_start + jnp.arange(block_dim) < nnz
-                rows = row_ref[pl.dslice(i_start, block_dim)]
-                cols = col_ref[pl.dslice(i_start, block_dim)]
-                weights = data_ref[pl.dslice(i_start, block_dim)]
 
                 def loop_fn(idx, _):
-                    row_idx = rows[idx]
-                    col_idx = cols[idx]
-                    w = weights[idx]
-                    events = B_ref[col_idx, pl.dslice(i_col_start, block_dim_n)]
-
-                    @pl.when(mask[idx])
-                    def process():
-                        if B_ref.dtype == jnp.bool_:
-                            event_mask = col_mask & events
-                        else:
-                            event_mask = col_mask & (events > 0.)
-                        data = jnp.ones((block_dim_n,), dtype=posts_ref.dtype) * w
-                        atomic_add(posts_ref, (row_idx, pl.dslice(i_col_start, block_dim_n)), data, mask=event_mask)
+                    elem = i_start + idx
+                    valid = elem < nnz
+                    row_idx = pl.load(row_ref, elem, mask=valid, other=0)
+                    col_idx = pl.load(col_ref, elem, mask=valid, other=0)
+                    w = jnp.asarray(pl.load(data_ref, elem, mask=valid, other=0), dtype=posts_ref.dtype)
+                    events = pl.load(
+                        B_ref,
+                        (col_idx, pl.dslice(i_col_start, block_dim_n)),
+                        mask=col_mask,
+                        other=False if B_ref.dtype == jnp.bool_ else 0
+                    )
+                    if B_ref.dtype == jnp.bool_:
+                        event_mask = col_mask & events & valid
+                    else:
+                        event_mask = col_mask & (events > 0.) & valid
+                    data = jnp.full((block_dim_n,), w, dtype=posts_ref.dtype)
+                    atomic_add(posts_ref, (row_idx, pl.dslice(i_col_start, block_dim_n)), data, mask=event_mask)
 
                 jax.lax.fori_loop(0, block_dim, loop_fn, None)
 
@@ -1313,19 +1335,37 @@ def binary_coomm_p_call(
     jax.Array
         The result of the sparse matrix-matrix multiplication.
     """
-    # Convert scalar weights to a single-element array
+    row = jnp.asarray(row)
+    col = jnp.asarray(col)
+    B = jnp.asarray(B)
+    if row.ndim != 1 or col.ndim != 1:
+        raise ValueError(f'`row` and `col` must be 1D arrays, got row.ndim={row.ndim}, col.ndim={col.ndim}.')
+    if row.shape[0] != col.shape[0]:
+        raise ValueError(f'`row` and `col` must have the same length, got {row.shape[0]} and {col.shape[0]}.')
+    if B.ndim != 2:
+        raise ValueError(f'`B` must be a 2D array, got ndim={B.ndim}.')
+
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
+    else:
+        weights = jnp.asarray(weights)
+    if weights.ndim != 1:
+        raise ValueError(f'`weights` must be a scalar or 1D array, got ndim={weights.ndim}.')
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
-    # Determine the output shape based on whether the sparse matrix is transposed
-    out_info = (
-        # If transposed, the output shape is [shape[1], B.shape[1]]
-        jax.ShapeDtypeStruct([shape[1], B.shape[1]], weights.dtype)
-        if transpose else
-        # If not transposed, the output shape is [shape[0], B.shape[1]]
-        jax.ShapeDtypeStruct([shape[0], B.shape[1]], weights.dtype)
-    )
+    nnz = row.shape[0]
+    if weights.shape[0] not in (1, nnz):
+        raise ValueError(f'`weights` length must be 1 or nnz={nnz}, got {weights.shape[0]}.')
+
+    expected_b_rows = shape[0] if transpose else shape[1]
+    if B.shape[0] != expected_b_rows:
+        raise ValueError(f'`B` has incompatible shape {B.shape} for shape={tuple(shape)}, transpose={transpose}.')
+
+    out_rows = shape[1] if transpose else shape[0]
+    if nnz == 0:
+        return [jnp.zeros((out_rows, B.shape[1]), dtype=weights.dtype)]
+
+    out_info = jax.ShapeDtypeStruct([out_rows, B.shape[1]], weights.dtype)
     # Call the custom kernel with the provided arguments and output information
     return binary_coomm_p(
         weights,

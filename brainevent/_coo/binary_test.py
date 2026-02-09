@@ -20,6 +20,7 @@ import brainstate
 import braintools
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from brainevent._coo.binary import binary_coomv, binary_coomv_p, binary_coomm, binary_coomm_p
@@ -28,6 +29,8 @@ from brainevent._coo.test_util import _get_coo, vector_coo, matrix_coo, coo_vect
 PLATFORM = jax.default_backend()
 COOMV_IMPLEMENTATIONS = tuple(binary_coomv_p.available_backends(PLATFORM))
 COOMM_IMPLEMENTATIONS = tuple(binary_coomm_p.available_backends(PLATFORM))
+# COOMV_IMPLEMENTATIONS = ['pallas']
+# COOMM_IMPLEMENTATIONS = ['pallas']
 
 if not COOMV_IMPLEMENTATIONS:
     pytest.skip(f'No binary_coomv implementation on platform={PLATFORM}', allow_module_level=True)
@@ -37,11 +40,12 @@ if not COOMM_IMPLEMENTATIONS:
 
 class TestVectorCOO:
     @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
+    @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('homo_w', [True, False])
-    def test_vector_coo(self, implementation, homo_w):
+    def test_vector_coo(self, implementation, replace, homo_w):
         m, n = 20, 40
         x = brainstate.random.rand(m) < 0.1
-        row, col = _get_coo(m, n, 0.1)
+        row, col = _get_coo(m, n, 0.1, replace=replace)
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         y = binary_coomv(data, row, col, x, shape=(m, n), transpose=True, backend=implementation)
@@ -65,17 +69,87 @@ class TestVectorCOO:
         jax.block_until_ready((xs, row, col, y, y2))
 
     @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
+    @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('homo_w', [True, False])
-    def test_coo_vector(self, implementation, homo_w):
+    def test_coo_vector(self, implementation, replace, homo_w):
         m, n = 20, 40
         v = brainstate.random.rand(n) < 0.1
-        row, col = _get_coo(m, n, 0.2)
+        row, col = _get_coo(m, n, 0.2, replace=replace)
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         y = binary_coomv(data, row, col, v, shape=(m, n), transpose=False, backend=implementation)
         y2 = coo_vector(v, data, row, col, (m, n))
         assert jax.block_until_ready(jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
         jax.block_until_ready((v, row, col, y, y2))
+
+    @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
+    @pytest.mark.parametrize('homo_w', [True, False])
+    @pytest.mark.parametrize('transpose', [True, False])
+    def test_coomv_single_nnz(self, implementation, homo_w, transpose):
+        m, n = 10, 20
+        row = np.array([3], dtype=np.int32)
+        col = np.array([7], dtype=np.int32)
+        if transpose:
+            x = jnp.zeros(m, dtype=jnp.bool_).at[3].set(True)
+        else:
+            x = jnp.zeros(n, dtype=jnp.bool_).at[7].set(True)
+        data = 2.5 if homo_w else jnp.array([2.5])
+        y = binary_coomv(data, row, col, x, shape=(m, n), transpose=transpose, backend=implementation)
+        y2 = vector_coo(x, data, row, col, (m, n)) if transpose else coo_vector(x, data, row, col, (m, n))
+        assert jax.block_until_ready(jnp.allclose(y, y2, atol=1e-6))
+
+    @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
+    @pytest.mark.parametrize('transpose', [True, False])
+    def test_coomv_empty(self, implementation, transpose):
+        m, n = 10, 20
+        row = np.array([], dtype=np.int32)
+        col = np.array([], dtype=np.int32)
+        x = jnp.ones(m if transpose else n, dtype=jnp.bool_)
+        data = jnp.array([1.0])
+        y = binary_coomv(data, row, col, x, shape=(m, n), transpose=transpose, backend=implementation)
+        expected_size = n if transpose else m
+        assert jax.block_until_ready(jnp.allclose(y, jnp.zeros(expected_size)))
+
+    @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
+    @pytest.mark.parametrize('nnz', [32, 33])
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_coomv_block_boundary(self, implementation, nnz, homo_w):
+        m, n = 100, 200
+        rng = np.random.default_rng(42)
+        row = rng.integers(0, m, size=nnz, dtype=np.int32)
+        col = rng.integers(0, n, size=nnz, dtype=np.int32)
+        x = jnp.asarray(rng.random(n) > 0.5, dtype=jnp.bool_)
+        data = 1.5 if homo_w else jnp.asarray(rng.standard_normal(nnz), dtype=jnp.float32)
+        y = binary_coomv(data, row, col, x, shape=(m, n), transpose=False, backend=implementation)
+        y2 = coo_vector(x, data, row, col, (m, n))
+        assert jax.block_until_ready(jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
+
+    @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_coomv_heavy_duplicates(self, implementation, homo_w):
+        m, n, nnz = 5, 5, 200
+        row = np.zeros(nnz, dtype=np.int32)
+        col = np.zeros(nnz, dtype=np.int32)
+        x = jnp.ones(n, dtype=jnp.bool_)
+        data = 1.0 if homo_w else jnp.ones(nnz, dtype=jnp.float32)
+        y = binary_coomv(data, row, col, x, shape=(m, n), transpose=False, backend=implementation)
+        y2 = coo_vector(x, data, row, col, (m, n))
+        assert jax.block_until_ready(jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
+
+    @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
+    @pytest.mark.parametrize('shape', [(10000, 5), (5, 10000)])
+    @pytest.mark.parametrize('homo_w', [True, False])
+    def test_coomv_extreme_shapes(self, implementation, shape, homo_w):
+        m, n = shape
+        nnz = 50
+        rng = np.random.default_rng(123)
+        row = rng.integers(0, m, size=nnz, dtype=np.int32)
+        col = rng.integers(0, n, size=nnz, dtype=np.int32)
+        x = jnp.asarray(rng.random(n) > 0.5, dtype=jnp.bool_)
+        data = 1.5 if homo_w else jnp.asarray(rng.standard_normal(nnz), dtype=jnp.float32)
+        y = binary_coomv(data, row, col, x, shape=(m, n), transpose=False, backend=implementation)
+        y2 = coo_vector(x, data, row, col, (m, n))
+        assert jax.block_until_ready(jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
 
     def _test_vjp(self, implementation, homo_w, replace, transpose):
         n_in = 20
