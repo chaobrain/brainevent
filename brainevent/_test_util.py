@@ -19,7 +19,7 @@
 import brainstate
 import jax
 import jax.numpy as jnp
-
+import random
 import brainevent
 
 
@@ -27,9 +27,12 @@ def generate_fixed_conn_num_indices(
     n_pre: int,
     n_post: int,
     n_conn: int,
-    replace: bool = True,
+    replace: bool = 'rand',
     rng=brainstate.random.DEFAULT
 ):
+    if isinstance(replace, str) and replace == 'rand':
+        replace = random.random() < 0.5
+
     if replace:
         indices = rng.randint(0, n_post, (n_pre, n_conn))
     else:

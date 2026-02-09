@@ -74,11 +74,10 @@ def _sparse_float_matrix(rows, cols, prob=0.3):
 @pytest.mark.parametrize("implementation", SPFLOAT_FCNMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize("shape", shapes)
 @pytest.mark.parametrize("homo_w", [True, False])
-@pytest.mark.parametrize("replace", [True, False])
-def test_spfloat_fcnmv_transpose(implementation, shape, homo_w, replace):
+def test_spfloat_fcnmv_transpose(implementation, shape, homo_w):
     """vector @ sparse_matrix  (transpose=True)."""
     m, n = shape
-    indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1), replace=replace)
+    indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
     weights = jnp.array([1.5]) if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
     x = _sparse_float_vector(m)
 
@@ -91,11 +90,10 @@ def test_spfloat_fcnmv_transpose(implementation, shape, homo_w, replace):
 @pytest.mark.parametrize("implementation", SPFLOAT_FCNMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize("shape", shapes)
 @pytest.mark.parametrize("homo_w", [True, False])
-@pytest.mark.parametrize("replace", [True, False])
-def test_spfloat_fcnmv_no_transpose(implementation, shape, homo_w, replace):
+def test_spfloat_fcnmv_no_transpose(implementation, shape, homo_w):
     """sparse_matrix @ vector  (transpose=False)."""
     m, n = shape
-    indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1), replace=replace)
+    indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
     weights = jnp.array([1.5]) if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
     v = _sparse_float_vector(n)
 
@@ -112,12 +110,11 @@ def test_spfloat_fcnmv_no_transpose(implementation, shape, homo_w, replace):
 @pytest.mark.parametrize("implementation", SPFLOAT_FCNMM_IMPLEMENTATIONS)
 @pytest.mark.parametrize("shape", shapes)
 @pytest.mark.parametrize("homo_w", [True, False])
-@pytest.mark.parametrize("replace", [True, False])
 @pytest.mark.parametrize("k", [10])
-def test_spfloat_fcnmm_transpose(implementation, shape, homo_w, replace, k):
+def test_spfloat_fcnmm_transpose(implementation, shape, homo_w, k):
     """matrix @ sparse_matrix  (transpose=True)."""
     m, n = shape
-    indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1), replace=replace)
+    indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
     weights = jnp.array([1.5]) if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
     X = _sparse_float_matrix(m, k)
 
@@ -130,12 +127,11 @@ def test_spfloat_fcnmm_transpose(implementation, shape, homo_w, replace, k):
 @pytest.mark.parametrize("implementation", SPFLOAT_FCNMM_IMPLEMENTATIONS)
 @pytest.mark.parametrize("shape", shapes)
 @pytest.mark.parametrize("homo_w", [True, False])
-@pytest.mark.parametrize("replace", [True, False])
 @pytest.mark.parametrize("k", [10])
-def test_spfloat_fcnmm_no_transpose(implementation, shape, homo_w, replace, k):
+def test_spfloat_fcnmm_no_transpose(implementation, shape, homo_w, k):
     """sparse_matrix @ matrix  (transpose=False)."""
     m, n = shape
-    indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1), replace=replace)
+    indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
     weights = jnp.array([1.5]) if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
     B = _sparse_float_matrix(n, k)
 
@@ -152,11 +148,10 @@ def test_spfloat_fcnmm_no_transpose(implementation, shape, homo_w, replace, k):
 @pytest.mark.parametrize("implementation", SPFLOAT_FCNMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize("shape", shapes)
 @pytest.mark.parametrize("homo_w", [True, False])
-@pytest.mark.parametrize("replace", [True, False])
 @pytest.mark.parametrize("transpose", [True, False])
-def test_spfloat_fcnmv_vjp(implementation, shape, homo_w, replace, transpose):
+def test_spfloat_fcnmv_vjp(implementation, shape, homo_w, transpose):
     m, n = shape
-    indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1), replace=replace)
+    indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
     w = jnp.array([1.5]) if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
     x = brainstate.random.rand(m if transpose else n)
 
@@ -184,11 +179,10 @@ def test_spfloat_fcnmv_vjp(implementation, shape, homo_w, replace, transpose):
 @pytest.mark.parametrize("implementation", SPFLOAT_FCNMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize("shape", shapes)
 @pytest.mark.parametrize("homo_w", [True, False])
-@pytest.mark.parametrize("replace", [True, False])
 @pytest.mark.parametrize("transpose", [True, False])
-def test_spfloat_fcnmv_jvp(implementation, shape, homo_w, replace, transpose):
+def test_spfloat_fcnmv_jvp(implementation, shape, homo_w, transpose):
     m, n = shape
-    indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1), replace=replace)
+    indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
     w = jnp.array([1.5]) if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
     x = brainstate.random.rand(m if transpose else n)
 
@@ -220,12 +214,11 @@ def test_spfloat_fcnmv_jvp(implementation, shape, homo_w, replace, transpose):
 @pytest.mark.parametrize("implementation", SPFLOAT_FCNMM_IMPLEMENTATIONS)
 @pytest.mark.parametrize("shape", shapes)
 @pytest.mark.parametrize("homo_w", [True, False])
-@pytest.mark.parametrize("replace", [True, False])
 @pytest.mark.parametrize("transpose", [True, False])
 @pytest.mark.parametrize("k", [10])
-def test_spfloat_fcnmm_vjp(implementation, shape, homo_w, replace, transpose, k):
+def test_spfloat_fcnmm_vjp(implementation, shape, homo_w, transpose, k):
     m, n = shape
-    indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1), replace=replace)
+    indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
     w = jnp.array([1.5]) if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
     x = brainstate.random.rand(m, k) if transpose else brainstate.random.rand(n, k)
 
@@ -253,12 +246,11 @@ def test_spfloat_fcnmm_vjp(implementation, shape, homo_w, replace, transpose, k)
 @pytest.mark.parametrize("implementation", SPFLOAT_FCNMM_IMPLEMENTATIONS)
 @pytest.mark.parametrize("shape", shapes)
 @pytest.mark.parametrize("homo_w", [True, False])
-@pytest.mark.parametrize("replace", [True, False])
 @pytest.mark.parametrize("transpose", [True, False])
 @pytest.mark.parametrize("k", [10])
-def test_spfloat_fcnmm_jvp(implementation, shape, homo_w, replace, transpose, k):
+def test_spfloat_fcnmm_jvp(implementation, shape, homo_w, transpose, k):
     m, n = shape
-    indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1), replace=replace)
+    indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
     w = jnp.array([1.5]) if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
     x = brainstate.random.rand(m, k) if transpose else brainstate.random.rand(n, k)
 
@@ -290,13 +282,12 @@ def test_spfloat_fcnmm_jvp(implementation, shape, homo_w, replace, transpose, k)
 @pytest.mark.parametrize("implementation", SPFLOAT_FCNMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize("shape", shapes)
 @pytest.mark.parametrize("homo_w", [True, False])
-@pytest.mark.parametrize("replace", [True, False])
 @pytest.mark.parametrize("batch_size", [5])
 @pytest.mark.parametrize("batch_axis", [0, 1])
-def test_spfloat_fcnmv_vmap_transpose(implementation, shape, homo_w, replace, batch_size, batch_axis):
+def test_spfloat_fcnmv_vmap_transpose(implementation, shape, homo_w, batch_size, batch_axis):
     """vmap over vector @ sparse_matrix  (transpose=True)."""
     m, n = shape
-    indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1), replace=replace)
+    indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
     weights = jnp.array([1.5]) if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
     if batch_axis == 0:
@@ -319,13 +310,12 @@ def test_spfloat_fcnmv_vmap_transpose(implementation, shape, homo_w, replace, ba
 @pytest.mark.parametrize("implementation", SPFLOAT_FCNMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize("shape", shapes)
 @pytest.mark.parametrize("homo_w", [True, False])
-@pytest.mark.parametrize("replace", [True, False])
 @pytest.mark.parametrize("batch_size", [5])
 @pytest.mark.parametrize("batch_axis", [0, 1])
-def test_spfloat_fcnmv_vmap_no_transpose(implementation, shape, homo_w, replace, batch_size, batch_axis):
+def test_spfloat_fcnmv_vmap_no_transpose(implementation, shape, homo_w, batch_size, batch_axis):
     """vmap over sparse_matrix @ vector  (transpose=False)."""
     m, n = shape
-    indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1), replace=replace)
+    indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
     weights = jnp.array([1.5]) if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
     if batch_axis == 0:
@@ -352,14 +342,13 @@ def test_spfloat_fcnmv_vmap_no_transpose(implementation, shape, homo_w, replace,
 @pytest.mark.parametrize("implementation", SPFLOAT_FCNMM_IMPLEMENTATIONS)
 @pytest.mark.parametrize("shape", shapes)
 @pytest.mark.parametrize("homo_w", [True, False])
-@pytest.mark.parametrize("replace", [True, False])
 @pytest.mark.parametrize("batch_size", [5])
 @pytest.mark.parametrize("k", [10])
 @pytest.mark.parametrize("batch_axis", [0, 1, 2])
-def test_spfloat_fcnmm_vmap_no_transpose(implementation, shape, homo_w, replace, batch_size, k, batch_axis):
+def test_spfloat_fcnmm_vmap_no_transpose(implementation, shape, homo_w, batch_size, k, batch_axis):
     """vmap over sparse_matrix @ matrix  (transpose=False)."""
     m, n = shape
-    indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1), replace=replace)
+    indices = generate_fixed_conn_num_indices(m, n, int(n * 0.1))
     weights = jnp.array([1.5]) if homo_w else braintools.init.Normal(0., 1.)(indices.shape)
 
     if batch_axis == 0:

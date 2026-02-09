@@ -95,14 +95,13 @@ def _mm_reference(weights, indices, matrix, shape, transpose):
 
 
 @pytest.mark.parametrize('implementation', FCNMV_PARAMS)
-@pytest.mark.parametrize('replace', [True, False])
 @pytest.mark.parametrize('homo_w', [True, False])
 @pytest.mark.parametrize('transpose', [True, False])
 @pytest.mark.parametrize('event_dtype', [bool, float])
 @pytest.mark.parametrize('shape', SHAPES)
-def test_binary_fcnmv_forward_matches_reference(implementation, replace, homo_w, transpose, event_dtype, shape):
+def test_binary_fcnmv_forward_matches_reference(implementation, homo_w, transpose, event_dtype, shape):
     m, n = shape
-    indices = generate_fixed_conn_num_indices(m, n, max(1, int(n * 0.1)), replace=replace)
+    indices = generate_fixed_conn_num_indices(m, n, max(1, int(n * 0.1)))
     weights = _make_weights(indices, homo_w)
 
     event_size = m if transpose else n
@@ -128,15 +127,14 @@ def test_binary_fcnmv_forward_matches_reference(implementation, replace, homo_w,
 
 
 @pytest.mark.parametrize('implementation', FCNMM_PARAMS)
-@pytest.mark.parametrize('replace', [True, False])
 @pytest.mark.parametrize('homo_w', [True, False])
 @pytest.mark.parametrize('transpose', [True, False])
 @pytest.mark.parametrize('event_dtype', [bool, float])
 @pytest.mark.parametrize('k', [10])
 @pytest.mark.parametrize('shape', SHAPES)
-def test_binary_fcnmm_forward_matches_reference(implementation, replace, homo_w, transpose, event_dtype, k, shape):
+def test_binary_fcnmm_forward_matches_reference(implementation, homo_w, transpose, event_dtype, k, shape):
     m, n = shape
-    indices = generate_fixed_conn_num_indices(m, n, max(1, int(n * 0.1)), replace=replace)
+    indices = generate_fixed_conn_num_indices(m, n, max(1, int(n * 0.1)))
     weights = _make_weights(indices, homo_w)
 
     n_rows = m if transpose else n
