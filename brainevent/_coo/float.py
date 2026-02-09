@@ -460,10 +460,7 @@ def _coomv_pallas_gpu_kernel(
 
         def kernel(data, row, col, vector):
             fn = pl.pallas_call(
-                mv,
-                grid=(pl.cdiv(nnz, block_dim),),
-                input_output_aliases={4: 0},
-                out_shape=kwargs['outs']
+                mv, grid=(pl.cdiv(nnz, block_dim),), input_output_aliases={4: 0}, out_shape=kwargs['outs']
             )
             posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
             return fn(data, row, col, vector, posts)
@@ -488,14 +485,7 @@ def _coomv_transpose_rule(ct, data, row, col, v, *, shape, transpose, **kwargs):
         if type(ct) is ad.Zero:
             ct_events = ad.Zero(v)
         else:
-            ct_events = coomv(
-                data,
-                row,
-                col,
-                ct,
-                shape=shape,
-                transpose=not transpose,
-            )
+            ct_events = coomv(data, row, col, ct, shape=shape, transpose=not transpose)
         return data, row, col, ct_events
     else:
         v = jnp.asarray(v)
