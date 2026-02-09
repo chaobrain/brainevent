@@ -343,10 +343,9 @@ def _coomv_warp_kernel(
                     if v[col[i]] > 0.:
                         warp.atomic_add(posts, row[i], weights[i])
 
-    dim = row_info.shape[0]
-    out_info = kwargs['outs'][0]
-
     def kernel(weights, row, col, v):
+        dim = row_info.shape[0]
+        out_info = kwargs['outs'][0]
         fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
         return fn(weights, row, col, v, jnp.zeros(out_info.shape, out_info.dtype))
 
@@ -360,6 +359,7 @@ def _coomv_pallas_gpu_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
+    from jax.experimental.pallas import triton as plgpu
     from jax.experimental.pallas.triton import atomic_add
 
     nnz = row_info.shape[0]
@@ -385,9 +385,13 @@ def _coomv_pallas_gpu_kernel(
                 i = pl.program_id(0)
                 i_start = i * block_dim
                 mask = i_start + jnp.arange(block_dim) < nnz
-                rows = pl.load(row_ref, pl.dslice(i_start, block_dim), mask=mask, other=0)
-                cols = pl.load(col_ref, pl.dslice(i_start, block_dim), mask=mask, other=0)
-                events = pl.load(vector_ref, rows, mask=mask, other=False if vector_ref.dtype == jnp.bool_ else 0)
+                rows = plgpu.load(row_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
+                cols = plgpu.load(col_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
+                events = plgpu.load(
+                    vector_ref.at[rows],
+                    mask=mask,
+                    other=False if vector_ref.dtype == jnp.bool_ else 0
+                )
 
                 if vector_ref.dtype == jnp.bool_:
                     event_mask = mask & events
@@ -415,10 +419,14 @@ def _coomv_pallas_gpu_kernel(
                 i = pl.program_id(0)
                 i_start = i * block_dim
                 mask = i_start + jnp.arange(block_dim) < nnz
-                rows = pl.load(row_ref, pl.dslice(i_start, block_dim), mask=mask, other=0)
-                cols = pl.load(col_ref, pl.dslice(i_start, block_dim), mask=mask, other=0)
-                weights = pl.load(data_ref, pl.dslice(i_start, block_dim), mask=mask, other=0)
-                events = pl.load(vector_ref, rows, mask=mask, other=False if vector_ref.dtype == jnp.bool_ else 0)
+                rows = plgpu.load(row_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
+                cols = plgpu.load(col_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
+                weights = plgpu.load(data_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
+                events = plgpu.load(
+                    vector_ref.at[rows],
+                    mask=mask,
+                    other=False if vector_ref.dtype == jnp.bool_ else 0
+                )
 
                 if vector_ref.dtype == jnp.bool_:
                     event_mask = mask & events
@@ -461,9 +469,13 @@ def _coomv_pallas_gpu_kernel(
                 i = pl.program_id(0)
                 i_start = i * block_dim
                 mask = i_start + jnp.arange(block_dim) < nnz
-                rows = pl.load(row_ref, pl.dslice(i_start, block_dim), mask=mask, other=0)
-                cols = pl.load(col_ref, pl.dslice(i_start, block_dim), mask=mask, other=0)
-                events = pl.load(vector_ref, cols, mask=mask, other=False if vector_ref.dtype == jnp.bool_ else 0)
+                rows = plgpu.load(row_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
+                cols = plgpu.load(col_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
+                events = plgpu.load(
+                    vector_ref.at[cols],
+                    mask=mask,
+                    other=False if vector_ref.dtype == jnp.bool_ else 0
+                )
 
                 if vector_ref.dtype == jnp.bool_:
                     event_mask = mask & events
@@ -491,10 +503,14 @@ def _coomv_pallas_gpu_kernel(
                 i = pl.program_id(0)
                 i_start = i * block_dim
                 mask = i_start + jnp.arange(block_dim) < nnz
-                rows = pl.load(row_ref, pl.dslice(i_start, block_dim), mask=mask, other=0)
-                cols = pl.load(col_ref, pl.dslice(i_start, block_dim), mask=mask, other=0)
-                weights = pl.load(data_ref, pl.dslice(i_start, block_dim), mask=mask, other=0)
-                events = pl.load(vector_ref, cols, mask=mask, other=False if vector_ref.dtype == jnp.bool_ else 0)
+                rows = plgpu.load(row_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
+                cols = plgpu.load(col_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
+                weights = plgpu.load(data_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
+                events = plgpu.load(
+                    vector_ref.at[cols],
+                    mask=mask,
+                    other=False if vector_ref.dtype == jnp.bool_ else 0
+                )
 
                 if vector_ref.dtype == jnp.bool_:
                     event_mask = mask & events
@@ -961,10 +977,10 @@ def _coomm_warp_kernel(
                     if B[col[i], j] > 0.:
                         warp.atomic_add(posts, row[i], j, weights[i])
 
-    dim = (row_info.shape[0], matrix_info.shape[1])
-    out_info = kwargs['outs'][0]
 
     def kernel(weights, row, col, B):
+        dim = (row_info.shape[0], matrix_info.shape[1])
+        out_info = kwargs['outs'][0]
         fn = jax_kernel(mm, launch_dims=dim, num_outputs=1, in_out_argnames=['posts'])
         return fn(weights, row, col, B, jnp.zeros(out_info.shape, out_info.dtype))
 
@@ -980,6 +996,7 @@ def _coomm_pallas_gpu_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
+    from jax.experimental.pallas import triton as plgpu
     from jax.experimental.pallas.triton import atomic_add
 
     nnz = row_info.shape[0]
@@ -1015,11 +1032,10 @@ def _coomm_pallas_gpu_kernel(
                 def loop_fn(idx, _):
                     elem = i_start + idx
                     valid = elem < nnz
-                    row_idx = pl.load(row_ref, elem, mask=valid, other=0)
-                    col_idx = pl.load(col_ref, elem, mask=valid, other=0)
-                    events = pl.load(
-                        B_ref,
-                        (row_idx, pl.dslice(i_col_start, block_dim_n)),
+                    row_idx = plgpu.load(row_ref.at[elem], mask=valid, other=0)
+                    col_idx = plgpu.load(col_ref.at[elem], mask=valid, other=0)
+                    events = plgpu.load(
+                        B_ref.at[row_idx, pl.ds(i_col_start, block_dim_n)],
                         mask=col_mask,
                         other=False if B_ref.dtype == jnp.bool_ else 0
                     )
@@ -1028,7 +1044,7 @@ def _coomm_pallas_gpu_kernel(
                     else:
                         event_mask = col_mask & (events > 0.) & valid
                     data = jnp.full((block_dim_n,), scalar_w, dtype=posts_ref.dtype)
-                    atomic_add(posts_ref, (col_idx, pl.dslice(i_col_start, block_dim_n)), data, mask=event_mask)
+                    atomic_add(posts_ref, (col_idx, pl.ds(i_col_start, block_dim_n)), data, mask=event_mask)
 
                 jax.lax.fori_loop(0, block_dim, loop_fn, None)
 
@@ -1057,12 +1073,11 @@ def _coomm_pallas_gpu_kernel(
                 def loop_fn(idx, _):
                     elem = i_start + idx
                     valid = elem < nnz
-                    row_idx = pl.load(row_ref, elem, mask=valid, other=0)
-                    col_idx = pl.load(col_ref, elem, mask=valid, other=0)
-                    w = jnp.asarray(pl.load(data_ref, elem, mask=valid, other=0), dtype=posts_ref.dtype)
-                    events = pl.load(
-                        B_ref,
-                        (row_idx, pl.dslice(i_col_start, block_dim_n)),
+                    row_idx = plgpu.load(row_ref.at[elem], mask=valid, other=0)
+                    col_idx = plgpu.load(col_ref.at[elem], mask=valid, other=0)
+                    w = jnp.asarray(plgpu.load(data_ref.at[elem], mask=valid, other=0), dtype=posts_ref.dtype)
+                    events = plgpu.load(
+                        B_ref.at[row_idx, pl.ds(i_col_start, block_dim_n)],
                         mask=col_mask,
                         other=False if B_ref.dtype == jnp.bool_ else 0
                     )
@@ -1071,7 +1086,7 @@ def _coomm_pallas_gpu_kernel(
                     else:
                         event_mask = col_mask & (events > 0.) & valid
                     data = jnp.full((block_dim_n,), w, dtype=posts_ref.dtype)
-                    atomic_add(posts_ref, (col_idx, pl.dslice(i_col_start, block_dim_n)), data, mask=event_mask)
+                    atomic_add(posts_ref, (col_idx, pl.ds(i_col_start, block_dim_n)), data, mask=event_mask)
 
                 jax.lax.fori_loop(0, block_dim, loop_fn, None)
 
@@ -1115,11 +1130,10 @@ def _coomm_pallas_gpu_kernel(
                 def loop_fn(idx, _):
                     elem = i_start + idx
                     valid = elem < nnz
-                    row_idx = pl.load(row_ref, elem, mask=valid, other=0)
-                    col_idx = pl.load(col_ref, elem, mask=valid, other=0)
-                    events = pl.load(
-                        B_ref,
-                        (col_idx, pl.dslice(i_col_start, block_dim_n)),
+                    row_idx = plgpu.load(row_ref.at[elem], mask=valid, other=0)
+                    col_idx = plgpu.load(col_ref.at[elem], mask=valid, other=0)
+                    events = plgpu.load(
+                        B_ref.at[col_idx, pl.ds(i_col_start, block_dim_n)],
                         mask=col_mask,
                         other=False if B_ref.dtype == jnp.bool_ else 0
                     )
@@ -1128,7 +1142,7 @@ def _coomm_pallas_gpu_kernel(
                     else:
                         event_mask = col_mask & (events > 0.) & valid
                     data = jnp.full((block_dim_n,), scalar_w, dtype=posts_ref.dtype)
-                    atomic_add(posts_ref, (row_idx, pl.dslice(i_col_start, block_dim_n)), data, mask=event_mask)
+                    atomic_add(posts_ref, (row_idx, pl.ds(i_col_start, block_dim_n)), data, mask=event_mask)
 
                 jax.lax.fori_loop(0, block_dim, loop_fn, None)
 
@@ -1157,12 +1171,11 @@ def _coomm_pallas_gpu_kernel(
                 def loop_fn(idx, _):
                     elem = i_start + idx
                     valid = elem < nnz
-                    row_idx = pl.load(row_ref, elem, mask=valid, other=0)
-                    col_idx = pl.load(col_ref, elem, mask=valid, other=0)
-                    w = jnp.asarray(pl.load(data_ref, elem, mask=valid, other=0), dtype=posts_ref.dtype)
-                    events = pl.load(
-                        B_ref,
-                        (col_idx, pl.dslice(i_col_start, block_dim_n)),
+                    row_idx = plgpu.load(row_ref.at[elem], mask=valid, other=0)
+                    col_idx = plgpu.load(col_ref.at[elem], mask=valid, other=0)
+                    w = jnp.asarray(plgpu.load(data_ref.at[elem], mask=valid, other=0), dtype=posts_ref.dtype)
+                    events = plgpu.load(
+                        B_ref.at[col_idx, pl.ds(i_col_start, block_dim_n)],
                         mask=col_mask,
                         other=False if B_ref.dtype == jnp.bool_ else 0
                     )
@@ -1171,7 +1184,7 @@ def _coomm_pallas_gpu_kernel(
                     else:
                         event_mask = col_mask & (events > 0.) & valid
                     data = jnp.full((block_dim_n,), w, dtype=posts_ref.dtype)
-                    atomic_add(posts_ref, (row_idx, pl.dslice(i_col_start, block_dim_n)), data, mask=event_mask)
+                    atomic_add(posts_ref, (row_idx, pl.ds(i_col_start, block_dim_n)), data, mask=event_mask)
 
                 jax.lax.fori_loop(0, block_dim, loop_fn, None)
 
