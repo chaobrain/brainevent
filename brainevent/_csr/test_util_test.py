@@ -108,6 +108,7 @@ class TestVectorCSR:
         result_new = vector_csr(x, w, indices, indptr, shape)
 
         assert jnp.allclose(result_ref, result_new, rtol=1e-5, atol=1e-5)
+        jax.block_until_ready((indptr, indices, x, w, result_ref, result_new))
 
     def test_output_shape(self):
         """Test output shape is correct."""
@@ -118,6 +119,7 @@ class TestVectorCSR:
 
         result = vector_csr(x, w, indices, indptr, (n_pre, n_post))
         assert result.shape == (n_post,)
+        jax.block_until_ready((indptr, indices, x, w, result))
 
     def test_jit_compilation(self):
         """Test that the function can be JIT compiled."""
@@ -129,6 +131,7 @@ class TestVectorCSR:
         # Should not raise
         result = vector_csr(x, w, indices, indptr, (n_pre, n_post))
         assert result.shape == (n_post,)
+        jax.block_until_ready((indptr, indices, x, w, result))
 
     def test_gradient(self):
         """Test that gradients can be computed."""
@@ -143,6 +146,7 @@ class TestVectorCSR:
         grads = jax.grad(loss_fn, argnums=(0, 1))(x, w)
         assert grads[0].shape == x.shape
         assert grads[1].shape == w.shape
+        jax.block_until_ready((indptr, indices, x, w, grads))
 
 
 class TestMatrixCSR:
@@ -171,6 +175,7 @@ class TestMatrixCSR:
         result_new = matrix_csr(xs, w, indices, indptr, shape)
 
         assert jnp.allclose(result_ref, result_new, rtol=1e-5, atol=1e-5)
+        jax.block_until_ready((indptr, indices, xs, w, result_ref, result_new))
 
     def test_output_shape(self):
         """Test output shape is correct."""
@@ -181,6 +186,7 @@ class TestMatrixCSR:
 
         result = matrix_csr(xs, w, indices, indptr, (n_pre, n_post))
         assert result.shape == (batch, n_post)
+        jax.block_until_ready((indptr, indices, xs, w, result))
 
     def test_gradient(self):
         """Test that gradients can be computed."""
@@ -195,6 +201,7 @@ class TestMatrixCSR:
         grads = jax.grad(loss_fn, argnums=(0, 1))(xs, w)
         assert grads[0].shape == xs.shape
         assert grads[1].shape == w.shape
+        jax.block_until_ready((indptr, indices, xs, w, grads))
 
 
 class TestCSRVector:
@@ -223,6 +230,7 @@ class TestCSRVector:
         result_new = csr_vector(x, w, indices, indptr, shape)
 
         assert jnp.allclose(result_ref, result_new, rtol=1e-5, atol=1e-5)
+        jax.block_until_ready((indptr, indices, x, w, result_ref, result_new))
 
     def test_output_shape(self):
         """Test output shape is correct."""
@@ -233,6 +241,7 @@ class TestCSRVector:
 
         result = csr_vector(x, w, indices, indptr, (n_pre, n_post))
         assert result.shape == (n_pre,)
+        jax.block_until_ready((indptr, indices, x, w, result))
 
     def test_gradient(self):
         """Test that gradients can be computed."""
@@ -247,6 +256,7 @@ class TestCSRVector:
         grads = jax.grad(loss_fn, argnums=(0, 1))(x, w)
         assert grads[0].shape == x.shape
         assert grads[1].shape == w.shape
+        jax.block_until_ready((indptr, indices, x, w, grads))
 
 
 class TestCSRMatrix:
@@ -275,6 +285,7 @@ class TestCSRMatrix:
         result_new = csr_matrix(xs, w, indices, indptr, shape)
 
         assert jnp.allclose(result_ref, result_new, rtol=1e-5, atol=1e-5)
+        jax.block_until_ready((indptr, indices, xs, w, result_ref, result_new))
 
     def test_output_shape(self):
         """Test output shape is correct."""
@@ -285,6 +296,7 @@ class TestCSRMatrix:
 
         result = csr_matrix(xs, w, indices, indptr, (n_pre, n_post))
         assert result.shape == (n_pre, k)
+        jax.block_until_ready((indptr, indices, xs, w, result))
 
     def test_gradient(self):
         """Test that gradients can be computed."""
@@ -299,6 +311,7 @@ class TestCSRMatrix:
         grads = jax.grad(loss_fn, argnums=(0, 1))(xs, w)
         assert grads[0].shape == xs.shape
         assert grads[1].shape == w.shape
+        jax.block_until_ready((indptr, indices, xs, w, grads))
 
 
 class TestVmapCompatibility:
@@ -317,6 +330,7 @@ class TestVmapCompatibility:
 
         result = jax.vmap(lambda x: vector_csr(x, w, indices, indptr, (n_pre, n_post)))(xs)
         assert result.shape == (batch, n_post)
+        jax.block_until_ready((indptr, indices, xs, w, result))
 
     def test_csr_vector_vmap_over_x(self):
         """Test vmap over input vector."""
@@ -327,6 +341,7 @@ class TestVmapCompatibility:
 
         result = jax.vmap(lambda x: csr_vector(x, w, indices, indptr, (n_pre, n_post)))(xs)
         assert result.shape == (batch, n_pre)
+        jax.block_until_ready((indptr, indices, xs, w, result))
 
     def test_vector_csr_vmap_over_w(self):
         """Test vmap over weights."""
@@ -337,3 +352,4 @@ class TestVmapCompatibility:
 
         result = jax.vmap(lambda w: vector_csr(x, w, indices, indptr, (n_pre, n_post)))(ws)
         assert result.shape == (batch, n_post)
+        jax.block_until_ready((indptr, indices, x, ws, result))

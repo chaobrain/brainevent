@@ -58,6 +58,7 @@ def test_jitumv_forward(implementation, shape, corder):
     dense = jitu(W_LOW, W_HIGH, PROB, SEED, shape=shape, corder=corder, backend=implementation)
     out = jitumv(W_LOW, W_HIGH, PROB, vector, SEED, shape=shape, corder=corder, backend=implementation)
     _assert_allclose(out, dense @ vector)
+    jax.block_until_ready((vector, dense, out))
 
 
 @pytest.mark.skipif(
@@ -91,6 +92,7 @@ def test_jitumv_transpose_forward(implementation, shape, corder):
         backend=implementation,
     )
     _assert_allclose(out, dense @ vector)
+    jax.block_until_ready((vector, dense, out))
 
 
 @pytest.mark.skipif(
@@ -106,6 +108,7 @@ def test_jitumm_forward(implementation, k, shape, corder):
     dense = jitu(W_LOW, W_HIGH, PROB, SEED, shape=shape, corder=corder, backend=implementation)
     out = jitumm(W_LOW, W_HIGH, PROB, matrix, SEED, shape=shape, corder=corder, backend=implementation)
     _assert_allclose(out, dense @ matrix)
+    jax.block_until_ready((matrix, dense, out))
 
 
 @pytest.mark.skipif(
@@ -140,6 +143,7 @@ def test_jitumm_transpose_forward(implementation, k, shape, corder):
         backend=implementation,
     )
     _assert_allclose(out, dense @ matrix)
+    jax.block_until_ready((matrix, dense, out))
 
 
 @pytest.mark.skipif(
@@ -171,10 +175,12 @@ def test_jitumv_jvp(implementation, shape, corder, transpose):
     def f_dense(x):
         return (dense @ x).sum()
 
-    out1, jvp1 = jax.jvp(f_fn, (vector,), (jnp.ones_like(vector),))
-    out2, jvp2 = jax.jvp(f_dense, (vector,), (jnp.ones_like(vector),))
+    tangent = jnp.ones_like(vector)
+    out1, jvp1 = jax.jvp(f_fn, (vector,), (tangent,))
+    out2, jvp2 = jax.jvp(f_dense, (vector,), (tangent,))
     _assert_allclose(out1, out2)
     _assert_allclose(jvp1, jvp2)
+    jax.block_until_ready((vector, dense, tangent, out1, jvp1, out2, jvp2))
 
 
 @pytest.mark.skipif(
@@ -210,6 +216,7 @@ def test_jitumv_vjp(implementation, shape, corder, transpose):
     out2, (vjp2,) = jax.value_and_grad(f_dense, argnums=(0,))(vector)
     _assert_allclose(out1, out2)
     _assert_allclose(vjp1, vjp2)
+    jax.block_until_ready((vector, dense, out1, vjp1, out2, vjp2))
 
 
 @pytest.mark.skipif(
@@ -242,10 +249,12 @@ def test_jitumm_jvp(implementation, k, shape, corder, transpose):
     def f_dense(x):
         return (dense @ x).sum()
 
-    out1, jvp1 = jax.jvp(f_fn, (matrix,), (jnp.ones_like(matrix),))
-    out2, jvp2 = jax.jvp(f_dense, (matrix,), (jnp.ones_like(matrix),))
+    tangent = jnp.ones_like(matrix)
+    out1, jvp1 = jax.jvp(f_fn, (matrix,), (tangent,))
+    out2, jvp2 = jax.jvp(f_dense, (matrix,), (tangent,))
     _assert_allclose(out1, out2)
     _assert_allclose(jvp1, jvp2)
+    jax.block_until_ready((matrix, dense, tangent, out1, jvp1, out2, jvp2))
 
 
 @pytest.mark.skipif(
@@ -282,6 +291,7 @@ def test_jitumm_vjp(implementation, k, shape, corder, transpose):
     out2, (vjp2,) = jax.value_and_grad(f_dense, argnums=(0,))(matrix)
     _assert_allclose(out1, out2)
     _assert_allclose(vjp1, vjp2)
+    jax.block_until_ready((matrix, dense, out1, vjp1, out2, vjp2))
 
 
 @pytest.mark.skipif(
@@ -359,6 +369,7 @@ def test_jitumv_vjp_w_bounds_match_affine_reference_and_finite_difference(
     _assert_allclose(g_w_high, ref_w_high, rtol=1e-2, atol=1e-2)
     _assert_allclose(g_w_low, fd_w_low, rtol=1e-2, atol=1e-2)
     _assert_allclose(g_w_high, fd_w_high, rtol=1e-2, atol=1e-2)
+    jax.block_until_ready((vector, cotangent, w_low, w_high, eps, g_w_low, g_w_high, U, C, u_out, c_out, ref_w_high, ref_w_low, fd_w_low, fd_w_high))
 
 
 @pytest.mark.skipif(
@@ -435,6 +446,7 @@ def test_jitumm_vjp_w_bounds_match_affine_reference_and_finite_difference(
     _assert_allclose(g_w_high, ref_w_high, rtol=1e-2, atol=1e-2)
     _assert_allclose(g_w_low, fd_w_low, rtol=1e-2, atol=1e-2)
     _assert_allclose(g_w_high, fd_w_high, rtol=1e-2, atol=1e-2)
+    jax.block_until_ready((matrix, cotangent, w_low, w_high, eps, g_w_low, g_w_high, U, C, u_out, c_out, ref_w_high, ref_w_low, fd_w_low, fd_w_high))
 
 
 @pytest.mark.skipif(
@@ -457,6 +469,7 @@ def test_jitumv_vmap_over_vectors(implementation, batch_size, shape, corder):
     results_loop = brainstate.transform.for_loop(f, vectors)
     assert results_loop.shape == (batch_size, shape[0])
     _assert_allclose(results, results_loop)
+    jax.block_until_ready((vectors, results, results_loop))
 
 
 @pytest.mark.skipif(
@@ -480,6 +493,7 @@ def test_jitumm_vmap_over_matrices(implementation, batch_size, k, shape, corder)
     results_loop = brainstate.transform.for_loop(f, matrices)
     assert results_loop.shape == (batch_size, shape[0], k)
     _assert_allclose(results, results_loop)
+    jax.block_until_ready((matrices, results, results_loop))
 
 
 @pytest.mark.skipif(
@@ -500,6 +514,7 @@ def test_jitu_vmap_over_wlow(implementation, shape):
     results_loop = brainstate.transform.for_loop(f, w_lows)
     assert results_loop.shape == (10,) + shape
     _assert_allclose(results, results_loop)
+    jax.block_until_ready((w_lows, results, results_loop))
 
 
 @pytest.mark.skipif(
@@ -520,6 +535,7 @@ def test_jitu_vmap_over_prob(implementation, shape):
     results_loop = brainstate.transform.for_loop(f, probs)
     assert results_loop.shape == (10,) + shape
     _assert_allclose(results, results_loop)
+    jax.block_until_ready((probs, results, results_loop))
 
 
 @pytest.mark.skipif(
@@ -540,3 +556,4 @@ def test_jitu_vmap_over_seed(implementation, shape):
     results_loop = brainstate.transform.for_loop(f, seeds)
     assert results_loop.shape == (10,) + shape
     _assert_allclose(results, results_loop)
+    jax.block_until_ready((seeds, results, results_loop))

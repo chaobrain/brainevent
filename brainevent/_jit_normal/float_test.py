@@ -41,6 +41,7 @@ def test_jitnmv_forward(implementation, shape, corder):
     out = jitnmv(w_loc, w_scale, prob, vector, seed, shape=shape, corder=corder, backend=implementation)
     expected = dense @ vector
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((vector, dense, out, expected))
 
 
 # ---- Forward: jitnmv (vector @ matrix, transpose=True) ----
@@ -55,6 +56,7 @@ def test_jitnmv_transpose_forward(implementation, shape, corder):
     out = jitnmv(w_loc, w_scale, prob, vector, seed, shape=shape, transpose=True, corder=corder, backend=implementation)
     expected = dense @ vector
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((vector, dense, out, expected))
 
 
 # ---- Forward: jitnmm (matrix @ matrix, transpose=False) ----
@@ -70,6 +72,7 @@ def test_jitnmm_forward(implementation, k, shape, corder):
     out = jitnmm(w_loc, w_scale, prob, B, seed, shape=shape, corder=corder, backend=implementation)
     expected = dense @ B
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((B, dense, out, expected))
 
 
 # ---- Forward: jitnmm (matrix.T @ matrix, transpose=True) ----
@@ -85,6 +88,7 @@ def test_jitnmm_transpose_forward(implementation, k, shape, corder):
     out = jitnmm(w_loc, w_scale, prob, B, seed, shape=shape, transpose=True, corder=corder, backend=implementation)
     expected = dense @ B
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((B, dense, out, expected))
 
 
 # ---- Gradient JVP: jitnmv ----
@@ -105,10 +109,12 @@ def test_jitnmv_jvp(implementation, shape, corder, transpose):
     def f_dense(x):
         return (dense @ x).sum()
 
-    out1, jvp1 = jax.jvp(f_fn, (x,), (jnp.ones_like(x),))
-    out2, jvp2 = jax.jvp(f_dense, (x,), (jnp.ones_like(x),))
+    tangent = jnp.ones_like(x)
+    out1, jvp1 = jax.jvp(f_fn, (x,), (tangent,))
+    out2, jvp2 = jax.jvp(f_dense, (x,), (tangent,))
     assert jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4)
     assert jnp.allclose(jvp1, jvp2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((x, dense, tangent, out1, jvp1, out2, jvp2))
 
 
 # ---- Gradient VJP: jitnmv ----
@@ -133,6 +139,7 @@ def test_jitnmv_vjp(implementation, shape, corder, transpose):
     out2, (vjp2,) = jax.value_and_grad(f_dense, argnums=(0,))(x)
     assert jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4)
     assert jnp.allclose(vjp1, vjp2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((x, dense, out1, vjp1, out2, vjp2))
 
 
 # ---- Gradient JVP: jitnmm ----
@@ -154,10 +161,12 @@ def test_jitnmm_jvp(implementation, k, shape, corder, transpose):
     def f_dense(x):
         return (dense @ x).sum()
 
-    out1, jvp1 = jax.jvp(f_fn, (x,), (jnp.ones_like(x),))
-    out2, jvp2 = jax.jvp(f_dense, (x,), (jnp.ones_like(x),))
+    tangent = jnp.ones_like(x)
+    out1, jvp1 = jax.jvp(f_fn, (x,), (tangent,))
+    out2, jvp2 = jax.jvp(f_dense, (x,), (tangent,))
     assert jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4)
     assert jnp.allclose(jvp1, jvp2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((x, dense, tangent, out1, jvp1, out2, jvp2))
 
 
 # ---- Gradient VJP: jitnmm ----
@@ -183,6 +192,7 @@ def test_jitnmm_vjp(implementation, k, shape, corder, transpose):
     out2, (vjp2,) = jax.value_and_grad(f_dense, argnums=(0,))(x)
     assert jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4)
     assert jnp.allclose(vjp1, vjp2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((x, dense, out1, vjp1, out2, vjp2))
 
 
 # ---- Batching: jitnmv over vectors ----
@@ -205,6 +215,7 @@ def test_jitnmv_vmap_over_vectors(implementation, batch_size, shape, corder):
     assert results_loop.shape == (batch_size, shape[0])
 
     assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((vectors, results, results_loop))
 
 
 # ---- Batching: jitnmv over vectors (transpose) ----
@@ -227,6 +238,7 @@ def test_jitnmv_transpose_vmap_over_vectors(implementation, batch_size, shape, c
     assert results_loop.shape == (batch_size, shape[1])
 
     assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((vectors, results, results_loop))
 
 
 # ---- Batching: jitnmv over w_loc ----
@@ -250,6 +262,7 @@ def test_jitnmv_vmap_over_wloc(implementation, batch_size, shape, corder):
     assert results_loop.shape == (batch_size, shape[0])
 
     assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((w_locs, vector, results, results_loop))
 
 
 # ---- Batching: jitnmm over matrices ----
@@ -273,6 +286,7 @@ def test_jitnmm_vmap_over_matrices(implementation, batch_size, k, shape, corder)
     assert outs_loop.shape == (batch_size, shape[0], k)
 
     assert jnp.allclose(outs, outs_loop, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((matrices, outs, outs_loop))
 
 
 # ---- Batching: jitnmm over matrices (transpose) ----
@@ -296,6 +310,7 @@ def test_jitnmm_transpose_vmap_over_matrices(implementation, batch_size, k, shap
     assert outs_loop.shape == (batch_size, shape[1], k)
 
     assert jnp.allclose(outs, outs_loop, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((matrices, outs, outs_loop))
 
 
 # ---- Batching: jitnmm over w_loc ----
@@ -320,6 +335,7 @@ def test_jitnmm_vmap_over_wloc(implementation, batch_size, k, shape, corder):
     assert results_loop.shape == (batch_size, shape[0], k)
 
     assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((w_locs, matrix, results, results_loop))
 
 
 # ---- Batching: jitn over w_loc ----
@@ -340,6 +356,7 @@ def test_jitn_vmap_over_wloc(implementation, shape):
     assert results_loop.shape == (10,) + shape
 
     assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((w_locs, results, results_loop))
 
 
 # ---- Batching: jitn over prob ----
@@ -360,6 +377,7 @@ def test_jitn_vmap_over_prob(implementation, shape):
     assert results_loop.shape == (10,) + shape
 
     assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((probs, results, results_loop))
 
 
 # ---- Batching: jitn over seed ----
@@ -380,6 +398,7 @@ def test_jitn_vmap_over_seed(implementation, shape):
     assert results_loop.shape == (10,) + shape
 
     assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((seeds, results, results_loop))
 
 
 # ---- Gradient VJP: jitnmv w.r.t. w_loc ----
@@ -407,6 +426,7 @@ def test_jitnmv_vjp_wloc(implementation, shape, corder, transpose):
     grad1 = jax.grad(f_fn)(w_loc_arr)
     grad2 = jax.grad(f_ref)(w_loc_arr)
     assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((vector, w_loc_arr, mask, z_mask, grad1, grad2))
 
 
 # ---- Gradient VJP: jitnmv w.r.t. w_scale ----
@@ -433,6 +453,7 @@ def test_jitnmv_vjp_wscale(implementation, shape, corder, transpose):
     grad1 = jax.grad(f_fn)(w_scale_arr)
     grad2 = jax.grad(f_ref)(w_scale_arr)
     assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((vector, w_scale_arr, mask, z_mask, grad1, grad2))
 
 
 # ---- End-to-end VJP: jitnmv w.r.t. w_loc with loss ----
@@ -463,6 +484,7 @@ def test_jitnmv_vjp_wloc_with_loss(implementation, shape, corder, transpose):
     grad1 = jax.grad(loss_fn)(w_loc_arr)
     grad2 = jax.grad(loss_ref)(w_loc_arr)
     assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((vector, target, w_loc_arr, mask, z_mask, grad1, grad2))
 
 
 # ---- End-to-end VJP: jitnmv w.r.t. w_scale with loss ----
@@ -493,6 +515,7 @@ def test_jitnmv_vjp_wscale_with_loss(implementation, shape, corder, transpose):
     grad1 = jax.grad(loss_fn)(w_scale_arr)
     grad2 = jax.grad(loss_ref)(w_scale_arr)
     assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((vector, target, w_scale_arr, mask, z_mask, grad1, grad2))
 
 
 # ---- Gradient VJP: jitnmm w.r.t. w_loc ----
@@ -520,6 +543,7 @@ def test_jitnmm_vjp_wloc(implementation, shape, corder, transpose):
     grad1 = jax.grad(f_fn)(w_loc_arr)
     grad2 = jax.grad(f_ref)(w_loc_arr)
     assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((B, w_loc_arr, mask, z_mask, grad1, grad2))
 
 
 # ---- Gradient VJP: jitnmm w.r.t. w_scale ----
@@ -547,6 +571,7 @@ def test_jitnmm_vjp_wscale(implementation, shape, corder, transpose):
     grad1 = jax.grad(f_fn)(w_scale_arr)
     grad2 = jax.grad(f_ref)(w_scale_arr)
     assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((B, w_scale_arr, mask, z_mask, grad1, grad2))
 
 
 # ---- End-to-end VJP: jitnmm w.r.t. w_loc with loss ----
@@ -578,6 +603,7 @@ def test_jitnmm_vjp_wloc_with_loss(implementation, shape, corder, transpose):
     grad1 = jax.grad(loss_fn)(w_loc_arr)
     grad2 = jax.grad(loss_ref)(w_loc_arr)
     assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((B, target, w_loc_arr, mask, z_mask, grad1, grad2))
 
 
 # ---- End-to-end VJP: jitnmm w.r.t. w_scale with loss ----
@@ -609,3 +635,4 @@ def test_jitnmm_vjp_wscale_with_loss(implementation, shape, corder, transpose):
     grad1 = jax.grad(loss_fn)(w_scale_arr)
     grad2 = jax.grad(loss_ref)(w_scale_arr)
     assert jnp.allclose(grad1, grad2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((B, target, w_scale_arr, mask, z_mask, grad1, grad2))

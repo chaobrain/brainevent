@@ -15,6 +15,7 @@
 
 import brainstate
 import brainunit as u
+import jax
 import jax.numpy as jnp
 import pytest
 
@@ -39,6 +40,7 @@ class Test_coo_on_pre:
         mat = jnp.where(mask, mat, 0.)
 
         assert jnp.allclose(coo.todense(), mat, rtol=1e-2, atol=1e-2)
+        jax.block_until_ready((mat, pre_spike, post_trace))
 
     @pytest.mark.parametrize('mat_unit', [u.mV, u.ms])
     @pytest.mark.parametrize('trace_unit', [u.mV, u.ms])
@@ -59,6 +61,7 @@ class Test_coo_on_pre:
             mat = u.math.where(mask, mat, 0. * mat_unit)
 
             assert u.math.allclose(coo.todense(), mat)
+            jax.block_until_ready((mat, pre_spike, post_trace))
 
         if mat_unit.has_same_dim(trace_unit):
             run()
@@ -85,6 +88,7 @@ class Test_coo_on_pre:
         mat = jnp.where(mask, mat, 0.)
 
         assert jnp.allclose(coo.todense(), mat)
+        jax.block_until_ready((mat, pre_spike, post_trace))
 
 
 class Test_coo_on_post:
@@ -105,6 +109,7 @@ class Test_coo_on_post:
         mat = jnp.where(mask, mat, 0.)
 
         assert jnp.allclose(coo.todense(), mat)
+        jax.block_until_ready((mat, pre_trace, post_spike))
 
     @pytest.mark.parametrize('mat_unit', [u.mV, u.ms])
     @pytest.mark.parametrize('trace_unit', [u.mV, u.ms])
@@ -125,6 +130,7 @@ class Test_coo_on_post:
             mat = u.math.where(mask, mat, 0. * mat_unit)
 
             assert u.math.allclose(coo.todense(), mat)
+            jax.block_until_ready((mat, pre_trace, post_spike))
 
         if mat_unit.has_same_dim(trace_unit):
             run()
@@ -151,3 +157,4 @@ class Test_coo_on_post:
         mat = jnp.where(mask, mat, 0.)
 
         assert jnp.allclose(coo.todense(), mat)
+        jax.block_until_ready((mat, pre_trace, post_spike))

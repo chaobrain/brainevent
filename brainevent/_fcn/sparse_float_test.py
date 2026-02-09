@@ -85,6 +85,7 @@ def test_spfloat_fcnmv_transpose(implementation, shape, homo_w, replace):
     result = spfloat_fcnmv(weights, indices, x, shape=(m, n), transpose=True, backend=implementation)
     expected = vector_fcn(x, weights, indices, (m, n))
     assert allclose(result, expected, rtol=1e-3, atol=1e-3)
+    jax.block_until_ready((indices, weights, x, result, expected))
 
 
 @pytest.mark.parametrize("implementation", SPFLOAT_FCNMV_IMPLEMENTATIONS)
@@ -101,6 +102,7 @@ def test_spfloat_fcnmv_no_transpose(implementation, shape, homo_w, replace):
     result = spfloat_fcnmv(weights, indices, v, shape=(m, n), transpose=False, backend=implementation)
     expected = fcn_vector(v, weights, indices, (m, n))
     assert allclose(result, expected, rtol=1e-3, atol=1e-3)
+    jax.block_until_ready((indices, weights, v, result, expected))
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +124,7 @@ def test_spfloat_fcnmm_transpose(implementation, shape, homo_w, replace, k):
     result = spfloat_fcnmm(weights, indices, X, shape=(m, n), transpose=True, backend=implementation)
     expected = matrix_fcn(X.T, weights, indices, (m, n)).T
     assert allclose(result, expected, rtol=1e-3, atol=1e-3)
+    jax.block_until_ready((indices, weights, X, result, expected))
 
 
 @pytest.mark.parametrize("implementation", SPFLOAT_FCNMM_IMPLEMENTATIONS)
@@ -139,6 +142,7 @@ def test_spfloat_fcnmm_no_transpose(implementation, shape, homo_w, replace, k):
     result = spfloat_fcnmm(weights, indices, B, shape=(m, n), transpose=False, backend=implementation)
     expected = fcn_matrix(B, weights, indices, (m, n))
     assert allclose(result, expected, rtol=1e-3, atol=1e-3)
+    jax.block_until_ready((indices, weights, B, result, expected))
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +174,7 @@ def test_spfloat_fcnmv_vjp(implementation, shape, homo_w, replace, transpose):
 
     assert allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
     assert allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
+    jax.block_until_ready((indices, w, x, r1[0], r1[1], r2[0], r2[1]))
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +210,7 @@ def test_spfloat_fcnmv_jvp(implementation, shape, homo_w, replace, transpose):
 
     assert allclose(o1, o2, rtol=1e-3, atol=1e-3)
     assert allclose(r1, r2, rtol=1e-3, atol=1e-3)
+    jax.block_until_ready((indices, w, x, o1, r1, o2, r2))
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +243,7 @@ def test_spfloat_fcnmm_vjp(implementation, shape, homo_w, replace, transpose, k)
 
     assert allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
     assert allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
+    jax.block_until_ready((indices, w, x, r1[0], r1[1], r2[0], r2[1]))
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +280,7 @@ def test_spfloat_fcnmm_jvp(implementation, shape, homo_w, replace, transpose, k)
 
     assert allclose(o1, o2, rtol=1e-3, atol=1e-3)
     assert allclose(r1, r2, rtol=1e-3, atol=1e-3)
+    jax.block_until_ready((indices, w, x, o1, r1, o2, r2))
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +313,7 @@ def test_spfloat_fcnmv_vmap_transpose(implementation, shape, homo_w, replace, ba
         in_axes=batch_axis,
     ))(xs)
     assert allclose(result, expected, rtol=1e-3, atol=1e-3)
+    jax.block_until_ready((indices, weights, xs, result, expected))
 
 
 @pytest.mark.parametrize("implementation", SPFLOAT_FCNMV_IMPLEMENTATIONS)
@@ -333,6 +342,7 @@ def test_spfloat_fcnmv_vmap_no_transpose(implementation, shape, homo_w, replace,
         in_axes=batch_axis,
     ))(vs)
     assert allclose(result, expected, rtol=1e-3, atol=1e-3)
+    jax.block_until_ready((indices, weights, vs, result, expected))
 
 
 # ---------------------------------------------------------------------------
@@ -368,3 +378,4 @@ def test_spfloat_fcnmm_vmap_no_transpose(implementation, shape, homo_w, replace,
         in_axes=batch_axis,
     ))(Bs)
     assert allclose(result, expected, rtol=1e-3, atol=1e-3)
+    jax.block_until_ready((indices, weights, Bs, result, expected))

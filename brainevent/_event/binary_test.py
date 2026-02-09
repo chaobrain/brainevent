@@ -15,6 +15,7 @@
 
 # -*- coding: utf-8 -*-
 
+import jax
 import numpy as np
 import pytest
 
@@ -51,6 +52,7 @@ class TestBinaryArray:
         expected = np.array([8.0, 10.0])  # [0*1 + 1*3 + 1*5, 0*2 + 1*4 + 1*6]
 
         assert np.allclose(result, expected)
+        jax.block_until_ready((result,))
 
     def test_matmul_2d_binary_with_2d_dense(self):
         """Test matrix multiplication between 2D binary array and 2D dense array."""
@@ -63,6 +65,7 @@ class TestBinaryArray:
             [[8.0, 10.0], [6.0, 8.0]])  # [[0*1 + 1*3 + 1*5, 0*2 + 1*4 + 1*6], [1*1 + 0*3 + 1*5, 1*2 + 0*4 + 1*6]]
 
         assert np.allclose(result, expected)
+        jax.block_until_ready((result,))
 
     def test_rmatmul_2d_dense_with_1d_binary(self):
         """Test reverse matrix multiplication between 2D dense array and 1D binary array."""
@@ -74,6 +77,7 @@ class TestBinaryArray:
         expected = np.array([5.0, 11.0])  # [1*0 + 2*1 + 3*1, 4*0 + 5*1 + 6*1]
 
         assert np.allclose(result, expected)
+        jax.block_until_ready((result,))
 
     def test_rmatmul_2d_dense_with_2d_binary(self):
         """Test reverse matrix multiplication between 2D dense array and 2D binary array."""
@@ -86,6 +90,7 @@ class TestBinaryArray:
             [[5.0, 4.0], [11.0, 10.0]])  # [[1*0 + 2*1 + 3*1, 1*1 + 2*0 + 3*1], [4*0 + 5*1 + 6*1, 4*1 + 5*0 + 6*1]]
 
         assert np.allclose(result, expected)
+        jax.block_until_ready((result,))
 
     def test_error_conditions(self):
         """Test error conditions for matrix multiplication."""

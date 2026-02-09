@@ -50,6 +50,7 @@ class Test_JITC_RC_Conversion:
         out1 = jitcr @ vector
         out2 = vector @ jitcc
         assert allclose(out1, out2)
+        jax.block_until_ready((vector, out1, out2))
 
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
@@ -62,6 +63,7 @@ class Test_JITC_RC_Conversion:
         out1 = vector @ jitcr
         out2 = jitcc @ vector
         assert allclose(out1, out2)
+        jax.block_until_ready((vector, out1, out2))
 
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('shape', shapes)
@@ -75,6 +77,7 @@ class Test_JITC_RC_Conversion:
         out1 = jitcr @ matrix
         out2 = (matrix.T @ jitcc).T
         assert allclose(out1, out2)
+        jax.block_until_ready((matrix, out1, out2))
 
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('shape', shapes)
@@ -89,6 +92,7 @@ class Test_JITC_RC_Conversion:
         out2 = (jitcc @ matrix.T).T
         print(out1 - out2)
         assert allclose(out1, out2, atol=1e-4, rtol=1e-4)
+        jax.block_until_ready((matrix, out1, out2))
 
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
@@ -102,6 +106,7 @@ class Test_JITC_RC_Conversion:
         out1 = jitcr @ vector
         out2 = vector @ jitcc
         assert allclose(out1, out2)
+        jax.block_until_ready((out1, out2))
 
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
@@ -115,6 +120,7 @@ class Test_JITC_RC_Conversion:
         out1 = vector @ jitcr
         out2 = jitcc @ vector
         assert allclose(out1, out2)
+        jax.block_until_ready((out1, out2))
 
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('shape', shapes)
@@ -129,6 +135,7 @@ class Test_JITC_RC_Conversion:
         out1 = jitcr @ matrix
         out2 = (matrix.value.T @ jitcc).T
         assert allclose(out1, out2)
+        jax.block_until_ready((out1, out2))
 
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('shape', shapes)
@@ -144,6 +151,7 @@ class Test_JITC_RC_Conversion:
         out2 = (jitcc @ matrix.value.T).T
         print(out1 - out2)
         assert allclose(out1, out2, atol=1e-4, rtol=1e-4)
+        jax.block_until_ready((out1, out2))
 
 
 class Test_JITC_Operator_Behavior:
@@ -158,10 +166,19 @@ class Test_JITC_Operator_Behavior:
         left_mat = gen_events((5, shape[0]), asbool=False).value
         right_mat = gen_events((shape[1], 4), asbool=False).value
 
-        assert allclose(left_vec @ mat, left_vec @ dense, atol=1e-4, rtol=1e-4)
-        assert allclose(mat @ right_vec, dense @ right_vec, atol=1e-4, rtol=1e-4)
-        assert allclose(left_mat @ mat, left_mat @ dense, atol=1e-4, rtol=1e-4)
-        assert allclose(mat @ right_mat, dense @ right_mat, atol=1e-4, rtol=1e-4)
+        r1 = left_vec @ mat
+        r2 = left_vec @ dense
+        r3 = mat @ right_vec
+        r4 = dense @ right_vec
+        r5 = left_mat @ mat
+        r6 = left_mat @ dense
+        r7 = mat @ right_mat
+        r8 = dense @ right_mat
+        assert allclose(r1, r2, atol=1e-4, rtol=1e-4)
+        assert allclose(r3, r4, atol=1e-4, rtol=1e-4)
+        assert allclose(r5, r6, atol=1e-4, rtol=1e-4)
+        assert allclose(r7, r8, atol=1e-4, rtol=1e-4)
+        jax.block_until_ready((dense, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
 
     @pytest.mark.parametrize('corder', [True, False])
     def test_jitc_normal_c_operator_behavior(self, corder):
@@ -174,10 +191,19 @@ class Test_JITC_Operator_Behavior:
         left_mat = gen_events((5, shape[0]), asbool=False).value
         right_mat = gen_events((shape[1], 4), asbool=False).value
 
-        assert allclose(left_vec @ mat, left_vec @ dense, atol=1e-4, rtol=1e-4)
-        assert allclose(mat @ right_vec, dense @ right_vec, atol=1e-4, rtol=1e-4)
-        assert allclose(left_mat @ mat, left_mat @ dense, atol=1e-4, rtol=1e-4)
-        assert allclose(mat @ right_mat, dense @ right_mat, atol=1e-4, rtol=1e-4)
+        r1 = left_vec @ mat
+        r2 = left_vec @ dense
+        r3 = mat @ right_vec
+        r4 = dense @ right_vec
+        r5 = left_mat @ mat
+        r6 = left_mat @ dense
+        r7 = mat @ right_mat
+        r8 = dense @ right_mat
+        assert allclose(r1, r2, atol=1e-4, rtol=1e-4)
+        assert allclose(r3, r4, atol=1e-4, rtol=1e-4)
+        assert allclose(r5, r6, atol=1e-4, rtol=1e-4)
+        assert allclose(r7, r8, atol=1e-4, rtol=1e-4)
+        jax.block_until_ready((dense, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
 
     @pytest.mark.parametrize('corder', [True, False])
     def test_jitc_normal_r_transpose_operator_behavior(self, corder):
@@ -190,10 +216,19 @@ class Test_JITC_Operator_Behavior:
         left_mat = jnp.asarray(np.random.rand(5, shape[1]))
         right_mat = jnp.asarray(np.random.rand(shape[0], 4))
 
-        assert allclose(left_vec @ mat, left_vec @ dense, atol=1e-4, rtol=1e-4)
-        assert allclose(mat @ right_vec, dense @ right_vec, atol=1e-4, rtol=1e-4)
-        assert allclose(left_mat @ mat, left_mat @ dense, atol=1e-4, rtol=1e-4)
-        assert allclose(mat @ right_mat, dense @ right_mat, atol=1e-4, rtol=1e-4)
+        r1 = left_vec @ mat
+        r2 = left_vec @ dense
+        r3 = mat @ right_vec
+        r4 = dense @ right_vec
+        r5 = left_mat @ mat
+        r6 = left_mat @ dense
+        r7 = mat @ right_mat
+        r8 = dense @ right_mat
+        assert allclose(r1, r2, atol=1e-4, rtol=1e-4)
+        assert allclose(r3, r4, atol=1e-4, rtol=1e-4)
+        assert allclose(r5, r6, atol=1e-4, rtol=1e-4)
+        assert allclose(r7, r8, atol=1e-4, rtol=1e-4)
+        jax.block_until_ready((dense, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
 
     @pytest.mark.parametrize('corder', [True, False])
     def test_jitc_normal_c_transpose_operator_behavior(self, corder):
@@ -206,10 +241,19 @@ class Test_JITC_Operator_Behavior:
         left_mat = jnp.asarray(np.random.rand(5, shape[1]))
         right_mat = jnp.asarray(np.random.rand(shape[0], 4))
 
-        assert allclose(left_vec @ mat, left_vec @ dense, atol=1e-4, rtol=1e-4)
-        assert allclose(mat @ right_vec, dense @ right_vec, atol=1e-4, rtol=1e-4)
-        assert allclose(left_mat @ mat, left_mat @ dense, atol=1e-4, rtol=1e-4)
-        assert allclose(mat @ right_mat, dense @ right_mat, atol=1e-4, rtol=1e-4)
+        r1 = left_vec @ mat
+        r2 = left_vec @ dense
+        r3 = mat @ right_vec
+        r4 = dense @ right_vec
+        r5 = left_mat @ mat
+        r6 = left_mat @ dense
+        r7 = mat @ right_mat
+        r8 = dense @ right_mat
+        assert allclose(r1, r2, atol=1e-4, rtol=1e-4)
+        assert allclose(r3, r4, atol=1e-4, rtol=1e-4)
+        assert allclose(r5, r6, atol=1e-4, rtol=1e-4)
+        assert allclose(r7, r8, atol=1e-4, rtol=1e-4)
+        jax.block_until_ready((dense, left_vec, right_vec, left_mat, right_mat, r1, r2, r3, r4, r5, r6, r7, r8))
 
     @pytest.mark.parametrize('cls', [brainevent.JITCNormalR, brainevent.JITCNormalC])
     def test_jitc_normal_unit_operator_behavior(self, cls):
@@ -222,12 +266,17 @@ class Test_JITC_Operator_Behavior:
         right_vec = jnp.asarray(np.random.rand(shape[1]))
         left_vec = jnp.asarray(np.random.rand(shape[0]))
 
-        assert u.math.allclose(mat @ right_vec, dense @ right_vec,
-                               rtol=1e-4 * u.get_unit(dense @ right_vec),
-                               atol=1e-4 * u.get_unit(dense @ right_vec))
-        assert u.math.allclose(left_vec @ mat, left_vec @ dense,
-                               rtol=1e-4 * u.get_unit(left_vec @ dense),
-                               atol=1e-4 * u.get_unit(left_vec @ dense))
+        r1 = mat @ right_vec
+        r2 = dense @ right_vec
+        r3 = left_vec @ mat
+        r4 = left_vec @ dense
+        assert u.math.allclose(r1, r2,
+                               rtol=1e-4 * u.get_unit(r2),
+                               atol=1e-4 * u.get_unit(r2))
+        assert u.math.allclose(r3, r4,
+                               rtol=1e-4 * u.get_unit(r4),
+                               atol=1e-4 * u.get_unit(r4))
+        jax.block_until_ready((right_vec, left_vec))
 
 
 class Test_JITC_To_Dense:
@@ -245,6 +294,7 @@ class Test_JITC_To_Dense:
         assert allclose(out1, out2)
         assert allclose(out1, out3)
         assert allclose(out1, out4)
+        jax.block_until_ready((out1, out2, out3, out4))
 
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
@@ -279,6 +329,8 @@ class Test_JITC_To_Dense:
 
         assert allclose(true_wloc_grad, jitc_wloc_grad)
         assert allclose(true_wscale_grad, jitc_wscale_grad)
+        jax.block_until_ready((base, ct, primals, true_wloc_grad, true_wscale_grad,
+                               expected_wloc_grad, expected_wscale_grad, jitc_wloc_grad, jitc_wscale_grad))
 
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
@@ -299,6 +351,7 @@ class Test_JITC_To_Dense:
         primals, true_grad = jax.jvp(f_dense_jvp, (wloc, wscale), tagents)
         primals, jitc_grad = jax.jvp(f_jitc_jvp, (wloc, wscale), tagents)
         assert allclose(true_grad, jitc_grad, atol=1e-3, rtol=1e-3)
+        jax.block_until_ready((base, tagents[0], tagents[1], primals, true_grad, jitc_grad))
 
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
@@ -322,6 +375,7 @@ class Test_JITC_To_Dense:
 
         primals, jitc_grad = jax.jvp(f_jitc_jvp, (wloc,), (dwloc,))
         assert allclose(true_grad, jitc_grad)
+        jax.block_until_ready((base, primals, true_grad, expected_grad, jitc_grad))
 
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])
@@ -345,6 +399,7 @@ class Test_JITC_To_Dense:
 
         primals, jitc_grad = jax.jvp(f_jitc_jvp, (wscale,), (dw_high,))
         assert allclose(true_grad, jitc_grad)
+        jax.block_until_ready((base, primals, true_grad, expected_grad, jitc_grad))
 
 
 class Test_JITC_Normal_Validation:
@@ -364,3 +419,4 @@ class Test_JITC_Normal_Validation:
         B = jnp.ones((shape[1], 4))
         out_mm = mat @ B
         assert allclose(out_mm, jnp.zeros_like(out_mm))
+        jax.block_until_ready((dense, vec, out_mv, B, out_mm))

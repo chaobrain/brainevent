@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# ============================================================================== 
+# ==============================================================================
 
 # -*- coding: utf-8 -*-
 
@@ -129,6 +129,7 @@ class TestVector:
             y = _vector_fcn_api(x, data, indices, (m, n), implementation)
             y_true = vector_fcn(x, data, indices, (m, n))
             assert allclose(y, y_true, rtol=1e-3, atol=1e-3)
+            jax.block_until_ready((x, indices, data, y, y_true))
 
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -141,6 +142,7 @@ class TestVector:
             y = _fcn_vector_api(v, data, indices, (m, n), implementation)
             y_true = fcn_vector(v, data, indices, (m, n))
             assert allclose(y, y_true, rtol=1e-3, atol=1e-3)
+            jax.block_until_ready((v, indices, data, y, y_true))
 
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -170,6 +172,7 @@ class TestVector:
             r2 = jax.jit(lambda x, data: jax.grad(f_ref, argnums=(0, 1))(x, data))(x, w)
             assert allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
             assert allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
+            jax.block_until_ready((x, indices, w, r1[0], r1[1], r2[0], r2[1]))
 
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -199,6 +202,7 @@ class TestVector:
             )(x, w)
             assert allclose(r1, r2, rtol=1e-3, atol=1e-3)
             assert allclose(o1, o2, rtol=1e-3, atol=1e-3)
+            jax.block_until_ready((x, indices, w, o1, r1, o2, r2))
 
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -230,6 +234,7 @@ class TestVector:
             lambda w: fcn_vector(x_right, w, indices, (m, n))
         ))(data)
         assert allclose(y, y_true, rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((indices, data, x_left, x_right, y, y_true))
 
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -251,6 +256,7 @@ class TestVector:
         xs = brainstate.random.rand(batch_size, m) if batch_axis == 0 else brainstate.random.rand(m, batch_size)
         y, y_true = f_compare_vector(xs)
         assert allclose(y, y_true, rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((indices, data, xs, y, y_true))
 
 
 @pytest.mark.skipif(
@@ -277,6 +283,7 @@ class TestMatrix:
             y = _matrix_fcn_api(x, data, indices, (m, n), implementation)
             y_true = matrix_fcn(x, data, indices, (m, n))
             assert allclose(y, y_true, rtol=1e-3, atol=1e-3)
+            jax.block_until_ready((x, indices, data, y, y_true))
 
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -290,6 +297,7 @@ class TestMatrix:
             y = _fcn_matrix_api(matrix, data, indices, (m, n), implementation)
             y_true = fcn_matrix(matrix, data, indices, (m, n))
             assert allclose(y, y_true, rtol=1e-3, atol=1e-3)
+            jax.block_until_ready((matrix, indices, data, y, y_true))
 
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -320,6 +328,7 @@ class TestMatrix:
             r2 = jax.jit(lambda x, data: jax.grad(f_ref, argnums=(0, 1))(x, data))(x, w)
             assert allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
             assert allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
+            jax.block_until_ready((x, indices, w, r1[0], r1[1], r2[0], r2[1]))
 
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -350,6 +359,7 @@ class TestMatrix:
             )(x, w)
             assert allclose(r1, r2, rtol=1e-3, atol=1e-3)
             assert allclose(o1, o2, rtol=1e-3, atol=1e-3)
+            jax.block_until_ready((x, indices, w, o1, r1, o2, r2))
 
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -383,6 +393,7 @@ class TestMatrix:
             lambda w: fcn_matrix(x_right, w, indices, (m, n))
         ))(data)
         assert allclose(y, y_true, rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((indices, data, x_left, x_right, y, y_true))
 
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -428,3 +439,4 @@ class TestMatrix:
         xs = brainstate.random.rand(*x_shape)
         y, y_true = f_compare_fcn_matrix(xs)
         assert allclose(y, y_true, rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((indices, data, xs, y, y_true))

@@ -44,6 +44,7 @@ def test_dbmv_forward(implementation, m, k, dtype):
     result = dbmv(weights, spikes, backend=implementation)
     expected = weights @ u.math.asarray(spikes, dtype=float)
     assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
+    jax.block_until_ready((weights, spikes, result, expected))
 
 
 # ---- Forward: binary vector @ dense matrix (bdvm) ----
@@ -60,6 +61,7 @@ def test_bdvm_forward(implementation, k, n, dtype):
     result = bdvm(spikes, weights, backend=implementation)
     expected = u.math.asarray(spikes, dtype=float) @ weights
     assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
+    jax.block_until_ready((spikes, weights, result, expected))
 
 
 # ---- Forward: dense matrix @ binary matrix (dbmm) ----
@@ -77,6 +79,7 @@ def test_dbmm_forward(implementation, m, k, n, dtype):
     result = dbmm(weights, spikes, backend=implementation)
     expected = weights @ u.math.asarray(spikes, dtype=float)
     assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
+    jax.block_until_ready((weights, spikes, result, expected))
 
 
 # ---- Forward: binary matrix @ dense matrix (bdmm) ----
@@ -94,6 +97,7 @@ def test_bdmm_forward(implementation, m, k, n, dtype):
     result = bdmm(spikes, weights, backend=implementation)
     expected = u.math.asarray(spikes, dtype=float) @ weights
     assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
+    jax.block_until_ready((spikes, weights, result, expected))
 
 
 # ---- Gradient: dbmv ----
@@ -110,6 +114,7 @@ def test_dbmv_grad_weights(implementation, m, k):
 
     grad = jax.grad(f)(weights)
     assert grad.shape == weights.shape
+    jax.block_until_ready((weights, spikes, grad))
 
 
 # ---- Gradient: bdvm ----
@@ -126,6 +131,7 @@ def test_bdvm_grad_weights(implementation, k, n):
 
     grad = jax.grad(f)(weights)
     assert grad.shape == weights.shape
+    jax.block_until_ready((spikes, weights, grad))
 
 
 # ---- Gradient: dbmm ----
@@ -143,6 +149,7 @@ def test_dbmm_grad_weights(implementation, m, k, n):
 
     grad = jax.grad(f)(weights)
     assert grad.shape == weights.shape
+    jax.block_until_ready((weights, spikes, grad))
 
 
 # ---- Gradient: bdmm ----
@@ -160,6 +167,7 @@ def test_bdmm_grad_weights(implementation, m, k, n):
 
     grad = jax.grad(f)(weights)
     assert grad.shape == weights.shape
+    jax.block_until_ready((spikes, weights, grad))
 
 
 # ---- Batching (vmap): dbmv ----
@@ -176,6 +184,7 @@ def test_dbmv_vmap_over_spikes(implementation, m, k, batch_size):
     batched_fn = jax.vmap(lambda s: dbmv(weights, s, backend=implementation))
     result = batched_fn(batched_spikes)
     assert result.shape == (batch_size, m)
+    jax.block_until_ready((weights, batched_spikes, result))
 
 
 # ---- Batching (vmap): bdvm ----
@@ -192,6 +201,7 @@ def test_bdvm_vmap_over_spikes(implementation, k, n, batch_size):
     batched_fn = jax.vmap(lambda s: bdvm(s, weights, backend=implementation))
     result = batched_fn(batched_spikes)
     assert result.shape == (batch_size, n)
+    jax.block_until_ready((batched_spikes, weights, result))
 
 
 # ---- Batching (vmap): dbmm ----
@@ -209,6 +219,7 @@ def test_dbmm_vmap_over_spikes(implementation, m, k, n, batch_size):
     batched_fn = jax.vmap(lambda s: dbmm(weights, s, backend=implementation))
     result = batched_fn(batched_spikes)
     assert result.shape == (batch_size, m, n)
+    jax.block_until_ready((weights, batched_spikes, result))
 
 
 # ---- Batching (vmap): bdmm ----
@@ -226,3 +237,4 @@ def test_bdmm_vmap_over_spikes(implementation, m, k, n, batch_size):
     batched_fn = jax.vmap(lambda s: bdmm(s, weights, backend=implementation))
     result = batched_fn(batched_spikes)
     assert result.shape == (batch_size, m, n)
+    jax.block_until_ready((batched_spikes, weights, result))

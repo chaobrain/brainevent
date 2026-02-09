@@ -42,6 +42,7 @@ class TestCOOAddSub:
         expected = coo.todense() + 5.0
         assert not isinstance(result, brainevent.COO)
         assert jnp.allclose(result, expected)
+        jax.block_until_ready((matrix, result, expected))
 
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_radd_scalar(self, shape):
@@ -51,6 +52,7 @@ class TestCOOAddSub:
         expected = 5.0 + coo.todense()
         assert not isinstance(result, brainevent.COO)
         assert jnp.allclose(result, expected)
+        jax.block_until_ready((matrix, result, expected))
 
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_sub_dense(self, shape):
@@ -61,6 +63,7 @@ class TestCOOAddSub:
         expected = coo.todense() - ones
         assert not isinstance(result, brainevent.COO)
         assert jnp.allclose(result, expected)
+        jax.block_until_ready((matrix, ones, result, expected))
 
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_rsub_dense(self, shape):
@@ -71,6 +74,7 @@ class TestCOOAddSub:
         expected = ones - coo.todense()
         assert not isinstance(result, brainevent.COO)
         assert jnp.allclose(result, expected)
+        jax.block_until_ready((matrix, ones, result, expected))
 
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_mul_scalar_stays_sparse(self, shape):
@@ -80,6 +84,7 @@ class TestCOOAddSub:
         assert isinstance(result, brainevent.COO)
         expected = coo.todense() * 2.0
         assert jnp.allclose(result.todense(), expected)
+        jax.block_until_ready((matrix, expected))
 
 
 class TestCOOToCsr:
@@ -90,6 +95,7 @@ class TestCOOToCsr:
         csr = coo.tocsr()
         assert isinstance(csr, brainevent.CSR)
         assert jnp.allclose(csr.todense(), coo.todense())
+        jax.block_until_ready((matrix,))
 
 
 class TestCOOMatmul:
@@ -103,6 +109,7 @@ class TestCOOMatmul:
         result = coo @ v
         expected = matrix @ v.value.astype(float)
         assert jnp.allclose(result, expected)
+        jax.block_until_ready((matrix, result, expected))
 
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_rmatmul_binary_vector(self, shape):
@@ -112,6 +119,7 @@ class TestCOOMatmul:
         result = v @ coo
         expected = v.value.astype(float) @ matrix
         assert jnp.allclose(result, expected)
+        jax.block_until_ready((matrix, result, expected))
 
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matmul_binary_matrix(self, shape):
@@ -121,6 +129,7 @@ class TestCOOMatmul:
         result = coo @ B
         expected = matrix @ B.value.astype(float)
         assert jnp.allclose(result, expected, rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((matrix, result, expected))
 
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_rmatmul_binary_matrix(self, shape):
@@ -130,6 +139,7 @@ class TestCOOMatmul:
         result = B @ coo
         expected = B.value.astype(float) @ matrix
         assert jnp.allclose(result, expected, rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((matrix, result, expected))
 
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_matmul_dense_vector(self, shape):
@@ -139,6 +149,7 @@ class TestCOOMatmul:
         result = coo @ v
         expected = matrix @ v
         assert jnp.allclose(result, expected, rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((matrix, v, result, expected))
 
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_rmatmul_dense_vector(self, shape):
@@ -148,6 +159,7 @@ class TestCOOMatmul:
         result = v @ coo
         expected = v @ matrix
         assert jnp.allclose(result, expected, rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((matrix, v, result, expected))
 
 
 class TestCOOBinaryOperator:
@@ -167,6 +179,7 @@ class TestCOOBinaryOperator:
                 v.value.astype(float) @ mask.astype(float),
                 v @ coo
             )
+            jax.block_until_ready((mask,))
 
     def test_event_homo_float_as_bool(self):
         mat = brainstate.random.rand(10, 20)
@@ -184,6 +197,7 @@ class TestCOOBinaryOperator:
             v.value.astype(float) @ mask.astype(float),
             v @ coo
         )
+        jax.block_until_ready((mat, mask))
 
     def test_event_homo_other(self):
         mat = brainstate.random.rand(10, 20)
@@ -201,6 +215,7 @@ class TestCOOBinaryOperator:
             v.value.astype(float) @ mask.astype(float),
             v @ coo
         )
+        jax.block_until_ready((mat, mask))
 
 
 class TestCOOBinaryVectorOperator:
@@ -215,6 +230,7 @@ class TestCOOBinaryVectorOperator:
         y = brainevent.BinaryArray(x) @ coo
         y2 = vector_coo(x, coo.data, row, col, (m, n))
         assert jnp.allclose(y, y2, rtol=1e-5, atol=1e-5)
+        jax.block_until_ready((x, row, col, y, y2))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vector_coo_vmap_vector(self, homo_w):
@@ -227,6 +243,7 @@ class TestCOOBinaryVectorOperator:
         y = jax.vmap(lambda x: brainevent.BinaryArray(x) @ coo)(xs)
         y2 = jax.vmap(lambda x: vector_coo(x, coo.data, row, col, (m, n)))(xs)
         assert jnp.allclose(y, y2, rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((xs, row, col, y, y2))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_coo_vector(self, homo_w):
@@ -239,6 +256,7 @@ class TestCOOBinaryVectorOperator:
         y = coo @ brainevent.BinaryArray(v)
         y2 = coo_vector(v, coo.data, row, col, (m, n))
         assert jnp.allclose(y, y2, rtol=1e-5, atol=1e-5)
+        jax.block_until_ready((v, row, col, y, y2))
 
     def _test_vjp(self, homo_w, replace, transpose):
         n_in = 20
@@ -270,6 +288,7 @@ class TestCOOBinaryVectorOperator:
         r2 = jax.grad(f_jax, argnums=(0, 1))(x, w)
         assert jnp.allclose(r[0], r2[0], rtol=1e-3, atol=1e-3)
         assert jnp.allclose(r[1], r2[1], rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((x, row, col, r, r2))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('replace', [True, False])
@@ -307,6 +326,7 @@ class TestCOOBinaryVectorOperator:
         o2, r2 = jax.jvp(f_jax, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
         assert jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3)
         assert jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((x, row, col, o1, r1, o2, r2))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('replace', [True, False])
@@ -327,6 +347,7 @@ class TestCOOBinaryMatrixOperator:
         y = brainevent.BinaryArray(x) @ coo
         y2 = matrix_coo(x.astype(float), coo.data, row, col, (m, n))
         assert jnp.allclose(y, y2, rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((x, row, col, y, y2))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_coo_matrix(self, homo_w):
@@ -339,3 +360,4 @@ class TestCOOBinaryMatrixOperator:
         y = coo @ brainevent.BinaryArray(matrix)
         y2 = coo_matrix(matrix.astype(float), coo.data, row, col, (m, n))
         assert jnp.allclose(y, y2)
+        jax.block_until_ready((matrix, row, col, y, y2))

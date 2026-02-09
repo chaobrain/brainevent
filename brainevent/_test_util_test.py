@@ -15,6 +15,7 @@
 
 # -*- coding: utf-8 -*-
 
+import jax
 import brainstate
 import jax.numpy as jnp
 
@@ -36,17 +37,20 @@ class TestGenerateFixedConnNumIndices:
         n_pre, n_post, n_conn = 10, 20, 5
         indices = generate_fixed_conn_num_indices(n_pre, n_post, n_conn, replace=True)
         assert indices.shape == (n_pre, n_conn)
+        jax.block_until_ready((indices,))
 
     def test_shape_without_replace(self):
         n_pre, n_post, n_conn = 10, 20, 5
         indices = generate_fixed_conn_num_indices(n_pre, n_post, n_conn, replace=False)
         assert indices.shape == (n_pre, n_conn)
+        jax.block_until_ready((indices,))
 
     def test_values_in_range(self):
         n_pre, n_post, n_conn = 10, 20, 5
         indices = generate_fixed_conn_num_indices(n_pre, n_post, n_conn, replace=True)
         assert jnp.all(indices >= 0)
         assert jnp.all(indices < n_post)
+        jax.block_until_ready((indices,))
 
     def test_without_replace_unique_per_row(self):
         n_pre, n_post, n_conn = 5, 20, 10
@@ -55,12 +59,14 @@ class TestGenerateFixedConnNumIndices:
             row = indices[i]
             unique_vals = jnp.unique(row)
             assert len(unique_vals) == n_conn
+        jax.block_until_ready((indices,))
 
     def test_custom_rng(self):
         n_pre, n_post, n_conn = 5, 10, 3
         rng = brainstate.random.RandomState(42)
         indices = generate_fixed_conn_num_indices(n_pre, n_post, n_conn, replace=True, rng=rng)
         assert indices.shape == (n_pre, n_conn)
+        jax.block_until_ready((indices,))
 
 
 class TestVectorFcn:
@@ -73,6 +79,7 @@ class TestVectorFcn:
 
         result = vector_fcn(x, weights, indices, shape)
         assert result.shape == (n_post,)
+        jax.block_until_ready((x, weights, indices, result))
 
     def test_heterogeneous_weights(self):
         n_pre, n_post, n_conn = 10, 20, 5
@@ -83,6 +90,7 @@ class TestVectorFcn:
 
         result = vector_fcn(x, weights, indices, shape)
         assert result.shape == (n_post,)
+        jax.block_until_ready((x, weights, indices, result))
 
     def test_with_event_array_input(self):
         n_pre, n_post, n_conn = 10, 20, 5
@@ -93,6 +101,7 @@ class TestVectorFcn:
 
         result = vector_fcn(x, weights, indices, shape)
         assert result.shape == (n_post,)
+        jax.block_until_ready((weights, indices, result))
 
     def test_zero_vector(self):
         n_pre, n_post, n_conn = 10, 20, 5
@@ -103,6 +112,7 @@ class TestVectorFcn:
 
         result = vector_fcn(x, weights, indices, shape)
         assert jnp.allclose(result, jnp.zeros(n_post))
+        jax.block_until_ready((x, weights, indices, result))
 
 
 class TestMatrixFcn:
@@ -116,6 +126,7 @@ class TestMatrixFcn:
 
         result = matrix_fcn(xs, weights, indices, shape)
         assert result.shape == (batch_size, n_post)
+        jax.block_until_ready((xs, weights, indices, result))
 
     def test_heterogeneous_weights(self):
         n_pre, n_post, n_conn = 10, 20, 5
@@ -127,6 +138,7 @@ class TestMatrixFcn:
 
         result = matrix_fcn(xs, weights, indices, shape)
         assert result.shape == (batch_size, n_post)
+        jax.block_until_ready((xs, weights, indices, result))
 
     def test_with_event_array_input(self):
         n_pre, n_post, n_conn = 10, 20, 5
@@ -138,6 +150,7 @@ class TestMatrixFcn:
 
         result = matrix_fcn(xs, weights, indices, shape)
         assert result.shape == (batch_size, n_post)
+        jax.block_until_ready((weights, indices, result))
 
 
 class TestFcnVector:
@@ -150,6 +163,7 @@ class TestFcnVector:
 
         result = fcn_vector(x, weights, indices, shape)
         assert result.shape == (n_pre,)
+        jax.block_until_ready((x, weights, indices, result))
 
     def test_heterogeneous_weights(self):
         n_pre, n_post, n_conn = 10, 20, 5
@@ -160,6 +174,7 @@ class TestFcnVector:
 
         result = fcn_vector(x, weights, indices, shape)
         assert result.shape == (n_pre,)
+        jax.block_until_ready((x, weights, indices, result))
 
     def test_with_event_array_input(self):
         n_pre, n_post, n_conn = 10, 20, 5
@@ -170,6 +185,7 @@ class TestFcnVector:
 
         result = fcn_vector(x, weights, indices, shape)
         assert result.shape == (n_pre,)
+        jax.block_until_ready((weights, indices, result))
 
 
 class TestFcnMatrix:
@@ -183,6 +199,7 @@ class TestFcnMatrix:
 
         result = fcn_matrix(xs, weights, indices, shape)
         assert result.shape == (n_pre, batch_size)
+        jax.block_until_ready((xs, weights, indices, result))
 
     def test_heterogeneous_weights(self):
         n_pre, n_post, n_conn = 10, 20, 5
@@ -194,6 +211,7 @@ class TestFcnMatrix:
 
         result = fcn_matrix(xs, weights, indices, shape)
         assert result.shape == (n_pre, batch_size)
+        jax.block_until_ready((xs, weights, indices, result))
 
     def test_with_event_array_input(self):
         n_pre, n_post, n_conn = 10, 20, 5
@@ -205,6 +223,7 @@ class TestFcnMatrix:
 
         result = fcn_matrix(xs, weights, indices, shape)
         assert result.shape == (n_pre, batch_size)
+        jax.block_until_ready((weights, indices, result))
 
 
 class TestAllclose:
@@ -212,16 +231,19 @@ class TestAllclose:
         x = jnp.array([1.0, 2.0, 3.0])
         y = jnp.array([1.0, 2.0, 3.0])
         assert allclose(x, y)
+        jax.block_until_ready((x, y))
 
     def test_close_arrays(self):
         x = jnp.array([1.0, 2.0, 3.0])
         y = jnp.array([1.0000001, 2.00000001, 3.0000001])
         assert allclose(x, y)
+        jax.block_until_ready((x, y))
 
     def test_not_close_arrays(self):
         x = jnp.array([1.0, 2.0, 3.0])
         y = jnp.array([1.1, 2.1, 3.1])
         assert not allclose(x, y)
+        jax.block_until_ready((x, y))
 
     def test_with_event_arrays(self):
         x = brainevent.BinaryArray(jnp.array([1.0, 2.0, 3.0]))
@@ -232,12 +254,14 @@ class TestAllclose:
         x = brainevent.BinaryArray(jnp.array([1.0, 2.0, 3.0]))
         y = jnp.array([1.0, 2.0, 3.0])
         assert allclose(x, y)
+        jax.block_until_ready((y,))
 
     def test_custom_tolerances(self):
         x = jnp.array([1.0, 2.0, 3.0])
         y = jnp.array([1.01, 2.01, 3.01])
         assert not allclose(x, y, rtol=1e-4, atol=1e-4)
         assert allclose(x, y, rtol=0.1, atol=0.1)
+        jax.block_until_ready((x, y))
 
 
 class TestGenEvents:
@@ -264,16 +288,19 @@ class TestGenEvents:
         events = gen_events(shape, prob=prob, asbool=True)
         actual_prob = jnp.mean(events.value.astype(float))
         assert jnp.abs(actual_prob - prob) < 0.05
+        jax.block_until_ready((actual_prob,))
 
     def test_high_probability(self):
         events = gen_events((10000,), prob=0.9)
         actual_prob = jnp.mean(events.value.astype(float))
         assert actual_prob > 0.85
+        jax.block_until_ready((actual_prob,))
 
     def test_low_probability(self):
         events = gen_events((10000,), prob=0.1)
         actual_prob = jnp.mean(events.value.astype(float))
         assert actual_prob < 0.15
+        jax.block_until_ready((actual_prob,))
 
 
 class TestOnesLike:
@@ -281,36 +308,43 @@ class TestOnesLike:
         x = jnp.array([1.0, 2.0, 3.0])
         result = ones_like(x)
         assert jnp.allclose(result, jnp.ones(3))
+        jax.block_until_ready((x, result))
 
     def test_2d_array(self):
         x = jnp.array([[1.0, 2.0], [3.0, 4.0]])
         result = ones_like(x)
         assert jnp.allclose(result, jnp.ones((2, 2)))
+        jax.block_until_ready((x, result))
 
     def test_preserves_shape(self):
         x = jnp.zeros((5, 10, 3))
         result = ones_like(x)
         assert result.shape == x.shape
+        jax.block_until_ready((x, result))
 
     def test_preserves_dtype(self):
         x = jnp.array([1, 2, 3], dtype=jnp.int32)
         result = ones_like(x)
         assert result.dtype == jnp.int32
+        jax.block_until_ready((x, result))
 
     def test_pytree_dict(self):
         x = {'a': jnp.array([1.0, 2.0]), 'b': jnp.array([3.0, 4.0, 5.0])}
         result = ones_like(x)
         assert jnp.allclose(result['a'], jnp.ones(2))
         assert jnp.allclose(result['b'], jnp.ones(3))
+        jax.block_until_ready((x['a'], x['b'], result['a'], result['b']))
 
     def test_pytree_nested(self):
         x = {'a': jnp.array([1.0]), 'b': {'c': jnp.array([2.0, 3.0])}}
         result = ones_like(x)
         assert jnp.allclose(result['a'], jnp.ones(1))
         assert jnp.allclose(result['b']['c'], jnp.ones(2))
+        jax.block_until_ready((x['a'], x['b']['c'], result['a'], result['b']['c']))
 
     def test_pytree_list(self):
         x = [jnp.array([1.0, 2.0]), jnp.array([3.0])]
         result = ones_like(x)
         assert jnp.allclose(result[0], jnp.ones(2))
         assert jnp.allclose(result[1], jnp.ones(1))
+        jax.block_until_ready((x[0], x[1], result[0], result[1]))

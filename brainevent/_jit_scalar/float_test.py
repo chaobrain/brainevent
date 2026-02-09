@@ -37,6 +37,7 @@ def test_jits_transpose_symmetry(implementation, transpose, corder):
     out1 = jits(1.5, 0.1, 123, shape=(100, 50), transpose=transpose, corder=corder, backend=implementation)
     out2 = jits(1.5, 0.1, 123, shape=(100, 50), transpose=not transpose, corder=not corder, backend=implementation)
     assert jnp.allclose(out1, out2.T)
+    jax.block_until_ready((out1, out2))
 
 
 # ---- Forward: jitsmv (transpose=False) ----
@@ -51,6 +52,7 @@ def test_jitsmv_forward(implementation, shape, corder):
     out = jitsmv(weight, prob, vector, seed=seed, shape=shape, corder=corder, backend=implementation)
     expected = dense @ vector
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((vector, dense, out, expected))
 
 
 # ---- Forward: jitsmv (transpose=True) ----
@@ -65,6 +67,7 @@ def test_jitsmv_transpose_forward(implementation, shape, corder):
     out = jitsmv(weight, prob, vector, seed=seed, shape=shape, transpose=True, corder=corder, backend=implementation)
     expected = dense @ vector
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((vector, dense, out, expected))
 
 
 # ---- Forward: jitsmv zero weight ----
@@ -78,6 +81,7 @@ def test_jitsmv_zero_weight(implementation, transpose, corder):
     result = jitsmv(0.0, 0.5, v, seed=1234, shape=shape, transpose=transpose, corder=corder, backend=implementation)
     expected = jnp.zeros(shape[1]) if transpose else jnp.zeros(shape[0])
     assert jnp.allclose(result, expected)
+    jax.block_until_ready((v, result, expected))
 
 
 # ---- Forward: jitsmm (transpose=False) ----
@@ -93,6 +97,7 @@ def test_jitsmm_forward(implementation, shape, k, corder):
     out = jitsmm(weight, prob, B, seed=seed, shape=shape, corder=corder, backend=implementation)
     expected = dense @ B
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((B, dense, out, expected))
 
 
 # ---- Forward: jitsmm (transpose=True) ----
@@ -108,6 +113,7 @@ def test_jitsmm_transpose_forward(implementation, shape, k, corder):
     out = jitsmm(weight, prob, B, seed=seed, shape=shape, transpose=True, corder=corder, backend=implementation)
     expected = dense @ B
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((B, dense, out, expected))
 
 
 # ---- Gradient JVP: jitsmv ----
@@ -128,10 +134,14 @@ def test_jitsmv_jvp(implementation, shape, corder, transpose):
     def f_dense(x, w):
         return (dense * w @ x).sum()
 
-    out1, jvp1 = jax.jvp(f_fn, (x, jnp.array(weight)), (jnp.ones_like(x), jnp.array(1.0)))
-    out2, jvp2 = jax.jvp(f_dense, (x, jnp.array(weight)), (jnp.ones_like(x), jnp.array(1.0)))
+    w_arr = jnp.array(weight)
+    t_x = jnp.ones_like(x)
+    t_w = jnp.array(1.0)
+    out1, jvp1 = jax.jvp(f_fn, (x, w_arr), (t_x, t_w))
+    out2, jvp2 = jax.jvp(f_dense, (x, w_arr), (t_x, t_w))
     assert jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4)
     assert jnp.allclose(jvp1, jvp2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((x, dense, w_arr, t_x, t_w, out1, jvp1, out2, jvp2))
 
 
 # ---- Gradient VJP: jitsmv ----
@@ -152,11 +162,13 @@ def test_jitsmv_vjp(implementation, shape, corder, transpose):
     def f_dense(x, w):
         return (dense * w @ x).sum()
 
-    out1, (vjp_x1, vjp_w1) = jax.value_and_grad(f_fn, argnums=(0, 1))(x, jnp.array(weight))
-    out2, (vjp_x2, vjp_w2) = jax.value_and_grad(f_dense, argnums=(0, 1))(x, jnp.array(weight))
+    w_arr = jnp.array(weight)
+    out1, (vjp_x1, vjp_w1) = jax.value_and_grad(f_fn, argnums=(0, 1))(x, w_arr)
+    out2, (vjp_x2, vjp_w2) = jax.value_and_grad(f_dense, argnums=(0, 1))(x, w_arr)
     assert jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4)
     assert jnp.allclose(vjp_x1, vjp_x2, rtol=1e-4, atol=1e-4)
     assert jnp.allclose(vjp_w1, vjp_w2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((x, dense, w_arr, out1, vjp_x1, vjp_w1, out2, vjp_x2, vjp_w2))
 
 
 # ---- Gradient JVP: jitsmm ----
@@ -178,10 +190,14 @@ def test_jitsmm_jvp(implementation, k, shape, corder, transpose):
     def f_dense(X, w):
         return (dense * w @ X).sum()
 
-    out1, jvp1 = jax.jvp(f_fn, (X, jnp.array(weight)), (jnp.ones_like(X), jnp.array(1.0)))
-    out2, jvp2 = jax.jvp(f_dense, (X, jnp.array(weight)), (jnp.ones_like(X), jnp.array(1.0)))
+    w_arr = jnp.array(weight)
+    t_X = jnp.ones_like(X)
+    t_w = jnp.array(1.0)
+    out1, jvp1 = jax.jvp(f_fn, (X, w_arr), (t_X, t_w))
+    out2, jvp2 = jax.jvp(f_dense, (X, w_arr), (t_X, t_w))
     assert jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4)
     assert jnp.allclose(jvp1, jvp2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((X, dense, w_arr, t_X, t_w, out1, jvp1, out2, jvp2))
 
 
 # ---- Gradient VJP: jitsmm ----
@@ -203,11 +219,13 @@ def test_jitsmm_vjp(implementation, k, shape, corder, transpose):
     def f_dense(X, w):
         return (dense * w @ X).sum()
 
-    out1, (vjp_x1, vjp_w1) = jax.value_and_grad(f_fn, argnums=(0, 1))(X, jnp.array(weight))
-    out2, (vjp_x2, vjp_w2) = jax.value_and_grad(f_dense, argnums=(0, 1))(X, jnp.array(weight))
+    w_arr = jnp.array(weight)
+    out1, (vjp_x1, vjp_w1) = jax.value_and_grad(f_fn, argnums=(0, 1))(X, w_arr)
+    out2, (vjp_x2, vjp_w2) = jax.value_and_grad(f_dense, argnums=(0, 1))(X, w_arr)
     assert jnp.allclose(out1, out2, rtol=1e-4, atol=1e-4)
     assert jnp.allclose(vjp_x1, vjp_x2, rtol=1e-4, atol=1e-4)
     assert jnp.allclose(vjp_w1, vjp_w2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((X, dense, w_arr, out1, vjp_x1, vjp_w1, out2, vjp_x2, vjp_w2))
 
 
 # ---- Batching: jitsmv over vectors ----
@@ -230,6 +248,7 @@ def test_jitsmv_vmap_over_vectors(implementation, batch_size, shape, corder):
     assert results_loop.shape == (batch_size, shape[0])
 
     assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((vectors, results, results_loop))
 
 
 # ---- Batching: jitsmv over vectors (transpose) ----
@@ -252,6 +271,7 @@ def test_jitsmv_transpose_vmap_over_vectors(implementation, batch_size, shape, c
     assert results_loop.shape == (batch_size, shape[1])
 
     assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((vectors, results, results_loop))
 
 
 # ---- Batching: jitsmv over weight ----
@@ -275,6 +295,7 @@ def test_jitsmv_vmap_over_weight(implementation, batch_size, shape, corder):
     assert results_loop.shape == (batch_size, shape[0])
 
     assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((weights, vector, results, results_loop))
 
 
 # ---- Batching: jitsmm over matrices ----
@@ -298,6 +319,7 @@ def test_jitsmm_vmap_over_matrices(implementation, batch_size, k, shape, corder)
     assert outs_loop.shape == (batch_size, shape[0], k)
 
     assert jnp.allclose(outs, outs_loop, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((matrices, outs, outs_loop))
 
 
 # ---- Batching: jitsmm over matrices (transpose) ----
@@ -321,6 +343,7 @@ def test_jitsmm_transpose_vmap_over_matrices(implementation, batch_size, k, shap
     assert outs_loop.shape == (batch_size, shape[1], k)
 
     assert jnp.allclose(outs, outs_loop, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((matrices, outs, outs_loop))
 
 
 # ---- Batching: jitsmm over weight ----
@@ -345,6 +368,7 @@ def test_jitsmm_vmap_over_weight(implementation, batch_size, k, shape, corder):
     assert results_loop.shape == (batch_size, shape[0], k)
 
     assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((weights, matrix, results, results_loop))
 
 
 # ---- Batching: jits over weight ----
@@ -365,6 +389,7 @@ def test_jits_vmap_over_weight(implementation, shape):
     assert results_loop.shape == (10,) + shape
 
     assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((weights, results, results_loop))
 
 
 # ---- Batching: jits over prob ----
@@ -385,6 +410,7 @@ def test_jits_vmap_over_prob(implementation, shape):
     assert results_loop.shape == (10,) + shape
 
     assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((probs, results, results_loop))
 
 
 # ---- Batching: jits over seed ----
@@ -405,3 +431,4 @@ def test_jits_vmap_over_seed(implementation, shape):
     assert results_loop.shape == (10,) + shape
 
     assert jnp.allclose(results, results_loop, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((seeds, results, results_loop))

@@ -46,6 +46,7 @@ class TestVectorCOO:
         y = coomv(data, row, col, x, shape=(m, n), transpose=True, backend=implementation)
         y2 = vector_coo(x, data, row, col, (m, n))
         assert jnp.allclose(y, y2, rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((x, row, col, y, y2))
 
     @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
     @pytest.mark.parametrize('replace', [True, False])
@@ -59,6 +60,7 @@ class TestVectorCOO:
         y = coomv(data, row, col, v, shape=(m, n), transpose=False, backend=implementation)
         y2 = coo_vector(v, data, row, col, (m, n))
         assert jnp.allclose(y, y2, rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((v, row, col, y, y2))
 
     @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
     @pytest.mark.parametrize('replace', [True, False])
@@ -75,6 +77,7 @@ class TestVectorCOO:
         y2 = jax.vmap(lambda x: vector_coo(x, data, row, col, (m, n)))(xs)
 
         assert jnp.allclose(y, y2, rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((xs, row, col, y, y2))
 
     def _test_vjp(self, implementation, homo_w, replace, transpose):
         n_in = 20
@@ -104,6 +107,7 @@ class TestVectorCOO:
         r2 = jax.grad(f_jax, argnums=(0, 1))(x, w)
         assert jnp.allclose(r[0], r2[0], rtol=1e-3, atol=1e-3)
         assert jnp.allclose(r[1], r2[1], rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((x, row, col, r, r2))
 
     @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -145,6 +149,7 @@ class TestVectorCOO:
         o2, r2 = jax.jvp(f_jax, (x, w), (jnp.ones_like(x), jnp.ones_like(w)))
         assert jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3)
         assert jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((x, row, col, o1, r1, o2, r2))
 
     @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -171,6 +176,7 @@ class TestMatrixCOO:
         y = coomm(data, row, col, x.T, shape=(m, n), transpose=True, backend=implementation).T
         y2 = matrix_coo(x, data, row, col, (m, n))
         assert jnp.allclose(y, y2, rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((x, row, col, y, y2))
 
     @pytest.mark.parametrize('implementation', COOMM_IMPLEMENTATIONS)
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -183,3 +189,4 @@ class TestMatrixCOO:
         y = coomm(data, row, col, x, shape=(m, n), transpose=False, backend=implementation)
         y2 = coo_matrix(x, data, row, col, (m, n))
         assert jnp.allclose(y, y2, rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((x, row, col, y, y2))

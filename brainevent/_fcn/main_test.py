@@ -92,6 +92,7 @@ class Test_To_Dense:
         assert allclose(out1, out2)
         assert allclose(out1, out3)
         assert allclose(out1, out4)
+        jax.block_until_ready((x, indices, out1, out2, out3, out4))
 
 
 class Test_To_COO:
@@ -105,6 +106,7 @@ class Test_To_COO:
         pre_data = jnp.array([[1., 9., 2., 3.], [4., 5., 6., 7.], [8., 9., 10., 11.]], dtype=jnp.float32)
         pre = brainevent.FixedPreNumConn((pre_data, pre_indices), shape=(4, 3))
         assert allclose(pre.tocoo().todense(), pre.todense())
+        jax.block_until_ready((post_indices, post_data, pre_indices, pre_data))
 
 
 class Test_Illegal_Slots:
@@ -113,17 +115,20 @@ class Test_Illegal_Slots:
         data = jnp.array([[1., 9., 2., 3.], [4., 5., 6., 7.], [8., 9., 10., 11.]], dtype=jnp.float32)
         with pytest.raises(ValueError, match="invalid indices"):
             brainevent.FixedPostNumConn((data, idx), shape=(3, 4))
+        jax.block_until_ready((idx, data))
 
     def test_invalid_indices_rejected_pre(self):
         idx = jnp.array([[0, -1, 2, 2], [1, 4, 3, 1], [2, 0, -3, 1]], dtype=jnp.int32)
         data = jnp.array([[1., 9., 2., 3.], [4., 5., 6., 7.], [8., 9., 10., 11.]], dtype=jnp.float32)
         with pytest.raises(ValueError, match="invalid indices"):
             brainevent.FixedPreNumConn((data, idx), shape=(4, 3))
+        jax.block_until_ready((idx, data))
 
     def test_invalid_indices_rejected_homo(self):
         idx = jnp.array([[0, -1, 2], [1, 5, 1]], dtype=jnp.int32)
         with pytest.raises(ValueError, match="invalid indices"):
             brainevent.FixedPostNumConn((jnp.array(1.5, dtype=jnp.float32), idx), shape=(2, 4))
+        jax.block_until_ready((idx,))
 
     def test_duplicates_are_supported_post(self):
         idx = jnp.array([[0, 1, 2, 2], [1, 3, 3, 1], [2, 0, 3, 1]], dtype=jnp.int32)
@@ -140,6 +145,7 @@ class Test_Illegal_Slots:
         assert allclose(conn @ v, dense @ v)
         assert allclose(X @ conn, X @ dense)
         assert allclose(conn @ V, dense @ V)
+        jax.block_until_ready((idx, data, dense, x, v, X, V))
 
     def test_duplicates_are_supported_pre(self):
         idx = jnp.array([[0, 1, 2, 2], [1, 3, 3, 1], [2, 0, 3, 1]], dtype=jnp.int32)
@@ -156,6 +162,7 @@ class Test_Illegal_Slots:
         assert allclose(conn @ v, dense @ v)
         assert allclose(X @ conn, X @ dense)
         assert allclose(conn @ V, dense @ V)
+        jax.block_until_ready((idx, data, dense, x, v, X, V))
 
     def test_homo_weight_with_duplicates(self):
         idx = jnp.array([[0, 1, 2], [1, 3, 1]], dtype=jnp.int32)
@@ -166,6 +173,7 @@ class Test_Illegal_Slots:
 
         assert allclose(x @ conn, x @ dense)
         assert allclose(conn @ v, dense @ v)
+        jax.block_until_ready((idx, dense, x, v))
 
 
 class Test_Operator_Behavior:
@@ -186,6 +194,7 @@ class Test_Operator_Behavior:
         assert allclose(conn @ right_vector, dense @ _binary_mask(right_vector.value, dense.dtype))
         assert allclose(left_matrix @ conn, _binary_mask(left_matrix.value, dense.dtype) @ dense)
         assert allclose(conn @ right_matrix, dense @ _binary_mask(right_matrix.value, dense.dtype))
+        jax.block_until_ready((idx, data, dense, left_vector.value, right_vector.value, left_matrix.value, right_matrix.value))
 
     def test_fixed_pre_binary_array_operator_behavior(self):
         idx = jnp.array([[0, 1, 2, 2], [1, 3, 3, 1], [2, 0, 3, 1]], dtype=jnp.int32)
@@ -204,6 +213,7 @@ class Test_Operator_Behavior:
         assert allclose(conn @ right_vector, dense @ _binary_mask(right_vector.value, dense.dtype))
         assert allclose(left_matrix @ conn, _binary_mask(left_matrix.value, dense.dtype) @ dense)
         assert allclose(conn @ right_matrix, dense @ _binary_mask(right_matrix.value, dense.dtype))
+        jax.block_until_ready((idx, data, dense, left_vector.value, right_vector.value, left_matrix.value, right_matrix.value))
 
     def test_fixed_post_sparse_float_operator_behavior(self):
         idx = jnp.array([[0, 1, 2, 2], [1, 3, 3, 1], [2, 0, 3, 1]], dtype=jnp.int32)
@@ -224,6 +234,7 @@ class Test_Operator_Behavior:
         assert allclose(conn @ right_vector, dense @ right_vector.value)
         assert allclose(left_matrix @ conn, left_matrix.value @ dense)
         assert allclose(conn @ right_matrix, dense @ right_matrix.value)
+        jax.block_until_ready((idx, data, dense, left_vector.value, right_vector.value, left_matrix.value, right_matrix.value))
 
     def test_fixed_pre_sparse_float_operator_behavior(self):
         idx = jnp.array([[0, 1, 2, 2], [1, 3, 3, 1], [2, 0, 3, 1]], dtype=jnp.int32)
@@ -244,6 +255,7 @@ class Test_Operator_Behavior:
         assert allclose(conn @ right_vector, dense @ right_vector.value)
         assert allclose(left_matrix @ conn, left_matrix.value @ dense)
         assert allclose(conn @ right_matrix, dense @ right_matrix.value)
+        jax.block_until_ready((idx, data, dense, left_vector.value, right_vector.value, left_matrix.value, right_matrix.value))
 
 
 class TestVector:
@@ -271,6 +283,7 @@ class TestVector:
             assert allclose(y1, y_true, rtol=1e-3, atol=1e-3)
             assert allclose(y2, y_true, rtol=1e-3, atol=1e-3)
             assert allclose(y3, y_true, rtol=1e-3, atol=1e-3)
+            jax.block_until_ready((x, indices, y1, y2, y3, y_true))
 
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -286,6 +299,7 @@ class TestVector:
             y_true = fcn_vector(v, conn.data, indices, (m, n))
             assert allclose(y1, y_true, rtol=1e-3, atol=1e-3)
             assert allclose(y2, y_true, rtol=1e-3, atol=1e-3)
+            jax.block_until_ready((v, indices, y1, y2, y_true))
 
     def _test_vjp(self, homo_w, replace, transpose, shape):
         n_in, n_out = shape
@@ -314,6 +328,7 @@ class TestVector:
 
             assert allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
             assert allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
+            jax.block_until_ready((x, indices, r1[0], r1[1], r2[0], r2[1]))
 
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -361,6 +376,7 @@ class TestVector:
 
             assert allclose(r1, r2, rtol=1e-3, atol=1e-3)
             assert allclose(o1, o2, rtol=1e-3, atol=1e-3)
+            jax.block_until_ready((x, indices, o1, r1, o2, r2))
 
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -410,6 +426,7 @@ class TestVector:
             y1, y2, y_true = f_compare_conn_vector(data, x)
             assert allclose(y1, y_true, rtol=1e-3, atol=1e-3)
             assert allclose(y2, y_true, rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((indices, data, y1, y2, y_true))
 
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -448,6 +465,7 @@ class TestVector:
             y1, y2, y_true = f_compare_conn_vector(xs)
             assert allclose(y1, y_true, rtol=1e-3, atol=1e-3)
             assert allclose(y2, y_true, rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((indices, y1, y2, y_true))
 
 
 class TestMatrix:
@@ -472,6 +490,7 @@ class TestMatrix:
             y_true = matrix_fcn(x, conn.data, indices, (m, n))
             assert allclose(y1, y_true, rtol=1e-3, atol=1e-3)
             assert allclose(y2, y_true, rtol=1e-3, atol=1e-3)
+            jax.block_until_ready((x, indices, y1, y2, y_true))
 
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -488,6 +507,7 @@ class TestMatrix:
             y_true = fcn_matrix(matrix, conn.data, indices, (m, n))
             assert allclose(y1, y_true, rtol=1e-3, atol=1e-3)
             assert allclose(y2, y_true, rtol=1e-3, atol=1e-3)
+            jax.block_until_ready((matrix, indices, y1, y2, y_true))
 
     def _test_vjp(self, homo_w, replace, transpose, shape, k):
         n_in, n_out = shape
@@ -516,6 +536,7 @@ class TestMatrix:
 
             assert allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
             assert allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
+            jax.block_until_ready((x, indices, r1[0], r1[1], r2[0], r2[1]))
 
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -560,6 +581,7 @@ class TestMatrix:
 
             assert allclose(r1, r2, rtol=1e-3, atol=1e-3)
             assert allclose(o1, o2, rtol=1e-3, atol=1e-3)
+            jax.block_until_ready((x, indices, o1, r1, o2, r2))
 
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -611,6 +633,7 @@ class TestMatrix:
             y1, y2, y_true = f_compare_conn_vector(data, x)
             assert allclose(y1, y_true, rtol=1e-3, atol=1e-3)
             assert allclose(y2, y_true, rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((indices, data, y1, y2, y_true))
 
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -663,3 +686,4 @@ class TestMatrix:
             y1, y2, y_true = f_compare_conn_vector(xs)
             assert allclose(y1, y_true, rtol=1e-3, atol=1e-3)
             assert allclose(y2, y_true, rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((indices, xs, y1, y2, y_true))

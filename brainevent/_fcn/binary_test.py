@@ -124,6 +124,7 @@ def test_binary_fcnmv_forward_matches_reference(implementation, replace, homo_w,
     )()
     y_ref = _mv_reference(weights, indices, events, shape, transpose)
     assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
+    jax.block_until_ready((indices, weights, events, y, y_ref))
 
 
 @pytest.mark.parametrize('implementation', FCNMM_PARAMS)
@@ -157,6 +158,7 @@ def test_binary_fcnmm_forward_matches_reference(implementation, replace, homo_w,
     )()
     y_ref = _mm_reference(weights, indices, matrix, shape, transpose)
     assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
+    jax.block_until_ready((indices, weights, matrix, y, y_ref))
 
 
 @pytest.mark.parametrize('implementation', FCNMM_PARAMS)
@@ -197,3 +199,4 @@ def test_binary_fcnmm_thresholds_float_events(implementation, homo_w, shape, k, 
         )
     )()
     assert jnp.allclose(y_float, y_binary, rtol=1e-3, atol=1e-3)
+    jax.block_until_ready((indices, weights, float_events, binary_events, y_float, y_binary))

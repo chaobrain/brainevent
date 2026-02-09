@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# ============================================================================== 
+# ==============================================================================
 
 from contextlib import contextmanager
 
@@ -70,6 +70,7 @@ class TestDSFMV:
         result = dsfmv(weights, spikes, backend=implementation)
         expected = weights @ _as_float(spikes)
         assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
+        jax.block_until_ready((weights, spikes, result, expected))
 
     def test_grad_weights(self, implementation):
         m, k = 12, 16
@@ -85,6 +86,7 @@ class TestDSFMV:
         grad_test = jax.grad(f_test)(weights)
         grad_ref = jax.grad(f_ref)(weights)
         assert u.math.allclose(grad_test, grad_ref, atol=1e-3, rtol=1e-3)
+        jax.block_until_ready((weights, spikes, grad_test, grad_ref))
 
     def test_vmap_spikes(self, implementation):
         b, m, k = 5, 12, 16
@@ -94,6 +96,7 @@ class TestDSFMV:
         result = jax.vmap(lambda s: dsfmv(weights, s, backend=implementation))(spikes)
         expected = jax.vmap(lambda s: weights @ s)(spikes)
         assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
+        jax.block_until_ready((weights, spikes, result, expected))
 
 
 @pytest.mark.skipif(
@@ -114,6 +117,7 @@ class TestSFDVM:
             result = sfdvm(spikes, weights)
         expected = _as_float(spikes) @ weights
         assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
+        jax.block_until_ready((spikes, weights, result, expected))
 
     def test_grad_weights(self, implementation):
         k, n = 16, 20
@@ -127,6 +131,7 @@ class TestSFDVM:
             grad_test = jax.grad(lambda w: sfdvm(spikes, w).sum())(weights)
         grad_ref = jax.grad(f_ref)(weights)
         assert u.math.allclose(grad_test, grad_ref, atol=1e-3, rtol=1e-3)
+        jax.block_until_ready((spikes, weights, grad_test, grad_ref))
 
     def test_vmap_spikes(self, implementation):
         b, k, n = 5, 16, 20
@@ -137,6 +142,7 @@ class TestSFDVM:
             result = jax.vmap(lambda s: sfdvm(s, weights))(spikes)
         expected = jax.vmap(lambda s: s @ weights)(spikes)
         assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
+        jax.block_until_ready((spikes, weights, result, expected))
 
 
 @pytest.mark.skipif(
@@ -157,6 +163,7 @@ class TestDSFMM:
             result = dsfmm(weights, spikes)
         expected = weights @ _as_float(spikes)
         assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
+        jax.block_until_ready((weights, spikes, result, expected))
 
     def test_grad_weights(self, implementation):
         m, k, n = 12, 16, 10
@@ -170,6 +177,7 @@ class TestDSFMM:
             grad_test = jax.grad(lambda w: dsfmm(w, spikes).sum())(weights)
         grad_ref = jax.grad(f_ref)(weights)
         assert u.math.allclose(grad_test, grad_ref, atol=1e-3, rtol=1e-3)
+        jax.block_until_ready((weights, spikes, grad_test, grad_ref))
 
     def test_vmap_spikes(self, implementation):
         b, m, k, n = 4, 12, 16, 10
@@ -180,6 +188,7 @@ class TestDSFMM:
             result = jax.vmap(lambda s: dsfmm(weights, s))(spikes)
         expected = jax.vmap(lambda s: weights @ s)(spikes)
         assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
+        jax.block_until_ready((weights, spikes, result, expected))
 
 
 @pytest.mark.skipif(
@@ -200,6 +209,7 @@ class TestSFDMM:
             result = sfdmm(spikes, weights)
         expected = _as_float(spikes) @ weights
         assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
+        jax.block_until_ready((spikes, weights, result, expected))
 
     def test_grad_weights(self, implementation):
         m, k, n = 12, 16, 10
@@ -213,6 +223,7 @@ class TestSFDMM:
             grad_test = jax.grad(lambda w: sfdmm(spikes, w).sum())(weights)
         grad_ref = jax.grad(f_ref)(weights)
         assert u.math.allclose(grad_test, grad_ref, atol=1e-3, rtol=1e-3)
+        jax.block_until_ready((spikes, weights, grad_test, grad_ref))
 
     def test_vmap_spikes(self, implementation):
         b, m, k, n = 4, 12, 16, 10
@@ -223,3 +234,4 @@ class TestSFDMM:
             result = jax.vmap(lambda s: sfdmm(s, weights))(spikes)
         expected = jax.vmap(lambda s: s @ weights)(spikes)
         assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
+        jax.block_until_ready((spikes, weights, result, expected))

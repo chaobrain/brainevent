@@ -56,6 +56,7 @@ class TestKeyProperty:
         key = rng.key
         for elem in key:
             assert isinstance(elem, jax.Array)
+        jax.block_until_ready(key)
 
     def test_key_elements_are_uint32(self):
         """Test that all key elements have dtype uint32."""
@@ -63,6 +64,7 @@ class TestKeyProperty:
         key = rng.key
         for elem in key:
             assert elem.dtype == jnp.uint32
+        jax.block_until_ready(key)
 
     def test_key_setter_valid_input(self):
         """Test that key setter accepts valid input."""
@@ -75,6 +77,7 @@ class TestKeyProperty:
         )
         rng.key = new_key
         assert rng.key == new_key
+        jax.block_until_ready(new_key)
 
     def test_key_setter_invalid_length(self):
         """Test that key setter rejects tuples with wrong length."""
@@ -86,6 +89,7 @@ class TestKeyProperty:
         )
         with pytest.raises(TypeError, match="Key must be a tuple of length 4"):
             rng.key = invalid_key
+        jax.block_until_ready(invalid_key)
 
     def test_key_setter_invalid_type(self):
         """Test that key setter rejects non-tuple input."""
@@ -93,6 +97,7 @@ class TestKeyProperty:
         invalid_key = jnp.array([1, 2, 3, 4], dtype=jnp.uint32)
         with pytest.raises(TypeError, match="Key must be a tuple of length 4"):
             rng.key = invalid_key
+        jax.block_until_ready((invalid_key,))
 
     def test_key_setter_invalid_element_type(self):
         """Test that key setter rejects non-array elements."""
@@ -112,6 +117,7 @@ class TestKeyProperty:
         )
         with pytest.raises(ValueError, match="Key element 0 must be of type jnp.uint32"):
             rng.key = invalid_key
+        jax.block_until_ready(invalid_key)
 
 
 class TestTreeUtilities:
@@ -194,13 +200,17 @@ class TestLFSR88RNG:
         value = rng.rand()
         assert isinstance(value, jax.Array)
         assert value.dtype == jnp.float32 or value.dtype == jnp.float64
+        jax.block_until_ready((value,))
 
     def test_rand_in_range(self):
         """Test that rand() returns values in [0, 1)."""
         rng = PallasLFSR88RNG(seed=42)
+        values = []
         for _ in range(100):
             value = rng.rand()
             assert 0.0 <= value < 1.0, f"Value {value} not in [0, 1)"
+            values.append(value)
+        jax.block_until_ready(tuple(values))
 
     def test_rand_updates_state(self):
         """Test that rand() updates the internal state."""
@@ -219,6 +229,7 @@ class TestLFSR88RNG:
             val1 = rng1.rand()
             val2 = rng2.rand()
             assert val1 == val2
+        jax.block_until_ready((val1, val2))
 
     def test_randint_returns_uint32(self):
         """Test that randint() returns uint32."""
@@ -226,15 +237,19 @@ class TestLFSR88RNG:
         value = rng.randint()
         assert isinstance(value, jax.Array)
         assert value.dtype == jnp.uint32
+        jax.block_until_ready((value,))
 
     def test_randint_in_range(self):
         """Test that randint() returns values in valid uint32 range."""
         rng = PallasLFSR88RNG(seed=42)
+        values = []
         for _ in range(100):
             value = rng.randint()
             # Convert to Python int for comparison to avoid JAX overflow
             value_int = int(value)
             assert 0 <= value_int <= 2 ** 32 - 1
+            values.append(value)
+        jax.block_until_ready(tuple(values))
 
     def test_randint_updates_state(self):
         """Test that randint() updates the internal state."""
@@ -253,6 +268,7 @@ class TestLFSR88RNG:
             val1 = rng1.randint()
             val2 = rng2.randint()
             assert val1 == val2
+        jax.block_until_ready((val1, val2))
 
     def test_randn_returns_float(self):
         """Test that randn() returns a float."""
@@ -260,6 +276,7 @@ class TestLFSR88RNG:
         value = rng.randn()
         assert isinstance(value, jax.Array)
         assert value.dtype == jnp.float32 or value.dtype == jnp.float64
+        jax.block_until_ready((value,))
 
     def test_randn_updates_state(self):
         """Test that randn() updates the internal state twice (uses 2 random numbers)."""
@@ -278,60 +295,70 @@ class TestLFSR88RNG:
             val1 = rng1.randn()
             val2 = rng2.randn()
             assert val1 == val2
+        jax.block_until_ready((val1, val2))
 
     def test_uniform_basic(self):
         """Test that uniform() works with basic range."""
         rng = PallasLFSR88RNG(seed=42)
         value = rng.uniform(5.0, 10.0)
         assert 5.0 <= value < 10.0
+        jax.block_until_ready((value,))
 
     def test_uniform_negative_range(self):
         """Test that uniform() works with negative range."""
         rng = PallasLFSR88RNG(seed=42)
         value = rng.uniform(-10.0, -5.0)
         assert -10.0 <= value < -5.0
+        jax.block_until_ready((value,))
 
     def test_uniform_zero_width(self):
         """Test that uniform() handles zero width range."""
         rng = PallasLFSR88RNG(seed=42)
         value = rng.uniform(5.0, 5.0)
         assert value == 5.0
+        jax.block_until_ready((value,))
 
     def test_normal_basic(self):
         """Test that normal() works with basic parameters."""
         rng = PallasLFSR88RNG(seed=42)
         value = rng.normal(0.0, 1.0)
         assert isinstance(value, jax.Array)
+        jax.block_until_ready((value,))
 
     def test_normal_custom_mean_std(self):
         """Test that normal() works with custom mean and std."""
         rng = PallasLFSR88RNG(seed=42)
         value = rng.normal(100.0, 15.0)
         assert isinstance(value, jax.Array)
+        jax.block_until_ready((value,))
 
     def test_normal_zero_std(self):
         """Test that normal() with zero std returns mean."""
         rng = PallasLFSR88RNG(seed=42)
         value = rng.normal(5.0, 0.0)
         assert value == 5.0
+        jax.block_until_ready((value,))
 
     def test_random_integers_basic(self):
         """Test that random_integers() works with basic range."""
         rng = PallasLFSR88RNG(seed=42)
         value = rng.random_integers(1, 6)
         assert 1 <= value <= 6
+        jax.block_until_ready((value,))
 
     def test_random_integers_coin_flip(self):
         """Test that random_integers() works for coin flip."""
         rng = PallasLFSR88RNG(seed=42)
         value = rng.random_integers(0, 1)
         assert value == 0 or value == 1
+        jax.block_until_ready((value,))
 
     def test_random_integers_large_range(self):
         """Test that random_integers() works with large range."""
         rng = PallasLFSR88RNG(seed=42)
         value = rng.random_integers(0, 1000)
         assert 0 <= value <= 1000
+        jax.block_until_ready((value,))
 
     def test_statistical_uniform_distribution(self):
         """Test that rand() produces values with correct statistical properties."""
@@ -396,23 +423,30 @@ class TestLFSR113RNG:
     def test_rand_in_range(self):
         """Test that rand() returns values in [0, 1)."""
         rng = PallasLFSR113RNG(seed=42)
+        values = []
         for _ in range(100):
             value = rng.rand()
             assert 0.0 <= value < 1.0
+            values.append(value)
+        jax.block_until_ready(tuple(values))
 
     def test_rand_in_range(self):
         """Test that randint() returns valid values."""
         rng = PallasLFSR113RNG(seed=42)
+        values = []
         for _ in range(100):
             value = rng.randint()
             value_int = int(value)
             assert 0 <= value_int <= 2 ** 32 - 1
+            values.append(value)
+        jax.block_until_ready(tuple(values))
 
     def test_randn_returns_float(self):
         """Test that randn() returns a float."""
         rng = PallasLFSR113RNG(seed=42)
         value = rng.randn()
         assert isinstance(value, jax.Array)
+        jax.block_until_ready((value,))
 
     def test_deterministic(self):
         """Test that LFSR113 is deterministic with same seed."""
@@ -423,6 +457,7 @@ class TestLFSR113RNG:
             val1 = rng1.rand()
             val2 = rng2.rand()
             assert val1 == val2
+        jax.block_until_ready((val1, val2))
 
     def test_different_from_lfsr88(self):
         """Test that LFSR113 produces different values than LFSR88."""
@@ -433,6 +468,7 @@ class TestLFSR113RNG:
         val113 = rng113.rand()
 
         assert val88 != val113
+        jax.block_until_ready((val88, val113))
 
     def test_statistical_uniform_distribution(self):
         """Test that rand() produces correct statistical properties."""
@@ -467,23 +503,30 @@ class TestLFSR128RNG:
     def test_rand_in_range(self):
         """Test that rand() returns values in [0, 1)."""
         rng = PallasLFSR128RNG(seed=42)
+        values = []
         for _ in range(100):
             value = rng.rand()
             assert 0.0 <= value < 1.0
+            values.append(value)
+        jax.block_until_ready(tuple(values))
 
     def test_randint_in_range(self):
         """Test that randint() returns valid values."""
         rng = PallasLFSR128RNG(seed=42)
+        values = []
         for _ in range(100):
             value = rng.randint()
             value_int = int(value)
             assert 0 <= value_int <= 2 ** 32 - 1
+            values.append(value)
+        jax.block_until_ready(tuple(values))
 
     def test_randn_returns_float(self):
         """Test that randn() returns a float."""
         rng = PallasLFSR128RNG(seed=42)
         value = rng.randn()
         assert isinstance(value, jax.Array)
+        jax.block_until_ready((value,))
 
     def test_deterministic(self):
         """Test that LFSR128 is deterministic with same seed."""
@@ -494,6 +537,7 @@ class TestLFSR128RNG:
             val1 = rng1.rand()
             val2 = rng2.rand()
             assert val1 == val2
+        jax.block_until_ready((val1, val2))
 
     def test_different_from_other_implementations(self):
         """Test that LFSR128 produces different values than LFSR88 and LFSR113."""
@@ -509,6 +553,7 @@ class TestLFSR128RNG:
         assert val88 != val113
         assert val88 != val128
         assert val113 != val128
+        jax.block_until_ready((val88, val113, val128))
 
     def test_statistical_uniform_distribution(self):
         """Test that rand() produces correct statistical properties."""
@@ -541,19 +586,25 @@ class TestCrossImplementationComparison:
         rngs = [PallasLFSR88RNG(seed=42), PallasLFSR113RNG(seed=42), PallasLFSR128RNG(seed=42)]
 
         for rng in rngs:
+            values = []
             for _ in range(100):
                 value = rng.rand()
                 assert 0.0 <= value < 1.0
+                values.append(value)
+            jax.block_until_ready(tuple(values))
 
     def test_all_implementations_produce_valid_integers(self):
         """Test that all implementations produce valid uint32 integers."""
         rngs = [PallasLFSR88RNG(seed=42), PallasLFSR113RNG(seed=42), PallasLFSR128RNG(seed=42)]
 
         for rng in rngs:
+            values = []
             for _ in range(100):
                 value = rng.randint()
                 value_int = int(value)
                 assert 0 <= value_int <= 2 ** 32 - 1
+                values.append(value)
+            jax.block_until_ready(tuple(values))
 
     def test_all_implementations_deterministic(self):
         """Test that all implementations are deterministic."""
@@ -565,6 +616,7 @@ class TestCrossImplementationComparison:
                 val1 = rng1.rand()
                 val2 = rng2.rand()
                 assert val1 == val2
+            jax.block_until_ready((val1, val2))
 
     def test_all_implementations_have_good_uniform_stats(self):
         """Test that all implementations have good statistical properties."""
@@ -587,6 +639,7 @@ class TestEdgeCases:
         rng = PallasLFSR88RNG(seed=2 ** 31 - 1)
         value = rng.rand()
         assert 0.0 <= value < 1.0
+        jax.block_until_ready((value,))
 
     def test_negative_seed(self):
         """Test that negative seed values work correctly."""
@@ -599,12 +652,14 @@ class TestEdgeCases:
         rng = PallasLFSR88RNG(seed=0)
         value = rng.rand()
         assert 0.0 <= value < 1.0
+        jax.block_until_ready((value,))
 
     def test_uniform_with_negative_low(self):
         """Test uniform with negative lower bound."""
         rng = PallasLFSR88RNG(seed=42)
         value = rng.uniform(-5.0, 5.0)
         assert -5.0 <= value < 5.0
+        jax.block_until_ready((value,))
 
     def test_uniform_with_high_greater_than_low(self):
         """Test uniform ensures high > low."""
@@ -612,18 +667,21 @@ class TestEdgeCases:
         # This should still work, but might produce negative values
         value = rng.uniform(10.0, 5.0)
         # Just verify it doesn't crash
+        jax.block_until_ready((value,))
 
     def test_random_integers_same_bounds(self):
         """Test random_integers with same low and high."""
         rng = PallasLFSR88RNG(seed=42)
         value = rng.random_integers(5, 5)
         assert value == 5
+        jax.block_until_ready((value,))
 
     def test_random_integers_zero_to_zero(self):
         """Test random_integers with 0 to 0."""
         rng = PallasLFSR88RNG(seed=42)
         value = rng.random_integers(0, 0)
         assert value == 0
+        jax.block_until_ready((value,))
 
     def test_normal_with_negative_std(self):
         """Test normal with negative standard deviation."""
@@ -631,6 +689,7 @@ class TestEdgeCases:
         # Negative std should still work (absolute value used internally)
         value = rng.normal(0.0, -1.0)
         assert isinstance(value, jax.Array)
+        jax.block_until_ready((value,))
 
     def test_epsilon_parameter_effect(self):
         """Test that epsilon parameter affects randn."""
@@ -639,6 +698,7 @@ class TestEdgeCases:
         rng = PallasLFSR88RNG(seed=42)
         value = rng.randn(epsilon=1e-10)
         assert isinstance(value, jax.Array)
+        jax.block_until_ready((value,))
 
 
 class TestSequenceProperties:
@@ -652,6 +712,7 @@ class TestSequenceProperties:
         consecutive_duplicates = sum(1 for i in range(len(samples) - 1) if samples[i] == samples[i + 1])
         # Should have very few or no consecutive duplicates
         assert consecutive_duplicates < 5, f"Too many consecutive duplicates: {consecutive_duplicates}"
+        jax.block_until_ready(tuple(samples))
 
     def test_no_consecutive_duplicates_lfsr113(self):
         """Test that LFSR113 doesn't produce many consecutive duplicates."""
@@ -660,6 +721,7 @@ class TestSequenceProperties:
 
         consecutive_duplicates = sum(1 for i in range(len(samples) - 1) if samples[i] == samples[i + 1])
         assert consecutive_duplicates < 5, f"Too many consecutive duplicates: {consecutive_duplicates}"
+        jax.block_until_ready(tuple(samples))
 
     def test_no_consecutive_duplicates_lfsr128(self):
         """Test that LFSR128 doesn't produce many consecutive duplicates."""
@@ -668,6 +730,7 @@ class TestSequenceProperties:
 
         consecutive_duplicates = sum(1 for i in range(len(samples) - 1) if samples[i] == samples[i + 1])
         assert consecutive_duplicates < 5, f"Too many consecutive duplicates: {consecutive_duplicates}"
+        jax.block_until_ready(tuple(samples))
 
     def test_sequence_diversity_lfsr88(self):
         """Test that LFSR88 produces diverse sequences."""
@@ -708,6 +771,7 @@ class TestJAXIntegration:
 
         result = generate_random(42)
         assert 0.0 <= result < 1.0
+        jax.block_until_ready((result,))
 
     def test_jit_compilation_lfsr113(self):
         """Test that LFSR113 can be JIT compiled."""
@@ -719,6 +783,7 @@ class TestJAXIntegration:
 
         result = generate_random(42)
         assert 0.0 <= result < 1.0
+        jax.block_until_ready((result,))
 
     def test_jit_compilation_lfsr128(self):
         """Test that LFSR128 can be JIT compiled."""
