@@ -254,7 +254,7 @@ def _csrmv_pallas_kernel_generator(
             # csr: [k, m]
             # B: [k]
             #
-            def mm(
+            def mm_transpose_scalar_single(
                 data_ref,  # [1]
                 indices_ref,  # [nse]
                 indptr_ref,  # [k + 1]
@@ -263,12 +263,15 @@ def _csrmv_pallas_kernel_generator(
                 posts_ref,  # [m]
             ):
                 i_col = pl.program_id(0)
+
                 col_start = indptr_ref[i_col]
                 col_end = indptr_ref[i_col + 1]
                 col_nnz = col_end - col_start
                 num_blocks = (col_nnz + block_dim - 1) // block_dim
+
                 val_vector = vector_ref[i_col]
                 data = data_ref[0] * val_vector
+
                 data_block = jnp.ones((block_dim,), dtype=posts_ref.dtype) * data
 
                 def loop_fn(index, _):
@@ -279,13 +282,46 @@ def _csrmv_pallas_kernel_generator(
 
                 jax.lax.fori_loop(0, num_blocks, loop_fn, None)
 
+            def mm_transpose_scalar_batch(
+                data_ref, indices_ref, indptr_ref, vector_ref, _, posts_ref
+            ):
+                # Program ID Mapping: [batch, k]
+                idx_batch = pl.program_id(0)
+                i_col = pl.program_id(1)
+
+                if i_col >= indptr_ref.shape[0] - 1:
+                    return
+
+                col_start = indptr_ref[i_col]
+                col_end = indptr_ref[i_col + 1]
+                col_nnz = col_end - col_start
+                num_blocks = (col_nnz + block_dim - 1) // block_dim
+
+                val_vector = vector_ref[idx_batch, i_col]
+                data = data_ref[0] * val_vector
+                data_block = jnp.ones((block_dim,), dtype=posts_ref.dtype) * data
+                
+                # Target Ref: [batch, m] -> slice to [m]
+                target_posts_ref = posts_ref[idx_batch]
+
+                def loop_fn(index, _):
+                    offset = col_start + index * block_dim
+                    mask = offset + jnp.arange(block_dim) < col_end
+                    rows = indices_ref[pl.dslice(offset, block_dim)]
+                    atomic_add(target_posts_ref, rows, data_block, mask=mask)
+
+                jax.lax.fori_loop(0, num_blocks, loop_fn, None)
+            
+            mm_single_impl = mm_transpose_scalar_single
+            mm_batch_impl = mm_transpose_scalar_batch
+
         else:
             # csr.T @ B
             #
             # csr: [k, m]
             # B: [k]
             #
-            def mm(
+            def mm_transpose_vector_single(
                 data_ref,  # [nse]
                 indices_ref,  # [nse]
                 indptr_ref,  # [k + 1]
@@ -310,12 +346,62 @@ def _csrmv_pallas_kernel_generator(
 
                 jax.lax.fori_loop(0, num_blocks, loop_fn, None)
 
+            def mm_transpose_vector_batch(
+                data_ref, indices_ref, indptr_ref, vector_ref, _, posts_ref
+            ):
+                idx_batch = pl.program_id(0)
+                i_col = pl.program_id(1)
+                
+                if i_col >= indptr_ref.shape[0] - 1:
+                    return
+
+                col_start = indptr_ref[i_col]
+                col_end = indptr_ref[i_col + 1]
+                col_nnz = col_end - col_start
+                num_blocks = (col_nnz + block_dim - 1) // block_dim
+                
+                val_vector = vector_ref[idx_batch, i_col]
+                target_posts_ref = posts_ref[idx_batch]
+
+                def loop_fn(index, _):
+                    offset = col_start + index * block_dim
+                    mask = offset + jnp.arange(block_dim) < col_end
+                    rows = indices_ref[pl.dslice(offset, block_dim)]
+                    val_A = data_ref[pl.dslice(offset, block_dim)]
+                    contrib = jnp.where(mask, val_A * val_vector, 0.0)
+                    atomic_add(target_posts_ref, rows, contrib, mask=mask)
+
+                jax.lax.fori_loop(0, num_blocks, loop_fn, None)
+
+            mm_single_impl = mm_transpose_vector_single
+            mm_batch_impl = mm_transpose_vector_batch
+            
         def kernel(data, indices, indptr, vector):
-            fn = pl.pallas_call(
-                mm, grid=(k if transpose else m,), input_output_aliases={4: 0}, out_shape=kwargs['outs']
-            )
             out_info = kwargs['outs'][0]
             placeholder = jnp.zeros(out_info.shape, out_info.dtype)
+            
+            has_batch = vector.ndim > 1
+            
+            if has_batch:
+                batch_size = vector.shape[0]
+                # Grid: (batch, k)
+                grid = (batch_size, k)
+                fn = pl.pallas_call(
+                    mm_batch_impl, 
+                    grid=grid, 
+                    input_output_aliases={4: 0}, 
+                    out_shape=kwargs['outs']
+                )
+            else:
+                # Grid: (k,)
+                grid = (k,)
+                fn = pl.pallas_call(
+                    mm_single_impl, 
+                    grid=grid, 
+                    input_output_aliases={4: 0}, 
+                    out_shape=kwargs['outs']
+                )
+                
             return fn(data, indices, indptr, vector, placeholder)
 
     else:
