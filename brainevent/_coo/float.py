@@ -492,11 +492,7 @@ def _coomv_transpose_rule(ct, data, row, col, v, *, shape, transpose, **kwargs):
         if data.aval.shape[0] == 1:  # scalar
             ct_values = coomv_p_call(
                 jnp.ones(1, dtype=data.aval.dtype),
-                row,
-                col,
-                v,
-                shape=shape,
-                transpose=transpose,
+                row, col, v, shape=shape, transpose=transpose,
             )[0]
             ct_values = jnp.inner(ct, ct_values).reshape(*data.aval.shape)
         else:
