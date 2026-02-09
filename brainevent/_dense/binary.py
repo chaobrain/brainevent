@@ -173,7 +173,6 @@ def _dbmv_warp_kernel(
 
 def _dbmv_pallas_kernel(
     weight_info: jax.ShapeDtypeStruct,
-    spk_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
     from jax.experimental import pallas as pl
@@ -188,7 +187,7 @@ def _dbmv_pallas_kernel(
 
         def loop_fn(i_spike, temp):
             spike = spike_ref[i_spike]
-            weight_col = weight_ref[pl.dslice(i_row_start, mat_block_dim), i_spike]
+            weight_col = weight_ref[pl.ds(i_row_start, mat_block_dim), i_spike]
             weight_col = jnp.where(i_row_mask, weight_col, 0.0)
             return jax.lax.cond(
                 spike if spike_ref.dtype == jnp.bool_ else spike > 0.,
@@ -203,7 +202,7 @@ def _dbmv_pallas_kernel(
             loop_fn,
             jnp.zeros((mat_block_dim,), dtype=weight_ref.dtype)
         )
-        out_ref[pl.dslice(i_row_start, mat_block_dim)] = jnp.where(i_row_mask, i_row_out, 0.0)
+        out_ref[pl.ds(i_row_start, mat_block_dim)] = jnp.where(i_row_mask, i_row_out, 0.0)
 
     def run(weights, spikes):
         fn = pl.pallas_call(kernel, grid=(cdiv(m, mat_block_dim),), out_shape=kwargs['outs'])
@@ -419,7 +418,7 @@ def _bdvm_pallas_kernel(
 
         def loop_fn(i_spike, temp):
             spike = spike_ref[i_spike]
-            weight_row = weight_ref[i_spike, pl.dslice(i_col_start, block_dim)]
+            weight_row = weight_ref[i_spike, pl.ds(i_col_start, block_dim)]
             weight_row = jnp.where(i_col_mask, weight_row, 0.0)
             return jax.lax.cond(
                 spike if (spike_ref.dtype == jnp.bool_) else spike > 0.,
@@ -434,7 +433,7 @@ def _bdvm_pallas_kernel(
             loop_fn,
             jnp.zeros((block_dim,), dtype=weight_ref.dtype)
         )
-        out_ref[pl.dslice(i_col_start, block_dim)] = jnp.where(i_col_mask, i_col_out, 0.0)
+        out_ref[pl.ds(i_col_start, block_dim)] = jnp.where(i_col_mask, i_col_out, 0.0)
 
     def run(spikes, weights):
         fn = pl.pallas_call(kernel, grid=(cdiv(n, block_dim),), out_shape=kwargs['outs'])
@@ -696,7 +695,7 @@ def _dbmm_pallas_kernel(
 
         def loop_fn(i_k, temp):
             spike = spike_ref[i_k, i_n]
-            weight_col = weight_ref[pl.dslice(i_m_start, block_dim), i_k]
+            weight_col = weight_ref[pl.ds(i_m_start, block_dim), i_k]
             weight_col = jnp.where(i_m_mask, weight_col, 0.0)
             return jax.lax.cond(
                 spike if spike_ref.dtype == jnp.bool_ else spike > 0.,
@@ -706,7 +705,7 @@ def _dbmm_pallas_kernel(
             )
 
         final_out = jax.lax.fori_loop(0, k, loop_fn, jnp.zeros(block_dim, dtype=weight_ref.dtype))
-        out_ref[pl.dslice(i_m_start, block_dim), i_n] = jnp.where(i_m_mask, final_out, 0.0)
+        out_ref[pl.ds(i_m_start, block_dim), i_n] = jnp.where(i_m_mask, final_out, 0.0)
 
     def run(weights, spikes):
         fn = pl.pallas_call(kernel, grid=(n, cdiv(m, block_dim)), out_shape=kwargs['outs'])
@@ -748,7 +747,7 @@ def _dbmm_batching_weight_fn(args, axis=0, **kwargs):
     assert args[0].ndim == 3, 'requires 3D input for weights'
     assert args[1].ndim == 2, 'requires 2D input for events'
     assert axis < 2, 'axis must be less than 2'
-    maybe_batch1, maybe_batch2, k = args[1].shape
+    maybe_batch1, maybe_batch2, k = args[0].shape
     weights = args[0].reshape(maybe_batch1 * maybe_batch2, k)
     r = dbmm_p_call(weights, args[1])
     r = jnp.reshape(r[0], [maybe_batch1, maybe_batch2, r[0].shape[-1]])
@@ -990,7 +989,7 @@ def _bdmm_pallas_kernel(
         def loop_fn(i_k, temp):
             spike = spike_ref[i_m, i_k]
             # Use block slice on first dim (working pattern on GPU triton)
-            weight_row = weight_t_ref[pl.dslice(i_n_start, block_dim), i_k]
+            weight_row = weight_t_ref[pl.ds(i_n_start, block_dim), i_k]
             weight_row = jnp.where(i_n_mask, weight_row, 0.0)
             return jax.lax.cond(
                 spike if spike_ref.dtype == jnp.bool_ else spike > 0.,
@@ -1000,7 +999,7 @@ def _bdmm_pallas_kernel(
             )
 
         final_out = jax.lax.fori_loop(0, k, loop_fn, jnp.zeros(block_dim, dtype=weight_t_ref.dtype))
-        out_ref[i_m, pl.dslice(i_n_start, block_dim)] = jnp.where(i_n_mask, final_out, 0.0)
+        out_ref[i_m, pl.ds(i_n_start, block_dim)] = jnp.where(i_n_mask, final_out, 0.0)
 
     def run(spikes, weights):
         weights_t = weights.T  # [k, n] -> [n, k]

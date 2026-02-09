@@ -123,8 +123,14 @@ def _bdvm_warp_kernel(
     ):
         j = warp.tid()
         r = weights.dtype(0.)
-        for i in range(count[0]):
-            r += weights[indices[i], j]
+        nnz = count[0]
+        max_i = indices.shape[0]
+        if nnz > max_i:
+            nnz = max_i
+        for i in range(nnz):
+            idx = indices[i]
+            if 0 <= idx < weights.shape[0]:
+                r += weights[idx, j]
         out[j] = r
 
     def run(spikes, indices, count, weights):
@@ -140,7 +146,6 @@ def _bdvm_pallas_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas import triton as plt
 
     block_dim = generate_block_dim(weights_info.shape[1], maximum=128)
 
@@ -155,20 +160,17 @@ def _bdvm_pallas_kernel(
         cols = col_start + jnp.arange(block_dim)
         mask = cols < weights_ref.shape[1]
         safe_cols = jnp.where(mask, cols, 0)
+        count = jnp.minimum(count_ref[0], indices_ref.shape[0])
 
         def fn(i, temp):
             i_row = indices_ref[i]
-            weight_row = plt.load(weights_ref[i_row, safe_cols])
-            weight_row = jnp.where(mask, weight_row, 0.0)
+            valid = (i_row >= 0) & (i_row < weights_ref.shape[0])
+            i_row = jnp.where(valid, i_row, 0)
+            weight_row = jnp.where(mask & valid, weights_ref[i_row, safe_cols], 0.0)
             return temp + weight_row
 
-        out = jax.lax.fori_loop(
-            0,
-            count_ref[0],
-            fn,
-            jnp.zeros([block_dim], dtype=weights_ref.dtype)
-        )
-        plt.store(out_ref[safe_cols], out, mask=mask)
+        out = jax.lax.fori_loop(0, count, fn, jnp.zeros([block_dim], dtype=weights_ref.dtype))
+        out_ref[safe_cols] = jnp.where(mask, out, 0.0)
 
     def run(spikes, indices, count, weights):
         fn = pl.pallas_call(kernel, grid=(cdiv(weights_info.shape[1], block_dim),), out_shape=kwargs['outs'])
@@ -381,7 +383,6 @@ def _bdmm_warp_kernel(
 
     batch = indices_info.shape[0]
     n_out = weights_info.shape[1]
-    spike_warp_info = jaxinfo_to_warpinfo(spikes_info)
     indices_warp_info = jaxinfo_to_warpinfo(indices_info)
     count_warp_info = jaxinfo_to_warpinfo(count_info)
     weight_warp_info = jaxinfo_to_warpinfo(weights_info)
@@ -394,16 +395,21 @@ def _bdmm_warp_kernel(
         weights: weight_warp_info,
         out: out_warp_info,
     ):
-        i_row = warp.tid()
-        for j in range(n_out):
-            r = weights.dtype(0.)
-            for k in range(count[i_row]):
-                r += weights[indices[i_row, k], j]
-            out[i_row, j] = r
+        i_row, j = warp.tid()
+        r = weights.dtype(0.)
+        nnz = count[i_row]
+        max_k = indices.shape[1]
+        if nnz > max_k:
+            nnz = max_k
+        for k in range(nnz):
+            idx = indices[i_row, k]
+            if 0 <= idx < weights.shape[0]:
+                r += weights[idx, j]
+        out[i_row, j] = r
 
     def run(spikes, indices, count, weights):
         out_info = kwargs['outs'][0]
-        fn = jax_kernel(kernel, launch_dims=[batch], num_outputs=1, output_dims={'out': out_info.shape})
+        fn = jax_kernel(kernel, launch_dims=(batch, n_out), num_outputs=1, output_dims={'out': out_info.shape})
         return fn(indices, count, weights)
 
     return run
@@ -415,7 +421,6 @@ def _bdmm_pallas_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas import triton as plt
 
     block_dim = generate_block_dim(weights_info.shape[1], maximum=128)
 
@@ -431,21 +436,17 @@ def _bdmm_pallas_kernel(
         cols = col_start + jnp.arange(block_dim)
         mask = cols < weights_ref.shape[1]
         safe_cols = jnp.where(mask, cols, 0)
-        count = count_ref[i_row]
+        count = jnp.minimum(count_ref[i_row], indices_ref.shape[1])
 
         def fn(i_index, temp):
             idx = indices_ref[i_row, i_index]
-            weight_row = plt.load(weights_ref[idx, safe_cols])
-            weight_row = jnp.where(mask, weight_row, 0.0)
+            valid = (idx >= 0) & (idx < weights_ref.shape[0])
+            idx = jnp.where(valid, idx, 0)
+            weight_row = jnp.where(mask & valid, weights_ref[idx, safe_cols], 0.0)
             return temp + weight_row
 
-        out = jax.lax.fori_loop(
-            0,
-            count,
-            fn,
-            jnp.zeros([block_dim], dtype=weights_ref.dtype)
-        )
-        plt.store(out_ref[i_row, safe_cols], out, mask=mask)
+        out = jax.lax.fori_loop(0, count, fn, jnp.zeros([block_dim], dtype=weights_ref.dtype))
+        out_ref[i_row, safe_cols] = jnp.where(mask, out, 0.0)
 
     def run(spikes, indices, count, weights):
         grid = (spikes_info.shape[0], cdiv(weights_info.shape[1], block_dim))

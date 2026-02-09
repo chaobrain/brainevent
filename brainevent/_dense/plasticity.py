@@ -23,7 +23,7 @@ from jax.interpreters import ad
 
 from brainevent._config import get_numba_parallel
 from brainevent._misc import generate_block_dim, namescope
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 
 __all__ = [
@@ -95,7 +95,6 @@ def _dense_on_pre_numba_kernel(spike_info: jax.ShapeDtypeStruct, **kwargs):
 
 def _dense_on_pre_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, **kwargs):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas import triton as plt
 
     block_dim = generate_block_dim(weight_info.shape[1], 512)
 
@@ -105,17 +104,15 @@ def _dense_on_pre_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, *
         cols = col_start + jnp.arange(block_dim)
         mask = cols < weight_info.shape[1]
         safe_cols = jnp.where(mask, cols, 0)
-        trace_block = plt.load(trace_ref[safe_cols])
-        trace_block = jnp.where(mask, trace_block, 0.0)
+        trace_block = jnp.where(mask, trace_ref[safe_cols], 0.0)
 
         def loop_fn(i, _):
             spike = spike_ref[i]
 
             @pl.when(spike if spike_info.dtype == jnp.bool_ else spike != 0.)
             def run():
-                row_ref = out_w_ref[i, safe_cols]
-                row_val = plt.load(row_ref)
-                plt.store(row_ref, row_val + trace_block, mask=mask)
+                row_val = out_w_ref[i, safe_cols]
+                out_w_ref[i, safe_cols] = jnp.where(mask, row_val + trace_block, row_val)
 
         jax.lax.fori_loop(0, spike_ref.shape[0], loop_fn, None)
 
@@ -126,6 +123,46 @@ def _dense_on_pre_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, *
             input_output_aliases={0: 0},
             out_shape=kwargs['outs'],
         )
+        return fn(weight, spike, trace)
+
+    return run
+
+
+def _dense_on_pre_warp_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    spike_info: jax.ShapeDtypeStruct,
+    trace_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    import warp
+    from warp.jax_experimental import jax_kernel
+
+    n_pre, n_post = weight_info.shape
+    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
+    spike_warp_info = jaxinfo_to_warpinfo(spike_info)
+    trace_warp_info = jaxinfo_to_warpinfo(trace_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    if spike_info.dtype == jnp.bool_:
+        @warp.kernel
+        def kernel(weight: weight_warp_info,
+                   spike: spike_warp_info,
+                   trace: trace_warp_info,
+                   out_w: out_warp_info):
+            i, j = warp.tid()
+            out_w[i, j] = weight[i, j] + trace[j] if spike[i] else weight[i, j]
+    else:
+        @warp.kernel
+        def kernel(weight: weight_warp_info,
+                   spike: spike_warp_info,
+                   trace: trace_warp_info,
+                   out_w: out_warp_info):
+            i, j = warp.tid()
+            out_w[i, j] = weight[i, j] + trace[j] if spike[i] != 0. else weight[i, j]
+
+    def run(weight, spike, trace):
+        out_info = kwargs['outs'][0]
+        fn = jax_kernel(kernel, launch_dims=(n_pre, n_post), num_outputs=1, output_dims={'out_w': out_info.shape})
         return fn(weight, spike, trace)
 
     return run
@@ -195,6 +232,7 @@ def _dense_on_pre_batching(args, axes, **kwargs):
 
 update_dense_on_binary_pre_p = XLACustomKernel('dense_on_pre')
 update_dense_on_binary_pre_p.def_numba_kernel(_dense_on_pre_numba_kernel)
+update_dense_on_binary_pre_p.def_warp_kernel(_dense_on_pre_warp_kernel)
 update_dense_on_binary_pre_p.def_pallas_kernel('gpu', _dense_on_pre_pallas_kernel)
 update_dense_on_binary_pre_p.def_pallas_kernel('tpu', _dense_on_pre_pallas_kernel)
 update_dense_on_binary_pre_p.def_jvp_rule2(_dense_on_pre_jvp_weight, None, None)
@@ -266,7 +304,6 @@ def _dense_on_post_numba_kernel(spike_info: jax.ShapeDtypeStruct, **kwargs):
 
 def _dense_on_post_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, **kwargs):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas import triton as plt
 
     block_dim = generate_block_dim(weight_info.shape[0], 512)
 
@@ -276,17 +313,15 @@ def _dense_on_post_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, 
         rows = row_start + jnp.arange(block_dim)
         mask = rows < weight_info.shape[0]
         safe_rows = jnp.where(mask, rows, 0)
-        trace_block = plt.load(trace_ref[safe_rows])
-        trace_block = jnp.where(mask, trace_block, 0.0)
+        trace_block = jnp.where(mask, trace_ref[safe_rows], 0.0)
 
         def loop_fn(i, _):
             spike = spike_ref[i]
 
             @pl.when(spike if spike_info.dtype == jnp.bool_ else spike != 0.)
             def run():
-                col_ref = out_w_ref[safe_rows, i]
-                col_val = plt.load(col_ref)
-                plt.store(col_ref, col_val + trace_block, mask=mask)
+                col_val = out_w_ref[safe_rows, i]
+                out_w_ref[safe_rows, i] = jnp.where(mask, col_val + trace_block, col_val)
 
         jax.lax.fori_loop(0, spike_ref.shape[0], loop_fn, None)
 
@@ -297,6 +332,46 @@ def _dense_on_post_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, 
             input_output_aliases={0: 0},
             out_shape=kwargs['outs'],
         )
+        return fn(weight, trace, spike)
+
+    return run
+
+
+def _dense_on_post_warp_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    spike_info: jax.ShapeDtypeStruct,
+    trace_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    import warp
+    from warp.jax_experimental import jax_kernel
+
+    n_pre, n_post = weight_info.shape
+    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
+    trace_warp_info = jaxinfo_to_warpinfo(trace_info)
+    spike_warp_info = jaxinfo_to_warpinfo(spike_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    if spike_info.dtype == jnp.bool_:
+        @warp.kernel
+        def kernel(weight: weight_warp_info,
+                   trace: trace_warp_info,
+                   spike: spike_warp_info,
+                   out_w: out_warp_info):
+            i, j = warp.tid()
+            out_w[i, j] = weight[i, j] + trace[i] if spike[j] else weight[i, j]
+    else:
+        @warp.kernel
+        def kernel(weight: weight_warp_info,
+                   trace: trace_warp_info,
+                   spike: spike_warp_info,
+                   out_w: out_warp_info):
+            i, j = warp.tid()
+            out_w[i, j] = weight[i, j] + trace[i] if spike[j] != 0. else weight[i, j]
+
+    def run(weight, trace, spike):
+        out_info = kwargs['outs'][0]
+        fn = jax_kernel(kernel, launch_dims=(n_pre, n_post), num_outputs=1, output_dims={'out_w': out_info.shape})
         return fn(weight, trace, spike)
 
     return run
@@ -362,6 +437,7 @@ def _update_dense_post_benchmark_data(*, platform):
 
 update_dense_on_binary_post_p = XLACustomKernel('dense_on_post')
 update_dense_on_binary_post_p.def_numba_kernel(_dense_on_post_numba_kernel)
+update_dense_on_binary_post_p.def_warp_kernel(_dense_on_post_warp_kernel)
 update_dense_on_binary_post_p.def_pallas_kernel('gpu', _dense_on_post_pallas_kernel)
 update_dense_on_binary_post_p.def_pallas_kernel('tpu', _dense_on_post_pallas_kernel)
 update_dense_on_binary_post_p.def_jvp_rule2(_dense_on_post_jvp_weight, None, None)

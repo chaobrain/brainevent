@@ -31,6 +31,8 @@ from brainevent._dense.sparse_float import (
     sfdmm_p,
 )
 
+jax.config.update('jax_default_matmul_precision', 'highest')
+
 platform = jax.default_backend()
 DSFMV_IMPLEMENTATIONS = tuple(dsfmv_p.available_backends(platform))
 SFDVM_IMPLEMENTATIONS = tuple(sfdvm_p.available_backends(platform))

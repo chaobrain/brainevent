@@ -23,6 +23,8 @@ import pytest
 
 from brainevent._dense.binary import dbmm, dbmm_p, bdmm, bdmm_p, dbmv, dbmv_p, bdvm, bdvm_p
 
+jax.config.update('jax_default_matmul_precision', 'highest')
+
 platform = jax.default_backend()
 DBMV_IMPLEMENTATIONS = tuple(dbmv_p.available_backends(platform))
 BDVM_IMPLEMENTATIONS = tuple(bdvm_p.available_backends(platform))

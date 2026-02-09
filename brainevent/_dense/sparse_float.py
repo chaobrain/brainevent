@@ -122,27 +122,52 @@ def _dsfmv_warp_kernel(
     spike_length = spk_info.shape[0]
     m = weight_info.shape[0]
     weight_warp_info = jaxinfo_to_warpinfo(weight_info)
-    spike_warp_info = jaxinfo_to_warpinfo(spk_info)
     out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
 
-    @warp.kernel
-    def kernel(
-        weight_ref: weight_warp_info,
-        spike_ref: spike_warp_info,
-        out_ref: out_warp_info,
-    ):
-        i_row = warp.tid()
-        r = weight_ref.dtype(0.)
-        for j in range(spike_length):
-            spk = spike_ref[j]
-            if spk != 0.:
-                r += weight_ref[i_row, j] * spk
-        out_ref[i_row] = r
+    if spk_info.dtype == jnp.bool_:
+        spk_float_info = jax.ShapeDtypeStruct(spk_info.shape, jnp.float32)
+        spike_warp_info = jaxinfo_to_warpinfo(spk_float_info)
 
-    def run(weights, spikes):
-        out_info = kwargs['outs'][0]
-        fn = jax_kernel(kernel, launch_dims=[m], num_outputs=1, output_dims={'out_ref': out_info.shape})
-        return fn(weights, spikes)
+        @warp.kernel
+        def kernel(
+            weight_ref: weight_warp_info,
+            spike_ref: spike_warp_info,
+            out_ref: out_warp_info,
+        ):
+            i_row = warp.tid()
+            r = weight_ref.dtype(0.)
+            for j in range(spike_length):
+                spk = spike_ref[j]
+                if spk != 0.:
+                    r += weight_ref[i_row, j] * spk
+            out_ref[i_row] = r
+
+        def run(weights, spikes):
+            spikes = spikes.astype(jnp.float32)
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=[m], num_outputs=1, output_dims={'out_ref': out_info.shape})
+            return fn(weights, spikes)
+    else:
+        spike_warp_info = jaxinfo_to_warpinfo(spk_info)
+
+        @warp.kernel
+        def kernel(
+            weight_ref: weight_warp_info,
+            spike_ref: spike_warp_info,
+            out_ref: out_warp_info,
+        ):
+            i_row = warp.tid()
+            r = weight_ref.dtype(0.)
+            for j in range(spike_length):
+                spk = spike_ref[j]
+                if spk != 0.:
+                    r += weight_ref[i_row, j] * spk
+            out_ref[i_row] = r
+
+        def run(weights, spikes):
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=[m], num_outputs=1, output_dims={'out_ref': out_info.shape})
+            return fn(weights, spikes)
 
     return run
 
@@ -152,7 +177,6 @@ def _dsfmv_pallas_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas import triton as plt
 
     mat_block_dim = generate_block_dim(weight_info.shape[0], maximum=1024)
 
@@ -169,7 +193,7 @@ def _dsfmv_pallas_kernel(
                 spike != 0.,
                 lambda out: out + jnp.where(
                     mask,
-                    plt.load(weight_ref[safe_rows, i_spike]) * spike,
+                    weight_ref[safe_rows, i_spike] * spike,
                     0.0,
                 ),
                 lambda out: out,
@@ -182,7 +206,7 @@ def _dsfmv_pallas_kernel(
             loop_fn,
             jnp.zeros((mat_block_dim,), dtype=weight_ref.dtype)
         )
-        plt.store(out_ref[safe_rows], i_row_out, mask=mask)
+        out_ref[safe_rows] = jnp.where(mask, i_row_out, 0.0)
 
     def run(weights, spikes):
         fn = pl.pallas_call(kernel, grid=(cdiv(weight_info.shape[0], mat_block_dim),), out_shape=kwargs['outs'])
@@ -203,10 +227,10 @@ def _dsfmv_transpose_rule(ct, weights, spikes, **kwargs):
     ct = ct[0]
     if ad.is_undefined_primal(spikes):
         ct_events = jnp.matmul(ct, weights)
-        return weights, (ad.Zero(spikes) if type(ct[0]) is ad.Zero else ct_events)
+        return weights, (ad.Zero(spikes) if type(ct) is ad.Zero else ct_events)
     else:
         ct_weights = jnp.outer(ct, spikes)
-        return (ad.Zero(weights) if type(ct[0]) is ad.Zero else ct_weights), spikes
+        return (ad.Zero(weights) if type(ct) is ad.Zero else ct_weights), spikes
 
 
 def _dsfmv_batching(args, axes, **kwargs):
@@ -257,7 +281,7 @@ dsfmv_p.def_tags('dense', 'sparse_float')
 dsfmv_p.def_benchmark_data(_dsfmv_benchmark_data)
 
 
-def sfdvm(spikes, weights):
+def sfdvm(spikes, weights, *, backend: Optional[str] = None):
     """Performs event-driven vector-matrix multiplication: `spikes @ weights`.
 
     This function computes the vector-matrix product of a spike vector and a
@@ -293,8 +317,8 @@ def sfdvm(spikes, weights):
         spikes = u.math.asarray(spikes)
     weight_val, wunit = u.split_mantissa_unit(weights)
     spk_val, spkunit = u.split_mantissa_unit(spikes)
-    r = sfvdm_p_call(spk_val, weight_val)
-    return u.maybe_decimal(r[0] * wunit * spkunit)
+    r = sfvdm_p_call(spk_val, weight_val, backend=backend)[0]
+    return u.maybe_decimal(r * wunit * spkunit)
 
 
 def _sfdvm_numba_kernel(**kwargs):
@@ -324,28 +348,53 @@ def _sfdvm_warp_kernel(
 
     spike_length = spk_info.shape[0]
     n = weight_info.shape[1]
-    spike_warp_info = jaxinfo_to_warpinfo(spk_info)
     weight_warp_info = jaxinfo_to_warpinfo(weight_info)
     out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
 
-    @warp.kernel
-    def kernel(
-        spike_ref: spike_warp_info,
-        weight_ref: weight_warp_info,
-        out_ref: out_warp_info,
-    ):
-        j = warp.tid()
-        r = weight_ref.dtype(0.)
-        for i in range(spike_length):
-            spk = spike_ref[i]
-            if spk != 0.:
-                r += weight_ref[i, j] * spk
-        out_ref[j] = r
+    if spk_info.dtype == jnp.bool_:
+        spk_float_info = jax.ShapeDtypeStruct(spk_info.shape, jnp.float32)
+        spike_warp_info = jaxinfo_to_warpinfo(spk_float_info)
 
-    def run(spikes, weights):
-        out_info = kwargs['outs'][0]
-        fn = jax_kernel(kernel, launch_dims=[n], num_outputs=1, output_dims={'out_ref': out_info.shape})
-        return fn(spikes, weights)
+        @warp.kernel
+        def kernel(
+            spike_ref: spike_warp_info,
+            weight_ref: weight_warp_info,
+            out_ref: out_warp_info,
+        ):
+            j = warp.tid()
+            r = weight_ref.dtype(0.)
+            for i in range(spike_length):
+                spk = spike_ref[i]
+                if spk != 0.:
+                    r += weight_ref[i, j] * spk
+            out_ref[j] = r
+
+        def run(spikes, weights):
+            spikes = spikes.astype(jnp.float32)
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=[n], num_outputs=1, output_dims={'out_ref': out_info.shape})
+            return fn(spikes, weights)
+    else:
+        spike_warp_info = jaxinfo_to_warpinfo(spk_info)
+
+        @warp.kernel
+        def kernel(
+            spike_ref: spike_warp_info,
+            weight_ref: weight_warp_info,
+            out_ref: out_warp_info,
+        ):
+            j = warp.tid()
+            r = weight_ref.dtype(0.)
+            for i in range(spike_length):
+                spk = spike_ref[i]
+                if spk != 0.:
+                    r += weight_ref[i, j] * spk
+            out_ref[j] = r
+
+        def run(spikes, weights):
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=[n], num_outputs=1, output_dims={'out_ref': out_info.shape})
+            return fn(spikes, weights)
 
     return run
 
@@ -355,7 +404,6 @@ def _sfdvm_pallas_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas import triton as plt
 
     block_dim = generate_block_dim(weight_info.shape[1], maximum=1024)
 
@@ -372,7 +420,7 @@ def _sfdvm_pallas_kernel(
                 spike != 0.,
                 lambda out: out + jnp.where(
                     mask,
-                    plt.load(weight_ref[i_spike, safe_cols]) * spike,
+                    weight_ref[i_spike, safe_cols] * spike,
                     0.0,
                 ),
                 lambda out: out,
@@ -385,7 +433,7 @@ def _sfdvm_pallas_kernel(
             loop_fn,
             jnp.zeros((block_dim,), dtype=weight_ref.dtype)
         )
-        plt.store(out_ref[safe_cols], i_col_out, mask=mask)
+        out_ref[safe_cols] = jnp.where(mask, i_col_out, 0.0)
 
     def run(spikes, weights):
         fn = pl.pallas_call(kernel, grid=(cdiv(weight_info.shape[1], block_dim),), out_shape=kwargs['outs'])
@@ -403,13 +451,14 @@ def _sfdvm_jvp_spikes(spk_dot, spikes, weights, **kwargs):
 
 
 def _sfdvm_transpose_rule(ct, spikes, weights, **kwargs):
+    ct = ct[0]
     if ad.is_undefined_primal(spikes):
-        ct_events = jnp.matmul(weights, ct[0])
-        return (ad.Zero(spikes) if type(ct[0]) is ad.Zero else ct_events), weights
+        ct_events = jnp.matmul(weights, ct)
+        return (ad.Zero(spikes) if type(ct) is ad.Zero else ct_events), weights
 
     else:
-        ct_weights = jnp.outer(spikes, ct[0])
-        return spikes, (ad.Zero(weights) if type(ct[0]) is ad.Zero else ct_weights)
+        ct_weights = jnp.outer(spikes, ct)
+        return spikes, (ad.Zero(weights) if type(ct) is ad.Zero else ct_weights)
 
 
 def _event_matrix_batching(args, axes, **kwargs):
@@ -459,7 +508,7 @@ sfdvm_p.def_tags('dense', 'sparse_float')
 sfdvm_p.def_benchmark_data(_sfdvm_benchmark_data)
 
 
-def dsfmm(weights, spikes):
+def dsfmm(weights, spikes, *, backend: Optional[str] = None):
     """
     Performs event-driven matrix-matrix multiplication: `weights @ spikes`.
 
@@ -506,7 +555,7 @@ def dsfmm(weights, spikes):
     weight_val, wunit = u.split_mantissa_unit(weights)
     spk_val, spkunit = u.split_mantissa_unit(spikes)
     # Call the underlying primitive with unitless values
-    r = dmsfm_p_call(weight_val, spk_val)
+    r = dmsfm_p_call(weight_val, spk_val, backend=backend)
     # Re-attach units to the result
     return u.maybe_decimal(r[0] * wunit * spkunit)
 
@@ -549,17 +598,19 @@ def _dsfmm_warp_kernel(
     m = weight_info.shape[0]
 
     weight_warp_info = jaxinfo_to_warpinfo(weight_info)
-    spike_warp_info = jaxinfo_to_warpinfo(spk_info)
     out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
 
-    @warp.kernel
-    def kernel(
-        weight_ref: weight_warp_info,
-        spike_ref: spike_warp_info,
-        out_ref: out_warp_info,
-    ):
-        i_n = warp.tid()
-        for i_m in range(m):
+    if spk_info.dtype == jnp.bool_:
+        spk_float_info = jax.ShapeDtypeStruct(spk_info.shape, jnp.float32)
+        spike_warp_info = jaxinfo_to_warpinfo(spk_float_info)
+
+        @warp.kernel
+        def kernel(
+            weight_ref: weight_warp_info,
+            spike_ref: spike_warp_info,
+            out_ref: out_warp_info,
+        ):
+            i_m, i_n = warp.tid()
             r = weight_ref.dtype(0.)
             for i_k in range(k):
                 spk = spike_ref[i_k, i_n]
@@ -567,10 +618,32 @@ def _dsfmm_warp_kernel(
                     r += weight_ref[i_m, i_k] * spk
             out_ref[i_m, i_n] = r
 
-    def run(weights, spikes):
-        out_info = kwargs['outs'][0]
-        fn = jax_kernel(kernel, launch_dims=[n], num_outputs=1, output_dims={'out_ref': out_info.shape})
-        return fn(weights, spikes)
+        def run(weights, spikes):
+            spikes = spikes.astype(jnp.float32)
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out_ref': out_info.shape})
+            return fn(weights, spikes)
+    else:
+        spike_warp_info = jaxinfo_to_warpinfo(spk_info)
+
+        @warp.kernel
+        def kernel(
+            weight_ref: weight_warp_info,
+            spike_ref: spike_warp_info,
+            out_ref: out_warp_info,
+        ):
+            i_m, i_n = warp.tid()
+            r = weight_ref.dtype(0.)
+            for i_k in range(k):
+                spk = spike_ref[i_k, i_n]
+                if spk != 0.:
+                    r += weight_ref[i_m, i_k] * spk
+            out_ref[i_m, i_n] = r
+
+        def run(weights, spikes):
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out_ref': out_info.shape})
+            return fn(weights, spikes)
 
     return run
 
@@ -584,8 +657,6 @@ def _dsfmm_pallas_kernel(
     # spikes: [k, n]
 
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas import triton as plt
-
     k = spk_info.shape[0]
     n = spk_info.shape[1]
     m = weight_info.shape[0]
@@ -609,7 +680,7 @@ def _dsfmm_pallas_kernel(
                 spike != 0.,
                 lambda out: out + jnp.where(
                     mask,
-                    plt.load(weight_ref[safe_rows, i_k]) * spike,
+                    weight_ref[safe_rows, i_k] * spike,
                     0.0,
                 ),
                 lambda out: out,
@@ -617,7 +688,7 @@ def _dsfmm_pallas_kernel(
             )
 
         final_out = jax.lax.fori_loop(0, k, loop_fn, jnp.zeros(block_dim, dtype=weight_ref.dtype))
-        plt.store(out_ref[safe_rows, i_n], final_out, mask=mask)
+        out_ref[safe_rows, i_n] = jnp.where(mask, final_out, 0.0)
 
     def run(weights, spikes):
         fn = pl.pallas_call(kernel, grid=(n, cdiv(m, block_dim)), out_shape=kwargs['outs'])
@@ -635,12 +706,13 @@ def _dsfmm_jvp_spikes(spk_dot, weights, spikes, **kwargs):
 
 
 def _dsfmm_transpose_rule(ct, weights, spikes, **kwargs):
+    ct = ct[0]
     if ad.is_undefined_primal(spikes):
-        ct_events = weights.T @ ct[0]
-        return weights, (ad.Zero(spikes) if type(ct[0]) is ad.Zero else ct_events)
+        ct_events = weights.T @ ct
+        return weights, (ad.Zero(spikes) if type(ct) is ad.Zero else ct_events)
     else:
-        ct_weights = dsfmm(ct[0], spikes.T)
-        return (ad.Zero(weights) if type(ct[0]) is ad.Zero else ct_weights), spikes
+        ct_weights = dsfmm(ct, spikes.T)
+        return (ad.Zero(weights) if type(ct) is ad.Zero else ct_weights), spikes
 
 
 def _dsfmm_batching_events_fn(args, axis=1, **kwargs):
@@ -658,7 +730,7 @@ def _dsfmm_batching_weight_fn(args, axis=0, **kwargs):
     assert args[0].ndim == 3, 'requires 3D input for weights'
     assert args[1].ndim == 2, 'requires 2D input for events'
     assert axis < 2, 'axis must be less than 2'
-    maybe_batch1, maybe_batch2, k = args[1].shape
+    maybe_batch1, maybe_batch2, k = args[0].shape
     weights = args[0].reshape(maybe_batch1 * maybe_batch2, k)
     r = dmsfm_p_call(weights, args[1])
     r = jnp.reshape(r[0], [maybe_batch1, maybe_batch2, r[0].shape[-1]])
@@ -673,7 +745,7 @@ def _dsfmm_batching(args, axes, **kwargs):
     elif axes == (None, 1):
         return _dsfmm_batching_events_fn(args, axis=1, **kwargs)
     elif axes == (None, 2):
-        return _dsfmm_batching_events_fn(args, axs=2, **kwargs)
+        return _dsfmm_batching_events_fn(args, axis=2, **kwargs)
 
     elif axes == (0, None):
         return _dsfmm_batching_weight_fn(args, axis=0, **kwargs)
@@ -724,7 +796,7 @@ dsfmm_p.def_tags('dense', 'sparse_float')
 dsfmm_p.def_benchmark_data(_dsfmm_benchmark_data)
 
 
-def sfdmm(spikes, weights):
+def sfdmm(spikes, weights, *, backend: Optional[str] = None):
     """
     Performs event-driven binary matrix - dense matrix multiplication: `spikes @ weights`.
 
@@ -763,7 +835,7 @@ def sfdmm(spikes, weights):
     spk_val, spkunit = u.split_mantissa_unit(spikes)
     # Call the underlying primitive with unitless values
     # Perform the actual matrix multiplication using the unitless values
-    r = sfdmm_p_call(spk_val, weight_val)
+    r = sfdmm_p_call(spk_val, weight_val, backend=backend)
     # Re-attach units to the result, handling potential Decimal types
     # Multiply the result by the units of spikes and weights, and handle Decimal types if necessary
     return u.maybe_decimal(r[0] * spkunit * wunit)
@@ -805,18 +877,20 @@ def _sfdmm_warp_kernel(
     m, k = spk_info.shape
     n = weight_info.shape[1]
 
-    spike_warp_info = jaxinfo_to_warpinfo(spk_info)
     weight_warp_info = jaxinfo_to_warpinfo(weight_info)
     out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
 
-    @warp.kernel
-    def kernel(
-        spike_ref: spike_warp_info,
-        weight_ref: weight_warp_info,
-        out_ref: out_warp_info,
-    ):
-        i_m = warp.tid()
-        for i_n in range(n):
+    if spk_info.dtype == jnp.bool_:
+        spk_float_info = jax.ShapeDtypeStruct(spk_info.shape, jnp.float32)
+        spike_warp_info = jaxinfo_to_warpinfo(spk_float_info)
+
+        @warp.kernel
+        def kernel(
+            spike_ref: spike_warp_info,
+            weight_ref: weight_warp_info,
+            out_ref: out_warp_info,
+        ):
+            i_m, i_n = warp.tid()
             r = weight_ref.dtype(0.)
             for i_k in range(k):
                 spk = spike_ref[i_m, i_k]
@@ -824,10 +898,32 @@ def _sfdmm_warp_kernel(
                     r += weight_ref[i_k, i_n] * spk
             out_ref[i_m, i_n] = r
 
-    def run(spikes, weights):
-        out_info = kwargs['outs'][0]
-        fn = jax_kernel(kernel, launch_dims=[m], num_outputs=1, output_dims={'out_ref': out_info.shape})
-        return fn(spikes, weights)
+        def run(spikes, weights):
+            spikes = spikes.astype(jnp.float32)
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out_ref': out_info.shape})
+            return fn(spikes, weights)
+    else:
+        spike_warp_info = jaxinfo_to_warpinfo(spk_info)
+
+        @warp.kernel
+        def kernel(
+            spike_ref: spike_warp_info,
+            weight_ref: weight_warp_info,
+            out_ref: out_warp_info,
+        ):
+            i_m, i_n = warp.tid()
+            r = weight_ref.dtype(0.)
+            for i_k in range(k):
+                spk = spike_ref[i_m, i_k]
+                if spk != 0.:
+                    r += weight_ref[i_k, i_n] * spk
+            out_ref[i_m, i_n] = r
+
+        def run(spikes, weights):
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out_ref': out_info.shape})
+            return fn(spikes, weights)
 
     return run
 
@@ -841,8 +937,6 @@ def _sfdmm_pallas_kernel(
     # weights: [k, n]
 
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas import triton as plt
-
     m = spk_info.shape[0]
     k, n = weight_info.shape
     block_dim = generate_block_dim(n, maximum=1024)
@@ -865,7 +959,7 @@ def _sfdmm_pallas_kernel(
                 spike != 0.,
                 lambda out: out + jnp.where(
                     mask,
-                    plt.load(weight_ref[i_k, safe_cols]) * spike,
+                    weight_ref[i_k, safe_cols] * spike,
                     0.0,
                 ),
                 lambda out: out,
@@ -873,7 +967,7 @@ def _sfdmm_pallas_kernel(
             )
 
         final_out = jax.lax.fori_loop(0, k, loop_fn, jnp.zeros(block_dim, dtype=weight_ref.dtype))
-        plt.store(out_ref[i_m, safe_cols], final_out, mask=mask)
+        out_ref[i_m, safe_cols] = jnp.where(mask, final_out, 0.0)
 
     def run(spikes, weights):
         fn = pl.pallas_call(kernel, grid=(m, cdiv(n, block_dim)), out_shape=kwargs['outs'])
@@ -891,13 +985,14 @@ def _sfdmm_jvp_spikes(spk_dot, spikes, weights, **kwargs):
 
 
 def _sfdmm_transpose_rule(ct, spikes, weights, **kwargs):
+    ct = ct[0]
     if ad.is_undefined_primal(spikes):
-        ct_events = ct[0] @ weights.T
-        return (ad.Zero(spikes) if type(ct[0]) is ad.Zero else ct_events), weights
+        ct_events = ct @ weights.T
+        return (ad.Zero(spikes) if type(ct) is ad.Zero else ct_events), weights
 
     else:
-        ct_weights = sfdmm(spikes.T, ct[0])
-        return spikes, (ad.Zero(weights) if type(ct[0]) is ad.Zero else ct_weights)
+        ct_weights = sfdmm(spikes.T, ct)
+        return spikes, (ad.Zero(weights) if type(ct) is ad.Zero else ct_weights)
 
 
 def _sfdmm_batching_spk_base_fn(args, axis=0, **kwargs):
@@ -911,7 +1006,7 @@ def _sfdmm_batching_spk_base_fn(args, axis=0, **kwargs):
 
 
 def _sfdmm_batching_weight_base_fn(args, axis=0, **kwargs):
-    assert args[0].ndim == 0, 'requires 2D events.'
+    assert args[0].ndim == 2, 'requires 2D events.'
     assert args[1].ndim == 3, 'requires 3D weights.'
     k, maybe_batch1, maybe_batch2 = args[1].shape
     events = args[0]
@@ -933,7 +1028,7 @@ def _sfdmm_batching(args, axes, **kwargs):
 
     elif axes == (None, 0):
         args = list(args)
-        args[1] = jnp.transpose(args[0], (1, 0, 2))
+        args[1] = jnp.transpose(args[1], (1, 0, 2))
         return _sfdmm_batching_weight_base_fn(args, axis=1, **kwargs)
     elif axes == (None, 1):
         return _sfdmm_batching_weight_base_fn(args, axis=1, **kwargs)
