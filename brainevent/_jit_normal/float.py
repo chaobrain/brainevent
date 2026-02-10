@@ -403,11 +403,11 @@ def _jitn_jvp_wlow(w_loc_dot, w_loc, w_scale, clen, seed, *, out_info, **kwargs)
     return [out]
 
 
-def _jitn_jvp_whigh(w_scale_dot, w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool, **kwargs):
-    return jitn_p_call(0., w_scale_dot, clen, seed, shape=shape, transpose=transpose, corder=corder)
+def _jitn_jvp_whigh(w_scale_dot, w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool, backend=None, **kwargs):
+    return jitn_p_call(0., w_scale_dot, clen, seed, shape=shape, transpose=transpose, corder=corder, backend=backend)
 
 
-def _jitn_transpose(ct, w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool, **kwargs):
+def _jitn_transpose(ct, w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool, backend=None, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
     ct = ct[0]
@@ -416,7 +416,7 @@ def _jitn_transpose(ct, w_loc, w_scale, clen, seed, *, shape, transpose: bool, c
         return (dwlow, w_scale, clen, seed)
 
     elif ad.is_undefined_primal(w_scale):
-        forward = jitn_p_call(0., 1., clen, seed, shape=shape, transpose=transpose, corder=corder)[0]
+        forward = jitn_p_call(0., 1., clen, seed, shape=shape, transpose=transpose, corder=corder, backend=backend)[0]
         dwscale = jnp.expand_dims((ct * forward).sum(), axis=0)
         return (w_loc, dwscale, clen, seed)
 
@@ -602,7 +602,6 @@ def _jitnmv_warp_kernel_generator(
     vector_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
@@ -755,19 +754,19 @@ def _jitnmv_pallas_kernel_generator(
     return run
 
 
-def _jitnmv_jvp_v(v_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
-    return jitnmv_p_call(w_loc, w_scale, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder)
+def _jitnmv_jvp_v(v_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend=None, **kwargs):
+    return jitnmv_p_call(w_loc, w_scale, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=backend)
 
 
-def _jitnmv_jvp_wloc(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
-    return jitnmv_p_call(w_dot, w_scale, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
+def _jitnmv_jvp_wloc(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend=None, **kwargs):
+    return jitnmv_p_call(w_dot, w_scale, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=backend)
 
 
-def _jitnmv_jvp_wscale(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
-    return jitnmv_p_call(w_loc, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
+def _jitnmv_jvp_wscale(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend=None, **kwargs):
+    return jitnmv_p_call(w_loc, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=backend)
 
 
-def _jitnmv_transpose_rules(ct, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
+def _jitnmv_transpose_rules(ct, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend=None, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
 
@@ -782,7 +781,8 @@ def _jitnmv_transpose_rules(ct, w_loc, w_scale, clen, vector, seed, *, shape, tr
             seed,
             shape=shape,
             transpose=not transpose,
-            corder=not corder
+            corder=not corder,
+            backend=backend,
         )[0]
         return w_loc, w_scale, clen, r, seed
     elif ad.is_undefined_primal(w_loc):
@@ -792,7 +792,8 @@ def _jitnmv_transpose_rules(ct, w_loc, w_scale, clen, vector, seed, *, shape, tr
         # mask^T @ ct = jitnmv(1., 0., ...) with transposed shape
         r = jitnmv_p_call(
             1., 0., clen, ct, seed,
-            shape=shape, transpose=not transpose, corder=not corder
+            shape=shape, transpose=not transpose, corder=not corder,
+            backend=backend,
         )[0]
         dw_loc = jnp.expand_dims(jnp.sum(r * vector), axis=0)
         return dw_loc, w_scale, clen, vector, seed
@@ -803,7 +804,8 @@ def _jitnmv_transpose_rules(ct, w_loc, w_scale, clen, vector, seed, *, shape, tr
         # (Z * mask)^T @ ct = jitnmv(0., 1., ...) with transposed shape
         r = jitnmv_p_call(
             0., 1., clen, ct, seed,
-            shape=shape, transpose=not transpose, corder=not corder
+            shape=shape, transpose=not transpose, corder=not corder,
+            backend=backend,
         )[0]
         dw_scale = jnp.expand_dims(jnp.sum(r * vector), axis=0)
         return w_loc, dw_scale, clen, vector, seed
@@ -826,6 +828,7 @@ def _jitnmv_batching(args, axes, **kwargs):
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             corder=kwargs['corder'],
+            backend=kwargs.get('backend'),
         )
         return r, [1]
     elif tuple(axes) == (None, None, None, 1, None):
@@ -839,6 +842,7 @@ def _jitnmv_batching(args, axes, **kwargs):
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             corder=kwargs['corder'],
+            backend=kwargs.get('backend'),
         )
         return r, [1]
     else:
@@ -1119,69 +1123,97 @@ def _jitnmm_pallas_kernel_generator(
     from jax.experimental import pallas as pl
     from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
-    block_dim = generate_block_dim(B_info.shape[1], maximum=1024)
+    B_cols = B_info.shape[1]
 
     if corder:
+        # Match jitn corder=True: vectorize over rows with identical RNG seeding.
+        # Grid: (row_blocks, B_cols). Each kernel block processes one B column,
+        # using vector RNG identical to jitn. Accumulates into 1D local array
+        # to avoid 2D local arrays (dynamic_slice unsupported in Pallas Triton).
+        out_rows = out_info.shape[0]
+        row_block = generate_block_dim(out_rows, maximum=128)
+        grid = (pl.cdiv(out_rows, row_block), B_cols)
+
         def kernel(w_loc_ref, w_scale_ref, clen_ref, B_ref, seed_ref, _, post_ref):
             k = B_ref.shape[0]
             w_loc0 = w_loc_ref[0]
             w_scale0 = w_scale_ref[0]
             clen0 = clen_ref[0]
             seed0 = seed_ref[0]
-            i_m = pl.program_id(0)
-            i_n_block = pl.program_id(1)
-            i_n_start = block_dim * i_n_block
-            i_n_indices = i_n_start + jnp.arange(block_dim)
-            mask = i_n_indices < B_info.shape[1]
+            i_row_block = pl.program_id(0)
+            col_j = pl.program_id(1)  # scalar B column index
+
+            # Row indices — VECTOR, matching jitn exactly
+            i_rows = i_row_block * row_block + jnp.arange(row_block)
+            i_row_mask = i_rows < out_rows
+            safe_rows = jnp.where(i_row_mask, i_rows, 0)
+
+            # VECTOR RNG seeded identically to jitn
+            rng = PallasLFSR88RNG(seed0 + i_rows)
+            i_cols = rng.random_integers(0, clen0)  # [row_block]
+            i_col_mask = i_cols < k
+
+            out = jnp.zeros(row_block, dtype=post_ref.dtype)
 
             def body(data):
-                i, rng, out = data
-                w = rng.normal(w_loc0, w_scale0)
-                B_vals = jnp.where(mask, B_ref[i, i_n_indices], 0.)
-                out += B_vals * w
-                i += rng.random_integers(1, clen0)
-                return i, rng, out
+                i_cols, i_col_mask, rng, out = data
+                w = rng.normal(w_loc0, w_scale0)  # [row_block]
+                safe_cols = jnp.where(i_col_mask, i_cols, 0)
+                b_vals = B_ref[safe_cols, col_j]  # [row_block] vector gather
+                out += jnp.where(i_col_mask & i_row_mask, w * b_vals, 0.)
+                i_cols += rng.random_integers(1, clen0)
+                return i_cols, i_cols < k, rng, out
 
-            rng = PallasLFSR88RNG(seed0 + i_m)
-            out = jnp.zeros(block_dim, dtype=post_ref.dtype)
-            _, _, out = jax.lax.while_loop(
-                lambda data: data[0] < k,
+            _, _, _, out = jax.lax.while_loop(
+                lambda data: jnp.sum(data[1]) > 0,
                 body,
-                (rng.random_integers(0, clen0), rng, out)
+                (i_cols, i_col_mask, rng, out)
             )
-            post_ref[i_m, i_n_indices] = jnp.where(mask, out, post_ref[i_m, i_n_indices])
+            atomic_add(post_ref, (safe_rows, col_j), out, mask=i_row_mask)
 
     else:
+        # Match jitn corder=False: vectorize over k-dim columns with identical
+        # RNG seeding. Grid: (k_blocks, B_cols). Each block processes one B column.
+        k_dim = B_info.shape[0]
+        k_block = generate_block_dim(k_dim, maximum=128)
+        grid = (pl.cdiv(k_dim, k_block), B_cols)
+
         def kernel(w_loc_ref, w_scale_ref, clen_ref, B_ref, seed_ref, _, post_ref):
             m = post_ref.shape[0]
             w_loc0 = w_loc_ref[0]
             w_scale0 = w_scale_ref[0]
             clen0 = clen_ref[0]
             seed0 = seed_ref[0]
-            i_k = pl.program_id(0)
-            i_n_block = pl.program_id(1)
-            i_n_start = block_dim * i_n_block
-            i_n_indices = i_n_start + jnp.arange(block_dim)
-            mask = i_n_indices < B_info.shape[1]
+            i_k_block = pl.program_id(0)
+            col_j = pl.program_id(1)  # scalar B column index
 
-            B_block = jnp.where(mask, B_ref[i_k, i_n_indices], 0.)
+            i_ks = i_k_block * k_block + jnp.arange(k_block)
+            i_k_mask = i_ks < k_dim
+            safe_ks = jnp.where(i_k_mask, i_ks, 0)
+
+            # Preload B values for this column (1D vector gather)
+            b_vals = B_ref[safe_ks, col_j]  # [k_block]
+
+            # VECTOR RNG seeded identically to jitn corder=False
+            rng = PallasLFSR88RNG(seed0 + i_ks)
+            i_rows = rng.random_integers(0, clen0)
+            i_row_mask = i_rows < m
 
             def body(data):
-                i, rng = data
-                w = rng.normal(w_loc0, w_scale0)
-                atomic_add(post_ref, (i, i_n_indices), B_block * w, mask=mask)
-                i += rng.random_integers(1, clen0)
-                return i, rng
+                i_rows, i_row_mask, rng = data
+                w = rng.normal(w_loc0, w_scale0)  # [k_block]
+                vals = jnp.where(i_k_mask & i_row_mask, w * b_vals, 0.)
+                safe_rows = jnp.where(i_row_mask, i_rows, 0)
+                atomic_add(post_ref, (safe_rows, col_j), vals,
+                           mask=i_k_mask & i_row_mask)
+                i_rows += rng.random_integers(1, clen0)
+                return i_rows, i_rows < m, rng
 
-            rng = PallasLFSR88RNG(seed0 + i_k)
             jax.lax.while_loop(
-                lambda data: data[0] < m,
+                lambda data: jnp.sum(data[1]) > 0,
                 body,
-                (rng.random_integers(0, clen0), rng)
+                (i_rows, i_row_mask, rng)
             )
-
-    tile = (out_info.shape[0] if corder else B_info.shape[0])
-    grid = (tile, pl.cdiv(B_info.shape[1], block_dim))
 
     def run(w_loc, w_scale, clen, B, seed):
         fn = pl.pallas_call(
@@ -1196,19 +1228,19 @@ def _jitnmm_pallas_kernel_generator(
     return run
 
 
-def _jitnmm_jvp_wloc(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
-    return jitnmm_p_call(w_dot, w_scale, clen, B, seed, shape=shape, transpose=transpose, corder=corder)
+def _jitnmm_jvp_wloc(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend=None, **kwargs):
+    return jitnmm_p_call(w_dot, w_scale, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=backend)
 
 
-def _jitnmm_jvp_wscale(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
-    return jitnmm_p_call(w_loc, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder)
+def _jitnmm_jvp_wscale(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend=None, **kwargs):
+    return jitnmm_p_call(w_loc, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=backend)
 
 
-def _jitnmm_jvp_B(B_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
-    return jitnmm_p_call(w_loc, w_scale, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder)
+def _jitnmm_jvp_B(B_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend=None, **kwargs):
+    return jitnmm_p_call(w_loc, w_scale, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=backend)
 
 
-def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
+def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend=None, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
 
@@ -1223,6 +1255,7 @@ def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpo
             shape=shape,
             transpose=not transpose,
             corder=not corder,
+            backend=backend,
         )[0]
         return w_loc, w_scale, clen, r, seed
     elif ad.is_undefined_primal(w_loc):
@@ -1232,6 +1265,7 @@ def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpo
         r = jitnmm_p_call(
             1., 0., clen, ct, seed,
             shape=shape, transpose=not transpose, corder=not corder,
+            backend=backend,
         )[0]
         dw_loc = jnp.expand_dims(jnp.sum(r * B), axis=0)
         return dw_loc, w_scale, clen, B, seed
@@ -1242,6 +1276,7 @@ def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpo
         r = jitnmm_p_call(
             0., 1., clen, ct, seed,
             shape=shape, transpose=not transpose, corder=not corder,
+            backend=backend,
         )[0]
         dw_scale = jnp.expand_dims(jnp.sum(r * B), axis=0)
         return w_loc, dw_scale, clen, B, seed
@@ -1265,6 +1300,7 @@ def _batching_axis1(args, axis=1, **kwargs):
         shape=kwargs['shape'],
         transpose=kwargs['transpose'],
         corder=kwargs['corder'],
+        backend=kwargs.get('backend'),
     )
     r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
     return [r], [axis]
