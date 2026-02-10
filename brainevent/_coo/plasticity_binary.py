@@ -83,10 +83,7 @@ def update_coo_on_binary_pre(
     return weight
 
 
-def _coo_on_pre_numba_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
+def _coo_on_pre_numba_kernel(**kwargs):
     import numba
 
     @numba.njit(fastmath=True)
@@ -336,10 +333,7 @@ def update_coo_on_binary_post(
     return weight
 
 
-def _coo_on_post_numba_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
+def _coo_on_post_numba_kernel(**kwargs):
     import numba
 
     @numba.njit(fastmath=True)
@@ -492,10 +486,7 @@ def _coo_post_benchmark_data(*, platform):
             post_spike = jnp.asarray(np.random.rand(n_post), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
         configs.append(
-            BenchmarkConfig(
-                name,
-                (weight, jnp.asarray(pre_ids), jnp.asarray(post_ids), pre_trace, post_spike)
-            )
+            BenchmarkConfig(name, (weight, jnp.asarray(pre_ids), jnp.asarray(post_ids), pre_trace, post_spike))
         )
     return configs
 
