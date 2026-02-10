@@ -291,7 +291,7 @@ def _jitu_pallas_kernel_generator(
             i_cols = rng.random_integers(0, clen0)
             i_col_mask = i_cols < m
             jax.lax.while_loop(
-                lambda data: jnp.any(data[1]),
+                lambda data: jnp.sum(data[1]) > 0,
                 body,
                 (i_cols, i_col_mask, rng)
             )
@@ -318,7 +318,7 @@ def _jitu_pallas_kernel_generator(
             i_rows = rng.random_integers(0, clen0)
             i_row_mask = i_rows < n
             jax.lax.while_loop(
-                lambda data: jnp.any(data[1]),
+                lambda data: jnp.sum(data[1]) > 0,
                 body,
                 (i_rows, i_row_mask, rng)
             )
@@ -633,7 +633,7 @@ def _jitumv_pallas_kernel_generator(
             i_row_mask = i_rows < num_row
             out = jnp.zeros(block_size, dtype=post_ref.dtype)
             out = jax.lax.while_loop(
-                lambda data: jnp.any(data[1]),
+                lambda data: jnp.sum(data[1]) > 0,
                 body,
                 (i_rows, i_row_mask, rng, out)
             )[-1]
@@ -661,7 +661,7 @@ def _jitumv_pallas_kernel_generator(
             i_cols = rng.random_integers(0, clen)
             i_col_mask = i_cols < num_col
             jax.lax.while_loop(
-                lambda data: jnp.any(data[1]),
+                lambda data: jnp.sum(data[1]) > 0,
                 body,
                 (i_cols, i_col_mask, rng)
             )
@@ -1045,149 +1045,100 @@ def _jitumm_warp_kernel_generator(
 def _jitumm_pallas_kernel_generator(
     B_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
     from jax.experimental import pallas as pl
     from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
-    block_dim = generate_block_dim(B_info.shape[1], maximum=1024)
+    B_cols = B_info.shape[1]
 
     if corder:
-        if transpose:
-            # JIT Matrix.T @ B
-            # - JIT matrix: [k, m]
-            # - B: [k, n]
-            def kernel(w_low_ref, w_high_ref, clen_ref, B_ref, seed_ref, _, post_ref):
-                k = B_ref.shape[0]
-                w_low0 = w_low_ref[0]
-                w_high0 = w_high_ref[0]
-                clen0 = clen_ref[0]
-                seed0 = seed_ref[0]
-                i_m = pl.program_id(0)
-                i_n_block = pl.program_id(1)
-                i_n_start = block_dim * i_n_block
-                i_n_indices = i_n_start + jnp.arange(block_dim)
-                mask = i_n_indices < B_info.shape[1]
+        # Match _jit_normal float.py _jitnmm_pallas corder=True:
+        # Grid: (row_blocks, B_cols). Each kernel block processes one B column,
+        # using vector RNG identical to jitn. Accumulates into 1D local array.
+        out_rows = out_info.shape[0]
+        row_block = generate_block_dim(out_rows, maximum=128)
+        grid = (pl.cdiv(out_rows, row_block), B_cols)
 
-                def body(data):
-                    i, rng, out = data
-                    w = rng.uniform(w_low0, w_high0)
-                    B_vals = jnp.where(mask, B_ref[i, i_n_indices], 0.)
-                    out += B_vals * w
-                    i += rng.random_integers(1, clen0)
-                    return i, rng, out
+        def kernel(w_low_ref, w_high_ref, clen_ref, B_ref, seed_ref, _, post_ref):
+            k = B_ref.shape[0]
+            w_low0 = w_low_ref[0]
+            w_high0 = w_high_ref[0]
+            clen0 = clen_ref[0]
+            seed0 = seed_ref[0]
+            i_row_block = pl.program_id(0)
+            col_j = pl.program_id(1)  # scalar B column index
 
-                rng = PallasLFSR88RNG(seed0 + i_m * k)
-                out = jnp.zeros(block_dim, dtype=post_ref.dtype)
-                _, _, out = jax.lax.while_loop(
-                    lambda data: data[0] < k,
-                    body,
-                    (rng.random_integers(0, clen0), rng, out)
-                )
-                post_ref[i_m, i_n_indices] = jnp.where(mask, out, post_ref[i_m, i_n_indices])
+            # Row indices — VECTOR
+            i_rows = i_row_block * row_block + jnp.arange(row_block)
+            i_row_mask = i_rows < out_rows
+            safe_rows = jnp.where(i_row_mask, i_rows, 0)
 
-        else:
-            # JIT Matrix @ B
-            # - JIT matrix: [m, k]
-            # - B: [k, n]
-            def kernel(w_low_ref, w_high_ref, clen_ref, B_ref, seed_ref, _, post_ref):
-                k = B_ref.shape[0]
-                w_low0 = w_low_ref[0]
-                w_high0 = w_high_ref[0]
-                clen0 = clen_ref[0]
-                seed0 = seed_ref[0]
-                i_m = pl.program_id(0)
-                i_n_block = pl.program_id(1)
-                i_n_start = block_dim * i_n_block
-                i_n_indices = i_n_start + jnp.arange(block_dim)
-                mask = i_n_indices < B_info.shape[1]
+            rng = PallasLFSR88RNG(seed0 + i_rows * k)
+            i_cols = rng.random_integers(0, clen0)  # [row_block]
+            i_col_mask = i_cols < k
 
-                def body(data):
-                    i, rng, out = data
-                    w = rng.uniform(w_low0, w_high0)
-                    B_vals = jnp.where(mask, B_ref[i, i_n_indices], 0.)
-                    out += B_vals * w
-                    i += rng.random_integers(1, clen0)
-                    return i, rng, out
+            out = jnp.zeros(row_block, dtype=post_ref.dtype)
 
-                rng = PallasLFSR88RNG(seed0 + i_m * k)
-                out = jnp.zeros(block_dim, dtype=post_ref.dtype)
-                _, _, out = jax.lax.while_loop(
-                    lambda data: data[0] < k,
-                    body,
-                    (rng.random_integers(0, clen0), rng, out)
-                )
-                post_ref[i_m, i_n_indices] = jnp.where(mask, out, post_ref[i_m, i_n_indices])
+            def body(data):
+                i_cols, i_col_mask, rng, out = data
+                w = rng.uniform(w_low0, w_high0)  # [row_block]
+                safe_cols = jnp.where(i_col_mask, i_cols, 0)
+                b_vals = B_ref[safe_cols, col_j]  # [row_block] vector gather
+                out += jnp.where(i_col_mask & i_row_mask, w * b_vals, 0.)
+                i_cols += rng.random_integers(1, clen0)
+                return i_cols, i_cols < k, rng, out
+
+            _, _, _, out = jax.lax.while_loop(
+                lambda data: jnp.sum(data[1]) > 0,
+                body,
+                (i_cols, i_col_mask, rng, out)
+            )
+            atomic_add(post_ref, (safe_rows, col_j), out, mask=i_row_mask)
 
     else:
-        if transpose:
-            # JIT Matrix.T @ B
-            # - JIT matrix: [k, m]
-            # - B: [k, n]
-            def kernel(w_low_ref, w_high_ref, clen_ref, B_ref, seed_ref, _, post_ref):
-                m = post_ref.shape[0]
-                w_low0 = w_low_ref[0]
-                w_high0 = w_high_ref[0]
-                clen0 = clen_ref[0]
-                seed0 = seed_ref[0]
-                i_k = pl.program_id(0)
-                i_n_block = pl.program_id(1)
-                i_n_start = block_dim * i_n_block
-                i_n_indices = i_n_start + jnp.arange(block_dim)
-                mask = i_n_indices < B_info.shape[1]
+        # Match _jit_normal float.py _jitnmm_pallas corder=False:
+        # Grid: (k_blocks, B_cols). Each block processes one B column.
+        k_dim = B_info.shape[0]
+        k_block = generate_block_dim(k_dim, maximum=128)
+        grid = (pl.cdiv(k_dim, k_block), B_cols)
 
-                B_block = jnp.where(mask, B_ref[i_k, i_n_indices], 0.)
+        def kernel(w_low_ref, w_high_ref, clen_ref, B_ref, seed_ref, _, post_ref):
+            m = post_ref.shape[0]
+            w_low0 = w_low_ref[0]
+            w_high0 = w_high_ref[0]
+            clen0 = clen_ref[0]
+            seed0 = seed_ref[0]
+            i_k_block = pl.program_id(0)
+            col_j = pl.program_id(1)  # scalar B column index
 
-                def body(data):
-                    i, rng = data
-                    w = rng.uniform(w_low0, w_high0)
-                    atomic_add(post_ref, (i, i_n_indices), B_block * w, mask=mask)
-                    i += rng.random_integers(1, clen0)
-                    return i, rng
+            i_ks = i_k_block * k_block + jnp.arange(k_block)
+            i_k_mask = i_ks < k_dim
+            safe_ks = jnp.where(i_k_mask, i_ks, 0)
 
-                rng = PallasLFSR88RNG(seed0 + i_k * m)
-                jax.lax.while_loop(
-                    lambda data: data[0] < m,
-                    body,
-                    (rng.random_integers(0, clen0), rng)
-                )
+            # Preload B values for this column (1D vector gather)
+            b_vals = B_ref[safe_ks, col_j]  # [k_block]
 
-        else:
-            # JIT Matrix @ B
-            # - JIT matrix: [m, k]
-            # - B: [k, n]
-            def kernel(w_low_ref, w_high_ref, clen_ref, B_ref, seed_ref, _, post_ref):
-                m = post_ref.shape[0]
-                w_low0 = w_low_ref[0]
-                w_high0 = w_high_ref[0]
-                clen0 = clen_ref[0]
-                seed0 = seed_ref[0]
-                i_k = pl.program_id(0)
-                i_n_block = pl.program_id(1)
-                i_n_start = block_dim * i_n_block
-                i_n_indices = i_n_start + jnp.arange(block_dim)
-                mask = i_n_indices < B_info.shape[1]
+            rng = PallasLFSR88RNG(seed0 + i_ks * m)
+            i_rows = rng.random_integers(0, clen0)
+            i_row_mask = i_rows < m
 
-                B_block = jnp.where(mask, B_ref[i_k, i_n_indices], 0.)
+            def body(data):
+                i_rows, i_row_mask, rng = data
+                w = rng.uniform(w_low0, w_high0)  # [k_block]
+                vals = jnp.where(i_k_mask & i_row_mask, w * b_vals, 0.)
+                safe_rows = jnp.where(i_row_mask, i_rows, 0)
+                atomic_add(post_ref, (safe_rows, col_j), vals,
+                           mask=i_k_mask & i_row_mask)
+                i_rows += rng.random_integers(1, clen0)
+                return i_rows, i_rows < m, rng
 
-                def body(data):
-                    i, rng = data
-                    w = rng.uniform(w_low0, w_high0)
-                    atomic_add(post_ref, (i, i_n_indices), B_block * w, mask=mask)
-                    i += rng.random_integers(1, clen0)
-                    return i, rng
-
-                rng = PallasLFSR88RNG(seed0 + i_k * m)
-                jax.lax.while_loop(
-                    lambda data: data[0] < m,
-                    body,
-                    (rng.random_integers(0, clen0), rng)
-                )
-
-    tile = (out_info.shape[0] if corder else B_info.shape[0])
-    grid = (tile, pl.cdiv(B_info.shape[1], block_dim))
+            jax.lax.while_loop(
+                lambda data: jnp.sum(data[1]) > 0,
+                body,
+                (i_rows, i_row_mask, rng)
+            )
 
     def run(w_low, w_high, clen, B, seed):
         fn = pl.pallas_call(

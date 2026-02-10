@@ -20,6 +20,10 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+# Keep GPU matmul reference numerics stable (avoid TF32 drift in dense @ B checks).
+if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is None:
+    jax.config.update('jax_default_matmul_precision', 'highest')
+
 from brainevent._jit_uniform.binary import (
     binary_jitumv,
     binary_jitumv_p,
@@ -32,9 +36,6 @@ from brainevent._test_util import allclose
 platform = jax.default_backend()
 JITUMV_IMPLEMENTATIONS = tuple(binary_jitumv_p.available_backends(platform))
 JITUMM_IMPLEMENTATIONS = tuple(binary_jitumm_p.available_backends(platform))
-
-JITUMV_IMPLEMENTATIONS = ['pallas']
-JITUMM_IMPLEMENTATIONS = ['pallas']
 
 
 if platform == 'cpu':
@@ -120,6 +121,7 @@ def test_binary_jitumv_forward_matches_reference(implementation, shape, transpos
         shape=shape,
         transpose=transpose,
         corder=corder,
+        backend=implementation,
     )
     assert allclose(y, y_ref, rtol=1e-4, atol=1e-4)
     jax.block_until_ready((w_low, w_high, vector, vector_ref, y, y_ref))
@@ -160,6 +162,7 @@ def test_binary_jitumm_forward_matches_reference(implementation, shape, transpos
         shape=shape,
         transpose=transpose,
         corder=corder,
+        backend=implementation,
     )
     assert allclose(y, y_ref, rtol=1e-4, atol=1e-4)
     jax.block_until_ready((w_low, w_high, matrix, matrix_ref, y, y_ref))
@@ -277,6 +280,7 @@ def test_binary_jitumv_jvp_and_vjp_match_reference(implementation, transpose, co
             shape=shape,
             transpose=transpose,
             corder=corder,
+            backend=implementation,
         )
 
     primals = (
@@ -336,6 +340,7 @@ def test_binary_jitumm_jvp_matches_reference(implementation, transpose, corder):
             shape=shape,
             transpose=transpose,
             corder=corder,
+            backend=implementation,
         )
 
     primals = (
@@ -488,6 +493,7 @@ def test_binary_jitumv_vmap_matches_reference(implementation, transpose, corder)
             shape=shape,
             transpose=transpose,
             corder=corder,
+            backend=implementation,
         )
     )
     y_binary = f_binary(vectors)
@@ -531,6 +537,7 @@ def test_binary_jitumm_vmap_matches_reference(implementation, transpose, corder)
             shape=shape,
             transpose=transpose,
             corder=corder,
+            backend=implementation,
         )
     )
     y_binary = f_binary(matrices)
