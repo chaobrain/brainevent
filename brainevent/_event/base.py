@@ -24,7 +24,7 @@ from jax.tree_util import register_pytree_node_class
 
 __all__ = [
     'EventRepresentation',
-    'IndexedRepresentation',
+    'IndexedEventRepresentation',
 ]
 
 ArrayValue = Union[jax.Array, u.Quantity]
@@ -120,7 +120,7 @@ class EventRepresentation(ABC):
         pass
 
 
-class IndexedRepresentation(EventRepresentation):
+class IndexedEventRepresentation(EventRepresentation):
     __slots__ = ('_value',)
     __array_priority__ = 100
     __module__ = 'brainevent'

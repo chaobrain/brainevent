@@ -59,7 +59,7 @@ from ._error import (
 )
 from ._event import (
     EventRepresentation,
-    IndexedRepresentation,
+    IndexedEventRepresentation,
     BinaryArray,
     SparseFloat,
     binary_array_index,
@@ -106,7 +106,7 @@ from ._registry import (
 __all__ = [
     # --- data representing events --- #
     'EventRepresentation',
-    'IndexedRepresentation',
+    'IndexedEventRepresentation',
     'BinaryArray',
     'SparseFloat',
     'binary_array_index',
