@@ -90,8 +90,8 @@ def _mm_reference(weights, indices, matrix, shape, transpose):
     dense = _dense_from_fixed_conn(weights, indices, shape)
     matrix = _to_binary_events(matrix, dense.dtype)
     if transpose:
-        return dense.T @ matrix
-    return dense @ matrix
+        return jnp.matmul(dense.T, matrix, precision=jax.lax.Precision.HIGHEST)
+    return jnp.matmul(dense, matrix, precision=jax.lax.Precision.HIGHEST)
 
 
 @pytest.mark.parametrize('implementation', FCNMV_PARAMS)
@@ -111,16 +111,14 @@ def test_binary_fcnmv_forward_matches_reference(implementation, homo_w, transpos
         raw = jnp.asarray(brainstate.random.rand(event_size), dtype=jnp.float32)
         events = jnp.where(raw > 0.4, raw, 0.0)
 
-    y = jax.jit(
-        lambda: binary_fcnmv(
-            weights,
-            indices,
-            events,
-            shape=shape,
-            transpose=transpose,
-            backend=implementation,
-        )
-    )()
+    y = binary_fcnmv(
+        weights,
+        indices,
+        events,
+        shape=shape,
+        transpose=transpose,
+        backend=implementation,
+    )
     y_ref = _mv_reference(weights, indices, events, shape, transpose)
     assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
     jax.block_until_ready((indices, weights, events, y, y_ref))
@@ -144,16 +142,14 @@ def test_binary_fcnmm_forward_matches_reference(implementation, homo_w, transpos
         raw = jnp.asarray(brainstate.random.rand(n_rows, k), dtype=jnp.float32)
         matrix = jnp.where(raw > 0.4, raw, 0.0)
 
-    y = jax.jit(
-        lambda: binary_fcnmm(
-            weights,
-            indices,
-            matrix,
-            shape=shape,
-            transpose=transpose,
-            backend=implementation,
-        )
-    )()
+    y = binary_fcnmm(
+        weights,
+        indices,
+        matrix,
+        shape=shape,
+        transpose=transpose,
+        backend=implementation,
+    )
     y_ref = _mm_reference(weights, indices, matrix, shape, transpose)
     assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
     jax.block_until_ready((indices, weights, matrix, y, y_ref))
@@ -176,25 +172,21 @@ def test_binary_fcnmm_thresholds_float_events(implementation, homo_w, shape, k, 
     float_events = jnp.asarray(raw * mask)
     binary_events = jnp.asarray(float_events > 0, dtype=jnp.float32)
 
-    y_float = jax.jit(
-        lambda: binary_fcnmm(
-            weights,
-            indices,
-            float_events,
-            shape=shape,
-            transpose=transpose,
-            backend=implementation,
-        )
-    )()
-    y_binary = jax.jit(
-        lambda: binary_fcnmm(
-            weights,
-            indices,
-            binary_events,
-            shape=shape,
-            transpose=transpose,
-            backend=implementation,
-        )
-    )()
+    y_float = binary_fcnmm(
+        weights,
+        indices,
+        float_events,
+        shape=shape,
+        transpose=transpose,
+        backend=implementation,
+    )
+    y_binary = binary_fcnmm(
+        weights,
+        indices,
+        binary_events,
+        shape=shape,
+        transpose=transpose,
+        backend=implementation,
+    )
     assert jnp.allclose(y_float, y_binary, rtol=1e-3, atol=1e-3)
     jax.block_until_ready((indices, weights, float_events, binary_events, y_float, y_binary))

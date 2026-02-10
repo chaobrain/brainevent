@@ -317,7 +317,9 @@ def _binary_fcnmv_pallas_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import atomic_add
+    atomic_add = getattr(pl, "atomic_add", None)
+    if atomic_add is None:
+        from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
     if len(shape) > 2:
         raise ValueError("shape must be a tuple of length 2")
@@ -339,8 +341,9 @@ def _binary_fcnmv_pallas_kernel(
         ):
             i_row = pl.program_id(0)
             vector = vector_ref[i_row]
+            vector_is_bool = vector_ref.dtype == jnp.bool_
 
-            @pl.when(vector > 0. if vector_ref.dtype > jnp.bool_ else vector)
+            @pl.when(vector if vector_is_bool else vector > 0.)
             def run():
                 if homo:
                     wv = weight_ref[0]
@@ -379,7 +382,6 @@ def _binary_fcnmv_pallas_kernel(
             weight_ref,  # [1]
             index_ref,  # [n_pre, n_conn]
             vector_ref,  # [n_post]
-            _,
             out_ref,  # [n_pre]
         ):
             i_row = pl.program_id(0)
@@ -390,9 +392,15 @@ def _binary_fcnmv_pallas_kernel(
                 ind = index_ref[i_row, pl.dslice(i_col, block_dim)]
                 ind = jnp.where(mask, ind, 0)
                 vec = vector_ref[ind]
-                vec = jnp.where(mask, vec, 0.0 if vector_ref.dtype > jnp.bool_ else False)
+                if vector_ref.dtype == jnp.bool_:
+                    vec = jnp.where(mask, vec, False)
+                else:
+                    vec = jnp.where(mask, vec, 0.0)
                 if homo:
-                    return out + jnp.sum(jnp.asarray(vec, dtype=out_ref.dtype))
+                    if vector_ref.dtype == jnp.bool_:
+                        return out + jnp.sum(jnp.asarray(vec, dtype=out_ref.dtype))
+                    else:
+                        return out + jnp.sum((vec > 0.).astype(out_ref.dtype))
                 else:
                     weight = weight_ref[i_row, pl.dslice(i_col, block_dim)]
                     weight = jnp.where(mask, weight, 0.0)
@@ -569,6 +577,7 @@ def binary_fcnmm(
         matrix,
         transpose=transpose,
         shape=shape,
+        backend=backend,
     )[0]
     return u.maybe_decimal(r * m_unit * w_unit)
 
@@ -674,7 +683,9 @@ def _binary_fcnmm_pallas_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import atomic_add
+    atomic_add = getattr(pl, "atomic_add", None)
+    if atomic_add is None:
+        from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
     if len(shape) > 2:
         raise ValueError("shape must be a tuple of length 2")
@@ -713,7 +724,10 @@ def _binary_fcnmm_pallas_kernel(
                 ind = jnp.where(i_index_mask, ind, 0)
                 mat = matrix_ref[i_k, pl.dslice(i_n_start, block_n)]
                 mat = jnp.where(i_n_mask, mat, 0.0)
-                mat = jnp.asarray(mat, dtype=weight_ref.dtype)
+                if matrix_ref.dtype != jnp.bool_:
+                    mat = (mat > 0.).astype(weight_ref.dtype)
+                else:
+                    mat = jnp.asarray(mat, dtype=weight_ref.dtype)
                 if homo:
                     A = weight
                 else:
@@ -725,7 +739,7 @@ def _binary_fcnmm_pallas_kernel(
 
             jax.lax.fori_loop(0, pl.cdiv(n_conn, block_k), loop_fn, None)
 
-        def kernel(weights, indices, matrix, _):
+        def kernel(weights, indices, matrix):
             fn = pl.pallas_call(
                 _raw_kernel,
                 grid=(n_pre, pl.cdiv(matrix_info.shape[1], block_n)),
@@ -764,10 +778,13 @@ def _binary_fcnmm_pallas_kernel(
                 ind = jnp.where(i_k_mask, ind, 0)
                 mat = matrix_ref[ind, pl.dslice(i_n_start, block_n)]
                 mat = jnp.where(i_k_mask[:, None] & i_n_mask[None, :], mat, 0.0)
+                if matrix_ref.dtype != jnp.bool_:
+                    mat = (mat > 0.).astype(weight_ref.dtype)
+                else:
+                    mat = jnp.asarray(mat, dtype=weight_ref.dtype)
                 if homo:
                     inc = mat.sum(axis=0)
                 else:
-                    mat = jnp.asarray(mat, dtype=weight_ref.dtype)
                     weight = weight_ref[i_m, pl.dslice(i_k_start, block_k)]
                     weight = jnp.where(i_k_mask, weight, 0.0)
                     inc = (weight[:, None] * mat).sum(axis=0)
@@ -777,19 +794,22 @@ def _binary_fcnmm_pallas_kernel(
                 0,
                 pl.cdiv(n_conn, block_k),
                 loop_fn,
-                jnp.zeros(block_n, dtype=matrix_ref.dtype)
+                jnp.zeros(block_n, dtype=weight_ref.dtype)
             )
             if homo:
                 final_out = final_out * weight_ref[0]
-            out_ref[i_m, pl.dslice(i_n_start, block_n)] = jnp.where(i_n_mask, final_out, 0.0)
+            atomic_add(out_ref, (i_m, pl.dslice(i_n_start, block_n)), final_out, mask=i_n_mask)
 
-        def kernel(weights, indices, matrix, _):
+        def kernel(weights, indices, matrix):
             fn = pl.pallas_call(
                 _raw_kernel,
                 grid=(n_pre, pl.cdiv(matrix_info.shape[1], block_n)),
+                input_output_aliases={3: 0},
                 out_shape=kwargs['outs']
             )
-            return fn(weights, indices, matrix, _)
+            out_info = kwargs['outs'][0]
+            placeholder = jnp.zeros(out_info.shape, out_info.dtype)
+            return fn(weights, indices, matrix, placeholder)
 
     return kernel
 
