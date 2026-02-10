@@ -1,4 +1,4 @@
-# Copyright 2025 BrainX Ecosystem Limited. All Rights Reserved.
+# Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,13 +21,13 @@ from .base import IndexedRepresentation, is_known_type
 from .indexed_binary_extraction import binary_1d_array_index_p_call, binary_2d_array_index_p_call
 
 __all__ = [
-    'IndexedBinary1d',
-    'IndexedBinary2d',
+    'IndexedSpFloat1d',
+    'IndexedSpFloat2d',
 ]
 
 
 @register_pytree_node_class
-class IndexedBinary1d(IndexedRepresentation):
+class IndexedSpFloat1d(IndexedRepresentation):
     """
     A binary array is a special case of an event array where the events are binary (0 or 1).
 
@@ -81,7 +81,7 @@ class IndexedBinary1d(IndexedRepresentation):
 
 
 @register_pytree_node_class
-class IndexedBinary2d(IndexedRepresentation):
+class IndexedSpFloat2d(IndexedRepresentation):
     """
     A binary array is a special case of an event array where the events are binary (0 or 1).
 

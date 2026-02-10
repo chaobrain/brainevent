@@ -17,7 +17,7 @@
 
 from jax.tree_util import register_pytree_node_class
 
-from brainevent._dense import dbmm, bdmm, binary_densemv
+from brainevent._dense import binary_densemm, binary_densemv
 from brainevent._error import MathError
 from .base import EventRepresentation, extract_raw_value, is_known_type
 
@@ -103,7 +103,7 @@ class BinaryArray(EventRepresentation):
             if self.ndim == 1:
                 return binary_densemv(oc, self.value, transpose=True)
             else:  # self.ndim == 2
-                return bdmm(self.value, oc)
+                return binary_densemm(oc, self.value.T, transpose=True)
         else:
             return oc.__rmatmul__(self)
 
@@ -158,7 +158,7 @@ class BinaryArray(EventRepresentation):
             if self.ndim == 1:
                 return binary_densemv(oc, self.value, transpose=False)
             else:
-                return dbmm(oc, self.value)
+                return binary_densemm(oc, self.value, transpose=False)
         else:
             return oc.__matmul__(self)
 
