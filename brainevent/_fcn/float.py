@@ -230,9 +230,7 @@ def _fcnmv_pallas_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    atomic_add = getattr(pl, "atomic_add", None)
-    if atomic_add is None:
-        from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
+    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
     if len(shape) != 2:
         raise ValueError("shape must be a tuple of length 2")
@@ -685,9 +683,7 @@ def _fcnmm_pallas_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    atomic_add = getattr(pl, "atomic_add", None)
-    if atomic_add is None:
-        from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
+    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
     if len(shape) != 2:
         raise ValueError("shape must be a tuple of length 2")
