@@ -253,6 +253,11 @@ def _jitc_mv_normal_warp_kernel_generator(
 ):
     r"""
     Generate the GPU kernel for the :func:`_jitc_matvec_normal` operation.
+
+    JITC matrix generation must be consistent with _jitn_warp_kernel_generator in float.py:
+
+    - corder=True:  i_row = tid(), loop over i_col, seed = seed0 + i_row
+    - corder=False: i_col = tid(), loop over i_row, seed = seed0 + i_col
     """
     import warp
     from warp.jax_experimental import jax_kernel
@@ -265,6 +270,8 @@ def _jitc_mv_normal_warp_kernel_generator(
     out_warp_info = jaxinfo_to_warpinfo(out_info)
 
     if corder:
+        # Consistent with jitn corder=True: i_row=tid(), loop over i_col
+        # Each thread produces one output element posts[i_row] — no atomics needed.
         if vector_info.dtype == jnp.bool_:
             @warp.kernel
             def kernel(
@@ -275,40 +282,20 @@ def _jitc_mv_normal_warp_kernel_generator(
                 seed: seed_warp_info,
                 posts: out_warp_info,
             ):
-                # Input vector dimension (number of rows in the matrix)
-                num_row = vector.shape[0]
-
+                num_col = vector.shape[0]
                 w_loc0 = w_loc[0]
                 w_scale0 = w_scale[0]
-                clen0 = clen[0]  # Connection length parameter (controls sparsity)
-                seed0 = seed[0]  # Base random seed value
-
-                # Get thread ID - each thread processes one output element
-                i_col = warp.tid()
-
-                # Initialize accumulator for dot product calculation
+                clen0 = clen[0]
+                seed0 = seed[0]
+                i_row = warp.tid()
                 r = float(0.0)
-
-                # Initialize random state with base seed plus thread ID to ensure
-                # different but reproducible random sequences across threads
-                state = warp.rand_init(seed0 + i_col)
-
-                # Sample the first connected row using random skipping
-                # Start at a random position in [0, clen0) for variability in connection patterns
-                i_row = warp.randi(state, 0, clen0)
-
-                # Process all connected entries for this output element
-                while i_row < num_row:
-                    # Add contribution from the current connected element
-                    w = (warp.randn(state) * w_scale0 + w_loc0)
-                    r = warp.where(vector[i_row], r + w, r)
-
-                    # Skip ahead to next connected row using geometric-like distribution
-                    # This creates sparse connectivity with ~1/clen0 connection probability
-                    i_row += warp.randi(state, 1, clen0)
-
-                # Scale accumulated sum by weight and store in output array
-                posts[i_col] = r
+                state = warp.rand_init(seed0 + i_row)
+                i_col = warp.randi(state, 0, clen0)
+                while i_col < num_col:
+                    w = warp.randn(state) * w_scale0 + w_loc0
+                    r = warp.where(vector[i_col], r + w, r)
+                    i_col += warp.randi(state, 1, clen0)
+                posts[i_row] = r
 
         else:
             @warp.kernel
@@ -320,39 +307,20 @@ def _jitc_mv_normal_warp_kernel_generator(
                 seed: seed_warp_info,
                 posts: out_warp_info,
             ):
-                # Input vector dimension (number of columns in the matrix)
                 num_col = vector.shape[0]
-
                 w_loc0 = w_loc[0]
                 w_scale0 = w_scale[0]
-                clen0 = clen[0]  # Connection length parameter (controls sparsity)
-                seed0 = seed[0]  # Base random seed value
-
-                # Get thread ID - each thread processes one output element (one row of the matrix)
+                clen0 = clen[0]
+                seed0 = seed[0]
                 i_row = warp.tid()
-
-                # Initialize accumulator for dot product calculation
                 r = float(0.0)
-
-                # Initialize random state with base seed plus thread ID to ensure
-                # different but reproducible random sequences across threads
                 state = warp.rand_init(seed0 + i_row)
-
-                # Sample the first connected column using random skipping
-                # Start at a random position in [0, clen0) for variability in connection patterns
                 i_col = warp.randi(state, 0, clen0)
-
-                # Process all connected entries for this output element (row)
                 while i_col < num_col:
-                    # Add contribution from the current connected element
                     w = warp.randn(state) * w_scale0 + w_loc0
-                    r += vector[i_col] * w
-
-                    # Skip ahead to next connected column using geometric-like distribution
-                    # This creates sparse connectivity with ~1/clen0 connection probability
+                    if vector[i_col] > float(0.0):
+                        r += w
                     i_col += warp.randi(state, 1, clen0)
-
-                # Scale accumulated sum by weight and store in output array
                 posts[i_row] = r
 
         def run(w_loc, w_scale, clen, vector, seed):
@@ -361,7 +329,8 @@ def _jitc_mv_normal_warp_kernel_generator(
             return fn(w_loc, w_scale, clen, vector, seed)
 
     else:
-
+        # Consistent with jitn corder=False: i_col=tid(), loop over i_row
+        # Multiple threads may scatter into the same output row — must use atomic_add.
         if vector_info.dtype == jnp.bool_:
             @warp.kernel
             def kernel(
@@ -372,43 +341,22 @@ def _jitc_mv_normal_warp_kernel_generator(
                 seed: seed_warp_info,
                 posts: out_warp_info,
             ):
-                # Output dimension (number of columns in the matrix)
-                num_col = posts.shape[0]
-
+                num_row = posts.shape[0]
                 w_loc0 = w_loc[0]
                 w_scale0 = w_scale[0]
-                clen0 = clen[0]  # Connection length parameter (controls sparsity)
-                seed0 = seed[0]  # Base random seed value
-
-                # Get thread ID - each thread processes one input element (row)
-                i_row = warp.tid()
-
-                # Pre-multiply the input value by weight for efficiency
-                # This avoids multiplying inside the inner loop for each connection
-                v = vector[i_row]
-
-                if v:
-                    # Initialize random state with base seed plus thread ID to ensure
-                    # different but reproducible random sequences across threads
-                    state = warp.rand_init(seed0 + i_row)
-
-                    # Sample the first connected column using random skipping
-                    # Start at a random position in [0, clen0) for variability in connection patterns
-                    i_col = warp.randi(state, 0, clen0)
-
-                    # Process all connected output positions for this input element
-                    while i_col < num_col:
-                        # Atomically add contribution to the appropriate output element
-                        # Using atomic operation because multiple threads may update the same output element
-                        posts[i_col] += (warp.randn(state) * w_scale0 + w_loc0)
-
-                        # Skip ahead to next connected column using geometric-like distribution
-                        # This creates sparse connectivity with ~1/clen0 connection probability
-                        i_col += warp.randi(state, 1, clen0)
-
+                clen0 = clen[0]
+                seed0 = seed[0]
+                i_col = warp.tid()
+                v = vector[i_col]
+                state = warp.rand_init(seed0 + i_col)
+                i_row = warp.randi(state, 0, clen0)
+                while i_row < num_row:
+                    w = warp.randn(state) * w_scale0 + w_loc0
+                    if v:
+                        warp.atomic_add(posts, i_row, w)
+                    i_row += warp.randi(state, 1, clen0)
 
         else:
-
             @warp.kernel
             def kernel(
                 w_loc: w_loc_warp_info,
@@ -418,39 +366,20 @@ def _jitc_mv_normal_warp_kernel_generator(
                 seed: seed_warp_info,
                 posts: out_warp_info,
             ):
-                # Output dimension (number of rows in the matrix)
                 num_row = posts.shape[0]
-
                 w_loc0 = w_loc[0]
                 w_scale0 = w_scale[0]
-                clen0 = clen[0]  # Connection length parameter (controls sparsity)
-                seed0 = seed[0]  # Base random seed value
-
-                # Get thread ID - each thread processes one input element (column)
+                clen0 = clen[0]
+                seed0 = seed[0]
                 i_col = warp.tid()
-
-                # Pre-multiply the input value by weight for efficiency
-                # This avoids multiplying inside the inner loop for each connection
                 v = vector[i_col]
-
-                if v > 0.:
-                    # Initialize random state with base seed plus thread ID to ensure
-                    # different but reproducible random sequences across threads
-                    state = warp.rand_init(seed0 + i_col)
-
-                    # Sample the first connected row using random skipping
-                    # Start at a random position in [0, clen0) for variability in connection patterns
-                    i_row = warp.randi(state, 0, clen0)
-
-                    # Process all connected output positions for this input element
-                    while i_row < num_row:
-                        # Atomically add contribution to the appropriate output element
-                        # Using atomic operation because multiple threads may update the same output element
-                        posts[i_row] += (warp.randn(state) * w_scale0 + w_loc0)
-
-                        # Skip ahead to next connected row using geometric-like distribution
-                        # This creates sparse connectivity with ~1/clen0 connection probability
-                        i_row += warp.randi(state, 1, clen0)
+                state = warp.rand_init(seed0 + i_col)
+                i_row = warp.randi(state, 0, clen0)
+                while i_row < num_row:
+                    w = warp.randn(state) * w_scale0 + w_loc0
+                    if v > float(0.0):
+                        warp.atomic_add(posts, i_row, w)
+                    i_row += warp.randi(state, 1, clen0)
 
         def run(w_loc, w_scale, clen, vector, seed):
             dim = vector_info.shape[0]
@@ -859,10 +788,18 @@ def _jitc_mm_normal_warp_kernel_generator(
     B_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
-    TITLE_SIZE: int,
     corder: bool = True,
     **kwargs
 ):
+    r"""
+    Generate the GPU kernel for the :func:`_jitc_matmat_normal` operation.
+
+    Uses scalar loops instead of warp tile operations to avoid cooperative
+    warp issues. JITC matrix generation must be consistent with
+    _jitn_warp_kernel_generator in float.py:
+    - corder=True:  i_m = tid(), loop over i_k, seed = seed0 + i_m
+    - corder=False: i_k = tid(), loop over i_m, seed = seed0 + i_k
+    """
     import warp
     from warp.jax_experimental import jax_kernel
 
@@ -874,8 +811,9 @@ def _jitc_mm_normal_warp_kernel_generator(
     out_warp_info = jaxinfo_to_warpinfo(out_info)
 
     if corder:
+        # Consistent with jitn corder=True: i_m=tid(), loop over i_k
+        # Each thread produces one output row — no atomics needed.
         if B_info.dtype == jnp.bool_:
-            # JIT Matrix.T @ B
             @warp.kernel
             def kernel(
                 w_loc: w_loc_warp_info,
@@ -886,24 +824,22 @@ def _jitc_mm_normal_warp_kernel_generator(
                 posts: out_warp_info,
             ):
                 k = B.shape[0]
+                n = B.shape[1]
                 w_loc0 = w_loc[0]
                 w_scale0 = w_scale[0]
                 clen0 = clen[0]
                 seed0 = seed[0]
-
                 i_m = warp.tid()
                 state = warp.rand_init(seed0 + i_m)
-
-                out = warp.tile_zeros(TITLE_SIZE, dtype=w_loc.dtype)
                 i_k = warp.randi(state, 0, clen0)
                 while i_k < k:
                     w = warp.randn(state) * w_scale0 + w_loc0
-                    out += warp.tile_astype(warp.tile_load(B[i_k], TITLE_SIZE), dtype=w_loc.dtype) * w
+                    for j in range(n):
+                        if B[i_k, j]:
+                            posts[i_m, j] += w
                     i_k += warp.randi(state, 1, clen0)
-                warp.tile_store(posts[i_m], out)
 
         else:
-            # JIT Matrix @ B
             @warp.kernel
             def kernel(
                 w_loc: w_loc_warp_info,
@@ -914,29 +850,30 @@ def _jitc_mm_normal_warp_kernel_generator(
                 posts: out_warp_info,
             ):
                 k = B.shape[0]
+                n = B.shape[1]
                 w_loc0 = w_loc[0]
                 w_scale0 = w_scale[0]
                 clen0 = clen[0]
                 seed0 = seed[0]
-
                 i_m = warp.tid()
                 state = warp.rand_init(seed0 + i_m)
-
-                out = warp.tile_zeros(TITLE_SIZE, dtype=w_loc.dtype)
                 i_k = warp.randi(state, 0, clen0)
                 while i_k < k:
                     w = warp.randn(state) * w_scale0 + w_loc0
-                    out += warp.tile_load(B[i_k], TITLE_SIZE) * w
+                    for j in range(n):
+                        if B[i_k, j] > float(0.0):
+                            posts[i_m, j] += w
                     i_k += warp.randi(state, 1, clen0)
-                warp.tile_store(posts[i_m], out)
 
         def run(w_loc, w_scale, clen, B, seed):
             dim = out_info.shape[0]
-            fn = jax_kernel(kernel, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
-            return fn(w_loc, w_scale, clen, B, seed)
+            fn = jax_kernel(kernel, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
+            return fn(w_loc, w_scale, clen, B, seed, jnp.zeros(out_info.shape, out_info.dtype))
+
     else:
+        # Consistent with jitn corder=False: i_k=tid(), loop over i_m
+        # Multiple threads scatter into output rows — must use atomic_add.
         if B_info.dtype == jnp.bool_:
-            # JIT Matrix.T @ B
             @warp.kernel
             def kernel(
                 w_loc: w_loc_warp_info,
@@ -947,24 +884,22 @@ def _jitc_mm_normal_warp_kernel_generator(
                 posts: out_warp_info,
             ):
                 m = posts.shape[0]
+                n = B.shape[1]
                 w_loc0 = w_loc[0]
                 w_scale0 = w_scale[0]
                 clen0 = clen[0]
                 seed0 = seed[0]
-
                 i_k = warp.tid()
                 state = warp.rand_init(seed0 + i_k)
-
-                out = warp.tile_astype(warp.tile_load(B[i_k], TITLE_SIZE), dtype=w_loc.dtype)
                 i_m = warp.randi(state, 0, clen0)
                 while i_m < m:
                     w = warp.randn(state) * w_scale0 + w_loc0
-                    warp.tile_atomic_add(posts[i_m], out * w)
+                    for j in range(n):
+                        if B[i_k, j]:
+                            warp.atomic_add(posts, i_m, j, w)
                     i_m += warp.randi(state, 1, clen0)
 
-
         else:
-            # JIT Matrix @ B
             @warp.kernel
             def kernel(
                 w_loc: w_loc_warp_info,
@@ -975,19 +910,19 @@ def _jitc_mm_normal_warp_kernel_generator(
                 posts: out_warp_info,
             ):
                 m = posts.shape[0]
+                n = B.shape[1]
                 w_loc0 = w_loc[0]
                 w_scale0 = w_scale[0]
                 clen0 = clen[0]
                 seed0 = seed[0]
-
                 i_k = warp.tid()
                 state = warp.rand_init(seed0 + i_k)
-
-                out = warp.tile_load(B[i_k], TITLE_SIZE)
                 i_m = warp.randi(state, 0, clen0)
                 while i_m < m:
                     w = warp.randn(state) * w_scale0 + w_loc0
-                    warp.tile_atomic_add(posts[i_m], out * w)
+                    for j in range(n):
+                        if B[i_k, j] > float(0.0):
+                            warp.atomic_add(posts, i_m, j, w)
                     i_m += warp.randi(state, 1, clen0)
 
         def run(w_loc, w_scale, clen, B, seed):
@@ -1267,7 +1202,6 @@ def binary_jitnmm_p_call(
         shape=shape,
         transpose=transpose,
         corder=corder,
-        TITLE_SIZE=B.shape[1],  # Assuming B is [k, n], we want to process n columns at once
         backend=backend,
     )
 
