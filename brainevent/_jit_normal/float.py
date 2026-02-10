@@ -1428,9 +1428,13 @@ def _jitnmm_benchmark_data(*, platform):
             B = jnp.asarray(np.random.randn(b_rows, 10), dtype=dtype)
             seed = jnp.asarray(42, dtype=jnp.uint32)
             name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append(BenchmarkConfig(name, (w_loc, w_scale, clen, B, seed), {
-                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
-            }))
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (w_loc, w_scale, clen, B, seed),
+                    {'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder }
+                )
+            )
     return configs
 
 
