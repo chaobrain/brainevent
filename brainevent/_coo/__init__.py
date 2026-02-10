@@ -23,8 +23,10 @@ from .plasticity_binary import (
 
 __all__ = [
     'COO',
-    'binary_coomv', 'binary_coomv_p', 'binary_coomm', 'binary_coomm_p',
-    'coomv', 'coomv_p', 'coomm', 'coomm_p',
-    'update_coo_on_binary_pre', 'update_coo_on_binary_post',
-    'update_coo_on_binary_pre_p', 'update_coo_on_binary_post_p',
+    'binary_coomv', 'binary_coomv_p',
+    'binary_coomm', 'binary_coomm_p',
+    'coomv', 'coomv_p',
+    'coomm', 'coomm_p',
+    'update_coo_on_binary_pre', 'update_coo_on_binary_pre_p',
+    'update_coo_on_binary_post', 'update_coo_on_binary_post_p',
 ]

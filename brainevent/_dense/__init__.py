@@ -28,8 +28,8 @@ from .plasticity import (
 from .sparse_float import dsfmv, dsfmv_p, sfdvm, sfdvm_p, dsfmm, dsfmm_p, sfdmm, sfdmm_p
 
 __all__ = [
-    'binary_densemv', 'binary_densemv_p', 'binary_densemv_p_call',
-    'binary_densemm', 'binary_densemm_p', 'binary_densemm_p_call',
+    'binary_densemv', 'binary_densemv_p',
+    'binary_densemm', 'binary_densemm_p',
     'indexed_binary_densemv', 'indexed_binary_densemv_p',
     'indexed_binary_densemm', 'indexed_binary_densemm_p',
     'update_dense_on_binary_pre', 'update_dense_on_binary_pre_p',
