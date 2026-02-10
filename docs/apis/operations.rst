@@ -101,10 +101,8 @@ Dense-matrix @ binary-vector / binary-matrix.
 .. autosummary::
    :toctree: generated/
 
-   dbmv
-   dbmv_p
-   bdvm
-   bdvm_p
+   binary_densemv
+   binary_densemv_p
    dbmm
    dbmm_p
    bdmm

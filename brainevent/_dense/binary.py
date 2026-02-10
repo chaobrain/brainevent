@@ -29,90 +29,100 @@ from brainevent._op import jaxinfo_to_warpinfo, numba_kernel, XLACustomKernel, g
 from brainevent._op.benchmark import BenchmarkConfig
 
 __all__ = [
-    'dbmv',
-    'dbmv_p',
-    'bdvm',
-    'bdvm_p',
-    'dbmm',
-    'dbmm_p',
-    'bdmm',
-    'bdmm_p',
+    'binary_densemv', 'binary_densemv_p', 'binary_densemv_p_call',
+    'dbmm', 'dbmm_p',
+    'bdmm', 'bdmm_p',
 ]
 
 
-@namescope
-def dbmv(weights, spikes, *, backend: Optional[str] = None):
-    """
-    Performs event-driven matrix-vector multiplication: `dense matrix @ binary vector`.
+# ==============================================================================
+# Unified binary dense matrix-vector product (binary_densemv)
+# ==============================================================================
+#
+# transpose=False: weights[m,k] @ spikes[k] -> out[m]  (old dbmv)
+# transpose=True:  spikes[k] @ weights[k,n] -> out[n]  (old bdvm)
+#
+# Argument order is always (weights, spikes).
 
-    This function computes the product of a dense weight matrix and a binary
-    vector, where the binary vector often represents events (e.g., neural spikes).
-    It handles potential units associated with the input arrays using the
-    `brainunit` library. The actual computation is dispatched to specialized
-    CPU/GPU kernels via `dmbv_p_call`.
+
+@namescope(static_argnames=['transpose'])
+def binary_densemv(weights, spikes, *, transpose, backend=None):
+    """
+    Performs event-driven dense matrix-vector multiplication.
+
+    When ``transpose=False``, computes ``weights[m,k] @ spikes[k] -> out[m]``
+    (dense matrix times binary vector).
+
+    When ``transpose=True``, computes ``spikes[k] @ weights[k,n] -> out[n]``
+    (binary vector times dense matrix).
 
     Parameters
     ----------
     weights : array_like
-        The weight matrix, typically with shape (M, K). Can be a `brainunit`
-        quantity.
+        The weight matrix. Shape ``(m, k)`` when ``transpose=False``,
+        or ``(k, n)`` when ``transpose=True``. Can be a ``brainunit`` quantity.
     spikes : array_like
-        The binary vector, typically with shape (K,). Can be boolean or float.
-        If boolean, True indicates an event. If float, non-zero values
-        indicate an event. Can be a `brainunit` quantity.
+        The binary vector with shape ``(k,)``. Can be boolean or float.
+        Can be a ``brainunit`` quantity.
+    transpose : bool
+        If False, compute ``weights @ spikes``. If True, compute ``spikes @ weights``.
+    backend : str, optional
+        Backend to use for the computation.
 
     Returns
     -------
     array_like
-        The result of the event-driven matrix-vector multiplication, with shape (M,).
-        If inputs had units, the output will also have appropriate units
-        (product of weights unit and spikes unit).
-
-    Notes
-    -----
-    The core computation performed is equivalent to:
-
-    `output[m] = sum_{k} weights[m, k] * f(spikes[k])`
-
-    where the function `f(s)` is defined as:
-    - If `spikes` is boolean: `f(s) = 1` if `s` is True, `0` otherwise.
-    - If `spikes` is float: `f(s) = 1` if `s > 0`, `0` otherwise.
-
-    The function ensures inputs are JAX arrays and handles unit consistency
-    using `brainunit`. The computation is delegated to a JAX primitive
-    `dbmv_p` for potential hardware acceleration.
+        Result vector. Shape ``(m,)`` when ``transpose=False``,
+        or ``(n,)`` when ``transpose=True``.
     """
-
     with jax.ensure_compile_time_eval():
         weights = u.math.asarray(weights)
         spikes = u.math.asarray(spikes)
     weight_val, wunit = u.split_mantissa_unit(weights)
     spk_val, spkunit = u.split_mantissa_unit(spikes)
-    r = dbmv_p_call(weight_val, spk_val, backend=backend)
+    r = binary_densemv_p_call(weight_val, spk_val, transpose=transpose, backend=backend)
     return u.maybe_decimal(r[0] * wunit * spkunit)
 
 
-def _dbmv_numba_kernel(
+def _binary_densemv_numba_kernel(
     spk_info: jax.ShapeDtypeStruct,
+    transpose: bool,
     **kwargs
 ):
     import numba
 
-    if spk_info.dtype == jnp.bool_:
-        @numba.njit(fastmath=True)
-        def kernel(weights, spikes, posts):
-            posts[:] = 0.
-            for i in range(spikes.shape[0]):
-                if spikes[i]:
-                    posts += weights[:, i]
-
+    if transpose:
+        # weights[k,n], spikes[k] -> out[n]
+        if spk_info.dtype == jnp.bool_:
+            @numba.njit(fastmath=True)
+            def kernel(weights, spikes, posts):
+                posts[:] = 0.
+                for i in range(spikes.shape[0]):
+                    if spikes[i]:
+                        posts += weights[i]
+        else:
+            @numba.njit(fastmath=True)
+            def kernel(weights, spikes, posts):
+                posts[:] = 0.
+                for i in range(spikes.shape[0]):
+                    if spikes[i] > 0.:
+                        posts += weights[i]
     else:
-        @numba.njit(fastmath=True)
-        def kernel(weights, spikes, posts):
-            posts[:] = 0.
-            for i in range(spikes.shape[0]):
-                if spikes[i] > 0.:
-                    posts += weights[:, i]
+        # weights[m,k], spikes[k] -> out[m]
+        if spk_info.dtype == jnp.bool_:
+            @numba.njit(fastmath=True)
+            def kernel(weights, spikes, posts):
+                posts[:] = 0.
+                for i in range(spikes.shape[0]):
+                    if spikes[i]:
+                        posts += weights[:, i]
+        else:
+            @numba.njit(fastmath=True)
+            def kernel(weights, spikes, posts):
+                posts[:] = 0.
+                for i in range(spikes.shape[0]):
+                    if spikes[i] > 0.:
+                        posts += weights[:, i]
 
     def run(weights, spikes):
         return numba_kernel(kernel, outs=kwargs['outs'])(weights, spikes)
@@ -120,130 +130,223 @@ def _dbmv_numba_kernel(
     return run
 
 
-def _dbmv_warp_kernel(
+def _binary_densemv_warp_kernel(
     weight_info: jax.ShapeDtypeStruct,
     spk_info: jax.ShapeDtypeStruct,
+    transpose: bool,
     **kwargs
 ):
     import warp
     from warp.jax_experimental import jax_kernel
 
     spike_length = spk_info.shape[0]
-    m = weight_info.shape[0]
-
     weight_warp_info = jaxinfo_to_warpinfo(weight_info)
     spike_warp_info = jaxinfo_to_warpinfo(spk_info)
     out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
 
-    if spk_info.dtype == jnp.bool_:
-        @warp.kernel
-        def kernel(
-            weights: weight_warp_info,
-            spikes: spike_warp_info,
-            out: out_warp_info,
-        ):
-            i = warp.tid()
-            r = weights.dtype(0.)
-            for j in range(spike_length):
-                if spikes[j]:
-                    r += weights[i, j]
-            out[i] = r
+    if transpose:
+        # weights[k,n], spikes[k] -> out[n]
+        n = weight_info.shape[1]
+
+        if spk_info.dtype == jnp.bool_:
+            @warp.kernel
+            def kernel(
+                weights: weight_warp_info,
+                spikes: spike_warp_info,
+                out: out_warp_info,
+            ):
+                j = warp.tid()
+                r = weights.dtype(0.)
+                for i in range(spike_length):
+                    if spikes[i]:
+                        r += weights[i, j]
+                out[j] = r
+        else:
+            @warp.kernel
+            def kernel(
+                weights: weight_warp_info,
+                spikes: spike_warp_info,
+                out: out_warp_info,
+            ):
+                j = warp.tid()
+                r = weights.dtype(0.)
+                for i in range(spike_length):
+                    if spikes[i] > 0.:
+                        r += weights[i, j]
+                out[j] = r
+
+        def run(weights, spikes):
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=[n], num_outputs=1, output_dims={'out': out_info.shape})
+            return fn(weights, spikes)
 
     else:
-        @warp.kernel
-        def kernel(
-            weights: weight_warp_info,
-            spikes: spike_warp_info,
-            out: out_warp_info,
-        ):
-            i = warp.tid()
-            r = weights.dtype(0.)
-            for j in range(spike_length):
-                if spikes[j] > 0.:
-                    r += weights[i, j]
-            out[i] = r
+        # weights[m,k], spikes[k] -> out[m]
+        m = weight_info.shape[0]
 
-    def run(weights, spikes):
-        out_info = kwargs['outs'][0]
-        fn = jax_kernel(kernel, launch_dims=[m], num_outputs=1, output_dims={'out': out_info.shape})
-        return fn(weights, spikes)
+        if spk_info.dtype == jnp.bool_:
+            @warp.kernel
+            def kernel(
+                weights: weight_warp_info,
+                spikes: spike_warp_info,
+                out: out_warp_info,
+            ):
+                i = warp.tid()
+                r = weights.dtype(0.)
+                for j in range(spike_length):
+                    if spikes[j]:
+                        r += weights[i, j]
+                out[i] = r
+        else:
+            @warp.kernel
+            def kernel(
+                weights: weight_warp_info,
+                spikes: spike_warp_info,
+                out: out_warp_info,
+            ):
+                i = warp.tid()
+                r = weights.dtype(0.)
+                for j in range(spike_length):
+                    if spikes[j] > 0.:
+                        r += weights[i, j]
+                out[i] = r
+
+        def run(weights, spikes):
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=[m], num_outputs=1, output_dims={'out': out_info.shape})
+            return fn(weights, spikes)
 
     return run
 
 
-def _dbmv_pallas_kernel(
+def _binary_densemv_pallas_kernel(
     weight_info: jax.ShapeDtypeStruct,
+    transpose: bool,
     **kwargs
 ):
     from jax.experimental import pallas as pl
 
-    m = weight_info.shape[0]
-    mat_block_dim = generate_block_dim(m, maximum=1024)
+    if transpose:
+        # weights[k,n], spikes[k] -> out[n]
+        n = weight_info.shape[1]
+        block_dim = generate_block_dim(n, maximum=1024)
 
-    def kernel(weight_ref, spike_ref, out_ref):
-        i_row_block = pl.program_id(0)
-        i_row_start = i_row_block * mat_block_dim
-        i_row_mask = i_row_start + jnp.arange(mat_block_dim) < weight_ref.shape[0]
+        def kernel(weight_ref, spike_ref, out_ref):
+            i_col_block = pl.program_id(0)
+            i_col_start = i_col_block * block_dim
+            i_col_mask = i_col_start + jnp.arange(block_dim) < weight_ref.shape[1]
 
-        def loop_fn(i_spike, temp):
-            spike = spike_ref[i_spike]
-            weight_col = weight_ref[pl.ds(i_row_start, mat_block_dim), i_spike]
-            weight_col = jnp.where(i_row_mask, weight_col, 0.0)
-            return jax.lax.cond(
-                spike if spike_ref.dtype == jnp.bool_ else spike > 0.,
-                lambda out: out + weight_col,
-                lambda out: out,
-                temp
+            def loop_fn(i_spike, temp):
+                spike = spike_ref[i_spike]
+                weight_row = weight_ref[i_spike, pl.ds(i_col_start, block_dim)]
+                weight_row = jnp.where(i_col_mask, weight_row, 0.0)
+                return jax.lax.cond(
+                    spike if (spike_ref.dtype == jnp.bool_) else spike > 0.,
+                    lambda out: out + weight_row,
+                    lambda out: out,
+                    temp,
+                )
+
+            i_col_out = jax.lax.fori_loop(
+                0,
+                spike_ref.shape[0],
+                loop_fn,
+                jnp.zeros((block_dim,), dtype=weight_ref.dtype)
             )
+            out_ref[pl.ds(i_col_start, block_dim)] = jnp.where(i_col_mask, i_col_out, 0.0)
 
-        i_row_out = jax.lax.fori_loop(
-            0,
-            spike_ref.shape[0],
-            loop_fn,
-            jnp.zeros((mat_block_dim,), dtype=weight_ref.dtype)
-        )
-        out_ref[pl.ds(i_row_start, mat_block_dim)] = jnp.where(i_row_mask, i_row_out, 0.0)
+        def run(weights, spikes):
+            fn = pl.pallas_call(kernel, grid=(cdiv(n, block_dim),), out_shape=kwargs['outs'])
+            return fn(weights, spikes)
 
-    def run(weights, spikes):
-        fn = pl.pallas_call(kernel, grid=(cdiv(m, mat_block_dim),), out_shape=kwargs['outs'])
-        return fn(weights, spikes)
+    else:
+        # weights[m,k], spikes[k] -> out[m]
+        m = weight_info.shape[0]
+        mat_block_dim = generate_block_dim(m, maximum=1024)
+
+        def kernel(weight_ref, spike_ref, out_ref):
+            i_row_block = pl.program_id(0)
+            i_row_start = i_row_block * mat_block_dim
+            i_row_mask = i_row_start + jnp.arange(mat_block_dim) < weight_ref.shape[0]
+
+            def loop_fn(i_spike, temp):
+                spike = spike_ref[i_spike]
+                weight_col = weight_ref[pl.ds(i_row_start, mat_block_dim), i_spike]
+                weight_col = jnp.where(i_row_mask, weight_col, 0.0)
+                return jax.lax.cond(
+                    spike if spike_ref.dtype == jnp.bool_ else spike > 0.,
+                    lambda out: out + weight_col,
+                    lambda out: out,
+                    temp
+                )
+
+            i_row_out = jax.lax.fori_loop(
+                0,
+                spike_ref.shape[0],
+                loop_fn,
+                jnp.zeros((mat_block_dim,), dtype=weight_ref.dtype)
+            )
+            out_ref[pl.ds(i_row_start, mat_block_dim)] = jnp.where(i_row_mask, i_row_out, 0.0)
+
+        def run(weights, spikes):
+            fn = pl.pallas_call(kernel, grid=(cdiv(m, mat_block_dim),), out_shape=kwargs['outs'])
+            return fn(weights, spikes)
 
     return run
 
 
-def _dbmv_jvp_weights(w_dot, weights, spikes, **kwargs):
-    return dbmv_p_call(w_dot, spikes)
+def _binary_densemv_jvp_weights(w_dot, weights, spikes, *, transpose, **kwargs):
+    return binary_densemv_p_call(w_dot, spikes, transpose=transpose)
 
 
-def _dbmv_jvp_spikes(spk_dot, weights, spikes, **kwargs):
-    return [weights @ spk_dot]
+def _binary_densemv_jvp_spikes(spk_dot, weights, spikes, *, transpose, **kwargs):
+    if transpose:
+        return [spk_dot @ weights]
+    else:
+        return [weights @ spk_dot]
 
 
-def _dbmv_transpose_rule(ct, weights, spikes, **kwargs):
+def _binary_densemv_transpose_rule(ct, weights, spikes, *, transpose, **kwargs):
     ct = ct[0]
     if ad.is_undefined_primal(spikes):
-        ct_events = jnp.matmul(ct, weights)
-        return weights, (ad.Zero(spikes) if type(ct) is ad.Zero else ct_events)
+        if transpose:
+            ct_spikes = jnp.matmul(weights, ct)
+        else:
+            ct_spikes = jnp.matmul(ct, weights)
+        return weights, (ad.Zero(spikes) if type(ct) is ad.Zero else ct_spikes)
     else:
-        ct_weights = jnp.outer(ct, spikes)
+        if transpose:
+            ct_weights = jnp.outer(spikes, ct)
+        else:
+            ct_weights = jnp.outer(ct, spikes)
         return (ad.Zero(weights) if type(ct) is ad.Zero else ct_weights), spikes
 
 
-def _dbmv_batching(args, axes, **kwargs):
-    if axes == (None, 0):
-        r = dbmm(args[0], args[1].T)
-        return [r], [1]
-    if axes == (None, 1):
-        r = dbmm(args[0], args[1])
-        return [r], [1]
+def _binary_densemv_batching(args, axes, *, transpose, **kwargs):
+    if transpose:
+        # weights[k,n], spikes[k] -> out[n]
+        if axes == (None, 0):
+            r = bdmm(args[1], args[0])
+            return [r], [0]
+        if axes == (None, 1):
+            r = bdmm(args[1].T, args[0])
+            return [r], [0]
     else:
-        return general_batching_rule(dbmv_p, args, axes, **kwargs)
+        # weights[m,k], spikes[k] -> out[m]
+        if axes == (None, 0):
+            r = dbmm(args[0], args[1].T)
+            return [r], [1]
+        if axes == (None, 1):
+            r = dbmm(args[0], args[1])
+            return [r], [1]
+    return general_batching_rule(binary_densemv_p, args, axes, transpose=transpose, **kwargs)
 
 
-def _dbmv_benchmark_data(*, platform):
+def _binary_densemv_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for bool_event in (True, False):
+        # transpose=False benchmark (dbmv style)
         weights = jnp.asarray(np.random.randn(n_pre, n_post), dtype=dtype)
         if bool_event:
             spikes = jnp.asarray(np.random.rand(n_post) > (1 - prob), dtype=jnp.bool_)
@@ -254,265 +357,44 @@ def _dbmv_benchmark_data(*, platform):
     return configs
 
 
-def dbmv_p_call(weights, spikes, *, backend: Optional[str] = None):
-    assert spikes.shape[0] == weights.shape[1], (
-        f"spikes shape {spikes.shape} and weights shape {weights.shape} are not compatible"
-    )
-    out = jax.ShapeDtypeStruct([weights.shape[0]], weights.dtype)
-    return dbmv_p(
-        weights,
-        spikes,
-        outs=[out],
-        spk_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
-        weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
-        backend=backend,
-    )
-
-
-dbmv_p = XLACustomKernel('dbmv')
-dbmv_p.def_numba_kernel(_dbmv_numba_kernel)
-dbmv_p.def_warp_kernel(_dbmv_warp_kernel)
-dbmv_p.def_pallas_kernel('gpu', _dbmv_pallas_kernel)
-dbmv_p.def_pallas_kernel('tpu', _dbmv_pallas_kernel)
-dbmv_p.def_jvp_rule2(_dbmv_jvp_weights, _dbmv_jvp_spikes)
-dbmv_p.def_transpose_rule(_dbmv_transpose_rule)
-dbmv_p.def_batching_rule(_dbmv_batching)
-dbmv_p.def_call(dbmv_p_call)
-dbmv_p.def_tags('dense', 'binary')
-dbmv_p.def_benchmark_data(_dbmv_benchmark_data)
-
-
-@namescope
-def bdvm(spikes, weights, *, backend: Optional[str] = None):
-    """Performs event-driven vector-matrix multiplication: `spikes @ weights`.
-
-    This function computes the vector-matrix product of a spike vector and a
-    weight matrix, where the spike vector typically represents binary events
-    (e.g., neural spikes). It handles units attached to input arrays using the
-    `brainunit` library and dispatches computation to specialized kernels via
-    `binary_vec_dot_dense_mat_p_call`.
-
-    Parameters
-    ----------
-    spikes : array_like
-        The spike vector with shape (K,). Can be boolean or float.
-        If boolean, True indicates an event. If float, non-zero values indicate events.
-        Can be a `brainunit` quantity.
-    weights : array_like
-        The weight matrix, typically with shape (K, N). Can be a `brainunit` quantity.
-
-    Returns
-    -------
-    array_like
-        The result of the event-driven vector-matrix multiplication, with shape (N,).
-        If inputs had units, the output will have appropriate units
-        (product of spikes unit and weights unit).
-
-    Notes
-    -----
-    The computation is optimized for sparse activations in the spike vector.
-    For boolean spikes, only the rows corresponding to True values contribute
-    to the output. For float spikes, only non-zero values contribute.
-    """
-    with jax.ensure_compile_time_eval():
-        weights = u.math.asarray(weights)
-        spikes = u.math.asarray(spikes)
-    weight_val, wunit = u.split_mantissa_unit(weights)
-    spk_val, spkunit = u.split_mantissa_unit(spikes)
-    r = bdvm_p_call(spk_val, weight_val, backend=backend)
-    return u.maybe_decimal(r[0] * wunit * spkunit)
-
-
-def _bdvm_numba_kernel(
-    spk_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    import numba
-
-    if spk_info.dtype == jnp.bool_:
-        @numba.njit(fastmath=True)
-        def kernel(spikes, weights, posts):
-            posts[:] = 0.
-            for i in range(spikes.shape[0]):
-                if spikes[i]:
-                    posts += weights[i]
-
-    else:
-        @numba.njit(fastmath=True)
-        def kernel(spikes, weights, posts):
-            posts[:] = 0.
-            for i in range(spikes.shape[0]):
-                if spikes[i] > 0.:
-                    posts += weights[i]
-
-    def run(spikes, weights):
-        return numba_kernel(kernel, outs=kwargs['outs'])(spikes, weights)
-
-    return run
-
-
-def _bdvm_warp_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    spk_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    spike_length = spk_info.shape[0]
-    n = weight_info.shape[1]
-
-    spike_warp_info = jaxinfo_to_warpinfo(spk_info)
-    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if spk_info.dtype == jnp.bool_:
-        @warp.kernel
-        def kernel(
-            spikes: spike_warp_info,
-            weights: weight_warp_info,
-            out: out_warp_info,
-        ):
-            j = warp.tid()
-            r = weights.dtype(0.)
-            for i in range(spike_length):
-                if spikes[i]:
-                    r += weights[i, j]
-            out[j] = r
-
-    else:
-        @warp.kernel
-        def kernel(
-            spikes: spike_warp_info,
-            weights: weight_warp_info,
-            out: out_warp_info,
-        ):
-            j = warp.tid()
-            r = weights.dtype(0.)
-            for i in range(spike_length):
-                if spikes[i] > 0.:
-                    r += weights[i, j]
-            out[j] = r
-
-    def run(spikes, weights):
-        out_info = kwargs['outs'][0]
-        fn = jax_kernel(kernel, launch_dims=[n], num_outputs=1, output_dims={'out': out_info.shape})
-        return fn(spikes, weights)
-
-    return run
-
-
-def _bdvm_pallas_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    from jax.experimental import pallas as pl
-
-    n = weight_info.shape[1]
-    block_dim = generate_block_dim(n, maximum=1024)
-
-    def kernel(spike_ref, weight_ref, out_ref):
-        i_col_block = pl.program_id(0)
-        i_col_start = i_col_block * block_dim
-        i_col_mask = i_col_start + jnp.arange(block_dim) < weight_ref.shape[1]
-
-        def loop_fn(i_spike, temp):
-            spike = spike_ref[i_spike]
-            weight_row = weight_ref[i_spike, pl.ds(i_col_start, block_dim)]
-            weight_row = jnp.where(i_col_mask, weight_row, 0.0)
-            return jax.lax.cond(
-                spike if (spike_ref.dtype == jnp.bool_) else spike > 0.,
-                lambda out: out + weight_row,
-                lambda out: out,
-                temp,
-            )
-
-        i_col_out = jax.lax.fori_loop(
-            0,
-            spike_ref.shape[0],
-            loop_fn,
-            jnp.zeros((block_dim,), dtype=weight_ref.dtype)
+def binary_densemv_p_call(weights, spikes, *, transpose, backend=None):
+    if transpose:
+        assert spikes.shape[0] == weights.shape[0], (
+            f"shapes {spikes.shape} and {weights.shape} not aligned: "
+            f"{spikes.shape[0]} (dim 0) != {weights.shape[0]} (dim 0)"
         )
-        out_ref[pl.ds(i_col_start, block_dim)] = jnp.where(i_col_mask, i_col_out, 0.0)
-
-    def run(spikes, weights):
-        fn = pl.pallas_call(kernel, grid=(cdiv(n, block_dim),), out_shape=kwargs['outs'])
-        return fn(spikes, weights)
-
-    return run
-
-
-def _bdvm_jvp_weights(w_dot, spikes, weights, **kwargs):
-    return bdvm_p_call(spikes, w_dot)
-
-
-def _bdvm_jvp_spikes(spk_dot, spikes, weights, **kwargs):
-    return [spk_dot @ weights]
-
-
-def _bdvm_transpose_rule(ct, spikes, weights, **kwargs):
-    ct = ct[0]
-    if ad.is_undefined_primal(spikes):
-        ct_events = jnp.matmul(weights, ct)
-        return (ad.Zero(spikes) if type(ct) is ad.Zero else ct_events), weights
-
+        out = jax.ShapeDtypeStruct([weights.shape[1]], weights.dtype)
     else:
-        ct_weights = jnp.outer(spikes, ct)
-        return spikes, (ad.Zero(weights) if type(ct) is ad.Zero else ct_weights)
-
-
-def _event_matrix_batching(args, axes, **kwargs):
-    if axes == (0, None):
-        r = bdmm(args[0], args[1])
-        return [r], [0]
-    if axes == (1, None):
-        r = bdmm(args[0].T, args[1])
-        return [r], [0]
-    else:
-        return general_batching_rule(bdvm_p, args, axes, **kwargs)
-
-
-def _bdvm_benchmark_data(*, platform):
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for bool_event in (True, False):
-        if bool_event:
-            spikes = jnp.asarray(np.random.rand(n_pre) > (1 - prob), dtype=jnp.bool_)
-        else:
-            spikes = jnp.asarray(np.random.rand(n_pre), dtype=dtype)
-        weights = jnp.asarray(np.random.randn(n_pre, n_post), dtype=dtype)
-        name = f"{'bool' if bool_event else 'float'}"
-        configs.append(BenchmarkConfig(name, (spikes, weights)))
-    return configs
-
-
-def bdvm_p_call(spikes, weights, *, backend: Optional[str] = None):
-    assert spikes.shape[0] == weights.shape[0], (
-        f"shapes {spikes.shape} and {weights.shape} not aligned: "
-        f"{spikes.shape[0]} (dim 0) > {weights.shape[0]} (dim 0)"
-    )
-    out = jax.ShapeDtypeStruct([weights.shape[1]], weights.dtype)
-    return bdvm_p(
-        spikes,
+        assert spikes.shape[0] == weights.shape[1], (
+            f"spikes shape {spikes.shape} and weights shape {weights.shape} are not compatible"
+        )
+        out = jax.ShapeDtypeStruct([weights.shape[0]], weights.dtype)
+    return binary_densemv_p(
         weights,
+        spikes,
         outs=[out],
+        transpose=transpose,
         spk_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         backend=backend,
     )
 
 
-bdvm_p = XLACustomKernel('binary_vector_dot_dense_matrix')
-bdvm_p.def_numba_kernel(_bdvm_numba_kernel)
-bdvm_p.def_warp_kernel(_bdvm_warp_kernel)
-bdvm_p.def_pallas_kernel('gpu', _bdvm_pallas_kernel)
-bdvm_p.def_pallas_kernel('tpu', _bdvm_pallas_kernel)
-bdvm_p.def_jvp_rule2(_bdvm_jvp_spikes, _bdvm_jvp_weights)
-bdvm_p.def_transpose_rule(_bdvm_transpose_rule)
-bdvm_p.def_batching_rule(_event_matrix_batching)
-bdvm_p.def_call(bdvm_p_call)
-bdvm_p.def_tags('dense', 'binary')
-bdvm_p.def_benchmark_data(_bdvm_benchmark_data)
+binary_densemv_p = XLACustomKernel('binary_densemv')
+binary_densemv_p.def_numba_kernel(_binary_densemv_numba_kernel)
+binary_densemv_p.def_warp_kernel(_binary_densemv_warp_kernel)
+binary_densemv_p.def_pallas_kernel('gpu', _binary_densemv_pallas_kernel)
+binary_densemv_p.def_pallas_kernel('tpu', _binary_densemv_pallas_kernel)
+binary_densemv_p.def_jvp_rule2(_binary_densemv_jvp_weights, _binary_densemv_jvp_spikes)
+binary_densemv_p.def_transpose_rule(_binary_densemv_transpose_rule)
+binary_densemv_p.def_batching_rule(_binary_densemv_batching)
+binary_densemv_p.def_call(binary_densemv_p_call)
+binary_densemv_p.def_tags('dense', 'binary')
+binary_densemv_p.def_benchmark_data(_binary_densemv_benchmark_data)
+
+# ==============================================================================
+# Dense matrix @ binary matrix (dbmm)
+# ==============================================================================
 
 
 @namescope
@@ -818,6 +700,11 @@ dbmm_p.def_batching_rule(_dbmm_batching)
 dbmm_p.def_call(dbmm_p_call)
 dbmm_p.def_tags('dense', 'binary')
 dbmm_p.def_benchmark_data(_dbmm_benchmark_data)
+
+
+# ==============================================================================
+# Binary matrix @ dense matrix (bdmm)
+# ==============================================================================
 
 
 @namescope

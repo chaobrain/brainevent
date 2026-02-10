@@ -40,7 +40,7 @@ from ._csr import (
     csr_solve,
 )
 from ._dense import (
-    dbmv, dbmv_p, bdvm, bdvm_p,
+    binary_densemv, binary_densemv_p, binary_densemv_p_call,
     dbmm, dbmm_p, bdmm, bdmm_p,
     indexed_bdvm, indexed_bdvm_p, indexed_dbmv, indexed_dbmm, indexed_bdmm, indexed_bdmm_p,
     update_dense_on_binary_pre, update_dense_on_binary_pre_p,
@@ -123,7 +123,7 @@ __all__ = [
     'csr_solve',
 
     # --- dense matrix --- #
-    'dbmv', 'dbmv_p', 'bdvm', 'bdvm_p',
+    'binary_densemv', 'binary_densemv_p', 'binary_densemv_p_call',
     'dbmm', 'dbmm_p', 'bdmm', 'bdmm_p',
     'indexed_bdvm', 'indexed_bdvm_p', 'indexed_dbmv', 'indexed_dbmm', 'indexed_bdmm', 'indexed_bdmm_p',
     'update_dense_on_binary_pre', 'update_dense_on_binary_pre_p',
