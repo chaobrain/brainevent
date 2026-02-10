@@ -112,6 +112,7 @@ def test_binary_jitsmv_forward_matches_reference(implementation, shape, transpos
         shape=shape,
         transpose=transpose,
         corder=corder,
+        backend=implementation,
     )
     assert allclose(y, y_ref, rtol=1e-4, atol=1e-4)
     jax.block_until_ready((weight, vector, vector_ref, y, y_ref))
@@ -149,6 +150,7 @@ def test_binary_jitsmm_forward_matches_reference(implementation, shape, transpos
         shape=shape,
         transpose=transpose,
         corder=corder,
+        backend=implementation,
     )
     assert allclose(y, y_ref, rtol=1e-4, atol=1e-4)
     jax.block_until_ready((weight, matrix, matrix_ref, y, y_ref))
@@ -258,6 +260,7 @@ def test_binary_jitsmv_jvp_and_vjp_match_reference(implementation, transpose, co
             shape=shape,
             transpose=transpose,
             corder=corder,
+            backend=implementation,
         )
 
     primals = (jnp.asarray(1.5, dtype=jnp.float32), vector)
@@ -308,6 +311,7 @@ def test_binary_jitsmm_jvp_matches_reference(implementation, transpose, corder):
             shape=shape,
             transpose=transpose,
             corder=corder,
+            backend=implementation,
         )
 
     primals = (jnp.asarray(1.5, dtype=jnp.float32), matrix)
@@ -351,6 +355,7 @@ def test_binary_jitsmv_vmap_matches_reference(implementation, transpose, corder)
             shape=shape,
             transpose=transpose,
             corder=corder,
+            backend=implementation,
         )
     )
     result_binary = f_binary(vectors)
@@ -392,6 +397,7 @@ def test_binary_jitsmm_vmap_matches_reference(implementation, transpose, corder)
             shape=shape,
             transpose=transpose,
             corder=corder,
+            backend=implementation,
         )
     )
     result_binary = f_binary(matrices)

@@ -52,7 +52,7 @@ def test_jits_transpose_symmetry(implementation, transpose, corder):
 def test_jitsmv_forward(implementation, shape, corder):
     weight, prob, seed = 1.5, 0.1, 1234
     vector = jnp.asarray(np.random.rand(shape[1]))
-    dense = jits(weight, prob, seed, shape=shape, corder=corder)
+    dense = jits(weight, prob, seed, shape=shape, corder=corder, backend=implementation)
     out = jitsmv(weight, prob, vector, seed=seed, shape=shape, corder=corder, backend=implementation)
     expected = dense @ vector
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
@@ -67,7 +67,7 @@ def test_jitsmv_forward(implementation, shape, corder):
 def test_jitsmv_transpose_forward(implementation, shape, corder):
     weight, prob, seed = 1.5, 0.1, 1234
     vector = jnp.asarray(np.random.rand(shape[0]))
-    dense = jits(weight, prob, seed, shape=shape, transpose=True, corder=corder)
+    dense = jits(weight, prob, seed, shape=shape, transpose=True, corder=corder, backend=implementation)
     out = jitsmv(weight, prob, vector, seed=seed, shape=shape, transpose=True, corder=corder, backend=implementation)
     expected = dense @ vector
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
@@ -97,7 +97,7 @@ def test_jitsmv_zero_weight(implementation, transpose, corder):
 def test_jitsmm_forward(implementation, shape, k, corder):
     weight, prob, seed = 1.5, 0.1, 1234
     B = jnp.asarray(np.random.rand(shape[1], k))
-    dense = jits(weight, prob, seed, shape=shape, corder=corder)
+    dense = jits(weight, prob, seed, shape=shape, corder=corder, backend=implementation)
     out = jitsmm(weight, prob, B, seed=seed, shape=shape, corder=corder, backend=implementation)
     expected = dense @ B
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
@@ -113,7 +113,7 @@ def test_jitsmm_forward(implementation, shape, k, corder):
 def test_jitsmm_transpose_forward(implementation, shape, k, corder):
     weight, prob, seed = 1.5, 0.1, 1234
     B = jnp.asarray(np.random.rand(shape[0], k))
-    dense = jits(weight, prob, seed, shape=shape, transpose=True, corder=corder)
+    dense = jits(weight, prob, seed, shape=shape, transpose=True, corder=corder, backend=implementation)
     out = jitsmm(weight, prob, B, seed=seed, shape=shape, transpose=True, corder=corder, backend=implementation)
     expected = dense @ B
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
@@ -130,7 +130,7 @@ def test_jitsmv_jvp(implementation, shape, corder, transpose):
     weight, prob, seed = 1.5, 0.1, 1234
     vec_size = shape[0] if transpose else shape[1]
     x = jnp.asarray(np.random.rand(vec_size))
-    dense = jits(1.0, prob, seed, shape=shape, transpose=transpose, corder=corder)
+    dense = jits(1.0, prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
 
     def f_fn(x, w):
         return jitsmv(w, prob, x, seed=seed, shape=shape, transpose=transpose, corder=corder,
@@ -159,7 +159,7 @@ def test_jitsmv_vjp(implementation, shape, corder, transpose):
     weight, prob, seed = 1.5, 0.1, 1234
     vec_size = shape[0] if transpose else shape[1]
     x = jnp.asarray(np.random.rand(vec_size))
-    dense = jits(1.0, prob, seed, shape=shape, transpose=transpose, corder=corder)
+    dense = jits(1.0, prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
 
     def f_fn(x, w):
         return jitsmv(w, prob, x, seed=seed, shape=shape, transpose=transpose, corder=corder,
@@ -188,7 +188,7 @@ def test_jitsmm_jvp(implementation, k, shape, corder, transpose):
     weight, prob, seed = 1.5, 0.1, 1234
     mat_rows = shape[0] if transpose else shape[1]
     X = jnp.asarray(np.random.rand(mat_rows, k))
-    dense = jits(1.0, prob, seed, shape=shape, transpose=transpose, corder=corder)
+    dense = jits(1.0, prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
 
     def f_fn(X, w):
         return jitsmm(w, prob, X, seed=seed, shape=shape, transpose=transpose, corder=corder,
@@ -218,7 +218,7 @@ def test_jitsmm_vjp(implementation, k, shape, corder, transpose):
     weight, prob, seed = 1.5, 0.1, 1234
     mat_rows = shape[0] if transpose else shape[1]
     X = jnp.asarray(np.random.rand(mat_rows, k))
-    dense = jits(1.0, prob, seed, shape=shape, transpose=transpose, corder=corder)
+    dense = jits(1.0, prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
 
     def f_fn(X, w):
         return jitsmm(w, prob, X, seed=seed, shape=shape, transpose=transpose, corder=corder,
