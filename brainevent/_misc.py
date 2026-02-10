@@ -752,6 +752,7 @@ def namescope(
     fn: Callable = None,
     name: str = None,
     prefix: str = "brainevent",
+    module: str = 'brainevent',
     static_argnums: Sequence[int] = (),
     static_argnames: Sequence[str] = ()
 ):
@@ -781,17 +782,23 @@ def namescope(
 
     if fn is None:
         def decorator(fun: Callable):
-            return NameScope(fun,
-                             name=name,
-                             prefix=prefix,
-                             static_argnums=static_argnums,
-                             static_argnames=static_argnames)
+            return NameScope(
+                fun,
+                name=name,
+                prefix=prefix,
+                module=module,
+                static_argnums=static_argnums,
+                static_argnames=static_argnames
+            )
 
         return decorator
 
     else:
-        return NameScope(fn,
-                         name=name,
-                         prefix=prefix,
-                         static_argnums=static_argnums,
-                         static_argnames=static_argnames)
+        return NameScope(
+            fn,
+            name=name,
+            prefix=prefix,
+            module=module,
+            static_argnums=static_argnums,
+            static_argnames=static_argnames
+        )
