@@ -32,6 +32,8 @@ import tempfile
 import warnings
 from typing import Any, Dict, Optional
 
+import jax
+
 __all__ = [
     'load_user_defaults',
     'save_user_defaults',
@@ -282,7 +284,7 @@ def get_pallas_use_mosaic_gpu() -> bool:
 
 def _apply_pallas_mosaic_gpu_config():
     """Apply the pallas_use_mosaic_gpu setting to JAX config."""
-    import jax
+
     try:
         from jax.experimental import pallas  # triggers lazy config registration
         current = jax.config.jax_pallas_use_mosaic_gpu
