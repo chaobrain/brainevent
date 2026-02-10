@@ -428,13 +428,16 @@ def _jitu_pallas_kernel_generator(
 
 
 def _jitu_jvp_wlow(w_low_dot, w_low, w_high, clen, seed, *, shape, transpose: bool, corder: bool, **kwargs):
-    res = jitu_p_call(0., w_low_dot, clen, seed, shape=shape, transpose=transpose, corder=corder)[0]
+    res = jitu_p_call(
+        0., w_low_dot, clen, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+    )[0]
     return [w_low_dot - res]
 
 
 def _jitu_jvp_whigh(w_high_dot, w_low, w_high, clen, seed, *, shape, transpose: bool, corder: bool, **kwargs):
-    res = jitu_p_call(0., w_high_dot, clen, seed, shape=shape, transpose=transpose, corder=corder)
-    return res
+    return jitu_p_call(
+        0., w_high_dot, clen, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+    )
 
 
 def _wlow_tranpose(ct, seed, clen, **kwargs):
@@ -461,6 +464,7 @@ def _jitu_transpose(ct, w_low, w_high, clen, seed, *, shape, transpose: bool, co
             shape=shape,
             transpose=transpose,
             corder=corder,
+            backend=kwargs['backend'],
         )
         return (dwlow, w_high, clen, seed)
     elif ad.is_undefined_primal(w_high):
@@ -471,6 +475,7 @@ def _jitu_transpose(ct, w_low, w_high, clen, seed, *, shape, transpose: bool, co
             shape=shape,
             transpose=transpose,
             corder=corder,
+            backend=kwargs['backend'],
         )
         return (w_low, dwhigh, clen, seed)
     else:
@@ -853,15 +858,21 @@ def _jitumv_pallas_kernel_generator(
 
 
 def _jitumv_jvp_v(v_dot, w_low, w_high, clen, vector, seed, *, shape, transpose, corder, **kwargs):
-    return jitumv_p_call(w_low, w_high, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder)
+    return jitumv_p_call(
+        w_low, w_high, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+    )
 
 
 def _jitumv_jvp_wlow(w_dot, w_low, w_high, clen, vector, seed, *, shape, transpose, corder, **kwargs):
-    return jitumv_p_call(w_dot, w_high, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
+    return jitumv_p_call(
+        w_dot, w_high, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+    )
 
 
 def _jitumv_jvp_whigh(w_dot, w_low, w_high, clen, vector, seed, *, shape, transpose, corder, **kwargs):
-    return jitumv_p_call(w_low, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
+    return jitumv_p_call(
+        w_low, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+    )
 
 
 def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, transpose, corder, **kwargs):
@@ -878,7 +889,8 @@ def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, tra
             seed,
             shape=shape,
             transpose=not transpose,
-            corder=not corder
+            corder=not corder,
+            backend=kwargs['backend'],
         )[0]
         return w_low, w_high, clen, r, seed
     elif ad.is_undefined_primal(w_low):
@@ -902,7 +914,8 @@ def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, tra
             seed,
             shape=shape,
             transpose=transpose,
-            corder=corder
+            corder=corder,
+            backend=kwargs['backend'],
         )[0]
         c_basis = jitumv_p_call(
             ones,
@@ -912,7 +925,8 @@ def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, tra
             seed,
             shape=shape,
             transpose=transpose,
-            corder=corder
+            corder=corder,
+            backend=kwargs['backend'],
         )[0]
         dw_low = jnp.expand_dims(jnp.sum(ct * (c_basis - u_basis)), axis=0)
         return dw_low, w_high, clen, vector, seed
@@ -927,7 +941,8 @@ def _jitumv_transpose_rules(ct, w_low, w_high, clen, vector, seed, *, shape, tra
             seed,
             shape=shape,
             transpose=transpose,
-            corder=corder
+            corder=corder,
+            backend=kwargs['backend'],
         )[0]
         dw_high = jnp.expand_dims(jnp.sum(ct * u_basis), axis=0)
         return w_low, dw_high, clen, vector, seed
@@ -950,6 +965,7 @@ def _jitumv_batching(args, axes, **kwargs):
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             corder=kwargs['corder'],
+            backend=kwargs['backend'],
         )
         return r, [1]
     elif tuple(axes) == (None, None, None, 1, None):
@@ -963,6 +979,7 @@ def _jitumv_batching(args, axes, **kwargs):
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             corder=kwargs['corder'],
+            backend=kwargs['backend'],
         )
         return r, [1]
     else:
@@ -1460,15 +1477,21 @@ def _jitumm_pallas_kernel_generator(
 
 
 def _jitumm_jvp_wlow(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
-    return jitumm_p_call(w_dot, w_high, clen, B, seed, shape=shape, transpose=transpose, corder=corder)
+    return jitumm_p_call(
+        w_dot, w_high, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+    )
 
 
 def _jitumm_jvp_whigh(w_dot, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
-    return jitumm_p_call(w_low, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder)
+    return jitumm_p_call(
+        w_low, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+    )
 
 
 def _jitumm_jvp_B(B_dot, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
-    return jitumm_p_call(w_low, w_high, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder)
+    return jitumm_p_call(
+        w_low, w_high, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+    )
 
 
 def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpose, corder, **kwargs):
@@ -1486,6 +1509,7 @@ def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpos
             shape=shape,
             transpose=not transpose,
             corder=not corder,
+            backend=kwargs['backend'],
         )[0]
         return w_low, w_high, clen, dB, seed
     elif ad.is_undefined_primal(w_low):
@@ -1505,7 +1529,8 @@ def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpos
             seed,
             shape=shape,
             transpose=transpose,
-            corder=corder
+            corder=corder,
+            backend=kwargs['backend'],
         )[0]
         c_basis = jitumm_p_call(
             ones,
@@ -1515,7 +1540,8 @@ def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpos
             seed,
             shape=shape,
             transpose=transpose,
-            corder=corder
+            corder=corder,
+            backend=kwargs['backend'],
         )[0]
         dw_low = jnp.expand_dims(jnp.sum(ct * (c_basis - u_basis)), axis=0)
         return dw_low, w_high, clen, B, seed
@@ -1530,7 +1556,8 @@ def _jitumm_transpose_rules(ct, w_low, w_high, clen, B, seed, *, shape, transpos
             seed,
             shape=shape,
             transpose=transpose,
-            corder=corder
+            corder=corder,
+            backend=kwargs['backend'],
         )[0]
         dw_high = jnp.expand_dims(jnp.sum(ct * u_basis), axis=0)
         return w_low, dw_high, clen, B, seed
@@ -1554,6 +1581,7 @@ def _batching_axis1(args, axis=1, **kwargs):
         shape=kwargs['shape'],
         transpose=kwargs['transpose'],
         corder=kwargs['corder'],
+        backend=kwargs['backend'],
     )
     r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
     return [r], [axis]

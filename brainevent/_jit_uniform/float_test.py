@@ -369,7 +369,9 @@ def test_jitumv_vjp_w_bounds_match_affine_reference_and_finite_difference(
     _assert_allclose(g_w_high, ref_w_high, rtol=1e-2, atol=1e-2)
     _assert_allclose(g_w_low, fd_w_low, rtol=1e-2, atol=1e-2)
     _assert_allclose(g_w_high, fd_w_high, rtol=1e-2, atol=1e-2)
-    jax.block_until_ready((vector, cotangent, w_low, w_high, eps, g_w_low, g_w_high, U, C, u_out, c_out, ref_w_high, ref_w_low, fd_w_low, fd_w_high))
+    jax.block_until_ready(
+        (vector, cotangent, w_low, w_high, eps, g_w_low, g_w_high, U, C, u_out, c_out, ref_w_high, ref_w_low, fd_w_low,
+         fd_w_high))
 
 
 @pytest.mark.skipif(
@@ -446,7 +448,9 @@ def test_jitumm_vjp_w_bounds_match_affine_reference_and_finite_difference(
     _assert_allclose(g_w_high, ref_w_high, rtol=1e-2, atol=1e-2)
     _assert_allclose(g_w_low, fd_w_low, rtol=1e-2, atol=1e-2)
     _assert_allclose(g_w_high, fd_w_high, rtol=1e-2, atol=1e-2)
-    jax.block_until_ready((matrix, cotangent, w_low, w_high, eps, g_w_low, g_w_high, U, C, u_out, c_out, ref_w_high, ref_w_low, fd_w_low, fd_w_high))
+    jax.block_until_ready(
+        (matrix, cotangent, w_low, w_high, eps, g_w_low, g_w_high, U, C, u_out, c_out, ref_w_high, ref_w_low, fd_w_low,
+         fd_w_high))
 
 
 @pytest.mark.skipif(

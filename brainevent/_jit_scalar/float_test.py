@@ -129,7 +129,8 @@ def test_jitsmv_jvp(implementation, shape, corder, transpose):
     dense = jits(1.0, prob, seed, shape=shape, transpose=transpose, corder=corder)
 
     def f_fn(x, w):
-        return jitsmv(w, prob, x, seed=seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
+        return jitsmv(w, prob, x, seed=seed, shape=shape, transpose=transpose, corder=corder,
+                      backend=implementation).sum()
 
     def f_dense(x, w):
         return (dense * w @ x).sum()
@@ -157,7 +158,8 @@ def test_jitsmv_vjp(implementation, shape, corder, transpose):
     dense = jits(1.0, prob, seed, shape=shape, transpose=transpose, corder=corder)
 
     def f_fn(x, w):
-        return jitsmv(w, prob, x, seed=seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
+        return jitsmv(w, prob, x, seed=seed, shape=shape, transpose=transpose, corder=corder,
+                      backend=implementation).sum()
 
     def f_dense(x, w):
         return (dense * w @ x).sum()
@@ -185,7 +187,8 @@ def test_jitsmm_jvp(implementation, k, shape, corder, transpose):
     dense = jits(1.0, prob, seed, shape=shape, transpose=transpose, corder=corder)
 
     def f_fn(X, w):
-        return jitsmm(w, prob, X, seed=seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
+        return jitsmm(w, prob, X, seed=seed, shape=shape, transpose=transpose, corder=corder,
+                      backend=implementation).sum()
 
     def f_dense(X, w):
         return (dense * w @ X).sum()
@@ -214,7 +217,8 @@ def test_jitsmm_vjp(implementation, k, shape, corder, transpose):
     dense = jits(1.0, prob, seed, shape=shape, transpose=transpose, corder=corder)
 
     def f_fn(X, w):
-        return jitsmm(w, prob, X, seed=seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
+        return jitsmm(w, prob, X, seed=seed, shape=shape, transpose=transpose, corder=corder,
+                      backend=implementation).sum()
 
     def f_dense(X, w):
         return (dense * w @ X).sum()
@@ -262,7 +266,8 @@ def test_jitsmv_transpose_vmap_over_vectors(implementation, batch_size, shape, c
     vectors = brainstate.random.rand(batch_size, shape[0])
 
     def f(vector):
-        return jitsmv(weight, prob, vector, seed=seed, shape=shape, transpose=True, corder=corder, backend=implementation)
+        return jitsmv(weight, prob, vector, seed=seed, shape=shape, transpose=True, corder=corder,
+                      backend=implementation)
 
     results = jax.vmap(f)(vectors)
     assert results.shape == (batch_size, shape[1])

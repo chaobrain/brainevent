@@ -320,11 +320,11 @@ def _fcnmv_pallas_kernel(
 
 
 def _fcnmv_jvp_vector(spk_dot, weights, indices, spikes, *, shape, transpose, **kwargs):
-    return fcnmv_p_call(weights, indices, spk_dot, shape=shape, transpose=transpose)
+    return fcnmv_p_call(weights, indices, spk_dot, shape=shape, transpose=transpose, backend=kwargs['backend'], )
 
 
 def _fcnmv_jvp_weights(w_dot, weights, indices, vector, *, shape, transpose, **kwargs):
-    return fcnmv_p_call(w_dot, indices, vector, shape=shape, transpose=transpose)
+    return fcnmv_p_call(w_dot, indices, vector, shape=shape, transpose=transpose, backend=kwargs['backend'], )
 
 
 def _fcnmv_transpose_rule(ct, weights, indices, vector, *, shape, transpose, weight_info, **kwargs):
@@ -344,7 +344,8 @@ def _fcnmv_transpose_rule(ct, weights, indices, vector, *, shape, transpose, wei
                 indices,
                 ct,
                 shape=shape,
-                transpose=not transpose
+                transpose=not transpose,
+                backend=kwargs['backend'],
             )[0]
         return weights, indices, ct_vector
     else:
@@ -357,7 +358,8 @@ def _fcnmv_transpose_rule(ct, weights, indices, vector, *, shape, transpose, wei
                 indices,
                 vector,
                 shape=shape,
-                transpose=transpose
+                transpose=transpose,
+                backend=kwargs['backend'],
             )[0]
             ct_weight = jnp.inner(ct, ct_weight).reshape(*weight_info.shape)
 

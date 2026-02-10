@@ -362,7 +362,9 @@ def _sparse_float_csrmv_jvp_v(v_dot, data, indices, indptr, v, *, shape, transpo
 
 
 def _sparse_float_csrmv_jvp_weights(data_dot, data, indices, indptr, v, *, shape, transpose, **kwargs):
-    return sparse_float_csrmv_p_call(data_dot, indices, indptr, v, shape=shape, transpose=transpose)
+    return sparse_float_csrmv_p_call(
+        data_dot, indices, indptr, v, shape=shape, transpose=transpose, backend=kwargs['backend']
+    )
 
 
 def _sparse_float_csrmv_transpose_rule(ct, data, indices, indptr, events, *, shape, transpose, **kwargs):
@@ -398,6 +400,7 @@ def _sparse_float_csrmv_transpose_rule(ct, data, indices, indptr, events, *, sha
                     events,
                     shape=shape,
                     transpose=transpose,
+                    backend=kwargs['backend'],
                 )[0]
                 ct_values = jnp.inner(ct, ct_values).reshape(*data.aval.shape)
             else:  # heterogeneous values

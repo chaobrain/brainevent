@@ -40,9 +40,9 @@ class IndexedSpFloat1d(IndexedEventRepresentation):
     """
     __module__ = 'brainevent'
 
-    def __init__(self, value):
+    def __init__(self, value, backend=None):
         super().__init__(value)
-        self._spike_indices, self._spike_count = binary_1d_array_index_p_call(self._value)
+        self._spike_indices, self._spike_count = binary_1d_array_index_p_call(self._value, backend=backend)
 
     @property
     def spike_indices(self):

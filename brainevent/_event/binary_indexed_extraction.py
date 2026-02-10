@@ -171,7 +171,7 @@ def _binary_1d_array_index_pallas_kernel(
 
 
 def _binary_1d_array_index_jvp_spikes(spikes_dot, spikes, **kwargs):
-    return binary_1d_array_index_p_call(spikes_dot)
+    return binary_1d_array_index_p_call(spikes_dot, backend=kwargs['backend'], )
 
 
 def _binary_1d_array_index_transpose_rule(ct, spikes, indices, count, **kwargs):

@@ -130,7 +130,7 @@ def csr_diag_position(indptr, indices, shape: brainstate.typing.Size):
     )
 
 
-def csr_diag_add(csr_value, diag_position, diag_value):
+def csr_diag_add(csr_value, diag_position, diag_value, backend=None):
     """
     Add a diagonal value to a sparse matrix represented in CSR format.
 
@@ -147,7 +147,7 @@ def csr_diag_add(csr_value, diag_position, diag_value):
     diag_value = u.Quantity(diag_value).to(u.get_unit(csr_value)).mantissa
     csr_value, csr_unit = u.split_mantissa_unit(csr_value)
     return u.maybe_decimal(
-        csr_diag_add_call(csr_value, diag_position, diag_value)[0]
+        csr_diag_add_call(csr_value, diag_position, diag_value, backend=backend)[0]
         * csr_unit
     )
 
@@ -246,7 +246,7 @@ def _csr_diag_add_jvp_csr_value(dot, csr_value, diag_position, diag_value, **kwa
 
 
 def _csr_diag_add_jvp_diag_value(dot, csr_value, diag_position, diag_value, **kwargs):
-    return csr_diag_add_call(jnp.zeros_like(csr_value), diag_position, dot)
+    return csr_diag_add_call(jnp.zeros_like(csr_value), diag_position, dot, backend=kwargs['backend'], )
 
 
 def _csr_diag_add_transpose_value(ct, csr_value, diag_position, diag_value, **kwargs):

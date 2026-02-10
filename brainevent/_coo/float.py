@@ -568,11 +568,11 @@ def _coomv_pallas_tpu_kernel(
 
 
 def _coomv_jvp_vector(vector_dot, data, row, col, vector, *, shape, transpose, **kwargs):
-    return coomv_p_call(data, row, col, vector_dot, shape=shape, transpose=transpose)
+    return coomv_p_call(data, row, col, vector_dot, shape=shape, transpose=transpose, backend=kwargs['backend'], )
 
 
 def _coomv_jvp_weights(data_dot, data, row, col, vector, *, shape, transpose, **kwargs):
-    return coomv_p_call(data_dot, row, col, vector, shape=shape, transpose=transpose)
+    return coomv_p_call(data_dot, row, col, vector, shape=shape, transpose=transpose, backend=kwargs['backend'], )
 
 
 def _coomv_transpose_rule(ct, data, row, col, v, *, shape, transpose, **kwargs):
@@ -591,7 +591,10 @@ def _coomv_transpose_rule(ct, data, row, col, v, *, shape, transpose, **kwargs):
         if data.aval.shape[0] == 1:  # scalar
             ct_values = coomv_p_call(
                 jnp.ones(1, dtype=data.aval.dtype),
-                row, col, v, shape=shape, transpose=transpose,
+                row, col, v,
+                shape=shape,
+                transpose=transpose,
+                backend=kwargs['backend'],
             )[0]
             ct_values = jnp.inner(ct, ct_values).reshape(*data.aval.shape)
         else:
@@ -609,6 +612,7 @@ def _coomv_batching(args, axes, **kwargs):
             args[3].T,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )
         return r, [1]
 
@@ -621,6 +625,7 @@ def _coomv_batching(args, axes, **kwargs):
             args[3],
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )
         return r, [1]
 
@@ -1157,11 +1162,11 @@ def _coomm_pallas_tpu_kernel(
 
 
 def _coomm_jvp_left(data_dot, data, row, col, B, *, shape, transpose, **kwargs):
-    return coomm_p_call(data_dot, row, col, B, shape=shape, transpose=transpose)
+    return coomm_p_call(data_dot, row, col, B, shape=shape, transpose=transpose, backend=kwargs['backend'], )
 
 
 def _coomm_jvp_right(B_dot, data, row, col, B, *, shape, transpose, **kwargs):
-    return coomm_p_call(data, row, col, B_dot, shape=shape, transpose=transpose)
+    return coomm_p_call(data, row, col, B_dot, shape=shape, transpose=transpose, backend=kwargs['backend'], )
 
 
 def _coomm_transpose_rule(ct, data, row, col, B, *, shape, transpose, **kwargs):
@@ -1195,6 +1200,7 @@ def _coomm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )
         r = jnp.reshape(r[0], [r[0].shape[0], batch_size, n])
         return [r], [1]
@@ -1210,6 +1216,7 @@ def _coomm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )
         r = jnp.reshape(r[0], [r[0].shape[0], batch_size, n])
         return [r], [1]

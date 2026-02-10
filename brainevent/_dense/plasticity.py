@@ -274,7 +274,7 @@ def update_dense_on_binary_post(
     """
     weight, wunit = u.split_mantissa_unit(weight)
     pre_trace = u.Quantity(pre_trace).to(wunit).mantissa
-    weight = u.maybe_decimal(_dense_one_post_prim_call(weight, pre_trace, post_spike, backend=backend)[0] * wunit)
+    weight = u.maybe_decimal(_dense_on_post_prim_call(weight, pre_trace, post_spike, backend=backend)[0] * wunit)
     weight = u.math.clip(weight, w_min, w_max)
     return weight
 
@@ -377,7 +377,7 @@ def _dense_on_post_warp_kernel(
     return run
 
 
-def _dense_one_post_prim_call(weight, pre_trace, post_spike, backend=None):
+def _dense_on_post_prim_call(weight, pre_trace, post_spike, backend=None):
     assert weight.ndim == 2, f'dense_one_pre only support 2D weight. But got shape: {weight.shape}.'
     assert pre_trace.ndim == 1, f'pre_trace should be 1D. But got shape: {pre_trace.shape}.'
     assert post_spike.ndim == 1, f'post_spike should be 1D. But got shape: {post_spike.shape}.'
@@ -443,6 +443,6 @@ update_dense_on_binary_post_p.def_pallas_kernel('tpu', _dense_on_post_pallas_ker
 update_dense_on_binary_post_p.def_jvp_rule2(_dense_on_post_jvp_weight, None, None)
 update_dense_on_binary_post_p.def_transpose_rule(_dense_on_post_transpose_rule)
 update_dense_on_binary_post_p.def_batching_rule(_dense_on_post_batching)
-update_dense_on_binary_post_p.def_call(_dense_one_post_prim_call)
+update_dense_on_binary_post_p.def_call(_dense_on_post_prim_call)
 update_dense_on_binary_post_p.def_tags('dense', 'plasticity')
 update_dense_on_binary_post_p.def_benchmark_data(_update_dense_post_benchmark_data)

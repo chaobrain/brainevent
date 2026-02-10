@@ -27,7 +27,6 @@ JITN_IMPLEMENTATIONS = tuple(jitn_p.available_backends(platform))
 JITNMV_IMPLEMENTATIONS = tuple(jitnmv_p.available_backends(platform))
 JITNMM_IMPLEMENTATIONS = tuple(jitnmm_p.available_backends(platform))
 
-
 JITN_IMPLEMENTATIONS = ['warp']
 JITNMV_IMPLEMENTATIONS = ['warp']
 JITNMM_IMPLEMENTATIONS = ['warp']

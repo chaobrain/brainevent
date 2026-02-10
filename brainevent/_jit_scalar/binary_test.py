@@ -268,7 +268,8 @@ def test_binary_jitsmv_jvp_and_vjp_match_reference(implementation, transpose, co
     g_w2, g_v2 = jax.grad(lambda w, v: f_ref(w, v).sum(), argnums=(0, 1))(*primals)
     assert allclose(g_w1, g_w2, rtol=1e-4, atol=1e-4)
     assert allclose(g_v1, g_v2, rtol=1e-4, atol=1e-4)
-    jax.block_until_ready((vector, primals[0], tangents[0], tangents[1], out1, jvp1, out2, jvp2, g_w1, g_v1, g_w2, g_v2))
+    jax.block_until_ready(
+        (vector, primals[0], tangents[0], tangents[1], out1, jvp1, out2, jvp2, g_w1, g_v1, g_w2, g_v2))
 
 
 @pytest.mark.parametrize('implementation', JITSMM_PARAMS)

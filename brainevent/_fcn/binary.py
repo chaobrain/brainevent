@@ -423,11 +423,11 @@ def _binary_fcnmv_pallas_kernel(
 
 
 def _binary_fcnmv_jvp_spikes(spk_dot, weights, indices, spikes, *, shape, transpose, **kwargs):
-    return fcnmv_p_call(weights, indices, spk_dot, shape=shape, transpose=transpose)
+    return fcnmv_p_call(weights, indices, spk_dot, shape=shape, transpose=transpose, backend=kwargs['backend'], )
 
 
 def _binary_fcnmv_jvp_weights(w_dot, weights, indices, spikes, *, shape, transpose, **kwargs):
-    return binary_fcnmv_p_call(w_dot, indices, spikes, shape=shape, transpose=transpose)
+    return binary_fcnmv_p_call(w_dot, indices, spikes, shape=shape, transpose=transpose, backend=kwargs['backend'], )
 
 
 def _binary_fcnmv_transpose_rule(ct, weights, indices, spikes, *, shape, transpose, weight_info, **kwargs):
@@ -442,7 +442,9 @@ def _binary_fcnmv_transpose_rule(ct, weights, indices, spikes, *, shape, transpo
         if type(ct) is ad.Zero:
             ct_spk = ad.Zero(spikes)
         else:
-            ct_spk = fcnmv_p_call(weights, indices, ct, shape=shape, transpose=not transpose)[0]
+            ct_spk = fcnmv_p_call(
+                weights, indices, ct, shape=shape, transpose=not transpose, backend=kwargs['backend'],
+            )[0]
         return weights, indices, ct_spk
 
     else:
@@ -457,6 +459,7 @@ def _binary_fcnmv_transpose_rule(ct, weights, indices, spikes, *, shape, transpo
                 spikes,
                 shape=shape,
                 transpose=transpose,
+                backend=kwargs['backend'],
             )
             ct_gmax = jnp.inner(ct, ct_gmax[0]).reshape(*weight_info.shape)
         else:
@@ -476,6 +479,7 @@ def _binary_fcnmv_batching(args, axes, **kwargs):
             args[2].T,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )
         return r, [1]
     elif tuple(axes) == (None, None, 1):
@@ -486,6 +490,7 @@ def _binary_fcnmv_batching(args, axes, **kwargs):
             args[2],
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )
         return r, [1]
     else:
@@ -819,7 +824,9 @@ def _binary_fcnmm_jvp_matrix(matrix_dot, weights, indices, matrix, *, shape, tra
 
 
 def _binary_fcnmm_jvp_weights(weights_dot, weights, indices, matrix, *, shape, transpose, **kwargs):
-    return binary_fcnmm_p_call(weights_dot, indices, matrix, shape=shape, transpose=transpose)
+    return binary_fcnmm_p_call(
+        weights_dot, indices, matrix, shape=shape, transpose=transpose, backend=kwargs['backend']
+    )
 
 
 def _binary_fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpose, weight_info, **kwargs):
@@ -856,6 +863,7 @@ def _binary_fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpo
                 matrix,
                 shape=shape,
                 transpose=transpose,
+                backend=kwargs['backend'],
             )[0]
             ct_weight = jnp.sum(ct * ct_weight).reshape(*weight_info.shape)
 
@@ -881,6 +889,7 @@ def _batching_base_fn(args, axis=1, **kwargs):
         B,
         shape=kwargs['shape'],
         transpose=kwargs['transpose'],
+        backend=kwargs['backend'],
     )
     r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
     return [r], [axis]

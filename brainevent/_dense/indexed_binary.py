@@ -265,7 +265,9 @@ def _mv_jvp_spikes(spikes_dot, spikes, indices, count, weights, *, transpose, **
 
 
 def _mv_jvp_weights(weights_dot, spikes, indices, count, weights, *, transpose, **kwargs):
-    return indexed_binary_densemv_p_call(spikes, indices, count, weights_dot, transpose=transpose)
+    return indexed_binary_densemv_p_call(
+        spikes, indices, count, weights_dot, transpose=transpose, backend=kwargs['backend'],
+    )
 
 
 def _mv_transpose(ct, spikes, indices, count, weights, *, transpose, **kwargs):

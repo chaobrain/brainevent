@@ -405,7 +405,7 @@ def _csrmv_jvp_v(v_dot, data, indices, indptr, v, *, shape, transpose, **kwargs)
 
 
 def _csrmv_jvp_weights(data_dot, data, indices, indptr, v, *, shape, transpose, **kwargs):
-    return csrmv_p_call(data_dot, indices, indptr, v, shape=shape, transpose=transpose)
+    return csrmv_p_call(data_dot, indices, indptr, v, shape=shape, transpose=transpose, backend=kwargs['backend'], )
 
 
 def _csrmv_transpose_rule(ct, data, indices, indptr, vector, *, shape, transpose, **kwargs):
@@ -441,6 +441,7 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, vector, *, shape, transpose
                     vector,
                     shape=shape,
                     transpose=transpose,
+                    backend=kwargs['backend'],
                 )[0]
                 ct_values = jnp.inner(ct, ct_values).reshape(*data.aval.shape)
             else:  # heterogeneous values
@@ -459,6 +460,7 @@ def _csrmv_batching(args, axes, **kwargs):
             args[3].T,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )
         return r, [1]
 
@@ -471,6 +473,7 @@ def _csrmv_batching(args, axes, **kwargs):
             args[3],
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )
         return r, [1]
 
@@ -590,6 +593,7 @@ def csrmm(
         B,
         shape=shape,
         transpose=transpose,
+        backend=kwargs['backend'],
     )[0]
     return u.maybe_decimal(res * (unitd * unitb))
 
@@ -986,7 +990,8 @@ def _csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose, **k
                 indptr,
                 B,
                 shape=shape,
-                transpose=transpose
+                transpose=transpose,
+                backend=kwargs['backend'],
             )[0]
             return jnp.expand_dims(jnp.sum(r * ct), axis=0), indices, indptr, B
         else:
@@ -1011,6 +1016,7 @@ def _csrmm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )[0]
         r = jnp.reshape(r, [r.shape[0], batch_size, n])
         return [r], [1]
@@ -1026,6 +1032,7 @@ def _csrmm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )[0]
         r = jnp.reshape(r, [r.shape[0], batch_size, n])
         return [r], [1]
@@ -1041,6 +1048,7 @@ def _csrmm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )[0]
         r = jnp.reshape(r, [r.shape[0], n, batch_size])
         return [r], [2]
@@ -1137,7 +1145,7 @@ def csrmv_yw2y(
 ) -> Data:
     w, w_unit = u.split_mantissa_unit(w)
     y, _ = u.split_mantissa_unit(y)
-    res = csrmv_yw2y_p_call(y, w, indices, indptr, shape=shape, transpose=transpose)[0]
+    res = csrmv_yw2y_p_call(y, w, indices, indptr, shape=shape, transpose=transpose, backend=kwargs['backend'])[0]
     return u.maybe_decimal(res * w_unit)
 
 
@@ -1247,11 +1255,11 @@ def _csrmv_yw2y_pallas_kernels(
 
 
 def _csrmv_yw2y_jvp_y(y_dot, y, w, indices, indptr, *, shape, transpose, **kwargs):
-    return csrmv_yw2y_p_call(y_dot, w, indices, indptr, shape=shape, transpose=transpose)
+    return csrmv_yw2y_p_call(y_dot, w, indices, indptr, shape=shape, transpose=transpose, backend=kwargs['backend'], )
 
 
 def _csrmv_yw2y_jvp_w(w_dot, y, w, indices, indptr, *, shape, transpose, **kwargs):
-    return csrmv_yw2y_p_call(y, w_dot, indices, indptr, shape=shape, transpose=transpose)
+    return csrmv_yw2y_p_call(y, w_dot, indices, indptr, shape=shape, transpose=transpose, backend=kwargs['backend'], )
 
 
 def _csrmv_yw2y_transpose_rule(ct, y, w, indices, indptr, *, shape, transpose, **kwargs):

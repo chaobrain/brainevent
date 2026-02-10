@@ -403,11 +403,19 @@ def _jitn_jvp_wlow(w_loc_dot, w_loc, w_scale, clen, seed, *, out_info, **kwargs)
     return [out]
 
 
-def _jitn_jvp_whigh(w_scale_dot, w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool, backend=None, **kwargs):
-    return jitn_p_call(0., w_scale_dot, clen, seed, shape=shape, transpose=transpose, corder=corder, backend=backend)
+def _jitn_jvp_whigh(
+    w_scale_dot, w_loc, w_scale, clen, seed, *,
+    shape, transpose: bool, corder: bool, backend=None, **kwargs
+):
+    return jitn_p_call(
+        0., w_scale_dot, clen, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
+    )
 
 
-def _jitn_transpose(ct, w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool, backend=None, **kwargs):
+def _jitn_transpose(
+    ct, w_loc, w_scale, clen, seed, *,
+    shape, transpose: bool, corder: bool, backend=None, **kwargs
+):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
     ct = ct[0]
@@ -416,7 +424,9 @@ def _jitn_transpose(ct, w_loc, w_scale, clen, seed, *, shape, transpose: bool, c
         return (dwlow, w_scale, clen, seed)
 
     elif ad.is_undefined_primal(w_scale):
-        forward = jitn_p_call(0., 1., clen, seed, shape=shape, transpose=transpose, corder=corder, backend=backend)[0]
+        forward = jitn_p_call(
+            0., 1., clen, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
+        )[0]
         dwscale = jnp.expand_dims((ct * forward).sum(), axis=0)
         return (w_loc, dwscale, clen, seed)
 
@@ -446,7 +456,9 @@ def _jitn_benchmark_data(*, platform):
     return configs
 
 
-def jitn_p_call(w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool, backend: Optional[str] = None):
+def jitn_p_call(
+    w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool, backend: Optional[str] = None
+):
     seed = _initialize_seed(seed)
     w_loc = jnp.atleast_1d(w_loc)
     w_scale = jnp.atleast_1d(w_scale)
@@ -755,18 +767,26 @@ def _jitnmv_pallas_kernel_generator(
 
 
 def _jitnmv_jvp_v(v_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend=None, **kwargs):
-    return jitnmv_p_call(w_loc, w_scale, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=backend)
+    return jitnmv_p_call(
+        w_loc, w_scale, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
+    )
 
 
 def _jitnmv_jvp_wloc(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend=None, **kwargs):
-    return jitnmv_p_call(w_dot, w_scale, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=backend)
+    return jitnmv_p_call(
+        w_dot, w_scale, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
+    )
 
 
 def _jitnmv_jvp_wscale(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend=None, **kwargs):
-    return jitnmv_p_call(w_loc, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=backend)
+    return jitnmv_p_call(
+        w_loc, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
+    )
 
 
-def _jitnmv_transpose_rules(ct, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend=None, **kwargs):
+def _jitnmv_transpose_rules(
+    ct, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend=None, **kwargs
+):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
 
@@ -943,7 +963,6 @@ jitnmv_p.def_benchmark_data(_jitnmv_benchmark_data)
 
 
 def _jitnmm_numba_kernel_generator(
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
@@ -1037,7 +1056,6 @@ def _jitnmm_warp_kernel_generator(
     out_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
     TITLE_SIZE: int,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
@@ -1229,7 +1247,9 @@ def _jitnmm_pallas_kernel_generator(
 
 
 def _jitnmm_jvp_wloc(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend=None, **kwargs):
-    return jitnmm_p_call(w_dot, w_scale, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=backend)
+    return jitnmm_p_call(
+        w_dot, w_scale, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
+    )
 
 
 def _jitnmm_jvp_wscale(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend=None, **kwargs):
@@ -1237,7 +1257,9 @@ def _jitnmm_jvp_wscale(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose
 
 
 def _jitnmm_jvp_B(B_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend=None, **kwargs):
-    return jitnmm_p_call(w_loc, w_scale, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=backend)
+    return jitnmm_p_call(
+        w_loc, w_scale, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
+    )
 
 
 def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend=None, **kwargs):
@@ -1341,8 +1363,11 @@ def _jitnmm_benchmark_data(*, platform):
     return configs
 
 
-def jitnmm_p_call(w_loc, w_scale, clen, B, seed, *, shape: MatrixShape, transpose: bool, corder: bool,
-                  backend: Optional[str] = None):
+def jitnmm_p_call(
+    w_loc, w_scale, clen, B, seed, *,
+    shape: MatrixShape, transpose: bool, corder: bool,
+    backend: Optional[str] = None
+):
     w_loc = jnp.atleast_1d(w_loc)
     w_scale = jnp.atleast_1d(w_scale)
     clen = jnp.atleast_1d(clen)

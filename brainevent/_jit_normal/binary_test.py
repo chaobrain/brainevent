@@ -454,7 +454,8 @@ def test_binary_jitnmv_vjp_wloc(implementation, shape, corder, transpose):
     z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
 
     def f_fn(wl):
-        return binary_jitnmv(wl, w_scale, prob, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
+        return binary_jitnmv(wl, w_scale, prob, vector, seed, shape=shape, transpose=transpose, corder=corder,
+                             backend=implementation).sum()
 
     def f_ref(wl):
         M = wl * mask + w_scale * z_mask
@@ -481,7 +482,8 @@ def test_binary_jitnmv_vjp_wscale(implementation, shape, corder, transpose):
     z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
 
     def f_fn(ws):
-        return binary_jitnmv(w_loc, ws, prob, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
+        return binary_jitnmv(w_loc, ws, prob, vector, seed, shape=shape, transpose=transpose, corder=corder,
+                             backend=implementation).sum()
 
     def f_ref(ws):
         M = w_loc * mask + ws * z_mask
@@ -510,7 +512,8 @@ def test_binary_jitnmv_vjp_wloc_with_loss(implementation, shape, corder, transpo
     z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
 
     def loss_fn(wl):
-        out = binary_jitnmv(wl, w_scale, prob, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+        out = binary_jitnmv(wl, w_scale, prob, vector, seed, shape=shape, transpose=transpose, corder=corder,
+                            backend=implementation)
         return jnp.sum((out - target) ** 2)
 
     def loss_ref(wl):
@@ -541,7 +544,8 @@ def test_binary_jitnmv_vjp_wscale_with_loss(implementation, shape, corder, trans
     z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
 
     def loss_fn(ws):
-        out = binary_jitnmv(w_loc, ws, prob, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+        out = binary_jitnmv(w_loc, ws, prob, vector, seed, shape=shape, transpose=transpose, corder=corder,
+                            backend=implementation)
         return jnp.sum((out - target) ** 2)
 
     def loss_ref(ws):

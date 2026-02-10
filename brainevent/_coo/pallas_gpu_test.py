@@ -3,14 +3,13 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 
-import numpy as np
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
-from brainevent._coo.float import coomv, coomm, coomv_p, coomm_p
 from brainevent._coo.binary import binary_coomv, binary_coomm
-
+from brainevent._coo.float import coomv, coomm, coomv_p, coomm_p
 
 if jax.default_backend() != 'gpu':
     pytest.skip('Pallas GPU COO tests require a GPU backend.', allow_module_level=True)
@@ -200,15 +199,18 @@ def test_pallas_input_validation_errors():
     weights = jnp.asarray([1.0], dtype=jnp.float32)
 
     with pytest.raises(ValueError, match='same length'):
-        coomv(weights, jnp.array([0, 1], dtype=jnp.int32), jnp.array([0], dtype=jnp.int32), jnp.ones((2,), dtype=jnp.float32),
+        coomv(weights, jnp.array([0, 1], dtype=jnp.int32), jnp.array([0], dtype=jnp.int32),
+              jnp.ones((2,), dtype=jnp.float32),
               shape=(2, 2), transpose=False, backend='pallas')
 
     with pytest.raises(ValueError, match='length must be 1 or nnz'):
-        coomv(jnp.array([1.0, 2.0], dtype=jnp.float32), jnp.array([0], dtype=jnp.int32), jnp.array([1], dtype=jnp.int32),
+        coomv(jnp.array([1.0, 2.0], dtype=jnp.float32), jnp.array([0], dtype=jnp.int32),
+              jnp.array([1], dtype=jnp.int32),
               jnp.ones((2,), dtype=jnp.float32), shape=(2, 2), transpose=False, backend='pallas')
 
     with pytest.raises(ValueError, match='incompatible shape'):
-        coomm(weights, jnp.array([0], dtype=jnp.int32), jnp.array([1], dtype=jnp.int32), jnp.ones((3, 2), dtype=jnp.float32),
+        coomm(weights, jnp.array([0], dtype=jnp.int32), jnp.array([1], dtype=jnp.int32),
+              jnp.ones((3, 2), dtype=jnp.float32),
               shape=(2, 2), transpose=False, backend='pallas')
 
 

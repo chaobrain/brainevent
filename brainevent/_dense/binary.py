@@ -295,7 +295,7 @@ def _binary_densemv_pallas_kernel(
 
 
 def _binary_densemv_jvp_weights(w_dot, weights, spikes, *, transpose, **kwargs):
-    return binary_densemv_p_call(w_dot, spikes, transpose=transpose)
+    return binary_densemv_p_call(w_dot, spikes, transpose=transpose, backend=kwargs['backend'])
 
 
 def _binary_densemv_jvp_spikes(spk_dot, weights, spikes, *, transpose, **kwargs):
@@ -698,7 +698,7 @@ def _binary_densemm_pallas_kernel(
 
 
 def _binary_densemm_jvp_weights(w_dot, weights, spikes, *, transpose, **kwargs):
-    return binary_densemm_p_call(w_dot, spikes, transpose=transpose)
+    return binary_densemm_p_call(w_dot, spikes, transpose=transpose, backend=kwargs['backend'], )
 
 
 def _binary_densemm_jvp_spikes(spk_dot, weights, spikes, *, transpose, **kwargs):
@@ -746,7 +746,7 @@ def _binary_densemm_batching_spikes_fn(args, axes, *, transpose, **kwargs):
             spikes = jnp.transpose(spikes, (1, 0, 2))
             k, batch, n_val = spikes.shape
             events = spikes.reshape(k, batch * n_val)
-            r = binary_densemm_p_call(weights, events, transpose=True)
+            r = binary_densemm_p_call(weights, events, transpose=True, backend=kwargs['backend'], )
             # result: [m, batch*n] -> reshape [m, batch, n]
             r = jnp.reshape(r[0], [r[0].shape[0], batch, n_val])
             return [r], [1]
@@ -754,7 +754,7 @@ def _binary_densemm_batching_spikes_fn(args, axes, *, transpose, **kwargs):
             # [k,batch,n] -> reshape [k, batch*n]
             k, batch, n_val = spikes.shape
             events = spikes.reshape(k, batch * n_val)
-            r = binary_densemm_p_call(weights, events, transpose=True)
+            r = binary_densemm_p_call(weights, events, transpose=True, backend=kwargs['backend'], )
             # result: [m, batch*n] -> reshape [m, batch, n]
             r = jnp.reshape(r[0], [r[0].shape[0], batch, n_val])
             return [r], [1]
@@ -762,7 +762,7 @@ def _binary_densemm_batching_spikes_fn(args, axes, *, transpose, **kwargs):
             # [k,n,batch] -> reshape [k, n*batch]
             k, n_val, batch = spikes.shape
             events = spikes.reshape(k, n_val * batch)
-            r = binary_densemm_p_call(weights, events, transpose=True)
+            r = binary_densemm_p_call(weights, events, transpose=True, backend=kwargs['backend'], )
             # result: [m, n*batch] -> reshape [m, n, batch]
             r = jnp.reshape(r[0], [r[0].shape[0], n_val, batch])
             return [r], [2]
@@ -776,19 +776,19 @@ def _binary_densemm_batching_spikes_fn(args, axes, *, transpose, **kwargs):
             spikes = jnp.transpose(spikes, (1, 0, 2))
             k, maybe_batch1, maybe_batch2 = spikes.shape
             events = spikes.reshape(k, maybe_batch1 * maybe_batch2)
-            r = binary_densemm_p_call(weights, events, transpose=False)
+            r = binary_densemm_p_call(weights, events, transpose=False, backend=kwargs['backend'], )
             r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
             return [r], [1]
         elif spk_axis == 1:
             k, maybe_batch1, maybe_batch2 = spikes.shape
             events = spikes.reshape(k, maybe_batch1 * maybe_batch2)
-            r = binary_densemm_p_call(weights, events, transpose=False)
+            r = binary_densemm_p_call(weights, events, transpose=False, backend=kwargs['backend'], )
             r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
             return [r], [1]
         elif spk_axis == 2:
             k, maybe_batch1, maybe_batch2 = spikes.shape
             events = spikes.reshape(k, maybe_batch1 * maybe_batch2)
-            r = binary_densemm_p_call(weights, events, transpose=False)
+            r = binary_densemm_p_call(weights, events, transpose=False, backend=kwargs['backend'], )
             r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
             return [r], [2]
     return general_batching_rule(binary_densemm_p, args, axes, transpose=transpose, **kwargs)
@@ -808,7 +808,7 @@ def _binary_densemm_batching_weights_fn(args, axes, *, transpose, **kwargs):
             weights = jnp.transpose(weights, (1, 0, 2))
             k, batch, m_val = weights.shape
             w = weights.reshape(k, batch * m_val)
-            r = binary_densemm_p_call(w, spikes, transpose=True)
+            r = binary_densemm_p_call(w, spikes, transpose=True, backend=kwargs['backend'], )
             # result: [batch*m, n] -> reshape [batch, m, n]
             r = jnp.reshape(r[0], [batch, m_val, r[0].shape[1]])
             return [r], [0]
@@ -816,7 +816,7 @@ def _binary_densemm_batching_weights_fn(args, axes, *, transpose, **kwargs):
             # [k,batch,m] -> reshape [k, batch*m]
             k, batch, m_val = weights.shape
             w = weights.reshape(k, batch * m_val)
-            r = binary_densemm_p_call(w, spikes, transpose=True)
+            r = binary_densemm_p_call(w, spikes, transpose=True, backend=kwargs['backend'], )
             # result: [batch*m, n] -> reshape [batch, m, n]
             r = jnp.reshape(r[0], [batch, m_val, r[0].shape[1]])
             return [r], [0]
@@ -824,7 +824,7 @@ def _binary_densemm_batching_weights_fn(args, axes, *, transpose, **kwargs):
             # [k,m,batch] -> reshape [k, m*batch]
             k, m_val, batch = weights.shape
             w = weights.reshape(k, m_val * batch)
-            r = binary_densemm_p_call(w, spikes, transpose=True)
+            r = binary_densemm_p_call(w, spikes, transpose=True, backend=kwargs['backend'], )
             # result: [m*batch, n] -> reshape [m, batch, n]
             r = jnp.reshape(r[0], [m_val, batch, r[0].shape[1]])
             return [r], [1]
@@ -837,20 +837,20 @@ def _binary_densemm_batching_weights_fn(args, axes, *, transpose, **kwargs):
         if w_axis == 0:
             maybe_batch1, maybe_batch2, k = weights.shape
             w = weights.reshape(maybe_batch1 * maybe_batch2, k)
-            r = binary_densemm_p_call(w, spikes, transpose=False)
+            r = binary_densemm_p_call(w, spikes, transpose=False, backend=kwargs['backend'], )
             r = jnp.reshape(r[0], [maybe_batch1, maybe_batch2, r[0].shape[-1]])
             return [r], [0]
         elif w_axis == 1:
             maybe_batch1, maybe_batch2, k = weights.shape
             w = weights.reshape(maybe_batch1 * maybe_batch2, k)
-            r = binary_densemm_p_call(w, spikes, transpose=False)
+            r = binary_densemm_p_call(w, spikes, transpose=False, backend=kwargs['backend'], )
             r = jnp.reshape(r[0], [maybe_batch1, maybe_batch2, r[0].shape[-1]])
             return [r], [1]
         elif w_axis == 2:
             weights = jnp.transpose(weights, (0, 2, 1))
             maybe_batch1, maybe_batch2, k = weights.shape
             w = weights.reshape(maybe_batch1 * maybe_batch2, k)
-            r = binary_densemm_p_call(w, spikes, transpose=False)
+            r = binary_densemm_p_call(w, spikes, transpose=False, backend=kwargs['backend'], )
             r = jnp.reshape(r[0], [maybe_batch1, maybe_batch2, r[0].shape[-1]])
             return [r], [1]
     return general_batching_rule(binary_densemm_p, args, axes, transpose=transpose, **kwargs)

@@ -16,10 +16,12 @@
 # -*- coding: utf-8 -*-
 
 
+import random
+
 import brainstate
 import jax
 import jax.numpy as jnp
-import random
+
 import brainevent
 
 

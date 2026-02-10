@@ -15,8 +15,8 @@
 
 # -*- coding: utf-8 -*-
 
-import jax
 import brainstate
+import jax
 import jax.numpy as jnp
 
 import brainevent

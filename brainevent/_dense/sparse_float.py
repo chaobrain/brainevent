@@ -216,7 +216,7 @@ def _dsfmv_pallas_kernel(
 
 
 def _dsfmv_jvp_weights(w_dot, weights, spikes, **kwargs):
-    return dsfmv_p_call(w_dot, spikes)
+    return dsfmv_p_call(w_dot, spikes, backend=kwargs['backend'], )
 
 
 def _dsfmv_jvp_spikes(spk_dot, weights, spikes, **kwargs):
@@ -443,7 +443,7 @@ def _sfdvm_pallas_kernel(
 
 
 def _sfdvm_jvp_weights(w_dot, spikes, weights, **kwargs):
-    return sfvdm_p_call(spikes, w_dot)
+    return sfvdm_p_call(spikes, w_dot, backend=kwargs['backend'], )
 
 
 def _sfdvm_jvp_spikes(spk_dot, spikes, weights, **kwargs):
@@ -698,7 +698,7 @@ def _dsfmm_pallas_kernel(
 
 
 def _dsfmm_jvp_weights(w_dot, weights, spikes, **kwargs):
-    return dmsfm_p_call(w_dot, spikes)
+    return dmsfm_p_call(w_dot, spikes, backend=kwargs['backend'], )
 
 
 def _dsfmm_jvp_spikes(spk_dot, weights, spikes, **kwargs):
@@ -721,7 +721,7 @@ def _dsfmm_batching_events_fn(args, axis=1, **kwargs):
     assert axis > 0, 'axis must be greater than 0'
     k, maybe_batch1, maybe_batch2 = args[1].shape
     events = args[1].reshape(k, maybe_batch1 * maybe_batch2)
-    r = dmsfm_p_call(args[0], events)
+    r = dmsfm_p_call(args[0], events, backend=kwargs['backend'], )
     r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
     return [r], [axis]
 
@@ -732,7 +732,7 @@ def _dsfmm_batching_weight_fn(args, axis=0, **kwargs):
     assert axis < 2, 'axis must be less than 2'
     maybe_batch1, maybe_batch2, k = args[0].shape
     weights = args[0].reshape(maybe_batch1 * maybe_batch2, k)
-    r = dmsfm_p_call(weights, args[1])
+    r = dmsfm_p_call(weights, args[1], backend=kwargs['backend'], )
     r = jnp.reshape(r[0], [maybe_batch1, maybe_batch2, r[0].shape[-1]])
     return [r], [axis]
 
@@ -977,7 +977,7 @@ def _sfdmm_pallas_kernel(
 
 
 def _sfdmm_jvp_weights(w_dot, spikes, weights, **kwargs):
-    return sfdmm_p_call(spikes, w_dot)
+    return sfdmm_p_call(spikes, w_dot, backend=kwargs['backend'], )
 
 
 def _sfdmm_jvp_spikes(spk_dot, spikes, weights, **kwargs):
@@ -1000,7 +1000,7 @@ def _sfdmm_batching_spk_base_fn(args, axis=0, **kwargs):
     assert args[1].ndim == 2, 'requires 3D weights.'
     maybe_batch1, maybe_batch2, n = args[0].shape
     events = args[0].reshape(maybe_batch1 * maybe_batch2, n)
-    r = sfdmm_p_call(events, args[1])
+    r = sfdmm_p_call(events, args[1], backend=kwargs['backend'], )
     r = jnp.reshape(r[0], [maybe_batch1, maybe_batch2, r[0].shape[1]])
     return [r], [axis]
 
@@ -1011,7 +1011,7 @@ def _sfdmm_batching_weight_base_fn(args, axis=0, **kwargs):
     k, maybe_batch1, maybe_batch2 = args[1].shape
     events = args[0]
     weights = args[1].reshape(k, maybe_batch1 * maybe_batch2)
-    r = sfdmm_p_call(events, weights)
+    r = sfdmm_p_call(events, weights, backend=kwargs['backend'], )
     r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
     return [r], [axis]
 

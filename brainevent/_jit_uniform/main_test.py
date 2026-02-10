@@ -332,7 +332,9 @@ class Test_JITC_To_Dense:
 
         assert allclose(true_wlow_grad, jitc_wlow_grad)
         assert allclose(true_whigh_grad, jitc_whigh_grad)
-        jax.block_until_ready((base, ct, primals, true_wlow_grad, true_whigh_grad, expected_wlow_grad, expected_whigh_grad, jitc_wlow_grad, jitc_whigh_grad))
+        jax.block_until_ready(
+            (base, ct, primals, true_wlow_grad, true_whigh_grad, expected_wlow_grad, expected_whigh_grad,
+             jitc_wlow_grad, jitc_whigh_grad))
 
     @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('corder', [True, False])

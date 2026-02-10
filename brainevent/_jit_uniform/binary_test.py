@@ -294,7 +294,8 @@ def test_binary_jitumv_jvp_and_vjp_match_reference(implementation, transpose, co
     g_v1 = jax.grad(lambda v: f_binary(primals[0], primals[1], v).sum())(primals[2])
     g_v2 = jax.grad(lambda v: f_ref(primals[0], primals[1], v).sum())(primals[2])
     assert allclose(g_v1, g_v2, rtol=1e-2, atol=1e-2)
-    jax.block_until_ready((vector, primals[0], primals[1], tangents[0], tangents[1], tangents[2], out1, jvp1, out2, jvp2, g_v1, g_v2))
+    jax.block_until_ready(
+        (vector, primals[0], primals[1], tangents[0], tangents[1], tangents[2], out1, jvp1, out2, jvp2, g_v1, g_v2))
 
 
 @pytest.mark.parametrize('implementation', JITUMM_PARAMS)
@@ -351,7 +352,8 @@ def test_binary_jitumm_jvp_matches_reference(implementation, transpose, corder):
     g_B1 = jax.grad(lambda B: f_binary(primals[0], primals[1], B).sum())(primals[2])
     g_B2 = jax.grad(lambda B: f_ref(primals[0], primals[1], B).sum())(primals[2])
     assert allclose(g_B1, g_B2, rtol=1e-2, atol=1e-2)
-    jax.block_until_ready((matrix, primals[0], primals[1], tangents[0], tangents[1], tangents[2], out1, jvp1, out2, jvp2, g_B1, g_B2))
+    jax.block_until_ready(
+        (matrix, primals[0], primals[1], tangents[0], tangents[1], tangents[2], out1, jvp1, out2, jvp2, g_B1, g_B2))
 
 
 @pytest.mark.parametrize('implementation', JITUMV_PARAMS)

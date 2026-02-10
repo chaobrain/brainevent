@@ -604,7 +604,9 @@ def _csrmv_jvp_v(v_dot, data, indices, indptr, v, *, shape, transpose, **kwargs)
 
 
 def _csrmv_jvp_weights(data_dot, data, indices, indptr, v, *, shape, transpose, **kwargs):
-    return binary_csrmv_p_call(data_dot, indices, indptr, v, shape=shape, transpose=transpose)
+    return binary_csrmv_p_call(
+        data_dot, indices, indptr, v, shape=shape, transpose=transpose, backend=kwargs['backend']
+    )
 
 
 def _csrmv_transpose_rule(ct, data, indices, indptr, events, *, shape, transpose, **kwargs):
@@ -633,6 +635,7 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, events, *, shape, transpose
                     events,
                     shape=shape,
                     transpose=transpose,
+                    backend=kwargs['backend'],
                 )[0]
                 ct_values = jnp.inner(ct, ct_values).reshape(*data.aval.shape)
             else:  # heterogeneous values
@@ -651,6 +654,7 @@ def _csrmv_batching(args, axes, **kwargs):
             args[3].T,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )
         return r, [1]
 
@@ -663,6 +667,7 @@ def _csrmv_batching(args, axes, **kwargs):
             args[3],
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )
         return r, [1]
 
@@ -1359,6 +1364,7 @@ def _csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose, **k
                 B,
                 shape=shape,
                 transpose=transpose,
+                backend=kwargs['backend'],
             )[0]
             return jnp.expand_dims(jnp.sum(r * ct), axis=0), indices, indptr, B
         else:
@@ -1382,6 +1388,7 @@ def _csrmm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )[0]
         r = jnp.reshape(r, [r.shape[0], batch_size, n])
         return [r], [1]
@@ -1397,6 +1404,7 @@ def _csrmm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )[0]
         r = jnp.reshape(r, [r.shape[0], batch_size, n])
         return [r], [1]
@@ -1412,6 +1420,7 @@ def _csrmm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )[0]
         r = jnp.reshape(r, [r.shape[0], n, batch_size])
         return [r], [2]
