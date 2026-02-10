@@ -448,7 +448,8 @@ def _jitc_homo_matrix_pallas_kernel(
             pallas_kernel_fn,
             grid=(pl.cdiv(dim, block_size),),
             input_output_aliases={3: 0},
-            out_shape=kwargs['outs']
+            out_shape=kwargs['outs'],
+            backend='triton',
         )
         out = kwargs['outs'][0]
         return fn(weight, clen, seed, jnp.zeros(out.shape, out.dtype))
@@ -556,7 +557,6 @@ jits_p = XLACustomKernel('float_jitc_homo_matrix')
 jits_p.def_numba_kernel(_jitc_homo_matrix_numba_kernel)
 jits_p.def_warp_kernel(_jitc_homo_matrix_warp_kernel)
 jits_p.def_pallas_kernel('gpu', _jitc_homo_matrix_pallas_kernel)
-jits_p.def_pallas_kernel('tpu', _jitc_homo_matrix_pallas_kernel)
 jits_p.def_jvp_rule2(_jitc_homo_matrix_jvp_weight, None, None)
 jits_p.def_transpose_rule(_jitc_homo_matrix_transpose)
 jits_p.def_batching_rule(_jitc_homo_matrix_batching)
@@ -755,7 +755,8 @@ def _jitsmv_pallas_kernel(
                 kernel,
                 grid=(pl.cdiv(dim, block_size),),
                 input_output_aliases={4: 0},
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             return fn(weights, clen, vector, seed, _)
 
@@ -811,7 +812,8 @@ def _jitsmv_pallas_kernel(
                 kernel,
                 grid=(dim,),
                 input_output_aliases={4: 0},
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             return fn(weights, clen, vector, seed, _)
 
@@ -1026,7 +1028,6 @@ jitsmv_p = XLACustomKernel('float_jitsmv')
 jitsmv_p.def_numba_kernel(_jitsmv_numba_kernel)
 jitsmv_p.def_warp_kernel(_jitsmv_warp_kernel)
 jitsmv_p.def_pallas_kernel('gpu', _jitsmv_pallas_kernel)
-jitsmv_p.def_pallas_kernel('tpu', _jitsmv_pallas_kernel)
 jitsmv_p.def_jvp_rule2(_jitsmv_jvp_weights, None, _jitsmv_jvp_v, None, None)
 jitsmv_p.def_transpose_rule(_jitsmv_transpose_rules)
 jitsmv_p.def_batching_rule(_jitsmv_batching)
@@ -1243,7 +1244,8 @@ def _jitsmm_pallas_kernel(
             kernel,
             grid=grid,
             input_output_aliases={4: 0},
-            out_shape=kwargs['outs']
+            out_shape=kwargs['outs'],
+            backend='triton',
         )
         return fn(weights, clen, B, seed, _)
 
@@ -1411,7 +1413,6 @@ jitsmm_p = XLACustomKernel('float_jitsmm')
 jitsmm_p.def_numba_kernel(_jitsmm_numba_kernel)
 jitsmm_p.def_warp_kernel(_jitsmm_warp_kernel)
 jitsmm_p.def_pallas_kernel('gpu', _jitsmm_pallas_kernel)
-jitsmm_p.def_pallas_kernel('tpu', _jitsmm_pallas_kernel)
 jitsmm_p.def_jvp_rule2(_jitsmm_jvp_w, None, _jitsmm_jvp_B, None, None)
 jitsmm_p.def_transpose_rule(_jitsmm_transpose_rules)
 jitsmm_p.def_batching_rule(_jitsmm_batching)

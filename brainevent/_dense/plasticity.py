@@ -122,6 +122,7 @@ def _dense_on_pre_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, *
             grid=(pl.cdiv(weight_info.shape[1], block_dim),),
             input_output_aliases={0: 0},
             out_shape=kwargs['outs'],
+            backend='triton',
         )
         return fn(weight, spike, trace)
 
@@ -234,7 +235,6 @@ update_dense_on_binary_pre_p = XLACustomKernel('dense_on_pre')
 update_dense_on_binary_pre_p.def_numba_kernel(_dense_on_pre_numba_kernel)
 update_dense_on_binary_pre_p.def_warp_kernel(_dense_on_pre_warp_kernel)
 update_dense_on_binary_pre_p.def_pallas_kernel('gpu', _dense_on_pre_pallas_kernel)
-update_dense_on_binary_pre_p.def_pallas_kernel('tpu', _dense_on_pre_pallas_kernel)
 update_dense_on_binary_pre_p.def_jvp_rule2(_dense_on_pre_jvp_weight, None, None)
 update_dense_on_binary_pre_p.def_transpose_rule(_dense_on_pre_transpose_rule)
 update_dense_on_binary_pre_p.def_batching_rule(_dense_on_pre_batching)
@@ -331,6 +331,7 @@ def _dense_on_post_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, 
             grid=(pl.cdiv(weight_info.shape[0], block_dim),),
             input_output_aliases={0: 0},
             out_shape=kwargs['outs'],
+            backend='triton',
         )
         return fn(weight, trace, spike)
 
@@ -439,7 +440,6 @@ update_dense_on_binary_post_p = XLACustomKernel('dense_on_post')
 update_dense_on_binary_post_p.def_numba_kernel(_dense_on_post_numba_kernel)
 update_dense_on_binary_post_p.def_warp_kernel(_dense_on_post_warp_kernel)
 update_dense_on_binary_post_p.def_pallas_kernel('gpu', _dense_on_post_pallas_kernel)
-update_dense_on_binary_post_p.def_pallas_kernel('tpu', _dense_on_post_pallas_kernel)
 update_dense_on_binary_post_p.def_jvp_rule2(_dense_on_post_jvp_weight, None, None)
 update_dense_on_binary_post_p.def_transpose_rule(_dense_on_post_transpose_rule)
 update_dense_on_binary_post_p.def_batching_rule(_dense_on_post_batching)

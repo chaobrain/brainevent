@@ -392,7 +392,7 @@ def _jitn_pallas_kernel_generator(
             )
 
     def run(w_loc, w_scale, clen, seed):
-        fn = pl.pallas_call(kernel, grid=(n_block,), input_output_aliases={4: 0}, out_shape=kwargs['outs'])
+        fn = pl.pallas_call(kernel, grid=(n_block,), input_output_aliases={4: 0}, out_shape=kwargs['outs'], backend='triton')
         out = kwargs['outs'][0]
         placeholder = jnp.zeros(out.shape, out.dtype)
         return fn(w_loc, w_scale, clen, seed, placeholder)
@@ -495,7 +495,6 @@ jitn_p = XLACustomKernel('float_jitn')
 jitn_p.def_numba_kernel(_jitn_numba_kernel_generator)
 jitn_p.def_warp_kernel(_jitn_warp_kernel_generator)
 jitn_p.def_pallas_kernel('gpu', _jitn_pallas_kernel_generator)
-jitn_p.def_pallas_kernel('tpu', _jitn_pallas_kernel_generator)
 jitn_p.def_jvp_rule2(_jitn_jvp_wlow, _jitn_jvp_whigh, None, None)
 jitn_p.def_transpose_rule(_jitn_transpose)
 jitn_p.def_batching_rule(_jitn_batching)
@@ -762,7 +761,8 @@ def _jitnmv_pallas_kernel_generator(
             kernel,
             grid=(pl.cdiv(dim, block_size),),
             input_output_aliases={5: 0},
-            out_shape=kwargs['outs']
+            out_shape=kwargs['outs'],
+            backend='triton',
         )
         placeholder = jnp.zeros(kwargs['outs'][0].shape, kwargs['outs'][0].dtype)
         return fn(w_loc, w_scale, clen, vector, seed, placeholder)
@@ -958,7 +958,6 @@ jitnmv_p = XLACustomKernel('float_jitnmv')
 jitnmv_p.def_numba_kernel(_jitnmv_numba_kernel_generator)
 jitnmv_p.def_warp_kernel(_jitnmv_warp_kernel_generator)
 jitnmv_p.def_pallas_kernel('gpu', _jitnmv_pallas_kernel_generator)
-jitnmv_p.def_pallas_kernel('tpu', _jitnmv_pallas_kernel_generator)
 jitnmv_p.def_jvp_rule2(_jitnmv_jvp_wloc, _jitnmv_jvp_wscale, None, _jitnmv_jvp_v, None)
 jitnmv_p.def_transpose_rule(_jitnmv_transpose_rules)
 jitnmv_p.def_batching_rule(_jitnmv_batching)
@@ -1309,7 +1308,8 @@ def _jitnmm_pallas_kernel_generator(
             kernel,
             grid=grid,
             input_output_aliases={5: 0},
-            out_shape=kwargs['outs']
+            out_shape=kwargs['outs'],
+            backend='triton',
         )
         placeholder = jnp.zeros(kwargs['outs'][0].shape, kwargs['outs'][0].dtype)
         return fn(w_loc, w_scale, clen, B, seed, placeholder)
@@ -1488,7 +1488,6 @@ jitnmm_p = XLACustomKernel('float_jitnmm')
 jitnmm_p.def_numba_kernel(_jitnmm_numba_kernel_generator)
 jitnmm_p.def_warp_kernel(_jitnmm_warp_kernel_generator)
 jitnmm_p.def_pallas_kernel('gpu', _jitnmm_pallas_kernel_generator)
-jitnmm_p.def_pallas_kernel('tpu', _jitnmm_pallas_kernel_generator)
 jitnmm_p.def_jvp_rule2(_jitnmm_jvp_wloc, _jitnmm_jvp_wscale, None, _jitnmm_jvp_B, None)
 jitnmm_p.def_transpose_rule(_jitnmm_transpose_rules)
 jitnmm_p.def_batching_rule(_jitnmm_batching)

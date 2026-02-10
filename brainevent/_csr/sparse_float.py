@@ -344,14 +344,15 @@ def _sparse_float_csrmv_pallas_kernel(
     if transpose:
         def kernel(data, indices, indptr, vector):
             fn = pl.pallas_call(
-                mm, grid=(k,), input_output_aliases={4: 0}, out_shape=kwargs['outs']
+                mm, grid=(k,), input_output_aliases={4: 0}, out_shape=kwargs['outs'],
+                backend='triton',
             )
             out_info = kwargs['outs'][0]
             placeholder = jnp.zeros(out_info.shape, out_info.dtype)
             return fn(data, indices, indptr, vector, placeholder)
     else:
         def kernel(data, indices, indptr, vector):
-            fn = pl.pallas_call(mm, grid=(m,), out_shape=kwargs['outs'])
+            fn = pl.pallas_call(mm, grid=(m,), out_shape=kwargs['outs'], backend='triton')
             return fn(data, indices, indptr, vector)
 
     return kernel
@@ -534,7 +535,6 @@ def sparse_float_csrmv_p_call(
 spfloat_csrmv_p = XLACustomKernel('sparse_float_csrmv')
 spfloat_csrmv_p.def_numba_kernel(_sparse_float_csrmv_numba_kernel)
 spfloat_csrmv_p.def_pallas_kernel('gpu', _sparse_float_csrmv_pallas_kernel)
-spfloat_csrmv_p.def_pallas_kernel('tpu', _sparse_float_csrmv_pallas_kernel)
 spfloat_csrmv_p.def_jvp_rule2(_sparse_float_csrmv_jvp_weights, None, None, _sparse_float_csrmv_jvp_v)
 spfloat_csrmv_p.def_transpose_rule(_sparse_float_csrmv_transpose_rule)
 spfloat_csrmv_p.def_batching_rule(_sparse_float_csrmv_batching)
@@ -793,7 +793,8 @@ def _sparse_float_csrmm_pallas_kernel(
                 mm,
                 grid=(k, pl.cdiv(n, block_dim_n)),
                 input_output_aliases={4: 0},
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             out_info = kwargs['outs'][0]
             placeholder = jnp.zeros(out_info.shape, out_info.dtype)
@@ -803,7 +804,8 @@ def _sparse_float_csrmm_pallas_kernel(
             fn = pl.pallas_call(
                 mm,
                 grid=(m, pl.cdiv(n, block_dim_n)),
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             return fn(data, indices, indptr, B)
 
@@ -991,7 +993,6 @@ def sparse_float_csrmm_p_call(
 spfloat_csrmm_p = XLACustomKernel('sparse_float_csrmm')
 spfloat_csrmm_p.def_numba_kernel(_sparse_float_csrmm_numba_kernel)
 spfloat_csrmm_p.def_pallas_kernel('gpu', _sparse_float_csrmm_pallas_kernel)
-spfloat_csrmm_p.def_pallas_kernel('tpu', _sparse_float_csrmm_pallas_kernel)
 spfloat_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 spfloat_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 spfloat_csrmm_p.def_batching_rule(_sparse_float_csrmm_batching)

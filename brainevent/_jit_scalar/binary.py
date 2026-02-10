@@ -436,7 +436,8 @@ def _jitsmv_pallas_kernel(
                 pallas_kernel_fn,
                 grid=(pl.cdiv(dim, block_size),),
                 input_output_aliases={4: 0},
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             return fn(weight, clen, vector, seed, _)
     else:
@@ -469,7 +470,8 @@ def _jitsmv_pallas_kernel(
                 pallas_kernel_fn,
                 grid=(dim,),
                 input_output_aliases={4: 0},
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             return fn(weight, clen, vector, seed, _)
 
@@ -688,7 +690,6 @@ binary_jitsmv_p = XLACustomKernel('binary_jitsmv')
 binary_jitsmv_p.def_numba_kernel(_jitsmv_numba_kernel)
 binary_jitsmv_p.def_warp_kernel(_jitsmv_warp_kernel)
 binary_jitsmv_p.def_pallas_kernel('gpu', _jitsmv_pallas_kernel)
-binary_jitsmv_p.def_pallas_kernel('tpu', _jitsmv_pallas_kernel)
 binary_jitsmv_p.def_jvp_rule2(_jitsmv_jvp_weights, None, _jitsmv_jvp_v, None, None)
 binary_jitsmv_p.def_transpose_rule(_jitsmv_transpose_rules)
 binary_jitsmv_p.def_batching_rule(_jitsmv_batching)
@@ -995,7 +996,8 @@ def _jitsmm_pallas_kernel(
             pallas_kernel_fn,
             grid=grid,
             input_output_aliases={4: 0},
-            out_shape=kwargs['outs']
+            out_shape=kwargs['outs'],
+            backend='triton',
         )
         return fn(weight, clen, B, seed, _)
 
@@ -1167,7 +1169,6 @@ binary_jitsmm_p = XLACustomKernel('binary_jitsmm')
 binary_jitsmm_p.def_numba_kernel(_jitsmm_numba_kernel)
 binary_jitsmm_p.def_warp_kernel(_jitsmm_warp_kernel)
 binary_jitsmm_p.def_pallas_kernel('gpu', _jitsmm_pallas_kernel)
-binary_jitsmm_p.def_pallas_kernel('tpu', _jitsmm_pallas_kernel)
 binary_jitsmm_p.def_jvp_rule2(_jitsmm_jvp_w, None, _jitsmm_jvp_B, None, None)
 binary_jitsmm_p.def_transpose_rule(_jitsmm_transpose_rules)
 binary_jitsmm_p.def_batching_rule(_jitsmm_batching)

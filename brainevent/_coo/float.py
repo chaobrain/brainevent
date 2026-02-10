@@ -410,7 +410,8 @@ def _coomv_pallas_gpu_kernel(
                 mv,
                 grid=(pl.cdiv(nnz, block_dim),),
                 input_output_aliases={4: 0},
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
             return fn(data, row, col, vector, posts)
@@ -460,7 +461,11 @@ def _coomv_pallas_gpu_kernel(
 
         def kernel(data, row, col, vector):
             fn = pl.pallas_call(
-                mv, grid=(pl.cdiv(nnz, block_dim),), input_output_aliases={4: 0}, out_shape=kwargs['outs']
+                mv,
+                grid=(pl.cdiv(nnz, block_dim),),
+                input_output_aliases={4: 0},
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
             return fn(data, row, col, vector, posts)
@@ -559,7 +564,8 @@ def _coomv_pallas_tpu_kernel(
             mv,
             grid=(out_len,),
             input_output_aliases={4: 0},
-            out_shape=kwargs['outs']
+            out_shape=kwargs['outs'],
+            backend='mosaic_tpu',
         )
         posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
         return fn(data, row, col, vector, posts)
@@ -968,7 +974,8 @@ def _coomm_pallas_gpu_kernel(
                 mm,
                 grid=(pl.cdiv(nnz, block_dim), pl.cdiv(n, block_dim_n)),
                 input_output_aliases={4: 0},
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
             return fn(data, row, col, B, posts)
@@ -1042,7 +1049,8 @@ def _coomm_pallas_gpu_kernel(
                 mm,
                 grid=(pl.cdiv(nnz, block_dim), pl.cdiv(n, block_dim_n)),
                 input_output_aliases={4: 0},
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
             return fn(data, row, col, B, posts)
@@ -1153,7 +1161,8 @@ def _coomm_pallas_tpu_kernel(
             mm,
             grid=(out_rows, pl.cdiv(n, block_dim_n)),
             input_output_aliases={4: 0},
-            out_shape=kwargs['outs']
+            out_shape=kwargs['outs'],
+            backend='mosaic_tpu',
         )
         posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
         return fn(data, row, col, B, posts)

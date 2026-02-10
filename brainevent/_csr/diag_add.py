@@ -234,7 +234,8 @@ def _csr_diag_add_pallas_kernel_generator(
             diag_add_pallas,
             grid=(pl.cdiv(total, block_dim),),
             input_output_aliases={3: 0},
-            out_shape=kwargs['outs']
+            out_shape=kwargs['outs'],
+            backend='triton',
         )
         return fn(csr_value, diag_position, diag_value, jnp.array(csr_value))
 
@@ -287,7 +288,6 @@ csr_diag_add_p = XLACustomKernel('csr_diag_add')
 csr_diag_add_p.def_numba_kernel(_csr_diag_add_numba_kernel_generator)
 csr_diag_add_p.def_warp_kernel(_csr_diag_add_warp_kernel_generator)
 csr_diag_add_p.def_pallas_kernel('gpu', _csr_diag_add_pallas_kernel_generator)
-csr_diag_add_p.def_pallas_kernel('tpu', _csr_diag_add_pallas_kernel_generator)
 csr_diag_add_p.def_jvp_rule2(_csr_diag_add_jvp_csr_value, None, _csr_diag_add_jvp_diag_value)
 csr_diag_add_p.def_call(csr_diag_add_call)
 csr_diag_add_p.def_tags('csr', 'diag')

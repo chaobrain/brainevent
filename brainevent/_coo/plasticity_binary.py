@@ -214,7 +214,8 @@ def _coo_on_pre_pallas_kernel(
             kernel,
             grid=(pl.cdiv(n_syn, block_dim),),
             input_output_aliases={0: 0},
-            out_shape=kwargs['outs']
+            out_shape=kwargs['outs'],
+            backend='triton',
         )
         return fn(weight, pre_ids, post_ids, pre_spike, post_trace)
 
@@ -274,7 +275,6 @@ update_coo_on_binary_pre_p = XLACustomKernel('coo_on_pre')
 update_coo_on_binary_pre_p.def_numba_kernel(_coo_on_pre_numba_kernel)
 update_coo_on_binary_pre_p.def_warp_kernel(_coo_on_pre_warp_kernel)
 update_coo_on_binary_pre_p.def_pallas_kernel('gpu', _coo_on_pre_pallas_kernel)
-update_coo_on_binary_pre_p.def_pallas_kernel('tpu', _coo_on_pre_pallas_kernel)
 update_coo_on_binary_pre_p.def_call(_coo_on_pre_prim_call)
 update_coo_on_binary_pre_p.def_tags('coo', 'plasticity')
 update_coo_on_binary_pre_p.def_benchmark_data(_coo_pre_benchmark_data)
@@ -464,7 +464,8 @@ def _coo_on_post_pallas_kernel(
             kernel,
             grid=(pl.cdiv(n_syn, block_dim),),
             input_output_aliases={0: 0},
-            out_shape=kwargs['outs']
+            out_shape=kwargs['outs'],
+            backend='triton',
         )
         return fn(weight, pre_ids, post_ids, pre_trace, post_spike)
 
@@ -525,7 +526,6 @@ update_coo_on_binary_post_p = XLACustomKernel('coo_on_post')
 update_coo_on_binary_post_p.def_numba_kernel(_coo_on_post_numba_kernel)
 update_coo_on_binary_post_p.def_warp_kernel(_coo_on_post_warp_kernel)
 update_coo_on_binary_post_p.def_pallas_kernel('gpu', _coo_on_post_pallas_kernel)
-update_coo_on_binary_post_p.def_pallas_kernel('tpu', _coo_on_post_pallas_kernel)
 update_coo_on_binary_post_p.def_call(_coo_on_post_prim_call)
 update_coo_on_binary_post_p.def_tags('coo', 'plasticity')
 update_coo_on_binary_post_p.def_benchmark_data(_coo_post_benchmark_data)

@@ -255,7 +255,7 @@ def _binary_densemv_pallas_kernel(
             out_ref[pl.ds(i_col_start, block_dim)] = jnp.where(i_col_mask, i_col_out, 0.0)
 
         def run(weights, spikes):
-            fn = pl.pallas_call(kernel, grid=(cdiv(n, block_dim),), out_shape=kwargs['outs'])
+            fn = pl.pallas_call(kernel, grid=(cdiv(n, block_dim),), out_shape=kwargs['outs'], backend='triton')
             return fn(weights, spikes)
 
     else:
@@ -288,7 +288,7 @@ def _binary_densemv_pallas_kernel(
             out_ref[pl.ds(i_row_start, mat_block_dim)] = jnp.where(i_row_mask, i_row_out, 0.0)
 
         def run(weights, spikes):
-            fn = pl.pallas_call(kernel, grid=(cdiv(m, mat_block_dim),), out_shape=kwargs['outs'])
+            fn = pl.pallas_call(kernel, grid=(cdiv(m, mat_block_dim),), out_shape=kwargs['outs'], backend='triton')
             return fn(weights, spikes)
 
     return run
@@ -389,7 +389,6 @@ binary_densemv_p = XLACustomKernel('binary_densemv')
 binary_densemv_p.def_numba_kernel(_binary_densemv_numba_kernel)
 binary_densemv_p.def_warp_kernel(_binary_densemv_warp_kernel)
 binary_densemv_p.def_pallas_kernel('gpu', _binary_densemv_pallas_kernel)
-binary_densemv_p.def_pallas_kernel('tpu', _binary_densemv_pallas_kernel)
 binary_densemv_p.def_jvp_rule2(_binary_densemv_jvp_weights, _binary_densemv_jvp_spikes)
 binary_densemv_p.def_transpose_rule(_binary_densemv_transpose_rule)
 binary_densemv_p.def_batching_rule(_binary_densemv_batching)
@@ -656,7 +655,7 @@ def _binary_densemm_pallas_kernel(
             out_ref[pl.ds(i_m_start, block_dim), i_n] = jnp.where(i_m_mask, final_out, 0.0)
 
         def run(weights, spikes):
-            fn = pl.pallas_call(kernel, grid=(n, cdiv(m, block_dim)), out_shape=kwargs['outs'])
+            fn = pl.pallas_call(kernel, grid=(n, cdiv(m, block_dim)), out_shape=kwargs['outs'], backend='triton')
             return fn(weights, spikes)
 
     else:
@@ -691,7 +690,7 @@ def _binary_densemm_pallas_kernel(
             out_ref[pl.ds(i_m_start, block_dim), i_n] = jnp.where(i_m_mask, final_out, 0.0)
 
         def run(weights, spikes):
-            fn = pl.pallas_call(kernel, grid=(n, cdiv(m, block_dim)), out_shape=kwargs['outs'])
+            fn = pl.pallas_call(kernel, grid=(n, cdiv(m, block_dim)), out_shape=kwargs['outs'], backend='triton')
             return fn(weights, spikes)
 
     return run
@@ -910,7 +909,6 @@ binary_densemm_p = XLACustomKernel('binary_densemm')
 binary_densemm_p.def_numba_kernel(_binary_densemm_numba_kernel)
 binary_densemm_p.def_warp_kernel(_binary_densemm_warp_kernel)
 binary_densemm_p.def_pallas_kernel('gpu', _binary_densemm_pallas_kernel)
-binary_densemm_p.def_pallas_kernel('tpu', _binary_densemm_pallas_kernel)
 binary_densemm_p.def_jvp_rule2(_binary_densemm_jvp_weights, _binary_densemm_jvp_spikes)
 binary_densemm_p.def_transpose_rule(_binary_densemm_transpose_rule)
 binary_densemm_p.def_batching_rule(_binary_densemm_batching)

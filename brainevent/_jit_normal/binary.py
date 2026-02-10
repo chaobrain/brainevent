@@ -484,7 +484,8 @@ def _jitc_mv_normal_pallas_kernel_generator(
             kernel,
             grid=(pl.cdiv(dim, block_size),),
             input_output_aliases={5: 0},
-            out_shape=kwargs['outs']
+            out_shape=kwargs['outs'],
+            backend='triton',
         )
         placeholder = jnp.zeros(kwargs['outs'][0].shape, kwargs['outs'][0].dtype)
         return fn(w_loc, w_scale, clen, vector, seed, placeholder)
@@ -672,7 +673,6 @@ binary_jitnmv_p = XLACustomKernel('event_jitc_mv_normal')
 binary_jitnmv_p.def_numba_kernel(_jitc_mv_normal_numba_kernel_generator)
 binary_jitnmv_p.def_warp_kernel(_jitc_mv_normal_warp_kernel_generator)
 binary_jitnmv_p.def_pallas_kernel('gpu', _jitc_mv_normal_pallas_kernel_generator)
-binary_jitnmv_p.def_pallas_kernel('tpu', _jitc_mv_normal_pallas_kernel_generator)
 binary_jitnmv_p.def_jvp_rule2(_jitc_mv_normal_jvp_wloc, _jitc_mv_normal_jvp_wscale, None, _jitc_mv_normal_jvp_v, None)
 binary_jitnmv_p.def_transpose_rule(_jitc_mv_normal_transpose_rules)
 binary_jitnmv_p.def_batching_rule(_jitc_mv_normal_batching)
@@ -1071,7 +1071,8 @@ def _jitc_mm_normal_pallas_kernel_generator(
             kernel,
             grid=grid,
             input_output_aliases={5: 0},
-            out_shape=kwargs['outs']
+            out_shape=kwargs['outs'],
+            backend='triton',
         )
         placeholder = jnp.zeros(kwargs['outs'][0].shape, kwargs['outs'][0].dtype)
         return fn(w_loc, w_scale, clen, B, seed, placeholder)
@@ -1264,7 +1265,6 @@ binary_jitnmm_p = XLACustomKernel('binary_jitc_mm_normal')
 binary_jitnmm_p.def_numba_kernel(_jitc_mm_normal_numba_kernel_generator)
 binary_jitnmm_p.def_warp_kernel(_jitc_mm_normal_warp_kernel_generator)
 binary_jitnmm_p.def_pallas_kernel('gpu', _jitc_mm_normal_pallas_kernel_generator)
-binary_jitnmm_p.def_pallas_kernel('tpu', _jitc_mm_normal_pallas_kernel_generator)
 binary_jitnmm_p.def_jvp_rule2(_jitc_mm_normal_jvp_wloc, _jitc_mm_normal_jvp_wscale, None, _jitc_mm_normal_jvp_B, None)
 binary_jitnmm_p.def_transpose_rule(_jitc_mm_normal_transpose_rules)
 binary_jitnmm_p.def_batching_rule(_jitc_mm_normal_batching)

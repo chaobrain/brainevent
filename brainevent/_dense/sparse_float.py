@@ -209,7 +209,7 @@ def _dsfmv_pallas_kernel(
         out_ref[safe_rows] = jnp.where(mask, i_row_out, 0.0)
 
     def run(weights, spikes):
-        fn = pl.pallas_call(kernel, grid=(cdiv(weight_info.shape[0], mat_block_dim),), out_shape=kwargs['outs'])
+        fn = pl.pallas_call(kernel, grid=(cdiv(weight_info.shape[0], mat_block_dim),), out_shape=kwargs['outs'], backend='triton')
         return fn(weights, spikes)
 
     return run
@@ -272,7 +272,6 @@ dsfmv_p = XLACustomKernel('dmsfv')
 dsfmv_p.def_numba_kernel(_dsfmv_numba_kernel)
 dsfmv_p.def_warp_kernel(_dsfmv_warp_kernel)
 dsfmv_p.def_pallas_kernel('gpu', _dsfmv_pallas_kernel)
-dsfmv_p.def_pallas_kernel('tpu', _dsfmv_pallas_kernel)
 dsfmv_p.def_jvp_rule2(_dsfmv_jvp_weights, _dsfmv_jvp_spikes)
 dsfmv_p.def_transpose_rule(_dsfmv_transpose_rule)
 dsfmv_p.def_batching_rule(_dsfmv_batching)
@@ -436,7 +435,7 @@ def _sfdvm_pallas_kernel(
         out_ref[safe_cols] = jnp.where(mask, i_col_out, 0.0)
 
     def run(spikes, weights):
-        fn = pl.pallas_call(kernel, grid=(cdiv(weight_info.shape[1], block_dim),), out_shape=kwargs['outs'])
+        fn = pl.pallas_call(kernel, grid=(cdiv(weight_info.shape[1], block_dim),), out_shape=kwargs['outs'], backend='triton')
         return fn(spikes, weights)
 
     return run
@@ -499,7 +498,6 @@ sfdvm_p = XLACustomKernel('sparse_float_vector_dot_dense_matrix')
 sfdvm_p.def_numba_kernel(_sfdvm_numba_kernel)
 sfdvm_p.def_warp_kernel(_sfdvm_warp_kernel)
 sfdvm_p.def_pallas_kernel('gpu', _sfdvm_pallas_kernel)
-sfdvm_p.def_pallas_kernel('tpu', _sfdvm_pallas_kernel)
 sfdvm_p.def_jvp_rule2(_sfdvm_jvp_spikes, _sfdvm_jvp_weights)
 sfdvm_p.def_transpose_rule(_sfdvm_transpose_rule)
 sfdvm_p.def_batching_rule(_event_matrix_batching)
@@ -691,7 +689,7 @@ def _dsfmm_pallas_kernel(
         out_ref[safe_rows, i_n] = jnp.where(mask, final_out, 0.0)
 
     def run(weights, spikes):
-        fn = pl.pallas_call(kernel, grid=(n, cdiv(m, block_dim)), out_shape=kwargs['outs'])
+        fn = pl.pallas_call(kernel, grid=(n, cdiv(m, block_dim)), out_shape=kwargs['outs'], backend='triton')
         return fn(weights, spikes)
 
     return run
@@ -787,7 +785,6 @@ dsfmm_p = XLACustomKernel('dense_matrix_dot_sparse_float_matrix')
 dsfmm_p.def_numba_kernel(_dsfmm_numba_kernel)
 dsfmm_p.def_warp_kernel(_dsfmm_warp_kernel)
 dsfmm_p.def_pallas_kernel('gpu', _dsfmm_pallas_kernel)
-dsfmm_p.def_pallas_kernel('tpu', _dsfmm_pallas_kernel)
 dsfmm_p.def_jvp_rule2(_dsfmm_jvp_weights, _dsfmm_jvp_spikes)
 dsfmm_p.def_transpose_rule(_dsfmm_transpose_rule)
 dsfmm_p.def_batching_rule(_dsfmm_batching)
@@ -970,7 +967,7 @@ def _sfdmm_pallas_kernel(
         out_ref[i_m, safe_cols] = jnp.where(mask, final_out, 0.0)
 
     def run(spikes, weights):
-        fn = pl.pallas_call(kernel, grid=(m, cdiv(n, block_dim)), out_shape=kwargs['outs'])
+        fn = pl.pallas_call(kernel, grid=(m, cdiv(n, block_dim)), out_shape=kwargs['outs'], backend='triton')
         return fn(spikes, weights)
 
     return run
@@ -1066,7 +1063,6 @@ sfdmm_p = XLACustomKernel('sparse_float_matrix_dot_dense_matrix')
 sfdmm_p.def_numba_kernel(_sfdmm_numba_kernel)
 sfdmm_p.def_warp_kernel(_sfdmm_warp_kernel)
 sfdmm_p.def_pallas_kernel('gpu', _sfdmm_pallas_kernel)
-sfdmm_p.def_pallas_kernel('tpu', _sfdmm_pallas_kernel)
 sfdmm_p.def_jvp_rule2(_sfdmm_jvp_spikes, _sfdmm_jvp_weights)
 sfdmm_p.def_transpose_rule(_sfdmm_transpose_rule)
 sfdmm_p.def_batching_rule(_sfdmm_batching)

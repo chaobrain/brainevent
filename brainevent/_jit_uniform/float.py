@@ -328,7 +328,8 @@ def _jitu_pallas_kernel_generator(
             kernel,
             grid=(pl.cdiv(dim, block_size),),
             input_output_aliases={4: 0},
-            out_shape=kwargs['outs']
+            out_shape=kwargs['outs'],
+            backend='triton',
         )
         placeholder = jnp.zeros(kwargs['outs'][0].shape, kwargs['outs'][0].dtype)
         return fn(w_low, w_high, clen, seed, placeholder)
@@ -459,7 +460,6 @@ jitu_p = XLACustomKernel('float_jitu')
 jitu_p.def_numba_kernel(_jitu_numba_kernel_generator)
 jitu_p.def_warp_kernel(_jitu_warp_kernel_generator)
 jitu_p.def_pallas_kernel('gpu', _jitu_pallas_kernel_generator)
-jitu_p.def_pallas_kernel('tpu', _jitu_pallas_kernel_generator)
 jitu_p.def_jvp_rule2(_jitu_jvp_wlow, _jitu_jvp_whigh, None, None)
 jitu_p.def_transpose_rule(_jitu_transpose)
 jitu_p.def_batching_rule(_jitu_batching)
@@ -671,7 +671,8 @@ def _jitumv_pallas_kernel_generator(
             kernel,
             grid=(pl.cdiv(dim, block_size),),
             input_output_aliases={5: 0},
-            out_shape=kwargs['outs']
+            out_shape=kwargs['outs'],
+            backend='triton',
         )
         placeholder = jnp.zeros(kwargs['outs'][0].shape, kwargs['outs'][0].dtype)
         return fn(w_low, w_high, clen, vector, seed, placeholder)
@@ -890,7 +891,6 @@ jitumv_p = XLACustomKernel('float_jitumv')
 jitumv_p.def_numba_kernel(_jitumv_numba_kernel_generator)
 jitumv_p.def_warp_kernel(_jitumv_warp_kernel_generator)
 jitumv_p.def_pallas_kernel('gpu', _jitumv_pallas_kernel_generator)
-jitumv_p.def_pallas_kernel('tpu', _jitumv_pallas_kernel_generator)
 jitumv_p.def_jvp_rule2(_jitumv_jvp_wlow, _jitumv_jvp_whigh, None, _jitumv_jvp_v, None)
 jitumv_p.def_transpose_rule(_jitumv_transpose_rules)
 jitumv_p.def_batching_rule(_jitumv_batching)
@@ -1190,7 +1190,8 @@ def _jitumm_pallas_kernel_generator(
             kernel,
             grid=grid,
             input_output_aliases={5: 0},
-            out_shape=kwargs['outs']
+            out_shape=kwargs['outs'],
+            backend='triton',
         )
         placeholder = jnp.zeros(kwargs['outs'][0].shape, kwargs['outs'][0].dtype)
         return fn(w_low, w_high, clen, B, seed, placeholder)
@@ -1412,7 +1413,6 @@ jitumm_p = XLACustomKernel('float_jitumm')
 jitumm_p.def_numba_kernel(_jitumm_numba_kernel_generator)
 jitumm_p.def_warp_kernel(_jitumm_warp_kernel_generator)
 jitumm_p.def_pallas_kernel('gpu', _jitumm_pallas_kernel_generator)
-jitumm_p.def_pallas_kernel('tpu', _jitumm_pallas_kernel_generator)
 jitumm_p.def_jvp_rule2(_jitumm_jvp_wlow, _jitumm_jvp_whigh, None, _jitumm_jvp_B, None)
 jitumm_p.def_transpose_rule(_jitumm_transpose_rules)
 jitumm_p.def_batching_rule(_jitumm_batching)

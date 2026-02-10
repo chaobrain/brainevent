@@ -275,7 +275,8 @@ def _fcnmv_pallas_kernel(
                 _raw_kernel,
                 grid=(n_pre,),
                 input_output_aliases={3: 0},
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             out_info = kwargs['outs'][0]
             placeholder = jnp.zeros(out_info.shape, out_info.dtype)
@@ -313,7 +314,7 @@ def _fcnmv_pallas_kernel(
             out_ref[i_row] = i_row_sum
 
         def kernel(weights, indices, vector):
-            fn = pl.pallas_call(_raw_kernel, grid=(n_pre,), out_shape=kwargs['outs'])
+            fn = pl.pallas_call(_raw_kernel, grid=(n_pre,), out_shape=kwargs['outs'], backend='triton')
             return fn(weights, indices, vector)
 
     return kernel
@@ -489,7 +490,6 @@ fcnmv_p = XLACustomKernel('fixed_num_mv')
 fcnmv_p.def_numba_kernel(_fcnmv_numba_kernel)
 fcnmv_p.def_warp_kernel(_fcnmv_warp_kernel)
 fcnmv_p.def_pallas_kernel('gpu', _fcnmv_pallas_kernel)
-fcnmv_p.def_pallas_kernel('tpu', _fcnmv_pallas_kernel)
 fcnmv_p.def_jvp_rule2(_fcnmv_jvp_weights, None, _fcnmv_jvp_vector, None)
 fcnmv_p.def_transpose_rule(_fcnmv_transpose_rule)
 fcnmv_p.def_batching_rule(_fcnmv_batching)
@@ -740,7 +740,8 @@ def _fcnmm_pallas_kernel(
                 _raw_kernel,
                 grid=(n_pre, pl.cdiv(matrix_info.shape[1], block_n)),
                 input_output_aliases={3: 0},
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             out_info = kwargs['outs'][0]
             placeholder = jnp.zeros(out_info.shape, out_info.dtype)
@@ -797,7 +798,8 @@ def _fcnmm_pallas_kernel(
                 _raw_kernel,
                 grid=(n_pre, pl.cdiv(matrix_info.shape[1], block_n)),
                 input_output_aliases={3: 0},
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             out_info = kwargs['outs'][0]
             placeholder = jnp.zeros(out_info.shape, out_info.dtype)
@@ -974,7 +976,6 @@ fcnmm_p = XLACustomKernel('fixed_num_mm')
 fcnmm_p.def_numba_kernel(_fcnmm_numba_kernel)
 fcnmm_p.def_warp_kernel(_fcnmm_warp_kernel)
 fcnmm_p.def_pallas_kernel('gpu', _fcnmm_pallas_kernel)
-fcnmm_p.def_pallas_kernel('tpu', _fcnmm_pallas_kernel)
 fcnmm_p.def_jvp_rule2(_fcnmm_jvp_weights, None, _fcnmm_jvp_matrix, None)
 fcnmm_p.def_transpose_rule(_fcnmm_transpose_rule)
 fcnmm_p.def_batching_rule(_fcnmm_batching)

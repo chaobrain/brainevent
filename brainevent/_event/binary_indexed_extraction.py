@@ -164,7 +164,7 @@ def _binary_1d_array_index_pallas_kernel(
 
     def kernel(spikes, indices, count):
         num_blocks = pl.cdiv(spikes_info.shape[0], BLOCK_SIZE)
-        fn = pl.pallas_call(_raw_kernel, grid=(num_blocks,), out_shape=kwargs['outs'])
+        fn = pl.pallas_call(_raw_kernel, grid=(num_blocks,), out_shape=kwargs['outs'], backend='triton')
         return fn(spikes, indices, count)
 
     return kernel
@@ -228,7 +228,6 @@ binary_1d_array_index_p = XLACustomKernel('binary_1d_array_index')
 binary_1d_array_index_p.def_numba_kernel(_binary_1d_array_index_numba_kernel)
 binary_1d_array_index_p.def_warp_kernel(_binary_1d_array_index_warp_kernel)
 binary_1d_array_index_p.def_pallas_kernel('gpu', _binary_1d_array_index_pallas_kernel)
-binary_1d_array_index_p.def_pallas_kernel('tpu', _binary_1d_array_index_pallas_kernel)
 binary_1d_array_index_p.def_jvp_rule2(_binary_1d_array_index_jvp_spikes)
 binary_1d_array_index_p.def_transpose_rule(_binary_1d_array_index_transpose_rule)
 binary_1d_array_index_p.def_batching_rule(_binary_1d_array_index_batching)
