@@ -108,173 +108,91 @@ def binary_jitumm(
 
 def _jitumv_numba_kernel_generator(
     vector_info: jax.ShapeDtypeStruct,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
     import numba
 
     if corder:
-        if transpose:
-            if vector_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True)
-                def kernel_impl(w_low, w_high, clen, vector, seed, posts):
-                    n_col = posts.shape[0]
-                    n_row = vector.shape[0]
-                    w_low0 = w_low[0]
-                    w_high0 = w_high[0]
-                    clen0 = clen[0]
-                    seed0 = seed[0]
-                    np.random.seed(seed0)
-                    for i_col in range(n_col):
-                        i_row = np.random.randint(0, clen0)
-                        out = np.asarray(0., dtype=posts.dtype)
-                        while i_row < n_row:
-                            w = np.random.uniform(low=w_low0, high=w_high0)
-                            if vector[i_row]:
-                                out += w
-                            i_row += np.random.randint(1, clen0)
-                        posts[i_col] = out
-            else:
-                @numba.njit(fastmath=True)
-                def kernel_impl(w_low, w_high, clen, vector, seed, posts):
-                    n_col = posts.shape[0]
-                    n_row = vector.shape[0]
-                    w_low0 = w_low[0]
-                    w_high0 = w_high[0]
-                    clen0 = clen[0]
-                    seed0 = seed[0]
-                    np.random.seed(seed0)
-                    for i_col in range(n_col):
-                        i_row = np.random.randint(0, clen0)
-                        out = np.asarray(0., dtype=posts.dtype)
-                        while i_row < n_row:
-                            w = np.random.uniform(low=w_low0, high=w_high0)
-                            if vector[i_row] > 0.:
-                                out += w
-                            i_row += np.random.randint(1, clen0)
-                        posts[i_col] = out
-
+        if vector_info.dtype == jnp.bool_:
+            @numba.njit(fastmath=True)
+            def kernel_impl(w_low, w_high, clen, vector, seed, posts):
+                n_col = posts.shape[0]
+                n_row = vector.shape[0]
+                w_low0 = w_low[0]
+                w_high0 = w_high[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
+                np.random.seed(seed0)
+                for i_col in range(n_col):
+                    i_row = np.random.randint(0, clen0)
+                    out = np.asarray(0., dtype=posts.dtype)
+                    while i_row < n_row:
+                        w = np.random.uniform(low=w_low0, high=w_high0)
+                        if vector[i_row]:
+                            out += w
+                        i_row += np.random.randint(1, clen0)
+                    posts[i_col] = out
         else:
-            if vector_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True)
-                def kernel_impl(w_low, w_high, clen, vector, seed, posts):
-                    num_row = posts.shape[0]
-                    num_col = vector.shape[0]
-                    w_low0 = w_low[0]
-                    w_high0 = w_high[0]
-                    seed0 = seed[0]
-                    clen0 = clen[0]
-                    np.random.seed(seed0)
-                    for i_row in range(num_row):
-                        i_col = np.random.randint(0, clen0)
-                        out = np.asarray(0., dtype=posts.dtype)
-                        while i_col < num_col:
-                            w = np.random.uniform(low=w_low0, high=w_high0)
-                            if vector[i_col]:
-                                out += w
-                            i_col += np.random.randint(1, clen0)
-                        posts[i_row] = out
-            else:
-                @numba.njit(fastmath=True)
-                def kernel_impl(w_low, w_high, clen, vector, seed, posts):
-                    num_row = posts.shape[0]
-                    num_col = vector.shape[0]
-                    w_low0 = w_low[0]
-                    w_high0 = w_high[0]
-                    seed0 = seed[0]
-                    clen0 = clen[0]
-                    np.random.seed(seed0)
-                    for i_row in range(num_row):
-                        i_col = np.random.randint(0, clen0)
-                        out = np.asarray(0., dtype=posts.dtype)
-                        while i_col < num_col:
-                            w = np.random.uniform(low=w_low0, high=w_high0)
-                            if vector[i_col] > 0.:
-                                out += w
-                            i_col += np.random.randint(1, clen0)
-                        posts[i_row] = out
+            @numba.njit(fastmath=True)
+            def kernel_impl(w_low, w_high, clen, vector, seed, posts):
+                n_col = posts.shape[0]
+                n_row = vector.shape[0]
+                w_low0 = w_low[0]
+                w_high0 = w_high[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
+                np.random.seed(seed0)
+                for i_col in range(n_col):
+                    i_row = np.random.randint(0, clen0)
+                    out = np.asarray(0., dtype=posts.dtype)
+                    while i_row < n_row:
+                        w = np.random.uniform(low=w_low0, high=w_high0)
+                        if vector[i_row] > 0.:
+                            out += w
+                        i_row += np.random.randint(1, clen0)
+                    posts[i_col] = out
+
 
     else:
-        if transpose:
-            if vector_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True)
-                def kernel_impl(w_low, w_high, clen, vector, seed, posts):
-                    posts[:] = 0.
-                    num_col = posts.shape[0]
-                    num_row = vector.shape[0]
-                    w_low0 = w_low[0]
-                    w_high0 = w_high[0]
-                    clen0 = clen[0]
-                    seed0 = seed[0]
-                    np.random.seed(seed0)
-                    for i_row in range(num_row):
-                        v = vector[i_row]
-                        i_col = np.random.randint(0, clen0)
-                        while i_col < num_col:
-                            w = np.random.uniform(low=w_low0, high=w_high0)
-                            if v:
-                                posts[i_col] += w
-                            i_col += np.random.randint(1, clen0)
-            else:
-                @numba.njit(fastmath=True)
-                def kernel_impl(w_low, w_high, clen, vector, seed, posts):
-                    posts[:] = 0.
-                    num_col = posts.shape[0]
-                    num_row = vector.shape[0]
-                    w_low0 = w_low[0]
-                    w_high0 = w_high[0]
-                    clen0 = clen[0]
-                    seed0 = seed[0]
-                    np.random.seed(seed0)
-                    for i_row in range(num_row):
-                        v = vector[i_row] > 0.
-                        i_col = np.random.randint(0, clen0)
-                        while i_col < num_col:
-                            w = np.random.uniform(low=w_low0, high=w_high0)
-                            if v:
-                                posts[i_col] += w
-                            i_col += np.random.randint(1, clen0)
-
+        if vector_info.dtype == jnp.bool_:
+            @numba.njit(fastmath=True)
+            def kernel_impl(w_low, w_high, clen, vector, seed, posts):
+                posts[:] = 0.
+                num_col = posts.shape[0]
+                num_row = vector.shape[0]
+                w_low0 = w_low[0]
+                w_high0 = w_high[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
+                np.random.seed(seed0)
+                for i_row in range(num_row):
+                    v = vector[i_row]
+                    i_col = np.random.randint(0, clen0)
+                    while i_col < num_col:
+                        w = np.random.uniform(low=w_low0, high=w_high0)
+                        if v:
+                            posts[i_col] += w
+                        i_col += np.random.randint(1, clen0)
         else:
-            if vector_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True)
-                def kernel_impl(w_low, w_high, clen, vector, seed, posts):
-                    posts[:] = 0.
-                    num_row = posts.shape[0]
-                    num_col = vector.shape[0]
-                    w_low0 = w_low[0]
-                    w_high0 = w_high[0]
-                    clen0 = clen[0]
-                    seed0 = seed[0]
-                    np.random.seed(seed0)
-                    for i_col in range(num_col):
-                        v = vector[i_col]
-                        i_row = np.random.randint(0, clen0)
-                        while i_row < num_row:
-                            w = np.random.uniform(low=w_low0, high=w_high0)
-                            if v:
-                                posts[i_row] += w
-                            i_row += np.random.randint(1, clen0)
-            else:
-                @numba.njit(fastmath=True)
-                def kernel_impl(w_low, w_high, clen, vector, seed, posts):
-                    posts[:] = 0.
-                    num_row = posts.shape[0]
-                    num_col = vector.shape[0]
-                    w_low0 = w_low[0]
-                    w_high0 = w_high[0]
-                    clen0 = clen[0]
-                    seed0 = seed[0]
-                    np.random.seed(seed0)
-                    for i_col in range(num_col):
-                        v = vector[i_col] > 0.
-                        i_row = np.random.randint(0, clen0)
-                        while i_row < num_row:
-                            w = np.random.uniform(low=w_low0, high=w_high0)
-                            if v:
-                                posts[i_row] += w
-                            i_row += np.random.randint(1, clen0)
+            @numba.njit(fastmath=True)
+            def kernel_impl(w_low, w_high, clen, vector, seed, posts):
+                posts[:] = 0.
+                num_col = posts.shape[0]
+                num_row = vector.shape[0]
+                w_low0 = w_low[0]
+                w_high0 = w_high[0]
+                clen0 = clen[0]
+                seed0 = seed[0]
+                np.random.seed(seed0)
+                for i_row in range(num_row):
+                    v = vector[i_row] > 0.
+                    i_col = np.random.randint(0, clen0)
+                    while i_col < num_col:
+                        w = np.random.uniform(low=w_low0, high=w_high0)
+                        if v:
+                            posts[i_col] += w
+                        i_col += np.random.randint(1, clen0)
 
     def kernel(w_low, w_high, clen, vector, seed):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, vector, seed)
@@ -725,177 +643,93 @@ binary_jitumv_p.def_benchmark_data(_binary_jitumv_benchmark_data)
 
 def _jitumm_numba_kernel_generator(
     B_info: jax.ShapeDtypeStruct,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
     import numba
 
     if corder:
-        if transpose:
-            if B_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True)
-                def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                    m = posts.shape[0]
-                    n = posts.shape[1]
-                    k = B.shape[0]
-                    w_low0 = w_low[0]
-                    w_high0 = w_high[0]
-                    seed0 = seed[0]
-                    clen0 = clen[0]
-                    np.random.seed(seed0)
-                    for i_m in range(m):
-                        i_k = np.random.randint(0, clen0)
-                        out = np.zeros(n, dtype=posts.dtype)
-                        while i_k < k:
-                            w = np.random.uniform(low=w_low0, high=w_high0)
-                            for j in range(B.shape[1]):
-                                if B[i_k, j]:
-                                    out[j] += w
-                            i_k += np.random.randint(1, clen0)
-                        posts[i_m] = out
-            else:
-                @numba.njit(fastmath=True)
-                def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                    m = posts.shape[0]
-                    n = posts.shape[1]
-                    k = B.shape[0]
-                    w_low0 = w_low[0]
-                    w_high0 = w_high[0]
-                    seed0 = seed[0]
-                    clen0 = clen[0]
-                    np.random.seed(seed0)
-                    for i_m in range(m):
-                        i_k = np.random.randint(0, clen0)
-                        out = np.zeros(n, dtype=posts.dtype)
-                        while i_k < k:
-                            w = np.random.uniform(low=w_low0, high=w_high0)
-                            for j in range(B.shape[1]):
-                                if B[i_k, j] > 0.:
-                                    out[j] += w
-                            i_k += np.random.randint(1, clen0)
-                        posts[i_m] = out
-
+        if B_info.dtype == jnp.bool_:
+            @numba.njit(fastmath=True)
+            def kernel_impl(w_low, w_high, clen, B, seed, posts):
+                m = posts.shape[0]
+                n = posts.shape[1]
+                k = B.shape[0]
+                w_low0 = w_low[0]
+                w_high0 = w_high[0]
+                seed0 = seed[0]
+                clen0 = clen[0]
+                np.random.seed(seed0)
+                for i_m in range(m):
+                    i_k = np.random.randint(0, clen0)
+                    out = np.zeros(n, dtype=posts.dtype)
+                    while i_k < k:
+                        w = np.random.uniform(low=w_low0, high=w_high0)
+                        for j in range(B.shape[1]):
+                            if B[i_k, j]:
+                                out[j] += w
+                        i_k += np.random.randint(1, clen0)
+                    posts[i_m] = out
         else:
-            if B_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True)
-                def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                    m = posts.shape[0]
-                    n = posts.shape[1]
-                    k = B.shape[0]
-                    w_low0 = w_low[0]
-                    w_high0 = w_high[0]
-                    seed0 = seed[0]
-                    clen0 = clen[0]
-                    np.random.seed(seed0)
-                    for i_m in range(m):
-                        i_k = np.random.randint(0, clen0)
-                        out = np.zeros(n, dtype=posts.dtype)
-                        while i_k < k:
-                            w = np.random.uniform(low=w_low0, high=w_high0)
-                            for j in range(B.shape[1]):
-                                if B[i_k, j]:
-                                    out[j] += w
-                            i_k += np.random.randint(1, clen0)
-                        posts[i_m] = out
-            else:
-                @numba.njit(fastmath=True)
-                def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                    m = posts.shape[0]
-                    n = posts.shape[1]
-                    k = B.shape[0]
-                    w_low0 = w_low[0]
-                    w_high0 = w_high[0]
-                    seed0 = seed[0]
-                    clen0 = clen[0]
-                    np.random.seed(seed0)
-                    for i_m in range(m):
-                        i_k = np.random.randint(0, clen0)
-                        out = np.zeros(n, dtype=posts.dtype)
-                        while i_k < k:
-                            w = np.random.uniform(low=w_low0, high=w_high0)
-                            for j in range(B.shape[1]):
-                                if B[i_k, j] > 0.:
-                                    out[j] += w
-                            i_k += np.random.randint(1, clen0)
-                        posts[i_m] = out
+            @numba.njit(fastmath=True)
+            def kernel_impl(w_low, w_high, clen, B, seed, posts):
+                m = posts.shape[0]
+                n = posts.shape[1]
+                k = B.shape[0]
+                w_low0 = w_low[0]
+                w_high0 = w_high[0]
+                seed0 = seed[0]
+                clen0 = clen[0]
+                np.random.seed(seed0)
+                for i_m in range(m):
+                    i_k = np.random.randint(0, clen0)
+                    out = np.zeros(n, dtype=posts.dtype)
+                    while i_k < k:
+                        w = np.random.uniform(low=w_low0, high=w_high0)
+                        for j in range(B.shape[1]):
+                            if B[i_k, j] > 0.:
+                                out[j] += w
+                        i_k += np.random.randint(1, clen0)
+                    posts[i_m] = out
+
 
     else:
-        if transpose:
-            if B_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True)
-                def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                    posts[:] = 0.
-                    m = posts.shape[0]
-                    k = B.shape[0]
-                    w_low0 = w_low[0]
-                    w_high0 = w_high[0]
-                    seed0 = seed[0]
-                    clen0 = clen[0]
-                    np.random.seed(seed0)
-                    for i_k in range(k):
-                        indices = np.where(B[i_k])[0]
-                        i_m = np.random.randint(0, clen0)
-                        while i_m < m:
-                            w = np.random.uniform(low=w_low0, high=w_high0)
-                            posts[i_m, indices] += w
-                            i_m += np.random.randint(1, clen0)
-            else:
-                @numba.njit(fastmath=True)
-                def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                    posts[:] = 0.
-                    m = posts.shape[0]
-                    k = B.shape[0]
-                    w_low0 = w_low[0]
-                    w_high0 = w_high[0]
-                    seed0 = seed[0]
-                    clen0 = clen[0]
-                    np.random.seed(seed0)
-                    for i_k in range(k):
-                        indices = np.where(B[i_k] > 0.)[0]
-                        i_m = np.random.randint(0, clen0)
-                        while i_m < m:
-                            w = np.random.uniform(low=w_low0, high=w_high0)
-                            posts[i_m, indices] += w
-                            i_m += np.random.randint(1, clen0)
-
+        if B_info.dtype == jnp.bool_:
+            @numba.njit(fastmath=True)
+            def kernel_impl(w_low, w_high, clen, B, seed, posts):
+                posts[:] = 0.
+                m = posts.shape[0]
+                k = B.shape[0]
+                w_low0 = w_low[0]
+                w_high0 = w_high[0]
+                seed0 = seed[0]
+                clen0 = clen[0]
+                np.random.seed(seed0)
+                for i_k in range(k):
+                    indices = np.where(B[i_k])[0]
+                    i_m = np.random.randint(0, clen0)
+                    while i_m < m:
+                        w = np.random.uniform(low=w_low0, high=w_high0)
+                        posts[i_m, indices] += w
+                        i_m += np.random.randint(1, clen0)
         else:
-            if B_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True)
-                def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                    posts[:] = 0.
-                    m = posts.shape[0]
-                    k = B.shape[0]
-                    w_low0 = w_low[0]
-                    w_high0 = w_high[0]
-                    seed0 = seed[0]
-                    clen0 = clen[0]
-                    np.random.seed(seed0)
-                    for i_k in range(k):
-                        indices = np.where(B[i_k])[0]
-                        i_m = np.random.randint(0, clen0)
-                        while i_m < m:
-                            w = np.random.uniform(low=w_low0, high=w_high0)
-                            posts[i_m, indices] += w
-                            i_m += np.random.randint(1, clen0)
-            else:
-                @numba.njit(fastmath=True)
-                def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                    posts[:] = 0.
-                    m = posts.shape[0]
-                    k = B.shape[0]
-                    w_low0 = w_low[0]
-                    w_high0 = w_high[0]
-                    seed0 = seed[0]
-                    clen0 = clen[0]
-                    np.random.seed(seed0)
-                    for i_k in range(k):
-                        indices = np.where(B[i_k] > 0.)[0]
-                        i_m = np.random.randint(0, clen0)
-                        while i_m < m:
-                            w = np.random.uniform(low=w_low0, high=w_high0)
-                            posts[i_m, indices] += w
-                            i_m += np.random.randint(1, clen0)
+            @numba.njit(fastmath=True)
+            def kernel_impl(w_low, w_high, clen, B, seed, posts):
+                posts[:] = 0.
+                m = posts.shape[0]
+                k = B.shape[0]
+                w_low0 = w_low[0]
+                w_high0 = w_high[0]
+                seed0 = seed[0]
+                clen0 = clen[0]
+                np.random.seed(seed0)
+                for i_k in range(k):
+                    indices = np.where(B[i_k] > 0.)[0]
+                    i_m = np.random.randint(0, clen0)
+                    while i_m < m:
+                        w = np.random.uniform(low=w_low0, high=w_high0)
+                        posts[i_m, indices] += w
+                        i_m += np.random.randint(1, clen0)
 
     def kernel(w_low, w_high, clen, B, seed):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, B, seed)
@@ -1047,7 +881,6 @@ def _jitumm_warp_kernel_generator(
 def _jitumm_pallas_kernel_generator(
     B_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
@@ -1057,144 +890,74 @@ def _jitumm_pallas_kernel_generator(
     block_dim = generate_block_dim(B_info.shape[1], maximum=1024)
 
     if corder:
-        if transpose:
-            # JIT Matrix.T @ B
-            # - JIT matrix: [k, m]
-            # - B: [k, n]
-            def kernel(w_low_ref, w_high_ref, clen_ref, B_ref, seed_ref, _, post_ref):
-                k = B_ref.shape[0]
-                w_low0 = w_low_ref[0]
-                w_high0 = w_high_ref[0]
-                clen0 = clen_ref[0]
-                seed0 = seed_ref[0]
-                i_m = pl.program_id(0)
-                i_n_block = pl.program_id(1)
-                i_n_start = block_dim * i_n_block
-                i_n_indices = i_n_start + jnp.arange(block_dim)
-                mask = i_n_indices < B_info.shape[1]
+        # JIT Matrix.T @ B
+        # - JIT matrix: [k, m]
+        # - B: [k, n]
+        def kernel(w_low_ref, w_high_ref, clen_ref, B_ref, seed_ref, _, post_ref):
+            k = B_ref.shape[0]
+            w_low0 = w_low_ref[0]
+            w_high0 = w_high_ref[0]
+            clen0 = clen_ref[0]
+            seed0 = seed_ref[0]
+            i_m = pl.program_id(0)
+            i_n_block = pl.program_id(1)
+            i_n_start = block_dim * i_n_block
+            i_n_indices = i_n_start + jnp.arange(block_dim)
+            mask = i_n_indices < B_info.shape[1]
 
-                def body(data):
-                    i, rng, out = data
-                    w = rng.uniform(w_low0, w_high0)
-                    events = jnp.where(mask, B_ref[i, i_n_indices], False if B_info.dtype == jnp.bool_ else 0.)
-                    if B_info.dtype == jnp.bool_:
-                        out = jnp.where(events, out + w, out)
-                    else:
-                        out = jnp.where(events > 0., out + w, out)
-                    i += rng.random_integers(1, clen0)
-                    return i, rng, out
+            def body(data):
+                i, rng, out = data
+                w = rng.uniform(w_low0, w_high0)
+                events = jnp.where(mask, B_ref[i, i_n_indices], False if B_info.dtype == jnp.bool_ else 0.)
+                if B_info.dtype == jnp.bool_:
+                    out = jnp.where(events, out + w, out)
+                else:
+                    out = jnp.where(events > 0., out + w, out)
+                i += rng.random_integers(1, clen0)
+                return i, rng, out
 
-                rng = PallasLFSR88RNG(seed0 + i_m)
-                out = jnp.zeros(block_dim, dtype=post_ref.dtype)
-                _, _, out = jax.lax.while_loop(
-                    lambda data: data[0] < k,
-                    body,
-                    (rng.random_integers(0, clen0), rng, out)
-                )
-                post_ref[i_m, i_n_indices] = jnp.where(mask, out, post_ref[i_m, i_n_indices])
+            rng = PallasLFSR88RNG(seed0 + i_m)
+            out = jnp.zeros(block_dim, dtype=post_ref.dtype)
+            _, _, out = jax.lax.while_loop(
+                lambda data: data[0] < k,
+                body,
+                (rng.random_integers(0, clen0), rng, out)
+            )
+            post_ref[i_m, i_n_indices] = jnp.where(mask, out, post_ref[i_m, i_n_indices])
 
-        else:
-            # JIT Matrix @ B
-            # - JIT matrix: [m, k]
-            # - B: [k, n]
-            def kernel(w_low_ref, w_high_ref, clen_ref, B_ref, seed_ref, _, post_ref):
-                k = B_ref.shape[0]
-                w_low0 = w_low_ref[0]
-                w_high0 = w_high_ref[0]
-                clen0 = clen_ref[0]
-                seed0 = seed_ref[0]
-                i_m = pl.program_id(0)
-                i_n_block = pl.program_id(1)
-                i_n_start = block_dim * i_n_block
-                i_n_indices = i_n_start + jnp.arange(block_dim)
-                mask = i_n_indices < B_info.shape[1]
-
-                def body(data):
-                    i, rng, out = data
-                    w = rng.uniform(w_low0, w_high0)
-                    events = jnp.where(mask, B_ref[i, i_n_indices], False if B_info.dtype == jnp.bool_ else 0.)
-                    if B_info.dtype == jnp.bool_:
-                        out = jnp.where(events, out + w, out)
-                    else:
-                        out = jnp.where(events > 0., out + w, out)
-                    i += rng.random_integers(1, clen0)
-                    return i, rng, out
-
-                rng = PallasLFSR88RNG(seed0 + i_m)
-                out = jnp.zeros(block_dim, dtype=post_ref.dtype)
-                _, _, out = jax.lax.while_loop(
-                    lambda data: data[0] < k,
-                    body,
-                    (rng.random_integers(0, clen0), rng, out)
-                )
-                post_ref[i_m, i_n_indices] = jnp.where(mask, out, post_ref[i_m, i_n_indices])
 
     else:
-        if transpose:
-            # JIT Matrix.T @ B
-            # - JIT matrix: [k, m]
-            # - B: [k, n]
-            def kernel(w_low_ref, w_high_ref, clen_ref, B_ref, seed_ref, _, post_ref):
-                m = post_ref.shape[0]
-                w_low0 = w_low_ref[0]
-                w_high0 = w_high_ref[0]
-                clen0 = clen_ref[0]
-                seed0 = seed_ref[0]
-                i_k = pl.program_id(0)
-                i_n_block = pl.program_id(1)
-                i_n_start = block_dim * i_n_block
-                i_n_indices = i_n_start + jnp.arange(block_dim)
-                mask = i_n_indices < B_info.shape[1]
+        # JIT Matrix.T @ B
+        # - JIT matrix: [k, m]
+        # - B: [k, n]
+        def kernel(w_low_ref, w_high_ref, clen_ref, B_ref, seed_ref, _, post_ref):
+            m = post_ref.shape[0]
+            w_low0 = w_low_ref[0]
+            w_high0 = w_high_ref[0]
+            clen0 = clen_ref[0]
+            seed0 = seed_ref[0]
+            i_k = pl.program_id(0)
+            i_n_block = pl.program_id(1)
+            i_n_start = block_dim * i_n_block
+            i_n_indices = i_n_start + jnp.arange(block_dim)
+            mask = i_n_indices < B_info.shape[1]
 
-                B_block = jnp.where(mask, B_ref[i_k, i_n_indices], 0.)
-                B_block = jnp.asarray(B_block, dtype=post_ref.dtype)
+            B_block = jnp.where(mask, B_ref[i_k, i_n_indices], 0.)
+            B_block = jnp.asarray(B_block, dtype=post_ref.dtype)
 
-                def body(data):
-                    i, rng = data
-                    w = rng.uniform(w_low0, w_high0)
-                    atomic_add(post_ref, (i, i_n_indices), B_block * w, mask=mask)
-                    i += rng.random_integers(1, clen0)
-                    return i, rng
+            def body(data):
+                i, rng = data
+                w = rng.uniform(w_low0, w_high0)
+                atomic_add(post_ref, (i, i_n_indices), B_block * w, mask=mask)
+                i += rng.random_integers(1, clen0)
+                return i, rng
 
-                rng = PallasLFSR88RNG(seed0 + i_k)
-                jax.lax.while_loop(
-                    lambda data: data[0] < m,
-                    body,
-                    (rng.random_integers(0, clen0), rng)
-                )
-
-        else:
-            # JIT Matrix @ B
-            # - JIT matrix: [m, k]
-            # - B: [k, n]
-            def kernel(w_low_ref, w_high_ref, clen_ref, B_ref, seed_ref, _, post_ref):
-                m = post_ref.shape[0]
-                w_low0 = w_low_ref[0]
-                w_high0 = w_high_ref[0]
-                clen0 = clen_ref[0]
-                seed0 = seed_ref[0]
-                i_k = pl.program_id(0)
-                i_n_block = pl.program_id(1)
-                i_n_start = block_dim * i_n_block
-                i_n_indices = i_n_start + jnp.arange(block_dim)
-                mask = i_n_indices < B_info.shape[1]
-
-                B_block = jnp.where(mask, B_ref[i_k, i_n_indices], 0.)
-                B_block = jnp.asarray(B_block, dtype=post_ref.dtype)
-
-                def body(data):
-                    i, rng = data
-                    w = rng.uniform(w_low0, w_high0)
-                    atomic_add(post_ref, (i, i_n_indices), B_block * w, mask=mask)
-                    i += rng.random_integers(1, clen0)
-                    return i, rng
-
-                rng = PallasLFSR88RNG(seed0 + i_k)
-                jax.lax.while_loop(
-                    lambda data: data[0] < m,
-                    body,
-                    (rng.random_integers(0, clen0), rng)
-                )
+            rng = PallasLFSR88RNG(seed0 + i_k)
+            jax.lax.while_loop(
+                lambda data: data[0] < m,
+                body,
+                (rng.random_integers(0, clen0), rng)
+            )
 
     tile = (out_info.shape[0] if corder else B_info.shape[0])
     grid = (tile, pl.cdiv(B_info.shape[1], block_dim))

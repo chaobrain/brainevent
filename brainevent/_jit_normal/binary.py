@@ -345,7 +345,8 @@ def _jitc_mv_normal_warp_kernel_generator(
                 # Process all connected entries for this output element (row)
                 while i_col < num_col:
                     # Add contribution from the current connected element
-                    r += vector[i_col] * (warp.randn(state) * w_scale0 + w_loc0)
+                    w = warp.randn(state) * w_scale0 + w_loc0
+                    r += vector[i_col] * w
 
                     # Skip ahead to next connected column using geometric-like distribution
                     # This creates sparse connectivity with ~1/clen0 connection probability

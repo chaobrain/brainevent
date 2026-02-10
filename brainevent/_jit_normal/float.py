@@ -650,7 +650,8 @@ def _jitnmv_warp_kernel_generator(
             state = warp.rand_init(seed0 + i_row)
             i_col = warp.randi(state, 0, clen0)
             while i_col < num_col:
-                r += vector[i_col] * (warp.randn(state) * w_scale0 + w_loc0)
+                w = warp.randn(state) * w_scale0 + w_loc0
+                r += vector[i_col] * w
                 i_col += warp.randi(state, 1, clen0)
             posts[i_row] = r
 
@@ -674,7 +675,8 @@ def _jitnmv_warp_kernel_generator(
             state = warp.rand_init(seed0 + i_col)
             i_row = warp.randi(state, 0, clen0)
             while i_row < num_row:
-                warp.atomic_add(posts, i_row, v * (warp.randn(state) * w_scale0 + w_loc0))
+                w = warp.randn(state) * w_scale0 + w_loc0
+                warp.atomic_add(posts, i_row, v * w)
                 i_row += warp.randi(state, 1, clen0)
 
     def run(w_loc, w_scale, clen, vector, seed):

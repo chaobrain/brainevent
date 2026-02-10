@@ -135,89 +135,49 @@ def jitumm(
 
 
 def _jitu_numba_kernel_generator(
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
     import numba
 
     if corder:
-        if transpose:
-            # JIT matrix.T
-            # - JIT matrix shape = [m, n]
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, seed, posts):
-                posts[:] = 0.
-                m = posts.shape[1]
-                n = posts.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
-                np.random.seed(seed0)
-                for i_row in range(n):
-                    i_col = np.random.randint(0, clen0)
-                    while i_col < m:
-                        posts[i_row, i_col] = np.random.uniform(low=w_low0, high=w_high0)
-                        i_col += np.random.randint(1, clen0)
+        # JIT matrix.T
+        # - JIT matrix shape = [m, n]
+        @numba.njit(fastmath=True)
+        def kernel_impl(w_low, w_high, clen, seed, posts):
+            posts[:] = 0.
+            m = posts.shape[1]
+            n = posts.shape[0]
+            w_low0 = w_low[0]
+            w_high0 = w_high[0]
+            clen0 = clen[0]
+            seed0 = seed[0]
+            np.random.seed(seed0)
+            for i_row in range(n):
+                i_col = np.random.randint(0, clen0)
+                while i_col < m:
+                    posts[i_row, i_col] = np.random.uniform(low=w_low0, high=w_high0)
+                    i_col += np.random.randint(1, clen0)
 
-        else:
-            # JIT matrix
-            # - JIT matrix shape = [m, n]
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, seed, posts):
-                posts[:] = 0.
-                m = posts.shape[0]
-                n = posts.shape[1]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                seed0 = seed[0]
-                clen0 = clen[0]
-                np.random.seed(seed0)
-                for i_row in range(m):
-                    i_col = np.random.randint(0, clen0)
-                    while i_col < n:
-                        posts[i_row, i_col] = np.random.uniform(low=w_low0, high=w_high0)
-                        i_col += np.random.randint(1, clen0)
 
     else:
-        if transpose:
-            # JIT matrix.T
-            # - JIT matrix shape = [m, n]
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, seed, posts):
-                posts[:] = 0.
-                m = posts.shape[1]
-                n = posts.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
-                np.random.seed(seed0)
-                for i_col in range(m):
-                    i_row = np.random.randint(0, clen0)
-                    while i_row < n:
-                        posts[i_row, i_col] = np.random.uniform(low=w_low0, high=w_high0)
-                        i_row += np.random.randint(1, clen0)
-
-        else:
-            # JIT matrix
-            # - JIT matrix shape = [m, n]
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, seed, posts):
-                posts[:] = 0.
-                m = posts.shape[0]
-                n = posts.shape[1]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
-                np.random.seed(seed0)
-                for i_col in range(n):
-                    i_row = np.random.randint(0, clen0)
-                    while i_row < m:
-                        posts[i_row, i_col] = np.random.uniform(low=w_low0, high=w_high0)
-                        i_row += np.random.randint(1, clen0)
+        # JIT matrix.T
+        # - JIT matrix shape = [m, n]
+        @numba.njit(fastmath=True)
+        def kernel_impl(w_low, w_high, clen, seed, posts):
+            posts[:] = 0.
+            m = posts.shape[1]
+            n = posts.shape[0]
+            w_low0 = w_low[0]
+            w_high0 = w_high[0]
+            clen0 = clen[0]
+            seed0 = seed[0]
+            np.random.seed(seed0)
+            for i_col in range(m):
+                i_row = np.random.randint(0, clen0)
+                while i_row < n:
+                    posts[i_row, i_col] = np.random.uniform(low=w_low0, high=w_high0)
+                    i_row += np.random.randint(1, clen0)
 
     def kernel(w_low, w_high, clen, seed):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, seed)
@@ -231,7 +191,6 @@ def _jitu_warp_kernel_generator(
     clen_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
@@ -245,102 +204,52 @@ def _jitu_warp_kernel_generator(
     out_warp = jaxinfo_to_warpinfo(out_info)
 
     if corder:
-        if transpose:
-            # JIT matrix.T
-            # - JIT matrix shape = [m, n]
-            @warp.kernel
-            def kernel_impl(
-                w_low: w_low_warp,
-                w_high: w_high_warp,
-                clen: clen_warp,
-                seed: seed_warp,
-                posts: out_warp,
-            ):
-                m = posts.shape[1]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                w_diff = w_high0 - w_low0
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_row = warp.tid()
-                state = warp.rand_init(seed0 + i_row)
-                i_col = warp.randi(state, 0, clen0)
-                while i_col < m:
-                    posts[i_row, i_col] = warp.randf(state) * w_diff + w_low0
-                    i_col += warp.randi(state, 1, clen0)
-
-        else:
-            # JIT matrix
-            # - JIT matrix shape = [m, n]
-            @warp.kernel
-            def kernel_impl(
-                w_low: w_low_warp,
-                w_high: w_high_warp,
-                clen: clen_warp,
-                seed: seed_warp,
-                posts: out_warp,
-            ):
-                n = posts.shape[1]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                w_diff = w_high0 - w_low0
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_row = warp.tid()
-                state = warp.rand_init(seed0 + i_row)
-                i_col = warp.randi(state, 0, clen0)
-                while i_col < n:
-                    posts[i_row, i_col] = warp.randf(state) * w_diff + w_low0
-                    i_col += warp.randi(state, 1, clen0)
+        # JIT matrix.T
+        # - JIT matrix shape = [m, n]
+        @warp.kernel
+        def kernel_impl(
+            w_low: w_low_warp,
+            w_high: w_high_warp,
+            clen: clen_warp,
+            seed: seed_warp,
+            posts: out_warp,
+        ):
+            m = posts.shape[1]
+            w_low0 = w_low[0]
+            w_high0 = w_high[0]
+            w_diff = w_high0 - w_low0
+            clen0 = clen[0]
+            seed0 = seed[0]
+            i_row = warp.tid()
+            state = warp.rand_init(seed0 + i_row)
+            i_col = warp.randi(state, 0, clen0)
+            while i_col < m:
+                posts[i_row, i_col] = warp.randf(state) * w_diff + w_low0
+                i_col += warp.randi(state, 1, clen0)
 
     else:
-        if transpose:
-            # JIT matrix.T
-            # - JIT matrix shape = [m, n]
-            @warp.kernel
-            def kernel_impl(
-                w_low: w_low_warp,
-                w_high: w_high_warp,
-                clen: clen_warp,
-                seed: seed_warp,
-                posts: out_warp,
-            ):
-                n = posts.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                w_diff = w_high0 - w_low0
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_col = warp.tid()
-                state = warp.rand_init(seed0 + i_col)
-                i_row = warp.randi(state, 0, clen0)
-                while i_row < n:
-                    posts[i_row, i_col] = warp.randf(state) * w_diff + w_low0
-                    i_row += warp.randi(state, 1, clen0)
-
-        else:
-            # JIT matrix
-            # - JIT matrix shape = [m, n]
-            @warp.kernel
-            def kernel_impl(
-                w_low: w_low_warp,
-                w_high: w_high_warp,
-                clen: clen_warp,
-                seed: seed_warp,
-                posts: out_warp,
-            ):
-                m = posts.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                w_diff = w_high0 - w_low0
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_col = warp.tid()
-                state = warp.rand_init(seed0 + i_col)
-                i_row = warp.randi(state, 0, clen0)
-                while i_row < m:
-                    posts[i_row, i_col] = warp.randf(state) * w_diff + w_low0
-                    i_row += warp.randi(state, 1, clen0)
+        # JIT matrix.T
+        # - JIT matrix shape = [m, n]
+        @warp.kernel
+        def kernel_impl(
+            w_low: w_low_warp,
+            w_high: w_high_warp,
+            clen: clen_warp,
+            seed: seed_warp,
+            posts: out_warp,
+        ):
+            n = posts.shape[0]
+            w_low0 = w_low[0]
+            w_high0 = w_high[0]
+            w_diff = w_high0 - w_low0
+            clen0 = clen[0]
+            seed0 = seed[0]
+            i_col = warp.tid()
+            state = warp.rand_init(seed0 + i_col)
+            i_row = warp.randi(state, 0, clen0)
+            while i_row < n:
+                posts[i_row, i_col] = warp.randf(state) * w_diff + w_low0
+                i_row += warp.randi(state, 1, clen0)
 
     def kernel(w_low, w_high, clen, seed):
         dim = out_info.shape[0] if corder else out_info.shape[1]
@@ -562,85 +471,47 @@ jitu_p.def_benchmark_data(_jitu_benchmark_data)
 # Kernel generators for JIT connection SPMV
 
 def _jitumv_numba_kernel_generator(
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
     import numba
 
     if corder:
-        if transpose:
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, vector, seed, posts):
-                n_col = posts.shape[0]
-                n_row = vector.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
-                np.random.seed(seed0)
-                for i_col in range(n_col):
-                    i_row = np.random.randint(0, clen0)
-                    out = np.asarray(0., dtype=vector.dtype)
-                    while i_row < n_row:
-                        out += vector[i_row] * np.random.uniform(low=w_low0, high=w_high0)
-                        i_row += np.random.randint(1, clen0)
-                    posts[i_col] = out
+        @numba.njit(fastmath=True)
+        def kernel_impl(w_low, w_high, clen, vector, seed, posts):
+            n_col = posts.shape[0]
+            n_row = vector.shape[0]
+            w_low0 = w_low[0]
+            w_high0 = w_high[0]
+            clen0 = clen[0]
+            seed0 = seed[0]
+            np.random.seed(seed0)
+            for i_col in range(n_col):
+                i_row = np.random.randint(0, clen0)
+                out = np.asarray(0., dtype=vector.dtype)
+                while i_row < n_row:
+                    out += vector[i_row] * np.random.uniform(low=w_low0, high=w_high0)
+                    i_row += np.random.randint(1, clen0)
+                posts[i_col] = out
 
-        else:
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, vector, seed, posts):
-                num_row = posts.shape[0]
-                num_col = vector.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                seed0 = seed[0]
-                clen0 = clen[0]
-                np.random.seed(seed0)
-                for i_row in range(num_row):
-                    i_col = np.random.randint(0, clen0)
-                    out = np.asarray(0., dtype=vector.dtype)
-                    while i_col < num_col:
-                        out += vector[i_col] * np.random.uniform(low=w_low0, high=w_high0)
-                        i_col += np.random.randint(1, clen0)
-                    posts[i_row] = out
 
     else:
-        if transpose:
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, vector, seed, posts):
-                posts[:] = 0.
-                num_col = posts.shape[0]
-                num_row = vector.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
-                np.random.seed(seed0)
-                for i_row in range(num_row):
-                    v = vector[i_row]
-                    i_col = np.random.randint(0, clen0)
-                    while i_col < num_col:
-                        posts[i_col] += v * np.random.uniform(low=w_low0, high=w_high0)
-                        i_col += np.random.randint(1, clen0)
-
-        else:
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, vector, seed, posts):
-                posts[:] = 0.
-                num_row = posts.shape[0]
-                num_col = vector.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
-                np.random.seed(seed0)
-                for i_col in range(num_col):
-                    v = vector[i_col]
-                    i_row = np.random.randint(0, clen0)
-                    while i_row < num_row:
-                        posts[i_row] += v * np.random.uniform(low=w_low0, high=w_high0)
-                        i_row += np.random.randint(1, clen0)
+        @numba.njit(fastmath=True)
+        def kernel_impl(w_low, w_high, clen, vector, seed, posts):
+            posts[:] = 0.
+            num_col = posts.shape[0]
+            num_row = vector.shape[0]
+            w_low0 = w_low[0]
+            w_high0 = w_high[0]
+            clen0 = clen[0]
+            seed0 = seed[0]
+            np.random.seed(seed0)
+            for i_row in range(num_row):
+                v = vector[i_row]
+                i_col = np.random.randint(0, clen0)
+                while i_col < num_col:
+                    posts[i_col] += v * np.random.uniform(low=w_low0, high=w_high0)
+                    i_col += np.random.randint(1, clen0)
 
     def kernel(w_low, w_high, clen, vector, seed):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, vector, seed)
@@ -655,7 +526,6 @@ def _jitumv_warp_kernel_generator(
     vector_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
@@ -670,103 +540,55 @@ def _jitumv_warp_kernel_generator(
     out_warp = jaxinfo_to_warpinfo(out_info)
 
     if corder:
-        if transpose:
-            @warp.kernel
-            def kernel_impl(
-                w_low: w_low_warp,
-                w_high: w_high_warp,
-                clen: clen_warp,
-                vector: v_warp,
-                seed: seed_warp,
-                posts: out_warp,
-            ):
-                num_row = vector.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                w_diff = w_high0 - w_low0
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_col = warp.tid()
-                r = float(0.0)
-                state = warp.rand_init(seed0 + i_col)
-                i_row = warp.randi(state, 0, clen0)
-                while i_row < num_row:
-                    r += vector[i_row] * (warp.randf(state) * w_diff + w_low0)
-                    i_row += warp.randi(state, 1, clen0)
-                posts[i_col] = r
+        @warp.kernel
+        def kernel_impl(
+            w_low: w_low_warp,
+            w_high: w_high_warp,
+            clen: clen_warp,
+            vector: v_warp,
+            seed: seed_warp,
+            posts: out_warp,
+        ):
+            num_row = vector.shape[0]
+            w_low0 = w_low[0]
+            w_high0 = w_high[0]
+            w_diff = w_high0 - w_low0
+            clen0 = clen[0]
+            seed0 = seed[0]
+            i_col = warp.tid()
+            r = float(0.0)
+            state = warp.rand_init(seed0 + i_col)
+            i_row = warp.randi(state, 0, clen0)
+            while i_row < num_row:
+                w = warp.randf(state) * w_diff + w_low0
+                r += vector[i_row] * w
+                i_row += warp.randi(state, 1, clen0)
+            posts[i_col] = r
 
-        else:
-            @warp.kernel
-            def kernel_impl(
-                w_low: w_low_warp,
-                w_high: w_high_warp,
-                clen: clen_warp,
-                vector: v_warp,
-                seed: seed_warp,
-                posts: out_warp,
-            ):
-                num_col = vector.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                w_diff = w_high0 - w_low0
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_row = warp.tid()
-                r = float(0.0)
-                state = warp.rand_init(seed0 + i_row)
-                i_col = warp.randi(state, 0, clen0)
-                while i_col < num_col:
-                    r += vector[i_col] * (warp.randf(state) * w_diff + w_low0)
-                    i_col += warp.randi(state, 1, clen0)
-                posts[i_row] = r
     else:
-        if transpose:
-            @warp.kernel
-            def kernel_impl(
-                w_low: w_low_warp,
-                w_high: w_high_warp,
-                clen: clen_warp,
-                vector: v_warp,
-                seed: seed_warp,
-                posts: out_warp,
-            ):
-                num_col = posts.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                w_diff = w_high0 - w_low0
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_row = warp.tid()
-                v = vector[i_row]
-                state = warp.rand_init(seed0 + i_row)
-                i_col = warp.randi(state, 0, clen0)
-                while i_col < num_col:
-                    warp.atomic_add(posts, i_col, v * (warp.randf(state) * w_diff + w_low0))
-                    i_col += warp.randi(state, 1, clen0)
-
-        else:
-            @warp.kernel
-            def kernel_impl(
-                w_low: w_low_warp,
-                w_high: w_high_warp,
-                clen: clen_warp,
-                vector: v_warp,
-                seed: seed_warp,
-                posts: out_warp,
-            ):
-                num_row = posts.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                w_diff = w_high0 - w_low0
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_col = warp.tid()
-                v = vector[i_col]
-                state = warp.rand_init(seed0 + i_col)
-                i_row = warp.randi(state, 0, clen0)
-                while i_row < num_row:
-                    warp.atomic_add(posts, i_row, v * (warp.randf(state) * w_diff + w_low0))
-                    i_row += warp.randi(state, 1, clen0)
+        @warp.kernel
+        def kernel_impl(
+            w_low: w_low_warp,
+            w_high: w_high_warp,
+            clen: clen_warp,
+            vector: v_warp,
+            seed: seed_warp,
+            posts: out_warp,
+        ):
+            num_col = posts.shape[0]
+            w_low0 = w_low[0]
+            w_high0 = w_high[0]
+            w_diff = w_high0 - w_low0
+            clen0 = clen[0]
+            seed0 = seed[0]
+            i_row = warp.tid()
+            v = vector[i_row]
+            state = warp.rand_init(seed0 + i_row)
+            i_col = warp.randi(state, 0, clen0)
+            while i_col < num_col:
+                w = warp.randf(state) * w_diff + w_low0
+                warp.atomic_add(posts, i_col, v * w)
+                i_col += warp.randi(state, 1, clen0)
 
     def kernel(w_low, w_high, clen, vector, seed):
         dim = out_info.shape[0] if corder else vector_info.shape[0]
@@ -1078,99 +900,54 @@ jitumv_p.def_benchmark_data(_jitumv_benchmark_data)
 
 
 def _jitumm_numba_kernel_generator(
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
     import numba
 
     if corder:
-        if transpose:
-            # JIT Matrix.T @ B
-            # - JIT matrix: [k, m]
-            # - B: [k, n]
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                m = posts.shape[0]
-                n = posts.shape[1]
-                k = B.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                seed0 = seed[0]
-                clen0 = clen[0]
-                np.random.seed(seed0)
-                for i_m in range(m):
-                    i_k = np.random.randint(0, clen0)
-                    out = np.zeros(n, dtype=B.dtype)
-                    while i_k < k:
-                        out += B[i_k] * np.random.uniform(low=w_low0, high=w_high0)
-                        i_k += np.random.randint(1, clen0)
-                    posts[i_m] = out
+        # JIT Matrix.T @ B
+        # - JIT matrix: [k, m]
+        # - B: [k, n]
+        @numba.njit(fastmath=True)
+        def kernel_impl(w_low, w_high, clen, B, seed, posts):
+            m = posts.shape[0]
+            n = posts.shape[1]
+            k = B.shape[0]
+            w_low0 = w_low[0]
+            w_high0 = w_high[0]
+            seed0 = seed[0]
+            clen0 = clen[0]
+            np.random.seed(seed0)
+            for i_m in range(m):
+                i_k = np.random.randint(0, clen0)
+                out = np.zeros(n, dtype=B.dtype)
+                while i_k < k:
+                    out += B[i_k] * np.random.uniform(low=w_low0, high=w_high0)
+                    i_k += np.random.randint(1, clen0)
+                posts[i_m] = out
 
-        else:
-            # JIT Matrix @ B
-            # - JIT matrix: [m, k]
-            # - B: [k, n]
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                m = posts.shape[0]
-                n = posts.shape[1]
-                k = B.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                seed0 = seed[0]
-                clen0 = clen[0]
-                np.random.seed(seed0)
-                for i_m in range(m):
-                    i_k = np.random.randint(0, clen0)
-                    out = np.zeros(n, dtype=B.dtype)
-                    while i_k < k:
-                        out += B[i_k] * np.random.uniform(low=w_low0, high=w_high0)
-                        i_k += np.random.randint(1, clen0)
-                    posts[i_m] = out
 
     else:
-        if transpose:
-            # JIT Matrix.T @ B
-            # - JIT matrix: [k, m]
-            # - B: [k, n]
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                posts[:] = 0.
-                m = posts.shape[0]
-                k = B.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                seed0 = seed[0]
-                clen0 = clen[0]
-                np.random.seed(seed0)
-                for i_k in range(k):
-                    out = B[i_k]
-                    i_m = np.random.randint(0, clen0)
-                    while i_m < m:
-                        posts[i_m] += out * np.random.uniform(low=w_low0, high=w_high0)
-                        i_m += np.random.randint(1, clen0)
-
-        else:
-            # JIT Matrix @ B
-            # - JIT matrix: [m, k]
-            # - B: [k, n]
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                posts[:] = 0.
-                m = posts.shape[0]
-                k = B.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                seed0 = seed[0]
-                clen0 = clen[0]
-                np.random.seed(seed0)
-                for i_k in range(k):
-                    out = B[i_k]
-                    i_m = np.random.randint(0, clen0)
-                    while i_m < m:
-                        posts[i_m] += out * np.random.uniform(low=w_low0, high=w_high0)
-                        i_m += np.random.randint(1, clen0)
+        # JIT Matrix.T @ B
+        # - JIT matrix: [k, m]
+        # - B: [k, n]
+        @numba.njit(fastmath=True)
+        def kernel_impl(w_low, w_high, clen, B, seed, posts):
+            posts[:] = 0.
+            m = posts.shape[0]
+            k = B.shape[0]
+            w_low0 = w_low[0]
+            w_high0 = w_high[0]
+            seed0 = seed[0]
+            clen0 = clen[0]
+            np.random.seed(seed0)
+            for i_k in range(k):
+                out = B[i_k]
+                i_m = np.random.randint(0, clen0)
+                while i_m < m:
+                    posts[i_m] += out * np.random.uniform(low=w_low0, high=w_high0)
+                    i_m += np.random.randint(1, clen0)
 
     def kernel(w_low, w_high, clen, B, seed):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, B, seed)
@@ -1186,7 +963,6 @@ def _jitumm_warp_kernel_generator(
     seed_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
     TITLE_SIZE: int,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
@@ -1201,112 +977,58 @@ def _jitumm_warp_kernel_generator(
     out_warp = jaxinfo_to_warpinfo(out_info)
 
     if corder:
-        if transpose:
-            # JIT Matrix.T @ B
-            @warp.kernel
-            def kernel_impl(
-                w_low: w_low_warp,
-                w_high: w_high_warp,
-                clen: clen_warp,
-                B: B_warp,
-                seed: seed_warp,
-                posts: out_warp,
-            ):
-                k = B.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                w_diff = w_high0 - w_low0
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_m = warp.tid()
-                state = warp.rand_init(seed0 + i_m)
-                out = warp.tile_zeros(TITLE_SIZE, dtype=warp.float32)
-                i_k = warp.randi(state, 0, clen0)
-                while i_k < k:
-                    w = warp.randf(state) * w_diff + w_low0
-                    out += warp.tile_load(B[i_k], TITLE_SIZE) * w
-                    i_k += warp.randi(state, 1, clen0)
-                warp.tile_store(posts[i_m], out)
+        # JIT Matrix.T @ B
+        @warp.kernel
+        def kernel_impl(
+            w_low: w_low_warp,
+            w_high: w_high_warp,
+            clen: clen_warp,
+            B: B_warp,
+            seed: seed_warp,
+            posts: out_warp,
+        ):
+            k = B.shape[0]
+            w_low0 = w_low[0]
+            w_high0 = w_high[0]
+            w_diff = w_high0 - w_low0
+            clen0 = clen[0]
+            seed0 = seed[0]
+            i_m = warp.tid()
+            state = warp.rand_init(seed0 + i_m)
+            out = warp.tile_zeros(TITLE_SIZE, dtype=warp.float32)
+            i_k = warp.randi(state, 0, clen0)
+            while i_k < k:
+                w = warp.randf(state) * w_diff + w_low0
+                out += warp.tile_load(B[i_k], TITLE_SIZE) * w
+                i_k += warp.randi(state, 1, clen0)
+            warp.tile_store(posts[i_m], out)
 
-        else:
-            # JIT Matrix @ B
-            @warp.kernel
-            def kernel_impl(
-                w_low: w_low_warp,
-                w_high: w_high_warp,
-                clen: clen_warp,
-                B: B_warp,
-                seed: seed_warp,
-                posts: out_warp,
-            ):
-                k = B.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                w_diff = w_high0 - w_low0
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_m = warp.tid()
-                state = warp.rand_init(seed0 + i_m)
-                out = warp.tile_zeros(TITLE_SIZE, dtype=warp.float32)
-                i_k = warp.randi(state, 0, clen0)
-                while i_k < k:
-                    w = warp.randf(state) * w_diff + w_low0
-                    out += warp.tile_load(B[i_k], TITLE_SIZE) * w
-                    i_k += warp.randi(state, 1, clen0)
-                warp.tile_store(posts[i_m], out)
 
     else:
-        if transpose:
-            # JIT Matrix.T @ B
-            @warp.kernel
-            def kernel_impl(
-                w_low: w_low_warp,
-                w_high: w_high_warp,
-                clen: clen_warp,
-                B: B_warp,
-                seed: seed_warp,
-                posts: out_warp,
-            ):
-                m = posts.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                w_diff = w_high0 - w_low0
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_k = warp.tid()
-                state = warp.rand_init(seed0 + i_k)
-                out = warp.tile_load(B[i_k], TITLE_SIZE)
-                i_m = warp.randi(state, 0, clen0)
-                while i_m < m:
-                    w = warp.randf(state) * w_diff + w_low0
-                    warp.tile_atomic_add(posts[i_m], out * w)
-                    i_m += warp.randi(state, 1, clen0)
-
-        else:
-            # JIT Matrix @ B
-            @warp.kernel
-            def kernel_impl(
-                w_low: w_low_warp,
-                w_high: w_high_warp,
-                clen: clen_warp,
-                B: B_warp,
-                seed: seed_warp,
-                posts: out_warp,
-            ):
-                m = posts.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                w_diff = w_high0 - w_low0
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_k = warp.tid()
-                state = warp.rand_init(seed0 + i_k)
-                out = warp.tile_load(B[i_k], TITLE_SIZE)
-                i_m = warp.randi(state, 0, clen0)
-                while i_m < m:
-                    w = warp.randf(state) * w_diff + w_low0
-                    warp.tile_atomic_add(posts[i_m], out * w)
-                    i_m += warp.randi(state, 1, clen0)
+        # JIT Matrix.T @ B
+        @warp.kernel
+        def kernel_impl(
+            w_low: w_low_warp,
+            w_high: w_high_warp,
+            clen: clen_warp,
+            B: B_warp,
+            seed: seed_warp,
+            posts: out_warp,
+        ):
+            m = posts.shape[0]
+            w_low0 = w_low[0]
+            w_high0 = w_high[0]
+            w_diff = w_high0 - w_low0
+            clen0 = clen[0]
+            seed0 = seed[0]
+            i_k = warp.tid()
+            state = warp.rand_init(seed0 + i_k)
+            out = warp.tile_load(B[i_k], TITLE_SIZE)
+            i_m = warp.randi(state, 0, clen0)
+            while i_m < m:
+                w = warp.randf(state) * w_diff + w_low0
+                warp.tile_atomic_add(posts[i_m], out * w)
+                i_m += warp.randi(state, 1, clen0)
 
     def kernel(w_low, w_high, clen, B, seed):
         tile = out_info.shape[0] if corder else B_info.shape[0]

@@ -698,7 +698,6 @@ binary_jitsmv_p.def_benchmark_data(_jitsmv_benchmark_data)
 
 
 def _jitsmm_numba_kernel(
-    transpose: bool,
     corder: bool,
     B_info: jax.ShapeDtypeStruct,
     **kwargs
@@ -706,51 +705,8 @@ def _jitsmm_numba_kernel(
     import numba
 
     if corder:
-        if transpose:
             # JIT Matrix.T @ B
             # - JIT matrix: [k, m]
-            # - B: [k, n]
-            if B_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True)
-                def kernel_impl(weight, clen, B, seed, posts):
-                    m = posts.shape[0]
-                    n = posts.shape[1]
-                    k = B.shape[0]
-                    weight0 = weight[0]
-                    seed0 = seed[0]
-                    clen0 = clen[0]
-                    np.random.seed(seed0)
-                    for i_m in range(m):
-                        i_k = np.random.randint(0, clen0)
-                        out = np.zeros(n, dtype=weight.dtype)
-                        while i_k < k:
-                            for j in range(B.shape[1]):
-                                if B[i_k, j]:
-                                    out[j] += 1.0
-                            i_k += np.random.randint(1, clen0)
-                        posts[i_m] = out * weight0
-            else:
-                @numba.njit(fastmath=True)
-                def kernel_impl(weight, clen, B, seed, posts):
-                    m = posts.shape[0]
-                    n = posts.shape[1]
-                    k = B.shape[0]
-                    weight0 = weight[0]
-                    seed0 = seed[0]
-                    clen0 = clen[0]
-                    np.random.seed(seed0)
-                    for i_m in range(m):
-                        i_k = np.random.randint(0, clen0)
-                        out = np.zeros(n, dtype=weight.dtype)
-                        while i_k < k:
-                            for j in range(B.shape[1]):
-                                if B[i_k, j] > 0.:
-                                    out[j] += 1.0
-                            i_k += np.random.randint(1, clen0)
-                        posts[i_m] = out * weight0
-        else:
-            # JIT Matrix @ B
-            # - JIT matrix: [m, k]
             # - B: [k, n]
             if B_info.dtype == jnp.bool_:
                 @numba.njit(fastmath=True)
@@ -791,45 +747,8 @@ def _jitsmm_numba_kernel(
                             i_k += np.random.randint(1, clen0)
                         posts[i_m] = out * weight0
     else:
-        if transpose:
             # JIT Matrix.T @ B
             # - JIT matrix: [k, m]
-            # - B: [k, n]
-            if B_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True)
-                def kernel_impl(weight, clen, B, seed, posts):
-                    posts[:] = 0.
-                    m = posts.shape[0]
-                    k = B.shape[0]
-                    weight0 = weight[0]
-                    seed0 = seed[0]
-                    clen0 = clen[0]
-                    np.random.seed(seed0)
-                    for i_k in range(k):
-                        indices = np.where(B[i_k])[0]
-                        i_m = np.random.randint(0, clen0)
-                        while i_m < m:
-                            posts[i_m, indices] += weight0
-                            i_m += np.random.randint(1, clen0)
-            else:
-                @numba.njit(fastmath=True)
-                def kernel_impl(weight, clen, B, seed, posts):
-                    posts[:] = 0.
-                    m = posts.shape[0]
-                    k = B.shape[0]
-                    weight0 = weight[0]
-                    seed0 = seed[0]
-                    clen0 = clen[0]
-                    np.random.seed(seed0)
-                    for i_k in range(k):
-                        indices = np.where(B[i_k] > 0.)[0]
-                        i_m = np.random.randint(0, clen0)
-                        while i_m < m:
-                            posts[i_m, indices] += weight0
-                            i_m += np.random.randint(1, clen0)
-        else:
-            # JIT Matrix @ B
-            # - JIT matrix: [m, k]
             # - B: [k, n]
             if B_info.dtype == jnp.bool_:
                 @numba.njit(fastmath=True)
