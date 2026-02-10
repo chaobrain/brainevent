@@ -96,7 +96,7 @@ def test_densemm_forward_transpose(implementation, m, k, n):
     spikes = brainstate.random.randn(k, n) < 0.3
     result = binary_densemm(weights, spikes, transpose=True, backend=implementation)
     expected = weights.T @ u.math.asarray(spikes, dtype=float)
-    print(result - expected)
+    print(jax.numpy.abs(result - expected).max())
     assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
     jax.block_until_ready((spikes, weights, result, expected))
 

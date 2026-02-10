@@ -103,7 +103,9 @@ class BinaryArray(EventRepresentation):
             if self.ndim == 1:
                 return binary_densemv(oc, self.value, transpose=True)
             else:  # self.ndim == 2
-                return binary_densemm(oc, self.value.T, transpose=True)
+                # self[m,k] @ oc[k,n]: use weights=oc[k,n], spikes=self.value.T[k,m]
+                # gives oc.T @ self.value.T = [n,m], then .T = [m,n]
+                return binary_densemm(oc, self.value.T, transpose=True).T
         else:
             return oc.__rmatmul__(self)
 
