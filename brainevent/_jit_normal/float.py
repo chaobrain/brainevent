@@ -1057,8 +1057,7 @@ def _jitnmm_warp_kernel_generator(
     B_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
-    TITLE_SIZE: int,
-    corder: bool = True,
+    corder: bool,
     **kwargs
 ):
     import warp
@@ -1071,8 +1070,75 @@ def _jitnmm_warp_kernel_generator(
     seed_warp_info = jaxinfo_to_warpinfo(seed_info)
     out_warp_info = jaxinfo_to_warpinfo(out_info)
 
+    # TILE_SIZE = generate_block_dim(B_info.shape[1], maximum=512)
+    #
+    # if corder:
+    #     # JIT Matrix @ B, corder=True
+    #     # Each thread i_m generates one row of the JITC matrix and
+    #     # multiplies it with B, accumulating into posts[i_m, :].
+    #     @warp.kernel
+    #     def kernel(
+    #         w_loc: w_loc_warp_info,
+    #         w_scale: w_scale_warp_info,
+    #         clen: clen_warp_info,
+    #         B: B_warp_info,
+    #         seed: seed_warp_info,
+    #         posts: out_warp_info,
+    #     ):
+    #         k = B.shape[0]
+    #         n = B.shape[1]
+    #         w_loc0 = w_loc[0]
+    #         w_scale0 = w_scale[0]
+    #         clen0 = clen[0]
+    #         seed0 = seed[0]
+    #
+    #         i_m = warp.tid()
+    #         state = warp.rand_init(seed0 + i_m)
+    #         i_k = warp.randi(state, 0, clen0)
+    #         while i_k < k:
+    #             w = warp.randn(state) * w_scale0 + w_loc0
+    #             for j in range(n):
+    #                 posts[i_m, j] += B[i_k, j] * w
+    #             i_k += warp.randi(state, 1, clen0)
+    #
+    # else:
+    #     # JIT Matrix @ B, corder=False
+    #     # Each thread i_k generates one column of the JITC matrix and
+    #     # scatters B[i_k, :] scaled by weight into output rows via atomic adds.
+    #     @warp.kernel
+    #     def kernel(
+    #         w_loc: w_loc_warp_info,
+    #         w_scale: w_scale_warp_info,
+    #         clen: clen_warp_info,
+    #         B: B_warp_info,
+    #         seed: seed_warp_info,
+    #         posts: out_warp_info,
+    #     ):
+    #         m = posts.shape[0]
+    #         n = B.shape[1]
+    #         w_loc0 = w_loc[0]
+    #         w_scale0 = w_scale[0]
+    #         clen0 = clen[0]
+    #         seed0 = seed[0]
+    #
+    #         i_k = warp.tid()
+    #         state = warp.rand_init(seed0 + i_k)
+    #         i_m = warp.randi(state, 0, clen0)
+    #         while i_m < m:
+    #             w = warp.randn(state) * w_scale0 + w_loc0
+    #             for j in range(n):
+    #                 warp.atomic_add(posts, i_m, j, B[i_k, j] * w)
+    #             i_m += warp.randi(state, 1, clen0)
+    #
+    # def run(w_loc, w_scale, clen, B, seed):
+    #     dim = out_info.shape[0] if corder else B_info.shape[0]
+    #     fn = jax_kernel(kernel, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
+    #     return fn(w_loc, w_scale, clen, B, seed, jnp.zeros(out_info.shape, out_info.dtype))
+
     if corder:
-        # JIT Matrix @ B
+        # JIT Matrix @ B, corder=True
+        # Each thread i_m generates one row of the JITC matrix and
+        # multiplies it with B, accumulating into posts[i_m, :].
         @warp.kernel
         def kernel(
             w_loc: w_loc_warp_info,
@@ -1083,6 +1149,7 @@ def _jitnmm_warp_kernel_generator(
             posts: out_warp_info,
         ):
             k = B.shape[0]
+            n = B.shape[1]
             w_loc0 = w_loc[0]
             w_scale0 = w_scale[0]
             clen0 = clen[0]
@@ -1090,17 +1157,17 @@ def _jitnmm_warp_kernel_generator(
 
             i_m = warp.tid()
             state = warp.rand_init(seed0 + i_m)
-
-            out = warp.tile_zeros(TITLE_SIZE, dtype=w_loc.dtype)
             i_k = warp.randi(state, 0, clen0)
             while i_k < k:
                 w = warp.randn(state) * w_scale0 + w_loc0
-                out += warp.tile_load(B[i_k], TITLE_SIZE) * w
+                for j in range(n):
+                    posts[i_m, j] += B[i_k, j] * w
                 i_k += warp.randi(state, 1, clen0)
-            warp.tile_store(posts[i_m], out)
 
     else:
-        # JIT Matrix @ B
+        # JIT Matrix @ B, corder=False
+        # Each thread i_k generates one column of the JITC matrix and
+        # scatters B[i_k, :] scaled by weight into output rows via atomic adds.
         @warp.kernel
         def kernel(
             w_loc: w_loc_warp_info,
@@ -1111,6 +1178,7 @@ def _jitnmm_warp_kernel_generator(
             posts: out_warp_info,
         ):
             m = posts.shape[0]
+            n = B.shape[1]
             w_loc0 = w_loc[0]
             w_scale0 = w_scale[0]
             clen0 = clen[0]
@@ -1118,12 +1186,11 @@ def _jitnmm_warp_kernel_generator(
 
             i_k = warp.tid()
             state = warp.rand_init(seed0 + i_k)
-
-            out = warp.tile_load(B[i_k], TITLE_SIZE)
             i_m = warp.randi(state, 0, clen0)
             while i_m < m:
                 w = warp.randn(state) * w_scale0 + w_loc0
-                warp.tile_atomic_add(posts[i_m], out * w)
+                for j in range(n):
+                    warp.atomic_add(posts, i_m, j, B[i_k, j] * w)
                 i_m += warp.randi(state, 1, clen0)
 
     def run(w_loc, w_scale, clen, B, seed):
@@ -1411,7 +1478,6 @@ def jitnmm_p_call(
         shape=shape,
         transpose=transpose,
         corder=corder,
-        TITLE_SIZE=B.shape[1],  # Assuming B is [k, n], we want to process n columns at once
         backend=backend,
     )
 
