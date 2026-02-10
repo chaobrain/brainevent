@@ -27,9 +27,10 @@ import numpy as np
 import pytest
 import brainstate
 
+numba_installed = importlib.util.find_spec('numba') is not None
 cpu_platform = jax.default_backend() == 'cpu'
-if not cpu_platform:
-    pytest.skip(allow_module_level=True, reason='Numba CPU FFI tests only run on CPU platform')
+if not cpu_platform or not numba_installed:
+    pytest.skip(allow_module_level=True, reason='Numba CPU FFI tests only run on CPU platform with Numba installed')
 
 from brainevent._op.numba_ffi import (
     _ensure_sequence,
@@ -39,8 +40,6 @@ from brainevent._op.numba_ffi import (
     numba_kernel,
     NumbaCpuFfiHandler,
 )
-
-numba_installed = importlib.util.find_spec('numba') is not None
 
 
 class TestHelperFunctions(unittest.TestCase):
