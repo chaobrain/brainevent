@@ -33,6 +33,10 @@ platform = jax.default_backend()
 JITUMV_IMPLEMENTATIONS = tuple(binary_jitumv_p.available_backends(platform))
 JITUMM_IMPLEMENTATIONS = tuple(binary_jitumm_p.available_backends(platform))
 
+JITUMV_IMPLEMENTATIONS = ['warp']
+JITUMM_IMPLEMENTATIONS = ['warp']
+
+
 if platform == 'cpu':
     SHAPES = ((20, 30), (100, 50))
 else:

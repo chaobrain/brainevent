@@ -26,9 +26,10 @@ JITU_IMPLEMENTATIONS = tuple(jitu_p.available_backends(platform))
 JITUMV_IMPLEMENTATIONS = tuple(jitumv_p.available_backends(platform))
 JITUMM_IMPLEMENTATIONS = tuple(jitumm_p.available_backends(platform))
 
-JITU_PARAMS = JITU_IMPLEMENTATIONS or (None,)
-JITUMV_PARAMS = JITUMV_IMPLEMENTATIONS or (None,)
-JITUMM_PARAMS = JITUMM_IMPLEMENTATIONS or (None,)
+JITU_IMPLEMENTATIONS = ['warp']
+JITUMV_IMPLEMENTATIONS = ['warp']
+JITUMM_IMPLEMENTATIONS = ['warp']
+
 
 SHAPES = [(20, 30), (100, 50)]
 W_LOW = -1.5
@@ -50,7 +51,7 @@ def _sample_cotangent(shape, seed: int):
     not JITUMV_IMPLEMENTATIONS,
     reason=f'No jitumv implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMV_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('corder', [True, False])
 def test_jitumv_forward(implementation, shape, corder):
@@ -65,7 +66,7 @@ def test_jitumv_forward(implementation, shape, corder):
     not JITUMV_IMPLEMENTATIONS,
     reason=f'No jitumv implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMV_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('corder', [True, False])
 def test_jitumv_transpose_forward(implementation, shape, corder):
@@ -99,7 +100,7 @@ def test_jitumv_transpose_forward(implementation, shape, corder):
     not JITUMM_IMPLEMENTATIONS,
     reason=f'No jitumm implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMM_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMM_IMPLEMENTATIONS)
 @pytest.mark.parametrize('k', [10])
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('corder', [True, False])
@@ -115,7 +116,7 @@ def test_jitumm_forward(implementation, k, shape, corder):
     not JITUMM_IMPLEMENTATIONS,
     reason=f'No jitumm implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMM_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMM_IMPLEMENTATIONS)
 @pytest.mark.parametrize('k', [10])
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('corder', [True, False])
@@ -150,7 +151,7 @@ def test_jitumm_transpose_forward(implementation, k, shape, corder):
     not JITUMV_IMPLEMENTATIONS,
     reason=f'No jitumv implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMV_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('corder', [True, False])
 @pytest.mark.parametrize('transpose', [True, False])
@@ -187,7 +188,7 @@ def test_jitumv_jvp(implementation, shape, corder, transpose):
     not JITUMV_IMPLEMENTATIONS,
     reason=f'No jitumv implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMV_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('corder', [True, False])
 @pytest.mark.parametrize('transpose', [True, False])
@@ -223,7 +224,7 @@ def test_jitumv_vjp(implementation, shape, corder, transpose):
     not JITUMM_IMPLEMENTATIONS,
     reason=f'No jitumm implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMM_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMM_IMPLEMENTATIONS)
 @pytest.mark.parametrize('k', [10])
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('corder', [True, False])
@@ -261,7 +262,7 @@ def test_jitumm_jvp(implementation, k, shape, corder, transpose):
     not JITUMM_IMPLEMENTATIONS,
     reason=f'No jitumm implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMM_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMM_IMPLEMENTATIONS)
 @pytest.mark.parametrize('k', [10])
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('corder', [True, False])
@@ -298,7 +299,7 @@ def test_jitumm_vjp(implementation, k, shape, corder, transpose):
     not JITUMV_IMPLEMENTATIONS,
     reason=f'No jitumv implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMV_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('corder', [True, False])
 @pytest.mark.parametrize('transpose', [True, False])
@@ -378,7 +379,7 @@ def test_jitumv_vjp_w_bounds_match_affine_reference_and_finite_difference(
     not JITUMM_IMPLEMENTATIONS,
     reason=f'No jitumm implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMM_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMM_IMPLEMENTATIONS)
 @pytest.mark.parametrize('k', [10])
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('corder', [True, False])
@@ -457,7 +458,7 @@ def test_jitumm_vjp_w_bounds_match_affine_reference_and_finite_difference(
     not JITUMV_IMPLEMENTATIONS,
     reason=f'No jitumv implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMV_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize('batch_size', [10])
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('corder', [True, False])
@@ -480,7 +481,7 @@ def test_jitumv_vmap_over_vectors(implementation, batch_size, shape, corder):
     not JITUMM_IMPLEMENTATIONS,
     reason=f'No jitumm implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMM_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMM_IMPLEMENTATIONS)
 @pytest.mark.parametrize('batch_size', [10])
 @pytest.mark.parametrize('k', [5])
 @pytest.mark.parametrize('shape', SHAPES)
@@ -504,7 +505,7 @@ def test_jitumm_vmap_over_matrices(implementation, batch_size, k, shape, corder)
     not JITU_IMPLEMENTATIONS,
     reason=f'No jitu implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITU_PARAMS)
+@pytest.mark.parametrize('implementation', JITU_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', [(100, 50)])
 def test_jitu_vmap_over_wlow(implementation, shape):
     w_lows = brainstate.random.rand(10)
@@ -525,7 +526,7 @@ def test_jitu_vmap_over_wlow(implementation, shape):
     not JITU_IMPLEMENTATIONS,
     reason=f'No jitu implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITU_PARAMS)
+@pytest.mark.parametrize('implementation', JITU_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', [(100, 50)])
 def test_jitu_vmap_over_prob(implementation, shape):
     probs = brainstate.random.rand(10) * 0.5
@@ -546,7 +547,7 @@ def test_jitu_vmap_over_prob(implementation, shape):
     not JITU_IMPLEMENTATIONS,
     reason=f'No jitu implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITU_PARAMS)
+@pytest.mark.parametrize('implementation', JITU_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', [(100, 50)])
 def test_jitu_vmap_over_seed(implementation, shape):
     seeds = brainstate.random.randint(0, 100000, 10)

@@ -425,7 +425,7 @@ def _jitsmv_pallas_kernel(
             i_rows = rng.random_integers(0, clen)
             i_row_mask = i_rows < num_row
             out = jax.lax.while_loop(
-                lambda data: jnp.any(data[1]),
+                lambda data: jnp.sum(data[1]) > 0,
                 body,
                 (i_rows, i_row_mask, rng, jnp.zeros(block_size, dtype=post_ref.dtype))
             )[-1]
@@ -821,17 +821,18 @@ def _jitsmm_warp_kernel(
                 posts: out_warp_info,
             ):
                 k = B.shape[0]
+                n = B.shape[1]
                 weight0 = weight[0]
                 clen0 = clen[0]
                 seed0 = seed[0]
                 i_m = warp.tid()
                 state = warp.rand_init(seed0 + i_m * k)
-                out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
                 i_k = warp.randi(state, 0, clen0)
                 while i_k < k:
-                    out += warp.tile_astype(warp.tile_load(B[i_k], TITLE_SIZE), dtype=weight.dtype)
+                    for j in range(n):
+                        if B[i_k, j]:
+                            posts[i_m, j] += weight0
                     i_k += warp.randi(state, 1, clen0)
-                warp.tile_store(posts[i_m], out * weight0)
         else:
             @warp.kernel
             def mm(
@@ -842,24 +843,23 @@ def _jitsmm_warp_kernel(
                 posts: out_warp_info,
             ):
                 k = B.shape[0]
+                n = B.shape[1]
                 weight0 = weight[0]
                 clen0 = clen[0]
                 seed0 = seed[0]
                 i_m = warp.tid()
                 state = warp.rand_init(seed0 + i_m * k)
-                out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
-                zeros = warp.tile_zeros(TITLE_SIZE, dtype=B.dtype)
                 i_k = warp.randi(state, 0, clen0)
                 while i_k < k:
-                    b_tile = warp.tile_load(B[i_k], TITLE_SIZE)
-                    out += warp.tile_astype(b_tile > zeros, dtype=weight.dtype)
+                    for j in range(n):
+                        if B[i_k, j] > float(0.0):
+                            posts[i_m, j] += weight0
                     i_k += warp.randi(state, 1, clen0)
-                warp.tile_store(posts[i_m], out * weight0)
 
         def kernel(weight, clen, B, seed, _):
             dim = out_info.shape[0]
-            fn = jax_kernel(mm, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
-            return fn(weight, clen, B, seed)
+            fn = jax_kernel(mm, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
+            return fn(weight, clen, B, seed, jnp.zeros(out_info.shape, out_info.dtype))
     else:
         # JIT Matrix.T @ B (corder=False)
         if B_info.dtype == jnp.bool_:
@@ -872,15 +872,17 @@ def _jitsmm_warp_kernel(
                 posts: out_warp_info,
             ):
                 m = posts.shape[0]
+                n = B.shape[1]
                 weight0 = weight[0]
                 clen0 = clen[0]
                 seed0 = seed[0]
                 i_k = warp.tid()
                 state = warp.rand_init(seed0 + i_k * m)
-                out = warp.tile_astype(warp.tile_load(B[i_k], TITLE_SIZE), dtype=weight.dtype) * weight0
                 i_m = warp.randi(state, 0, clen0)
                 while i_m < m:
-                    warp.tile_atomic_add(posts[i_m], out)
+                    for j in range(n):
+                        if B[i_k, j]:
+                            warp.atomic_add(posts, i_m, j, weight0)
                     i_m += warp.randi(state, 1, clen0)
         else:
             @warp.kernel
@@ -892,17 +894,17 @@ def _jitsmm_warp_kernel(
                 posts: out_warp_info,
             ):
                 m = posts.shape[0]
+                n = B.shape[1]
                 weight0 = weight[0]
                 clen0 = clen[0]
                 seed0 = seed[0]
                 i_k = warp.tid()
                 state = warp.rand_init(seed0 + i_k * m)
-                zeros = warp.tile_zeros(TITLE_SIZE, dtype=B.dtype)
-                b_tile = warp.tile_load(B[i_k], TITLE_SIZE)
-                out = warp.tile_astype(b_tile > zeros, dtype=weight.dtype) * weight0
                 i_m = warp.randi(state, 0, clen0)
                 while i_m < m:
-                    warp.tile_atomic_add(posts[i_m], out)
+                    for j in range(n):
+                        if B[i_k, j] > float(0.0):
+                            warp.atomic_add(posts, i_m, j, weight0)
                     i_m += warp.randi(state, 1, clen0)
 
         def kernel(weight, clen, B, seed, _):
