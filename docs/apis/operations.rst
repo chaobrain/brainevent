@@ -103,10 +103,8 @@ Dense-matrix @ binary-vector / binary-matrix.
 
    binary_densemv
    binary_densemv_p
-   dbmm
-   dbmm_p
-   bdmm
-   bdmm_p
+   binary_densemm
+   binary_densemm_p
 
 Indexed binary operations.
 

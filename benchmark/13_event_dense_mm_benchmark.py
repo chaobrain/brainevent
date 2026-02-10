@@ -21,10 +21,7 @@ import jax
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from brainevent._dense import (
-    dbmm,
-    bdmm,
-)
+from brainevent._dense import binary_densemm
 import braintools
 import brainstate
 from utils import visualize
@@ -47,9 +44,9 @@ def matrix_event(m, k, n, spk_prob, as_float: bool, transpose: bool, n_run=100):
     @jax.jit
     def f1(spike, weight):
         return (
-            dbmm(weight, spike)
+            binary_densemm(weight, spike, transpose=False)
             if transpose
-            else bdmm(spike, weight)
+            else binary_densemm(weight, spike, transpose=True)
         )
 
     @jax.jit
