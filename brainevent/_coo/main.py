@@ -144,6 +144,12 @@ class COO(u.sparse.SparseMatrix):
         self.rows_sorted = rows_sorted
         self.cols_sorted = cols_sorted
 
+        if rows_sorted and cols_sorted:
+            raise ValueError(
+                f'Both rows_sorted and cols_sorted cannot be True for COO. '
+                f'Received rows_sorted={rows_sorted}, cols_sorted={cols_sorted}.'
+            )
+
         if ptr is None and (rows_sorted or cols_sorted):
             sorted_idx = self.row if rows_sorted else self.col
             length = shape[0] if rows_sorted else shape[1]
