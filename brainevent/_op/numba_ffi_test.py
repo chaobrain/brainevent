@@ -27,6 +27,10 @@ import numpy as np
 import pytest
 import brainstate
 
+cpu_platform = jax.default_backend() == 'cpu'
+if not cpu_platform:
+    pytest.skip(allow_module_level=True, reason='Numba CPU FFI tests only run on CPU platform')
+
 from brainevent._op.numba_ffi import (
     _ensure_sequence,
     _normalize_shapes_and_dtypes,
