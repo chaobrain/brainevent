@@ -17,7 +17,7 @@
 
 from jax.tree_util import register_pytree_node_class
 
-from .base import EventRepresentation, is_known_type
+from .base import IndexedRepresentation, is_known_type
 from .indexed_binary_extraction import binary_1d_array_index_p_call, binary_2d_array_index_p_call
 
 __all__ = [
@@ -26,7 +26,7 @@ __all__ = [
 
 
 @register_pytree_node_class
-class IndexedBinary1d(EventRepresentation):
+class IndexedBinary1d(IndexedRepresentation):
     """
     A binary array is a special case of an event array where the events are binary (0 or 1).
 
@@ -80,7 +80,7 @@ class IndexedBinary1d(EventRepresentation):
 
 
 @register_pytree_node_class
-class IndexedBinary2d(EventRepresentation):
+class IndexedBinary2d(IndexedRepresentation):
     """
     A binary array is a special case of an event array where the events are binary (0 or 1).
 

@@ -24,6 +24,7 @@ from jax.tree_util import register_pytree_node_class
 
 __all__ = [
     'EventRepresentation',
+    'IndexedRepresentation',
 ]
 
 ArrayValue = Union[jax.Array, u.Quantity]
@@ -117,3 +118,10 @@ class EventRepresentation(ABC):
     @abstractmethod
     def __rmatmul__(self, other):
         pass
+
+
+class IndexedRepresentation(EventRepresentation):
+    __slots__ = ('_value',)
+    __array_priority__ = 100
+    __module__ = 'brainevent'
+

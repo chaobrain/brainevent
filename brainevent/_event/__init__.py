@@ -14,13 +14,14 @@
 # ==============================================================================
 
 
-from .base import EventRepresentation
+from .base import EventRepresentation, IndexedRepresentation
 from .binary import BinaryArray
 from .indexed_binary_extraction import binary_array_index
 from .sparse_float import SparseFloat
 
 __all__ = [
     'EventRepresentation',
+    'IndexedRepresentation',
     'BinaryArray',
     'SparseFloat',
     'binary_array_index',
