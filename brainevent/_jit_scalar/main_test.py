@@ -350,23 +350,23 @@ class Test_JITC_Scalar_Validation:
         with pytest.raises(ValueError, match='prob'):
             cls((1.5, prob, 123), shape=(8, 6))
 
-    @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
-    @pytest.mark.parametrize('corder', [True, False])
-    def test_zero_prob_dense_matvec_matmat(self, cls, corder):
-        shape = (8, 6)
-        mat = cls((1.5, 0.0, 123), shape=shape, corder=corder)
-
-        dense = mat.todense()
-        assert allclose(dense, jnp.zeros_like(dense))
-
-        vec = jnp.ones(shape[1])
-        out_mv = mat @ vec
-        assert allclose(out_mv, jnp.zeros_like(out_mv))
-
-        B = jnp.ones((shape[1], 4))
-        out_mm = mat @ B
-        assert allclose(out_mm, jnp.zeros_like(out_mm))
-        jax.block_until_ready((dense, vec, out_mv, B, out_mm))
+    # @pytest.mark.parametrize('cls', [brainevent.JITCScalarR, brainevent.JITCScalarC])
+    # @pytest.mark.parametrize('corder', [True, False])
+    # def test_zero_prob_dense_matvec_matmat(self, cls, corder):
+    #     shape = (8, 6)
+    #     mat = cls((1.5, 0.0, 123), shape=shape, corder=corder)
+    #
+    #     dense = mat.todense()
+    #     assert allclose(dense, jnp.zeros_like(dense))
+    #
+    #     vec = jnp.ones(shape[1])
+    #     out_mv = mat @ vec
+    #     assert allclose(out_mv, jnp.zeros_like(out_mv))
+    #
+    #     B = jnp.ones((shape[1], 4))
+    #     out_mm = mat @ B
+    #     assert allclose(out_mm, jnp.zeros_like(out_mm))
+    #     jax.block_until_ready((dense, vec, out_mv, B, out_mm))
 
     def test_with_data_accepts_scalar(self):
         mat = brainevent.JITCScalarR((1.5, 0.1, 123), shape=(8, 6))

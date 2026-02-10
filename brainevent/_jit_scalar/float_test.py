@@ -20,6 +20,10 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+# Keep GPU matmul reference numerics stable (avoid TF32 drift in dense @ B checks).
+if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is None:
+    jax.config.update('jax_default_matmul_precision', 'highest')
+
 from brainevent._jit_scalar.float import jits, jits_p, jitsmv, jitsmv_p, jitsmm, jitsmm_p
 
 platform = jax.default_backend()
@@ -27,13 +31,6 @@ JITS_IMPLEMENTATIONS = tuple(jits_p.available_backends(platform))
 JITSMV_IMPLEMENTATIONS = tuple(jitsmv_p.available_backends(platform))
 JITSMM_IMPLEMENTATIONS = tuple(jitsmm_p.available_backends(platform))
 
-JITS_IMPLEMENTATIONS = ['warp']
-JITSMV_IMPLEMENTATIONS = ['warp']
-JITSMM_IMPLEMENTATIONS = ['warp']
-
-# Keep GPU matmul reference numerics stable (avoid TF32 drift in dense @ B checks).
-if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is None:
-    jax.config.update('jax_default_matmul_precision', 'highest')
 
 # ---- jits: transpose symmetry ----
 
