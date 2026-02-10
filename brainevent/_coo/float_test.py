@@ -36,12 +36,11 @@ if not COOMM_IMPLEMENTATIONS:
 
 class TestVectorCOO:
     @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
-    @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('homo_w', [True, False])
-    def test_vector_coo(self, implementation, replace, homo_w):
+    def test_vector_coo(self, implementation, homo_w):
         m, n = 20, 40
         x = brainstate.random.rand(m)
-        row, col = _get_coo(m, n, 0.1, replace=replace)
+        row, col = _get_coo(m, n, 0.1)
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         y = coomv(data, row, col, x, shape=(m, n), transpose=True, backend=implementation)
@@ -50,12 +49,11 @@ class TestVectorCOO:
         jax.block_until_ready((x, row, col, y, y2))
 
     @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
-    @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('homo_w', [True, False])
-    def test_coo_vector(self, implementation, replace, homo_w):
+    def test_coo_vector(self, implementation, homo_w):
         m, n = 20, 40
         v = brainstate.random.rand(n)
-        row, col = _get_coo(m, n, 0.1, replace=replace)
+        row, col = _get_coo(m, n, 0.1)
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         y = coomv(data, row, col, v, shape=(m, n), transpose=False, backend=implementation)
@@ -64,12 +62,11 @@ class TestVectorCOO:
         jax.block_until_ready((v, row, col, y, y2))
 
     @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
-    @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('homo_w', [True, False])
-    def test_vector_coo_vmap_vector(self, implementation, replace, homo_w):
+    def test_vector_coo_vmap_vector(self, implementation, homo_w):
         n_batch, m, n = 10, 20, 40
         xs = brainstate.random.rand(n_batch, m)
-        row, col = _get_coo(m, n, 0.1, replace=replace)
+        row, col = _get_coo(m, n, 0.1)
 
         data = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
         y = jax.vmap(
@@ -163,13 +160,13 @@ class TestVectorCOO:
             assert y.dtype == dtype
             assert jax.block_until_ready(jnp.allclose(y, y2, rtol=1e-5, atol=1e-5))
 
-    def _test_vjp(self, implementation, homo_w, replace, transpose):
+    def _test_vjp(self, implementation, homo_w, transpose):
         n_in = 20
         n_out = 30
         shape = (n_in, n_out)
         x = brainstate.random.rand(n_in) if transpose else brainstate.random.rand(n_out)
 
-        row, col = _get_coo(n_in, n_out, 0.2, replace=replace)
+        row, col = _get_coo(n_in, n_out, 0.2)
         w = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
 
         def f_api(x, w):
@@ -195,22 +192,21 @@ class TestVectorCOO:
 
     @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
     @pytest.mark.parametrize('homo_w', [True, False])
-    @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
-    def test_vjp(self, implementation, transpose, replace, homo_w):
+    def test_vjp(self, implementation, transpose, homo_w):
         self._test_vjp(
             implementation=implementation,
             homo_w=homo_w,
-            replace=replace,
+
             transpose=transpose,
         )
 
-    def _test_jvp(self, implementation, homo_w, replace, transpose):
+    def _test_jvp(self, implementation, homo_w, transpose):
         n_in = 20
         n_out = 30
         shape = (n_in, n_out)
         x = brainstate.random.rand(n_in if transpose else n_out)
-        row, col = _get_coo(n_in, n_out, 0.1, replace=replace)
+        row, col = _get_coo(n_in, n_out, 0.1)
 
         w = 1.5 if homo_w else braintools.init.Normal(0., 1.)(row.shape)
 
@@ -237,13 +233,11 @@ class TestVectorCOO:
 
     @pytest.mark.parametrize('implementation', COOMV_IMPLEMENTATIONS)
     @pytest.mark.parametrize('homo_w', [True, False])
-    @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
-    def test_jvp(self, implementation, transpose, replace, homo_w):
+    def test_jvp(self, implementation, transpose, homo_w):
         self._test_jvp(
             implementation=implementation,
             homo_w=homo_w,
-            replace=replace,
             transpose=transpose,
         )
 

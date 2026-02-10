@@ -20,9 +20,12 @@ import jax.numpy as jnp
 import numpy as np
 
 
-def _get_coo(n_pre, n_post, prob, replace=True):
+def _get_coo(n_pre, n_post, prob, replace='rand'):
     n_conn = int(n_post * prob)
     rows = np.repeat(np.arange(n_pre), n_conn)
+
+    if replace == 'rand':
+        replace = np.random.choice([True, False])
 
     if replace:
         cols = np.random.randint(0, n_post, size=(n_pre * n_conn,))
