@@ -247,7 +247,11 @@ class TestVector:
             y_true = vector_fcn(x, data, indices, (m, n))
             return y, y_true
 
-        xs = brainstate.random.rand(batch_size, m) if batch_axis == 0 else brainstate.random.rand(m, batch_size)
+        xs = (
+            brainstate.random.rand(batch_size, m)
+            if batch_axis == 0 else
+            brainstate.random.rand(m, batch_size)
+        )
         y, y_true = f_compare_vector(xs)
         assert allclose(y, y_true, rtol=1e-3, atol=1e-3)
         jax.block_until_ready((indices, data, xs, y, y_true))
