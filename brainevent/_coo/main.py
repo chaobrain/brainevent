@@ -24,12 +24,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent import EventRepresentation
 from brainevent._csr import (
     CSR, binary_csrmv, binary_csrmm, csrmv, csrmm,
     update_csr_on_binary_pre, update_csr_on_binary_post
 )
-from brainevent._event import BinaryArray, SparseFloat
+from brainevent._event import BinaryArray, SparseFloat, EventRepresentation
 from brainevent._misc import _coo_todense, COOInfo
 from brainevent._typing import MatrixShape, Data, Index
 from .binary import binary_coomv, binary_coomm
@@ -419,6 +418,7 @@ class COO(u.sparse.SparseMatrix):
 
         if inplace:
             self.data = data
+            return None
         return data
 
     def update_on_post(
@@ -449,6 +449,7 @@ class COO(u.sparse.SparseMatrix):
 
         if inplace:
             self.data = data
+            return None
         return data
 
     def apply(self, fn):

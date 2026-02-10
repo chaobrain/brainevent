@@ -280,10 +280,9 @@ def _spfloat_fcnmv_pallas_kernel(
         # vector: [k]
 
         def _raw_kernel(
-            weight_ref,  # [1]
+            weight_ref,  # [1] or [n_pre, n_conn]
             index_ref,  # [n_pre, n_conn]
             vector_ref,  # [n_post]
-            _,
             out_ref,  # [n_pre]
         ):
             i_row = pl.program_id(0)
@@ -556,6 +555,99 @@ def _spfloat_fcnmm_numba_kernel(
     return kernel
 
 
+def _spfloat_fcnmm_warp_kernel(
+    transpose: bool,
+    weight_info: jax.ShapeDtypeStruct,
+    matrix_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    import warp
+    from warp.jax_experimental import jax_kernel
+
+    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
+    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
+    B_warp_info = jaxinfo_to_warpinfo(matrix_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    if transpose:
+        if weight_info.size == 1:
+            @warp.kernel
+            def mm(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                B: B_warp_info,
+                posts: out_warp_info,
+            ):
+                i_k, i_n = warp.tid()
+                sp = B[i_k, i_n]
+                if sp != weights.dtype(0.):
+                    v = sp * weights[0]
+                    for j in range(indices.shape[1]):
+                        i_m = indices[i_k, j]
+                        warp.atomic_add(posts, i_m, i_n, v)
+        else:
+            @warp.kernel
+            def mm(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                B: B_warp_info,
+                posts: out_warp_info,
+            ):
+                i_k, i_n = warp.tid()
+                b = B[i_k, i_n]
+                if b != weights.dtype(0.):
+                    for j in range(indices.shape[1]):
+                        i_m = indices[i_k, j]
+                        w = weights[i_k, j]
+                        warp.atomic_add(posts, i_m, i_n, w * b)
+
+        def kernel(weights, indices, matrix):
+            out_info = kwargs['outs'][0]
+            dim = (matrix_info.shape[0], matrix_info.shape[1])
+            fn = jax_kernel(mm, launch_dims=dim, num_outputs=1, in_out_argnames=['posts'])
+            return fn(weights, indices, matrix, jnp.zeros(out_info.shape, out_info.dtype))
+
+    else:
+        if weight_info.size == 1:
+            @warp.kernel
+            def mm(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                B: B_warp_info,
+                posts: out_warp_info,
+            ):
+                i_m, i_n = warp.tid()
+                r = weights.dtype(0.)
+                for j in range(indices.shape[1]):
+                    i_k = indices[i_m, j]
+                    r += B[i_k, i_n]
+                posts[i_m, i_n] = r * weights[0]
+        else:
+            @warp.kernel
+            def mm(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                B: B_warp_info,
+                posts: out_warp_info,
+            ):
+                i_m, i_n = warp.tid()
+                r = weights.dtype(0.)
+                for j in range(indices.shape[1]):
+                    i_k = indices[i_m, j]
+                    w = weights[i_m, j]
+                    r += w * B[i_k, i_n]
+                posts[i_m, i_n] = r
+
+        def kernel(weights, indices, matrix):
+            out_info = kwargs['outs'][0]
+            dim = (indices_info.shape[0], matrix_info.shape[1])
+            fn = jax_kernel(mm, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
+            return fn(weights, indices, matrix)
+
+    return kernel
+
+
 def _spfloat_fcnmm_pallas_kernel(
     shape: MatrixShape,
     transpose: bool,
@@ -640,7 +732,6 @@ def _spfloat_fcnmm_pallas_kernel(
             weight_ref,  # [1] or [n_pre, n_conn]
             index_ref,  # [n_pre, n_conn]
             matrix_ref,  # [k, n]
-            _,
             out_ref,  # [n_pre, n]
         ):
             i_m = pl.program_id(0)
@@ -851,6 +942,7 @@ def spfloat_fcnmm_p_call(
 
 spfloat_fcnmm_p = XLACustomKernel('spfloat_fcnmm')
 spfloat_fcnmm_p.def_numba_kernel(_spfloat_fcnmm_numba_kernel)
+spfloat_fcnmm_p.def_warp_kernel(_spfloat_fcnmm_warp_kernel)
 spfloat_fcnmm_p.def_pallas_kernel('gpu', _spfloat_fcnmm_pallas_kernel)
 spfloat_fcnmm_p.def_pallas_kernel('tpu', _spfloat_fcnmm_pallas_kernel)
 spfloat_fcnmm_p.def_jvp_rule2(_spfloat_fcnmm_jvp_weights, None, _spfloat_fcnmm_jvp_matrix, None)
