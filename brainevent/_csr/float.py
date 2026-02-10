@@ -251,7 +251,7 @@ def _csrmv_pallas_kernel_generator(
         if weight_info.size == 1:
             # csr.T @ B (Scalar Weight)
             
-            def mm_transpose_scalar_single(
+            def mv_transpose_scalar_single(
                 data_ref,  # [1]
                 indices_ref,  # [nse]
                 indptr_ref,  # [rows + 1]
@@ -292,7 +292,7 @@ def _csrmv_pallas_kernel_generator(
                 # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
                 jax.lax.cond(i_row < num_rows, _body, lambda: None)
 
-            def mm_transpose_scalar_batch(
+            def mv_transpose_scalar_batch(
                 data_ref, indices_ref, indptr_ref, vector_ref, _, posts_ref
             ):
                 idx_batch = pl.program_id(0)
@@ -328,12 +328,12 @@ def _csrmv_pallas_kernel_generator(
                 # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
                 jax.lax.cond(i_row < num_rows, _body, lambda: None)
             
-            mm_single_impl = mm_transpose_scalar_single
-            mm_batch_impl = mm_transpose_scalar_batch
+            mv_single_impl = mv_transpose_scalar_single
+            mv_batch_impl = mv_transpose_scalar_batch
 
         else:
             # csr.T @ B (Vector Weight)
-            def mm_transpose_vector_single(
+            def mv_transpose_vector_single(
                 data_ref,  # [nse]
                 indices_ref,  # [nse]
                 indptr_ref,  # [rows + 1]
@@ -371,7 +371,7 @@ def _csrmv_pallas_kernel_generator(
                 # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
                 jax.lax.cond(i_row < num_rows, _body, lambda: None)
 
-            def mm_transpose_vector_batch(
+            def mv_transpose_vector_batch(
                 data_ref, indices_ref, indptr_ref, vector_ref, _, posts_ref
             ):
                 idx_batch = pl.program_id(0)
@@ -406,8 +406,8 @@ def _csrmv_pallas_kernel_generator(
                 # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
                 jax.lax.cond(i_row < num_rows, _body, lambda: None)
 
-            mm_single_impl = mm_transpose_vector_single
-            mm_batch_impl = mm_transpose_vector_batch
+            mv_single_impl = mv_transpose_vector_single
+            mv_batch_impl = mv_transpose_vector_batch
             
         def kernel(data, indices, indptr, vector):
             out_info = kwargs['outs'][0]
@@ -420,7 +420,7 @@ def _csrmv_pallas_kernel_generator(
                 batch_size = vector.shape[0]
                 grid = (batch_size, launch_rows)
                 fn = pl.pallas_call(
-                    mm_batch_impl, 
+                    mv_batch_impl, 
                     grid=grid, 
                     input_output_aliases={4: 0}, 
                     out_shape=kwargs['outs']
@@ -428,7 +428,7 @@ def _csrmv_pallas_kernel_generator(
             else:
                 grid = (launch_rows,)
                 fn = pl.pallas_call(
-                    mm_single_impl, 
+                    mv_single_impl, 
                     grid=grid, 
                     input_output_aliases={4: 0}, 
                     out_shape=kwargs['outs']
@@ -440,7 +440,7 @@ def _csrmv_pallas_kernel_generator(
         # Non-Transpose: csr @ B -> A @ x
         
         if weight_info.size == 1:
-            def mm(
+            def mv(
                 data_ref,  # [1]
                 indices_ref,  # [nse]
                 indptr_ref,  # [m + 1]
@@ -487,7 +487,7 @@ def _csrmv_pallas_kernel_generator(
                 jax.lax.cond(i_row < num_rows, _body, lambda: None)
 
         else:
-            def mm(
+            def mv(
                 data_ref,  # [nse]
                 indices_ref,  # [nse]
                 indptr_ref,  # [m + 1]
@@ -513,7 +513,7 @@ def _csrmv_pallas_kernel_generator(
                         val_A = load(data_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0.0)
                         
                         # GUARD 2: Indirect Access Boundary Check (Gather)
-                        safe_cols = jnp.minimum(cols, vec_len - 1)
+                        safe_cols = jnp.minimum(cols, vec_len - 1) # make the access can be limited in the vec
                         valid_col_mask = cols < vec_len
                         val_B = vector_ref[safe_cols]
                         
@@ -534,7 +534,7 @@ def _csrmv_pallas_kernel_generator(
 
         def kernel(data, indices, indptr, vector):
             launch_rows = shape[0]
-            fn = pl.pallas_call(mm, grid=(launch_rows,), out_shape=kwargs['outs'])
+            fn = pl.pallas_call(mv, grid=(launch_rows,), out_shape=kwargs['outs'])
             return fn(data, indices, indptr, vector)
 
     return kernel
