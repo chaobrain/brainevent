@@ -395,82 +395,101 @@ def _jitc_mv_normal_pallas_kernel_generator(
     corder: bool = True,
     **kwargs
 ):
+    """
+    Pallas GPU kernel for binary event matvec with normal-distributed JITC matrix.
+
+    JITC matrix generation must be consistent with _jitnmv_pallas_kernel_generator
+    in float.py (same RNG seeding and iteration order):
+    - corder=True:  vectorize over output rows (i_cols), loop over input (i_rows)
+    - corder=False: vectorize over input rows (i_rows), loop over output (i_cols)
+    """
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas import triton as plt
+    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
     dim = (out_info.shape[0] if corder else vector_info.shape[0])
+    block_size = generate_block_dim(dim, maximum=128)
 
     if corder:
-        block_size = generate_block_dim(dim, maximum=128)
-
+        # Matches float.py _jitnmv_pallas corder=True exactly:
+        # vectorize over output, seed by i_cols, loop over i_rows.
+        # Binary: accumulate w only when vector[i_row] is event (>0 or True).
         def kernel(w_loc_ref, w_scale_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
             num_row = vector_ref.shape[0]
             w_loc = w_loc_ref[0]
             w_scale = w_scale_ref[0]
-            clen = clen_ref[0]  # Connection length parameter (controls sparsity)
-            seed = seed_ref[0]  # Base random seed value
+            clen = clen_ref[0]
+            seed = seed_ref[0]
             i_col_block = pl.program_id(0)
             i_cols = i_col_block * block_size + jnp.arange(block_size)
             i_col_mask = i_cols < dim
 
             def body(data):
-                i_rows, i_row_mask, rng, res = data
+                i_rows, i_row_mask, rng, out = data
                 v = vector_ref[i_rows]
                 if vector_ref.dtype != jnp.bool_:
-                    v = v != 0.
+                    v = v > 0.
                 w = rng.normal(w_loc, w_scale)
-                res = jnp.where(v, res + w, res)
+                out = jnp.where(i_row_mask & v, out + w, out)
                 i_rows += rng.random_integers(1, clen)
-                return i_rows, i_rows < num_row, rng, res
+                return i_rows, i_rows < num_row, rng, out
 
             rng = PallasLFSR88RNG(seed + i_cols)
             i_rows = rng.random_integers(0, clen)
             i_row_mask = i_rows < num_row
+            out = jnp.zeros(block_size, dtype=post_ref.dtype)
             out = jax.lax.while_loop(
                 lambda data: jnp.sum(data[1]) > 0,
                 body,
-                (i_rows, i_row_mask, rng, jnp.zeros(block_size, dtype=post_ref.dtype))
+                (i_rows, i_row_mask, rng, out)
             )[-1]
-            plt.store(post_ref, i_cols, out, mask=i_col_mask)
-
-        def run(w_loc, w_scale, clen, vector, seed):
-            out = kwargs['outs'][0]
-            fn = pl.pallas_call(kernel, grid=(pl.cdiv(dim, block_size),), out_shape=kwargs['outs'])
-            return fn(w_loc, w_scale, clen, vector, seed, jnp.zeros(out.shape, out.dtype))
-
-        return run
+            post_ref[i_cols] = jnp.where(i_col_mask, out, post_ref[i_cols])
 
     else:
+        # Matches float.py _jitnmv_pallas corder=False exactly:
+        # vectorize over input, seed by i_rows, loop over i_cols.
+        # Binary: only scatter w (via atomic_add) when vector element is event.
         def kernel(w_loc_ref, w_scale_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
             num_col = post_ref.shape[0]
             w_loc = w_loc_ref[0]
             w_scale = w_scale_ref[0]
-            clen = clen_ref[0]  # Connection length parameter (controls sparsity)
-            seed = seed_ref[0]  # Base random seed value
-            i_row = pl.program_id(0)
-            v = vector_ref[i_row]
+            clen = clen_ref[0]
+            seed = seed_ref[0]
+            i_row_block = pl.program_id(0)
+            i_rows = i_row_block * block_size + jnp.arange(block_size)
+            i_row_mask = i_rows < dim
+            v = vector_ref[i_rows]
+            if vector_ref.dtype != jnp.bool_:
+                v = v > 0.
+            # event_mask: only active lanes where the vector element is an event
+            event_mask = i_row_mask & v
 
-            @pl.when(v if vector_ref.dtype == jnp.bool_ else v != 0.)
-            def run():
-                def body(data):
-                    i, rng = data
-                    plt.atomic_add(post_ref, i, rng.normal(w_loc, w_scale))
-                    i += rng.random_integers(1, clen)
-                    return i, rng
+            def body(data):
+                i_cols, i_col_mask, rng = data
+                w = rng.normal(w_loc, w_scale)
+                atomic_add(post_ref, (i_cols,), w, mask=event_mask & i_col_mask)
+                i_cols += rng.random_integers(1, clen)
+                return i_cols, i_cols < num_col, rng
 
-                rng = PallasLFSR88RNG(seed + i_row)
-                jax.lax.while_loop(
-                    lambda data: data[0] < num_col,
-                    body,
-                    (rng.random_integers(0, clen), rng)
-                )
+            rng = PallasLFSR88RNG(seed + i_rows)
+            i_cols = rng.random_integers(0, clen)
+            i_col_mask = i_cols < num_col
+            jax.lax.while_loop(
+                lambda data: jnp.sum(data[1]) > 0,
+                body,
+                (i_cols, i_col_mask, rng)
+            )
 
-        def run(w_loc, w_scale, clen, vector, seed):
-            out = kwargs['outs'][0]
-            fn = pl.pallas_call(kernel, grid=(dim,), out_shape=kwargs['outs'], input_output_aliases={5: 0})
-            return fn(w_loc, w_scale, clen, vector, seed, jnp.zeros(out.shape, out.dtype))
+    def run(w_loc, w_scale, clen, vector, seed):
+        fn = pl.pallas_call(
+            kernel,
+            grid=(pl.cdiv(dim, block_size),),
+            input_output_aliases={5: 0},
+            out_shape=kwargs['outs']
+        )
+        placeholder = jnp.zeros(kwargs['outs'][0].shape, kwargs['outs'][0].dtype)
+        return fn(w_loc, w_scale, clen, vector, seed, placeholder)
 
-        return run
+    return run
 
 
 def _jitc_mv_normal_jvp_v(v_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
@@ -939,88 +958,123 @@ def _jitc_mm_normal_pallas_kernel_generator(
     corder: bool = True,
     **kwargs
 ):
-    from jax.experimental import pallas as pl
-    from jax.experimental.pallas import triton as plt
+    """
+    Pallas GPU kernel for binary event matmat with normal-distributed JITC matrix.
 
-    block_dim = generate_block_dim(B_info.shape[1], maximum=1024)
-    tile = out_info.shape[0] if corder else B_info.shape[0]
-    grid = (tile, pl.cdiv(B_info.shape[1], block_dim))
+    Matches _jitnmm_pallas_kernel_generator in float.py:
+    - Grid: (row_or_k_blocks, B_cols) — each block processes one B column
+    - corder=True:  vectorize over output rows, seed by i_rows, loop over k
+    - corder=False: vectorize over k, seed by i_ks, loop over output rows
+    """
+    from jax.experimental import pallas as pl
+    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
+
+    B_cols = B_info.shape[1]
 
     if corder:
-        # JIT Matrix.T @ B
-        # - JIT matrix: [k, m]
-        # - B: [k, n]
-        def kernel(w_loc_ref, w_scale_ref, clen_ref, B_ref, seed_ref, post_ref):
+        # Match float.py _jitnmm_pallas corder=True exactly:
+        # Grid: (row_blocks, B_cols). Each block processes one B column.
+        out_rows = out_info.shape[0]
+        row_block = generate_block_dim(out_rows, maximum=128)
+        grid = (pl.cdiv(out_rows, row_block), B_cols)
+
+        def kernel(w_loc_ref, w_scale_ref, clen_ref, B_ref, seed_ref, _, post_ref):
             k = B_ref.shape[0]
             w_loc0 = w_loc_ref[0]
             w_scale0 = w_scale_ref[0]
-            clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
-            seed0 = seed_ref[0]  # Base random seed value
-            i_m = pl.program_id(0)
-            i_n_block = pl.program_id(1)
-            i_n_start = block_dim * i_n_block
-            cols = i_n_start + jnp.arange(block_dim)
-            mask = cols < B_info.shape[1]
-            safe_cols = jnp.where(mask, cols, 0)
+            clen0 = clen_ref[0]
+            seed0 = seed_ref[0]
+            i_row_block = pl.program_id(0)
+            col_j = pl.program_id(1)
+
+            i_rows = i_row_block * row_block + jnp.arange(row_block)
+            i_row_mask = i_rows < out_rows
+            safe_rows = jnp.where(i_row_mask, i_rows, 0)
+
+            rng = PallasLFSR88RNG(seed0 + i_rows)
+            i_cols = rng.random_integers(0, clen0)
+            i_col_mask = i_cols < k
+
+            out = jnp.zeros(row_block, dtype=post_ref.dtype)
 
             def body(data):
-                i, rng, out = data
+                i_cols, i_col_mask, rng, out = data
                 w = rng.normal(w_loc0, w_scale0)
-                events = plt.load(B_ref[i, safe_cols])
-                events = jnp.asarray(events, dtype=out.dtype) if B_ref.dtype == jnp.bool_ else events
-                events = jnp.where(mask, events, 0)
-                out += events * w
-                i += rng.random_integers(1, clen0)
-                return i, rng, out
+                safe_cols = jnp.where(i_col_mask, i_cols, 0)
+                b_vals = B_ref[safe_cols, col_j]
+                # Binary thresholding: treat b_vals as events
+                if B_ref.dtype == jnp.bool_:
+                    events = jnp.asarray(b_vals, dtype=out.dtype)
+                else:
+                    events = jnp.where(b_vals > 0., 1., 0.)
+                out += jnp.where(i_col_mask & i_row_mask, w * events, 0.)
+                i_cols += rng.random_integers(1, clen0)
+                return i_cols, i_cols < k, rng, out
 
-            rng = PallasLFSR88RNG(seed0 + i_m)
-            out = jnp.zeros(block_dim, dtype=post_ref.dtype)
-            _, _, out = jax.lax.while_loop(
-                lambda data: data[0] < k,
+            _, _, _, out = jax.lax.while_loop(
+                lambda data: jnp.sum(data[1]) > 0,
                 body,
-                (rng.random_integers(0, clen0), rng, out)
+                (i_cols, i_col_mask, rng, out)
             )
-            plt.store(post_ref[i_m, safe_cols], out, mask=mask)
-
+            atomic_add(post_ref, (safe_rows, col_j), out, mask=i_row_mask)
 
     else:
-        # JIT Matrix.T @ B
-        # - JIT matrix: [k, m]
-        # - B: [k, n]
-        def kernel(w_loc_ref, w_scale_ref, clen_ref, B_ref, seed_ref, post_ref):
+        # Match float.py _jitnmm_pallas corder=False exactly:
+        # Grid: (k_blocks, B_cols). Each block processes one B column.
+        k_dim = B_info.shape[0]
+        k_block = generate_block_dim(k_dim, maximum=128)
+        grid = (pl.cdiv(k_dim, k_block), B_cols)
+
+        def kernel(w_loc_ref, w_scale_ref, clen_ref, B_ref, seed_ref, _, post_ref):
             m = post_ref.shape[0]
             w_loc0 = w_loc_ref[0]
             w_scale0 = w_scale_ref[0]
-            clen0 = clen_ref[0]  # Connection length parameter (controls sparsity)
-            seed0 = seed_ref[0]  # Base random seed value
-            i_k = pl.program_id(0)
-            i_n_block = pl.program_id(1)
-            i_n_start = block_dim * i_n_block
-            cols = i_n_start + jnp.arange(block_dim)
-            mask = cols < B_info.shape[1]
-            safe_cols = jnp.where(mask, cols, 0)
+            clen0 = clen_ref[0]
+            seed0 = seed_ref[0]
+            i_k_block = pl.program_id(0)
+            col_j = pl.program_id(1)
 
-            B_block = plt.load(B_ref[i_k, safe_cols])
-            B_block = jnp.asarray(B_block, dtype=post_ref.dtype)
-            B_block = jnp.where(mask, B_block, 0)
+            i_ks = i_k_block * k_block + jnp.arange(k_block)
+            i_k_mask = i_ks < k_dim
+            safe_ks = jnp.where(i_k_mask, i_ks, 0)
+
+            # Preload B values for this column and apply binary thresholding
+            b_vals = B_ref[safe_ks, col_j]
+            if B_ref.dtype == jnp.bool_:
+                b_events = jnp.asarray(b_vals, dtype=post_ref.dtype)
+            else:
+                b_events = jnp.where(b_vals > 0., 1., 0.)
+            b_events = jnp.where(i_k_mask, b_events, 0.)
+
+            rng = PallasLFSR88RNG(seed0 + i_ks)
+            i_rows = rng.random_integers(0, clen0)
+            i_row_mask = i_rows < m
 
             def body(data):
-                i, rng = data
+                i_rows, i_row_mask, rng = data
                 w = rng.normal(w_loc0, w_scale0)
-                plt.atomic_add(post_ref[i, safe_cols], B_block * w, mask=mask)
-                i += rng.random_integers(1, clen0)
-                return i, rng
+                vals = jnp.where(i_k_mask & i_row_mask, w * b_events, 0.)
+                safe_rows = jnp.where(i_row_mask, i_rows, 0)
+                atomic_add(post_ref, (safe_rows, col_j), vals,
+                           mask=i_k_mask & i_row_mask)
+                i_rows += rng.random_integers(1, clen0)
+                return i_rows, i_rows < m, rng
 
-            rng = PallasLFSR88RNG(seed0 + i_k)
             jax.lax.while_loop(
-                lambda data: data[0] < m,
+                lambda data: jnp.sum(data[1]) > 0,
                 body,
-                (rng.random_integers(0, clen0), rng)
+                (i_rows, i_row_mask, rng)
             )
 
     def run(w_loc, w_scale, clen, B, seed):
-        fn = pl.pallas_call(kernel, grid=grid, out_shape=kwargs['outs'])
-        return fn(w_loc, w_scale, clen, B, seed)
+        fn = pl.pallas_call(
+            kernel,
+            grid=grid,
+            input_output_aliases={5: 0},
+            out_shape=kwargs['outs']
+        )
+        placeholder = jnp.zeros(kwargs['outs'][0].shape, kwargs['outs'][0].dtype)
+        return fn(w_loc, w_scale, clen, B, seed, placeholder)
 
     return run
 

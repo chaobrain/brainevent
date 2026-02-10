@@ -607,17 +607,17 @@ class PallasLFSR128RNG(LFSRBase):
             starting points for the four components of the state.
         """
         # Use different transformations for each component to ensure diversity
-        # Mask to ensure values fit in uint32
-        s1 = (seed + 123) & 0xFFFFFFFF
-        s2 = (seed ^ 0xfedc7890) & 0xFFFFFFFF
-        s3 = ((seed << 3) + 0x1a2b3c4d) & 0xFFFFFFFF
-        s4 = (~(seed + 0x5f6e7d8c)) & 0xFFFFFFFF
-        return (
-            jnp.asarray(s1, dtype=jnp.uint32),
-            jnp.asarray(s2, dtype=jnp.uint32),
-            jnp.asarray(s3, dtype=jnp.uint32),
-            jnp.asarray(s4, dtype=jnp.uint32)
-        )
+        # Cast to uint32 first to avoid overflow with large constants
+        seed = jnp.asarray(seed, dtype=jnp.uint32)
+        _c1 = jnp.asarray(123, dtype=jnp.uint32)
+        _c2 = jnp.asarray(0xfedc7890, dtype=jnp.uint32)
+        _c3 = jnp.asarray(0x1a2b3c4d, dtype=jnp.uint32)
+        _c4 = jnp.asarray(0x5f6e7d8c, dtype=jnp.uint32)
+        s1 = seed + _c1
+        s2 = seed ^ _c2
+        s3 = (seed << 3) + _c3
+        s4 = ~(seed + _c4)
+        return (s1, s2, s3, s4)
 
     def generate_next_key(self) -> PallasRandomKey:
         """Generate the next random key and update the internal state.

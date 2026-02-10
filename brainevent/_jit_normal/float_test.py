@@ -27,12 +27,6 @@ JITN_IMPLEMENTATIONS = tuple(jitn_p.available_backends(platform))
 JITNMV_IMPLEMENTATIONS = tuple(jitnmv_p.available_backends(platform))
 JITNMM_IMPLEMENTATIONS = tuple(jitnmm_p.available_backends(platform))
 
-impl = 'warp'
-impl = 'pallas'
-JITN_IMPLEMENTATIONS = [impl]
-JITNMV_IMPLEMENTATIONS = [impl]
-JITNMM_IMPLEMENTATIONS = [impl]
-
 
 # ---- Forward: jitnmv (matrix @ vector, transpose=False) ----
 
@@ -665,7 +659,7 @@ def test_jitnmm_vjp_wscale_with_loss(implementation, shape, corder, transpose):
 
     # Validate via finite differences (avoids jitn vs jitnmm RNG mismatch)
     grad1 = jax.grad(loss_fn)(w_scale_arr)
-    eps = 1e-2
+    eps = 1e-4
     f_plus = loss_fn(w_scale_arr + eps)
     f_minus = loss_fn(w_scale_arr - eps)
     grad_fd = (f_plus - f_minus) / (2 * eps)

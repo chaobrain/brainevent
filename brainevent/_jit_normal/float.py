@@ -349,7 +349,8 @@ def _jitn_pallas_kernel_generator(
             def body(data):
                 i_cols, i_col_mask, rng = data
                 val = rng.normal(w_loc, w_scale)
-                post_ref[i_rows, i_cols] = jnp.where(i_row_mask & i_col_mask, val, post_ref[i_rows, i_cols])
+                safe_cols = jnp.where(i_col_mask, i_cols, 0)
+                post_ref[i_rows, safe_cols] = jnp.where(i_row_mask & i_col_mask, val, post_ref[i_rows, safe_cols])
                 i_cols += rng.random_integers(1, clen0)
                 return i_cols, i_cols < m, rng
 
@@ -376,7 +377,8 @@ def _jitn_pallas_kernel_generator(
             def body(data):
                 i_rows, i_row_mask, rng = data
                 val = rng.normal(w_loc, w_scale)
-                post_ref[i_rows, i_cols] = jnp.where(i_row_mask & i_col_mask, val, post_ref[i_rows, i_cols])
+                safe_rows = jnp.where(i_row_mask, i_rows, 0)
+                post_ref[safe_rows, i_cols] = jnp.where(i_row_mask & i_col_mask, val, post_ref[safe_rows, i_cols])
                 i_rows = i_rows + rng.random_integers(1, clen0)
                 return i_rows, i_rows < n, rng
 
