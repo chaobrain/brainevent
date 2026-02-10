@@ -191,170 +191,316 @@ def _sparse_float_csrmv_pallas_kernel(
 ):
     from jax.experimental import pallas as pl
     from jax.experimental.pallas.triton import atomic_add
+    from jax.experimental.pallas import load
 
     m, k = shape
     block_dim = generate_block_dim(pl.cdiv(indices_info.size, shape[1] if transpose else shape[0]))
-    block_dim = block_dim // 2
+    block_dim = max(1, block_dim // 2)
     block_dim = 32 if block_dim < 32 else block_dim
 
-    if weight_info.size == 1:
-        if transpose:
-            # csr.T @ B
-            #
-            # csr: [k, m]
-            # B: [k]
-            #
-            def mm(
-                data_ref,  # [1]
-                indices_ref,  # [nse]
-                indptr_ref,  # [k + 1]
-                vector_ref,  # [k]
-                _,  # [m]
-                posts_ref,  # [m]
-            ):
-                i_col = pl.program_id(0)
-                col_start = indptr_ref[i_col]
-                col_end = indptr_ref[i_col + 1]
-                col_nnz = col_end - col_start
-                num_blocks = (col_nnz + block_dim - 1) // block_dim
-                event = vector_ref[i_col]
-                weight = data_ref[0]
-                data = jnp.ones((block_dim,), dtype=posts_ref.dtype) * (weight * event)
-
-                @pl.when(event != 0.)
-                def event_processing():
-                    def loop_fn(index, _):
-                        offset = col_start + index * block_dim
-                        mask = offset + jnp.arange(block_dim) < col_end
-                        rows = pl.load(indices_ref, pl.dslice(offset, block_dim), mask=mask)
-                        atomic_add(posts_ref, rows, data, mask=mask)
-
-                    jax.lax.fori_loop(0, num_blocks, loop_fn, None)
-
-        else:
-            # csr @ B
-            #
-            # csr: [m, k]
-            # B: [k]
-            #
-            def mm(
-                data_ref,  # [1]
-                indices_ref,  # [nse]
-                indptr_ref,  # [m + 1]
-                vector_ref,  # [k, n]
-                posts_ref,  # [m, ]
-            ):
-                i_row = pl.program_id(0)
-                row_start = indptr_ref[i_row]
-                row_end = indptr_ref[i_row + 1]
-                row_nnz = row_end - row_start
-                num_blocks = (row_nnz + block_dim - 1) // block_dim
-                val_A = data_ref[0]
-
-                def loop_fn(index, sum_):
-                    offset = row_start + index * block_dim
-                    mask = offset + jnp.arange(block_dim) < row_end
-
-                    cols = pl.load(indices_ref, pl.dslice(offset, block_dim), mask=mask)
-                    events = pl.load(vector_ref, cols, mask=mask)
-                    events = jnp.asarray(events, dtype=posts_ref.dtype)
-                    sum_ += val_A * jnp.sum(events)
-                    return sum_
-
-                i_row_sum = jax.lax.fori_loop(
-                    0,
-                    num_blocks,
-                    loop_fn,
-                    jnp.asarray(0., dtype=posts_ref.dtype)
-                )
-                posts_ref[i_row] = i_row_sum
-
-    else:
-        if transpose:
-            # csr.T @ B
-            #
-            # csr: [k, m]
-            # B: [k, ]
-            #
-            def mm(
-                data_ref,  # [nse]
-                indices_ref,  # [nse]
-                indptr_ref,  # [k + 1]
-                vector_ref,  # [k]
-                _,  # [m]
-                posts_ref,  # [m]
-            ):
-                i_col = pl.program_id(0)
-                col_start = indptr_ref[i_col]
-                col_end = indptr_ref[i_col + 1]
-                col_nnz = col_end - col_start
-                num_blocks = (col_nnz + block_dim - 1) // block_dim
-                event = vector_ref[i_col]
-
-                @pl.when(event != 0.)
-                def event_processing():
-                    def loop_fn(index, _):
-                        offset = col_start + index * block_dim
-                        mask = offset + jnp.arange(block_dim) < col_end
-                        rows = pl.load(indices_ref, pl.dslice(offset, block_dim), mask=mask)
-                        val_A = pl.load(data_ref, pl.dslice(offset, block_dim), mask=mask, other=0.0)
-                        contrib = val_A * event
-                        atomic_add(posts_ref, rows, contrib, mask=mask)
-
-                    jax.lax.fori_loop(0, num_blocks, loop_fn, None)
-
-        else:
-            # csr @ B
-            #
-            # csr: [m, k]
-            # B: [k]
-            #
-            def mm(
-                data_ref,  # [nse]
-                indices_ref,  # [nse]
-                indptr_ref,  # [m + 1]
-                vector_ref,  # [k, n]
-                posts_ref,  # [m, ]
-            ):
-                i_row = pl.program_id(0)
-                row_start = indptr_ref[i_row]
-                row_end = indptr_ref[i_row + 1]
-                row_nnz = row_end - row_start
-                num_blocks = (row_nnz + block_dim - 1) // block_dim
-
-                def loop_fn(index, sum_):
-                    offset = row_start + index * block_dim
-                    mask = offset + jnp.arange(block_dim) < row_end
-
-                    cols = pl.load(indices_ref, pl.dslice(offset, block_dim), mask=mask)
-                    val_A = pl.load(data_ref, pl.dslice(offset, block_dim), mask=mask, other=0.0)
-                    events = pl.load(vector_ref, cols, mask=mask)
-                    events = jnp.asarray(events, dtype=posts_ref.dtype)
-                    sum_ += jnp.sum(val_A * events)
-                    return sum_
-
-                i_row_sum = jax.lax.fori_loop(
-                    0,
-                    num_blocks,
-                    loop_fn,
-                    jnp.asarray(0., dtype=posts_ref.dtype)
-                )
-                posts_ref[i_row] = i_row_sum
-
     if transpose:
+
+        if weight_info.size == 1:
+            # csr.T @ B (Scalar Weight)
+            
+            def mv_transpose_scalar_single(
+                data_ref,  # [1]
+                indices_ref,  # [nse]
+                indptr_ref,  # [rows + 1]
+                vector_ref,  # [rows]
+                _,  # [?]
+                posts_ref,  # [cols]
+            ):
+                i_row = pl.program_id(0) # Iterating over rows of the input CSR matrix
+                num_rows = indptr_ref.shape[0] - 1
+
+                def _body():
+
+                    val_vector = vector_ref[i_row]
+                    @pl.when(val_vector != 0.)
+                    def event_process():
+                        col_start = indptr_ref[i_row]
+                        col_end = indptr_ref[i_row + 1]
+                        col_nnz = col_end - col_start
+                        num_blocks = (col_nnz + block_dim - 1) // block_dim
+
+                        val_vector = vector_ref[i_row]
+                        data = data_ref[0] * val_vector
+
+                        data_block = jnp.ones((block_dim,), dtype=posts_ref.dtype) * data
+                        
+                        # Output dimension limit for validity check
+                        out_dim = posts_ref.shape[0]
+
+                        def loop_fn(index, _):
+                            offset = col_start + index * block_dim
+                            mask = offset + jnp.arange(block_dim) < col_end
+                            
+                            rows = load(indices_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0)
+                            
+                            # GUARD 2: Indirect Access Boundary Check (Scatter)
+                            valid_idx_mask = rows < out_dim
+                            final_mask = mask & valid_idx_mask
+                            atomic_add(posts_ref, rows, data_block, mask=final_mask)
+
+                        jax.lax.fori_loop(0, num_blocks, loop_fn, None)
+
+                # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
+                jax.lax.cond(i_row < num_rows, _body, lambda: None)
+
+            def mv_transpose_scalar_batch(
+                data_ref, indices_ref, indptr_ref, vector_ref, _, posts_ref
+            ):
+                idx_batch = pl.program_id(0)
+                i_row = pl.program_id(1)
+                num_rows = indptr_ref.shape[0] - 1
+
+                def _body():
+                    col_start = indptr_ref[i_row]
+                    col_end = indptr_ref[i_row + 1]
+                    col_nnz = col_end - col_start
+                    num_blocks = (col_nnz + block_dim - 1) // block_dim
+
+                    val_vector = vector_ref[idx_batch, i_row]
+                    data = data_ref[0] * val_vector
+                    data_block = jnp.ones((block_dim,), dtype=posts_ref.dtype) * data
+                    
+                    target_posts_ref = posts_ref[idx_batch]
+                    out_dim = target_posts_ref.shape[0]
+
+                    def loop_fn(index, _):
+                        offset = col_start + index * block_dim
+                        mask = offset + jnp.arange(block_dim) < col_end
+                        rows = load(indices_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0)
+                        
+                        # GUARD 2: Indirect Access Boundary Check
+                        valid_idx_mask = rows < out_dim
+                        final_mask = mask & valid_idx_mask
+                        
+                        atomic_add(target_posts_ref, rows, data_block, mask=final_mask)
+
+                    jax.lax.fori_loop(0, num_blocks, loop_fn, None)
+
+                # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
+                jax.lax.cond(i_row < num_rows, _body, lambda: None)
+            
+            mm_single_impl = mv_transpose_scalar_single
+            mm_batch_impl = mv_transpose_scalar_batch
+
+        else:
+            # csr.T @ B (Vector Weight)
+            def mv_transpose_vector_single(
+                data_ref,  # [nse]
+                indices_ref,  # [nse]
+                indptr_ref,  # [rows + 1]
+                vector_ref,  # [rows]
+                _,  # [?]
+                posts_ref,  # [cols]
+            ):
+                i_row = pl.program_id(0)
+                num_rows = indptr_ref.shape[0] - 1
+                
+                def _body():
+                    
+                    val_vector = vector_ref[i_row]
+                    
+                    @pl.when(val_vector != 0.)
+                    def event_process():
+                        col_start = indptr_ref[i_row]
+                        col_end = indptr_ref[i_row + 1]
+                        col_nnz = col_end - col_start
+                        num_blocks = (col_nnz + block_dim - 1) // block_dim
+                        val_vector = vector_ref[i_row]
+                        
+                        out_dim = posts_ref.shape[0]
+
+                        def loop_fn(index, _):
+                            offset = col_start + index * block_dim
+                            mask = offset + jnp.arange(block_dim) < col_end
+                            rows = load(indices_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0)
+                            val_A = load(data_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0.0)
+                            
+                            # GUARD 2: Indirect Access Boundary Check
+                            valid_idx_mask = rows < out_dim
+                            final_mask = mask & valid_idx_mask
+                            
+                            contrib = jnp.where(final_mask, val_A * val_vector, 0.0)
+                            atomic_add(posts_ref, rows, contrib, mask=final_mask)
+
+                        jax.lax.fori_loop(0, num_blocks, loop_fn, None)
+
+                # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
+                jax.lax.cond(i_row < num_rows, _body, lambda: None)
+
+            def mv_transpose_vector_batch(
+                data_ref, indices_ref, indptr_ref, vector_ref, _, posts_ref
+            ):
+                idx_batch = pl.program_id(0)
+                i_row = pl.program_id(1)
+                num_rows = indptr_ref.shape[0] - 1
+
+                def _body():
+                    col_start = indptr_ref[i_row]
+                    col_end = indptr_ref[i_row + 1]
+                    col_nnz = col_end - col_start
+                    num_blocks = (col_nnz + block_dim - 1) // block_dim
+                    
+                    val_vector = vector_ref[idx_batch, i_row]
+                    target_posts_ref = posts_ref[idx_batch]
+                    out_dim = target_posts_ref.shape[0]
+
+                    def loop_fn(index, _):
+                        offset = col_start + index * block_dim
+                        mask = offset + jnp.arange(block_dim) < col_end
+                        rows = load(indices_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0)
+                        val_A = load(data_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0.0)
+                        
+                        # GUARD 2: Indirect Access Boundary Check
+                        valid_idx_mask = rows < out_dim
+                        final_mask = mask & valid_idx_mask
+                        
+                        contrib = jnp.where(final_mask, val_A * val_vector, 0.0)
+                        atomic_add(target_posts_ref, rows, contrib, mask=final_mask)
+
+                    jax.lax.fori_loop(0, num_blocks, loop_fn, None)
+
+                # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
+                jax.lax.cond(i_row < num_rows, _body, lambda: None)
+
+            mm_single_impl = mv_transpose_vector_single
+            mm_batch_impl = mv_transpose_vector_batch
+            
         def kernel(data, indices, indptr, vector):
-            fn = pl.pallas_call(
-                mm, grid=(k,), input_output_aliases={4: 0}, out_shape=kwargs['outs']
-            )
             out_info = kwargs['outs'][0]
             placeholder = jnp.zeros(out_info.shape, out_info.dtype)
+            
+            has_batch = vector.ndim > 1
+            launch_rows = shape[0] # CSR rows
+
+            if has_batch:
+                batch_size = vector.shape[0]
+                grid = (batch_size, launch_rows)
+                fn = pl.pallas_call(
+                    mm_batch_impl, 
+                    grid=grid, 
+                    input_output_aliases={4: 0}, 
+                    out_shape=kwargs['outs']
+                )
+            else:
+                grid = (launch_rows,)
+                fn = pl.pallas_call(
+                    mm_single_impl, 
+                    grid=grid, 
+                    input_output_aliases={4: 0}, 
+                    out_shape=kwargs['outs']
+                )
+                
             return fn(data, indices, indptr, vector, placeholder)
+
     else:
+        # Non-Transpose: csr @ B -> A @ x
+        
+        if weight_info.size == 1:
+            def mv(
+                data_ref,  # [1]
+                indices_ref,  # [nse]
+                indptr_ref,  # [m + 1]
+                vector_ref,  # [k]
+                posts_ref,  # [m]
+            ):
+                i_row = pl.program_id(0)
+                num_rows = indptr_ref.shape[0] - 1
+                
+                def _body():
+                    row_start = indptr_ref[i_row]
+                    row_end = indptr_ref[i_row + 1]
+                    row_nnz = row_end - row_start
+                    num_blocks = (row_nnz + block_dim - 1) // block_dim
+                    
+                    val_A = data_ref[0]
+                    
+                    vec_len = vector_ref.shape[0]
+
+                    def loop_fn(index, sum_):
+                        offset = row_start + index * block_dim
+                        mask = offset + jnp.arange(block_dim) < row_end
+
+                        cols = load(indices_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0)
+                        
+                        # GUARD 2: Indirect Access Boundary Check (Gather)
+                        safe_cols = jnp.minimum(cols, vec_len - 1)
+                        valid_col_mask = cols < vec_len
+                        
+                        val_B = load(vector_ref, safe_cols)
+                        calc_mask = mask & valid_col_mask
+                        
+                        sum_ += val_A * jnp.sum(jnp.where(calc_mask, val_B, 0.0))
+                        return sum_
+
+                    i_row_sum = jax.lax.fori_loop(
+                        0,
+                        num_blocks,
+                        loop_fn,
+                        jnp.asarray(0., dtype=posts_ref.dtype)
+                    )
+                    posts_ref[i_row] = i_row_sum
+
+                # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
+                jax.lax.cond(i_row < num_rows, _body, lambda: None)
+
+        else:
+            def mv(
+                data_ref,  # [nse]
+                indices_ref,  # [nse]
+                indptr_ref,  # [m + 1]
+                vector_ref,  # [k]
+                posts_ref,  # [m]
+            ):
+                i_row = pl.program_id(0)
+                num_rows = indptr_ref.shape[0] - 1
+                
+                def _body():
+                    row_start = indptr_ref[i_row]
+                    row_end = indptr_ref[i_row + 1]
+                    row_nnz = row_end - row_start
+                    num_blocks = (row_nnz + block_dim - 1) // block_dim
+                    
+                    vec_len = vector_ref.shape[0]
+
+                    def loop_fn(index, sum_):
+                        offset = row_start + index * block_dim
+                        mask = offset + jnp.arange(block_dim) < row_end
+
+                        cols = load(indices_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0)
+                        val_A = load(data_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0.0)
+                        
+                        # GUARD 2: Indirect Access Boundary Check (Gather)
+                        safe_cols = jnp.minimum(cols, vec_len - 1)
+                        valid_col_mask = cols < vec_len
+                        val_B = load(vector_ref, safe_cols)
+                        
+                        calc_mask = mask & valid_col_mask
+                        sum_ += jnp.sum(jnp.where(calc_mask, val_A * val_B, 0.0))
+                        return sum_
+
+                    i_row_sum = jax.lax.fori_loop(
+                        0,
+                        num_blocks,
+                        loop_fn,
+                        jnp.asarray(0., dtype=posts_ref.dtype)
+                    )
+                    posts_ref[i_row] = i_row_sum
+
+                # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
+                jax.lax.cond(i_row < num_rows, _body, lambda: None)
+
         def kernel(data, indices, indptr, vector):
-            fn = pl.pallas_call(mm, grid=(m,), out_shape=kwargs['outs'])
+            launch_rows = shape[0]
+            fn = pl.pallas_call(mv, grid=(launch_rows,), out_shape=kwargs['outs'])
             return fn(data, indices, indptr, vector)
 
     return kernel
+
 
 
 def _sparse_float_csrmv_jvp_v(v_dot, data, indices, indptr, v, *, shape, transpose, **kwargs):

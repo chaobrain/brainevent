@@ -328,8 +328,8 @@ def _csrmv_pallas_kernel_generator(
                 # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
                 jax.lax.cond(i_row < num_rows, _body, lambda: None)
             
-            mv_single_impl = mv_transpose_scalar_single
-            mv_batch_impl = mv_transpose_scalar_batch
+            mm_single_impl = mv_transpose_scalar_single
+            mm_batch_impl = mv_transpose_scalar_batch
 
         else:
             # csr.T @ B (Vector Weight)
@@ -406,8 +406,8 @@ def _csrmv_pallas_kernel_generator(
                 # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
                 jax.lax.cond(i_row < num_rows, _body, lambda: None)
 
-            mv_single_impl = mv_transpose_vector_single
-            mv_batch_impl = mv_transpose_vector_batch
+            mm_single_impl = mv_transpose_vector_single
+            mm_batch_impl = mv_transpose_vector_batch
             
         def kernel(data, indices, indptr, vector):
             out_info = kwargs['outs'][0]
@@ -420,7 +420,7 @@ def _csrmv_pallas_kernel_generator(
                 batch_size = vector.shape[0]
                 grid = (batch_size, launch_rows)
                 fn = pl.pallas_call(
-                    mv_batch_impl, 
+                    mm_batch_impl, 
                     grid=grid, 
                     input_output_aliases={4: 0}, 
                     out_shape=kwargs['outs']
@@ -428,7 +428,7 @@ def _csrmv_pallas_kernel_generator(
             else:
                 grid = (launch_rows,)
                 fn = pl.pallas_call(
-                    mv_single_impl, 
+                    mm_single_impl, 
                     grid=grid, 
                     input_output_aliases={4: 0}, 
                     out_shape=kwargs['outs']
@@ -455,6 +455,7 @@ def _csrmv_pallas_kernel_generator(
                     row_end = indptr_ref[i_row + 1]
                     row_nnz = row_end - row_start
                     num_blocks = (row_nnz + block_dim - 1) // block_dim
+                    
                     val_A = data_ref[0]
                     
                     vec_len = vector_ref.shape[0]
@@ -469,7 +470,7 @@ def _csrmv_pallas_kernel_generator(
                         safe_cols = jnp.minimum(cols, vec_len - 1)
                         valid_col_mask = cols < vec_len
                         
-                        val_B = vector_ref[safe_cols]
+                        val_B = load(vector_ref, safe_cols)
                         calc_mask = mask & valid_col_mask
                         
                         sum_ += val_A * jnp.sum(jnp.where(calc_mask, val_B, 0.0))
@@ -513,9 +514,9 @@ def _csrmv_pallas_kernel_generator(
                         val_A = load(data_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0.0)
                         
                         # GUARD 2: Indirect Access Boundary Check (Gather)
-                        safe_cols = jnp.minimum(cols, vec_len - 1) # make the access can be limited in the vec
+                        safe_cols = jnp.minimum(cols, vec_len - 1)
                         valid_col_mask = cols < vec_len
-                        val_B = vector_ref[safe_cols]
+                        val_B = load(vector_ref, safe_cols)
                         
                         calc_mask = mask & valid_col_mask
                         sum_ += jnp.sum(jnp.where(calc_mask, val_A * val_B, 0.0))
