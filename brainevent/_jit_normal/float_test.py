@@ -645,12 +645,13 @@ def test_jitnmm_vjp_wloc_with_loss(implementation, shape, corder, transpose):
 @pytest.mark.parametrize('corder', [True, False])
 @pytest.mark.parametrize('transpose', [True, False])
 def test_jitnmm_vjp_wscale_with_loss(implementation, shape, corder, transpose):
-    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
     k = 10
+    rng = np.random.RandomState(123)
+    w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
     mat_rows = shape[0] if transpose else shape[1]
     out_rows = shape[1] if transpose else shape[0]
-    B = jnp.asarray(np.random.rand(mat_rows, k))
-    target = jnp.asarray(np.random.rand(out_rows, k))
+    B = jnp.asarray(rng.rand(mat_rows, k))
+    target = jnp.asarray(rng.rand(out_rows, k))
     w_scale_arr = jnp.array([w_scale])
 
     def loss_fn(ws):
@@ -659,7 +660,7 @@ def test_jitnmm_vjp_wscale_with_loss(implementation, shape, corder, transpose):
 
     # Validate via finite differences (avoids jitn vs jitnmm RNG mismatch)
     grad1 = jax.grad(loss_fn)(w_scale_arr)
-    eps = 1e-4
+    eps = 1e-2
     f_plus = loss_fn(w_scale_arr + eps)
     f_minus = loss_fn(w_scale_arr - eps)
     grad_fd = (f_plus - f_minus) / (2 * eps)
