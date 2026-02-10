@@ -37,6 +37,11 @@ if numba_installed:
     except ImportError:
         pass
 
+gpu_platform = jax.default_backend() == 'gpu'
+numba_cuda_available = numba_cuda_available and gpu_platform
+if not gpu_platform:
+    pytest.skip('GPU platform not detected, skipping Numba CUDA tests', allow_module_level=True)
+
 
 @pytest.mark.skipif(not numba_cuda_available, reason="Numba CUDA not available")
 class TestNumbaCudaKernelBasic(unittest.TestCase):
