@@ -303,7 +303,7 @@ def _jitsmv_warp_kernel(
                 seed0 = seed[0]
                 i_col = warp.tid()
                 r = weight.dtype(0.)
-                state = warp.rand_init(seed0 + i_col)
+                state = warp.rand_init(seed0 + i_col * num_row)
                 i_row = warp.randi(state, 0, clen0)
                 while i_row < num_row:
                     if vector[i_row]:
@@ -325,7 +325,7 @@ def _jitsmv_warp_kernel(
                 seed0 = seed[0]
                 i_col = warp.tid()
                 r = weight.dtype(0.)
-                state = warp.rand_init(seed0 + i_col)
+                state = warp.rand_init(seed0 + i_col * num_row)
                 i_row = warp.randi(state, 0, clen0)
                 while i_row < num_row:
                     if vector[i_row] > vector.dtype(0.):
@@ -353,7 +353,7 @@ def _jitsmv_warp_kernel(
                 seed0 = seed[0]
                 i_row = warp.tid()
                 if vector[i_row]:
-                    state = warp.rand_init(seed0 + i_row)
+                    state = warp.rand_init(seed0 + i_row * num_col)
                     i_col = warp.randi(state, 0, clen0)
                     while i_col < num_col:
                         warp.atomic_add(posts, i_col, weight0)
@@ -373,7 +373,7 @@ def _jitsmv_warp_kernel(
                 seed0 = seed[0]
                 i_row = warp.tid()
                 if vector[i_row] > vector.dtype(0.):
-                    state = warp.rand_init(seed0 + i_row)
+                    state = warp.rand_init(seed0 + i_row * num_col)
                     i_col = warp.randi(state, 0, clen0)
                     while i_col < num_col:
                         warp.atomic_add(posts, i_col, weight0)
@@ -421,7 +421,7 @@ def _jitsmv_pallas_kernel(
                 i_rows = i_rows + rng.random_integers(1, clen)
                 return i_rows, i_rows < num_row, rng, res
 
-            rng = PallasLFSR88RNG(seed + i_cols)
+            rng = PallasLFSR88RNG(seed + i_cols * num_row)
             i_rows = rng.random_integers(0, clen)
             i_row_mask = i_rows < num_row
             out = jax.lax.while_loop(
@@ -458,7 +458,7 @@ def _jitsmv_pallas_kernel(
                     i = i + rng.random_integers(1, clen0)
                     return i, rng
 
-                rng = PallasLFSR88RNG(seed0 + i_row)
+                rng = PallasLFSR88RNG(seed0 + i_row * num_col)
                 jax.lax.while_loop(
                     lambda data: data[0] < num_col,
                     body,
@@ -825,7 +825,7 @@ def _jitsmm_warp_kernel(
                 clen0 = clen[0]
                 seed0 = seed[0]
                 i_m = warp.tid()
-                state = warp.rand_init(seed0 + i_m)
+                state = warp.rand_init(seed0 + i_m * k)
                 out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
                 i_k = warp.randi(state, 0, clen0)
                 while i_k < k:
@@ -846,7 +846,7 @@ def _jitsmm_warp_kernel(
                 clen0 = clen[0]
                 seed0 = seed[0]
                 i_m = warp.tid()
-                state = warp.rand_init(seed0 + i_m)
+                state = warp.rand_init(seed0 + i_m * k)
                 out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
                 zeros = warp.tile_zeros(TITLE_SIZE, dtype=B.dtype)
                 i_k = warp.randi(state, 0, clen0)
@@ -876,7 +876,7 @@ def _jitsmm_warp_kernel(
                 clen0 = clen[0]
                 seed0 = seed[0]
                 i_k = warp.tid()
-                state = warp.rand_init(seed0 + i_k)
+                state = warp.rand_init(seed0 + i_k * m)
                 out = warp.tile_astype(warp.tile_load(B[i_k], TITLE_SIZE), dtype=weight.dtype) * weight0
                 i_m = warp.randi(state, 0, clen0)
                 while i_m < m:
@@ -896,7 +896,7 @@ def _jitsmm_warp_kernel(
                 clen0 = clen[0]
                 seed0 = seed[0]
                 i_k = warp.tid()
-                state = warp.rand_init(seed0 + i_k)
+                state = warp.rand_init(seed0 + i_k * m)
                 zeros = warp.tile_zeros(TITLE_SIZE, dtype=B.dtype)
                 b_tile = warp.tile_load(B[i_k], TITLE_SIZE)
                 out = warp.tile_astype(b_tile > zeros, dtype=weight.dtype) * weight0
@@ -950,7 +950,7 @@ def _jitsmm_pallas_kernel(
                 i = i + rng.random_integers(1, clen0)
                 return i, rng, out
 
-            rng = PallasLFSR88RNG(seed0 + i_m)
+            rng = PallasLFSR88RNG(seed0 + i_m * k)
             out = jnp.zeros(block_dim, dtype=post_ref.dtype)
             _, _, out = jax.lax.while_loop(
                 lambda data: data[0] < k,
@@ -984,7 +984,7 @@ def _jitsmm_pallas_kernel(
                 i = i + rng.random_integers(1, clen0)
                 return i, rng
 
-            rng = PallasLFSR88RNG(seed0 + i_k)
+            rng = PallasLFSR88RNG(seed0 + i_k * m)
             jax.lax.while_loop(
                 lambda data: data[0] < m,
                 body,

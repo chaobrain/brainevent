@@ -239,7 +239,7 @@ def _jitumv_warp_kernel_generator(
                 seed0 = seed[0]
                 i_col = warp.tid()
                 r = float(0.0)
-                state = warp.rand_init(seed0 + i_col)
+                state = warp.rand_init(seed0 + i_col * num_row)
                 i_row = warp.randi(state, 0, clen0)
                 while i_row < num_row:
                     w = warp.randf(state) * w_diff + w_low0
@@ -265,7 +265,7 @@ def _jitumv_warp_kernel_generator(
                 seed0 = seed[0]
                 i_col = warp.tid()
                 r = float(0.0)
-                state = warp.rand_init(seed0 + i_col)
+                state = warp.rand_init(seed0 + i_col * num_row)
                 i_row = warp.randi(state, 0, clen0)
                 while i_row < num_row:
                     w = warp.randf(state) * w_diff + w_low0
@@ -293,7 +293,7 @@ def _jitumv_warp_kernel_generator(
                 i_row = warp.tid()
                 v = vector[i_row]
                 if v:
-                    state = warp.rand_init(seed0 + i_row)
+                    state = warp.rand_init(seed0 + i_row * num_col)
                     i_col = warp.randi(state, 0, clen0)
                     while i_col < num_col:
                         w = warp.randf(state) * w_diff + w_low0
@@ -318,7 +318,7 @@ def _jitumv_warp_kernel_generator(
                 i_row = warp.tid()
                 v = vector[i_row] > 0.
                 if v:
-                    state = warp.rand_init(seed0 + i_row)
+                    state = warp.rand_init(seed0 + i_row * num_col)
                     i_col = warp.randi(state, 0, clen0)
                     while i_col < num_col:
                         w = warp.randf(state) * w_diff + w_low0
@@ -369,7 +369,7 @@ def _jitumv_pallas_kernel_generator(
                 i_rows += rng.random_integers(1, clen)
                 return i_rows, i_rows < num_row, rng, res
 
-            rng = PallasLFSR88RNG(seed + i_cols)
+            rng = PallasLFSR88RNG(seed + i_cols * num_row)
             i_rows = rng.random_integers(0, clen)
             i_row_mask = i_rows < num_row
             out = jax.lax.while_loop(
@@ -397,7 +397,7 @@ def _jitumv_pallas_kernel_generator(
                     i += rng.random_integers(1, clen)
                     return i, rng
 
-                rng = PallasLFSR88RNG(seed + i_row)
+                rng = PallasLFSR88RNG(seed + i_row * num_col)
                 jax.lax.while_loop(
                     lambda data: data[0] < num_col,
                     body,
@@ -777,7 +777,7 @@ def _jitumm_warp_kernel_generator(
                 seed0 = seed[0]
 
                 i_m = warp.tid()
-                state = warp.rand_init(seed0 + i_m)
+                state = warp.rand_init(seed0 + i_m * k)
 
                 out = warp.tile_zeros(TILE_SIZE, dtype=w_low_warp.dtype)
                 i_k = warp.randi(state, 0, clen0)
@@ -805,7 +805,7 @@ def _jitumm_warp_kernel_generator(
                 seed0 = seed[0]
 
                 i_m = warp.tid()
-                state = warp.rand_init(seed0 + i_m)
+                state = warp.rand_init(seed0 + i_m * k)
 
                 out = warp.tile_zeros(TILE_SIZE, dtype=w_low_warp.dtype)
                 i_k = warp.randi(state, 0, clen0)
@@ -834,7 +834,7 @@ def _jitumm_warp_kernel_generator(
                 seed0 = seed[0]
 
                 i_k = warp.tid()
-                state = warp.rand_init(seed0 + i_k)
+                state = warp.rand_init(seed0 + i_k * m)
 
                 out = warp.tile_astype(warp.tile_load(B[i_k], TILE_SIZE), dtype=w_low_warp.dtype)
                 i_m = warp.randi(state, 0, clen0)
@@ -861,7 +861,7 @@ def _jitumm_warp_kernel_generator(
                 seed0 = seed[0]
 
                 i_k = warp.tid()
-                state = warp.rand_init(seed0 + i_k)
+                state = warp.rand_init(seed0 + i_k * m)
 
                 out = warp.tile_load(B[i_k], TILE_SIZE)
                 i_m = warp.randi(state, 0, clen0)
@@ -916,7 +916,7 @@ def _jitumm_pallas_kernel_generator(
                 i += rng.random_integers(1, clen0)
                 return i, rng, out
 
-            rng = PallasLFSR88RNG(seed0 + i_m)
+            rng = PallasLFSR88RNG(seed0 + i_m * k)
             out = jnp.zeros(block_dim, dtype=post_ref.dtype)
             _, _, out = jax.lax.while_loop(
                 lambda data: data[0] < k,
@@ -952,7 +952,7 @@ def _jitumm_pallas_kernel_generator(
                 i += rng.random_integers(1, clen0)
                 return i, rng
 
-            rng = PallasLFSR88RNG(seed0 + i_k)
+            rng = PallasLFSR88RNG(seed0 + i_k * m)
             jax.lax.while_loop(
                 lambda data: data[0] < m,
                 body,

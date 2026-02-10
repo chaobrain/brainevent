@@ -289,7 +289,7 @@ def _jitc_mv_normal_warp_kernel_generator(
                 seed0 = seed[0]
                 i_row = warp.tid()
                 r = float(0.0)
-                state = warp.rand_init(seed0 + i_row)
+                state = warp.rand_init(seed0 + i_row * num_col)
                 i_col = warp.randi(state, 0, clen0)
                 while i_col < num_col:
                     w = warp.randn(state) * w_scale0 + w_loc0
@@ -314,7 +314,7 @@ def _jitc_mv_normal_warp_kernel_generator(
                 seed0 = seed[0]
                 i_row = warp.tid()
                 r = float(0.0)
-                state = warp.rand_init(seed0 + i_row)
+                state = warp.rand_init(seed0 + i_row * num_col)
                 i_col = warp.randi(state, 0, clen0)
                 while i_col < num_col:
                     w = warp.randn(state) * w_scale0 + w_loc0
@@ -348,7 +348,7 @@ def _jitc_mv_normal_warp_kernel_generator(
                 seed0 = seed[0]
                 i_col = warp.tid()
                 v = vector[i_col]
-                state = warp.rand_init(seed0 + i_col)
+                state = warp.rand_init(seed0 + i_col * num_row)
                 i_row = warp.randi(state, 0, clen0)
                 while i_row < num_row:
                     w = warp.randn(state) * w_scale0 + w_loc0
@@ -373,7 +373,7 @@ def _jitc_mv_normal_warp_kernel_generator(
                 seed0 = seed[0]
                 i_col = warp.tid()
                 v = vector[i_col]
-                state = warp.rand_init(seed0 + i_col)
+                state = warp.rand_init(seed0 + i_col * num_row)
                 i_row = warp.randi(state, 0, clen0)
                 while i_row < num_row:
                     w = warp.randn(state) * w_scale0 + w_loc0
@@ -433,7 +433,7 @@ def _jitc_mv_normal_pallas_kernel_generator(
                 i_rows += rng.random_integers(1, clen)
                 return i_rows, i_rows < num_row, rng, out
 
-            rng = PallasLFSR88RNG(seed + i_cols)
+            rng = PallasLFSR88RNG(seed + i_cols * num_row)
             i_rows = rng.random_integers(0, clen)
             i_row_mask = i_rows < num_row
             out = jnp.zeros(block_size, dtype=post_ref.dtype)
@@ -470,7 +470,7 @@ def _jitc_mv_normal_pallas_kernel_generator(
                 i_cols += rng.random_integers(1, clen)
                 return i_cols, i_cols < num_col, rng
 
-            rng = PallasLFSR88RNG(seed + i_rows)
+            rng = PallasLFSR88RNG(seed + i_rows * num_col)
             i_cols = rng.random_integers(0, clen)
             i_col_mask = i_cols < num_col
             jax.lax.while_loop(
@@ -849,7 +849,7 @@ def _jitc_mm_normal_warp_kernel_generator(
                 clen0 = clen[0]
                 seed0 = seed[0]
                 i_m = warp.tid()
-                state = warp.rand_init(seed0 + i_m)
+                state = warp.rand_init(seed0 + i_m * k)
                 i_k = warp.randi(state, 0, clen0)
                 while i_k < k:
                     w = warp.randn(state) * w_scale0 + w_loc0
@@ -875,7 +875,7 @@ def _jitc_mm_normal_warp_kernel_generator(
                 clen0 = clen[0]
                 seed0 = seed[0]
                 i_m = warp.tid()
-                state = warp.rand_init(seed0 + i_m)
+                state = warp.rand_init(seed0 + i_m * k)
                 i_k = warp.randi(state, 0, clen0)
                 while i_k < k:
                     w = warp.randn(state) * w_scale0 + w_loc0
@@ -909,7 +909,7 @@ def _jitc_mm_normal_warp_kernel_generator(
                 clen0 = clen[0]
                 seed0 = seed[0]
                 i_k = warp.tid()
-                state = warp.rand_init(seed0 + i_k)
+                state = warp.rand_init(seed0 + i_k * m)
                 i_m = warp.randi(state, 0, clen0)
                 while i_m < m:
                     w = warp.randn(state) * w_scale0 + w_loc0
@@ -935,7 +935,7 @@ def _jitc_mm_normal_warp_kernel_generator(
                 clen0 = clen[0]
                 seed0 = seed[0]
                 i_k = warp.tid()
-                state = warp.rand_init(seed0 + i_k)
+                state = warp.rand_init(seed0 + i_k * m)
                 i_m = warp.randi(state, 0, clen0)
                 while i_m < m:
                     w = warp.randn(state) * w_scale0 + w_loc0
@@ -991,7 +991,7 @@ def _jitc_mm_normal_pallas_kernel_generator(
             i_row_mask = i_rows < out_rows
             safe_rows = jnp.where(i_row_mask, i_rows, 0)
 
-            rng = PallasLFSR88RNG(seed0 + i_rows)
+            rng = PallasLFSR88RNG(seed0 + i_rows * k)
             i_cols = rng.random_integers(0, clen0)
             i_col_mask = i_cols < k
 
@@ -1046,7 +1046,7 @@ def _jitc_mm_normal_pallas_kernel_generator(
                 b_events = jnp.where(b_vals > 0., 1., 0.)
             b_events = jnp.where(i_k_mask, b_events, 0.)
 
-            rng = PallasLFSR88RNG(seed0 + i_ks)
+            rng = PallasLFSR88RNG(seed0 + i_ks * m)
             i_rows = rng.random_integers(0, clen0)
             i_row_mask = i_rows < m
 
