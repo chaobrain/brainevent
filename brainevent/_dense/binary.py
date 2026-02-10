@@ -324,12 +324,18 @@ def _binary_densemv_transpose_rule(ct, weights, spikes, *, transpose, **kwargs):
 def _binary_densemv_batching(args, axes, *, transpose, **kwargs):
     if transpose:
         # weights[k,n], spikes[k] -> out[n]
+        # mm transpose=True: weights[k,m].T @ spikes[k,n] -> out[m,n]
+        # result shape from mm: [weights.shape[1], spikes.shape[1]]
         if axes == (None, 0):
-            r = binary_densemm(args[0], args[1], transpose=True)
-            return [r], [0]
-        if axes == (None, 1):
+            # spikes batched on axis 0: [batch, k] -> .T gives [k, batch]
+            # mm(weights[k,n], [k,batch], transpose=True) -> [n, batch]
             r = binary_densemm(args[0], args[1].T, transpose=True)
-            return [r], [0]
+            return [r], [1]
+        if axes == (None, 1):
+            # spikes batched on axis 1: [k, batch]
+            # mm(weights[k,n], [k,batch], transpose=True) -> [n, batch]
+            r = binary_densemm(args[0], args[1], transpose=True)
+            return [r], [1]
     else:
         # weights[m,k], spikes[k] -> out[m]
         if axes == (None, 0):
@@ -397,7 +403,7 @@ binary_densemv_p.def_benchmark_data(_binary_densemv_benchmark_data)
 # ==============================================================================
 #
 # transpose=False: weights[m,k] @ spikes[k,n] -> out[m,n]  (old dbmm)
-# transpose=True:  spikes[m,k] @ weights[k,n] -> out[m,n]  (old bdmm)
+# transpose=True:  weights[k,m].T @ spikes[k,n] -> out[m,n]  (old bdmm)
 #
 # Argument order is always (weights, spikes).
 
@@ -410,20 +416,20 @@ def binary_densemm(weights, spikes, *, transpose, backend=None):
     When ``transpose=False``, computes ``weights[m,k] @ spikes[k,n] -> out[m,n]``
     (dense matrix times binary matrix).
 
-    When ``transpose=True``, computes ``spikes[m,k] @ weights[k,n] -> out[m,n]``
-    (binary matrix times dense matrix).
+    When ``transpose=True``, computes ``weights[k,m].T @ spikes[k,n] -> out[m,n]``
+    (transposed dense matrix times binary matrix). Both weights and spikes share
+    their first dimension ``k``.
 
     Parameters
     ----------
     weights : array_like
         The weight matrix. Shape ``(m, k)`` when ``transpose=False``,
-        or ``(k, n)`` when ``transpose=True``. Can be a ``brainunit`` quantity.
+        or ``(k, m)`` when ``transpose=True``. Can be a ``brainunit`` quantity.
     spikes : array_like
-        The binary matrix. Shape ``(k, n)`` when ``transpose=False``,
-        or ``(m, k)`` when ``transpose=True``. Can be boolean or float.
+        The binary matrix. Shape ``(k, n)`` in both modes. Can be boolean or float.
         Can be a ``brainunit`` quantity.
     transpose : bool
-        If False, compute ``weights @ spikes``. If True, compute ``spikes @ weights``.
+        If False, compute ``weights @ spikes``. If True, compute ``weights.T @ spikes``.
     backend : str, optional
         Backend to use for the computation.
 
@@ -443,32 +449,33 @@ def binary_densemm(weights, spikes, *, transpose, backend=None):
 
 def _binary_densemm_numba_kernel(
     spk_info: jax.ShapeDtypeStruct,
+    weight_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs
 ):
     import numba
 
     if transpose:
-        # spikes[m,k] @ weights[k,n] -> out[m,n]
+        # weights[k,m].T @ spikes[k,n] -> out[m,n]
         # primitive args: (weights, spikes)
         if spk_info.dtype == jnp.bool_:
             @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
             def kernel(weights, spikes, posts):
-                for i_m in numba.prange(spikes.shape[0]):
+                for i_n in numba.prange(spikes.shape[1]):
                     out = np.zeros(weights.shape[1], dtype=posts.dtype)
-                    for i_k in range(spikes.shape[1]):
-                        if spikes[i_m, i_k]:
+                    for i_k in range(spikes.shape[0]):
+                        if spikes[i_k, i_n]:
                             out += weights[i_k]
-                    posts[i_m] = out
+                    posts[:, i_n] = out
         else:
             @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
             def kernel(weights, spikes, posts):
-                for i_m in numba.prange(spikes.shape[0]):
+                for i_n in numba.prange(spikes.shape[1]):
                     out = np.zeros(weights.shape[1], dtype=posts.dtype)
-                    for i_k in range(spikes.shape[1]):
-                        if spikes[i_m, i_k] > 0.:
+                    for i_k in range(spikes.shape[0]):
+                        if spikes[i_k, i_n] > 0.:
                             out += weights[i_k]
-                    posts[i_m] = out
+                    posts[:, i_n] = out
     else:
         # weights[m,k] @ spikes[k,n] -> out[m,n]
         if spk_info.dtype == jnp.bool_:
@@ -509,9 +516,10 @@ def _binary_densemm_warp_kernel(
     out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
 
     if transpose:
-        # spikes[m,k] @ weights[k,n] -> out[m,n]
-        m, k = spk_info.shape
-        n = weight_info.shape[1]
+        # weights[k,m].T @ spikes[k,n] -> out[m,n]
+        k = weight_info.shape[0]
+        m = weight_info.shape[1]
+        n = spk_info.shape[1]
 
         if spk_info.dtype == jnp.bool_:
             spk_float_info = jax.ShapeDtypeStruct(spk_info.shape, jnp.float32)
@@ -526,8 +534,8 @@ def _binary_densemm_warp_kernel(
                 i_m, i_n = warp.tid()
                 r = weights.dtype(0.)
                 for i_k in range(k):
-                    if spikes[i_m, i_k] > 0.:
-                        r += weights[i_k, i_n]
+                    if spikes[i_k, i_n] > 0.:
+                        r += weights[i_k, i_m]
                 out[i_m, i_n] = r
 
             def run(weights, spikes):
@@ -547,8 +555,8 @@ def _binary_densemm_warp_kernel(
                 i_m, i_n = warp.tid()
                 r = weights.dtype(0.)
                 for i_k in range(k):
-                    if spikes[i_m, i_k] > 0.:
-                        r += weights[i_k, i_n]
+                    if spikes[i_k, i_n] > 0.:
+                        r += weights[i_k, i_m]
                 out[i_m, i_n] = r
 
             def run(weights, spikes):
@@ -617,25 +625,26 @@ def _binary_densemm_pallas_kernel(
     from jax.experimental import pallas as pl
 
     if transpose:
-        # spikes[m,k] @ weights[k,n] -> out[m,n]
-        m = spk_info.shape[0]
-        k, n = weight_info.shape
-        block_dim = generate_block_dim(n, maximum=1024)
+        # weights[k,m].T @ spikes[k,n] -> out[m,n]
+        k = weight_info.shape[0]
+        m = weight_info.shape[1]
+        n = spk_info.shape[1]
+        block_dim = generate_block_dim(m, maximum=1024)
 
-        def pallas_kernel(
-            weight_t_ref,  # [n, k] (transposed weights)
-            spike_ref,  # [m, k]
+        def kernel(
+            weight_ref,  # [k, m]
+            spike_ref,  # [k, n]
             out_ref,  # [m, n]
         ):
-            i_m = pl.program_id(0)
-            i_n_block = pl.program_id(1)
-            i_n_start = i_n_block * block_dim
-            i_n_mask = i_n_start + jnp.arange(block_dim) < n
+            i_n = pl.program_id(0)
+            i_m_block = pl.program_id(1)
+            i_m_start = i_m_block * block_dim
+            i_m_mask = i_m_start + jnp.arange(block_dim) < m
 
             def loop_fn(i_k, temp):
-                spike = spike_ref[i_m, i_k]
-                weight_row = weight_t_ref[pl.ds(i_n_start, block_dim), i_k]
-                weight_row = jnp.where(i_n_mask, weight_row, 0.0)
+                spike = spike_ref[i_k, i_n]
+                weight_row = weight_ref[i_k, pl.ds(i_m_start, block_dim)]
+                weight_row = jnp.where(i_m_mask, weight_row, 0.0)
                 return jax.lax.cond(
                     spike if spk_info.dtype == jnp.bool_ else spike > 0.,
                     lambda out: out + weight_row,
@@ -643,13 +652,12 @@ def _binary_densemm_pallas_kernel(
                     temp,
                 )
 
-            final_out = jax.lax.fori_loop(0, k, loop_fn, jnp.zeros(block_dim, dtype=weight_t_ref.dtype))
-            out_ref[i_m, pl.ds(i_n_start, block_dim)] = jnp.where(i_n_mask, final_out, 0.0)
+            final_out = jax.lax.fori_loop(0, k, loop_fn, jnp.zeros(block_dim, dtype=weight_ref.dtype))
+            out_ref[pl.ds(i_m_start, block_dim), i_n] = jnp.where(i_m_mask, final_out, 0.0)
 
         def run(weights, spikes):
-            weights_t = weights.T  # [k, n] -> [n, k]
-            fn = pl.pallas_call(pallas_kernel, grid=(m, cdiv(n, block_dim)), out_shape=kwargs['outs'])
-            return fn(weights_t, spikes)
+            fn = pl.pallas_call(kernel, grid=(n, cdiv(m, block_dim)), out_shape=kwargs['outs'])
+            return fn(weights, spikes)
 
     else:
         # weights[m,k] @ spikes[k,n] -> out[m,n]
@@ -695,7 +703,7 @@ def _binary_densemm_jvp_weights(w_dot, weights, spikes, *, transpose, **kwargs):
 
 def _binary_densemm_jvp_spikes(spk_dot, weights, spikes, *, transpose, **kwargs):
     if transpose:
-        return [spk_dot @ weights]
+        return [weights.T @ spk_dot]
     else:
         return [weights @ spk_dot]
 
@@ -703,14 +711,14 @@ def _binary_densemm_jvp_spikes(spk_dot, weights, spikes, *, transpose, **kwargs)
 def _binary_densemm_transpose_rule(ct, weights, spikes, *, transpose, **kwargs):
     ct = ct[0]
     if transpose:
-        # spikes[m,k] @ weights[k,n] -> out[m,n]
+        # weights[k,m].T @ spikes[k,n] -> out[m,n]
         if ad.is_undefined_primal(spikes):
-            ct_events = ct @ weights.T
+            # ct_spikes: weights[k,m] @ ct[m,n] -> [k,n]
+            ct_events = weights @ ct
             return weights, (ad.Zero(spikes) if type(ct) is ad.Zero else ct_events)
         else:
-            # ct[m,n], spikes[m,k] -> ct_weights[k,n]
-            # spikes.T[k,m] @ ct[m,n] -> [k,n]
-            ct_weights = binary_densemm(ct, spikes.T, transpose=True)
+            # ct_weights: spikes[k,n] @ ct.T[n,m] -> [k,m]
+            ct_weights = spikes @ ct.T
             return (ad.Zero(weights) if type(ct) is ad.Zero else ct_weights), spikes
     else:
         # weights[m,k] @ spikes[k,n] -> out[m,n]
@@ -727,30 +735,37 @@ def _binary_densemm_transpose_rule(ct, weights, spikes, *, transpose, **kwargs):
 def _binary_densemm_batching_spikes_fn(args, axes, *, transpose, **kwargs):
     weights, spikes = args
     if transpose:
-        # spikes[m,k] @ weights[k,n] -> out[m,n]
-        # spikes batched: [batch, m, k] or [m, batch, k] etc.
+        # weights[k,m].T @ spikes[k,n] -> out[m,n]
+        # out shape: [weights.shape[1], spikes.shape[1]]
+        # spikes batched: [batch,k,n] or [k,batch,n] or [k,n,batch]
         assert spikes.ndim == 3, 'requires 3D events.'
         assert weights.ndim == 2, 'requires 2D weights.'
         spk_axis = axes[1]
         if spk_axis == 0:
-            maybe_batch1, maybe_batch2, n = spikes.shape
-            events = spikes.reshape(maybe_batch1 * maybe_batch2, n)
+            # [batch,k,n] -> transpose(1,0,2) -> [k,batch,n] -> reshape [k, batch*n]
+            spikes = jnp.transpose(spikes, (1, 0, 2))
+            k, batch, n_val = spikes.shape
+            events = spikes.reshape(k, batch * n_val)
             r = binary_densemm_p_call(weights, events, transpose=True)
-            r = jnp.reshape(r[0], [maybe_batch1, maybe_batch2, r[0].shape[1]])
-            return [r], [0]
+            # result: [m, batch*n] -> reshape [m, batch, n]
+            r = jnp.reshape(r[0], [r[0].shape[0], batch, n_val])
+            return [r], [1]
         elif spk_axis == 1:
-            maybe_batch1, maybe_batch2, n = spikes.shape
-            events = spikes.reshape(maybe_batch1 * maybe_batch2, n)
+            # [k,batch,n] -> reshape [k, batch*n]
+            k, batch, n_val = spikes.shape
+            events = spikes.reshape(k, batch * n_val)
             r = binary_densemm_p_call(weights, events, transpose=True)
-            r = jnp.reshape(r[0], [maybe_batch1, maybe_batch2, r[0].shape[1]])
+            # result: [m, batch*n] -> reshape [m, batch, n]
+            r = jnp.reshape(r[0], [r[0].shape[0], batch, n_val])
             return [r], [1]
         elif spk_axis == 2:
-            spikes = jnp.transpose(spikes, (0, 2, 1))
-            maybe_batch1, maybe_batch2, n = spikes.shape
-            events = spikes.reshape(maybe_batch1 * maybe_batch2, n)
+            # [k,n,batch] -> reshape [k, n*batch]
+            k, n_val, batch = spikes.shape
+            events = spikes.reshape(k, n_val * batch)
             r = binary_densemm_p_call(weights, events, transpose=True)
-            r = jnp.reshape(r[0], [maybe_batch1, maybe_batch2, r[0].shape[1]])
-            return [r], [1]
+            # result: [m, n*batch] -> reshape [m, n, batch]
+            r = jnp.reshape(r[0], [r[0].shape[0], n_val, batch])
+            return [r], [2]
     else:
         # weights[m,k] @ spikes[k,n] -> out[m,n]
         # spikes batched
@@ -782,30 +797,37 @@ def _binary_densemm_batching_spikes_fn(args, axes, *, transpose, **kwargs):
 def _binary_densemm_batching_weights_fn(args, axes, *, transpose, **kwargs):
     weights, spikes = args
     if transpose:
-        # spikes[m,k] @ weights[k,n] -> out[m,n]
-        # weights batched
+        # weights[k,m].T @ spikes[k,n] -> out[m,n]
+        # out shape: [weights.shape[1], spikes.shape[1]]
+        # weights batched: [batch,k,m] or [k,batch,m] or [k,m,batch]
         assert weights.ndim == 3, 'requires 3D weights.'
         assert spikes.ndim == 2, 'requires 2D events.'
         w_axis = axes[0]
         if w_axis == 0:
+            # [batch,k,m] -> transpose(1,0,2) -> [k,batch,m] -> reshape [k, batch*m]
             weights = jnp.transpose(weights, (1, 0, 2))
-            k, maybe_batch1, maybe_batch2 = weights.shape
-            w = weights.reshape(k, maybe_batch1 * maybe_batch2)
+            k, batch, m_val = weights.shape
+            w = weights.reshape(k, batch * m_val)
             r = binary_densemm_p_call(w, spikes, transpose=True)
-            r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
-            return [r], [1]
+            # result: [batch*m, n] -> reshape [batch, m, n]
+            r = jnp.reshape(r[0], [batch, m_val, r[0].shape[1]])
+            return [r], [0]
         elif w_axis == 1:
-            k, maybe_batch1, maybe_batch2 = weights.shape
-            w = weights.reshape(k, maybe_batch1 * maybe_batch2)
+            # [k,batch,m] -> reshape [k, batch*m]
+            k, batch, m_val = weights.shape
+            w = weights.reshape(k, batch * m_val)
             r = binary_densemm_p_call(w, spikes, transpose=True)
-            r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
-            return [r], [1]
+            # result: [batch*m, n] -> reshape [batch, m, n]
+            r = jnp.reshape(r[0], [batch, m_val, r[0].shape[1]])
+            return [r], [0]
         elif w_axis == 2:
-            k, maybe_batch1, maybe_batch2 = weights.shape
-            w = weights.reshape(k, maybe_batch1 * maybe_batch2)
+            # [k,m,batch] -> reshape [k, m*batch]
+            k, m_val, batch = weights.shape
+            w = weights.reshape(k, m_val * batch)
             r = binary_densemm_p_call(w, spikes, transpose=True)
-            r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
-            return [r], [2]
+            # result: [m*batch, n] -> reshape [m, batch, n]
+            r = jnp.reshape(r[0], [m_val, batch, r[0].shape[1]])
+            return [r], [1]
     else:
         # weights[m,k] @ spikes[k,n] -> out[m,n]
         # weights batched
@@ -860,12 +882,12 @@ def _binary_densemm_benchmark_data(*, platform):
 
 def binary_densemm_p_call(weights, spikes, *, transpose, backend: Optional[str] = None):
     if transpose:
-        # spikes[m,k] @ weights[k,n] -> out[m,n]
-        assert spikes.shape[1] == weights.shape[0], (
-            f"spikes shape {spikes.shape} and weights shape {weights.shape} do not match"
-            f" for event matrix multiplication"
+        # weights[k,m].T @ spikes[k,n] -> out[m,n]
+        assert weights.shape[0] == spikes.shape[0], (
+            f"weights shape {weights.shape} and spikes shape {spikes.shape} do not match"
+            f" for event matrix multiplication: weights dim 0 ({weights.shape[0]}) != spikes dim 0 ({spikes.shape[0]})"
         )
-        out = jax.ShapeDtypeStruct([spikes.shape[0], weights.shape[1]], weights.dtype)
+        out = jax.ShapeDtypeStruct([weights.shape[1], spikes.shape[1]], weights.dtype)
     else:
         # weights[m,k] @ spikes[k,n] -> out[m,n]
         assert weights.shape[1] == spikes.shape[0], (

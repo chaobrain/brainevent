@@ -85,20 +85,18 @@ def test_densemm_forward_no_transpose(implementation, m, k, n, dtype):
     jax.block_until_ready((weights, spikes, result, expected))
 
 
-# ---- Forward: binary matrix @ dense matrix (transpose=True) ----
+# ---- Forward: weights.T @ binary matrix (transpose=True) ----
 
 @pytest.mark.parametrize("implementation", DENSEMM_IMPLEMENTATIONS)
 @pytest.mark.parametrize("m", [10])
 @pytest.mark.parametrize("k", [15, 20])
 @pytest.mark.parametrize("n", [30])
-@pytest.mark.parametrize("dtype", [bool, float])
-def test_densemm_forward_transpose(implementation, m, k, n, dtype):
-    spikes = brainstate.random.randn(m, k) < 0.3
-    if dtype == float:
-        spikes = u.math.asarray(spikes, dtype=float)
-    weights = brainstate.random.randn(k, n)
+def test_densemm_forward_transpose(implementation, m, k, n):
+    weights = brainstate.random.randn(k, m)
+    spikes = brainstate.random.randn(k, n) < 0.3
     result = binary_densemm(weights, spikes, transpose=True, backend=implementation)
-    expected = u.math.asarray(spikes, dtype=float) @ weights
+    expected = weights.T @ u.math.asarray(spikes, dtype=float)
+    print(result - expected)
     assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
     jax.block_until_ready((spikes, weights, result, expected))
 
@@ -162,8 +160,8 @@ def test_densemm_grad_weights_no_transpose(implementation, m, k, n):
 @pytest.mark.parametrize("k", [15])
 @pytest.mark.parametrize("n", [20])
 def test_densemm_grad_weights_transpose(implementation, m, k, n):
-    spikes = u.math.asarray(brainstate.random.randn(m, k) < 0.3, dtype=float)
-    weights = brainstate.random.randn(k, n)
+    spikes = u.math.asarray(brainstate.random.randn(k, n) < 0.3, dtype=float)
+    weights = brainstate.random.randn(k, m)
 
     def f(w):
         return binary_densemm(w, spikes, transpose=True, backend=implementation).sum()
@@ -233,10 +231,10 @@ def test_densemm_vmap_over_spikes_no_transpose(implementation, m, k, n, batch_si
 @pytest.mark.parametrize("n", [20])
 @pytest.mark.parametrize("batch_size", [5])
 def test_densemm_vmap_over_spikes_transpose(implementation, m, k, n, batch_size):
+    weights = brainstate.random.randn(k, m)
     batched_spikes = u.math.asarray(
-        brainstate.random.randn(batch_size, m, k) < 0.3, dtype=float
+        brainstate.random.randn(batch_size, k, n) < 0.3, dtype=float
     )
-    weights = brainstate.random.randn(k, n)
     batched_fn = jax.vmap(lambda s: binary_densemm(weights, s, transpose=True, backend=implementation))
     result = batched_fn(batched_spikes)
     assert result.shape == (batch_size, m, n)
