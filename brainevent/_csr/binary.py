@@ -405,6 +405,7 @@ def _csrmv_pallas_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
+    from jax.experimental.pallas import load
 
     m, k = shape
     block_dim = generate_block_dim(pl.cdiv(indices_info.size, shape[1] if transpose else shape[0]))
@@ -435,7 +436,7 @@ def _csrmv_pallas_kernel(
             def loop_fn(index, sum_):
                 offset = row_start + index * block_dim
                 mask = offset + jnp.arange(block_dim) < row_end
-                cols = indices_ref[pl.dslice(offset, block_dim)]
+                cols = load(indices_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0)
                 events = vector_ref[cols]
                 if vector_ref.dtype == jnp.bool_:
                     events = jnp.asarray(events & mask, dtype=posts_ref.dtype)
@@ -479,8 +480,8 @@ def _csrmv_pallas_kernel(
             def loop_fn(index, sum_):
                 offset = row_start + index * block_dim
                 mask = offset + jnp.arange(block_dim) < row_end
-                cols = indices_ref[pl.dslice(offset, block_dim)]
-                val_A = data_ref[pl.dslice(offset, block_dim)]
+                cols = load(indices_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0)
+                val_A = load(data_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0.0)
                 events = vector_ref[cols]
                 if vector_ref.dtype == jnp.bool_:
                     events = jnp.asarray(events & mask, dtype=posts_ref.dtype)
@@ -1121,42 +1122,62 @@ def _csrmm_pallas_kernel(
         # result: [m, n]
         #
         def mm(
-            data_ref,  # [1]
-            indices_ref,  # [nse]
+            data_ref,   # [1]
+            indices_ref, # [nse]
             indptr_ref,  # [m + 1]
-            B_ref,  # [k, n]
+            B_ref,      # [k, n]
             posts_ref,  # [m, n]
         ):
+            # 1. Grid Info
             i_row = pl.program_id(0)
             i_n = pl.program_id(1)
-            i_col_start = i_n * block_dim_n
-            col_mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
+            
+            #Grid Guard
+            num_rows = indptr_ref.shape[0] - 1
+            
+            def _body():
+                # 2. Column Blocking Setup
+                i_col_start = i_n * block_dim_n
+                col_mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
 
-            row_start = indptr_ref[i_row]
-            row_end = indptr_ref[i_row + 1]
-            row_nnz = row_end - row_start
-            num_blocks = (row_nnz + block_dim - 1) // block_dim
-            val_A = data_ref[0]
+                # 3. Row Metadata
+                row_start = indptr_ref[i_row]
+                row_end = indptr_ref[i_row + 1]
+                row_nnz = row_end - row_start
+                num_blocks = (row_nnz + block_dim - 1) // block_dim
+                val_A = data_ref[0]
+                
+                limit_k = B_ref.shape[0] - 1
 
-            def loop_fn(index, sum_):
-                offset = row_start + index * block_dim
-                nnz_mask = offset + jnp.arange(block_dim) < row_end
+                def loop_fn(index, sum_):
+                    offset = row_start + index * block_dim
+                    nnz_mask = offset + jnp.arange(block_dim) < row_end
 
-                cols = indices_ref[pl.dslice(offset, block_dim)]
-                events = B_ref[cols, pl.dslice(i_col_start, block_dim_n)]
-                events = jnp.asarray(events, dtype=posts_ref.dtype)
+                    cols = pl.load(indices_ref, (pl.dslice(offset, block_dim),), mask=nnz_mask, other=0)
+                    
+                    safe_cols = jnp.minimum(cols, limit_k)
+                    
+                    events = B_ref[safe_cols, pl.dslice(i_col_start, block_dim_n)]
+                    events = jnp.asarray(events, dtype=posts_ref.dtype)
 
-                contribution = jnp.sum(jnp.where(nnz_mask[:, None], events, 0.), axis=0)
-                sum_ += val_A * contribution
-                return sum_
+                    contribution = jnp.sum(jnp.where(nnz_mask[:, None], events, 0.), axis=0)
+                    sum_ += val_A * contribution
+                    return sum_
 
-            i_row_sum = jax.lax.fori_loop(
-                0, num_blocks, loop_fn,
-                jnp.zeros([block_dim_n], dtype=posts_ref.dtype)
-            )
-            posts_ref[i_row, pl.dslice(i_col_start, block_dim_n)] = jnp.where(
-                col_mask, i_row_sum, 0.
-            )
+                i_row_sum = jax.lax.fori_loop(
+                    0, num_blocks, loop_fn,
+                    jnp.zeros([block_dim_n], dtype=posts_ref.dtype)
+                )
+                
+                pl.store(
+                    posts_ref, 
+                    (i_row, pl.dslice(i_col_start, block_dim_n)), 
+                    i_row_sum, 
+                    mask=col_mask
+                )
+
+            # guard
+            jax.lax.cond(i_row < num_rows, _body, lambda: None)
 
     else:
         #
@@ -1172,43 +1193,60 @@ def _csrmm_pallas_kernel(
         # result: [m, n]
         #
         def mm(
-            data_ref,  # [nse]
+            data_ref,     # [nse]
             indices_ref,  # [nse]
-            indptr_ref,  # [m + 1]
-            B_ref,  # [k, n]
-            posts_ref,  # [m, n]
+            indptr_ref,   # [m + 1]
+            B_ref,        # [k, n]
+            posts_ref,    # [m, n]
         ):
             i_row = pl.program_id(0)
-            i_n = pl.program_id(1)
-            i_col_start = i_n * block_dim_n
-            col_mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
+            num_rows = indptr_ref.shape[0] - 1
 
-            row_start = indptr_ref[i_row]
-            row_end = indptr_ref[i_row + 1]
-            row_nnz = row_end - row_start
-            num_blocks = (row_nnz + block_dim - 1) // block_dim
+            def _body():
+                i_n = pl.program_id(1)
+                i_col_start = i_n * block_dim_n
 
-            def loop_fn(index, sum_):
-                offset = row_start + index * block_dim
-                nnz_mask = offset + jnp.arange(block_dim) < row_end
+                col_mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
 
-                cols = indices_ref[pl.dslice(offset, block_dim)]
-                val_A = data_ref[pl.dslice(offset, block_dim)]
-                events = B_ref[cols, pl.dslice(i_col_start, block_dim_n)]
-                events = jnp.asarray(events, dtype=posts_ref.dtype)
+                row_start = indptr_ref[i_row]
+                row_end = indptr_ref[i_row + 1]
+                row_nnz = row_end - row_start
+                num_blocks = (row_nnz + block_dim - 1) // block_dim
+                
+                num_B_rows = B_ref.shape[0]
 
-                weighted = val_A[:, None] * events
-                contribution = jnp.sum(jnp.where(nnz_mask[:, None], weighted, 0.), axis=0)
-                sum_ += contribution
-                return sum_
+                def loop_fn(index, sum_):
+                    offset = row_start + index * block_dim
 
-            i_row_sum = jax.lax.fori_loop(
-                0, num_blocks, loop_fn,
-                jnp.zeros([block_dim_n], dtype=posts_ref.dtype)
-            )
-            posts_ref[i_row, pl.dslice(i_col_start, block_dim_n)] = jnp.where(
-                col_mask, i_row_sum, 0.
-            )
+                    nnz_mask = offset + jnp.arange(block_dim) < row_end
+
+                    cols = pl.load(indices_ref, (pl.dslice(offset, block_dim),), mask=nnz_mask, other=0)
+                    val_A = pl.load(data_ref, (pl.dslice(offset, block_dim),), mask=nnz_mask, other=0.0)
+                    
+
+                    valid_cols = cols < num_B_rows
+                    safe_cols = jnp.minimum(cols, num_B_rows - 1)
+
+                    mask_B_dim0 = nnz_mask & valid_cols
+                    mask_B = mask_B_dim0[:, None] & col_mask[None, :]
+                    
+                    events = pl.load(B_ref, (safe_cols, pl.dslice(i_col_start, block_dim_n)), mask=mask_B, other=0.0)
+   
+                    weighted = val_A[:, None] * events
+
+                    contribution = jnp.sum(weighted, axis=0) 
+                    
+                    sum_ += contribution
+                    return sum_
+
+                i_row_sum = jax.lax.fori_loop(
+                    0, num_blocks, loop_fn,
+                    jnp.zeros([block_dim_n], dtype=posts_ref.dtype)
+                )
+                
+                pl.store(posts_ref, (i_row, pl.dslice(i_col_start, block_dim_n)), i_row_sum, mask=col_mask)
+
+            jax.lax.cond(i_row < num_rows, _body, lambda: None)
 
     def kernel(data, indices, indptr, B):
         fn = pl.pallas_call(
