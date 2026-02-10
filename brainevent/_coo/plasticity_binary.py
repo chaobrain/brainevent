@@ -22,7 +22,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent._misc import generate_block_dim
+from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 
@@ -34,6 +34,7 @@ __all__ = [
 ]
 
 
+@namescope
 def update_coo_on_binary_pre(
     weight: Union[u.Quantity, jax.Array],
     pre_ids: jax.Array,
@@ -287,6 +288,7 @@ update_coo_on_binary_pre_p.def_benchmark_data(_coo_pre_benchmark_data)
 # =============================================================================
 
 
+@namescope
 def update_coo_on_binary_post(
     weight: Union[u.Quantity, jax.Array],
     pre_ids: jax.Array,

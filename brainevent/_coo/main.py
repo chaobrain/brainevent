@@ -17,19 +17,27 @@
 
 
 import operator
-from typing import Any, Tuple
+from typing import Any, Tuple, Optional
 
 import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent._csr import CSR, binary_csrmv, binary_csrmm, csrmv, csrmm
+from brainevent import EventRepresentation
+from brainevent._csr import (
+    CSR, binary_csrmv, binary_csrmm, csrmv, csrmm,
+    update_csr_on_binary_pre, update_csr_on_binary_post
+)
 from brainevent._event import BinaryArray, SparseFloat
 from brainevent._misc import _coo_todense, COOInfo
 from brainevent._typing import MatrixShape, Data, Index
 from .binary import binary_coomv, binary_coomm
 from .float import coomv, coomm
+from .plasticity_binary import (
+    update_coo_on_binary_pre,
+    update_coo_on_binary_post,
+)
 
 __all__ = [
     'COO',
@@ -381,6 +389,67 @@ class COO(u.sparse.SparseMatrix):
         for k, v in aux_data.items():
             setattr(obj, k, v)
         return obj
+
+    def update_on_pre(
+        self,
+        pre_events: EventRepresentation,
+        post_trace: Data,
+        w_min: Optional[Data] = None,
+        w_max: Optional[Data] = None,
+        inplace: bool = False,
+        backend: Optional[str] = None,
+    ):
+        if isinstance(pre_events, BinaryArray):
+            if self.ptr is not None:
+                if self.rows_sorted:
+                    data = update_csr_on_binary_pre
+                elif self.cols_sorted:
+                    raise NotImplementedError
+                else:
+                    raise NotImplementedError
+            else:
+                data = update_coo_on_binary_pre(
+                    self.data, self.row, self.col, pre_events.value, post_trace, w_min, w_max, backend=backend
+                )
+
+        else:
+            raise NotImplementedError(
+                f'update_on_pre is only implemented for BinaryArray pre_events, but got {type(pre_events)}'
+            )
+
+        if inplace:
+            self.data = data
+        return data
+
+    def update_on_post(
+        self,
+        post_events: EventRepresentation,
+        pre_trace: Data,
+        w_min: Optional[Data] = None,
+        w_max: Optional[Data] = None,
+        inplace: bool = False,
+        backend: Optional[str] = None,
+    ):
+        if isinstance(post_events, BinaryArray):
+            if self.ptr is not None:
+                if self.rows_sorted:
+                    data = update_csr_on_binary_post
+                elif self.cols_sorted:
+                    raise NotImplementedError
+                else:
+                    raise NotImplementedError
+            else:
+                data = update_coo_on_binary_post(
+                    self.data, self.row, self.col, post_events.value, pre_trace, w_min, w_max, backend=backend
+                )
+        else:
+            raise NotImplementedError(
+                f'update_on_post is only implemented for BinaryArray post_events, but got {type(post_events)}'
+            )
+
+        if inplace:
+            self.data = data
+        return data
 
     def apply(self, fn):
         """
