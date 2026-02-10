@@ -15,7 +15,6 @@
 
 
 import brainstate
-import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -27,6 +26,9 @@ platform = jax.default_backend()
 JITN_IMPLEMENTATIONS = tuple(jitn_p.available_backends(platform))
 JITNMV_IMPLEMENTATIONS = tuple(jitnmv_p.available_backends(platform))
 JITNMM_IMPLEMENTATIONS = tuple(jitnmm_p.available_backends(platform))
+JITN_IMPLEMENTATIONS = ['pallas']
+JITNMV_IMPLEMENTATIONS = ['pallas']
+JITNMM_IMPLEMENTATIONS = ['pallas']
 
 
 # ---- Forward: jitnmv (matrix @ vector, transpose=False) ----
@@ -37,7 +39,7 @@ JITNMM_IMPLEMENTATIONS = tuple(jitnmm_p.available_backends(platform))
 def test_jitnmv_forward(implementation, shape, corder):
     w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
     vector = jnp.asarray(np.random.rand(shape[1]))
-    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, corder=corder)
+    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, corder=corder, backend=implementation)
     out = jitnmv(w_loc, w_scale, prob, vector, seed, shape=shape, corder=corder, backend=implementation)
     expected = dense @ vector
     print(out, expected)
@@ -53,7 +55,7 @@ def test_jitnmv_forward(implementation, shape, corder):
 def test_jitnmv_transpose_forward(implementation, shape, corder):
     w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
     vector = jnp.asarray(np.random.rand(shape[0]))
-    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, transpose=True, corder=corder)
+    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, transpose=True, corder=corder, backend=implementation)
     out = jitnmv(w_loc, w_scale, prob, vector, seed, shape=shape, transpose=True, corder=corder, backend=implementation)
     expected = dense @ vector
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
@@ -69,7 +71,7 @@ def test_jitnmv_transpose_forward(implementation, shape, corder):
 def test_jitnmm_forward(implementation, k, shape, corder):
     w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
     B = jnp.asarray(np.random.rand(shape[1], k))
-    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, corder=corder)
+    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, corder=corder, backend=implementation)
     out = jitnmm(w_loc, w_scale, prob, B, seed, shape=shape, corder=corder, backend=implementation)
     expected = dense @ B
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
@@ -85,7 +87,7 @@ def test_jitnmm_forward(implementation, k, shape, corder):
 def test_jitnmm_transpose_forward(implementation, k, shape, corder):
     w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
     B = jnp.asarray(np.random.rand(shape[0], k))
-    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, transpose=True, corder=corder)
+    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, transpose=True, corder=corder, backend=implementation)
     out = jitnmm(w_loc, w_scale, prob, B, seed, shape=shape, transpose=True, corder=corder, backend=implementation)
     expected = dense @ B
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
@@ -102,7 +104,7 @@ def test_jitnmv_jvp(implementation, shape, corder, transpose):
     w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
     vec_size = shape[0] if transpose else shape[1]
     x = jnp.asarray(np.random.rand(vec_size))
-    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, transpose=transpose, corder=corder)
+    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
 
     def f_fn(x):
         return jitnmv(w_loc, w_scale, prob, x, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
@@ -128,7 +130,7 @@ def test_jitnmv_vjp(implementation, shape, corder, transpose):
     w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
     vec_size = shape[0] if transpose else shape[1]
     x = jnp.asarray(np.random.rand(vec_size))
-    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, transpose=transpose, corder=corder)
+    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
 
     def f_fn(x):
         return jitnmv(w_loc, w_scale, prob, x, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
@@ -154,7 +156,7 @@ def test_jitnmm_jvp(implementation, k, shape, corder, transpose):
     w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
     mat_rows = shape[0] if transpose else shape[1]
     x = jnp.asarray(np.random.rand(mat_rows, k))
-    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, transpose=transpose, corder=corder)
+    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
 
     def f_fn(x):
         return jitnmm(w_loc, w_scale, prob, x, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
@@ -181,7 +183,7 @@ def test_jitnmm_vjp(implementation, k, shape, corder, transpose):
     w_loc, w_scale, prob, seed = 1.5, 0.15, 0.1, 123
     mat_rows = shape[0] if transpose else shape[1]
     x = jnp.asarray(np.random.rand(mat_rows, k))
-    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, transpose=transpose, corder=corder)
+    dense = jitn(w_loc, w_scale, prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
 
     def f_fn(x):
         return jitnmm(w_loc, w_scale, prob, x, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
@@ -414,8 +416,8 @@ def test_jitnmv_vjp_wloc(implementation, shape, corder, transpose):
     vector = jnp.asarray(np.random.rand(vec_size))
     w_loc_arr = jnp.array([w_loc])
     # Build fixed dense components: mask and Z*mask
-    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
-    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
 
     def f_fn(wl):
         return jitnmv(wl, w_scale, prob, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
@@ -441,8 +443,8 @@ def test_jitnmv_vjp_wscale(implementation, shape, corder, transpose):
     vec_size = shape[0] if transpose else shape[1]
     vector = jnp.asarray(np.random.rand(vec_size))
     w_scale_arr = jnp.array([w_scale])
-    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
-    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
 
     def f_fn(ws):
         return jitnmv(w_loc, ws, prob, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
@@ -470,8 +472,8 @@ def test_jitnmv_vjp_wloc_with_loss(implementation, shape, corder, transpose):
     vector = jnp.asarray(np.random.rand(vec_size))
     target = jnp.asarray(np.random.rand(out_size))
     w_loc_arr = jnp.array([w_loc])
-    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
-    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
 
     def loss_fn(wl):
         out = jitnmv(wl, w_scale, prob, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
@@ -501,8 +503,8 @@ def test_jitnmv_vjp_wscale_with_loss(implementation, shape, corder, transpose):
     vector = jnp.asarray(np.random.rand(vec_size))
     target = jnp.asarray(np.random.rand(out_size))
     w_scale_arr = jnp.array([w_scale])
-    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
-    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
 
     def loss_fn(ws):
         out = jitnmv(w_loc, ws, prob, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
@@ -531,8 +533,8 @@ def test_jitnmm_vjp_wloc(implementation, shape, corder, transpose):
     mat_rows = shape[0] if transpose else shape[1]
     B = jnp.asarray(np.random.rand(mat_rows, k))
     w_loc_arr = jnp.array([w_loc])
-    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
-    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
 
     def f_fn(wl):
         return jitnmm(wl, w_scale, prob, B, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
@@ -559,8 +561,8 @@ def test_jitnmm_vjp_wscale(implementation, shape, corder, transpose):
     mat_rows = shape[0] if transpose else shape[1]
     B = jnp.asarray(np.random.rand(mat_rows, k))
     w_scale_arr = jnp.array([w_scale])
-    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
-    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
 
     def f_fn(ws):
         return jitnmm(w_loc, ws, prob, B, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation).sum()
@@ -589,8 +591,8 @@ def test_jitnmm_vjp_wloc_with_loss(implementation, shape, corder, transpose):
     B = jnp.asarray(np.random.rand(mat_rows, k))
     target = jnp.asarray(np.random.rand(out_rows, k))
     w_loc_arr = jnp.array([w_loc])
-    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
-    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
 
     def loss_fn(wl):
         out = jitnmm(wl, w_scale, prob, B, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
@@ -621,8 +623,8 @@ def test_jitnmm_vjp_wscale_with_loss(implementation, shape, corder, transpose):
     B = jnp.asarray(np.random.rand(mat_rows, k))
     target = jnp.asarray(np.random.rand(out_rows, k))
     w_scale_arr = jnp.array([w_scale])
-    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder)
-    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder)
+    mask = jitn(1., 0., prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+    z_mask = jitn(0., 1., prob, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
 
     def loss_fn(ws):
         out = jitnmm(w_loc, ws, prob, B, seed, shape=shape, transpose=transpose, corder=corder, backend=implementation)
