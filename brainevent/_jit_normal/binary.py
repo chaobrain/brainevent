@@ -486,8 +486,7 @@ def _jitc_mv_normal_pallas_kernel_generator(
 
             def body(data):
                 i_rows, i_row_mask, rng, res = data
-                # v = vector_ref.at[i_rows].load(mask=i_row_mask)
-                v = vector_ref.at[i_rows].load()
+                v = vector_ref[i_rows]
                 if vector_ref.dtype != jnp.bool_:
                     v = v != 0.
                 w = rng.normal(w_loc, w_scale)
