@@ -26,13 +26,3 @@ else:
     from jax.extend.core import Primitive
 
 from jax.core import Tracer
-
-try:
-    # the Mosaic config key is lazily registered only after importing
-    #   jax.experimental.pallas.
-    from jax.experimental import pallas
-
-    if jax.config.jax_pallas_use_mosaic_gpu:
-        jax.config.update('jax_pallas_use_mosaic_gpu', False)
-except:
-    pass

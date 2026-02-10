@@ -43,6 +43,8 @@ __all__ = [
     'set_numba_parallel',
     'get_numba_parallel',
     'get_numba_num_threads',
+    'set_pallas_use_mosaic_gpu',
+    'get_pallas_use_mosaic_gpu',
 ]
 
 _SCHEMA_VERSION = 1
@@ -257,3 +259,37 @@ def get_numba_parallel() -> bool:
 def get_numba_num_threads() -> Optional[int]:
     """Return configured numba thread count, or None for numba default."""
     return _numba_num_threads
+
+
+_pallas_use_mosaic_gpu: bool = False
+
+
+def set_pallas_use_mosaic_gpu(enable: bool = False):
+    """Enable or disable JAX's Mosaic GPU backend for Pallas kernels.
+
+    When disabled (default), forces ``jax_pallas_use_mosaic_gpu`` to False,
+    ensuring Pallas uses the standard Triton compilation path on GPU.
+    """
+    global _pallas_use_mosaic_gpu
+    _pallas_use_mosaic_gpu = enable
+    _apply_pallas_mosaic_gpu_config()
+
+
+def get_pallas_use_mosaic_gpu() -> bool:
+    """Return the current Mosaic GPU setting."""
+    return _pallas_use_mosaic_gpu
+
+
+def _apply_pallas_mosaic_gpu_config():
+    """Apply the pallas_use_mosaic_gpu setting to JAX config."""
+    import jax
+    try:
+        from jax.experimental import pallas  # triggers lazy config registration
+        current = jax.config.jax_pallas_use_mosaic_gpu
+        if current != _pallas_use_mosaic_gpu:
+            jax.config.update('jax_pallas_use_mosaic_gpu', _pallas_use_mosaic_gpu)
+    except Exception:
+        pass
+
+
+_apply_pallas_mosaic_gpu_config()

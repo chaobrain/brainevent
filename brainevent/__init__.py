@@ -22,6 +22,7 @@ from ._config import (
     set_user_default, clear_user_defaults, get_config_path,
     invalidate_cache,
     set_numba_parallel, get_numba_parallel, get_numba_num_threads,
+    set_pallas_use_mosaic_gpu, get_pallas_use_mosaic_gpu,
 )
 from ._coo import (
     COO,
@@ -195,6 +196,7 @@ __all__ = [
     'set_user_default', 'clear_user_defaults', 'get_config_path',
     'invalidate_cache',
     'set_numba_parallel', 'get_numba_parallel', 'get_numba_num_threads',
+    'set_pallas_use_mosaic_gpu', 'get_pallas_use_mosaic_gpu',
     'get_registry', 'get_primitives_by_tags', 'get_all_primitive_names',
 ]
 
