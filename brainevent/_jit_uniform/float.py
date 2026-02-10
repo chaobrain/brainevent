@@ -382,7 +382,7 @@ def _jitu_pallas_kernel_generator(
             i_cols = rng.random_integers(0, clen0)
             i_col_mask = i_cols < m
             jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
+                lambda data: jnp.any(data[1]),
                 body,
                 (i_cols, i_col_mask, rng)
             )
@@ -409,7 +409,7 @@ def _jitu_pallas_kernel_generator(
             i_rows = rng.random_integers(0, clen0)
             i_row_mask = i_rows < n
             jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
+                lambda data: jnp.any(data[1]),
                 body,
                 (i_rows, i_row_mask, rng)
             )
@@ -736,7 +736,7 @@ def _jitumv_warp_kernel_generator(
                 state = warp.rand_init(seed0 + i_row)
                 i_col = warp.randi(state, 0, clen0)
                 while i_col < num_col:
-                    posts[i_col] += v * (warp.randf(state) * w_diff + w_low0)
+                    warp.atomic_add(posts, i_col, v * (warp.randf(state) * w_diff + w_low0))
                     i_col += warp.randi(state, 1, clen0)
 
         else:
@@ -760,7 +760,7 @@ def _jitumv_warp_kernel_generator(
                 state = warp.rand_init(seed0 + i_col)
                 i_row = warp.randi(state, 0, clen0)
                 while i_row < num_row:
-                    posts[i_row] += v * (warp.randf(state) * w_diff + w_low0)
+                    warp.atomic_add(posts, i_row, v * (warp.randf(state) * w_diff + w_low0))
                     i_row += warp.randi(state, 1, clen0)
 
     def kernel(w_low, w_high, clen, vector, seed):
@@ -778,7 +778,7 @@ def _jitumv_pallas_kernel_generator(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import atomic_add
+    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
     dim = (out_info.shape[0] if corder else vector_info.shape[0])
     block_size = generate_block_dim(dim, maximum=128)
@@ -806,7 +806,7 @@ def _jitumv_pallas_kernel_generator(
             i_row_mask = i_rows < num_row
             out = jnp.zeros(block_size, dtype=post_ref.dtype)
             out = jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
+                lambda data: jnp.any(data[1]),
                 body,
                 (i_rows, i_row_mask, rng, out)
             )[-1]
@@ -834,7 +834,7 @@ def _jitumv_pallas_kernel_generator(
             i_cols = rng.random_integers(0, clen)
             i_col_mask = i_cols < num_col
             jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
+                lambda data: jnp.any(data[1]),
                 body,
                 (i_cols, i_col_mask, rng)
             )
@@ -1307,7 +1307,7 @@ def _jitumm_pallas_kernel_generator(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import atomic_add
+    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
     block_dim = generate_block_dim(B_info.shape[1], maximum=1024)
 

@@ -40,6 +40,7 @@ def test_jitnmv_forward(implementation, shape, corder):
     dense = jitn(w_loc, w_scale, prob, seed, shape=shape, corder=corder)
     out = jitnmv(w_loc, w_scale, prob, vector, seed, shape=shape, corder=corder, backend=implementation)
     expected = dense @ vector
+    print(out, expected)
     assert jnp.allclose(out, expected, rtol=1e-4, atol=1e-4)
     jax.block_until_ready((vector, dense, out, expected))
 

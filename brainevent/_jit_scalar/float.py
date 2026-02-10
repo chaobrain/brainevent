@@ -488,7 +488,7 @@ def _jitc_homo_matrix_pallas_kernel(
             i_cols = rng.random_integers(0, clen0)
             i_col_mask = i_cols < m
             jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
+                lambda data: jnp.any(data[1]),
                 body,
                 (i_cols, i_col_mask, rng)
             )
@@ -514,7 +514,7 @@ def _jitc_homo_matrix_pallas_kernel(
             i_rows = rng.random_integers(0, clen0)
             i_row_mask = i_rows < n
             jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
+                lambda data: jnp.any(data[1]),
                 body,
                 (i_rows, i_row_mask, rng)
             )
@@ -802,7 +802,7 @@ def _jitsmv_warp_kernel(
                 state = warp.rand_init(seed0 + i_row)
                 i_col = warp.randi(state, 0, clen0)
                 while i_col < num_col:
-                    posts[i_col] += v
+                    warp.atomic_add(posts, i_col, v)
                     i_col += warp.randi(state, 1, clen0)
         else:
             @warp.kernel
@@ -822,7 +822,7 @@ def _jitsmv_warp_kernel(
                 state = warp.rand_init(seed0 + i_col)
                 i_row = warp.randi(state, 0, clen0)
                 while i_row < num_row:
-                    posts[i_row] += v
+                    warp.atomic_add(posts, i_row, v)
                     i_row += warp.randi(state, 1, clen0)
 
         def kernel(weight, clen, vector, seed, _):
@@ -840,7 +840,7 @@ def _jitsmv_pallas_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import atomic_add
+    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
     dim = (out_info.shape[0] if corder else vector_info.shape[0])
     tiled = True
@@ -871,7 +871,7 @@ def _jitsmv_pallas_kernel(
                 i_row_mask = i_rows < num_row
                 out = jnp.zeros(block_size, dtype=post_ref.dtype)
                 out = jax.lax.while_loop(
-                    lambda data: jnp.sum(data[1]) > 0,
+                    lambda data: jnp.any(data[1]),
                     body,
                     (i_rows, i_row_mask, rng, out)
                 )[-1]
@@ -899,7 +899,7 @@ def _jitsmv_pallas_kernel(
                 i_cols = rng.random_integers(0, clen)
                 i_col_mask = i_cols < num_col
                 jax.lax.while_loop(
-                    lambda data: jnp.sum(data[1]) > 0,
+                    lambda data: jnp.any(data[1]),
                     body,
                     (i_cols, i_col_mask, rng)
                 )
@@ -1397,7 +1397,7 @@ def _jitsmm_pallas_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import atomic_add
+    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
     block_dim = generate_block_dim(B_info.shape[1], maximum=1024)
 
