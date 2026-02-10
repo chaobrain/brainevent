@@ -269,7 +269,8 @@ def _jitumv_warp_kernel_generator(
                 i_row = warp.randi(state, 0, clen0)
                 while i_row < num_row:
                     w = warp.randf(state) * w_diff + w_low0
-                    r += w * vector[i_row]
+                    if vector[i_row] > float(0.0):
+                        r += w
                     i_row += warp.randi(state, 1, clen0)
                 posts[i_col] = r
 
@@ -327,8 +328,8 @@ def _jitumv_warp_kernel_generator(
 
     def kernel(w_low, w_high, clen, vector, seed):
         dim = out_info.shape[0] if corder else vector_info.shape[0]
-        fn = jax_kernel(kernel_impl, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
-        return fn(w_low, w_high, clen, vector, seed)
+        fn = jax_kernel(kernel_impl, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
+        return fn(w_low, w_high, clen, vector, seed, jnp.zeros(out_info.shape, out_info.dtype))
 
     return kernel
 
@@ -750,15 +751,16 @@ def _jitumm_warp_kernel_generator(
     import warp
     from warp.jax_experimental import jax_kernel
 
-    TILE_SIZE = B_info.shape[1]
     w_low_warp = jaxinfo_to_warpinfo(w_low_info)
     w_high_warp = jaxinfo_to_warpinfo(w_high_info)
     clen_warp = jaxinfo_to_warpinfo(clen_info)
     B_warp = jaxinfo_to_warpinfo(B_info)
     seed_warp = jaxinfo_to_warpinfo(seed_info)
-    out_warp = jaxinfo_to_warpinfo(kwargs['outs'][0])
+    out_warp = jaxinfo_to_warpinfo(out_info)
 
     if corder:
+        # Each thread i_m generates one row of the JITC matrix and
+        # multiplies it with B, accumulating into posts[i_m, :].
         if B_info.dtype == jnp.bool_:
             @warp.kernel
             def kernel_impl(
@@ -770,22 +772,21 @@ def _jitumm_warp_kernel_generator(
                 posts: out_warp,
             ):
                 k = B.shape[0]
+                n = B.shape[1]
                 w_low0 = w_low[0]
                 w_high0 = w_high[0]
                 w_diff = w_high0 - w_low0
                 clen0 = clen[0]
                 seed0 = seed[0]
-
                 i_m = warp.tid()
                 state = warp.rand_init(seed0 + i_m * k)
-
-                out = warp.tile_zeros(TILE_SIZE, dtype=w_low_warp.dtype)
                 i_k = warp.randi(state, 0, clen0)
                 while i_k < k:
                     w = warp.randf(state) * w_diff + w_low0
-                    out += warp.tile_astype(warp.tile_load(B[i_k], TILE_SIZE), dtype=w_low_warp.dtype) * w
+                    for j in range(n):
+                        if B[i_k, j]:
+                            posts[i_m, j] += w
                     i_k += warp.randi(state, 1, clen0)
-                warp.tile_store(posts[i_m], out)
 
         else:
             @warp.kernel
@@ -798,24 +799,25 @@ def _jitumm_warp_kernel_generator(
                 posts: out_warp,
             ):
                 k = B.shape[0]
+                n = B.shape[1]
                 w_low0 = w_low[0]
                 w_high0 = w_high[0]
                 w_diff = w_high0 - w_low0
                 clen0 = clen[0]
                 seed0 = seed[0]
-
                 i_m = warp.tid()
                 state = warp.rand_init(seed0 + i_m * k)
-
-                out = warp.tile_zeros(TILE_SIZE, dtype=w_low_warp.dtype)
                 i_k = warp.randi(state, 0, clen0)
                 while i_k < k:
                     w = warp.randf(state) * w_diff + w_low0
-                    out += warp.tile_load(B[i_k], TILE_SIZE) * w
+                    for j in range(n):
+                        if B[i_k, j] > float(0.0):
+                            posts[i_m, j] += w
                     i_k += warp.randi(state, 1, clen0)
-                warp.tile_store(posts[i_m], out)
 
     else:
+        # Each thread i_k generates one column of the JITC matrix and
+        # scatters B[i_k, :] scaled by weight into output rows via atomic adds.
         if B_info.dtype == jnp.bool_:
             @warp.kernel
             def kernel_impl(
@@ -827,20 +829,20 @@ def _jitumm_warp_kernel_generator(
                 posts: out_warp,
             ):
                 m = posts.shape[0]
+                n = B.shape[1]
                 w_low0 = w_low[0]
                 w_high0 = w_high[0]
                 w_diff = w_high0 - w_low0
                 clen0 = clen[0]
                 seed0 = seed[0]
-
                 i_k = warp.tid()
                 state = warp.rand_init(seed0 + i_k * m)
-
-                out = warp.tile_astype(warp.tile_load(B[i_k], TILE_SIZE), dtype=w_low_warp.dtype)
                 i_m = warp.randi(state, 0, clen0)
                 while i_m < m:
                     w = warp.randf(state) * w_diff + w_low0
-                    warp.tile_atomic_add(posts[i_m], out * w)
+                    for j in range(n):
+                        if B[i_k, j]:
+                            warp.atomic_add(posts, i_m, j, w)
                     i_m += warp.randi(state, 1, clen0)
 
         else:
@@ -854,26 +856,26 @@ def _jitumm_warp_kernel_generator(
                 posts: out_warp,
             ):
                 m = posts.shape[0]
+                n = B.shape[1]
                 w_low0 = w_low[0]
                 w_high0 = w_high[0]
                 w_diff = w_high0 - w_low0
                 clen0 = clen[0]
                 seed0 = seed[0]
-
                 i_k = warp.tid()
                 state = warp.rand_init(seed0 + i_k * m)
-
-                out = warp.tile_load(B[i_k], TILE_SIZE)
                 i_m = warp.randi(state, 0, clen0)
                 while i_m < m:
                     w = warp.randf(state) * w_diff + w_low0
-                    warp.tile_atomic_add(posts[i_m], out * w)
+                    for j in range(n):
+                        if B[i_k, j] > float(0.0):
+                            warp.atomic_add(posts, i_m, j, w)
                     i_m += warp.randi(state, 1, clen0)
 
     def kernel(w_low, w_high, clen, B, seed):
         dim = out_info.shape[0] if corder else B_info.shape[0]
-        fn = jax_kernel(kernel_impl, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
-        return fn(w_low, w_high, clen, B, seed)
+        fn = jax_kernel(kernel_impl, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
+        return fn(w_low, w_high, clen, B, seed, jnp.zeros(out_info.shape, out_info.dtype))
 
     return kernel
 

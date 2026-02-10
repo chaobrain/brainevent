@@ -26,9 +26,9 @@ JITU_IMPLEMENTATIONS = tuple(jitu_p.available_backends(platform))
 JITUMV_IMPLEMENTATIONS = tuple(jitumv_p.available_backends(platform))
 JITUMM_IMPLEMENTATIONS = tuple(jitumm_p.available_backends(platform))
 
-JITU_IMPLEMENTATIONS = ['warp']
-JITUMV_IMPLEMENTATIONS = ['warp']
-JITUMM_IMPLEMENTATIONS = ['warp']
+JITU_IMPLEMENTATIONS = ['pallas']
+JITUMV_IMPLEMENTATIONS = ['pallas']
+JITUMM_IMPLEMENTATIONS = ['pallas']
 
 
 SHAPES = [(20, 30), (100, 50)]

@@ -253,8 +253,8 @@ def _jitu_warp_kernel_generator(
 
     def kernel(w_low, w_high, clen, seed):
         dim = out_info.shape[0] if corder else out_info.shape[1]
-        fn = jax_kernel(kernel_impl, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
-        return fn(w_low, w_high, clen, seed)
+        fn = jax_kernel(kernel_impl, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
+        return fn(w_low, w_high, clen, seed, jnp.zeros(out_info.shape, out_info.dtype))
 
     return kernel
 
@@ -592,8 +592,8 @@ def _jitumv_warp_kernel_generator(
 
     def kernel(w_low, w_high, clen, vector, seed):
         dim = out_info.shape[0] if corder else vector_info.shape[0]
-        fn = jax_kernel(kernel_impl, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
-        return fn(w_low, w_high, clen, vector, seed)
+        fn = jax_kernel(kernel_impl, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
+        return fn(w_low, w_high, clen, vector, seed, jnp.zeros(out_info.shape, out_info.dtype))
 
     return kernel
 
@@ -977,7 +977,9 @@ def _jitumm_warp_kernel_generator(
     out_warp = jaxinfo_to_warpinfo(out_info)
 
     if corder:
-        # JIT Matrix.T @ B
+        # JIT Matrix @ B, corder=True
+        # Each thread i_m generates one row of the JITC matrix and
+        # multiplies it with B, accumulating into posts[i_m, :].
         @warp.kernel
         def kernel_impl(
             w_low: w_low_warp,
@@ -988,6 +990,7 @@ def _jitumm_warp_kernel_generator(
             posts: out_warp,
         ):
             k = B.shape[0]
+            n = B.shape[1]
             w_low0 = w_low[0]
             w_high0 = w_high[0]
             w_diff = w_high0 - w_low0
@@ -995,17 +998,17 @@ def _jitumm_warp_kernel_generator(
             seed0 = seed[0]
             i_m = warp.tid()
             state = warp.rand_init(seed0 + i_m * k)
-            out = warp.tile_zeros(TITLE_SIZE, dtype=warp.float32)
             i_k = warp.randi(state, 0, clen0)
             while i_k < k:
                 w = warp.randf(state) * w_diff + w_low0
-                out += warp.tile_load(B[i_k], TITLE_SIZE) * w
+                for j in range(n):
+                    posts[i_m, j] += B[i_k, j] * w
                 i_k += warp.randi(state, 1, clen0)
-            warp.tile_store(posts[i_m], out)
-
 
     else:
-        # JIT Matrix.T @ B
+        # JIT Matrix @ B, corder=False
+        # Each thread i_k generates one column of the JITC matrix and
+        # scatters B[i_k, :] scaled by weight into output rows via atomic adds.
         @warp.kernel
         def kernel_impl(
             w_low: w_low_warp,
@@ -1016,6 +1019,7 @@ def _jitumm_warp_kernel_generator(
             posts: out_warp,
         ):
             m = posts.shape[0]
+            n = B.shape[1]
             w_low0 = w_low[0]
             w_high0 = w_high[0]
             w_diff = w_high0 - w_low0
@@ -1023,17 +1027,17 @@ def _jitumm_warp_kernel_generator(
             seed0 = seed[0]
             i_k = warp.tid()
             state = warp.rand_init(seed0 + i_k * m)
-            out = warp.tile_load(B[i_k], TITLE_SIZE)
             i_m = warp.randi(state, 0, clen0)
             while i_m < m:
                 w = warp.randf(state) * w_diff + w_low0
-                warp.tile_atomic_add(posts[i_m], out * w)
+                for j in range(n):
+                    warp.atomic_add(posts, i_m, j, B[i_k, j] * w)
                 i_m += warp.randi(state, 1, clen0)
 
     def kernel(w_low, w_high, clen, B, seed):
-        tile = out_info.shape[0] if corder else B_info.shape[0]
-        fn = jax_kernel(kernel_impl, launch_dims=[tile], num_outputs=1, output_dims={'posts': out_info.shape})
-        return fn(w_low, w_high, clen, B, seed)
+        dim = out_info.shape[0] if corder else B_info.shape[0]
+        fn = jax_kernel(kernel_impl, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
+        return fn(w_low, w_high, clen, B, seed, jnp.zeros(out_info.shape, out_info.dtype))
 
     return kernel
 
