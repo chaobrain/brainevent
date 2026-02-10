@@ -111,12 +111,10 @@ Indexed binary operations.
 .. autosummary::
    :toctree: generated/
 
-   indexed_bdvm
-   indexed_bdvm_p
-   indexed_dbmv
-   indexed_dbmm
-   indexed_bdmm
-   indexed_bdmm_p
+   indexed_binary_densemv
+   indexed_binary_densemv_p
+   indexed_binary_densemm
+   indexed_binary_densemm_p
 
 Dense-matrix @ sparse-float-vector / sparse-float-matrix.
 

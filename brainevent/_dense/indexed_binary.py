@@ -27,70 +27,84 @@ from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, g
 from brainevent._op.benchmark import BenchmarkConfig
 
 __all__ = [
-    'indexed_bdvm',
-    'indexed_bdvm_p',
-    'indexed_dbmv',
-    'indexed_dbmm',
-    'indexed_bdmm',
-    'indexed_bdmm_p',
+    'indexed_binary_densemv',
+    'indexed_binary_densemv_p',
+    'indexed_binary_densemm',
+    'indexed_binary_densemm_p',
 ]
 
 
-@namescope
-def indexed_bdvm(binary_index, weights, *, backend: Optional[str] = None):
-    """
-    Computes the dot product between a binary vector (in sparse format) and a dense matrix.
+# ==============================================================================
+# Unified indexed binary dense matrix-vector product (indexed_binary_densemv)
+# ==============================================================================
+#
+# transpose=False: weights[m,k] columns selected by indices -> out[m]  (old indexed_dbmv)
+# transpose=True:  weights[k,n] rows selected by indices -> out[n]    (old indexed_bdvm)
+#
+# Argument order is always (weights, binary_index).
 
-    The binary vector is represented by `binary_arr`, which contains the spike values,
-    their indices, and the count of spikes. The dense matrix is given by `weights`.
-    The function multiplies the selected rows of the dense matrix (as indicated by the
-    spike indices) and sums them, then applies the unit scaling.
+
+@namescope(static_argnames=['transpose'])
+def indexed_binary_densemv(weights, binary_index, *, transpose, backend: Optional[str] = None):
+    """
+    Performs indexed binary dense matrix-vector multiplication.
+
+    When ``transpose=False``, computes ``weights[m,k] @ binary_index -> out[m]``
+    by summing the columns of ``weights`` selected by the spike indices.
+
+    When ``transpose=True``, computes ``binary_index @ weights[k,n] -> out[n]``
+    by summing the rows of ``weights`` selected by the spike indices.
 
     Parameters
     ----------
-    binary_index : BinaryArray
-        An object representing a binary vector in sparse format. It must have the attributes:
-
-        - value: the spike values (typically all ones for binary)
-        - spike_indices: indices of nonzero (spike) elements
-        - spike_count: number of spikes (nonzero elements)
     weights : ndarray or compatible
-        A dense matrix of shape (N, M), where N is the number of possible indices and M is the output dimension.
-        Maybe a unit-aware array.
+        The weight matrix. Shape ``(m, k)`` when ``transpose=False``,
+        or ``(k, n)`` when ``transpose=True``. Can be a ``brainunit`` quantity.
+    binary_index : BinaryArray
+        An object representing a binary vector in sparse format with attributes:
+        ``value``, ``spike_indices``, ``spike_count``.
+    transpose : bool
+        If False, compute ``weights @ binary``. If True, compute ``binary @ weights``.
+    backend : str, optional
+        Backend to use for the computation.
 
     Returns
     -------
     result : ndarray or compatible
-        The result of the dot product, with the same dtype and unit as the input weights.
-
-    Notes
-    -----
-    This function supports custom CPU and GPU kernels for efficient computation.
-    The binary vector is assumed to be sparse, and only the rows of the dense matrix
-    corresponding to the spike indices are summed.
-
-    Examples
-    --------
-    >>> # Suppose binary_arr has spike_indices = [0, 2], spike_count = 2
-    >>> # and weights is a (3, 4) matrix
-    >>> result = indexed_bdvm(binary_index, weights)
+        Result vector. Shape ``(m,)`` when ``transpose=False``,
+        or ``(n,)`` when ``transpose=True``.
     """
     weight_val, wunit = u.split_mantissa_unit(weights)
     spikes = binary_index.value
     indices = binary_index.spike_indices
     count = binary_index.spike_count
-    r = ibdvm_p_call(spikes, indices, count, weight_val, backend=backend)
+    r = indexed_binary_densemv_p_call(spikes, indices, count, weight_val, transpose=transpose, backend=backend)
     return u.maybe_decimal(r[0] * wunit)
 
 
-def _bdvm_numba_kernel(**kwargs):
+def _mv_numba_kernel(transpose: bool, **kwargs):
     import numba
 
-    @numba.njit(fastmath=True)
-    def kernel(indices, count, weights, out):
-        out[:] = 0.
-        for i in range(count[0]):
-            out += weights[indices[i]]
+    if transpose:
+        # weights[k,n], select rows by indices -> out[n]
+        @numba.njit(fastmath=True)
+        def kernel(indices, count, weights, out):
+            out[:] = 0.
+            nnz = min(count[0], indices.shape[0])
+            for i in range(nnz):
+                idx = indices[i]
+                if 0 <= idx < weights.shape[0]:
+                    out += weights[idx]
+    else:
+        # weights[m,k], select columns by indices -> out[m]
+        @numba.njit(fastmath=True)
+        def kernel(indices, count, weights, out):
+            out[:] = 0.
+            nnz = min(count[0], indices.shape[0])
+            for i in range(nnz):
+                idx = indices[i]
+                if 0 <= idx < weights.shape[1]:
+                    out += weights[:, idx]
 
     def run(spikes, indices, count, weights):
         return numba_kernel(kernel, outs=kwargs['outs'])(indices, count, weights)
@@ -98,96 +112,163 @@ def _bdvm_numba_kernel(**kwargs):
     return run
 
 
-def _bdvm_warp_kernel(
+def _mv_warp_kernel(
     spikes_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
     count_info: jax.ShapeDtypeStruct,
     weights_info: jax.ShapeDtypeStruct,
+    transpose: bool,
     **kwargs
 ):
     import warp
     from warp.jax_experimental import jax_kernel
 
-    n = weights_info.shape[1]
     indices_warp_info = jaxinfo_to_warpinfo(indices_info)
     count_warp_info = jaxinfo_to_warpinfo(count_info)
     weight_warp_info = jaxinfo_to_warpinfo(weights_info)
     out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
 
-    @warp.kernel
-    def kernel(
-        indices: indices_warp_info,
-        count: count_warp_info,
-        weights: weight_warp_info,
-        out: out_warp_info,
-    ):
-        j = warp.tid()
-        r = weights.dtype(0.)
-        nnz = count[0]
-        max_i = indices.shape[0]
-        if nnz > max_i:
-            nnz = max_i
-        for i in range(nnz):
-            idx = indices[i]
-            if 0 <= idx < weights.shape[0]:
-                r += weights[idx, j]
-        out[j] = r
+    if transpose:
+        # weights[k,n], select rows -> out[n]
+        n = weights_info.shape[1]
 
-    def run(spikes, indices, count, weights):
-        out_info = kwargs['outs'][0]
-        fn = jax_kernel(kernel, launch_dims=[n], num_outputs=1, output_dims={'out': out_info.shape})
-        return fn(indices, count, weights)
+        @warp.kernel
+        def kernel(
+            indices: indices_warp_info,
+            count: count_warp_info,
+            weights: weight_warp_info,
+            out: out_warp_info,
+        ):
+            j = warp.tid()
+            r = weights.dtype(0.)
+            nnz = count[0]
+            max_i = indices.shape[0]
+            if nnz > max_i:
+                nnz = max_i
+            for i in range(nnz):
+                idx = indices[i]
+                if 0 <= idx < weights.shape[0]:
+                    r += weights[idx, j]
+            out[j] = r
+
+        def run(spikes, indices, count, weights):
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=[n], num_outputs=1, output_dims={'out': out_info.shape})
+            return fn(indices, count, weights)
+    else:
+        # weights[m,k], select columns -> out[m]
+        m = weights_info.shape[0]
+
+        @warp.kernel
+        def kernel(
+            indices: indices_warp_info,
+            count: count_warp_info,
+            weights: weight_warp_info,
+            out: out_warp_info,
+        ):
+            i = warp.tid()
+            r = weights.dtype(0.)
+            nnz = count[0]
+            max_k = indices.shape[0]
+            if nnz > max_k:
+                nnz = max_k
+            for k in range(nnz):
+                idx = indices[k]
+                if 0 <= idx < weights.shape[1]:
+                    r += weights[i, idx]
+            out[i] = r
+
+        def run(spikes, indices, count, weights):
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=[m], num_outputs=1, output_dims={'out': out_info.shape})
+            return fn(indices, count, weights)
 
     return run
 
 
-def _bdvm_pallas_kernel(
+def _mv_pallas_kernel(
     weights_info: jax.ShapeDtypeStruct,
+    transpose: bool,
     **kwargs
 ):
     from jax.experimental import pallas as pl
 
-    block_dim = generate_block_dim(weights_info.shape[1], maximum=128)
+    if transpose:
+        # weights[k,n], select rows -> out[n]
+        block_dim = generate_block_dim(weights_info.shape[1], maximum=128)
 
-    def kernel(
-        indices_ref,  # [n_neuron]
-        count_ref,  # [1]
-        weights_ref,  # [n_neuron, n_output]
-        out_ref,  # [n_output]
-    ):
-        i_block = pl.program_id(0)
-        col_start = i_block * block_dim
-        cols = col_start + jnp.arange(block_dim)
-        mask = cols < weights_ref.shape[1]
-        safe_cols = jnp.where(mask, cols, 0)
-        count = jnp.minimum(count_ref[0], indices_ref.shape[0])
+        def kernel(
+            indices_ref,  # [n_neuron]
+            count_ref,  # [1]
+            weights_ref,  # [k, n]
+            out_ref,  # [n]
+        ):
+            i_block = pl.program_id(0)
+            col_start = i_block * block_dim
+            cols = col_start + jnp.arange(block_dim)
+            mask = cols < weights_ref.shape[1]
+            safe_cols = jnp.where(mask, cols, 0)
+            count = jnp.minimum(count_ref[0], indices_ref.shape[0])
 
-        def fn(i, temp):
-            i_row = indices_ref[i]
-            valid = (i_row >= 0) & (i_row < weights_ref.shape[0])
-            i_row = jnp.where(valid, i_row, 0)
-            weight_row = jnp.where(mask & valid, weights_ref[i_row, safe_cols], 0.0)
-            return temp + weight_row
+            def fn(i, temp):
+                i_row = indices_ref[i]
+                valid = (i_row >= 0) & (i_row < weights_ref.shape[0])
+                i_row = jnp.where(valid, i_row, 0)
+                weight_row = jnp.where(mask & valid, weights_ref[i_row, safe_cols], 0.0)
+                return temp + weight_row
 
-        out = jax.lax.fori_loop(0, count, fn, jnp.zeros([block_dim], dtype=weights_ref.dtype))
-        out_ref[safe_cols] = jnp.where(mask, out, 0.0)
+            out = jax.lax.fori_loop(0, count, fn, jnp.zeros([block_dim], dtype=weights_ref.dtype))
+            out_ref[safe_cols] = jnp.where(mask, out, 0.0)
 
-    def run(spikes, indices, count, weights):
-        fn = pl.pallas_call(kernel, grid=(cdiv(weights_info.shape[1], block_dim),), out_shape=kwargs['outs'])
-        return fn(indices, count, weights)
+        def run(spikes, indices, count, weights):
+            fn = pl.pallas_call(kernel, grid=(cdiv(weights_info.shape[1], block_dim),), out_shape=kwargs['outs'])
+            return fn(indices, count, weights)
+    else:
+        # weights[m,k], select columns -> out[m]
+        block_dim = generate_block_dim(weights_info.shape[0], maximum=128)
+
+        def kernel(
+            indices_ref,  # [n_neuron]
+            count_ref,  # [1]
+            weights_ref,  # [m, k]
+            out_ref,  # [m]
+        ):
+            i_block = pl.program_id(0)
+            row_start = i_block * block_dim
+            rows = row_start + jnp.arange(block_dim)
+            mask = rows < weights_ref.shape[0]
+            safe_rows = jnp.where(mask, rows, 0)
+            count = jnp.minimum(count_ref[0], indices_ref.shape[0])
+
+            def fn(i, temp):
+                i_col = indices_ref[i]
+                valid = (i_col >= 0) & (i_col < weights_ref.shape[1])
+                i_col = jnp.where(valid, i_col, 0)
+                weight_col = jnp.where(mask & valid, weights_ref[safe_rows, i_col], 0.0)
+                return temp + weight_col
+
+            out = jax.lax.fori_loop(0, count, fn, jnp.zeros([block_dim], dtype=weights_ref.dtype))
+            out_ref[safe_rows] = jnp.where(mask, out, 0.0)
+
+        def run(spikes, indices, count, weights):
+            fn = pl.pallas_call(kernel, grid=(cdiv(weights_info.shape[0], block_dim),), out_shape=kwargs['outs'])
+            return fn(indices, count, weights)
 
     return run
 
 
-def _bdvm_jvp_spikes(spikes_dot, spikes, indices, count, weights, **kwargs):
-    return [jnp.zeros((weights.shape[1],), dtype=weights.dtype)]
+def _mv_jvp_spikes(spikes_dot, spikes, indices, count, weights, *, transpose, **kwargs):
+    if transpose:
+        return [jnp.zeros((weights.shape[1],), dtype=weights.dtype)]
+    else:
+        return [jnp.zeros((weights.shape[0],), dtype=weights.dtype)]
 
 
-def _bdvm_jvp_weights(weights_dot, spikes, indices, count, weights, **kwargs):
-    return ibdvm_p_call(spikes, indices, count, weights_dot)
+def _mv_jvp_weights(weights_dot, spikes, indices, count, weights, *, transpose, **kwargs):
+    return indexed_binary_densemv_p_call(spikes, indices, count, weights_dot, transpose=transpose)
 
 
-def _bdvm_transpose(ct, spikes, indices, count, weights, **kwargs):
+def _mv_transpose(ct, spikes, indices, count, weights, *, transpose, **kwargs):
     if ad.is_undefined_primal(indices):
         raise ValueError("Cannot transpose with respect to indices.")
     if ad.is_undefined_primal(count):
@@ -199,25 +280,39 @@ def _bdvm_transpose(ct, spikes, indices, count, weights, **kwargs):
         if type(ct) is ad.Zero:
             return spikes, indices, count, ad.Zero(weights)
         mask = jnp.arange(indices.shape[0]) < count[0]
-        updates = jnp.where(mask[:, None], ct, 0.0)
-        zeros = jnp.zeros(weights.aval.shape, dtype=weights.aval.dtype)
-        ct_weights = zeros.at[indices].add(updates)
+        if transpose:
+            # kernel sums rows: ct_weights[indices[i]] += ct
+            updates = jnp.where(mask[:, None], ct, 0.0)
+            zeros = jnp.zeros(weights.aval.shape, dtype=weights.aval.dtype)
+            ct_weights = zeros.at[indices].add(updates)
+        else:
+            # kernel sums columns: ct_weights[:, indices[i]] += ct
+            updates = jnp.where(mask[:, None], ct, 0.0)
+            zeros = jnp.zeros(weights.aval.shape, dtype=weights.aval.dtype)
+            ct_weights = zeros.at[:, indices].add(updates)
         return spikes, indices, count, ct_weights
     raise ValueError("Cannot transpose with respect to both spikes and weights.")
 
 
-def _bdvm_batching(args, axes, **kwargs):
+def _mv_batching(args, axes, *, transpose, **kwargs):
     if axes == (None, None, None, 0):
         spikes, indices, count, weights = args
         mask = jnp.arange(indices.shape[0]) < count[0]
-        gathered = jnp.take(weights, indices, axis=1)
-        updates = jnp.where(mask[None, :, None], gathered, 0.0)
-        r = updates.sum(axis=1)
+        if transpose:
+            # weights batched: [batch, k, n], select rows -> [batch, n]
+            gathered = jnp.take(weights, indices, axis=1)
+            updates = jnp.where(mask[None, :, None], gathered, 0.0)
+            r = updates.sum(axis=1)
+        else:
+            # weights batched: [batch, m, k], select columns -> [batch, m]
+            gathered = jnp.take(weights, indices, axis=2)
+            updates = jnp.where(mask[None, None, :], gathered, 0.0)
+            r = updates.sum(axis=2)
         return [r], [0]
-    return general_batching_rule(indexed_bdvm_p, args, axes, **kwargs)
+    return general_batching_rule(indexed_binary_densemv_p, args, axes, transpose=transpose, **kwargs)
 
 
-def _bdvm_benchmark_data(*, platform):
+def _mv_benchmark_data(*, platform):
     n_input, n_output = 1000, 1000
     n_spikes = 100
     dtype = jnp.float32
@@ -230,21 +325,32 @@ def _bdvm_benchmark_data(*, platform):
     ]
 
 
-def ibdvm_p_call(spikes, indices, count, weights, *, backend: Optional[str] = None):
+def indexed_binary_densemv_p_call(spikes, indices, count, weights, *, transpose, backend: Optional[str] = None):
     assert spikes.ndim == 1, "spikes should be 1D (n_spikes,)"
     assert indices.ndim == 1, "indices should be 1D (n_spikes,)"
     assert count.ndim == 1 and count.shape[0] == 1, "count should be 1D (1,)"
-    assert weights.ndim == 2, "weights should be 2D (n_input, n_output)"
-    assert spikes.shape[0] == weights.shape[0], (
-        f"spikes and weights dimension mismatch, "
-        f"got {spikes.shape} and {weights.shape}"
-    )
-    return indexed_bdvm_p(
+    assert weights.ndim == 2, "weights should be 2D"
+    if transpose:
+        # weights[k,n], select rows by indices -> out[n]
+        assert spikes.shape[0] == weights.shape[0], (
+            f"spikes and weights dimension mismatch, "
+            f"got {spikes.shape} and {weights.shape}"
+        )
+        out_shape = jax.ShapeDtypeStruct([weights.shape[1]], weights.dtype)
+    else:
+        # weights[m,k], select columns by indices -> out[m]
+        assert spikes.shape[0] == weights.shape[1], (
+            f"spikes and weights dimension mismatch, "
+            f"got {spikes.shape} and {weights.shape}"
+        )
+        out_shape = jax.ShapeDtypeStruct([weights.shape[0]], weights.dtype)
+    return indexed_binary_densemv_p(
         spikes,
         indices,
         count,
         weights,
-        outs=[jax.ShapeDtypeStruct([weights.shape[1]], weights.dtype)],
+        outs=[out_shape],
+        transpose=transpose,
         spikes_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         count_info=jax.ShapeDtypeStruct(count.shape, count.dtype),
@@ -253,117 +359,95 @@ def ibdvm_p_call(spikes, indices, count, weights, *, backend: Optional[str] = No
     )
 
 
-indexed_bdvm_p = XLACustomKernel('binary_vec_dot_dense_matrix')
-indexed_bdvm_p.def_numba_kernel(_bdvm_numba_kernel)
-indexed_bdvm_p.def_warp_kernel(_bdvm_warp_kernel)
-indexed_bdvm_p.def_pallas_kernel('gpu', _bdvm_pallas_kernel)
-indexed_bdvm_p.def_pallas_kernel('tpu', _bdvm_pallas_kernel)
-indexed_bdvm_p.def_jvp_rule2(_bdvm_jvp_spikes, None, None, _bdvm_jvp_weights)
-indexed_bdvm_p.def_transpose_rule(_bdvm_transpose)
-indexed_bdvm_p.def_batching_rule(_bdvm_batching)
-indexed_bdvm_p.def_call(ibdvm_p_call)
-indexed_bdvm_p.def_tags('dense', 'indexed_binary')
-indexed_bdvm_p.def_benchmark_data(_bdvm_benchmark_data)
+indexed_binary_densemv_p = XLACustomKernel('indexed_binary_densemv')
+indexed_binary_densemv_p.def_numba_kernel(_mv_numba_kernel)
+indexed_binary_densemv_p.def_warp_kernel(_mv_warp_kernel)
+indexed_binary_densemv_p.def_pallas_kernel('gpu', _mv_pallas_kernel)
+indexed_binary_densemv_p.def_pallas_kernel('tpu', _mv_pallas_kernel)
+indexed_binary_densemv_p.def_jvp_rule2(_mv_jvp_spikes, None, None, _mv_jvp_weights)
+indexed_binary_densemv_p.def_transpose_rule(_mv_transpose)
+indexed_binary_densemv_p.def_batching_rule(_mv_batching)
+indexed_binary_densemv_p.def_call(indexed_binary_densemv_p_call)
+indexed_binary_densemv_p.def_tags('dense', 'indexed_binary')
+indexed_binary_densemv_p.def_benchmark_data(_mv_benchmark_data)
 
 
-@namescope
-def indexed_dbmv(weights, binary_arr, *, backend: Optional[str] = None):
+# ==============================================================================
+# Unified indexed binary dense matrix-matrix product (indexed_binary_densemm)
+# ==============================================================================
+#
+# transpose=False: weights[m,k] columns selected by indices -> out[batch, m]  (old indexed_dbmm)
+# transpose=True:  weights[k,n] rows selected by indices -> out[batch, n]    (old indexed_bdmm)
+#
+# Argument order is always (weights, binary_arr).
+
+
+@namescope(static_argnames=['transpose'])
+def indexed_binary_densemm(weights, binary_arr, *, transpose, backend: Optional[str] = None):
     """
-    Computes the dot product between a dense matrix and a binary vector (in sparse format).
+    Performs indexed binary dense matrix-matrix multiplication (batched).
 
-    The binary vector is represented by `binary_arr`, which contains the spike values,
-    their indices, and the count of spikes. The dense matrix is given by `weights`.
-    The function multiplies the selected columns of the dense matrix (as indicated by the
-    spike indices) and sums them, then applies the unit scaling.
+    When ``transpose=False``, computes ``weights[m,k] @ binary_arr -> out[batch, m]``
+    by summing the columns of ``weights`` selected by each batch's spike indices.
+
+    When ``transpose=True``, computes ``binary_arr @ weights[k,n] -> out[batch, n]``
+    by summing the rows of ``weights`` selected by each batch's spike indices.
 
     Parameters
     ----------
     weights : ndarray or compatible
-        A dense matrix of shape (N, M), where N is the input dimension and M is the output dimension.
-        May be a unit-aware array.
+        The weight matrix. Shape ``(m, k)`` when ``transpose=False``,
+        or ``(k, n)`` when ``transpose=True``. Can be a ``brainunit`` quantity.
     binary_arr : BinaryArray
-        An object representing a binary vector in sparse format. It must have the attributes:
-        - value: the spike values (typically all ones for binary)
-        - spike_indices: indices of nonzero (spike) elements
-        - spike_count: number of spikes (nonzero elements)
+        An object representing a batch of binary vectors in sparse format with attributes:
+        ``value`` (batch, n_spikes), ``spike_indices`` (batch, n_spikes),
+        ``spike_count`` (batch,).
+    transpose : bool
+        If False, compute ``weights @ binary``. If True, compute ``binary @ weights``.
+    backend : str, optional
+        Backend to use for the computation.
 
     Returns
     -------
     result : ndarray or compatible
-        The result of the dot product, with the same dtype and unit as the input weights.
-
-    Notes
-    -----
-    This function is designed to support custom CPU and GPU kernels for efficient computation.
-    The binary vector is assumed to be sparse, and only the columns of the dense matrix
-    corresponding to the spike indices are summed.
-
-    Examples
-    --------
-    >>> # Suppose binary_arr has spike_indices = [1, 3], spike_count = 2
-    >>> # and weights is a (5, 4) matrix
-    >>> result = indexed_dbmv(weights, binary_arr)
-    """
-    return indexed_bdvm(binary_arr, weights.T)
-
-
-@namescope
-def indexed_bdmm(binary_arr, weights, *, backend: Optional[str] = None):
-    """
-    Computes the dot product between a batch of binary vectors (in sparse format) and a dense matrix.
-
-    Each binary vector in the batch is represented by `binary_arr`, which contains the spike values,
-    their indices, and the count of spikes for each vector. The dense matrix is given by `weights`.
-    The function multiplies the selected rows of the dense matrix (as indicated by the spike indices
-    for each vector in the batch) and sums them, then applies the unit scaling.
-
-    Parameters
-    ----------
-    binary_arr : BinaryArray
-        An object representing a batch of binary vectors in sparse format. It must have the attributes:
-        - value: the spike values (typically all ones for binary), shape (batch_size, n_spikes)
-        - spike_indices: indices of nonzero (spike) elements, shape (batch_size, n_spikes)
-        - spike_count: number of spikes (nonzero elements) for each vector, shape (batch_size,)
-    weights : ndarray or compatible
-        A dense matrix of shape (N, M), where N is the input dimension and M is the output dimension.
-        May be a unit-aware array.
-
-    Returns
-    -------
-    result : ndarray or compatible
-        The result of the dot product for each vector in the batch, with shape (batch_size, M)
-        and the same dtype and unit as the input weights.
-
-    Notes
-    -----
-    This function is designed to support custom CPU and GPU kernels for efficient computation.
-    The binary vectors are assumed to be sparse, and only the rows of the dense matrix
-    corresponding to the spike indices are summed for each vector in the batch.
-
-    Examples
-    --------
-    >>> # Suppose binary_arr has spike_indices = [[0, 2], [1, 3]], spike_count = [2, 2]
-    >>> # and weights is a (4, 5) matrix
-    >>> result = indexed_bdmm(binary_arr, weights)
+        Result matrix. Shape ``(batch, m)`` when ``transpose=False``,
+        or ``(batch, n)`` when ``transpose=True``.
     """
     weights, wunit = u.split_mantissa_unit(weights)
     spikes = binary_arr.value
     indices = binary_arr.spike_indices
     count = binary_arr.spike_count
-    r = indexed_bdmm_p_call(spikes, indices, count, weights, backend=backend)
+    r = indexed_binary_densemm_p_call(spikes, indices, count, weights, transpose=transpose, backend=backend)
     return u.maybe_decimal(r[0] * wunit)
 
 
-def _bdmm_numba_kernel(**kwargs):
+def _mm_numba_kernel(transpose: bool, **kwargs):
     import numba
 
-    @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
-    def kernel(indices, count, weights, out):
-        for i_row in numba.prange(indices.shape[0]):
-            temp = np.zeros(weights.shape[1], dtype=weights.dtype)
-            for i_col in range(count[i_row]):
-                temp += weights[indices[i_row, i_col]]
-            out[i_row] = temp
+    if transpose:
+        # weights[k,n], select rows by indices -> out[batch, n]
+        @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+        def kernel(indices, count, weights, out):
+            for i_row in numba.prange(indices.shape[0]):
+                temp = np.zeros(weights.shape[1], dtype=weights.dtype)
+                nnz = min(count[i_row], indices.shape[1])
+                for i_col in range(nnz):
+                    idx = indices[i_row, i_col]
+                    if 0 <= idx < weights.shape[0]:
+                        temp += weights[idx]
+                out[i_row] = temp
+    else:
+        # weights[m,k], select columns by indices -> out[batch, m]
+        @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+        def kernel(indices, count, weights, out):
+            for i_row in numba.prange(indices.shape[0]):
+                temp = np.zeros(weights.shape[0], dtype=weights.dtype)
+                nnz = min(count[i_row], indices.shape[1])
+                for i_col in range(nnz):
+                    idx = indices[i_row, i_col]
+                    if 0 <= idx < weights.shape[1]:
+                        temp += weights[:, idx]
+                out[i_row] = temp
 
     def run(spikes, indices, count, weights):
         return numba_kernel(kernel, outs=kwargs['outs'])(indices, count, weights)
@@ -371,100 +455,169 @@ def _bdmm_numba_kernel(**kwargs):
     return run
 
 
-def _bdmm_warp_kernel(
+def _mm_warp_kernel(
     spikes_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
     count_info: jax.ShapeDtypeStruct,
     weights_info: jax.ShapeDtypeStruct,
+    transpose: bool,
     **kwargs
 ):
     import warp
     from warp.jax_experimental import jax_kernel
 
     batch = indices_info.shape[0]
-    n_out = weights_info.shape[1]
     indices_warp_info = jaxinfo_to_warpinfo(indices_info)
     count_warp_info = jaxinfo_to_warpinfo(count_info)
     weight_warp_info = jaxinfo_to_warpinfo(weights_info)
     out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
 
-    @warp.kernel
-    def kernel(
-        indices: indices_warp_info,
-        count: count_warp_info,
-        weights: weight_warp_info,
-        out: out_warp_info,
-    ):
-        i_row, j = warp.tid()
-        r = weights.dtype(0.)
-        nnz = count[i_row]
-        max_k = indices.shape[1]
-        if nnz > max_k:
-            nnz = max_k
-        for k in range(nnz):
-            idx = indices[i_row, k]
-            if 0 <= idx < weights.shape[0]:
-                r += weights[idx, j]
-        out[i_row, j] = r
+    if transpose:
+        # weights[k,n], select rows -> out[batch, n]
+        n_out = weights_info.shape[1]
 
-    def run(spikes, indices, count, weights):
-        out_info = kwargs['outs'][0]
-        fn = jax_kernel(kernel, launch_dims=(batch, n_out), num_outputs=1, output_dims={'out': out_info.shape})
-        return fn(indices, count, weights)
+        @warp.kernel
+        def kernel(
+            indices: indices_warp_info,
+            count: count_warp_info,
+            weights: weight_warp_info,
+            out: out_warp_info,
+        ):
+            i_row, j = warp.tid()
+            r = weights.dtype(0.)
+            nnz = count[i_row]
+            max_k = indices.shape[1]
+            if nnz > max_k:
+                nnz = max_k
+            for k in range(nnz):
+                idx = indices[i_row, k]
+                if 0 <= idx < weights.shape[0]:
+                    r += weights[idx, j]
+            out[i_row, j] = r
+
+        def run(spikes, indices, count, weights):
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=(batch, n_out), num_outputs=1, output_dims={'out': out_info.shape})
+            return fn(indices, count, weights)
+    else:
+        # weights[m,k], select columns -> out[batch, m]
+        n_out = weights_info.shape[0]
+
+        @warp.kernel
+        def kernel(
+            indices: indices_warp_info,
+            count: count_warp_info,
+            weights: weight_warp_info,
+            out: out_warp_info,
+        ):
+            i_row, j = warp.tid()
+            r = weights.dtype(0.)
+            nnz = count[i_row]
+            max_k = indices.shape[1]
+            if nnz > max_k:
+                nnz = max_k
+            for k in range(nnz):
+                idx = indices[i_row, k]
+                if 0 <= idx < weights.shape[1]:
+                    r += weights[j, idx]
+            out[i_row, j] = r
+
+        def run(spikes, indices, count, weights):
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=(batch, n_out), num_outputs=1, output_dims={'out': out_info.shape})
+            return fn(indices, count, weights)
 
     return run
 
 
-def _bdmm_pallas_kernel(
+def _mm_pallas_kernel(
     spikes_info: jax.ShapeDtypeStruct,
     weights_info: jax.ShapeDtypeStruct,
+    transpose: bool,
     **kwargs
 ):
     from jax.experimental import pallas as pl
 
-    block_dim = generate_block_dim(weights_info.shape[1], maximum=128)
+    if transpose:
+        # weights[k,n], select rows -> out[batch, n]
+        block_dim = generate_block_dim(weights_info.shape[1], maximum=128)
 
-    def kernel(
-        indices_ref,  # [batch, n_spikes]
-        count_ref,  # [batch]
-        weights_ref,  # [n_input, n_output]
-        out_ref,  # [batch, n_output]
-    ):
-        i_row = pl.program_id(0)
-        i_block = pl.program_id(1)
-        col_start = i_block * block_dim
-        cols = col_start + jnp.arange(block_dim)
-        mask = cols < weights_ref.shape[1]
-        safe_cols = jnp.where(mask, cols, 0)
-        count = jnp.minimum(count_ref[i_row], indices_ref.shape[1])
+        def kernel(
+            indices_ref,  # [batch, n_spikes]
+            count_ref,  # [batch]
+            weights_ref,  # [k, n]
+            out_ref,  # [batch, n]
+        ):
+            i_row = pl.program_id(0)
+            i_block = pl.program_id(1)
+            col_start = i_block * block_dim
+            cols = col_start + jnp.arange(block_dim)
+            mask = cols < weights_ref.shape[1]
+            safe_cols = jnp.where(mask, cols, 0)
+            count = jnp.minimum(count_ref[i_row], indices_ref.shape[1])
 
-        def fn(i_index, temp):
-            idx = indices_ref[i_row, i_index]
-            valid = (idx >= 0) & (idx < weights_ref.shape[0])
-            idx = jnp.where(valid, idx, 0)
-            weight_row = jnp.where(mask & valid, weights_ref[idx, safe_cols], 0.0)
-            return temp + weight_row
+            def fn(i_index, temp):
+                idx = indices_ref[i_row, i_index]
+                valid = (idx >= 0) & (idx < weights_ref.shape[0])
+                idx = jnp.where(valid, idx, 0)
+                weight_row = jnp.where(mask & valid, weights_ref[idx, safe_cols], 0.0)
+                return temp + weight_row
 
-        out = jax.lax.fori_loop(0, count, fn, jnp.zeros([block_dim], dtype=weights_ref.dtype))
-        out_ref[i_row, safe_cols] = jnp.where(mask, out, 0.0)
+            out = jax.lax.fori_loop(0, count, fn, jnp.zeros([block_dim], dtype=weights_ref.dtype))
+            out_ref[i_row, safe_cols] = jnp.where(mask, out, 0.0)
 
-    def run(spikes, indices, count, weights):
-        grid = (spikes_info.shape[0], cdiv(weights_info.shape[1], block_dim))
-        fn = pl.pallas_call(kernel, grid=grid, out_shape=kwargs['outs'])
-        return fn(indices, count, weights)
+        def run(spikes, indices, count, weights):
+            grid = (spikes_info.shape[0], cdiv(weights_info.shape[1], block_dim))
+            fn = pl.pallas_call(kernel, grid=grid, out_shape=kwargs['outs'])
+            return fn(indices, count, weights)
+    else:
+        # weights[m,k], select columns -> out[batch, m]
+        block_dim = generate_block_dim(weights_info.shape[0], maximum=128)
+
+        def kernel(
+            indices_ref,  # [batch, n_spikes]
+            count_ref,  # [batch]
+            weights_ref,  # [m, k]
+            out_ref,  # [batch, m]
+        ):
+            i_row = pl.program_id(0)
+            i_block = pl.program_id(1)
+            row_start = i_block * block_dim
+            rows = row_start + jnp.arange(block_dim)
+            mask = rows < weights_ref.shape[0]
+            safe_rows = jnp.where(mask, rows, 0)
+            count = jnp.minimum(count_ref[i_row], indices_ref.shape[1])
+
+            def fn(i_index, temp):
+                idx = indices_ref[i_row, i_index]
+                valid = (idx >= 0) & (idx < weights_ref.shape[1])
+                idx = jnp.where(valid, idx, 0)
+                weight_col = jnp.where(mask & valid, weights_ref[safe_rows, idx], 0.0)
+                return temp + weight_col
+
+            out = jax.lax.fori_loop(0, count, fn, jnp.zeros([block_dim], dtype=weights_ref.dtype))
+            out_ref[i_row, safe_rows] = jnp.where(mask, out, 0.0)
+
+        def run(spikes, indices, count, weights):
+            grid = (spikes_info.shape[0], cdiv(weights_info.shape[0], block_dim))
+            fn = pl.pallas_call(kernel, grid=grid, out_shape=kwargs['outs'])
+            return fn(indices, count, weights)
 
     return run
 
 
-def _bdmm_jvp_spikes(spikes_dot, spikes, indices, count, weights, **kwargs):
-    return [jnp.zeros((spikes.shape[0], weights.shape[1]), dtype=weights.dtype)]
+def _mm_jvp_spikes(spikes_dot, spikes, indices, count, weights, *, transpose, **kwargs):
+    if transpose:
+        return [jnp.zeros((spikes.shape[0], weights.shape[1]), dtype=weights.dtype)]
+    else:
+        return [jnp.zeros((spikes.shape[0], weights.shape[0]), dtype=weights.dtype)]
 
 
-def _bdmm_jvp_weights(weights_dot, spikes, indices, count, weights, **kwargs):
-    return indexed_bdmm_p_call(spikes, indices, count, weights_dot)
+def _mm_jvp_weights(weights_dot, spikes, indices, count, weights, *, transpose, **kwargs):
+    return indexed_binary_densemm_p_call(spikes, indices, count, weights_dot, transpose=transpose)
 
 
-def _bdmm_transpose(ct, spikes, indices, count, weights, **kwargs):
+def _mm_transpose(ct, spikes, indices, count, weights, *, transpose, **kwargs):
     if ad.is_undefined_primal(indices):
         raise ValueError("Cannot transpose with respect to indices.")
     if ad.is_undefined_primal(count):
@@ -475,19 +628,27 @@ def _bdmm_transpose(ct, spikes, indices, count, weights, **kwargs):
     if ad.is_undefined_primal(weights):
         if type(ct) is ad.Zero:
             return spikes, indices, count, ad.Zero(weights)
-        mask = jnp.arange(indices.shape[1])[None, :] < count[:, None]
-        updates = jnp.where(mask[:, :, None], ct[:, None, :], 0.0)
-        zeros = jnp.zeros(weights.aval.shape, dtype=weights.aval.dtype)
-        ct_weights = zeros.at[indices].add(updates)
+        if transpose:
+            # kernel sums rows: ct_weights[indices[b,i]] += ct[b]
+            mask = jnp.arange(indices.shape[1])[None, :] < count[:, None]
+            updates = jnp.where(mask[:, :, None], ct[:, None, :], 0.0)
+            zeros = jnp.zeros(weights.aval.shape, dtype=weights.aval.dtype)
+            ct_weights = zeros.at[indices].add(updates)
+        else:
+            # kernel sums columns: ct_weights[:, indices[b,i]] += ct[b]
+            mask = jnp.arange(indices.shape[1])[None, :] < count[:, None]
+            updates = jnp.where(mask[:, :, None], ct[:, None, :], 0.0)
+            zeros = jnp.zeros(weights.aval.shape, dtype=weights.aval.dtype)
+            ct_weights = zeros.at[:, indices].add(updates)
         return spikes, indices, count, ct_weights
     raise ValueError("Cannot transpose with respect to both spikes and weights.")
 
 
-def _bdmm_batching(args, axes, **kwargs):
-    return general_batching_rule(indexed_bdmm_p, args, axes, **kwargs)
+def _mm_batching(args, axes, *, transpose, **kwargs):
+    return general_batching_rule(indexed_binary_densemm_p, args, axes, transpose=transpose, **kwargs)
 
 
-def _bdmm_benchmark_data(*, platform):
+def _mm_benchmark_data(*, platform):
     batch_size, n_input, n_output = 32, 1000, 1000
     n_spikes = 100
     dtype = jnp.float32
@@ -503,19 +664,32 @@ def _bdmm_benchmark_data(*, platform):
     ]
 
 
-def indexed_bdmm_p_call(spikes, indices, count, weights, *, backend: Optional[str] = None):
+def indexed_binary_densemm_p_call(spikes, indices, count, weights, *, transpose, backend: Optional[str] = None):
     assert spikes.ndim == 2, "spikes should be 2D (batch_size, n_spikes)"
     assert indices.ndim == 2, "indices should be 2D (batch_size, n_spikes)"
     assert count.ndim == 1 and count.shape[0] == spikes.shape[0], "count should be 1D (batch_size,)"
-    assert weights.ndim == 2, "weights should be 2D (n_input, n_output)"
-    assert spikes.shape[1] == weights.shape[0], (f"spikes and weights dimension mismatch, "
-                                                 f"got {spikes.shape} and {weights.shape}")
-    return indexed_bdmm_p(
+    assert weights.ndim == 2, "weights should be 2D"
+    if transpose:
+        # weights[k,n], select rows -> out[batch, n]
+        assert spikes.shape[1] == weights.shape[0], (
+            f"spikes and weights dimension mismatch, "
+            f"got {spikes.shape} and {weights.shape}"
+        )
+        out_shape = jax.ShapeDtypeStruct([spikes.shape[0], weights.shape[1]], weights.dtype)
+    else:
+        # weights[m,k], select columns -> out[batch, m]
+        assert spikes.shape[1] == weights.shape[1], (
+            f"spikes and weights dimension mismatch, "
+            f"got {spikes.shape} and {weights.shape}"
+        )
+        out_shape = jax.ShapeDtypeStruct([spikes.shape[0], weights.shape[0]], weights.dtype)
+    return indexed_binary_densemm_p(
         spikes,
         indices,
         count,
         weights,
-        outs=[jax.ShapeDtypeStruct([spikes.shape[0], weights.shape[1]], weights.dtype)],
+        outs=[out_shape],
+        transpose=transpose,
         spikes_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
         indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
         count_info=jax.ShapeDtypeStruct(count.shape, count.dtype),
@@ -524,25 +698,14 @@ def indexed_bdmm_p_call(spikes, indices, count, weights, *, backend: Optional[st
     )
 
 
-indexed_bdmm_p = XLACustomKernel('binary_mat_dot_dense_matrix')
-indexed_bdmm_p.def_numba_kernel(_bdmm_numba_kernel)
-indexed_bdmm_p.def_warp_kernel(_bdmm_warp_kernel)
-indexed_bdmm_p.def_pallas_kernel('gpu', _bdmm_pallas_kernel)
-indexed_bdmm_p.def_pallas_kernel('tpu', _bdmm_pallas_kernel)
-indexed_bdmm_p.def_jvp_rule2(_bdmm_jvp_spikes, None, None, _bdmm_jvp_weights)
-indexed_bdmm_p.def_transpose_rule(_bdmm_transpose)
-indexed_bdmm_p.def_batching_rule(_bdmm_batching)
-indexed_bdmm_p.def_call(indexed_bdmm_p_call)
-indexed_bdmm_p.def_tags('dense', 'indexed_binary')
-indexed_bdmm_p.def_benchmark_data(_bdmm_benchmark_data)
-
-
-@namescope
-def indexed_dbmm(weights, binary_arr, *, backend=None):
-    weight_val, wunit = u.split_mantissa_unit(weights)
-    spikes = binary_arr.value
-    indices = binary_arr.spike_indices
-    count = binary_arr.spike_count
-    return u.maybe_decimal(
-        indexed_bdmm_p_call(spikes, indices, count, weight_val) * wunit
-    )
+indexed_binary_densemm_p = XLACustomKernel('indexed_binary_densemm')
+indexed_binary_densemm_p.def_numba_kernel(_mm_numba_kernel)
+indexed_binary_densemm_p.def_warp_kernel(_mm_warp_kernel)
+indexed_binary_densemm_p.def_pallas_kernel('gpu', _mm_pallas_kernel)
+indexed_binary_densemm_p.def_pallas_kernel('tpu', _mm_pallas_kernel)
+indexed_binary_densemm_p.def_jvp_rule2(_mm_jvp_spikes, None, None, _mm_jvp_weights)
+indexed_binary_densemm_p.def_transpose_rule(_mm_transpose)
+indexed_binary_densemm_p.def_batching_rule(_mm_batching)
+indexed_binary_densemm_p.def_call(indexed_binary_densemm_p_call)
+indexed_binary_densemm_p.def_tags('dense', 'indexed_binary')
+indexed_binary_densemm_p.def_benchmark_data(_mm_benchmark_data)
