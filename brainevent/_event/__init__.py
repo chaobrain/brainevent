@@ -16,7 +16,7 @@
 
 from .base import EventRepresentation, IndexedRepresentation
 from .binary import BinaryArray
-from .indexed_binary_extraction import binary_array_index
+from .binary_indexed_extraction import binary_array_index
 from .sparse_float import SparseFloat
 
 __all__ = [

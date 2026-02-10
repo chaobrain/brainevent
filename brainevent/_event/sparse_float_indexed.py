@@ -18,7 +18,7 @@
 from jax.tree_util import register_pytree_node_class
 
 from .base import IndexedRepresentation, is_known_type
-from .indexed_binary_extraction import binary_1d_array_index_p_call, binary_2d_array_index_p_call
+from .binary_indexed_extraction import binary_1d_array_index_p_call, binary_2d_array_index_p_call
 
 __all__ = [
     'IndexedSpFloat1d',
