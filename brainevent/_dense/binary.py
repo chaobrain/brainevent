@@ -628,7 +628,6 @@ def _binary_densemm_pallas_kernel(
         k = weight_info.shape[0]
         m = weight_info.shape[1]
         n = spk_info.shape[1]
-        block_dim = generate_block_dim(m, maximum=1024)
 
         def kernel(
             weight_ref,  # [k, m]
@@ -636,26 +635,19 @@ def _binary_densemm_pallas_kernel(
             out_ref,  # [m, n]
         ):
             i_n = pl.program_id(0)
-            i_m_block = pl.program_id(1)
-            i_m_start = i_m_block * block_dim
-            i_m_mask = i_m_start + jnp.arange(block_dim) < m
+            i_m = pl.program_id(1)
 
             def loop_fn(i_k, temp):
                 spike = spike_ref[i_k, i_n]
-                weight_row = weight_ref[i_k, pl.ds(i_m_start, block_dim)]
-                weight_row = jnp.where(i_m_mask, weight_row, 0.0)
-                return jax.lax.cond(
-                    spike if spk_info.dtype == jnp.bool_ else spike > 0.,
-                    lambda out: out + weight_row,
-                    lambda out: out,
-                    temp,
-                )
+                weight = weight_ref[i_k, i_m]
+                return temp + jnp.where(spike > 0., weight, 0.0)
 
-            final_out = jax.lax.fori_loop(0, k, loop_fn, jnp.zeros(block_dim, dtype=weight_ref.dtype))
-            out_ref[pl.ds(i_m_start, block_dim), i_n] = jnp.where(i_m_mask, final_out, 0.0)
+            out_ref[i_m, i_n] = jax.lax.fori_loop(
+                0, k, loop_fn, jnp.zeros((), dtype=weight_ref.dtype)
+            )
 
         def run(weights, spikes):
-            fn = pl.pallas_call(kernel, grid=(n, cdiv(m, block_dim)), out_shape=kwargs['outs'], backend='triton')
+            fn = pl.pallas_call(kernel, grid=(n, m), out_shape=kwargs['outs'], backend='triton')
             return fn(weights, spikes)
 
     else:
@@ -663,7 +655,6 @@ def _binary_densemm_pallas_kernel(
         k = spk_info.shape[0]
         n = spk_info.shape[1]
         m = weight_info.shape[0]
-        block_dim = generate_block_dim(m, maximum=1024)
 
         def kernel(
             weight_ref,  # [m, k]
@@ -671,26 +662,19 @@ def _binary_densemm_pallas_kernel(
             out_ref,  # [m, n]
         ):
             i_n = pl.program_id(0)
-            i_m_block = pl.program_id(1)
-            i_m_start = i_m_block * block_dim
-            i_m_mask = i_m_start + jnp.arange(block_dim) < m
+            i_m = pl.program_id(1)
 
             def loop_fn(i_k, temp):
                 spike = spike_ref[i_k, i_n]
-                weight_col = weight_ref[pl.ds(i_m_start, block_dim), i_k]
-                weight_col = jnp.where(i_m_mask, weight_col, 0.0)
-                return jax.lax.cond(
-                    spike if spk_info.dtype == jnp.bool_ else spike > 0.,
-                    lambda out: out + weight_col,
-                    lambda out: out,
-                    temp,
-                )
+                weight = weight_ref[i_m, i_k]
+                return temp + jnp.where(spike > 0., weight, 0.0)
 
-            final_out = jax.lax.fori_loop(0, k, loop_fn, jnp.zeros(block_dim, dtype=weight_ref.dtype))
-            out_ref[pl.ds(i_m_start, block_dim), i_n] = jnp.where(i_m_mask, final_out, 0.0)
+            out_ref[i_m, i_n] = jax.lax.fori_loop(
+                0, k, loop_fn, jnp.zeros((), dtype=weight_ref.dtype)
+            )
 
         def run(weights, spikes):
-            fn = pl.pallas_call(kernel, grid=(n, cdiv(m, block_dim)), out_shape=kwargs['outs'], backend='triton')
+            fn = pl.pallas_call(kernel, grid=(n, m), out_shape=kwargs['outs'], backend='triton')
             return fn(weights, spikes)
 
     return run
@@ -880,6 +864,10 @@ def _binary_densemm_benchmark_data(*, platform):
 
 
 def binary_densemm_p_call(weights, spikes, *, transpose, backend: Optional[str] = None):
+    # Convert bool spikes to float before primitive call to avoid
+    # Pallas Triton boolean buffer corruption
+    if spikes.dtype == jnp.bool_:
+        spikes = jnp.asarray(spikes, dtype=weights.dtype)
     if transpose:
         # weights[k,m].T @ spikes[k,n] -> out[m,n]
         assert weights.shape[0] == spikes.shape[0], (
