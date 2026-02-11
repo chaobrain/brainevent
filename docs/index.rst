@@ -181,4 +181,5 @@ See also the ecosystem
    apis/operator.rst
    apis/errors.rst
    apis/utilities.rst
+   apis/config.rst
 

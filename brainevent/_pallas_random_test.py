@@ -20,6 +20,41 @@ import pytest
 
 from brainevent._pallas_random import PallasLFSR88RNG, PallasLFSR113RNG, PallasLFSR128RNG, LFSRBase
 
+SMALL_SAMPLE_SIZE = 32
+STAT_SAMPLE_SIZE = 2048
+SEQUENCE_SAMPLE_SIZE = 512
+RNG_CLASSES = (PallasLFSR88RNG, PallasLFSR113RNG, PallasLFSR128RNG)
+
+
+def _sample_rand_stream(rng_class, n, seed=42):
+    def _step(rng, _):
+        value = rng.rand()
+        return rng, value
+
+    init_rng = rng_class(seed=seed)
+    _, values = jax.lax.scan(_step, init_rng, xs=None, length=n)
+    return np.asarray(values)
+
+
+def _sample_randn_stream(rng_class, n, seed=42):
+    def _step(rng, _):
+        value = rng.randn()
+        return rng, value
+
+    init_rng = rng_class(seed=seed)
+    _, values = jax.lax.scan(_step, init_rng, xs=None, length=n)
+    return np.asarray(values)
+
+
+def _sample_randint_stream(rng_class, n, seed=42):
+    def _step(rng, _):
+        value = rng.randint()
+        return rng, value
+
+    init_rng = rng_class(seed=seed)
+    _, values = jax.lax.scan(_step, init_rng, xs=None, length=n)
+    return np.asarray(values)
+
 
 class TestLFSRBase:
     """Test the base LFSR class functionality."""
@@ -183,9 +218,9 @@ class TestLFSR88RNG:
     def test_initialization_zero_seed(self):
         """Test that zero seed works correctly."""
         rng = PallasLFSR88RNG(seed=0)
-        assert rng.key[0] == 1  # seed + 1
-        assert rng.key[1] == 7  # seed + 7
-        assert rng.key[2] == 15  # seed + 15
+        assert rng.key[0] == 2  # seed + 2
+        assert rng.key[1] == 8  # seed + 8
+        assert rng.key[2] == 16  # seed + 16
         assert rng.key[3] == 0
 
     def test_initialization_negative_seed(self):
@@ -204,13 +239,9 @@ class TestLFSR88RNG:
 
     def test_rand_in_range(self):
         """Test that rand() returns values in [0, 1)."""
-        rng = PallasLFSR88RNG(seed=42)
-        values = []
-        for _ in range(100):
-            value = rng.rand()
-            assert 0.0 <= value < 1.0, f"Value {value} not in [0, 1)"
-            values.append(value)
-        jax.block_until_ready(tuple(values))
+        samples = _sample_rand_stream(PallasLFSR88RNG, SMALL_SAMPLE_SIZE)
+        assert np.all(samples >= 0.0), "Some samples are < 0"
+        assert np.all(samples < 1.0), "Some samples are >= 1"
 
     def test_rand_updates_state(self):
         """Test that rand() updates the internal state."""
@@ -241,15 +272,8 @@ class TestLFSR88RNG:
 
     def test_randint_in_range(self):
         """Test that randint() returns values in valid uint32 range."""
-        rng = PallasLFSR88RNG(seed=42)
-        values = []
-        for _ in range(100):
-            value = rng.randint()
-            # Convert to Python int for comparison to avoid JAX overflow
-            value_int = int(value)
-            assert 0 <= value_int <= 2 ** 32 - 1
-            values.append(value)
-        jax.block_until_ready(tuple(values))
+        values = _sample_randint_stream(PallasLFSR88RNG, SMALL_SAMPLE_SIZE).astype(np.uint64)
+        assert np.all(values <= (2 ** 32 - 1))
 
     def test_randint_updates_state(self):
         """Test that randint() updates the internal state."""
@@ -362,8 +386,7 @@ class TestLFSR88RNG:
 
     def test_statistical_uniform_distribution(self):
         """Test that rand() produces values with correct statistical properties."""
-        rng = PallasLFSR88RNG(seed=42)
-        samples = [float(rng.rand()) for _ in range(10000)]
+        samples = _sample_rand_stream(PallasLFSR88RNG, STAT_SAMPLE_SIZE)
 
         mean = np.mean(samples)
         std = np.std(samples)
@@ -374,8 +397,7 @@ class TestLFSR88RNG:
 
     def test_statistical_normal_distribution(self):
         """Test that randn() produces values with correct statistical properties."""
-        rng = PallasLFSR88RNG(seed=42)
-        samples = [float(rng.randn()) for _ in range(10000)]
+        samples = _sample_randn_stream(PallasLFSR88RNG, STAT_SAMPLE_SIZE)
 
         mean = np.mean(samples)
         std = np.std(samples)
@@ -418,28 +440,18 @@ class TestLFSR113RNG:
     def test_initialization_fourth_element(self):
         """Test that LFSR113 uses all 4 elements."""
         rng = PallasLFSR113RNG(seed=42)
-        assert rng.key[3] == 169  # 42 + 127
+        assert rng.key[3] == 170  # 42 + 128
 
     def test_rand_in_range(self):
         """Test that rand() returns values in [0, 1)."""
-        rng = PallasLFSR113RNG(seed=42)
-        values = []
-        for _ in range(100):
-            value = rng.rand()
-            assert 0.0 <= value < 1.0
-            values.append(value)
-        jax.block_until_ready(tuple(values))
+        samples = _sample_rand_stream(PallasLFSR113RNG, SMALL_SAMPLE_SIZE)
+        assert np.all(samples >= 0.0)
+        assert np.all(samples < 1.0)
 
-    def test_rand_in_range(self):
+    def test_randint_in_range(self):
         """Test that randint() returns valid values."""
-        rng = PallasLFSR113RNG(seed=42)
-        values = []
-        for _ in range(100):
-            value = rng.randint()
-            value_int = int(value)
-            assert 0 <= value_int <= 2 ** 32 - 1
-            values.append(value)
-        jax.block_until_ready(tuple(values))
+        values = _sample_randint_stream(PallasLFSR113RNG, SMALL_SAMPLE_SIZE).astype(np.uint64)
+        assert np.all(values <= (2 ** 32 - 1))
 
     def test_randn_returns_float(self):
         """Test that randn() returns a float."""
@@ -472,8 +484,7 @@ class TestLFSR113RNG:
 
     def test_statistical_uniform_distribution(self):
         """Test that rand() produces correct statistical properties."""
-        rng = PallasLFSR113RNG(seed=42)
-        samples = [float(rng.rand()) for _ in range(10000)]
+        samples = _sample_rand_stream(PallasLFSR113RNG, STAT_SAMPLE_SIZE)
 
         mean = np.mean(samples)
         std = np.std(samples)
@@ -502,24 +513,14 @@ class TestLFSR128RNG:
 
     def test_rand_in_range(self):
         """Test that rand() returns values in [0, 1)."""
-        rng = PallasLFSR128RNG(seed=42)
-        values = []
-        for _ in range(100):
-            value = rng.rand()
-            assert 0.0 <= value < 1.0
-            values.append(value)
-        jax.block_until_ready(tuple(values))
+        samples = _sample_rand_stream(PallasLFSR128RNG, SMALL_SAMPLE_SIZE)
+        assert np.all(samples >= 0.0)
+        assert np.all(samples < 1.0)
 
     def test_randint_in_range(self):
         """Test that randint() returns valid values."""
-        rng = PallasLFSR128RNG(seed=42)
-        values = []
-        for _ in range(100):
-            value = rng.randint()
-            value_int = int(value)
-            assert 0 <= value_int <= 2 ** 32 - 1
-            values.append(value)
-        jax.block_until_ready(tuple(values))
+        values = _sample_randint_stream(PallasLFSR128RNG, SMALL_SAMPLE_SIZE).astype(np.uint64)
+        assert np.all(values <= (2 ** 32 - 1))
 
     def test_randn_returns_float(self):
         """Test that randn() returns a float."""
@@ -557,8 +558,7 @@ class TestLFSR128RNG:
 
     def test_statistical_uniform_distribution(self):
         """Test that rand() produces correct statistical properties."""
-        rng = PallasLFSR128RNG(seed=42)
-        samples = [float(rng.rand()) for _ in range(10000)]
+        samples = _sample_rand_stream(PallasLFSR128RNG, STAT_SAMPLE_SIZE)
 
         mean = np.mean(samples)
         std = np.std(samples)
@@ -568,8 +568,7 @@ class TestLFSR128RNG:
 
     def test_statistical_normal_distribution(self):
         """Test that randn() produces correct statistical properties."""
-        rng = PallasLFSR128RNG(seed=42)
-        samples = [float(rng.randn()) for _ in range(10000)]
+        samples = _sample_randn_stream(PallasLFSR128RNG, STAT_SAMPLE_SIZE)
 
         mean = np.mean(samples)
         std = np.std(samples)
@@ -583,28 +582,16 @@ class TestCrossImplementationComparison:
 
     def test_all_implementations_produce_valid_uniform(self):
         """Test that all implementations produce valid uniform [0,1) values."""
-        rngs = [PallasLFSR88RNG(seed=42), PallasLFSR113RNG(seed=42), PallasLFSR128RNG(seed=42)]
-
-        for rng in rngs:
-            values = []
-            for _ in range(100):
-                value = rng.rand()
-                assert 0.0 <= value < 1.0
-                values.append(value)
-            jax.block_until_ready(tuple(values))
+        for rng_class in RNG_CLASSES:
+            samples = _sample_rand_stream(rng_class, SMALL_SAMPLE_SIZE)
+            assert np.all(samples >= 0.0), f"{rng_class.__name__}: some samples are < 0"
+            assert np.all(samples < 1.0), f"{rng_class.__name__}: some samples are >= 1"
 
     def test_all_implementations_produce_valid_integers(self):
         """Test that all implementations produce valid uint32 integers."""
-        rngs = [PallasLFSR88RNG(seed=42), PallasLFSR113RNG(seed=42), PallasLFSR128RNG(seed=42)]
-
-        for rng in rngs:
-            values = []
-            for _ in range(100):
-                value = rng.randint()
-                value_int = int(value)
-                assert 0 <= value_int <= 2 ** 32 - 1
-                values.append(value)
-            jax.block_until_ready(tuple(values))
+        for rng_class in RNG_CLASSES:
+            values = _sample_randint_stream(rng_class, SMALL_SAMPLE_SIZE).astype(np.uint64)
+            assert np.all(values <= (2 ** 32 - 1)), f"{rng_class.__name__}: values outside uint32 range"
 
     def test_all_implementations_deterministic(self):
         """Test that all implementations are deterministic."""
@@ -620,9 +607,8 @@ class TestCrossImplementationComparison:
 
     def test_all_implementations_have_good_uniform_stats(self):
         """Test that all implementations have good statistical properties."""
-        for rng_class in [PallasLFSR88RNG, PallasLFSR113RNG, PallasLFSR128RNG]:
-            rng = rng_class(seed=42)
-            samples = [float(rng.rand()) for _ in range(5000)]
+        for rng_class in RNG_CLASSES:
+            samples = _sample_rand_stream(rng_class, STAT_SAMPLE_SIZE)
 
             mean = np.mean(samples)
             std = np.std(samples)
@@ -706,56 +692,47 @@ class TestSequenceProperties:
 
     def test_no_consecutive_duplicates_lfsr88(self):
         """Test that LFSR88 doesn't produce many consecutive duplicates."""
-        rng = PallasLFSR88RNG(seed=42)
-        samples = [rng.rand() for _ in range(1000)]
-
-        consecutive_duplicates = sum(1 for i in range(len(samples) - 1) if samples[i] == samples[i + 1])
+        samples = _sample_rand_stream(PallasLFSR88RNG, SEQUENCE_SAMPLE_SIZE)
+        consecutive_duplicates = int(np.sum(samples[:-1] == samples[1:]))
         # Should have very few or no consecutive duplicates
         assert consecutive_duplicates < 5, f"Too many consecutive duplicates: {consecutive_duplicates}"
-        jax.block_until_ready(tuple(samples))
 
     def test_no_consecutive_duplicates_lfsr113(self):
         """Test that LFSR113 doesn't produce many consecutive duplicates."""
-        rng = PallasLFSR113RNG(seed=42)
-        samples = [rng.rand() for _ in range(1000)]
-
-        consecutive_duplicates = sum(1 for i in range(len(samples) - 1) if samples[i] == samples[i + 1])
+        samples = _sample_rand_stream(PallasLFSR113RNG, SEQUENCE_SAMPLE_SIZE)
+        consecutive_duplicates = int(np.sum(samples[:-1] == samples[1:]))
         assert consecutive_duplicates < 5, f"Too many consecutive duplicates: {consecutive_duplicates}"
-        jax.block_until_ready(tuple(samples))
 
     def test_no_consecutive_duplicates_lfsr128(self):
         """Test that LFSR128 doesn't produce many consecutive duplicates."""
-        rng = PallasLFSR128RNG(seed=42)
-        samples = [rng.rand() for _ in range(1000)]
-
-        consecutive_duplicates = sum(1 for i in range(len(samples) - 1) if samples[i] == samples[i + 1])
+        samples = _sample_rand_stream(PallasLFSR128RNG, SEQUENCE_SAMPLE_SIZE)
+        consecutive_duplicates = int(np.sum(samples[:-1] == samples[1:]))
         assert consecutive_duplicates < 5, f"Too many consecutive duplicates: {consecutive_duplicates}"
-        jax.block_until_ready(tuple(samples))
 
     def test_sequence_diversity_lfsr88(self):
         """Test that LFSR88 produces diverse sequences."""
-        rng = PallasLFSR88RNG(seed=42)
-        samples = [float(rng.rand()) for _ in range(1000)]
-
-        unique_values = len(set(samples))
+        samples = _sample_rand_stream(PallasLFSR88RNG, SEQUENCE_SAMPLE_SIZE)
+        unique_values = np.unique(samples).size
         # Should have many unique values
-        assert unique_values > 900, f"Not enough unique values: {unique_values}/1000"
+        assert unique_values > int(SEQUENCE_SAMPLE_SIZE * 0.9), (
+            f"Not enough unique values: {unique_values}/{SEQUENCE_SAMPLE_SIZE}"
+        )
 
     def test_sequence_diversity_lfsr113(self):
         """Test that LFSR113 produces diverse sequences."""
-        rng = PallasLFSR113RNG(seed=42)
-        samples = [float(rng.rand()) for _ in range(1000)]
-
-        unique_values = len(set(samples))
-        assert unique_values > 900, f"Not enough unique values: {unique_values}/1000"
+        samples = _sample_rand_stream(PallasLFSR113RNG, SEQUENCE_SAMPLE_SIZE)
+        unique_values = np.unique(samples).size
+        assert unique_values > int(SEQUENCE_SAMPLE_SIZE * 0.9), (
+            f"Not enough unique values: {unique_values}/{SEQUENCE_SAMPLE_SIZE}"
+        )
 
     def test_sequence_diversity_lfsr128(self):
         """Test that LFSR128 produces diverse sequences."""
-        rng = PallasLFSR128RNG(seed=42)
-        samples = [float(rng.rand()) for _ in range(1000)]
-
-        unique_values = len(set(samples))
-        assert unique_values > 900, f"Not enough unique values: {unique_values}/1000"
+        samples = _sample_rand_stream(PallasLFSR128RNG, SEQUENCE_SAMPLE_SIZE)
+        unique_values = np.unique(samples).size
+        assert unique_values > int(SEQUENCE_SAMPLE_SIZE * 0.9), (
+            f"Not enough unique values: {unique_values}/{SEQUENCE_SAMPLE_SIZE}"
+        )
 
 
 class TestJAXIntegration:

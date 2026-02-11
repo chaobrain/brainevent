@@ -27,7 +27,8 @@ from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim
 from brainevent._op import XLACustomKernel, jaxinfo_to_warpinfo, numba_kernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
-from brainevent._pallas_random import PallasLFSR88RNG
+from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_normal
+from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
 
 __all__ = [
@@ -408,78 +409,47 @@ def jitnmm(
 
 def _jitn_numba_kernel_generator(corder: bool = True, **kwargs):
     import numba
+    _lfsr_seed = get_numba_lfsr_seed()
+    _lfsr_random_integers = get_numba_lfsr_random_integers()
+    _lfsr_normal = get_numba_lfsr_normal()
 
     if corder:
         # JIT matrix
-        #
         # - JIT matrix shape = [m, n]
-        #
-
         @numba.njit(fastmath=True)
         def kernel(w_loc, w_scale, clen, seed, posts):
             posts[:] = 0.
             m = posts.shape[0]
             n = posts.shape[1]
-
             w_loc0 = w_loc[0]
             w_scale0 = w_scale[0]
-            seed0 = seed[0]  # Random seed for reproducible matrix generation
-            clen0 = clen[0]  # Connection length parameter (controls sparsity)
-
-            # Initialize the random number generator with the provided seed
-            # This ensures the "random" matrix is reproducible for the same seed value
-            np.random.seed(seed0)
-
-            # Process each output element (each row of the matrix)
+            seed0 = seed[0]
+            clen0 = clen[0]
             for i_row in range(m):
-                # Generate first column index randomly - this determines where to start sampling
-                i_col = np.random.randint(0, clen0)
-
-                # Process all connected entries for this row
+                state = _lfsr_seed(seed0 + i_row * n)
+                i_col = _lfsr_random_integers(state, 0, clen0 - 1)
                 while i_col < n:
-                    # Set the current matrix element to the weight value
-                    posts[i_row, i_col] = np.random.normal(loc=w_loc0, scale=w_scale0)
-
-                    # Skip ahead to next connected column (sparse sampling)
-                    # The random skip ensures proper connection probability
-                    i_col += np.random.randint(1, clen0)
+                    posts[i_row, i_col] = _lfsr_normal(state, w_loc0, w_scale0)
+                    i_col += _lfsr_random_integers(state, 1, clen0 - 1)
 
     else:
-        # This means that the for loop is parallelized along the dimension of the vector: ``vector.shape[0]``.
-
         # JIT matrix
-        #
         # - JIT matrix shape = [m, n]
-        #
-
         @numba.njit(fastmath=True)
         def kernel(w_loc, w_scale, clen, seed, posts):
             posts[:] = 0.
-            m = posts.shape[0]  # Number of rows in the output matrix
-            n = posts.shape[1]  # Number of columns in the output matrix
-
+            m = posts.shape[0]
+            n = posts.shape[1]
             w_loc0 = w_loc[0]
             w_scale0 = w_scale[0]
-            clen0 = clen[0]  # Controls sparsity - higher values mean fewer connections
-            seed0 = seed[0]  # Random seed for reproducible matrix generation
-
-            # Initialize the random number generator with the provided seed
-            # This ensures reproducibility for the same seed value
-            np.random.seed(seed0)
-
-            # Process each column of the matrix sequentially
+            clen0 = clen[0]
+            seed0 = seed[0]
             for i_col in range(n):
-                # Generate first row index randomly - this determines where to start sampling in this column
-                i_row = np.random.randint(0, clen0)
-
-                # Process all connected entries for this column
+                state = _lfsr_seed(seed0 + i_col * m)
+                i_row = _lfsr_random_integers(state, 0, clen0 - 1)
                 while i_row < m:
-                    # Set the current matrix element to the weight value
-                    posts[i_row, i_col] = np.random.normal(loc=w_loc0, scale=w_scale0)
-
-                    # Skip ahead to next connected row (sparse sampling)
-                    # The random skip ensures proper connection probability
-                    i_row += np.random.randint(1, clen0)
+                    posts[i_row, i_col] = _lfsr_normal(state, w_loc0, w_scale0)
+                    i_row += _lfsr_random_integers(state, 1, clen0 - 1)
 
     def run(w_loc, w_scale, clen, seed):
         return numba_kernel(kernel, outs=kwargs['outs'])(w_loc, w_scale, clen, seed)
@@ -564,6 +534,7 @@ def _jitn_pallas_kernel_generator(
     **kwargs
 ):
     from jax.experimental import pallas as pl
+    _PallasLFSRRNG = get_pallas_lfsr_rng_class()
 
     dim = out_info.shape[0] if corder else out_info.shape[1]
     block_size = generate_block_dim(dim, maximum=128)
@@ -588,7 +559,7 @@ def _jitn_pallas_kernel_generator(
                 i_cols += rng.random_integers(1, clen0)
                 return i_cols, i_cols < m, rng
 
-            rng = PallasLFSR88RNG(seed0 + i_rows * m)
+            rng = _PallasLFSRRNG(seed0 + i_rows * m)
             i_cols = rng.random_integers(0, clen0)
             i_col_mask = i_cols < m
             jax.lax.while_loop(
@@ -616,7 +587,7 @@ def _jitn_pallas_kernel_generator(
                 i_rows = i_rows + rng.random_integers(1, clen0)
                 return i_rows, i_rows < n, rng
 
-            rng = PallasLFSR88RNG(seed0 + i_cols * n)
+            rng = _PallasLFSRRNG(seed0 + i_cols * n)
             i_rows = rng.random_integers(0, clen0)
             i_row_mask = i_rows < n
             jax.lax.while_loop(
@@ -795,99 +766,46 @@ def _jitnmv_numba_kernel_generator(
     **kwargs
 ):
     import numba
-    if corder:
-        # This means that the for loop is parallelized along the dimension of the output vector: ``post.shape[0]``.
+    _lfsr_seed = get_numba_lfsr_seed()
+    _lfsr_random_integers = get_numba_lfsr_random_integers()
+    _lfsr_normal = get_numba_lfsr_normal()
 
+    if corder:
         @numba.njit(fastmath=True)
         def kernel(w_loc, w_scale, clen, vector, seed, posts):
             posts[:] = 0.
-            # Output vector dimension = number of rows in the matrix
-            # Each row in the matrix will produce one element in the output vector
             num_row = posts.shape[0]
-
-            # Input vector dimension = number of columns in the matrix
-            # The input vector must match the number of columns in our implicit matrix
             num_col = vector.shape[0]
-
-            # Extract scalar values from input arrays for more efficient access in loops
             w_loc0 = w_loc[0]
             w_scale0 = w_scale[0]
-            seed0 = seed[0]  # Random seed for reproducible matrix generation
-            clen0 = clen[0]  # Connection length parameter (controls sparsity)
-
-            # Initialize the random number generator with the provided seed
-            # This ensures the "random" matrix is reproducible for the same seed value
-            np.random.seed(seed0)
-
-            # Process each output element (each row of the matrix)
+            seed0 = seed[0]
+            clen0 = clen[0]
             for i_row in range(num_row):
-                # Randomly determine the first column where this row has a connection
-                # This implements efficient sampling of a sparse pattern
-                i_col = np.random.randint(0, clen0)
-
-                # Initialize accumulator for the dot product result for this row
-                # Using input vector's dtype ensures proper numerical precision
+                state = _lfsr_seed(seed0 + i_row * num_col)
+                i_col = _lfsr_random_integers(state, 0, clen0 - 1)
                 out = np.asarray(0., dtype=vector.dtype)
-
-                # Process all connected entries for this row by skipping through columns
-                # This is the core sparse sampling algorithm - we only process columns
-                # that have connections rather than checking every possible column
                 while i_col < num_col:
-                    # Add contribution from the current connected element
-                    # For connected positions, we add the corresponding vector element
-                    out += vector[i_col] * np.random.normal(loc=w_loc0, scale=w_scale0)
-
-                    # Skip ahead to next connected column using geometric-like distribution
-                    # The random skip distance models the sparse connectivity pattern
-                    # where each position has approximately 1/clen0 probability of connection
-                    i_col += np.random.randint(1, clen0)
-
+                    out += vector[i_col] * _lfsr_normal(state, w_loc0, w_scale0)
+                    i_col += _lfsr_random_integers(state, 1, clen0 - 1)
                 posts[i_row] = out
 
     else:
-        # This means that the for loop is parallelized along the dimension of the vector: ``vector.shape[0]``.
-
         @numba.njit(fastmath=True)
         def kernel(w_loc, w_scale, clen, vector, seed, posts):
             posts[:] = 0.
-            # Output vector dimension = number of rows in the matrix
-            # This represents the first dimension of the matrix and the result vector's size
             num_row = posts.shape[0]
-
-            # Input vector dimension = number of columns in the matrix
-            # Each element of the input vector corresponds to a column in the matrix
             num_col = vector.shape[0]
-
             w_loc0 = w_loc[0]
             w_scale0 = w_scale[0]
-            clen0 = clen[0]  # Controls sparsity - higher values mean fewer connections
-            seed0 = seed[0]  # Random seed for reproducible matrix generation
-
-            # Initialize the random number generator with the provided seed
-            # This ensures the "random" matrix is reproducible for the same seed value
-            np.random.seed(seed0)
-
-            # Process each input element (each column of the matrix)
-            # This implements the matrix @ vector operation one column at a time
+            clen0 = clen[0]
+            seed0 = seed[0]
             for i_col in range(num_col):
+                state = _lfsr_seed(seed0 + i_col * num_row)
                 v = vector[i_col]
-
-                # Sample the first connected row using random skipping
-                # This implements the sparse sampling - each column connects to ~num_row/clen0 rows on average
-                # Starting from a random position in [0,clen0) creates variability in connection patterns
-                i_row = np.random.randint(0, clen0)
-
-                # Continue sampling and accumulating while we haven't exceeded output dimension
-                # This loop processes all rows this particular column connects to
+                i_row = _lfsr_random_integers(state, 0, clen0 - 1)
                 while i_row < num_row:
-                    # Add this connection's contribution to the appropriate output element
-                    # The output is accumulated as we process each column's contributions
-                    posts[i_row] += v * np.random.normal(loc=w_loc0, scale=w_scale0)
-
-                    # Move to the next connected row using geometric-like skipping
-                    # Each next connection is approximately clen0 positions away on average
-                    # This creates a sparse pattern where only ~1/clen0 of all possible connections exist
-                    i_row += np.random.randint(1, clen0)
+                    posts[i_row] += v * _lfsr_normal(state, w_loc0, w_scale0)
+                    i_row += _lfsr_random_integers(state, 1, clen0 - 1)
 
     def run(w_loc, w_scale, clen, vector, seed):
         return numba_kernel(kernel, outs=kwargs['outs'])(w_loc, w_scale, clen, vector, seed)
@@ -983,6 +901,7 @@ def _jitnmv_pallas_kernel_generator(
 ):
     from jax.experimental import pallas as pl
     from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
+    _PallasLFSRRNG = get_pallas_lfsr_rng_class()
 
     dim = (out_info.shape[0] if corder else vector_info.shape[0])
     block_size = generate_block_dim(dim, maximum=128)
@@ -1005,7 +924,7 @@ def _jitnmv_pallas_kernel_generator(
                 i_rows += rng.random_integers(1, clen)
                 return i_rows, i_rows < num_row, rng, out
 
-            rng = PallasLFSR88RNG(seed + i_cols * num_row)
+            rng = _PallasLFSRRNG(seed + i_cols * num_row)
             i_rows = rng.random_integers(0, clen)
             i_row_mask = i_rows < num_row
             out = jnp.zeros(block_size, dtype=post_ref.dtype)
@@ -1034,7 +953,7 @@ def _jitnmv_pallas_kernel_generator(
                 i_cols += rng.random_integers(1, clen)
                 return i_cols, i_cols < num_col, rng
 
-            rng = PallasLFSR88RNG(seed + i_rows * num_col)
+            rng = _PallasLFSRRNG(seed + i_rows * num_col)
             i_cols = rng.random_integers(0, clen)
             i_col_mask = i_cols < num_col
             jax.lax.while_loop(
@@ -1319,80 +1238,53 @@ def _jitnmm_numba_kernel_generator(
     **kwargs
 ):
     import numba
+    _lfsr_seed = get_numba_lfsr_seed()
+    _lfsr_random_integers = get_numba_lfsr_random_integers()
+    _lfsr_normal = get_numba_lfsr_normal()
+
     if corder:
         # JIT Matrix @ B
-        #
         # - JIT matrix: [m, k]
         # - B: [k, n]
-
         @numba.njit(fastmath=True)
         def kernel(w_loc, w_scale, clen, B, seed, posts):
             posts[:] = 0.
-            m = posts.shape[0]  # Number of rows in output matrix (rows in M)
-            n = posts.shape[1]  # Number of columns in output matrix (columns in B)
-            k = B.shape[0]  # Number of rows in B (columns in M)
-
+            m = posts.shape[0]
+            n = posts.shape[1]
+            k = B.shape[0]
             w_loc0 = w_loc[0]
             w_scale0 = w_scale[0]
-            seed0 = seed[0]  # Random seed for reproducible matrix generation
-            clen0 = clen[0]  # Connection length parameter (controls sparsity)
-            np.random.seed(seed0)  # Initialize random number generator with seed for reproducibility
-
+            seed0 = seed[0]
+            clen0 = clen[0]
             for i_m in range(m):
-                # Start at a random position in [0, clen0) for variability in connection patterns
-                i_k = np.random.randint(0, clen0)
-
-                # Initialize accumulator for this output row with proper dtype
+                state = _lfsr_seed(seed0 + i_m * k)
+                i_k = _lfsr_random_integers(state, 0, clen0 - 1)
                 out = np.zeros(n, dtype=B.dtype)
-
-                # Process all connected entries for this output row
                 while i_k < k:
-                    # Add contribution from the current connected input row
-                    out += B[i_k] * np.random.normal(w_loc0, w_scale0)
-
-                    # Skip ahead to next connected row using geometric-like distribution
-                    # This creates sparse connectivity with ~1/clen0 connection probability
-                    i_k += np.random.randint(1, clen0)
-
-                # Scale accumulated sum by weight and store in output array
+                    out += B[i_k] * _lfsr_normal(state, w_loc0, w_scale0)
+                    i_k += _lfsr_random_integers(state, 1, clen0 - 1)
                 posts[i_m] = out
 
     else:
         # JIT Matrix @ B
-        #
         # - JIT matrix: [m, k]
         # - B: [k, n]
-
         @numba.njit(fastmath=True)
         def kernel(w_loc, w_scale, clen, B, seed, posts):
             posts[:] = 0.
-            m = posts.shape[0]  # Number of rows in output matrix (rows in M)
-            k = B.shape[0]  # Number of rows in B (columns in M)
-
+            m = posts.shape[0]
+            k = B.shape[0]
             w_loc0 = w_loc[0]
             w_scale0 = w_scale[0]
-            seed0 = seed[0]  # Random seed for reproducible matrix generation
-            clen0 = clen[0]  # Connection length parameter (controls sparsity)
-            np.random.seed(seed0)  # Initialize random number generator with seed
-
-            # Process each input column sequentially
+            seed0 = seed[0]
+            clen0 = clen[0]
             for i_k in range(k):
-                # Pre-multiply the current row by weight for efficiency
+                state = _lfsr_seed(seed0 + i_k * m)
                 out = B[i_k]
-
-                # Sample the first connected output row using random skipping
-                # Start at a random position in [0, clen0) for variability in connection patterns
-                i_m = np.random.randint(0, clen0)
-
-                # Process all connected output rows for this input column
+                i_m = _lfsr_random_integers(state, 0, clen0 - 1)
                 while i_m < m:
-                    # Add contribution to the connected output row
-                    # Using += to accumulate results across all input columns
-                    posts[i_m] += out * np.random.normal(w_loc0, w_scale0)
-
-                    # Skip ahead to next connected output row using geometric-like distribution
-                    # This creates sparse connectivity with ~1/clen0 connection probability
-                    i_m += np.random.randint(1, clen0)
+                    posts[i_m] += out * _lfsr_normal(state, w_loc0, w_scale0)
+                    i_m += _lfsr_random_integers(state, 1, clen0 - 1)
 
     def run(w_loc, w_scale, clen, B, seed):
         return numba_kernel(kernel, outs=kwargs['outs'])(w_loc, w_scale, clen, B, seed)
@@ -1559,6 +1451,7 @@ def _jitnmm_pallas_kernel_generator(
 ):
     from jax.experimental import pallas as pl
     from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
+    _PallasLFSRRNG = get_pallas_lfsr_rng_class()
 
     B_cols = B_info.shape[1]
 
@@ -1586,7 +1479,7 @@ def _jitnmm_pallas_kernel_generator(
             safe_rows = jnp.where(i_row_mask, i_rows, 0)
 
             # Seed each (row, col_j) thread with an additional column stride.
-            rng = PallasLFSR88RNG(seed0 + i_rows * k)
+            rng = _PallasLFSRRNG(seed0 + i_rows * k)
             i_cols = rng.random_integers(0, clen0)  # [row_block]
             i_col_mask = i_cols < k
 
@@ -1632,7 +1525,7 @@ def _jitnmm_pallas_kernel_generator(
             b_vals = B_ref[safe_ks, col_j]  # [k_block]
 
             # Seed each (k, col_j) thread with an additional column stride.
-            rng = PallasLFSR88RNG(seed0 + i_ks * m)
+            rng = _PallasLFSRRNG(seed0 + i_ks * m)
             i_rows = rng.random_integers(0, clen0)
             i_row_mask = i_rows < m
 

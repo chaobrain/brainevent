@@ -17,12 +17,7 @@
 __version__ = "0.0.6"
 __version_info__ = tuple(map(int, __version__.split(".")))
 
-from ._config import (
-    load_user_defaults, save_user_defaults, get_user_default,
-    set_user_default, clear_user_defaults, get_config_path,
-    invalidate_cache,
-    set_numba_parallel, get_numba_parallel, get_numba_num_threads,
-)
+from . import config
 from ._coo import (
     COO,
     binary_coomv, binary_coomv_p, binary_coomm, binary_coomm_p,
@@ -96,6 +91,7 @@ from ._op import (
 )
 from ._pallas_random import (
     PallasLFSR88RNG, PallasLFSR113RNG, PallasLFSR128RNG,
+    PallasLFSRRNG, get_pallas_lfsr_rng_class,
 )
 from ._registry import (
     get_registry, get_primitives_by_tags, get_all_primitive_names,
@@ -179,6 +175,7 @@ __all__ = [
 
     # --- Pallas kernel --- #
     'PallasLFSR88RNG', 'PallasLFSR113RNG', 'PallasLFSR128RNG',
+    'PallasLFSRRNG', 'get_pallas_lfsr_rng_class',
 
     # --- errors --- #
     'MathError',
@@ -191,11 +188,7 @@ __all__ = [
     'csr_to_coo_index', 'coo_to_csc_index', 'csr_to_csc_index',
 
     # --- config & registry --- #
-    'load_user_defaults', 'save_user_defaults', 'get_user_default',
-    'set_user_default', 'clear_user_defaults', 'get_config_path',
-    'invalidate_cache',
-    'set_numba_parallel', 'get_numba_parallel', 'get_numba_num_threads',
-    'get_registry', 'get_primitives_by_tags', 'get_all_primitive_names',
+    'config', 'get_registry', 'get_primitives_by_tags', 'get_all_primitive_names',
 ]
 
 
