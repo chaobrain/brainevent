@@ -405,7 +405,7 @@ def _csrmv_pallas_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas import load
+    from jax.experimental.pallas.triton import load
 
     m, k = shape
     block_dim = generate_block_dim(pl.cdiv(indices_info.size, shape[1] if transpose else shape[0]))
@@ -1100,6 +1100,7 @@ def _csrmm_pallas_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
+    from jax.experimental.pallas.triton import load, store
 
     m, k = shape
     n = vector_info.shape[1]
@@ -1157,7 +1158,7 @@ def _csrmm_pallas_kernel(
                     offset = row_start + index * block_dim
                     nnz_mask = offset + jnp.arange(block_dim) < row_end
 
-                    cols = pl.load(indices_ref, (pl.dslice(offset, block_dim),), mask=nnz_mask, other=0)
+                    cols = load(indices_ref, (pl.dslice(offset, block_dim),), mask=nnz_mask, other=0)
                     
                     safe_cols = jnp.minimum(cols, limit_k)
                     
@@ -1234,7 +1235,7 @@ def _csrmm_pallas_kernel(
                     mask_B_dim0 = nnz_mask & valid_cols
                     mask_B = mask_B_dim0[:, None] & col_mask[None, :]
                     
-                    events = pl.load(B_ref, (safe_cols, pl.dslice(i_col_start, block_dim_n)), mask=mask_B, other=0.0)
+                    events = load(B_ref.at[safe_cols, pl.dslice(i_col_start, block_dim_n)], mask=mask_B, other=0.0)
    
                     weighted = val_A[:, None] * events
 
@@ -1248,7 +1249,7 @@ def _csrmm_pallas_kernel(
                     jnp.zeros([block_dim_n], dtype=posts_ref.dtype)
                 )
                 
-                pl.store(posts_ref, (i_row, pl.dslice(i_col_start, block_dim_n)), i_row_sum, mask=col_mask)
+                store(posts_ref.at[i_row, pl.dslice(i_col_start, block_dim_n)], i_row_sum, mask=col_mask)
 
             jax.lax.cond(i_row < num_rows, _body, lambda: None)
 
