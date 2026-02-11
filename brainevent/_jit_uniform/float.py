@@ -26,6 +26,7 @@ from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
+from brainevent._numba_random import lfsr88_seed, lfsr88_random_integers, lfsr88_uniform
 from brainevent._pallas_random import PallasLFSR88RNG
 from brainevent._typing import Data, MatrixShape
 
@@ -419,12 +420,12 @@ def _jitu_numba_kernel_generator(
             w_high0 = w_high[0]
             clen0 = clen[0]
             seed0 = seed[0]
-            np.random.seed(seed0)
             for i_row in range(n):
-                i_col = np.random.randint(0, clen0)
+                state = lfsr88_seed(seed0 + i_row * m)
+                i_col = lfsr88_random_integers(state, 0, clen0 - 1)
                 while i_col < m:
-                    posts[i_row, i_col] = np.random.uniform(low=w_low0, high=w_high0)
-                    i_col += np.random.randint(1, clen0)
+                    posts[i_row, i_col] = lfsr88_uniform(state, w_low0, w_high0)
+                    i_col += lfsr88_random_integers(state, 1, clen0 - 1)
 
 
     else:
@@ -439,12 +440,12 @@ def _jitu_numba_kernel_generator(
             w_high0 = w_high[0]
             clen0 = clen[0]
             seed0 = seed[0]
-            np.random.seed(seed0)
             for i_col in range(m):
-                i_row = np.random.randint(0, clen0)
+                state = lfsr88_seed(seed0 + i_col * n)
+                i_row = lfsr88_random_integers(state, 0, clen0 - 1)
                 while i_row < n:
-                    posts[i_row, i_col] = np.random.uniform(low=w_low0, high=w_high0)
-                    i_row += np.random.randint(1, clen0)
+                    posts[i_row, i_col] = lfsr88_uniform(state, w_low0, w_high0)
+                    i_row += lfsr88_random_integers(state, 1, clen0 - 1)
 
     def kernel(w_low, w_high, clen, seed):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, seed)
@@ -1034,13 +1035,13 @@ def _jitumv_numba_kernel_generator(
             w_high0 = w_high[0]
             clen0 = clen[0]
             seed0 = seed[0]
-            np.random.seed(seed0)
             for i_col in range(n_col):
-                i_row = np.random.randint(0, clen0)
+                state = lfsr88_seed(seed0 + i_col * n_row)
+                i_row = lfsr88_random_integers(state, 0, clen0 - 1)
                 out = np.asarray(0., dtype=vector.dtype)
                 while i_row < n_row:
-                    out += vector[i_row] * np.random.uniform(low=w_low0, high=w_high0)
-                    i_row += np.random.randint(1, clen0)
+                    out += vector[i_row] * lfsr88_uniform(state, w_low0, w_high0)
+                    i_row += lfsr88_random_integers(state, 1, clen0 - 1)
                 posts[i_col] = out
 
 
@@ -1054,13 +1055,13 @@ def _jitumv_numba_kernel_generator(
             w_high0 = w_high[0]
             clen0 = clen[0]
             seed0 = seed[0]
-            np.random.seed(seed0)
             for i_row in range(num_row):
+                state = lfsr88_seed(seed0 + i_row * num_col)
                 v = vector[i_row]
-                i_col = np.random.randint(0, clen0)
+                i_col = lfsr88_random_integers(state, 0, clen0 - 1)
                 while i_col < num_col:
-                    posts[i_col] += v * np.random.uniform(low=w_low0, high=w_high0)
-                    i_col += np.random.randint(1, clen0)
+                    posts[i_col] += v * lfsr88_uniform(state, w_low0, w_high0)
+                    i_col += lfsr88_random_integers(state, 1, clen0 - 1)
 
     def kernel(w_low, w_high, clen, vector, seed):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, vector, seed)
@@ -1736,13 +1737,13 @@ def _jitumm_numba_kernel_generator(
             w_high0 = w_high[0]
             seed0 = seed[0]
             clen0 = clen[0]
-            np.random.seed(seed0)
             for i_m in range(m):
-                i_k = np.random.randint(0, clen0)
+                state = lfsr88_seed(seed0 + i_m * k)
+                i_k = lfsr88_random_integers(state, 0, clen0 - 1)
                 out = np.zeros(n, dtype=B.dtype)
                 while i_k < k:
-                    out += B[i_k] * np.random.uniform(low=w_low0, high=w_high0)
-                    i_k += np.random.randint(1, clen0)
+                    out += B[i_k] * lfsr88_uniform(state, w_low0, w_high0)
+                    i_k += lfsr88_random_integers(state, 1, clen0 - 1)
                 posts[i_m] = out
 
 
@@ -1759,13 +1760,13 @@ def _jitumm_numba_kernel_generator(
             w_high0 = w_high[0]
             seed0 = seed[0]
             clen0 = clen[0]
-            np.random.seed(seed0)
             for i_k in range(k):
+                state = lfsr88_seed(seed0 + i_k * m)
                 out = B[i_k]
-                i_m = np.random.randint(0, clen0)
+                i_m = lfsr88_random_integers(state, 0, clen0 - 1)
                 while i_m < m:
-                    posts[i_m] += out * np.random.uniform(low=w_low0, high=w_high0)
-                    i_m += np.random.randint(1, clen0)
+                    posts[i_m] += out * lfsr88_uniform(state, w_low0, w_high0)
+                    i_m += lfsr88_random_integers(state, 1, clen0 - 1)
 
     def kernel(w_low, w_high, clen, B, seed):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, B, seed)
