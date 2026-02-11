@@ -669,8 +669,7 @@ def _spfloat_fcnmm_pallas_kernel(
     n_pre, n_post = shape
     n_conn = indices_info.shape[1]
     homo = weight_info.size == 1
-    block_k = generate_block_dim(indices_info.shape[1], maximum=128)
-    block_n = generate_block_dim(matrix_info.shape[1], maximum=128)
+    n_col = matrix_info.shape[1]
 
     if transpose:
         #
@@ -685,38 +684,26 @@ def _spfloat_fcnmm_pallas_kernel(
             index_ref,  # [n_pre, n_conn]
             matrix_ref,  # [k, n]
             _,
-            out_ref,  # [n_pre, n]
+            out_ref,  # [n_post, n]
         ):
             i_k = pl.program_id(0)
-            i_n_block = pl.program_id(1)
-            i_n_start = i_n_block * block_n
-            i_n_mask = i_n_start + jnp.arange(block_n) < matrix_ref.shape[1]
-            if homo:
-                weight = jnp.full(block_k, weight_ref[0])
+            i_n = pl.program_id(1)
+            b = matrix_ref[i_k, i_n]
 
-            def loop_fn(i_index_block, _):
-                i_index_start = i_index_block * block_k
-                i_index_mask = i_index_start + jnp.arange(block_k) < n_conn
-                ind = index_ref[i_k, pl.dslice(i_index_start, block_k)]
-                ind = jnp.where(i_index_mask, ind, 0)
-                mat = matrix_ref[i_k, pl.dslice(i_n_start, block_n)]
-                mat = jnp.where(i_n_mask, mat, 0.0)
-                mat = jnp.asarray(mat, dtype=weight_ref.dtype)
+            def loop_fn(j, _):
+                i_m = index_ref[i_k, j]
                 if homo:
-                    A = weight
+                    val = weight_ref[0] * b
                 else:
-                    A = weight_ref[i_k, pl.dslice(i_index_start, block_k)]
-                    A = jnp.where(i_index_mask, A, 0.0)
-                data = A[:, None] * mat[None, :]
-                atomic_add(out_ref, (ind, pl.dslice(i_n_start, block_n)), data,
-                           mask=i_index_mask[:, None] & i_n_mask[None, :])
+                    val = weight_ref[i_k, j] * b
+                atomic_add(out_ref, (i_m, i_n), val)
 
-            jax.lax.fori_loop(0, pl.cdiv(n_conn, block_k), loop_fn, None)
+            jax.lax.fori_loop(0, n_conn, loop_fn, None)
 
         def kernel(weights, indices, matrix):
             fn = pl.pallas_call(
                 _raw_kernel,
-                grid=(n_pre, pl.cdiv(matrix_info.shape[1], block_n)),
+                grid=(n_pre, n_col),
                 input_output_aliases={3: 0},
                 out_shape=kwargs['outs'],
                 backend='triton',
@@ -741,40 +728,24 @@ def _spfloat_fcnmm_pallas_kernel(
             out_ref,  # [n_pre, n]
         ):
             i_m = pl.program_id(0)
-            i_n_block = pl.program_id(1)
-            i_n_start = i_n_block * block_n
-            i_n_mask = i_n_start + jnp.arange(block_n) < matrix_ref.shape[1]
+            i_n = pl.program_id(1)
 
-            def loop_fn(i_k_block, out):
-                i_k_start = i_k_block * block_k
-                i_k_mask = i_k_start + jnp.arange(block_k) < n_conn
-                ind = index_ref[i_m, pl.dslice(i_k_start, block_k)]
-                ind = jnp.where(i_k_mask, ind, 0)
-                mat = matrix_ref[ind, pl.dslice(i_n_start, block_n)]
-                mat = jnp.where(i_k_mask[:, None] & i_n_mask[None, :], mat, 0.0)
+            def loop_fn(j, acc):
+                i_k = index_ref[i_m, j]
                 if homo:
-                    inc = mat.sum(axis=0)
+                    return acc + matrix_ref[i_k, i_n]
                 else:
-                    mat = jnp.asarray(mat, dtype=weight_ref.dtype)
-                    weight = weight_ref[i_m, pl.dslice(i_k_start, block_k)]
-                    weight = jnp.where(i_k_mask, weight, 0.0)
-                    inc = (weight[:, None] * mat).sum(axis=0)
-                return out + inc
+                    return acc + weight_ref[i_m, j] * matrix_ref[i_k, i_n]
 
-            final_out = jax.lax.fori_loop(
-                0,
-                pl.cdiv(n_conn, block_k),
-                loop_fn,
-                jnp.zeros(block_n, dtype=matrix_ref.dtype)
-            )
+            result = jax.lax.fori_loop(0, n_conn, loop_fn, jnp.zeros((), dtype=matrix_ref.dtype))
             if homo:
-                final_out = final_out * weight_ref[0]
-            out_ref[i_m, pl.dslice(i_n_start, block_n)] = jnp.where(i_n_mask, final_out, 0.0)
+                result = result * weight_ref[0]
+            out_ref[i_m, i_n] = result
 
         def kernel(weights, indices, matrix):
             fn = pl.pallas_call(
                 _raw_kernel,
-                grid=(n_pre, pl.cdiv(matrix_info.shape[1], block_n)),
+                grid=(n_pre, n_col),
                 out_shape=kwargs['outs'],
                 backend='triton',
             )
@@ -784,7 +755,7 @@ def _spfloat_fcnmm_pallas_kernel(
 
 
 def _spfloat_fcnmm_jvp_matrix(matrix_dot, weights, indices, matrix, *, shape, transpose, **kwargs):
-    return fcnmm_p_call(weights, indices, matrix_dot, shape=shape, transpose=transpose)
+    return fcnmm_p_call(weights, indices, matrix_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
 
 def _spfloat_fcnmm_jvp_weights(weights_dot, weights, indices, matrix, *, shape, transpose, **kwargs):
@@ -811,7 +782,8 @@ def _spfloat_fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transp
                 indices,
                 ct,
                 shape=shape,
-                transpose=not transpose
+                transpose=not transpose,
+                backend=kwargs['backend'],
             )[0]
 
         return weights, indices, ct_vector
