@@ -37,7 +37,7 @@ from brainevent.config import (
 def isolate_config(tmp_path, monkeypatch):
     """Redirect config to a temp directory and clear cache for each test."""
     config_path = str(tmp_path / 'brainevent' / 'defaults.json')
-    monkeypatch.setattr('brainevent._config.get_config_path', lambda: config_path)
+    monkeypatch.setattr('brainevent.config.get_config_path', lambda: config_path)
     invalidate_cache()
     yield config_path
     invalidate_cache()
