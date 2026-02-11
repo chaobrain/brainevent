@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-
 import numbers
+from functools import partial
 from typing import Union, Optional
 
 import brainunit as u
@@ -171,6 +171,7 @@ def _csr_on_pre_warp_kernel_generator(
 
 
 def _csr_on_pre_pallas_kernel_generator(
+    impl_backend,
     spike_info: jax.ShapeDtypeStruct,
     shape: MatrixShape,
     **kwargs
@@ -212,7 +213,7 @@ def _csr_on_pre_pallas_kernel_generator(
             grid=(shape[0],),
             input_output_aliases={5: 0},
             out_shape=kwargs['outs'],
-            backend='triton',
+            backend=impl_backend,
         )
         return fn(weight, indices, indptr, pre_spike, post_trace, weight)
 
@@ -233,9 +234,13 @@ def _csr_on_pre_benchmark_data(*, platform):
             pre_spike = jnp.asarray(np.random.rand(n_pre), dtype=dtype)
         post_trace = jnp.asarray(np.random.randn(n_post), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
-        configs.append(BenchmarkConfig(name, (weight, indices, jnp.asarray(indptr), pre_spike, post_trace), {
-            'shape': (n_pre, n_post)
-        }))
+        configs.append(
+            BenchmarkConfig(
+                name,
+                (weight, indices, jnp.asarray(indptr), pre_spike, post_trace),
+                {'shape': (n_pre, n_post)}
+            )
+        )
     return configs
 
 
@@ -264,7 +269,8 @@ def csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, shap
 update_csr_on_binary_pre_p = XLACustomKernel('binary_csr_plast')
 update_csr_on_binary_pre_p.def_numba_kernel(_csr_on_pre_numba_kernel_generator)
 update_csr_on_binary_pre_p.def_warp_kernel(_csr_on_pre_warp_kernel_generator)
-update_csr_on_binary_pre_p.def_pallas_kernel('gpu', _csr_on_pre_pallas_kernel_generator)
+update_csr_on_binary_pre_p.def_pallas_kernel('gpu', partial(_csr_on_pre_pallas_kernel_generator, 'triton'))
+update_csr_on_binary_pre_p.def_pallas_kernel('tpu', partial(_csr_on_pre_pallas_kernel_generator, 'mosaic_tpu'))
 update_csr_on_binary_pre_p.def_tags('csr', 'plasticity')
 update_csr_on_binary_pre_p.def_benchmark_data(_csr_on_pre_benchmark_data)
 
@@ -420,6 +426,7 @@ def _csr2csc_on_post_warp_kernel_generator(
 
 
 def _csr2csc_on_post_pallas_kernel_generator(
+    impl_backend,
     spike_info: jax.ShapeDtypeStruct,
     shape: MatrixShape,
     **kwargs
@@ -459,7 +466,7 @@ def _csr2csc_on_post_pallas_kernel_generator(
 
     def kernel(weight, indices, indptr, weight_indices, pre_trace, post_spike):
         fn = pl.pallas_call(
-            kernel_fn, grid=(shape[1],), input_output_aliases={6: 0}, out_shape=kwargs['outs'], backend='triton',
+            kernel_fn, grid=(shape[1],), input_output_aliases={6: 0}, out_shape=kwargs['outs'], backend=impl_backend
         )
         return fn(weight, indices, indptr, weight_indices, pre_trace, post_spike, weight)
 
@@ -520,6 +527,7 @@ def csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace
 update_csr_on_binary_post_p = XLACustomKernel('csr2csc_on_post')
 update_csr_on_binary_post_p.def_numba_kernel(_csr2csc_on_post_numba_kernel_generator)
 update_csr_on_binary_post_p.def_warp_kernel(_csr2csc_on_post_warp_kernel_generator)
-update_csr_on_binary_post_p.def_pallas_kernel('gpu', _csr2csc_on_post_pallas_kernel_generator)
+update_csr_on_binary_post_p.def_pallas_kernel('gpu', partial(_csr2csc_on_post_pallas_kernel_generator, 'triton'))
+update_csr_on_binary_post_p.def_pallas_kernel('tpu', partial(_csr2csc_on_post_pallas_kernel_generator, 'mosaic_tpu'))
 update_csr_on_binary_post_p.def_tags('csr', 'plasticity')
 update_csr_on_binary_post_p.def_benchmark_data(_csr2csc_on_post_benchmark_data)

@@ -34,12 +34,14 @@ PLATFORM = jax.default_backend()
 PRE_BACKENDS = tuple(update_csr_on_binary_pre_p.available_backends(PLATFORM))
 POST_BACKENDS = tuple(update_csr_on_binary_post_p.available_backends(PLATFORM))
 
+shapes = [(20, 100), (100, 100), (100, 50), (200, 200)]
+
 
 class Test_csr_on_pre:
     @pytest.mark.parametrize('backend', PRE_BACKENDS)
-    def test_csr_on_pre_v1(self, backend):
-        n_pre = 20
-        n_post = 100
+    @pytest.mark.parametrize('shape', shapes)
+    def test_csr_on_pre_v1(self, backend, shape):
+        n_pre, n_post = shape
         mat = brainstate.random.random((n_pre, n_post))
         mask = mat < 0.5
         mat = jnp.where(mask, mat, 0.)
@@ -59,12 +61,12 @@ class Test_csr_on_pre:
         jax.block_until_ready((mat, pre_spike, post_trace))
 
     @pytest.mark.parametrize('backend', PRE_BACKENDS)
+    @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('mat_unit', [u.mV, u.ms])
     @pytest.mark.parametrize('trace_unit', [u.mV, u.ms])
-    def test_csr_on_pre_with_unit(self, backend, mat_unit, trace_unit):
+    def test_csr_on_pre_with_unit(self, backend, shape, mat_unit, trace_unit):
         def run():
-            n_pre = 100
-            n_post = 100
+            n_pre, n_post = shape
             mat = brainstate.random.random((n_pre, n_post))
             mask = mat < 0.5
             mat = jnp.where(mask, mat, 0.) * mat_unit
@@ -91,11 +93,11 @@ class Test_csr_on_pre:
                 run()
 
     @pytest.mark.parametrize('backend', PRE_BACKENDS)
+    @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('w_in', [None, 0.1])
     @pytest.mark.parametrize('w_max', [None, 0.5])
-    def test_csr_on_pre_v2(self, backend, w_in, w_max):
-        n_pre = 100
-        n_post = 100
+    def test_csr_on_pre_v2(self, backend, shape, w_in, w_max):
+        n_pre, n_post = shape
         mat = brainstate.random.random((n_pre, n_post))
         mask = mat < 0.5
         mat = jnp.where(mask, mat, 0.)
@@ -161,9 +163,9 @@ def _csr_to_csc_with_weight_indices(csr_data, csr_indices, csr_indptr, shape):
 
 class Test_on_post:
     @pytest.mark.parametrize('backend', POST_BACKENDS)
-    def test_csr_on_post_v1(self, backend):
-        n_pre = 20
-        n_post = 100
+    @pytest.mark.parametrize('shape', shapes)
+    def test_csr_on_post_v1(self, backend, shape):
+        n_pre, n_post = shape
         mat = brainstate.random.random((n_pre, n_post))
         mask = mat < 0.5
         mat = jnp.where(mask, mat, 0.)
@@ -189,12 +191,12 @@ class Test_on_post:
         jax.block_until_ready((mat, post_spike, pre_trace))
 
     @pytest.mark.parametrize('backend', POST_BACKENDS)
+    @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('mat_unit', [u.mV, u.ms])
     @pytest.mark.parametrize('trace_unit', [u.mV, u.ms])
-    def test_csr_on_post_with_unit(self, backend, mat_unit, trace_unit):
+    def test_csr_on_post_with_unit(self, backend, shape, mat_unit, trace_unit):
         def run():
-            n_pre = 100
-            n_post = 100
+            n_pre, n_post = shape
             mat = brainstate.random.random((n_pre, n_post))
             mask = mat < 0.5
             mat = jnp.where(mask, mat, 0.) * mat_unit
@@ -227,11 +229,11 @@ class Test_on_post:
                 run()
 
     @pytest.mark.parametrize('backend', POST_BACKENDS)
+    @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('w_in', [None, 0.1])
     @pytest.mark.parametrize('w_max', [None, 0.5])
-    def test_csr_on_post_v2(self, backend, w_in, w_max):
-        n_pre = 100
-        n_post = 100
+    def test_csr_on_post_v2(self, backend, shape, w_in, w_max):
+        n_pre, n_post = shape
         mat = brainstate.random.random((n_pre, n_post))
         mask = mat < 0.5
         mat = jnp.where(mask, mat, 0.)
