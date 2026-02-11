@@ -83,12 +83,95 @@ class JITCMatrix(u.sparse.SparseMatrix):
         return self._unitary_op(fn)
 
     def __abs__(self):
+        """
+        Return the element-wise absolute value of the matrix.
+
+        Computes ``abs(weight)`` for each value parameter of the matrix while
+        preserving the sparse connectivity structure (probability, seed, shape,
+        and memory layout order).
+
+        Returns
+        -------
+        JITCMatrix
+            A new JITC matrix whose value parameters are the absolute values
+            of the original.
+
+        See Also
+        --------
+        apply : General unary function application.
+        __neg__ : Element-wise negation.
+        __pos__ : Element-wise positive (identity).
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import brainevent
+            >>> mat = brainevent.JITCScalarR((-1.5, 0.1, 42), shape=(10, 10))
+            >>> abs_mat = abs(mat)
+            >>> float(abs_mat.weight)
+            1.5
+        """
         return self.apply(operator.abs)
 
     def __neg__(self):
+        """
+        Return the element-wise negation of the matrix.
+
+        Computes ``-weight`` for each value parameter of the matrix while
+        preserving the sparse connectivity structure.
+
+        Returns
+        -------
+        JITCMatrix
+            A new JITC matrix whose value parameters are negated.
+
+        See Also
+        --------
+        apply : General unary function application.
+        __abs__ : Element-wise absolute value.
+        __pos__ : Element-wise positive (identity).
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import brainevent
+            >>> mat = brainevent.JITCScalarR((1.5, 0.1, 42), shape=(10, 10))
+            >>> neg_mat = -mat
+            >>> float(neg_mat.weight)
+            -1.5
+        """
         return self.apply(operator.neg)
 
     def __pos__(self):
+        """
+        Return the element-wise positive of the matrix (identity operation).
+
+        Computes ``+weight`` for each value parameter, which returns an
+        equivalent matrix. The sparse connectivity structure is preserved.
+
+        Returns
+        -------
+        JITCMatrix
+            A new JITC matrix with the same value parameters.
+
+        See Also
+        --------
+        apply : General unary function application.
+        __abs__ : Element-wise absolute value.
+        __neg__ : Element-wise negation.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import brainevent
+            >>> mat = brainevent.JITCScalarR((1.5, 0.1, 42), shape=(10, 10))
+            >>> pos_mat = +mat
+            >>> float(pos_mat.weight)
+            1.5
+        """
         return self.apply(operator.pos)
 
     def _binary_op(self, other, op):
@@ -159,33 +242,423 @@ class JITCMatrix(u.sparse.SparseMatrix):
         return self._binary_op(other, fn)
 
     def __mul__(self, other: Union[jax.typing.ArrayLike, u.Quantity]):
+        """
+        Multiply the matrix element-wise by a scalar or array.
+
+        Computes ``self * other`` by applying ``operator.mul`` to the value
+        parameters of the matrix and ``other``. The sparse connectivity
+        structure is preserved.
+
+        Parameters
+        ----------
+        other : jax.typing.ArrayLike or u.Quantity
+            Right-hand multiplicand. Typically a scalar value; support for
+            non-scalar operands depends on the subclass implementation.
+
+        Returns
+        -------
+        JITCMatrix
+            A new JITC matrix with scaled value parameters.
+
+        Raises
+        ------
+        NotImplementedError
+            If the subclass does not support the given operand type or shape.
+
+        See Also
+        --------
+        __rmul__ : Reflected multiplication (``other * self``).
+        __truediv__ : Element-wise division.
+        apply2 : General binary function application.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import brainevent
+            >>> mat = brainevent.JITCScalarR((1.5, 0.1, 42), shape=(10, 10))
+            >>> scaled = mat * 2.0
+            >>> float(scaled.weight)
+            3.0
+        """
         return self.apply2(other, operator.mul)
 
     def __truediv__(self, other):
+        """
+        Divide the matrix element-wise by a scalar or array.
+
+        Computes ``self / other`` by applying ``operator.truediv`` to the
+        value parameters of the matrix and ``other``. The sparse connectivity
+        structure is preserved.
+
+        Parameters
+        ----------
+        other : jax.typing.ArrayLike or u.Quantity
+            Right-hand divisor. Typically a scalar value; support for
+            non-scalar operands depends on the subclass implementation.
+
+        Returns
+        -------
+        JITCMatrix
+            A new JITC matrix with divided value parameters.
+
+        Raises
+        ------
+        NotImplementedError
+            If the subclass does not support the given operand type or shape.
+
+        See Also
+        --------
+        __rtruediv__ : Reflected division (``other / self``).
+        __mul__ : Element-wise multiplication.
+        apply2 : General binary function application.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import brainevent
+            >>> mat = brainevent.JITCScalarR((3.0, 0.1, 42), shape=(10, 10))
+            >>> divided = mat / 2.0
+            >>> float(divided.weight)
+            1.5
+        """
         return self.apply2(other, operator.truediv)
 
     def __add__(self, other):
+        """
+        Add a scalar or array element-wise to the matrix.
+
+        Computes ``self + other`` by applying ``operator.add`` to the value
+        parameters of the matrix and ``other``. The sparse connectivity
+        structure is preserved.
+
+        Parameters
+        ----------
+        other : jax.typing.ArrayLike or u.Quantity
+            Right-hand addend. Typically a scalar value or another JITC matrix
+            with the same connectivity structure.
+
+        Returns
+        -------
+        JITCMatrix
+            A new JITC matrix with summed value parameters.
+
+        Raises
+        ------
+        NotImplementedError
+            If the subclass does not support the given operand type or shape,
+            or if two JITC matrices have incompatible seeds, shapes, or
+            probabilities.
+
+        See Also
+        --------
+        __radd__ : Reflected addition (``other + self``).
+        __sub__ : Element-wise subtraction.
+        apply2 : General binary function application.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import brainevent
+            >>> mat = brainevent.JITCScalarR((1.5, 0.1, 42), shape=(10, 10))
+            >>> result = mat + 0.5
+            >>> float(result.weight)
+            2.0
+        """
         return self.apply2(other, operator.add)
 
     def __sub__(self, other):
+        """
+        Subtract a scalar or array element-wise from the matrix.
+
+        Computes ``self - other`` by applying ``operator.sub`` to the value
+        parameters of the matrix and ``other``. The sparse connectivity
+        structure is preserved.
+
+        Parameters
+        ----------
+        other : jax.typing.ArrayLike or u.Quantity
+            Right-hand subtrahend. Typically a scalar value or another JITC
+            matrix with the same connectivity structure.
+
+        Returns
+        -------
+        JITCMatrix
+            A new JITC matrix with subtracted value parameters.
+
+        Raises
+        ------
+        NotImplementedError
+            If the subclass does not support the given operand type or shape,
+            or if two JITC matrices have incompatible seeds, shapes, or
+            probabilities.
+
+        See Also
+        --------
+        __rsub__ : Reflected subtraction (``other - self``).
+        __add__ : Element-wise addition.
+        apply2 : General binary function application.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import brainevent
+            >>> mat = brainevent.JITCScalarR((1.5, 0.1, 42), shape=(10, 10))
+            >>> result = mat - 0.5
+            >>> float(result.weight)
+            1.0
+        """
         return self.apply2(other, operator.sub)
 
     def __mod__(self, other):
+        """
+        Compute the element-wise modulo of the matrix by a scalar or array.
+
+        Computes ``self % other`` by applying ``operator.mod`` to the value
+        parameters of the matrix and ``other``. The sparse connectivity
+        structure is preserved.
+
+        Parameters
+        ----------
+        other : jax.typing.ArrayLike or u.Quantity
+            Right-hand modulus. Typically a scalar value.
+
+        Returns
+        -------
+        JITCMatrix
+            A new JITC matrix with the modulo-reduced value parameters.
+
+        Raises
+        ------
+        NotImplementedError
+            If the subclass does not support the given operand type or shape.
+
+        See Also
+        --------
+        __rmod__ : Reflected modulo (``other % self``).
+        apply2 : General binary function application.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import brainevent
+            >>> mat = brainevent.JITCScalarR((5.0, 0.1, 42), shape=(10, 10))
+            >>> result = mat % 3.0
+            >>> float(result.weight)
+            2.0
+        """
         return self.apply2(other, operator.mod)
 
     def __rmul__(self, other: Union[jax.typing.ArrayLike, u.Quantity]):
+        """
+        Reflected multiplication: multiply a scalar or array by the matrix.
+
+        Computes ``other * self`` by applying ``operator.mul`` with the
+        operands in reflected order. This is invoked when the left operand
+        does not support multiplication with a JITC matrix.
+
+        Parameters
+        ----------
+        other : jax.typing.ArrayLike or u.Quantity
+            Left-hand multiplicand. Typically a scalar value.
+
+        Returns
+        -------
+        JITCMatrix
+            A new JITC matrix with scaled value parameters.
+
+        Raises
+        ------
+        NotImplementedError
+            If the subclass does not support the given operand type or shape.
+
+        See Also
+        --------
+        __mul__ : Forward multiplication (``self * other``).
+        apply2 : General binary function application.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import brainevent
+            >>> mat = brainevent.JITCScalarR((1.5, 0.1, 42), shape=(10, 10))
+            >>> scaled = 2.0 * mat
+            >>> float(scaled.weight)
+            3.0
+        """
         return self.apply2(other, operator.mul, reverse=True)
 
     def __rtruediv__(self, other):
+        """
+        Reflected division: divide a scalar or array by the matrix.
+
+        Computes ``other / self`` by applying ``operator.truediv`` with the
+        operands in reflected order. This is invoked when the left operand
+        does not support division by a JITC matrix.
+
+        Parameters
+        ----------
+        other : jax.typing.ArrayLike or u.Quantity
+            Left-hand dividend. Typically a scalar value.
+
+        Returns
+        -------
+        JITCMatrix
+            A new JITC matrix where each value parameter ``w`` is replaced
+            by ``other / w``.
+
+        Raises
+        ------
+        NotImplementedError
+            If the subclass does not support the given operand type or shape.
+
+        See Also
+        --------
+        __truediv__ : Forward division (``self / other``).
+        apply2 : General binary function application.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import brainevent
+            >>> mat = brainevent.JITCScalarR((2.0, 0.1, 42), shape=(10, 10))
+            >>> result = 6.0 / mat
+            >>> float(result.weight)
+            3.0
+        """
         return self.apply2(other, operator.truediv, reverse=True)
 
     def __radd__(self, other):
+        """
+        Reflected addition: add the matrix to a scalar or array.
+
+        Computes ``other + self`` by applying ``operator.add`` with the
+        operands in reflected order. This is invoked when the left operand
+        does not support addition with a JITC matrix.
+
+        Parameters
+        ----------
+        other : jax.typing.ArrayLike or u.Quantity
+            Left-hand addend. Typically a scalar value.
+
+        Returns
+        -------
+        JITCMatrix
+            A new JITC matrix with summed value parameters.
+
+        Raises
+        ------
+        NotImplementedError
+            If the subclass does not support the given operand type or shape.
+
+        See Also
+        --------
+        __add__ : Forward addition (``self + other``).
+        apply2 : General binary function application.
+
+        Notes
+        -----
+        For commutative operands (e.g., plain scalars), ``other + self``
+        produces the same result as ``self + other``.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import brainevent
+            >>> mat = brainevent.JITCScalarR((1.5, 0.1, 42), shape=(10, 10))
+            >>> result = 0.5 + mat
+            >>> float(result.weight)
+            2.0
+        """
         return self.apply2(other, operator.add, reverse=True)
 
     def __rsub__(self, other):
+        """
+        Reflected subtraction: subtract the matrix from a scalar or array.
+
+        Computes ``other - self`` by applying ``operator.sub`` with the
+        operands in reflected order. This is invoked when the left operand
+        does not support subtraction of a JITC matrix.
+
+        Parameters
+        ----------
+        other : jax.typing.ArrayLike or u.Quantity
+            Left-hand minuend. Typically a scalar value.
+
+        Returns
+        -------
+        JITCMatrix
+            A new JITC matrix where each value parameter ``w`` is replaced
+            by ``other - w``.
+
+        Raises
+        ------
+        NotImplementedError
+            If the subclass does not support the given operand type or shape.
+
+        See Also
+        --------
+        __sub__ : Forward subtraction (``self - other``).
+        apply2 : General binary function application.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import brainevent
+            >>> mat = brainevent.JITCScalarR((1.5, 0.1, 42), shape=(10, 10))
+            >>> result = 3.0 - mat
+            >>> float(result.weight)
+            1.5
+        """
         return self.apply2(other, operator.sub, reverse=True)
 
     def __rmod__(self, other):
+        """
+        Reflected modulo: compute a scalar or array modulo the matrix.
+
+        Computes ``other % self`` by applying ``operator.mod`` with the
+        operands in reflected order. This is invoked when the left operand
+        does not support modulo with a JITC matrix.
+
+        Parameters
+        ----------
+        other : jax.typing.ArrayLike or u.Quantity
+            Left-hand dividend for the modulo operation.
+
+        Returns
+        -------
+        JITCMatrix
+            A new JITC matrix where each value parameter ``w`` is replaced
+            by ``other % w``.
+
+        Raises
+        ------
+        NotImplementedError
+            If the subclass does not support the given operand type or shape.
+
+        See Also
+        --------
+        __mod__ : Forward modulo (``self % other``).
+        apply2 : General binary function application.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import brainevent
+            >>> mat = brainevent.JITCScalarR((3.0, 0.1, 42), shape=(10, 10))
+            >>> result = 7.0 % mat
+            >>> float(result.weight)
+            1.0
+        """
         return self.apply2(other, operator.mod, reverse=True)
 
 

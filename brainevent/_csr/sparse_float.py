@@ -48,22 +48,93 @@ def spfloat_csrmv(
     transpose: bool = False,
     backend: Optional[str] = None,
 ) -> Data:
-    """
-    Product of CSR sparse matrix and a dense vector.
+    """Compute the product of a CSR sparse matrix with sparse float data and a dense vector.
 
-    Args:
-      data : array of shape ``(nse,)``.
-      indices : array of shape ``(nse,)``
-      indptr : array of shape ``(shape[0] + 1,)`` and dtype ``indices.dtype``
-      v : array of shape ``(shape[0] if transpose else shape[1],)``
-        and dtype ``data.dtype``
-      shape : length-2 tuple representing the matrix shape
-      transpose : boolean specifying whether to transpose the sparse matrix
-        before computing.
+    Performs the matrix-vector product ``y = A @ v`` (or ``y = A.T @ v`` when
+    ``transpose=True``), where ``A`` is a sparse matrix in Compressed Sparse Row
+    (CSR) format with explicit float-valued non-zero entries. Unlike binary event
+    CSR operations, this function uses the actual floating-point values stored in
+    ``data`` during multiplication.
 
-    Returns:
-      y : array of shape ``(shape[1] if transpose else shape[0],)`` representing
-        the matrix vector product.
+    Parameters
+    ----------
+    data : jax.Array or Quantity
+        Non-zero element values of the CSR sparse matrix, with shape ``(nse,)``
+        where ``nse`` is the number of stored elements. A scalar (shape ``(1,)``)
+        indicates a homogeneous weight shared by all connections. May carry
+        physical units via ``brainunit.Quantity``.
+    indices : jax.Array
+        Column indices of the non-zero elements, with shape ``(nse,)`` and
+        integer dtype.
+    indptr : jax.Array
+        Row pointer array of the CSR format, with shape ``(shape[0] + 1,)`` and
+        the same integer dtype as ``indices``.
+    v : jax.Array or Quantity
+        Dense vector to multiply, with shape
+        ``(shape[0],)`` if ``transpose=True``, or ``(shape[1],)`` otherwise. May
+        carry physical units.
+    shape : tuple of int
+        Shape of the sparse matrix as ``(m, k)``.
+    transpose : bool, optional
+        If ``True``, compute ``A.T @ v`` instead of ``A @ v``. Default is
+        ``False``.
+    backend : str or None, optional
+        Compute backend to use. One of ``'numba'``, ``'pallas'``, or ``None`` for
+        automatic selection.
+
+    Returns
+    -------
+    jax.Array or Quantity
+        Result vector with shape ``(shape[1],)`` if ``transpose=True``, or
+        ``(shape[0],)`` otherwise. Carries the product of the units of ``data``
+        and ``v``.
+
+    Raises
+    ------
+    AssertionError
+        If ``indices`` or ``indptr`` have unsupported dtypes (must be ``int32``,
+        ``int64``, ``uint32``, or ``uint64``), if they are not 1-D, if their
+        dtypes do not match, or if the vector shape does not match ``shape``
+        given the ``transpose`` flag.  These checks are performed by the
+        underlying :func:`sparse_float_csrmv_p_call`.
+
+    See Also
+    --------
+    spfloat_csrmm : Sparse-float CSR matrix--dense matrix multiplication.
+    spfloat_csrmv_p : Low-level XLA custom kernel primitive for this operation.
+
+    Notes
+    -----
+    Given a CSR matrix ``A`` of shape ``(m, k)`` and a dense vector ``v``, the
+    non-transpose operation computes for each row ``i``:
+
+    ``y[i] = sum_{j in nz(i)} data[j] * v[indices[j]]``
+
+    where ``nz(i)`` denotes the stored non-zero positions in row ``i``, i.e.,
+    ``range(indptr[i], indptr[i+1])``.
+
+    When ``transpose=True`` the operation computes:
+
+    ``y[j] = sum_{i : j in nz(i)} data[pos(i,j)] * v[i]``
+
+    This operation is differentiable with respect to both ``data`` and ``v``. The
+    JVP and transpose rules fall through to :func:`csrmv` for gradient
+    computation.
+
+    When ``data`` has shape ``(1,)``, a homogeneous (scalar) weight is broadcast
+    to all stored elements, which enables optimized kernel paths.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._csr.sparse_float import spfloat_csrmv
+        >>> data = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32)
+        >>> indices = jnp.array([0, 2, 1], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 3], dtype=jnp.int32)
+        >>> v = jnp.array([1.0, 0.5, 0.0], dtype=jnp.float32)
+        >>> y = spfloat_csrmv(data, indices, indptr, v, shape=(2, 3))
     """
     data, unitd = u.split_mantissa_unit(data)
     v, unitv = u.split_mantissa_unit(v)
@@ -90,22 +161,93 @@ def spfloat_csrmm(
     transpose: bool = False,
     backend: Optional[str] = None,
 ) -> Data:
-    """
-    Product of CSR sparse matrix and a dense matrix.
+    """Compute the product of a CSR sparse matrix with sparse float data and a dense matrix.
 
-    Args:
-      data : array of shape ``(nse,)``.
-      indices : array of shape ``(nse,)``
-      indptr : array of shape ``(shape[0] + 1,)`` and dtype ``indices.dtype``
-      B : array of shape ``(shape[0] if transpose else shape[1], cols)`` and
-        dtype ``data.dtype``
-      shape : length-2 tuple representing the matrix shape
-      transpose : boolean specifying whether to transpose the sparse matrix
-        before computing.
+    Performs the matrix-matrix product ``C = A @ B`` (or ``C = A.T @ B`` when
+    ``transpose=True``), where ``A`` is a sparse matrix in Compressed Sparse Row
+    (CSR) format with explicit float-valued non-zero entries.
 
-    Returns:
-      C : array of shape ``(shape[1] if transpose else shape[0], cols)``
-        representing the matrix-matrix product.
+    Parameters
+    ----------
+    data : jax.Array or Quantity
+        Non-zero element values of the CSR sparse matrix, with shape ``(nse,)``
+        where ``nse`` is the number of stored elements. A scalar (shape ``(1,)``)
+        indicates a homogeneous weight shared by all connections. May carry
+        physical units via ``brainunit.Quantity``.
+    indices : jax.Array
+        Column indices of the non-zero elements, with shape ``(nse,)`` and
+        integer dtype.
+    indptr : jax.Array
+        Row pointer array of the CSR format, with shape ``(shape[0] + 1,)`` and
+        the same integer dtype as ``indices``.
+    B : jax.Array or Quantity
+        Dense matrix to multiply, with shape
+        ``(shape[0], n)`` if ``transpose=True``, or ``(shape[1], n)`` otherwise,
+        where ``n`` is the number of columns. May carry physical units.
+    shape : tuple of int
+        Shape of the sparse matrix as ``(m, k)``.
+    transpose : bool, optional
+        If ``True``, compute ``A.T @ B`` instead of ``A @ B``. Default is
+        ``False``.
+    backend : str or None, optional
+        Compute backend to use. One of ``'numba'``, ``'pallas'``, or ``None`` for
+        automatic selection.
+
+    Returns
+    -------
+    jax.Array or Quantity
+        Result matrix with shape ``(shape[1], n)`` if ``transpose=True``, or
+        ``(shape[0], n)`` otherwise. Carries the product of the units of ``data``
+        and ``B``.
+
+    Raises
+    ------
+    AssertionError
+        If ``indices`` or ``indptr`` have unsupported dtypes (must be ``int32``,
+        ``int64``, ``uint32``, or ``uint64``), if they are not 1-D, if their
+        dtypes do not match, or if the first dimension of ``B`` does not match
+        ``shape`` given the ``transpose`` flag.  These checks are performed by
+        the underlying :func:`sparse_float_csrmm_p_call`.
+
+    See Also
+    --------
+    spfloat_csrmv : Sparse-float CSR matrix--dense vector multiplication.
+    spfloat_csrmm_p : Low-level XLA custom kernel primitive for this operation.
+
+    Notes
+    -----
+    Given a CSR matrix ``A`` of shape ``(m, k)`` and a dense matrix ``B`` of
+    shape ``(k, n)``, the non-transpose operation computes for each output
+    element:
+
+    ``C[i, l] = sum_{j in nz(i)} data[j] * B[indices[j], l]``
+
+    where ``nz(i) = range(indptr[i], indptr[i+1])`` are the stored positions in
+    row ``i``.
+
+    When ``transpose=True`` and ``B`` has shape ``(m, n)``, the operation
+    computes:
+
+    ``C[j, l] = sum_{i : j in nz(i)} data[pos(i,j)] * B[i, l]``
+
+    This operation is differentiable with respect to both ``data`` and ``B``. The
+    JVP and transpose rules fall through to :func:`csrmm` for gradient
+    computation.
+
+    Batching over the last dimension(s) of ``B`` is supported via custom vmap
+    rules that reshape into a single matrix multiplication call.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._csr.sparse_float import spfloat_csrmm
+        >>> data = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32)
+        >>> indices = jnp.array([0, 2, 1], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 3], dtype=jnp.int32)
+        >>> B = jnp.ones((3, 4), dtype=jnp.float32)
+        >>> C = spfloat_csrmm(data, indices, indptr, B, shape=(2, 3))
     """
     data, unitd = u.split_mantissa_unit(data)
     B, unitb = u.split_mantissa_unit(B)
@@ -612,23 +754,81 @@ def sparse_float_csrmv_p_call(
     transpose: bool,
     backend: Optional[str] = None,
 ):
-    """
-    Perform a call to the event CSR matrix-vector multiplication custom operation.
+    """Invoke the low-level XLA custom kernel for sparse-float CSR matrix-vector multiplication.
 
-    This function prepares the inputs and calls the spfloat_csrmv_p custom operation
-    to perform matrix-vector multiplication using a CSR (Compressed Sparse Row) format.
+    Validates inputs, normalizes scalar weights to a 1-D array, determines the
+    output shape, and dispatches to :data:`spfloat_csrmv_p`. Most users should
+    prefer the higher-level :func:`spfloat_csrmv` which additionally handles
+    physical units.
 
-    Args:
-        weights (jax.Array): Non-zero elements of the CSR sparse matrix.
-        indices (jax.Array): Column indices of non-zero elements in the CSR sparse matrix.
-        indptr (jax.Array): Index pointers of the CSR sparse matrix, indicating the start of each row.
-        vector (jax.Array): The dense vector to be multiplied with the sparse matrix.
-        shape (Sequence[int]): A sequence of length 2, representing the shape of the sparse matrix.
-        transpose (bool): Whether to transpose the sparse matrix before multiplication.
-        backend (str): Optional backend to use for the operation.
+    Parameters
+    ----------
+    weights : jax.Array
+        Non-zero element values of the CSR sparse matrix, with shape ``(nse,)``
+        or scalar. Scalars are promoted to shape ``(1,)``.
+    indices : jax.Array
+        Column indices of the non-zero elements, with shape ``(nse,)`` and
+        integer dtype (``int32``, ``int64``, ``uint32``, or ``uint64``).
+    indptr : jax.Array
+        Row pointer array, with shape ``(shape[0] + 1,)`` and the same dtype as
+        ``indices``.
+    vector : jax.Array
+        Dense vector, with shape ``(shape[0],)`` if ``transpose=True``, or
+        ``(shape[1],)`` otherwise.
+    shape : tuple of int
+        Shape of the sparse matrix as ``(m, k)``.
+    transpose : bool
+        If ``True``, compute ``A.T @ v`` instead of ``A @ v``.
+    backend : str or None, optional
+        Compute backend to use. One of ``'numba'``, ``'pallas'``, or ``None`` for
+        automatic selection.
 
-    Returns:
-        jax.Array: The result of the matrix-vector multiplication.
+    Returns
+    -------
+    tuple of jax.Array
+        A single-element tuple containing the result vector with shape
+        ``(shape[1],)`` if ``transpose=True``, or ``(shape[0],)`` otherwise.
+
+    Raises
+    ------
+    AssertionError
+        If ``indices`` or ``indptr`` have unsupported dtypes, if they are not
+        1-D, if their dtypes do not match, or if the vector shape does not match
+        ``shape`` given the ``transpose`` flag.
+
+    See Also
+    --------
+    spfloat_csrmv : High-level wrapper with unit handling.
+    sparse_float_csrmm_p_call : Analogous primitive call for matrix-matrix
+        multiplication.
+
+    Notes
+    -----
+    Scalar weights (0-D arrays) are promoted to shape ``(1,)`` before dispatch.
+    This allows the backend kernels to distinguish between homogeneous
+    (``weights.size == 1``) and heterogeneous (``weights.size == nse``) weight
+    modes and select optimized code paths accordingly.
+
+    The output shape is determined by the ``transpose`` flag:
+
+    * ``transpose=False``: output shape ``(m,)``
+    * ``transpose=True``:  output shape ``(k,)``
+
+    where ``(m, k) = shape``.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._csr.sparse_float import sparse_float_csrmv_p_call
+        >>> data = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32)
+        >>> indices = jnp.array([0, 2, 1], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 3], dtype=jnp.int32)
+        >>> v = jnp.array([1.0, 0.5, 0.0], dtype=jnp.float32)
+        >>> (y,) = sparse_float_csrmv_p_call(
+        ...     data, indices, indptr, v, shape=(2, 3), transpose=False,
+        ... )
     """
     assert indices.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indices must be int32 or int64."
     assert indptr.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indptr must be int32 or int64."
@@ -868,7 +1068,7 @@ def _sparse_float_csrmm_pallas_kernel(
                 jax.lax.cond(i_k < num_k, _body, lambda: None)
 
         def kernel(data, indices, indptr, B):
-            # Transpose: input rows = shape[0] if it was (m,k) ? 
+            # Transpose: input rows = shape[0] if it was (m,k) ?
             # csrmm_p_call ensures shape matches B. If transpose, B has shape[0] rows.
             # So we iterate shape[0].
             launch_rows = shape[0]
@@ -886,7 +1086,7 @@ def _sparse_float_csrmm_pallas_kernel(
 
     else:
         #
-        # Gustavson algorithm: Sparse matrix–matrix multiplication is performed in a row-wise fashion.
+        # Gustavson algorithm: Sparse matrix-matrix multiplication is performed in a row-wise fashion.
         #
         # Each nonzero value in a row is multiplied by the nonzero values corresponding to the column index.
         # These values are summed and stored in a temporary row buffer based on their column indices.
@@ -1134,20 +1334,81 @@ def sparse_float_csrmm_p_call(
     transpose: bool,
     backend: Optional[str] = None,
 ):
-    """
-    Perform a call to the event CSR matrix-matrix multiplication custom operation.
+    """Invoke the low-level XLA custom kernel for sparse-float CSR matrix-matrix multiplication.
 
-    Args:
-        weights (jax.Array): Non-zero elements of the CSR sparse matrix.
-        indices (jax.Array): Column indices of non-zero elements in the CSR sparse matrix.
-        indptr (jax.Array): Index pointers of the CSR sparse matrix, indicating the start of each row.
-        B (jax.Array): A dense matrix.
-        shape (Sequence[int]): A sequence of length 2, representing the shape of the sparse matrix.
-        transpose (bool): A boolean indicating whether to transpose the sparse matrix before multiplication.
-        backend (str): Optional backend to use for the operation.
+    Validates inputs, normalizes scalar weights to a 1-D array, determines the
+    output shape, and dispatches to :data:`spfloat_csrmm_p`. Most users should
+    prefer the higher-level :func:`spfloat_csrmm` which additionally handles
+    physical units.
 
-    Returns:
-        jax.Array: The result of the matrix-matrix multiplication.
+    Parameters
+    ----------
+    weights : jax.Array
+        Non-zero element values of the CSR sparse matrix, with shape ``(nse,)``
+        or scalar. Scalars are promoted to shape ``(1,)``.
+    indices : jax.Array
+        Column indices of the non-zero elements, with shape ``(nse,)`` and
+        integer dtype (``int32``, ``int64``, ``uint32``, or ``uint64``).
+    indptr : jax.Array
+        Row pointer array, with shape ``(shape[0] + 1,)`` and the same dtype as
+        ``indices``.
+    B : jax.Array
+        Dense matrix to multiply, with shape ``(shape[0], n)`` if
+        ``transpose=True``, or ``(shape[1], n)`` otherwise.
+    shape : tuple of int
+        Shape of the sparse matrix as ``(m, k)``.
+    transpose : bool
+        If ``True``, compute ``A.T @ B`` instead of ``A @ B``.
+    backend : str or None, optional
+        Compute backend to use. One of ``'numba'``, ``'pallas'``, or ``None`` for
+        automatic selection.
+
+    Returns
+    -------
+    tuple of jax.Array
+        A single-element tuple containing the result matrix with shape
+        ``(shape[1], n)`` if ``transpose=True``, or ``(shape[0], n)`` otherwise.
+
+    Raises
+    ------
+    AssertionError
+        If ``indices`` or ``indptr`` have unsupported dtypes, if they are not
+        1-D, if their dtypes do not match, or if the first dimension of ``B``
+        does not match ``shape`` given the ``transpose`` flag.
+
+    See Also
+    --------
+    spfloat_csrmm : High-level wrapper with unit handling.
+    sparse_float_csrmv_p_call : Analogous primitive call for matrix-vector
+        multiplication.
+
+    Notes
+    -----
+    Scalar weights (0-D arrays) are promoted to shape ``(1,)`` before dispatch.
+    This allows the backend kernels to distinguish between homogeneous
+    (``weights.size == 1``) and heterogeneous (``weights.size == nse``) weight
+    modes and select optimized code paths accordingly.
+
+    The output shape is determined by the ``transpose`` flag:
+
+    * ``transpose=False``: output shape ``(m, n)``
+    * ``transpose=True``:  output shape ``(k, n)``
+
+    where ``(m, k) = shape`` and ``n = B.shape[1]``.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._csr.sparse_float import sparse_float_csrmm_p_call
+        >>> data = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32)
+        >>> indices = jnp.array([0, 2, 1], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 3], dtype=jnp.int32)
+        >>> B = jnp.ones((3, 4), dtype=jnp.float32)
+        >>> (C,) = sparse_float_csrmm_p_call(
+        ...     data, indices, indptr, B, shape=(2, 3), transpose=False,
+        ... )
     """
     assert indices.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indices must be int32 or int64."
     assert indptr.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indptr must be int32 or int64."

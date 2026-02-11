@@ -28,23 +28,54 @@ __all__ = [
 
 @register_pytree_node_class
 class SparseFloat(EventRepresentation):
-    """
-    A specialized array class for sparse floating-point values (0 or floating points).
+    """Array wrapper for sparse floating-point event vectors and matrices.
 
-    ``SparseFloat`` extends ``EventRepresentation`` to provide functionality for arrays with sparse
-    floating-point values, where zeros are treated as sparse (skipped during computation).
+    ``SparseFloat`` extends ``EventRepresentation`` to represent arrays where
+    most elements are zero and only a few carry floating-point values.  The
+    ``@`` operator skips zero entries during multiplication, which is
+    mathematically equivalent to dense matrix multiplication but exploits
+    the sparsity pattern for efficiency.
 
-    This class supports matrix multiplication operations with other arrays:
-    - ``SparseFloat`` @ dense matrix
-    - dense matrix @ ``SparseFloat``
-
-    The class is registered as a PyTree node for compatibility with JAX's
-    functional transformations.
+    Unlike ``BinaryArray``, where non-zero entries are implicitly 1, the
+    non-zero entries in a ``SparseFloat`` carry arbitrary floating-point
+    magnitudes that are multiplied with the corresponding weight elements.
 
     Parameters
     ----------
     value : array_like
-        The underlying sparse float array data.
+        The underlying sparse float array data.  Zero entries are treated as
+        inactive (skipped during computation).
+
+    Notes
+    -----
+    Given a sparse float vector ``x`` of shape ``(k,)`` and a dense weight
+    matrix ``W`` of shape ``(k, n)``, the forward multiplication ``x @ W``
+    computes:
+
+        y[j] = sum_{i : x[i] != 0} x[i] * W[i, j]
+
+    This is identical to the dense ``x @ W`` result but the implementation
+    iterates only over non-zero entries of ``x``.
+
+    The class is registered as a JAX PyTree node, so instances are compatible
+    with ``jax.jit``, ``jax.grad``, ``jax.vmap``, and other transformations.
+
+    See Also
+    --------
+    BinaryArray : Similar wrapper for binary (0/1) event arrays.
+    sfdvm : Underlying primitive for sparse-float vector @ dense matrix.
+    dsfmv : Underlying primitive for dense matrix @ sparse-float vector.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> import brainevent as be
+        >>> x = be.SparseFloat(jnp.array([0.0, 2.5, 0.0, 1.0]))
+        >>> W = jnp.ones((4, 3))
+        >>> x @ W  # only indices 1 and 3 contribute
+        Array([3.5, 3.5, 3.5], dtype=float32)
     """
     __module__ = 'brainevent'
 
@@ -52,6 +83,42 @@ class SparseFloat(EventRepresentation):
         super().__init__(value)
 
     def __matmul__(self, oc):
+        """Compute ``self @ oc`` using sparse-float event-driven multiplication.
+
+        Parameters
+        ----------
+        oc : array_like
+            Right operand, must be a 2-D dense weight matrix of shape
+            ``(k, n)`` where ``k == self.shape[-1]``.
+
+        Returns
+        -------
+        jax.Array
+            For a 1-D ``self`` of shape ``(k,)``: a vector of shape ``(n,)``.
+            For a 2-D ``self`` of shape ``(m, k)``: a matrix of shape ``(m, n)``.
+
+        Raises
+        ------
+        MathError
+            If ``self`` has more than 2 dimensions or is a scalar.
+        AssertionError
+            If ``oc`` is not 2-D or if inner dimensions do not match.
+
+        Notes
+        -----
+        For 1-D ``self``, the computation is:
+
+            y[j] = sum_{i : self[i] != 0} self[i] * oc[i, j]
+
+        For 2-D ``self``, the computation is:
+
+            Y[r, j] = sum_{i : self[r, i] != 0} self[r, i] * oc[i, j]
+
+        See Also
+        --------
+        sfdvm : Sparse-float vector @ dense matrix primitive.
+        sfdmm : Sparse-float matrix @ dense matrix primitive.
+        """
         if is_known_type(oc):
             oc = extract_raw_value(oc)
             # Check dimensions for both operands
@@ -82,6 +149,38 @@ class SparseFloat(EventRepresentation):
             return oc.__rmatmul__(self)
 
     def __rmatmul__(self, oc):
+        """Compute ``oc @ self`` using sparse-float event-driven multiplication.
+
+        Parameters
+        ----------
+        oc : array_like
+            Left operand, must be a 2-D dense weight matrix of shape
+            ``(m, k)`` where ``k == self.shape[0]``.
+
+        Returns
+        -------
+        jax.Array
+            For a 1-D ``self`` of shape ``(k,)``: a vector of shape ``(m,)``.
+            For a 2-D ``self`` of shape ``(k, n)``: a matrix of shape ``(m, n)``.
+
+        Raises
+        ------
+        MathError
+            If ``self`` has more than 2 dimensions or is a scalar.
+        AssertionError
+            If ``oc`` is not 2-D or if inner dimensions do not match.
+
+        Notes
+        -----
+        For 1-D ``self`` of shape ``(k,)``:
+
+            y[i] = sum_{j : self[j] != 0} oc[i, j] * self[j]
+
+        See Also
+        --------
+        dsfmv : Dense matrix @ sparse-float vector primitive.
+        dsfmm : Dense matrix @ sparse-float matrix primitive.
+        """
         if is_known_type(oc):
             oc = extract_raw_value(oc)
             # Check dimensions for both operands
@@ -112,16 +211,58 @@ class SparseFloat(EventRepresentation):
             return oc.__matmul__(self)
 
     def __imatmul__(self, oc):
+        """Compute in-place ``self @= oc``.
+
+        Parameters
+        ----------
+        oc : array_like
+            Right operand for the matrix multiplication.
+
+        Returns
+        -------
+        SparseFloat
+            A new ``SparseFloat`` wrapping the multiplication result.
+
+        Notes
+        -----
+        JAX arrays are immutable, so this does not perform a true in-place
+        update.  Instead it returns a new ``SparseFloat`` whose value is the
+        result of ``self @ oc``.
+        """
         if is_known_type(oc):
             return self.with_value(self.__matmul__(oc))
         return self.with_value(oc.__rmatmul__(self))
 
     def tree_flatten(self):
+        """Flatten this instance for JAX PyTree serialisation.
+
+        Returns
+        -------
+        children : tuple
+            A single-element tuple ``(value,)`` containing the dynamic
+            array leaf.
+        aux_data : dict
+            Empty dictionary (no static metadata).
+        """
         aux = dict()
         return (self._value,), aux
 
     @classmethod
     def tree_unflatten(cls, aux_data, flat_contents):
+        """Reconstruct a ``SparseFloat`` from its PyTree representation.
+
+        Parameters
+        ----------
+        aux_data : dict
+            Static metadata produced by ``tree_flatten``.
+        flat_contents : tuple
+            Dynamic leaves — the underlying array.
+
+        Returns
+        -------
+        SparseFloat
+            A new instance wrapping the given array.
+        """
         value, = flat_contents
         obj = object.__new__(cls)
         obj._value = value

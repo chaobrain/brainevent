@@ -47,32 +47,90 @@ __all__ = [
 @namescope(static_argnames=['transpose'])
 def indexed_binary_densemv(weights, binary_index, *, transpose, backend: Optional[str] = None):
     """
-    Performs indexed binary dense matrix-vector multiplication.
+    Perform indexed binary dense matrix-vector multiplication.
 
-    When ``transpose=False``, computes ``weights[m,k] @ binary_index -> out[m]``
-    by summing the columns of ``weights`` selected by the spike indices.
+    Accumulates rows or columns of a dense weight matrix selected by
+    sparse spike indices. This is an event-driven operation where only
+    the weight entries corresponding to active spikes contribute to the
+    output.
 
-    When ``transpose=True``, computes ``binary_index @ weights[k,n] -> out[n]``
-    by summing the rows of ``weights`` selected by the spike indices.
+    When ``transpose=False``, sums the columns of ``weights`` at the
+    positions given by ``binary_index.spike_indices``, producing a vector
+    of length ``m``.
+
+    When ``transpose=True``, sums the rows of ``weights`` at the
+    positions given by ``binary_index.spike_indices``, producing a vector
+    of length ``n``.
 
     Parameters
     ----------
-    weights : ndarray or compatible
+    weights : array_like
         The weight matrix. Shape ``(m, k)`` when ``transpose=False``,
-        or ``(k, n)`` when ``transpose=True``. Can be a ``brainunit`` quantity.
+        or ``(k, n)`` when ``transpose=True``. Can be a ``brainunit``
+        quantity.
     binary_index : BinaryArray
-        An object representing a binary vector in sparse format with attributes:
-        ``value``, ``spike_indices``, ``spike_count``.
+        An object representing a binary vector in sparse format with
+        attributes:
+
+        - ``value`` : array of shape ``(k,)`` with spike values.
+        - ``spike_indices`` : 1-D integer array of active spike indices.
+        - ``spike_count`` : 1-D array of shape ``(1,)`` giving the number
+          of valid entries in ``spike_indices``.
     transpose : bool
-        If False, compute ``weights @ binary``. If True, compute ``binary @ weights``.
+        If False, accumulate selected columns of ``weights``.
+        If True, accumulate selected rows of ``weights``.
     backend : str, optional
-        Backend to use for the computation.
+        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` (auto-select).
 
     Returns
     -------
-    result : ndarray or compatible
+    result : array_like
         Result vector. Shape ``(m,)`` when ``transpose=False``,
-        or ``(n,)`` when ``transpose=True``.
+        or ``(n,)`` when ``transpose=True``. Carries the unit of
+        ``weights`` if applicable.
+
+    Raises
+    ------
+    AssertionError
+        If the spike dimension does not match the corresponding weight
+        dimension.
+
+    See Also
+    --------
+    indexed_binary_densemm : Batched (matrix-matrix) variant.
+    indexed_binary_densemv_p_call : Low-level primitive call.
+
+    Notes
+    -----
+    Only the first ``spike_count`` entries of ``spike_indices`` are used.
+    Indices outside the valid range of the weight matrix dimension are
+    silently ignored.
+
+    When ``transpose=False``, the operation computes:
+
+    ``out[i] = sum_{p=0}^{count-1} W[i, indices[p]]``
+
+    where ``indices`` is the array of active spike positions and ``count``
+    is the number of valid entries.
+
+    When ``transpose=True``, the operation computes:
+
+    ``out[j] = sum_{p=0}^{count-1} W[indices[p], j]``
+
+    This indexed form avoids iterating over the full spike vector and is
+    efficient when the number of active spikes is much smaller than the
+    total spike dimension ``k``.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.indexed_binary import indexed_binary_densemv
+        >>> weights = jnp.ones((4, 3), dtype=jnp.float32)
+        >>> # Assuming binary_index has spike_indices=[0, 2], spike_count=[2]
+        >>> # transpose=False sums columns 0 and 2 of weights -> shape (4,)
     """
     weight_val, wunit = u.split_mantissa_unit(weights)
     spikes = binary_index.value
@@ -328,6 +386,80 @@ def _mv_benchmark_data(*, platform):
 
 
 def indexed_binary_densemv_p_call(spikes, indices, count, weights, *, transpose, backend: Optional[str] = None):
+    """
+    Low-level primitive call for indexed binary dense matrix-vector multiplication.
+
+    This function validates input shapes, constructs the output shape
+    descriptor, and invokes the ``indexed_binary_densemv_p`` JAX primitive.
+    Unlike :func:`indexed_binary_densemv`, this function operates on raw
+    numerical arrays without ``brainunit`` unit handling and accepts the
+    sparse index components directly rather than a ``BinaryArray`` object.
+
+    Parameters
+    ----------
+    spikes : jax.Array
+        Spike values array with shape ``(k,)``.
+    indices : jax.Array
+        Integer array of active spike indices with shape ``(n_spikes,)``.
+    count : jax.Array
+        Integer array of shape ``(1,)`` indicating the number of valid
+        entries in ``indices``.
+    weights : jax.Array
+        The weight matrix. Shape ``(m, k)`` when ``transpose=False``,
+        or ``(k, n)`` when ``transpose=True``.
+    transpose : bool
+        If False, accumulate selected columns of ``weights`` producing
+        shape ``(m,)``. If True, accumulate selected rows of ``weights``
+        producing shape ``(n,)``.
+    backend : str, optional
+        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` (auto-select).
+
+    Returns
+    -------
+    result : list of jax.Array
+        A single-element list containing the result vector.
+
+    Raises
+    ------
+    AssertionError
+        If ``spikes`` is not 1-D, ``indices`` is not 1-D, ``count`` does
+        not have shape ``(1,)``, ``weights`` is not 2-D, or the spike
+        dimension does not match the corresponding weight dimension.
+
+    See Also
+    --------
+    indexed_binary_densemv : High-level function with unit handling.
+
+    Notes
+    -----
+    This is the low-level entry point that bypasses unit handling and
+    accepts the sparse index components directly. The mathematical
+    operation is identical to :func:`indexed_binary_densemv`:
+
+    When ``transpose=False``:
+
+    ``out[i] = sum_{p=0}^{count-1} weights[i, indices[p]]``
+
+    When ``transpose=True``:
+
+    ``out[j] = sum_{p=0}^{count-1} weights[indices[p], j]``
+
+    The function returns a single-element list to conform to the JAX
+    primitive output convention.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.indexed_binary import indexed_binary_densemv_p_call
+        >>> spikes = jnp.ones(5, dtype=jnp.float32)
+        >>> indices = jnp.array([0, 2, 4], dtype=jnp.int32)
+        >>> count = jnp.array([3], dtype=jnp.int32)
+        >>> weights = jnp.ones((5, 3), dtype=jnp.float32)
+        >>> indexed_binary_densemv_p_call(spikes, indices, count, weights, transpose=True)
+    """
     assert spikes.ndim == 1, "spikes should be 1D (n_spikes,)"
     assert indices.ndim == 1, "indices should be 1D (n_spikes,)"
     assert count.ndim == 1 and count.shape[0] == 1, "count should be 1D (1,)"
@@ -386,33 +518,90 @@ indexed_binary_densemv_p.def_benchmark_data(_mv_benchmark_data)
 @namescope(static_argnames=['transpose'])
 def indexed_binary_densemm(weights, binary_arr, *, transpose, backend: Optional[str] = None):
     """
-    Performs indexed binary dense matrix-matrix multiplication (batched).
+    Perform batched indexed binary dense matrix-matrix multiplication.
 
-    When ``transpose=False``, computes ``weights[m,k] @ binary_arr -> out[batch, m]``
-    by summing the columns of ``weights`` selected by each batch's spike indices.
+    For each sample in the batch, accumulates rows or columns of a dense
+    weight matrix selected by that sample's sparse spike indices.
 
-    When ``transpose=True``, computes ``binary_arr @ weights[k,n] -> out[batch, n]``
-    by summing the rows of ``weights`` selected by each batch's spike indices.
+    When ``transpose=False``, for each batch element ``b``, sums the
+    columns of ``weights`` at positions given by
+    ``binary_arr.spike_indices[b]``, producing an output row of length
+    ``m``.
+
+    When ``transpose=True``, for each batch element ``b``, sums the rows
+    of ``weights`` at positions given by
+    ``binary_arr.spike_indices[b]``, producing an output row of length
+    ``n``.
 
     Parameters
     ----------
-    weights : ndarray or compatible
+    weights : array_like
         The weight matrix. Shape ``(m, k)`` when ``transpose=False``,
-        or ``(k, n)`` when ``transpose=True``. Can be a ``brainunit`` quantity.
+        or ``(k, n)`` when ``transpose=True``. Can be a ``brainunit``
+        quantity.
     binary_arr : BinaryArray
-        An object representing a batch of binary vectors in sparse format with attributes:
-        ``value`` (batch, n_spikes), ``spike_indices`` (batch, n_spikes),
-        ``spike_count`` (batch,).
+        An object representing a batch of binary vectors in sparse format
+        with attributes:
+
+        - ``value`` : array of shape ``(batch, k)`` with spike values.
+        - ``spike_indices`` : integer array of shape ``(batch, n_spikes)``
+          with active spike indices per sample.
+        - ``spike_count`` : integer array of shape ``(batch,)`` giving the
+          number of valid entries per sample.
     transpose : bool
-        If False, compute ``weights @ binary``. If True, compute ``binary @ weights``.
+        If False, accumulate selected columns of ``weights``.
+        If True, accumulate selected rows of ``weights``.
     backend : str, optional
-        Backend to use for the computation.
+        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` (auto-select).
 
     Returns
     -------
-    result : ndarray or compatible
+    result : array_like
         Result matrix. Shape ``(batch, m)`` when ``transpose=False``,
-        or ``(batch, n)`` when ``transpose=True``.
+        or ``(batch, n)`` when ``transpose=True``. Carries the unit of
+        ``weights`` if applicable.
+
+    Raises
+    ------
+    AssertionError
+        If the spike dimension does not match the corresponding weight
+        dimension.
+
+    See Also
+    --------
+    indexed_binary_densemv : Unbatched (matrix-vector) variant.
+    indexed_binary_densemm_p_call : Low-level primitive call.
+
+    Notes
+    -----
+    For each batch element, only the first ``spike_count[b]`` entries of
+    ``spike_indices[b]`` are used. Indices outside the valid range of the
+    weight matrix dimension are silently ignored.
+
+    When ``transpose=False``, the operation computes for each batch
+    element ``b``:
+
+    ``out[b, i] = sum_{p=0}^{count[b]-1} W[i, indices[b, p]]``
+
+    When ``transpose=True``, the operation computes for each batch
+    element ``b``:
+
+    ``out[b, j] = sum_{p=0}^{count[b]-1} W[indices[b, p], j]``
+
+    This indexed form avoids iterating over the full spike vector and is
+    efficient when the number of active spikes per sample is much smaller
+    than the total spike dimension ``k``.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.indexed_binary import indexed_binary_densemm
+        >>> weights = jnp.ones((4, 3), dtype=jnp.float32)
+        >>> # Assuming binary_arr has spike_indices=[[0,2],[1,2]], spike_count=[2,2]
+        >>> # transpose=False sums columns for each batch -> shape (2, 4)
     """
     weights, wunit = u.split_mantissa_unit(weights)
     spikes = binary_arr.value
@@ -666,6 +855,83 @@ def _mm_benchmark_data(*, platform):
 
 
 def indexed_binary_densemm_p_call(spikes, indices, count, weights, *, transpose, backend: Optional[str] = None):
+    """
+    Low-level primitive call for batched indexed binary dense matrix-matrix multiplication.
+
+    This function validates input shapes, constructs the output shape
+    descriptor, and invokes the ``indexed_binary_densemm_p`` JAX primitive.
+    Unlike :func:`indexed_binary_densemm`, this function operates on raw
+    numerical arrays without ``brainunit`` unit handling and accepts the
+    sparse index components directly rather than a ``BinaryArray`` object.
+
+    Parameters
+    ----------
+    spikes : jax.Array
+        Spike values array with shape ``(batch, k)``.
+    indices : jax.Array
+        Integer array of active spike indices with shape
+        ``(batch, n_spikes)``.
+    count : jax.Array
+        Integer array of shape ``(batch,)`` indicating the number of valid
+        entries in ``indices`` for each batch element.
+    weights : jax.Array
+        The weight matrix. Shape ``(m, k)`` when ``transpose=False``,
+        or ``(k, n)`` when ``transpose=True``.
+    transpose : bool
+        If False, accumulate selected columns of ``weights`` producing
+        shape ``(batch, m)``. If True, accumulate selected rows of
+        ``weights`` producing shape ``(batch, n)``.
+    backend : str, optional
+        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` (auto-select).
+
+    Returns
+    -------
+    result : list of jax.Array
+        A single-element list containing the result matrix with shape
+        ``(batch, m)`` or ``(batch, n)``.
+
+    Raises
+    ------
+    AssertionError
+        If ``spikes`` is not 2-D, ``indices`` is not 2-D, ``count`` shape
+        does not match the batch size, ``weights`` is not 2-D, or the spike
+        dimension does not match the corresponding weight dimension.
+
+    See Also
+    --------
+    indexed_binary_densemm : High-level function with unit handling.
+
+    Notes
+    -----
+    This is the low-level entry point that bypasses unit handling and
+    accepts the sparse index components directly. The mathematical
+    operation is identical to :func:`indexed_binary_densemm`:
+
+    When ``transpose=False`` for each batch element ``b``:
+
+    ``out[b, i] = sum_{p=0}^{count[b]-1} weights[i, indices[b, p]]``
+
+    When ``transpose=True`` for each batch element ``b``:
+
+    ``out[b, j] = sum_{p=0}^{count[b]-1} weights[indices[b, p], j]``
+
+    The function returns a single-element list to conform to the JAX
+    primitive output convention.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.indexed_binary import indexed_binary_densemm_p_call
+        >>> spikes = jnp.ones((2, 5), dtype=jnp.float32)
+        >>> indices = jnp.array([[0, 2, 4, 0, 0],
+        ...                      [1, 3, 0, 0, 0]], dtype=jnp.int32)
+        >>> count = jnp.array([3, 2], dtype=jnp.int32)
+        >>> weights = jnp.ones((5, 3), dtype=jnp.float32)
+        >>> indexed_binary_densemm_p_call(spikes, indices, count, weights, transpose=True)
+    """
     assert spikes.ndim == 2, "spikes should be 2D (batch_size, n_spikes)"
     assert indices.ndim == 2, "indices should be 2D (batch_size, n_spikes)"
     assert count.ndim == 1 and count.shape[0] == spikes.shape[0], "count should be 1D (batch_size,)"

@@ -76,6 +76,9 @@ def jits(
         Controls whether the parallelization order is oriented along the matrix columns:
         - True: Sampling index along collum dimension
         - False: Sampling index along row dimension
+    backend : str or None, optional
+        The computation backend to use. If ``None``, the default backend is
+        selected automatically.
 
     Returns
     -------
@@ -84,31 +87,50 @@ def jits(
         is True, the matrix is transposed, and the output shape is ``shape``.
         Otherwise, the output shape is ``(shape[1], shape[0])``.
 
+    Raises
+    ------
+    ValueError
+        If ``prob`` is not a scalar, is not finite, or is outside ``[0, 1]``.
+
+    See Also
+    --------
+    jitsmv : Matrix-vector product with JIT-generated scalar matrix.
+    jitsmm : Matrix-matrix product with JIT-generated scalar matrix.
+
     Notes
     -----
-    The matrix is generated using a probabilistic sampling approach rather than
-    explicitly storing all values. This allows efficient operations with very large
-    sparse matrices that would otherwise be impractical to store in memory.
+    The matrix ``W`` is defined element-wise as:
 
-    When using corder=True (default), the matrix generated with transpose=True
-    will generally be different from the transpose of the matrix generated with transpose=False.
-    Set corder=False if exact correspondence between these two cases is required.
+    ``W[i, j] = w * B[i, j]``
+
+    where ``w`` is the scalar weight and ``B[i, j] ~ Bernoulli(prob)`` is a
+    binary mask fully determined by the seed. The mask is generated using a
+    deterministic PRNG that, for a given ``(seed, i, j)`` triple, always
+    produces the same outcome.
+
+    The expected number of non-zeros is ``prob * m * n`` where ``(m, n)`` is
+    the matrix shape. The connection length parameter ``clen = 2 / prob``
+    controls the average stride between successive non-zero entries during
+    the sampling loop.
+
+    When using ``corder=True`` (default), the matrix generated with
+    ``transpose=True`` will generally be different from the transpose of the
+    matrix generated with ``transpose=False``. Set ``corder=False`` if exact
+    correspondence between these two cases is required.
 
     Examples
     --------
-    >>> import jax.numpy as jnp
-    >>>
-    >>> # Generate a 1000x500 sparse matrix with 10% connection probability
-    >>> rng_seed = 42
-    >>> weight = 0.01  # All connections have this value
-    >>> matrix = jits(weight, prob=0.1, seed=rng_seed,
-    ...                           shape=(1000, 500))
-    >>>
-    >>> # With units
-    >>> import brainunit as u
-    >>> weight_with_units = 0.01 * u.mA
-    >>> matrix_with_units = jits(weight_with_units, prob=0.1,
-    ...                                      seed=rng_seed, shape=(1000, 500))
+
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> import brainunit as u
+        >>> from brainevent._jit_scalar.float import jits
+        >>> # Generate a 1000x500 sparse matrix with 10% connection probability
+        >>> matrix = jits(0.01, prob=0.1, seed=42, shape=(1000, 500))
+        >>> matrix.shape  # (1000, 500)
+        >>> # With units
+        >>> matrix_u = jits(0.01 * u.mA, prob=0.1, seed=42, shape=(1000, 500))
     """
     weight, unitd = u.split_mantissa_unit(weight)
     clen = _initialize_conn_length(prob)
@@ -172,12 +194,53 @@ def jitsmv(
         Controls whether the parallelization order is oriented along the matrix columns:
         - True: Sampling index along collum dimension
         - False: Sampling index along row dimension
+    backend : str or None, optional
+        The computation backend to use. If ``None``, the default backend is
+        selected automatically.
 
     Returns
     -------
     out: Array, ndarray, Quantity
         The output of :math:`y = M @ v` if ``transpose=False``,
         or the output of :math:`y = M^T @ v` if ``transpose=True``.
+
+    Raises
+    ------
+    ValueError
+        If ``prob`` is not a scalar, is not finite, or is outside ``[0, 1]``.
+    AssertionError
+        If the matrix shape and vector length are incompatible.
+
+    See Also
+    --------
+    jits : Generate the full JIT scalar matrix as a dense array.
+    jitsmm : Matrix-matrix product with JIT-generated scalar matrix.
+    binary_jitsmv : Event-driven (binary) variant of this operation.
+
+    Notes
+    -----
+    The operation computes:
+
+    ``y[i] = sum_{j in C(i)} w * v[j]``
+
+    where ``w`` is the scalar weight, ``v`` is the input vector, and
+    ``C(i)`` is the deterministic random connection set for row ``i``
+    (determined by the seed and connection probability). This is equivalent
+    to ``y = M @ v`` where ``M[i, j] = w * Bernoulli(prob)``.
+
+    The weight ``w`` and vector ``v`` may carry physical units from
+    ``brainunit``; the output will have the product of their units.
+
+    Examples
+    --------
+
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._jit_scalar.float import jitsmv
+        >>> v = jnp.ones(50)
+        >>> result = jitsmv(0.01, 0.1, v, seed=42, shape=(100, 50))
+        >>> result.shape  # (100,)
     """
 
     seed = _initialize_seed(seed)
@@ -243,12 +306,53 @@ def jitsmm(
         Controls whether the parallelization order is oriented along the matrix columns:
         - True: Sampling index along collum dimension
         - False: Sampling index along row dimension
+    backend : str or None, optional
+        The computation backend to use. If ``None``, the default backend is
+        selected automatically.
 
     Returns
     -------
     out: Array, ndarray
         The output of :math:`y = M @ B` if ``transpose=False``,
         or the output of :math:`y = M^T @ B` if ``transpose=True``.
+
+    Raises
+    ------
+    ValueError
+        If ``prob`` is not a scalar, is not finite, or is outside ``[0, 1]``.
+    AssertionError
+        If the matrix shape and input matrix ``B`` dimensions are incompatible.
+
+    See Also
+    --------
+    jits : Generate the full JIT scalar matrix as a dense array.
+    jitsmv : Matrix-vector product with JIT-generated scalar matrix.
+    binary_jitsmm : Event-driven (binary) variant of this operation.
+
+    Notes
+    -----
+    The operation computes:
+
+    ``Y[i, k] = sum_{j in C(i)} w * B[j, k]``
+
+    where ``w`` is the scalar weight, ``B`` is the input matrix, and
+    ``C(i)`` is the deterministic random connection set for row ``i``.
+    This is equivalent to ``Y = M @ B`` where
+    ``M[i, j] = w * Bernoulli(prob)``.
+
+    This is mathematically equivalent to performing ``jitsmv`` for each
+    column of ``B``, but is implemented more efficiently as a single kernel.
+
+    Examples
+    --------
+
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._jit_scalar.float import jitsmm
+        >>> B = jnp.ones((50, 10))
+        >>> result = jitsmm(0.01, 0.1, B, seed=42, shape=(100, 50))
+        >>> result.shape  # (100, 10)
     """
 
     seed = _initialize_seed(seed)
@@ -272,6 +376,24 @@ def _jitc_homo_matrix_numba_kernel(
     corder: bool = True,
     **kwargs
 ):
+    """
+    Build a Numba CPU kernel for generating a dense JIT scalar connectivity matrix.
+
+    Parameters
+    ----------
+    corder : bool, default=True
+        If True, iterate over rows as the outer loop (each row samples column
+        indices). If False, iterate over columns as the outer loop (each column
+        samples row indices).
+    **kwargs : dict
+        Additional keyword arguments, must include ``'outs'`` specifying
+        the output shape/dtype information.
+
+    Returns
+    -------
+    callable
+        A kernel function with signature ``(weight, clen, seed) -> tuple``.
+    """
     import numba
 
     if corder:
@@ -321,6 +443,30 @@ def _jitc_homo_matrix_warp_kernel(
     corder: bool = True,
     **kwargs
 ):
+    """
+    Build a Warp GPU kernel for generating a dense JIT scalar connectivity matrix.
+
+    Parameters
+    ----------
+    weight_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the weight array.
+    clen_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the connection length array.
+    seed_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the random seed.
+    out_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the output matrix.
+    corder : bool, default=True
+        If True, each GPU thread handles one row. If False, each thread
+        handles one column.
+    **kwargs : dict
+        Additional keyword arguments, must include ``'outs'``.
+
+    Returns
+    -------
+    callable
+        A kernel function with signature ``(weight, clen, seed) -> tuple``.
+    """
     import warp
     from warp.jax_experimental import jax_kernel
 
@@ -386,6 +532,24 @@ def _jitc_homo_matrix_pallas_kernel(
     corder: bool = True,
     **kwargs
 ):
+    """
+    Build a Pallas (Triton) GPU kernel for generating a dense JIT scalar connectivity matrix.
+
+    Parameters
+    ----------
+    out_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the output matrix.
+    corder : bool, default=True
+        If True, each Pallas program handles one row. If False, each program
+        handles one column.
+    **kwargs : dict
+        Additional keyword arguments, must include ``'outs'``.
+
+    Returns
+    -------
+    callable
+        A kernel function with signature ``(weight, clen, seed) -> tuple``.
+    """
     from jax.experimental import pallas as pl
 
     dim = out_info.shape[0] if corder else out_info.shape[1]
@@ -446,12 +610,66 @@ def _jitc_homo_matrix_pallas_kernel(
 
 
 def _jitc_homo_matrix_jvp_weight(weight_dot, weight, clen, seed, *, shape, transpose: bool, corder: bool, **kwargs):
+    """
+    JVP rule for the weight argument of the JIT scalar matrix generation primitive.
+
+    Parameters
+    ----------
+    weight_dot : jax.Array
+        The tangent vector for the weight.
+    weight, clen, seed : jax.Array
+        Primal values of the primitive inputs.
+    shape : tuple of int
+        The matrix shape.
+    transpose : bool
+        Whether the matrix is transposed.
+    corder : bool
+        Column-order flag.
+    **kwargs : dict
+        Must contain ``'backend'``.
+
+    Returns
+    -------
+    tuple
+        The JVP result as a tuple of arrays.
+    """
     return jits_p_call(
         weight_dot, clen, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
     )
 
 
 def _jitc_homo_matrix_transpose(ct, weight, clen, seed, *, shape, transpose: bool, corder: bool, **kwargs):
+    """
+    Transpose (adjoint) rule for the JIT scalar matrix generation primitive.
+
+    Computes the weight gradient by generating a unit-weight matrix and
+    performing a sum-of-products with the cotangent.
+
+    Parameters
+    ----------
+    ct : tuple
+        The cotangent values from the output.
+    weight, clen, seed : jax.Array
+        Primal or undefined-primal values.
+    shape : tuple of int
+        The matrix shape.
+    transpose : bool
+        Whether the forward pass generated a transposed matrix.
+    corder : bool
+        Column-order flag used in the forward pass.
+    **kwargs : dict
+        Must contain ``'backend'``.
+
+    Returns
+    -------
+    tuple
+        Cotangent values for ``(weight, clen, seed)``.
+
+    Raises
+    ------
+    NotImplementedError
+        If ``weight`` is not the undefined primal.
+    """
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
     ct = ct[0]
@@ -467,6 +685,27 @@ def _jitc_homo_matrix_transpose(ct, weight, clen, seed, *, shape, transpose: boo
 
 
 def _jitc_homo_matrix_batching(args, axes, **kwargs):
+    """
+    Batching (vmap) rule for the JIT scalar matrix generation primitive.
+
+    When vectorizing over the weight dimension, generates the matrix once with
+    unit weight and then scales by each batched weight value.
+
+    Parameters
+    ----------
+    args : tuple
+        The batched arguments ``(weight, clen, seed)``.
+    axes : tuple
+        The batch axes for each argument.
+    **kwargs : dict
+        Keyword arguments including ``'shape'``, ``'transpose'``, ``'corder'``,
+        and ``'backend'``.
+
+    Returns
+    -------
+    tuple
+        A 2-tuple of ``(results, out_axes)``.
+    """
     if tuple(axes)[1:] == (None, None):
         # vmap on weight data
         r = jits_p_call(
@@ -487,6 +726,20 @@ def _jitc_homo_matrix_batching(args, axes, **kwargs):
 
 
 def _jits_benchmark_data(*, platform):
+    """
+    Generate benchmark configurations for the JIT scalar matrix generation primitive.
+
+    Parameters
+    ----------
+    platform : str
+        The target platform (e.g., ``'cpu'``, ``'gpu'``).
+
+    Returns
+    -------
+    list of BenchmarkConfig
+        A list of benchmark configurations covering combinations of
+        transpose and corder.
+    """
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -515,6 +768,53 @@ def jits_p_call(
     corder: bool,
     backend: Optional[str] = None,
 ):
+    r"""
+    Low-level implementation function for generating a JIT scalar connectivity matrix.
+
+    This function prepares inputs and calls the XLA custom kernel primitive that
+    generates a dense matrix with homogeneous weight values at stochastically
+    determined positions. The connectivity pattern is produced on-the-fly using the
+    provided seed and connection length parameter.
+
+    Parameters
+    ----------
+    weight : jax.Array or float
+        Scalar weight value for non-zero connections. Will be converted to at
+        least a 1-D array internally.
+    clen : jax.Array or float
+        Connection length parameter (approximately ``2 / prob``). Will be
+        converted to at least a 1-D array internally.
+    seed : jax.Array or int
+        Random seed for reproducible matrix generation. Will be converted to
+        at least a 1-D array internally.
+    shape : tuple of int
+        The shape of the matrix as ``(num_rows, num_cols)``.
+    transpose : bool
+        If True, generate the transposed matrix (shape is reversed).
+    corder : bool
+        Column-order flag controlling the parallelization strategy.
+    backend : str or None, optional
+        The computation backend to use. If ``None``, the default backend is
+        selected automatically.
+
+    Returns
+    -------
+    tuple
+        A tuple containing the generated dense matrix. If ``transpose=False``,
+        the output shape is ``shape``; if ``transpose=True``, the output shape
+        is ``shape[::-1]``.
+
+    Notes
+    -----
+    This is an internal implementation function. Use the higher-level ``jits``
+    for a user-friendly interface with unit handling.
+
+    See Also
+    --------
+    jits : High-level function with unit handling.
+    jitsmv_p_call : Low-level matrix-vector product variant.
+    jitsmm_p_call : Low-level matrix-matrix product variant.
+    """
     weight = jnp.atleast_1d(weight)
     clen = jnp.atleast_1d(clen)
     seed = jnp.atleast_1d(seed)
@@ -557,6 +857,26 @@ def _jitsmv_numba_kernel(
     corder: bool = True,
     **kwargs
 ):
+    """
+    Build a Numba CPU kernel for float JIT scalar matrix-vector product.
+
+    Parameters
+    ----------
+    corder : bool, default=True
+        If True, iterate over columns (output dimension) as the outer loop,
+        accumulating the weighted sum of input vector elements. If False,
+        iterate over rows (input dimension) as the outer loop, scattering
+        weighted values to the output via accumulation.
+    **kwargs : dict
+        Additional keyword arguments, must include ``'outs'`` specifying
+        the output shape/dtype information.
+
+    Returns
+    -------
+    callable
+        A kernel function with signature
+        ``(weight, clen, vector, seed, _) -> tuple``.
+    """
     import numba
 
     if corder:
@@ -607,6 +927,33 @@ def _jitsmv_warp_kernel(
     corder: bool = True,
     **kwargs
 ):
+    """
+    Build a Warp GPU kernel for float JIT scalar matrix-vector product.
+
+    Parameters
+    ----------
+    weight_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the weight array.
+    clen_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the connection length array.
+    vector_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the input vector.
+    seed_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the random seed.
+    out_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the output array.
+    corder : bool, default=True
+        If True, each GPU thread handles one output element.
+        If False, each thread handles one input element using atomic additions.
+    **kwargs : dict
+        Additional keyword arguments, must include ``'outs'``.
+
+    Returns
+    -------
+    callable
+        A kernel function with signature
+        ``(weight, clen, vector, seed, _) -> tuple``.
+    """
     import warp
     from warp.jax_experimental import jax_kernel
 
@@ -673,6 +1020,27 @@ def _jitsmv_pallas_kernel(
     corder: bool = True,
     **kwargs
 ):
+    """
+    Build a Pallas (Triton) GPU kernel for float JIT scalar matrix-vector product.
+
+    Parameters
+    ----------
+    vector_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the input vector.
+    out_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the output array.
+    corder : bool, default=True
+        If True, vectorize over output elements. If False, vectorize over
+        input elements with atomic additions.
+    **kwargs : dict
+        Additional keyword arguments, must include ``'outs'``.
+
+    Returns
+    -------
+    callable
+        A kernel function with signature
+        ``(weight, clen, vector, seed, _) -> tuple``.
+    """
     from jax.experimental import pallas as pl
     from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
@@ -781,18 +1149,97 @@ def _jitsmv_pallas_kernel(
 
 
 def _jitsmv_jvp_v(v_dot, weight, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
+    """
+    JVP rule for the vector argument of the float JIT scalar matrix-vector product.
+
+    Parameters
+    ----------
+    v_dot : jax.Array
+        The tangent vector for the input vector.
+    weight, clen, vector, seed, _ : jax.Array
+        Primal values of the primitive inputs.
+    shape : tuple of int
+        The matrix shape.
+    transpose : bool
+        Whether the matrix is transposed.
+    corder : bool
+        Column-order flag.
+    **kwargs : dict
+        Must contain ``'backend'``.
+
+    Returns
+    -------
+    tuple
+        The JVP result as a tuple of arrays.
+    """
     return jitsmv_p_call(
         weight, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
     )
 
 
 def _jitsmv_jvp_weights(w_dot, weight, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
+    """
+    JVP rule for the weight argument of the float JIT scalar matrix-vector product.
+
+    Parameters
+    ----------
+    w_dot : jax.Array
+        The tangent vector for the weight.
+    weight, clen, vector, seed, _ : jax.Array
+        Primal values of the primitive inputs.
+    shape : tuple of int
+        The matrix shape.
+    transpose : bool
+        Whether the matrix is transposed.
+    corder : bool
+        Column-order flag.
+    **kwargs : dict
+        Must contain ``'backend'``.
+
+    Returns
+    -------
+    tuple
+        The JVP result as a tuple of arrays.
+    """
     return jitsmv_p_call(
         w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
     )
 
 
 def _jitsmv_transpose_rules(ct, weight, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
+    """
+    Transpose (adjoint) rule for the float JIT scalar matrix-vector product.
+
+    Implements the VJP backward pass. When the vector is the undefined primal,
+    computes the cotangent by running the transpose of the forward pass. When the
+    weight is the undefined primal, computes the weight gradient via a
+    sum-of-products reduction.
+
+    Parameters
+    ----------
+    ct : tuple
+        The cotangent values from the output.
+    weight, clen, vector, seed, _ : jax.Array
+        Primal or undefined-primal values.
+    shape : tuple of int
+        The matrix shape.
+    transpose : bool
+        Whether the forward pass used a transposed matrix.
+    corder : bool
+        Column-order flag used in the forward pass.
+    **kwargs : dict
+        Must contain ``'backend'``.
+
+    Returns
+    -------
+    tuple
+        Cotangent values for ``(weight, clen, vector, seed, _)``.
+
+    Raises
+    ------
+    NotImplementedError
+        If neither ``vector`` nor ``weight`` is the undefined primal.
+    """
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
 
@@ -834,6 +1281,27 @@ def _jitsmv_batching(
     axes,
     **kwargs
 ):
+    """
+    Batching (vmap) rule for the float JIT scalar matrix-vector product.
+
+    Handles vectorized mapping over the input vector dimension by dispatching
+    to the matrix-matrix product primitive ``jitsmm_p_call``.
+
+    Parameters
+    ----------
+    args : tuple
+        The batched arguments ``(weight, clen, vector, seed, _)``.
+    axes : tuple
+        The batch axes for each argument.
+    **kwargs : dict
+        Keyword arguments including ``'shape'``, ``'transpose'``, ``'corder'``,
+        and ``'backend'``.
+
+    Returns
+    -------
+    tuple
+        A 2-tuple of ``(results, out_axes)``.
+    """
     if tuple(axes) == (None, None, 0, None, None):
         assert args[2].ndim == 2, 'Batching axis 0 requires 2D input.'
         r = jitsmm_p_call(
@@ -865,6 +1333,20 @@ def _jitsmv_batching(
 
 
 def _jitsmv_benchmark_data(*, platform):
+    """
+    Generate benchmark configurations for the float JIT scalar matrix-vector product.
+
+    Parameters
+    ----------
+    platform : str
+        The target platform (e.g., ``'cpu'``, ``'gpu'``).
+
+    Returns
+    -------
+    list of BenchmarkConfig
+        A list of benchmark configurations covering combinations of
+        transpose and corder.
+    """
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -922,27 +1404,35 @@ def jitsmv_p_call(
         - True: Parallelize along output dimension (typically faster)
         - False: Parallelize along input dimension (ensures reproducibility between
                  transposed operations, but may be slower)
+    backend : str or None, optional
+        The computation backend to use. If ``None``, the default backend is
+        selected automatically.
 
     Returns
     -------
     tuple
         A tuple containing the output array from the primitive operation.
         The output shape is determined by the matrix shape and transpose flag:
-        - If ``transpose=False``: output shape is (shape[0],)
-        - If ``transpose=True``: output shape is (shape[1],)
+        - If ``transpose=False``: output shape is ``(shape[0],)``
+        - If ``transpose=True``: output shape is ``(shape[1],)``
 
     Notes
     -----
     This function is intended as an internal implementation detail and is used by the
-    higher-level `jitc_matvec_homo` function, which properly handles units and provides
+    higher-level ``jitsmv`` function, which properly handles units and provides
     a more user-friendly interface.
 
     The operation is implemented as an XLA custom kernel to achieve high performance on
     both CPU and GPU. The primitive supports JAX transformations including grad, vmap, and jit.
 
-    When using ``corder=True`` (default), the generated matrix $M$ when ``transpose=False``
-    will generally be different from the implicitly generated $M^T$ when ``transpose=True``.
-    Set ``corder=False`` if exact correspondence between $M$ and $M^T$ is required.
+    When using ``corder=True`` (default), the generated matrix ``M`` when ``transpose=False``
+    will generally be different from the implicitly generated ``M^T`` when ``transpose=True``.
+    Set ``corder=False`` if exact correspondence between ``M`` and ``M^T`` is required.
+
+    See Also
+    --------
+    jitsmv : High-level function with unit handling.
+    jitsmm_p_call : Low-level matrix-matrix product variant.
     """
 
     weight = jnp.atleast_1d(weight)
@@ -1000,6 +1490,25 @@ def _jitsmm_numba_kernel(
     corder: bool = True,
     **kwargs
 ):
+    """
+    Build a Numba CPU kernel for float JIT scalar matrix-matrix product.
+
+    Parameters
+    ----------
+    corder : bool, default=True
+        If True, iterate over output rows as the outer loop, gathering from
+        the input matrix ``B``. If False, iterate over input rows as the
+        outer loop, scattering weighted row values to the output.
+    **kwargs : dict
+        Additional keyword arguments, must include ``'outs'`` specifying
+        the output shape/dtype information.
+
+    Returns
+    -------
+    callable
+        A kernel function with signature
+        ``(weight, clen, B, seed, _) -> tuple``.
+    """
     import numba
 
     if corder:
@@ -1054,6 +1563,35 @@ def _jitsmm_warp_kernel(
     corder: bool = True,
     **kwargs
 ):
+    """
+    Build a Warp GPU kernel for float JIT scalar matrix-matrix product.
+
+    Parameters
+    ----------
+    weight_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the weight array.
+    clen_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the connection length array.
+    B_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the input matrix ``B``.
+    seed_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the random seed.
+    out_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the output matrix.
+    TITLE_SIZE : int
+        Number of columns in ``B``, used for inner loop bounds.
+    corder : bool, default=True
+        If True, each GPU thread handles one output row.
+        If False, each thread handles one input row using atomic additions.
+    **kwargs : dict
+        Additional keyword arguments, must include ``'outs'``.
+
+    Returns
+    -------
+    callable
+        A kernel function with signature
+        ``(weight, clen, B, seed, _) -> tuple``.
+    """
     import warp
     from warp.jax_experimental import jax_kernel
 
@@ -1127,6 +1665,27 @@ def _jitsmm_pallas_kernel(
     corder: bool = True,
     **kwargs
 ):
+    """
+    Build a Pallas (Triton) GPU kernel for float JIT scalar matrix-matrix product.
+
+    Parameters
+    ----------
+    B_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the input matrix ``B``.
+    out_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the output matrix.
+    corder : bool, default=True
+        If True, vectorize over output rows. If False, use scalar indexing
+        over input rows with atomic additions.
+    **kwargs : dict
+        Additional keyword arguments, must include ``'outs'``.
+
+    Returns
+    -------
+    callable
+        A kernel function with signature
+        ``(weight, clen, B, seed, _) -> tuple``.
+    """
     from jax.experimental import pallas as pl
     from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
@@ -1215,18 +1774,97 @@ def _jitsmm_pallas_kernel(
 
 
 def _jitsmm_jvp_w(w_dot, weight, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
+    """
+    JVP rule for the weight argument of the float JIT scalar matrix-matrix product.
+
+    Parameters
+    ----------
+    w_dot : jax.Array
+        The tangent vector for the weight.
+    weight, clen, B, seed, _ : jax.Array
+        Primal values of the primitive inputs.
+    shape : tuple of int
+        The matrix shape.
+    transpose : bool
+        Whether the matrix is transposed.
+    corder : bool
+        Column-order flag.
+    **kwargs : dict
+        Must contain ``'backend'``.
+
+    Returns
+    -------
+    tuple
+        The JVP result as a tuple of arrays.
+    """
     return jitsmm_p_call(
         w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
     )
 
 
 def _jitsmm_jvp_B(B_dot, weight, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
+    """
+    JVP rule for the matrix ``B`` argument of the float JIT scalar matrix-matrix product.
+
+    Parameters
+    ----------
+    B_dot : jax.Array
+        The tangent matrix for ``B``.
+    weight, clen, B, seed, _ : jax.Array
+        Primal values of the primitive inputs.
+    shape : tuple of int
+        The matrix shape.
+    transpose : bool
+        Whether the matrix is transposed.
+    corder : bool
+        Column-order flag.
+    **kwargs : dict
+        Must contain ``'backend'``.
+
+    Returns
+    -------
+    tuple
+        The JVP result as a tuple of arrays.
+    """
     return jitsmm_p_call(
         weight, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
     )
 
 
 def _jitsmm_transpose_rules(ct, weight, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
+    """
+    Transpose (adjoint) rule for the float JIT scalar matrix-matrix product.
+
+    Implements the VJP backward pass for ``jitsmm_p``. When ``B`` is the
+    undefined primal, computes the cotangent by running the transpose of the
+    forward pass. When ``weight`` is the undefined primal, computes the weight
+    gradient via a sum-of-products reduction.
+
+    Parameters
+    ----------
+    ct : tuple
+        The cotangent values from the output.
+    weight, clen, B, seed, _ : jax.Array
+        Primal or undefined-primal values.
+    shape : tuple of int
+        The matrix shape.
+    transpose : bool
+        Whether the forward pass used a transposed matrix.
+    corder : bool
+        Column-order flag used in the forward pass.
+    **kwargs : dict
+        Must contain ``'backend'``.
+
+    Returns
+    -------
+    tuple
+        Cotangent values for ``(weight, clen, B, seed, _)``.
+
+    Raises
+    ------
+    NotImplementedError
+        If neither ``B`` nor ``weight`` is the undefined primal.
+    """
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
 
@@ -1267,6 +1905,27 @@ def _jitsmm_transpose_rules(ct, weight, clen, B, seed, _, *, shape, transpose, c
 
 
 def _batching_axis1(args, axis=1, **kwargs):
+    """
+    Helper for batching over axis 1 (or 2) of a 3-D input matrix ``B``.
+
+    Reshapes the 3-D input into a 2-D matrix, runs the matrix-matrix primitive,
+    and reshapes the result back to 3-D.
+
+    Parameters
+    ----------
+    args : tuple
+        The batched arguments ``(weight, clen, B, seed, _)``, where ``B`` is 3-D.
+    axis : int, default=1
+        The batch axis in the output.
+    **kwargs : dict
+        Keyword arguments including ``'shape'``, ``'transpose'``, ``'corder'``,
+        and ``'backend'``.
+
+    Returns
+    -------
+    tuple
+        A 2-tuple of ``([result_3d], [axis])``.
+    """
     assert args[2].ndim == 3, 'Batching axis 0 requires 3D input.'
     m, maybe_batch1, maybe_batch2 = args[2].shape
     B = args[2].reshape(m, maybe_batch1 * maybe_batch2)
@@ -1285,6 +1944,27 @@ def _batching_axis1(args, axis=1, **kwargs):
 
 
 def _jitsmm_batching(args, axes, **kwargs):
+    """
+    Batching (vmap) rule for the float JIT scalar matrix-matrix product.
+
+    Handles vectorized mapping over various axes of the input matrix ``B``
+    by reshaping and dispatching to ``jitsmm_p_call``.
+
+    Parameters
+    ----------
+    args : tuple
+        The batched arguments ``(weight, clen, B, seed, _)``.
+    axes : tuple
+        The batch axes for each argument.
+    **kwargs : dict
+        Keyword arguments including ``'shape'``, ``'transpose'``, ``'corder'``,
+        and ``'backend'``.
+
+    Returns
+    -------
+    tuple
+        A 2-tuple of ``(results, out_axes)``.
+    """
     if tuple(axes) == (None, None, 0, None, None):
         assert args[2].ndim == 3, 'Batching axis 0 requires 3D input.'
         args = list(args)
@@ -1302,6 +1982,20 @@ def _jitsmm_batching(args, axes, **kwargs):
 
 
 def _jitsmm_benchmark_data(*, platform):
+    """
+    Generate benchmark configurations for the float JIT scalar matrix-matrix product.
+
+    Parameters
+    ----------
+    platform : str
+        The target platform (e.g., ``'cpu'``, ``'gpu'``).
+
+    Returns
+    -------
+    list of BenchmarkConfig
+        A list of benchmark configurations covering combinations of
+        transpose and corder.
+    """
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -1329,6 +2023,54 @@ def jitsmm_p_call(
     corder: bool,
     backend: Optional[str] = None,
 ):
+    r"""
+    Low-level implementation function for float JIT scalar matrix-matrix multiplication.
+
+    This function prepares inputs and calls the XLA custom kernel primitive for matrix-matrix
+    multiplication where the JIT connectivity matrix has a homogeneous scalar weight and the
+    input is a dense float matrix ``B``. The connectivity pattern is generated on-the-fly
+    during execution using the provided seed and connection length.
+
+    Parameters
+    ----------
+    weight : jax.Array
+        Scalar weight value for non-zero connections, as a 1-D array of shape ``(1,)``.
+    clen : jax.Array
+        Connection length parameter (approximately ``2 / prob``), as a 1-D array
+        of shape ``(1,)``.
+    B : jax.Array
+        Input dense matrix of shape ``(k, n)`` where ``k`` must match the
+        appropriate dimension of the JIT matrix (determined by ``transpose``).
+    seed : jax.Array
+        Random seed as a 1-D array of shape ``(1,)``.
+    shape : MatrixShape
+        The shape of the implicit JIT matrix as ``(num_rows, num_cols)``.
+    transpose : bool
+        If True, compute ``M^T @ B``; otherwise compute ``M @ B``.
+    corder : bool
+        Column-order flag controlling the parallelization strategy.
+    backend : str or None, optional
+        The computation backend to use. If ``None``, the default backend is
+        selected automatically.
+
+    Returns
+    -------
+    tuple
+        A tuple containing the output matrix from the primitive operation:
+        - If ``transpose=False``: output shape is ``(shape[0], B.shape[1])``
+        - If ``transpose=True``: output shape is ``(shape[1], B.shape[1])``
+
+    Notes
+    -----
+    This is an internal implementation function. Use the higher-level
+    ``jitsmm`` for a user-friendly interface with unit handling.
+
+    See Also
+    --------
+    jitsmm : High-level function with unit handling.
+    jitsmv_p_call : Low-level matrix-vector product variant.
+    jits_p_call : Low-level matrix generation variant.
+    """
     weight = jnp.atleast_1d(weight)
     clen = jnp.atleast_1d(clen)
 

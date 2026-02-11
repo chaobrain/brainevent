@@ -38,12 +38,77 @@ __all__ = [
 
 
 class BaseCLS(u.sparse.SparseMatrix):
+    """
+    Abstract base class for compressed sparse matrix formats.
+
+    ``BaseCLS`` provides the common interface shared by :class:`CSR` and
+    :class:`CSC`. It inherits from ``brainunit.sparse.SparseMatrix`` and
+    adds arithmetic operators, JAX pytree support, and helper methods for
+    event-driven neural simulation.
+
+    Subclasses must implement :meth:`apply`, :meth:`_binary_op`,
+    :meth:`_binary_rop`, :meth:`todense`, :meth:`tocoo`, :meth:`with_data`,
+    :meth:`fromdense`, :meth:`yw_to_w`, and :meth:`yw_to_w_transposed`.
+
+    Parameters
+    ----------
+    data : array_like or Sequence
+        Non-zero values, or a length-3 sequence ``(data, indices, indptr)``.
+    indices : array_like, optional
+        Secondary-axis indices for each stored element.
+    indptr : array_like, optional
+        Primary-axis pointers into ``data`` and ``indices``.
+    shape : tuple[int, int]
+        Matrix shape ``(num_rows, num_columns)``.
+
+    Attributes
+    ----------
+    data : Data
+        Array of stored (non-zero) values.
+    indices : Index
+        Secondary-axis index array.
+    indptr : Indptr
+        Primary-axis pointer array.
+    shape : tuple[int, int]
+        Shape of the full matrix.
+
+    See Also
+    --------
+    CSR : Compressed Sparse Row implementation.
+    CSC : Compressed Sparse Column implementation.
+    """
+
     data: Data
     indices: Index
     indptr: Indptr
     shape: MatrixShape
-    nse = property(lambda self: self.indices.size)
-    dtype = property(lambda self: self.data.dtype)
+
+    @property
+    def nse(self):
+        """
+        Number of stored elements in the sparse matrix.
+
+        This counts all explicitly stored entries, including any stored
+        zeros.  It equals ``self.indices.size``.
+
+        Returns
+        -------
+        int
+            The number of stored elements.
+        """
+        return self.indices.size
+
+    @property
+    def dtype(self):
+        """
+        Data type of the stored values.
+
+        Returns
+        -------
+        numpy.dtype
+            The dtype of ``self.data``.
+        """
+        return self.data.dtype
 
     def __init__(
         self,
@@ -94,6 +159,25 @@ class BaseCLS(u.sparse.SparseMatrix):
         self.diag_positions = None
 
     def tree_flatten(self):
+        """
+        Flatten this sparse matrix into JAX pytree leaves and auxiliary data.
+
+        This method is part of the JAX pytree protocol.  The ``data`` array
+        is the only leaf (traced by JAX); ``indices``, ``indptr``, ``shape``,
+        and ``diag_positions`` are stored as static auxiliary data.
+
+        Returns
+        -------
+        children : tuple
+            A 1-tuple ``(data,)`` containing the traceable leaf array.
+        aux_data : dict
+            Dictionary with keys ``'indices'``, ``'indptr'``, ``'shape'``,
+            and ``'diag_positions'``.
+
+        See Also
+        --------
+        tree_unflatten : Reconstruct a sparse matrix from flattened data.
+        """
         aux = {
             'indices': self.indices,
             'indptr': self.indptr,
@@ -104,6 +188,31 @@ class BaseCLS(u.sparse.SparseMatrix):
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
+        """
+        Reconstruct a sparse matrix from JAX pytree leaves and auxiliary data.
+
+        This is the inverse of :meth:`tree_flatten` and is called by JAX
+        when unflattening a pytree (e.g., after ``jax.jit`` compilation).
+
+        Parameters
+        ----------
+        aux_data : dict
+            Auxiliary data produced by :meth:`tree_flatten`, containing
+            ``'indices'``, ``'indptr'``, ``'shape'``, and
+            ``'diag_positions'``.
+        children : tuple
+            A 1-tuple ``(data,)`` containing the leaf array.
+
+        Returns
+        -------
+        BaseCLS
+            A new instance of the sparse matrix class with restored
+            attributes.
+
+        See Also
+        --------
+        tree_flatten : Flatten a sparse matrix for JAX pytree handling.
+        """
         obj = object.__new__(cls)
         obj.data, = children
         for k, v in aux_data.items():
@@ -131,12 +240,69 @@ class BaseCLS(u.sparse.SparseMatrix):
         raise NotImplementedError
 
     def __abs__(self):
+        """
+        Return a sparse matrix with element-wise absolute values.
+
+        Computes ``abs(x)`` for every stored element *x* while preserving the
+        sparsity structure (indices, indptr, and shape).
+
+        Returns
+        -------
+        CSR or CSC
+            A new sparse matrix whose data values are the absolute values of
+            the original stored elements.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> csr = CSR(jnp.array([-1.0, 2.0, -3.0]), indices, indptr, shape=(3, 3))
+            >>> result = abs(csr)
+        """
         return self.apply(operator.abs)
 
     def __neg__(self):
+        """
+        Return a sparse matrix with element-wise negation.
+
+        Computes ``-x`` for every stored element *x* while preserving the
+        sparsity structure.
+
+        Returns
+        -------
+        CSR or CSC
+            A new sparse matrix whose data values are the negation of the
+            original stored elements.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> csr = CSR(jnp.array([1.0, 2.0, 3.0]), indices, indptr, shape=(3, 3))
+            >>> result = -csr
+        """
         return self.apply(operator.neg)
 
     def __pos__(self):
+        """
+        Return a sparse matrix with the unary positive operator applied.
+
+        Computes ``+x`` for every stored element *x*.  For numeric types this
+        is typically the identity, but the operator may trigger type promotion
+        for certain array-like objects.
+
+        Returns
+        -------
+        CSR or CSC
+            A new sparse matrix whose data values are ``+self.data``.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> csr = CSR(jnp.array([1.0, 2.0, 3.0]), indices, indptr, shape=(3, 3))
+            >>> result = +csr
+        """
         return self.apply(operator.pos)
 
     def _binary_op(self, other, op):
@@ -168,30 +334,250 @@ class BaseCLS(u.sparse.SparseMatrix):
         return self._binary_op(other, fn)
 
     def __mul__(self, other: Data):
+        """
+        Element-wise multiplication: ``self * other``.
+
+        When ``other`` is a scalar, each stored element is multiplied by that
+        scalar.  When ``other`` is a dense matrix of the same shape, only the
+        values at the stored positions are multiplied.  When ``other`` is a
+        sparse matrix with identical structure (same ``indices`` and
+        ``indptr`` objects), the data arrays are multiplied directly.
+
+        Parameters
+        ----------
+        other : Data
+            Scalar, dense array, or structurally identical sparse matrix.
+
+        Returns
+        -------
+        CSR or CSC
+            A new sparse matrix containing the element-wise product.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``other`` is a sparse matrix with different structure, or a
+            dense array whose shape is incompatible.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> csr = CSR(jnp.array([1.0, 2.0, 3.0]), indices, indptr, shape=(3, 3))
+            >>> result = csr * 2.0
+        """
         return self.apply2(other, operator.mul)
 
     def __truediv__(self, other):
+        """
+        Element-wise true division: ``self / other``.
+
+        Divides every stored element by ``other``.  Semantics for scalar,
+        dense, and structurally identical sparse operands match those of
+        :meth:`__mul__`.
+
+        Parameters
+        ----------
+        other : Data
+            Scalar, dense array, or structurally identical sparse matrix.
+
+        Returns
+        -------
+        CSR or CSC
+            A new sparse matrix containing the element-wise quotient.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``other`` is a sparse matrix with different structure, or a
+            dense array whose shape is incompatible.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> csr = CSR(jnp.array([2.0, 4.0, 6.0]), indices, indptr, shape=(3, 3))
+            >>> result = csr / 2.0
+        """
         return self.apply2(other, operator.truediv)
 
     def __add__(self, other):
+        """
+        Element-wise addition: ``self + other``.
+
+        For addition and subtraction the sparse matrix is first converted to a
+        dense matrix via :meth:`todense`, so the result is always a dense
+        array.
+
+        Parameters
+        ----------
+        other : array_like
+            Dense array with a shape broadcastable to ``self.shape``.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            Dense result of the addition.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> csr = CSR(jnp.array([1.0, 2.0]), indices, indptr, shape=(3, 3))
+            >>> dense = jnp.ones((3, 3))
+            >>> result = csr + dense
+        """
         return self.apply2(other, operator.add)
 
     def __sub__(self, other):
+        """
+        Element-wise subtraction: ``self - other``.
+
+        The sparse matrix is first converted to a dense matrix via
+        :meth:`todense`, so the result is always a dense array.
+
+        Parameters
+        ----------
+        other : array_like
+            Dense array with a shape broadcastable to ``self.shape``.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            Dense result of the subtraction.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> csr = CSR(jnp.array([1.0, 2.0]), indices, indptr, shape=(3, 3))
+            >>> dense = jnp.ones((3, 3))
+            >>> result = csr - dense
+        """
         return self.apply2(other, operator.sub)
 
     def _binary_rop(self, other, op):
         raise NotImplementedError
 
     def __rmul__(self, other: Data):
+        """
+        Reflected element-wise multiplication: ``other * self``.
+
+        Called when the left operand does not support multiplication with this
+        sparse type.  Semantics are identical to :meth:`__mul__` because
+        multiplication is commutative for scalars and element-wise operations.
+
+        Parameters
+        ----------
+        other : Data
+            Scalar, dense array, or structurally identical sparse matrix.
+
+        Returns
+        -------
+        CSR or CSC
+            A new sparse matrix containing the element-wise product.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``other`` is a sparse matrix with different structure, or a
+            dense array whose shape is incompatible.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> csr = CSR(jnp.array([1.0, 2.0, 3.0]), indices, indptr, shape=(3, 3))
+            >>> result = 2.0 * csr
+        """
         return self.apply2(other, operator.mul, reverse=True)
 
     def __rtruediv__(self, other):
+        """
+        Reflected element-wise true division: ``other / self``.
+
+        Computes ``other / x`` for every stored element *x*.  Note that this
+        is **not** equivalent to ``self / other``; the operand order matters.
+
+        Parameters
+        ----------
+        other : Data
+            Scalar, dense array, or structurally identical sparse matrix.
+
+        Returns
+        -------
+        CSR or CSC
+            A new sparse matrix containing the element-wise quotient.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``other`` is a sparse matrix with different structure, or a
+            dense array whose shape is incompatible.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> csr = CSR(jnp.array([1.0, 2.0, 4.0]), indices, indptr, shape=(3, 3))
+            >>> result = 8.0 / csr  # stored values become [8.0, 4.0, 2.0]
+        """
         return self.apply2(other, operator.truediv, reverse=True)
 
     def __radd__(self, other):
+        """
+        Reflected element-wise addition: ``other + self``.
+
+        The sparse matrix is first converted to dense, so the result is always
+        a dense array.  Because addition is commutative the result equals
+        ``self + other``.
+
+        Parameters
+        ----------
+        other : array_like
+            Dense array with a shape broadcastable to ``self.shape``.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            Dense result of the addition.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> csr = CSR(jnp.array([1.0, 2.0]), indices, indptr, shape=(3, 3))
+            >>> dense = jnp.ones((3, 3))
+            >>> result = dense + csr
+        """
         return self.apply2(other, operator.add, reverse=True)
 
     def __rsub__(self, other):
+        """
+        Reflected element-wise subtraction: ``other - self``.
+
+        The sparse matrix is first converted to dense, so the result is always
+        a dense array.  Note that ``other - self`` is **not** equivalent to
+        ``self - other``.
+
+        Parameters
+        ----------
+        other : array_like
+            Dense array with a shape broadcastable to ``self.shape``.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            Dense result of the subtraction.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> csr = CSR(jnp.array([1.0, 2.0]), indices, indptr, shape=(3, 3))
+            >>> dense = jnp.ones((3, 3))
+            >>> result = dense - csr
+        """
         return self.apply2(other, operator.sub, reverse=True)
 
     def yw_to_w(
@@ -199,6 +585,28 @@ class BaseCLS(u.sparse.SparseMatrix):
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity]
     ) -> Union[jax.Array, u.Quantity]:
+        """
+        Compute a sparse matrix-vector product mapping y-w space to w space.
+
+        This method is used in event-driven neural simulations to efficiently
+        compute the effect of synaptic connections.  Given a per-target array
+        ``y_dim_arr`` and a per-synapse weight array ``w_dim_arr``, it
+        performs a specialised sparse product that accumulates contributions
+        along the connectivity defined by this matrix.
+
+        Parameters
+        ----------
+        y_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
+            Values in the target (post-synaptic) dimension.
+        w_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
+            Values in the weight / synapse dimension.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            Result of the sparse transformation, preserving physical units
+            when present.
+        """
         raise NotImplementedError
 
     def yw_to_w_transposed(
@@ -206,19 +614,104 @@ class BaseCLS(u.sparse.SparseMatrix):
         y_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity]
     ) -> Union[jax.Array, u.Quantity]:
+        """
+        Compute the transposed sparse matrix-vector product mapping y-w space to w space.
+
+        This is the adjoint of :meth:`yw_to_w`.  It is useful for
+        back-propagation or adjoint computations in event-driven neural
+        simulations.
+
+        Parameters
+        ----------
+        y_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
+            Values in the target (post-synaptic) dimension.
+        w_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
+            Values in the weight / synapse dimension.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            Result of the transposed sparse transformation, preserving
+            physical units when present.
+
+        See Also
+        --------
+        yw_to_w : The forward (non-transposed) variant.
+        """
         raise NotImplementedError
 
     @classmethod
     def fromdense(cls, mat, *, nse=None, index_dtype=jnp.int32):
+        """
+        Create a compressed sparse matrix from a dense matrix.
+
+        Parameters
+        ----------
+        mat : array_like
+            The dense matrix to convert.
+        nse : int, optional
+            Number of stored (non-zero) elements.  If ``None`` it is
+            inferred from ``mat``.
+        index_dtype : dtype, optional
+            Data type for index arrays.  Defaults to ``jnp.int32``.
+
+        Returns
+        -------
+        CSR or CSC
+            A new sparse matrix in the appropriate compressed format.
+        """
         raise NotImplementedError
 
     def with_data(self, data: Data):
+        """
+        Create a new sparse matrix with the same structure but different data.
+
+        Unlike :meth:`apply`, the new ``data`` must have the same shape,
+        dtype, and unit as the original.
+
+        Parameters
+        ----------
+        data : Data
+            Replacement data array.
+
+        Returns
+        -------
+        CSR or CSC
+            New sparse matrix sharing indices and indptr with this instance.
+
+        Raises
+        ------
+        AssertionError
+            If the shape, dtype, or unit of ``data`` does not match the
+            original.
+        """
         raise NotImplementedError
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
+        """
+        Convert the sparse matrix to a dense array.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            A dense ``(num_rows, num_columns)`` matrix equivalent to this
+            sparse matrix.
+        """
         raise NotImplementedError
 
     def tocoo(self):
+        """
+        Convert the sparse matrix to COO (Coordinate) format.
+
+        Returns
+        -------
+        COO
+            A :class:`~brainevent.COO` matrix containing the same data.
+
+        See Also
+        --------
+        brainevent.COO : The Coordinate sparse matrix class.
+        """
         raise NotImplementedError
 
     def diag_add(self, other):
@@ -255,24 +748,44 @@ class BaseCLS(u.sparse.SparseMatrix):
 
     def solve(self, b: Union[jax.Array, u.Quantity]) -> Union[jax.Array, u.Quantity]:
         """
-        Solve the linear system Ax = b where A is the sparse matrix.
-
-        This method uses JAX's sparse solver to solve the equation Ax = b,
-        where A is the current sparse matrix and b is the right-hand side vector.
+        Solve the linear system ``A x = b`` where ``A`` is this sparse matrix.
 
         Parameters
         ----------
-        b : array_like
-            The right-hand side vector of the linear system.
+        b : jax.Array or brainunit.Quantity
+            Right-hand side vector of the linear system.  Its first dimension
+            must match ``self.shape[0]``.
 
         Returns
         -------
-        x : jax.Array or u.Quantity
-            The solution vector x that satisfies Ax = b.
+        jax.Array or brainunit.Quantity
+            Solution vector *x* satisfying ``A x = b``.
+
+        Raises
+        ------
+        AssertionError
+            If the first dimension of ``b`` does not match the number of rows
+            in the matrix.
         """
         raise NotImplementedError
 
     def _diag_pos(self, pos):
+        """
+        Attach precomputed diagonal positions and return ``self``.
+
+        This is a private helper used during construction to carry forward
+        cached diagonal-position information.
+
+        Parameters
+        ----------
+        pos : array_like or None
+            Precomputed diagonal positions, or ``None``.
+
+        Returns
+        -------
+        BaseCLS
+            ``self``, with ``diag_positions`` set to ``pos``.
+        """
         self.diag_positions = pos
         return self
 
@@ -303,6 +816,45 @@ class CSR(BaseCLS):
         Number of stored elements (non-zero entries).
     dtype : dtype
         Data type of the matrix values.
+
+    Notes
+    -----
+    In CSR format a matrix of shape ``(m, n)`` is stored as three arrays:
+
+    * ``indptr`` of length ``m + 1`` -- the *i*-th row occupies entries
+      ``indptr[i]`` to ``indptr[i+1]`` in the ``data`` and ``indices``
+      arrays.
+    * ``indices`` -- column indices of the stored elements.
+    * ``data`` -- the corresponding non-zero values.
+
+    The ``@`` operator dispatches to optimised kernels depending on the
+    right-hand operand type:
+
+    * :class:`~brainevent.BinaryArray` -- event-driven binary CSR MV/MM.
+    * :class:`~brainevent.SparseFloat` -- sparse-float CSR MV/MM.
+    * Dense ``jax.Array`` / ``brainunit.Quantity`` -- standard float CSR
+      MV/MM with automatic dtype promotion.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        import jax.numpy as jnp
+        import brainevent
+
+        data    = jnp.array([1.0, 2.0, 3.0])
+        indices = jnp.array([0, 2, 1])
+        indptr  = jnp.array([0, 1, 2, 3])
+        csr     = brainevent.CSR((data, indices, indptr), shape=(3, 3))
+
+        # Sparse-dense matrix-vector product
+        x = jnp.ones(3)
+        y = csr @ x
+
+    See Also
+    --------
+    CSC : Compressed Sparse Column format.
+    brainevent.COO : Coordinate sparse format.
     """
     __module__ = 'brainevent'
 
@@ -327,6 +879,16 @@ class CSR(BaseCLS):
         -------
         CSR
             A new CSR matrix object created from the input dense matrix.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            import jax.numpy as jnp
+            import brainevent
+
+            dense = jnp.array([[1.0, 0.0], [0.0, 2.0]])
+            csr = brainevent.CSR.fromdense(dense)
         """
         if nse is None:
             nse = (u.get_mantissa(mat) != 0).sum()
@@ -352,9 +914,16 @@ class CSR(BaseCLS):
             A new CSR matrix instance with updated data and the same structure as the original.
 
         Raises
-        -------
+        ------
         AssertionError
             If the shape, dtype, or unit of the new data doesn't match the original data.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            new_data = jnp.array([10.0, 20.0, 30.0])
+            new_csr = csr.with_data(new_data)
         """
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
@@ -370,8 +939,15 @@ class CSR(BaseCLS):
 
         Returns
         -------
-        array_like
-            A dense matrix representation of the CSR matrix.
+        jax.Array or brainunit.Quantity
+            A dense matrix of shape ``self.shape`` containing all the values
+            (including zeros) of the sparse matrix.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            dense = csr.todense()
         """
         return _csr_todense(self.data, self.indices, self.indptr, shape=self.shape)
 
@@ -389,13 +965,14 @@ class CSR(BaseCLS):
 
         See Also
         --------
-        _csr_to_coo : Internal function that converts CSR row/column indices to COO format
-        COO : The Coordinate sparse matrix class
+        brainevent.COO : The Coordinate sparse matrix class.
 
         Examples
         --------
-        >>> csr_matrix = CSR((data, indices, indptr), shape=(3, 4))
-        >>> coo_matrix = csr_matrix.tocoo()
+        .. code-block:: python
+
+            csr_matrix = CSR((data, indices, indptr), shape=(3, 4))
+            coo_matrix = csr_matrix.tocoo()
         """
         from brainevent import COO
         pre_ids, post_ids = _csr_to_coo(self.indices, self.indptr)
@@ -406,6 +983,9 @@ class CSR(BaseCLS):
         Transpose the CSR matrix.
 
         This method returns the transpose of the CSR matrix as a CSC matrix.
+        Because the transpose of a CSR matrix is a CSC matrix with the same
+        underlying arrays, this operation is essentially free (no data is
+        copied or rearranged).
 
         Parameters
         ----------
@@ -419,14 +999,47 @@ class CSR(BaseCLS):
             The transpose of the CSR matrix as a CSC (Compressed Sparse Column) matrix.
 
         Raises
-        -------
+        ------
         AssertionError
             If axes is not None, as this implementation doesn't support custom axis ordering.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            csc = csr.transpose()
+            # or equivalently:
+            csc = csr.T
         """
         assert axes is None, "transpose does not support axes argument."
         return CSC((self.data, self.indices, self.indptr), shape=self.shape[::-1])._diag_pos(self.diag_positions)
 
     def apply(self, fn) -> 'CSR':
+        """
+        Apply a unary function to the stored data values.
+
+        Creates a new :class:`CSR` matrix with ``fn(self.data)`` while
+        preserving the sparsity structure (indices, indptr, shape, and cached
+        diagonal positions).
+
+        Parameters
+        ----------
+        fn : callable
+            A function that accepts a single array argument and returns an
+            array of the same shape.  The dtype and unit may differ from the
+            input.
+
+        Returns
+        -------
+        CSR
+            A new CSR matrix with transformed data.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            squared = csr.apply(lambda x: x ** 2)
+        """
         return CSR(fn(self.data), self.indices, self.indptr, shape=self.shape)._diag_pos(self.diag_positions)
 
     def _binary_op(self, other, op) -> 'CSR':
@@ -506,6 +1119,45 @@ class CSR(BaseCLS):
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
     def __matmul__(self, other):
+        """
+        Sparse-dense matrix multiplication: ``self @ other``.
+
+        Dispatches to an optimised kernel based on the type and
+        dimensionality of ``other``:
+
+        * 1-D array -- sparse matrix-vector product (MV).
+        * 2-D array -- sparse matrix-matrix product (MM).
+        * :class:`~brainevent.BinaryArray` -- event-driven binary kernel.
+        * :class:`~brainevent.SparseFloat` -- sparse-float kernel.
+        * Dense ``jax.Array`` / ``brainunit.Quantity`` -- standard float
+          kernel with automatic dtype promotion.
+
+        Parameters
+        ----------
+        other : jax.Array, brainunit.Quantity, BinaryArray, or SparseFloat
+            The right-hand operand.  Must be 1-D or 2-D.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            The result of the matrix multiplication.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``other`` is a sparse matrix (sparse-sparse matmul is not
+            supported) or if ``other`` has more than 2 dimensions.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            x = jnp.ones(n)
+            y = csr @ x          # matrix-vector
+
+            X = jnp.ones((n, k))
+            Y = csr @ X          # matrix-matrix
+        """
         # csr @ other
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
@@ -553,6 +1205,37 @@ class CSR(BaseCLS):
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
     def __rmatmul__(self, other):
+        """
+        Reflected sparse-dense matrix multiplication: ``other @ self``.
+
+        Computes the product with ``self`` on the right by using the
+        transposed CSR kernel.  Dispatch logic mirrors :meth:`__matmul__`.
+
+        Parameters
+        ----------
+        other : jax.Array, brainunit.Quantity, BinaryArray, or SparseFloat
+            The left-hand operand.  Must be 1-D or 2-D.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            The result of the matrix multiplication.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``other`` is a sparse matrix or has more than 2 dimensions.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            x = jnp.ones(m)
+            y = x @ csr          # vector-matrix
+
+            X = jnp.ones((k, m))
+            Y = X @ csr          # matrix-matrix
+        """
         # other @ csr
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
@@ -615,24 +1298,37 @@ class CSR(BaseCLS):
 
     def solve(self, b: Union[jax.Array, u.Quantity], tol=1e-6, reorder=1) -> Union[jax.Array, u.Quantity]:
         """
-        Solve the linear system Ax = b where A is the sparse matrix.
+        Solve the linear system ``A x = b`` where ``A`` is this CSR matrix.
 
-        This method uses JAX's sparse solver to solve the equation Ax = b,
-        where A is the current sparse matrix and b is the right-hand side vector.
+        Uses a sparse direct solver via the underlying ``csr_solve`` routine.
 
         Parameters
         ----------
-        b : array_like
-            The right-hand side vector of the linear system.
-        tol : Tolerance to decide if singular or not. Defaults to 1e-6.
-        reorder : The reordering scheme to use to reduce fill-in. No reordering if
-            ``reorder=0``. Otherwise, symrcm, symamd, or csrmetisnd (``reorder=1,2,3``),
-            respectively. Defaults to symrcm.
+        b : jax.Array or brainunit.Quantity
+            Right-hand side vector.  Its first dimension must equal
+            ``self.shape[0]``.
+        tol : float, optional
+            Tolerance for singularity detection.  Defaults to ``1e-6``.
+        reorder : int, optional
+            Fill-reducing reordering scheme: ``0`` for no reordering,
+            ``1`` for symrcm, ``2`` for symamd, ``3`` for csrmetisnd.
+            Defaults to ``1``.
 
         Returns
         -------
-        x : jax.Array or u.Quantity
-            The solution vector x that satisfies Ax = b.
+        jax.Array or brainunit.Quantity
+            Solution vector *x* satisfying ``A x = b``.
+
+        Raises
+        ------
+        AssertionError
+            If ``b.shape[0] != self.shape[0]``.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            x = csr.solve(b)
         """
         assert self.shape[0] == b.shape[0], ("The number of rows in the matrix must match "
                                              "the size of the right-hand side vector b.")
@@ -644,30 +1340,33 @@ class CSR(BaseCLS):
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
     ) -> Union[jax.Array, u.Quantity]:
         """
-        Perform a specialized transformation from y-w space to w space using this sparse matrix.
+        Compute a sparse transformation from y-w space to w space.
 
-        This method implements a matrix-vector product operation that is optimized for
-        specific computational patterns in neural simulations. It efficiently computes
-        a sparse matrix vector product where indices in the y dimension map to values
-        in the w dimension.
+        Performs a specialised sparse matrix-vector product optimised for
+        event-driven neural simulations, accumulating contributions from the
+        target (post-synaptic) dimension ``y_dim_arr`` weighted by the
+        per-synapse values ``w_dim_arr`` according to the connectivity
+        defined by this CSR matrix.
 
         Parameters
         ----------
-        y_dim_arr : jax.Array, np.ndarray, u.Quantity
-            Array containing values in the y dimension (typically target/post-synaptic).
-        w_dim_arr : jax.Array, np.ndarray, u.Quantity
-            Array containing values in the w dimension (typically weights or connection values).
+        y_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
+            Values in the target (post-synaptic) dimension.
+        w_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
+            Per-synapse weight values.
 
         Returns
         -------
-        Union[jax.Array, u.Quantity]
-            The resulting array after the sparse transformation operation.
-            Maintains the same units as the input arrays if they have units.
+        jax.Array or brainunit.Quantity
+            Accumulated result, preserving physical units when present.
+
+        See Also
+        --------
+        yw_to_w_transposed : The transposed (adjoint) variant.
 
         Notes
         -----
-        This method is typically used in event-driven neural simulations to efficiently
-        compute the effect of connections between neurons.
+        Internally calls ``csrmv_yw2y`` with ``transpose=False``.
         """
         return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape, transpose=False)
 
@@ -677,30 +1376,31 @@ class CSR(BaseCLS):
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
     ) -> Union[jax.Array, u.Quantity]:
         """
-        Perform a transposed transformation from y-w space to w space using this sparse matrix.
+        Compute the transposed sparse transformation from y-w space to w space.
 
-        This method implements the transpose of the yw_to_w operation, computing a specialized
-        matrix-vector product that is optimized for specific computational patterns in neural
-        simulations. It efficiently handles the transposed mapping between the y dimension and
-        the w dimension.
+        This is the adjoint of :meth:`yw_to_w`, useful for back-propagation
+        or adjoint computations in event-driven neural simulations.
 
         Parameters
         ----------
-        y_dim_arr : jax.Array, np.ndarray, u.Quantity
-            Array containing values in the y dimension (typically target/post-synaptic).
-        w_dim_arr : jax.Array, np.ndarray, u.Quantity
-            Array containing values in the w dimension (typically weights or connection values).
+        y_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
+            Values in the target (post-synaptic) dimension.
+        w_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
+            Per-synapse weight values.
 
         Returns
         -------
-        Union[jax.Array, u.Quantity]
-            The resulting array after the transposed sparse transformation operation.
-            Maintains the same units as the input arrays if they have units.
+        jax.Array or brainunit.Quantity
+            Accumulated result of the transposed operation, preserving
+            physical units when present.
+
+        See Also
+        --------
+        yw_to_w : The forward (non-transposed) variant.
 
         Notes
         -----
-        This method computes the transpose of the yw_to_w operation, which can be useful
-        for backpropagation or adjoint operations in neural simulations.
+        Internally calls ``csrmv_yw2y`` with ``transpose=True``.
         """
         return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape, transpose=True)
 
@@ -732,6 +1432,40 @@ class CSC(BaseCLS):
     dtype : dtype
         Data type of the matrix values.
 
+    Notes
+    -----
+    In CSC format a matrix of shape ``(m, n)`` is stored as three arrays:
+
+    * ``indptr`` of length ``n + 1`` -- the *j*-th column occupies entries
+      ``indptr[j]`` to ``indptr[j+1]`` in the ``data`` and ``indices``
+      arrays.
+    * ``indices`` -- row indices of the stored elements.
+    * ``data`` -- the corresponding non-zero values.
+
+    Internally, CSC operations are implemented by treating the underlying
+    arrays as a CSR matrix with transposed shape and applying the appropriate
+    transpose flags to the CSR kernels.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        import jax.numpy as jnp
+        import brainevent
+
+        data    = jnp.array([1.0, 2.0, 3.0])
+        indices = jnp.array([0, 2, 1])
+        indptr  = jnp.array([0, 1, 2, 3])
+        csc     = brainevent.CSC((data, indices, indptr), shape=(3, 3))
+
+        # Sparse-dense matrix-vector product
+        x = jnp.ones(3)
+        y = csc @ x
+
+    See Also
+    --------
+    CSR : Compressed Sparse Row format.
+    brainevent.COO : Coordinate sparse format.
     """
     __module__ = 'brainevent'
 
@@ -757,6 +1491,16 @@ class CSC(BaseCLS):
         -------
         CSC
             A new CSC matrix instance created from the input dense matrix.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            import jax.numpy as jnp
+            import brainevent
+
+            dense = jnp.array([[1.0, 0.0], [0.0, 2.0]])
+            csc = brainevent.CSC.fromdense(dense)
         """
         if nse is None:
             nse = (u.get_mantissa(mat) != 0).sum()
@@ -782,9 +1526,16 @@ class CSC(BaseCLS):
             A new CSC matrix instance with updated data and the same structure as the original.
 
         Raises
-        -------
+        ------
         AssertionError
             If the shape, dtype, or unit of the new data doesn't match the original data.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            new_data = jnp.array([10.0, 20.0, 30.0])
+            new_csc = csc.with_data(new_data)
         """
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
@@ -795,13 +1546,20 @@ class CSC(BaseCLS):
         """
         Convert the CSC matrix to a dense matrix.
 
-        This method transforms the compressed sparse column (CSC) representation
-        into a full dense matrix.
+        Transposes the underlying CSR-style storage, converts to dense, and
+        transposes back.
 
         Returns
         -------
-        array_like
-            A dense matrix representation of the CSC matrix.
+        jax.Array or brainunit.Quantity
+            A dense matrix of shape ``self.shape`` containing all the values
+            (including zeros) of the sparse matrix.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            dense = csc.todense()
         """
         return self.T.todense().T
 
@@ -819,13 +1577,14 @@ class CSC(BaseCLS):
 
         See Also
         --------
-        _csr_to_coo : Internal function that converts CSC column/row indices to COO format
-        COO : The Coordinate sparse matrix class
+        brainevent.COO : The Coordinate sparse matrix class.
 
         Examples
         --------
-        >>> csc_matrix = CSC((data, indices, indptr), shape=(3, 4))
-        >>> coo_matrix = csc_matrix.tocoo()
+        .. code-block:: python
+
+            csc_matrix = CSC((data, indices, indptr), shape=(3, 4))
+            coo_matrix = csc_matrix.tocoo()
         """
         from brainevent import COO
         post_ids, pre_ids = _csr_to_coo(self.indices, self.indptr)
@@ -835,13 +1594,14 @@ class CSC(BaseCLS):
         """
         Transpose the CSC matrix.
 
-        This method returns the transpose of the CSC matrix as a CSR matrix.
+        Returns the transpose as a :class:`CSR` matrix.  Because the
+        transpose of a CSC matrix is a CSR matrix with the same underlying
+        arrays, this operation is essentially free.
 
         Parameters
         ----------
         axes : None
-            This parameter is not used and must be None. Included for compatibility
-            with numpy's transpose function signature.
+            Must be ``None``.  Included for API compatibility with NumPy.
 
         Returns
         -------
@@ -849,14 +1609,47 @@ class CSC(BaseCLS):
             The transpose of the CSC matrix as a CSR (Compressed Sparse Row) matrix.
 
         Raises
-        -------
+        ------
         AssertionError
-            If axes is not None, as this implementation doesn't support custom axis ordering.
+            If ``axes`` is not ``None``.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            csr = csc.transpose()
+            # or equivalently:
+            csr = csc.T
         """
         assert axes is None
         return CSR((self.data, self.indices, self.indptr), shape=self.shape[::-1])._diag_pos(self.diag_positions)
 
     def apply(self, fn) -> 'CSC':
+        """
+        Apply a unary function to the stored data values.
+
+        Creates a new :class:`CSC` matrix with ``fn(self.data)`` while
+        preserving the sparsity structure (indices, indptr, shape, and cached
+        diagonal positions).
+
+        Parameters
+        ----------
+        fn : callable
+            A function that accepts a single array argument and returns an
+            array of the same shape.  The dtype and unit may differ from the
+            input.
+
+        Returns
+        -------
+        CSC
+            A new CSC matrix with transformed data.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            squared = csc.apply(lambda x: x ** 2)
+        """
         return CSC((fn(self.data), self.indices, self.indptr), shape=self.shape)._diag_pos(self.diag_positions)
 
     def _binary_op(self, other, op) -> 'CSC':
@@ -934,6 +1727,39 @@ class CSC(BaseCLS):
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
     def __matmul__(self, other):
+        """
+        Sparse-dense matrix multiplication: ``self @ other``.
+
+        Dispatches to an optimised kernel based on the type and
+        dimensionality of ``other``.  Internally the CSC storage is treated
+        as a transposed CSR matrix, so the CSR kernels are called with
+        ``shape=self.shape[::-1]`` and ``transpose=True``.
+
+        Parameters
+        ----------
+        other : jax.Array, brainunit.Quantity, BinaryArray, or SparseFloat
+            The right-hand operand.  Must be 1-D or 2-D.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            The result of the matrix multiplication.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``other`` is a sparse matrix or has more than 2 dimensions.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            x = jnp.ones(n)
+            y = csc @ x          # matrix-vector
+
+            X = jnp.ones((n, k))
+            Y = csc @ X          # matrix-matrix
+        """
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
@@ -998,6 +1824,38 @@ class CSC(BaseCLS):
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
     def __rmatmul__(self, other):
+        """
+        Reflected sparse-dense matrix multiplication: ``other @ self``.
+
+        Computes the product with ``self`` on the right.  Internally the CSC
+        storage is treated as a transposed CSR matrix with
+        ``transpose=False``.
+
+        Parameters
+        ----------
+        other : jax.Array, brainunit.Quantity, BinaryArray, or SparseFloat
+            The left-hand operand.  Must be 1-D or 2-D.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            The result of the matrix multiplication.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``other`` is a sparse matrix or has more than 2 dimensions.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            x = jnp.ones(m)
+            y = x @ csc          # vector-matrix
+
+            X = jnp.ones((k, m))
+            Y = X @ csc          # matrix-matrix
+        """
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
         data = self.data
@@ -1055,24 +1913,37 @@ class CSC(BaseCLS):
 
     def solve(self, b: Union[jax.Array, u.Quantity], tol=1e-6, reorder=1) -> Union[jax.Array, u.Quantity]:
         """
-        Solve the linear system Ax = b where A is the sparse matrix.
+        Solve the linear system ``A x = b`` where ``A`` is this CSC matrix.
 
-        This method uses JAX's sparse solver to solve the equation Ax = b,
-        where A is the current sparse matrix and b is the right-hand side vector.
+        Delegates to the CSR solver by transposing the matrix.
 
         Parameters
         ----------
-        b : array_like
-            The right-hand side vector of the linear system.
-        tol : Tolerance to decide if singular or not. Defaults to 1e-6.
-        reorder : The reordering scheme to use to reduce fill-in. No reordering if
-            ``reorder=0``. Otherwise, symrcm, symamd, or csrmetisnd (``reorder=1,2,3``),
-            respectively. Defaults to symrcm.
+        b : jax.Array or brainunit.Quantity
+            Right-hand side vector.  Its first dimension must equal
+            ``self.shape[0]``.
+        tol : float, optional
+            Tolerance for singularity detection.  Defaults to ``1e-6``.
+        reorder : int, optional
+            Fill-reducing reordering scheme: ``0`` for no reordering,
+            ``1`` for symrcm, ``2`` for symamd, ``3`` for csrmetisnd.
+            Defaults to ``1``.
 
         Returns
         -------
-        x : jax.Array or u.Quantity
-            The solution vector x that satisfies Ax = b.
+        jax.Array or brainunit.Quantity
+            Solution vector *x* satisfying ``A x = b``.
+
+        Raises
+        ------
+        AssertionError
+            If ``b.shape[0] != self.shape[0]``.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            x = csc.solve(b)
         """
         assert self.shape[0] == b.shape[0], ("The number of rows in the matrix must match "
                                              "the size of the right-hand side vector b.")
@@ -1084,32 +1955,33 @@ class CSC(BaseCLS):
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
     ) -> Union[jax.Array, u.Quantity]:
         """
-        Perform a specialized transformation from y-w space to w space using this sparse matrix.
+        Compute a sparse transformation from y-w space to w space.
 
-        This method implements a matrix-vector product operation that is optimized for
-        specific computational patterns in neural simulations. It efficiently computes
-        a sparse matrix vector product where indices in the y dimension map to values
-        in the w dimension, using the Compressed Sparse Column format.
+        Performs a specialised sparse matrix-vector product optimised for
+        event-driven neural simulations.  The CSC storage is treated as a
+        transposed CSR matrix, so this method calls the CSR kernel with
+        ``shape=self.shape[::-1]`` and ``transpose=True``.
 
         Parameters
         ----------
-        y_dim_arr : jax.Array, np.ndarray, u.Quantity
-            Array containing values in the y dimension (typically target/post-synaptic).
-        w_dim_arr : jax.Array, np.ndarray, u.Quantity
-            Array containing values in the w dimension (typically weights or connection values).
+        y_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
+            Values in the target (post-synaptic) dimension.
+        w_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
+            Per-synapse weight values.
 
         Returns
         -------
-        Union[jax.Array, u.Quantity]
-            The resulting array after the sparse transformation operation.
-            Maintains the same units as the input arrays if they have units.
+        jax.Array or brainunit.Quantity
+            Accumulated result, preserving physical units when present.
+
+        See Also
+        --------
+        yw_to_w_transposed : The transposed (adjoint) variant.
 
         Notes
         -----
-        This method is typically used in event-driven neural simulations to efficiently
-        compute the effect of connections between neurons. Unlike the CSR implementation,
-        this method uses a transposed operation with reversed shape to account for the
-        column-oriented storage format.
+        Internally calls ``csrmv_yw2y`` with ``transpose=True`` and reversed
+        shape to account for the column-oriented storage format.
         """
         return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape[::-1], transpose=True)
 
@@ -1119,31 +1991,33 @@ class CSC(BaseCLS):
         w_dim_arr: Union[jax.Array, np.ndarray, u.Quantity],
     ) -> Union[jax.Array, u.Quantity]:
         """
-        Perform a transposed transformation from y-w space to w space using this sparse matrix.
+        Compute the transposed sparse transformation from y-w space to w space.
 
-        This method implements the transpose of the yw_to_w operation, computing a specialized
-        matrix-vector product that is optimized for specific computational patterns in neural
-        simulations. It efficiently handles the transposed mapping between the y dimension and
-        the w dimension using the Compressed Sparse Column format.
+        This is the adjoint of :meth:`yw_to_w`, useful for back-propagation
+        or adjoint computations in event-driven neural simulations.  Uses
+        ``transpose=False`` with the reversed shape to compute the
+        appropriate transposed operation for CSC storage.
 
         Parameters
         ----------
-        y_dim_arr : jax.Array, np.ndarray, u.Quantity
-            Array containing values in the y dimension (typically target/post-synaptic).
-        w_dim_arr : jax.Array, np.ndarray, u.Quantity
-            Array containing values in the w dimension (typically weights or connection values).
+        y_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
+            Values in the target (post-synaptic) dimension.
+        w_dim_arr : jax.Array, numpy.ndarray, or brainunit.Quantity
+            Per-synapse weight values.
 
         Returns
         -------
-        Union[jax.Array, u.Quantity]
-            The resulting array after the transposed sparse transformation operation.
-            Maintains the same units as the input arrays if they have units.
+        jax.Array or brainunit.Quantity
+            Accumulated result of the transposed operation, preserving
+            physical units when present.
+
+        See Also
+        --------
+        yw_to_w : The forward (non-transposed) variant.
 
         Notes
         -----
-        This method computes the transpose of the yw_to_w operation, which can be useful
-        for backpropagation or adjoint operations in neural simulations. Unlike the regular
-        yw_to_w method, this transposed version uses transpose=False in the underlying
-        implementation to compute the appropriate transposed operation.
+        Internally calls ``csrmv_yw2y`` with ``transpose=False`` and reversed
+        shape.
         """
         return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape[::-1], transpose=False)

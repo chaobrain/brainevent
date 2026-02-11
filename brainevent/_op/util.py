@@ -60,10 +60,21 @@ _MIN_JAX_VERSION_FOR_PALLAS = (0, 7, 1)
 
 
 def check_pallas_jax_version():
-    """Check that JAX version is >= 0.7.1 for Pallas kernel support.
+    """Check that the installed JAX version satisfies Pallas requirements.
 
-    Raises:
-        RuntimeError: If the installed JAX version is older than 0.7.1.
+    Pallas kernels require JAX >= 0.7.1.  This function verifies the
+    installed version and raises an informative error if it is too old.
+
+    Raises
+    ------
+    RuntimeError
+        If the installed JAX version is older than 0.7.1.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> check_pallas_jax_version()  # succeeds silently on JAX >= 0.7.1
     """
     if jax.__version_info__ < _MIN_JAX_VERSION_FOR_PALLAS:
         min_ver = '.'.join(str(v) for v in _MIN_JAX_VERSION_FOR_PALLAS)
@@ -75,10 +86,29 @@ def check_pallas_jax_version():
 
 
 def check_warp_installed():
-    """Check that Warp is installed for Warp kernel support.
+    """Check that the Warp package is installed and importable.
 
-    Raises:
-        RuntimeError: If Warp is not installed.
+    This function verifies that the ``warp`` Python package is available
+    at runtime.  It is called automatically before dispatching to a Warp
+    kernel backend.
+
+    Raises
+    ------
+    RuntimeError
+        If the ``warp`` package is not installed or could not be
+        imported.
+
+    See Also
+    --------
+    jaxtype_to_warptype : Convert a JAX/NumPy dtype to a Warp type.
+    jaxinfo_to_warpinfo : Convert a ``jax.ShapeDtypeStruct`` to a Warp
+        array type.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> check_warp_installed()  # succeeds silently when warp is installed
     """
     if not warp_installed:
         raise RuntimeError(
@@ -94,7 +124,63 @@ def register_tvm_cuda_kernels(
     module: str,
     functions: Sequence[str],
 ):
-    """Compile CUDA kernels and register with JAX FFI."""
+    """Compile CUDA source code and register the resulting kernels with JAX FFI.
+
+    Uses the TVM FFI infrastructure (``jax_tvm_ffi`` and ``tvm_ffi.cpp``)
+    to compile inline CUDA source and register each resulting function as
+    a JAX FFI target on the GPU platform.  If the TVM FFI packages are
+    not installed the function returns silently, allowing upstream code
+    to fall back to other backends.
+
+    Parameters
+    ----------
+    source_code : str
+        CUDA C/C++ source code containing the kernel implementations.
+    module : str
+        Module name under which the compiled kernels are registered.
+        Each kernel is registered as ``"<module>.<function_name>"``.
+    functions : Sequence of str
+        Names of the functions (entry points) to extract from the
+        compiled module and register with JAX FFI.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        If *source_code* is not a string, *module* is not a string, or
+        *functions* is not a sequence of strings.  (Note: the current
+        implementation returns the ``ValueError`` instead of raising it;
+        this may change in a future version.)
+
+    See Also
+    --------
+    XLACustomKernel.def_tvmffi_kernel : Register a TVM FFI kernel with
+        an ``XLACustomKernel``.
+
+    Notes
+    -----
+    The function requires both ``jax_tvm_ffi`` and ``tvm_ffi.cpp``
+    packages to be installed.  If they are not available, the function
+    returns silently with no effect.  The compiled kernels are
+    registered as JAX FFI targets using the naming convention
+    ``"<module>.<function_name>"`` and are available on the ``"gpu"``
+    platform.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> cuda_src = '''
+        ... extern "C" void add_arrays(float* a, float* b, float* out, int n) {
+        ...     int i = threadIdx.x + blockIdx.x * blockDim.x;
+        ...     if (i < n) out[i] = a[i] + b[i];
+        ... }
+        ... '''
+        >>> register_tvm_cuda_kernels(cuda_src, 'my_kernels', ['add_arrays'])
+    """
 
     if not tvmffi_installed:
         return
@@ -124,33 +210,63 @@ def register_tvm_cuda_kernels(
 
 
 def defjvp(primitive, *jvp_rules):
-    """
-    Define JVP rules for any JAX primitive.
+    """Define per-input JVP rules for a JAX primitive.
 
-    This function allows defining Jacobian-vector product (JVP) rules for JAX primitives,
-    extending the functionality of ``jax.interpreters.ad.defjvp``. While the standard
-    JAX function primarily supports primitives that return a single result
-    (``multiple_results=False``), this implementation supports defining independent
-    JVP rules for each input parameter regardless of whether the primitive returns
-    single or multiple results.
+    This function allows defining Jacobian-vector product (JVP) rules
+    for JAX primitives, extending the functionality of
+    ``jax.interpreters.ad.defjvp``.  While the standard JAX function
+    primarily supports primitives that return a single result
+    (``multiple_results=False``), this implementation supports defining
+    independent JVP rules for each input parameter regardless of whether
+    the primitive returns single or multiple results.
 
-    This is particularly useful for custom operations or primitives where different
-    inputs might have different differentiation rules or where the primitive naturally
-    produces multiple outputs that need distinct handling in automatic differentiation.
+    This is particularly useful for custom operations or primitives
+    where different inputs have different differentiation rules, or where
+    the primitive produces multiple outputs that need distinct handling
+    in automatic differentiation.
 
-    For concrete usage examples, refer to the test file ``test_ad_support.py``.
+    Parameters
+    ----------
+    primitive : Primitive or XLACustomKernel
+        The JAX ``Primitive`` object (or an ``XLACustomKernel`` instance,
+        from which the underlying ``Primitive`` is extracted) for which
+        the JVP rule is being defined.
+    *jvp_rules : callable or None
+        One callable per input primal.  Each callable has the signature
+        ``rule(tangent, *primals, **params) -> tangent_out`` and computes
+        the tangent contribution from the corresponding input.  Pass
+        ``None`` for inputs whose JVP contribution is zero.
 
-    Args:
-        primitive: The JAX ``Primitive`` object or an ``XLACustomKernel`` instance
-            for which the JVP rule is being defined. If an ``XLACustomKernel`` is
-            provided, its underlying ``Primitive`` is extracted.
-        *jvp_rules: A variable number of functions, each representing the JVP rule
-            corresponding to a primal input argument of the primitive. Each rule
-            function should accept the tangent vector for its corresponding primal input,
-            followed by all the primal inputs, and any keyword arguments passed to the
-            primitive. It should return the tangent vector(s) corresponding to the
-            primitive's output(s). If a rule is ``None``, it implies the JVP for that
-            input is zero.
+    Raises
+    ------
+    AssertionError
+        If *primitive* (after unwrapping) is not a ``Primitive`` instance.
+
+    See Also
+    --------
+    XLACustomKernel.def_jvp_rule : Register a single monolithic JVP
+        rule for an ``XLACustomKernel``.
+    XLACustomKernel.def_jvp_rule2 : Convenience wrapper around this
+        function.
+    general_batching_rule : General batching rule for custom primitives.
+
+    Notes
+    -----
+    When the primitive has ``multiple_results=True``, a custom internal
+    JVP implementation (``_standard_jvp``) is used that correctly
+    handles tuple outputs.  For single-result primitives, the standard
+    ``jax.interpreters.ad.standard_jvp`` is used.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> # Assume `my_prim` is a JAX Primitive with two inputs.
+        >>> def jvp_rule_input0(tangent, x, y, **kw):
+        ...     return tangent * y
+        >>> def jvp_rule_input1(tangent, x, y, **kw):
+        ...     return tangent * x
+        >>> defjvp(my_prim, jvp_rule_input0, jvp_rule_input1)
     """
     # Import XLACustomKernel locally to avoid circular dependencies.
     from .main import XLACustomKernel
@@ -174,6 +290,33 @@ def defjvp(primitive, *jvp_rules):
 
 
 def _standard_jvp(jvp_rules, primitive: Primitive, primals, tangents, **params):
+    """Compute the JVP for a multi-result primitive.
+
+    This is an internal helper used by :func:`defjvp` when the primitive
+    has ``multiple_results=True``.  It binds the primals, evaluates
+    each per-input JVP rule whose tangent is not ``Zero``, and sums the
+    resulting tangent contributions.
+
+    Parameters
+    ----------
+    jvp_rules : sequence of callable or None
+        Per-input JVP rules (see :func:`defjvp`).
+    primitive : Primitive
+        The JAX primitive.
+    primals : tuple
+        Primal input values.
+    tangents : tuple
+        Tangent input values (may contain ``ad.Zero``).
+    **params
+        Additional keyword arguments forwarded from the primitive bind.
+
+    Returns
+    -------
+    tuple
+        A pair ``(val_out, tangents_out)`` where *val_out* is the tuple
+        of primal outputs and *tangents_out* is the summed tangent
+        contributions with the same pytree structure as *val_out*.
+    """
     assert primitive.multiple_results
     val_out = tuple(primitive.bind(*primals, **params))
     tree = tree_util.tree_structure(val_out)
@@ -200,32 +343,76 @@ def _standard_jvp(jvp_rules, primitive: Primitive, primals, tangents, **params):
 
 
 def _add_tangents(xs, ys):
+    """Element-wise addition of two tangent pytrees.
+
+    Parameters
+    ----------
+    xs : pytree
+        First tangent pytree (may contain ``ad.Zero`` leaves).
+    ys : pytree
+        Second tangent pytree (may contain ``ad.Zero`` leaves).
+
+    Returns
+    -------
+    pytree
+        The element-wise sum of *xs* and *ys*.
+    """
     return tree_util.tree_map(ad.add_tangents, xs, ys, is_leaf=lambda a: isinstance(a, ad.Zero))
 
 
 def general_batching_rule(prim, args, axes, **kwargs):
-    """
-    Implements a general batching rule for JAX primitive operations.
+    """General-purpose batching rule for custom JAX primitives.
 
-    This function handles batching for JAX primitives by separating batched and non-batched
-    arguments, then applying the primitive to each element in the batch using jax.lax.scan.
+    Implements batching by separating batched and non-batched arguments,
+    moving all batch dimensions to axis 0, and then applying the primitive
+    to each element in the batch via ``jax.lax.scan``.
 
-    Args:
-        prim: The JAX primitive operation to be batched.
-        args: Sequence of input arguments to the primitive.
-        axes: Sequence of axis indices indicating the batch dimension for each argument.
-              None indicates that the corresponding argument is not batched.
-        **kwargs: Additional keyword arguments to pass to the primitive.
+    This function is registered as the default batching rule for every
+    :class:`XLACustomKernel` during initialization.
 
-    Returns:
-        tuple: A tuple containing:
-            - outs: The batched outputs from applying the primitive.
-            - out_dim: A pytree with the same structure as outs, indicating
-              the batch dimensions of each output.
+    Parameters
+    ----------
+    prim : Primitive
+        The JAX primitive operation to be batched.
+    args : sequence of array_like
+        Input arguments to the primitive.
+    axes : sequence of int or None
+        Batch dimension index for each argument.  ``None`` indicates
+        that the corresponding argument is not batched.
+    **kwargs
+        Additional keyword arguments forwarded to the primitive.
 
-    Note:
-        This function moves all batch dimensions to the leading axis (0) before
-        applying scan, then processes each slice of the batched inputs.
+    Returns
+    -------
+    outs : pytree
+        The batched outputs from applying the primitive.
+    out_dim : pytree
+        A pytree with the same structure as *outs*, where every leaf
+        is ``0``, indicating that the batch dimension is the leading
+        axis of each output.
+
+    Notes
+    -----
+    All batch dimensions are moved to axis 0 before scanning.  The scan
+    carry is unused (always ``0``); only the stacked scan outputs are
+    returned.
+
+    See Also
+    --------
+    XLACustomKernel.register_general_batching : Registers this function
+        as the batching rule for a primitive.
+    XLACustomKernel.def_batching_rule : Override with a custom batching
+        rule.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import functools
+        >>> from jax.interpreters import batching
+        >>> batching.primitive_batchers[my_prim] = functools.partial(
+        ...     general_batching_rule, my_prim
+        ... )
     """
     batch_axes, batch_args, non_batch_args = [], {}, {}
     for ax_i, ax in enumerate(axes):
@@ -259,16 +446,20 @@ def general_batching_rule(prim, args, axes, **kwargs):
 
 
 class ShapeDtype(Protocol):
-    """A protocol defining objects that have `shape` and `dtype` attributes.
+    """Protocol for objects that expose ``shape`` and ``dtype`` attributes.
 
-    This protocol is used for type hinting to indicate that an object is expected
-    to provide information about its tensor shape (as a tuple of integers) and
-    its data type (as a NumPy dtype). It's commonly used in JAX and related
-    libraries to specify the expected structure of abstract arrays or outputs
-    without requiring a specific concrete class like `jax.core.ShapedArray`.
+    This protocol is used for type hinting to indicate that an object
+    provides information about its tensor shape (as a tuple of integers)
+    and its data type (as a NumPy dtype).  It is commonly satisfied by
+    ``jax.ShapeDtypeStruct``, ``jax.core.ShapedArray``, and any
+    user-defined class with the matching attributes.
 
-    Examples:
+    See Also
+    --------
+    OutType : Type alias combining ``ShapeDtype`` and sequences thereof.
 
+    Examples
+    --------
     .. code-block:: python
 
         >>> import numpy as np
@@ -302,7 +493,7 @@ class ShapeDtype(Protocol):
 
     @property
     def dtype(self) -> np.dtype:
-        """The data type of the tensor elements (e.g., np.float32)."""
+        """The data type of the tensor elements (e.g., ``np.float32``)."""
         ...
 
 
@@ -310,24 +501,118 @@ OutType = Union[ShapeDtype, Sequence[ShapeDtype]]
 
 
 def _transform_to_shapedarray(a):
+    """Convert an object with ``shape`` and ``dtype`` to a ``jax.core.ShapedArray``.
+
+    Parameters
+    ----------
+    a : ShapeDtype
+        Any object satisfying the :class:`ShapeDtype` protocol.
+
+    Returns
+    -------
+    jax.core.ShapedArray
+        The corresponding JAX abstract array.
+    """
     return jax.core.ShapedArray(a.shape, a.dtype)
 
 
 def abstract_arguments(outs):
+    """Flatten an output specification into abstract ``ShapedArray`` objects.
+
+    Takes a pytree of objects with ``shape`` and ``dtype`` attributes
+    (e.g., ``jax.ShapeDtypeStruct``) and returns a flat list of
+    ``jax.core.ShapedArray`` instances together with the tree definition
+    needed to reconstruct the original structure.
+
+    Parameters
+    ----------
+    outs : OutType
+        An output specification -- a single ``ShapeDtype`` object or a
+        pytree (list, tuple, dict, ...) of them.
+
+    Returns
+    -------
+    flat_outs : list of jax.core.ShapedArray
+        Flattened list of abstract arrays.
+    tree_def : jax.tree_util.PyTreeDef
+        The pytree definition that can be used to unflatten the outputs
+        back into the original structure.
+
+    See Also
+    --------
+    ShapeDtype : Protocol describing the expected input objects.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax
+        >>> import jax.numpy as jnp
+        >>> spec = [
+        ...     jax.ShapeDtypeStruct((10,), jnp.float32),
+        ...     jax.ShapeDtypeStruct((5, 3), jnp.int32),
+        ... ]
+        >>> flat, treedef = abstract_arguments(spec)
+        >>> len(flat)
+        2
+        >>> flat[0].shape
+        (10,)
+    """
     outs = jax.tree.map(_transform_to_shapedarray, outs)
     outs, tree_def = jax.tree.flatten(outs)
     return outs, tree_def
 
 
 def jaxtype_to_warptype(dtype):
-    """
-    Convert the JAX dtype to the Warp type.
+    """Convert a JAX / NumPy dtype to the corresponding Warp scalar type.
 
-    Args:
-        dtype: np.dtype. The JAX dtype.
+    Maps standard NumPy data types (which are also used by JAX) to their
+    Warp equivalents.  This is needed when constructing Warp kernel
+    signatures or Warp array types from JAX metadata.
 
-    Returns:
-        ``Warp`` type.
+    Parameters
+    ----------
+    dtype : numpy.dtype or type
+        The data type to convert.  Accepts any object that can be
+        compared with NumPy scalar types (e.g., ``np.float32``,
+        ``jnp.float32``, ``np.dtype('float32')``).
+
+    Returns
+    -------
+    warp type
+        The corresponding Warp scalar type (e.g., ``warp.float32``,
+        ``warp.int32``, ``warp.bool``).
+
+    Raises
+    ------
+    ImportError
+        If the ``warp`` package is not installed.
+    ValueError
+        If *dtype* does not correspond to any supported Warp type.
+        Supported types include: ``float16``, ``float32``, ``float64``,
+        ``int8``, ``int16``, ``int32``, ``int64``, ``uint8``,
+        ``uint16``, ``uint32``, ``uint64``, and ``bool_``.
+
+    See Also
+    --------
+    jaxinfo_to_warpinfo : Convert a full ``jax.ShapeDtypeStruct`` to a
+        Warp array type.
+    check_warp_installed : Verify that Warp is available.
+
+    Notes
+    -----
+    The mapping covers all scalar types supported by both NumPy and
+    Warp: ``float16``, ``float32``, ``float64``, ``int8`` through
+    ``int64``, ``uint8`` through ``uint64``, and ``bool_``.  Complex
+    types are not supported by Warp and will raise ``ValueError``.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import numpy as np
+        >>> warp_type = jaxtype_to_warptype(np.float32)
+        >>> warp_type  # warp.float32
     """
     if not warp_installed:
         raise ImportError('Warp is required to convert JAX dtypes to Warp types.')
@@ -368,34 +653,54 @@ def jaxtype_to_warptype(dtype):
 
 
 def jaxinfo_to_warpinfo(jax_info: jax.ShapeDtypeStruct):
-    """
-    Convert JAX shape and dtype information to a compatible Warp array type.
+    """Convert a ``jax.ShapeDtypeStruct`` to a Warp array type descriptor.
 
-    This function takes a JAX ShapeDtypeStruct object and creates an appropriate
-    Warp array type with the corresponding data type and dimensionality.
-    This is useful when interfacing between JAX and Warp, allowing JAX arrays
-    to be processed by Warp kernels.
+    Takes a JAX shape-and-dtype specification and creates the
+    corresponding Warp array type with matching data type and
+    dimensionality.  This is useful when building Warp kernel
+    signatures from JAX output specifications.
 
     Parameters
     ----------
     jax_info : jax.ShapeDtypeStruct
-        A JAX structure containing shape and dtype information for an array.
+        A JAX structure containing ``shape``, ``dtype``, and ``ndim``
+        attributes describing an array.
 
     Returns
     -------
     warp.types.array
-        A Warp array type with matching data type and dimensionality that can be
-        used in Warp kernel definitions.
+        A Warp array type with matching data type and number of
+        dimensions, suitable for use in Warp kernel definitions.
 
-    Examples
-    --------
-    >>> array_info = jax.ShapeDtypeStruct(shape=(32, 32), dtype=np.float32)
-    >>> warp_info = jaxinfo_to_warpinfo(array_info)
-    >>> # Use warp_info in kernel definition
+    Raises
+    ------
+    ImportError
+        If the ``warp`` package is not installed (propagated from
+        :func:`jaxtype_to_warptype`).
+    ValueError
+        If the dtype in *jax_info* is not supported by Warp (propagated
+        from :func:`jaxtype_to_warptype`).
 
     See Also
     --------
-    dtype_to_warp_type : Function to convert numpy/JAX dtypes to Warp types.
+    jaxtype_to_warptype : Convert a single dtype to a Warp type.
+    check_warp_installed : Verify that Warp is available.
+
+    Notes
+    -----
+    The resulting Warp array type is constructed via
+    ``warp.array(dtype=..., ndim=...)`` which creates a Warp type
+    descriptor (not an actual array).  This is typically used in Warp
+    kernel function signatures to define input/output types.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax
+        >>> import numpy as np
+        >>> info = jax.ShapeDtypeStruct(shape=(32, 32), dtype=np.float32)
+        >>> warp_arr_type = jaxinfo_to_warpinfo(info)
     """
     dtype = jaxtype_to_warptype(jax_info.dtype)
     return warp.array(dtype=dtype, ndim=jax_info.ndim)

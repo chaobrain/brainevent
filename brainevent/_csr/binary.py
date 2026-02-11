@@ -49,21 +49,109 @@ def binary_csrmv(
     backend: Optional[str] = None,
 ) -> Data:
     """
-    Product of CSR sparse matrix and a dense vector.
+    Product of a CSR sparse matrix and a dense vector using event-driven
+    (binary) computation.
 
-    Args:
-      data : array of shape ``(nse,)``.
-      indices : array of shape ``(nse,)``
-      indptr : array of shape ``(shape[0] + 1,)`` and dtype ``indices.dtype``
-      v : array of shape ``(shape[0] if transpose else shape[1],)``
-        and dtype ``data.dtype``
-      shape : length-2 tuple representing the matrix shape
-      transpose : boolean specifying whether to transpose the sparse matrix
-        before computing.
+    Computes ``y = A @ v`` (or ``y = A.T @ v`` when ``transpose=True``)
+    where ``A`` is stored in Compressed Sparse Row format and ``v`` is
+    treated as a binary event vector.  Elements of ``v`` that are ``True``
+    (boolean) or positive (float) are considered *active events*; only
+    those contribute to the result, enabling efficient event-driven
+    sparse--dense products commonly used in spiking neural networks.
 
-    Returns:
-      y : array of shape ``(shape[1] if transpose else shape[0],)`` representing
-        the matrix vector product.
+    The function supports physical units via :mod:`brainunit`.  If ``data``
+    or ``v`` carry units, the result is returned in the corresponding
+    product unit.
+
+    Parameters
+    ----------
+    data : jax.Array, numpy.ndarray, or brainunit.Quantity
+        Non-zero weight values of the CSR matrix.  Shape ``(nse,)`` for
+        heterogeneous weights or ``(1,)`` for a single homogeneous weight
+        shared across all connections.
+    indices : jax.Array or numpy.ndarray
+        Column indices of the non-zero elements.  Shape ``(nse,)`` with
+        integer dtype (``int32``, ``int64``, ``uint32``, or ``uint64``).
+    indptr : jax.Array or numpy.ndarray
+        Row index pointer array.  Shape ``(shape[0] + 1,)`` and same dtype
+        as ``indices``.  ``indptr[i]`` and ``indptr[i+1]`` delimit the
+        non-zero entries of row ``i``.
+    v : jax.Array, numpy.ndarray, or brainunit.Quantity
+        Dense event vector.  Shape ``(shape[0],)`` when ``transpose=True``
+        or ``(shape[1],)`` when ``transpose=False``.  Dtype may be boolean
+        (events indicated by ``True``) or floating-point (events indicated
+        by values ``> 0``).
+    shape : tuple of int
+        Two-element tuple ``(m, k)`` giving the logical shape of the
+        sparse matrix ``A``.
+    transpose : bool, optional
+        If ``True``, the sparse matrix is transposed before multiplication,
+        i.e. compute ``A.T @ v``.  Default is ``False``.
+    backend : str or None, optional
+        Compute backend to use.  One of ``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` (auto-select).  Default is ``None``.
+
+    Returns
+    -------
+    y : jax.Array or brainunit.Quantity
+        Result vector.  Shape ``(shape[1],)`` when ``transpose=True`` or
+        ``(shape[0],)`` when ``transpose=False``.
+
+    See Also
+    --------
+    binary_csrmv_p_call : Low-level primitive call for binary CSR
+        matrix--vector multiplication.
+    binary_csrmm : Binary CSR matrix--matrix multiplication.
+    csrmv : Standard (non-event-driven) CSR matrix--vector multiplication.
+
+    Notes
+    -----
+    This operation is *event-driven*: instead of performing a full
+    sparse--dense product, it skips columns (or rows, when transposed)
+    for which the corresponding entry in ``v`` is inactive (``False`` or
+    ``<= 0``).  This yields significant speed-ups when the event vector is
+    sparse.
+
+    Mathematically, the non-transposed operation computes:
+
+    ``y[i] = sum_{j in nz(i)} A[i, j] * e(v[j])``
+
+    where ``nz(i)`` denotes the set of column indices with non-zero
+    entries in row ``i``, and ``e(v[j])`` is the event indicator:
+
+    ``e(v[j]) = 1  if v[j] is True (bool) or v[j] > 0 (float)``
+    ``e(v[j]) = 0  otherwise``
+
+    When ``transpose=True``, the transposed operation computes:
+
+    ``y[j] = sum_{i in nz_col(j)} A[i, j] * e(v[i])``
+
+    where ``nz_col(j)`` denotes the set of row indices with non-zero
+    entries in column ``j``.
+
+    For homogeneous weights (``data`` of shape ``(1,)``), ``A[i, j]``
+    is the constant ``data[0]`` for all non-zero positions.
+
+    The operation is differentiable with respect to both ``data`` and
+    ``v`` via custom JVP and transpose rules.
+
+    References
+    ----------
+    .. [1] R. Brette, "Simulation of networks of spiking neurons:
+       A review of tools and strategies," *Journal of Computational
+       Neuroscience*, vol. 23, pp. 349--398, 2007.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._csr.binary import binary_csrmv
+        >>> data = jnp.array([0.5])           # homogeneous weight
+        >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
+        >>> v = jnp.array([True, False, True])  # binary event vector
+        >>> binary_csrmv(data, indices, indptr, v, shape=(2, 3))
     """
     data, unitd = u.split_mantissa_unit(data)
     v, unitv = u.split_mantissa_unit(v)
@@ -91,21 +179,102 @@ def binary_csrmm(
     backend: Optional[str] = None,
 ) -> Data:
     """
-    Product of CSR sparse matrix and a dense matrix.
+    Product of a CSR sparse matrix and a dense matrix using event-driven
+    (binary) computation.
 
-    Args:
-      data : array of shape ``(nse,)``.
-      indices : array of shape ``(nse,)``
-      indptr : array of shape ``(shape[0] + 1,)`` and dtype ``indices.dtype``
-      B : array of shape ``(shape[0] if transpose else shape[1], cols)`` and
-        dtype ``data.dtype``
-      shape : length-2 tuple representing the matrix shape
-      transpose : boolean specifying whether to transpose the sparse matrix
-        before computing.
+    Computes ``C = A @ B`` (or ``C = A.T @ B`` when ``transpose=True``)
+    where ``A`` is stored in Compressed Sparse Row format and ``B`` is a
+    dense matrix whose entries are treated as binary events.  Entries of
+    ``B`` that are ``True`` (boolean) or positive (float) are the only
+    ones that contribute to the result.
 
-    Returns:
-      C : array of shape ``(shape[1] if transpose else shape[0], cols)``
-        representing the matrix-matrix product.
+    The function supports physical units via :mod:`brainunit`.
+
+    Parameters
+    ----------
+    data : jax.Array, numpy.ndarray, or brainunit.Quantity
+        Non-zero weight values of the CSR matrix.  Shape ``(nse,)`` for
+        heterogeneous weights or ``(1,)`` for a single homogeneous weight.
+    indices : jax.Array or numpy.ndarray
+        Column indices of the non-zero elements.  Shape ``(nse,)`` with
+        integer dtype.
+    indptr : jax.Array or numpy.ndarray
+        Row index pointer array.  Shape ``(shape[0] + 1,)`` and same dtype
+        as ``indices``.
+    B : jax.Array, numpy.ndarray, or brainunit.Quantity
+        Dense event matrix.  Shape
+        ``(shape[0], cols)`` when ``transpose=True`` or
+        ``(shape[1], cols)`` when ``transpose=False``.
+        Dtype may be boolean or floating-point.
+    shape : tuple of int
+        Two-element tuple ``(m, k)`` giving the logical shape of the
+        sparse matrix ``A``.
+    transpose : bool, optional
+        If ``True``, transpose ``A`` before multiplication.  Default is
+        ``False``.
+    backend : str or None, optional
+        Compute backend.  One of ``'numba'``, ``'warp'``, ``'pallas'``, or
+        ``None`` (auto-select).  Default is ``None``.
+
+    Returns
+    -------
+    C : jax.Array or brainunit.Quantity
+        Result matrix.  Shape ``(shape[1], cols)`` when ``transpose=True``
+        or ``(shape[0], cols)`` when ``transpose=False``.
+
+    See Also
+    --------
+    binary_csrmm_p_call : Low-level primitive call for binary CSR
+        matrix--matrix multiplication.
+    binary_csrmv : Binary CSR matrix--vector multiplication.
+    csrmm : Standard (non-event-driven) CSR matrix--matrix multiplication.
+
+    Notes
+    -----
+    The operation is *event-driven*: entries of ``B`` that are inactive
+    (``False`` or ``<= 0``) are skipped.  Custom JVP and transpose rules
+    are provided for automatic differentiation.
+
+    Mathematically, the non-transposed operation computes:
+
+    ``C[i, l] = sum_{j in nz(i)} A[i, j] * e(B[j, l])``
+
+    where ``nz(i)`` denotes the set of column indices with non-zero
+    entries in row ``i`` of the CSR matrix, and ``e(B[j, l])`` is the
+    event indicator:
+
+    ``e(B[j, l]) = 1  if B[j, l] is True (bool) or B[j, l] > 0 (float)``
+    ``e(B[j, l]) = 0  otherwise``
+
+    When ``transpose=True``, the transposed operation computes:
+
+    ``C[j, l] = sum_{i in nz_col(j)} A[i, j] * e(B[i, l])``
+
+    where ``nz_col(j)`` denotes the set of row indices with non-zero
+    entries in column ``j``.
+
+    For homogeneous weights (``data`` of shape ``(1,)``), ``A[i, j]``
+    is the constant ``data[0]`` for all non-zero positions.
+
+    References
+    ----------
+    .. [1] R. Brette, "Simulation of networks of spiking neurons:
+       A review of tools and strategies," *Journal of Computational
+       Neuroscience*, vol. 23, pp. 349--398, 2007.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._csr.binary import binary_csrmm
+        >>> data = jnp.array([1.0, 2.0, 3.0, 4.0])
+        >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
+        >>> B = jnp.array([[True, False],
+        ...                [False, True],
+        ...                [True, True]])
+        >>> binary_csrmm(data, indices, indptr, B, shape=(2, 3))
     """
     data, unitd = u.split_mantissa_unit(data)
     B, unitb = u.split_mantissa_unit(B)
@@ -713,22 +882,95 @@ def binary_csrmv_p_call(
     backend: Optional[str] = None,
 ):
     """
-    Perform a call to the event CSR matrix-vector multiplication custom operation.
+    Low-level primitive call for event-driven CSR matrix--vector
+    multiplication.
 
-    This function prepares the inputs and calls the binary_csrmv_p custom operation
-    to perform matrix-vector multiplication using a CSR (Compressed Sparse Row) format.
+    Prepares inputs, validates shapes and dtypes, and dispatches the
+    ``binary_csrmv_p`` XLA custom kernel to perform the computation
+    ``y = A @ v`` (or ``y = A.T @ v``), where ``A`` is a CSR matrix and
+    ``v`` is a binary event vector.
 
-    Args:
-        weights (jax.Array): Non-zero elements of the CSR sparse matrix.
-        indices (jax.Array): Column indices of non-zero elements in the CSR sparse matrix.
-        indptr (jax.Array): Index pointers of the CSR sparse matrix, indicating the start of each row.
-        vector (jax.Array): The dense vector to be multiplied with the sparse matrix.
-        shape (Sequence[int]): A sequence of length 2, representing the shape of the sparse matrix.
-        transpose (bool): Whether to transpose the sparse matrix before multiplication.
-        backend (str, optional): Backend to use for computation.
+    Parameters
+    ----------
+    weights : jax.Array
+        Non-zero weight values of the CSR matrix.  Shape ``(nse,)`` for
+        heterogeneous weights, ``(1,)`` for a homogeneous weight, or a
+        scalar (automatically promoted to shape ``(1,)``).
+    indices : jax.Array
+        Column indices of non-zero elements.  Shape ``(nse,)`` with dtype
+        ``int32``, ``int64``, ``uint32``, or ``uint64``.
+    indptr : jax.Array
+        Row index pointer array.  Shape ``(shape[0] + 1,)`` and same dtype
+        as ``indices``.
+    vector : jax.Array
+        Dense event vector.  Shape ``(shape[0],)`` when
+        ``transpose=True`` or ``(shape[1],)`` when ``transpose=False``.
+        Dtype may be boolean or floating-point.
+    shape : tuple of int
+        Two-element tuple ``(m, k)`` giving the logical shape of the
+        sparse matrix.
+    transpose : bool
+        If ``True``, transpose the sparse matrix before multiplication.
+    backend : str or None, optional
+        Compute backend to use.  Default is ``None`` (auto-select).
 
-    Returns:
-        jax.Array: The result of the matrix-vector multiplication.
+    Returns
+    -------
+    list of jax.Array
+        A single-element list containing the result vector.  Shape
+        ``(shape[1],)`` when ``transpose=True`` or ``(shape[0],)`` when
+        ``transpose=False``.
+
+    Raises
+    ------
+    AssertionError
+        If ``indices`` or ``indptr`` have a dtype other than ``int32``,
+        ``int64``, ``uint32``, or ``uint64``.
+    AssertionError
+        If ``indices`` and ``indptr`` do not share the same dtype.
+    AssertionError
+        If ``indptr`` or ``indices`` is not 1-D.
+    AssertionError
+        If ``weights`` does not have a floating-point dtype.
+    AssertionError
+        If there is a shape mismatch between ``vector`` and the sparse
+        matrix ``shape`` (considering the ``transpose`` flag).
+
+    See Also
+    --------
+    binary_csrmv : High-level wrapper with unit support.
+    binary_csrmm_p_call : Low-level primitive call for binary CSR
+        matrix--matrix multiplication.
+
+    Notes
+    -----
+    Scalar ``weights`` (0-d arrays) are automatically promoted to
+    shape ``(1,)`` to indicate a homogeneous weight across all
+    connections.
+
+    The computation performed is:
+
+    ``y[i] = sum_{j in nz(i)} w[j] * e(v[j])``  (non-transposed)
+
+    ``y[j] = sum_{i in nz_col(j)} w[i] * e(v[i])``  (transposed)
+
+    where ``e(x)`` is ``1`` when ``x`` is ``True`` (boolean) or
+    ``x > 0`` (float), and ``0`` otherwise.  ``w[j]`` is either
+    ``weights[j]`` (heterogeneous) or ``weights[0]`` (homogeneous).
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._csr.binary import binary_csrmv_p_call
+        >>> weights = jnp.array([0.5])
+        >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
+        >>> vector = jnp.array([True, False, True])
+        >>> result = binary_csrmv_p_call(
+        ...     weights, indices, indptr, vector,
+        ...     shape=(2, 3), transpose=False)
     """
     assert indices.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indices must be int32 or int64."
     assert indptr.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indptr must be int32 or int64."
@@ -1136,10 +1378,10 @@ def _csrmm_pallas_kernel(
             # 1. Grid Info
             i_row = pl.program_id(0)
             i_n = pl.program_id(1)
-            
+
             #Grid Guard
             num_rows = indptr_ref.shape[0] - 1
-            
+
             def _body():
                 # 2. Column Blocking Setup
                 i_col_start = i_n * block_dim_n
@@ -1151,7 +1393,7 @@ def _csrmm_pallas_kernel(
                 row_nnz = row_end - row_start
                 num_blocks = (row_nnz + block_dim - 1) // block_dim
                 val_A = data_ref[0]
-                
+
                 limit_k = B_ref.shape[0] - 1
 
                 def loop_fn(index, sum_):
@@ -1159,9 +1401,9 @@ def _csrmm_pallas_kernel(
                     nnz_mask = offset + jnp.arange(block_dim) < row_end
 
                     cols = load(indices_ref, (pl.dslice(offset, block_dim),), mask=nnz_mask, other=0)
-                    
+
                     safe_cols = jnp.minimum(cols, limit_k)
-                    
+
                     events = B_ref[safe_cols, pl.dslice(i_col_start, block_dim_n)]
                     events = jnp.asarray(events, dtype=posts_ref.dtype)
 
@@ -1173,11 +1415,11 @@ def _csrmm_pallas_kernel(
                     0, num_blocks, loop_fn,
                     jnp.zeros([block_dim_n], dtype=posts_ref.dtype)
                 )
-                
+
                 pl.store(
-                    posts_ref, 
-                    (i_row, pl.dslice(i_col_start, block_dim_n)), 
-                    i_row_sum, 
+                    posts_ref,
+                    (i_row, pl.dslice(i_col_start, block_dim_n)),
+                    i_row_sum,
                     mask=col_mask
                 )
 
@@ -1217,7 +1459,7 @@ def _csrmm_pallas_kernel(
                 row_end = indptr_ref[i_row + 1]
                 row_nnz = row_end - row_start
                 num_blocks = (row_nnz + block_dim - 1) // block_dim
-                
+
                 num_B_rows = B_ref.shape[0]
 
                 def loop_fn(index, sum_):
@@ -1227,20 +1469,20 @@ def _csrmm_pallas_kernel(
 
                     cols = pl.load(indices_ref, (pl.dslice(offset, block_dim),), mask=nnz_mask, other=0)
                     val_A = pl.load(data_ref, (pl.dslice(offset, block_dim),), mask=nnz_mask, other=0.0)
-                    
+
 
                     valid_cols = cols < num_B_rows
                     safe_cols = jnp.minimum(cols, num_B_rows - 1)
 
                     mask_B_dim0 = nnz_mask & valid_cols
                     mask_B = mask_B_dim0[:, None] & col_mask[None, :]
-                    
+
                     events = load(B_ref.at[safe_cols, pl.dslice(i_col_start, block_dim_n)], mask=mask_B, other=0.0)
-   
+
                     weighted = val_A[:, None] * events
 
-                    contribution = jnp.sum(weighted, axis=0) 
-                    
+                    contribution = jnp.sum(weighted, axis=0)
+
                     sum_ += contribution
                     return sum_
 
@@ -1248,7 +1490,7 @@ def _csrmm_pallas_kernel(
                     0, num_blocks, loop_fn,
                     jnp.zeros([block_dim_n], dtype=posts_ref.dtype)
                 )
-                
+
                 store(posts_ref.at[i_row, pl.dslice(i_col_start, block_dim_n)], i_row_sum, mask=col_mask)
 
             jax.lax.cond(i_row < num_rows, _body, lambda: None)
@@ -1506,19 +1748,97 @@ def binary_csrmm_p_call(
     backend: Optional[str] = None,
 ):
     """
-    Perform a call to the event CSR matrix-matrix multiplication custom operation.
+    Low-level primitive call for event-driven CSR matrix--matrix
+    multiplication.
 
-    Args:
-        weights (jax.Array): Non-zero elements of the CSR sparse matrix.
-        indices (jax.Array): Column indices of non-zero elements in the CSR sparse matrix.
-        indptr (jax.Array): Index pointers of the CSR sparse matrix, indicating the start of each row.
-        B (jax.Array): A dense matrix.
-        shape (Sequence[int]): A sequence of length 2, representing the shape of the sparse matrix.
-        transpose (bool): A boolean indicating whether to transpose the sparse matrix before multiplication.
-        backend (str, optional): Backend to use for computation.
+    Prepares inputs, validates shapes and dtypes, and dispatches the
+    ``binary_csrmm_p`` XLA custom kernel to compute ``C = A @ B`` (or
+    ``C = A.T @ B``), where ``A`` is a CSR matrix and ``B`` is a dense
+    event matrix.
 
-    Returns:
-        jax.Array: The result of the matrix-matrix multiplication.
+    Parameters
+    ----------
+    weights : jax.Array
+        Non-zero weight values of the CSR matrix.  Shape ``(nse,)`` for
+        heterogeneous weights, ``(1,)`` for a homogeneous weight, or a
+        scalar (automatically promoted to shape ``(1,)``).
+    indices : jax.Array
+        Column indices of non-zero elements.  Shape ``(nse,)`` with dtype
+        ``int32``, ``int64``, ``uint32``, or ``uint64``.
+    indptr : jax.Array
+        Row index pointer array.  Shape ``(shape[0] + 1,)`` and same dtype
+        as ``indices``.
+    B : jax.Array
+        Dense event matrix.  Shape ``(shape[0], cols)`` when
+        ``transpose=True`` or ``(shape[1], cols)`` when
+        ``transpose=False``.  Dtype may be boolean or floating-point.
+    shape : tuple of int
+        Two-element tuple ``(m, k)`` giving the logical shape of the
+        sparse matrix.
+    transpose : bool
+        If ``True``, transpose the sparse matrix before multiplication.
+    backend : str or None, optional
+        Compute backend to use.  Default is ``None`` (auto-select).
+
+    Returns
+    -------
+    list of jax.Array
+        A single-element list containing the result matrix.  Shape
+        ``(shape[1], cols)`` when ``transpose=True`` or
+        ``(shape[0], cols)`` when ``transpose=False``.
+
+    Raises
+    ------
+    AssertionError
+        If ``indices`` or ``indptr`` have a dtype other than ``int32``,
+        ``int64``, ``uint32``, or ``uint64``.
+    AssertionError
+        If ``indices`` and ``indptr`` do not share the same dtype.
+    AssertionError
+        If ``indptr`` or ``indices`` is not 1-D.
+    AssertionError
+        If ``weights`` does not have a floating-point dtype.
+    AssertionError
+        If there is a shape mismatch between ``B`` and the sparse
+        matrix ``shape`` (considering the ``transpose`` flag).
+
+    See Also
+    --------
+    binary_csrmm : High-level wrapper with unit support.
+    binary_csrmv_p_call : Low-level primitive call for binary CSR
+        matrix--vector multiplication.
+
+    Notes
+    -----
+    Scalar ``weights`` (0-d arrays) are automatically promoted to
+    shape ``(1,)`` to indicate a homogeneous weight across all
+    connections.
+
+    The computation performed is:
+
+    ``C[i, l] = sum_{j in nz(i)} w[j] * e(B[j, l])``  (non-transposed)
+
+    ``C[j, l] = sum_{i in nz_col(j)} w[i] * e(B[i, l])``  (transposed)
+
+    where ``e(x)`` is ``1`` when ``x`` is ``True`` (boolean) or
+    ``x > 0`` (float), and ``0`` otherwise.  ``w[j]`` is either
+    ``weights[j]`` (heterogeneous) or ``weights[0]`` (homogeneous).
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._csr.binary import binary_csrmm_p_call
+        >>> weights = jnp.array([1.0, 2.0, 3.0, 4.0])
+        >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
+        >>> B = jnp.array([[True, False],
+        ...                [False, True],
+        ...                [True, True]])
+        >>> result = binary_csrmm_p_call(
+        ...     weights, indices, indptr, B,
+        ...     shape=(2, 3), transpose=False)
     """
     assert indices.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indices must be int32 or int64."
     assert indptr.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indptr must be int32 or int64."

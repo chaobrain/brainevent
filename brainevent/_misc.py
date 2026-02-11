@@ -31,26 +31,91 @@ from ._typing import MatrixShape, Data, Index
 
 
 def is_known_type(x):
+    """Check whether an object is a recognized array or event type.
+
+    Determines if the input is an instance of one of the known numerical
+    or event-representation types used throughout brainevent:
+    :class:`brainunit.Quantity`, :class:`jax.Array`, :class:`numpy.ndarray`,
+    or :class:`~brainevent._event.base.EventRepresentation`.
+
+    Parameters
+    ----------
+    x : object
+        The object to check.
+
+    Returns
+    -------
+    bool
+        ``True`` if ``x`` is an instance of a recognized type, ``False``
+        otherwise.
+
+    See Also
+    --------
+    COOInfo : Metadata type for COO sparse matrices.
+
+    Notes
+    -----
+    This function is used internally for type dispatching in sparse
+    matrix operations, ensuring that only recognized numerical types
+    are passed to kernel functions.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._misc import is_known_type
+        >>> is_known_type(jnp.array([1, 2, 3]))
+        True
+        >>> is_known_type("not an array")
+        False
+    """
     from ._event.base import EventRepresentation
     return isinstance(x, (u.Quantity, jax.Array, np.ndarray, EventRepresentation))
 
 
 class COOInfo(NamedTuple):
-    """
-    A named tuple containing metadata for COO (Coordinate) format sparse matrices.
+    """Metadata for COO (Coordinate) format sparse matrices.
 
-    COO format represents a sparse matrix using three arrays: data values, row indices,
-    and column indices. This class stores shape and sorting information needed for
+    COO format represents a sparse matrix using three arrays: data
+    values, row indices, and column indices.  This named tuple stores
+    the matrix shape and sorting information needed by sparse matrix
+    operations.
+
+    Parameters
+    ----------
+    shape : MatrixShape
+        The shape of the matrix as a sequence of two integers
+        ``(n_rows, n_cols)``.
+    rows_sorted : bool, optional
+        Whether the row indices are in sorted (non-decreasing) order.
+        Defaults to ``False``.
+    cols_sorted : bool, optional
+        Whether the column indices are in sorted order within each row.
+        Only meaningful when ``rows_sorted`` is ``True``.  Defaults to
+        ``False``.
+
+    See Also
+    --------
+    csr_to_coo_index : Convert CSR indices to COO format.
+    coo_to_csc_index : Convert COO indices to CSC format.
+
+    Notes
+    -----
+    This type is used as the ``spinfo`` parameter in JAX's
+    ``coo_todense`` primitive binding and throughout brainevent's COO
     sparse matrix operations.
 
-    Attributes:
-        shape: Sequence[int]
-            The shape of the matrix as a sequence of integers (rows, columns).
-        rows_sorted: bool, default=False
-            Indicates whether the row indices are in sorted order.
-        cols_sorted: bool, default=False
-            Indicates whether the column indices are in sorted order within each row.
-            Only relevant if ``rows_sorted`` is True.
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from brainevent._misc import COOInfo
+        >>> info = COOInfo(shape=(100, 200), rows_sorted=True)
+        >>> info.shape
+        (100, 200)
+        >>> info.rows_sorted
+        True
     """
     shape: MatrixShape
     rows_sorted: bool = False
@@ -64,16 +129,26 @@ def _coo_todense(
     *,
     spinfo: COOInfo
 ) -> Data:
-    """Convert CSR-format sparse matrix to a dense matrix.
+    """Convert a COO-format sparse matrix to a dense matrix.
 
-    Args:
-      data : array of shape ``(nse,)``.
-      row : array of shape ``(nse,)``
-      col : array of shape ``(nse,)`` and dtype ``row.dtype``
-      spinfo : COOInfo object containing matrix metadata
+    Parameters
+    ----------
+    data : array_like
+        Data values of shape ``(nse,)``, where *nse* is the number of
+        stored elements.
+    row : array_like
+        Row index array of shape ``(nse,)``.
+    col : array_like
+        Column index array of shape ``(nse,)`` with the same dtype as
+        *row*.
+    spinfo : COOInfo
+        Metadata for the sparse matrix including ``shape``.
 
-    Returns:
-      mat : array with specified shape and dtype matching ``data``
+    Returns
+    -------
+    Data
+        A dense array with shape ``spinfo.shape`` and dtype matching
+        *data*.
     """
     data, unit = u.split_mantissa_unit(data)
     if data.size == 1:
@@ -87,7 +162,22 @@ def _csr_to_coo(
     indices: jax.Array,
     indptr: jax.Array
 ) -> Tuple[jax.Array, jax.Array]:
-    """Given CSR (indices, indptr) return COO (row, col)"""
+    """Convert CSR index arrays to COO ``(row, col)`` arrays.
+
+    Parameters
+    ----------
+    indices : jax.Array
+        Column index array from CSR format.
+    indptr : jax.Array
+        Row pointer array from CSR format.
+
+    Returns
+    -------
+    row : jax.Array
+        Row indices in COO format.
+    col : jax.Array
+        Column indices in COO format (identical to *indices*).
+    """
     return jnp.cumsum(jnp.zeros_like(indices).at[indptr].add(1)) - 1, indices
 
 
@@ -98,17 +188,26 @@ def _csr_todense(
     *,
     shape: MatrixShape
 ) -> Data:
-    """
-    Convert CSR-format sparse matrix to a dense matrix.
+    """Convert a CSR-format sparse matrix to a dense matrix.
 
-    Args:
-      data : array of shape ``(nse,)``.
-      indices : array of shape ``(nse,)``
-      indptr : array of shape ``(shape[0] + 1,)`` and dtype ``indices.dtype``
-      shape : length-2 tuple representing the matrix shape
+    Parameters
+    ----------
+    data : array_like
+        Data values of shape ``(nse,)``, where *nse* is the number of
+        stored elements.
+    indices : array_like
+        Column index array of shape ``(nse,)``.
+    indptr : array_like
+        Row pointer array of shape ``(shape[0] + 1,)`` with the same
+        dtype as *indices*.
+    shape : MatrixShape
+        A length-2 tuple ``(n_rows, n_cols)`` representing the matrix
+        shape.
 
-    Returns:
-      mat : array with specified shape and dtype matching ``data``
+    Returns
+    -------
+    Data
+        A dense array with the given *shape* and dtype matching *data*.
     """
     data, unit = u.split_mantissa_unit(data)
     if data.size == 1:
@@ -187,9 +286,56 @@ def _block_csr_tocoo(
 
 
 def estimate_block_size(csr, efficiency: float = 0.7) -> Tuple[int, int]:
-    """Attempt to determine the block_size of a CSR matrix
+    """Estimate an appropriate block size for a CSR sparse matrix.
 
-    Returns a block_size=(r,c) such that best match the efficiency setting
+    Attempts to find the largest block size ``(r, c)`` where the fraction
+    of non-zero entries to total entries within occupied blocks (the block
+    efficiency) exceeds the given ``efficiency`` threshold. Candidate block
+    sizes are drawn from the set ``{(1,1), (2,2), (3,3), (4,4), (6,6)}``.
+
+    Parameters
+    ----------
+    csr : sparse matrix
+        A CSR sparse matrix with attributes ``nse`` (number of stored
+        elements), ``shape``, ``indptr``, and ``indices``.
+    efficiency : float, optional
+        Target efficiency threshold in the open interval ``(0, 1)``.
+        A higher value requires denser blocks before a larger block size
+        is chosen. Defaults to ``0.7``.
+
+    Returns
+    -------
+    tuple of int
+        A ``(block_rows, block_cols)`` tuple selected from the candidate
+        set that best matches the efficiency criterion. Returns ``(1, 1)``
+        if the matrix is empty or no larger block size meets the threshold.
+
+    Raises
+    ------
+    ValueError
+        If ``efficiency`` is not in the open interval ``(0, 1)``.
+
+    See Also
+    --------
+    count_blocks : Count the number of occupied blocks for a given block size.
+
+    Notes
+    -----
+    The algorithm first checks ``(2,2)`` and ``(3,3)`` blocks. If both
+    exceed a high-efficiency bar (the midpoint between ``efficiency`` and
+    ``1.0``), it considers ``(6,6)``. Otherwise it falls through
+    ``(4,4)``, ``(3,3)``, ``(2,2)`` in order. A candidate block size
+    is only considered if the matrix dimensions are evenly divisible by
+    the block dimensions.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from brainevent._misc import estimate_block_size
+        >>> # Assuming `csr_mat` is a CSR sparse matrix:
+        >>> block_size = estimate_block_size(csr_mat, efficiency=0.7)  # doctest: +SKIP
+        >>> print(block_size)  # e.g. (2, 2) or (1, 1)
     """
     if csr.nse == 0:
         return (1, 1)
@@ -249,8 +395,49 @@ def _count_blocks(N, M, n, m, indptr, indices):
 
 
 def count_blocks(mat, block_size: Tuple[int, int]) -> int:
-    """For a given block_size=(n,m) count the number of occupied
-    blocks in a csr matrix
+    """Count the number of occupied blocks in a CSR sparse matrix.
+
+    For a given ``block_size = (n, m)``, counts how many ``n x m`` blocks
+    in the matrix contain at least one non-zero entry.
+
+    Parameters
+    ----------
+    mat : sparse matrix
+        A CSR sparse matrix with attributes ``shape``, ``indptr``, and
+        ``indices``.
+    block_size : tuple of int
+        A ``(block_rows, block_cols)`` tuple specifying the dimensions of
+        each block. Both values must be positive integers.
+
+    Returns
+    -------
+    int
+        The number of ``block_size``-shaped blocks that contain at least
+        one non-zero element.
+
+    Raises
+    ------
+    ValueError
+        If either component of ``block_size`` is less than 1.
+
+    See Also
+    --------
+    estimate_block_size : Automatically choose a good block size for a CSR matrix.
+
+    Notes
+    -----
+    The counting is performed using a row-sweep algorithm that tracks
+    which block columns have been seen for each block row, using a
+    mask array for O(1) lookup.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from brainevent._misc import count_blocks
+        >>> # Assuming `csr_mat` is a CSR sparse matrix:
+        >>> n_blocks = count_blocks(csr_mat, (2, 2))  # doctest: +SKIP
+        >>> print(n_blocks)
     """
     n, m = block_size
     if n < 1 or m < 1:
@@ -288,23 +475,49 @@ def _nonzero_blocks(
 
 
 def cdiv(m: int, n: int) -> int:
-    """
-    Calculate ceiling division of m by n (division rounded up to nearest integer).
+    """Compute the ceiling division of two positive integers.
 
-    This is equivalent to math.ceil(m/n) but avoids floating-point operations.
+    Returns the smallest integer ``k`` such that ``k >= m / n``, equivalent
+    to ``math.ceil(m / n)`` but implemented using only integer arithmetic.
 
-    Args:
-        m: Dividend (numerator)
-        n: Divisor (denominator), must be positive
+    Parameters
+    ----------
+    m : int
+        The dividend (numerator).
+    n : int
+        The divisor (denominator). Must be a positive integer.
 
-    Returns:
-        The smallest integer k such that k ≥ m/n
+    Returns
+    -------
+    int
+        The smallest integer ``k`` satisfying ``k * n >= m``.
 
-    Examples:
-        >>> cdiv(10, 3)  # 10/3 = 3.33... -> 4
+    Raises
+    ------
+    ValueError
+        If ``n`` is not positive.
+
+    See Also
+    --------
+    generate_block_dim : Select a power-of-two block size for kernels.
+
+    Notes
+    -----
+    The implementation uses the integer formula ``(m + n - 1) // n``
+    which avoids floating-point rounding issues that ``math.ceil``
+    could introduce for very large integers.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from brainevent._misc import cdiv
+        >>> cdiv(10, 3)
         4
-        >>> cdiv(9, 3)   # 9/3 = 3 -> 3
+        >>> cdiv(9, 3)
         3
+        >>> cdiv(1, 1)
+        1
     """
     if n <= 0:
         raise ValueError("Divisor must be positive")
@@ -315,22 +528,48 @@ def generate_block_dim(
     n_conn: int,
     maximum: int = 256
 ) -> int:
-    """
-    Determines an appropriate block dimension based on the number of connections.
+    """Determine an appropriate block dimension for parallel kernel execution.
 
-    This function selects a block size, typically a power of 2, based on the
-    input `n_conn`. It seems intended for optimizing operations possibly
-    related to parallel processing or memory access patterns where block
-    sizes like 32, 64, 128, or 256 are common.
+    Selects a power-of-two block size from the set ``{32, 64, 128, 256}``
+    that is at least as large as ``n_conn`` and does not exceed ``maximum``.
+    If ``n_conn`` exceeds all candidates, the ``maximum`` value is returned.
 
-    Args:
-        n_conn: An integer representing the number of connections or a similar
-                metric influencing the desired block size.
-        maximum: An optional integer specifying the maximum allowed block size.
+    Parameters
+    ----------
+    n_conn : int
+        The number of connections (or similar workload metric) that the
+        block must cover.
+    maximum : int, optional
+        The maximum allowed block size. Defaults to ``256``.
 
-    Returns:
-        An integer representing the calculated block dimension. Returns 32, 64,
-        128, or 256 based on `n_conn`, defaulting to 128 if `n_conn` exceeds 256.
+    Returns
+    -------
+    int
+        A block dimension from ``{32, 64, 128, 256}`` or ``maximum`` if
+        no candidate is large enough.
+
+    See Also
+    --------
+    cdiv : Ceiling division helper.
+
+    Notes
+    -----
+    Choosing a power-of-two block size aligned to the GPU warp size
+    (32 threads) ensures efficient hardware utilization.  The smallest
+    sufficient block size is chosen to minimize wasted threads when
+    ``n_conn`` is small.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from brainevent._misc import generate_block_dim
+        >>> generate_block_dim(20)
+        32
+        >>> generate_block_dim(50)
+        64
+        >>> generate_block_dim(300)
+        256
     """
     if n_conn <= 32 <= maximum:
         block_size = 32
@@ -355,64 +594,79 @@ def check_fixed_conn_num_shape(
     transpose: bool,
     require_scalar_weight: bool = False
 ) -> Tuple[jax.ShapeDtypeStruct, jax.Array, int, int]:
-    """
-    Checks the shapes and dtypes of inputs for sparse operations.
+    """Validate input shapes for fixed-connection-number sparse operations.
 
-    Validates the dimensions and consistency of weights, indices, and a vector
-    involved in a sparse matrix operation (like SpMV or SpM^T V). It adjusts
-    the weights array based on its dimensions and the `require_scalar_weight`
-    flag. It also determines the expected output shape based on the transpose
-    flag.
+    Checks the dimensions and consistency of weights, indices, and a vector
+    involved in a sparse matrix operation (SpMV or transposed SpMV). Adjusts
+    the weights array based on its dimensionality and the
+    ``require_scalar_weight`` flag, and determines the expected output shape
+    based on the ``transpose`` flag.
 
     Parameters
     ----------
     weights : jax.Array
-        The weights associated with the sparse connections. Can be 2D (same shape
-        as indices), 1D (scalar weight), or 0D (scalar weight).
+        The weights associated with the sparse connections. Can be:
+
+        - **2D** with shape ``(n_pre, n_conn)`` matching ``indices``,
+        - **1D** with a single element (scalar weight), or
+        - **0D** (scalar weight).
     indices : jax.Array
-        The indices of the connections, typically of shape (n_pre, n_conn),
-        where n_conn is the number of connections per pre-synaptic neuron.
+        Connection index array of shape ``(n_pre, n_conn)`` where each row
+        contains the post-synaptic indices for one pre-synaptic element.
     vector : jax.Array
-        The vector to be multiplied with the sparse matrix. Its shape depends
-        on the `transpose` flag.
-    shape : Sequence[int]
-        A sequence of two integers `(n_pre, n_post)` representing the logical
-        shape of the dense equivalent matrix.
+        The vector (or matrix) to multiply with the sparse connectivity.
+        Shape depends on ``transpose``:
+
+        - ``transpose=False``: shape ``(n_post,)`` or ``(n_post, k)``.
+        - ``transpose=True``: shape ``(n_pre,)`` or ``(n_pre, k)``.
+    shape : sequence of int
+        A length-2 sequence ``(n_pre, n_post)`` giving the logical dense
+        matrix shape.
     transpose : bool
-        If True, checks shapes for the transposed operation (vector * Matrix).
-        If False, checks shapes for the forward operation (Matrix * vector).
+        If ``True``, validate for the transposed operation
+        ``vector @ Matrix -> (n_post,)``.
+        If ``False``, validate for the forward operation
+        ``Matrix @ vector -> (n_pre,)``.
     require_scalar_weight : bool, optional
-        If True and weights are 1D or 0D, ensures weights is treated as a
-        scalar value. If False and weights are 0D, converts weights to a 1D
-        array of size 1. Defaults to False.
+        If ``True`` and weights are 1D of size 1, extract the scalar value.
+        If ``False`` and weights are 0D, promote to a 1D array of size 1.
+        Defaults to ``False``.
 
     Returns
     -------
     out_struct : jax.ShapeDtypeStruct
-        A ShapeDtypeStruct representing the expected shape and dtype of the
-        output vector.
+        Expected shape and dtype of the output.
     weights : jax.Array
-        The potentially modified weights array (e.g., scalar extracted from
-        1D array if `require_scalar_weight` is True, or 0D converted to 1D).
+        The (potentially modified) weights array.
     n_pre : int
-        The number of pre-synaptic elements.
+        Number of pre-synaptic elements.
     n_post : int
-        The number of post-synaptic elements.
+        Number of post-synaptic elements.
 
     Raises
     ------
     ValueError
-        If `weights` has dimensions other than 0, 1, or 2.
+        If ``weights`` has a number of dimensions other than 0, 1, or 2.
     AssertionError
-        If shape inconsistencies are found between inputs (e.g., `weights`
-        and `indices` shapes don't match when `weights` is 2D, `weights` is
-        1D but not size 1, `indices` first dimension doesn't match `n_pre`,
-        or `vector` shape doesn't match `n_pre` or `n_post` based on
-        `transpose`).
+        If shape inconsistencies are found between inputs (e.g.,
+        ``weights`` and ``indices`` shapes do not match when ``weights``
+        is 2D, ``indices`` first dimension does not match ``n_pre``, or
+        ``vector`` shape is incompatible with the specified operation).
+
+    See Also
+    --------
+    csr_to_coo_index : Convert CSR indices to COO format.
+
+    Notes
+    -----
+    This function is used as a validation and normalization step before
+    dispatching to fixed-connection-number sparse kernels (e.g., in the
+    ``_fcn`` and ``_jit_*`` modules).  It ensures that the weight,
+    index, and vector dimensions are mutually consistent and prepares
+    the output specification for the kernel.
 
     Examples
     --------
-
     .. code-block:: python
 
         >>> import jax
@@ -421,32 +675,13 @@ def check_fixed_conn_num_shape(
         >>> n_pre, n_post, n_conn = 5, 10, 3
         >>> shape = (n_pre, n_post)
         >>> indices = jax.random.randint(key, (n_pre, n_conn), 0, n_post)
-        >>> # Example 1: 2D weights, no transpose
         >>> weights_2d = jax.random.uniform(key, (n_pre, n_conn))
         >>> vector_post = jnp.ones(n_post)
-        >>> out_struct, w, _, _ = check_fixed_conn_num_shape(weights_2d, indices, vector_post, shape, False)
+        >>> out_struct, w, _, _ = check_fixed_conn_num_shape(
+        ...     weights_2d, indices, vector_post, shape, False
+        ... )
         >>> print(out_struct)
         ShapeDtypeStruct(shape=(5,), dtype=float32)
-        >>> print(w.shape)
-        (5, 3)
-        >>> # Example 2: Scalar weight (0D), transpose
-        >>> weights_0d = jnp.array(0.5)
-        >>> vector_pre = jnp.ones(n_pre)
-        >>> out_struct, w, _, _ = check_fixed_conn_num_shape(weights_0d, indices, vector_pre, shape, True)
-        >>> print(out_struct)
-        ShapeDtypeStruct(shape=(10,), dtype=float32)
-        >>> print(w.shape) # Converted to 1D array
-        (1,)
-        >>> # Example 3: Scalar weight (1D), require scalar, no transpose
-        >>> weights_1d = jnp.array([0.7])
-        >>> vector_post = jnp.ones(n_post)
-        >>> out_struct, w, _, _ = check_fixed_conn_num_shape(weights_1d, indices, vector_post, shape, False, require_scalar_weight=True)
-        >>> print(out_struct)
-        ShapeDtypeStruct(shape=(5,), dtype=float32)
-        >>> print(w.shape) # Kept as scalar
-        ()
-        >>> print(w)
-        0.7
     """
     if weights.ndim == 2:
         assert weights.shape == indices.shape, (
@@ -529,32 +764,55 @@ def csr_to_coo_index(
     indptr: Union[jax.Array, np.ndarray],
     indices: Union[jax.Array, np.ndarray]
 ):
-    """
-    Converts CSR (Compressed Sparse Row) format indices to COO (Coordinate) format indices.
+    """Convert CSR format index arrays to COO format index arrays.
 
-    This function transforms the CSR representation of a sparse matrix (given by indptr and
-    indices) into the COO representation, which consists of explicit row and column indices
-    for each non-zero element.
+    Transforms the Compressed Sparse Row representation of a sparse matrix
+    (given by ``indptr`` and ``indices``) into the Coordinate representation,
+    which uses explicit row and column index arrays for each non-zero element.
 
-    Args:
-        indptr: Union[jax.Array, np.ndarray]
-            Row pointers array in CSR format. For a matrix with m rows, this has length m+1.
-            Each element represents the starting position of a row in the indices array.
+    Parameters
+    ----------
+    indptr : jax.Array or numpy.ndarray
+        Row pointer array in CSR format. For a matrix with ``m`` rows, this
+        has length ``m + 1``. Element ``indptr[i]`` gives the index into
+        ``indices`` where row ``i`` starts, and ``indptr[i+1] - indptr[i]``
+        is the number of non-zero entries in row ``i``.
+    indices : jax.Array or numpy.ndarray
+        Column index array in CSR format. Contains the column index for
+        each non-zero element. Length equals the number of stored elements.
 
-        indices: Union[jax.Array, np.ndarray]
-            Column indices array in CSR format. Contains the column index for each non-zero
-            element of the sparse matrix.
+    Returns
+    -------
+    pre_ids : jax.Array or numpy.ndarray
+        Row indices in COO format, with the same length as ``indices``.
+    post_ids : jax.Array or numpy.ndarray
+        Column indices in COO format (identical to the input ``indices``).
 
-    Returns:
-        Tuple[Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray]]:
-            A tuple (pre_ids, post_ids) where:
-            - pre_ids: Row indices in COO format
-            - post_ids: Column indices in COO format (same as input indices)
+    See Also
+    --------
+    coo_to_csc_index : Convert COO indices to CSC format.
+    csr_to_csc_index : Convert CSR indices directly to CSC format.
 
-    Notes:
-        The function automatically determines whether to use NumPy or JAX based on the
-        type of the input arrays. The computation is performed at compile time using
-        jax.ensure_compile_time_eval().
+    Notes
+    -----
+    The function automatically selects NumPy or JAX operations based on
+    the type of the input arrays. When JAX arrays are provided, the
+    computation is wrapped in ``jax.ensure_compile_time_eval()`` so that
+    it runs at trace time.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import numpy as np
+        >>> from brainevent._misc import csr_to_coo_index
+        >>> indptr = np.array([0, 2, 3, 5])
+        >>> indices = np.array([0, 2, 1, 0, 3])
+        >>> row_ids, col_ids = csr_to_coo_index(indptr, indices)
+        >>> print(row_ids)
+        [0 0 1 2 2]
+        >>> print(col_ids)
+        [0 2 1 0 3]
     """
     with jax.ensure_compile_time_eval():
         mod = np if isinstance(indptr, np.ndarray) else jnp
@@ -569,45 +827,61 @@ def coo_to_csc_index(
     *,
     shape: Tuple[int, int],
 ):
-    """
-    Convert COO (Coordinate) format indices to CSC (Compressed Sparse Column) format.
+    """Convert COO format index arrays to CSC format.
 
-    This function transforms a sparse matrix representation from Coordinate format
-    (given by explicit row and column indices) to Compressed Sparse Column format.
-    The implementation handles both NumPy and JAX arrays automatically.
+    Transforms a sparse matrix representation from Coordinate (COO) format
+    (explicit row and column index arrays) to Compressed Sparse Column (CSC)
+    format. The implementation automatically selects NumPy or JAX operations
+    based on the type of the input arrays.
 
     Parameters
     ----------
-    pre_ids : Union[jax.Array, np.ndarray]
-        Row indices array in COO format. Contains the row index for each non-zero
-        element of the sparse matrix.
-
-    indices : Union[jax.Array, np.ndarray]
-        Column indices array in COO format. Contains the column index for each non-zero
-        element of the sparse matrix.
-
-    shape : Tuple[int, int]
-        A tuple of (n_rows, n_cols) specifying the dimensions of the sparse matrix.
-        Required as a keyword-only argument.
+    pre_ids : jax.Array or numpy.ndarray
+        Row index array in COO format. Contains the row index for each
+        non-zero element.
+    indices : jax.Array or numpy.ndarray
+        Column index array in COO format. Contains the column index for
+        each non-zero element.
+    shape : tuple of int
+        A ``(n_rows, n_cols)`` tuple specifying the dimensions of the
+        sparse matrix. Keyword-only argument.
 
     Returns
     -------
-    Tuple[Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray]]
-        A tuple containing:
+    csc_indptr : jax.Array or numpy.ndarray
+        Column pointer array in CSC format. For a matrix with ``n`` columns,
+        this has length ``n + 1``. Element ``csc_indptr[j]`` gives the
+        position in ``csc_indices`` where column ``j`` starts.
+    csc_indices : jax.Array or numpy.ndarray
+        Row index array in CSC format. Contains the row index for each
+        non-zero element, ordered by column.
+    post_positions : jax.Array or numpy.ndarray
+        Permutation array that reorders data values from COO order to
+        CSC order. If ``data`` is the COO data array, then
+        ``data[post_positions]`` gives the values in CSC order.
 
-        - csc_indptr: Column pointers array in CSC format. For a matrix with n columns,
-          this has length n+1. Each element represents the starting position of a column
-          in the row indices array.
-        - csc_indices: Row indices array in CSC format. Contains the row index for each
-          non-zero element, sorted by column.
-        - post_positions: Array of indices that can be used to reorder the data values
-          from COO to CSC format.
+    See Also
+    --------
+    csr_to_coo_index : Convert CSR indices to COO format.
+    csr_to_csc_index : Convert CSR indices directly to CSC format.
 
     Notes
     -----
-    The implementation automatically determines whether to use NumPy or JAX based on
-    the type of input arrays. When using JAX arrays, computation is performed at
-    compile time using jax.ensure_compile_time_eval().
+    When JAX arrays are provided, the computation is wrapped in
+    ``jax.ensure_compile_time_eval()`` so that it executes at trace time
+    rather than at runtime.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import numpy as np
+        >>> from brainevent._misc import coo_to_csc_index
+        >>> row_ids = np.array([0, 0, 1, 2, 2])
+        >>> col_ids = np.array([0, 2, 1, 0, 3])
+        >>> indptr, row_indices, perm = coo_to_csc_index(
+        ...     row_ids, col_ids, shape=(3, 4)
+        ... )
     """
     n_post = shape[1]
     if isinstance(indices, np.ndarray) and isinstance(pre_ids, np.ndarray):
@@ -645,47 +919,66 @@ def csr_to_csc_index(
     *,
     shape: Tuple[int, int],
 ):
-    """
-    Convert CSR (Compressed Sparse Row) format indices to CSC (Compressed Sparse Column) format.
+    """Convert CSR format index arrays to CSC format.
 
-    This function transforms the sparse matrix representation from Compressed Sparse Row format
-    to Compressed Sparse Column format by first converting to COO (Coordinate) format as an
-    intermediate step.
+    Transforms the sparse matrix representation from Compressed Sparse Row
+    (CSR) format to Compressed Sparse Column (CSC) format. Internally
+    converts to COO format as an intermediate step via :func:`csr_to_coo_index`,
+    then to CSC via :func:`coo_to_csc_index`.
 
     Parameters
     ----------
-    csr_indptr : Union[jax.Array, np.ndarray]
-        Row pointers array in CSR format. For a matrix with m rows, this has length m+1.
-        Each element represents the starting position of a row in the indices array.
-
-    csr_indices : Union[jax.Array, np.ndarray]
-        Column indices array in CSR format. Contains the column index for each non-zero
-        element of the sparse matrix.
-
-    shape : Tuple[int, int]
-        A tuple of (n_rows, n_cols) specifying the dimensions of the sparse matrix.
-        Required as a keyword-only argument.
+    csr_indptr : jax.Array or numpy.ndarray
+        Row pointer array in CSR format. For a matrix with ``m`` rows, this
+        has length ``m + 1``.
+    csr_indices : jax.Array or numpy.ndarray
+        Column index array in CSR format. Contains the column index for
+        each non-zero element.
+    shape : tuple of int
+        A ``(n_rows, n_cols)`` tuple specifying the dimensions of the
+        sparse matrix. Keyword-only argument.
 
     Returns
     -------
-    Tuple[Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray], Union[jax.Array, np.ndarray]]
-        A tuple containing:
-
-        - csc_indptr: Column pointers array in CSC format
-        - csc_indices: Row indices array in CSC format
-        - post_positions: Array of indices that can be used to reorder the data values
-          from CSR to CSC format
+    csc_indptr : jax.Array or numpy.ndarray
+        Column pointer array in CSC format.
+    csc_indices : jax.Array or numpy.ndarray
+        Row index array in CSC format.
+    post_positions : jax.Array or numpy.ndarray
+        Permutation array that reorders data values from CSR order to
+        CSC order. If ``data`` is the CSR data array, then
+        ``data[post_positions]`` gives the values in CSC order.
 
     Raises
     ------
     AssertionError
-        If shape is not a tuple/list, doesn't have exactly 2 dimensions, or contains
-        non-positive dimensions.
+        If ``shape`` is not a tuple or list, does not have exactly two
+        elements, or contains non-positive dimensions.
+
+    See Also
+    --------
+    csr_to_coo_index : Convert CSR indices to COO indices.
+    coo_to_csc_index : Convert COO indices to CSC indices.
 
     Notes
     -----
-    The implementation automatically determines whether to use NumPy or JAX based on
-    the type of input arrays.
+    The conversion is performed in two steps: CSR is first expanded to
+    COO via :func:`csr_to_coo_index`, then the COO representation is
+    sorted by column via :func:`coo_to_csc_index`.  The returned
+    ``post_positions`` permutation array can be used to reorder a CSR
+    data array into CSC order.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import numpy as np
+        >>> from brainevent._misc import csr_to_csc_index
+        >>> indptr = np.array([0, 2, 3, 5])
+        >>> indices = np.array([0, 2, 1, 0, 3])
+        >>> csc_indptr, csc_indices, perm = csr_to_csc_index(
+        ...     indptr, indices, shape=(3, 4)
+        ... )
     """
     assert isinstance(shape, (tuple, list)), "Shape must be a tuple or list"
     assert len(shape) == 2, "Shape must have exactly two dimensions (rows, columns)"
@@ -696,9 +989,45 @@ def csr_to_csc_index(
 
 
 class NameScope:
-    """A callable that caches a separate JIT-compiled function per unique `backend` value.
+    """A callable that caches a separate JIT-compiled function per unique ``backend`` value.
 
-    This enables efficient per-backend caching without relying on JAX's static argument mechanism.
+    This enables efficient per-backend caching without relying on JAX's
+    static argument mechanism. Each distinct ``backend`` keyword argument
+    produces a separate JIT-compiled variant of the wrapped function, which
+    is cached for reuse on subsequent calls.
+
+    Parameters
+    ----------
+    fn : callable
+        The function to wrap with per-backend JIT compilation.
+    name : str or None, optional
+        Display name for the function. If ``None``, a name is constructed
+        from ``prefix`` and the function's ``__name__``.
+    prefix : str, optional
+        Prefix prepended to the function name when ``name`` is ``None``.
+        Defaults to ``"brainevent"``.
+    module : str, optional
+        Value to set for ``__module__``. Defaults to ``"brainevent"``.
+    static_argnums : sequence of int or int, optional
+        Positional argument indices to treat as static (passed through to
+        ``jax.jit``). Defaults to ``()``.
+    static_argnames : sequence of str or str, optional
+        Keyword argument names to treat as static (passed through to
+        ``jax.jit``). Defaults to ``()``.
+
+    See Also
+    --------
+    namescope : Decorator form that creates a ``NameScope`` instance.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from brainevent._misc import NameScope
+        >>> def my_kernel(x, y):
+        ...     return x + y
+        >>> ns = NameScope(my_kernel, name="brainevent.my_kernel")
+        >>> result = ns(x, y, backend="pallas")  # doctest: +SKIP
     """
 
     def __init__(
@@ -756,28 +1085,54 @@ def namescope(
     static_argnums: Sequence[int] = (),
     static_argnames: Sequence[str] = ()
 ):
-    """Decorator that wraps a function with JAX's JIT compilation and sets its name.
+    """Decorator that wraps a function with per-backend JIT compilation.
 
-    Returns a ``NameScope`` instance that caches a separate JIT-compiled function
-    per unique ``backend`` keyword argument value.
+    Returns a :class:`NameScope` instance that caches a separate
+    JIT-compiled variant of the decorated function for each unique
+    ``backend`` keyword argument value.
 
-    Args:
-        name: Optional name to set for the function. If None, uses the original function name.
-        prefix: Prefix to add to function name if name is None.
-        static_argnums: Tuple of positional argument indices to be treated as static.
-        static_argnames: Tuple of keyword argument names to be treated as static.
+    Parameters
+    ----------
+    fn : callable, optional
+        The function to decorate. When ``None``, returns a decorator
+        (allowing use with or without parentheses).
+    name : str or None, optional
+        Display name for the function. If ``None``, the name is derived
+        from ``prefix`` and the function's ``__name__``.
+    prefix : str, optional
+        Prefix prepended to the function name when ``name`` is ``None``.
+        Defaults to ``"brainevent"``.
+    module : str, optional
+        Value to set for ``__module__``. Defaults to ``"brainevent"``.
+    static_argnums : sequence of int, optional
+        Positional argument indices to treat as static (passed through to
+        ``jax.jit``). Defaults to ``()``.
+    static_argnames : sequence of str, optional
+        Keyword argument names to treat as static (passed through to
+        ``jax.jit``). Defaults to ``()``.
 
-    Returns:
-        A ``NameScope`` instance wrapping the function with per-backend JIT caching.
+    Returns
+    -------
+    NameScope
+        A ``NameScope`` instance wrapping the function with per-backend
+        JIT caching. When used as a parameterized decorator (i.e.,
+        ``fn`` is ``None``), returns a decorator function instead.
 
-    Example:
-        @namescope(static_argnums=(0,))
-        def my_func(x, y):
-            return x + y
+    See Also
+    --------
+    NameScope : The underlying class that implements per-backend JIT caching.
 
-        @namescope(static_argnames=("shape", "transpose"))
-        def my_func2(x, y, *, shape, transpose=False):
-            return x + y
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from brainevent._misc import namescope
+        >>> @namescope(static_argnums=(0,))
+        ... def my_func(x, y):
+        ...     return x + y
+        >>> @namescope(static_argnames=("shape", "transpose"))
+        ... def my_func2(x, y, *, shape, transpose=False):
+        ...     return x + y
     """
 
     if fn is None:

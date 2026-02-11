@@ -47,33 +47,107 @@ def update_csr_on_binary_pre(
     shape: MatrixShape,
     backend: Optional[str] = None,
 ):
-    """Updates synaptic weights in CSR format based on presynaptic spike events and postsynaptic traces.
+    """Update CSR synaptic weights triggered by presynaptic binary spike events.
 
-    This function implements a plasticity rule for sparse connectivity matrices where
-    presynaptic spikes trigger weight updates modulated by postsynaptic trace values.
-    The weight matrix is stored in Compressed Sparse Row (CSR) format.
+    Implements a spike-timing-dependent plasticity (STDP) rule for sparse
+    connectivity matrices stored in Compressed Sparse Row (CSR) format. For each
+    presynaptic neuron ``i`` that fires (``pre_spike[i]`` is ``True`` or nonzero),
+    the weights of all outgoing synapses from that neuron are updated by adding the
+    corresponding postsynaptic trace values:
 
-    Specifically, for each presynaptic neuron, if it spikes ``pre_spike[i]`` is True,
-    the weights of all synapses originating from that neuron are updated by adding the
-    corresponding postsynaptic trace values ``post_trace[indices[index: index_end]]`` to
-    the weights ``weight[index: index_end]``.
+    ``weight[indptr[i]:indptr[i+1]] += post_trace[indices[indptr[i]:indptr[i+1]]]``
 
-    Args:
-        weight: Sparse synaptic weight array in CSR format, shape (n_nonzero,).
-        indices: Column indices array of the CSR format, shape (n_nonzero,).
-        indptr: Row pointers array of the CSR format, shape (n_rows + 1,).
-        pre_spike: Binary/boolean array indicating presynaptic spike events, shape (n_pre,).
-        post_trace: Postsynaptic trace values, shape (n_post,).
-        w_min: Optional lower bound for weight clipping. Must have same units as weight.
-        w_max: Optional upper bound for weight clipping. Must have same units as weight.
-        shape: Tuple specifying the full matrix shape as (n_pre, n_post).
+    After the update, weights are optionally clipped to ``[w_min, w_max]``.
 
-    Returns:
-        Updated weight array with the same shape and units as the input weight.
+    Parameters
+    ----------
+    weight : jax.Array, Quantity, or number
+        Sparse synaptic weight array in CSR data format, with shape ``(nse,)``
+        where ``nse`` is the number of stored elements. May carry physical units
+        via ``brainunit.Quantity``.
+    indices : ndarray or jax.Array
+        Column indices array of the CSR format, with shape ``(nse,)`` and integer
+        dtype.
+    indptr : ndarray or jax.Array
+        Row pointer array of the CSR format, with shape ``(n_pre + 1,)`` and
+        integer dtype.
+    pre_spike : jax.Array
+        Binary or boolean array indicating presynaptic spike events, with shape
+        ``(n_pre,)``. If boolean, ``True`` indicates a spike. If float, any
+        nonzero value indicates a spike.
+    post_trace : jax.Array or Quantity
+        Postsynaptic eligibility trace values, with shape ``(n_post,)``. Must be
+        compatible in units with ``weight``.
+    w_min : jax.Array, Quantity, number, or None, optional
+        Lower bound for weight clipping. Must have the same units as ``weight``.
+        If ``None``, no lower bound is applied.
+    w_max : jax.Array, Quantity, number, or None, optional
+        Upper bound for weight clipping. Must have the same units as ``weight``.
+        If ``None``, no upper bound is applied.
+    shape : tuple of int
+        Full matrix shape as ``(n_pre, n_post)``.
+    backend : str or None, optional
+        Compute backend to use. One of ``'numba'``, ``'warp'``, ``'pallas'``, or
+        ``None`` for automatic selection.
 
-    Note:
-        The function handles unit conversion internally, ensuring that the post_trace
-        is converted to the same unit as the weight before computation.
+    Returns
+    -------
+    jax.Array or Quantity
+        Updated weight array with the same shape ``(nse,)`` and units as the
+        input ``weight``.
+
+    Raises
+    ------
+    AssertionError
+        If ``weight`` is not 1-D, if ``pre_spike`` is not 1-D, if ``post_trace``
+        is not 1-D, if ``shape[0] != pre_spike.shape[0]``,
+        ``shape[1] != post_trace.shape[0]``, or if
+        ``weight.shape[0] != indices.shape[0]``.  These checks are performed by
+        the underlying :func:`csr_on_pre_prim_call`.
+
+    See Also
+    --------
+    update_csr_on_binary_post : Post-synaptic-spike-triggered weight update.
+    update_csr_on_binary_pre_p : Low-level XLA custom kernel primitive for this
+        operation.
+
+    Notes
+    -----
+    This function implements the **pre-synaptic** component of an additive
+    spike-timing-dependent plasticity (STDP) rule.  In the standard pair-based
+    STDP formulation the weight matrix ``W`` with shape ``(n_pre, n_post)`` is
+    stored in CSR format.  When presynaptic neuron ``j`` fires, the update for
+    every synapse ``(i, j)`` that exists in the sparsity pattern is:
+
+    ``W[i, j] <- W[i, j] + post_trace[i]``
+
+    After the additive update, weights are clipped element-wise:
+
+    ``W[i, j] <- clip(W[i, j], w_min, w_max)``
+
+    Here ``post_trace`` is an eligibility trace that typically decays
+    exponentially between postsynaptic spikes, so synapses that experienced a
+    recent postsynaptic spike receive a larger update.
+
+    The function internally converts ``post_trace`` to the same unit as ``weight``
+    before performing arithmetic, so mixed-unit inputs are supported as long as
+    the units are dimensionally compatible.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._csr.plasticity_binary import update_csr_on_binary_pre
+        >>> weight = jnp.array([0.5, 0.3, 0.8, 0.2], dtype=jnp.float32)
+        >>> indices = jnp.array([0, 1, 0, 2], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
+        >>> pre_spike = jnp.array([True, False])
+        >>> post_trace = jnp.array([0.1, 0.2, 0.05], dtype=jnp.float32)
+        >>> updated = update_csr_on_binary_pre(
+        ...     weight, indices, indptr, pre_spike, post_trace,
+        ...     shape=(2, 3),
+        ... )
     """
     weight, wunit = u.split_mantissa_unit(weight)
     post_trace = u.Quantity(post_trace).to(wunit).mantissa
@@ -244,7 +318,80 @@ def _csr_on_pre_benchmark_data(*, platform):
     return configs
 
 
-def csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, shape, backend=None):
+def csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, shape, backend: Optional[str] = None):
+    """Invoke the low-level XLA custom kernel for presynaptic plasticity updates.
+
+    Validates input shapes and dimensions, then dispatches to
+    :data:`update_csr_on_binary_pre_p` with the appropriate metadata. This is the
+    direct primitive call without unit handling or weight clipping; most users
+    should prefer :func:`update_csr_on_binary_pre`.
+
+    Parameters
+    ----------
+    weight : jax.Array
+        Sparse synaptic weight data array, with shape ``(nse,)`` where ``nse`` is
+        the number of stored elements.
+    indices : jax.Array
+        Column indices array of the CSR format, with shape ``(nse,)``.
+    indptr : jax.Array
+        Row pointer array of the CSR format, with shape ``(n_pre + 1,)``.
+    pre_spike : jax.Array
+        Binary or boolean presynaptic spike array, with shape ``(n_pre,)``.
+    post_trace : jax.Array
+        Postsynaptic trace values, with shape ``(n_post,)``.
+    shape : tuple of int
+        Full matrix shape as ``(n_pre, n_post)``.
+    backend : str or None, optional
+        Compute backend to use. One of ``'numba'``, ``'warp'``, ``'pallas'``, or
+        ``None`` for automatic selection.
+
+    Returns
+    -------
+    tuple of jax.Array
+        A single-element tuple containing the updated weight array with shape
+        ``(nse,)``.
+
+    Raises
+    ------
+    AssertionError
+        If ``weight`` is not 1-D, if ``pre_spike`` is not 1-D, if ``post_trace``
+        is not 1-D, if dimension sizes in ``shape`` do not match
+        ``pre_spike.shape[0]`` and ``post_trace.shape[0]``, or if
+        ``weight.shape[0] != indices.shape[0]``.
+
+    See Also
+    --------
+    update_csr_on_binary_pre : High-level wrapper with unit handling and clipping.
+
+    Notes
+    -----
+    This function operates on unitless mantissa arrays. All physical-unit
+    handling and weight clipping are performed by the caller
+    (:func:`update_csr_on_binary_pre`).  The additive update rule applied per
+    row ``i`` where ``pre_spike[i]`` is active is:
+
+    ``weight[indptr[i] : indptr[i+1]] += post_trace[indices[indptr[i] : indptr[i+1]]]``
+
+    The function constructs :class:`jax.ShapeDtypeStruct` metadata for each
+    operand and forwards the call to the ``XLACustomKernel`` instance
+    :data:`update_csr_on_binary_pre_p`.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._csr.plasticity_binary import csr_on_pre_prim_call
+        >>> weight = jnp.array([0.5, 0.3, 0.8, 0.2], dtype=jnp.float32)
+        >>> indices = jnp.array([0, 1, 0, 2], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
+        >>> pre_spike = jnp.array([True, False])
+        >>> post_trace = jnp.array([0.1, 0.2, 0.05], dtype=jnp.float32)
+        >>> (updated,) = csr_on_pre_prim_call(
+        ...     weight, indices, indptr, pre_spike, post_trace,
+        ...     shape=(2, 3),
+        ... )
+    """
     assert weight.ndim == 1, 'dense_one_pre only support 1D weight.'
     assert pre_spike.ndim == 1, 'pre_spike should be 1D.'
     assert post_trace.ndim == 1, 'post_trace should be 1D.'
@@ -289,34 +436,119 @@ def update_csr_on_binary_post(
     shape: MatrixShape,
     backend: Optional[str] = None,
 ):
-    """Updates synaptic weights in CSC format based on postsynaptic spike events and presynaptic traces.
+    """Update CSR synaptic weights triggered by postsynaptic binary spike events.
 
-    This function implements a plasticity rule for sparse connectivity matrices where
-    postsynaptic spikes trigger weight updates modulated by presynaptic trace values.
-    The weight matrix is stored in Compressed Sparse Column (CSC) format.
+    Implements a spike-timing-dependent plasticity (STDP) rule for sparse
+    connectivity stored in CSC (Compressed Sparse Column) layout. For each
+    postsynaptic neuron ``j`` that fires (``post_spike[j]`` is ``True`` or
+    nonzero), the weights of all incoming synapses to that neuron are updated
+    by adding the corresponding presynaptic trace values:
 
-    Specifically, for each postsynaptic neuron, if it spikes ``post_spike[i]`` is True,
-    the weights of all synapses targeting that neuron are updated by adding the
-    corresponding presynaptic trace values ``pre_trace[indices[index: index_end]]`` to
-    the weights ``weight[index: index_end]``.
+    ``weight[weight_indices[indptr[j]:indptr[j+1]]] += pre_trace[indices[indptr[j]:indptr[j+1]]]``
 
-    Args:
-        weight: Sparse synaptic weight array in CSC format, shape (n_nonzero,).
-        indices: Row indices array of the CSC format, shape (n_nonzero,).
-        indptr: Column pointers array of the CSC format, shape (n_cols + 1,).
-        weight_indices: Array of weight indices corresponding to the synapses, shape (n_nonzero,).
-        pre_trace: Presynaptic trace values, shape (n_pre,).
-        post_spike: Binary/boolean array indicating postsynaptic spike events, shape (n_post,).
-        w_min: Optional lower bound for weight clipping. Must have same units as weight.
-        w_max: Optional upper bound for weight clipping. Must have same units as weight.
-        shape: Tuple specifying the full matrix shape as (n_pre, n_post).
+    The CSC structure (``indices``, ``indptr``) indexes by postsynaptic neuron,
+    while ``weight_indices`` maps back to the original CSR weight positions.
+    After the update, weights are optionally clipped to ``[w_min, w_max]``.
 
-    Returns:
-        Updated weight array with the same shape and units as the input weight.
+    Parameters
+    ----------
+    weight : jax.Array or Quantity
+        Sparse synaptic weight array, with shape ``(nse,)`` where ``nse`` is the
+        number of stored elements. May carry physical units via
+        ``brainunit.Quantity``.
+    indices : ndarray or jax.Array
+        Row indices array of the CSC format, with shape ``(nse,)`` and integer
+        dtype.
+    indptr : ndarray or jax.Array
+        Column pointer array of the CSC format, with shape ``(n_post + 1,)`` and
+        integer dtype.
+    weight_indices : ndarray or jax.Array
+        Mapping from CSC element positions to CSR weight positions, with shape
+        ``(nse,)`` and integer dtype.
+    pre_trace : jax.Array or Quantity
+        Presynaptic eligibility trace values, with shape ``(n_pre,)``. Must be
+        compatible in units with ``weight``.
+    post_spike : jax.Array
+        Binary or boolean array indicating postsynaptic spike events, with shape
+        ``(n_post,)``. If boolean, ``True`` indicates a spike. If float, any
+        nonzero value indicates a spike.
+    w_min : jax.Array, Quantity, number, or None, optional
+        Lower bound for weight clipping. Must have the same units as ``weight``.
+        If ``None``, no lower bound is applied.
+    w_max : jax.Array, Quantity, number, or None, optional
+        Upper bound for weight clipping. Must have the same units as ``weight``.
+        If ``None``, no upper bound is applied.
+    shape : tuple of int
+        Full matrix shape as ``(n_pre, n_post)``.
+    backend : str or None, optional
+        Compute backend to use. One of ``'numba'``, ``'warp'``, ``'pallas'``, or
+        ``None`` for automatic selection.
 
-    Note:
-        The function handles unit conversion internally, ensuring that the pre_trace
-        is converted to the same unit as the weight before computation.
+    Returns
+    -------
+    jax.Array or Quantity
+        Updated weight array with the same shape ``(nse,)`` and units as the
+        input ``weight``.
+
+    Raises
+    ------
+    AssertionError
+        If ``weight`` is not 1-D, if ``post_spike`` is not 1-D, if ``pre_trace``
+        is not 1-D, if ``shape[1] != post_spike.shape[0]``,
+        ``shape[0] != pre_trace.shape[0]``, or if ``weight.shape``,
+        ``weight_indices.shape``, and ``indices.shape`` are not all equal.
+        These checks are performed by the underlying
+        :func:`csr2csc_on_post_prim_call`.
+
+    See Also
+    --------
+    update_csr_on_binary_pre : Pre-synaptic-spike-triggered weight update.
+    update_csr_on_binary_post_p : Low-level XLA custom kernel primitive for this
+        operation.
+
+    Notes
+    -----
+    This function implements the **post-synaptic** component of an additive
+    spike-timing-dependent plasticity (STDP) rule.  In the standard pair-based
+    STDP formulation the weight matrix ``W`` with shape ``(n_pre, n_post)`` is
+    stored in CSR format.  When postsynaptic neuron ``i`` fires, the update for
+    every synapse ``(i, j)`` that exists in the sparsity pattern is:
+
+    ``W[i, j] <- W[i, j] + pre_trace[j]``
+
+    After the additive update, weights are clipped element-wise:
+
+    ``W[i, j] <- clip(W[i, j], w_min, w_max)``
+
+    Here ``pre_trace`` is an eligibility trace that typically decays
+    exponentially between presynaptic spikes, so synapses whose presynaptic
+    neuron fired recently receive a larger update.
+
+    The function internally converts ``pre_trace`` to the same unit as ``weight``
+    before performing arithmetic, so mixed-unit inputs are supported as long as
+    the units are dimensionally compatible.
+
+    The CSC layout is used so that iterating over postsynaptic spikes efficiently
+    gathers all incoming synapses. The ``weight_indices`` array allows writing
+    the updated values back to the correct positions in the original CSR weight
+    array.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._csr.plasticity_binary import update_csr_on_binary_post
+        >>> weight = jnp.array([0.5, 0.3, 0.8, 0.2], dtype=jnp.float32)
+        >>> indices = jnp.array([0, 1, 0, 1], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
+        >>> weight_indices = jnp.array([0, 2, 1, 3], dtype=jnp.int32)
+        >>> pre_trace = jnp.array([0.1, -0.05], dtype=jnp.float32)
+        >>> post_spike = jnp.array([True, False])
+        >>> updated = update_csr_on_binary_post(
+        ...     weight, indices, indptr, weight_indices,
+        ...     pre_trace, post_spike, shape=(2, 2),
+        ... )
     """
     weight, wunit = u.split_mantissa_unit(weight)
     pre_trace = u.Quantity(pre_trace).to(wunit).mantissa
@@ -500,7 +732,86 @@ def _csr2csc_on_post_benchmark_data(*, platform):
     return configs
 
 
-def csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace, post_spike, *, shape, backend=None):
+def csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace, post_spike, *, shape, backend: Optional[str] = None):
+    """Invoke the low-level XLA custom kernel for postsynaptic plasticity updates.
+
+    Validates input shapes and dimensions, then dispatches to
+    :data:`update_csr_on_binary_post_p` with the appropriate metadata. This is the
+    direct primitive call without unit handling or weight clipping; most users
+    should prefer :func:`update_csr_on_binary_post`.
+
+    Parameters
+    ----------
+    weight : jax.Array
+        Sparse synaptic weight data array, with shape ``(nse,)`` where ``nse`` is
+        the number of stored elements.
+    indices : jax.Array
+        Row indices array of the CSC format, with shape ``(nse,)``.
+    indptr : jax.Array
+        Column pointer array of the CSC format, with shape ``(n_post + 1,)``.
+    weight_indices : jax.Array
+        Mapping from CSC element positions to CSR weight positions, with shape
+        ``(nse,)`` and integer dtype.
+    pre_trace : jax.Array
+        Presynaptic trace values, with shape ``(n_pre,)``.
+    post_spike : jax.Array
+        Binary or boolean postsynaptic spike array, with shape ``(n_post,)``.
+    shape : tuple of int
+        Full matrix shape as ``(n_pre, n_post)``.
+    backend : str or None, optional
+        Compute backend to use. One of ``'numba'``, ``'warp'``, ``'pallas'``, or
+        ``None`` for automatic selection.
+
+    Returns
+    -------
+    tuple of jax.Array
+        A single-element tuple containing the updated weight array with shape
+        ``(nse,)``.
+
+    Raises
+    ------
+    AssertionError
+        If ``weight`` is not 1-D, if ``post_spike`` is not 1-D, if ``pre_trace``
+        is not 1-D, if dimension sizes in ``shape`` do not match
+        ``post_spike.shape[0]`` and ``pre_trace.shape[0]``, or if
+        ``weight.shape``, ``weight_indices.shape``, and ``indices.shape`` are not
+        all equal.
+
+    See Also
+    --------
+    update_csr_on_binary_post : High-level wrapper with unit handling and clipping.
+
+    Notes
+    -----
+    This function operates on unitless mantissa arrays. All physical-unit
+    handling and weight clipping are performed by the caller
+    (:func:`update_csr_on_binary_post`).  The CSC layout allows efficient
+    iteration over postsynaptic neurons; for each postsynaptic neuron ``j``
+    where ``post_spike[j]`` is active the update is:
+
+    ``weight[weight_indices[indptr[j] : indptr[j+1]]] += pre_trace[indices[indptr[j] : indptr[j+1]]]``
+
+    The function constructs :class:`jax.ShapeDtypeStruct` metadata for each
+    operand and forwards the call to the ``XLACustomKernel`` instance
+    :data:`update_csr_on_binary_post_p`.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._csr.plasticity_binary import csr2csc_on_post_prim_call
+        >>> weight = jnp.array([0.5, 0.3, 0.8, 0.2], dtype=jnp.float32)
+        >>> indices = jnp.array([0, 1, 0, 1], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
+        >>> weight_indices = jnp.array([0, 2, 1, 3], dtype=jnp.int32)
+        >>> pre_trace = jnp.array([0.1, -0.05], dtype=jnp.float32)
+        >>> post_spike = jnp.array([True, False])
+        >>> (updated,) = csr2csc_on_post_prim_call(
+        ...     weight, indices, indptr, weight_indices,
+        ...     pre_trace, post_spike, shape=(2, 2),
+        ... )
+    """
     assert weight.ndim == 1, 'dense_one_post only support 1D weight.'
     assert post_spike.ndim == 1, 'post_spike should be 1D.'
     assert pre_trace.ndim == 1, 'pre_trace should be 1D.'

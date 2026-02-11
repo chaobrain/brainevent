@@ -50,21 +50,94 @@ def csrmv(
     backend: Optional[str] = None,
 ) -> Data:
     """
-    Product of CSR sparse matrix and a dense vector.
+    Product of a CSR sparse matrix and a dense vector.
 
-    Args:
-        data : array of shape ``(nse,)``.
-        indices : array of shape ``(nse,)``
-        indptr : array of shape ``(shape[0] + 1,)`` and dtype ``indices.dtype``
-        v : array of shape ``(shape[0] if transpose else shape[1],)``
-            and dtype ``data.dtype``
-        shape : length-2 tuple representing the matrix shape
-        transpose : boolean specifying whether to transpose the sparse matrix
-                    before computing.
+    Computes ``y = A @ v`` (or ``y = A.T @ v`` when ``transpose=True``)
+    where ``A`` is stored in Compressed Sparse Row format and ``v`` is a
+    dense vector.  Unlike the binary (event-driven) variant, every element
+    of ``v`` contributes to the result regardless of sign or magnitude.
 
-    Returns:
-      y : array of shape ``(shape[1] if transpose else shape[0],)`` representing
-          the matrix vector product.
+    The function supports physical units via :mod:`brainunit`.  If ``data``
+    or ``v`` carry units, the result is returned in the corresponding
+    product unit.
+
+    Parameters
+    ----------
+    data : jax.Array, numpy.ndarray, or brainunit.Quantity
+        Non-zero values of the CSR matrix.  Shape ``(nse,)`` for
+        heterogeneous weights or ``(1,)`` for a single homogeneous weight
+        shared across all connections.
+    indices : jax.Array or numpy.ndarray
+        Column indices of the non-zero elements.  Shape ``(nse,)`` with
+        integer dtype (``int32``, ``int64``, ``uint32``, or ``uint64``).
+    indptr : jax.Array or numpy.ndarray
+        Row index pointer array.  Shape ``(shape[0] + 1,)`` and same dtype
+        as ``indices``.
+    v : jax.Array, numpy.ndarray, or brainunit.Quantity
+        Dense vector.  Shape ``(shape[0],)`` when ``transpose=True`` or
+        ``(shape[1],)`` when ``transpose=False``.
+    shape : tuple of int
+        Two-element tuple ``(m, k)`` giving the logical shape of the
+        sparse matrix ``A``.
+    transpose : bool, optional
+        If ``True``, the sparse matrix is transposed before multiplication,
+        i.e. compute ``A.T @ v``.  Default is ``False``.
+    backend : str or None, optional
+        Compute backend to use.  One of ``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` (auto-select).  Default is ``None``.
+
+    Returns
+    -------
+    y : jax.Array or brainunit.Quantity
+        Result vector.  Shape ``(shape[1],)`` when ``transpose=True`` or
+        ``(shape[0],)`` when ``transpose=False``.
+
+    See Also
+    --------
+    csrmv_p_call : Low-level primitive call for CSR matrix--vector
+        multiplication.
+    csrmm : CSR matrix--matrix multiplication.
+    binary_csrmv : Event-driven (binary) CSR matrix--vector multiplication.
+
+    Notes
+    -----
+    This operation is differentiable with respect to both ``data`` and
+    ``v`` via custom JVP and transpose rules.
+
+    Mathematically, the non-transposed operation computes:
+
+    ``y[i] = sum_{j in nz(i)} A[i, j] * v[j]``
+
+    where ``nz(i)`` denotes the set of column indices with non-zero
+    entries in row ``i`` of the CSR matrix.
+
+    When ``transpose=True``, the transposed operation computes:
+
+    ``y[j] = sum_{i in nz_col(j)} A[i, j] * v[i]``
+
+    where ``nz_col(j)`` denotes the set of row indices with non-zero
+    entries in column ``j``.
+
+    For homogeneous weights (``data`` of shape ``(1,)``), ``A[i, j]``
+    equals the constant ``data[0]`` for all structural non-zero
+    positions.
+
+    References
+    ----------
+    .. [1] Y. Saad, *Iterative Methods for Sparse Linear Systems*,
+       2nd ed., SIAM, 2003, ch. 3.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._csr.float import csrmv
+        >>> data = jnp.array([1.0, 2.0, 3.0, 4.0])
+        >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
+        >>> v = jnp.array([1.0, 2.0, 3.0])
+        >>> csrmv(data, indices, indptr, v, shape=(2, 3))
     """
     data, unitd = u.split_mantissa_unit(data)
     v, unitv = u.split_mantissa_unit(v)
@@ -650,6 +723,95 @@ def csrmv_p_call(
     transpose: bool,
     backend: Optional[str] = None,
 ):
+    """
+    Low-level primitive call for CSR matrix--vector multiplication.
+
+    Prepares inputs, validates shapes and dtypes, and dispatches the
+    ``csrmv_p`` XLA custom kernel to compute ``y = A @ v`` (or
+    ``y = A.T @ v``), where ``A`` is a CSR matrix and ``v`` is a dense
+    vector.
+
+    Parameters
+    ----------
+    weights : jax.Array
+        Non-zero values of the CSR matrix.  Shape ``(nse,)`` for
+        heterogeneous weights, ``(1,)`` for a homogeneous weight, or a
+        scalar (automatically promoted to shape ``(1,)``).
+    indices : jax.Array
+        Column indices of non-zero elements.  Shape ``(nse,)`` with dtype
+        ``int32``, ``int64``, ``uint32``, or ``uint64``.
+    indptr : jax.Array
+        Row index pointer array.  Shape ``(shape[0] + 1,)`` and same dtype
+        as ``indices``.
+    vector : jax.Array
+        Dense vector.  Shape ``(shape[0],)`` when ``transpose=True`` or
+        ``(shape[1],)`` when ``transpose=False``.
+    shape : sequence of int
+        Two-element sequence ``(m, k)`` giving the logical shape of the
+        sparse matrix.
+    transpose : bool
+        If ``True``, transpose the sparse matrix before multiplication.
+    backend : str or None, optional
+        Compute backend to use.  Default is ``None`` (auto-select).
+
+    Returns
+    -------
+    list of jax.Array
+        A single-element list containing the result vector.  Shape
+        ``(shape[1],)`` when ``transpose=True`` or ``(shape[0],)`` when
+        ``transpose=False``.
+
+    Raises
+    ------
+    AssertionError
+        If ``indices`` or ``indptr`` have a dtype other than ``int32``,
+        ``int64``, ``uint32``, or ``uint64``.
+    AssertionError
+        If ``indices`` and ``indptr`` do not share the same dtype.
+    AssertionError
+        If ``indptr`` or ``indices`` is not 1-D.
+    AssertionError
+        If ``weights`` does not have a floating-point dtype.
+    AssertionError
+        If there is a shape mismatch between ``vector`` and the sparse
+        matrix ``shape`` (considering the ``transpose`` flag).
+
+    See Also
+    --------
+    csrmv : High-level wrapper with unit support.
+    csrmm_p_call : Low-level primitive call for CSR matrix--matrix
+        multiplication.
+
+    Notes
+    -----
+    Scalar ``weights`` (0-d arrays) are automatically promoted to
+    shape ``(1,)`` to indicate a homogeneous weight across all
+    connections.
+
+    The computation performed is:
+
+    ``y[i] = sum_{j in nz(i)} w[j] * v[j]``  (non-transposed)
+
+    ``y[j] = sum_{i in nz_col(j)} w[i] * v[i]``  (transposed)
+
+    where ``w[j]`` is either ``weights[j]`` (heterogeneous) or
+    ``weights[0]`` (homogeneous), and ``nz(i)`` is the set of column
+    indices with structural non-zeros in row ``i``.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._csr.float import csrmv_p_call
+        >>> weights = jnp.array([1.0, 2.0, 3.0, 4.0])
+        >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
+        >>> vector = jnp.array([1.0, 2.0, 3.0])
+        >>> result = csrmv_p_call(
+        ...     weights, indices, indptr, vector,
+        ...     shape=(2, 3), transpose=False)
+    """
     assert indices.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indices must be int32 or int64."
     assert indptr.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indptr must be int32 or int64."
     assert indptr.ndim == 1, "Indptr must be 1D."
@@ -706,24 +868,96 @@ def csrmm(
     *,
     shape: MatrixShape,
     transpose: bool = False,
-    backend=None,
+    backend: Optional[str] = None,
 ) -> Data:
     """
-    Product of CSR sparse matrix and a dense matrix.
+    Product of a CSR sparse matrix and a dense matrix.
 
-    Args:
-        data : array of shape ``(nse,)``.
-        indices : array of shape ``(nse,)``
-        indptr : array of shape ``(shape[0] + 1,)`` and dtype ``indices.dtype``
-        B : array of shape ``(shape[0] if transpose else shape[1], cols)`` and
-        dtype ``data.dtype``
-        shape : length-2 tuple representing the matrix shape
-        transpose : boolean specifying whether to transpose the sparse matrix
-            before computing.
+    Computes ``C = A @ B`` (or ``C = A.T @ B`` when ``transpose=True``)
+    where ``A`` is stored in Compressed Sparse Row format and ``B`` is a
+    dense matrix.
 
-    Returns:
-        C : array of shape ``(shape[1] if transpose else shape[0], cols)``
-            representing the matrix-matrix product.
+    The function supports physical units via :mod:`brainunit`.
+
+    Parameters
+    ----------
+    data : jax.Array, numpy.ndarray, or brainunit.Quantity
+        Non-zero values of the CSR matrix.  Shape ``(nse,)`` for
+        heterogeneous weights or ``(1,)`` for a single homogeneous weight.
+    indices : jax.Array or numpy.ndarray
+        Column indices of the non-zero elements.  Shape ``(nse,)`` with
+        integer dtype.
+    indptr : jax.Array or numpy.ndarray
+        Row index pointer array.  Shape ``(shape[0] + 1,)`` and same dtype
+        as ``indices``.
+    B : jax.Array, numpy.ndarray, or brainunit.Quantity
+        Dense matrix.  Shape ``(shape[0], cols)`` when ``transpose=True``
+        or ``(shape[1], cols)`` when ``transpose=False``.
+    shape : tuple of int
+        Two-element tuple ``(m, k)`` giving the logical shape of the
+        sparse matrix ``A``.
+    transpose : bool, optional
+        If ``True``, transpose ``A`` before multiplication.  Default is
+        ``False``.
+    backend : str or None, optional
+        Compute backend.  One of ``'numba'``, ``'warp'``, ``'pallas'``, or
+        ``None`` (auto-select).  Default is ``None``.
+
+    Returns
+    -------
+    C : jax.Array or brainunit.Quantity
+        Result matrix.  Shape ``(shape[1], cols)`` when ``transpose=True``
+        or ``(shape[0], cols)`` when ``transpose=False``.
+
+    See Also
+    --------
+    csrmm_p_call : Low-level primitive call for CSR matrix--matrix
+        multiplication.
+    csrmv : CSR matrix--vector multiplication.
+    binary_csrmm : Event-driven (binary) CSR matrix--matrix multiplication.
+
+    Notes
+    -----
+    Custom JVP and transpose rules are provided for automatic
+    differentiation with respect to ``data`` and ``B``.
+
+    Mathematically, the non-transposed operation computes:
+
+    ``C[i, l] = sum_{j in nz(i)} A[i, j] * B[j, l]``
+
+    where ``nz(i)`` denotes the set of column indices with non-zero
+    entries in row ``i`` of the CSR matrix.
+
+    When ``transpose=True``, the transposed operation computes:
+
+    ``C[j, l] = sum_{i in nz_col(j)} A[i, j] * B[i, l]``
+
+    where ``nz_col(j)`` denotes the set of row indices with non-zero
+    entries in column ``j``.
+
+    For homogeneous weights (``data`` of shape ``(1,)``), ``A[i, j]``
+    equals the constant ``data[0]`` for all structural non-zero
+    positions.
+
+    References
+    ----------
+    .. [1] F. G. Gustavson, "Two Fast Algorithms for Sparse Matrices:
+       Multiplication and Permuted Transposition," *ACM Transactions on
+       Mathematical Software*, vol. 4, no. 3, pp. 250--269, 1978.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._csr.float import csrmm
+        >>> data = jnp.array([1.0, 2.0, 3.0, 4.0])
+        >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
+        >>> B = jnp.array([[1.0, 0.5],
+        ...                [2.0, 1.5],
+        ...                [3.0, 2.5]])
+        >>> csrmm(data, indices, indptr, B, shape=(2, 3))
     """
     data, unitd = u.split_mantissa_unit(data)
     B, unitb = u.split_mantissa_unit(B)
@@ -1026,7 +1260,7 @@ def _csrmm_pallas_kernel_generator(
                 jax.lax.cond(i_k < num_k, _body, lambda: None)
 
         def kernel(data, indices, indptr, B):
-            # Transpose: input rows = shape[0] if it was (m,k) ? 
+            # Transpose: input rows = shape[0] if it was (m,k) ?
             # csrmm_p_call ensures shape matches B. If transpose, B has shape[0] rows.
             # So we iterate shape[0].
             launch_rows = shape[0]
@@ -1281,6 +1515,98 @@ def csrmm_p_call(
     transpose: bool,
     backend: Optional[str] = None,
 ):
+    """
+    Low-level primitive call for CSR matrix--matrix multiplication.
+
+    Prepares inputs, validates shapes and dtypes, and dispatches the
+    ``csrmm_p`` XLA custom kernel to compute ``C = A @ B`` (or
+    ``C = A.T @ B``), where ``A`` is a CSR matrix and ``B`` is a dense
+    matrix.
+
+    Parameters
+    ----------
+    weights : jax.Array
+        Non-zero values of the CSR matrix.  Shape ``(nse,)`` for
+        heterogeneous weights, ``(1,)`` for a homogeneous weight, or a
+        scalar (automatically promoted to shape ``(1,)``).
+    indices : jax.Array
+        Column indices of non-zero elements.  Shape ``(nse,)`` with dtype
+        ``int32``, ``int64``, ``uint32``, or ``uint64``.
+    indptr : jax.Array
+        Row index pointer array.  Shape ``(shape[0] + 1,)`` and same dtype
+        as ``indices``.
+    B : jax.Array
+        Dense matrix.  Shape ``(shape[0], cols)`` when
+        ``transpose=True`` or ``(shape[1], cols)`` when
+        ``transpose=False``.
+    shape : sequence of int
+        Two-element sequence ``(m, k)`` giving the logical shape of the
+        sparse matrix.
+    transpose : bool
+        If ``True``, transpose the sparse matrix before multiplication.
+    backend : str or None, optional
+        Compute backend to use.  Default is ``None`` (auto-select).
+
+    Returns
+    -------
+    list of jax.Array
+        A single-element list containing the result matrix.  Shape
+        ``(shape[1], cols)`` when ``transpose=True`` or
+        ``(shape[0], cols)`` when ``transpose=False``.
+
+    Raises
+    ------
+    AssertionError
+        If ``indices`` or ``indptr`` have a dtype other than ``int32``,
+        ``int64``, ``uint32``, or ``uint64``.
+    AssertionError
+        If ``indices`` and ``indptr`` do not share the same dtype.
+    AssertionError
+        If ``indptr`` or ``indices`` is not 1-D.
+    AssertionError
+        If ``weights`` does not have a floating-point dtype.
+    AssertionError
+        If there is a shape mismatch between ``B`` and the sparse
+        matrix ``shape`` (considering the ``transpose`` flag).
+
+    See Also
+    --------
+    csrmm : High-level wrapper with unit support.
+    csrmv_p_call : Low-level primitive call for CSR matrix--vector
+        multiplication.
+
+    Notes
+    -----
+    Scalar ``weights`` (0-d arrays) are automatically promoted to
+    shape ``(1,)`` to indicate a homogeneous weight across all
+    connections.
+
+    The computation performed is:
+
+    ``C[i, l] = sum_{j in nz(i)} w[j] * B[j, l]``  (non-transposed)
+
+    ``C[j, l] = sum_{i in nz_col(j)} w[i] * B[i, l]``  (transposed)
+
+    where ``w[j]`` is either ``weights[j]`` (heterogeneous) or
+    ``weights[0]`` (homogeneous), and ``nz(i)`` is the set of column
+    indices with structural non-zeros in row ``i``.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._csr.float import csrmm_p_call
+        >>> weights = jnp.array([1.0, 2.0, 3.0, 4.0])
+        >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
+        >>> B = jnp.array([[1.0, 0.5],
+        ...                [2.0, 1.5],
+        ...                [3.0, 2.5]])
+        >>> result = csrmm_p_call(
+        ...     weights, indices, indptr, B,
+        ...     shape=(2, 3), transpose=False)
+    """
     assert indices.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indices must be int32 or int64."
     assert indptr.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indptr must be int32 or int64."
     assert indptr.ndim == 1, "Indptr must be 1D."
@@ -1337,8 +1663,90 @@ def csrmv_yw2y(
     *,
     shape,
     transpose: bool = False,
-    backend=None,
+    backend: Optional[str] = None,
 ) -> Data:
+    """
+    Element-wise product of a vector and CSR weights, indexed by CSR
+    structure.
+
+    For each non-zero entry ``j`` in the CSR matrix at position
+    ``(row, col)``, computes ``out[j] = w[j] * y[row]`` (non-transposed)
+    or ``out[j] = w[j] * y[col]`` (transposed).  The result has the same
+    shape as ``w`` and ``indices`` (i.e., one value per structural
+    non-zero).
+
+    This operation is useful for computing per-synapse quantities in
+    neural network models where ``y`` is a neuron-level vector and ``w``
+    contains per-synapse weights stored in CSR form.
+
+    The function supports physical units via :mod:`brainunit`.
+
+    Parameters
+    ----------
+    y : jax.Array, numpy.ndarray, or brainunit.Quantity
+        Dense vector indexed by the CSR structure.  Shape
+        ``(shape[0],)`` when ``transpose=False`` or ``(shape[1],)`` when
+        ``transpose=True``.
+    w : jax.Array, numpy.ndarray, or brainunit.Quantity
+        Per-synapse weight values.  Shape ``(nse,)``, must match the
+        shape of ``indices``.
+    indices : jax.Array or numpy.ndarray
+        Column indices of the CSR matrix.  Shape ``(nse,)`` with integer
+        dtype.
+    indptr : jax.Array or numpy.ndarray
+        Row index pointer array.  Shape ``(shape[0] + 1,)`` with integer
+        dtype.
+    shape : tuple of int
+        Two-element tuple ``(m, k)`` giving the logical shape of the
+        CSR matrix.
+    transpose : bool, optional
+        If ``True``, index ``y`` by column indices instead of row indices.
+        Default is ``False``.
+    backend : str or None, optional
+        Compute backend.  Default is ``None`` (auto-select).
+
+    Returns
+    -------
+    out : jax.Array or brainunit.Quantity
+        Per-synapse result vector.  Shape ``(nse,)``, same as ``w``.
+
+    See Also
+    --------
+    csrmv_yw2y_p_call : Low-level primitive call for this operation.
+    csrmv : Standard CSR matrix--vector multiplication.
+
+    Notes
+    -----
+    This operation is differentiable with respect to both ``y`` and ``w``
+    via custom JVP rules.  The transpose rule is not yet implemented.
+
+    Mathematically, for each structural non-zero entry ``j`` of the CSR
+    matrix at position ``(row, col)``, the output is computed as:
+
+    ``out[j] = w[j] * y[row]``  (non-transposed, ``transpose=False``)
+
+    ``out[j] = w[j] * y[col]``  (transposed, ``transpose=True``)
+
+    where ``row`` is determined by the ``indptr`` array (the row to
+    which the ``j``-th non-zero belongs) and ``col = indices[j]``.
+
+    This operation is distinct from standard sparse matrix--vector
+    multiplication: it produces one output element per structural
+    non-zero rather than one per matrix row.  It is commonly used to
+    compute per-synapse quantities in spiking neural network models.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._csr.float import csrmv_yw2y
+        >>> y = jnp.array([1.0, 2.0])
+        >>> w = jnp.array([0.5, 0.3, 0.7, 0.1])
+        >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
+        >>> csrmv_yw2y(y, w, indices, indptr, shape=(2, 3))
+    """
     w, w_unit = u.split_mantissa_unit(w)
     y, _ = u.split_mantissa_unit(y)
     res = csrmv_yw2y_p_call(y, w, indices, indptr, shape=shape, transpose=transpose)[0]
@@ -1511,6 +1919,88 @@ def csrmv_yw2y_p_call(
     transpose: bool = False,
     backend: Optional[str] = None,
 ):
+    """
+    Low-level primitive call for the element-wise vector--weight product
+    indexed by CSR structure.
+
+    Validates inputs and dispatches the ``csrmv_yw2y_p`` XLA custom kernel.
+    For each structural non-zero ``j`` at position ``(row, col)`` in the
+    CSR matrix, the output is ``out[j] = w[j] * y[row]`` (non-transposed)
+    or ``out[j] = w[j] * y[col]`` (transposed).
+
+    Parameters
+    ----------
+    y : jax.Array
+        Dense vector.  Shape ``(shape[0],)`` when ``transpose=False`` or
+        ``(shape[1],)`` when ``transpose=True``.
+    w : jax.Array
+        Per-synapse weight values.  Shape ``(nse,)``, must match the shape
+        of ``indices``.
+    indices : jax.Array
+        Column indices of the CSR matrix.  Shape ``(nse,)`` with integer
+        dtype.
+    indptr : jax.Array
+        Row index pointer array.  Shape ``(shape[0] + 1,)`` with integer
+        dtype.
+    shape : tuple of int
+        Two-element tuple ``(m, k)`` giving the logical shape of the CSR
+        matrix.
+    transpose : bool, optional
+        If ``True``, index ``y`` by column indices.  Default is ``False``.
+    backend : str or None, optional
+        Compute backend to use.  Default is ``None`` (auto-select).
+
+    Returns
+    -------
+    list of jax.Array
+        A single-element list containing the per-synapse result.  Shape
+        ``(nse,)``, same as ``w``.
+
+    Raises
+    ------
+    AssertionError
+        If ``y`` and ``w`` have different dtypes.
+    AssertionError
+        If ``y`` or ``w`` is not 1-D.
+    AssertionError
+        If ``indices`` or ``indptr`` does not have an integer dtype.
+    AssertionError
+        If ``w`` does not have a floating-point dtype.
+    AssertionError
+        If ``w`` and ``indices`` do not have the same shape.
+    AssertionError
+        If there is a shape mismatch between ``y`` and the sparse
+        matrix ``shape`` (considering the ``transpose`` flag).
+
+    See Also
+    --------
+    csrmv_yw2y : High-level wrapper with unit support.
+
+    Notes
+    -----
+    The computation performed is, for each structural non-zero entry
+    ``j`` at CSR position ``(row, col)``:
+
+    ``out[j] = w[j] * y[row]``  (non-transposed)
+
+    ``out[j] = w[j] * y[col]``  (transposed)
+
+    where ``row`` is determined by ``indptr`` and ``col = indices[j]``.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._csr.float import csrmv_yw2y_p_call
+        >>> y = jnp.array([1.0, 2.0])
+        >>> w = jnp.array([0.5, 0.3, 0.7, 0.1])
+        >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
+        >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
+        >>> result = csrmv_yw2y_p_call(
+        ...     y, w, indices, indptr,
+        ...     shape=(2, 3), transpose=False)
+    """
     assert y.dtype == w.dtype, f"y and w must have the same dtype, but got {y.dtype} and {w.dtype}."
     assert indptr.ndim == 1, "Indptr must be 1D."
     assert indices.ndim == 1, "Indices must be 1D."
