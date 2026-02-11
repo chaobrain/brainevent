@@ -684,7 +684,7 @@ class XLACustomKernel:
             )
         self._defaults[platform] = backend
         if persist:
-            from brainevent._config import set_user_default
+            from brainevent.config import set_user_default
             set_user_default(self.name, platform, backend)
 
     def get_default(self, platform: str) -> Optional[str]:
@@ -1037,7 +1037,7 @@ class XLACustomKernel:
         if self._user_defaults_applied:
             return
         self._user_defaults_applied = True
-        from brainevent._config import load_user_defaults
+        from brainevent.config import load_user_defaults
         prim_defaults = load_user_defaults().get(self.name, {})
         for plat, backend in prim_defaults.items():
             if plat in self._kernels and backend in self._kernels[plat]:

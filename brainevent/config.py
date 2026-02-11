@@ -32,8 +32,6 @@ import tempfile
 import warnings
 from typing import Any, Dict, Optional
 
-import jax
-
 __all__ = [
     'load_user_defaults',
     'save_user_defaults',
@@ -45,6 +43,8 @@ __all__ = [
     'set_numba_parallel',
     'get_numba_parallel',
     'get_numba_num_threads',
+    'set_lfsr_algorithm',
+    'get_lfsr_algorithm',
 ]
 
 _SCHEMA_VERSION = 1
@@ -518,3 +518,69 @@ def get_numba_num_threads() -> Optional[int]:
         8
     """
     return _numba_num_threads
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  LFSR algorithm configuration
+# ──────────────────────────────────────────────────────────────────────
+
+_VALID_LFSR_ALGORITHMS = ('lfsr88', 'lfsr113', 'lfsr128')
+_lfsr_algorithm: str = 'lfsr88'
+
+
+def set_lfsr_algorithm(algorithm: str):
+    """Set the global LFSR algorithm used by JIT connectivity kernels.
+
+    Parameters
+    ----------
+    algorithm : str
+        One of ``'lfsr88'``, ``'lfsr113'``, or ``'lfsr128'``.
+
+    Raises
+    ------
+    ValueError
+        If *algorithm* is not one of the valid choices.
+
+    See Also
+    --------
+    get_lfsr_algorithm : Query the current LFSR algorithm.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import brainevent
+        >>> brainevent.config.set_lfsr_algorithm('lfsr113')
+        >>> brainevent.config.get_lfsr_algorithm()
+        'lfsr113'
+    """
+    global _lfsr_algorithm
+    if algorithm not in _VALID_LFSR_ALGORITHMS:
+        raise ValueError(
+            f"Invalid LFSR algorithm {algorithm!r}. "
+            f"Valid options are: {_VALID_LFSR_ALGORITHMS}"
+        )
+    _lfsr_algorithm = algorithm
+
+
+def get_lfsr_algorithm() -> str:
+    """Return the current global LFSR algorithm name.
+
+    Returns
+    -------
+    str
+        One of ``'lfsr88'``, ``'lfsr113'``, or ``'lfsr128'``.
+
+    See Also
+    --------
+    set_lfsr_algorithm : Set the LFSR algorithm.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import brainevent
+        >>> brainevent.config.get_lfsr_algorithm()
+        'lfsr88'
+    """
+    return _lfsr_algorithm

@@ -26,7 +26,8 @@ from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
-from brainevent._pallas_random import PallasLFSR88RNG
+from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers
+from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
 
 
@@ -395,6 +396,8 @@ def _jitc_homo_matrix_numba_kernel(
         A kernel function with signature ``(weight, clen, seed) -> tuple``.
     """
     import numba
+    _lfsr_seed = get_numba_lfsr_seed()
+    _lfsr_random_integers = get_numba_lfsr_random_integers()
 
     if corder:
         # JIT matrix.T - JIT matrix shape = [m, n]
@@ -406,12 +409,12 @@ def _jitc_homo_matrix_numba_kernel(
             weight0 = weight[0]
             clen0 = clen[0]
             seed0 = seed[0]
-            np.random.seed(seed0)
             for i_row in range(n):
-                i_col = np.random.randint(0, clen0)
+                state = _lfsr_seed(seed0 + i_row * m)
+                i_col = _lfsr_random_integers(state, 0, clen0 - 1)
                 while i_col < m:
                     posts[i_row, i_col] = weight0
-                    i_col += np.random.randint(1, clen0)
+                    i_col += _lfsr_random_integers(state, 1, clen0 - 1)
     else:
         # JIT matrix.T - JIT matrix shape = [m, n]
         @numba.njit(fastmath=True)
@@ -422,12 +425,12 @@ def _jitc_homo_matrix_numba_kernel(
             weight0 = weight[0]
             clen0 = clen[0]
             seed0 = seed[0]
-            np.random.seed(seed0)
             for i_col in range(m):
-                i_row = np.random.randint(0, clen0)
+                state = _lfsr_seed(seed0 + i_col * n)
+                i_row = _lfsr_random_integers(state, 0, clen0 - 1)
                 while i_row < n:
                     posts[i_row, i_col] = weight0
-                    i_row += np.random.randint(1, clen0)
+                    i_row += _lfsr_random_integers(state, 1, clen0 - 1)
 
     def kernel(weight, clen, seed):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(weight, clen, seed)
@@ -551,6 +554,7 @@ def _jitc_homo_matrix_pallas_kernel(
         A kernel function with signature ``(weight, clen, seed) -> tuple``.
     """
     from jax.experimental import pallas as pl
+    _PallasLFSRRNG = get_pallas_lfsr_rng_class()
 
     dim = out_info.shape[0] if corder else out_info.shape[1]
 
@@ -568,7 +572,7 @@ def _jitc_homo_matrix_pallas_kernel(
                 i_col = i_col + rng.random_integers(1, clen0)
                 return i_col, rng
 
-            rng = PallasLFSR88RNG(seed0 + i_row * m)
+            rng = _PallasLFSRRNG(seed0 + i_row * m)
             jax.lax.while_loop(
                 lambda data: data[0] < m,
                 body,
@@ -588,7 +592,7 @@ def _jitc_homo_matrix_pallas_kernel(
                 i_row = i_row + rng.random_integers(1, clen0)
                 return i_row, rng
 
-            rng = PallasLFSR88RNG(seed0 + i_col * n)
+            rng = _PallasLFSRRNG(seed0 + i_col * n)
             jax.lax.while_loop(
                 lambda data: data[0] < n,
                 body,
@@ -878,6 +882,8 @@ def _jitsmv_numba_kernel(
         ``(weight, clen, vector, seed, _) -> tuple``.
     """
     import numba
+    _lfsr_seed = get_numba_lfsr_seed()
+    _lfsr_random_integers = get_numba_lfsr_random_integers()
 
     if corder:
         @numba.njit(fastmath=True)
@@ -887,13 +893,13 @@ def _jitsmv_numba_kernel(
             weight0 = weight[0]
             clen0 = clen[0]
             seed0 = seed[0]
-            np.random.seed(seed0)
             for i_col in range(n_col):
-                i_row = np.random.randint(0, clen0)
+                state = _lfsr_seed(seed0 + i_col * n_row)
+                i_row = _lfsr_random_integers(state, 0, clen0 - 1)
                 out = np.float64(0.)
                 while i_row < n_row:
                     out += vector[i_row]
-                    i_row += np.random.randint(1, clen0)
+                    i_row += _lfsr_random_integers(state, 1, clen0 - 1)
                 posts[i_col] = out * weight0
     else:
         @numba.njit(fastmath=True)
@@ -904,13 +910,13 @@ def _jitsmv_numba_kernel(
             weight0 = weight[0]
             clen0 = clen[0]
             seed0 = seed[0]
-            np.random.seed(seed0)
             for i_row in range(num_row):
+                state = _lfsr_seed(seed0 + i_row * num_col)
                 v = vector[i_row] * weight0
-                i_col = np.random.randint(0, clen0)
+                i_col = _lfsr_random_integers(state, 0, clen0 - 1)
                 while i_col < num_col:
                     posts[i_col] += v
-                    i_col += np.random.randint(1, clen0)
+                    i_col += _lfsr_random_integers(state, 1, clen0 - 1)
 
     def kernel(weight, clen, vector, seed, _):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(weight, clen, vector, seed)
@@ -1043,6 +1049,7 @@ def _jitsmv_pallas_kernel(
     """
     from jax.experimental import pallas as pl
     from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
+    _PallasLFSRRNG = get_pallas_lfsr_rng_class()
 
     dim = (out_info.shape[0] if corder else vector_info.shape[0])
 
@@ -1067,7 +1074,7 @@ def _jitsmv_pallas_kernel(
                 i_rows += rng.random_integers(1, clen)
                 return i_rows, i_rows < num_row, rng, out
 
-            rng = PallasLFSR88RNG(seed + i_cols * num_row)
+            rng = _PallasLFSRRNG(seed + i_cols * num_row)
             i_rows = rng.random_integers(0, clen)
             i_row_mask = i_rows < num_row
             out = jnp.zeros(block_size, dtype=post_ref.dtype)
@@ -1105,7 +1112,7 @@ def _jitsmv_pallas_kernel(
                     i += rng.random_integers(1, clen0)
                     return i, rng, res
 
-                rng = PallasLFSR88RNG(seed0 + i_col * num_row)
+                rng = _PallasLFSRRNG(seed0 + i_col * num_row)
                 _, _, r = jax.lax.while_loop(
                     lambda data: data[0] < num_row,
                     body,
@@ -1128,7 +1135,7 @@ def _jitsmv_pallas_kernel(
                     i += rng.random_integers(1, clen0)
                     return i, rng
 
-                rng = PallasLFSR88RNG(seed0 + i_row * num_col)
+                rng = _PallasLFSRRNG(seed0 + i_row * num_col)
                 jax.lax.while_loop(
                     lambda data: data[0] < num_col,
                     body,
@@ -1510,6 +1517,8 @@ def _jitsmm_numba_kernel(
         ``(weight, clen, B, seed, _) -> tuple``.
     """
     import numba
+    _lfsr_seed = get_numba_lfsr_seed()
+    _lfsr_random_integers = get_numba_lfsr_random_integers()
 
     if corder:
         # JIT Matrix.T @ B - JIT matrix: [k, m], B: [k, n]
@@ -1521,13 +1530,13 @@ def _jitsmm_numba_kernel(
             weight0 = weight[0]
             seed0 = seed[0]
             clen0 = clen[0]
-            np.random.seed(seed0)
             for i_m in range(m):
-                i_k = np.random.randint(0, clen0)
+                state = _lfsr_seed(seed0 + i_m * k)
+                i_k = _lfsr_random_integers(state, 0, clen0 - 1)
                 out = np.zeros(n, dtype=B.dtype)
                 while i_k < k:
                     out += B[i_k]
-                    i_k += np.random.randint(1, clen0)
+                    i_k += _lfsr_random_integers(state, 1, clen0 - 1)
                 posts[i_m] = out * weight0
     else:
         # JIT Matrix.T @ B - JIT matrix: [k, m], B: [k, n]
@@ -1539,13 +1548,13 @@ def _jitsmm_numba_kernel(
             weight0 = weight[0]
             seed0 = seed[0]
             clen0 = clen[0]
-            np.random.seed(seed0)
             for i_k in range(k):
+                state = _lfsr_seed(seed0 + i_k * m)
                 out = B[i_k] * weight0
-                i_m = np.random.randint(0, clen0)
+                i_m = _lfsr_random_integers(state, 0, clen0 - 1)
                 while i_m < m:
                     posts[i_m] += out
-                    i_m += np.random.randint(1, clen0)
+                    i_m += _lfsr_random_integers(state, 1, clen0 - 1)
 
     def kernel(weight, clen, B, seed, _):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(weight, clen, B, seed)
@@ -1688,6 +1697,7 @@ def _jitsmm_pallas_kernel(
     """
     from jax.experimental import pallas as pl
     from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
+    _PallasLFSRRNG = get_pallas_lfsr_rng_class()
 
     B_cols = B_info.shape[1]
 
@@ -1710,7 +1720,7 @@ def _jitsmm_pallas_kernel(
             i_row_mask = i_rows < out_rows
             safe_rows = jnp.where(i_row_mask, i_rows, 0)
 
-            rng = PallasLFSR88RNG(seed0 + i_rows * k)
+            rng = _PallasLFSRRNG(seed0 + i_rows * k)
             i_cols = rng.random_integers(0, clen0)
             i_col_mask = i_cols < k
             out = jnp.zeros(row_block, dtype=post_ref.dtype)
@@ -1745,7 +1755,7 @@ def _jitsmm_pallas_kernel(
             col_j = pl.program_id(1)
             val = B_ref[i_k, col_j] * weight0
 
-            rng = PallasLFSR88RNG(seed0 + i_k * m)
+            rng = _PallasLFSRRNG(seed0 + i_k * m)
             i_rows = rng.random_integers(0, clen0)
 
             def body(data):

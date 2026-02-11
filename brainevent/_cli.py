@@ -76,7 +76,7 @@ def _run_benchmark(args) -> int:
     # Import brainevent to trigger all primitive registrations
     import brainevent  # noqa: F401
     from brainevent._registry import get_registry
-    from brainevent._config import save_user_defaults
+    from brainevent.config import save_user_defaults
 
     registry = get_registry()
     filtered = _filter_primitives(registry, args.data)
