@@ -16,7 +16,7 @@
 # -*- coding: utf-8 -*-
 
 
-from typing import Union, Tuple
+from typing import Union, Tuple, Optional
 
 import brainunit as u
 import jax
@@ -78,6 +78,7 @@ class JITScalarMatrix(JITCMatrix):
     seed: Union[int, jax.Array]
     shape: MatrixShape
     corder: bool
+    backend: Optional[str]
 
     def __init__(
         self,
@@ -87,6 +88,7 @@ class JITScalarMatrix(JITCMatrix):
         *,
         shape: MatrixShape,
         corder: bool = False,
+        backend: Optional[str] = None,
     ):
         """
         Initialize a homogeneous sparse just-in-time connectivity matrix.
@@ -130,6 +132,7 @@ class JITScalarMatrix(JITCMatrix):
                 raise ValueError(f"prob must be in [0, 1], but got {prob}.")
         self.weight = u.math.asarray(weight)
         self.corder = corder
+        self.backend = backend
         super().__init__(data, shape=shape)
 
     def __repr__(self):
@@ -154,7 +157,9 @@ class JITScalarMatrix(JITCMatrix):
             f"weight={self.weight}, "
             f"prob={self.prob}, "
             f"seed={self.seed}, "
-            f"corder={self.corder})"
+            f"corder={self.corder},"
+            f"backend={self.backend},"
+            f")"
         )
 
     @property
@@ -218,11 +223,12 @@ class JITScalarMatrix(JITCMatrix):
         return type(self)(
             (weight, self.prob, self.seed),
             shape=self.shape,
-            corder=self.corder
+            corder=self.corder,
+            backend=self.backend,
         )
 
     def tree_flatten(self):
-        aux = {'shape': self.shape, 'corder': self.corder}
+        aux = {'shape': self.shape, 'corder': self.corder, 'backend': self.backend}
         return (self.weight, self.prob, self.seed), aux
 
     @classmethod
@@ -384,6 +390,7 @@ class JITCScalarR(JITScalarMatrix):
             shape=self.shape,
             transpose=False,
             corder=self.corder,
+            backend=self.backend,
         )
 
     def transpose(self, axes=None) -> 'JITCScalarC':
@@ -430,7 +437,8 @@ class JITCScalarR(JITScalarMatrix):
         return JITCScalarC(
             (self.weight, self.prob, self.seed),
             shape=(self.shape[1], self.shape[0]),
-            corder=not self.corder
+            corder=not self.corder,
+            backend=self.backend,
         )
 
     def _new_mat(self, weight, prob=None, seed=None):
@@ -441,7 +449,8 @@ class JITCScalarR(JITScalarMatrix):
                 self.seed if seed is None else seed
             ),
             shape=self.shape,
-            corder=self.corder
+            corder=self.corder,
+            backend=self.backend,
         )
 
     def _unitary_op(self, op) -> 'JITCScalarR':
@@ -487,11 +496,11 @@ class JITCScalarR(JITScalarMatrix):
             if other.ndim == 1:
                 # JIT matrix @ events
                 return binary_jitsmv(weight, self.prob, other, self.seed, shape=self.shape,
-                                     transpose=False, corder=self.corder, )
+                                     transpose=False, corder=self.corder, backend=self.backend)
             elif other.ndim == 2:
                 # JIT matrix @ events
                 return binary_jitsmm(weight, self.prob, other, self.seed, shape=self.shape,
-                                     transpose=False, corder=self.corder, )
+                                     transpose=False, corder=self.corder, backend=self.backend)
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -508,6 +517,7 @@ class JITCScalarR(JITScalarMatrix):
                     shape=self.shape,
                     transpose=False,
                     corder=self.corder,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 # JIT matrix @ matrix
@@ -519,6 +529,7 @@ class JITCScalarR(JITScalarMatrix):
                     shape=self.shape,
                     transpose=False,
                     corder=self.corder,
+                    backend=self.backend,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -545,6 +556,7 @@ class JITCScalarR(JITScalarMatrix):
                     shape=self.shape,
                     transpose=True,
                     corder=not self.corder,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 #
@@ -560,6 +572,7 @@ class JITCScalarR(JITScalarMatrix):
                     shape=self.shape,
                     transpose=True,
                     corder=not self.corder,
+                    backend=self.backend,
                 )
                 return r.T
             else:
@@ -582,6 +595,7 @@ class JITCScalarR(JITScalarMatrix):
                     shape=self.shape,
                     transpose=True,
                     corder=not self.corder,  # This is import to generate the same matrix as ``.todense()``
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 #
@@ -597,6 +611,7 @@ class JITCScalarR(JITScalarMatrix):
                     shape=self.shape,
                     transpose=True,
                     corder=not self.corder,  # This is import to generate the same matrix as ``.todense()``
+                    backend=self.backend,
                 )
                 return r.T
             else:
@@ -724,6 +739,7 @@ class JITCScalarC(JITScalarMatrix):
             shape=self.shape,
             transpose=False,
             corder=self.corder,
+            backend=self.backend,
         )
 
     def transpose(self, axes=None) -> 'JITCScalarR':
@@ -770,7 +786,8 @@ class JITCScalarC(JITScalarMatrix):
         return JITCScalarR(
             (self.weight, self.prob, self.seed),
             shape=(self.shape[1], self.shape[0]),
-            corder=not self.corder
+            corder=not self.corder,
+            backend=self.backend,
         )
 
     def _new_mat(self, weight, prob=None, seed=None):
@@ -781,7 +798,8 @@ class JITCScalarC(JITScalarMatrix):
                 self.seed if seed is None else seed
             ),
             shape=self.shape,
-            corder=self.corder
+            corder=self.corder,
+            backend=self.backend,
         )
 
     def _unitary_op(self, op) -> 'JITCScalarC':
@@ -836,6 +854,7 @@ class JITCScalarC(JITScalarMatrix):
                     shape=self.shape[::-1],
                     transpose=True,
                     corder=self.corder,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 # JITC_R matrix.T @ matrix
@@ -849,6 +868,7 @@ class JITCScalarC(JITScalarMatrix):
                     shape=self.shape[::-1],
                     transpose=True,
                     corder=self.corder,
+                    backend=self.backend,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -868,6 +888,7 @@ class JITCScalarC(JITScalarMatrix):
                     shape=self.shape[::-1],
                     transpose=True,
                     corder=self.corder,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 # JITC_R matrix.T @ matrix
@@ -881,6 +902,7 @@ class JITCScalarC(JITScalarMatrix):
                     shape=self.shape[::-1],
                     transpose=True,
                     corder=self.corder,
+                    backend=self.backend,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -907,6 +929,7 @@ class JITCScalarC(JITScalarMatrix):
                     shape=self.shape[::-1],
                     transpose=False,
                     corder=not self.corder,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 #
@@ -922,6 +945,7 @@ class JITCScalarC(JITScalarMatrix):
                     shape=self.shape[::-1],
                     transpose=False,
                     corder=not self.corder,
+                    backend=self.backend,
                 )
                 return r.T
             else:
@@ -944,6 +968,7 @@ class JITCScalarC(JITScalarMatrix):
                     shape=self.shape[::-1],
                     transpose=False,
                     corder=not self.corder,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 #
@@ -959,6 +984,7 @@ class JITCScalarC(JITScalarMatrix):
                     shape=self.shape[::-1],
                     transpose=False,
                     corder=not self.corder,
+                    backend=self.backend,
                 )
                 return r.T
             else:

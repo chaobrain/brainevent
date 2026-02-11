@@ -16,7 +16,7 @@
 # -*- coding: utf-8 -*-
 
 
-from typing import Union, Tuple
+from typing import Union, Tuple, Optional
 
 import brainunit as u
 import jax
@@ -82,6 +82,7 @@ class JITNormalMatrix(JITCMatrix):
     seed: Union[int, jax.Array]
     shape: MatrixShape
     corder: bool
+    backend: Optional[str]
 
     def __init__(
         self,
@@ -92,6 +93,7 @@ class JITNormalMatrix(JITCMatrix):
         *,
         shape: MatrixShape,
         corder: bool = False,
+        backend: Optional[str] = None,
     ):
         """
         Initialize a normal distribution sparse matrix.
@@ -132,6 +134,7 @@ class JITNormalMatrix(JITCMatrix):
         self.wloc = u.math.asarray(loc)
         self.wscale = u.math.asarray(scale)
         self.corder = corder
+        self.backend = backend
         super().__init__(data, shape=shape)
 
     def __repr__(self):
@@ -157,7 +160,9 @@ class JITNormalMatrix(JITCMatrix):
             f"wscale={self.wscale}, "
             f"prob={self.prob}, "
             f"seed={self.seed}, "
-            f"corder={self.corder})"
+            f"corder={self.corder},"
+            f"backend={self.backend},"
+            f")"
         )
 
     @property
@@ -216,11 +221,12 @@ class JITNormalMatrix(JITCMatrix):
         return type(self)(
             (loc, scale, self.prob, self.seed),
             shape=self.shape,
-            corder=self.corder
+            corder=self.corder,
+            backend=self.backend,
         )
 
     def tree_flatten(self):
-        aux = {'shape': self.shape, 'corder': self.corder}
+        aux = {'shape': self.shape, 'corder': self.corder, 'backend': self.backend}
         return (self.wloc, self.wscale, self.prob, self.seed), aux
 
     @classmethod
@@ -358,6 +364,7 @@ class JITCNormalR(JITNormalMatrix):
             shape=self.shape,
             transpose=False,
             corder=self.corder,
+            backend=self.backend,
         )
 
     def transpose(self, axes=None) -> 'JITCNormalC':
@@ -404,7 +411,8 @@ class JITCNormalR(JITNormalMatrix):
         return JITCNormalC(
             (self.wloc, self.wscale, self.prob, self.seed),
             shape=(self.shape[1], self.shape[0]),
-            corder=not self.corder
+            corder=not self.corder,
+            backend=self.backend,
         )
 
     def _new_mat(self, loc, scale, prob=None, seed=None):
@@ -416,7 +424,8 @@ class JITCNormalR(JITNormalMatrix):
                 self.seed if seed is None else seed
             ),
             shape=self.shape,
-            corder=self.corder
+            corder=self.corder,
+            backend=self.backend,
         )
 
     def _unitary_op(self, op) -> 'JITCNormalR':
@@ -461,6 +470,7 @@ class JITCNormalR(JITNormalMatrix):
                     shape=self.shape,
                     transpose=False,
                     corder=self.corder,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 # JIT matrix @ events
@@ -473,6 +483,7 @@ class JITCNormalR(JITNormalMatrix):
                     shape=self.shape,
                     transpose=False,
                     corder=self.corder,
+                    backend=self.backend,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -492,6 +503,7 @@ class JITCNormalR(JITNormalMatrix):
                     shape=self.shape,
                     transpose=False,
                     corder=self.corder,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 # JIT matrix @ matrix
@@ -504,6 +516,7 @@ class JITCNormalR(JITNormalMatrix):
                     shape=self.shape,
                     transpose=False,
                     corder=self.corder,
+                    backend=self.backend,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -530,6 +543,7 @@ class JITCNormalR(JITNormalMatrix):
                     shape=self.shape,
                     transpose=True,
                     corder=not self.corder,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 #
@@ -546,6 +560,7 @@ class JITCNormalR(JITNormalMatrix):
                     shape=self.shape,
                     transpose=True,
                     corder=not self.corder,
+                    backend=self.backend,
                 )
                 return r.T
             else:
@@ -570,6 +585,7 @@ class JITCNormalR(JITNormalMatrix):
                     shape=self.shape,
                     transpose=True,
                     corder=not self.corder,  # This is import to generate the same matrix as ``.todense()``
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 #
@@ -586,6 +602,7 @@ class JITCNormalR(JITNormalMatrix):
                     shape=self.shape,
                     transpose=True,
                     corder=not self.corder,  # This is import to generate the same matrix as ``.todense()``
+                    backend=self.backend,
                 )
                 return r.T
             else:
@@ -697,6 +714,7 @@ class JITCNormalC(JITNormalMatrix):
             shape=self.shape,
             transpose=False,
             corder=self.corder,
+            backend=self.backend,
         )
 
     def transpose(self, axes=None) -> 'JITCNormalR':
@@ -743,7 +761,8 @@ class JITCNormalC(JITNormalMatrix):
         return JITCNormalR(
             (self.wloc, self.wscale, self.prob, self.seed),
             shape=(self.shape[1], self.shape[0]),
-            corder=not self.corder
+            corder=not self.corder,
+            backend=self.backend,
         )
 
     def _new_mat(self, loc, scale, prob=None, seed=None):
@@ -755,7 +774,8 @@ class JITCNormalC(JITNormalMatrix):
                 self.seed if seed is None else seed
             ),
             shape=self.shape,
-            corder=self.corder
+            corder=self.corder,
+            backend=self.backend,
         )
 
     def _unitary_op(self, op) -> 'JITCNormalC':
@@ -802,6 +822,7 @@ class JITCNormalC(JITNormalMatrix):
                     shape=self.shape[::-1],
                     transpose=True,
                     corder=self.corder,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 # JITC_R matrix.T @ matrix
@@ -816,6 +837,7 @@ class JITCNormalC(JITNormalMatrix):
                     shape=self.shape[::-1],
                     transpose=True,
                     corder=self.corder,
+                    backend=self.backend,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -837,6 +859,7 @@ class JITCNormalC(JITNormalMatrix):
                     shape=self.shape[::-1],
                     transpose=True,
                     corder=self.corder,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 # JITC_R matrix.T @ matrix
@@ -851,6 +874,7 @@ class JITCNormalC(JITNormalMatrix):
                     shape=self.shape[::-1],
                     transpose=True,
                     corder=self.corder,
+                    backend=self.backend,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -876,6 +900,7 @@ class JITCNormalC(JITNormalMatrix):
                     shape=self.shape[::-1],
                     transpose=False,
                     corder=not self.corder,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 #
@@ -892,6 +917,7 @@ class JITCNormalC(JITNormalMatrix):
                     shape=self.shape[::-1],
                     transpose=False,
                     corder=not self.corder,
+                    backend=self.backend,
                 )
                 return r.T
             else:
@@ -916,6 +942,7 @@ class JITCNormalC(JITNormalMatrix):
                     shape=self.shape[::-1],
                     transpose=False,
                     corder=not self.corder,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 #
@@ -932,6 +959,7 @@ class JITCNormalC(JITNormalMatrix):
                     shape=self.shape[::-1],
                     transpose=False,
                     corder=not self.corder,
+                    backend=self.backend,
                 )
                 return r.T
             else:
