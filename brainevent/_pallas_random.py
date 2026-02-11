@@ -435,7 +435,7 @@ class PallasLFSR88RNG(LFSRBase):
     ----------
     seed : int
         An integer used to initialize the three-component state.  The
-        seed is offset by ``+1``, ``+7``, and ``+15`` for the three
+        seed is offset by ``+2``, ``+8``, and ``+16`` for the three
         components to satisfy the minimum-seed constraints of the
         algorithm.
 
@@ -497,10 +497,10 @@ class PallasLFSR88RNG(LFSRBase):
 
         Notes
         -----
-        The LFSR88 algorithm requires that the initial seeds are larger
-        than 1, 7, and 15 for the three components respectively.  This
-        method adds these offsets to the provided seed to ensure the
-        constraint is always satisfied.
+        The LFSR88 algorithm requires that the initial seeds are at
+        least 2, 8, and 16 for the three components respectively.
+        This method adds these offsets to the provided seed to ensure
+        the constraint is always satisfied.
 
         Examples
         --------
@@ -512,9 +512,9 @@ class PallasLFSR88RNG(LFSRBase):
             4
         """
         return (
-            jnp.asarray(seed + 1, dtype=jnp.uint32),
-            jnp.asarray(seed + 7, dtype=jnp.uint32),
-            jnp.asarray(seed + 15, dtype=jnp.uint32),
+            jnp.asarray(seed + 2, dtype=jnp.uint32),
+            jnp.asarray(seed + 8, dtype=jnp.uint32),
+            jnp.asarray(seed + 16, dtype=jnp.uint32),
             jnp.asarray(0, dtype=jnp.uint32)
         )
 
@@ -686,7 +686,7 @@ class PallasLFSR113RNG(LFSRBase):
     ----------
     seed : int
         An integer used to initialize the four-component state.  The
-        seed is offset by ``+1``, ``+7``, ``+15``, and ``+127`` for
+        seed is offset by ``+2``, ``+8``, ``+16``, and ``+128`` for
         the four components to satisfy the minimum-seed constraints.
 
     See Also
@@ -745,8 +745,8 @@ class PallasLFSR113RNG(LFSRBase):
 
         Notes
         -----
-        The LFSR113 algorithm requires that the initial seeds are larger
-        than 1, 7, 15, and 127 for the four components respectively.
+        The LFSR113 algorithm requires that the initial seeds are at
+        least 2, 8, 16, and 128 for the four components respectively.
         This method adds these offsets to the provided seed to ensure
         the constraint is always satisfied.
 
@@ -760,10 +760,10 @@ class PallasLFSR113RNG(LFSRBase):
             4
         """
         return (
-            jnp.asarray(seed + 1, dtype=jnp.uint32),
-            jnp.asarray(seed + 7, dtype=jnp.uint32),
-            jnp.asarray(seed + 15, dtype=jnp.uint32),
-            jnp.asarray(seed + 127, dtype=jnp.uint32)
+            jnp.asarray(seed + 2, dtype=jnp.uint32),
+            jnp.asarray(seed + 8, dtype=jnp.uint32),
+            jnp.asarray(seed + 16, dtype=jnp.uint32),
+            jnp.asarray(seed + 128, dtype=jnp.uint32)
         )
 
     def generate_next_key(self) -> PallasRandomKey:
