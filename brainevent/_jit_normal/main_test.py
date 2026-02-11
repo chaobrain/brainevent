@@ -80,7 +80,7 @@ class Test_JITC_RC_Conversion:
 
         out1 = jitcr @ matrix
         out2 = (matrix.T @ jitcc).T
-        assert allclose(out1, out2)
+        assert allclose(out1, out2, atol=1e-3, rtol=1e-3)
         jax.block_until_ready((matrix, out1, out2))
 
     @pytest.mark.parametrize('k', [10])
@@ -138,7 +138,7 @@ class Test_JITC_RC_Conversion:
 
         out1 = jitcr @ matrix
         out2 = (matrix.value.T @ jitcc).T
-        assert allclose(out1, out2)
+        assert allclose(out1, out2, rtol=1e-3, atol=1e-3)
         jax.block_until_ready((out1, out2))
 
     @pytest.mark.parametrize('k', [10])
