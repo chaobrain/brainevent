@@ -114,7 +114,7 @@ class TestXLACustomKernelPersist:
         """set_default with persist=True should write to config."""
         config_path = str(tmp_path / 'brainevent' / 'defaults.json')
         monkeypatch.setattr('brainevent._config.get_config_path', lambda: config_path)
-        from brainevent._config import invalidate_cache
+        from brainevent.config import invalidate_cache
         invalidate_cache()
 
         import brainevent
@@ -131,7 +131,7 @@ class TestXLACustomKernelPersist:
         """set_default without persist should not write to config."""
         config_path = str(tmp_path / 'brainevent' / 'defaults.json')
         monkeypatch.setattr('brainevent._config.get_config_path', lambda: config_path)
-        from brainevent._config import invalidate_cache
+        from brainevent.config import invalidate_cache
         invalidate_cache()
 
         import brainevent
@@ -265,7 +265,7 @@ class TestXLACustomKernelUserDefaults:
         """Lazy user defaults should be applied on first dispatch lookup."""
         config_path = str(tmp_path / 'brainevent' / 'defaults.json')
         monkeypatch.setattr('brainevent._config.get_config_path', lambda: config_path)
-        from brainevent._config import invalidate_cache, save_user_defaults
+        from brainevent.config import invalidate_cache, save_user_defaults
         invalidate_cache()
 
         # Write a config with numba as default for cpu

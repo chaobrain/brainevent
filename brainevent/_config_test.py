@@ -19,7 +19,7 @@ import warnings
 
 import pytest
 
-from brainevent._config import (
+from brainevent.config import (
     _SCHEMA_VERSION,
     _read_config_file,
     _write_config_file,
