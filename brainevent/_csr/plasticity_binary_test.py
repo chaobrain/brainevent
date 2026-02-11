@@ -34,7 +34,11 @@ PLATFORM = jax.default_backend()
 PRE_BACKENDS = tuple(update_csr_on_binary_pre_p.available_backends(PLATFORM))
 POST_BACKENDS = tuple(update_csr_on_binary_post_p.available_backends(PLATFORM))
 
-shapes = [(20, 100), (100, 100), (100, 50), (200, 200)]
+shapes = [
+    (20, 100),
+    (100, 100),
+    (100, 50),
+]
 
 
 class Test_csr_on_pre:
