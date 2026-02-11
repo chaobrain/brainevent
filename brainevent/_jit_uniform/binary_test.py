@@ -20,6 +20,10 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+# Keep GPU matmul reference numerics stable (avoid TF32 drift in dense @ B checks).
+if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is None:
+    jax.config.update('jax_default_matmul_precision', 'highest')
+
 from brainevent._jit_uniform.binary import (
     binary_jitumv,
     binary_jitumv_p,
@@ -32,6 +36,7 @@ from brainevent._test_util import allclose
 platform = jax.default_backend()
 JITUMV_IMPLEMENTATIONS = tuple(binary_jitumv_p.available_backends(platform))
 JITUMM_IMPLEMENTATIONS = tuple(binary_jitumm_p.available_backends(platform))
+
 
 if platform == 'cpu':
     SHAPES = ((20, 30), (100, 50))
@@ -116,8 +121,10 @@ def test_binary_jitumv_forward_matches_reference(implementation, shape, transpos
         shape=shape,
         transpose=transpose,
         corder=corder,
+        backend=implementation,
     )
     assert allclose(y, y_ref, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((w_low, w_high, vector, vector_ref, y, y_ref))
 
 
 @pytest.mark.parametrize('implementation', JITUMM_PARAMS)
@@ -155,8 +162,10 @@ def test_binary_jitumm_forward_matches_reference(implementation, shape, transpos
         shape=shape,
         transpose=transpose,
         corder=corder,
+        backend=implementation,
     )
     assert allclose(y, y_ref, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((w_low, w_high, matrix, matrix_ref, y, y_ref))
 
 
 @pytest.mark.parametrize('implementation', JITUMV_PARAMS)
@@ -195,6 +204,7 @@ def test_binary_jitumv_thresholds_float_events(implementation, shape, transpose,
         backend=implementation,
     )
     assert allclose(y_float, y_binary, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((w_low, w_high, vector, vector_binary, y_float, y_binary))
 
 
 @pytest.mark.parametrize('implementation', JITUMM_PARAMS)
@@ -234,6 +244,7 @@ def test_binary_jitumm_thresholds_float_events(implementation, shape, transpose,
         backend=implementation,
     )
     assert allclose(y_float, y_binary, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((w_low, w_high, matrix, matrix_binary, y_float, y_binary))
 
 
 @pytest.mark.parametrize('implementation', JITUMV_PARAMS)
@@ -269,6 +280,7 @@ def test_binary_jitumv_jvp_and_vjp_match_reference(implementation, transpose, co
             shape=shape,
             transpose=transpose,
             corder=corder,
+            backend=implementation,
         )
 
     primals = (
@@ -290,6 +302,8 @@ def test_binary_jitumv_jvp_and_vjp_match_reference(implementation, transpose, co
     g_v1 = jax.grad(lambda v: f_binary(primals[0], primals[1], v).sum())(primals[2])
     g_v2 = jax.grad(lambda v: f_ref(primals[0], primals[1], v).sum())(primals[2])
     assert allclose(g_v1, g_v2, rtol=1e-2, atol=1e-2)
+    jax.block_until_ready(
+        (vector, primals[0], primals[1], tangents[0], tangents[1], tangents[2], out1, jvp1, out2, jvp2, g_v1, g_v2))
 
 
 @pytest.mark.parametrize('implementation', JITUMM_PARAMS)
@@ -326,6 +340,7 @@ def test_binary_jitumm_jvp_matches_reference(implementation, transpose, corder):
             shape=shape,
             transpose=transpose,
             corder=corder,
+            backend=implementation,
         )
 
     primals = (
@@ -346,6 +361,8 @@ def test_binary_jitumm_jvp_matches_reference(implementation, transpose, corder):
     g_B1 = jax.grad(lambda B: f_binary(primals[0], primals[1], B).sum())(primals[2])
     g_B2 = jax.grad(lambda B: f_ref(primals[0], primals[1], B).sum())(primals[2])
     assert allclose(g_B1, g_B2, rtol=1e-2, atol=1e-2)
+    jax.block_until_ready(
+        (matrix, primals[0], primals[1], tangents[0], tangents[1], tangents[2], out1, jvp1, out2, jvp2, g_B1, g_B2))
 
 
 @pytest.mark.parametrize('implementation', JITUMV_PARAMS)
@@ -391,6 +408,7 @@ def test_binary_jitumv_grad_w_bounds_match_reference_and_finite_difference(
 
     assert allclose(grad_w_low, fd_w_low, rtol=1e-2, atol=1e-2)
     assert allclose(grad_w_high, fd_w_high, rtol=1e-2, atol=1e-2)
+    jax.block_until_ready((eps, vector, cotangent, w_low, w_high, grad_w_low, grad_w_high, fd_w_low, fd_w_high))
 
 
 @pytest.mark.parametrize('implementation', JITUMM_PARAMS)
@@ -438,6 +456,7 @@ def test_binary_jitumm_grad_w_bounds_match_reference_and_finite_difference(
 
     assert allclose(grad_w_low, fd_w_low, rtol=1e-2, atol=1e-2)
     assert allclose(grad_w_high, fd_w_high, rtol=1e-2, atol=1e-2)
+    jax.block_until_ready((eps, matrix, cotangent, w_low, w_high, grad_w_low, grad_w_high, fd_w_low, fd_w_high))
 
 
 @pytest.mark.parametrize('implementation', JITUMV_PARAMS)
@@ -474,9 +493,13 @@ def test_binary_jitumv_vmap_matches_reference(implementation, transpose, corder)
             shape=shape,
             transpose=transpose,
             corder=corder,
+            backend=implementation,
         )
     )
-    assert allclose(f_binary(vectors), f_ref(vectors), rtol=1e-4, atol=1e-4)
+    y_binary = f_binary(vectors)
+    y_ref = f_ref(vectors)
+    assert allclose(y_binary, y_ref, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((vectors, y_binary, y_ref))
 
 
 @pytest.mark.parametrize('implementation', JITUMM_PARAMS)
@@ -514,6 +537,10 @@ def test_binary_jitumm_vmap_matches_reference(implementation, transpose, corder)
             shape=shape,
             transpose=transpose,
             corder=corder,
+            backend=implementation,
         )
     )
-    assert allclose(f_binary(matrices), f_ref(matrices), rtol=1e-4, atol=1e-4)
+    y_binary = f_binary(matrices)
+    y_ref = f_ref(matrices)
+    assert allclose(y_binary, y_ref, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((matrices, y_binary, y_ref))

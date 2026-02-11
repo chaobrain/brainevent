@@ -21,10 +21,7 @@ import jax
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from brainevent._dense import (
-    dbmm,
-    bdmm,
-)
+from brainevent._dense import binary_densemm
 import braintools
 import brainstate
 from utils import visualize
@@ -39,17 +36,17 @@ def matrix_event(m, k, n, spk_prob, as_float: bool, transpose: bool, n_run=100):
         weight = braintools.init.KaimingUniform()((m, k))
         spike = (brainstate.random.rand(k, n) < spk_prob)
     else:
-        spike = (brainstate.random.rand(m, k) < spk_prob)
-        weight = braintools.init.KaimingUniform()((k, n))
+        weight = braintools.init.KaimingUniform()((k, m))
+        spike = (brainstate.random.rand(k, n) < spk_prob)
     if as_float:
         spike = spike.astype(float)
 
     @jax.jit
     def f1(spike, weight):
         return (
-            dbmm(weight, spike)
+            binary_densemm(weight, spike, transpose=False)
             if transpose
-            else bdmm(spike, weight)
+            else binary_densemm(weight, spike, transpose=True)
         )
 
     @jax.jit
@@ -57,7 +54,7 @@ def matrix_event(m, k, n, spk_prob, as_float: bool, transpose: bool, n_run=100):
         return (
             weight @ spike
             if transpose
-            else spike @ weight
+            else weight.T @ spike
         )
 
     y1 = jax.block_until_ready(f1(spike, weight))

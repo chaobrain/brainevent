@@ -13,9 +13,13 @@
 # limitations under the License.
 # ==============================================================================
 
-from .binary import dbmv, dbmv_p, bdvm, bdvm_p, dbmm, dbmm_p, bdmm, bdmm_p
+from .binary import (
+    binary_densemv, binary_densemv_p, binary_densemv_p_call,
+    binary_densemm, binary_densemm_p, binary_densemm_p_call,
+)
 from .indexed_binary import (
-    indexed_bdvm, indexed_bdvm_p, indexed_dbmv, indexed_dbmm, indexed_bdmm, indexed_bdmm_p,
+    indexed_binary_densemv, indexed_binary_densemv_p,
+    indexed_binary_densemm, indexed_binary_densemm_p,
 )
 from .plasticity import (
     update_dense_on_binary_pre, update_dense_on_binary_pre_p,
@@ -24,9 +28,10 @@ from .plasticity import (
 from .sparse_float import dsfmv, dsfmv_p, sfdvm, sfdvm_p, dsfmm, dsfmm_p, sfdmm, sfdmm_p
 
 __all__ = [
-    'dbmv', 'dbmv_p', 'bdvm', 'bdvm_p',
-    'dbmm', 'dbmm_p', 'bdmm', 'bdmm_p',
-    'indexed_bdvm', 'indexed_bdvm_p', 'indexed_dbmv', 'indexed_dbmm', 'indexed_bdmm', 'indexed_bdmm_p',
+    'binary_densemv', 'binary_densemv_p',
+    'binary_densemm', 'binary_densemm_p',
+    'indexed_binary_densemv', 'indexed_binary_densemv_p',
+    'indexed_binary_densemm', 'indexed_binary_densemm_p',
     'update_dense_on_binary_pre', 'update_dense_on_binary_pre_p',
     'update_dense_on_binary_post', 'update_dense_on_binary_post_p',
     'dsfmv', 'dsfmv_p', 'sfdvm', 'sfdvm_p',

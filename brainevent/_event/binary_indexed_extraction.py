@@ -106,13 +106,29 @@ def _binary_1d_array_index_warp_kernel(
 
     def kernel(spikes):
         dim = spikes_info.shape[0]
+        if dim == 0:
+            return (
+                jnp.zeros(indices_info.shape, dtype=indices_info.dtype),
+                jnp.zeros(count_info.shape, dtype=count_info.dtype),
+            )
+
+        indices = jnp.zeros(indices_info.shape, dtype=indices_info.dtype)
+        count = jnp.zeros(count_info.shape, dtype=count_info.dtype)
         fn = jax_kernel(
             mv,
             launch_dims=[dim],
             num_outputs=2,
-            output_dims={'indices': (dim,), 'count': (1,), },
+            in_out_argnames=['indices', 'count'],
         )
-        return fn(spikes)
+        indices, count = fn(spikes, indices, count)
+
+        # atomic_add-based writes are nondeterministic in order; enforce ascending
+        # order on the valid prefix so all backends match the reference behavior.
+        valid_mask = jnp.arange(dim) < count[0]
+        sentinel = jnp.asarray(dim, dtype=indices.dtype)
+        sorted_indices = jnp.sort(jnp.where(valid_mask, indices, sentinel))
+        indices = jnp.where(valid_mask, sorted_indices, 0)
+        return indices, count
 
     return kernel
 
@@ -163,15 +179,26 @@ def _binary_1d_array_index_pallas_kernel(
         indices_ref[write_positions] = jnp.where(combined_mask, idxs, 0)
 
     def kernel(spikes, indices, count):
+        dim = spikes_info.shape[0]
+        if dim == 0:
+            return jnp.zeros_like(indices), jnp.zeros_like(count)
+
         num_blocks = pl.cdiv(spikes_info.shape[0], BLOCK_SIZE)
-        fn = pl.pallas_call(_raw_kernel, grid=(num_blocks,), out_shape=kwargs['outs'])
-        return fn(spikes, indices, count)
+        fn = pl.pallas_call(_raw_kernel, grid=(num_blocks,), out_shape=kwargs['outs'], backend='triton')
+        indices, count = fn(spikes, indices, count)
+
+        # Keep deterministic ordering consistent with numba/CPU implementation.
+        valid_mask = jnp.arange(dim) < count[0]
+        sentinel = jnp.asarray(dim, dtype=indices.dtype)
+        sorted_indices = jnp.sort(jnp.where(valid_mask, indices, sentinel))
+        indices = jnp.where(valid_mask, sorted_indices, 0)
+        return indices, count
 
     return kernel
 
 
 def _binary_1d_array_index_jvp_spikes(spikes_dot, spikes, **kwargs):
-    return binary_1d_array_index_p_call(spikes_dot)
+    return binary_1d_array_index_p_call(spikes_dot, backend=kwargs['backend'], )
 
 
 def _binary_1d_array_index_transpose_rule(ct, spikes, indices, count, **kwargs):
@@ -228,7 +255,6 @@ binary_1d_array_index_p = XLACustomKernel('binary_1d_array_index')
 binary_1d_array_index_p.def_numba_kernel(_binary_1d_array_index_numba_kernel)
 binary_1d_array_index_p.def_warp_kernel(_binary_1d_array_index_warp_kernel)
 binary_1d_array_index_p.def_pallas_kernel('gpu', _binary_1d_array_index_pallas_kernel)
-binary_1d_array_index_p.def_pallas_kernel('tpu', _binary_1d_array_index_pallas_kernel)
 binary_1d_array_index_p.def_jvp_rule2(_binary_1d_array_index_jvp_spikes)
 binary_1d_array_index_p.def_transpose_rule(_binary_1d_array_index_transpose_rule)
 binary_1d_array_index_p.def_batching_rule(_binary_1d_array_index_batching)

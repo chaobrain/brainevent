@@ -15,11 +15,22 @@
 
 import brainstate
 import brainunit as u
+import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 import brainevent
-from brainevent._coo.plasticity_binary import update_coo_on_binary_pre, update_coo_on_binary_post
+from brainevent._coo.plasticity_binary import (
+    update_coo_on_binary_pre,
+    update_coo_on_binary_post,
+    update_coo_on_binary_pre_p,
+    update_coo_on_binary_post_p,
+)
+
+PLATFORM = jax.default_backend()
+PRE_BACKENDS = tuple(update_coo_on_binary_pre_p.available_backends(PLATFORM))
+POST_BACKENDS = tuple(update_coo_on_binary_post_p.available_backends(PLATFORM))
 
 
 class Test_coo_on_pre:
@@ -39,6 +50,7 @@ class Test_coo_on_pre:
         mat = jnp.where(mask, mat, 0.)
 
         assert jnp.allclose(coo.todense(), mat, rtol=1e-2, atol=1e-2)
+        jax.block_until_ready((mat, pre_spike, post_trace))
 
     @pytest.mark.parametrize('mat_unit', [u.mV, u.ms])
     @pytest.mark.parametrize('trace_unit', [u.mV, u.ms])
@@ -59,6 +71,7 @@ class Test_coo_on_pre:
             mat = u.math.where(mask, mat, 0. * mat_unit)
 
             assert u.math.allclose(coo.todense(), mat)
+            jax.block_until_ready((mat, pre_spike, post_trace))
 
         if mat_unit.has_same_dim(trace_unit):
             run()
@@ -85,6 +98,7 @@ class Test_coo_on_pre:
         mat = jnp.where(mask, mat, 0.)
 
         assert jnp.allclose(coo.todense(), mat)
+        jax.block_until_ready((mat, pre_spike, post_trace))
 
 
 class Test_coo_on_post:
@@ -105,6 +119,7 @@ class Test_coo_on_post:
         mat = jnp.where(mask, mat, 0.)
 
         assert jnp.allclose(coo.todense(), mat)
+        jax.block_until_ready((mat, pre_trace, post_spike))
 
     @pytest.mark.parametrize('mat_unit', [u.mV, u.ms])
     @pytest.mark.parametrize('trace_unit', [u.mV, u.ms])
@@ -125,6 +140,7 @@ class Test_coo_on_post:
             mat = u.math.where(mask, mat, 0. * mat_unit)
 
             assert u.math.allclose(coo.todense(), mat)
+            jax.block_until_ready((mat, pre_trace, post_spike))
 
         if mat_unit.has_same_dim(trace_unit):
             run()
@@ -151,3 +167,145 @@ class Test_coo_on_post:
         mat = jnp.where(mask, mat, 0.)
 
         assert jnp.allclose(coo.todense(), mat)
+        jax.block_until_ready((mat, pre_trace, post_spike))
+
+
+@pytest.mark.skipif(PLATFORM != 'gpu', reason='GPU backend parity tests require CUDA GPU.')
+class Test_coo_gpu_backend_parity:
+    @staticmethod
+    def _call_pre_backend(weight, pre_ids, post_ids, pre_spike, post_trace, backend):
+        return update_coo_on_binary_pre_p(
+            weight, pre_ids, post_ids, pre_spike, post_trace,
+            outs=[jax.ShapeDtypeStruct(weight.shape, weight.dtype)],
+            weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
+            pre_ids_info=jax.ShapeDtypeStruct(pre_ids.shape, pre_ids.dtype),
+            post_ids_info=jax.ShapeDtypeStruct(post_ids.shape, post_ids.dtype),
+            spike_info=jax.ShapeDtypeStruct(pre_spike.shape, pre_spike.dtype),
+            trace_info=jax.ShapeDtypeStruct(post_trace.shape, post_trace.dtype),
+            backend=backend,
+        )[0]
+
+    @staticmethod
+    def _call_post_backend(weight, pre_ids, post_ids, pre_trace, post_spike, backend):
+        return update_coo_on_binary_post_p(
+            weight, pre_ids, post_ids, pre_trace, post_spike,
+            outs=[jax.ShapeDtypeStruct(weight.shape, weight.dtype)],
+            weight_info=jax.ShapeDtypeStruct(weight.shape, weight.dtype),
+            pre_ids_info=jax.ShapeDtypeStruct(pre_ids.shape, pre_ids.dtype),
+            post_ids_info=jax.ShapeDtypeStruct(post_ids.shape, post_ids.dtype),
+            trace_info=jax.ShapeDtypeStruct(pre_trace.shape, pre_trace.dtype),
+            spike_info=jax.ShapeDtypeStruct(post_spike.shape, post_spike.dtype),
+            backend=backend,
+        )[0]
+
+    @staticmethod
+    def _make_ids(n_syn, n_pre, n_post, seed):
+        rng = np.random.default_rng(seed)
+        if n_syn == 0:
+            return jnp.empty((0,), dtype=jnp.int32), jnp.empty((0,), dtype=jnp.int32)
+        # Skew toward a hotspot to stress duplicate gathers.
+        pre_ids = rng.integers(0, n_pre, size=n_syn, dtype=np.int32)
+        post_ids = rng.integers(0, n_post, size=n_syn, dtype=np.int32)
+        hot = max(1, n_syn // 8)
+        pre_ids[:hot] = pre_ids[0]
+        post_ids[:hot] = post_ids[0]
+        return jnp.asarray(pre_ids), jnp.asarray(post_ids)
+
+    @pytest.mark.parametrize('backend', [b for b in ('warp', 'pallas') if b in PRE_BACKENDS])
+    @pytest.mark.parametrize('dtype', [jnp.float32, jnp.float16])
+    @pytest.mark.parametrize('bool_spike', [True, False])
+    @pytest.mark.parametrize('n_syn', [0, 33, 4097])
+    def test_pre_backend_matches_reference(self, backend, dtype, bool_spike, n_syn):
+        n_pre, n_post = 257, 193
+        rng = np.random.default_rng(123)
+        pre_ids, post_ids = self._make_ids(n_syn, n_pre, n_post, seed=321)
+        weight = jnp.asarray(rng.standard_normal(n_syn), dtype=dtype)
+        post_trace = jnp.asarray(rng.standard_normal(n_post), dtype=dtype)
+        if bool_spike:
+            pre_spike = jnp.asarray(rng.random(n_pre) > 0.6, dtype=jnp.bool_)
+            spike_mask = pre_spike[pre_ids]
+        else:
+            pre_spike = jnp.asarray(rng.standard_normal(n_pre), dtype=dtype)
+            spike_mask = pre_spike[pre_ids] != 0.
+
+        f = jax.jit(lambda: self._call_pre_backend(weight, pre_ids, post_ids, pre_spike, post_trace, backend))
+        out = f()
+        ref = weight + jnp.where(spike_mask, post_trace[post_ids], 0)
+
+        rtol, atol = (5e-3, 5e-3) if dtype == jnp.float16 else (1e-5, 1e-5)
+        assert jnp.allclose(out, ref, rtol=rtol, atol=atol)
+        jax.block_until_ready((out, ref))
+
+    @pytest.mark.parametrize('backend', [b for b in ('warp', 'pallas') if b in POST_BACKENDS])
+    @pytest.mark.parametrize('dtype', [jnp.float32, jnp.float16])
+    @pytest.mark.parametrize('bool_spike', [True, False])
+    @pytest.mark.parametrize('n_syn', [0, 33, 4097])
+    def test_post_backend_matches_reference(self, backend, dtype, bool_spike, n_syn):
+        n_pre, n_post = 257, 193
+        rng = np.random.default_rng(456)
+        pre_ids, post_ids = self._make_ids(n_syn, n_pre, n_post, seed=654)
+        weight = jnp.asarray(rng.standard_normal(n_syn), dtype=dtype)
+        pre_trace = jnp.asarray(rng.standard_normal(n_pre), dtype=dtype)
+        if bool_spike:
+            post_spike = jnp.asarray(rng.random(n_post) > 0.6, dtype=jnp.bool_)
+            spike_mask = post_spike[post_ids]
+        else:
+            post_spike = jnp.asarray(rng.standard_normal(n_post), dtype=dtype)
+            spike_mask = post_spike[post_ids] != 0.
+
+        f = jax.jit(lambda: self._call_post_backend(weight, pre_ids, post_ids, pre_trace, post_spike, backend))
+        out = f()
+        ref = weight + jnp.where(spike_mask, pre_trace[pre_ids], 0)
+
+        rtol, atol = (5e-3, 5e-3) if dtype == jnp.float16 else (1e-5, 1e-5)
+        assert jnp.allclose(out, ref, rtol=rtol, atol=atol)
+        jax.block_until_ready((out, ref))
+
+    def test_default_backend_routes_bf16_to_supported_kernel(self):
+        n_pre, n_post, n_syn = 127, 111, 4099
+        rng = np.random.default_rng(777)
+        pre_ids, post_ids = self._make_ids(n_syn, n_pre, n_post, seed=778)
+        weight = jnp.asarray(rng.standard_normal(n_syn), dtype=jnp.bfloat16)
+        pre_trace = jnp.asarray(rng.standard_normal(n_pre), dtype=jnp.bfloat16)
+        post_trace = jnp.asarray(rng.standard_normal(n_post), dtype=jnp.bfloat16)
+        pre_spike = jnp.asarray(rng.random(n_pre) > 0.5, dtype=jnp.bool_)
+        post_spike = jnp.asarray(rng.random(n_post) > 0.5, dtype=jnp.bool_)
+
+        out_pre = update_coo_on_binary_pre(weight, pre_ids, post_ids, pre_spike, post_trace, backend='pallas')
+        out_post = update_coo_on_binary_post(weight, pre_ids, post_ids, pre_trace, post_spike, backend='pallas')
+
+        ref_pre = weight + jnp.where(pre_spike[pre_ids], post_trace[post_ids], 0)
+        ref_post = weight + jnp.where(post_spike[post_ids], pre_trace[pre_ids], 0)
+
+        assert jnp.allclose(out_pre, ref_pre, rtol=2e-2, atol=2e-2)
+        assert jnp.allclose(out_post, ref_post, rtol=2e-2, atol=2e-2)
+        jax.block_until_ready((out_pre, out_post, ref_pre, ref_post))
+
+    @pytest.mark.skipif(not jax.config.read('jax_enable_x64'), reason='Requires jax_enable_x64=True')
+    def test_pallas_int64_indices_parity(self):
+        if 'pallas' not in PRE_BACKENDS or 'pallas' not in POST_BACKENDS:
+            pytest.skip('Pallas backend unavailable for COO plasticity kernels.')
+
+        n_pre, n_post, n_syn = 257, 193, 2048
+        rng = np.random.default_rng(999)
+        pre_ids = jnp.asarray(rng.integers(0, n_pre, size=n_syn, dtype=np.int64))
+        post_ids = jnp.asarray(rng.integers(0, n_post, size=n_syn, dtype=np.int64))
+        weight = jnp.asarray(rng.standard_normal(n_syn), dtype=jnp.float32)
+        pre_trace = jnp.asarray(rng.standard_normal(n_pre), dtype=jnp.float32)
+        post_trace = jnp.asarray(rng.standard_normal(n_post), dtype=jnp.float32)
+        pre_spike = jnp.asarray(rng.standard_normal(n_pre), dtype=jnp.float32)
+        post_spike = jnp.asarray(rng.standard_normal(n_post), dtype=jnp.float32)
+
+        out_pre = jax.jit(
+            lambda: self._call_pre_backend(weight, pre_ids, post_ids, pre_spike, post_trace, backend='pallas')
+        )()
+        out_post = jax.jit(
+            lambda: self._call_post_backend(weight, pre_ids, post_ids, pre_trace, post_spike, backend='pallas')
+        )()
+
+        ref_pre = weight + jnp.where(pre_spike[pre_ids] != 0., post_trace[post_ids], 0)
+        ref_post = weight + jnp.where(post_spike[post_ids] != 0., pre_trace[pre_ids], 0)
+
+        assert jnp.allclose(out_pre, ref_pre, rtol=1e-5, atol=1e-5)
+        assert jnp.allclose(out_post, ref_post, rtol=1e-5, atol=1e-5)
+        jax.block_until_ready((out_pre, out_post, ref_pre, ref_post))

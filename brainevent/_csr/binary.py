@@ -499,7 +499,7 @@ def _csrmv_pallas_kernel(
             posts_ref[i_row] = i_row_sum
 
     def kernel(data, indices, indptr, vector):
-        fn = pl.pallas_call(mm, grid=(m,), out_shape=kwargs['outs'])
+        fn = pl.pallas_call(mm, grid=(m,), out_shape=kwargs['outs'], backend='triton')
         return fn(data, indices, indptr, vector)
 
     return kernel
@@ -589,7 +589,7 @@ def _csrmv_pallas_gpu_kernel(
                     jax.lax.fori_loop(0, num_blocks, loop_fn, None)
 
         def kernel(data, indices, indptr, vector):
-            fn = pl.pallas_call(mm, grid=(m,), input_output_aliases={4: 0}, out_shape=kwargs['outs'])
+            fn = pl.pallas_call(mm, grid=(m,), input_output_aliases={4: 0}, out_shape=kwargs['outs'], backend='triton')
             out = kwargs['outs'][0]
             return fn(data, indices, indptr, vector, jnp.zeros(out.shape, dtype=out.dtype))
 
@@ -605,7 +605,9 @@ def _csrmv_jvp_v(v_dot, data, indices, indptr, v, *, shape, transpose, **kwargs)
 
 
 def _csrmv_jvp_weights(data_dot, data, indices, indptr, v, *, shape, transpose, **kwargs):
-    return binary_csrmv_p_call(data_dot, indices, indptr, v, shape=shape, transpose=transpose)
+    return binary_csrmv_p_call(
+        data_dot, indices, indptr, v, shape=shape, transpose=transpose, backend=kwargs['backend']
+    )
 
 
 def _csrmv_transpose_rule(ct, data, indices, indptr, events, *, shape, transpose, **kwargs):
@@ -634,6 +636,7 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, events, *, shape, transpose
                     events,
                     shape=shape,
                     transpose=transpose,
+                    backend=kwargs['backend'],
                 )[0]
                 ct_values = jnp.inner(ct, ct_values).reshape(*data.aval.shape)
             else:  # heterogeneous values
@@ -652,6 +655,7 @@ def _csrmv_batching(args, axes, **kwargs):
             args[3].T,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )
         return r, [1]
 
@@ -664,6 +668,7 @@ def _csrmv_batching(args, axes, **kwargs):
             args[3],
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )
         return r, [1]
 
@@ -774,7 +779,6 @@ binary_csrmv_p = XLACustomKernel('binary_csrmv')
 binary_csrmv_p.def_numba_kernel(_csrmv_numba_kernel)
 binary_csrmv_p.def_warp_kernel(_csrmv_warp_kernel)
 binary_csrmv_p.def_pallas_kernel('gpu', _csrmv_pallas_gpu_kernel)
-binary_csrmv_p.def_pallas_kernel('tpu', _csrmv_pallas_gpu_kernel)
 binary_csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
 binary_csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
 binary_csrmv_p.def_batching_rule(_csrmv_batching)
@@ -1252,7 +1256,8 @@ def _csrmm_pallas_kernel(
         fn = pl.pallas_call(
             mm,
             grid=(m, pl.cdiv(n, block_dim_n)),
-            out_shape=kwargs['outs']
+            out_shape=kwargs['outs'],
+            backend='triton',
         )
         return fn(data, indices, indptr, B)
 
@@ -1360,7 +1365,8 @@ def _csrmm_pallas_gpu_kernel(
                 mm,
                 grid=(m, pl.cdiv(n, block_dim_n)),
                 input_output_aliases={4: 0},
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             posts = jnp.zeros(out_info.shape, dtype=out_info.dtype)
             return fn(data, indices, indptr, B, posts)
@@ -1397,6 +1403,7 @@ def _csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose, **k
                 B,
                 shape=shape,
                 transpose=transpose,
+                backend=kwargs['backend'],
             )[0]
             return jnp.expand_dims(jnp.sum(r * ct), axis=0), indices, indptr, B
         else:
@@ -1420,6 +1427,7 @@ def _csrmm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )[0]
         r = jnp.reshape(r, [r.shape[0], batch_size, n])
         return [r], [1]
@@ -1435,6 +1443,7 @@ def _csrmm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )[0]
         r = jnp.reshape(r, [r.shape[0], batch_size, n])
         return [r], [1]
@@ -1450,6 +1459,7 @@ def _csrmm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )[0]
         r = jnp.reshape(r, [r.shape[0], n, batch_size])
         return [r], [2]
@@ -1557,7 +1567,6 @@ binary_csrmm_p = XLACustomKernel('binary_csrmm')
 binary_csrmm_p.def_numba_kernel(_csrmm_numba_kernel)
 binary_csrmm_p.def_warp_kernel(_csrmm_warp_kernel)
 binary_csrmm_p.def_pallas_kernel('gpu', _csrmm_pallas_gpu_kernel)
-binary_csrmm_p.def_pallas_kernel('tpu', _csrmm_pallas_gpu_kernel)
 binary_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 binary_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 binary_csrmm_p.def_batching_rule(_csrmm_batching)

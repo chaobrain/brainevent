@@ -15,7 +15,7 @@
 import functools
 import inspect
 from functools import partial
-from typing import Tuple, NamedTuple, Sequence, Union, Callable
+from typing import Tuple, NamedTuple, Sequence, Union, Callable, Optional
 
 import brainstate.environ
 import brainunit as u
@@ -703,11 +703,12 @@ class NameScope:
 
     def __init__(
         self,
-        fn,
-        name=None,
-        prefix="brainevent",
-        static_argnums=(),
-        static_argnames=(),
+        fn: Callable,
+        name: Optional[str] = None,
+        prefix: str = "brainevent",
+        module: str = 'brainevent',
+        static_argnums: Sequence[int] | int = (),
+        static_argnames: Sequence[str] | str = (),
     ):
         self._fn = fn
         self._static_argnums = static_argnums
@@ -725,7 +726,7 @@ class NameScope:
         self.__name__ = fn.__name__
         self.__qualname__ = getattr(fn, '__qualname__', self.__name__)
         self.__doc__ = fn.__doc__
-        self.__module__ = getattr(fn, '__module__', None)
+        self.__module__ = module
         self.__wrapped__ = fn
 
     def _get_jit_fn(self, backend):
@@ -751,6 +752,7 @@ def namescope(
     fn: Callable = None,
     name: str = None,
     prefix: str = "brainevent",
+    module: str = 'brainevent',
     static_argnums: Sequence[int] = (),
     static_argnames: Sequence[str] = ()
 ):
@@ -780,17 +782,23 @@ def namescope(
 
     if fn is None:
         def decorator(fun: Callable):
-            return NameScope(fun,
-                             name=name,
-                             prefix=prefix,
-                             static_argnums=static_argnums,
-                             static_argnames=static_argnames)
+            return NameScope(
+                fun,
+                name=name,
+                prefix=prefix,
+                module=module,
+                static_argnums=static_argnums,
+                static_argnames=static_argnames
+            )
 
         return decorator
 
     else:
-        return NameScope(fn,
-                         name=name,
-                         prefix=prefix,
-                         static_argnums=static_argnums,
-                         static_argnames=static_argnames)
+        return NameScope(
+            fn,
+            name=name,
+            prefix=prefix,
+            module=module,
+            static_argnums=static_argnums,
+            static_argnames=static_argnames
+        )

@@ -37,6 +37,11 @@ if numba_installed:
     except ImportError:
         pass
 
+gpu_platform = jax.default_backend() == 'gpu'
+numba_cuda_available = numba_cuda_available and gpu_platform
+if not gpu_platform:
+    pytest.skip('GPU platform not detected, skipping Numba CUDA tests', allow_module_level=True)
+
 
 @pytest.mark.skipif(not numba_cuda_available, reason="Numba CUDA not available")
 class TestNumbaCudaKernelBasic(unittest.TestCase):
@@ -67,6 +72,7 @@ class TestNumbaCudaKernelBasic(unittest.TestCase):
         expected = a + b
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, result, expected))
 
     def test_element_wise_multiplication(self):
         """Test element-wise multiplication kernel."""
@@ -93,6 +99,7 @@ class TestNumbaCudaKernelBasic(unittest.TestCase):
         expected = a * b
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, result, expected))
 
     def test_different_dtypes(self):
         """Test kernel with different data types."""
@@ -117,6 +124,7 @@ class TestNumbaCudaKernelBasic(unittest.TestCase):
             a = jnp.arange(n, dtype=dtype)
             result = kernel(a)
             self.assertTrue(jnp.allclose(result, a), f"Failed for dtype {dtype}")
+            jax.block_until_ready((a, result))
 
 
 @pytest.mark.skipif(not numba_cuda_available, reason="Numba CUDA not available")
@@ -147,6 +155,7 @@ class TestNumbaCudaKernelLaunchConfig(unittest.TestCase):
         expected = a + b
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, result, expected))
 
     def test_launch_dims_with_threads_per_block(self):
         """Test kernel with custom threads_per_block."""
@@ -173,6 +182,7 @@ class TestNumbaCudaKernelLaunchConfig(unittest.TestCase):
         expected = a + b
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, result, expected))
 
     def test_explicit_grid_block_tuple(self):
         """Test kernel with tuple grid/block dimensions."""
@@ -199,6 +209,7 @@ class TestNumbaCudaKernelLaunchConfig(unittest.TestCase):
         expected = a + b
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, result, expected))
 
 
 @pytest.mark.skipif(not numba_cuda_available, reason="Numba CUDA not available")
@@ -234,6 +245,7 @@ class TestNumbaCudaKernelJaxJit(unittest.TestCase):
         expected = a + b
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, result, expected))
 
     def test_multiple_calls_in_jit(self):
         """Test multiple kernel calls inside jax.jit."""
@@ -277,6 +289,7 @@ class TestNumbaCudaKernelJaxJit(unittest.TestCase):
         expected = (a + b) * c
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, c, result, expected))
 
 
 @pytest.mark.skipif(not numba_cuda_available, reason="Numba CUDA not available")
@@ -310,6 +323,7 @@ class TestNumbaCudaKernelMultipleOutputs(unittest.TestCase):
 
         self.assertTrue(jnp.allclose(out1, x * 2))
         self.assertTrue(jnp.allclose(out2, x * 3))
+        jax.block_until_ready((x, out1, out2))
 
     def test_three_outputs(self):
         """Test kernel with three output arrays."""
@@ -342,6 +356,7 @@ class TestNumbaCudaKernelMultipleOutputs(unittest.TestCase):
         self.assertTrue(jnp.allclose(sum_out, x + y))
         self.assertTrue(jnp.allclose(diff_out, x - y))
         self.assertTrue(jnp.allclose(prod_out, x * y))
+        jax.block_until_ready((x, y, sum_out, diff_out, prod_out))
 
 
 @pytest.mark.skipif(not numba_cuda_available, reason="Numba CUDA not available")
@@ -395,6 +410,7 @@ class TestNumbaCudaKernelSharedMemory(unittest.TestCase):
         total = jnp.sum(partial_sums)
 
         self.assertTrue(jnp.allclose(total, float(n)))
+        jax.block_until_ready((x, partial_sums, total))
 
 
 @pytest.mark.skipif(not numba_cuda_available, reason="Numba CUDA not available")
@@ -425,6 +441,7 @@ class TestNumbaCudaKernelMultipleInputs(unittest.TestCase):
         expected = x * 3.0
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((x, scale, result, expected))
 
     def test_many_inputs(self):
         """Test kernel with multiple input arrays."""
@@ -455,6 +472,7 @@ class TestNumbaCudaKernelMultipleInputs(unittest.TestCase):
         expected = a * 1.0 + b * 2.0 + c * 3.0
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, c, w1, w2, w3, result, expected))
 
 
 @pytest.mark.skipif(not numba_cuda_available, reason="Numba CUDA not available")
@@ -540,6 +558,7 @@ class TestNumbaCudaKernelXLAStream(unittest.TestCase):
                 any(ptr != 0 for ptr in stream_ptrs),
                 "XLA stream was not extracted (all pointers are 0)"
             )
+            jax.block_until_ready((a, b, result))
         finally:
             ffi._get_stream_from_callframe = orig_get_stream
 
@@ -619,6 +638,7 @@ class TestNumbaCudaCallableBasic(unittest.TestCase):
         expected = a + b
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, result, expected))
 
     def test_single_kernel_scale(self):
         """Scale array using a callable with scalar input."""
@@ -649,6 +669,7 @@ class TestNumbaCudaCallableBasic(unittest.TestCase):
         expected = x * 3.0
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((x, s, result, expected))
 
     def test_inside_jax_jit(self):
         """Test callable inside @jax.jit."""
@@ -683,6 +704,7 @@ class TestNumbaCudaCallableBasic(unittest.TestCase):
         expected = a + b
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, result, expected))
 
 
 # ===========================================================================
@@ -731,6 +753,7 @@ class TestNumbaCudaCallableMultiKernel(unittest.TestCase):
         expected = (a + b) * 2.0
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, result, expected))
 
     def test_three_kernel_pipeline(self):
         """Three-kernel pipeline: add, square, negate."""
@@ -775,6 +798,7 @@ class TestNumbaCudaCallableMultiKernel(unittest.TestCase):
         expected = -((a + b) ** 2)
 
         self.assertTrue(jnp.allclose(result, expected, atol=1e-4))
+        jax.block_until_ready((a, b, result, expected))
 
 
 # ===========================================================================
@@ -819,6 +843,7 @@ class TestNumbaCudaCallableMultipleOutputs(unittest.TestCase):
 
         self.assertTrue(jnp.allclose(s, a + b))
         self.assertTrue(jnp.allclose(d, a - b))
+        jax.block_until_ready((a, b, s, d))
 
     def test_different_output_shapes(self):
         """Outputs with different shapes."""
@@ -856,6 +881,7 @@ class TestNumbaCudaCallableMultipleOutputs(unittest.TestCase):
 
         self.assertTrue(jnp.allclose(doubled, x * 2.0))
         self.assertTrue(jnp.allclose(total[0], float(n)))
+        jax.block_until_ready((x, doubled, total))
 
 
 # ===========================================================================
@@ -893,6 +919,7 @@ class TestNumbaCudaCallableStream(unittest.TestCase):
         self.assertTrue(len(received_streams) > 0, "Stream was never passed to callable")
         self.assertIsNotNone(received_streams[0], "Stream is None")
         self.assertTrue(jnp.allclose(result, jnp.full(256, 42.0, dtype=jnp.float32)))
+        jax.block_until_ready((result,))
 
     def test_all_kernels_share_same_stream(self):
         """All kernel launches inside the callable should use the same stream."""
@@ -928,6 +955,7 @@ class TestNumbaCudaCallableStream(unittest.TestCase):
         self.assertTrue(len(stream_ids) >= 2)
         self.assertEqual(stream_ids[0], stream_ids[1])
         self.assertTrue(jnp.allclose(result, jnp.full(256, 2.0, dtype=jnp.float32)))
+        jax.block_until_ready((result,))
 
 
 # ===========================================================================
@@ -1008,6 +1036,7 @@ class TestNumbaCudaCallableFusedOps(unittest.TestCase):
 
         expected = jax.nn.softmax(x)
         self.assertTrue(jnp.allclose(result, expected, atol=1e-5))
+        jax.block_until_ready((x, result, expected))
 
     def test_norm_then_dot(self):
         """Normalize a vector then compute dot product (two outputs)."""
@@ -1068,6 +1097,7 @@ class TestNumbaCudaCallableFusedOps(unittest.TestCase):
 
         self.assertTrue(jnp.allclose(normalized, expected_normalized, rtol=1e-5))
         self.assertTrue(jnp.allclose(dot[0], expected_dot, rtol=1e-4))
+        jax.block_until_ready((x, y, normalized, dot, x_norm, expected_normalized, expected_dot))
 
 
 # ===========================================================================
@@ -1127,6 +1157,7 @@ class TestNumbaCudaCallableCSRMatvec(unittest.TestCase):
         # After ReLU: [5, 6, 11] (all positive)
         expected = jnp.array([5.0, 6.0, 11.0], dtype=jnp.float32)
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((data, indices, indptr, x, result, expected))
 
     def test_csr_matvec_with_negative_results(self):
         """Test that ReLU actually clips negative values."""
@@ -1176,6 +1207,7 @@ class TestNumbaCudaCallableCSRMatvec(unittest.TestCase):
         # Ax = [1-2, -3+4] = [-1, 1] -> ReLU -> [0, 1]
         expected = jnp.array([0.0, 1.0], dtype=jnp.float32)
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((data, indices, indptr, x, result, expected))
 
 
 # ===========================================================================
@@ -1245,6 +1277,7 @@ class TestNumbaCudaCallableSpikePropagation(unittest.TestCase):
         w_matrix = weights.reshape(n_pre, n_post)
         expected = w_matrix[1] + w_matrix[3] + w_matrix[5]
         self.assertTrue(jnp.allclose(result, expected, rtol=1e-5))
+        jax.block_until_ready((spikes, weights, result, w_matrix, expected))
 
 
 # ===========================================================================
@@ -1318,6 +1351,7 @@ class TestNumbaCudaCallableSTDP(unittest.TestCase):
         expected = jnp.clip(weights + 0.01 * dw, 0.0, 1.0)
 
         self.assertTrue(jnp.allclose(result, expected, atol=1e-3))
+        jax.block_until_ready((pre_trace, post_trace, weights, result, dw, expected))
 
 
 # ===========================================================================
@@ -1367,6 +1401,7 @@ class TestNumbaCudaCallableLargeArrays(unittest.TestCase):
         expected = (a + b) * 0.5
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, s, result, expected))
 
 
 # ===========================================================================
@@ -1402,6 +1437,7 @@ class TestNumbaCudaCallableNoInputs(unittest.TestCase):
         result = f()
         expected = jnp.arange(n, dtype=jnp.float32)
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((result, expected))
 
 
 # ===========================================================================
@@ -1439,6 +1475,7 @@ class TestNumbaCudaCallableRepeatedCalls(unittest.TestCase):
         for _ in range(10):
             result = f(a, b)
             self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, expected, result))
 
 
 # ===========================================================================
@@ -1475,6 +1512,7 @@ class TestNumbaCudaCallableDtypes(unittest.TestCase):
         expected = a + b
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, result, expected))
 
     def test_int32(self):
         from numba import cuda
@@ -1501,6 +1539,7 @@ class TestNumbaCudaCallableDtypes(unittest.TestCase):
         expected = a + b
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, result, expected))
 
 
 if __name__ == '__main__':

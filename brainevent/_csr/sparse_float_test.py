@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# ============================================================================== 
+# ==============================================================================
 
 import os
 
@@ -86,8 +86,10 @@ class TestSparseFloatCSRMV:
         data = _make_data(homo_w, indices.shape)
 
         result = _spfloat_csrmv_api(data, indices, indptr, v, (m, n), transpose, implementation)
-        expected = csrmv(data, indices, indptr, v, shape=(m, n), transpose=transpose)
+        expected = csrmv(data, indices, indptr, v, shape=(m, n), transpose=transpose, backend=implementation)
         assert jnp.allclose(result, expected, rtol=1e-5, atol=1e-5)
+
+        jax.block_until_ready((v, indptr, indices, data, result, expected))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -98,8 +100,10 @@ class TestSparseFloatCSRMV:
         data = _make_data(homo_w, indices.shape)
 
         result = _spfloat_csrmv_api(data, indices, indptr, v, (m, n), transpose, implementation)
-        expected = csrmv(data, indices, indptr, v, shape=(m, n), transpose=transpose)
+        expected = csrmv(data, indices, indptr, v, shape=(m, n), transpose=transpose, backend=implementation)
         assert jnp.allclose(result, expected, rtol=1e-5, atol=1e-5)
+
+        jax.block_until_ready((v, indptr, indices, data, result, expected))
 
     def test_scalar_weight_broadcast(self, implementation):
         m, n = 50, 30
@@ -108,8 +112,10 @@ class TestSparseFloatCSRMV:
         data = jnp.asarray(2.5, dtype=jnp.float32)
 
         result = _spfloat_csrmv_api(data, indices, indptr, v, (m, n), False, implementation)
-        expected = csrmv(data, indices, indptr, v, shape=(m, n), transpose=False)
+        expected = csrmv(data, indices, indptr, v, shape=(m, n), transpose=False, backend=implementation)
         assert jnp.allclose(result, expected, rtol=1e-5, atol=1e-5)
+
+        jax.block_until_ready((v, indptr, indices, data, result, expected))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -123,11 +129,13 @@ class TestSparseFloatCSRMV:
             return _spfloat_csrmv_api(data, indices, indptr, v_arg, (m, n), transpose, implementation).sum()
 
         def f_ref(v_arg):
-            return csrmv(data, indices, indptr, v_arg, shape=(m, n), transpose=transpose).sum()
+            return csrmv(data, indices, indptr, v_arg, shape=(m, n), transpose=transpose, backend=implementation).sum()
 
         grad_test = jax.grad(f_test)(v)
         grad_ref = jax.grad(f_ref)(v)
         assert jnp.allclose(grad_test, grad_ref, rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((v, indptr, indices, data, grad_test, grad_ref))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -141,11 +149,13 @@ class TestSparseFloatCSRMV:
             return _spfloat_csrmv_api(w_arg, indices, indptr, v, (m, n), transpose, implementation).sum()
 
         def f_ref(w_arg):
-            return csrmv(w_arg, indices, indptr, v, shape=(m, n), transpose=transpose).sum()
+            return csrmv(w_arg, indices, indptr, v, shape=(m, n), transpose=transpose, backend=implementation).sum()
 
         grad_test = jax.grad(f_test)(data)
         grad_ref = jax.grad(f_ref)(data)
         assert jnp.allclose(grad_test, grad_ref, rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((v, indptr, indices, data, grad_test, grad_ref))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -160,12 +170,14 @@ class TestSparseFloatCSRMV:
             return _spfloat_csrmv_api(data, indices, indptr, v_arg, (m, n), transpose, implementation)
 
         def f_ref(v_arg):
-            return csrmv(data, indices, indptr, v_arg, shape=(m, n), transpose=transpose)
+            return csrmv(data, indices, indptr, v_arg, shape=(m, n), transpose=transpose, backend=implementation)
 
         primal_test, tangent_test = jax.jvp(f_test, (v,), (v_dot,))
         primal_ref, tangent_ref = jax.jvp(f_ref, (v,), (v_dot,))
         assert jnp.allclose(primal_test, primal_ref, rtol=1e-5, atol=1e-5)
         assert jnp.allclose(tangent_test, tangent_ref, rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((v, indptr, indices, data, primal_test, tangent_test, primal_ref, tangent_ref))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -180,12 +192,14 @@ class TestSparseFloatCSRMV:
             return _spfloat_csrmv_api(w_arg, indices, indptr, v, (m, n), transpose, implementation)
 
         def f_ref(w_arg):
-            return csrmv(w_arg, indices, indptr, v, shape=(m, n), transpose=transpose)
+            return csrmv(w_arg, indices, indptr, v, shape=(m, n), transpose=transpose, backend=implementation)
 
         primal_test, tangent_test = jax.jvp(f_test, (data,), (data_dot,))
         primal_ref, tangent_ref = jax.jvp(f_ref, (data,), (data_dot,))
         assert jnp.allclose(primal_test, primal_ref, rtol=1e-5, atol=1e-5)
         assert jnp.allclose(tangent_test, tangent_ref, rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((indptr, indices, data, primal_test, tangent_test, primal_ref, tangent_ref))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_vector(self, implementation, homo_w):
@@ -195,11 +209,13 @@ class TestSparseFloatCSRMV:
         data = _make_data(homo_w, indices.shape)
 
         f_test = lambda v: _spfloat_csrmv_api(data, indices, indptr, v, (m, n), False, implementation)
-        f_ref = lambda v: csrmv(data, indices, indptr, v, shape=(m, n), transpose=False)
+        f_ref = lambda v: csrmv(data, indices, indptr, v, shape=(m, n), transpose=False, backend=implementation)
 
         result = jax.vmap(f_test)(vs)
         expected = jax.vmap(f_ref)(vs)
         assert jnp.allclose(result, expected, rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((vs, indptr, indices, data, result, expected))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_vector_transpose(self, implementation, homo_w):
@@ -209,11 +225,13 @@ class TestSparseFloatCSRMV:
         data = _make_data(homo_w, indices.shape)
 
         f_test = lambda v: _spfloat_csrmv_api(data, indices, indptr, v, (m, n), True, implementation)
-        f_ref = lambda v: csrmv(data, indices, indptr, v, shape=(m, n), transpose=True)
+        f_ref = lambda v: csrmv(data, indices, indptr, v, shape=(m, n), transpose=True, backend=implementation)
 
         result = jax.vmap(f_test)(vs)
         expected = jax.vmap(f_ref)(vs)
         assert jnp.allclose(result, expected, rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((vs, indptr, indices, data, result, expected))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_data(self, implementation, homo_w):
@@ -227,11 +245,13 @@ class TestSparseFloatCSRMV:
             data = braintools.init.Normal(0.0, 1.0)((b,) + indices.shape)
 
         f_test = lambda w: _spfloat_csrmv_api(w, indices, indptr, v, (m, n), False, implementation)
-        f_ref = lambda w: csrmv(w, indices, indptr, v, shape=(m, n), transpose=False)
+        f_ref = lambda w: csrmv(w, indices, indptr, v, shape=(m, n), transpose=False, backend=implementation)
 
         result = jax.vmap(f_test)(data)
         expected = jax.vmap(f_ref)(data)
         assert jnp.allclose(result, expected, rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((v, indptr, indices, data, result, expected))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_vjp(self, implementation, homo_w):
@@ -244,12 +264,14 @@ class TestSparseFloatCSRMV:
             return _spfloat_csrmv_api(w_arg, indices, indptr, v_arg, (m, n), False, implementation).sum()
 
         def f_ref(v_arg, w_arg):
-            return csrmv(w_arg, indices, indptr, v_arg, shape=(m, n), transpose=False).sum()
+            return csrmv(w_arg, indices, indptr, v_arg, shape=(m, n), transpose=False, backend=implementation).sum()
 
         grad_test = jax.vmap(lambda v: jax.grad(f_test, argnums=(0, 1))(v, data))(vs)
         grad_ref = jax.vmap(lambda v: jax.grad(f_ref, argnums=(0, 1))(v, data))(vs)
         assert jnp.allclose(grad_test[0], grad_ref[0], rtol=1e-3, atol=1e-3)
         assert jnp.allclose(grad_test[1], grad_ref[1], rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((vs, indptr, indices, data, grad_test, grad_ref))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_jvp(self, implementation, homo_w):
@@ -260,12 +282,14 @@ class TestSparseFloatCSRMV:
         data = _make_data(homo_w, indices.shape)
 
         f_test = lambda v: _spfloat_csrmv_api(data, indices, indptr, v, (m, n), False, implementation)
-        f_ref = lambda v: csrmv(data, indices, indptr, v, shape=(m, n), transpose=False)
+        f_ref = lambda v: csrmv(data, indices, indptr, v, shape=(m, n), transpose=False, backend=implementation)
 
         primal_test, tangent_test = jax.vmap(lambda v, vd: jax.jvp(f_test, (v,), (vd,)))(vs, v_dots)
         primal_ref, tangent_ref = jax.vmap(lambda v, vd: jax.jvp(f_ref, (v,), (vd,)))(vs, v_dots)
         assert jnp.allclose(primal_test, primal_ref, rtol=1e-3, atol=1e-3)
         assert jnp.allclose(tangent_test, tangent_ref, rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((vs, indptr, indices, data, primal_test, tangent_test, primal_ref, tangent_ref))
 
 
 @pytest.mark.skipif(
@@ -283,8 +307,10 @@ class TestSparseFloatCSRMM:
         data = _make_data(homo_w, indices.shape)
 
         result = _spfloat_csrmm_api(data, indices, indptr, B, (m, n), transpose, implementation)
-        expected = csrmm(data, indices, indptr, B, shape=(m, n), transpose=transpose)
+        expected = csrmm(data, indices, indptr, B, shape=(m, n), transpose=transpose, backend=implementation)
         assert jnp.allclose(result, expected, rtol=1e-5, atol=1e-5)
+
+        jax.block_until_ready((B, indptr, indices, data, result, expected))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -295,8 +321,10 @@ class TestSparseFloatCSRMM:
         data = _make_data(homo_w, indices.shape)
 
         result = _spfloat_csrmm_api(data, indices, indptr, B, (m, n), transpose, implementation)
-        expected = csrmm(data, indices, indptr, B, shape=(m, n), transpose=transpose)
+        expected = csrmm(data, indices, indptr, B, shape=(m, n), transpose=transpose, backend=implementation)
         assert jnp.allclose(result, expected, rtol=1e-5, atol=1e-5)
+
+        jax.block_until_ready((B, indptr, indices, data, result, expected))
 
     def test_scalar_weight_broadcast(self, implementation):
         m, n, k = 50, 30, 10
@@ -305,8 +333,10 @@ class TestSparseFloatCSRMM:
         data = jnp.asarray(2.5, dtype=jnp.float32)
 
         result = _spfloat_csrmm_api(data, indices, indptr, B, (m, n), False, implementation)
-        expected = csrmm(data, indices, indptr, B, shape=(m, n), transpose=False)
+        expected = csrmm(data, indices, indptr, B, shape=(m, n), transpose=False, backend=implementation)
         assert jnp.allclose(result, expected, rtol=1e-5, atol=1e-5)
+
+        jax.block_until_ready((B, indptr, indices, data, result, expected))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -320,11 +350,13 @@ class TestSparseFloatCSRMM:
             return _spfloat_csrmm_api(data, indices, indptr, B_arg, (m, n), transpose, implementation).sum()
 
         def f_ref(B_arg):
-            return csrmm(data, indices, indptr, B_arg, shape=(m, n), transpose=transpose).sum()
+            return csrmm(data, indices, indptr, B_arg, shape=(m, n), transpose=transpose, backend=implementation).sum()
 
         grad_test = jax.grad(f_test)(B)
         grad_ref = jax.grad(f_ref)(B)
         assert jnp.allclose(grad_test, grad_ref, rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((B, indptr, indices, data, grad_test, grad_ref))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -338,11 +370,13 @@ class TestSparseFloatCSRMM:
             return _spfloat_csrmm_api(w_arg, indices, indptr, B, (m, n), transpose, implementation).sum()
 
         def f_ref(w_arg):
-            return csrmm(w_arg, indices, indptr, B, shape=(m, n), transpose=transpose).sum()
+            return csrmm(w_arg, indices, indptr, B, shape=(m, n), transpose=transpose, backend=implementation).sum()
 
         grad_test = jax.grad(f_test)(data)
         grad_ref = jax.grad(f_ref)(data)
         assert jnp.allclose(grad_test, grad_ref, rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((B, indptr, indices, data, grad_test, grad_ref))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -357,12 +391,14 @@ class TestSparseFloatCSRMM:
             return _spfloat_csrmm_api(data, indices, indptr, B_arg, (m, n), transpose, implementation)
 
         def f_ref(B_arg):
-            return csrmm(data, indices, indptr, B_arg, shape=(m, n), transpose=transpose)
+            return csrmm(data, indices, indptr, B_arg, shape=(m, n), transpose=transpose, backend=implementation)
 
         primal_test, tangent_test = jax.jvp(f_test, (B,), (B_dot,))
         primal_ref, tangent_ref = jax.jvp(f_ref, (B,), (B_dot,))
         assert jnp.allclose(primal_test, primal_ref, rtol=1e-5, atol=1e-5)
         assert jnp.allclose(tangent_test, tangent_ref, rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((B, indptr, indices, data, primal_test, tangent_test, primal_ref, tangent_ref))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -377,12 +413,14 @@ class TestSparseFloatCSRMM:
             return _spfloat_csrmm_api(w_arg, indices, indptr, B, (m, n), transpose, implementation)
 
         def f_ref(w_arg):
-            return csrmm(w_arg, indices, indptr, B, shape=(m, n), transpose=transpose)
+            return csrmm(w_arg, indices, indptr, B, shape=(m, n), transpose=transpose, backend=implementation)
 
         primal_test, tangent_test = jax.jvp(f_test, (data,), (data_dot,))
         primal_ref, tangent_ref = jax.jvp(f_ref, (data,), (data_dot,))
         assert jnp.allclose(primal_test, primal_ref, rtol=1e-5, atol=1e-5)
         assert jnp.allclose(tangent_test, tangent_ref, rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((B, indptr, indices, data, primal_test, tangent_test, primal_ref, tangent_ref))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_matrix(self, implementation, homo_w):
@@ -392,11 +430,13 @@ class TestSparseFloatCSRMM:
         data = _make_data(homo_w, indices.shape)
 
         f_test = lambda B: _spfloat_csrmm_api(data, indices, indptr, B, (m, n), False, implementation)
-        f_ref = lambda B: csrmm(data, indices, indptr, B, shape=(m, n), transpose=False)
+        f_ref = lambda B: csrmm(data, indices, indptr, B, shape=(m, n), transpose=False, backend=implementation)
 
         result = jax.vmap(f_test)(Bs)
         expected = jax.vmap(f_ref)(Bs)
         assert jnp.allclose(result, expected, rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((Bs, indptr, indices, data, result, expected))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_matrix_transpose(self, implementation, homo_w):
@@ -406,8 +446,10 @@ class TestSparseFloatCSRMM:
         data = _make_data(homo_w, indices.shape)
 
         f_test = lambda B: _spfloat_csrmm_api(data, indices, indptr, B, (m, n), True, implementation)
-        f_ref = lambda B: csrmm(data, indices, indptr, B, shape=(m, n), transpose=True)
+        f_ref = lambda B: csrmm(data, indices, indptr, B, shape=(m, n), transpose=True, backend=implementation)
 
         result = jax.vmap(f_test)(Bs)
         expected = jax.vmap(f_ref)(Bs)
         assert jnp.allclose(result, expected, rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((Bs, indptr, indices, data, result, expected))

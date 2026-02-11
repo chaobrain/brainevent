@@ -16,6 +16,7 @@
 
 import brainstate
 import brainunit as u
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -43,6 +44,8 @@ class Test_csr_on_pre:
 
         assert jnp.allclose(csr2.todense(), dense2)
 
+        jax.block_until_ready((mat, pre_spike, post_trace))
+
     @pytest.mark.parametrize('mat_unit', [u.mV, u.ms])
     @pytest.mark.parametrize('trace_unit', [u.mV, u.ms])
     def test_csr_on_pre_with_unit(self, mat_unit, trace_unit):
@@ -63,6 +66,8 @@ class Test_csr_on_pre:
             dense = u.math.where(mask, dense, 0. * mat_unit)
 
             assert u.math.allclose(csr.todense(), dense)
+
+            jax.block_until_ready((mat, pre_spike, post_trace))
 
         if mat_unit.has_same_dim(trace_unit):
             run()
@@ -92,6 +97,8 @@ class Test_csr_on_pre:
 
         mat = jnp.where(mask, mat, 0.)
         assert jnp.allclose(csr.todense(), mat)
+
+        jax.block_until_ready((mat, pre_spike, post_trace))
 
 
 def _csr_to_csc_with_weight_indices(csr_data, csr_indices, csr_indptr, shape):
@@ -162,6 +169,8 @@ class Test_on_post:
 
         assert jnp.allclose(csr2.todense(), dense2)
 
+        jax.block_until_ready((mat, post_spike, pre_trace))
+
     @pytest.mark.parametrize('mat_unit', [u.mV, u.ms])
     @pytest.mark.parametrize('trace_unit', [u.mV, u.ms])
     def test_csr_on_post_with_unit(self, mat_unit, trace_unit):
@@ -190,6 +199,8 @@ class Test_on_post:
             dense = u.math.where(mask, dense, 0. * mat_unit)
 
             assert u.math.allclose(csr.todense(), dense)
+
+            jax.block_until_ready((mat, post_spike, pre_trace))
 
         if mat_unit.has_same_dim(trace_unit):
             run()
@@ -225,3 +236,5 @@ class Test_on_post:
 
         mat = jnp.where(mask, mat, 0.)
         assert jnp.allclose(csr.todense(), mat)
+
+        jax.block_until_ready((mat, post_spike, pre_trace))

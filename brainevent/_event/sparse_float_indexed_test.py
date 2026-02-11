@@ -1,4 +1,4 @@
-# Copyright 2025 BrainX Ecosystem Limited. All Rights Reserved.
+# Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,16 +13,4 @@
 # limitations under the License.
 # ==============================================================================
 
-
-from .base import EventRepresentation, IndexedEventRepresentation
-from .binary import BinaryArray
-from .binary_indexed_extraction import binary_array_index
-from .sparse_float import SparseFloat
-
-__all__ = [
-    'EventRepresentation',
-    'IndexedEventRepresentation',
-    'BinaryArray',
-    'SparseFloat',
-    'binary_array_index',
-]
+# -*- coding: utf-8 -*-

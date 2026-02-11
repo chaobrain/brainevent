@@ -230,6 +230,7 @@ def _csrmv_warp_kernel_generator(
 
     return kernel
 
+
 def _csrmv_pallas_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
@@ -250,7 +251,7 @@ def _csrmv_pallas_kernel_generator(
 
         if weight_info.size == 1:
             # csr.T @ B (Scalar Weight)
-            
+
             def mv_transpose_scalar_single(
                 data_ref,  # [1]
                 indices_ref,  # [nse]
@@ -259,7 +260,7 @@ def _csrmv_pallas_kernel_generator(
                 _,  # [?]
                 posts_ref,  # [cols]
             ):
-                i_row = pl.program_id(0) # Iterating over rows of the input CSR matrix
+                i_row = pl.program_id(0)  # Iterating over rows of the input CSR matrix
                 num_rows = indptr_ref.shape[0] - 1
 
                 def _body():
@@ -272,16 +273,16 @@ def _csrmv_pallas_kernel_generator(
                     data = data_ref[0] * val_vector
 
                     data_block = jnp.ones((block_dim,), dtype=posts_ref.dtype) * data
-                    
+
                     # Output dimension limit for validity check
                     out_dim = posts_ref.shape[0]
 
                     def loop_fn(index, _):
                         offset = col_start + index * block_dim
                         mask = offset + jnp.arange(block_dim) < col_end
-                        
+
                         rows = load(indices_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0)
-                        
+
                         # GUARD 2: Indirect Access Boundary Check (Scatter)
                         valid_idx_mask = rows < out_dim
                         final_mask = mask & valid_idx_mask
@@ -308,7 +309,7 @@ def _csrmv_pallas_kernel_generator(
                     val_vector = vector_ref[idx_batch, i_row]
                     data = data_ref[0] * val_vector
                     data_block = jnp.ones((block_dim,), dtype=posts_ref.dtype) * data
-                    
+
                     target_posts_ref = posts_ref[idx_batch]
                     out_dim = target_posts_ref.shape[0]
 
@@ -316,18 +317,18 @@ def _csrmv_pallas_kernel_generator(
                         offset = col_start + index * block_dim
                         mask = offset + jnp.arange(block_dim) < col_end
                         rows = load(indices_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0)
-                        
+
                         # GUARD 2: Indirect Access Boundary Check
                         valid_idx_mask = rows < out_dim
                         final_mask = mask & valid_idx_mask
-                        
+
                         atomic_add(target_posts_ref, rows, data_block, mask=final_mask)
 
                     jax.lax.fori_loop(0, num_blocks, loop_fn, None)
 
                 # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
                 jax.lax.cond(i_row < num_rows, _body, lambda: None)
-            
+
             mm_single_impl = mv_transpose_scalar_single
             mm_batch_impl = mv_transpose_scalar_batch
 
@@ -350,7 +351,7 @@ def _csrmv_pallas_kernel_generator(
                     col_nnz = col_end - col_start
                     num_blocks = (col_nnz + block_dim - 1) // block_dim
                     val_vector = vector_ref[i_row]
-                    
+
                     out_dim = posts_ref.shape[0]
 
                     def loop_fn(index, _):
@@ -358,11 +359,11 @@ def _csrmv_pallas_kernel_generator(
                         mask = offset + jnp.arange(block_dim) < col_end
                         rows = load(indices_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0)
                         val_A = load(data_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0.0)
-                        
+
                         # GUARD 2: Indirect Access Boundary Check
                         valid_idx_mask = rows < out_dim
                         final_mask = mask & valid_idx_mask
-                        
+
                         contrib = jnp.where(final_mask, val_A * val_vector, 0.0)
                         atomic_add(posts_ref, rows, contrib, mask=final_mask)
 
@@ -383,7 +384,7 @@ def _csrmv_pallas_kernel_generator(
                     col_end = indptr_ref[i_row + 1]
                     col_nnz = col_end - col_start
                     num_blocks = (col_nnz + block_dim - 1) // block_dim
-                    
+
                     val_vector = vector_ref[idx_batch, i_row]
                     target_posts_ref = posts_ref[idx_batch]
                     out_dim = target_posts_ref.shape[0]
@@ -393,11 +394,11 @@ def _csrmv_pallas_kernel_generator(
                         mask = offset + jnp.arange(block_dim) < col_end
                         rows = load(indices_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0)
                         val_A = load(data_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0.0)
-                        
+
                         # GUARD 2: Indirect Access Boundary Check
                         valid_idx_mask = rows < out_dim
                         final_mask = mask & valid_idx_mask
-                        
+
                         contrib = jnp.where(final_mask, val_A * val_vector, 0.0)
                         atomic_add(target_posts_ref, rows, contrib, mask=final_mask)
 
@@ -408,37 +409,39 @@ def _csrmv_pallas_kernel_generator(
 
             mm_single_impl = mv_transpose_vector_single
             mm_batch_impl = mv_transpose_vector_batch
-            
+
         def kernel(data, indices, indptr, vector):
             out_info = kwargs['outs'][0]
             placeholder = jnp.zeros(out_info.shape, out_info.dtype)
-            
+
             has_batch = vector.ndim > 1
-            launch_rows = shape[0] # CSR rows
+            launch_rows = shape[0]  # CSR rows
 
             if has_batch:
                 batch_size = vector.shape[0]
                 grid = (batch_size, launch_rows)
                 fn = pl.pallas_call(
-                    mm_batch_impl, 
-                    grid=grid, 
-                    input_output_aliases={4: 0}, 
-                    out_shape=kwargs['outs']
+                    mm_batch_impl,
+                    grid=grid,
+                    input_output_aliases={4: 0},
+                    out_shape=kwargs['outs'],
+                    backend='triton'
                 )
             else:
                 grid = (launch_rows,)
                 fn = pl.pallas_call(
-                    mm_single_impl, 
-                    grid=grid, 
-                    input_output_aliases={4: 0}, 
-                    out_shape=kwargs['outs']
+                    mm_single_impl,
+                    grid=grid,
+                    input_output_aliases={4: 0},
+                    out_shape=kwargs['outs'],
+                    backend='triton'
                 )
-                
+
             return fn(data, indices, indptr, vector, placeholder)
 
     else:
         # Non-Transpose: csr @ B -> A @ x
-        
+
         if weight_info.size == 1:
             def mv(
                 data_ref,  # [1]
@@ -449,15 +452,15 @@ def _csrmv_pallas_kernel_generator(
             ):
                 i_row = pl.program_id(0)
                 num_rows = indptr_ref.shape[0] - 1
-                
+
                 def _body():
                     row_start = indptr_ref[i_row]
                     row_end = indptr_ref[i_row + 1]
                     row_nnz = row_end - row_start
                     num_blocks = (row_nnz + block_dim - 1) // block_dim
-                    
+
                     val_A = data_ref[0]
-                    
+
                     vec_len = vector_ref.shape[0]
 
                     def loop_fn(index, sum_):
@@ -465,14 +468,14 @@ def _csrmv_pallas_kernel_generator(
                         mask = offset + jnp.arange(block_dim) < row_end
 
                         cols = load(indices_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0)
-                        
+
                         # GUARD 2: Indirect Access Boundary Check (Gather)
                         safe_cols = jnp.minimum(cols, vec_len - 1)
                         valid_col_mask = cols < vec_len
-                        
+
                         val_B = load(vector_ref, safe_cols)
                         calc_mask = mask & valid_col_mask
-                        
+
                         sum_ += val_A * jnp.sum(jnp.where(calc_mask, val_B, 0.0))
                         return sum_
 
@@ -497,13 +500,13 @@ def _csrmv_pallas_kernel_generator(
             ):
                 i_row = pl.program_id(0)
                 num_rows = indptr_ref.shape[0] - 1
-                
+
                 def _body():
                     row_start = indptr_ref[i_row]
                     row_end = indptr_ref[i_row + 1]
                     row_nnz = row_end - row_start
                     num_blocks = (row_nnz + block_dim - 1) // block_dim
-                    
+
                     vec_len = vector_ref.shape[0]
 
                     def loop_fn(index, sum_):
@@ -512,12 +515,12 @@ def _csrmv_pallas_kernel_generator(
 
                         cols = load(indices_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0)
                         val_A = load(data_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0.0)
-                        
+
                         # GUARD 2: Indirect Access Boundary Check (Gather)
                         safe_cols = jnp.minimum(cols, vec_len - 1)
                         valid_col_mask = cols < vec_len
                         val_B = load(vector_ref, safe_cols)
-                        
+
                         calc_mask = mask & valid_col_mask
                         sum_ += jnp.sum(jnp.where(calc_mask, val_A * val_B, 0.0))
                         return sum_
@@ -535,7 +538,7 @@ def _csrmv_pallas_kernel_generator(
 
         def kernel(data, indices, indptr, vector):
             launch_rows = shape[0]
-            fn = pl.pallas_call(mv, grid=(launch_rows,), out_shape=kwargs['outs'])
+            fn = pl.pallas_call(mv, grid=(launch_rows,), out_shape=kwargs['outs'], backend='triton')
             return fn(data, indices, indptr, vector)
 
     return kernel
@@ -955,7 +958,7 @@ def _csrmm_pallas_kernel_generator(
             ):
                 i_k = pl.program_id(0)
                 num_k = indptr_ref.shape[0] - 1
-                
+
                 def _body():
                     i_n_block = pl.program_id(1)
                     i_n_start = i_n_block * block_dim_n
@@ -968,11 +971,11 @@ def _csrmm_pallas_kernel_generator(
 
                     def loop_fn(index, _):
                         i_row = indices_ref[index]
-                        
+
                         # Indirect Write Guard (Scatter)
                         row_valid = i_row < out_rows
                         final_mask = mask & row_valid
-                        
+
                         pl.atomic_add(posts_ref, (i_row, pl.dslice(i_n_start, block_dim_n)), val, mask=final_mask)
 
                     jax.lax.fori_loop(indptr_ref[i_k], indptr_ref[i_k + 1], loop_fn, None)
@@ -1003,18 +1006,18 @@ def _csrmm_pallas_kernel_generator(
                     mask = (i_n_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
                     B_row = B_ref[i_k, pl.dslice(i_n_start, block_dim_n)]
                     B_row = jnp.where(mask, B_row, 0.0)
-                    
+
                     out_rows = posts_ref.shape[0]
 
                     def loop_fn(index, _):
                         i_row = indices_ref[index]
                         A_val = data_ref[index]
                         val = A_val * B_row
-                        
+
                         # Indirect Write Guard (Scatter)
                         row_valid = i_row < out_rows
                         final_mask = mask & row_valid
-                        
+
                         pl.atomic_add(posts_ref, (i_row, pl.dslice(i_n_start, block_dim_n)), val, mask=final_mask)
 
                     jax.lax.fori_loop(indptr_ref[i_k], indptr_ref[i_k + 1], loop_fn, None)
@@ -1027,12 +1030,13 @@ def _csrmm_pallas_kernel_generator(
             # csrmm_p_call ensures shape matches B. If transpose, B has shape[0] rows.
             # So we iterate shape[0].
             launch_rows = shape[0]
-            
+
             fn = pl.pallas_call(
                 mm,
                 grid=(launch_rows, pl.cdiv(n, block_dim_n)),
                 input_output_aliases={4: 0},
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton'
             )
             out_info = kwargs['outs'][0]
             placeholder = jnp.zeros(out_info.shape, out_info.dtype)
@@ -1060,23 +1064,23 @@ def _csrmm_pallas_kernel_generator(
             ):
                 i_m = pl.program_id(0)
                 num_m = indptr_ref.shape[0] - 1
-                
+
                 def _body():
                     i_n_block = pl.program_id(1)
                     i_n_start = i_n_block * block_dim_n
                     mask = (i_n_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
                     weight = data_ref[0]
-                    
+
                     b_rows = B_ref.shape[0]
 
                     def loop_fn(index, out):
                         i_k = indices_ref[index]
-                        
+
                         # Indirect Read Guard (Gather)
                         safe_k = jnp.minimum(i_k, b_rows - 1)
                         k_valid = i_k < b_rows
                         final_mask = mask & k_valid
-                        
+
                         B_row = B_ref[safe_k, pl.dslice(i_n_start, block_dim_n)]
                         B_row = jnp.where(final_mask, B_row, 0.0)
                         out += weight * B_row
@@ -1113,7 +1117,7 @@ def _csrmm_pallas_kernel_generator(
             ):
                 i_m = pl.program_id(0)
                 num_m = indptr_ref.shape[0] - 1
-                
+
                 def _body():
                     i_n_block = pl.program_id(1)
                     i_n_start = i_n_block * block_dim_n
@@ -1124,12 +1128,12 @@ def _csrmm_pallas_kernel_generator(
                     def loop_fn(index, out):
                         i_col = indices_ref[index]
                         val_A = data_ref[index]
-                        
+
                         # Indirect Read Guard (Gather)
                         safe_col = jnp.minimum(i_col, b_rows - 1)
                         col_valid = i_col < b_rows
                         final_mask = mask & col_valid
-                        
+
                         val_B = B_ref[safe_col, pl.dslice(i_n_start, block_dim_n)]
                         val_B = jnp.where(final_mask, val_B, 0.0)
                         out += val_A * val_B
@@ -1154,7 +1158,8 @@ def _csrmm_pallas_kernel_generator(
         def kernel(data, indices, indptr, B):
             # Not transpose, B shape matches shape[1]. Indptr matches shape[0].
             launch_rows = shape[0]
-            fn = pl.pallas_call(mm, grid=(launch_rows, pl.cdiv(n, block_dim_n)), out_shape=kwargs['outs'])
+            fn = pl.pallas_call(mm, grid=(launch_rows, pl.cdiv(n, block_dim_n)), out_shape=kwargs['outs'],
+                                backend='triton')
             return fn(data, indices, indptr, B)
 
     return kernel
@@ -1394,7 +1399,7 @@ def _csrmv_yw2y_pallas_kernels(
         ):
             i_block = pl.program_id(0)
             num_blocks_grid = indptr_ref.shape[0] - 1
-            
+
             def _body():
                 i_start = indptr_ref[i_block]
                 i_end = indptr_ref[i_block + 1]
@@ -1403,20 +1408,20 @@ def _csrmv_yw2y_pallas_kernels(
                 def loop_fn(i, _):
                     offset = i_start + i * block_dim
                     mask = (offset + jnp.arange(block_dim)) < i_end
-                    
+
                     w = load(w_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0.0)
                     index = load(indices_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0)
-                    
+
                     # Indirect Read Guard
                     valid_idx = index < y_ref.shape[0]
                     safe_index = jnp.minimum(index, y_ref.shape[0] - 1)
-                    
+
                     # Combine Masks
                     final_mask = mask & valid_idx
-                    
+
                     y = y_ref[safe_index]
                     y = jnp.where(final_mask, y, 0.0)
-                    
+
                     pl.store(posts_ref, (pl.dslice(offset, block_dim),), w * y, mask=final_mask)
 
                 jax.lax.fori_loop(0, num_blocks, loop_fn, None)
@@ -1428,7 +1433,8 @@ def _csrmv_yw2y_pallas_kernels(
             fn = pl.pallas_call(
                 mm,
                 grid=(shape[0],),
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton'
             )
             return fn(y, w, indices, indptr)
     else:
@@ -1450,7 +1456,7 @@ def _csrmv_yw2y_pallas_kernels(
                 def loop_fn(i, _):
                     offset = i_start + i * block_dim
                     mask = (offset + jnp.arange(block_dim)) < i_end
-                    
+
                     w = load(w_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0.0)
                     pl.store(posts_ref, (pl.dslice(offset, block_dim),), w * y_scalar, mask=mask)
 
@@ -1460,7 +1466,7 @@ def _csrmv_yw2y_pallas_kernels(
             jax.lax.cond(i_block < num_blocks_grid, _body, lambda: None)
 
         def kernel(y, w, indices, indptr):
-            fn = pl.pallas_call(mm, grid=(shape[0],), out_shape=kwargs['outs'])
+            fn = pl.pallas_call(mm, grid=(shape[0],), out_shape=kwargs['outs'], backend='triton')
             return fn(y, w, indptr)
 
     return kernel
