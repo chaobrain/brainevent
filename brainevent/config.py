@@ -32,8 +32,6 @@ import tempfile
 import warnings
 from typing import Any, Dict, Optional
 
-import jax
-
 __all__ = [
     'load_user_defaults',
     'save_user_defaults',
