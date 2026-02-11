@@ -265,6 +265,7 @@ def _jitu_pallas_kernel_generator(
     **kwargs
 ):
     from jax.experimental import pallas as pl
+    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
     dim = out_info.shape[0] if corder else out_info.shape[1]
     block_size = generate_block_dim(dim, maximum=128)
@@ -279,11 +280,13 @@ def _jitu_pallas_kernel_generator(
             i_row_block = pl.program_id(0)
             i_rows = i_row_block * block_size + jnp.arange(block_size)
             i_row_mask = i_rows < dim
+            safe_rows = jnp.where(i_row_mask, i_rows, 0)
 
             def body(data):
                 i_cols, i_col_mask, rng = data
                 val = rng.uniform(w_low, w_high)
-                post_ref[i_rows, i_cols] = jnp.where(i_row_mask & i_col_mask, val, post_ref[i_rows, i_cols])
+                safe_cols = jnp.where(i_col_mask, i_cols, 0)
+                atomic_add(post_ref, (safe_rows, safe_cols), val, mask=i_row_mask & i_col_mask)
                 i_cols += rng.random_integers(1, clen0)
                 return i_cols, i_cols < m, rng
 
@@ -306,11 +309,13 @@ def _jitu_pallas_kernel_generator(
             i_col_block = pl.program_id(0)
             i_cols = i_col_block * block_size + jnp.arange(block_size)
             i_col_mask = i_cols < dim
+            safe_cols = jnp.where(i_col_mask, i_cols, 0)
 
             def body(data):
                 i_rows, i_row_mask, rng = data
                 val = rng.uniform(w_low, w_high)
-                post_ref[i_rows, i_cols] = jnp.where(i_row_mask & i_col_mask, val, post_ref[i_rows, i_cols])
+                safe_rows = jnp.where(i_row_mask, i_rows, 0)
+                atomic_add(post_ref, (safe_rows, safe_cols), val, mask=i_row_mask & i_col_mask)
                 i_rows = i_rows + rng.random_integers(1, clen0)
                 return i_rows, i_rows < n, rng
 
