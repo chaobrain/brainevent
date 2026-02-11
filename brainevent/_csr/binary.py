@@ -1175,8 +1175,7 @@ def _csrmm_pallas_kernel(
                 )
                 
                 store(
-                    posts_ref, 
-                    (i_row, pl.ds(i_col_start, block_dim_n)), 
+                    posts_ref.at[i_row, pl.ds(i_col_start, block_dim_n)], 
                     i_row_sum, 
                     mask=col_mask
                 )

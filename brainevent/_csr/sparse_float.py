@@ -766,7 +766,7 @@ def _sparse_float_csrmm_pallas_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import store
+    from jax.experimental.pallas.triton import store, atomic_add
 
     m, k = shape
     n = vector_info.shape[1]
@@ -816,7 +816,7 @@ def _sparse_float_csrmm_pallas_kernel(
                         row_valid = i_row < out_rows
                         final_mask = mask & row_valid
 
-                        pl.atomic_add(posts_ref, (i_row, pl.ds(i_n_start, block_dim_n)), val, mask=final_mask)
+                        atomic_add(posts_ref, (i_row, pl.ds(i_n_start, block_dim_n)), val, mask=final_mask)
 
                     jax.lax.fori_loop(indptr_start, indptr_end, loop_fn, None)
 
@@ -861,7 +861,7 @@ def _sparse_float_csrmm_pallas_kernel(
                         row_valid = i_row < out_rows
                         final_mask = mask & row_valid
 
-                        pl.atomic_add(posts_ref, (i_row, pl.ds(i_n_start, block_dim_n)), val, mask=final_mask)
+                        atomic_add(posts_ref, (i_row, pl.ds(i_n_start, block_dim_n)), val, mask=final_mask)
 
                     jax.lax.fori_loop(indptr_ref[i_k], indptr_ref[i_k + 1], loop_fn, None)
 
