@@ -14,7 +14,7 @@
 # ==============================================================================
 
 
-from typing import Sequence, Optional
+from typing import Optional
 
 import brainunit as u
 import jax
@@ -645,11 +645,12 @@ def _sparse_float_csrmv_pallas_kernel(
 
 
 def _sparse_float_csrmv_jvp_v(v_dot, data, indices, indptr, v, *, shape, transpose, **kwargs):
-    return [csrmv(data, indices, indptr, v_dot, shape=shape, transpose=transpose)]
+    return [csrmv(data, indices, indptr, v_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
 
 def _sparse_float_csrmv_jvp_weights(data_dot, data, indices, indptr, v, *, shape, transpose, **kwargs):
-    return sparse_float_csrmv_p_call(data_dot, indices, indptr, v, shape=shape, transpose=transpose)
+    return sparse_float_csrmv_p_call(data_dot, indices, indptr, v,
+                                     shape=shape, transpose=transpose, backend=kwargs['backend'])
 
 
 def _sparse_float_csrmv_transpose_rule(ct, data, indices, indptr, events, *, shape, transpose, **kwargs):
@@ -670,7 +671,8 @@ def _sparse_float_csrmv_transpose_rule(ct, data, indices, indptr, events, *, sha
                 indptr,
                 ct,
                 shape=shape,
-                transpose=not transpose
+                transpose=not transpose,
+                backend=kwargs['backend']
             )
         return data, indices, indptr, ct_events
     else:
@@ -685,6 +687,7 @@ def _sparse_float_csrmv_transpose_rule(ct, data, indices, indptr, events, *, sha
                     events,
                     shape=shape,
                     transpose=transpose,
+                    backend=kwargs['backend']
                 )[0]
                 ct_values = jnp.inner(ct, ct_values).reshape(*data.aval.shape)
             else:  # heterogeneous values
@@ -703,6 +706,7 @@ def _sparse_float_csrmv_batching(args, axes, **kwargs):
             args[3].T,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend']
         )
         return r, [1]
 
@@ -715,6 +719,7 @@ def _sparse_float_csrmv_batching(args, axes, **kwargs):
             args[3],
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend']
         )
         return r, [1]
 
@@ -887,7 +892,6 @@ spfloat_csrmv_p.def_benchmark_data(_spfloat_csrmv_benchmark_data)
 
 def _sparse_float_csrmm_numba_kernel(
     weight_info: jax.ShapeDtypeStruct,
-    vector_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs
 ):
@@ -1214,11 +1218,11 @@ def _sparse_float_csrmm_pallas_kernel(
 
 
 def _csrmm_jvp_data(data_dot, data, indices, indptr, B, *, shape, transpose, **kwargs):
-    return [csrmm(data_dot, indices, indptr, B, shape=shape, transpose=transpose)]
+    return [csrmm(data_dot, indices, indptr, B, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
 
 def _csrmm_jvp_B(B_dot, data, indices, indptr, B, *, shape, transpose, **kwargs):
-    return [csrmm(data, indices, indptr, B_dot, shape=shape, transpose=transpose)]
+    return [csrmm(data, indices, indptr, B_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
 
 def _csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose, **kwargs):
@@ -1226,7 +1230,7 @@ def _csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose, **k
     assert not ad.is_undefined_primal(indptr)
 
     if ad.is_undefined_primal(B):
-        dB = csrmm(data, indices, indptr, ct, shape=shape, transpose=not transpose)
+        dB = csrmm(data, indices, indptr, ct, shape=shape, transpose=not transpose, backend=kwargs['backend'])
         return data, indices, indptr, dB
     else:
         B = jnp.asarray(B)
@@ -1238,6 +1242,7 @@ def _csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose, **k
                 B,
                 shape=shape,
                 transpose=transpose,
+                backend=kwargs['backend']
             )[0]
             return jnp.expand_dims(jnp.sum(r * ct), axis=0), indices, indptr, B
         else:
@@ -1263,6 +1268,7 @@ def _sparse_float_csrmm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend']
         )[0]
         r = jnp.reshape(r, [r.shape[0], batch_size, n])
         return [r], [1]
@@ -1278,6 +1284,7 @@ def _sparse_float_csrmm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend']
         )[0]
         r = jnp.reshape(r, [r.shape[0], batch_size, n])
         return [r], [1]
@@ -1293,6 +1300,7 @@ def _sparse_float_csrmm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend']
         )[0]
         r = jnp.reshape(r, [r.shape[0], n, batch_size])
         return [r], [2]

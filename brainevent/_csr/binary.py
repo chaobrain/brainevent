@@ -770,13 +770,12 @@ def _csrmv_pallas_gpu_kernel(
 
 
 def _csrmv_jvp_v(v_dot, data, indices, indptr, v, *, shape, transpose, **kwargs):
-    return [csrmv(data, indices, indptr, v_dot, shape=shape, transpose=transpose)]
+    return [csrmv(data, indices, indptr, v_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
 
 def _csrmv_jvp_weights(data_dot, data, indices, indptr, v, *, shape, transpose, **kwargs):
-    return binary_csrmv_p_call(
-        data_dot, indices, indptr, v, shape=shape, transpose=transpose, backend=kwargs['backend']
-    )
+    backend = kwargs['backend']
+    return binary_csrmv_p_call(data_dot, indices, indptr, v, shape=shape, transpose=transpose, backend=backend)
 
 
 def _csrmv_transpose_rule(ct, data, indices, indptr, events, *, shape, transpose, **kwargs):
@@ -1623,11 +1622,11 @@ def _csrmm_pallas_gpu_kernel(
 
 
 def _csrmm_jvp_data(data_dot, data, indices, indptr, B, *, shape, transpose, **kwargs):
-    return [csrmm(data_dot, indices, indptr, B, shape=shape, transpose=transpose)]
+    return [csrmm(data_dot, indices, indptr, B, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
 
 def _csrmm_jvp_B(B_dot, data, indices, indptr, B, *, shape, transpose, **kwargs):
-    return [csrmm(data, indices, indptr, B_dot, shape=shape, transpose=transpose)]
+    return [csrmm(data, indices, indptr, B_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
 
 def _csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose, **kwargs):

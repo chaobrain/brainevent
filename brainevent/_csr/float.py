@@ -409,7 +409,7 @@ def _csrmv_pallas_kernel_generator(
             out_info = kwargs['outs'][0]
             placeholder = jnp.zeros(out_info.shape, out_info.dtype)
 
-            #has_batch = vector.ndim > 1
+            # has_batch = vector.ndim > 1
             launch_rows = shape[0]  # CSR rows
 
             grid = (launch_rows,)
@@ -457,7 +457,7 @@ def _csrmv_pallas_kernel_generator(
                         safe_cols = jnp.minimum(cols, vec_len - 1)
                         valid_col_mask = cols < vec_len
 
-                        val_B = load(vector_ref.at[safe_cols]) # ??!!
+                        val_B = load(vector_ref.at[safe_cols])  # ??!!
                         calc_mask = mask & valid_col_mask
 
                         sum_ += val_A * jnp.sum(jnp.where(calc_mask, val_B, 0.0))
@@ -529,11 +529,11 @@ def _csrmv_pallas_kernel_generator(
 
 
 def _csrmv_jvp_v(v_dot, data, indices, indptr, v, *, shape, transpose, **kwargs):
-    return [csrmv(data, indices, indptr, v_dot, shape=shape, transpose=transpose)]
+    return [csrmv(data, indices, indptr, v_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
 
 def _csrmv_jvp_weights(data_dot, data, indices, indptr, v, *, shape, transpose, **kwargs):
-    return csrmv_p_call(data_dot, indices, indptr, v, shape=shape, transpose=transpose)
+    return csrmv_p_call(data_dot, indices, indptr, v, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
 
 def _csrmv_transpose_rule(ct, data, indices, indptr, vector, *, shape, transpose, **kwargs):
@@ -554,7 +554,8 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, vector, *, shape, transpose
                 indptr,
                 ct,
                 shape=shape,
-                transpose=not transpose
+                transpose=not transpose,
+                backend=kwargs['backend'],
             )
         return data, indices, indptr, ct_events
     else:
@@ -569,6 +570,7 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, vector, *, shape, transpose
                     vector,
                     shape=shape,
                     transpose=transpose,
+                    backend=kwargs['backend'],
                 )[0]
                 ct_values = jnp.inner(ct, ct_values).reshape(*data.aval.shape)
             else:  # heterogeneous values
@@ -587,6 +589,7 @@ def _csrmv_batching(args, axes, **kwargs):
             args[3].T,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )
         return r, [1]
 
@@ -599,6 +602,7 @@ def _csrmv_batching(args, axes, **kwargs):
             args[3],
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )
         return r, [1]
 
@@ -618,9 +622,13 @@ def _csrmv_benchmark_data(*, platform):
             v_size = n_post if not transpose else n_pre
             vector = jnp.asarray(np.random.randn(v_size), dtype=dtype)
             name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
-            configs.append(BenchmarkConfig(name, (weights, indices, jnp.asarray(indptr), vector), {
-                'shape': (n_pre, n_post), 'transpose': transpose
-            }))
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (weights, indices, jnp.asarray(indptr), vector),
+                    {'shape': (n_pre, n_post), 'transpose': transpose}
+                )
+            )
     return configs
 
 
@@ -879,6 +887,7 @@ def csrmm(
         B,
         shape=shape,
         transpose=transpose,
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * (unitd * unitb))
 
@@ -1310,11 +1319,11 @@ def _csrmm_pallas_kernel_generator(
 
 
 def _csrmm_jvp_data(data_dot, data, indices, indptr, B, *, shape, transpose, **kwargs):
-    return [csrmm(data_dot, indices, indptr, B, shape=shape, transpose=transpose)]
+    return [csrmm(data_dot, indices, indptr, B, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
 
 def _csrmm_jvp_B(B_dot, data, indices, indptr, B, *, shape, transpose, **kwargs):
-    return [csrmm(data, indices, indptr, B_dot, shape=shape, transpose=transpose)]
+    return [csrmm(data, indices, indptr, B_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
 
 def _csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose, **kwargs):
@@ -1334,7 +1343,8 @@ def _csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose, **k
                 indptr,
                 B,
                 shape=shape,
-                transpose=transpose
+                transpose=transpose,
+                backend=kwargs['backend']
             )[0]
             return jnp.expand_dims(jnp.sum(r * ct), axis=0), indices, indptr, B
         else:
@@ -1359,6 +1369,7 @@ def _csrmm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend']
         )[0]
         r = jnp.reshape(r, [r.shape[0], batch_size, n])
         return [r], [1]
@@ -1374,6 +1385,7 @@ def _csrmm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend']
         )[0]
         r = jnp.reshape(r, [r.shape[0], batch_size, n])
         return [r], [1]
@@ -1389,6 +1401,7 @@ def _csrmm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend']
         )[0]
         r = jnp.reshape(r, [r.shape[0], n, batch_size])
         return [r], [2]
@@ -1409,9 +1422,13 @@ def _csrmm_benchmark_data(*, platform):
             b_rows = n_post if not transpose else n_pre
             B = jnp.asarray(np.random.randn(b_rows, 10), dtype=dtype)
             name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'}"
-            configs.append(BenchmarkConfig(name, (weights, indices, jnp.asarray(indptr), B), {
-                'shape': (n_pre, n_post), 'transpose': transpose
-            }))
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (weights, indices, jnp.asarray(indptr), B),
+                    {'shape': (n_pre, n_post), 'transpose': transpose}
+                )
+            )
     return configs
 
 
@@ -1554,7 +1571,7 @@ def csrmm_p_call(
 
 csrmm_p = XLACustomKernel('csrmm')
 csrmm_p.def_numba_kernel(_csrmm_numba_kernel_generator)
-# csrmm_p.def_warp_kernel(_csrmm_warp_kernel_generator)
+csrmm_p.def_warp_kernel(_csrmm_warp_kernel_generator)
 csrmm_p.def_pallas_kernel('gpu', _csrmm_pallas_kernel_generator)
 csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
@@ -1659,7 +1676,7 @@ def csrmv_yw2y(
     """
     w, w_unit = u.split_mantissa_unit(w)
     y, _ = u.split_mantissa_unit(y)
-    res = csrmv_yw2y_p_call(y, w, indices, indptr, shape=shape, transpose=transpose)[0]
+    res = csrmv_yw2y_p_call(y, w, indices, indptr, shape=shape, transpose=transpose, backend=backend)[0]
     return u.maybe_decimal(res * w_unit)
 
 
@@ -1791,11 +1808,11 @@ def _csrmv_yw2y_pallas_kernels(
 
 
 def _csrmv_yw2y_jvp_y(y_dot, y, w, indices, indptr, *, shape, transpose, **kwargs):
-    return csrmv_yw2y_p_call(y_dot, w, indices, indptr, shape=shape, transpose=transpose)
+    return csrmv_yw2y_p_call(y_dot, w, indices, indptr, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
 
 def _csrmv_yw2y_jvp_w(w_dot, y, w, indices, indptr, *, shape, transpose, **kwargs):
-    return csrmv_yw2y_p_call(y, w_dot, indices, indptr, shape=shape, transpose=transpose)
+    return csrmv_yw2y_p_call(y, w_dot, indices, indptr, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
 
 def _csrmv_yw2y_transpose_rule(ct, y, w, indices, indptr, *, shape, transpose, **kwargs):
@@ -1813,9 +1830,13 @@ def _csrmv_yw2y_benchmark_data(*, platform):
         y_size = n_pre if not transpose else n_post
         y = jnp.asarray(np.random.randn(y_size), dtype=dtype)
         name = f"{'T' if transpose else 'NT'}"
-        configs.append(BenchmarkConfig(name, (y, w, indices, jnp.asarray(indptr)), {
-            'shape': (n_pre, n_post), 'transpose': transpose
-        }))
+        configs.append(
+            BenchmarkConfig(
+                name,
+                (y, w, indices, jnp.asarray(indptr)),
+                {'shape': (n_pre, n_post), 'transpose': transpose}
+            )
+        )
     return configs
 
 
