@@ -181,7 +181,6 @@ def _sparse_float_csrmv_numba_kernel(
 
     return kernel
 
-
 def _sparse_float_csrmv_pallas_kernel(
     weight_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
@@ -301,7 +300,7 @@ def _sparse_float_csrmv_pallas_kernel(
                 num_rows = indptr_ref.shape[0] - 1
                 
                 def _body():
-                    
+
                     val_vector = vector_ref[i_row]
                     
                     @pl.when(val_vector != 0.)
@@ -500,7 +499,6 @@ def _sparse_float_csrmv_pallas_kernel(
             return fn(data, indices, indptr, vector)
 
     return kernel
-
 
 
 def _sparse_float_csrmv_jvp_v(v_dot, data, indices, indptr, v, *, shape, transpose, **kwargs):
@@ -763,191 +761,252 @@ def _sparse_float_csrmm_pallas_kernel(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     transpose: bool,
-    shape: MatrixShape,
+    shape,
     **kwargs
 ):
     from jax.experimental import pallas as pl
 
     m, k = shape
     n = vector_info.shape[1]
-
     block_dim_n = generate_block_dim(n, 512)
 
-    if weight_info.size == 1:
-        if transpose:
-            # csr.T @ B
-            #
-            # csr: [k, m]
-            # B: [k, n]
-            #
-            def mm(
-                data_ref,  # [1]
-                indices_ref,  # [nse]
-                indptr_ref,  # [k + 1]
-                B_ref,  # [k, n]
-                _,  # [m, n]
-                posts_ref,  # [m, n]
-            ):
-                i_k = pl.program_id(0)
-                i_n = pl.program_id(1)
-                i_col_start = i_n * block_dim_n
-                col_start = indptr_ref[i_k]
-                col_end = indptr_ref[i_k + 1]
-                mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
-                events = pl.load(B_ref, (i_k, pl.dslice(i_col_start, block_dim_n)), mask=mask)
-                val = events * data_ref[0]
-                mask = mask & (events != 0.)
-
-                def loop_fn(index, _):
-                    i_row = indices_ref[index]
-                    pl.atomic_add(posts_ref, (i_row, pl.dslice(i_col_start, block_dim_n)), val, mask=mask)
-
-                jax.lax.fori_loop(col_start, col_end, loop_fn, None, )
-
-        else:
-            #
-            # Gustavson algorithm: Sparse matrix–matrix multiplication is performed in a row-wise fashion.
-            #
-            # Each nonzero value in a row is multiplied by the nonzero values corresponding to the column index.
-            # These values are summed and stored in a temporary row buffer based on their column indices.
-
-            # csr @ B
-            #
-            # csr: [m, k]
-            # B: [k, n]
-            #
-            def mm(
-                data_ref,  # [1]
-                indices_ref,  # [nse]
-                indptr_ref,  # [m + 1]
-                B_ref,  # [k, n]
-                posts_ref,  # [m, n]
-            ):
-                i_m = pl.program_id(0)
-                i_n = pl.program_id(1)
-                i_col_start = i_n * block_dim_n
-                mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
-                row_start = indptr_ref[i_m]
-                row_end = indptr_ref[i_m + 1]
-                weight = data_ref[0]
-
-                def loop_fn(i_k, sum_):
-                    index = indices_ref[i_k]
-                    events = pl.load(B_ref, (index, pl.dslice(i_col_start, block_dim_n)), mask=mask)
-                    sum_ += weight * events
-                    return sum_
-
-                i_row_sum = jax.lax.fori_loop(
-                    row_start,
-                    row_end,
-                    loop_fn,
-                    jnp.zeros([block_dim_n], dtype=posts_ref.dtype)
-                )
-                pl.store(
-                    posts_ref,
-                    (i_m, pl.dslice(i_col_start, block_dim_n)),
-                    i_row_sum,
-                    mask=mask
-                )
-
-
-    else:
-        if transpose:
-            # csr.T @ B
-            #
-            # csr: [k, m]
-            # B: [k, n]
-            #
-            def mm(
-                data_ref,  # [nse]
-                indices_ref,  # [nse]
-                indptr_ref,  # [k + 1]
-                B_ref,  # [k, n]
-                _,  # [m, n]
-                posts_ref,  # [m, n]
-            ):
-                i_k = pl.program_id(0)
-                i_n = pl.program_id(1)
-                i_col_start = i_n * block_dim_n
-                mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
-                col_start = indptr_ref[i_k]
-                col_end = indptr_ref[i_k + 1]
-                events = pl.load(B_ref, (i_k, pl.dslice(i_col_start, block_dim_n)), mask=mask)
-                mask = mask & (events != 0.)
-
-                def loop_fn(index, _):
-                    i_row = indices_ref[index]
-                    val_A = data_ref[index]
-                    val = events * val_A
-                    pl.atomic_add(posts_ref, (i_row, pl.dslice(i_col_start, block_dim_n)), val, mask=mask)
-
-                jax.lax.fori_loop(col_start, col_end, loop_fn, None, )
-
-
-        else:
-            #
-            # Gustavson algorithm: Sparse matrix–matrix multiplication is performed in a row-wise fashion.
-            #
-            # Each nonzero value in a row is multiplied by the nonzero values corresponding to the column index.
-            # These values are summed and stored in a temporary row buffer based on their column indices.
-
-            # csr @ B
-            #
-            # csr: [m, k]
-            # B: [k, n]
-            #
-            def mm(
-                data_ref,  # [nse]
-                indices_ref,  # [nse]
-                indptr_ref,  # [m + 1]
-                B_ref,  # [k, n]
-                posts_ref,  # [m, n]
-            ):
-                i_m = pl.program_id(0)
-                i_n = pl.program_id(1)
-                i_col_start = i_n * block_dim_n
-                mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
-                row_start = indptr_ref[i_m]
-                row_end = indptr_ref[i_m + 1]
-
-                def loop_fn(index, sum_):
-                    i_col = indices_ref[index]
-                    val_A = data_ref[index]
-                    events = pl.load(B_ref, (i_col, pl.dslice(i_col_start, block_dim_n)), mask=mask)
-                    sum_ += val_A * events
-                    return sum_
-
-                i_row_sum = jax.lax.fori_loop(
-                    row_start,
-                    row_end,
-                    loop_fn,
-                    jnp.zeros([block_dim_n], dtype=posts_ref.dtype)
-                )
-                pl.store(
-                    posts_ref,
-                    (i_m, pl.dslice(i_col_start, block_dim_n)),
-                    i_row_sum,
-                    mask=mask
-                )
-
     if transpose:
+        if weight_info.size == 1:
+            # csr.T @ B
+            #
+            # csr: [k, m]
+            # B: [k, n]
+            #
+            def mm(
+                data_ref,  # [1]
+                indices_ref,  # [nse]
+                indptr_ref,  # [k + 1]
+                B_ref,  # [k, n]
+                _,  # [m, n]
+                posts_ref,  # [m, n]
+            ):
+                i_k = pl.program_id(0)
+                
+                num_k = indptr_ref.shape[0] - 1
+                
+                indptr_start = indptr_ref[i_k]
+                indptr_end = indptr_ref[i_k + 1]
+
+                def _body():
+                    i_n_block = pl.program_id(1)
+                    i_n_start = i_n_block * block_dim_n
+
+                    mask = (i_n_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
+
+                    B_row = B_ref[i_k, pl.dslice(i_n_start, block_dim_n)]
+                    #B_row = pl.load(B_ref, (pl.dslice(i_n_start, block_dim_n),), mask=mask, other=0.0)
+                    
+                    val = B_row * data_ref[0]
+
+                    mask = mask & (B_row != 0.)
+
+                    out_rows = posts_ref.shape[0]
+
+                    def loop_fn(index, _):
+                        i_row = indices_ref[index]
+                        
+                        # Indirect Write Guard (Scatter)
+                        row_valid = i_row < out_rows
+                        final_mask = mask & row_valid
+                        
+                        pl.atomic_add(posts_ref, (i_row, pl.dslice(i_n_start, block_dim_n)), val, mask=final_mask)
+
+                    jax.lax.fori_loop(indptr_start, indptr_end, loop_fn, None)
+
+                # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
+                jax.lax.cond(i_k < num_k, _body, lambda: None)
+
+        else:
+            # csr.T @ B
+            #
+            # csr: [k, m]
+            # B: [k, n]
+            #
+            def mm(
+                data_ref,  # [nse]
+                indices_ref,  # [nse]
+                indptr_ref,  # [k + 1]
+                B_ref,  # [k, n]
+                _,  # [m, n]
+                posts_ref,  # [m, n]
+            ):
+                i_k = pl.program_id(0)
+                num_k = indptr_ref.shape[0] - 1
+                i_n_block = pl.program_id(1)
+                def _body():
+
+                    i_n_start = i_n_block * block_dim_n
+
+                    mask = (i_n_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
+                    B_row = B_ref[i_k, pl.dslice(i_n_start, block_dim_n)]
+                    #B_row = pl.load(B_ref, (pl.dslice(i_n_start, block_dim_n),), mask=mask, other=0.0)
+                    
+                    out_rows = posts_ref.shape[0]
+
+                    mask = mask & (B_row != 0.)
+
+                    def loop_fn(index, _):
+                        i_row = indices_ref[index]
+                        A_val = data_ref[index]
+                        val = A_val * B_row
+                        
+                        # Indirect Write Guard (Scatter)
+                        row_valid = i_row < out_rows
+                        final_mask = mask & row_valid
+                        
+                        pl.atomic_add(posts_ref, (i_row, pl.dslice(i_n_start, block_dim_n)), val, mask=final_mask)
+
+                    jax.lax.fori_loop(indptr_ref[i_k], indptr_ref[i_k + 1], loop_fn, None)
+
+                # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
+                jax.lax.cond(i_k < num_k, _body, lambda: None)
+
         def kernel(data, indices, indptr, B):
+            # Transpose: input rows = shape[0] if it was (m,k) ? 
+            # csrmm_p_call ensures shape matches B. If transpose, B has shape[0] rows.
+            # So we iterate shape[0].
+            launch_rows = shape[0]
+            
             fn = pl.pallas_call(
                 mm,
-                grid=(k, pl.cdiv(n, block_dim_n)),
+                grid=(launch_rows, pl.cdiv(n, block_dim_n)),
                 input_output_aliases={4: 0},
                 out_shape=kwargs['outs']
             )
             out_info = kwargs['outs'][0]
             placeholder = jnp.zeros(out_info.shape, out_info.dtype)
             return fn(data, indices, indptr, B, placeholder)
+
     else:
+        #
+        # Gustavson algorithm: Sparse matrix–matrix multiplication is performed in a row-wise fashion.
+        #
+        # Each nonzero value in a row is multiplied by the nonzero values corresponding to the column index.
+        # These values are summed and stored in a temporary row buffer based on their column indices.
+        if weight_info.size == 1:
+
+            # csr @ B
+            #
+            # csr: [m, k]
+            # B: [k, n]
+            #
+            def mm(
+                data_ref,  # [1]
+                indices_ref,  # [nse]
+                indptr_ref,  # [m + 1]
+                B_ref,  # [k, n]
+                posts_ref,  # [m, n]
+            ):
+                i_m = pl.program_id(0)
+                num_m = indptr_ref.shape[0] - 1
+                
+                def _body():
+                    i_n_block = pl.program_id(1)
+                    i_n_start = i_n_block * block_dim_n
+                    mask = (i_n_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
+
+                    row_start, row_end = indptr_ref[i_m], indptr_ref[i_m + 1]
+                    weight = data_ref[0]
+                    
+                    b_rows = B_ref.shape[0]
+
+                    def loop_fn(index, out):
+                        i_k = indices_ref[index]
+                        
+                        # Indirect Read Guard (Gather)
+                        safe_k = jnp.minimum(i_k, b_rows - 1)
+                        k_valid = i_k < b_rows
+                        final_mask = mask & k_valid
+                        
+                        #B_row = pl.load(B_ref, (safe_k, pl.dslice(i_n_start, block_dim_n),), mask=final_mask, other=0.0)
+                        B_row = B_ref[safe_k, pl.dslice(i_n_start, block_dim_n)]
+                        B_row = jnp.where(final_mask, B_row, 0.0)
+                        out += weight * B_row
+                        return out
+
+                    i_row_out = jax.lax.fori_loop(
+                        row_start,
+                        row_end,
+                        loop_fn,
+                        jnp.zeros([block_dim_n], dtype=posts_ref.dtype)
+                    )
+                    pl.store(
+                        posts_ref,
+                        (i_m, pl.dslice(i_n_start, block_dim_n)),
+                        i_row_out,
+                        mask=mask
+                    )
+
+                # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
+                jax.lax.cond(i_m < num_m, _body, lambda: None)
+
+        else:
+            # csr @ B
+            #
+            # csr: [m, k]
+            # B: [k, n]
+            #
+            def mm(
+                data_ref,  # [nse]
+                indices_ref,  # [nse]
+                indptr_ref,  # [m + 1]
+                B_ref,  # [k, n]
+                posts_ref,  # [m, n]
+            ):
+                i_m = pl.program_id(0)
+                num_m = indptr_ref.shape[0] - 1
+                i_n_block = pl.program_id(1)     
+
+                def _body():
+    
+                    i_n_start = i_n_block * block_dim_n
+                    mask = (i_n_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
+
+                    b_rows = B_ref.shape[0]
+
+                    row_start, row_end = indptr_ref[i_m], indptr_ref[i_m + 1]
+
+                    def loop_fn(index, out):
+                        i_col = indices_ref[index]
+                        val_A = data_ref[index]
+                        
+                        # Indirect Read Guard (Gather)
+                        safe_col = jnp.minimum(i_col, b_rows - 1)
+                        col_valid = i_col < b_rows
+                        final_mask = mask & col_valid
+                        
+                        #val_B = pl.load(B_ref, (safe_col, pl.dslice(i_n_start, block_dim_n),), mask=final_mask, other=0.0)
+                        
+                        val_B = B_ref[safe_col, pl.dslice(i_n_start, block_dim_n)]
+                        val_B = jnp.where(final_mask, val_B, 0.0)
+                        out += val_A * val_B
+                        return out
+
+                    i_row_out = jax.lax.fori_loop(
+                        row_start,
+                        row_end,
+                        loop_fn,
+                        jnp.zeros([block_dim_n], dtype=posts_ref.dtype)
+                    )
+                    pl.store(
+                        posts_ref,
+                        (i_m, pl.dslice(i_n_start, block_dim_n)),
+                        i_row_out,
+                        mask=mask
+                    )
+
+                # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
+                jax.lax.cond(i_m < num_m, _body, lambda: None)
+
         def kernel(data, indices, indptr, B):
-            fn = pl.pallas_call(
-                mm,
-                grid=(m, pl.cdiv(n, block_dim_n)),
-                out_shape=kwargs['outs']
-            )
+            # Not transpose, B shape matches shape[1]. Indptr matches shape[0].
+            launch_rows = shape[0]
+            fn = pl.pallas_call(mm, grid=(launch_rows, pl.cdiv(n, block_dim_n)), out_shape=kwargs['outs'])
             return fn(data, indices, indptr, B)
 
     return kernel
