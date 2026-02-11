@@ -38,11 +38,14 @@ _PRIMITIVE_REGISTRY: Dict[str, 'XLACustomKernel'] = {}
 def register_primitive(name: str, primitive: 'XLACustomKernel'):
     """Register a primitive in the global registry.
 
-    Called automatically by XLACustomKernel.__init__.
+    Called automatically by ``XLACustomKernel.__init__``.
 
-    Args:
-        name: The unique name of the primitive.
-        primitive: The XLACustomKernel instance.
+    Parameters
+    ----------
+    name : str
+        The unique name of the primitive.
+    primitive : XLACustomKernel
+        The ``XLACustomKernel`` instance to register.
     """
     _PRIMITIVE_REGISTRY[name] = primitive
 
@@ -50,8 +53,10 @@ def register_primitive(name: str, primitive: 'XLACustomKernel'):
 def get_registry() -> Dict[str, 'XLACustomKernel']:
     """Return a copy of the full primitive registry.
 
-    Returns:
-        A dictionary mapping primitive names to XLACustomKernel instances.
+    Returns
+    -------
+    dict of str to XLACustomKernel
+        A dictionary mapping primitive names to ``XLACustomKernel`` instances.
     """
     return dict(_PRIMITIVE_REGISTRY)
 
@@ -59,12 +64,16 @@ def get_registry() -> Dict[str, 'XLACustomKernel']:
 def get_primitives_by_tags(tags: Set[str]) -> Dict[str, 'XLACustomKernel']:
     """Return primitives that have all the specified tags.
 
-    Args:
-        tags: A set of tag strings to filter by. A primitive must have
-            all specified tags to be included.
+    Parameters
+    ----------
+    tags : set of str
+        A set of tag strings to filter by.  A primitive must have all
+        specified tags to be included.
 
-    Returns:
-        A dictionary mapping primitive names to matching XLACustomKernel instances.
+    Returns
+    -------
+    dict of str to XLACustomKernel
+        A dictionary mapping primitive names to matching instances.
     """
     result = {}
     for name, prim in _PRIMITIVE_REGISTRY.items():
@@ -76,7 +85,9 @@ def get_primitives_by_tags(tags: Set[str]) -> Dict[str, 'XLACustomKernel']:
 def get_all_primitive_names() -> List[str]:
     """Return a sorted list of all registered primitive names.
 
-    Returns:
+    Returns
+    -------
+    list of str
         A sorted list of primitive name strings.
     """
     return sorted(_PRIMITIVE_REGISTRY.keys())

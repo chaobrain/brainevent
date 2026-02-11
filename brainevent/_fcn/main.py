@@ -72,13 +72,104 @@ def _contains_invalid_indices(indices: Index, *, upper_bound: int) -> bool:
 
 class FixedNumConn(u.sparse.SparseMatrix):
     """
-    Base class for fixed number of connections.
+    Base class for sparse matrices with a fixed number of connections per neuron.
+
+    ``FixedNumConn`` provides the shared interface for
+    :class:`FixedPostNumConn` (fixed number of outgoing connections per
+    pre-synaptic neuron) and :class:`FixedPreNumConn` (fixed number of
+    incoming connections per post-synaptic neuron).  It defines element-wise
+    arithmetic operators, the ``apply`` / ``apply2`` transformation helpers,
+    and the JAX pytree flattening protocol.
+
+    Subclasses must implement ``_unitary_op``, ``_binary_op``, and
+    ``_binary_rop`` to specify how unary and binary operations create new
+    instances with the correct connectivity metadata.
+
+    Parameters
+    ----------
+    data : Data
+        Non-zero values of the sparse matrix.
+    indices : Index
+        Integer index array that describes the connectivity pattern.
+    shape : tuple[int, int]
+        Logical ``(num_pre, num_post)`` dense-matrix shape.
+
+    Returns
+    -------
+    FixedNumConn
+        The constructed sparse matrix instance.
+
+    Raises
+    ------
+    ValueError
+        If ``indices`` is not 2-D, if the row count does not match the expected
+        dimension, or if the index dtype is not integer.
+
+    See Also
+    --------
+    FixedPostNumConn : Concrete subclass for fixed post-synaptic connections.
+    FixedPreNumConn : Concrete subclass for fixed pre-synaptic connections.
+
+    Notes
+    -----
+    The fixed-number connectivity model stores the weight matrix ``W`` of shape
+    ``(num_pre, num_post)`` in a compressed format. Instead of storing all
+    ``num_pre * num_post`` entries, only ``n_conn`` connections per row (or column)
+    are stored, yielding two dense arrays:
+
+    - ``data`` of shape ``(N, n_conn)`` -- the non-zero weight values
+    - ``indices`` of shape ``(N, n_conn)`` -- the target neuron indices
+
+    where ``N`` is ``num_pre`` for ``FixedPostNumConn`` or ``num_post`` for
+    ``FixedPreNumConn``.
+
+    The equivalent dense matrix is:
+
+        ``W[i, indices[i, k]] = data[i, k]``    for ``k = 0, ..., n_conn - 1``
+
+    and all other entries are zero. When ``data`` has shape ``(1,)`` (homogeneous
+    weights), the single scalar is broadcast:
+
+        ``W[i, indices[i, k]] = data[0]``    for all ``i, k``
+
+    Matrix-vector products ``y = W @ v`` are computed via gather operations:
+
+        ``y[i] = sum_{k=0}^{n_conn-1} data[i, k] * v[indices[i, k]]``
+
+    This avoids materializing the full dense matrix and runs in
+    ``O(N * n_conn)`` time rather than ``O(num_pre * num_post)``.
+
+    Examples
+    --------
+
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent import FixedPostNumConn
+        >>>
+        >>> data = jnp.array([[1., 2.], [3., 4.]])
+        >>> indices = jnp.array([[0, 1], [1, 2]])
+        >>> mat = FixedPostNumConn((data, indices), shape=(2, 3))
+        >>> mat.shape
+        (2, 3)
     """
     data: Data
     indices: Index
     shape: MatrixShape
 
     def tree_flatten(self):
+        """
+        Flatten the instance into JAX-compatible pytree components.
+
+        Returns
+        -------
+        children : tuple
+            A single-element tuple ``(self.data,)`` containing the traced
+            leaf arrays.
+        aux_data : dict
+            A dictionary with static / non-traced metadata (``indices``
+            and ``shape``) needed for reconstruction.
+        """
         aux = {
             'indices': self.indices,
             'shape': self.shape,
@@ -87,6 +178,21 @@ class FixedNumConn(u.sparse.SparseMatrix):
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
+        """
+        Reconstruct an instance from pytree components.
+
+        Parameters
+        ----------
+        aux_data : dict
+            Static metadata previously returned by :meth:`tree_flatten`.
+        children : tuple
+            Traced leaf arrays previously returned by :meth:`tree_flatten`.
+
+        Returns
+        -------
+        FixedNumConn
+            A newly created instance with the restored data and metadata.
+        """
         obj = object.__new__(cls)
         obj.data, = children
         for k, v in aux_data.items():
@@ -113,12 +219,15 @@ class FixedNumConn(u.sparse.SparseMatrix):
         return self._unitary_op(fn)
 
     def __abs__(self):
+        """Return element-wise absolute value, preserving connectivity."""
         return self.apply(operator.abs)
 
     def __neg__(self):
+        """Return element-wise negation, preserving connectivity."""
         return self.apply(operator.neg)
 
     def __pos__(self):
+        """Return element-wise positive (identity), preserving connectivity."""
         return self.apply(operator.pos)
 
     def _binary_op(self, other, op):
@@ -150,36 +259,46 @@ class FixedNumConn(u.sparse.SparseMatrix):
         return self._binary_op(other, fn)
 
     def __mul__(self, other: Data):
+        """Element-wise multiplication: ``self * other``."""
         return self.apply2(other, operator.mul)
 
     def __truediv__(self, other):
+        """Element-wise true division: ``self / other``."""
         return self.apply2(other, operator.truediv)
 
     def __add__(self, other):
+        """Element-wise addition: ``self + other``."""
         return self.apply2(other, operator.add)
 
     def __sub__(self, other):
+        """Element-wise subtraction: ``self - other``."""
         return self.apply2(other, operator.sub)
 
     def __mod__(self, other):
+        """Element-wise modulo: ``self % other``."""
         return self.apply2(other, operator.mod)
 
     def _binary_rop(self, other, op):
         raise NotImplementedError
 
     def __rmul__(self, other: Data):
+        """Reflected element-wise multiplication: ``other * self``."""
         return self.apply2(other, operator.mul, reverse=True)
 
     def __rtruediv__(self, other):
+        """Reflected element-wise true division: ``other / self``."""
         return self.apply2(other, operator.truediv, reverse=True)
 
     def __radd__(self, other):
+        """Reflected element-wise addition: ``other + self``."""
         return self.apply2(other, operator.add, reverse=True)
 
     def __rsub__(self, other):
+        """Reflected element-wise subtraction: ``other - self``."""
         return self.apply2(other, operator.sub, reverse=True)
 
     def __rmod__(self, other):
+        """Reflected element-wise modulo: ``other % self``."""
         return self.apply2(other, operator.mod, reverse=True)
 
 
@@ -274,6 +393,32 @@ class FixedPostNumConn(FixedNumConn):
         >>> print("Transposed indices (reinterpreted):", mat_t.indices)
         Transposed indices (reinterpreted): [[0 1]
          [1 2]]
+
+    Notes
+    -----
+    The mathematical model for ``FixedPostNumConn`` is a sparse matrix
+    ``W`` of shape ``(num_pre, num_post)`` where each pre-synaptic neuron ``i``
+    connects to exactly ``n_conn`` post-synaptic neurons. The connections are
+    specified by the ``indices`` array:
+
+        ``W[i, indices[i, k]] = data[i, k]``    for ``k = 0, ..., n_conn - 1``
+
+    All other entries of ``W`` are zero. When homogeneous weights are used
+    (``data`` has shape ``(1,)``), all connections share the same weight:
+
+        ``W[i, indices[i, k]] = data[0]``    for all ``i, k``
+
+    The matrix-vector product ``y = W @ v`` is computed via a gather pattern:
+
+        ``y[i] = sum_{k=0}^{n_conn-1} data[i, k] * v[indices[i, k]]``
+
+    This runs in ``O(num_pre * n_conn)`` time. For the transposed product
+    ``y = W^T @ v``, a scatter-add pattern is used:
+
+        ``y[indices[i, k]] += data[i, k] * v[i]``    for all ``i, k``
+
+    Duplicate indices in a single row are allowed and their contributions
+    are accumulated (summed).
     """
     __module__ = 'brainevent'
 
@@ -287,6 +432,36 @@ class FixedPostNumConn(FixedNumConn):
     dtype = property(lambda self: self.data.dtype)
 
     def __init__(self, data, indices=None, *, shape: MatrixShape):
+        """
+        Initialize a FixedPostNumConn sparse matrix.
+
+        The constructor accepts either a tuple ``(data, indices)`` as the
+        first positional argument or ``data`` and ``indices`` as two
+        separate positional arguments.
+
+        Parameters
+        ----------
+        data : jax.Array or tuple
+            If ``indices`` is ``None``, this should be a tuple
+            ``(data_array, indices_array)``.  Otherwise it is the 2-D data
+            array of shape ``(num_pre, num_conn)``.
+        indices : jax.Array or None, optional
+            Integer array of post-synaptic indices with shape
+            ``(num_pre, num_conn)``.  Pass ``None`` when ``data`` is
+            already a ``(data, indices)`` tuple.
+        shape : tuple[int, int]
+            Logical ``(num_pre, num_post)`` shape of the equivalent dense
+            matrix.
+
+        Raises
+        ------
+        ValueError
+            If ``indices`` is not 2-D, if the number of rows does not
+            match ``shape[0]``, if the index dtype is not integer, if
+            ``data.shape`` does not match ``indices.shape`` (when data is
+            not scalar), or if any index value is out of the valid range
+            ``[0, num_post)``.
+        """
         if indices is None:
             args = data
         else:
@@ -494,6 +669,32 @@ class FixedPostNumConn(FixedNumConn):
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
     def __matmul__(self, other):
+        """
+        Matrix multiplication: ``self @ other``.
+
+        Dispatches to the appropriate sparse kernel depending on the type
+        and dimensionality of ``other``:
+
+        * :class:`BinaryArray` -- event-driven (binary) kernels.
+        * :class:`SparseFloat` -- sparse-float event-driven kernels.
+        * Dense ``jax.Array`` -- standard float sparse-dense kernels.
+
+        Parameters
+        ----------
+        other : BinaryArray, SparseFloat, jax.Array, or u.Quantity
+            The right-hand operand.  Must be 1-D (vector) or 2-D (matrix).
+
+        Returns
+        -------
+        jax.Array or u.Quantity
+            Result of the sparse matrix--dense vector/matrix product.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``other`` is another sparse matrix or has unsupported
+            dimensionality.
+        """
         # csr @ other
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
@@ -528,6 +729,29 @@ class FixedPostNumConn(FixedNumConn):
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
     def __rmatmul__(self, other):
+        """
+        Reflected matrix multiplication: ``other @ self``.
+
+        Dispatches to the appropriate sparse kernel depending on the type
+        and dimensionality of ``other``, using the transposed form of the
+        sparse matrix.
+
+        Parameters
+        ----------
+        other : BinaryArray, SparseFloat, jax.Array, or u.Quantity
+            The left-hand operand.  Must be 1-D (vector) or 2-D (matrix).
+
+        Returns
+        -------
+        jax.Array or u.Quantity
+            Result of the dense vector/matrix--sparse matrix product.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``other`` is another sparse matrix or has unsupported
+            dimensionality.
+        """
         # other @ csr
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
@@ -663,6 +887,28 @@ class FixedPreNumConn(FixedNumConn):
         Transposed indices (reinterpreted): [[0 1]
          [1 0]
          [0 2]]
+
+    Notes
+    -----
+    The mathematical model for ``FixedPreNumConn`` is a sparse matrix
+    ``W`` of shape ``(num_pre, num_post)`` where each post-synaptic neuron ``j``
+    receives from exactly ``n_conn`` pre-synaptic neurons. The connections are
+    specified by the ``indices`` array:
+
+        ``W[indices[j, k], j] = data[j, k]``    for ``k = 0, ..., n_conn - 1``
+
+    All other entries of ``W`` are zero. When homogeneous weights are used
+    (``data`` has shape ``(1,)``), all connections share the same weight:
+
+        ``W[indices[j, k], j] = data[0]``    for all ``j, k``
+
+    The matrix-vector product ``y = W @ v`` is computed via the transposed
+    fixed-post representation. For ``y = W^T @ v``, a gather pattern is used:
+
+        ``y[j] = sum_{k=0}^{n_conn-1} data[j, k] * v[indices[j, k]]``
+
+    This runs in ``O(num_post * n_conn)`` time. Duplicate indices in a single
+    row are allowed and their contributions are accumulated (summed).
     """
     __module__ = 'brainevent'
 
@@ -676,6 +922,36 @@ class FixedPreNumConn(FixedNumConn):
     dtype = property(lambda self: self.data.dtype)
 
     def __init__(self, data, indices=None, *, shape: MatrixShape):
+        """
+        Initialize a FixedPreNumConn sparse matrix.
+
+        The constructor accepts either a tuple ``(data, indices)`` as the
+        first positional argument or ``data`` and ``indices`` as two
+        separate positional arguments.
+
+        Parameters
+        ----------
+        data : jax.Array or tuple
+            If ``indices`` is ``None``, this should be a tuple
+            ``(data_array, indices_array)``.  Otherwise it is the 2-D data
+            array of shape ``(num_post, num_conn)``.
+        indices : jax.Array or None, optional
+            Integer array of pre-synaptic indices with shape
+            ``(num_post, num_conn)``.  Pass ``None`` when ``data`` is
+            already a ``(data, indices)`` tuple.
+        shape : tuple[int, int]
+            Logical ``(num_pre, num_post)`` shape of the equivalent dense
+            matrix.
+
+        Raises
+        ------
+        ValueError
+            If ``indices`` is not 2-D, if the number of rows does not
+            match ``shape[1]``, if the index dtype is not integer, if
+            ``data.shape`` does not match ``indices.shape`` (when data is
+            not scalar), or if any index value is out of the valid range
+            ``[0, num_pre)``.
+        """
         if indices is None:
             args = data
         else:
@@ -901,6 +1177,31 @@ class FixedPreNumConn(FixedNumConn):
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
     def __matmul__(self, other):
+        """
+        Matrix multiplication: ``self @ other``.
+
+        Dispatches to the appropriate sparse kernel depending on the type
+        and dimensionality of ``other``.  Internally this uses the
+        *transposed* fixed-post representation (``shape[::-1]``,
+        ``transpose=True``) because ``FixedPreNumConn`` stores indices
+        per post-synaptic neuron.
+
+        Parameters
+        ----------
+        other : BinaryArray, SparseFloat, jax.Array, or u.Quantity
+            The right-hand operand.  Must be 1-D (vector) or 2-D (matrix).
+
+        Returns
+        -------
+        jax.Array or u.Quantity
+            Result of the sparse matrix--dense vector/matrix product.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``other`` is another sparse matrix or has unsupported
+            dimensionality.
+        """
         # csr @ other
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")
@@ -935,6 +1236,29 @@ class FixedPreNumConn(FixedNumConn):
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
     def __rmatmul__(self, other):
+        """
+        Reflected matrix multiplication: ``other @ self``.
+
+        Dispatches to the appropriate sparse kernel depending on the type
+        and dimensionality of ``other``, using the non-transposed form
+        (``shape[::-1]``, ``transpose=False``).
+
+        Parameters
+        ----------
+        other : BinaryArray, SparseFloat, jax.Array, or u.Quantity
+            The left-hand operand.  Must be 1-D (vector) or 2-D (matrix).
+
+        Returns
+        -------
+        jax.Array or u.Quantity
+            Result of the dense vector/matrix--sparse matrix product.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``other`` is another sparse matrix or has unsupported
+            dimensionality.
+        """
         # other @ csr
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError("matmul between two sparse objects.")

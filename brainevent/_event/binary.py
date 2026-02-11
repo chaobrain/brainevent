@@ -28,13 +28,50 @@ __all__ = [
 
 @register_pytree_node_class
 class BinaryArray(EventRepresentation):
-    """
-    A binary array is a special case of an event array where the events are binary (0 or 1).
+    """Array wrapper for binary (0/1) event vectors and matrices.
+
+    ``BinaryArray`` represents a boolean or 0/1 array and provides
+    event-driven matrix multiplication via the ``@`` operator.  When a
+    ``BinaryArray`` is multiplied with a dense weight matrix, only the
+    rows/columns corresponding to non-zero (active) elements are
+    accumulated, which is mathematically equivalent to standard matrix
+    multiplication but can exploit sparsity for efficiency.
 
     Parameters
     ----------
     value : array_like
-        The input binary array data.
+        The input binary array data.  Typically a boolean JAX array, but
+        any array whose non-zero pattern encodes binary events is accepted.
+
+    Notes
+    -----
+    Given a binary spike vector ``s`` of shape ``(k,)`` and a weight matrix
+    ``W`` of shape ``(k, n)``, the forward multiplication ``s @ W`` computes:
+
+        y[j] = sum_{i : s[i] != 0} W[i, j]
+
+    This is equivalent to ``s.astype(float) @ W`` but the implementation
+    only iterates over the non-zero entries of ``s``.
+
+    The class is registered as a JAX PyTree node, so it is compatible with
+    ``jax.jit``, ``jax.grad``, ``jax.vmap``, and other transformations.
+
+    See Also
+    --------
+    SparseFloat : Similar wrapper for sparse floating-point event arrays.
+    binary_densemv : Underlying primitive for binary vector-matrix multiply.
+    binary_densemm : Underlying primitive for binary matrix-matrix multiply.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> import brainevent as be
+        >>> spikes = be.BinaryArray(jnp.array([True, False, True]))
+        >>> W = jnp.ones((3, 4))
+        >>> spikes @ W  # sums rows 0 and 2 of W
+        Array([2., 2., 2., 2.], dtype=float32)
     """
     __module__ = 'brainevent'
 
@@ -43,44 +80,80 @@ class BinaryArray(EventRepresentation):
 
     @property
     def T(self):
+        """Transpose of the underlying array.
+
+        Returns
+        -------
+        jax.Array
+            The transposed raw array (not wrapped in ``BinaryArray``).
+        """
         return self.value.T
 
     def transpose(self, *axes):
+        """Return the underlying array with axes permuted.
+
+        Parameters
+        ----------
+        *axes : int, optional
+            Axis permutation.  If omitted, reverses the axis order.
+
+        Returns
+        -------
+        jax.Array
+            The transposed raw array (not wrapped in ``BinaryArray``).
+        """
         return self.value.transpose(*axes)
 
     def __matmul__(self, oc):
-        """
-        Perform matrix multiplication on the array with another object.
-
-        This special method implements the matrix multiplication operator (@)
-        for BinaryArray instances. It handles matrix multiplication with different
-        array types and dimensions, performing appropriate validation checks.
+        """Compute ``self @ oc`` using event-driven binary multiplication.
 
         Parameters
         ----------
         oc : array_like
-            The right operand of the matrix multiplication. This object will be
-            multiplied with the current BinaryArray instance.
+            Right operand, must be a 2-D dense weight matrix of shape
+            ``(k, n)`` where ``k == self.shape[-1]``.
 
         Returns
         -------
-        ndarray or BinaryArray
-            The result of the matrix multiplication between this BinaryArray instance
-            and the other object.
+        jax.Array
+            For a 1-D ``self`` of shape ``(k,)``: a vector of shape ``(n,)``.
+            For a 2-D ``self`` of shape ``(m, k)``: a matrix of shape ``(m, n)``.
 
         Raises
         ------
         MathError
-            If the dimensions of the operands are incompatible for matrix multiplication
-            or if the array dimensions are not suitable (only 1D and 2D arrays are supported).
+            If ``self`` has more than 2 dimensions or is a scalar.
+        AssertionError
+            If ``oc`` is not 2-D or if inner dimensions do not match.
 
         Notes
         -----
-        - For 1D array @ 2D array: This performs vector-matrix multiplication
-        - For 2D array @ 2D array: This performs standard matrix multiplication
-        - The method checks dimensions for compatibility before performing the operation
-        - If the right operand is not a recognized array type, it delegates to the
-          operand's __rmatmul__ method
+        For 1-D ``self``, the computation is:
+
+            y[j] = sum_{i : self[i] != 0} oc[i, j]
+
+        For 2-D ``self`` of shape ``(m, k)``, the computation is:
+
+            Y[r, j] = sum_{i : self[r, i] != 0} oc[i, j]
+
+        The 2-D case is implemented as
+        ``binary_densemm(oc, self.T, transpose=True).T``.
+
+        See Also
+        --------
+        binary_densemv : Underlying vector-matrix multiply primitive.
+        binary_densemm : Underlying matrix-matrix multiply primitive.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import jax.numpy as jnp
+            >>> import brainevent as be
+            >>> s = be.BinaryArray(jnp.array([True, False, True]))
+            >>> W = jnp.array([[1., 2.], [3., 4.], [5., 6.]])
+            >>> s @ W
+            Array([6., 8.], dtype=float32)
         """
         if is_known_type(oc):
             oc = extract_raw_value(oc)
@@ -110,36 +183,51 @@ class BinaryArray(EventRepresentation):
             return oc.__rmatmul__(self)
 
     def __rmatmul__(self, oc):
-        """
-        Perform matrix multiplication on another object with the array.
-
-        This special method implements the reverse matrix multiplication operator (@)
-        when the left operand is not an BinaryArray. It handles the case where
-        another object is matrix-multiplied with this BinaryArray instance.
+        """Compute ``oc @ self`` using event-driven binary multiplication.
 
         Parameters
         ----------
         oc : array_like
-            The left operand of the matrix multiplication. This object will be
-            multiplied with the current BinaryArray instance.
+            Left operand, must be a 2-D dense weight matrix of shape
+            ``(m, k)`` where ``k == self.shape[0]``.
 
         Returns
         -------
-        ndarray or BinaryArray
-            The result of the matrix multiplication between the other object and this
-            BinaryArray instance.
+        jax.Array
+            For a 1-D ``self`` of shape ``(k,)``: a vector of shape ``(m,)``.
+            For a 2-D ``self`` of shape ``(k, n)``: a matrix of shape ``(m, n)``.
 
         Raises
         ------
         MathError
-            If the dimensions of the operands are incompatible for matrix multiplication
-            or if the array dimensions are not suitable (only 1D and 2D arrays are supported).
+            If ``self`` has more than 2 dimensions or is a scalar.
+        AssertionError
+            If ``oc`` is not 2-D or if inner dimensions do not match.
 
         Notes
         -----
-        - For 2D arrays, this performs standard matrix multiplication
-        - For a 1D array multiplied by a 2D array, it performs a vector-matrix multiplication
-        - The method checks dimensions for compatibility before performing the operation
+        For 1-D ``self`` of shape ``(k,)``, the computation is:
+
+            y[i] = sum_{j : self[j] != 0} oc[i, j]
+
+        This is equivalent to ``oc @ self.astype(float)`` but only accumulates
+        columns of ``oc`` where ``self`` is active.
+
+        See Also
+        --------
+        binary_densemv : Underlying vector-matrix multiply primitive.
+        binary_densemm : Underlying matrix-matrix multiply primitive.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import jax.numpy as jnp
+            >>> import brainevent as be
+            >>> W = jnp.array([[1., 2., 3.], [4., 5., 6.]])
+            >>> s = be.BinaryArray(jnp.array([True, False, True]))
+            >>> W @ s
+            Array([ 4., 10.], dtype=float32)
         """
         if is_known_type(oc):
             oc = extract_raw_value(oc)
@@ -165,11 +253,35 @@ class BinaryArray(EventRepresentation):
             return oc.__matmul__(self)
 
     def tree_flatten(self):
+        """Flatten this instance for JAX PyTree serialisation.
+
+        Returns
+        -------
+        children : tuple
+            A single-element tuple ``(value,)`` containing the dynamic
+            array leaf.
+        aux_data : dict
+            Empty dictionary (no static metadata).
+        """
         aux = dict()
         return (self._value,), aux
 
     @classmethod
     def tree_unflatten(cls, aux_data, flat_contents):
+        """Reconstruct a ``BinaryArray`` from its PyTree representation.
+
+        Parameters
+        ----------
+        aux_data : dict
+            Static metadata produced by ``tree_flatten``.
+        flat_contents : tuple
+            Dynamic leaves — the underlying array.
+
+        Returns
+        -------
+        BinaryArray
+            A new instance wrapping the given array.
+        """
         value, = flat_contents
         obj = object.__new__(cls)
         obj._value = value

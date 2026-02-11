@@ -49,6 +49,92 @@ def spfloat_fcnmv(
     transpose: bool = False,
     backend: Optional[str] = None,
 ) -> Union[jax.Array, u.Quantity]:
+    """
+    Sparse-float event-driven matrix--vector product with fixed connection number.
+
+    Computes ``y = W @ s`` (or ``y = W^T @ s`` when ``transpose=True``)
+    where ``W`` is a sparse weight matrix stored in fixed-connection-number
+    format and ``s`` is a sparse-float vector.  Non-zero entries of ``s``
+    contribute their actual floating-point value (not just ``1``) to the
+    accumulation, combining the sparsity benefit of event-driven processing
+    with floating-point precision.
+
+    Parameters
+    ----------
+    weights : jax.Array or u.Quantity
+        Non-zero weight values.  Shape is ``(1,)`` for homogeneous weights
+        or ``(num_pre, num_conn)`` for heterogeneous weights.  Must have a
+        floating-point dtype.
+    indices : jax.Array
+        Integer index array of shape ``(num_pre, num_conn)`` specifying
+        the post-synaptic (column) indices of each connection.
+    spikes : jax.Array or u.Quantity
+        Sparse-float vector.  Entries equal to zero are skipped; non-zero
+        entries are multiplied by the corresponding weight.
+    shape : tuple[int, int]
+        Logical ``(num_pre, num_post)`` shape of the equivalent dense
+        weight matrix.
+    transpose : bool, optional
+        If ``False`` (default), compute ``W @ s`` (fixed post-synaptic
+        connections, gather mode).  If ``True``, compute ``W^T @ s``
+        (fixed pre-synaptic connections, scatter mode).
+    backend : str or None, optional
+        Execution backend override (``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` for automatic selection).
+
+    Returns
+    -------
+    jax.Array or u.Quantity
+        Result vector.  Shape is ``(num_pre,)`` when ``transpose=False``
+        or ``(num_post,)`` when ``transpose=True``.
+
+    See Also
+    --------
+    spfloat_fcnmm : Sparse-float event-driven matrix--matrix product.
+    binary_fcnmv : Binary event-driven variant (ignores spike values).
+    fcnmv : Dense float variant (no event-driven skipping).
+    spfloat_fcnmv_p_call : Lower-level primitive call without unit handling.
+
+    Notes
+    -----
+    The sparse weight matrix ``W`` of shape ``(num_pre, num_post)`` is stored in
+    fixed-connection-number format where each row ``i`` has exactly ``n_conn``
+    non-zero entries at column positions ``indices[i, :]``.
+
+    Unlike the binary variant (:func:`binary_fcnmv`) which treats non-zero
+    entries as ``1``, this sparse-float variant preserves the actual
+    floating-point values of the spike vector.  When ``transpose=False``
+    (gather mode):
+
+        ``y[i] = sum_{k=0}^{n_conn-1} weights[i, k] * s[indices[i, k]]``
+
+    where only terms with ``s[indices[i, k]] != 0`` are accumulated.  For
+    homogeneous weights (``weights`` has shape ``(1,)``):
+
+        ``y[i] = w * sum_{k=0}^{n_conn-1} s[indices[i, k]]``
+
+    When ``transpose=True`` (scatter mode):
+
+        ``y[indices[i, k]] += weights[i, k] * s[i]``    for all ``i, k`` where ``s[i] != 0``
+
+    This formulation is mathematically equivalent to :func:`fcnmv` but skips
+    zero entries of ``s``, providing a speedup when the spike vector is sparse.
+
+    Examples
+    --------
+
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._fcn.sparse_float import spfloat_fcnmv
+        >>>
+        >>> weights = jnp.ones(1, dtype=jnp.float32)  # homogeneous
+        >>> indices = jnp.array([[0, 1], [1, 2]])      # (2, 2)
+        >>> spikes = jnp.array([0.0, 2.0, 3.0])
+        >>> y = spfloat_fcnmv(weights, indices, spikes, shape=(2, 3))
+        >>> print(y)
+        [2. 5.]
+    """
     out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, spikes, shape, transpose)
     weights, w_unit = u.split_mantissa_unit(weights)
     spikes, v_unit = u.split_mantissa_unit(spikes)
@@ -328,7 +414,7 @@ def _spfloat_fcnmv_transpose_rule(ct, weights, indices, spikes, *, shape, transp
 
     ct = ct[0]
 
-    # ∂L/∂spk = ∂L/∂y * ∂y/∂spk
+    # dL/dspk = dL/dy * dy/dspk
     homo = weight_info.size == 1
     if ad.is_undefined_primal(spikes):
         if type(ct) is ad.Zero:
@@ -340,7 +426,7 @@ def _spfloat_fcnmv_transpose_rule(ct, weights, indices, spikes, *, shape, transp
         return weights, indices, ct_spk
 
     else:
-        # ∂L/∂w = ∂L/∂y * ∂y/∂w
+        # dL/dw = dL/dy * dy/dw
         if type(ct) is ad.Zero:
             ct_gmax = ad.Zero(weights)
         elif homo:
@@ -425,6 +511,43 @@ def spfloat_fcnmv_p_call(
     transpose: bool = False,
     backend: Optional[str] = None,
 ) -> Tuple[jax.Array]:
+    """
+    Low-level primitive call for sparse-float event-driven matrix--vector
+    product with fixed connection number.
+
+    This function validates shapes and dispatches to the registered XLA
+    custom kernel (Numba, Warp, or Pallas) without performing any
+    physical-unit bookkeeping.  It is typically called from
+    :func:`spfloat_fcnmv` or from autodiff rules.
+
+    Parameters
+    ----------
+    weights : jax.Array
+        Non-zero weight values.  Shape ``(1,)`` for homogeneous weights or
+        ``(num_pre, num_conn)`` for heterogeneous weights.  Must be a
+        floating-point dtype.
+    indices : jax.Array
+        Integer index array of shape ``(num_pre, num_conn)``.
+    spikes : jax.Array
+        Sparse-float vector; zero entries are treated as inactive.
+    shape : tuple[int, int]
+        Logical ``(num_pre, num_post)`` dense-matrix shape.
+    transpose : bool, optional
+        ``False`` for gather mode (fixed post-connections), ``True`` for
+        scatter mode (fixed pre-connections).  Default is ``False``.
+    backend : str or None, optional
+        Backend override (``'numba'``, ``'warp'``, ``'pallas'``, or
+        ``None``).
+
+    Returns
+    -------
+    tuple[jax.Array]
+        Single-element tuple containing the result vector.
+
+    See Also
+    --------
+    spfloat_fcnmv : High-level wrapper with unit support.
+    """
     out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, spikes, shape, transpose)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
     return spfloat_fcnmv_p(
@@ -464,30 +587,90 @@ def spfloat_fcnmm(
     backend: Optional[str] = None,
 ) -> Union[jax.Array, u.Quantity]:
     """
-    Perform a sparse matrix-matrix multiplication with fixed connection number.
+    Sparse-float event-driven matrix--matrix product with fixed connection number.
 
-    This function multiplies a sparse weight matrix against a dense matrix, where the
-    sparse matrix is represented in a format with a fixed number of connections per row.
-    Depending on the transpose flag, it handles either fixed pre-connections (transpose=True)
-    or fixed post-connections (transpose=False).
+    Computes ``Y = W @ M`` (or ``Y = W^T @ M`` when ``transpose=True``)
+    where ``W`` is a sparse weight matrix stored in fixed-connection-number
+    format and ``M`` is a dense matrix whose entries may be sparse-float
+    values.  Non-zero entries of ``M`` contribute their actual
+    floating-point value to the accumulation.
 
-    Args:
-        weights: The weight values for the sparse connections. Can be either a JAX array
-                 or a Quantity object. For homogeneous weights, this can be a scalar.
-        indices: The indices array specifying the sparse matrix pattern. For transpose=True,
-                 shape should be [n_pre, n_conn], otherwise [n_post, n_conn].
-        matrix: The dense matrix to multiply with. Can be either a JAX array or a Quantity object.
-        shape: A tuple of (n_pre, n_post) specifying the dimensions of the sparse weight matrix.
-        transpose: If True, performs computation for fixed pre connections.
-                  If False, performs computation for fixed post connections.
+    Parameters
+    ----------
+    weights : jax.Array or u.Quantity
+        Non-zero weight values.  Shape is ``(1,)`` for homogeneous weights
+        or ``(num_pre, num_conn)`` for heterogeneous weights.  Must have a
+        floating-point dtype.
+    indices : jax.Array
+        Integer index array of shape ``(num_pre, num_conn)`` specifying
+        the post-synaptic (column) indices of each connection.
+    matrix : jax.Array or u.Quantity
+        Dense matrix to multiply with, of shape ``(k, n)`` where ``k``
+        matches the appropriate sparse-matrix dimension.
+    shape : tuple[int, int]
+        Logical ``(num_pre, num_post)`` shape of the equivalent dense
+        weight matrix.
+    transpose : bool
+        If ``False``, compute ``W @ M`` (fixed post-synaptic connections,
+        gather mode).  If ``True``, compute ``W^T @ M`` (fixed
+        pre-synaptic connections, scatter mode).
+    backend : str or None, optional
+        Execution backend override.
 
-    Returns:
-        A tuple containing a single element: the resulting matrix after multiplication,
-        which will have the same type (JAX array or Quantity) as the inputs.
+    Returns
+    -------
+    jax.Array or u.Quantity
+        Result matrix of shape ``(num_pre, n)`` when ``transpose=False``
+        or ``(num_post, n)`` when ``transpose=True``.
 
-    Note:
-        The transpose=True implementation uses an optimized kernel, while transpose=False
-        uses a JAX-based implementation.
+    See Also
+    --------
+    spfloat_fcnmv : Sparse-float event-driven matrix--vector product.
+    binary_fcnmm : Binary event-driven variant.
+    fcnmm : Dense float variant.
+    spfloat_fcnmm_p_call : Lower-level primitive call without unit handling.
+
+    Notes
+    -----
+    The sparse weight matrix ``W`` of shape ``(num_pre, num_post)`` is stored in
+    fixed-connection-number format where each row ``i`` has exactly ``n_conn``
+    non-zero entries at column positions ``indices[i, :]``.
+
+    Unlike the binary variant (:func:`binary_fcnmm`) which treats non-zero
+    matrix entries as ``1``, this sparse-float variant preserves the actual
+    floating-point values.  When ``transpose=False`` (gather mode):
+
+        ``Y[i, j] = sum_{k=0}^{n_conn-1} weights[i, k] * M[indices[i, k], j]``
+
+    where only terms with ``M[indices[i, k], j] != 0`` are accumulated.  For
+    homogeneous weights (``weights`` has shape ``(1,)``):
+
+        ``Y[i, j] = w * sum_{k=0}^{n_conn-1} M[indices[i, k], j]``
+
+    When ``transpose=True`` (scatter mode):
+
+        ``Y[indices[i, k], j] += weights[i, k] * M[i, j]``    for all ``i, k, j`` where ``M[i, j] != 0``
+
+    This formulation is mathematically equivalent to :func:`fcnmm` but skips
+    zero entries of ``M``, providing a speedup when the matrix is sparse.
+
+    Examples
+    --------
+
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._fcn.sparse_float import spfloat_fcnmm
+        >>>
+        >>> weights = jnp.ones(1, dtype=jnp.float32)
+        >>> indices = jnp.array([[0, 1], [1, 2]])
+        >>> matrix = jnp.array([[0.0, 1.0],
+        ...                     [2.0, 0.0],
+        ...                     [3.0, 4.0]])
+        >>> y = spfloat_fcnmm(weights, indices, matrix, shape=(2, 3), transpose=False)
+        >>> print(y)
+        [[2. 1.]
+         [5. 4.]]
     """
     out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, matrix, shape, transpose)
     weights, w_unit = u.split_mantissa_unit(weights)
@@ -770,7 +953,7 @@ def _spfloat_fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transp
 
     ct = ct[0]
 
-    # ∂L/∂spk = ∂L/∂y * ∂y/∂spk
+    # dL/dspk = dL/dy * dy/dspk
     homo = weight_info.size == 1
     if ad.is_undefined_primal(matrix):
         if type(ct) is ad.Zero:
@@ -788,7 +971,7 @@ def _spfloat_fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transp
 
         return weights, indices, ct_vector
     else:
-        # ∂L/∂w = ∂L/∂y * ∂y/∂w
+        # dL/dw = dL/dy * dy/dw
         if type(ct) is ad.Zero:
             ct_weight = ad.Zero(weights)
 
@@ -882,30 +1065,47 @@ def spfloat_fcnmm_p_call(
     backend: Optional[str] = None,
 ) -> Tuple[jax.Array]:
     """
-    Perform a sparse matrix-matrix multiplication with fixed connection number.
+    Low-level primitive call for sparse-float event-driven matrix--matrix
+    product with fixed connection number.
 
-    This function multiplies a sparse weight matrix against a dense matrix, where the
-    sparse matrix is represented in a format with a fixed number of connections per row.
-    Depending on the transpose flag, it handles either fixed pre-connections (transpose=True)
-    or fixed post-connections (transpose=False).
+    This function validates shapes and dispatches to the registered XLA
+    custom kernel (Numba, Warp, or Pallas) without performing any
+    physical-unit bookkeeping.  It is typically called from
+    :func:`spfloat_fcnmm` or from autodiff rules.
 
-    Args:
-        weights: The weight values for the sparse connections. Can be either a JAX array
-                 or a Quantity object. For homogeneous weights, this can be a scalar.
-        indices: The indices array specifying the sparse matrix pattern. For transpose=True,
-                 shape should be [n_pre, n_conn], otherwise [n_post, n_conn].
-        matrix: The dense matrix to multiply with. Can be either a JAX array or a Quantity object.
-        shape: A tuple of (n_pre, n_post) specifying the dimensions of the sparse weight matrix.
-        transpose: If True, performs computation for fixed pre connections.
-                  If False, performs computation for fixed post connections.
+    Parameters
+    ----------
+    weights : jax.Array or u.Quantity
+        Non-zero weight values.  Shape ``(1,)`` for homogeneous weights or
+        ``(num_pre, num_conn)`` for heterogeneous weights.  Must be a
+        floating-point dtype.
+    indices : jax.Array
+        Integer index array of shape ``(num_pre, num_conn)``.
+    matrix : jax.Array or u.Quantity
+        Dense matrix to multiply with, of shape ``(k, n)``.
+    shape : tuple[int, int]
+        Logical ``(num_pre, num_post)`` dense-matrix shape.
+    transpose : bool
+        ``False`` for gather mode (fixed post-connections), ``True`` for
+        scatter mode (fixed pre-connections).
+    backend : str or None, optional
+        Backend override (``'numba'``, ``'warp'``, ``'pallas'``, or
+        ``None``).
 
-    Returns:
-        A tuple containing a single element: the resulting matrix after multiplication,
-        which will have the same type (JAX array or Quantity) as the inputs.
+    Returns
+    -------
+    tuple[jax.Array]
+        Single-element tuple containing the result matrix.
 
-    Note:
-        The transpose=True implementation uses an optimized kernel, while transpose=False
-        uses a JAX-based implementation.
+    Notes
+    -----
+    The ``transpose=True`` path uses scatter-based accumulation via
+    ``atomic_add`` on GPU backends, while ``transpose=False`` uses a
+    gather-based reduction.
+
+    See Also
+    --------
+    spfloat_fcnmm : High-level wrapper with unit support.
     """
     out, weights, n_pre, n_post = check_fixed_conn_num_shape(weights, indices, matrix, shape, transpose)
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'

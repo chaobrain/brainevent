@@ -45,14 +45,14 @@ __all__ = [
 
 
 @namescope(static_argnames=['transpose'])
-def binary_densemv(weights, spikes, *, transpose, backend=None):
+def binary_densemv(weights, spikes, *, transpose, backend: Optional[str] = None):
     """
-    Performs event-driven dense matrix-vector multiplication.
+    Perform event-driven dense matrix-vector multiplication with binary spikes.
 
-    When ``transpose=False``, computes ``weights[m,k] @ spikes[k] -> out[m]``
+    When ``transpose=False``, computes ``weights[m, k] @ spikes[k] -> out[m]``
     (dense matrix times binary vector).
 
-    When ``transpose=True``, computes ``spikes[k] @ weights[k,n] -> out[n]``
+    When ``transpose=True``, computes ``spikes[k] @ weights[k, n] -> out[n]``
     (binary vector times dense matrix).
 
     Parameters
@@ -64,15 +64,61 @@ def binary_densemv(weights, spikes, *, transpose, backend=None):
         The binary vector with shape ``(k,)``. Can be boolean or float.
         Can be a ``brainunit`` quantity.
     transpose : bool
-        If False, compute ``weights @ spikes``. If True, compute ``spikes @ weights``.
+        If False, compute ``weights @ spikes``. If True, compute
+        ``spikes @ weights``.
     backend : str, optional
-        Backend to use for the computation.
+        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` (auto-select).
 
     Returns
     -------
-    array_like
+    result : array_like
         Result vector. Shape ``(m,)`` when ``transpose=False``,
-        or ``(n,)`` when ``transpose=True``.
+        or ``(n,)`` when ``transpose=True``. If inputs carry units, the
+        result carries the product of the weight and spike units.
+
+    Raises
+    ------
+    AssertionError
+        If the inner dimensions of ``weights`` and ``spikes`` do not match.
+
+    See Also
+    --------
+    binary_densemm : Matrix-matrix variant of binary dense multiplication.
+    binary_densemv_p_call : Low-level primitive call without unit handling.
+
+    Notes
+    -----
+    The computation is event-driven: only the columns (or rows) of
+    ``weights`` corresponding to active (nonzero or True) entries of
+    ``spikes`` are accumulated. This is mathematically equivalent to a
+    standard matrix-vector product but can be faster when spikes are sparse.
+
+    When ``transpose=False``, the operation computes:
+
+    ``out[i] = sum_{j} W[i, j] * s[j]``
+
+    where ``s[j]`` is ``1`` if ``spikes[j]`` is active and ``0`` otherwise.
+
+    When ``transpose=True``, the operation computes:
+
+    ``out[j] = sum_{i} W[i, j] * s[i]``
+
+    where ``s[i]`` is ``1`` if ``spikes[i]`` is active and ``0`` otherwise.
+
+    For boolean spikes, an entry is considered active when it is ``True``.
+    For float spikes, an entry is considered active when it is ``> 0``.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.binary import binary_densemv
+        >>> weights = jnp.ones((3, 4), dtype=jnp.float32)
+        >>> spikes = jnp.array([True, False, True, False])
+        >>> binary_densemv(weights, spikes, transpose=False)
+        Array([2., 2., 2.], dtype=float32)
     """
     with jax.ensure_compile_time_eval():
         weights = u.math.asarray(weights)
@@ -362,7 +408,70 @@ def _binary_densemv_benchmark_data(*, platform):
     return configs
 
 
-def binary_densemv_p_call(weights, spikes, *, transpose, backend=None):
+def binary_densemv_p_call(weights, spikes, *, transpose, backend: Optional[str] = None):
+    """
+    Low-level primitive call for binary dense matrix-vector multiplication.
+
+    This function validates input shapes, constructs the output shape
+    descriptor, and invokes the ``binary_densemv_p`` JAX primitive. Unlike
+    :func:`binary_densemv`, this function operates on raw numerical arrays
+    without ``brainunit`` unit handling.
+
+    Parameters
+    ----------
+    weights : jax.Array
+        The weight matrix. Shape ``(m, k)`` when ``transpose=False``,
+        or ``(k, n)`` when ``transpose=True``.
+    spikes : jax.Array
+        The binary vector with shape ``(k,)``. Can be boolean or float.
+    transpose : bool
+        If False, compute ``weights @ spikes`` producing shape ``(m,)``.
+        If True, compute ``spikes @ weights`` producing shape ``(n,)``.
+    backend : str, optional
+        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` (auto-select).
+
+    Returns
+    -------
+    result : list of jax.Array
+        A single-element list containing the result vector. Shape ``(m,)``
+        when ``transpose=False``, or ``(n,)`` when ``transpose=True``.
+
+    Raises
+    ------
+    AssertionError
+        If the inner dimensions of ``weights`` and ``spikes`` do not match.
+
+    See Also
+    --------
+    binary_densemv : High-level function with unit handling.
+
+    Notes
+    -----
+    This is the low-level entry point that bypasses unit handling. The
+    mathematical operation is identical to :func:`binary_densemv`:
+
+    When ``transpose=False``:
+
+    ``out[i] = sum_{j where s[j] active} weights[i, j]``
+
+    When ``transpose=True``:
+
+    ``out[j] = sum_{i where s[i] active} weights[i, j]``
+
+    The function returns a single-element list to conform to the JAX
+    primitive output convention.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.binary import binary_densemv_p_call
+        >>> weights = jnp.ones((3, 4), dtype=jnp.float32)
+        >>> spikes = jnp.array([1., 0., 1., 0.], dtype=jnp.float32)
+        >>> binary_densemv_p_call(weights, spikes, transpose=False)
+    """
     if transpose:
         assert spikes.shape[0] == weights.shape[0], (
             f"shapes {spikes.shape} and {weights.shape} not aligned: "
@@ -408,14 +517,14 @@ binary_densemv_p.def_benchmark_data(_binary_densemv_benchmark_data)
 
 
 @namescope(static_argnames=['transpose'])
-def binary_densemm(weights, spikes, *, transpose, backend=None):
+def binary_densemm(weights, spikes, *, transpose, backend: Optional[str] = None):
     """
-    Performs event-driven dense matrix-matrix multiplication.
+    Perform event-driven dense matrix-matrix multiplication with binary spikes.
 
-    When ``transpose=False``, computes ``weights[m,k] @ spikes[k,n] -> out[m,n]``
+    When ``transpose=False``, computes ``weights[m, k] @ spikes[k, n] -> out[m, n]``
     (dense matrix times binary matrix).
 
-    When ``transpose=True``, computes ``weights[k,m].T @ spikes[k,n] -> out[m,n]``
+    When ``transpose=True``, computes ``weights[k, m].T @ spikes[k, n] -> out[m, n]``
     (transposed dense matrix times binary matrix). Both weights and spikes share
     their first dimension ``k``.
 
@@ -425,17 +534,65 @@ def binary_densemm(weights, spikes, *, transpose, backend=None):
         The weight matrix. Shape ``(m, k)`` when ``transpose=False``,
         or ``(k, m)`` when ``transpose=True``. Can be a ``brainunit`` quantity.
     spikes : array_like
-        The binary matrix. Shape ``(k, n)`` in both modes. Can be boolean or float.
-        Can be a ``brainunit`` quantity.
+        The binary matrix. Shape ``(k, n)`` in both modes. Can be boolean or
+        float. Can be a ``brainunit`` quantity.
     transpose : bool
-        If False, compute ``weights @ spikes``. If True, compute ``weights.T @ spikes``.
+        If False, compute ``weights @ spikes``. If True, compute
+        ``weights.T @ spikes``.
     backend : str, optional
-        Backend to use for the computation.
+        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` (auto-select).
 
     Returns
     -------
-    array_like
-        Result matrix with shape ``(m, n)``.
+    result : array_like
+        Result matrix with shape ``(m, n)``. If inputs carry units, the
+        result carries the product of the weight and spike units.
+
+    Raises
+    ------
+    AssertionError
+        If the shared dimensions of ``weights`` and ``spikes`` do not match.
+
+    See Also
+    --------
+    binary_densemv : Matrix-vector variant of binary dense multiplication.
+    binary_densemm_p_call : Low-level primitive call without unit handling.
+
+    Notes
+    -----
+    When ``transpose=False``, the operation computes:
+
+    ``out[i, j] = sum_{k} W[i, k] * s[k, j]``
+
+    where ``s[k, j]`` is ``1`` if ``spikes[k, j]`` is active and ``0``
+    otherwise.
+
+    When ``transpose=True``, the operation computes:
+
+    ``out[i, j] = sum_{k} W[k, i] * s[k, j]``
+
+    where ``s[k, j]`` is ``1`` if ``spikes[k, j]`` is active and ``0``
+    otherwise.
+
+    Boolean spikes are converted to ``weights.dtype`` before the primitive
+    call to avoid Pallas Triton boolean buffer corruption.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.binary import binary_densemm
+        >>> weights = jnp.ones((3, 4), dtype=jnp.float32)
+        >>> spikes = jnp.array([[True, False],
+        ...                     [False, True],
+        ...                     [True, True],
+        ...                     [False, False]])
+        >>> binary_densemm(weights, spikes, transpose=False)
+        Array([[2., 2.],
+               [2., 2.],
+               [2., 2.]], dtype=float32)
     """
     with jax.ensure_compile_time_eval():
         weights = u.math.asarray(weights)
@@ -864,6 +1021,74 @@ def _binary_densemm_benchmark_data(*, platform):
 
 
 def binary_densemm_p_call(weights, spikes, *, transpose, backend: Optional[str] = None):
+    """
+    Low-level primitive call for binary dense matrix-matrix multiplication.
+
+    This function validates input shapes, converts boolean spikes to float
+    to avoid Pallas Triton boolean buffer corruption, constructs the output
+    shape descriptor, and invokes the ``binary_densemm_p`` JAX primitive.
+    Unlike :func:`binary_densemm`, this function operates on raw numerical
+    arrays without ``brainunit`` unit handling.
+
+    Parameters
+    ----------
+    weights : jax.Array
+        The weight matrix. Shape ``(m, k)`` when ``transpose=False``,
+        or ``(k, m)`` when ``transpose=True``.
+    spikes : jax.Array
+        The binary matrix with shape ``(k, n)``. Can be boolean or float.
+        Boolean inputs are automatically cast to ``weights.dtype``.
+    transpose : bool
+        If False, compute ``weights @ spikes`` producing shape ``(m, n)``.
+        If True, compute ``weights.T @ spikes`` producing shape ``(m, n)``.
+    backend : str, optional
+        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` (auto-select).
+
+    Returns
+    -------
+    result : list of jax.Array
+        A single-element list containing the result matrix with shape
+        ``(m, n)``.
+
+    Raises
+    ------
+    AssertionError
+        If the shared dimensions of ``weights`` and ``spikes`` do not match.
+
+    See Also
+    --------
+    binary_densemm : High-level function with unit handling.
+
+    Notes
+    -----
+    This is the low-level entry point that bypasses unit handling. The
+    mathematical operation is identical to :func:`binary_densemm`:
+
+    When ``transpose=False``:
+
+    ``out[i, j] = sum_{k where s[k, j] active} weights[i, k]``
+
+    When ``transpose=True``:
+
+    ``out[i, j] = sum_{k where s[k, j] active} weights[k, i]``
+
+    Boolean spikes are automatically cast to ``weights.dtype`` before
+    invoking the primitive to prevent Pallas Triton boolean buffer
+    corruption. The function returns a single-element list to conform to
+    the JAX primitive output convention.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.binary import binary_densemm_p_call
+        >>> weights = jnp.ones((3, 4), dtype=jnp.float32)
+        >>> spikes = jnp.array([[1., 0.], [0., 1.],
+        ...                     [1., 1.], [0., 0.]], dtype=jnp.float32)
+        >>> binary_densemm_p_call(weights, spikes, transpose=False)
+    """
     # Convert bool spikes to float before primitive call to avoid
     # Pallas Triton boolean buffer corruption
     if spikes.dtype == jnp.bool_:

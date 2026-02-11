@@ -24,35 +24,43 @@ __all__ = [
 
 
 def csr_solve(data, indices, indptr, b, tol=1e-6, reorder=1):
-    """
-    A sparse direct solver using QR factorization.
+    """Sparse direct solver using QR factorization.
 
-    Compute
+    Solve the linear system ``M @ x = b`` where ``M`` is a sparse matrix
+    in CSR format.  Currently the CUDA GPU backend is implemented; the
+    CPU backend falls back to ``scipy.sparse.linalg.spsolve``.
 
-    $$
-    M x = b
-    $$
+    Parameters
+    ----------
+    data : jax.Array or brainunit.Quantity
+        Non-zero entries of the CSR matrix.
+    indices : jax.Array
+        Column indices of the CSR matrix.
+    indptr : jax.Array
+        Row pointer array of the CSR matrix.
+    b : jax.Array or brainunit.Quantity
+        Right-hand side vector.
+    tol : float, optional
+        Tolerance to decide if the matrix is singular.  Default is ``1e-6``.
+    reorder : int, optional
+        Reordering scheme to reduce fill-in.  ``0`` for no reordering,
+        ``1`` for symrcm, ``2`` for symamd, ``3`` for csrmetisnd.
+        Default is ``1`` (symrcm).
 
-    where $M$ is the CSR sparse matrix, and b is the vector.
+    Returns
+    -------
+    jax.Array or brainunit.Quantity
+        Solution vector ``x`` with the same dtype and size as ``b``.
 
-    Accepts a sparse matrix in CSR format `data, indices, indptr` arrays.
-    Currently only the CUDA GPU backend is implemented, the CPU backend will fall
-    back to `scipy.sparse.linalg.spsolve`. Neither the CPU nor the GPU
-    implementation support batching with `vmap`.
+    Notes
+    -----
+    The system solved is:
 
-    Args:
-      data : An array containing the non-zero entries of the CSR matrix.
-      indices : The column indices of the CSR matrix.
-      indptr : The row pointer array of the CSR matrix.
-      b : The right hand side of the linear system.
-      tol : Tolerance to decide if singular or not. Defaults to 1e-6.
-      reorder : The reordering scheme to use to reduce fill-in. No reordering if
-        ``reorder=0``. Otherwise, symrcm, symamd, or csrmetisnd (``reorder=1,2,3``),
-        respectively. Defaults to symrcm.
+        ``M @ x = b``
 
-    Returns:
-      An array with the same dtype and size as b representing the solution to
-      the sparse linear system.
+    where ``M`` is the sparse matrix represented by ``(data, indices,
+    indptr)`` in CSR format.  Neither the CPU nor the GPU implementation
+    supports batching with ``vmap``.
     """
     data, data_unit = u.split_mantissa_unit(data)
     b, b_unit = u.split_mantissa_unit(b)

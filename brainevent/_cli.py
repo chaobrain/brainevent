@@ -195,10 +195,14 @@ def _run_benchmark(args) -> int:
 def main(argv: Optional[List[str]] = None) -> int:
     """Main CLI entry point.
 
-    Args:
-        argv: Command-line arguments (defaults to sys.argv[1:]).
+    Parameters
+    ----------
+    argv : list of str or None, optional
+        Command-line arguments.  Defaults to ``sys.argv[1:]``.
 
-    Returns:
+    Returns
+    -------
+    int
         Exit code (0 for success).
     """
     parser = _build_parser()

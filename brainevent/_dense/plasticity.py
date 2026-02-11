@@ -44,24 +44,92 @@ def update_dense_on_binary_pre(
     *,
     backend: Optional[str] = None,
 ):
-    """Updates synaptic weights based on presynaptic spike events and postsynaptic traces.
+    """
+    Update synaptic weights based on presynaptic spike events and postsynaptic traces.
 
-    This function implements a plasticity rule where presynaptic spikes trigger weight updates
-    modulated by postsynaptic trace values. The weight update is performed element-wise.
+    Implements a plasticity rule where presynaptic spikes trigger weight
+    updates modulated by postsynaptic trace values. For each presynaptic
+    neuron ``i`` that fires, the update is:
 
-    Args:
-        weight: Synaptic weight matrix of shape (n_pre, n_post).
-        pre_spike: Binary/boolean array indicating presynaptic spike events, shape (n_pre,).
-        post_trace: Postsynaptic trace values, shape (n_post,).
-        w_min: Optional lower bound for weight clipping. Must have same units as weight.
-        w_max: Optional upper bound for weight clipping. Must have same units as weight.
+    ``weight[i, :] += post_trace``
 
-    Returns:
-        Updated weight matrix with the same shape and units as the input weight.
+    The result is optionally clipped to ``[w_min, w_max]``.
 
-    Note:
-        The function handles unit conversion internally, ensuring that the pre_trace
-        is converted to the same unit as the weight before computation.
+    Parameters
+    ----------
+    weight : array_like or Quantity
+        Synaptic weight matrix of shape ``(n_pre, n_post)``. Can be a
+        ``brainunit`` quantity.
+    pre_spike : jax.Array
+        Binary or boolean array indicating presynaptic spike events,
+        with shape ``(n_pre,)``.
+    post_trace : array_like or Quantity
+        Postsynaptic trace values with shape ``(n_post,)``. Must be
+        convertible to the same unit as ``weight``.
+    w_min : array_like, Quantity, or None, optional
+        Lower bound for weight clipping. Must have the same units as
+        ``weight``. If ``None``, no lower bound is applied.
+    w_max : array_like, Quantity, or None, optional
+        Upper bound for weight clipping. Must have the same units as
+        ``weight``. If ``None``, no upper bound is applied.
+    backend : str, optional
+        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` (auto-select).
+
+    Returns
+    -------
+    result : array_like or Quantity
+        Updated weight matrix with the same shape and units as the input
+        ``weight``.
+
+    Raises
+    ------
+    AssertionError
+        If ``weight`` is not 2-D, ``pre_spike`` is not 1-D,
+        ``post_trace`` is not 1-D, or the dimensions do not match
+        (``weight.shape[0] != pre_spike.shape[0]`` or
+        ``weight.shape[1] != post_trace.shape[0]``).
+
+    See Also
+    --------
+    update_dense_on_binary_post : Post-synaptic variant of this plasticity rule.
+
+    Notes
+    -----
+    This implements a pre-synaptic spike-triggered plasticity rule. The
+    weight update for each synapse ``(i, j)`` is:
+
+    ``delta_W[i, j] = post_trace[j]`` if ``pre_spike[i]`` is active
+
+    ``delta_W[i, j] = 0`` otherwise
+
+    The updated weight matrix is then:
+
+    ``W'[i, j] = clip(W[i, j] + delta_W[i, j], w_min, w_max)``
+
+    where the clip operation is only applied when ``w_min`` or ``w_max``
+    is not ``None``. This rule is commonly used in spike-timing-dependent
+    plasticity (STDP) models, where the presynaptic spike arrival
+    triggers potentiation or depression modulated by the postsynaptic
+    trace.
+
+    The function handles unit conversion internally, ensuring that
+    ``post_trace`` is converted to the same unit as ``weight`` before
+    computation.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.plasticity import update_dense_on_binary_pre
+        >>> weight = jnp.zeros((3, 4), dtype=jnp.float32)
+        >>> pre_spike = jnp.array([True, False, True])
+        >>> post_trace = jnp.ones(4, dtype=jnp.float32) * 0.1
+        >>> update_dense_on_binary_pre(weight, pre_spike, post_trace)
+        Array([[0.1, 0.1, 0.1, 0.1],
+               [0. , 0. , 0. , 0. ],
+               [0.1, 0.1, 0.1, 0.1]], dtype=float32)
     """
     weight, wunit = u.split_mantissa_unit(weight)
     post_trace = u.Quantity(post_trace).to(wunit).mantissa
@@ -169,7 +237,70 @@ def _dense_on_pre_warp_kernel(
     return run
 
 
-def _dense_on_pre_prim_call(weight, pre_spike, post_trace, backend=None):
+def _dense_on_pre_prim_call(weight, pre_spike, post_trace, backend: Optional[str] = None):
+    """
+    Low-level primitive call for pre-synaptic plasticity weight update.
+
+    This function validates input shapes, constructs the output shape
+    descriptor, and invokes the ``update_dense_on_binary_pre_p`` JAX
+    primitive. Unlike :func:`update_dense_on_binary_pre`, this function
+    operates on raw numerical arrays without ``brainunit`` unit handling
+    or weight clipping.
+
+    Parameters
+    ----------
+    weight : jax.Array
+        Synaptic weight matrix of shape ``(n_pre, n_post)``.
+    pre_spike : jax.Array
+        Binary or boolean array of presynaptic spike events with shape
+        ``(n_pre,)``.
+    post_trace : jax.Array
+        Postsynaptic trace values with shape ``(n_post,)``.
+    backend : str, optional
+        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` (auto-select).
+
+    Returns
+    -------
+    result : list of jax.Array
+        A single-element list containing the updated weight matrix with
+        shape ``(n_pre, n_post)``.
+
+    Raises
+    ------
+    AssertionError
+        If ``weight`` is not 2-D, ``pre_spike`` is not 1-D,
+        ``post_trace`` is not 1-D, or the dimensions do not match.
+
+    See Also
+    --------
+    update_dense_on_binary_pre : High-level function with unit handling and clipping.
+
+    Notes
+    -----
+    This is the low-level entry point that bypasses unit handling and
+    weight clipping. The mathematical operation is:
+
+    ``W'[i, j] = W[i, j] + post_trace[j]`` if ``pre_spike[i]`` is active
+
+    ``W'[i, j] = W[i, j]`` otherwise
+
+    No clipping is applied at this level; clipping is handled by the
+    high-level :func:`update_dense_on_binary_pre` wrapper. The function
+    returns a single-element list to conform to the JAX primitive output
+    convention.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.plasticity import _dense_on_pre_prim_call
+        >>> weight = jnp.zeros((3, 4), dtype=jnp.float32)
+        >>> pre_spike = jnp.array([True, False, True])
+        >>> post_trace = jnp.ones(4, dtype=jnp.float32)
+        >>> _dense_on_pre_prim_call(weight, pre_spike, post_trace)
+    """
     assert weight.ndim == 2, f'dense_one_pre only support 2D weight. But got shape: {weight.shape}.'
     assert pre_spike.ndim == 1, f'pre_spike should be 1D, But got shape: {pre_spike.shape}.'
     assert post_trace.ndim == 1, f'post_trace should be 1D. But got shape: {post_trace.shape}.'
@@ -253,24 +384,92 @@ def update_dense_on_binary_post(
     *,
     backend: Optional[str] = None,
 ):
-    """Updates synaptic weights based on postsynaptic spike events and presynaptic traces.
+    """
+    Update synaptic weights based on postsynaptic spike events and presynaptic traces.
 
-    This function implements a plasticity rule where postsynaptic spikes trigger weight updates
-    modulated by presynaptic trace values. The weight update is performed element-wise.
+    Implements a plasticity rule where postsynaptic spikes trigger weight
+    updates modulated by presynaptic trace values. For each postsynaptic
+    neuron ``j`` that fires, the update is:
 
-    Args:
-        weight: Synaptic weight matrix of shape (n_pre, n_post).
-        pre_trace: Presynaptic trace values, shape (n_pre,).
-        post_spike: Binary/boolean array indicating postsynaptic spike events, shape (n_post,).
-        w_min: Optional lower bound for weight clipping. Must have same units as weight.
-        w_max: Optional upper bound for weight clipping. Must have same units as weight.
+    ``weight[:, j] += pre_trace``
 
-    Returns:
-        Updated weight matrix with the same shape and units as the input weight.
+    The result is optionally clipped to ``[w_min, w_max]``.
 
-    Note:
-        The function handles unit conversion internally, ensuring that the pre_trace
-        is converted to the same unit as the weight before computation.
+    Parameters
+    ----------
+    weight : array_like or Quantity
+        Synaptic weight matrix of shape ``(n_pre, n_post)``. Can be a
+        ``brainunit`` quantity.
+    pre_trace : array_like or Quantity
+        Presynaptic trace values with shape ``(n_pre,)``. Must be
+        convertible to the same unit as ``weight``.
+    post_spike : jax.Array
+        Binary or boolean array indicating postsynaptic spike events,
+        with shape ``(n_post,)``.
+    w_min : array_like, Quantity, or None, optional
+        Lower bound for weight clipping. Must have the same units as
+        ``weight``. If ``None``, no lower bound is applied.
+    w_max : array_like, Quantity, or None, optional
+        Upper bound for weight clipping. Must have the same units as
+        ``weight``. If ``None``, no upper bound is applied.
+    backend : str, optional
+        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` (auto-select).
+
+    Returns
+    -------
+    result : array_like or Quantity
+        Updated weight matrix with the same shape and units as the input
+        ``weight``.
+
+    Raises
+    ------
+    AssertionError
+        If ``weight`` is not 2-D, ``pre_trace`` is not 1-D,
+        ``post_spike`` is not 1-D, or the dimensions do not match
+        (``weight.shape[0] != pre_trace.shape[0]`` or
+        ``weight.shape[1] != post_spike.shape[0]``).
+
+    See Also
+    --------
+    update_dense_on_binary_pre : Pre-synaptic variant of this plasticity rule.
+
+    Notes
+    -----
+    This implements a post-synaptic spike-triggered plasticity rule. The
+    weight update for each synapse ``(i, j)`` is:
+
+    ``delta_W[i, j] = pre_trace[i]`` if ``post_spike[j]`` is active
+
+    ``delta_W[i, j] = 0`` otherwise
+
+    The updated weight matrix is then:
+
+    ``W'[i, j] = clip(W[i, j] + delta_W[i, j], w_min, w_max)``
+
+    where the clip operation is only applied when ``w_min`` or ``w_max``
+    is not ``None``. This rule is commonly used in spike-timing-dependent
+    plasticity (STDP) models, where the postsynaptic spike arrival
+    triggers potentiation or depression modulated by the presynaptic
+    trace.
+
+    The function handles unit conversion internally, ensuring that
+    ``pre_trace`` is converted to the same unit as ``weight`` before
+    computation.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.plasticity import update_dense_on_binary_post
+        >>> weight = jnp.zeros((3, 4), dtype=jnp.float32)
+        >>> pre_trace = jnp.ones(3, dtype=jnp.float32) * 0.1
+        >>> post_spike = jnp.array([True, False, True, False])
+        >>> update_dense_on_binary_post(weight, pre_trace, post_spike)
+        Array([[0.1, 0. , 0.1, 0. ],
+               [0.1, 0. , 0.1, 0. ],
+               [0.1, 0. , 0.1, 0. ]], dtype=float32)
     """
     weight, wunit = u.split_mantissa_unit(weight)
     pre_trace = u.Quantity(pre_trace).to(wunit).mantissa
@@ -378,7 +577,70 @@ def _dense_on_post_warp_kernel(
     return run
 
 
-def _dense_on_post_prim_call(weight, pre_trace, post_spike, backend=None):
+def _dense_on_post_prim_call(weight, pre_trace, post_spike, backend: Optional[str] = None):
+    """
+    Low-level primitive call for post-synaptic plasticity weight update.
+
+    This function validates input shapes, constructs the output shape
+    descriptor, and invokes the ``update_dense_on_binary_post_p`` JAX
+    primitive. Unlike :func:`update_dense_on_binary_post`, this function
+    operates on raw numerical arrays without ``brainunit`` unit handling
+    or weight clipping.
+
+    Parameters
+    ----------
+    weight : jax.Array
+        Synaptic weight matrix of shape ``(n_pre, n_post)``.
+    pre_trace : jax.Array
+        Presynaptic trace values with shape ``(n_pre,)``.
+    post_spike : jax.Array
+        Binary or boolean array of postsynaptic spike events with shape
+        ``(n_post,)``.
+    backend : str, optional
+        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` (auto-select).
+
+    Returns
+    -------
+    result : list of jax.Array
+        A single-element list containing the updated weight matrix with
+        shape ``(n_pre, n_post)``.
+
+    Raises
+    ------
+    AssertionError
+        If ``weight`` is not 2-D, ``pre_trace`` is not 1-D,
+        ``post_spike`` is not 1-D, or the dimensions do not match.
+
+    See Also
+    --------
+    update_dense_on_binary_post : High-level function with unit handling and clipping.
+
+    Notes
+    -----
+    This is the low-level entry point that bypasses unit handling and
+    weight clipping. The mathematical operation is:
+
+    ``W'[i, j] = W[i, j] + pre_trace[i]`` if ``post_spike[j]`` is active
+
+    ``W'[i, j] = W[i, j]`` otherwise
+
+    No clipping is applied at this level; clipping is handled by the
+    high-level :func:`update_dense_on_binary_post` wrapper. The function
+    returns a single-element list to conform to the JAX primitive output
+    convention.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.plasticity import _dense_on_post_prim_call
+        >>> weight = jnp.zeros((3, 4), dtype=jnp.float32)
+        >>> pre_trace = jnp.ones(3, dtype=jnp.float32)
+        >>> post_spike = jnp.array([True, False, True, False])
+        >>> _dense_on_post_prim_call(weight, pre_trace, post_spike)
+    """
     assert weight.ndim == 2, f'dense_one_pre only support 2D weight. But got shape: {weight.shape}.'
     assert pre_trace.ndim == 1, f'pre_trace should be 1D. But got shape: {pre_trace.shape}.'
     assert post_spike.ndim == 1, f'post_spike should be 1D. But got shape: {post_spike.shape}.'

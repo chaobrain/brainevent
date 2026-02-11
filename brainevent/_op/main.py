@@ -25,7 +25,7 @@ from brainevent._compatible_import import Primitive
 from brainevent._error import KernelFallbackExhaustedError
 from brainevent._typing import KernelGenerator
 from .benchmark import BenchmarkResult, BenchmarkReport, benchmark_function
-from .util import general_batching_rule, defjvp, OutType, abstract_arguments, check_pallas_jax_version
+from .util import general_batching_rule, defjvp, OutType, abstract_arguments, check_pallas_jax_version, check_warp_installed
 
 __all__ = [
     'XLACustomKernel',
@@ -35,12 +35,51 @@ __all__ = [
 
 @dataclass
 class KernelEntry:
-    """Represents a registered kernel for a specific backend and platform.
+    """A registered kernel implementation for a specific backend and platform.
 
-    Attributes:
-        backend: The backend name (e.g., 'numba', 'warp', 'pallas', 'triton').
-        platform: The platform name (e.g., 'cpu', 'gpu', 'tpu').
-        kernel_generator: A callable that generates the kernel function.
+    ``KernelEntry`` is a lightweight data class used internally by
+    :class:`XLACustomKernel` to store a single kernel implementation together
+    with the backend and platform it targets.
+
+    Parameters
+    ----------
+    backend : str
+        The backend name (e.g., ``'numba'``, ``'warp'``, ``'pallas'``,
+        ``'triton'``, ``'tvmffi'``, ``'numba_cuda'``).
+    platform : str
+        The hardware platform name (e.g., ``'cpu'``, ``'gpu'``, ``'tpu'``).
+    kernel_generator : KernelGenerator
+        A callable that accepts keyword arguments (forwarded from the
+        primitive ``bind`` call) and returns a concrete kernel function
+        ready to be invoked with the input arrays.
+
+    See Also
+    --------
+    XLACustomKernel : The kernel manager that creates and stores
+        ``KernelEntry`` instances.
+    XLACustomKernel.def_kernel : Method used to register a new
+        ``KernelEntry``.
+
+    Notes
+    -----
+    ``KernelEntry`` instances are created internally by
+    :meth:`XLACustomKernel.def_kernel` and stored in a nested
+    dictionary keyed by ``(platform, backend)``.  Users typically do
+    not need to instantiate this class directly.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> entry = KernelEntry(
+        ...     backend='numba',
+        ...     platform='cpu',
+        ...     kernel_generator=my_kernel_generator,
+        ... )
+        >>> entry.backend
+        'numba'
+        >>> entry.platform
+        'cpu'
     """
     backend: str
     platform: str
@@ -84,10 +123,25 @@ class XLACustomKernel:
     - ``primitive``: The underlying JAX primitive created.
     - ``name``: The name assigned to the primitive.
 
-    Args:
-        name: The unique name for the custom JAX primitive.
+    Parameters
+    ----------
+    name : str
+        The unique name for the custom JAX primitive. This name is used
+        to identify the primitive in JAX's internal registry and in
+        error messages.
 
-    Example:
+    See Also
+    --------
+    KernelEntry : Data class representing a single registered kernel.
+    defjvp : Utility to define JVP rules for primitives with multiple
+        results.
+    general_batching_rule : Default batching rule applied to new
+        ``XLACustomKernel`` instances.
+
+    Examples
+    --------
+    .. code-block:: python
+
         >>> kernel = XLACustomKernel('my_custom_op')
         >>> kernel.def_numba_kernel(numba_kernel_generator)  # CPU default
         >>> kernel.def_pallas_kernel('gpu', pallas_kernel_generator, asdefault=True)
@@ -95,9 +149,6 @@ class XLACustomKernel:
         >>> print(kernel.defaults)  # {'cpu': 'numba', 'gpu': 'pallas'}
         >>> kernel.set_default('gpu', 'warp')  # Change GPU default
         >>> result = kernel(input_array, outs=[jax.ShapeDtypeStruct((10,), jnp.float32)])
-
-    See Also:
-        :class:`KernelEntry`: Represents a registered kernel.
     """
 
     __module__ = 'brainevent'
@@ -137,45 +188,88 @@ class XLACustomKernel:
         register_primitive(name, self)
 
     def _abstract_eval(self, *ins, outs: OutType, **kwargs):
-        """
-        Abstract evaluation rule for the JAX primitive.
+        """Compute the abstract output types for the primitive.
 
-        This method defines how JAX should determine the shape and dtype of the
-        primitive's output(s) based on the shapes and dtypes of the inputs,
-        without performing the actual computation. In this specific implementation,
-        the output shapes and dtypes are explicitly provided via the `outs`
-        parameter during the `primitive.bind` call and are simply returned here.
+        This method defines how JAX determines the shape and dtype of the
+        primitive's outputs based on its inputs, without performing the
+        actual computation.  In this implementation the output shapes and
+        dtypes are explicitly provided via the ``outs`` parameter during
+        the ``primitive.bind`` call and are returned directly.
 
-        Args:
-            *ins: Abstract values (e.g., `jax.core.ShapedArray`) corresponding
-                  to the input operands. Not directly used in this implementation
-                  as output shapes are pre-determined.
-            outs: A sequence of `jax.core.ShapedArray` objects specifying the
-                  expected shape and dtype of each output. This is passed as a
-                  parameter to the primitive binding.
-            **kwargs: Additional keyword arguments passed during primitive binding.
-                      Not used in this abstract evaluation rule.
+        Parameters
+        ----------
+        *ins : jax.core.ShapedArray
+            Abstract values corresponding to the input operands.  Not
+            directly used because the output specification is pre-determined.
+        outs : OutType
+            A sequence of ``jax.core.ShapedArray`` objects specifying the
+            expected shape and dtype of each output.
+        **kwargs
+            Additional keyword arguments forwarded during ``primitive.bind``.
+            Not used in this abstract evaluation rule.
 
-        Returns:
-            A tuple containing the `jax.core.ShapedArray` objects passed in `outs`,
-            representing the abstract value of the primitive's output(s).
+        Returns
+        -------
+        tuple of jax.core.ShapedArray
+            The abstract output types, identical to the ``outs`` parameter.
         """
         return tuple(outs)
 
     def __call__(self, *ins, outs: OutType, **kwargs):
-        """Call the primitive with the given inputs.
+        """Invoke the primitive with the given inputs and output specification.
 
-        Args:
-            *ins: Input arrays to the primitive.
-            outs: Output specification (shapes and dtypes).
-            backend: Optional backend to use. If specified and a kernel
-                with that backend is available for the target platform,
-                it will be prioritized. If None, kernels are tried in
-                default priority order.
-            **kwargs: Additional keyword arguments passed to the kernel.
+        Binds the input arrays and keyword arguments to the underlying JAX
+        primitive.  The ``outs`` parameter describes the shapes and dtypes
+        of the expected outputs so that JAX can allocate output buffers and
+        perform abstract evaluation.
 
-        Returns:
-            The output(s) of the primitive.
+        Parameters
+        ----------
+        *ins : array_like
+            Input arrays to the primitive.
+        outs : OutType
+            Output specification.  Can be a single object with ``shape``
+            and ``dtype`` attributes (e.g., ``jax.ShapeDtypeStruct``), or
+            a sequence / pytree of such objects for multiple outputs.
+        **kwargs
+            Additional keyword arguments forwarded to the kernel.  A
+            ``backend`` keyword, if present, selects a specific backend
+            implementation instead of the platform default.
+
+        Returns
+        -------
+        result
+            The output(s) of the primitive.  The pytree structure matches
+            the structure of ``outs``.
+
+        Raises
+        ------
+        AssertionError
+            If the number of results returned by the primitive does not
+            match the number of output specifications.
+
+        See Also
+        --------
+        call : Invoke the high-level call function registered via
+            :meth:`def_call`.
+
+        Notes
+        -----
+        The ``outs`` specification is flattened into a list of
+        ``jax.core.ShapedArray`` objects via :func:`abstract_arguments`
+        and passed as the ``outs`` keyword to ``primitive.bind``.  The
+        results are then unflattened to match the original pytree
+        structure.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> import jax
+            >>> import jax.numpy as jnp
+            >>> kernel = XLACustomKernel('my_op')
+            >>> # After registering kernels...
+            >>> out = kernel(x, outs=[jax.ShapeDtypeStruct((10,), jnp.float32)])  # doctest: +SKIP
         """
         outs, tree_def = abstract_arguments(outs)
         r = self.primitive.bind(*ins, **kwargs, outs=tuple(outs))
@@ -189,15 +283,43 @@ class XLACustomKernel:
         kg: KernelGenerator,
         asdefault: bool = False
     ):
-        """Register a kernel for a specific backend and platform.
+        """Register a kernel implementation for a specific backend and platform.
 
-        Args:
-            backend: The backend name (e.g., 'numba', 'warp', 'pallas').
-            platform: The platform name (e.g., 'cpu', 'gpu', 'tpu').
-            kg: A kernel generator callable that creates the kernel function.
-            asdefault: If True, set this backend as the default for the platform.
-                The first kernel registered for a platform automatically becomes
-                the default unless another kernel is explicitly set as default.
+        Creates a :class:`KernelEntry` and stores it in the internal kernel
+        registry.  If this is the first kernel registered for the given
+        *platform*, it automatically becomes the default.  Pass
+        ``asdefault=True`` to override an existing default.
+
+        A JAX lowering rule is registered for the platform the first time
+        any kernel targets it.
+
+        Parameters
+        ----------
+        backend : str
+            The backend name (e.g., ``'numba'``, ``'warp'``, ``'pallas'``,
+            ``'triton'``, ``'tvmffi'``, ``'numba_cuda'``).
+        platform : str
+            The hardware platform (e.g., ``'cpu'``, ``'gpu'``, ``'tpu'``).
+        kg : KernelGenerator
+            A callable that accepts keyword arguments (from the primitive
+            ``bind`` call) and returns a concrete kernel function.
+        asdefault : bool, optional
+            If ``True``, set this backend as the default for *platform*
+            even if a default already exists.  Default is ``False``.
+
+        Raises
+        ------
+        AssertionError
+            If *backend* or *platform* is not a string, or if *kg* is not
+            callable.
+
+        See Also
+        --------
+        def_numba_kernel : Shorthand for ``def_kernel('numba', 'cpu', ...)``.
+        def_warp_kernel : Shorthand for ``def_kernel('warp', 'gpu', ...)``.
+        def_pallas_kernel : Shorthand for Pallas kernels on GPU or TPU.
+        set_default : Change the default backend for a platform after
+            registration.
         """
         assert isinstance(backend, str), f'The `backend` should be a string, but got {type(backend)}.'
         assert isinstance(platform, str), f'The `platform` should be a string, but got {type(platform)}.'
@@ -227,14 +349,24 @@ class XLACustomKernel:
             self._registered_platforms.add(platform)
 
     def _register_fallback_lowering(self, platform: str):
-        """Register a lowering function that uses the default backend.
+        """Register a MLIR lowering function that dispatches to the default backend.
 
-        This creates a lowering function that uses the default backend for the
-        platform, or a specific backend if requested via _preferred_backend.
-        On failure, it shows alternative backends available.
+        Creates a lowering function for the given *platform* that, when
+        invoked by JAX during compilation, selects the appropriate kernel
+        backend (either the default or one explicitly requested via the
+        ``backend`` keyword argument) and calls it.
 
-        Args:
-            platform: The platform to register the lowering for.
+        Parameters
+        ----------
+        platform : str
+            The platform to register the lowering for (e.g., ``'cpu'``,
+            ``'gpu'``, ``'tpu'``).
+
+        Raises
+        ------
+        KernelFallbackExhaustedError
+            If no kernels are registered for the platform, or if the
+            explicitly requested backend is not available.
         """
 
         def fallback_kernel_fn(*args, **kwargs):
@@ -268,6 +400,8 @@ class XLACustomKernel:
 
             if backend_to_use == 'pallas':
                 check_pallas_jax_version()
+            elif backend_to_use == 'warp':
+                check_warp_installed()
 
             entry = kernels[backend_to_use]
             kernel = entry.kernel_generator(**kwargs)
@@ -282,14 +416,32 @@ class XLACustomKernel:
         kg: KernelGenerator,
         asdefault: bool = False
     ):
-        """Register a Numba kernel for CPU platform.
+        """Register a Numba kernel for the CPU platform.
 
-        This is a convenience method equivalent to:
-        ``self.def_kernel(backend='numba', platform='cpu', kg=kg, asdefault=asdefault)``
+        Convenience wrapper around :meth:`def_kernel` with
+        ``backend='numba'`` and ``platform='cpu'``.
 
-        Args:
-            kg: A kernel generator callable that creates the Numba kernel function.
-            asdefault: If True, set this as the default backend for CPU.
+        Parameters
+        ----------
+        kg : KernelGenerator
+            A callable that generates the Numba kernel function.
+        asdefault : bool, optional
+            If ``True``, set Numba as the default CPU backend.  Default
+            is ``False`` (the first registered CPU kernel becomes the
+            default automatically).
+
+        See Also
+        --------
+        def_kernel : General kernel registration method.
+        def_warp_kernel : Register a Warp kernel for GPU.
+        def_pallas_kernel : Register a Pallas kernel for GPU or TPU.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> kernel = XLACustomKernel('my_op')
+            >>> kernel.def_numba_kernel(my_numba_kernel_gen)  # doctest: +SKIP
         """
         self.def_kernel(backend='numba', platform='cpu', kg=kg, asdefault=asdefault)
 
@@ -298,14 +450,32 @@ class XLACustomKernel:
         kg: KernelGenerator,
         asdefault: bool = False
     ):
-        """Register a Warp kernel for GPU platform.
+        """Register a Warp kernel for the GPU platform.
 
-        This is a convenience method equivalent to:
-        ``self.def_kernel(backend='warp', platform='gpu', kg=kg, asdefault=asdefault)``
+        Convenience wrapper around :meth:`def_kernel` with
+        ``backend='warp'`` and ``platform='gpu'``.
 
-        Args:
-            kg: A kernel generator callable that creates the Warp kernel function.
-            asdefault: If True, set this as the default backend for GPU.
+        Parameters
+        ----------
+        kg : KernelGenerator
+            A callable that generates the Warp kernel function.
+        asdefault : bool, optional
+            If ``True``, set Warp as the default GPU backend.  Default
+            is ``False``.
+
+        See Also
+        --------
+        def_kernel : General kernel registration method.
+        def_numba_kernel : Register a Numba kernel for CPU.
+        def_pallas_kernel : Register a Pallas kernel for GPU or TPU.
+        def_triton_kernel : Register a Triton kernel for GPU.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> kernel = XLACustomKernel('my_op')
+            >>> kernel.def_warp_kernel(my_warp_kernel_gen)  # doctest: +SKIP
         """
         self.def_kernel(backend='warp', platform='gpu', kg=kg, asdefault=asdefault)
 
@@ -314,14 +484,31 @@ class XLACustomKernel:
         kg: KernelGenerator,
         asdefault: bool = False
     ):
-        """Register a Triton kernel for GPU platform.
+        """Register a Triton kernel for the GPU platform.
 
-        This is a convenience method equivalent to:
-        ``self.def_kernel(backend='triton', platform='gpu', kg=kg, asdefault=asdefault)``
+        Convenience wrapper around :meth:`def_kernel` with
+        ``backend='triton'`` and ``platform='gpu'``.
 
-        Args:
-            kg: A kernel generator callable that creates the Triton kernel function.
-            asdefault: If True, set this as the default backend for GPU.
+        Parameters
+        ----------
+        kg : KernelGenerator
+            A callable that generates the Triton kernel function.
+        asdefault : bool, optional
+            If ``True``, set Triton as the default GPU backend.  Default
+            is ``False``.
+
+        See Also
+        --------
+        def_kernel : General kernel registration method.
+        def_warp_kernel : Register a Warp kernel for GPU.
+        def_pallas_kernel : Register a Pallas kernel for GPU or TPU.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> kernel = XLACustomKernel('my_op')
+            >>> kernel.def_triton_kernel(my_triton_kernel_gen)  # doctest: +SKIP
         """
         self.def_kernel(backend='triton', platform='gpu', kg=kg, asdefault=asdefault)
 
@@ -331,15 +518,43 @@ class XLACustomKernel:
         kg: KernelGenerator,
         asdefault: bool = False
     ):
-        """Register a Pallas kernel for GPU or TPU platform.
+        """Register a Pallas kernel for the GPU or TPU platform.
 
-        This is a convenience method equivalent to:
-        ``self.def_kernel(backend='pallas', platform=platform, kg=kg, asdefault=asdefault)``
+        Convenience wrapper around :meth:`def_kernel` with
+        ``backend='pallas'``.
 
-        Args:
-            platform: The target platform, must be either 'gpu' or 'tpu'.
-            kg: A kernel generator callable that creates the Pallas kernel function.
-            asdefault: If True, set this as the default backend for the platform.
+        Parameters
+        ----------
+        platform : str
+            Target platform.  Must be ``'gpu'`` or ``'tpu'``.
+        kg : KernelGenerator
+            A callable that generates the Pallas kernel function.
+        asdefault : bool, optional
+            If ``True``, set Pallas as the default backend for the
+            given platform.  Default is ``False``.
+
+        Raises
+        ------
+        AssertionError
+            If *platform* is not ``'gpu'`` or ``'tpu'``.
+
+        See Also
+        --------
+        def_kernel : General kernel registration method.
+        def_warp_kernel : Register a Warp kernel for GPU.
+        def_numba_kernel : Register a Numba kernel for CPU.
+
+        Notes
+        -----
+        Pallas kernels require JAX >= 0.7.1.  The version check is
+        performed lazily at dispatch time, not at registration time.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> kernel = XLACustomKernel('my_op')
+            >>> kernel.def_pallas_kernel('gpu', my_pallas_gen, asdefault=True)  # doctest: +SKIP
         """
         assert platform in ['gpu', 'tpu'], f'The `platform` should be either `gpu` or `tpu`, but got {platform}.'
         self.def_kernel(backend='pallas', platform=platform, kg=kg, asdefault=asdefault)
@@ -350,15 +565,38 @@ class XLACustomKernel:
         kg: KernelGenerator,
         asdefault: bool = False
     ):
-        """Register a TVM FFI kernel for CPU or GPU platform.
+        """Register a TVM FFI kernel for the CPU or GPU platform.
 
-        This is a convenience method equivalent to:
-        ``self.def_kernel(backend='tvmffi', platform=platform, kg=kg, asdefault=asdefault)``
+        Convenience wrapper around :meth:`def_kernel` with
+        ``backend='tvmffi'``.
 
-        Args:
-            platform: The target platform, must be either 'cpu' or 'gpu'.
-            kg: A kernel generator callable that creates the TVM FFI kernel function.
-            asdefault: If True, set this as the default backend for the platform.
+        Parameters
+        ----------
+        platform : str
+            Target platform.  Must be ``'cpu'`` or ``'gpu'``.
+        kg : KernelGenerator
+            A callable that generates the TVM FFI kernel function.
+        asdefault : bool, optional
+            If ``True``, set TVM FFI as the default backend for the
+            given platform.  Default is ``False``.
+
+        Raises
+        ------
+        AssertionError
+            If *platform* is not ``'cpu'`` or ``'gpu'``.
+
+        See Also
+        --------
+        def_kernel : General kernel registration method.
+        register_tvm_cuda_kernels : Lower-level TVM CUDA kernel
+            registration utility.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> kernel = XLACustomKernel('my_op')
+            >>> kernel.def_tvmffi_kernel('gpu', my_tvm_gen)  # doctest: +SKIP
         """
         assert platform in ['cpu', 'gpu'], f'The `platform` should be either `cpu` or `gpu`, but got {platform}.'
         self.def_kernel(backend='tvmffi', platform=platform, kg=kg, asdefault=asdefault)
@@ -368,26 +606,73 @@ class XLACustomKernel:
         kg: KernelGenerator,
         asdefault: bool = False
     ):
-        """Register a Numba CUDA kernel for GPU platform.
+        """Register a Numba CUDA kernel for the GPU platform.
 
-        Args:
-            kg: A kernel generator callable that creates the Numba CUDA kernel function.
-            asdefault: If True, set this as the default backend for GPU.
+        Convenience wrapper around :meth:`def_kernel` with
+        ``backend='numba_cuda'`` and ``platform='gpu'``.
+
+        Parameters
+        ----------
+        kg : KernelGenerator
+            A callable that generates the Numba CUDA kernel function.
+        asdefault : bool, optional
+            If ``True``, set Numba CUDA as the default GPU backend.
+            Default is ``False``.
+
+        See Also
+        --------
+        def_kernel : General kernel registration method.
+        def_warp_kernel : Register a Warp kernel for GPU.
+        numba_cuda_kernel : Standalone function for wrapping a single
+            Numba CUDA kernel.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> kernel = XLACustomKernel('my_op')
+            >>> kernel.def_numba_cuda_kernel(my_numba_cuda_gen)  # doctest: +SKIP
         """
         self.def_kernel(backend='numba_cuda', platform='gpu', kg=kg, asdefault=asdefault)
 
     def set_default(self, platform: str, backend: str, persist: bool = False):
         """Set the default backend for a platform.
 
-        Args:
-            platform: The platform name (e.g., 'cpu', 'gpu', 'tpu').
-            backend: The backend name to set as default.
-            persist: If True, save the default to the user config file
-                so it persists across sessions.
+        After this call, all subsequent dispatches on the given
+        *platform* will use the specified *backend* unless overridden
+        by an explicit ``backend=`` keyword argument at call time.
 
-        Raises:
-            ValueError: If no kernels registered for the platform or
-                the specified backend is not registered for the platform.
+        Parameters
+        ----------
+        platform : str
+            The platform name (e.g., ``'cpu'``, ``'gpu'``, ``'tpu'``).
+        backend : str
+            The backend name to set as default.  Must already be
+            registered for the given platform.
+        persist : bool, optional
+            If ``True``, save the default to the user configuration
+            file so it persists across sessions.  Default is ``False``.
+
+        Raises
+        ------
+        ValueError
+            If no kernels are registered for *platform*, or if *backend*
+            is not registered for *platform*.
+
+        See Also
+        --------
+        get_default : Retrieve the current default backend for a
+            platform.
+        defaults : Property returning all default backends.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> kernel = XLACustomKernel('my_op')
+            >>> kernel.def_warp_kernel(warp_gen)  # doctest: +SKIP
+            >>> kernel.def_pallas_kernel('gpu', pallas_gen)  # doctest: +SKIP
+            >>> kernel.set_default('gpu', 'pallas')  # doctest: +SKIP
         """
         if platform not in self._kernels:
             raise ValueError(f"No kernels registered for platform '{platform}'")
@@ -403,117 +688,283 @@ class XLACustomKernel:
             set_user_default(self.name, platform, backend)
 
     def get_default(self, platform: str) -> Optional[str]:
-        """Get the default backend for a platform.
+        """Get the current default backend for a platform.
 
-        Args:
-            platform: The platform name (e.g., 'cpu', 'gpu', 'tpu').
+        Parameters
+        ----------
+        platform : str
+            The platform name (e.g., ``'cpu'``, ``'gpu'``, ``'tpu'``).
 
-        Returns:
-            The default backend name, or None if no default is set.
+        Returns
+        -------
+        str or None
+            The default backend name, or ``None`` if no default is set
+            for the given platform.
+
+        See Also
+        --------
+        set_default : Set the default backend for a platform.
+        defaults : Property returning all default backends.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> kernel = XLACustomKernel('my_op')
+            >>> kernel.def_numba_kernel(numba_gen)  # doctest: +SKIP
+            >>> kernel.get_default('cpu')  # doctest: +SKIP
+            'numba'
         """
         return self._defaults.get(platform)
 
     @property
     def defaults(self) -> Dict[str, str]:
-        """Get all default backends.
+        """Return a copy of all default backends.
 
-        Returns:
-            A dictionary mapping platform names to their default backend names.
+        Returns
+        -------
+        dict of str to str
+            A dictionary mapping platform names to their default backend
+            names.  Modifying the returned dictionary does not affect the
+            internal state.
+
+        See Also
+        --------
+        get_default : Retrieve the default for a single platform.
+        set_default : Change the default backend for a platform.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> kernel = XLACustomKernel('my_op')
+            >>> kernel.def_numba_kernel(numba_gen)  # doctest: +SKIP
+            >>> kernel.def_pallas_kernel('gpu', pallas_gen)  # doctest: +SKIP
+            >>> kernel.defaults  # doctest: +SKIP
+            {'cpu': 'numba', 'gpu': 'pallas'}
         """
         return self._defaults.copy()
 
     def def_batching_rule(self, fun: Callable):
-        """
-        Defines a custom batching rule for the JAX primitive.
+        """Define a custom batching rule for the primitive.
 
-        This rule specifies how the primitive should behave when applied to
-        batched inputs (inputs with a leading batch dimension).
+        The batching rule specifies how the primitive should behave when
+        applied to batched inputs (i.e., inputs with a leading batch
+        dimension introduced by ``jax.vmap``).
 
-        Args:
-            fun: A callable that implements the batching logic. It typically
-                 takes batched arguments and batch dimensions as input and returns
-                 batched outputs and output batch dimensions. See JAX documentation
-                 for `batching.primitive_batchers`.
+        Parameters
+        ----------
+        fun : callable
+            A function implementing the batching logic.  It receives
+            batched arguments and per-argument batch dimension indices,
+            and must return ``(batched_outputs, output_batch_dims)``.
+            See JAX documentation for
+            ``jax.interpreters.batching.primitive_batchers``.
+
+        See Also
+        --------
+        register_general_batching : Register the default general-purpose
+            batching rule.
+        general_batching_rule : The general-purpose batching
+            implementation used by default.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> def my_batching(args, axes, **kwargs):
+            ...     # Custom batching logic
+            ...     return batched_out, out_dims
+            >>> kernel = XLACustomKernel('my_op')
+            >>> kernel.def_batching_rule(my_batching)  # doctest: +SKIP
         """
         batching.primitive_batchers[self.primitive] = fun
 
     def def_jvp_rule(self, fun: Callable):
-        """
-        Defines a custom JVP (Jacobian-vector product) rule for the primitive.
+        """Define a custom JVP (Jacobian-vector product) rule.
 
-        This rule is used for forward-mode automatic differentiation (AD). It
-        specifies how to compute the directional derivative of the primitive's
-        output with respect to its inputs.
+        This rule is used for forward-mode automatic differentiation.  It
+        specifies how to compute the directional derivative of the
+        primitive's outputs with respect to its inputs.
 
-        Args:
-            fun: A callable that implements the JVP logic. See JAX documentation
-                 for `ad.primitive_jvps`.
+        Parameters
+        ----------
+        fun : callable
+            A function implementing the JVP logic.  See JAX documentation
+            for ``jax.interpreters.ad.primitive_jvps``.
+
+        See Also
+        --------
+        def_jvp_rule2 : Convenience method for defining per-input JVP
+            rules.
+        def_transpose_rule : Define a transpose rule for reverse-mode AD.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> def my_jvp(primals, tangents, **params):
+            ...     val_out = kernel.primitive.bind(*primals, **params)
+            ...     tangent_out = ...  # compute tangent
+            ...     return val_out, tangent_out
+            >>> kernel.def_jvp_rule(my_jvp)  # doctest: +SKIP
         """
         ad.primitive_jvps[self.primitive] = fun
 
     def def_jvp_rule2(self, *jvp_rules):
-        """
-        Defines the JVP (Jacobian-vector product) rules for the primitive.
+        """Define per-input JVP rules for the primitive.
 
-        This is a convenience method similar to `jax.interpreters.ad.defjvp`,
-        but specifically adapted to handle primitives that may have multiple
-        output values. It registers the JVP rules necessary for forward-mode
-        automatic differentiation.
+        This is a convenience method similar to ``jax.interpreters.ad.defjvp``
+        but adapted for primitives that return multiple results.  Each rule
+        corresponds to one input primal and computes the tangent
+        contribution from that input.
 
-        Args:
-            *jvp_rules: A sequence of callables, each defining the JVP rule for
-                        a corresponding input primal. See the implementation of
-                        `brainevent._xla_custom_op_util.defjvp` and JAX AD
-                        documentation for details.
+        Parameters
+        ----------
+        *jvp_rules : callable or None
+            One callable per input primal.  Each callable has the
+            signature ``rule(tangent, *primals, **params) -> tangent_out``.
+            Pass ``None`` for inputs whose JVP contribution is zero.
+
+        See Also
+        --------
+        def_jvp_rule : Define a single monolithic JVP rule.
+        defjvp : The underlying utility function.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> def jvp_input0(t, x, y, **kw):
+            ...     return t * y
+            >>> def jvp_input1(t, x, y, **kw):
+            ...     return t * x
+            >>> kernel.def_jvp_rule2(jvp_input0, jvp_input1)  # doctest: +SKIP
         """
         defjvp(self.primitive, *jvp_rules)
 
     def def_transpose_rule(self, fun: Callable):
-        """
-        Defines a custom transpose rule for the primitive.
+        """Define a custom transpose rule for reverse-mode AD.
 
-        This rule is used for reverse-mode automatic differentiation (AD),
-        specifically within the context of `jax.linear_transpose`. It defines
-        how to propagate gradients backward through the primitive.
+        The transpose rule is invoked during ``jax.linear_transpose`` and
+        defines how to propagate cotangent vectors (gradients) backward
+        through the primitive.
 
-        Args:
-            fun: A callable that implements the transpose logic. See JAX
-                 documentation for `ad.primitive_transposes`.
+        Parameters
+        ----------
+        fun : callable
+            A function implementing the transpose logic.  See JAX
+            documentation for
+            ``jax.interpreters.ad.primitive_transposes``.
+
+        See Also
+        --------
+        def_jvp_rule : Define a JVP rule for forward-mode AD.
+        def_jvp_rule2 : Define per-input JVP rules.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> def my_transpose(ct, *args, **params):
+            ...     # Propagate cotangent backward
+            ...     return (ct_input0, ct_input1)
+            >>> kernel.def_transpose_rule(my_transpose)  # doctest: +SKIP
         """
         ad.primitive_transposes[self.primitive] = fun
 
     def register_general_batching(self):
-        """
-        Registers a predefined general-purpose batching rule for the primitive.
+        """Register the default general-purpose batching rule.
 
-        This method applies a common batching pattern suitable for many custom
-        operators, likely handling element-wise operations or operations where
-        batching involves mapping the kernel over the batch dimension. It uses
-        the `general_batching_rule` function internally.
+        This method applies a common batching pattern that handles most
+        custom operators by using ``jax.lax.scan`` to map the kernel
+        over the batch dimension.  It is called automatically during
+        ``__init__``; call it again to restore the default after
+        overriding with :meth:`def_batching_rule`.
+
+        See Also
+        --------
+        def_batching_rule : Override with a custom batching rule.
+        general_batching_rule : The underlying batching implementation.
+
+        Notes
+        -----
+        The general batching rule moves all batch dimensions to axis 0
+        and uses ``jax.lax.scan`` to iterate over the batch.  This is
+        correct but may be slower than a hand-written batching rule for
+        operations that can natively handle batched inputs.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> kernel = XLACustomKernel('my_op')
+            >>> kernel.def_batching_rule(custom_rule)  # doctest: +SKIP
+            >>> kernel.register_general_batching()  # Restore default  # doctest: +SKIP
         """
         prim = self.primitive
         batching.primitive_batchers[prim] = functools.partial(general_batching_rule, prim)
 
     def def_call(self, fn: Callable):
-        """Associate a call function with this primitive.
+        """Associate a high-level call function with this primitive.
 
-        The call function is automatically JIT-compiled with all keyword-only
-        arguments treated as static.
+        The call function is the user-facing Python function that
+        prepares arguments and invokes the primitive.  It is stored
+        so that :meth:`call` and :meth:`benchmark` can use it.
 
-        Args:
-            fn: The call function (e.g., binary_csrmv_p_call).
+        Parameters
+        ----------
+        fn : callable
+            The call function (e.g., ``binary_csrmv_p_call``).  It
+            should accept the same positional and keyword arguments
+            that the end user would pass.
+
+        See Also
+        --------
+        call : Invoke the registered call function.
+        benchmark : Benchmark the registered call function.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> kernel = XLACustomKernel('my_op')
+            >>> kernel.def_call(my_call_fn)  # doctest: +SKIP
+            >>> kernel.call(x, y)  # delegates to my_call_fn  # doctest: +SKIP
         """
         self._call_fn = fn
 
     def call(self, *args, **kwargs):
-        """Call the associated call function.
+        """Invoke the registered call function.
 
-        Args:
-            *args: Positional arguments for the call function.
-            **kwargs: Keyword arguments for the call function.
+        Parameters
+        ----------
+        *args
+            Positional arguments forwarded to the call function.
+        **kwargs
+            Keyword arguments forwarded to the call function.
 
-        Returns:
-            The result of the call function.
+        Returns
+        -------
+        result
+            The return value of the call function.
+
+        Raises
+        ------
+        ValueError
+            If no call function has been registered via :meth:`def_call`.
+
+        See Also
+        --------
+        def_call : Register a call function.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> kernel = XLACustomKernel('my_op')
+            >>> kernel.def_call(my_call_fn)  # doctest: +SKIP
+            >>> result = kernel.call(x, y, backend='pallas')  # doctest: +SKIP
         """
         if self._call_fn is None:
             raise ValueError(
@@ -525,33 +976,63 @@ class XLACustomKernel:
     def def_tags(self, *tags: str):
         """Set categorization tags for this primitive.
 
-        Tags are used by the CLI and registry to filter primitives
-        by format (e.g., 'csr', 'coo') and type (e.g., 'binary', 'float').
+        Tags are used by the CLI and the global primitive registry to
+        filter primitives by sparse format (e.g., ``'csr'``, ``'coo'``)
+        and value type (e.g., ``'binary'``, ``'float'``).
 
-        Args:
-            *tags: Tag strings (e.g., 'csr', 'binary').
+        Parameters
+        ----------
+        *tags : str
+            Tag strings (e.g., ``'csr'``, ``'binary'``).
+
+        See Also
+        --------
+        def_benchmark_data : Register a benchmark data generator.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> kernel = XLACustomKernel('binary_csrmv')
+            >>> kernel.def_tags('csr', 'binary', 'mv')  # doctest: +SKIP
         """
         self._tags = set(tags)
 
     def def_benchmark_data(self, fn: Callable):
         """Register a benchmark data generator function.
 
-        The function should return a list of :class:`BenchmarkConfig`
-        instances, each covering a specific parameter combination for
-        this primitive.
+        The generator produces a list of :class:`BenchmarkConfig`
+        instances that define the parameter combinations to benchmark
+        for this primitive.
 
-        Args:
-            fn: A callable with signature
-                ``fn(*, platform) -> List[BenchmarkConfig]``.
+        Parameters
+        ----------
+        fn : callable
+            A callable with signature
+            ``fn(*, platform: str) -> List[BenchmarkConfig]``.
+
+        See Also
+        --------
+        benchmark : Run benchmarks using the registered call function.
+        def_tags : Set categorization tags for filtering.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> def my_data_gen(*, platform):
+            ...     return [BenchmarkConfig(n=100), BenchmarkConfig(n=1000)]
+            >>> kernel.def_benchmark_data(my_data_gen)  # doctest: +SKIP
         """
         self._benchmark_data_fn = fn
 
     def _apply_user_defaults(self):
-        """Lazily apply user defaults from the config file.
+        """Lazily apply user defaults from the configuration file.
 
-        Called once before the first kernel dispatch. Reads the user config
-        and sets defaults for any platforms that have a user preference and
-        a matching registered backend.
+        Called once before the first kernel dispatch.  Reads the user
+        configuration and sets defaults for any platforms that have a
+        user preference matching a registered backend.  Subsequent calls
+        are no-ops.
         """
         if self._user_defaults_applied:
             return
@@ -563,13 +1044,32 @@ class XLACustomKernel:
                 self._defaults[plat] = backend
 
     def available_backends(self, platform: str) -> List[str]:
-        """Return list of registered backend names for a platform.
+        """Return the list of registered backend names for a platform.
 
-        Args:
-            platform: The platform name (e.g., 'cpu', 'gpu', 'tpu').
+        Parameters
+        ----------
+        platform : str
+            The platform name (e.g., ``'cpu'``, ``'gpu'``, ``'tpu'``).
 
-        Returns:
-            A list of backend names registered for the given platform.
+        Returns
+        -------
+        list of str
+            Backend names registered for *platform*.  Returns an empty
+            list if no kernels are registered for the platform.
+
+        See Also
+        --------
+        defaults : Property returning the default backend for each
+            platform.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> kernel = XLACustomKernel('my_op')
+            >>> kernel.def_numba_kernel(numba_gen)  # doctest: +SKIP
+            >>> kernel.available_backends('cpu')  # doctest: +SKIP
+            ['numba']
         """
         if platform not in self._kernels:
             return []
@@ -589,25 +1089,58 @@ class XLACustomKernel:
     ) -> Union[BenchmarkResult, BenchmarkReport]:
         """Benchmark kernel execution using the registered call function.
 
-        Args:
-            *args: Positional args passed to the call function.
-            platform: Target platform ('cpu', 'gpu', 'tpu').
-            backend: Specific backend to benchmark, or None for all.
-            n_warmup: Number of warmup runs.
-            n_runs: Number of timed runs.
-            batch_mode: If False (default), block after each function call and time
-                each run individually (measures per-call latency). If True, run all
-                n_runs calls first, then block once at the end and measure total time
-                (measures throughput, useful for async GPU/TPU execution).
-            catch_error: If True, catch exceptions during kernel execution and record them in the results.
-            compare_results: Verify outputs match across backends (not yet implemented).
-            **kwargs: Keyword args passed to the call function.
+        Runs the call function with the given arguments on one or all
+        backends and measures execution time.  Optionally compares
+        outputs across backends for numerical consistency.
 
-        Returns:
-            BenchmarkResult if backend specified, else BenchmarkReport.
+        Parameters
+        ----------
+        *args
+            Positional arguments forwarded to the call function.
+        platform : str
+            Target platform (``'cpu'``, ``'gpu'``, or ``'tpu'``).
+        backend : str or None, optional
+            Specific backend to benchmark.  If ``None`` (default), all
+            backends registered for *platform* are benchmarked.
+        n_warmup : int, optional
+            Number of warmup runs before timing.  Default is ``5``.
+        n_runs : int, optional
+            Number of timed runs.  Default is ``20``.
+        batch_mode : bool, optional
+            If ``False`` (default), block after each call and time each
+            run individually (per-call latency).  If ``True``, run all
+            *n_runs* calls, then block once and measure total time
+            (throughput, useful for asynchronous GPU/TPU execution).
+        compare_results : bool, optional
+            If ``True`` (default), verify that outputs match across
+            backends using ``jnp.allclose``.
+        catch_error : bool, optional
+            If ``True`` (default), catch exceptions during kernel
+            execution and record them in the results.  If ``False``,
+            exceptions propagate immediately.
+        **kwargs
+            Keyword arguments forwarded to the call function.
 
-        Raises:
-            ValueError: If no call function registered (use def_call first).
+        Returns
+        -------
+        BenchmarkResult or BenchmarkReport
+            A :class:`BenchmarkResult` if a specific *backend* was
+            requested, otherwise a :class:`BenchmarkReport` aggregating
+            results for all backends.
+
+        Raises
+        ------
+        ValueError
+            If no call function has been registered (use :meth:`def_call`
+            first), or if no backends are registered for *platform*.
+
+        See Also
+        --------
+        def_call : Register the call function to benchmark.
+        def_benchmark_data : Register a data generator for automated
+            benchmarking.
+        BenchmarkResult : Single-backend benchmark result.
+        BenchmarkReport : Multi-backend benchmark report.
         """
         if self._call_fn is None:
             raise ValueError(
