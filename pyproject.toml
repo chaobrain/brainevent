@@ -47,8 +47,13 @@ classifiers = [
 ]
 keywords = [
     'computational neuroscience',
-    'brain-inspired computation',
-    'brain dynamics programming',
+    'brain-inspired computing',
+    'brain simulation',
+    'brain modeling',
+    'event-driven computation',
+    'spiking neural networks',
+    'neuromorphic computing',
+    'dynamic sparsity',
 ]
 dependencies = [
     'numpy>=1.15',
