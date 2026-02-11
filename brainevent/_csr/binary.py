@@ -436,7 +436,7 @@ def _csrmv_pallas_kernel(
             def loop_fn(index, sum_):
                 offset = row_start + index * block_dim
                 mask = offset + jnp.arange(block_dim) < row_end
-                cols = load(indices_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0)
+                cols = load(indices_ref.at[pl.ds(offset, block_dim)], mask=mask, other=0)
                 events = vector_ref[cols]
                 if vector_ref.dtype == jnp.bool_:
                     events = jnp.asarray(events & mask, dtype=posts_ref.dtype)
@@ -480,8 +480,8 @@ def _csrmv_pallas_kernel(
             def loop_fn(index, sum_):
                 offset = row_start + index * block_dim
                 mask = offset + jnp.arange(block_dim) < row_end
-                cols = load(indices_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0)
-                val_A = load(data_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0.0)
+                cols = load(indices_ref.at[pl.ds(offset, block_dim)], mask=mask, other=0)
+                val_A = load(data_ref.at[pl.ds(offset, block_dim)], mask=mask, other=0.0)
                 events = vector_ref[cols]
                 if vector_ref.dtype == jnp.bool_:
                     events = jnp.asarray(events & mask, dtype=posts_ref.dtype)
@@ -549,7 +549,7 @@ def _csrmv_pallas_gpu_kernel(
                     def loop_fn(index, _):
                         offset = row_start + index * block_dim
                         mask = offset + jnp.arange(block_dim) < row_end
-                        cols = indices_ref[pl.dslice(offset, block_dim)]
+                        cols = indices_ref[pl.ds(offset, block_dim)]
                         atomic_add(posts_ref, cols, data, mask=mask)
 
                     jax.lax.fori_loop(0, num_blocks, loop_fn, None)
@@ -581,8 +581,8 @@ def _csrmv_pallas_gpu_kernel(
                     def loop_fn(index, _):
                         offset = row_start + index * block_dim
                         mask = offset + jnp.arange(block_dim) < row_end
-                        cols = indices_ref[pl.dslice(offset, block_dim)]
-                        weights = data_ref[pl.dslice(offset, block_dim)]
+                        cols = indices_ref[pl.ds(offset, block_dim)]
+                        weights = data_ref[pl.ds(offset, block_dim)]
                         data = jnp.asarray(weights, dtype=posts_ref.dtype)
                         atomic_add(posts_ref, cols, data, mask=mask)
 
@@ -1158,11 +1158,11 @@ def _csrmm_pallas_kernel(
                     offset = row_start + index * block_dim
                     nnz_mask = offset + jnp.arange(block_dim) < row_end
 
-                    cols = load(indices_ref, (pl.dslice(offset, block_dim),), mask=nnz_mask, other=0)
+                    cols = load(indices_ref.at[pl.ds(offset, block_dim)], mask=nnz_mask, other=0)
                     
                     safe_cols = jnp.minimum(cols, limit_k)
                     
-                    events = B_ref[safe_cols, pl.dslice(i_col_start, block_dim_n)]
+                    events = B_ref[safe_cols, pl.ds(i_col_start, block_dim_n)]
                     events = jnp.asarray(events, dtype=posts_ref.dtype)
 
                     contribution = jnp.sum(jnp.where(nnz_mask[:, None], events, 0.), axis=0)
@@ -1174,9 +1174,9 @@ def _csrmm_pallas_kernel(
                     jnp.zeros([block_dim_n], dtype=posts_ref.dtype)
                 )
                 
-                pl.store(
+                store(
                     posts_ref, 
-                    (i_row, pl.dslice(i_col_start, block_dim_n)), 
+                    (i_row, pl.ds(i_col_start, block_dim_n)), 
                     i_row_sum, 
                     mask=col_mask
                 )
@@ -1225,8 +1225,8 @@ def _csrmm_pallas_kernel(
 
                     nnz_mask = offset + jnp.arange(block_dim) < row_end
 
-                    cols = pl.load(indices_ref, (pl.dslice(offset, block_dim),), mask=nnz_mask, other=0)
-                    val_A = pl.load(data_ref, (pl.dslice(offset, block_dim),), mask=nnz_mask, other=0.0)
+                    cols = load(indices_ref.at[pl.ds(offset, block_dim)], mask=nnz_mask, other=0)
+                    val_A = load(data_ref.at[pl.ds(offset, block_dim)], mask=nnz_mask, other=0.0)
                     
 
                     valid_cols = cols < num_B_rows
@@ -1235,7 +1235,7 @@ def _csrmm_pallas_kernel(
                     mask_B_dim0 = nnz_mask & valid_cols
                     mask_B = mask_B_dim0[:, None] & col_mask[None, :]
                     
-                    events = load(B_ref.at[safe_cols, pl.dslice(i_col_start, block_dim_n)], mask=mask_B, other=0.0)
+                    events = load(B_ref.at[safe_cols, pl.ds(i_col_start, block_dim_n)], mask=mask_B, other=0.0)
    
                     weighted = val_A[:, None] * events
 
@@ -1249,7 +1249,7 @@ def _csrmm_pallas_kernel(
                     jnp.zeros([block_dim_n], dtype=posts_ref.dtype)
                 )
                 
-                store(posts_ref.at[i_row, pl.dslice(i_col_start, block_dim_n)], i_row_sum, mask=col_mask)
+                store(posts_ref.at[i_row, pl.ds(i_col_start, block_dim_n)], i_row_sum, mask=col_mask)
 
             jax.lax.cond(i_row < num_rows, _body, lambda: None)
 
@@ -1274,6 +1274,8 @@ def _csrmm_pallas_gpu_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
+    from jax.experimental.pallas.triton import load, atomic_add
+
 
     m, k = shape
     n = vector_info.shape[1]
@@ -1308,7 +1310,7 @@ def _csrmm_pallas_gpu_kernel(
                 col_start = indptr_ref[i_k]
                 col_end = indptr_ref[i_k + 1]
                 mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
-                events = pl.load(B_ref, (i_k, pl.dslice(i_col_start, block_dim_n)), mask=mask)
+                events = load(B_ref.at[i_k, pl.ds(i_col_start, block_dim_n)], mask=mask)
                 if B_ref.dtype == jnp.bool_:
                     mask = mask & events
                     val = jnp.where(events, data_ref[0], 0.)
@@ -1318,7 +1320,7 @@ def _csrmm_pallas_gpu_kernel(
 
                 def loop_fn(index, _):
                     i_row = indices_ref[index]
-                    pl.atomic_add(posts_ref, (i_row, pl.dslice(i_col_start, block_dim_n)), val, mask=mask)
+                    atomic_add(posts_ref, (i_row, pl.ds(i_col_start, block_dim_n)), val, mask=mask)
 
                 jax.lax.fori_loop(col_start, col_end, loop_fn, None, )
 
@@ -1343,7 +1345,7 @@ def _csrmm_pallas_gpu_kernel(
                 mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
                 col_start = indptr_ref[i_k]
                 col_end = indptr_ref[i_k + 1]
-                events = pl.load(B_ref, (i_k, pl.dslice(i_col_start, block_dim_n)), mask=mask)
+                events = load(B_ref.at[i_k, pl.ds(i_col_start, block_dim_n)], mask=mask)
                 if B_ref.dtype == jnp.bool_:
                     mask = mask & events
                 else:
@@ -1356,7 +1358,7 @@ def _csrmm_pallas_gpu_kernel(
                         val = jnp.where(events, val_A, 0.)
                     else:
                         val = events * val_A
-                    pl.atomic_add(posts_ref, (i_row, pl.dslice(i_col_start, block_dim_n)), val, mask=mask)
+                    atomic_add(posts_ref, (i_row, pl.ds(i_col_start, block_dim_n)), val, mask=mask)
 
                 jax.lax.fori_loop(col_start, col_end, loop_fn, None, )
 

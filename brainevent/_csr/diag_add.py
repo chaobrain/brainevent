@@ -224,8 +224,8 @@ def _csr_diag_add_pallas_kernel_generator(
         i_tile = pl.program_id(0)
         i_tile_start = i_tile * block_dim
         mask = (i_tile_start + jnp.arange(block_dim)) < total
-        positions = diag_position_ref[pl.dslice(i_tile_start, block_dim)]
-        values = diag_value_ref[pl.dslice(i_tile_start, block_dim)]
+        positions = diag_position_ref[pl.ds(i_tile_start, block_dim)]
+        values = diag_value_ref[pl.ds(i_tile_start, block_dim)]
         valid_mask = mask & (positions >= 0)
         atomic_add(out_ref, positions, values, mask=valid_mask)
 
