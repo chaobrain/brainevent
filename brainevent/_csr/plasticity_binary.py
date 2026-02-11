@@ -21,7 +21,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent._misc import generate_block_dim, namescope
+from brainevent._misc import namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
@@ -78,7 +78,7 @@ def update_csr_on_binary_pre(
     weight, wunit = u.split_mantissa_unit(weight)
     post_trace = u.Quantity(post_trace).to(wunit).mantissa
     weight = u.maybe_decimal(
-        _csr_on_pre_prim_call(
+        csr_on_pre_prim_call(
             weight, indices, indptr, pre_spike, post_trace, shape=shape, backend=backend
         )[0] * wunit
     )
@@ -139,7 +139,6 @@ def _csr_on_pre_warp_kernel_generator(
     if spike_info.dtype == jnp.bool_:
         @warp.kernel
         def plasticity_kernel(
-            weight: weight_warp_info,
             indices: indices_warp_info,
             indptr: indptr_warp_info,
             pre_spike: spike_warp_info,
@@ -153,7 +152,6 @@ def _csr_on_pre_warp_kernel_generator(
     else:
         @warp.kernel
         def plasticity_kernel(
-            weight: weight_warp_info,
             indices: indices_warp_info,
             indptr: indptr_warp_info,
             pre_spike: spike_warp_info,
@@ -166,65 +164,47 @@ def _csr_on_pre_warp_kernel_generator(
                     out_w[j] += post_trace[indices[j]]
 
     def kernel(weight, indices, indptr, pre_spike, post_trace):
-        fn = jax_kernel(
-            plasticity_kernel,
-            launch_dims=shape[0],
-            num_outputs=1,
-            in_out_argnames=['out_w']
-        )
-        return fn(weight, indices, indptr, pre_spike, post_trace, weight.copy())
+        fn = jax_kernel(plasticity_kernel, launch_dims=[shape[0]], num_outputs=1, in_out_argnames=['out_w'])
+        return fn(indices, indptr, pre_spike, post_trace, weight)
 
     return kernel
 
 
 def _csr_on_pre_pallas_kernel_generator(
-    weight_info: jax.ShapeDtypeStruct,
     spike_info: jax.ShapeDtypeStruct,
     shape: MatrixShape,
     **kwargs
 ):
     from jax.experimental import pallas as pl
 
-    block_dim = generate_block_dim(weight_info.shape[0], 512)
-
     if spike_info.dtype == jnp.bool_:
         def kernel_fn(weight_ref, indices_ref, indptr_ref, spike_ref, trace_ref, _, out_w_ref):
             i_row = pl.program_id(0)
             i_col_start = indptr_ref[i_row]
             i_col_end = indptr_ref[i_row + 1]
-            num_blocks = (i_col_end - i_col_start + block_dim - 1) // block_dim
 
             @pl.when(spike_ref[i_row])
             def run():
-                def loop_fn(i_block, _):
-                    offset = i_col_start + i_block * block_dim
-                    mask = (offset + jnp.arange(block_dim)) < i_col_end
-                    post_ids = indices_ref[pl.dslice(offset, block_dim)]
-                    current_w = out_w_ref[pl.dslice(offset, block_dim)]
-                    post_trace = trace_ref[post_ids]
-                    updated_w = jnp.where(mask, current_w + post_trace, current_w)
-                    out_w_ref[pl.dslice(offset, block_dim)] = updated_w
+                def loop_fn(j, _):
+                    idx = i_col_start + j
+                    post_id = indices_ref[idx]
+                    out_w_ref[idx] = out_w_ref[idx] + trace_ref[post_id]
 
-                jax.lax.fori_loop(0, num_blocks, loop_fn, None)
+                jax.lax.fori_loop(0, i_col_end - i_col_start, loop_fn, None)
     else:
         def kernel_fn(weight_ref, indices_ref, indptr_ref, spike_ref, trace_ref, _, out_w_ref):
             i_row = pl.program_id(0)
             i_col_start = indptr_ref[i_row]
             i_col_end = indptr_ref[i_row + 1]
-            num_blocks = (i_col_end - i_col_start + block_dim - 1) // block_dim
 
             @pl.when(spike_ref[i_row] != 0.)
             def run():
-                def loop_fn(i_block, _):
-                    offset = i_col_start + i_block * block_dim
-                    mask = (offset + jnp.arange(block_dim)) < i_col_end
-                    post_ids = indices_ref[pl.dslice(offset, block_dim)]
-                    current_w = out_w_ref[pl.dslice(offset, block_dim)]
-                    post_trace = trace_ref[post_ids]
-                    updated_w = jnp.where(mask, current_w + post_trace, current_w)
-                    out_w_ref[pl.dslice(offset, block_dim)] = updated_w
+                def loop_fn(j, _):
+                    idx = i_col_start + j
+                    post_id = indices_ref[idx]
+                    out_w_ref[idx] = out_w_ref[idx] + trace_ref[post_id]
 
-                jax.lax.fori_loop(0, num_blocks, loop_fn, None)
+                jax.lax.fori_loop(0, i_col_end - i_col_start, loop_fn, None)
 
     def kernel(weight, indices, indptr, pre_spike, post_trace):
         fn = pl.pallas_call(
@@ -239,7 +219,7 @@ def _csr_on_pre_pallas_kernel_generator(
     return kernel
 
 
-def _update_csr_pre_benchmark_data(*, platform):
+def _csr_on_pre_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for bool_event in (True, False):
@@ -259,7 +239,7 @@ def _update_csr_pre_benchmark_data(*, platform):
     return configs
 
 
-def _csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, shape, backend=None):
+def csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, shape, backend=None):
     assert weight.ndim == 1, 'dense_one_pre only support 1D weight.'
     assert pre_spike.ndim == 1, 'pre_spike should be 1D.'
     assert post_trace.ndim == 1, 'post_trace should be 1D.'
@@ -286,7 +266,7 @@ update_csr_on_binary_pre_p.def_numba_kernel(_csr_on_pre_numba_kernel_generator)
 update_csr_on_binary_pre_p.def_warp_kernel(_csr_on_pre_warp_kernel_generator)
 update_csr_on_binary_pre_p.def_pallas_kernel('gpu', _csr_on_pre_pallas_kernel_generator)
 update_csr_on_binary_pre_p.def_tags('csr', 'plasticity')
-update_csr_on_binary_pre_p.def_benchmark_data(_update_csr_pre_benchmark_data)
+update_csr_on_binary_pre_p.def_benchmark_data(_csr_on_pre_benchmark_data)
 
 
 @namescope(static_argnames=['shape'])
@@ -335,7 +315,7 @@ def update_csr_on_binary_post(
     weight, wunit = u.split_mantissa_unit(weight)
     pre_trace = u.Quantity(pre_trace).to(wunit).mantissa
     weight = u.maybe_decimal(
-        _csr2csc_on_post_prim_call(
+        csr2csc_on_post_prim_call(
             weight, indices, indptr, weight_indices, pre_trace, post_spike, shape=shape, backend=backend
         )[0] * wunit
     )
@@ -392,7 +372,6 @@ def _csr2csc_on_post_warp_kernel_generator(
     import warp
     from warp.jax_experimental import jax_kernel
 
-    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
     indices_warp_info = jaxinfo_to_warpinfo(indices_info)
     indptr_warp_info = jaxinfo_to_warpinfo(indptr_info)
     weight_indices_warp_info = jaxinfo_to_warpinfo(weight_indices_info)
@@ -403,7 +382,6 @@ def _csr2csc_on_post_warp_kernel_generator(
     if spike_info.dtype == jnp.bool_:
         @warp.kernel
         def plasticity_kernel(
-            weight: weight_warp_info,
             indices: indices_warp_info,
             indptr: indptr_warp_info,
             weight_indices: weight_indices_warp_info,
@@ -420,7 +398,6 @@ def _csr2csc_on_post_warp_kernel_generator(
     else:
         @warp.kernel
         def plasticity_kernel(
-            weight: weight_warp_info,
             indices: indices_warp_info,
             indptr: indptr_warp_info,
             weight_indices: weight_indices_warp_info,
@@ -436,93 +413,60 @@ def _csr2csc_on_post_warp_kernel_generator(
                     out_w[weight_id] += pre_trace[pre_id]
 
     def kernel(weight, indices, indptr, weight_indices, pre_trace, post_spike):
-        fn = jax_kernel(
-            plasticity_kernel,
-            launch_dims=shape[1],
-            num_outputs=1,
-            in_out_argnames=['out_w']
-        )
-        return fn(weight, indices, indptr, weight_indices, pre_trace, post_spike, weight.copy())
+        fn = jax_kernel(plasticity_kernel, launch_dims=[shape[1]], num_outputs=1, in_out_argnames=['out_w'])
+        return fn(indices, indptr, weight_indices, pre_trace, post_spike, weight)
 
     return kernel
 
 
 def _csr2csc_on_post_pallas_kernel_generator(
-    weight_info: jax.ShapeDtypeStruct,
     spike_info: jax.ShapeDtypeStruct,
     shape: MatrixShape,
     **kwargs
 ):
     from jax.experimental import pallas as pl
 
-    block_dim = generate_block_dim(weight_info.shape[0], 512)
-
     if spike_info.dtype == jnp.bool_:
         def kernel_fn(weight_ref, indices_ref, indptr_ref, weight_indices_ref, trace_ref, spike_ref, _, out_w_ref):
             i_col = pl.program_id(0)
             i_row_start = indptr_ref[i_col]
             i_row_end = indptr_ref[i_col + 1]
-            num_blocks = (i_row_end - i_row_start + block_dim - 1) // block_dim
 
             @pl.when(spike_ref[i_col])
             def run():
-                def loop_fn(i_block, _):
-                    offset = i_row_start + i_block * block_dim
-                    mask = (offset + jnp.arange(block_dim)) < i_row_end
-                    pre_ids = indices_ref[pl.dslice(offset, block_dim)]
-                    weight_ids = weight_indices_ref[pl.dslice(offset, block_dim)]
-                    pre_trace_vals = trace_ref[pre_ids]
-                    current_w = out_w_ref[weight_ids]
-                    updated_w = jnp.where(mask, current_w + pre_trace_vals, current_w)
+                def loop_fn(j, _):
+                    idx = i_row_start + j
+                    pre_id = indices_ref[idx]
+                    w_id = weight_indices_ref[idx]
+                    out_w_ref[w_id] = out_w_ref[w_id] + trace_ref[pre_id]
 
-                    # Scatter update: for each position, update out_w_ref at weight_ids
-                    # Using a loop to handle potential non-contiguous writes
-                    def scatter_fn(j, _):
-                        w_id = weight_ids[j]
-                        out_w_ref[w_id] = jnp.where(mask[j], out_w_ref[w_id] + pre_trace_vals[j], out_w_ref[w_id])
-
-                    jax.lax.fori_loop(0, block_dim, scatter_fn, None)
-
-                jax.lax.fori_loop(0, num_blocks, loop_fn, None)
+                jax.lax.fori_loop(0, i_row_end - i_row_start, loop_fn, None)
     else:
         def kernel_fn(weight_ref, indices_ref, indptr_ref, weight_indices_ref, trace_ref, spike_ref, _, out_w_ref):
             i_col = pl.program_id(0)
             i_row_start = indptr_ref[i_col]
             i_row_end = indptr_ref[i_col + 1]
-            num_blocks = (i_row_end - i_row_start + block_dim - 1) // block_dim
 
             @pl.when(spike_ref[i_col] != 0.)
             def run():
-                def loop_fn(i_block, _):
-                    offset = i_row_start + i_block * block_dim
-                    mask = (offset + jnp.arange(block_dim)) < i_row_end
-                    pre_ids = indices_ref[pl.dslice(offset, block_dim)]
-                    weight_ids = weight_indices_ref[pl.dslice(offset, block_dim)]
-                    pre_trace_vals = trace_ref[pre_ids]
+                def loop_fn(j, _):
+                    idx = i_row_start + j
+                    pre_id = indices_ref[idx]
+                    w_id = weight_indices_ref[idx]
+                    out_w_ref[w_id] = out_w_ref[w_id] + trace_ref[pre_id]
 
-                    # Scatter update: for each position, update out_w_ref at weight_ids
-                    def scatter_fn(j, _):
-                        w_id = weight_ids[j]
-                        out_w_ref[w_id] = jnp.where(mask[j], out_w_ref[w_id] + pre_trace_vals[j], out_w_ref[w_id])
-
-                    jax.lax.fori_loop(0, block_dim, scatter_fn, None)
-
-                jax.lax.fori_loop(0, num_blocks, loop_fn, None)
+                jax.lax.fori_loop(0, i_row_end - i_row_start, loop_fn, None)
 
     def kernel(weight, indices, indptr, weight_indices, pre_trace, post_spike):
         fn = pl.pallas_call(
-            kernel_fn,
-            grid=(shape[1],),
-            input_output_aliases={6: 0},
-            out_shape=kwargs['outs'],
-            backend='triton',
+            kernel_fn, grid=(shape[1],), input_output_aliases={6: 0}, out_shape=kwargs['outs'], backend='triton',
         )
         return fn(weight, indices, indptr, weight_indices, pre_trace, post_spike, weight)
 
     return kernel
 
 
-def _update_csr_post_benchmark_data(*, platform):
+def _csr2csc_on_post_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for bool_event in (True, False):
@@ -540,13 +484,16 @@ def _update_csr_post_benchmark_data(*, platform):
             post_spike = jnp.asarray(np.random.rand(n_post), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
         configs.append(
-            BenchmarkConfig(name, (weight, indices, jnp.asarray(indptr), weight_indices, pre_trace, post_spike), {
-                'shape': (n_pre, n_post)
-            }))
+            BenchmarkConfig(
+                name,
+                (weight, indices, jnp.asarray(indptr), weight_indices, pre_trace, post_spike),
+                {'shape': (n_pre, n_post)}
+            )
+        )
     return configs
 
 
-def _csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace, post_spike, *, shape, backend=None):
+def csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace, post_spike, *, shape, backend=None):
     assert weight.ndim == 1, 'dense_one_post only support 1D weight.'
     assert post_spike.ndim == 1, 'post_spike should be 1D.'
     assert pre_trace.ndim == 1, 'pre_trace should be 1D.'
@@ -575,4 +522,4 @@ update_csr_on_binary_post_p.def_numba_kernel(_csr2csc_on_post_numba_kernel_gener
 update_csr_on_binary_post_p.def_warp_kernel(_csr2csc_on_post_warp_kernel_generator)
 update_csr_on_binary_post_p.def_pallas_kernel('gpu', _csr2csc_on_post_pallas_kernel_generator)
 update_csr_on_binary_post_p.def_tags('csr', 'plasticity')
-update_csr_on_binary_post_p.def_benchmark_data(_update_csr_post_benchmark_data)
+update_csr_on_binary_post_p.def_benchmark_data(_csr2csc_on_post_benchmark_data)
