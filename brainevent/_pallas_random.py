@@ -20,11 +20,14 @@ import jax.numpy as jnp
 import numpy as np
 
 from ._typing import PallasRandomKey
+from .config import get_lfsr_algorithm
 
 __all__ = [
     'PallasLFSR88RNG',
     'PallasLFSR113RNG',
     'PallasLFSR128RNG',
+    'get_pallas_lfsr_rng_class',
+    'PallasLFSRRNG',
 ]
 
 
@@ -1186,3 +1189,35 @@ class PallasLFSR128RNG(LFSRBase):
         z = mag * jnp.sin(2 * jnp.pi * u2)
 
         return z
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Dispatch helpers
+# ──────────────────────────────────────────────────────────────────────
+
+_PALLAS_LFSR_CLASSES = {
+    'lfsr88': PallasLFSR88RNG,
+    'lfsr113': PallasLFSR113RNG,
+    'lfsr128': PallasLFSR128RNG,
+}
+
+
+def get_pallas_lfsr_rng_class():
+    """Return the Pallas RNG class for the current global LFSR algorithm."""
+    return _PALLAS_LFSR_CLASSES[get_lfsr_algorithm()]
+
+
+def PallasLFSRRNG(seed):
+    """Factory: create a Pallas RNG instance using the globally configured algorithm.
+
+    Parameters
+    ----------
+    seed : int
+        Integer seed for the RNG.
+
+    Returns
+    -------
+    LFSRBase
+        An instance of the appropriate Pallas LFSR RNG class.
+    """
+    return get_pallas_lfsr_rng_class()(seed)

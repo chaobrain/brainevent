@@ -26,8 +26,8 @@ from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, jaxinfo_to_warpinfo, numba_kernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
-from brainevent._numba_random import lfsr88_seed, lfsr88_random_integers, lfsr88_normal
-from brainevent._pallas_random import PallasLFSR88RNG
+from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_normal
+from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
 from .float import jitnmv_p_call, jitnmm_p_call
 
@@ -313,6 +313,9 @@ def _jitc_mv_normal_numba_kernel_generator(
     r"""Generate the CPU kernel for the :func:`_jitc_matvec_normal` operation.
     """
     import numba
+    _lfsr_seed = get_numba_lfsr_seed()
+    _lfsr_random_integers = get_numba_lfsr_random_integers()
+    _lfsr_normal = get_numba_lfsr_normal()
 
     if corder:
         # This means that the for loop is parallelized along the dimension of the output vector: ``post.shape[0]``.
@@ -327,14 +330,14 @@ def _jitc_mv_normal_numba_kernel_generator(
                 clen0 = clen[0]
                 seed0 = seed[0]
                 for i_col in range(n_col):
-                    state = lfsr88_seed(seed0 + i_col * n_row)
-                    i_row = lfsr88_random_integers(state, 0, clen0 - 1)
+                    state = _lfsr_seed(seed0 + i_col * n_row)
+                    i_row = _lfsr_random_integers(state, 0, clen0 - 1)
                     out = np.asarray(0., dtype=posts.dtype)
                     while i_row < n_row:
-                        w = lfsr88_normal(state, w_loc0, w_scale0)
+                        w = _lfsr_normal(state, w_loc0, w_scale0)
                         if vector[i_row]:
                             out += w
-                        i_row += lfsr88_random_integers(state, 1, clen0 - 1)
+                        i_row += _lfsr_random_integers(state, 1, clen0 - 1)
                     posts[i_col] = out
         else:
             @numba.njit(fastmath=True)
@@ -347,14 +350,14 @@ def _jitc_mv_normal_numba_kernel_generator(
                 clen0 = clen[0]
                 seed0 = seed[0]
                 for i_col in range(n_col):
-                    state = lfsr88_seed(seed0 + i_col * n_row)
-                    i_row = lfsr88_random_integers(state, 0, clen0 - 1)
+                    state = _lfsr_seed(seed0 + i_col * n_row)
+                    i_row = _lfsr_random_integers(state, 0, clen0 - 1)
                     out = np.asarray(0., dtype=posts.dtype)
                     while i_row < n_row:
-                        w = lfsr88_normal(state, w_loc0, w_scale0)
+                        w = _lfsr_normal(state, w_loc0, w_scale0)
                         if vector[i_row] > 0.:
                             out += w
-                        i_row += lfsr88_random_integers(state, 1, clen0 - 1)
+                        i_row += _lfsr_random_integers(state, 1, clen0 - 1)
                     posts[i_col] = out
 
     else:
@@ -370,12 +373,12 @@ def _jitc_mv_normal_numba_kernel_generator(
                 seed0 = seed[0]
                 for i_row in range(num_row):
                     if vector[i_row]:
-                        state = lfsr88_seed(seed0 + i_row * num_col)
-                        i_col = lfsr88_random_integers(state, 0, clen0 - 1)
+                        state = _lfsr_seed(seed0 + i_row * num_col)
+                        i_col = _lfsr_random_integers(state, 0, clen0 - 1)
                         while i_col < num_col:
-                            w = lfsr88_normal(state, w_loc0, w_scale0)
+                            w = _lfsr_normal(state, w_loc0, w_scale0)
                             posts[i_col] += w
-                            i_col += lfsr88_random_integers(state, 1, clen0 - 1)
+                            i_col += _lfsr_random_integers(state, 1, clen0 - 1)
         else:
             @numba.njit(fastmath=True)
             def kernel(w_loc, w_scale, clen, vector, seed, posts):
@@ -388,12 +391,12 @@ def _jitc_mv_normal_numba_kernel_generator(
                 seed0 = seed[0]
                 for i_row in range(num_row):
                     if vector[i_row] > 0.:
-                        state = lfsr88_seed(seed0 + i_row * num_col)
-                        i_col = lfsr88_random_integers(state, 0, clen0 - 1)
+                        state = _lfsr_seed(seed0 + i_row * num_col)
+                        i_col = _lfsr_random_integers(state, 0, clen0 - 1)
                         while i_col < num_col:
-                            w = lfsr88_normal(state, w_loc0, w_scale0)
+                            w = _lfsr_normal(state, w_loc0, w_scale0)
                             posts[i_col] += w
-                            i_col += lfsr88_random_integers(state, 1, clen0 - 1)
+                            i_col += _lfsr_random_integers(state, 1, clen0 - 1)
 
     def run(w_loc, w_scale, clen, vector, seed):
         return numba_kernel(kernel, outs=kwargs['outs'])(w_loc, w_scale, clen, vector, seed)
@@ -566,6 +569,8 @@ def _jitc_mv_normal_pallas_kernel_generator(
     from jax.experimental import pallas as pl
     from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
+    _PallasLFSRRNG = get_pallas_lfsr_rng_class()
+
     dim = (out_info.shape[0] if corder else vector_info.shape[0])
     block_size = generate_block_dim(dim, maximum=128)
 
@@ -593,7 +598,7 @@ def _jitc_mv_normal_pallas_kernel_generator(
                 i_rows += rng.random_integers(1, clen)
                 return i_rows, i_rows < num_row, rng, out
 
-            rng = PallasLFSR88RNG(seed + i_cols * num_row)
+            rng = _PallasLFSRRNG(seed + i_cols * num_row)
             i_rows = rng.random_integers(0, clen)
             i_row_mask = i_rows < num_row
             out = jnp.zeros(block_size, dtype=post_ref.dtype)
@@ -630,7 +635,7 @@ def _jitc_mv_normal_pallas_kernel_generator(
                 i_cols += rng.random_integers(1, clen)
                 return i_cols, i_cols < num_col, rng
 
-            rng = PallasLFSR88RNG(seed + i_rows * num_col)
+            rng = _PallasLFSRRNG(seed + i_rows * num_col)
             i_cols = rng.random_integers(0, clen)
             i_col_mask = i_cols < num_col
             jax.lax.while_loop(
@@ -900,6 +905,9 @@ def _jitc_mm_normal_numba_kernel_generator(
     Generate the CPU kernel for the :func:`_jitc_matmat_normal` operation.
     """
     import numba
+    _lfsr_seed = get_numba_lfsr_seed()
+    _lfsr_random_integers = get_numba_lfsr_random_integers()
+    _lfsr_normal = get_numba_lfsr_normal()
 
     if corder:
         # JIT Matrix.T @ B
@@ -917,15 +925,15 @@ def _jitc_mm_normal_numba_kernel_generator(
                 seed0 = seed[0]
                 clen0 = clen[0]
                 for i_m in range(m):
-                    state = lfsr88_seed(seed0 + i_m * k)
-                    i_k = lfsr88_random_integers(state, 0, clen0 - 1)
+                    state = _lfsr_seed(seed0 + i_m * k)
+                    i_k = _lfsr_random_integers(state, 0, clen0 - 1)
                     out = np.zeros(n, dtype=posts.dtype)
                     while i_k < k:
-                        w = lfsr88_normal(state, w_loc0, w_scale0)
+                        w = _lfsr_normal(state, w_loc0, w_scale0)
                         for j in range(B.shape[1]):
                             if B[i_k, j]:
                                 out[j] += w
-                        i_k += lfsr88_random_integers(state, 1, clen0 - 1)
+                        i_k += _lfsr_random_integers(state, 1, clen0 - 1)
                     posts[i_m] = out
         else:
             @numba.njit(fastmath=True)
@@ -939,15 +947,15 @@ def _jitc_mm_normal_numba_kernel_generator(
                 seed0 = seed[0]
                 clen0 = clen[0]
                 for i_m in range(m):
-                    state = lfsr88_seed(seed0 + i_m * k)
-                    i_k = lfsr88_random_integers(state, 0, clen0 - 1)
+                    state = _lfsr_seed(seed0 + i_m * k)
+                    i_k = _lfsr_random_integers(state, 0, clen0 - 1)
                     out = np.zeros(n, dtype=posts.dtype)
                     while i_k < k:
-                        w = lfsr88_normal(state, w_loc0, w_scale0)
+                        w = _lfsr_normal(state, w_loc0, w_scale0)
                         for j in range(B.shape[1]):
                             if B[i_k, j] > 0.:
                                 out[j] += w
-                        i_k += lfsr88_random_integers(state, 1, clen0 - 1)
+                        i_k += _lfsr_random_integers(state, 1, clen0 - 1)
                     posts[i_m] = out
 
     else:
@@ -965,13 +973,13 @@ def _jitc_mm_normal_numba_kernel_generator(
                 seed0 = seed[0]
                 clen0 = clen[0]
                 for i_k in range(k):
-                    state = lfsr88_seed(seed0 + i_k * m)
+                    state = _lfsr_seed(seed0 + i_k * m)
                     indices = np.where(B[i_k])[0]
-                    i_m = lfsr88_random_integers(state, 0, clen0 - 1)
+                    i_m = _lfsr_random_integers(state, 0, clen0 - 1)
                     while i_m < m:
-                        w = lfsr88_normal(state, w_loc0, w_scale0)
+                        w = _lfsr_normal(state, w_loc0, w_scale0)
                         posts[i_m, indices] += w
-                        i_m += lfsr88_random_integers(state, 1, clen0 - 1)
+                        i_m += _lfsr_random_integers(state, 1, clen0 - 1)
         else:
             @numba.njit(fastmath=True)
             def kernel(w_loc, w_scale, clen, B, seed, posts):
@@ -983,13 +991,13 @@ def _jitc_mm_normal_numba_kernel_generator(
                 seed0 = seed[0]
                 clen0 = clen[0]
                 for i_k in range(k):
-                    state = lfsr88_seed(seed0 + i_k * m)
+                    state = _lfsr_seed(seed0 + i_k * m)
                     indices = np.where(B[i_k] > 0.)[0]
-                    i_m = lfsr88_random_integers(state, 0, clen0 - 1)
+                    i_m = _lfsr_random_integers(state, 0, clen0 - 1)
                     while i_m < m:
-                        w = lfsr88_normal(state, w_loc0, w_scale0)
+                        w = _lfsr_normal(state, w_loc0, w_scale0)
                         posts[i_m, indices] += w
-                        i_m += lfsr88_random_integers(state, 1, clen0 - 1)
+                        i_m += _lfsr_random_integers(state, 1, clen0 - 1)
 
     def run(w_loc, w_scale, clen, B, seed):
         return numba_kernel(kernel, outs=kwargs['outs'])(w_loc, w_scale, clen, B, seed)
@@ -1166,6 +1174,8 @@ def _jitc_mm_normal_pallas_kernel_generator(
     from jax.experimental import pallas as pl
     from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
+    _PallasLFSRRNG = get_pallas_lfsr_rng_class()
+
     B_cols = B_info.shape[1]
 
     if corder:
@@ -1188,7 +1198,7 @@ def _jitc_mm_normal_pallas_kernel_generator(
             i_row_mask = i_rows < out_rows
             safe_rows = jnp.where(i_row_mask, i_rows, 0)
 
-            rng = PallasLFSR88RNG(seed0 + i_rows * k)
+            rng = _PallasLFSRRNG(seed0 + i_rows * k)
             i_cols = rng.random_integers(0, clen0)
             i_col_mask = i_cols < k
 
@@ -1243,7 +1253,7 @@ def _jitc_mm_normal_pallas_kernel_generator(
                 b_events = jnp.where(b_vals > 0., 1., 0.)
             b_events = jnp.where(i_k_mask, b_events, 0.)
 
-            rng = PallasLFSR88RNG(seed0 + i_ks * m)
+            rng = _PallasLFSRRNG(seed0 + i_ks * m)
             i_rows = rng.random_integers(0, clen0)
             i_row_mask = i_rows < m
 

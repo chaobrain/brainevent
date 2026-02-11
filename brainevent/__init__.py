@@ -91,6 +91,7 @@ from ._op import (
 )
 from ._pallas_random import (
     PallasLFSR88RNG, PallasLFSR113RNG, PallasLFSR128RNG,
+    PallasLFSRRNG, get_pallas_lfsr_rng_class,
 )
 from ._registry import (
     get_registry, get_primitives_by_tags, get_all_primitive_names,
@@ -174,6 +175,7 @@ __all__ = [
 
     # --- Pallas kernel --- #
     'PallasLFSR88RNG', 'PallasLFSR113RNG', 'PallasLFSR128RNG',
+    'PallasLFSRRNG', 'get_pallas_lfsr_rng_class',
 
     # --- errors --- #
     'MathError',
