@@ -251,7 +251,7 @@ def _csrmv_pallas_kernel_generator(
         if weight_info.size == 1:
             # csr.T @ B (Scalar Weight)
 
-            def mv_transpose_scalar_single(
+            def mv(
                 data_ref,  # [1]
                 indices_ref,  # [nse]
                 indptr_ref,  # [rows + 1]
@@ -292,48 +292,9 @@ def _csrmv_pallas_kernel_generator(
                 # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
                 jax.lax.cond(i_row < num_rows, _body, lambda: None)
 
-            def mv_transpose_scalar_batch(
-                data_ref, indices_ref, indptr_ref, vector_ref, _, posts_ref
-            ):
-                idx_batch = pl.program_id(0)
-                i_row = pl.program_id(1)
-                num_rows = indptr_ref.shape[0] - 1
-
-                def _body():
-                    col_start = indptr_ref[i_row]
-                    col_end = indptr_ref[i_row + 1]
-                    col_nnz = col_end - col_start
-                    num_blocks = (col_nnz + block_dim - 1) // block_dim
-
-                    val_vector = vector_ref[idx_batch, i_row]
-                    data = data_ref[0] * val_vector
-                    data_block = jnp.ones((block_dim,), dtype=posts_ref.dtype) * data
-
-                    target_posts_ref = posts_ref[idx_batch]
-                    out_dim = target_posts_ref.shape[0]
-
-                    def loop_fn(index, _):
-                        offset = col_start + index * block_dim
-                        mask = offset + jnp.arange(block_dim) < col_end
-                        rows = load(indices_ref.at[pl.ds(offset, block_dim)], mask=mask, other=0)
-
-                        # GUARD 2: Indirect Access Boundary Check
-                        valid_idx_mask = rows < out_dim
-                        final_mask = mask & valid_idx_mask
-
-                        atomic_add(target_posts_ref, rows, data_block, mask=final_mask)
-
-                    jax.lax.fori_loop(0, num_blocks, loop_fn, None)
-
-                # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
-                jax.lax.cond(i_row < num_rows, _body, lambda: None)
-
-            mm_single_impl = mv_transpose_scalar_single
-            mm_batch_impl = mv_transpose_scalar_batch
-
         else:
             # csr.T @ B (Vector Weight)
-            def mv_transpose_vector_single(
+            def mv(
                 data_ref,  # [nse]
                 indices_ref,  # [nse]
                 indptr_ref,  # [rows + 1]
@@ -371,70 +332,21 @@ def _csrmv_pallas_kernel_generator(
                 # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
                 jax.lax.cond(i_row < num_rows, _body, lambda: None)
 
-            def mv_transpose_vector_batch(
-                data_ref, indices_ref, indptr_ref, vector_ref, _, posts_ref
-            ):
-                idx_batch = pl.program_id(0)
-                i_row = pl.program_id(1)
-                num_rows = indptr_ref.shape[0] - 1
-
-                def _body():
-                    col_start = indptr_ref[i_row]
-                    col_end = indptr_ref[i_row + 1]
-                    col_nnz = col_end - col_start
-                    num_blocks = (col_nnz + block_dim - 1) // block_dim
-
-                    val_vector = vector_ref[idx_batch, i_row]
-                    target_posts_ref = posts_ref[idx_batch]
-                    out_dim = target_posts_ref.shape[0]
-
-                    def loop_fn(index, _):
-                        offset = col_start + index * block_dim
-                        mask = offset + jnp.arange(block_dim) < col_end
-                        rows = load(indices_ref.at[pl.ds(offset, block_dim)], mask=mask, other=0)
-                        val_A = load(data_ref.at[pl.ds(offset, block_dim)], mask=mask, other=0.0)
-
-                        # GUARD 2: Indirect Access Boundary Check
-                        valid_idx_mask = rows < out_dim
-                        final_mask = mask & valid_idx_mask
-
-                        contrib = jnp.where(final_mask, val_A * val_vector, 0.0)
-                        atomic_add(target_posts_ref, rows, contrib, mask=final_mask)
-
-                    jax.lax.fori_loop(0, num_blocks, loop_fn, None)
-
-                # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
-                jax.lax.cond(i_row < num_rows, _body, lambda: None)
-
-            mm_single_impl = mv_transpose_vector_single
-            mm_batch_impl = mv_transpose_vector_batch
-
         def kernel(data, indices, indptr, vector):
             out_info = kwargs['outs'][0]
             placeholder = jnp.zeros(out_info.shape, out_info.dtype)
 
-            has_batch = vector.ndim > 1
+            #has_batch = vector.ndim > 1
             launch_rows = shape[0]  # CSR rows
 
-            if has_batch:
-                batch_size = vector.shape[0]
-                grid = (batch_size, launch_rows)
-                fn = pl.pallas_call(
-                    mm_batch_impl,
-                    grid=grid,
-                    input_output_aliases={4: 0},
-                    out_shape=kwargs['outs'],
-                    backend='triton'
-                )
-            else:
-                grid = (launch_rows,)
-                fn = pl.pallas_call(
-                    mm_single_impl,
-                    grid=grid,
-                    input_output_aliases={4: 0},
-                    out_shape=kwargs['outs'],
-                    backend='triton'
-                )
+            grid = (launch_rows,)
+            fn = pl.pallas_call(
+                mv,
+                grid=grid,
+                input_output_aliases={4: 0},
+                out_shape=kwargs['outs'],
+                backend='triton'
+            )
 
             return fn(data, indices, indptr, vector, placeholder)
 
