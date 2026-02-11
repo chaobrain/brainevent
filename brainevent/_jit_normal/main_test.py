@@ -20,6 +20,10 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+# Keep GPU matmul reference numerics stable (avoid TF32 drift in dense @ B checks).
+if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is None:
+    jax.config.update('jax_default_matmul_precision', 'highest')
+
 import brainevent
 from brainevent._test_util import allclose, gen_events
 
