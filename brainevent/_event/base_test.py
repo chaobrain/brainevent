@@ -58,6 +58,7 @@ class TestEventRepresentationMinimalAPI:
         arr2 = jax.tree.unflatten(treedef, leaves)
         assert isinstance(arr2, BinaryArray)
         assert np.array_equal(arr2.value, arr.value)
+        jax.block_until_ready((leaves,))
 
     def test_item_assignment_is_not_supported(self):
         arr = BinaryArray(np.array([1, 2, 3]))

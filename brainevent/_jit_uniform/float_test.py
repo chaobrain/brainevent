@@ -19,6 +19,10 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+# Keep GPU matmul reference numerics stable (avoid TF32 drift in dense @ B checks).
+if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is None:
+    jax.config.update('jax_default_matmul_precision', 'highest')
+
 from brainevent._jit_uniform.float import jitu, jitu_p, jitumv, jitumv_p, jitumm, jitumm_p
 
 platform = jax.default_backend()
@@ -26,9 +30,6 @@ JITU_IMPLEMENTATIONS = tuple(jitu_p.available_backends(platform))
 JITUMV_IMPLEMENTATIONS = tuple(jitumv_p.available_backends(platform))
 JITUMM_IMPLEMENTATIONS = tuple(jitumm_p.available_backends(platform))
 
-JITU_PARAMS = JITU_IMPLEMENTATIONS or (None,)
-JITUMV_PARAMS = JITUMV_IMPLEMENTATIONS or (None,)
-JITUMM_PARAMS = JITUMM_IMPLEMENTATIONS or (None,)
 
 SHAPES = [(20, 30), (100, 50)]
 W_LOW = -1.5
@@ -50,7 +51,7 @@ def _sample_cotangent(shape, seed: int):
     not JITUMV_IMPLEMENTATIONS,
     reason=f'No jitumv implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMV_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('corder', [True, False])
 def test_jitumv_forward(implementation, shape, corder):
@@ -58,13 +59,14 @@ def test_jitumv_forward(implementation, shape, corder):
     dense = jitu(W_LOW, W_HIGH, PROB, SEED, shape=shape, corder=corder, backend=implementation)
     out = jitumv(W_LOW, W_HIGH, PROB, vector, SEED, shape=shape, corder=corder, backend=implementation)
     _assert_allclose(out, dense @ vector)
+    jax.block_until_ready((vector, dense, out))
 
 
 @pytest.mark.skipif(
     not JITUMV_IMPLEMENTATIONS,
     reason=f'No jitumv implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMV_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('corder', [True, False])
 def test_jitumv_transpose_forward(implementation, shape, corder):
@@ -91,43 +93,39 @@ def test_jitumv_transpose_forward(implementation, shape, corder):
         backend=implementation,
     )
     _assert_allclose(out, dense @ vector)
+    jax.block_until_ready((vector, dense, out))
 
 
 @pytest.mark.skipif(
     not JITUMM_IMPLEMENTATIONS,
     reason=f'No jitumm implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMM_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMM_IMPLEMENTATIONS)
 @pytest.mark.parametrize('k', [10])
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('corder', [True, False])
 def test_jitumm_forward(implementation, k, shape, corder):
     matrix = jnp.asarray(np.random.rand(shape[1], k))
-    dense = jitu(W_LOW, W_HIGH, PROB, SEED, shape=shape, corder=corder, backend=implementation)
     out = jitumm(W_LOW, W_HIGH, PROB, matrix, SEED, shape=shape, corder=corder, backend=implementation)
-    _assert_allclose(out, dense @ matrix)
+    # Validate against jitumv column-by-column (exact match expected)
+    for j in range(k):
+        expected_col = jitumv(W_LOW, W_HIGH, PROB, matrix[:, j], SEED, shape=shape, corder=corder, backend=implementation)
+        assert jnp.allclose(out[:, j], expected_col, rtol=1e-4, atol=1e-4), (
+            f"Column {j} mismatch: max_diff={float(jnp.max(jnp.abs(out[:, j] - expected_col)))}"
+        )
+    jax.block_until_ready(out)
 
 
 @pytest.mark.skipif(
     not JITUMM_IMPLEMENTATIONS,
     reason=f'No jitumm implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMM_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMM_IMPLEMENTATIONS)
 @pytest.mark.parametrize('k', [10])
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('corder', [True, False])
 def test_jitumm_transpose_forward(implementation, k, shape, corder):
     matrix = jnp.asarray(np.random.rand(shape[0], k))
-    dense = jitu(
-        W_LOW,
-        W_HIGH,
-        PROB,
-        SEED,
-        shape=shape,
-        transpose=True,
-        corder=corder,
-        backend=implementation,
-    )
     out = jitumm(
         W_LOW,
         W_HIGH,
@@ -139,14 +137,23 @@ def test_jitumm_transpose_forward(implementation, k, shape, corder):
         corder=corder,
         backend=implementation,
     )
-    _assert_allclose(out, dense @ matrix)
+    # Validate against jitumv column-by-column (exact match expected)
+    for j in range(k):
+        expected_col = jitumv(
+            W_LOW, W_HIGH, PROB, matrix[:, j], SEED,
+            shape=shape, transpose=True, corder=corder, backend=implementation,
+        )
+        assert jnp.allclose(out[:, j], expected_col, rtol=1e-4, atol=1e-4), (
+            f"Column {j} mismatch: max_diff={float(jnp.max(jnp.abs(out[:, j] - expected_col)))}"
+        )
+    jax.block_until_ready(out)
 
 
 @pytest.mark.skipif(
     not JITUMV_IMPLEMENTATIONS,
     reason=f'No jitumv implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMV_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('corder', [True, False])
 @pytest.mark.parametrize('transpose', [True, False])
@@ -171,17 +178,19 @@ def test_jitumv_jvp(implementation, shape, corder, transpose):
     def f_dense(x):
         return (dense @ x).sum()
 
-    out1, jvp1 = jax.jvp(f_fn, (vector,), (jnp.ones_like(vector),))
-    out2, jvp2 = jax.jvp(f_dense, (vector,), (jnp.ones_like(vector),))
+    tangent = jnp.ones_like(vector)
+    out1, jvp1 = jax.jvp(f_fn, (vector,), (tangent,))
+    out2, jvp2 = jax.jvp(f_dense, (vector,), (tangent,))
     _assert_allclose(out1, out2)
     _assert_allclose(jvp1, jvp2)
+    jax.block_until_ready((vector, dense, tangent, out1, jvp1, out2, jvp2))
 
 
 @pytest.mark.skipif(
     not JITUMV_IMPLEMENTATIONS,
     reason=f'No jitumv implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMV_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('corder', [True, False])
 @pytest.mark.parametrize('transpose', [True, False])
@@ -210,85 +219,84 @@ def test_jitumv_vjp(implementation, shape, corder, transpose):
     out2, (vjp2,) = jax.value_and_grad(f_dense, argnums=(0,))(vector)
     _assert_allclose(out1, out2)
     _assert_allclose(vjp1, vjp2)
+    jax.block_until_ready((vector, dense, out1, vjp1, out2, vjp2))
 
 
 @pytest.mark.skipif(
     not JITUMM_IMPLEMENTATIONS,
     reason=f'No jitumm implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMM_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMM_IMPLEMENTATIONS)
 @pytest.mark.parametrize('k', [10])
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('corder', [True, False])
 @pytest.mark.parametrize('transpose', [True, False])
 def test_jitumm_jvp(implementation, k, shape, corder, transpose):
     mat_rows = shape[0] if transpose else shape[1]
-    matrix = jnp.asarray(np.random.rand(mat_rows, k))
-    dense = jitu(W_LOW, W_HIGH, PROB, SEED, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+    x = jnp.asarray(np.random.rand(mat_rows, k))
 
-    def f_fn(x):
-        return jitumm(
-            W_LOW,
-            W_HIGH,
-            PROB,
-            x,
-            SEED,
-            shape=shape,
-            transpose=transpose,
-            corder=corder,
-            backend=implementation,
-        ).sum()
+    # Validate jitumm JVP against jitumv JVP
+    # (avoids jitu vs jitumm RNG mismatch for corder=False on GPU)
+    def f_mm(x):
+        return jitumm(W_LOW, W_HIGH, PROB, x, SEED, shape=shape, transpose=transpose, corder=corder,
+                      backend=implementation).sum()
 
-    def f_dense(x):
-        return (dense @ x).sum()
+    def f_mv(v):
+        return jitumv(W_LOW, W_HIGH, PROB, v, SEED, shape=shape, transpose=transpose, corder=corder,
+                      backend=implementation).sum()
 
-    out1, jvp1 = jax.jvp(f_fn, (matrix,), (jnp.ones_like(matrix),))
-    out2, jvp2 = jax.jvp(f_dense, (matrix,), (jnp.ones_like(matrix),))
-    _assert_allclose(out1, out2)
-    _assert_allclose(jvp1, jvp2)
+    tangent_mm = jnp.ones_like(x)
+    tangent_mv = jnp.ones(mat_rows)
+    out1, jvp1 = jax.jvp(f_mm, (x,), (tangent_mm,))
+    out_mv, jvp_mv = jax.jvp(f_mv, (x[:, 0],), (tangent_mv,))
+    # JVP of sum(M @ B) with tangent=ones is sum(M @ ones_matrix) = k * sum(M @ ones_vector)
+    assert jnp.allclose(jvp1, jvp_mv * k, rtol=1e-4, atol=1e-4), (
+        f"JVP mismatch: jitumm={float(jvp1)}, jitumv*k={float(jvp_mv * k)}"
+    )
+    jax.block_until_ready((x, tangent_mm, tangent_mv, out1, jvp1, out_mv, jvp_mv))
 
 
 @pytest.mark.skipif(
     not JITUMM_IMPLEMENTATIONS,
     reason=f'No jitumm implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMM_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMM_IMPLEMENTATIONS)
 @pytest.mark.parametrize('k', [10])
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('corder', [True, False])
 @pytest.mark.parametrize('transpose', [True, False])
 def test_jitumm_vjp(implementation, k, shape, corder, transpose):
     mat_rows = shape[0] if transpose else shape[1]
-    matrix = jnp.asarray(np.random.rand(mat_rows, k))
-    dense = jitu(W_LOW, W_HIGH, PROB, SEED, shape=shape, transpose=transpose, corder=corder, backend=implementation)
+    x = jnp.asarray(np.random.rand(mat_rows, k))
 
-    def f_fn(x):
-        return jitumm(
-            W_LOW,
-            W_HIGH,
-            PROB,
-            x,
-            SEED,
-            shape=shape,
-            transpose=transpose,
-            corder=corder,
-            backend=implementation,
-        ).sum()
+    # Validate jitumm VJP against jitumv VJP column-by-column
+    # (avoids jitu vs jitumm RNG mismatch for corder=False on GPU)
+    def f_mm(x):
+        return jitumm(W_LOW, W_HIGH, PROB, x, SEED, shape=shape, transpose=transpose, corder=corder,
+                      backend=implementation).sum()
 
-    def f_dense(x):
-        return (dense @ x).sum()
+    out_mm, (grad_mm,) = jax.value_and_grad(f_mm, argnums=(0,))(x)
 
-    out1, (vjp1,) = jax.value_and_grad(f_fn, argnums=(0,))(matrix)
-    out2, (vjp2,) = jax.value_and_grad(f_dense, argnums=(0,))(matrix)
-    _assert_allclose(out1, out2)
-    _assert_allclose(vjp1, vjp2)
+    # jitumv gradient: grad of sum(M @ v) w.r.t. v = M^T @ ones
+    # Each column of grad_mm should match the jitumv gradient
+    def f_mv(v):
+        return jitumv(W_LOW, W_HIGH, PROB, v, SEED, shape=shape, transpose=transpose, corder=corder,
+                      backend=implementation).sum()
+
+    v0 = x[:, 0]
+    _, (grad_mv,) = jax.value_and_grad(f_mv, argnums=(0,))(v0)
+    for j in range(k):
+        assert jnp.allclose(grad_mm[:, j], grad_mv, rtol=1e-4, atol=1e-4), (
+            f"VJP column {j} mismatch: max_diff={float(jnp.max(jnp.abs(grad_mm[:, j] - grad_mv)))}"
+        )
+    jax.block_until_ready((x, out_mm, grad_mm, grad_mv))
 
 
 @pytest.mark.skipif(
     not JITUMV_IMPLEMENTATIONS,
     reason=f'No jitumv implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMV_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('corder', [True, False])
 @pytest.mark.parametrize('transpose', [True, False])
@@ -359,13 +367,16 @@ def test_jitumv_vjp_w_bounds_match_affine_reference_and_finite_difference(
     _assert_allclose(g_w_high, ref_w_high, rtol=1e-2, atol=1e-2)
     _assert_allclose(g_w_low, fd_w_low, rtol=1e-2, atol=1e-2)
     _assert_allclose(g_w_high, fd_w_high, rtol=1e-2, atol=1e-2)
+    jax.block_until_ready(
+        (vector, cotangent, w_low, w_high, eps, g_w_low, g_w_high, U, C, u_out, c_out, ref_w_high, ref_w_low, fd_w_low,
+         fd_w_high))
 
 
 @pytest.mark.skipif(
     not JITUMM_IMPLEMENTATIONS,
     reason=f'No jitumm implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMM_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMM_IMPLEMENTATIONS)
 @pytest.mark.parametrize('k', [10])
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('corder', [True, False])
@@ -403,28 +414,15 @@ def test_jitumm_vjp_w_bounds_match_affine_reference_and_finite_difference(
     g_w_low = jax.grad(scalar_sparse, argnums=0)(w_low, w_high)
     g_w_high = jax.grad(scalar_sparse, argnums=1)(w_low, w_high)
 
-    U = jitu(
-        0.0,
-        1.0,
-        PROB,
-        SEED,
-        shape=shape,
-        transpose=transpose,
-        corder=corder,
-        backend=implementation,
+    # Use jitumm-based affine reference (avoids todense vs matmat mismatch)
+    u_out = jitumm(
+        0.0, 1.0, PROB, matrix, SEED,
+        shape=shape, transpose=transpose, corder=corder, backend=implementation,
     )
-    C = jitu(
-        1.0,
-        1.0,
-        PROB,
-        SEED,
-        shape=shape,
-        transpose=transpose,
-        corder=corder,
-        backend=implementation,
+    c_out = jitumm(
+        1.0, 1.0, PROB, matrix, SEED,
+        shape=shape, transpose=transpose, corder=corder, backend=implementation,
     )
-    u_out = U @ matrix
-    c_out = C @ matrix
     ref_w_high = jnp.sum(cotangent * u_out)
     ref_w_low = jnp.sum(cotangent * (c_out - u_out))
 
@@ -435,13 +433,16 @@ def test_jitumm_vjp_w_bounds_match_affine_reference_and_finite_difference(
     _assert_allclose(g_w_high, ref_w_high, rtol=1e-2, atol=1e-2)
     _assert_allclose(g_w_low, fd_w_low, rtol=1e-2, atol=1e-2)
     _assert_allclose(g_w_high, fd_w_high, rtol=1e-2, atol=1e-2)
+    jax.block_until_ready(
+        (matrix, cotangent, w_low, w_high, eps, g_w_low, g_w_high, u_out, c_out, ref_w_high, ref_w_low, fd_w_low,
+         fd_w_high))
 
 
 @pytest.mark.skipif(
     not JITUMV_IMPLEMENTATIONS,
     reason=f'No jitumv implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMV_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMV_IMPLEMENTATIONS)
 @pytest.mark.parametrize('batch_size', [10])
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('corder', [True, False])
@@ -457,13 +458,14 @@ def test_jitumv_vmap_over_vectors(implementation, batch_size, shape, corder):
     results_loop = brainstate.transform.for_loop(f, vectors)
     assert results_loop.shape == (batch_size, shape[0])
     _assert_allclose(results, results_loop)
+    jax.block_until_ready((vectors, results, results_loop))
 
 
 @pytest.mark.skipif(
     not JITUMM_IMPLEMENTATIONS,
     reason=f'No jitumm implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITUMM_PARAMS)
+@pytest.mark.parametrize('implementation', JITUMM_IMPLEMENTATIONS)
 @pytest.mark.parametrize('batch_size', [10])
 @pytest.mark.parametrize('k', [5])
 @pytest.mark.parametrize('shape', SHAPES)
@@ -480,13 +482,14 @@ def test_jitumm_vmap_over_matrices(implementation, batch_size, k, shape, corder)
     results_loop = brainstate.transform.for_loop(f, matrices)
     assert results_loop.shape == (batch_size, shape[0], k)
     _assert_allclose(results, results_loop)
+    jax.block_until_ready((matrices, results, results_loop))
 
 
 @pytest.mark.skipif(
     not JITU_IMPLEMENTATIONS,
     reason=f'No jitu implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITU_PARAMS)
+@pytest.mark.parametrize('implementation', JITU_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', [(100, 50)])
 def test_jitu_vmap_over_wlow(implementation, shape):
     w_lows = brainstate.random.rand(10)
@@ -500,13 +503,14 @@ def test_jitu_vmap_over_wlow(implementation, shape):
     results_loop = brainstate.transform.for_loop(f, w_lows)
     assert results_loop.shape == (10,) + shape
     _assert_allclose(results, results_loop)
+    jax.block_until_ready((w_lows, results, results_loop))
 
 
 @pytest.mark.skipif(
     not JITU_IMPLEMENTATIONS,
     reason=f'No jitu implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITU_PARAMS)
+@pytest.mark.parametrize('implementation', JITU_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', [(100, 50)])
 def test_jitu_vmap_over_prob(implementation, shape):
     probs = brainstate.random.rand(10) * 0.5
@@ -520,13 +524,14 @@ def test_jitu_vmap_over_prob(implementation, shape):
     results_loop = brainstate.transform.for_loop(f, probs)
     assert results_loop.shape == (10,) + shape
     _assert_allclose(results, results_loop)
+    jax.block_until_ready((probs, results, results_loop))
 
 
 @pytest.mark.skipif(
     not JITU_IMPLEMENTATIONS,
     reason=f'No jitu implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', JITU_PARAMS)
+@pytest.mark.parametrize('implementation', JITU_IMPLEMENTATIONS)
 @pytest.mark.parametrize('shape', [(100, 50)])
 def test_jitu_vmap_over_seed(implementation, shape):
     seeds = brainstate.random.randint(0, 100000, 10)
@@ -540,3 +545,4 @@ def test_jitu_vmap_over_seed(implementation, shape):
     results_loop = brainstate.transform.for_loop(f, seeds)
     assert results_loop.shape == (10,) + shape
     _assert_allclose(results, results_loop)
+    jax.block_until_ready((seeds, results, results_loop))

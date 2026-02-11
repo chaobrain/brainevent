@@ -99,6 +99,8 @@ class TestVectorCSR:
             y = _vector_csr_api(x, data, indices, indptr, (m, n), implementation)
             assert jnp.allclose(y, y2, rtol=1e-5, atol=1e-5)
 
+        jax.block_until_ready((x, indptr, indices, y2))
+
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vector_csr_vmap_vector(self, homo_w):
         _require_implementations(CSRMV_IMPLEMENTATIONS, 'binary_csrmv')
@@ -117,6 +119,8 @@ class TestVectorCSR:
                 )(xs)
                 assert jnp.allclose(y, y2, rtol=1e-3, atol=1e-3)
 
+        jax.block_until_ready((xs, indptr, indices))
+
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_csr_vector(self, homo_w):
         _require_implementations(CSRMV_IMPLEMENTATIONS, 'binary_csrmv')
@@ -131,6 +135,8 @@ class TestVectorCSR:
         for implementation in CSRMV_IMPLEMENTATIONS:
             y = _csr_vector_api(v, data, indices, indptr, (m, n), implementation)
             assert jnp.allclose(y, y2, rtol=1e-5, atol=1e-5)
+
+        jax.block_until_ready((v, indptr, indices, y2))
 
     def _test_vjp(self, implementation, homo_w, replace, transpose):
         n_in = 20
@@ -161,6 +167,8 @@ class TestVectorCSR:
         r2 = jax.grad(f_jax, argnums=(0, 1))(x, w)
         assert jnp.allclose(r[0], r2[0], rtol=1e-3, atol=1e-3)
         assert jnp.allclose(r[1], r2[1], rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((x, indptr, indices, r, r2))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('replace', [True, False])
@@ -206,6 +214,8 @@ class TestVectorCSR:
         assert jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3)
         assert jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3)
 
+        jax.block_until_ready((x, indptr, indices, o1, r1, o2, r2))
+
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -245,6 +255,8 @@ class TestBatchingVectorCSR:
             res = brainstate.transform.vmap2(lambda x: self._run(x, data, indices, indptr, m, n))(xs)
             assert jnp.all(res)
 
+        jax.block_until_ready((xs, indptr, indices))
+
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_data(self, homo_w):
         _require_implementations(CSRMV_IMPLEMENTATIONS, 'binary_csrmv')
@@ -258,6 +270,8 @@ class TestBatchingVectorCSR:
             self._implementation = implementation
             res = brainstate.transform.vmap2(lambda data: self._run(x, data, indices, indptr, m, n))(data)
             assert jnp.all(res)
+
+        jax.block_until_ready((x, indptr, indices))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_indices(self, homo_w):
@@ -273,6 +287,8 @@ class TestBatchingVectorCSR:
             self._implementation = implementation
             res = brainstate.transform.vmap2(lambda ind: self._run(x, data, ind, indptr, m, n))(indices)
             assert jnp.all(res)
+
+        jax.block_until_ready((x, indptr, indices))
 
     def _run_vjp(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
         x = x.astype(float)
@@ -313,6 +329,8 @@ class TestBatchingVectorCSR:
             assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
             assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
 
+        jax.block_until_ready((xs, indptr, indices, r1, r2))
+
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_data_vjp(self, homo_w):
         _require_implementations(CSRMV_IMPLEMENTATIONS, 'binary_csrmv')
@@ -327,6 +345,8 @@ class TestBatchingVectorCSR:
             r1, r2 = brainstate.transform.vmap2(lambda data: self._run_vjp(x, data, indices, indptr, m, n))(data)
             assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
             assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((x, indptr, indices, r1, r2))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_indices_vjp(self, homo_w):
@@ -343,6 +363,8 @@ class TestBatchingVectorCSR:
             r1, r2 = brainstate.transform.vmap2(lambda ind: self._run_vjp(x, data, ind, indptr, m, n))(indices)
             assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
             assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((x, indptr, indices, r1, r2))
 
     def _run_jvp(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
         x = x.astype(float)
@@ -383,6 +405,8 @@ class TestBatchingVectorCSR:
             assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
             assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
 
+        jax.block_until_ready((xs, indptr, indices, r1, r2))
+
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_data_jvp(self, homo_w):
         _require_implementations(CSRMV_IMPLEMENTATIONS, 'binary_csrmv')
@@ -397,6 +421,8 @@ class TestBatchingVectorCSR:
             r1, r2 = brainstate.transform.vmap2(lambda data: self._run_jvp(x, data, indices, indptr, m, n))(data)
             assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
             assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((x, indptr, indices, r1, r2))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_indices_jvp(self, homo_w):
@@ -413,6 +439,8 @@ class TestBatchingVectorCSR:
             r1, r2 = brainstate.transform.vmap2(lambda ind: self._run_jvp(x, data, ind, indptr, m, n))(indices)
             assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
             assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((x, indptr, indices, r1, r2))
 
 
 class TestMatrixCSR:
@@ -431,6 +459,8 @@ class TestMatrixCSR:
             y = _matrix_csr_api(x, data, indices, indptr, (m, n), implementation)
             assert jnp.allclose(y, y2, rtol=1e-3, atol=1e-3)
 
+        jax.block_until_ready((x, indptr, indices, y2))
+
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_csr_matrix(self, homo_w):
         _require_implementations(CSRMM_IMPLEMENTATIONS, 'binary_csrmm')
@@ -445,6 +475,8 @@ class TestMatrixCSR:
         for implementation in CSRMM_IMPLEMENTATIONS:
             y = _csr_matrix_api(matrix, data, indices, indptr, (m, n), implementation)
             assert jnp.allclose(y, y2)
+
+        jax.block_until_ready((matrix, indptr, indices, y2))
 
 
 class TestBatchingMatrixCSR:
@@ -472,6 +504,8 @@ class TestBatchingMatrixCSR:
             res = brainstate.transform.vmap2(lambda x: self._run(x, data, indices, indptr, m, n))(xs)
             assert jnp.all(res)
 
+        jax.block_until_ready((xs, indptr, indices))
+
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_data(self, homo_w):
         _require_implementations(CSRMM_IMPLEMENTATIONS, 'binary_csrmm')
@@ -485,6 +519,8 @@ class TestBatchingMatrixCSR:
             self._implementation = implementation
             res = brainstate.transform.vmap2(lambda data: self._run(x, data, indices, indptr, m, n))(data)
             assert jnp.all(res)
+
+        jax.block_until_ready((x, indptr, indices))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_indices(self, homo_w):
@@ -500,6 +536,8 @@ class TestBatchingMatrixCSR:
             self._implementation = implementation
             res = brainstate.transform.vmap2(lambda ind: self._run(x, data, ind, indptr, m, n))(indices)
             assert jnp.all(res)
+
+        jax.block_until_ready((x, indptr, indices))
 
     def _run_vjp(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
         x = x.astype(float)
@@ -545,6 +583,8 @@ class TestBatchingMatrixCSR:
             assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
             assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
 
+        jax.block_until_ready((xs, indptr, indices, r1, r2))
+
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_data_vjp(self, homo_w):
         _require_implementations(CSRMM_IMPLEMENTATIONS, 'binary_csrmm')
@@ -559,6 +599,8 @@ class TestBatchingMatrixCSR:
             r1, r2 = brainstate.transform.vmap2(lambda data: self._run_vjp(x, data, indices, indptr, m, n))(data)
             assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
             assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((x, indptr, indices, r1, r2))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_indices_vjp(self, homo_w):
@@ -575,6 +617,8 @@ class TestBatchingMatrixCSR:
             r1, r2 = brainstate.transform.vmap2(lambda ind: self._run_vjp(x, data, ind, indptr, m, n))(indices)
             assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
             assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((x, indptr, indices, r1, r2))
 
     def _run_jvp(self, x, data, indices, indptr, m: int, n: int, transpose: bool = True):
         x = x.astype(float)
@@ -615,6 +659,8 @@ class TestBatchingMatrixCSR:
             assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
             assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
 
+        jax.block_until_ready((xs, indptr, indices, r1, r2))
+
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_data_jvp(self, homo_w):
         _require_implementations(CSRMM_IMPLEMENTATIONS, 'binary_csrmm')
@@ -629,6 +675,8 @@ class TestBatchingMatrixCSR:
             r1, r2 = brainstate.transform.vmap2(lambda data: self._run_jvp(x, data, indices, indptr, m, n))(data)
             assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
             assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((x, indptr, indices, r1, r2))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vmap_indices_jvp(self, homo_w):
@@ -645,3 +693,5 @@ class TestBatchingMatrixCSR:
             r1, r2 = brainstate.transform.vmap2(lambda ind: self._run_jvp(x, data, ind, indptr, m, n))(indices)
             assert jnp.allclose(r1[0], r2[0], rtol=1e-3, atol=1e-3)
             assert jnp.allclose(r1[1], r2[1], rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((x, indptr, indices, r1, r2))

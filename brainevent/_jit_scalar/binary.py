@@ -303,7 +303,7 @@ def _jitsmv_warp_kernel(
                 seed0 = seed[0]
                 i_col = warp.tid()
                 r = weight.dtype(0.)
-                state = warp.rand_init(seed0 + i_col)
+                state = warp.rand_init(seed0 + i_col * num_row)
                 i_row = warp.randi(state, 0, clen0)
                 while i_row < num_row:
                     if vector[i_row]:
@@ -325,7 +325,7 @@ def _jitsmv_warp_kernel(
                 seed0 = seed[0]
                 i_col = warp.tid()
                 r = weight.dtype(0.)
-                state = warp.rand_init(seed0 + i_col)
+                state = warp.rand_init(seed0 + i_col * num_row)
                 i_row = warp.randi(state, 0, clen0)
                 while i_row < num_row:
                     if vector[i_row] > vector.dtype(0.):
@@ -353,10 +353,10 @@ def _jitsmv_warp_kernel(
                 seed0 = seed[0]
                 i_row = warp.tid()
                 if vector[i_row]:
-                    state = warp.rand_init(seed0 + i_row)
+                    state = warp.rand_init(seed0 + i_row * num_col)
                     i_col = warp.randi(state, 0, clen0)
                     while i_col < num_col:
-                        posts[i_col] += weight0
+                        warp.atomic_add(posts, i_col, weight0)
                         i_col += warp.randi(state, 1, clen0)
         else:
             @warp.kernel
@@ -373,10 +373,10 @@ def _jitsmv_warp_kernel(
                 seed0 = seed[0]
                 i_row = warp.tid()
                 if vector[i_row] > vector.dtype(0.):
-                    state = warp.rand_init(seed0 + i_row)
+                    state = warp.rand_init(seed0 + i_row * num_col)
                     i_col = warp.randi(state, 0, clen0)
                     while i_col < num_col:
-                        posts[i_col] += weight0
+                        warp.atomic_add(posts, i_col, weight0)
                         i_col += warp.randi(state, 1, clen0)
 
         def kernel(weight, clen, vector, seed, _):
@@ -394,10 +394,11 @@ def _jitsmv_pallas_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import atomic_add
+    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
     dim = out_info.shape[0] if corder else vector_info.shape[0]
     block_size = generate_block_dim(dim, maximum=128)
+    vector_is_bool = vector_info.dtype == jnp.bool_
 
     if corder:
         def pallas_kernel_fn(weight_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
@@ -411,15 +412,16 @@ def _jitsmv_pallas_kernel(
 
             def body(data):
                 i_rows, i_row_mask, rng, res = data
-                v = vector_ref[i_rows]
-                v = jnp.where(i_row_mask, v, jnp.zeros_like(v))
-                if vector_ref.dtype > jnp.bool_:
+                safe_rows = jnp.where(i_row_mask, i_rows, 0)
+                v = vector_ref[safe_rows]
+                v = jnp.where(i_row_mask, v, False if vector_is_bool else 0.)
+                if not vector_is_bool:
                     v = v > 0.
                 res = jnp.where(v, res + weight, res)
                 i_rows = i_rows + rng.random_integers(1, clen)
                 return i_rows, i_rows < num_row, rng, res
 
-            rng = PallasLFSR88RNG(seed + i_cols)
+            rng = PallasLFSR88RNG(seed + i_cols * num_row)
             i_rows = rng.random_integers(0, clen)
             i_row_mask = i_rows < num_row
             out = jax.lax.while_loop(
@@ -434,7 +436,8 @@ def _jitsmv_pallas_kernel(
                 pallas_kernel_fn,
                 grid=(pl.cdiv(dim, block_size),),
                 input_output_aliases={4: 0},
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             return fn(weight, clen, vector, seed, _)
     else:
@@ -443,31 +446,38 @@ def _jitsmv_pallas_kernel(
             weight = weight_ref[0]
             clen0 = clen_ref[0]
             seed0 = seed_ref[0]
-            i_row = pl.program_id(0)
-            v = vector_ref[i_row]
-            is_event = v if vector_ref.dtype == jnp.bool_ else (v > 0.)
+            i_row_block = pl.program_id(0)
+            i_rows = i_row_block * block_size + jnp.arange(block_size)
+            i_row_mask = i_rows < dim
+            safe_rows = jnp.where(i_row_mask, i_rows, 0)
+            v = vector_ref[safe_rows]
+            if vector_ref.dtype != jnp.bool_:
+                v = v > 0.
+            event_mask = i_row_mask & v
 
-            @pl.when(is_event)
-            def run():
-                def body(data):
-                    i, rng = data
-                    atomic_add(post_ref, i, weight)
-                    i = i + rng.random_integers(1, clen0)
-                    return i, rng
+            def body(data):
+                i_cols, i_col_mask, rng = data
+                vals = jnp.full(block_size, weight, dtype=post_ref.dtype)
+                atomic_add(post_ref, (i_cols,), vals, mask=event_mask & i_col_mask)
+                i_cols = i_cols + rng.random_integers(1, clen0)
+                return i_cols, i_cols < num_col, rng
 
-                rng = PallasLFSR88RNG(seed0 + i_row)
-                jax.lax.while_loop(
-                    lambda data: data[0] < num_col,
-                    body,
-                    (rng.random_integers(0, clen0), rng)
-                )
+            rng = PallasLFSR88RNG(seed0 + i_rows * num_col)
+            i_cols = rng.random_integers(0, clen0)
+            i_col_mask = i_cols < num_col
+            jax.lax.while_loop(
+                lambda data: jnp.sum(data[1]) > 0,
+                body,
+                (i_cols, i_col_mask, rng)
+            )
 
         def kernel(weight, clen, vector, seed, _):
             fn = pl.pallas_call(
                 pallas_kernel_fn,
-                grid=(dim,),
+                grid=(pl.cdiv(dim, block_size),),
                 input_output_aliases={4: 0},
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             return fn(weight, clen, vector, seed, _)
 
@@ -475,11 +485,15 @@ def _jitsmv_pallas_kernel(
 
 
 def _jitsmv_jvp_v(v_dot, weight, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
-    return jitsmv_p_call(weight, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder)
+    return jitsmv_p_call(
+        weight, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+    )
 
 
 def _jitsmv_jvp_weights(w_dot, weight, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
-    return binary_jitsmv_p_call(w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
+    return binary_jitsmv_p_call(
+        w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+    )
 
 
 def _jitsmv_transpose_rules(ct, weight, clen, vector, seed, _, *, shape, transpose, corder, **kwargs):
@@ -495,7 +509,8 @@ def _jitsmv_transpose_rules(ct, weight, clen, vector, seed, _, *, shape, transpo
             seed,
             shape=shape,
             transpose=not transpose,
-            corder=not corder
+            corder=not corder,
+            backend=kwargs['backend'],
         )[0]
         return weight, clen, r, seed, _
     elif ad.is_undefined_primal(weight):
@@ -506,7 +521,8 @@ def _jitsmv_transpose_rules(ct, weight, clen, vector, seed, _, *, shape, transpo
             seed,
             shape=shape,
             transpose=not transpose,
-            corder=not corder
+            corder=not corder,
+            backend=kwargs['backend'],
         )[0]
         dw = jnp.sum(row * vector, keepdims=True).reshape(weight.aval.shape)
         return dw, clen, vector, seed, _
@@ -528,6 +544,7 @@ def _jitsmv_batching(args, axes, **kwargs):
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             corder=kwargs['corder'],
+            backend=kwargs['backend'],
         )
         return r, [1]
     elif tuple(axes) == (None, None, 1, None, None):
@@ -540,6 +557,7 @@ def _jitsmv_batching(args, axes, **kwargs):
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             corder=kwargs['corder'],
+            backend=kwargs['backend'],
         )
         return r, [1]
     else:
@@ -678,7 +696,6 @@ binary_jitsmv_p = XLACustomKernel('binary_jitsmv')
 binary_jitsmv_p.def_numba_kernel(_jitsmv_numba_kernel)
 binary_jitsmv_p.def_warp_kernel(_jitsmv_warp_kernel)
 binary_jitsmv_p.def_pallas_kernel('gpu', _jitsmv_pallas_kernel)
-binary_jitsmv_p.def_pallas_kernel('tpu', _jitsmv_pallas_kernel)
 binary_jitsmv_p.def_jvp_rule2(_jitsmv_jvp_weights, None, _jitsmv_jvp_v, None, None)
 binary_jitsmv_p.def_transpose_rule(_jitsmv_transpose_rules)
 binary_jitsmv_p.def_batching_rule(_jitsmv_batching)
@@ -688,7 +705,6 @@ binary_jitsmv_p.def_benchmark_data(_jitsmv_benchmark_data)
 
 
 def _jitsmm_numba_kernel(
-    transpose: bool,
     corder: bool,
     B_info: jax.ShapeDtypeStruct,
     **kwargs
@@ -696,51 +712,8 @@ def _jitsmm_numba_kernel(
     import numba
 
     if corder:
-        if transpose:
             # JIT Matrix.T @ B
             # - JIT matrix: [k, m]
-            # - B: [k, n]
-            if B_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True)
-                def kernel_impl(weight, clen, B, seed, posts):
-                    m = posts.shape[0]
-                    n = posts.shape[1]
-                    k = B.shape[0]
-                    weight0 = weight[0]
-                    seed0 = seed[0]
-                    clen0 = clen[0]
-                    np.random.seed(seed0)
-                    for i_m in range(m):
-                        i_k = np.random.randint(0, clen0)
-                        out = np.zeros(n, dtype=weight.dtype)
-                        while i_k < k:
-                            for j in range(B.shape[1]):
-                                if B[i_k, j]:
-                                    out[j] += 1.0
-                            i_k += np.random.randint(1, clen0)
-                        posts[i_m] = out * weight0
-            else:
-                @numba.njit(fastmath=True)
-                def kernel_impl(weight, clen, B, seed, posts):
-                    m = posts.shape[0]
-                    n = posts.shape[1]
-                    k = B.shape[0]
-                    weight0 = weight[0]
-                    seed0 = seed[0]
-                    clen0 = clen[0]
-                    np.random.seed(seed0)
-                    for i_m in range(m):
-                        i_k = np.random.randint(0, clen0)
-                        out = np.zeros(n, dtype=weight.dtype)
-                        while i_k < k:
-                            for j in range(B.shape[1]):
-                                if B[i_k, j] > 0.:
-                                    out[j] += 1.0
-                            i_k += np.random.randint(1, clen0)
-                        posts[i_m] = out * weight0
-        else:
-            # JIT Matrix @ B
-            # - JIT matrix: [m, k]
             # - B: [k, n]
             if B_info.dtype == jnp.bool_:
                 @numba.njit(fastmath=True)
@@ -781,45 +754,8 @@ def _jitsmm_numba_kernel(
                             i_k += np.random.randint(1, clen0)
                         posts[i_m] = out * weight0
     else:
-        if transpose:
             # JIT Matrix.T @ B
             # - JIT matrix: [k, m]
-            # - B: [k, n]
-            if B_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True)
-                def kernel_impl(weight, clen, B, seed, posts):
-                    posts[:] = 0.
-                    m = posts.shape[0]
-                    k = B.shape[0]
-                    weight0 = weight[0]
-                    seed0 = seed[0]
-                    clen0 = clen[0]
-                    np.random.seed(seed0)
-                    for i_k in range(k):
-                        indices = np.where(B[i_k])[0]
-                        i_m = np.random.randint(0, clen0)
-                        while i_m < m:
-                            posts[i_m, indices] += weight0
-                            i_m += np.random.randint(1, clen0)
-            else:
-                @numba.njit(fastmath=True)
-                def kernel_impl(weight, clen, B, seed, posts):
-                    posts[:] = 0.
-                    m = posts.shape[0]
-                    k = B.shape[0]
-                    weight0 = weight[0]
-                    seed0 = seed[0]
-                    clen0 = clen[0]
-                    np.random.seed(seed0)
-                    for i_k in range(k):
-                        indices = np.where(B[i_k] > 0.)[0]
-                        i_m = np.random.randint(0, clen0)
-                        while i_m < m:
-                            posts[i_m, indices] += weight0
-                            i_m += np.random.randint(1, clen0)
-        else:
-            # JIT Matrix @ B
-            # - JIT matrix: [m, k]
             # - B: [k, n]
             if B_info.dtype == jnp.bool_:
                 @numba.njit(fastmath=True)
@@ -891,17 +827,18 @@ def _jitsmm_warp_kernel(
                 posts: out_warp_info,
             ):
                 k = B.shape[0]
+                n = B.shape[1]
                 weight0 = weight[0]
                 clen0 = clen[0]
                 seed0 = seed[0]
                 i_m = warp.tid()
-                state = warp.rand_init(seed0 + i_m)
-                out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
+                state = warp.rand_init(seed0 + i_m * k)
                 i_k = warp.randi(state, 0, clen0)
                 while i_k < k:
-                    out += warp.tile_astype(warp.tile_load(B[i_k], TITLE_SIZE), dtype=weight.dtype)
+                    for j in range(n):
+                        if B[i_k, j]:
+                            posts[i_m, j] += weight0
                     i_k += warp.randi(state, 1, clen0)
-                warp.tile_store(posts[i_m], out * weight0)
         else:
             @warp.kernel
             def mm(
@@ -912,24 +849,23 @@ def _jitsmm_warp_kernel(
                 posts: out_warp_info,
             ):
                 k = B.shape[0]
+                n = B.shape[1]
                 weight0 = weight[0]
                 clen0 = clen[0]
                 seed0 = seed[0]
                 i_m = warp.tid()
-                state = warp.rand_init(seed0 + i_m)
-                out = warp.tile_zeros(TITLE_SIZE, dtype=weight.dtype)
-                zeros = warp.tile_zeros(TITLE_SIZE, dtype=B.dtype)
+                state = warp.rand_init(seed0 + i_m * k)
                 i_k = warp.randi(state, 0, clen0)
                 while i_k < k:
-                    b_tile = warp.tile_load(B[i_k], TITLE_SIZE)
-                    out += warp.tile_astype(b_tile > zeros, dtype=weight.dtype)
+                    for j in range(n):
+                        if B[i_k, j] > float(0.0):
+                            posts[i_m, j] += weight0
                     i_k += warp.randi(state, 1, clen0)
-                warp.tile_store(posts[i_m], out * weight0)
 
         def kernel(weight, clen, B, seed, _):
             dim = out_info.shape[0]
-            fn = jax_kernel(mm, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
-            return fn(weight, clen, B, seed)
+            fn = jax_kernel(mm, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
+            return fn(weight, clen, B, seed, jnp.zeros(out_info.shape, out_info.dtype))
     else:
         # JIT Matrix.T @ B (corder=False)
         if B_info.dtype == jnp.bool_:
@@ -942,15 +878,17 @@ def _jitsmm_warp_kernel(
                 posts: out_warp_info,
             ):
                 m = posts.shape[0]
+                n = B.shape[1]
                 weight0 = weight[0]
                 clen0 = clen[0]
                 seed0 = seed[0]
                 i_k = warp.tid()
-                state = warp.rand_init(seed0 + i_k)
-                out = warp.tile_astype(warp.tile_load(B[i_k], TITLE_SIZE), dtype=weight.dtype) * weight0
+                state = warp.rand_init(seed0 + i_k * m)
                 i_m = warp.randi(state, 0, clen0)
                 while i_m < m:
-                    warp.tile_atomic_add(posts[i_m], out)
+                    for j in range(n):
+                        if B[i_k, j]:
+                            warp.atomic_add(posts, i_m, j, weight0)
                     i_m += warp.randi(state, 1, clen0)
         else:
             @warp.kernel
@@ -962,17 +900,17 @@ def _jitsmm_warp_kernel(
                 posts: out_warp_info,
             ):
                 m = posts.shape[0]
+                n = B.shape[1]
                 weight0 = weight[0]
                 clen0 = clen[0]
                 seed0 = seed[0]
                 i_k = warp.tid()
-                state = warp.rand_init(seed0 + i_k)
-                zeros = warp.tile_zeros(TITLE_SIZE, dtype=B.dtype)
-                b_tile = warp.tile_load(B[i_k], TITLE_SIZE)
-                out = warp.tile_astype(b_tile > zeros, dtype=weight.dtype) * weight0
+                state = warp.rand_init(seed0 + i_k * m)
                 i_m = warp.randi(state, 0, clen0)
                 while i_m < m:
-                    warp.tile_atomic_add(posts[i_m], out)
+                    for j in range(n):
+                        if B[i_k, j] > float(0.0):
+                            warp.atomic_add(posts, i_m, j, weight0)
                     i_m += warp.randi(state, 1, clen0)
 
         def kernel(weight, clen, B, seed, _):
@@ -990,75 +928,86 @@ def _jitsmm_pallas_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import atomic_add
+    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
-    block_dim = generate_block_dim(B_info.shape[1], maximum=1024)
-    tile = out_info.shape[0] if corder else B_info.shape[0]
-    grid = (tile, pl.cdiv(B_info.shape[1], block_dim))
+    B_cols = B_info.shape[1]
 
     if corder:
-        # JIT Matrix.T @ B - JIT matrix: [k, m], B: [k, n]
+        # Match jits corder=True RNG pattern:
+        # seed by output row, loop over B rows (k), vectorized over output rows.
+        out_rows = out_info.shape[0]
+        row_block = generate_block_dim(out_rows, maximum=128)
+        grid = (pl.cdiv(out_rows, row_block), B_cols)
+
         def pallas_kernel_fn(weight_ref, clen_ref, B_ref, seed_ref, _, post_ref):
             k = B_ref.shape[0]
             weight = weight_ref[0]
             clen0 = clen_ref[0]
             seed0 = seed_ref[0]
-            i_m = pl.program_id(0)
-            i_n_block = pl.program_id(1)
-            i_n_start = block_dim * i_n_block
-            mask = i_n_start + jnp.arange(block_dim) < B_info.shape[1]
+            i_row_block = pl.program_id(0)
+            col_j = pl.program_id(1)
+
+            i_rows = i_row_block * row_block + jnp.arange(row_block)
+            i_row_mask = i_rows < out_rows
+            safe_rows = jnp.where(i_row_mask, i_rows, 0)
+            rng = PallasLFSR88RNG(seed0 + i_rows * k)
+            i_cols = rng.random_integers(0, clen0)
+            i_col_mask = i_cols < k
+            out = jnp.zeros(row_block, dtype=post_ref.dtype)
 
             def body(data):
-                i, rng, out = data
-                events = B_ref[i, pl.dslice(i_n_start, block_dim)]
-                events = jnp.where(mask, events, jnp.zeros_like(events))
-                if B_ref.dtype == jnp.bool_:
-                    out = jnp.where(events, out + weight, out)
-                else:
+                i_cols, i_col_mask, rng, out = data
+                safe_cols = jnp.where(i_col_mask, i_cols, 0)
+                events = B_ref[safe_cols, col_j]
+                if B_ref.dtype != jnp.bool_:
                     events = events > 0.
-                    out = jnp.where(events, out + weight, out)
-                i = i + rng.random_integers(1, clen0)
-                return i, rng, out
+                out = jnp.where(i_col_mask & i_row_mask & events, out + weight, out)
+                i_cols = i_cols + rng.random_integers(1, clen0)
+                return i_cols, i_cols < k, rng, out
 
-            rng = PallasLFSR88RNG(seed0 + i_m)
-            out = jnp.zeros(block_dim, dtype=post_ref.dtype)
-            _, _, out = jax.lax.while_loop(
-                lambda data: data[0] < k,
+            _, _, _, out = jax.lax.while_loop(
+                lambda data: jnp.sum(data[1]) > 0,
                 body,
-                (rng.random_integers(0, clen0), rng, out)
+                (i_cols, i_col_mask, rng, out)
             )
-            post_ref[i_m, pl.dslice(i_n_start, block_dim)] = jnp.where(
-                mask, out, post_ref[i_m, pl.dslice(i_n_start, block_dim)]
-            )
+            atomic_add(post_ref, (safe_rows, col_j), out, mask=i_row_mask)
     else:
-        # JIT Matrix.T @ B - JIT matrix: [k, m], B: [k, n]
+        # Match jits corder=False RNG pattern:
+        # seed by B row index k, loop over output rows, vectorized over k.
+        k_dim = B_info.shape[0]
+        k_block = generate_block_dim(k_dim, maximum=128)
+        grid = (pl.cdiv(k_dim, k_block), B_cols)
+
         def pallas_kernel_fn(weight_ref, clen_ref, B_ref, seed_ref, _, post_ref):
             m = post_ref.shape[0]
             weight = weight_ref[0]
             clen0 = clen_ref[0]
             seed0 = seed_ref[0]
-            i_k = pl.program_id(0)
-            i_n_block = pl.program_id(1)
-            i_n_start = block_dim * i_n_block
-            mask = i_n_start + jnp.arange(block_dim) < B_info.shape[1]
+            i_k_block = pl.program_id(0)
+            col_j = pl.program_id(1)
 
-            B_block = B_ref[i_k, pl.dslice(i_n_start, block_dim)]
-            B_block = jnp.where(mask, B_block, jnp.zeros_like(B_block))
+            i_ks = i_k_block * k_block + jnp.arange(k_block)
+            i_k_mask = i_ks < k_dim
+            safe_ks = jnp.where(i_k_mask, i_ks, 0)
+            events = B_ref[safe_ks, col_j]
             if B_ref.dtype != jnp.bool_:
-                B_block = (B_block > 0.)
-            out = jnp.asarray(B_block, dtype=post_ref.dtype) * weight
+                events = events > 0.
+            rng = PallasLFSR88RNG(seed0 + i_ks * m)
+            i_rows = rng.random_integers(0, clen0)
+            i_row_mask = i_rows < m
 
             def body(data):
-                i, rng = data
-                atomic_add(post_ref, (i, pl.dslice(i_n_start, block_dim)), out, mask=mask)
-                i = i + rng.random_integers(1, clen0)
-                return i, rng
+                i_rows, i_row_mask, rng = data
+                vals = jnp.where(i_k_mask & i_row_mask & events, weight, 0.)
+                safe_rows = jnp.where(i_row_mask, i_rows, 0)
+                atomic_add(post_ref, (safe_rows, col_j), vals, mask=i_k_mask & i_row_mask)
+                i_rows = i_rows + rng.random_integers(1, clen0)
+                return i_rows, i_rows < m, rng
 
-            rng = PallasLFSR88RNG(seed0 + i_k)
             jax.lax.while_loop(
-                lambda data: data[0] < m,
+                lambda data: jnp.sum(data[1]) > 0,
                 body,
-                (rng.random_integers(0, clen0), rng)
+                (i_rows, i_row_mask, rng)
             )
 
     def kernel(weight, clen, B, seed, _):
@@ -1066,7 +1015,8 @@ def _jitsmm_pallas_kernel(
             pallas_kernel_fn,
             grid=grid,
             input_output_aliases={4: 0},
-            out_shape=kwargs['outs']
+            out_shape=kwargs['outs'],
+            backend='triton',
         )
         return fn(weight, clen, B, seed, _)
 
@@ -1074,11 +1024,15 @@ def _jitsmm_pallas_kernel(
 
 
 def _jitsmm_jvp_w(w_dot, weight, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
-    return binary_jitsmm_p_call(w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder)
+    return binary_jitsmm_p_call(
+        w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+    )
 
 
 def _jitsmm_jvp_B(B_dot, weight, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
-    return jitsmm_p_call(weight, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder)
+    return jitsmm_p_call(
+        weight, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
+    )
 
 
 def _jitsmm_transpose_rules(ct, weight, clen, B, seed, _, *, shape, transpose, corder, **kwargs):
@@ -1095,6 +1049,7 @@ def _jitsmm_transpose_rules(ct, weight, clen, B, seed, _, *, shape, transpose, c
             shape=shape,
             transpose=not transpose,
             corder=not corder,
+            backend=kwargs['backend'],
         )[0]
 
         return weight, clen, r, seed, _
@@ -1107,7 +1062,8 @@ def _jitsmm_transpose_rules(ct, weight, clen, B, seed, _, *, shape, transpose, c
             seed,
             shape=shape,
             transpose=not transpose,
-            corder=not corder
+            corder=not corder,
+            backend=kwargs['backend'],
         )[0]
         dw = jnp.sum(r * B, keepdims=True).reshape(weight.aval.shape)
         return dw, clen, B, seed, _
@@ -1131,6 +1087,7 @@ def _batching_axis1(args, axis=1, **kwargs):
         shape=kwargs['shape'],
         transpose=kwargs['transpose'],
         corder=kwargs['corder'],
+        backend=kwargs['backend'],
     )
     r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
     return [r], [axis]
@@ -1231,7 +1188,6 @@ binary_jitsmm_p = XLACustomKernel('binary_jitsmm')
 binary_jitsmm_p.def_numba_kernel(_jitsmm_numba_kernel)
 binary_jitsmm_p.def_warp_kernel(_jitsmm_warp_kernel)
 binary_jitsmm_p.def_pallas_kernel('gpu', _jitsmm_pallas_kernel)
-binary_jitsmm_p.def_pallas_kernel('tpu', _jitsmm_pallas_kernel)
 binary_jitsmm_p.def_jvp_rule2(_jitsmm_jvp_w, None, _jitsmm_jvp_B, None, None)
 binary_jitsmm_p.def_transpose_rule(_jitsmm_transpose_rules)
 binary_jitsmm_p.def_batching_rule(_jitsmm_batching)

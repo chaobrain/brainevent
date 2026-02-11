@@ -40,9 +40,10 @@ from ._csr import (
     csr_solve,
 )
 from ._dense import (
-    dbmv, dbmv_p, bdvm, bdvm_p,
-    dbmm, dbmm_p, bdmm, bdmm_p,
-    indexed_bdvm, indexed_bdvm_p, indexed_dbmv, indexed_dbmm, indexed_bdmm, indexed_bdmm_p,
+    binary_densemv, binary_densemv_p,
+    binary_densemm, binary_densemm_p,
+    indexed_binary_densemv, indexed_binary_densemv_p,
+    indexed_binary_densemm, indexed_binary_densemm_p,
     update_dense_on_binary_pre, update_dense_on_binary_pre_p,
     update_dense_on_binary_post, update_dense_on_binary_post_p,
     dsfmv, dsfmv_p, sfdvm, sfdvm_p,
@@ -56,7 +57,9 @@ from ._error import (
     KernelExecutionError,
 )
 from ._event import (
-    EventRepresentation, BinaryArray,
+    EventRepresentation,
+    IndexedEventRepresentation,
+    BinaryArray,
     SparseFloat,
     binary_array_index,
 )
@@ -102,30 +105,38 @@ from ._registry import (
 __all__ = [
     # --- data representing events --- #
     'EventRepresentation',
+    'IndexedEventRepresentation',
     'BinaryArray',
     'SparseFloat',
     'binary_array_index',
 
     # --- COO --- #
     'COO',
-    'binary_coomv', 'binary_coomv_p', 'binary_coomm', 'binary_coomm_p',
-    'coomv', 'coomv_p', 'coomm', 'coomm_p',
+    'binary_coomv', 'binary_coomv_p',
+    'binary_coomm', 'binary_coomm_p',
+    'coomv', 'coomv_p',
+    'coomm', 'coomm_p',
     'update_coo_on_binary_pre', 'update_coo_on_binary_post',
     'update_coo_on_binary_pre_p', 'update_coo_on_binary_post_p',
 
     # --- CSR --- #
     'CSR', 'CSC',
-    'binary_csrmv', 'binary_csrmv_p', 'binary_csrmm', 'binary_csrmm_p',
-    'csrmv', 'csrmv_p', 'csrmm', 'csrmm_p', 'csrmv_yw2y', 'csrmv_yw2y_p',
+    'binary_csrmv', 'binary_csrmv_p',
+    'binary_csrmm', 'binary_csrmm_p',
+    'csrmv', 'csrmv_p',
+    'csrmm', 'csrmm_p',
+    'csrmv_yw2y', 'csrmv_yw2y_p',
     'update_csr_on_binary_pre', 'update_csr_on_binary_pre_p',
     'update_csr_on_binary_post', 'update_csr_on_binary_post_p',
-    'spfloat_csrmv', 'spfloat_csrmv_p', 'spfloat_csrmm', 'spfloat_csrmm_p',
+    'spfloat_csrmv', 'spfloat_csrmv_p',
+    'spfloat_csrmm', 'spfloat_csrmm_p',
     'csr_solve',
 
     # --- dense matrix --- #
-    'dbmv', 'dbmv_p', 'bdvm', 'bdvm_p',
-    'dbmm', 'dbmm_p', 'bdmm', 'bdmm_p',
-    'indexed_bdvm', 'indexed_bdvm_p', 'indexed_dbmv', 'indexed_dbmm', 'indexed_bdmm', 'indexed_bdmm_p',
+    'binary_densemv', 'binary_densemv_p',
+    'binary_densemm', 'binary_densemm_p',
+    'indexed_binary_densemv', 'indexed_binary_densemv_p',
+    'indexed_binary_densemm', 'indexed_binary_densemm_p',
     'update_dense_on_binary_pre', 'update_dense_on_binary_pre_p',
     'update_dense_on_binary_post', 'update_dense_on_binary_post_p',
     'dsfmv', 'dsfmv_p', 'sfdvm', 'sfdvm_p',
@@ -134,20 +145,32 @@ __all__ = [
     # --- Just-In-Time Connectivity matrix --- #
     'JITCMatrix',
     'JITScalarMatrix', 'JITCScalarR', 'JITCScalarC',
-    'binary_jitsmv', 'binary_jitsmv_p', 'binary_jitsmm', 'binary_jitsmm_p',
-    'jits', 'jits_p', 'jitsmv', 'jitsmv_p', 'jitsmm', 'jitsmm_p',
+    'binary_jitsmv', 'binary_jitsmv_p',
+    'binary_jitsmm', 'binary_jitsmm_p',
+    'jits', 'jits_p',
+    'jitsmv', 'jitsmv_p',
+    'jitsmm', 'jitsmm_p',
     'JITCNormalR', 'JITCNormalC',
-    'binary_jitnmv', 'binary_jitnmv_p', 'binary_jitnmm', 'binary_jitnmm_p',
-    'jitn', 'jitn_p', 'jitnmv', 'jitnmv_p', 'jitnmm', 'jitnmm_p',
+    'binary_jitnmv', 'binary_jitnmv_p',
+    'binary_jitnmm', 'binary_jitnmm_p',
+    'jitn', 'jitn_p',
+    'jitnmv', 'jitnmv_p',
+    'jitnmm', 'jitnmm_p',
     'JITCUniformR', 'JITCUniformC',
-    'binary_jitumv', 'binary_jitumv_p', 'binary_jitumm', 'binary_jitumm_p',
-    'jitu', 'jitu_p', 'jitumv', 'jitumv_p', 'jitumm', 'jitumm_p',
+    'binary_jitumv', 'binary_jitumv_p',
+    'binary_jitumm', 'binary_jitumm_p',
+    'jitu', 'jitu_p',
+    'jitumv', 'jitumv_p',
+    'jitumm', 'jitumm_p',
 
     # --- Fixed number connectivity --- #
     'FixedNumConn', 'FixedPreNumConn', 'FixedPostNumConn',
-    'binary_fcnmv', 'binary_fcnmv_p', 'binary_fcnmm', 'binary_fcnmm_p',
-    'fcnmv', 'fcnmv_p', 'fcnmm', 'fcnmm_p',
-    'spfloat_fcnmv', 'spfloat_fcnmv_p', 'spfloat_fcnmm', 'spfloat_fcnmm_p',
+    'binary_fcnmv', 'binary_fcnmv_p',
+    'binary_fcnmm', 'binary_fcnmm_p',
+    'fcnmv', 'fcnmv_p',
+    'fcnmm', 'fcnmm_p',
+    'spfloat_fcnmv', 'spfloat_fcnmv_p',
+    'spfloat_fcnmm', 'spfloat_fcnmm_p',
 
     # --- operator customization routines --- #
     'XLACustomKernel', 'KernelEntry',
@@ -180,18 +203,19 @@ __all__ = [
 
 def __getattr__(name):
     import warnings
+    if name == 'EventArray':
+        warnings.warn(f'EventArray is deprecated, use {BinaryArray.__name__} instead')
+        return BinaryArray
     if name == 'csr_on_pre':
-        warnings.warn(
-            f'csr_on_pre is deprecated, use {update_csr_on_binary_pre.__name__} instead',
-        )
+        warnings.warn(f'csr_on_pre is deprecated, use {update_csr_on_binary_pre.__name__} instead')
         return update_csr_on_binary_pre
     if name == 'csr2csc_on_post':
-        warnings.warn(
-            f'csr2csc_on_post is deprecated, use {update_csr_on_binary_post.__name__} instead',
-        )
+        warnings.warn(f'csr2csc_on_post is deprecated, use {update_csr_on_binary_post.__name__} instead')
         return update_csr_on_binary_post
     if name == 'dense_on_pre':
+        warnings.warn(f'dense_on_pre is deprecated, use {update_dense_on_binary_pre.__name__} instead')
         return update_dense_on_binary_pre
     if name == 'dense_on_post':
+        warnings.warn(f'dense_on_post is deprecated, use {update_dense_on_binary_post.__name__} instead')
         return update_dense_on_binary_post
     raise AttributeError(name)

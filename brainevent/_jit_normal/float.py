@@ -172,155 +172,80 @@ def jitnmm(
     return u.maybe_decimal(res * unitd * unitB)
 
 
-def _jitn_numba_kernel_generator(
-    transpose: bool = False,
-    corder: bool = True,
-    **kwargs
-):
+def _jitn_numba_kernel_generator(corder: bool = True, **kwargs):
     import numba
 
     if corder:
-        if transpose:
-            # JIT matrix.T
-            #
-            # - JIT matrix shape = [m, n]
-            #
+        # JIT matrix
+        #
+        # - JIT matrix shape = [m, n]
+        #
 
-            @numba.njit(fastmath=True)
-            def kernel(w_loc, w_scale, clen, seed, posts):
-                posts[:] = 0.
-                m = posts.shape[1]
-                n = posts.shape[0]
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                clen0 = clen[0]  # Connection length (inverse of connection probability)
-                seed0 = seed[0]  # Random seed
+        @numba.njit(fastmath=True)
+        def kernel(w_loc, w_scale, clen, seed, posts):
+            posts[:] = 0.
+            m = posts.shape[0]
+            n = posts.shape[1]
 
-                # Initialize the random number generator with the provided seed
-                # This ensures reproducibility for the same seed value
-                np.random.seed(seed0)
+            w_loc0 = w_loc[0]
+            w_scale0 = w_scale[0]
+            seed0 = seed[0]  # Random seed for reproducible matrix generation
+            clen0 = clen[0]  # Connection length parameter (controls sparsity)
 
-                # Process each output element (column in the matrix)
-                for i_row in range(n):
-                    # Generate first row index randomly - this determines where to start sampling
-                    i_col = np.random.randint(0, clen0)
+            # Initialize the random number generator with the provided seed
+            # This ensures the "random" matrix is reproducible for the same seed value
+            np.random.seed(seed0)
 
-                    # Process all connected entries for this column
-                    while i_col < m:
-                        posts[i_row, i_col] = np.random.normal(loc=w_loc0, scale=w_scale0)
+            # Process each output element (each row of the matrix)
+            for i_row in range(m):
+                # Generate first column index randomly - this determines where to start sampling
+                i_col = np.random.randint(0, clen0)
 
-                        # Skip ahead to next connected row (sparse sampling)
-                        # The random skip ensures proper connection probability
-                        # Each skip distance is randomly determined to maintain the sparse pattern
-                        i_col += np.random.randint(1, clen0)
+                # Process all connected entries for this row
+                while i_col < n:
+                    # Set the current matrix element to the weight value
+                    posts[i_row, i_col] = np.random.normal(loc=w_loc0, scale=w_scale0)
 
-        else:
-            # JIT matrix
-            #
-            # - JIT matrix shape = [m, n]
-            #
-
-            @numba.njit(fastmath=True)
-            def kernel(w_loc, w_scale, clen, seed, posts):
-                posts[:] = 0.
-                m = posts.shape[0]
-                n = posts.shape[1]
-
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                seed0 = seed[0]  # Random seed for reproducible matrix generation
-                clen0 = clen[0]  # Connection length parameter (controls sparsity)
-
-                # Initialize the random number generator with the provided seed
-                # This ensures the "random" matrix is reproducible for the same seed value
-                np.random.seed(seed0)
-
-                # Process each output element (each row of the matrix)
-                for i_row in range(m):
-                    # Generate first column index randomly - this determines where to start sampling
-                    i_col = np.random.randint(0, clen0)
-
-                    # Process all connected entries for this row
-                    while i_col < n:
-                        # Set the current matrix element to the weight value
-                        posts[i_row, i_col] = np.random.normal(loc=w_loc0, scale=w_scale0)
-
-                        # Skip ahead to next connected column (sparse sampling)
-                        # The random skip ensures proper connection probability
-                        i_col += np.random.randint(1, clen0)
+                    # Skip ahead to next connected column (sparse sampling)
+                    # The random skip ensures proper connection probability
+                    i_col += np.random.randint(1, clen0)
 
     else:
         # This means that the for loop is parallelized along the dimension of the vector: ``vector.shape[0]``.
 
-        if transpose:
-            # JIT matrix.T
-            #
-            # - JIT matrix shape = [m, n]
-            #
+        # JIT matrix
+        #
+        # - JIT matrix shape = [m, n]
+        #
 
-            @numba.njit(fastmath=True)
-            def kernel(w_loc, w_scale, clen, seed, posts):
-                posts[:] = 0.
-                m = posts.shape[1]
-                n = posts.shape[0]
+        @numba.njit(fastmath=True)
+        def kernel(w_loc, w_scale, clen, seed, posts):
+            posts[:] = 0.
+            m = posts.shape[0]  # Number of rows in the output matrix
+            n = posts.shape[1]  # Number of columns in the output matrix
 
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                clen0 = clen[0]  # Controls sparsity - higher values mean fewer connections
-                seed0 = seed[0]  # Random seed for reproducible matrix generation
+            w_loc0 = w_loc[0]
+            w_scale0 = w_scale[0]
+            clen0 = clen[0]  # Controls sparsity - higher values mean fewer connections
+            seed0 = seed[0]  # Random seed for reproducible matrix generation
 
-                # Initialize the random number generator with the provided seed
-                # This ensures reproducibility for the same seed value
-                np.random.seed(seed0)
+            # Initialize the random number generator with the provided seed
+            # This ensures reproducibility for the same seed value
+            np.random.seed(seed0)
 
-                # Process each column of the matrix sequentially
-                for i_col in range(m):
-                    # Generate first row index randomly - this determines where to start sampling in this column
-                    i_row = np.random.randint(0, clen0)
+            # Process each column of the matrix sequentially
+            for i_col in range(n):
+                # Generate first row index randomly - this determines where to start sampling in this column
+                i_row = np.random.randint(0, clen0)
 
-                    # Process all connected entries for this column
-                    while i_row < n:
-                        # Set the current matrix element to the weight value
-                        posts[i_row, i_col] = np.random.normal(loc=w_loc0, scale=w_scale0)
+                # Process all connected entries for this column
+                while i_row < m:
+                    # Set the current matrix element to the weight value
+                    posts[i_row, i_col] = np.random.normal(loc=w_loc0, scale=w_scale0)
 
-                        # Skip ahead to next connected row (sparse sampling)
-                        # The random skip ensures proper connection probability
-                        i_row += np.random.randint(1, clen0)
-
-        else:
-            # JIT matrix
-            #
-            # - JIT matrix shape = [m, n]
-            #
-
-            @numba.njit(fastmath=True)
-            def kernel(w_loc, w_scale, clen, seed, posts):
-                posts[:] = 0.
-                m = posts.shape[0]  # Number of rows in the output matrix
-                n = posts.shape[1]  # Number of columns in the output matrix
-
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                clen0 = clen[0]  # Controls sparsity - higher values mean fewer connections
-                seed0 = seed[0]  # Random seed for reproducible matrix generation
-
-                # Initialize the random number generator with the provided seed
-                # This ensures reproducibility for the same seed value
-                np.random.seed(seed0)
-
-                # Process each column of the matrix sequentially
-                for i_col in range(n):
-                    # Generate first row index randomly - this determines where to start sampling in this column
-                    i_row = np.random.randint(0, clen0)
-
-                    # Process all connected entries for this column
-                    while i_row < m:
-                        # Set the current matrix element to the weight value
-                        posts[i_row, i_col] = np.random.normal(loc=w_loc0, scale=w_scale0)
-
-                        # Skip ahead to next connected row (sparse sampling)
-                        # The random skip ensures proper connection probability
-                        i_row += np.random.randint(1, clen0)
+                    # Skip ahead to next connected row (sparse sampling)
+                    # The random skip ensures proper connection probability
+                    i_row += np.random.randint(1, clen0)
 
     def run(w_loc, w_scale, clen, seed):
         return numba_kernel(kernel, outs=kwargs['outs'])(w_loc, w_scale, clen, seed)
@@ -334,7 +259,6 @@ def _jitn_warp_kernel_generator(
     clen_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
@@ -348,101 +272,54 @@ def _jitn_warp_kernel_generator(
     out_warp_info = jaxinfo_to_warpinfo(out_info)
 
     if corder:
-        if transpose:
-            # JIT matrix.T - JIT matrix shape = [m, n]
-            @warp.kernel
-            def kernel(
-                w_loc: w_loc_warp_info,
-                w_scale: w_scale_warp_info,
-                clen: clen_warp_info,
-                seed: seed_warp_info,
-                posts: out_warp_info,
-            ):
-                m = posts.shape[1]
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_row = warp.tid()
-                state = warp.rand_init(seed0 + i_row)
-                i_col = warp.randi(state, 0, clen0)
-                while i_col < m:
-                    posts[i_row, i_col] = warp.randn(state) * w_scale0 + w_loc0
-                    i_col += warp.randi(state, 1, clen0)
-        else:
-            # JIT matrix - JIT matrix shape = [m, n]
-            @warp.kernel
-            def kernel(
-                w_loc: w_loc_warp_info,
-                w_scale: w_scale_warp_info,
-                clen: clen_warp_info,
-                seed: seed_warp_info,
-                posts: out_warp_info,
-            ):
-                n = posts.shape[1]
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_row = warp.tid()
-                state = warp.rand_init(seed0 + i_row)
-                i_col = warp.randi(state, 0, clen0)
-                while i_col < n:
-                    posts[i_row, i_col] = warp.randn(state) * w_scale0 + w_loc0
-                    i_col += warp.randi(state, 1, clen0)
+        # JIT matrix - JIT matrix shape = [m, n]
+        @warp.kernel
+        def kernel(
+            w_loc: w_loc_warp_info,
+            w_scale: w_scale_warp_info,
+            clen: clen_warp_info,
+            seed: seed_warp_info,
+            posts: out_warp_info,
+        ):
+            n = posts.shape[1]
+            w_loc0 = w_loc[0]
+            w_scale0 = w_scale[0]
+            clen0 = clen[0]
+            seed0 = seed[0]
+            i_row = warp.tid()
+            state = warp.rand_init(seed0 + i_row * n)
+            i_col = warp.randi(state, 0, clen0)
+            while i_col < n:
+                posts[i_row, i_col] = warp.randn(state) * w_scale0 + w_loc0
+                i_col += warp.randi(state, 1, clen0)
 
-        def run(w_loc, w_scale, clen, seed):
-            dim = out_info.shape[0]
-            fn = jax_kernel(kernel, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
-            return fn(w_loc, w_scale, clen, seed)
+
     else:
-        if transpose:
-            # JIT matrix.T - JIT matrix shape = [m, n]
-            @warp.kernel
-            def kernel(
-                w_loc: w_loc_warp_info,
-                w_scale: w_scale_warp_info,
-                clen: clen_warp_info,
-                seed: seed_warp_info,
-                posts: out_warp_info,
-            ):
-                n = posts.shape[0]
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_col = warp.tid()
-                state = warp.rand_init(seed0 + i_col)
-                i_row = warp.randi(state, 0, clen0)
-                while i_row < n:
-                    posts[i_row, i_col] = warp.randn(state) * w_scale0 + w_loc0
-                    i_row += warp.randi(state, 1, clen0)
-        else:
-            # JIT matrix - JIT matrix shape = [m, n]
-            @warp.kernel
-            def kernel(
-                w_loc: w_loc_warp_info,
-                w_scale: w_scale_warp_info,
-                clen: clen_warp_info,
-                seed: seed_warp_info,
-                posts: out_warp_info,
-            ):
-                m = posts.shape[0]
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_col = warp.tid()
-                state = warp.rand_init(seed0 + i_col)
-                i_row = warp.randi(state, 0, clen0)
-                while i_row < m:
-                    posts[i_row, i_col] = warp.randn(state) * w_scale0 + w_loc0
-                    i_row += warp.randi(state, 1, clen0)
+        # JIT matrix - JIT matrix shape = [m, n]
+        @warp.kernel
+        def kernel(
+            w_loc: w_loc_warp_info,
+            w_scale: w_scale_warp_info,
+            clen: clen_warp_info,
+            seed: seed_warp_info,
+            posts: out_warp_info,
+        ):
+            m = posts.shape[0]
+            w_loc0 = w_loc[0]
+            w_scale0 = w_scale[0]
+            clen0 = clen[0]
+            seed0 = seed[0]
+            i_col = warp.tid()
+            state = warp.rand_init(seed0 + i_col * m)
+            i_row = warp.randi(state, 0, clen0)
+            while i_row < m:
+                posts[i_row, i_col] = warp.randn(state) * w_scale0 + w_loc0
+                i_row += warp.randi(state, 1, clen0)
 
-        def run(w_loc, w_scale, clen, seed):
-            dim = out_info.shape[1]
-            fn = jax_kernel(kernel, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
-            return fn(w_loc, w_scale, clen, seed)
+    def run(w_loc, w_scale, clen, seed):
+        dim = out_info.shape[0] if corder else out_info.shape[1]
+        fn = jax_kernel(kernel, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
+        return fn(w_loc, w_scale, clen, seed, jnp.zeros(out_info.shape, out_info.dtype))
 
     return run
 
@@ -453,151 +330,74 @@ def _jitn_pallas_kernel_generator(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas import triton as plt
 
     dim = out_info.shape[0] if corder else out_info.shape[1]
-    tiled = True
+    block_size = generate_block_dim(dim, maximum=128)
+    n_block = pl.cdiv(dim, block_size)
 
-    if tiled:
-        block_size = generate_block_dim(dim, maximum=128)
-        if corder:
-            def _raw_kernel(
-                w_loc_ref,  # [1]
-                w_scale_ref,  # [1]
-                clen_ref,  # [1]
-                seed_ref,  # [1]
-                post_ref,  # [m, n]
-            ):
-                m = post_ref.shape[1]
-                w_loc = w_loc_ref[0]
-                w_scale = w_scale_ref[0]
-                clen0 = clen_ref[0]
-                seed0 = seed_ref[0]
-                i_row_block = pl.program_id(0)
-                i_rows = i_row_block * block_size + jnp.arange(block_size)
-                i_row_mask = i_rows < dim
-                safe_rows = jnp.where(i_row_mask, i_rows, 0)
+    if corder:
+        def kernel(w_loc_ref, w_scale_ref, clen_ref, seed_ref, _, post_ref):
+            m = post_ref.shape[1]
+            w_loc = w_loc_ref[0]
+            w_scale = w_scale_ref[0]
+            clen0 = clen_ref[0]
+            seed0 = seed_ref[0]
+            i_row_block = pl.program_id(0)
+            i_rows = i_row_block * block_size + jnp.arange(block_size)
+            i_row_mask = i_rows < dim
 
-                def body(data):
-                    i_cols, i_col_mask, rng = data
-                    safe_cols = jnp.where(i_col_mask, i_cols, 0)
-                    values = rng.normal(w_loc, w_scale)
-                    plt.store(post_ref[safe_rows, safe_cols], values, mask=i_row_mask & i_col_mask)
-                    i_cols += rng.random_integers(1, clen0)
-                    return i_cols, i_cols < m, rng
-
-                rng = PallasLFSR88RNG(seed0 + i_rows)
-                i_cols = rng.random_integers(0, clen0)
-                i_col_mask = i_cols < m
-                jax.lax.while_loop(
-                    lambda data: jnp.sum(data[1]) > 0,
-                    body,
-                    (i_cols, i_col_mask, rng)
-                )
-
-        else:
-            def _raw_kernel(
-                w_loc_ref,  # [1]
-                w_scale_ref,  # [1]
-                clen_ref,  # [1]
-                seed_ref,  # [1]
-                post_ref,  # [m, n]
-            ):
-                n = post_ref.shape[0]
-                w_loc = w_loc_ref[0]
-                w_scale = w_scale_ref[0]
-                clen0 = clen_ref[0]
-                seed0 = seed_ref[0]
-                i_col_block = pl.program_id(0)
-                i_cols = i_col_block * block_size + jnp.arange(block_size)
-                i_col_mask = i_cols < dim
+            def body(data):
+                i_cols, i_col_mask, rng = data
+                val = rng.normal(w_loc, w_scale)
                 safe_cols = jnp.where(i_col_mask, i_cols, 0)
+                post_ref[i_rows, safe_cols] = jnp.where(i_row_mask & i_col_mask, val, post_ref[i_rows, safe_cols])
+                i_cols += rng.random_integers(1, clen0)
+                return i_cols, i_cols < m, rng
 
-                def body(data):
-                    i_rows, i_row_mask, rng = data
-                    safe_rows = jnp.where(i_row_mask, i_rows, 0)
-                    values = rng.normal(w_loc, w_scale)
-                    plt.store(post_ref[safe_rows, safe_cols], values, mask=i_row_mask & i_col_mask)
-                    i_rows = i_rows + rng.random_integers(1, clen0)
-                    return i_rows, i_rows < n, rng
-
-                rng = PallasLFSR88RNG(seed0 + i_cols)
-                i_rows = rng.random_integers(0, clen0)
-                i_row_mask = i_rows < n
-                jax.lax.while_loop(
-                    lambda data: jnp.sum(data[1]) > 0,
-                    body,
-                    (i_rows, i_row_mask, rng)
-                )
-
-        def run(w_loc, w_scale, clen, seed):
-            fn = pl.pallas_call(_raw_kernel, grid=(pl.cdiv(dim, block_size),), out_shape=kwargs['outs'])
-            return fn(w_loc, w_scale, clen, seed)
-
-        return run
+            rng = PallasLFSR88RNG(seed0 + i_rows * m)
+            i_cols = rng.random_integers(0, clen0)
+            i_col_mask = i_cols < m
+            jax.lax.while_loop(
+                lambda data: jnp.sum(data[1]) > 0,
+                body,
+                (i_cols, i_col_mask, rng)
+            )
 
     else:
-        if corder:
-            def _raw_kernel(
-                w_loc_ref,  # [1]
-                w_scale_ref,  # [1]
-                clen_ref,  # [1]
-                seed_ref,  # [1]
-                post_ref,  # [m, n]
-            ):
-                m = post_ref.shape[1]
-                w_loc0 = w_loc_ref[0]
-                w_scale0 = w_scale_ref[0]
-                clen0 = clen_ref[0]
-                seed0 = seed_ref[0]
-                i_row = pl.program_id(0)
+        def kernel(w_loc_ref, w_scale_ref, clen_ref, seed_ref, _, post_ref):
+            n = post_ref.shape[0]
+            w_loc = w_loc_ref[0]
+            w_scale = w_scale_ref[0]
+            clen0 = clen_ref[0]
+            seed0 = seed_ref[0]
+            i_col_block = pl.program_id(0)
+            i_cols = i_col_block * block_size + jnp.arange(block_size)
+            i_col_mask = i_cols < dim
 
-                def body(data):
-                    i_col, rng_ = data
-                    plt.store(post_ref[i_row, i_col], rng_.normal(w_loc0, w_scale0))
-                    i_col = i_col + rng_.random_integers(1, clen0)
-                    return i_col, rng_
+            def body(data):
+                i_rows, i_row_mask, rng = data
+                val = rng.normal(w_loc, w_scale)
+                safe_rows = jnp.where(i_row_mask, i_rows, 0)
+                post_ref[safe_rows, i_cols] = jnp.where(i_row_mask & i_col_mask, val, post_ref[safe_rows, i_cols])
+                i_rows = i_rows + rng.random_integers(1, clen0)
+                return i_rows, i_rows < n, rng
 
-                rng = PallasLFSR88RNG(seed0 + i_row)
-                jax.lax.while_loop(
-                    lambda data: data[0] < m,
-                    body,
-                    (rng.random_integers(0, clen0), rng)
-                )
+            rng = PallasLFSR88RNG(seed0 + i_cols * n)
+            i_rows = rng.random_integers(0, clen0)
+            i_row_mask = i_rows < n
+            jax.lax.while_loop(
+                lambda data: jnp.sum(data[1]) > 0,
+                body,
+                (i_rows, i_row_mask, rng)
+            )
 
-        else:
-            def _raw_kernel(
-                w_loc_ref,  # [1]
-                w_scale_ref,  # [1]
-                clen_ref,  # [1]
-                seed_ref,  # [1]
-                post_ref,  # [m, n]
-            ):
-                n = post_ref.shape[0]
-                w_loc0 = w_loc_ref[0]
-                w_scale0 = w_scale_ref[0]
-                clen0 = clen_ref[0]
-                seed0 = seed_ref[0]
-                i_col = pl.program_id(0)
+    def run(w_loc, w_scale, clen, seed):
+        fn = pl.pallas_call(kernel, grid=(n_block,), input_output_aliases={4: 0}, out_shape=kwargs['outs'], backend='triton')
+        out = kwargs['outs'][0]
+        placeholder = jnp.zeros(out.shape, out.dtype)
+        return fn(w_loc, w_scale, clen, seed, placeholder)
 
-                def body(data):
-                    i_row, rng_ = data
-                    plt.store(post_ref[i_row, i_col], rng_.normal(w_loc0, w_scale0))
-                    i_row = i_row + rng_.random_integers(1, clen0)
-                    return i_row, rng_
-
-                rng = PallasLFSR88RNG(seed0 + i_col)
-                jax.lax.while_loop(
-                    lambda data: data[0] < n,
-                    body,
-                    (rng.random_integers(0, clen0), rng)
-                )
-
-        def run(w_loc, w_scale, clen, seed):
-            fn = pl.pallas_call(_raw_kernel, grid=(dim,), out_shape=kwargs['outs'])
-            return fn(w_loc, w_scale, clen, seed)
-
-        return run
+    return run
 
 
 def _jitn_jvp_wlow(w_loc_dot, w_loc, w_scale, clen, seed, *, out_info, **kwargs):
@@ -605,11 +405,19 @@ def _jitn_jvp_wlow(w_loc_dot, w_loc, w_scale, clen, seed, *, out_info, **kwargs)
     return [out]
 
 
-def _jitn_jvp_whigh(w_scale_dot, w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool, **kwargs):
-    return jitn_p_call(0., w_scale_dot, clen, seed, shape=shape, transpose=transpose, corder=corder)
+def _jitn_jvp_whigh(
+    w_scale_dot, w_loc, w_scale, clen, seed, *,
+    shape, transpose: bool, corder: bool, backend=None, **kwargs
+):
+    return jitn_p_call(
+        0., w_scale_dot, clen, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
+    )
 
 
-def _jitn_transpose(ct, w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool, **kwargs):
+def _jitn_transpose(
+    ct, w_loc, w_scale, clen, seed, *,
+    shape, transpose: bool, corder: bool, backend=None, **kwargs
+):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
     ct = ct[0]
@@ -618,8 +426,9 @@ def _jitn_transpose(ct, w_loc, w_scale, clen, seed, *, shape, transpose: bool, c
         return (dwlow, w_scale, clen, seed)
 
     elif ad.is_undefined_primal(w_scale):
-        # TODO: optimize memory
-        forward = jitn_p_call(0., 1., clen, seed, shape=shape, transpose=transpose, corder=corder)[0]
+        forward = jitn_p_call(
+            0., 1., clen, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
+        )[0]
         dwscale = jnp.expand_dims((ct * forward).sum(), axis=0)
         return (w_loc, dwscale, clen, seed)
 
@@ -649,7 +458,10 @@ def _jitn_benchmark_data(*, platform):
     return configs
 
 
-def jitn_p_call(w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool, backend: Optional[str] = None):
+def jitn_p_call(
+    w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool, backend: Optional[str] = None
+):
+    seed = _initialize_seed(seed)
     w_loc = jnp.atleast_1d(w_loc)
     w_scale = jnp.atleast_1d(w_scale)
     clen = jnp.atleast_1d(clen)
@@ -683,7 +495,6 @@ jitn_p = XLACustomKernel('float_jitn')
 jitn_p.def_numba_kernel(_jitn_numba_kernel_generator)
 jitn_p.def_warp_kernel(_jitn_warp_kernel_generator)
 jitn_p.def_pallas_kernel('gpu', _jitn_pallas_kernel_generator)
-jitn_p.def_pallas_kernel('tpu', _jitn_pallas_kernel_generator)
 jitn_p.def_jvp_rule2(_jitn_jvp_wlow, _jitn_jvp_whigh, None, None)
 jitn_p.def_transpose_rule(_jitn_transpose)
 jitn_p.def_batching_rule(_jitn_batching)
@@ -700,180 +511,96 @@ def _jitnmv_numba_kernel_generator(
     if corder:
         # This means that the for loop is parallelized along the dimension of the output vector: ``post.shape[0]``.
 
-        if transpose:
-            @numba.njit(fastmath=True)
-            def kernel(w_loc, w_scale, clen, vector, seed, posts):
-                posts[:] = 0.
-                # Output vector dimension = number of columns in the matrix
-                n_col = posts.shape[0]
+        @numba.njit(fastmath=True)
+        def kernel(w_loc, w_scale, clen, vector, seed, posts):
+            posts[:] = 0.
+            # Output vector dimension = number of rows in the matrix
+            # Each row in the matrix will produce one element in the output vector
+            num_row = posts.shape[0]
 
-                # Input vector dimension = number of rows in the matrix
-                n_row = vector.shape[0]
+            # Input vector dimension = number of columns in the matrix
+            # The input vector must match the number of columns in our implicit matrix
+            num_col = vector.shape[0]
 
-                # Extract scalar values from input arrays
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                clen0 = clen[0]  # Connection length (inverse of connection probability)
-                seed0 = seed[0]  # Random seed
+            # Extract scalar values from input arrays for more efficient access in loops
+            w_loc0 = w_loc[0]
+            w_scale0 = w_scale[0]
+            seed0 = seed[0]  # Random seed for reproducible matrix generation
+            clen0 = clen[0]  # Connection length parameter (controls sparsity)
 
-                # Initialize the random number generator with the provided seed
-                # This ensures reproducibility for the same seed value
-                np.random.seed(seed0)
+            # Initialize the random number generator with the provided seed
+            # This ensures the "random" matrix is reproducible for the same seed value
+            np.random.seed(seed0)
 
-                # Process each output element (column in the matrix)
-                for i_col in range(n_col):
-                    # Generate first row index randomly - this determines where to start sampling
-                    i_row = np.random.randint(0, clen0)
+            # Process each output element (each row of the matrix)
+            for i_row in range(num_row):
+                # Randomly determine the first column where this row has a connection
+                # This implements efficient sampling of a sparse pattern
+                i_col = np.random.randint(0, clen0)
 
-                    # Initialize accumulator for this output element with proper dtype
-                    out = np.asarray(0., dtype=vector.dtype)
+                # Initialize accumulator for the dot product result for this row
+                # Using input vector's dtype ensures proper numerical precision
+                out = np.asarray(0., dtype=vector.dtype)
 
-                    # Process all connected entries for this column
-                    while i_row < n_row:
-                        out += vector[i_row] * np.random.normal(loc=w_loc0, scale=w_scale0)
+                # Process all connected entries for this row by skipping through columns
+                # This is the core sparse sampling algorithm - we only process columns
+                # that have connections rather than checking every possible column
+                while i_col < num_col:
+                    # Add contribution from the current connected element
+                    # For connected positions, we add the corresponding vector element
+                    out += vector[i_col] * np.random.normal(loc=w_loc0, scale=w_scale0)
 
-                        # Skip ahead to next connected row (sparse sampling)
-                        # The random skip ensures proper connection probability
-                        # Each skip distance is randomly determined to maintain the sparse pattern
-                        i_row += np.random.randint(1, clen0)
+                    # Skip ahead to next connected column using geometric-like distribution
+                    # The random skip distance models the sparse connectivity pattern
+                    # where each position has approximately 1/clen0 probability of connection
+                    i_col += np.random.randint(1, clen0)
 
-                    posts[i_col] = out
-
-        else:
-            @numba.njit(fastmath=True)
-            def kernel(w_loc, w_scale, clen, vector, seed, posts):
-                posts[:] = 0.
-                # Output vector dimension = number of rows in the matrix
-                # Each row in the matrix will produce one element in the output vector
-                num_row = posts.shape[0]
-
-                # Input vector dimension = number of columns in the matrix
-                # The input vector must match the number of columns in our implicit matrix
-                num_col = vector.shape[0]
-
-                # Extract scalar values from input arrays for more efficient access in loops
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                seed0 = seed[0]  # Random seed for reproducible matrix generation
-                clen0 = clen[0]  # Connection length parameter (controls sparsity)
-
-                # Initialize the random number generator with the provided seed
-                # This ensures the "random" matrix is reproducible for the same seed value
-                np.random.seed(seed0)
-
-                # Process each output element (each row of the matrix)
-                for i_row in range(num_row):
-                    # Randomly determine the first column where this row has a connection
-                    # This implements efficient sampling of a sparse pattern
-                    i_col = np.random.randint(0, clen0)
-
-                    # Initialize accumulator for the dot product result for this row
-                    # Using input vector's dtype ensures proper numerical precision
-                    out = np.asarray(0., dtype=vector.dtype)
-
-                    # Process all connected entries for this row by skipping through columns
-                    # This is the core sparse sampling algorithm - we only process columns
-                    # that have connections rather than checking every possible column
-                    while i_col < num_col:
-                        # Add contribution from the current connected element
-                        # For connected positions, we add the corresponding vector element
-                        out += vector[i_col] * np.random.normal(loc=w_loc0, scale=w_scale0)
-
-                        # Skip ahead to next connected column using geometric-like distribution
-                        # The random skip distance models the sparse connectivity pattern
-                        # where each position has approximately 1/clen0 probability of connection
-                        i_col += np.random.randint(1, clen0)
-
-                    posts[i_row] = out
+                posts[i_row] = out
 
     else:
         # This means that the for loop is parallelized along the dimension of the vector: ``vector.shape[0]``.
 
-        if transpose:
-            @numba.njit(fastmath=True)
-            def kernel(w_loc, w_scale, clen, vector, seed, posts):
-                posts[:] = 0.
-                # Output vector dimension = number of columns in the matrix
-                # This is the dimension of the result vector in the vector @ matrix operation
-                num_col = posts.shape[0]
+        @numba.njit(fastmath=True)
+        def kernel(w_loc, w_scale, clen, vector, seed, posts):
+            posts[:] = 0.
+            # Output vector dimension = number of rows in the matrix
+            # This represents the first dimension of the matrix and the result vector's size
+            num_row = posts.shape[0]
 
-                # Input vector dimension = number of rows in the matrix
-                # The vector elements are processed one by one, with each contributing to multiple output elements
-                num_row = vector.shape[0]
+            # Input vector dimension = number of columns in the matrix
+            # Each element of the input vector corresponds to a column in the matrix
+            num_col = vector.shape[0]
 
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                clen0 = clen[0]  # Controls sparsity - higher values mean fewer connections
-                seed0 = seed[0]  # Random seed for reproducible matrix generation
+            w_loc0 = w_loc[0]
+            w_scale0 = w_scale[0]
+            clen0 = clen[0]  # Controls sparsity - higher values mean fewer connections
+            seed0 = seed[0]  # Random seed for reproducible matrix generation
 
-                # Initialize the random number generator with the provided seed
-                # This ensures the "random" matrix is reproducible for the same seed value
-                np.random.seed(seed0)
+            # Initialize the random number generator with the provided seed
+            # This ensures the "random" matrix is reproducible for the same seed value
+            np.random.seed(seed0)
 
-                # Process each input row (vector element) and distribute its value to connected columns
-                # This implements the vector @ matrix operation one row at a time
-                for i_row in range(num_row):
-                    v = vector[i_row]
+            # Process each input element (each column of the matrix)
+            # This implements the matrix @ vector operation one column at a time
+            for i_col in range(num_col):
+                v = vector[i_col]
 
-                    # Sample the first connected column using random skipping
-                    # This implements the sparse sampling - each row connects to ~num_col/clen0 columns on average
-                    # Starting from a random position in [0,clen0) creates variability in connection patterns
-                    i_col = np.random.randint(0, clen0)
+                # Sample the first connected row using random skipping
+                # This implements the sparse sampling - each column connects to ~num_row/clen0 rows on average
+                # Starting from a random position in [0,clen0) creates variability in connection patterns
+                i_row = np.random.randint(0, clen0)
 
-                    # Continue sampling and accumulating while we haven't exceeded output dimension
-                    # This loop processes all columns this particular row connects to
-                    while i_col < num_col:
-                        # Add this connection's contribution to the appropriate output element
-                        # The output is accumulated as we process each input element's contributions
-                        posts[i_col] += v * np.random.normal(loc=w_loc0, scale=w_scale0)
+                # Continue sampling and accumulating while we haven't exceeded output dimension
+                # This loop processes all rows this particular column connects to
+                while i_row < num_row:
+                    # Add this connection's contribution to the appropriate output element
+                    # The output is accumulated as we process each column's contributions
+                    posts[i_row] += v * np.random.normal(loc=w_loc0, scale=w_scale0)
 
-                        # Move to the next connected column using geometric-like skipping
-                        # Each next connection is approximately clen0 positions away on average
-                        # This creates a sparse pattern where only ~1/clen0 of all possible connections exist
-                        i_col += np.random.randint(1, clen0)
-
-        else:
-            @numba.njit(fastmath=True)
-            def kernel(w_loc, w_scale, clen, vector, seed, posts):
-                posts[:] = 0.
-                # Output vector dimension = number of rows in the matrix
-                # This represents the first dimension of the matrix and the result vector's size
-                num_row = posts.shape[0]
-
-                # Input vector dimension = number of columns in the matrix
-                # Each element of the input vector corresponds to a column in the matrix
-                num_col = vector.shape[0]
-
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                clen0 = clen[0]  # Controls sparsity - higher values mean fewer connections
-                seed0 = seed[0]  # Random seed for reproducible matrix generation
-
-                # Initialize the random number generator with the provided seed
-                # This ensures the "random" matrix is reproducible for the same seed value
-                np.random.seed(seed0)
-
-                # Process each input element (each column of the matrix)
-                # This implements the matrix @ vector operation one column at a time
-                for i_col in range(num_col):
-                    v = vector[i_col]
-
-                    # Sample the first connected row using random skipping
-                    # This implements the sparse sampling - each column connects to ~num_row/clen0 rows on average
-                    # Starting from a random position in [0,clen0) creates variability in connection patterns
-                    i_row = np.random.randint(0, clen0)
-
-                    # Continue sampling and accumulating while we haven't exceeded output dimension
-                    # This loop processes all rows this particular column connects to
-                    while i_row < num_row:
-                        # Add this connection's contribution to the appropriate output element
-                        # The output is accumulated as we process each column's contributions
-                        posts[i_row] += v * np.random.normal(loc=w_loc0, scale=w_scale0)
-
-                        # Move to the next connected row using geometric-like skipping
-                        # Each next connection is approximately clen0 positions away on average
-                        # This creates a sparse pattern where only ~1/clen0 of all possible connections exist
-                        i_row += np.random.randint(1, clen0)
+                    # Move to the next connected row using geometric-like skipping
+                    # Each next connection is approximately clen0 positions away on average
+                    # This creates a sparse pattern where only ~1/clen0 of all possible connections exist
+                    i_row += np.random.randint(1, clen0)
 
     def run(w_loc, w_scale, clen, vector, seed):
         return numba_kernel(kernel, outs=kwargs['outs'])(w_loc, w_scale, clen, vector, seed)
@@ -888,7 +615,6 @@ def _jitnmv_warp_kernel_generator(
     vector_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
@@ -906,107 +632,58 @@ def _jitnmv_warp_kernel_generator(
     out_warp_info = jaxinfo_to_warpinfo(out_info)
 
     if corder:
-        if transpose:
-            @warp.kernel
-            def kernel(
-                w_loc: w_loc_warp_info,
-                w_scale: w_scale_warp_info,
-                clen: clen_warp_info,
-                vector: v_warp_info,
-                seed: seed_warp_info,
-                posts: out_warp_info,
-            ):
-                num_row = vector.shape[0]
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_col = warp.tid()
-                r = float(0.0)
-                state = warp.rand_init(seed0 + i_col)
-                i_row = warp.randi(state, 0, clen0)
-                while i_row < num_row:
-                    r += vector[i_row] * (warp.randn(state) * w_scale0 + w_loc0)
-                    i_row += warp.randi(state, 1, clen0)
-                posts[i_col] = r
-        else:
-            @warp.kernel
-            def kernel(
-                w_loc: w_loc_warp_info,
-                w_scale: w_scale_warp_info,
-                clen: clen_warp_info,
-                vector: v_warp_info,
-                seed: seed_warp_info,
-                posts: out_warp_info,
-            ):
-                num_col = vector.shape[0]
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_row = warp.tid()
-                r = float(0.0)
-                state = warp.rand_init(seed0 + i_row)
-                i_col = warp.randi(state, 0, clen0)
-                while i_col < num_col:
-                    r += vector[i_col] * (warp.randn(state) * w_scale0 + w_loc0)
-                    i_col += warp.randi(state, 1, clen0)
-                posts[i_row] = r
+        @warp.kernel
+        def kernel(
+            w_loc: w_loc_warp_info,
+            w_scale: w_scale_warp_info,
+            clen: clen_warp_info,
+            vector: v_warp_info,
+            seed: seed_warp_info,
+            posts: out_warp_info,
+        ):
+            num_col = vector.shape[0]
+            w_loc0 = w_loc[0]
+            w_scale0 = w_scale[0]
+            clen0 = clen[0]
+            seed0 = seed[0]
+            i_row = warp.tid()
+            r = float(0.0)
+            state = warp.rand_init(seed0 + i_row * num_col)
+            i_col = warp.randi(state, 0, clen0)
+            while i_col < num_col:
+                w = warp.randn(state) * w_scale0 + w_loc0
+                r += vector[i_col] * w
+                i_col += warp.randi(state, 1, clen0)
+            posts[i_row] = r
 
-        def run(w_loc, w_scale, clen, vector, seed):
-            dim = out_info.shape[0]
-            fn = jax_kernel(kernel, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
-            return fn(w_loc, w_scale, clen, vector, seed)
     else:
-        if transpose:
-            @warp.kernel
-            def kernel(
-                w_loc: w_loc_warp_info,
-                w_scale: w_scale_warp_info,
-                clen: clen_warp_info,
-                vector: v_warp_info,
-                seed: seed_warp_info,
-                posts: out_warp_info,
-            ):
-                num_col = posts.shape[0]
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_row = warp.tid()
-                v = vector[i_row]
-                state = warp.rand_init(seed0 + i_row)
-                i_col = warp.randi(state, 0, clen0)
-                while i_col < num_col:
-                    posts[i_col] += v * (warp.randn(state) * w_scale0 + w_loc0)
-                    i_col += warp.randi(state, 1, clen0)
-        else:
-            @warp.kernel
-            def kernel(
-                w_loc: w_loc_warp_info,
-                w_scale: w_scale_warp_info,
-                clen: clen_warp_info,
-                vector: v_warp_info,
-                seed: seed_warp_info,
-                posts: out_warp_info,
-            ):
-                num_row = posts.shape[0]
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_col = warp.tid()
-                v = vector[i_col]
-                state = warp.rand_init(seed0 + i_col)
-                i_row = warp.randi(state, 0, clen0)
-                while i_row < num_row:
-                    posts[i_row] += v * (warp.randn(state) * w_scale0 + w_loc0)
-                    i_row += warp.randi(state, 1, clen0)
+        @warp.kernel
+        def kernel(
+            w_loc: w_loc_warp_info,
+            w_scale: w_scale_warp_info,
+            clen: clen_warp_info,
+            vector: v_warp_info,
+            seed: seed_warp_info,
+            posts: out_warp_info,
+        ):
+            num_row = posts.shape[0]
+            w_loc0 = w_loc[0]
+            w_scale0 = w_scale[0]
+            clen0 = clen[0]
+            seed0 = seed[0]
+            i_col = warp.tid()
+            v = vector[i_col]
+            state = warp.rand_init(seed0 + i_col * num_row)
+            i_row = warp.randi(state, 0, clen0)
+            while i_row < num_row:
+                w = warp.randn(state) * w_scale0 + w_loc0
+                warp.atomic_add(posts, i_row, v * w)
+                i_row += warp.randi(state, 1, clen0)
 
-        def run(w_loc, w_scale, clen, vector, seed):
-            dim = vector_info.shape[0]
-            fn = jax_kernel(kernel, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
-            return fn(w_loc, w_scale, clen, vector, seed, jnp.zeros(out_info.shape, out_info.dtype))
+    def run(w_loc, w_scale, clen, vector, seed):
+        dim = out_info.shape[0] if corder else vector_info.shape[0]
+        fn = jax_kernel(kernel, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
+        return fn(w_loc, w_scale, clen, vector, seed, jnp.zeros(out_info.shape, out_info.dtype))
 
     return run
 
@@ -1014,104 +691,106 @@ def _jitnmv_warp_kernel_generator(
 def _jitnmv_pallas_kernel_generator(
     vector_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas import triton as plt
+    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
     dim = (out_info.shape[0] if corder else vector_info.shape[0])
-    tiled = True
+    block_size = generate_block_dim(dim, maximum=128)
 
-    if tiled:
-        block_size = generate_block_dim(dim, maximum=128)
+    if corder:
+        def kernel(w_loc_ref, w_scale_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
+            num_row = vector_ref.shape[0]
+            w_loc = w_loc_ref[0]
+            w_scale = w_scale_ref[0]
+            clen = clen_ref[0]
+            seed = seed_ref[0]
+            i_col_block = pl.program_id(0)
+            i_cols = i_col_block * block_size + jnp.arange(block_size)
+            i_col_mask = i_cols < dim
 
-        if corder:
-            def kernel(w_loc_ref, w_scale_ref, clen_ref, vector_ref, seed_ref, post_ref):
-                num_row = vector_ref.shape[0]
-                w_loc = w_loc_ref[0]
-                w_scale = w_scale_ref[0]
-                clen = clen_ref[0]
-                seed = seed_ref[0]
-                i_col_block = pl.program_id(0)
-                i_cols = i_col_block * block_size + jnp.arange(block_size)
-                i_col_mask = i_cols < dim
-                safe_cols = jnp.where(i_col_mask, i_cols, 0)
+            def body(data):
+                i_rows, i_row_mask, rng, out = data
+                v = jnp.where(i_row_mask, vector_ref[i_rows], 0.)
+                out += v * rng.normal(w_loc, w_scale)
+                i_rows += rng.random_integers(1, clen)
+                return i_rows, i_rows < num_row, rng, out
 
-                def body(data):
-                    i_rows, i_row_mask, rng, out = data
-                    safe_rows = jnp.where(i_row_mask, i_rows, 0)
-                    v = plt.load(vector_ref[safe_rows])
-                    v = jnp.where(i_row_mask, v, 0)
-                    out += v * rng.normal(w_loc, w_scale)
-                    i_rows += rng.random_integers(1, clen)
-                    return i_rows, i_rows < num_row, rng, out
+            rng = PallasLFSR88RNG(seed + i_cols * num_row)
+            i_rows = rng.random_integers(0, clen)
+            i_row_mask = i_rows < num_row
+            out = jnp.zeros(block_size, dtype=post_ref.dtype)
+            out = jax.lax.while_loop(
+                lambda data: jnp.sum(data[1]) > 0,
+                body,
+                (i_rows, i_row_mask, rng, out)
+            )[-1]
+            post_ref[i_cols] = jnp.where(i_col_mask, out, post_ref[i_cols])
 
-                rng = PallasLFSR88RNG(seed + i_cols)
-                i_rows = rng.random_integers(0, clen)
-                i_row_mask = i_rows < num_row
-                out = jnp.zeros(block_size, dtype=post_ref.dtype)
-                out = jax.lax.while_loop(
-                    lambda data: jnp.sum(data[1]) > 0,
-                    body,
-                    (i_rows, i_row_mask, rng, out)
-                )[-1]
-                plt.store(post_ref[safe_cols], out, mask=i_col_mask)
+    else:
+        def kernel(w_loc_ref, w_scale_ref, clen_ref, vector_ref, seed_ref, _, post_ref):
+            num_col = post_ref.shape[0]
+            w_loc = w_loc_ref[0]
+            w_scale = w_scale_ref[0]
+            clen = clen_ref[0]
+            seed = seed_ref[0]
+            i_row_block = pl.program_id(0)
+            i_rows = i_row_block * block_size + jnp.arange(block_size)
+            i_row_mask = i_rows < dim
+            vector = jnp.where(i_row_mask, vector_ref[i_rows], 0.)
 
-        else:
-            def kernel(w_loc_ref, w_scale_ref, clen_ref, vector_ref, seed_ref, post_ref):
-                num_col = post_ref.shape[0]
-                w_loc = w_loc_ref[0]
-                w_scale = w_scale_ref[0]
-                clen = clen_ref[0]
-                seed = seed_ref[0]
-                i_row_block = pl.program_id(0)
-                i_rows = i_row_block * block_size + jnp.arange(block_size)
-                i_row_mask = i_rows < dim
-                safe_rows = jnp.where(i_row_mask, i_rows, 0)
-                vector = plt.load(vector_ref[safe_rows])
-                vector = jnp.where(i_row_mask, vector, 0)
+            def body(data):
+                i_cols, i_col_mask, rng = data
+                atomic_add(post_ref, (i_cols,), vector * rng.normal(w_loc, w_scale), mask=i_row_mask & i_col_mask)
+                i_cols += rng.random_integers(1, clen)
+                return i_cols, i_cols < num_col, rng
 
-                def body(data):
-                    i_cols, i_col_mask, rng = data
-                    safe_cols = jnp.where(i_col_mask, i_cols, 0)
-                    plt.atomic_add(post_ref[safe_cols], vector * rng.normal(w_loc, w_scale),
-                                   mask=i_row_mask & i_col_mask)
-                    i_cols += rng.random_integers(1, clen)
-                    return i_cols, i_cols < num_col, rng
+            rng = PallasLFSR88RNG(seed + i_rows * num_col)
+            i_cols = rng.random_integers(0, clen)
+            i_col_mask = i_cols < num_col
+            jax.lax.while_loop(
+                lambda data: jnp.sum(data[1]) > 0,
+                body,
+                (i_cols, i_col_mask, rng)
+            )
 
-                rng = PallasLFSR88RNG(seed + i_rows)
-                i_cols = rng.random_integers(0, clen)
-                i_col_mask = i_cols < num_col
-                jax.lax.while_loop(
-                    lambda data: jnp.sum(data[1]) > 0,
-                    body,
-                    (i_cols, i_col_mask, rng)
-                )
+    def run(w_loc, w_scale, clen, vector, seed):
+        fn = pl.pallas_call(
+            kernel,
+            grid=(pl.cdiv(dim, block_size),),
+            input_output_aliases={5: 0},
+            out_shape=kwargs['outs'],
+            backend='triton',
+        )
+        placeholder = jnp.zeros(kwargs['outs'][0].shape, kwargs['outs'][0].dtype)
+        return fn(w_loc, w_scale, clen, vector, seed, placeholder)
 
-        def run(w_loc, w_scale, clen, vector, seed):
-            fn = pl.pallas_call(kernel, grid=(pl.cdiv(dim, block_size),), out_shape=kwargs['outs'])
-            return fn(w_loc, w_scale, clen, vector, seed)
-
-        return run
-
-    raise NotImplementedError("Non-tiled kernel path is not implemented.")
+    return run
 
 
-def _jitnmv_jvp_v(v_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
-    return jitnmv_p_call(w_loc, w_scale, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder)
+def _jitnmv_jvp_v(v_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend=None, **kwargs):
+    return jitnmv_p_call(
+        w_loc, w_scale, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
+    )
 
 
-def _jitnmv_jvp_wloc(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
-    return jitnmv_p_call(w_dot, w_scale, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
+def _jitnmv_jvp_wloc(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend=None, **kwargs):
+    return jitnmv_p_call(
+        w_dot, w_scale, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
+    )
 
 
-def _jitnmv_jvp_wscale(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
-    return jitnmv_p_call(w_loc, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder)
+def _jitnmv_jvp_wscale(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend=None, **kwargs):
+    return jitnmv_p_call(
+        w_loc, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
+    )
 
 
-def _jitnmv_transpose_rules(ct, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
+def _jitnmv_transpose_rules(
+    ct, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend=None, **kwargs
+):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
 
@@ -1126,7 +805,8 @@ def _jitnmv_transpose_rules(ct, w_loc, w_scale, clen, vector, seed, *, shape, tr
             seed,
             shape=shape,
             transpose=not transpose,
-            corder=not corder
+            corder=not corder,
+            backend=backend,
         )[0]
         return w_loc, w_scale, clen, r, seed
     elif ad.is_undefined_primal(w_loc):
@@ -1136,7 +816,8 @@ def _jitnmv_transpose_rules(ct, w_loc, w_scale, clen, vector, seed, *, shape, tr
         # mask^T @ ct = jitnmv(1., 0., ...) with transposed shape
         r = jitnmv_p_call(
             1., 0., clen, ct, seed,
-            shape=shape, transpose=not transpose, corder=not corder
+            shape=shape, transpose=not transpose, corder=not corder,
+            backend=backend,
         )[0]
         dw_loc = jnp.expand_dims(jnp.sum(r * vector), axis=0)
         return dw_loc, w_scale, clen, vector, seed
@@ -1147,7 +828,8 @@ def _jitnmv_transpose_rules(ct, w_loc, w_scale, clen, vector, seed, *, shape, tr
         # (Z * mask)^T @ ct = jitnmv(0., 1., ...) with transposed shape
         r = jitnmv_p_call(
             0., 1., clen, ct, seed,
-            shape=shape, transpose=not transpose, corder=not corder
+            shape=shape, transpose=not transpose, corder=not corder,
+            backend=backend,
         )[0]
         dw_scale = jnp.expand_dims(jnp.sum(r * vector), axis=0)
         return w_loc, dw_scale, clen, vector, seed
@@ -1170,6 +852,7 @@ def _jitnmv_batching(args, axes, **kwargs):
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             corder=kwargs['corder'],
+            backend=kwargs.get('backend'),
         )
         return r, [1]
     elif tuple(axes) == (None, None, None, 1, None):
@@ -1183,6 +866,7 @@ def _jitnmv_batching(args, axes, **kwargs):
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             corder=kwargs['corder'],
+            backend=kwargs.get('backend'),
         )
         return r, [1]
     else:
@@ -1274,7 +958,6 @@ jitnmv_p = XLACustomKernel('float_jitnmv')
 jitnmv_p.def_numba_kernel(_jitnmv_numba_kernel_generator)
 jitnmv_p.def_warp_kernel(_jitnmv_warp_kernel_generator)
 jitnmv_p.def_pallas_kernel('gpu', _jitnmv_pallas_kernel_generator)
-jitnmv_p.def_pallas_kernel('tpu', _jitnmv_pallas_kernel_generator)
 jitnmv_p.def_jvp_rule2(_jitnmv_jvp_wloc, _jitnmv_jvp_wscale, None, _jitnmv_jvp_v, None)
 jitnmv_p.def_transpose_rule(_jitnmv_transpose_rules)
 jitnmv_p.def_batching_rule(_jitnmv_batching)
@@ -1283,163 +966,84 @@ jitnmv_p.def_benchmark_data(_jitnmv_benchmark_data)
 
 
 def _jitnmm_numba_kernel_generator(
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
     import numba
     if corder:
+        # JIT Matrix @ B
+        #
+        # - JIT matrix: [m, k]
+        # - B: [k, n]
 
-        if transpose:
-            # JIT Matrix.T @ B
-            #
-            # - JIT matrix: [k, m]
-            # - B: [k, n]
+        @numba.njit(fastmath=True)
+        def kernel(w_loc, w_scale, clen, B, seed, posts):
+            posts[:] = 0.
+            m = posts.shape[0]  # Number of rows in output matrix (rows in M)
+            n = posts.shape[1]  # Number of columns in output matrix (columns in B)
+            k = B.shape[0]  # Number of rows in B (columns in M)
 
-            @numba.njit(fastmath=True)
-            def kernel(w_loc, w_scale, clen, B, seed, posts):
-                posts[:] = 0.
-                m = posts.shape[0]  # Number of rows in output matrix (columns in M)
-                n = posts.shape[1]  # Number of columns in output matrix (columns in B)
-                k = B.shape[0]  # Number of rows in B (rows in M)
+            w_loc0 = w_loc[0]
+            w_scale0 = w_scale[0]
+            seed0 = seed[0]  # Random seed for reproducible matrix generation
+            clen0 = clen[0]  # Connection length parameter (controls sparsity)
+            np.random.seed(seed0)  # Initialize random number generator with seed for reproducibility
 
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                seed0 = seed[0]  # Random seed for reproducible matrix generation
-                clen0 = clen[0]  # Connection length parameter (controls sparsity)
-                np.random.seed(seed0)
+            for i_m in range(m):
+                # Start at a random position in [0, clen0) for variability in connection patterns
+                i_k = np.random.randint(0, clen0)
 
-                for i_m in range(m):
-                    # Start at a random position in [0, clen0) for variability in connection patterns
-                    i_k = np.random.randint(0, clen0)
+                # Initialize accumulator for this output row with proper dtype
+                out = np.zeros(n, dtype=B.dtype)
 
-                    # Initialize accumulator for this output row with proper dtype
-                    out = np.zeros(n, dtype=B.dtype)
+                # Process all connected entries for this output row
+                while i_k < k:
+                    # Add contribution from the current connected input row
+                    out += B[i_k] * np.random.normal(w_loc0, w_scale0)
 
-                    # Process all connected entries for this output row
-                    while i_k < k:
-                        # Add contribution from the current connected input row
-                        out += B[i_k] * np.random.normal(w_loc0, w_scale0)
+                    # Skip ahead to next connected row using geometric-like distribution
+                    # This creates sparse connectivity with ~1/clen0 connection probability
+                    i_k += np.random.randint(1, clen0)
 
-                        # Skip ahead to next connected row using geometric-like distribution
-                        # This creates sparse connectivity with ~1/clen0 connection probability
-                        i_k += np.random.randint(1, clen0)
-
-                    # Scale accumulated sum by weight and store in output array
-                    posts[i_m] = out
-
-        else:
-            # JIT Matrix @ B
-            #
-            # - JIT matrix: [m, k]
-            # - B: [k, n]
-
-            @numba.njit(fastmath=True)
-            def kernel(w_loc, w_scale, clen, B, seed, posts):
-                posts[:] = 0.
-                m = posts.shape[0]  # Number of rows in output matrix (rows in M)
-                n = posts.shape[1]  # Number of columns in output matrix (columns in B)
-                k = B.shape[0]  # Number of rows in B (columns in M)
-
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                seed0 = seed[0]  # Random seed for reproducible matrix generation
-                clen0 = clen[0]  # Connection length parameter (controls sparsity)
-                np.random.seed(seed0)  # Initialize random number generator with seed for reproducibility
-
-                for i_m in range(m):
-                    # Start at a random position in [0, clen0) for variability in connection patterns
-                    i_k = np.random.randint(0, clen0)
-
-                    # Initialize accumulator for this output row with proper dtype
-                    out = np.zeros(n, dtype=B.dtype)
-
-                    # Process all connected entries for this output row
-                    while i_k < k:
-                        # Add contribution from the current connected input row
-                        out += B[i_k] * np.random.normal(w_loc0, w_scale0)
-
-                        # Skip ahead to next connected row using geometric-like distribution
-                        # This creates sparse connectivity with ~1/clen0 connection probability
-                        i_k += np.random.randint(1, clen0)
-
-                    # Scale accumulated sum by weight and store in output array
-                    posts[i_m] = out
+                # Scale accumulated sum by weight and store in output array
+                posts[i_m] = out
 
     else:
-        if transpose:
-            # JIT Matrix.T @ B
-            #
-            # - JIT matrix: [k, m]
-            # - B: [k, n]
+        # JIT Matrix @ B
+        #
+        # - JIT matrix: [m, k]
+        # - B: [k, n]
 
-            @numba.njit(fastmath=True)
-            def kernel(w_loc, w_scale, clen, B, seed, posts):
-                posts[:] = 0.
-                m = posts.shape[0]  # Number of rows in output matrix (columns in M)
-                k = B.shape[0]  # Number of rows in B (rows in M)
+        @numba.njit(fastmath=True)
+        def kernel(w_loc, w_scale, clen, B, seed, posts):
+            posts[:] = 0.
+            m = posts.shape[0]  # Number of rows in output matrix (rows in M)
+            k = B.shape[0]  # Number of rows in B (columns in M)
 
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                seed0 = seed[0]  # Random seed for reproducible matrix generation
-                clen0 = clen[0]  # Connection length parameter (controls sparsity)
-                np.random.seed(seed0)  # Initialize random number generator with seed
+            w_loc0 = w_loc[0]
+            w_scale0 = w_scale[0]
+            seed0 = seed[0]  # Random seed for reproducible matrix generation
+            clen0 = clen[0]  # Connection length parameter (controls sparsity)
+            np.random.seed(seed0)  # Initialize random number generator with seed
 
-                # Process each input row sequentially
-                for i_k in range(k):
-                    # Pre-multiply the current row by weight for efficiency
-                    out = B[i_k]
+            # Process each input column sequentially
+            for i_k in range(k):
+                # Pre-multiply the current row by weight for efficiency
+                out = B[i_k]
 
-                    # Sample the first connected output row using random skipping
-                    # Start at a random position in [0, clen0) for variability in connection patterns
-                    i_m = np.random.randint(0, clen0)
+                # Sample the first connected output row using random skipping
+                # Start at a random position in [0, clen0) for variability in connection patterns
+                i_m = np.random.randint(0, clen0)
 
-                    # Process all connected output rows for this input row
-                    while i_m < m:
-                        # Add contribution to the connected output row
-                        # Using += to accumulate results across all input rows
-                        posts[i_m] += out * np.random.normal(w_loc0, w_scale0)
+                # Process all connected output rows for this input column
+                while i_m < m:
+                    # Add contribution to the connected output row
+                    # Using += to accumulate results across all input columns
+                    posts[i_m] += out * np.random.normal(w_loc0, w_scale0)
 
-                        # Skip ahead to next connected output row using geometric-like distribution
-                        # This creates sparse connectivity with ~1/clen0 connection probability
-                        i_m += np.random.randint(1, clen0)
-
-        else:
-            # JIT Matrix @ B
-            #
-            # - JIT matrix: [m, k]
-            # - B: [k, n]
-
-            @numba.njit(fastmath=True)
-            def kernel(w_loc, w_scale, clen, B, seed, posts):
-                posts[:] = 0.
-                m = posts.shape[0]  # Number of rows in output matrix (rows in M)
-                k = B.shape[0]  # Number of rows in B (columns in M)
-
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                seed0 = seed[0]  # Random seed for reproducible matrix generation
-                clen0 = clen[0]  # Connection length parameter (controls sparsity)
-                np.random.seed(seed0)  # Initialize random number generator with seed
-
-                # Process each input column sequentially
-                for i_k in range(k):
-                    # Pre-multiply the current row by weight for efficiency
-                    out = B[i_k]
-
-                    # Sample the first connected output row using random skipping
-                    # Start at a random position in [0, clen0) for variability in connection patterns
-                    i_m = np.random.randint(0, clen0)
-
-                    # Process all connected output rows for this input column
-                    while i_m < m:
-                        # Add contribution to the connected output row
-                        # Using += to accumulate results across all input columns
-                        posts[i_m] += out * np.random.normal(w_loc0, w_scale0)
-
-                        # Skip ahead to next connected output row using geometric-like distribution
-                        # This creates sparse connectivity with ~1/clen0 connection probability
-                        i_m += np.random.randint(1, clen0)
+                    # Skip ahead to next connected output row using geometric-like distribution
+                    # This creates sparse connectivity with ~1/clen0 connection probability
+                    i_m += np.random.randint(1, clen0)
 
     def run(w_loc, w_scale, clen, B, seed):
         return numba_kernel(kernel, outs=kwargs['outs'])(w_loc, w_scale, clen, B, seed)
@@ -1454,9 +1058,7 @@ def _jitnmm_warp_kernel_generator(
     B_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
     seed_info: jax.ShapeDtypeStruct,
-    TITLE_SIZE: int,
-    transpose: bool = False,
-    corder: bool = True,
+    corder: bool,
     **kwargs
 ):
     import warp
@@ -1469,127 +1071,133 @@ def _jitnmm_warp_kernel_generator(
     seed_warp_info = jaxinfo_to_warpinfo(seed_info)
     out_warp_info = jaxinfo_to_warpinfo(out_info)
 
+    # TILE_SIZE = generate_block_dim(B_info.shape[1], maximum=512)
+    #
+    # if corder:
+    #     # JIT Matrix @ B, corder=True
+    #     # Each thread i_m generates one row of the JITC matrix and
+    #     # multiplies it with B, accumulating into posts[i_m, :].
+    #     @warp.kernel
+    #     def kernel(
+    #         w_loc: w_loc_warp_info,
+    #         w_scale: w_scale_warp_info,
+    #         clen: clen_warp_info,
+    #         B: B_warp_info,
+    #         seed: seed_warp_info,
+    #         posts: out_warp_info,
+    #     ):
+    #         k = B.shape[0]
+    #         n = B.shape[1]
+    #         w_loc0 = w_loc[0]
+    #         w_scale0 = w_scale[0]
+    #         clen0 = clen[0]
+    #         seed0 = seed[0]
+    #
+    #         i_m = warp.tid()
+    #         state = warp.rand_init(seed0 + i_m * k)
+    #         i_k = warp.randi(state, 0, clen0)
+    #         while i_k < k:
+    #             w = warp.randn(state) * w_scale0 + w_loc0
+    #             for j in range(n):
+    #                 posts[i_m, j] += B[i_k, j] * w
+    #             i_k += warp.randi(state, 1, clen0)
+    #
+    # else:
+    #     # JIT Matrix @ B, corder=False
+    #     # Each thread i_k generates one column of the JITC matrix and
+    #     # scatters B[i_k, :] scaled by weight into output rows via atomic adds.
+    #     @warp.kernel
+    #     def kernel(
+    #         w_loc: w_loc_warp_info,
+    #         w_scale: w_scale_warp_info,
+    #         clen: clen_warp_info,
+    #         B: B_warp_info,
+    #         seed: seed_warp_info,
+    #         posts: out_warp_info,
+    #     ):
+    #         m = posts.shape[0]
+    #         n = B.shape[1]
+    #         w_loc0 = w_loc[0]
+    #         w_scale0 = w_scale[0]
+    #         clen0 = clen[0]
+    #         seed0 = seed[0]
+    #
+    #         i_k = warp.tid()
+    #         state = warp.rand_init(seed0 + i_k * m)
+    #         i_m = warp.randi(state, 0, clen0)
+    #         while i_m < m:
+    #             w = warp.randn(state) * w_scale0 + w_loc0
+    #             for j in range(n):
+    #                 warp.atomic_add(posts, i_m, j, B[i_k, j] * w)
+    #             i_m += warp.randi(state, 1, clen0)
+    #
+    # def run(w_loc, w_scale, clen, B, seed):
+    #     dim = out_info.shape[0] if corder else B_info.shape[0]
+    #     fn = jax_kernel(kernel, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
+    #     return fn(w_loc, w_scale, clen, B, seed, jnp.zeros(out_info.shape, out_info.dtype))
+
     if corder:
-        if transpose:
-            # JIT Matrix.T @ B
-            @warp.kernel
-            def kernel(
-                w_loc: w_loc_warp_info,
-                w_scale: w_scale_warp_info,
-                clen: clen_warp_info,
-                B: B_warp_info,
-                seed: seed_warp_info,
-                posts: out_warp_info,
-            ):
-                k = B.shape[0]
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
+        # JIT Matrix @ B, corder=True
+        # Each thread i_m generates one row of the JITC matrix and
+        # multiplies it with B, accumulating into posts[i_m, :].
+        @warp.kernel
+        def kernel(
+            w_loc: w_loc_warp_info,
+            w_scale: w_scale_warp_info,
+            clen: clen_warp_info,
+            B: B_warp_info,
+            seed: seed_warp_info,
+            posts: out_warp_info,
+        ):
+            k = B.shape[0]
+            n = B.shape[1]
+            w_loc0 = w_loc[0]
+            w_scale0 = w_scale[0]
+            clen0 = clen[0]
+            seed0 = seed[0]
 
-                i_m = warp.tid()
-                state = warp.rand_init(seed0 + i_m)
-
-                out = warp.tile_zeros(TITLE_SIZE, dtype=w_loc0)
-                i_k = warp.randi(state, 0, clen0)
-                while i_k < k:
-                    w = warp.randn(state) * w_scale0 + w_loc0
-                    out += warp.tile_load(B[i_k], TITLE_SIZE) * w
-                    i_k += warp.randi(state, 1, clen0)
-                warp.tile_store(posts[i_m], out)
-
-        else:
-            # JIT Matrix @ B
-            @warp.kernel
-            def kernel(
-                w_loc: w_loc_warp_info,
-                w_scale: w_scale_warp_info,
-                clen: clen_warp_info,
-                B: B_warp_info,
-                seed: seed_warp_info,
-                posts: out_warp_info,
-            ):
-                k = B.shape[0]
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
-
-                i_m = warp.tid()
-                state = warp.rand_init(seed0 + i_m)
-
-                out = warp.tile_zeros(TITLE_SIZE, dtype=w_loc0)
-                i_k = warp.randi(state, 0, clen0)
-                while i_k < k:
-                    w = warp.randn(state) * w_scale0 + w_loc0
-                    out += warp.tile_load(B[i_k], TITLE_SIZE) * w
-                    i_k += warp.randi(state, 1, clen0)
-                warp.tile_store(posts[i_m], out)
-
-        def run(w_loc, w_scale, clen, B, seed):
-            dim = out_info.shape[0]
-            fn = jax_kernel(kernel, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
-            return fn(w_loc, w_scale, clen, B, seed)
+            i_m = warp.tid()
+            state = warp.rand_init(seed0 + i_m * k)
+            i_k = warp.randi(state, 0, clen0)
+            while i_k < k:
+                w = warp.randn(state) * w_scale0 + w_loc0
+                for j in range(n):
+                    posts[i_m, j] += B[i_k, j] * w
+                i_k += warp.randi(state, 1, clen0)
 
     else:
-        if transpose:
-            # JIT Matrix.T @ B
-            @warp.kernel
-            def kernel(
-                w_loc: w_loc_warp_info,
-                w_scale: w_scale_warp_info,
-                clen: clen_warp_info,
-                B: B_warp_info,
-                seed: seed_warp_info,
-                posts: out_warp_info,
-            ):
-                m = posts.shape[0]
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
+        # JIT Matrix @ B, corder=False
+        # Each thread i_k generates one column of the JITC matrix and
+        # scatters B[i_k, :] scaled by weight into output rows via atomic adds.
+        @warp.kernel
+        def kernel(
+            w_loc: w_loc_warp_info,
+            w_scale: w_scale_warp_info,
+            clen: clen_warp_info,
+            B: B_warp_info,
+            seed: seed_warp_info,
+            posts: out_warp_info,
+        ):
+            m = posts.shape[0]
+            n = B.shape[1]
+            w_loc0 = w_loc[0]
+            w_scale0 = w_scale[0]
+            clen0 = clen[0]
+            seed0 = seed[0]
 
-                i_k = warp.tid()
-                state = warp.rand_init(seed0 + i_k)
+            i_k = warp.tid()
+            state = warp.rand_init(seed0 + i_k * m)
+            i_m = warp.randi(state, 0, clen0)
+            while i_m < m:
+                w = warp.randn(state) * w_scale0 + w_loc0
+                for j in range(n):
+                    warp.atomic_add(posts, i_m, j, B[i_k, j] * w)
+                i_m += warp.randi(state, 1, clen0)
 
-                out = warp.tile_load(B[i_k], TITLE_SIZE)
-                i_m = warp.randi(state, 0, clen0)
-                while i_m < m:
-                    w = warp.randn(state) * w_scale0 + w_loc0
-                    warp.tile_atomic_add(posts[i_m], out * w)
-                    i_m += warp.randi(state, 1, clen0)
-
-        else:
-            # JIT Matrix @ B
-            @warp.kernel
-            def kernel(
-                w_loc: w_loc_warp_info,
-                w_scale: w_scale_warp_info,
-                clen: clen_warp_info,
-                B: B_warp_info,
-                seed: seed_warp_info,
-                posts: out_warp_info,
-            ):
-                m = posts.shape[0]
-                w_loc0 = w_loc[0]
-                w_scale0 = w_scale[0]
-                clen0 = clen[0]
-                seed0 = seed[0]
-
-                i_k = warp.tid()
-                state = warp.rand_init(seed0 + i_k)
-
-                out = warp.tile_load(B[i_k], TITLE_SIZE)
-                i_m = warp.randi(state, 0, clen0)
-                while i_m < m:
-                    w = warp.randn(state) * w_scale0 + w_loc0
-                    warp.tile_atomic_add(posts[i_m], out * w)
-                    i_m += warp.randi(state, 1, clen0)
-
-        def run(w_loc, w_scale, clen, B, seed):
-            dim = B_info.shape[0]
-            fn = jax_kernel(kernel, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
-            return fn(w_loc, w_scale, clen, B, seed, jnp.zeros(out_info.shape, out_info.dtype))
+    def run(w_loc, w_scale, clen, B, seed):
+        dim = out_info.shape[0] if corder else B_info.shape[0]
+        fn = jax_kernel(kernel, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
+        return fn(w_loc, w_scale, clen, B, seed, jnp.zeros(out_info.shape, out_info.dtype))
 
     return run
 
@@ -1597,100 +1205,135 @@ def _jitnmm_warp_kernel_generator(
 def _jitnmm_pallas_kernel_generator(
     B_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
-    transpose: bool = False,
     corder: bool = True,
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas import triton as plt
+    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
-    block_dim = generate_block_dim(B_info.shape[1], maximum=1024)
-    tile = out_info.shape[0] if corder else B_info.shape[0]
-    grid = (tile, pl.cdiv(B_info.shape[1], block_dim))
+    B_cols = B_info.shape[1]
 
     if corder:
-        def kernel(w_loc_ref, w_scale_ref, clen_ref, B_ref, seed_ref, post_ref):
+        # Match jitn corder=True: vectorize over rows with identical RNG seeding.
+        # Grid: (row_blocks, B_cols). Each kernel block processes one B column,
+        # using vector RNG identical to jitn. Accumulates into 1D local array
+        # to avoid 2D local arrays (dynamic_slice unsupported in Pallas Triton).
+        out_rows = out_info.shape[0]
+        row_block = generate_block_dim(out_rows, maximum=128)
+        grid = (pl.cdiv(out_rows, row_block), B_cols)
+
+        def kernel(w_loc_ref, w_scale_ref, clen_ref, B_ref, seed_ref, _, post_ref):
             k = B_ref.shape[0]
             w_loc0 = w_loc_ref[0]
             w_scale0 = w_scale_ref[0]
             clen0 = clen_ref[0]
             seed0 = seed_ref[0]
-            i_m = pl.program_id(0)
-            i_n_block = pl.program_id(1)
-            i_n_start = block_dim * i_n_block
-            cols = i_n_start + jnp.arange(block_dim)
-            mask = cols < B_info.shape[1]
-            safe_cols = jnp.where(mask, cols, 0)
+            i_row_block = pl.program_id(0)
+            col_j = pl.program_id(1)  # scalar B column index
+
+            # Row indices — VECTOR, matching jitn exactly
+            i_rows = i_row_block * row_block + jnp.arange(row_block)
+            i_row_mask = i_rows < out_rows
+            safe_rows = jnp.where(i_row_mask, i_rows, 0)
+
+            # Seed each (row, col_j) thread with an additional column stride.
+            rng = PallasLFSR88RNG(seed0 + i_rows * k)
+            i_cols = rng.random_integers(0, clen0)  # [row_block]
+            i_col_mask = i_cols < k
+
+            out = jnp.zeros(row_block, dtype=post_ref.dtype)
 
             def body(data):
-                i, rng, out = data
-                w = rng.normal(w_loc0, w_scale0)
-                events = plt.load(B_ref[i, safe_cols])
-                events = jnp.where(mask, events, 0)
-                out += events * w
-                i += rng.random_integers(1, clen0)
-                return i, rng, out
+                i_cols, i_col_mask, rng, out = data
+                w = rng.normal(w_loc0, w_scale0)  # [row_block]
+                safe_cols = jnp.where(i_col_mask, i_cols, 0)
+                b_vals = B_ref[safe_cols, col_j]  # [row_block] vector gather
+                out += jnp.where(i_col_mask & i_row_mask, w * b_vals, 0.)
+                i_cols += rng.random_integers(1, clen0)
+                return i_cols, i_cols < k, rng, out
 
-            rng = PallasLFSR88RNG(seed0 + i_m)
-            out = jnp.zeros(block_dim, dtype=post_ref.dtype)
-            _, _, out = jax.lax.while_loop(
-                lambda data: data[0] < k,
+            _, _, _, out = jax.lax.while_loop(
+                lambda data: jnp.sum(data[1]) > 0,
                 body,
-                (rng.random_integers(0, clen0), rng, out)
+                (i_cols, i_col_mask, rng, out)
             )
-            plt.store(post_ref[i_m, safe_cols], out, mask=mask)
+            atomic_add(post_ref, (safe_rows, col_j), out, mask=i_row_mask)
 
     else:
-        def kernel(w_loc_ref, w_scale_ref, clen_ref, B_ref, seed_ref, post_ref):
+        # Match jitn corder=False: vectorize over k-dim columns with identical
+        # RNG seeding. Grid: (k_blocks, B_cols). Each block processes one B column.
+        k_dim = B_info.shape[0]
+        k_block = generate_block_dim(k_dim, maximum=128)
+        grid = (pl.cdiv(k_dim, k_block), B_cols)
+
+        def kernel(w_loc_ref, w_scale_ref, clen_ref, B_ref, seed_ref, _, post_ref):
             m = post_ref.shape[0]
             w_loc0 = w_loc_ref[0]
             w_scale0 = w_scale_ref[0]
             clen0 = clen_ref[0]
             seed0 = seed_ref[0]
-            i_k = pl.program_id(0)
-            i_n_block = pl.program_id(1)
-            i_n_start = block_dim * i_n_block
-            cols = i_n_start + jnp.arange(block_dim)
-            mask = cols < B_info.shape[1]
-            safe_cols = jnp.where(mask, cols, 0)
+            i_k_block = pl.program_id(0)
+            col_j = pl.program_id(1)  # scalar B column index
 
-            B_block = plt.load(B_ref[i_k, safe_cols])
-            B_block = jnp.where(mask, B_block, 0)
+            i_ks = i_k_block * k_block + jnp.arange(k_block)
+            i_k_mask = i_ks < k_dim
+            safe_ks = jnp.where(i_k_mask, i_ks, 0)
+
+            # Preload B values for this column (1D vector gather)
+            b_vals = B_ref[safe_ks, col_j]  # [k_block]
+
+            # Seed each (k, col_j) thread with an additional column stride.
+            rng = PallasLFSR88RNG(seed0 + i_ks * m)
+            i_rows = rng.random_integers(0, clen0)
+            i_row_mask = i_rows < m
 
             def body(data):
-                i, rng = data
-                w = rng.normal(w_loc0, w_scale0)
-                plt.atomic_add(post_ref[i, safe_cols], B_block * w, mask=mask)
-                i += rng.random_integers(1, clen0)
-                return i, rng
+                i_rows, i_row_mask, rng = data
+                w = rng.normal(w_loc0, w_scale0)  # [k_block]
+                vals = jnp.where(i_k_mask & i_row_mask, w * b_vals, 0.)
+                safe_rows = jnp.where(i_row_mask, i_rows, 0)
+                atomic_add(post_ref, (safe_rows, col_j), vals,
+                           mask=i_k_mask & i_row_mask)
+                i_rows += rng.random_integers(1, clen0)
+                return i_rows, i_rows < m, rng
 
-            rng = PallasLFSR88RNG(seed0 + i_k)
             jax.lax.while_loop(
-                lambda data: data[0] < m,
+                lambda data: jnp.sum(data[1]) > 0,
                 body,
-                (rng.random_integers(0, clen0), rng)
+                (i_rows, i_row_mask, rng)
             )
 
     def run(w_loc, w_scale, clen, B, seed):
-        fn = pl.pallas_call(kernel, grid=grid, out_shape=kwargs['outs'])
-        return fn(w_loc, w_scale, clen, B, seed)
+        fn = pl.pallas_call(
+            kernel,
+            grid=grid,
+            input_output_aliases={5: 0},
+            out_shape=kwargs['outs'],
+            backend='triton',
+        )
+        placeholder = jnp.zeros(kwargs['outs'][0].shape, kwargs['outs'][0].dtype)
+        return fn(w_loc, w_scale, clen, B, seed, placeholder)
 
     return run
 
 
-def _jitnmm_jvp_wloc(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
-    return jitnmm_p_call(w_dot, w_scale, clen, B, seed, shape=shape, transpose=transpose, corder=corder)
+def _jitnmm_jvp_wloc(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend=None, **kwargs):
+    return jitnmm_p_call(
+        w_dot, w_scale, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
+    )
 
 
-def _jitnmm_jvp_wscale(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
-    return jitnmm_p_call(w_loc, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder)
+def _jitnmm_jvp_wscale(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend=None, **kwargs):
+    return jitnmm_p_call(w_loc, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=backend)
 
 
-def _jitnmm_jvp_B(B_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
-    return jitnmm_p_call(w_loc, w_scale, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder)
+def _jitnmm_jvp_B(B_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend=None, **kwargs):
+    return jitnmm_p_call(
+        w_loc, w_scale, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
+    )
 
 
-def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
+def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend=None, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
 
@@ -1705,6 +1348,7 @@ def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpo
             shape=shape,
             transpose=not transpose,
             corder=not corder,
+            backend=backend,
         )[0]
         return w_loc, w_scale, clen, r, seed
     elif ad.is_undefined_primal(w_loc):
@@ -1714,6 +1358,7 @@ def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpo
         r = jitnmm_p_call(
             1., 0., clen, ct, seed,
             shape=shape, transpose=not transpose, corder=not corder,
+            backend=backend,
         )[0]
         dw_loc = jnp.expand_dims(jnp.sum(r * B), axis=0)
         return dw_loc, w_scale, clen, B, seed
@@ -1724,6 +1369,7 @@ def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpo
         r = jitnmm_p_call(
             0., 1., clen, ct, seed,
             shape=shape, transpose=not transpose, corder=not corder,
+            backend=backend,
         )[0]
         dw_scale = jnp.expand_dims(jnp.sum(r * B), axis=0)
         return w_loc, dw_scale, clen, B, seed
@@ -1747,6 +1393,7 @@ def _batching_axis1(args, axis=1, **kwargs):
         shape=kwargs['shape'],
         transpose=kwargs['transpose'],
         corder=kwargs['corder'],
+        backend=kwargs.get('backend'),
     )
     r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
     return [r], [axis]
@@ -1781,14 +1428,21 @@ def _jitnmm_benchmark_data(*, platform):
             B = jnp.asarray(np.random.randn(b_rows, 10), dtype=dtype)
             seed = jnp.asarray(42, dtype=jnp.uint32)
             name = f"{'T' if transpose else 'NT'},{'corder' if corder else 'rorder'}"
-            configs.append(BenchmarkConfig(name, (w_loc, w_scale, clen, B, seed), {
-                'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder
-            }))
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (w_loc, w_scale, clen, B, seed),
+                    {'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder }
+                )
+            )
     return configs
 
 
-def jitnmm_p_call(w_loc, w_scale, clen, B, seed, *, shape: MatrixShape, transpose: bool, corder: bool,
-                  backend: Optional[str] = None):
+def jitnmm_p_call(
+    w_loc, w_scale, clen, B, seed, *,
+    shape: MatrixShape, transpose: bool, corder: bool,
+    backend: Optional[str] = None
+):
     w_loc = jnp.atleast_1d(w_loc)
     w_scale = jnp.atleast_1d(w_scale)
     clen = jnp.atleast_1d(clen)
@@ -1830,7 +1484,6 @@ def jitnmm_p_call(w_loc, w_scale, clen, B, seed, *, shape: MatrixShape, transpos
         shape=shape,
         transpose=transpose,
         corder=corder,
-        TITLE_SIZE=B.shape[1],  # Assuming B is [k, n], we want to process n columns at once
         backend=backend,
     )
 
@@ -1839,7 +1492,6 @@ jitnmm_p = XLACustomKernel('float_jitnmm')
 jitnmm_p.def_numba_kernel(_jitnmm_numba_kernel_generator)
 jitnmm_p.def_warp_kernel(_jitnmm_warp_kernel_generator)
 jitnmm_p.def_pallas_kernel('gpu', _jitnmm_pallas_kernel_generator)
-jitnmm_p.def_pallas_kernel('tpu', _jitnmm_pallas_kernel_generator)
 jitnmm_p.def_jvp_rule2(_jitnmm_jvp_wloc, _jitnmm_jvp_wscale, None, _jitnmm_jvp_B, None)
 jitnmm_p.def_transpose_rule(_jitnmm_transpose_rules)
 jitnmm_p.def_batching_rule(_jitnmm_batching)

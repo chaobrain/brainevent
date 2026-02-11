@@ -130,7 +130,7 @@ def csr_diag_position(indptr, indices, shape: brainstate.typing.Size):
     )
 
 
-def csr_diag_add(csr_value, diag_position, diag_value):
+def csr_diag_add(csr_value, diag_position, diag_value, backend=None):
     """
     Add a diagonal value to a sparse matrix represented in CSR format.
 
@@ -147,7 +147,7 @@ def csr_diag_add(csr_value, diag_position, diag_value):
     diag_value = u.Quantity(diag_value).to(u.get_unit(csr_value)).mantissa
     csr_value, csr_unit = u.split_mantissa_unit(csr_value)
     return u.maybe_decimal(
-        csr_diag_add_call(csr_value, diag_position, diag_value)[0]
+        csr_diag_add_call(csr_value, diag_position, diag_value, backend=backend)[0]
         * csr_unit
     )
 
@@ -234,7 +234,8 @@ def _csr_diag_add_pallas_kernel_generator(
             diag_add_pallas,
             grid=(pl.cdiv(total, block_dim),),
             input_output_aliases={3: 0},
-            out_shape=kwargs['outs']
+            out_shape=kwargs['outs'],
+            backend='triton',
         )
         return fn(csr_value, diag_position, diag_value, jnp.array(csr_value))
 
@@ -246,7 +247,7 @@ def _csr_diag_add_jvp_csr_value(dot, csr_value, diag_position, diag_value, **kwa
 
 
 def _csr_diag_add_jvp_diag_value(dot, csr_value, diag_position, diag_value, **kwargs):
-    return csr_diag_add_call(jnp.zeros_like(csr_value), diag_position, dot)
+    return csr_diag_add_call(jnp.zeros_like(csr_value), diag_position, dot, backend=kwargs['backend'], )
 
 
 def _csr_diag_add_transpose_value(ct, csr_value, diag_position, diag_value, **kwargs):
@@ -287,7 +288,6 @@ csr_diag_add_p = XLACustomKernel('csr_diag_add')
 csr_diag_add_p.def_numba_kernel(_csr_diag_add_numba_kernel_generator)
 csr_diag_add_p.def_warp_kernel(_csr_diag_add_warp_kernel_generator)
 csr_diag_add_p.def_pallas_kernel('gpu', _csr_diag_add_pallas_kernel_generator)
-csr_diag_add_p.def_pallas_kernel('tpu', _csr_diag_add_pallas_kernel_generator)
 csr_diag_add_p.def_jvp_rule2(_csr_diag_add_jvp_csr_value, None, _csr_diag_add_jvp_diag_value)
 csr_diag_add_p.def_call(csr_diag_add_call)
 csr_diag_add_p.def_tags('csr', 'diag')

@@ -16,7 +16,7 @@
 # -*- coding: utf-8 -*-
 
 
-from typing import Union, Tuple
+from typing import Union, Tuple, Optional
 
 import brainunit as u
 import jax
@@ -26,15 +26,8 @@ from brainevent._compatible_import import Tracer
 from brainevent._event.binary import BinaryArray
 from brainevent._jitc_matrix import JITCMatrix
 from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
-from .binary import (
-    binary_jitumv,
-    binary_jitumm,
-)
-from .float import (
-    jitu,
-    jitumv,
-    jitumm,
-)
+from .binary import binary_jitumv, binary_jitumm
+from .float import jitu, jitumv, jitumm
 
 __all__ = [
     'JITCUniformR',
@@ -92,6 +85,7 @@ class JITUniformMatrix(JITCMatrix):
         *,
         shape: MatrixShape,
         corder: bool = False,
+        backend: Optional[str] = None,
     ):
         """
         Initialize a uniform distribution sparse matrix.
@@ -149,6 +143,7 @@ class JITUniformMatrix(JITCMatrix):
         self.wlow = u.math.asarray(low)
         self.whigh = u.math.asarray(high)
         self.corder = corder
+        self.backend = backend
         super().__init__(data, shape=shape)
 
     def __repr__(self):
@@ -174,7 +169,9 @@ class JITUniformMatrix(JITCMatrix):
             f"whigh={self.whigh}, "
             f"prob={self.prob}, "
             f"seed={self.seed}, "
-            f"corder={self.corder})"
+            f"corder={self.corder},"
+            f"backend={self.backend},"
+            f")"
         )
 
     @property
@@ -271,11 +268,12 @@ class JITUniformMatrix(JITCMatrix):
         return type(self)(
             (low, high, self.prob, self.seed),
             shape=self.shape,
-            corder=self.corder
+            corder=self.corder,
+            backend=self.backend,
         )
 
     def tree_flatten(self):
-        aux = {'shape': self.shape, 'corder': self.corder}
+        aux = {'shape': self.shape, 'corder': self.corder, 'backend': self.backend}
         return (self.wlow, self.whigh, self.prob, self.seed), aux
 
     @classmethod
@@ -438,6 +436,7 @@ class JITCUniformR(JITUniformMatrix):
             shape=self.shape,
             transpose=False,
             corder=self.corder,
+            backend=self.backend,
         )
 
     def transpose(self, axes=None) -> 'JITCUniformC':
@@ -484,7 +483,8 @@ class JITCUniformR(JITUniformMatrix):
         return JITCUniformC(
             (self.wlow, self.whigh, self.prob, self.seed),
             shape=(self.shape[1], self.shape[0]),
-            corder=not self.corder
+            corder=not self.corder,
+            backend=self.backend,
         )
 
     def _new_mat(self, wlow, whigh, prob=None, seed=None):
@@ -496,7 +496,8 @@ class JITCUniformR(JITUniformMatrix):
                 self.seed if seed is None else seed
             ),
             shape=self.shape,
-            corder=self.corder
+            corder=self.corder,
+            backend=self.backend,
         )
 
     def _unitary_op(self, op) -> 'JITCUniformR':
@@ -541,6 +542,7 @@ class JITCUniformR(JITUniformMatrix):
                     shape=self.shape,
                     transpose=False,
                     corder=self.corder,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 # JIT matrix @ events
@@ -553,6 +555,7 @@ class JITCUniformR(JITUniformMatrix):
                     shape=self.shape,
                     transpose=False,
                     corder=self.corder,
+                    backend=self.backend,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -572,6 +575,7 @@ class JITCUniformR(JITUniformMatrix):
                     shape=self.shape,
                     transpose=False,
                     corder=self.corder,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 # JIT matrix @ matrix
@@ -584,6 +588,7 @@ class JITCUniformR(JITUniformMatrix):
                     shape=self.shape,
                     transpose=False,
                     corder=self.corder,
+                    backend=self.backend,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -610,6 +615,7 @@ class JITCUniformR(JITUniformMatrix):
                     shape=self.shape,
                     transpose=True,
                     corder=not self.corder,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 #
@@ -626,6 +632,7 @@ class JITCUniformR(JITUniformMatrix):
                     shape=self.shape,
                     transpose=True,
                     corder=not self.corder,
+                    backend=self.backend,
                 )
                 return r.T
             else:
@@ -650,6 +657,7 @@ class JITCUniformR(JITUniformMatrix):
                     shape=self.shape,
                     transpose=True,
                     corder=not self.corder,  # This is import to generate the same matrix as ``.todense()``
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 #
@@ -666,6 +674,7 @@ class JITCUniformR(JITUniformMatrix):
                     shape=self.shape,
                     transpose=True,
                     corder=not self.corder,  # This is import to generate the same matrix as ``.todense()``
+                    backend=self.backend,
                 )
                 return r.T
             else:
@@ -813,6 +822,7 @@ class JITCUniformC(JITUniformMatrix):
             shape=self.shape,
             transpose=False,
             corder=self.corder,
+            backend=self.backend,
         )
 
     def transpose(self, axes=None) -> 'JITCUniformR':
@@ -859,7 +869,8 @@ class JITCUniformC(JITUniformMatrix):
         return JITCUniformR(
             (self.wlow, self.whigh, self.prob, self.seed),
             shape=(self.shape[1], self.shape[0]),
-            corder=not self.corder
+            corder=not self.corder,
+            backend=self.backend,
         )
 
     def _new_mat(self, wlow, whigh, prob=None, seed=None):
@@ -871,7 +882,8 @@ class JITCUniformC(JITUniformMatrix):
                 self.seed if seed is None else seed
             ),
             shape=self.shape,
-            corder=self.corder
+            corder=self.corder,
+            backend=self.backend,
         )
 
     def _unitary_op(self, op) -> 'JITCUniformC':
@@ -918,6 +930,7 @@ class JITCUniformC(JITUniformMatrix):
                     shape=self.shape[::-1],
                     transpose=True,
                     corder=self.corder,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 # JITC_R matrix.T @ matrix
@@ -932,6 +945,7 @@ class JITCUniformC(JITUniformMatrix):
                     shape=self.shape[::-1],
                     transpose=True,
                     corder=self.corder,
+                    backend=self.backend,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -953,6 +967,7 @@ class JITCUniformC(JITUniformMatrix):
                     shape=self.shape[::-1],
                     transpose=True,
                     corder=self.corder,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 # JITC_R matrix.T @ matrix
@@ -967,6 +982,7 @@ class JITCUniformC(JITUniformMatrix):
                     shape=self.shape[::-1],
                     transpose=True,
                     corder=self.corder,
+                    backend=self.backend,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -992,6 +1008,7 @@ class JITCUniformC(JITUniformMatrix):
                     shape=self.shape[::-1],
                     transpose=False,
                     corder=not self.corder,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 #
@@ -1008,6 +1025,7 @@ class JITCUniformC(JITUniformMatrix):
                     shape=self.shape[::-1],
                     transpose=False,
                     corder=not self.corder,
+                    backend=self.backend,
                 )
                 return r.T
             else:
@@ -1032,6 +1050,7 @@ class JITCUniformC(JITUniformMatrix):
                     shape=self.shape[::-1],
                     transpose=False,
                     corder=not self.corder,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 #
@@ -1048,6 +1067,7 @@ class JITCUniformC(JITUniformMatrix):
                     shape=self.shape[::-1],
                     transpose=False,
                     corder=not self.corder,
+                    backend=self.backend,
                 )
                 return r.T
             else:

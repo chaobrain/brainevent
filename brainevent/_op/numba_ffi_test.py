@@ -27,6 +27,11 @@ import numpy as np
 import pytest
 import brainstate
 
+numba_installed = importlib.util.find_spec('numba') is not None
+cpu_platform = jax.default_backend() == 'cpu'
+if not cpu_platform or not numba_installed:
+    pytest.skip(allow_module_level=True, reason='Numba CPU FFI tests only run on CPU platform with Numba installed')
+
 from brainevent._op.numba_ffi import (
     _ensure_sequence,
     _normalize_shapes_and_dtypes,
@@ -35,8 +40,6 @@ from brainevent._op.numba_ffi import (
     numba_kernel,
     NumbaCpuFfiHandler,
 )
-
-numba_installed = importlib.util.find_spec('numba') is not None
 
 
 class TestHelperFunctions(unittest.TestCase):
@@ -168,6 +171,7 @@ class TestNumbaKernelBasic(unittest.TestCase):
         expected = a + b
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, result, expected))
 
     def test_element_wise_multiplication(self):
         """Test element-wise multiplication kernel."""
@@ -191,6 +195,7 @@ class TestNumbaKernelBasic(unittest.TestCase):
         expected = a * b
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, result, expected))
 
     def test_single_input_single_output(self):
         """Test kernel with single input and output."""
@@ -213,6 +218,7 @@ class TestNumbaKernelBasic(unittest.TestCase):
         expected = x ** 2
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((x, result, expected))
 
     def test_in_place_style_operation(self):
         """Test kernel that writes result using [...] indexing."""
@@ -234,6 +240,7 @@ class TestNumbaKernelBasic(unittest.TestCase):
         expected = x + 1.0
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((x, result, expected))
 
 
 @pytest.mark.skipif(not numba_installed, reason="Numba not installed")
@@ -259,6 +266,7 @@ class TestNumbaKernelDtypes(unittest.TestCase):
         result = result[0] if isinstance(result, tuple) else result
         self.assertEqual(result.dtype, jnp.float32)
         self.assertTrue(jnp.allclose(result, x))
+        jax.block_until_ready((x, result))
 
     def test_float64(self):
         """Test kernel with float64."""
@@ -280,6 +288,7 @@ class TestNumbaKernelDtypes(unittest.TestCase):
             result = result[0] if isinstance(result, tuple) else result
             self.assertEqual(result.dtype, jnp.float64)
             self.assertTrue(jnp.allclose(result, x))
+            jax.block_until_ready((x, result))
 
     def test_int32(self):
         """Test kernel with int32."""
@@ -301,6 +310,7 @@ class TestNumbaKernelDtypes(unittest.TestCase):
         result = result[0] if isinstance(result, tuple) else result
         self.assertEqual(result.dtype, jnp.int32)
         self.assertTrue(jnp.allclose(result, x + 1))
+        jax.block_until_ready((x, result))
 
     def test_int64(self):
         """Test kernel with int64."""
@@ -323,6 +333,7 @@ class TestNumbaKernelDtypes(unittest.TestCase):
             result = result[0] if isinstance(result, tuple) else result
             self.assertEqual(result.dtype, jnp.int64)
             self.assertTrue(jnp.allclose(result, x * 2))
+            jax.block_until_ready((x, result))
 
     def test_mixed_dtypes_input_output(self):
         """Test kernel with different input and output dtypes."""
@@ -343,6 +354,7 @@ class TestNumbaKernelDtypes(unittest.TestCase):
         result = kernel(x)
         result = result[0] if isinstance(result, tuple) else result
         self.assertEqual(result.dtype, jnp.int32)
+        jax.block_until_ready((x, result))
 
 
 @pytest.mark.skipif(not numba_installed, reason="Numba not installed")
@@ -373,6 +385,7 @@ class TestNumbaKernelMultidimensional(unittest.TestCase):
 
         self.assertEqual(result.shape, (cols, rows))
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((x, result, expected))
 
     def test_3d_array(self):
         """Test kernel with 3D array."""
@@ -401,6 +414,7 @@ class TestNumbaKernelMultidimensional(unittest.TestCase):
 
         self.assertEqual(result.shape, (2, 4))
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((x, result, expected))
 
     def test_matrix_vector_multiply(self):
         """Test matrix-vector multiplication kernel."""
@@ -428,6 +442,7 @@ class TestNumbaKernelMultidimensional(unittest.TestCase):
         expected = A @ x
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((A, x, result, expected))
 
 
 @pytest.mark.skipif(not numba_installed, reason="Numba not installed")
@@ -458,6 +473,7 @@ class TestNumbaKernelMultipleOutputs(unittest.TestCase):
 
         self.assertTrue(jnp.allclose(out1, x * 2))
         self.assertTrue(jnp.allclose(out2, x * 3))
+        jax.block_until_ready((x, out1, out2))
 
     def test_three_outputs_different_shapes(self):
         """Test kernel with three outputs of different shapes."""
@@ -488,6 +504,7 @@ class TestNumbaKernelMultipleOutputs(unittest.TestCase):
         self.assertTrue(jnp.allclose(sum_out[0], jnp.sum(x)))
         self.assertTrue(jnp.allclose(mean_out[0], jnp.mean(x)))
         self.assertEqual(count_out[0], n)
+        jax.block_until_ready((x, sum_out, mean_out, count_out))
 
     def test_outputs_different_dtypes(self):
         """Test kernel with outputs of different dtypes."""
@@ -514,6 +531,7 @@ class TestNumbaKernelMultipleOutputs(unittest.TestCase):
 
             self.assertEqual(float_out.dtype, jnp.float64)
             self.assertEqual(int_out.dtype, jnp.int64)
+            jax.block_until_ready((x, float_out, int_out))
 
 
 @pytest.mark.skipif(not numba_installed, reason="Numba not installed")
@@ -543,6 +561,7 @@ class TestNumbaKernelMultipleInputs(unittest.TestCase):
         expected = a + 2 * b + 3 * c
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, c, result, expected))
 
     def test_scalar_like_input(self):
         """Test kernel with scalar-like (1-element) array input."""
@@ -567,6 +586,7 @@ class TestNumbaKernelMultipleInputs(unittest.TestCase):
         expected = x * 3.0
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((x, scale, result, expected))
 
 
 @pytest.mark.skipif(not numba_installed, reason="Numba not installed")
@@ -598,6 +618,7 @@ class TestNumbaKernelJaxJit(unittest.TestCase):
         expected = a + b
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, result, expected))
 
     def test_multiple_calls_in_jit(self):
         """Test multiple kernel calls inside jax.jit."""
@@ -637,6 +658,7 @@ class TestNumbaKernelJaxJit(unittest.TestCase):
         expected = (a + b) * c
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, c, result, expected))
 
     def test_kernel_with_jax_operations(self):
         """Test kernel combined with standard JAX operations."""
@@ -667,6 +689,7 @@ class TestNumbaKernelJaxJit(unittest.TestCase):
         expected = jnp.sum(y ** 2 + 1)
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((x, result, y, expected))
 
 
 @pytest.mark.skipif(not numba_installed, reason="Numba not installed")
@@ -720,6 +743,7 @@ class TestNumbaKernelParallel(unittest.TestCase):
         expected = a + b
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, result, expected))
 
 
 @pytest.mark.skipif(not numba_installed, reason="Numba not installed")
@@ -748,6 +772,7 @@ class TestNumbaKernelVmapMethod(unittest.TestCase):
         expected = a + b
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, result, expected))
 
 
 @pytest.mark.skipif(not numba_installed, reason="Numba not installed")
@@ -810,6 +835,7 @@ class TestNumbaKernelReduction(unittest.TestCase):
         expected = jnp.sum(x)
 
         self.assertTrue(jnp.allclose(result[0], expected))
+        jax.block_until_ready((x, result, expected))
 
     def test_max_reduction(self):
         """Test max reduction kernel."""
@@ -833,6 +859,7 @@ class TestNumbaKernelReduction(unittest.TestCase):
         result = result[0] if isinstance(result, tuple) else result
 
         self.assertTrue(jnp.allclose(result[0], 9.0))
+        jax.block_until_ready((x, result))
 
 
 @pytest.mark.skipif(not numba_installed, reason="Numba not installed")
@@ -862,6 +889,7 @@ class TestNumbaKernelInputOutputAliases(unittest.TestCase):
         expected = a + b
 
         self.assertTrue(jnp.allclose(result, expected))
+        jax.block_until_ready((a, b, result, expected))
 
 
 if __name__ == '__main__':

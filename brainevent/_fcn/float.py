@@ -230,7 +230,7 @@ def _fcnmv_pallas_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import atomic_add
+    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
     if len(shape) != 2:
         raise ValueError("shape must be a tuple of length 2")
@@ -275,7 +275,8 @@ def _fcnmv_pallas_kernel(
                 _raw_kernel,
                 grid=(n_pre,),
                 input_output_aliases={3: 0},
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             out_info = kwargs['outs'][0]
             placeholder = jnp.zeros(out_info.shape, out_info.dtype)
@@ -289,7 +290,6 @@ def _fcnmv_pallas_kernel(
             weight_ref,  # [1]
             index_ref,  # [n_pre, n_conn]
             vector_ref,  # [n_post]
-            _,
             out_ref,  # [n_pre]
         ):
             i_row = pl.program_id(0)
@@ -314,18 +314,18 @@ def _fcnmv_pallas_kernel(
             out_ref[i_row] = i_row_sum
 
         def kernel(weights, indices, vector):
-            fn = pl.pallas_call(_raw_kernel, grid=(n_pre,), out_shape=kwargs['outs'])
+            fn = pl.pallas_call(_raw_kernel, grid=(n_pre,), out_shape=kwargs['outs'], backend='triton')
             return fn(weights, indices, vector)
 
     return kernel
 
 
 def _fcnmv_jvp_vector(spk_dot, weights, indices, spikes, *, shape, transpose, **kwargs):
-    return fcnmv_p_call(weights, indices, spk_dot, shape=shape, transpose=transpose)
+    return fcnmv_p_call(weights, indices, spk_dot, shape=shape, transpose=transpose, backend=kwargs['backend'], )
 
 
 def _fcnmv_jvp_weights(w_dot, weights, indices, vector, *, shape, transpose, **kwargs):
-    return fcnmv_p_call(w_dot, indices, vector, shape=shape, transpose=transpose)
+    return fcnmv_p_call(w_dot, indices, vector, shape=shape, transpose=transpose, backend=kwargs['backend'], )
 
 
 def _fcnmv_transpose_rule(ct, weights, indices, vector, *, shape, transpose, weight_info, **kwargs):
@@ -345,7 +345,8 @@ def _fcnmv_transpose_rule(ct, weights, indices, vector, *, shape, transpose, wei
                 indices,
                 ct,
                 shape=shape,
-                transpose=not transpose
+                transpose=not transpose,
+                backend=kwargs['backend'],
             )[0]
         return weights, indices, ct_vector
     else:
@@ -358,7 +359,8 @@ def _fcnmv_transpose_rule(ct, weights, indices, vector, *, shape, transpose, wei
                 indices,
                 vector,
                 shape=shape,
-                transpose=transpose
+                transpose=transpose,
+                backend=kwargs['backend'],
             )[0]
             ct_weight = jnp.inner(ct, ct_weight).reshape(*weight_info.shape)
 
@@ -488,7 +490,6 @@ fcnmv_p = XLACustomKernel('fixed_num_mv')
 fcnmv_p.def_numba_kernel(_fcnmv_numba_kernel)
 fcnmv_p.def_warp_kernel(_fcnmv_warp_kernel)
 fcnmv_p.def_pallas_kernel('gpu', _fcnmv_pallas_kernel)
-fcnmv_p.def_pallas_kernel('tpu', _fcnmv_pallas_kernel)
 fcnmv_p.def_jvp_rule2(_fcnmv_jvp_weights, None, _fcnmv_jvp_vector, None)
 fcnmv_p.def_transpose_rule(_fcnmv_transpose_rule)
 fcnmv_p.def_batching_rule(_fcnmv_batching)
@@ -546,11 +547,11 @@ def _fcnmm_numba_kernel(
                         posts[indices[i_k, i_conn]] += wv
         else:
             @numba.njit(fastmath=True)
-            def ell_mv(weights, indices, vector, posts):
+            def ell_mv(weights, indices, matrix, posts):
                 posts[:] = 0.
-                for i in range(vector.shape[0]):
+                for i in range(matrix.shape[0]):
                     for j in range(indices.shape[1]):
-                        posts[indices[i, j]] += weights[i, j] * vector[i]
+                        posts[indices[i, j]] += weights[i, j] * matrix[i]
 
     else:
         # fixed post connection number
@@ -578,13 +579,101 @@ def _fcnmm_numba_kernel(
 
 
 def _fcnmm_warp_kernel(
+    transpose: bool,
     weight_info: jax.ShapeDtypeStruct,
     matrix_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    # Warp kernel for MM not yet implemented
-    raise NotImplementedError
+    import warp
+    from warp.jax_experimental import jax_kernel
+
+    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
+    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
+    B_warp_info = jaxinfo_to_warpinfo(matrix_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    if transpose:
+        # fixed pre connection number
+        # Sparse Matrix: [k, m]
+        # matrix: [k, n]
+
+        if weight_info.size == 1:
+            @warp.kernel
+            def mm(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                B: B_warp_info,
+                posts: out_warp_info,
+            ):
+                i_k, i_n = warp.tid()
+                v = B[i_k, i_n] * weights[0]
+                for j in range(indices.shape[1]):
+                    i_m = indices[i_k, j]
+                    warp.atomic_add(posts, i_m, i_n, v)
+        else:
+            @warp.kernel
+            def mm(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                B: B_warp_info,
+                posts: out_warp_info,
+            ):
+                i_k, i_n = warp.tid()
+                b = B[i_k, i_n]
+                for j in range(indices.shape[1]):
+                    i_m = indices[i_k, j]
+                    w = weights[i_k, j]
+                    warp.atomic_add(posts, i_m, i_n, w * b)
+
+        def kernel(weights, indices, matrix):
+            out_info = kwargs['outs'][0]
+            dim = (matrix_info.shape[0], matrix_info.shape[1])
+            fn = jax_kernel(mm, launch_dims=dim, num_outputs=1, in_out_argnames=['posts'])
+            return fn(weights, indices, matrix, jnp.zeros(out_info.shape, out_info.dtype))
+
+    else:
+        # fixed post connection number
+        # Sparse Matrix: [m, k]
+        # matrix: [k, n]
+
+        if weight_info.size == 1:
+            @warp.kernel
+            def mm(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                B: B_warp_info,
+                posts: out_warp_info,
+            ):
+                i_m, i_n = warp.tid()
+                r = weights.dtype(0.)
+                for j in range(indices.shape[1]):
+                    i_k = indices[i_m, j]
+                    r += B[i_k, i_n]
+                posts[i_m, i_n] = r * weights[0]
+        else:
+            @warp.kernel
+            def mm(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                B: B_warp_info,
+                posts: out_warp_info,
+            ):
+                i_m, i_n = warp.tid()
+                r = weights.dtype(0.)
+                for j in range(indices.shape[1]):
+                    i_k = indices[i_m, j]
+                    w = weights[i_m, j]
+                    r += w * B[i_k, i_n]
+                posts[i_m, i_n] = r
+
+        def kernel(weights, indices, matrix):
+            out_info = kwargs['outs'][0]
+            dim = (indices_info.shape[0], matrix_info.shape[1])
+            fn = jax_kernel(mm, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
+            return fn(weights, indices, matrix)
+
+    return kernel
 
 
 def _fcnmm_pallas_kernel(
@@ -596,15 +685,14 @@ def _fcnmm_pallas_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import atomic_add
+    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
     if len(shape) != 2:
         raise ValueError("shape must be a tuple of length 2")
     n_pre, n_post = shape
     n_conn = indices_info.shape[1]
     homo = weight_info.size == 1
-    block_k = generate_block_dim(indices_info.shape[1], maximum=128)
-    block_n = generate_block_dim(matrix_info.shape[1], maximum=128)
+    n_col = matrix_info.shape[1]
 
     if transpose:
         #
@@ -619,39 +707,29 @@ def _fcnmm_pallas_kernel(
             index_ref,  # [n_pre, n_conn]
             matrix_ref,  # [k, n]
             _,
-            out_ref,  # [n_pre, n]
+            out_ref,  # [n_post, n]
         ):
             i_k = pl.program_id(0)
-            i_n_block = pl.program_id(1)
-            i_n_start = i_n_block * block_n
-            i_n_mask = i_n_start + jnp.arange(block_n) < matrix_ref.shape[1]
-            if homo:
-                weight = jnp.full(block_k, weight_ref[0])
+            i_n = pl.program_id(1)
+            b = matrix_ref[i_k, i_n]
 
-            def loop_fn(i_index_block, _):
-                i_index_start = i_index_block * block_k
-                i_index_mask = i_index_start + jnp.arange(block_k) < n_conn
-                ind = index_ref[i_k, pl.dslice(i_index_start, block_k)]
-                ind = jnp.where(i_index_mask, ind, 0)
-                mat = matrix_ref[i_k, pl.dslice(i_n_start, block_n)]
-                mat = jnp.where(i_n_mask, mat, 0.0)
+            def loop_fn(j, _):
+                i_m = index_ref[i_k, j]
                 if homo:
-                    A = weight
+                    val = weight_ref[0] * b
                 else:
-                    A = weight_ref[i_k, pl.dslice(i_index_start, block_k)]
-                    A = jnp.where(i_index_mask, A, 0.0)
-                data = A[:, None] * mat[None, :]
-                atomic_add(out_ref, (ind, pl.dslice(i_n_start, block_n)), data,
-                           mask=i_index_mask[:, None] & i_n_mask[None, :])
+                    val = weight_ref[i_k, j] * b
+                atomic_add(out_ref, (i_m, i_n), val)
 
-            jax.lax.fori_loop(0, pl.cdiv(n_conn, block_k), loop_fn, None)
+            jax.lax.fori_loop(0, n_conn, loop_fn, None)
 
         def kernel(weights, indices, matrix):
             fn = pl.pallas_call(
                 _raw_kernel,
-                grid=(n_pre, pl.cdiv(matrix_info.shape[1], block_n)),
+                grid=(n_pre, n_col),
                 input_output_aliases={3: 0},
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             out_info = kwargs['outs'][0]
             placeholder = jnp.zeros(out_info.shape, out_info.dtype)
@@ -670,44 +748,29 @@ def _fcnmm_pallas_kernel(
             weight_ref,  # [1] or [n_pre, n_conn]
             index_ref,  # [n_pre, n_conn]
             matrix_ref,  # [k, n]
-            _,
             out_ref,  # [n_pre, n]
         ):
             i_m = pl.program_id(0)
-            i_n_block = pl.program_id(1)
-            i_n_start = i_n_block * block_n
-            i_n_mask = i_n_start + jnp.arange(block_n) < matrix_ref.shape[1]
+            i_n = pl.program_id(1)
 
-            def loop_fn(i_k_block, out):
-                i_k_start = i_k_block * block_k
-                i_k_mask = i_k_start + jnp.arange(block_k) < n_conn
-                ind = index_ref[i_m, pl.dslice(i_k_start, block_k)]
-                ind = jnp.where(i_k_mask, ind, 0)
-                mat = matrix_ref[ind, pl.dslice(i_n_start, block_n)]
-                mat = jnp.where(i_k_mask[:, None] & i_n_mask[None, :], mat, 0.0)
+            def loop_fn(j, acc):
+                i_k = index_ref[i_m, j]
                 if homo:
-                    inc = mat.sum(axis=0)
+                    return acc + matrix_ref[i_k, i_n]
                 else:
-                    weight = weight_ref[i_m, pl.dslice(i_k_start, block_k)]
-                    weight = jnp.where(i_k_mask, weight, 0.0)
-                    inc = (weight[:, None] * mat).sum(axis=0)
-                return out + inc
+                    return acc + weight_ref[i_m, j] * matrix_ref[i_k, i_n]
 
-            final_out = jax.lax.fori_loop(
-                0,
-                pl.cdiv(n_conn, block_k),
-                loop_fn,
-                jnp.zeros(block_n, dtype=matrix_ref.dtype)
-            )
+            result = jax.lax.fori_loop(0, n_conn, loop_fn, jnp.zeros((), dtype=matrix_ref.dtype))
             if homo:
-                final_out = final_out * weight_ref[0]
-            out_ref[i_m, pl.dslice(i_n_start, block_n)] = jnp.where(i_n_mask, final_out, 0.0)
+                result = result * weight_ref[0]
+            out_ref[i_m, i_n] = result
 
         def kernel(weights, indices, matrix):
             fn = pl.pallas_call(
                 _raw_kernel,
-                grid=(n_pre, pl.cdiv(matrix_info.shape[1], block_n)),
-                out_shape=kwargs['outs']
+                grid=(n_pre, n_col),
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             return fn(weights, indices, matrix)
 
@@ -715,11 +778,11 @@ def _fcnmm_pallas_kernel(
 
 
 def _fcnmm_jvp_matrix(matrix_dot, weights, indices, matrix, *, shape, transpose, **kwargs):
-    return fcnmm_p_call(weights, indices, matrix_dot, shape=shape, transpose=transpose)
+    return fcnmm_p_call(weights, indices, matrix_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
 
 def _fcnmm_jvp_weights(weights_dot, weights, indices, matrix, *, shape, transpose, **kwargs):
-    return fcnmm_p_call(weights_dot, indices, matrix, shape=shape, transpose=transpose)
+    return fcnmm_p_call(weights_dot, indices, matrix, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
 
 def _fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpose, weight_info, **kwargs):
@@ -740,7 +803,8 @@ def _fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpose, wei
                 indices,
                 ct,
                 shape=shape,
-                transpose=not transpose
+                transpose=not transpose,
+                backend=kwargs['backend'],
             )[0]
 
         return weights, indices, ct_vector
@@ -755,7 +819,8 @@ def _fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpose, wei
                 indices,
                 matrix,
                 shape=shape,
-                transpose=transpose
+                transpose=transpose,
+                backend=kwargs['backend'],
             )[0]
             ct_weight = jnp.sum(ct * ct_weight).reshape(*weight_info.shape)
 
@@ -781,6 +846,7 @@ def _batching_base_fn(args, axis=1, **kwargs):
         B,
         shape=kwargs['shape'],
         transpose=kwargs['transpose'],
+        backend=kwargs['backend'],
     )
     r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
     return [r], [axis]
@@ -880,8 +946,8 @@ def fcnmm_p_call(
 
 fcnmm_p = XLACustomKernel('fixed_num_mm')
 fcnmm_p.def_numba_kernel(_fcnmm_numba_kernel)
+fcnmm_p.def_warp_kernel(_fcnmm_warp_kernel)
 fcnmm_p.def_pallas_kernel('gpu', _fcnmm_pallas_kernel)
-fcnmm_p.def_pallas_kernel('tpu', _fcnmm_pallas_kernel)
 fcnmm_p.def_jvp_rule2(_fcnmm_jvp_weights, None, _fcnmm_jvp_matrix, None)
 fcnmm_p.def_transpose_rule(_fcnmm_transpose_rule)
 fcnmm_p.def_batching_rule(_fcnmm_batching)

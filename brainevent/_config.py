@@ -32,6 +32,8 @@ import tempfile
 import warnings
 from typing import Any, Dict, Optional
 
+import jax
+
 __all__ = [
     'load_user_defaults',
     'save_user_defaults',
@@ -257,3 +259,4 @@ def get_numba_parallel() -> bool:
 def get_numba_num_threads() -> Optional[int]:
     """Return configured numba thread count, or None for numba default."""
     return _numba_num_threads
+

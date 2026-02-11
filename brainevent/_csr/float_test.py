@@ -122,6 +122,8 @@ class TestFloatCSRMV:
         y_ref = vector_csr(x, data, indices, indptr, (m, n))
         assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
 
+        jax.block_until_ready((x, indptr, indices, data, y, y_ref))
+
     @pytest.mark.parametrize('implementation', CSRMV_IMPLEMENTATIONS)
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_csr_vector(self, implementation, homo_w):
@@ -133,6 +135,8 @@ class TestFloatCSRMV:
         y = _csr_vector_api(v, data, indices, indptr, (m, n), implementation)
         y_ref = csr_vector(v, data, indices, indptr, (m, n))
         assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((v, indptr, indices, data, y, y_ref))
 
     @pytest.mark.parametrize('implementation', CSRMV_IMPLEMENTATIONS)
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -147,6 +151,8 @@ class TestFloatCSRMV:
         )(xs)
         y_ref = brainstate.transform.vmap2(lambda x: vector_csr(x, data, indices, indptr, (m, n)))(xs)
         assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((xs, indptr, indices, data, y, y_ref))
 
     @pytest.mark.parametrize('implementation', CSRMV_IMPLEMENTATIONS)
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -176,6 +182,8 @@ class TestFloatCSRMV:
         assert jnp.allclose(r[0], r_ref[0], rtol=1e-3, atol=1e-3)
         assert jnp.allclose(r[1], r_ref[1], rtol=1e-3, atol=1e-3)
 
+        jax.block_until_ready((x, indptr, indices, w, r, r_ref))
+
     @pytest.mark.parametrize('implementation', CSRMV_IMPLEMENTATIONS)
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('replace', [True, False])
@@ -204,6 +212,8 @@ class TestFloatCSRMV:
         assert jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3)
         assert jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3)
 
+        jax.block_until_ready((x, indptr, indices, w, o1, r1, o2, r2))
+
 
 @pytest.mark.skipif(
     not CSRMM_IMPLEMENTATIONS,
@@ -222,6 +232,8 @@ class TestFloatCSRMM:
         y_ref = matrix_csr(x, data, indices, indptr, (m, n))
         assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
 
+        jax.block_until_ready((x, indptr, indices, data, y, y_ref))
+
     @pytest.mark.parametrize('implementation', CSRMM_IMPLEMENTATIONS)
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_csr_matrix(self, implementation, homo_w):
@@ -233,6 +245,8 @@ class TestFloatCSRMM:
         y = _csr_matrix_api(x, data, indices, indptr, (m, n), implementation)
         y_ref = csr_matrix(x, data, indices, indptr, (m, n))
         assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((x, indptr, indices, data, y, y_ref))
 
     @pytest.mark.parametrize('implementation', CSRMM_IMPLEMENTATIONS)
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -267,6 +281,8 @@ class TestFloatCSRMM:
         assert jnp.allclose(r[0], r_ref[0], rtol=1e-3, atol=1e-3)
         assert jnp.allclose(r[1], r_ref[1], rtol=1e-3, atol=1e-3)
 
+        jax.block_until_ready((x, indptr, indices, w, r, r_ref))
+
     @pytest.mark.parametrize('implementation', CSRMM_IMPLEMENTATIONS)
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('replace', [True, False])
@@ -300,6 +316,8 @@ class TestFloatCSRMM:
         assert jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3)
         assert jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3)
 
+        jax.block_until_ready((x, indptr, indices, w, o1, r1, o2, r2))
+
 
 @pytest.mark.skipif(
     not CSRMV_YW2Y_IMPLEMENTATIONS,
@@ -325,3 +343,5 @@ class TestCSRMVYw2y:
             expected = data * y[row_ids]
 
         assert jnp.allclose(result, expected, rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((data, y, indptr, indices, result, expected))

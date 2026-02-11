@@ -16,6 +16,7 @@
 
 import brainstate
 import brainunit as u
+import jax
 import jax.numpy as jnp
 import pytest
 
@@ -35,6 +36,7 @@ class Test_dense_on_pre:
 
         mat = mat + jnp.outer(pre_spike, post_trace)
         assert jnp.allclose(mat2, mat)
+        jax.block_until_ready((mat, pre_spike, post_trace, mat2))
 
     @pytest.mark.parametrize('mat_unit', [u.mV, u.ms])
     @pytest.mark.parametrize('trace_unit', [u.mV, u.ms])
@@ -52,6 +54,7 @@ class Test_dense_on_pre:
 
             mat = mat + u.math.outer(pre_spike, post_trace)
             assert u.math.allclose(mat2, mat)
+            jax.block_until_ready((mat, pre_spike, post_trace, mat2))
 
         if mat_unit.has_same_dim(trace_unit):
             run()
@@ -78,6 +81,7 @@ class Test_dense_on_pre:
             mat = jnp.minimum(mat, w_max)
 
         assert jnp.allclose(mat2, mat)
+        jax.block_until_ready((mat, pre_spike, post_trace, mat2))
 
 
 class Test_dense_on_post:
@@ -93,6 +97,7 @@ class Test_dense_on_post:
 
         mat = mat + jnp.outer(pre_trace, post_spike)
         assert jnp.allclose(mat2, mat)
+        jax.block_until_ready((mat, pre_trace, post_spike, mat2))
 
     @pytest.mark.parametrize('mat_unit', [u.mV, u.ms])
     @pytest.mark.parametrize('trace_unit', [u.mV, u.ms])
@@ -110,6 +115,7 @@ class Test_dense_on_post:
 
             mat = mat + u.math.outer(pre_trace, post_spike)
             assert u.math.allclose(mat2, mat)
+            jax.block_until_ready((mat, pre_trace, post_spike, mat2))
 
         if mat_unit.has_same_dim(trace_unit):
             run()
@@ -132,3 +138,4 @@ class Test_dense_on_post:
         if w_max is not None:
             mat = jnp.minimum(mat, w_max)
         assert jnp.allclose(mat2, mat)
+        jax.block_until_ready((mat, pre_trace, post_spike, mat2))
