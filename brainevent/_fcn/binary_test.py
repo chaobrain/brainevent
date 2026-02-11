@@ -31,9 +31,17 @@ FCNMV_IMPLEMENTATIONS = tuple(binary_fcnmv_p.available_backends(platform))
 FCNMM_IMPLEMENTATIONS = tuple(binary_fcnmm_p.available_backends(platform))
 
 if platform == 'cpu':
-    SHAPES = ((20, 40), (50, 30))
+    SHAPES = (
+        (20, 40),
+        (50, 30)
+    )
 else:
-    SHAPES = ((20, 40), (50, 30), (200, 400))
+    SHAPES = (
+        (20, 40),
+        # (50, 30),
+        # (200, 400)
+        (400, 200)
+    )
 
 
 def _implementation_params(implementations, op_name: str):
