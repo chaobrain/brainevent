@@ -32,21 +32,55 @@ class LFSRBase(abc.ABC):
     """Abstract base class for Linear Feedback Shift Register random number generators.
 
     This class defines the common interface and functionality for LFSR-based
-    random number generators such as LFSR88 and LFSR113. It handles the basic
-    operations for managing the generator state and defines abstract methods
-    that concrete implementations must provide.
+    random number generators such as LFSR88, LFSR113, and LFSR128.  It handles
+    the basic operations for managing the generator state and defines abstract
+    methods that concrete implementations must provide.
 
-    The LFSR (Linear Feedback Shift Register) algorithms are efficient
-    pseudorandom number generators based on bitwise operations, ideal for
-    applications requiring fast random number generation with good statistical
-    properties.
+    Parameters
+    ----------
+    seed : int
+        An integer used to initialize the random state.  The concrete
+        subclass determines how the seed is expanded into the full
+        internal state.
 
-    Attributes:
-        _key (PallasRandomKey): The current state of the random number generator,
-            represented as a jax.Array of shape (4,) and type uint32.
+    See Also
+    --------
+    PallasLFSR88RNG : Combined LFSR88 generator with period ~2^88.
+    PallasLFSR113RNG : Combined LFSR113 generator with period ~2^113.
+    PallasLFSR128RNG : Combined LFSR128 generator with period ~2^128.
 
-    Example:
-        # Create a concrete LFSR implementation
+    Notes
+    -----
+    LFSR (Linear Feedback Shift Register) algorithms are efficient
+    pseudorandom number generators based on bitwise shift and XOR
+    operations.  A single LFSR advances its state by shifting bits and
+    feeding back a linear combination (XOR) of selected bit positions.
+    The "combined" variants used here (LFSR88, LFSR113, LFSR128) run
+    multiple independent LFSRs in parallel and XOR their outputs to
+    produce the final random value.  This improves the statistical
+    quality and extends the period well beyond what a single LFSR can
+    achieve.
+
+    These generators are particularly well-suited for GPU execution via
+    JAX Pallas kernels because:
+
+    - The state is compact (4 x ``uint32`` values).
+    - Each step requires only bitwise shifts, masks, and XOR -- all of
+      which map directly to single GPU instructions.
+    - No division, modulo, or memory-indirect operations are needed,
+      making them ideal for high-throughput parallel random number
+      generation inside Pallas grid kernels.
+
+    The internal state is stored as a tuple of four ``jnp.uint32``
+    scalars.  The class is registered as a JAX pytree node (in concrete
+    subclasses) so that instances can be passed through ``jax.jit``,
+    ``jax.vmap``, and other JAX transformations.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> # Create a concrete LFSR implementation
         >>> rng = PallasLFSR113RNG(seed=42)
         >>> random_float = rng.rand()
         >>> random_int = rng.randint()
@@ -55,8 +89,10 @@ class LFSRBase(abc.ABC):
     def __init__(self, seed: int):
         """Initialize the random number generator with a seed.
 
-        Args:
-            seed: An integer used to initialize the random state.
+        Parameters
+        ----------
+        seed : int
+            An integer used to initialize the random state.
         """
         self._key = self.generate_key(seed)
 
@@ -64,8 +100,16 @@ class LFSRBase(abc.ABC):
     def key(self) -> PallasRandomKey:
         """Get the current random state key.
 
-        Returns:
-            PallasRandomKey: The current state of the random number generator.
+        Returns
+        -------
+        PallasRandomKey
+            The current state of the random number generator, as a
+            tuple of four ``jnp.uint32`` scalars.
+
+        See Also
+        --------
+        generate_key : Create an initial key from a seed.
+        generate_next_key : Advance the state by one step.
         """
         return self._key
 
@@ -73,15 +117,32 @@ class LFSRBase(abc.ABC):
     def key(self, value: PallasRandomKey):
         """Set the random state key.
 
-        Validates that the provided key is a tuple of 4 jax.Array elements, each with
-        the correct type before setting it as the current state.
+        Validates that the provided key is a tuple of 4 ``jax.Array``
+        elements, each with dtype ``uint32``, before setting it as the
+        current state.
 
-        Args:
-            value: The new state to set for the random number generator.
+        Parameters
+        ----------
+        value : PallasRandomKey
+            The new state to set for the random number generator.  Must
+            be a tuple of exactly 4 ``jax.Array`` or ``numpy.ndarray``
+            elements with dtype ``jnp.uint32``.
 
-        Raises:
-            TypeError: If the key is not a tuple of 4 jax.Arrays.
-            ValueError: If any element of the key isn't of type uint32.
+        Raises
+        ------
+        TypeError
+            If *value* is not a tuple of length 4, or if any element is
+            not a ``jax.Array`` or ``numpy.ndarray``.
+        ValueError
+            If any element of *value* does not have dtype ``jnp.uint32``.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> rng = PallasLFSR88RNG(seed=0)
+            >>> new_key = tuple(jnp.asarray(i, dtype=jnp.uint32) for i in [10, 20, 30, 40])
+            >>> rng.key = new_key
         """
         if not isinstance(value, tuple) or len(value) != 4:
             raise TypeError("Key must be a tuple of length 4")
@@ -99,11 +160,20 @@ class LFSRBase(abc.ABC):
         This method must be implemented by concrete subclasses to create
         the initial state from a seed value.
 
-        Args:
-            seed: An integer used to initialize the random state.
+        Parameters
+        ----------
+        seed : int
+            An integer used to initialize the random state.
 
-        Returns:
-            PallasRandomKey: The initial state of the random number generator.
+        Returns
+        -------
+        PallasRandomKey
+            The initial state of the random number generator, as a
+            tuple of four ``jnp.uint32`` scalars.
+
+        See Also
+        --------
+        generate_next_key : Advance the state by one step.
         """
         pass
 
@@ -112,56 +182,111 @@ class LFSRBase(abc.ABC):
         """Generate the next random key and update the internal state.
 
         This method must be implemented by concrete subclasses to advance
-        the random state by one iteration according to the specific LFSR algorithm.
+        the random state by one iteration according to the specific LFSR
+        algorithm.
 
-        Returns:
-            PallasRandomKey: The new state of the random number generator.
+        Returns
+        -------
+        PallasRandomKey
+            The new state of the random number generator after one
+            iteration.
+
+        See Also
+        --------
+        generate_key : Create an initial key from a seed.
+
+        Notes
+        -----
+        This method mutates the internal ``_key`` attribute in place.
         """
         pass
 
     @abc.abstractmethod
     def rand(self) -> jax.Array:
-        """Generate a uniformly distributed random float between 0 and 1.
+        """Generate a uniformly distributed random float in [0, 1).
 
-        Returns:
-            jax.Array: A random float in the range [0, 1).
+        Returns
+        -------
+        jax.Array
+            A scalar ``float32`` value in the range [0, 1).
+
+        See Also
+        --------
+        randint : Generate a random 32-bit unsigned integer.
+        uniform : Generate a random float in an arbitrary range.
         """
         pass
 
     @abc.abstractmethod
     def randint(self) -> jax.Array:
-        """Generate a uniformly distributed random 32-bit integer.
+        """Generate a uniformly distributed random 32-bit unsigned integer.
 
-        Returns:
-            jax.Array: A random integer in the range [0, 2^32-1].
+        Returns
+        -------
+        jax.Array
+            A scalar ``uint32`` value in the range [0, 2^32 - 1].
+
+        See Also
+        --------
+        rand : Generate a random float in [0, 1).
+        random_integers : Generate a random integer in a specified range.
         """
         pass
 
     @abc.abstractmethod
     def randn(self, epsilon: float = 1e-10) -> jax.Array:
-        """Generate a random number with the standard normal distribution.
+        """Generate a random number from the standard normal distribution N(0, 1).
 
-        Args:
-            epsilon: A small positive value to avoid numerical issues in transformations.
+        Parameters
+        ----------
+        epsilon : float, optional
+            A small positive value used to clamp the uniform input away
+            from zero before applying ``log``, preventing ``-inf``.
+            Defaults to ``1e-10``.
 
-        Returns:
-            jax.Array: A random value from the standard normal distribution N(0, 1).
+        Returns
+        -------
+        jax.Array
+            A scalar ``float32`` value sampled from N(0, 1).
+
+        See Also
+        --------
+        normal : Generate a value from N(mu, sigma).
+
+        Notes
+        -----
+        Concrete implementations use the Box-Muller transform to convert
+        two uniform samples into a normally distributed value.
         """
         pass
 
     def uniform(self, low: float, high: float) -> jax.Array:
-        """Generate a uniformly distributed random float between low and high.
+        """Generate a uniformly distributed random float in [low, high).
 
-        Maps a random value in [0, 1) to the specified range [low, high).
+        Maps a random value from :meth:`rand` (in [0, 1)) to the
+        specified range via ``rand() * (high - low) + low``.
 
-        Args:
-            low: The lower bound of the range (inclusive).
-            high: The upper bound of the range (exclusive).
+        Parameters
+        ----------
+        low : float
+            The lower bound of the range (inclusive).
+        high : float
+            The upper bound of the range (exclusive).
 
-        Returns:
-            jax.Array: A floating-point value in the range [low, high).
+        Returns
+        -------
+        jax.Array
+            A scalar ``float32`` value in the range [low, high).
 
-        Example:
+        See Also
+        --------
+        rand : Generate a random float in [0, 1).
+        normal : Generate a value from a normal distribution.
+
+        Examples
+        --------
+        .. code-block:: python
+
             >>> rng = PallasLFSR88RNG(seed=42)
             >>> value = rng.uniform(10.0, 20.0)  # Random value between 10 and 20
         """
@@ -171,18 +296,34 @@ class LFSRBase(abc.ABC):
     def normal(self, mu: float, sigma: float, epsilon: float = 1e-10) -> jax.Array:
         """Generate a random number from the normal distribution N(mu, sigma).
 
-        Uses the randn method to generate a standard normal value and then
-        scales and shifts it to the desired mean and standard deviation.
+        Uses the :meth:`randn` method to generate a standard normal value
+        and then scales and shifts it to the desired mean and standard
+        deviation.
 
-        Args:
-            mu: The mean of the normal distribution.
-            sigma: The standard deviation of the normal distribution.
-            epsilon: A small positive value to avoid numerical issues.
+        Parameters
+        ----------
+        mu : float
+            The mean of the normal distribution.
+        sigma : float
+            The standard deviation of the normal distribution.
+        epsilon : float, optional
+            A small positive value forwarded to :meth:`randn` to avoid
+            numerical issues.  Defaults to ``1e-10``.
 
-        Returns:
-            jax.Array: A random value from the normal distribution N(mu, sigma).
+        Returns
+        -------
+        jax.Array
+            A scalar ``float32`` value sampled from N(mu, sigma^2).
 
-        Example:
+        See Also
+        --------
+        randn : Generate a standard normal value.
+        uniform : Generate a uniform random value.
+
+        Examples
+        --------
+        .. code-block:: python
+
             >>> rng = PallasLFSR113RNG(seed=42)
             >>> value = rng.normal(0.0, 1.0)  # Standard normal
             >>> value = rng.normal(5.0, 2.0)  # N(5, 4)
@@ -191,16 +332,36 @@ class LFSRBase(abc.ABC):
         return mu + sigma * r
 
     def random_integers(self, low: int, high: int) -> jax.Array:
-        """Generate a uniformly distributed random integer between low and high (inclusive).
+        """Generate a uniformly distributed random integer in [low, high].
 
-        Args:
-            low: The lower bound of the range (inclusive).
-            high: The upper bound of the range (inclusive).
+        Parameters
+        ----------
+        low : int
+            The lower bound of the range (inclusive).
+        high : int
+            The upper bound of the range (inclusive).
 
-        Returns:
-            jax.Array: A random integer in the range [low, high].
+        Returns
+        -------
+        jax.Array
+            A scalar integer value in the range [low, high].
 
-        Example:
+        See Also
+        --------
+        randint : Generate a raw 32-bit unsigned integer.
+        uniform : Generate a uniform float in a range.
+
+        Notes
+        -----
+        The mapping uses modular arithmetic:
+        ``randint() % (high + 1 - low) + low``.  This introduces a
+        slight bias when ``(high - low + 1)`` does not evenly divide
+        ``2^32``, but the bias is negligible for typical ranges.
+
+        Examples
+        --------
+        .. code-block:: python
+
             >>> rng = PallasLFSR88RNG(seed=42)
             >>> dice_roll = rng.random_integers(1, 6)  # Random integer from 1 to 6
             >>> coin_flip = rng.random_integers(0, 1)  # 0 or 1
@@ -209,40 +370,47 @@ class LFSRBase(abc.ABC):
         return val % (high + 1 - low) + low
 
     def tree_flatten(self):
-        """
-        Flatten the RNG object for JAX's tree utilities.
-
-        This method is used by JAX's tree utilities to flatten the RNG object
-        into a form suitable for transformation and reconstruction.
+        """Flatten the RNG object for JAX pytree utilities.
 
         Returns
+        -------
+        children : tuple
+            A single-element tuple containing the RNG key.
+        aux_data : tuple
+            An empty tuple (no auxiliary data is needed).
+
+        See Also
         --------
-        tuple
-            A tuple containing two elements:
-            - A tuple with the RNG's key as the only element.
-            - An empty tuple (no auxiliary data needed).
+        tree_unflatten : Reconstruct an RNG from flattened data.
+
+        Notes
+        -----
+        This method, together with :meth:`tree_unflatten`, allows
+        LFSR RNG instances to be passed through ``jax.jit``,
+        ``jax.vmap``, and other JAX transformations that require pytree
+        support.
         """
         return (self.key,), ()
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
-        """
-        Reconstruct an RNG object from flattened data.
-
-        This class method is used by JAX's tree utilities to reconstruct
-        an RNG object from its flattened representation.
+        """Reconstruct an RNG object from flattened pytree data.
 
         Parameters
-        -----------
+        ----------
         aux_data : tuple
-            An empty tuple (no auxiliary data needed).
+            An empty tuple (no auxiliary data is needed).
         children : tuple
-            A tuple containing the RNG's key as its only element.
+            A single-element tuple containing the RNG key.
 
         Returns
-        --------
+        -------
         LFSRBase
-            A new RNG instance reconstructed from the flattened data.
+            A new RNG instance with the given key as its state.
+
+        See Also
+        --------
+        tree_flatten : Flatten an RNG into pytree leaves.
         """
         obj = object.__new__(cls)
         key, = children
@@ -258,49 +426,90 @@ class LFSRBase(abc.ABC):
 class PallasLFSR88RNG(LFSRBase):
     """Combined LFSR random number generator by L'Ecuyer (LFSR88).
 
-    This class implements the LFSR88 algorithm, a combined Linear Feedback Shift Register
-    random number generator developed by Pierre L'Ecuyer. The algorithm combines three
-    different LFSRs to produce high-quality random numbers with a long period
-    (approximately 2^88).
+    Implements the LFSR88 algorithm, a combined Linear Feedback Shift
+    Register random number generator developed by Pierre L'Ecuyer.  The
+    algorithm combines three independent LFSRs to produce high-quality
+    pseudorandom numbers with a period of approximately 2^88.
 
-    The implementation is based on L'Ecuyer's original C code with adaptations for JAX.
+    Parameters
+    ----------
+    seed : int
+        An integer used to initialize the three-component state.  The
+        seed is offset by ``+1``, ``+7``, and ``+15`` for the three
+        components to satisfy the minimum-seed constraints of the
+        algorithm.
 
-    Attributes:
-        key (PallasRandomKey): The current state of the random number generator,
-            represented as an array of 4 unsigned 32-bit integers (though only
-            the first 3 are used in calculations).
+    See Also
+    --------
+    PallasLFSR113RNG : Four-component variant with period ~2^113.
+    PallasLFSR128RNG : Four-component variant with period ~2^128.
+    LFSRBase : Abstract base class defining the LFSR interface.
 
-    Example:
+    Notes
+    -----
+    The LFSR88 algorithm combines three Tausworthe generators with
+    the following parameters:
+
+    - Component 1: shift (13, 19), mask ``0xFFFFFFFE``, left-shift 12
+    - Component 2: shift (2, 25), mask ``0xFFFFFFF8``, left-shift 4
+    - Component 3: shift (3, 11), mask ``0xFFFFFFF0``, left-shift 17
+
+    Each component advances independently, and the final output is the
+    XOR of all three component values.  The fourth element of the
+    internal key tuple is unused by the generation algorithm and is set
+    to zero.
+
+    The implementation is based on L'Ecuyer's original C code:
+    https://github.com/cmcqueen/simplerandom/blob/main/c/lecuyer/lfsr88.c
+
+    Examples
+    --------
+    .. code-block:: python
+
         >>> rng = PallasLFSR88RNG(seed=42)
-        >>> rand_float = rng.rand()  # Generate a random float between 0 and 1
-        >>> rand_int = rng.randint()  # Generate a random 32-bit integer
-        >>> norm_val = rng.normal(0, 1)  # Generate a random value from N(0,1)
-        >>> unif_val = rng.uniform(5.0, 10.0)  # Generate a random float between 5 and 10
-        >>> rand_int_range = rng.random_integers(1, 6)  # Random integer from 1 to 6
-
-    Source:
-        https://github.com/cmcqueen/simplerandom/blob/main/c/lecuyer/lfsr88.c
+        >>> rand_float = rng.rand()        # Random float in [0, 1)
+        >>> rand_int = rng.randint()        # Random 32-bit unsigned integer
+        >>> norm_val = rng.normal(0, 1)     # Value from N(0, 1)
+        >>> unif_val = rng.uniform(5.0, 10.0)  # Float in [5, 10)
+        >>> dice = rng.random_integers(1, 6)   # Integer from 1 to 6
     """
     __module__ = 'brainevent'
 
     def generate_key(self, seed: int) -> PallasRandomKey:
-        """
-        Initialize the random key of the LFSR88 algorithm.
+        """Initialize the random key of the LFSR88 algorithm.
 
-        Creates a 4-element state vector from the given seed, ensuring that each
-        element meets the minimum required value to guarantee proper algorithm function.
+        Creates a 4-element state tuple from the given seed, ensuring
+        that each element meets the minimum required value to guarantee
+        proper algorithm function.
 
-        Args:
-            seed: An integer seed value used to initialize the generator state.
+        Parameters
+        ----------
+        seed : int
+            An integer seed value used to initialize the generator
+            state.
 
-        Returns:
-            PallasRandomKey: A jax.Array of shape (4,) containing the initial state
-            of the generator.
+        Returns
+        -------
+        PallasRandomKey
+            A tuple of four ``jnp.uint32`` scalars containing the
+            initial state.  The fourth element is set to ``0`` as it is
+            not used by the LFSR88 algorithm.
 
-        Note:
-            The initial seeds MUST be larger than 1, 7, and 15 respectively.
-            This method adds these values to the provided seed to ensure validity.
-            The 4th element is set to 0 as it's not used in the original algorithm.
+        Notes
+        -----
+        The LFSR88 algorithm requires that the initial seeds are larger
+        than 1, 7, and 15 for the three components respectively.  This
+        method adds these offsets to the provided seed to ensure the
+        constraint is always satisfied.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> rng = PallasLFSR88RNG.__new__(PallasLFSR88RNG)
+            >>> key = rng.generate_key(42)
+            >>> len(key)
+            4
         """
         return (
             jnp.asarray(seed + 1, dtype=jnp.uint32),
@@ -310,20 +519,32 @@ class PallasLFSR88RNG(LFSRBase):
         )
 
     def generate_next_key(self) -> PallasRandomKey:
-        """
-        Generate the next random key and update the internal state.
+        """Generate the next random key and update the internal state.
 
-        Computes the next state of the LFSR88 generator by applying the LFSR
-        transformations to each of the three components of the state vector.
+        Computes the next state of the LFSR88 generator by applying the
+        three-component LFSR transformations to the current state.
 
-        Returns:
-            PallasRandomKey: A jax.Array of shape (4,) containing the new state
-            of the generator after one iteration.
+        Returns
+        -------
+        PallasRandomKey
+            A tuple of four ``jnp.uint32`` scalars containing the new
+            state after one iteration.
 
-        Note:
-            This method modifies the internal state (_key) of the generator.
-            The fourth element of the key is used to store the last intermediate value 'b',
-            though this isn't part of the original algorithm's state.
+        Notes
+        -----
+        This method mutates the internal ``_key`` attribute.  The fourth
+        element stores the last intermediate value ``b`` from the third
+        component, though this is not part of the original algorithm's
+        state.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> rng = PallasLFSR88RNG(seed=42)
+            >>> new_key = rng.generate_next_key()
+            >>> len(new_key)
+            4
         """
         key = self.key
         b = jnp.asarray(((key[0] << 13) ^ key[0]) >> 19, dtype=jnp.uint32)
@@ -344,24 +565,43 @@ class PallasLFSR88RNG(LFSRBase):
         return new_key
 
     def randn(self, epsilon: float = 1e-10) -> jax.Array:
-        """
-        Generate a random number from the standard normal distribution N(0, 1).
+        """Generate a random number from the standard normal distribution N(0, 1).
 
-        Uses the Box-Muller transform to convert uniform random numbers to normally
-        distributed random numbers.
+        Uses the Box-Muller transform to convert two uniform random
+        numbers into a normally distributed value.
 
-        Args:
-            epsilon: A small positive value to avoid numerical issues in log(0).
+        Parameters
+        ----------
+        epsilon : float, optional
+            A small positive value used to clamp the first uniform
+            sample away from zero, preventing ``log(0)``.  Defaults to
+            ``1e-10``.
 
-        Returns:
-            jax.Array: A random value from the standard normal distribution.
+        Returns
+        -------
+        jax.Array
+            A scalar ``float32`` value sampled from N(0, 1).
 
-        Example:
+        See Also
+        --------
+        normal : Generate a value from N(mu, sigma).
+        rand : Generate a uniform float in [0, 1).
+
+        Notes
+        -----
+        The Box-Muller transform generates two independent standard
+        normal values from two independent uniform values.  This
+        implementation returns only the sine component.
+
+        References: Box-Muller transform,
+        https://en.wikipedia.org/wiki/Box%E2%80%93Muller_transform
+
+        Examples
+        --------
+        .. code-block:: python
+
             >>> rng = PallasLFSR88RNG(seed=42)
-            >>> value = rng.randn()  # Random value from standard normal distribution
-
-        References:
-            Box–Muller transform. https://en.wikipedia.org/wiki/Box%E2%80%93Muller_transform
+            >>> value = rng.randn()  # Random value from standard normal
         """
         u1 = self.rand()
         u2 = self.rand()
@@ -376,32 +616,53 @@ class PallasLFSR88RNG(LFSRBase):
         return z2
 
     def randint(self) -> jax.Array:
-        """Generate a uniformly distributed random 32-bit integer.
+        """Generate a uniformly distributed random 32-bit unsigned integer.
 
-        Advances the generator state and returns the XOR of the three state components.
+        Advances the generator state and returns the XOR of the three
+        state components.
 
-        Returns:
-            jax.Array: A random integer in the range [0, 2^32-1].
+        Returns
+        -------
+        jax.Array
+            A scalar ``uint32`` value in the range [0, 2^32 - 1].
 
-        Example:
+        See Also
+        --------
+        rand : Generate a random float in [0, 1).
+        random_integers : Generate a random integer in a specified range.
+
+        Examples
+        --------
+        .. code-block:: python
+
             >>> rng = PallasLFSR88RNG(seed=42)
-            >>> value = rng.randint()  # Might return 2846173195, for example
+            >>> value = rng.randint()
         """
         key = self.generate_next_key()
         return jnp.asarray(key[0] ^ key[1] ^ key[2], dtype=jnp.uint32)
 
     def rand(self) -> jax.Array:
-        """Generate a uniformly distributed random float between 0 and 1.
+        """Generate a uniformly distributed random float in [0, 1).
 
-        Advances the generator state and converts the resulting integer to a
-        floating-point number in [0, 1).
+        Advances the generator state and converts the resulting integer
+        to a floating-point number by multiplying with ``1 / (2^32 - 1)``.
 
-        Returns:
-            jax.Array: A floating-point value in the range [0, 1).
+        Returns
+        -------
+        jax.Array
+            A scalar ``float32`` value in the range [0, 1).
 
-        Example:
+        See Also
+        --------
+        randint : Generate a raw 32-bit unsigned integer.
+        uniform : Generate a float in an arbitrary range.
+
+        Examples
+        --------
+        .. code-block:: python
+
             >>> rng = PallasLFSR88RNG(seed=42)
-            >>> value = rng.rand()  # Might return 0.27183515, for example
+            >>> value = rng.rand()  # e.g. 0.27183515
         """
         key = self.generate_next_key()
         # 2.3283064365386963e-10 is 1 / (2^32 - 1) approx
@@ -416,46 +677,87 @@ class PallasLFSR88RNG(LFSRBase):
 class PallasLFSR113RNG(LFSRBase):
     """Combined LFSR random number generator by L'Ecuyer (LFSR113).
 
-    This class implements the LFSR113 algorithm, a combined Linear Feedback Shift Register
-    random number generator developed by Pierre L'Ecuyer. The algorithm combines four
-    different LFSRs to produce high-quality random numbers with a long period
-    (approximately 2^113).
+    Implements the LFSR113 algorithm, a combined Linear Feedback Shift
+    Register random number generator developed by Pierre L'Ecuyer.  The
+    algorithm combines four independent LFSRs to produce high-quality
+    pseudorandom numbers with a period of approximately 2^113.
 
-    The implementation is based on L'Ecuyer's original C code with adaptations for JAX.
+    Parameters
+    ----------
+    seed : int
+        An integer used to initialize the four-component state.  The
+        seed is offset by ``+1``, ``+7``, ``+15``, and ``+127`` for
+        the four components to satisfy the minimum-seed constraints.
 
-    Attributes:
-        key (PallasRandomKey): The current state of the random number generator,
-            represented as an array of 4 unsigned 32-bit integers.
+    See Also
+    --------
+    PallasLFSR88RNG : Three-component variant with period ~2^88.
+    PallasLFSR128RNG : Four-component variant with period ~2^128.
+    LFSRBase : Abstract base class defining the LFSR interface.
 
-    Example:
+    Notes
+    -----
+    The LFSR113 algorithm combines four Tausworthe generators with
+    the following parameters:
+
+    - Component 1: shift (6, 13), mask ``0xFFFFFFFE``, left-shift 18
+    - Component 2: shift (2, 27), mask ``0xFFFFFFF8``, left-shift 2
+    - Component 3: shift (13, 21), mask ``0xFFFFFFF0``, left-shift 7
+    - Component 4: shift (3, 12), mask ``0xFFFFFF80``, left-shift 13
+
+    Each component advances independently, and the final output is the
+    XOR of all four component values.
+
+    The implementation is based on L'Ecuyer's original C code:
+    https://github.com/cmcqueen/simplerandom/blob/main/c/lecuyer/lfsr113.c
+
+    Examples
+    --------
+    .. code-block:: python
+
         >>> rng = PallasLFSR113RNG(seed=42)
-        >>> rand_float = rng.rand()  # Generate a random float between 0 and 1
-        >>> rand_int = rng.randint()  # Generate a random 32-bit integer
-        >>> norm_val = rng.normal(0, 1)  # Generate a random value from N(0,1)
-        >>> unif_val = rng.uniform(5.0, 10.0)  # Generate a random float between 5 and 10
-        >>> rand_int_range = rng.random_integers(1, 6)  # Random integer from 1 to 6
-
-    Source:
-        https://github.com/cmcqueen/simplerandom/blob/main/c/lecuyer/lfsr113.c
+        >>> rand_float = rng.rand()        # Random float in [0, 1)
+        >>> rand_int = rng.randint()        # Random 32-bit unsigned integer
+        >>> norm_val = rng.normal(0, 1)     # Value from N(0, 1)
+        >>> unif_val = rng.uniform(5.0, 10.0)  # Float in [5, 10)
+        >>> dice = rng.random_integers(1, 6)   # Integer from 1 to 6
     """
     __module__ = 'brainevent'
 
     def generate_key(self, seed: int) -> PallasRandomKey:
         """Initialize the random key of the LFSR113 algorithm.
 
-        Creates a 4-element state vector from the given seed, ensuring that each
-        element meets the minimum required value to guarantee proper algorithm function.
+        Creates a 4-element state tuple from the given seed, ensuring
+        that each element meets the minimum required value to guarantee
+        proper algorithm function.
 
-        Args:
-            seed: An integer seed value used to initialize the generator state.
+        Parameters
+        ----------
+        seed : int
+            An integer seed value used to initialize the generator
+            state.
 
-        Returns:
-            PallasRandomKey: A jax.Array of shape (4,) containing the initial state
-            of the generator.
+        Returns
+        -------
+        PallasRandomKey
+            A tuple of four ``jnp.uint32`` scalars containing the
+            initial state.
 
-        Note:
-            The initial seeds MUST be larger than 1, 7, 15, and 127 respectively.
-            This method adds these values to the provided seed to ensure validity.
+        Notes
+        -----
+        The LFSR113 algorithm requires that the initial seeds are larger
+        than 1, 7, 15, and 127 for the four components respectively.
+        This method adds these offsets to the provided seed to ensure
+        the constraint is always satisfied.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> rng = PallasLFSR113RNG.__new__(PallasLFSR113RNG)
+            >>> key = rng.generate_key(42)
+            >>> len(key)
+            4
         """
         return (
             jnp.asarray(seed + 1, dtype=jnp.uint32),
@@ -467,15 +769,27 @@ class PallasLFSR113RNG(LFSRBase):
     def generate_next_key(self) -> PallasRandomKey:
         """Generate the next random key and update the internal state.
 
-        Computes the next state of the LFSR113 generator by applying the LFSR
-        transformations to each of the four components of the state vector.
+        Computes the next state of the LFSR113 generator by applying the
+        four-component LFSR transformations to the current state.
 
-        Returns:
-            PallasRandomKey: A jax.Array of shape (4,) containing the new state
-            of the generator after one iteration.
+        Returns
+        -------
+        PallasRandomKey
+            A tuple of four ``jnp.uint32`` scalars containing the new
+            state after one iteration.
 
-        Note:
-            This method modifies the internal state (_key) of the generator.
+        Notes
+        -----
+        This method mutates the internal ``_key`` attribute.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> rng = PallasLFSR113RNG(seed=42)
+            >>> new_key = rng.generate_next_key()
+            >>> len(new_key)
+            4
         """
         key = self.key
         z1 = key[0]
@@ -500,33 +814,54 @@ class PallasLFSR113RNG(LFSRBase):
         return new_key
 
     def rand(self) -> jax.Array:
-        """Generate a uniformly distributed random float between 0 and 1.
+        """Generate a uniformly distributed random float in [0, 1).
 
-        Advances the generator state and converts the resulting integer to a
-        floating-point number in [0, 1).
+        Advances the generator state and converts the resulting integer
+        to a floating-point number by multiplying with ``1 / (2^32 - 1)``.
 
-        Returns:
-            jax.Array: A floating-point value in the range [0, 1).
+        Returns
+        -------
+        jax.Array
+            A scalar ``float32`` value in the range [0, 1).
 
-        Example:
+        See Also
+        --------
+        randint : Generate a raw 32-bit unsigned integer.
+        uniform : Generate a float in an arbitrary range.
+
+        Examples
+        --------
+        .. code-block:: python
+
             >>> rng = PallasLFSR113RNG(seed=42)
-            >>> value = rng.rand()  # Might return 0.32415783, for example
+            >>> value = rng.rand()
         """
         key = self.generate_next_key()
         # 2.3283064365386963e-10 is 1 / (2^32 - 1) approx
         return (key[0] ^ key[1] ^ key[2] ^ key[3]) * 2.3283064365386963e-10
 
     def randint(self) -> jax.Array:
-        """Generate a uniformly distributed random 32-bit integer.
+        """Generate a uniformly distributed random 32-bit unsigned integer.
 
-        Advances the generator state and returns the XOR of all four state components.
+        Advances the generator state and returns the XOR of all four
+        state components.
 
-        Returns:
-            jax.Array: A random integer in the range [0, 2^32-1].
+        Returns
+        -------
+        jax.Array
+            A scalar ``uint32`` value in the range [0, 2^32 - 1].
 
-        Example:
+        See Also
+        --------
+        rand : Generate a random float in [0, 1).
+        random_integers : Generate a random integer in a specified range.
+
+        Examples
+        --------
+        .. code-block:: python
+
             >>> rng = PallasLFSR113RNG(seed=42)
-            >>> value = rng.randint()  # Might return 3829173452, for example
+            >>> value = rng.randint()
         """
         key = self.generate_next_key()
         return jnp.asarray(key[0] ^ key[1] ^ key[2] ^ key[3], dtype=jnp.uint32)
@@ -534,21 +869,41 @@ class PallasLFSR113RNG(LFSRBase):
     def randn(self, epsilon: float = 1e-10) -> jax.Array:
         """Generate a random number from the standard normal distribution N(0, 1).
 
-        Uses the Box-Muller transform to convert uniform random numbers to normally
-        distributed random numbers.
+        Uses the Box-Muller transform to convert two uniform random
+        numbers into a normally distributed value.
 
-        Args:
-            epsilon: A small positive value to avoid numerical issues in log(0).
+        Parameters
+        ----------
+        epsilon : float, optional
+            A small positive value used to clamp the first uniform
+            sample away from zero, preventing ``log(0)``.  Defaults to
+            ``1e-10``.
 
-        Returns:
-            jax.Array: A random value from the standard normal distribution.
+        Returns
+        -------
+        jax.Array
+            A scalar ``float32`` value sampled from N(0, 1).
 
-        Example:
+        See Also
+        --------
+        normal : Generate a value from N(mu, sigma).
+        rand : Generate a uniform float in [0, 1).
+
+        Notes
+        -----
+        The Box-Muller transform generates two independent standard
+        normal values from two independent uniform values.  This
+        implementation returns only the sine component.
+
+        References: Box-Muller transform,
+        https://en.wikipedia.org/wiki/Box%E2%80%93Muller_transform
+
+        Examples
+        --------
+        .. code-block:: python
+
             >>> rng = PallasLFSR113RNG(seed=42)
-            >>> value = rng.randn()  # Random value from standard normal distribution
-
-        References:
-            Box–Muller transform. https://en.wikipedia.org/wiki/Box%E2%80%93Muller_transform
+            >>> value = rng.randn()
         """
         u1 = self.rand()
         u2 = self.rand()
@@ -571,40 +926,94 @@ class PallasLFSR113RNG(LFSRBase):
 class PallasLFSR128RNG(LFSRBase):
     """Combined LFSR random number generator (LFSR128).
 
-    This class implements the LFSR128 algorithm, an extension of the LFSR family of
-    Linear Feedback Shift Register random number generators. The algorithm combines
-    four different LFSRs with expanded state to produce high-quality random numbers
-    with a very long period (approximately 2^128).
+    Implements the LFSR128 algorithm, an extension of the LFSR family of
+    Linear Feedback Shift Register random number generators.  The
+    algorithm combines four independent LFSRs with expanded state to
+    produce high-quality pseudorandom numbers with a very long period of
+    approximately 2^128.
 
-    Attributes:
-        key (PallasRandomKey): The current state of the random number generator,
-            represented as an array of 4 unsigned 32-bit integers.
+    Parameters
+    ----------
+    seed : int
+        An integer used to initialize the four-component state.  The
+        seed is diversified using additive constants and bitwise
+        transformations to produce distinct starting values for each
+        component.
 
-    Example:
+    See Also
+    --------
+    PallasLFSR88RNG : Three-component variant with period ~2^88.
+    PallasLFSR113RNG : Four-component variant with period ~2^113.
+    LFSRBase : Abstract base class defining the LFSR interface.
+
+    Notes
+    -----
+    The LFSR128 algorithm uses four Tausworthe generators with
+    customized shift and mask parameters:
+
+    - Component 1: shift (7, 9), mask ``0xFFFFFFFE``, left-shift 15
+    - Component 2: shift (5, 23), mask ``0xFFFFFFF0``, left-shift 6
+    - Component 3: shift (11, 17), mask ``0xFFFFFF80``, left-shift 8
+    - Component 4: shift (13, 7), mask ``0xFFFFFFE0``, left-shift 10
+
+    Each component advances independently, and the final output is the
+    XOR of all four component values.
+
+    The seed initialization uses different bitwise transformations
+    (addition, XOR, shift, complement) with distinct constants for each
+    component to ensure diverse starting points even for sequential
+    seed values.
+
+    Examples
+    --------
+    .. code-block:: python
+
         >>> rng = PallasLFSR128RNG(seed=42)
-        >>> rand_float = rng.rand()  # Generate a random float between 0 and 1
-        >>> rand_int = rng.randint()  # Generate a random 32-bit integer
-        >>> norm_val = rng.normal(0, 1)  # Generate a random value from N(0,1)
-        >>> unif_val = rng.uniform(5.0, 10.0)  # Generate a random float between 5 and 10
+        >>> rand_float = rng.rand()        # Random float in [0, 1)
+        >>> rand_int = rng.randint()        # Random 32-bit unsigned integer
+        >>> norm_val = rng.normal(0, 1)     # Value from N(0, 1)
+        >>> unif_val = rng.uniform(5.0, 10.0)  # Float in [5, 10)
     """
     __module__ = 'brainevent'
 
     def generate_key(self, seed: int) -> PallasRandomKey:
         """Initialize the random key of the LFSR128 algorithm.
 
-        Creates a 4-element state vector from the given seed, ensuring that each
-        element meets the minimum required values to guarantee proper algorithm function.
+        Creates a 4-element state tuple from the given seed using
+        different bitwise transformations for each component to ensure
+        diverse starting points.
 
-        Args:
-            seed: An integer seed value used to initialize the generator state.
+        Parameters
+        ----------
+        seed : int
+            An integer seed value used to initialize the generator
+            state.
 
-        Returns:
-            PallasRandomKey: A jax.Array of shape (4,) containing the initial state
-            of the generator.
+        Returns
+        -------
+        PallasRandomKey
+            A tuple of four ``jnp.uint32`` scalars containing the
+            initial state.
 
-        Note:
-            The initial seeds are derived from the provided seed to ensure diverse
-            starting points for the four components of the state.
+        Notes
+        -----
+        The four components are derived from the seed as follows:
+
+        - ``s1 = seed + 123``
+        - ``s2 = seed ^ 0xFEDC7890``
+        - ``s3 = (seed << 3) + 0x1A2B3C4D``
+        - ``s4 = ~(seed + 0x5F6E7D8C)``
+
+        All arithmetic is performed in ``uint32`` to prevent overflow.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> rng = PallasLFSR128RNG.__new__(PallasLFSR128RNG)
+            >>> key = rng.generate_key(42)
+            >>> len(key)
+            4
         """
         # Use different transformations for each component to ensure diversity
         # Cast to uint32 first to avoid overflow with large constants
@@ -622,15 +1031,28 @@ class PallasLFSR128RNG(LFSRBase):
     def generate_next_key(self) -> PallasRandomKey:
         """Generate the next random key and update the internal state.
 
-        Computes the next state of the LFSR128 generator by applying customized LFSR
-        transformations to each of the four components of the state vector.
+        Computes the next state of the LFSR128 generator by applying
+        customized LFSR transformations to each of the four components
+        of the state.
 
-        Returns:
-            PallasRandomKey: A jax.Array of shape (4,) containing the new state
-            of the generator after one iteration.
+        Returns
+        -------
+        PallasRandomKey
+            A tuple of four ``jnp.uint32`` scalars containing the new
+            state after one iteration.
 
-        Note:
-            This method modifies the internal state (_key) of the generator.
+        Notes
+        -----
+        This method mutates the internal ``_key`` attribute.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            >>> rng = PallasLFSR128RNG(seed=42)
+            >>> new_key = rng.generate_next_key()
+            >>> len(new_key)
+            4
         """
         key = self.key
         z1 = key[0]
@@ -661,17 +1083,27 @@ class PallasLFSR128RNG(LFSRBase):
         return new_key
 
     def rand(self) -> jax.Array:
-        """Generate a uniformly distributed random float between 0 and 1.
+        """Generate a uniformly distributed random float in [0, 1).
 
-        Advances the generator state and converts the resulting integer to a
-        floating-point number in [0, 1).
+        Advances the generator state and converts the resulting integer
+        to a floating-point number by multiplying with ``1 / (2^32 - 1)``.
 
-        Returns:
-            jax.Array: A floating-point value in the range [0, 1).
+        Returns
+        -------
+        jax.Array
+            A scalar ``float32`` value in the range [0, 1).
 
-        Example:
+        See Also
+        --------
+        randint : Generate a raw 32-bit unsigned integer.
+        uniform : Generate a float in an arbitrary range.
+
+        Examples
+        --------
+        .. code-block:: python
+
             >>> rng = PallasLFSR128RNG(seed=42)
-            >>> value = rng.rand()  # Returns a random float between 0 and 1
+            >>> value = rng.rand()
         """
         key = self.generate_next_key()
         # Use all components with rotation for better mixing
@@ -679,36 +1111,69 @@ class PallasLFSR128RNG(LFSRBase):
         return result * 2.3283064365386963e-10  # 1/(2^32-1)
 
     def randint(self) -> jax.Array:
-        """Generate a uniformly distributed random 32-bit integer.
+        """Generate a uniformly distributed random 32-bit unsigned integer.
 
-        Advances the generator state and returns a mixed result of all components.
+        Advances the generator state and returns a mixed result of all
+        four components via XOR.
 
-        Returns:
-            jax.Array: A random integer in the range [0, 2^32-1].
+        Returns
+        -------
+        jax.Array
+            A scalar ``uint32`` value in the range [0, 2^32 - 1].
 
-        Example:
+        See Also
+        --------
+        rand : Generate a random float in [0, 1).
+        random_integers : Generate a random integer in a specified range.
+
+        Examples
+        --------
+        .. code-block:: python
+
             >>> rng = PallasLFSR128RNG(seed=42)
-            >>> value = rng.randint()  # Returns a random 32-bit integer
+            >>> value = rng.randint()
         """
         key = self.generate_next_key()
         return jnp.asarray(key[0] ^ key[1] ^ key[2] ^ key[3], dtype=jnp.uint32)
 
     def randn(self, epsilon: float = 1e-10) -> jax.Array:
-        """
-        Generate a random number from the standard normal distribution N(0, 1).
+        """Generate a random number from the standard normal distribution N(0, 1).
 
-        Uses the Box-Muller transform to convert uniform random numbers to normally
-        distributed random numbers.
+        Uses the Box-Muller transform to convert two uniform random
+        numbers into a normally distributed value.
 
-        Args:
-            epsilon: A small positive value to avoid numerical issues in log(0).
+        Parameters
+        ----------
+        epsilon : float, optional
+            A small positive value used to clamp the first uniform
+            sample away from zero, preventing ``log(0)``.  Defaults to
+            ``1e-10``.
 
-        Returns:
-            jax.Array: A random value from the standard normal distribution.
+        Returns
+        -------
+        jax.Array
+            A scalar ``float32`` value sampled from N(0, 1).
 
-        Example:
+        See Also
+        --------
+        normal : Generate a value from N(mu, sigma).
+        rand : Generate a uniform float in [0, 1).
+
+        Notes
+        -----
+        The Box-Muller transform generates two independent standard
+        normal values from two independent uniform values.  This
+        implementation returns only the sine component.
+
+        References: Box-Muller transform,
+        https://en.wikipedia.org/wiki/Box%E2%80%93Muller_transform
+
+        Examples
+        --------
+        .. code-block:: python
+
             >>> rng = PallasLFSR128RNG(seed=42)
-            >>> value = rng.randn()  # Random value from standard normal distribution
+            >>> value = rng.randn()
         """
         u1 = self.rand()
         u2 = self.rand()

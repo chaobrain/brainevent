@@ -46,30 +46,105 @@ def update_coo_on_binary_pre(
     *,
     backend: Optional[str] = None,
 ):
-    """Updates synaptic weights in COO format based on presynaptic spike events and postsynaptic traces.
+    """
+    Update synaptic weights in COO format driven by presynaptic spike events.
 
-    This function implements a plasticity rule for sparse connectivity matrices where
-    presynaptic spikes trigger weight updates modulated by postsynaptic trace values.
+    For each synapse *i* stored in COO format, if the presynaptic neuron fires
+    (``pre_spike[pre_ids[i]]`` is nonzero), the weight is updated according to:
 
-    Specifically, for each synapse, if the presynaptic neuron spikes ``pre_spike[i]`` is True,
-    the weight of the synapse is updated by adding the corresponding postsynaptic trace value
-    ``post_trace[post_ids[i]]`` to the weight ``weight[i]``.
+    ``weight[i] = weight[i] + post_trace[post_ids[i]]``
 
-    Args:
-        weight: Sparse synaptic weight array in COO format, shape (n_synapses,).
-        pre_ids: Array of presynaptic neuron indices for each synapse, shape (n_synapses,).
-        post_ids: Array of postsynaptic neuron indices for each synapse, shape (n_synapses,).
-        pre_spike: Binary/boolean array indicating presynaptic spike events, shape (n_pre,).
-        post_trace: Postsynaptic trace values, shape (n_post,).
-        w_min: Optional lower bound for weight clipping. Must have same units as weight.
-        w_max: Optional upper bound for weight clipping. Must have same units as weight.
+    After the additive update, the result is clipped to ``[w_min, w_max]`` when
+    the bounds are provided. Physical units attached to ``weight`` and
+    ``post_trace`` are handled transparently via ``brainunit``.
 
-    Returns:
-        Updated weight array with the same shape and units as the input weight.
+    Parameters
+    ----------
+    weight : jax.Array or brainunit.Quantity
+        Sparse synaptic weight values stored in COO format, shape
+        ``(n_synapses,)``.
+    pre_ids : jax.Array
+        Presynaptic neuron index for every synapse, shape ``(n_synapses,)``.
+    post_ids : jax.Array
+        Postsynaptic neuron index for every synapse, shape ``(n_synapses,)``.
+    pre_spike : jax.Array
+        Binary or boolean array indicating which presynaptic neurons fired,
+        shape ``(n_pre,)``. Non-boolean arrays are treated as active when the
+        value is nonzero.
+    post_trace : jax.Array or brainunit.Quantity
+        Trace values accumulated at each postsynaptic neuron, shape
+        ``(n_post,)``. Converted to the same unit as *weight* before the
+        update.
+    w_min : jax.Array or brainunit.Quantity or None, optional
+        Lower bound for weight clipping. Must carry the same unit as *weight*
+        when units are used. Default is ``None`` (no lower bound).
+    w_max : jax.Array or brainunit.Quantity or None, optional
+        Upper bound for weight clipping. Must carry the same unit as *weight*
+        when units are used. Default is ``None`` (no upper bound).
+    backend : str or None, optional
+        Compute backend to use for the underlying kernel. Accepted values
+        depend on the platform (e.g., ``'numba'``, ``'warp'``, ``'pallas'``).
+        When ``None``, the default backend for the current platform is used.
 
-    Note:
-        The function handles unit conversion internally, ensuring that the post_trace
-        is converted to the same unit as the weight before computation.
+    Returns
+    -------
+    jax.Array or brainunit.Quantity
+        Updated weight array with the same shape and unit as the input
+        *weight*, after the additive plasticity update and optional clipping.
+
+    Raises
+    ------
+    AssertionError
+        If *weight*, *pre_ids*, or *post_ids* do not all have matching 1-D
+        shapes, or if *pre_spike* / *post_trace* are not 1-D.
+
+    See Also
+    --------
+    update_coo_on_binary_post : Analogous update driven by postsynaptic spikes.
+    update_coo_on_binary_pre_p : Low-level XLA custom-kernel primitive used
+        internally.
+
+    Notes
+    -----
+    This operation is the **pre-synaptic** half of a spike-timing-dependent
+    plasticity (STDP) rule expressed in COO sparse format.  In the standard
+    pair-based STDP formulation, when presynaptic neuron ``j`` fires the
+    update for every synapse ``(i, j)`` that exists in the connectivity is:
+
+    ``W[i, j] <- W[i, j] + post_trace[i]``
+
+    After the additive update, weights are clipped element-wise:
+
+    ``W[i, j] <- clip(W[i, j], w_min, w_max)``
+
+    Here ``post_trace`` is an eligibility trace that typically decays
+    exponentially between postsynaptic spikes, so synapses that experienced a
+    recent postsynaptic spike receive a larger update.
+
+    In COO storage the loop iterates over every stored synapse index ``s``:
+    if ``pre_spike[pre_ids[s]]`` is active, then
+    ``weight[s] += post_trace[post_ids[s]]``.
+
+    The kernel is dispatched through ``update_coo_on_binary_pre_p``, an
+    :class:`~brainevent._op.XLACustomKernel` instance that selects among
+    Numba (CPU), Warp (GPU), and Pallas/Triton (GPU) implementations
+    according to *backend* and the runtime platform.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._coo.plasticity_binary import update_coo_on_binary_pre
+        >>> weight = jnp.array([0.5, 0.3, 0.8])
+        >>> pre_ids = jnp.array([0, 1, 0])
+        >>> post_ids = jnp.array([1, 0, 2])
+        >>> pre_spike = jnp.array([True, False])
+        >>> post_trace = jnp.array([0.1, 0.2, 0.05])
+        >>> new_w = update_coo_on_binary_pre(
+        ...     weight, pre_ids, post_ids, pre_spike, post_trace,
+        ...     w_min=0.0, w_max=1.0,
+        ... )
     """
     weight, wunit = u.split_mantissa_unit(weight)
     post_trace = u.Quantity(post_trace).to(wunit).mantissa
@@ -248,8 +323,73 @@ def _coo_on_pre_prim_call(
     pre_spike,
     post_trace,
     *,
-    backend=None
+    backend: Optional[str] = None
 ):
+    """
+    Validate inputs and dispatch the presynaptic COO plasticity primitive.
+
+    This is the low-level call wrapper around
+    :data:`update_coo_on_binary_pre_p`. It performs shape and dimensionality
+    checks on every operand, constructs the required
+    :class:`jax.ShapeDtypeStruct` metadata, and forwards the call to the
+    ``XLACustomKernel`` instance which selects the appropriate backend
+    kernel.
+
+    Parameters
+    ----------
+    weight : jax.Array
+        Unitless weight mantissa array, shape ``(n_synapses,)``.
+    pre_ids : jax.Array
+        Presynaptic neuron indices, shape ``(n_synapses,)``.
+    post_ids : jax.Array
+        Postsynaptic neuron indices, shape ``(n_synapses,)``.
+    pre_spike : jax.Array
+        Binary spike indicator for presynaptic neurons, shape ``(n_pre,)``.
+    post_trace : jax.Array
+        Unitless trace mantissa for postsynaptic neurons, shape ``(n_post,)``.
+    backend : str or None, optional
+        Backend override forwarded to the kernel dispatcher. When ``None``,
+        the platform default is used.
+
+    Returns
+    -------
+    tuple of jax.Array
+        A single-element tuple ``(updated_weight,)`` where
+        ``updated_weight`` has the same shape and dtype as *weight*.
+
+    Raises
+    ------
+    AssertionError
+        If *weight* is not 1-D, if the shapes of *weight*, *pre_ids*, and
+        *post_ids* do not match, or if *pre_spike* / *post_trace* are not
+        1-D.
+
+    See Also
+    --------
+    update_coo_on_binary_pre : High-level wrapper that handles units and
+        clipping before calling this function.
+    update_coo_on_binary_pre_p : The ``XLACustomKernel`` instance invoked
+        by this function.
+
+    Notes
+    -----
+    Callers are expected to strip physical units from *weight* and
+    *post_trace* before calling this function. Unit handling is performed by
+    :func:`update_coo_on_binary_pre`.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._coo.plasticity_binary import _coo_on_pre_prim_call
+        >>> w = jnp.array([0.5, 0.3, 0.8])
+        >>> pre = jnp.array([0, 1, 0])
+        >>> post = jnp.array([1, 0, 2])
+        >>> spike = jnp.array([True, False])
+        >>> trace = jnp.array([0.1, 0.2, 0.05])
+        >>> (new_w,) = _coo_on_pre_prim_call(w, pre, post, spike, trace)
+    """
     assert weight.ndim == 1, 'coo_on_pre only supports 1D weight.'
     assert weight.shape == pre_ids.shape == post_ids.shape, (
         f'weight shape ({weight.shape}), '
@@ -297,30 +437,106 @@ def update_coo_on_binary_post(
     *,
     backend: Optional[str] = None,
 ):
-    """Updates synaptic weights in COO format based on postsynaptic spike events and presynaptic traces.
+    """
+    Update synaptic weights in COO format driven by postsynaptic spike events.
 
-    This function implements a plasticity rule for sparse connectivity matrices where
-    postsynaptic spikes trigger weight updates modulated by presynaptic trace values.
+    For each synapse *i* stored in COO format, if the postsynaptic neuron
+    fires (``post_spike[post_ids[i]]`` is nonzero), the weight is updated
+    according to:
 
-    Specifically, for each synapse, if the postsynaptic neuron spikes ``post_spike[post_ids[i]]`` is True,
-    the weight of the synapse is updated by adding the corresponding presynaptic trace value
-    ``pre_trace[pre_ids[i]]`` to the weight ``weight[i]``.
+    ``weight[i] = weight[i] + pre_trace[pre_ids[i]]``
 
-    Args:
-        weight: Sparse synaptic weight array in COO format, shape (n_synapses,).
-        pre_ids: Array of presynaptic neuron indices for each synapse, shape (n_synapses,).
-        post_ids: Array of postsynaptic neuron indices for each synapse, shape (n_synapses,).
-        pre_trace: Presynaptic trace values, shape (n_pre,).
-        post_spike: Binary/boolean array indicating postsynaptic spike events, shape (n_post,).
-        w_min: Optional lower bound for weight clipping. Must have same units as weight.
-        w_max: Optional upper bound for weight clipping. Must have same units as weight.
+    After the additive update, the result is clipped to ``[w_min, w_max]``
+    when the bounds are provided. Physical units attached to ``weight`` and
+    ``pre_trace`` are handled transparently via ``brainunit``.
 
-    Returns:
-        Updated weight array with the same shape and units as the input weight.
+    Parameters
+    ----------
+    weight : jax.Array or brainunit.Quantity
+        Sparse synaptic weight values stored in COO format, shape
+        ``(n_synapses,)``.
+    pre_ids : jax.Array
+        Presynaptic neuron index for every synapse, shape ``(n_synapses,)``.
+    post_ids : jax.Array
+        Postsynaptic neuron index for every synapse, shape ``(n_synapses,)``.
+    pre_trace : jax.Array or brainunit.Quantity
+        Trace values accumulated at each presynaptic neuron, shape
+        ``(n_pre,)``. Converted to the same unit as *weight* before the
+        update.
+    post_spike : jax.Array
+        Binary or boolean array indicating which postsynaptic neurons fired,
+        shape ``(n_post,)``. Non-boolean arrays are treated as active when
+        the value is nonzero.
+    w_min : jax.Array or brainunit.Quantity or None, optional
+        Lower bound for weight clipping. Must carry the same unit as *weight*
+        when units are used. Default is ``None`` (no lower bound).
+    w_max : jax.Array or brainunit.Quantity or None, optional
+        Upper bound for weight clipping. Must carry the same unit as *weight*
+        when units are used. Default is ``None`` (no upper bound).
+    backend : str or None, optional
+        Compute backend to use for the underlying kernel. Accepted values
+        depend on the platform (e.g., ``'numba'``, ``'warp'``, ``'pallas'``).
+        When ``None``, the default backend for the current platform is used.
 
-    Note:
-        The function handles unit conversion internally, ensuring that the pre_trace
-        is converted to the same unit as the weight before computation.
+    Returns
+    -------
+    jax.Array or brainunit.Quantity
+        Updated weight array with the same shape and unit as the input
+        *weight*, after the additive plasticity update and optional clipping.
+
+    Raises
+    ------
+    AssertionError
+        If *weight*, *pre_ids*, or *post_ids* do not all have matching 1-D
+        shapes, or if *pre_trace* / *post_spike* are not 1-D.
+
+    See Also
+    --------
+    update_coo_on_binary_pre : Analogous update driven by presynaptic spikes.
+    update_coo_on_binary_post_p : Low-level XLA custom-kernel primitive used
+        internally.
+
+    Notes
+    -----
+    This operation is the **post-synaptic** half of a spike-timing-dependent
+    plasticity (STDP) rule expressed in COO sparse format.  In the standard
+    pair-based STDP formulation, when postsynaptic neuron ``i`` fires the
+    update for every synapse ``(i, j)`` that exists in the connectivity is:
+
+    ``W[i, j] <- W[i, j] + pre_trace[j]``
+
+    After the additive update, weights are clipped element-wise:
+
+    ``W[i, j] <- clip(W[i, j], w_min, w_max)``
+
+    Here ``pre_trace`` is an eligibility trace that typically decays
+    exponentially between presynaptic spikes, so synapses whose presynaptic
+    neuron fired recently receive a larger update.
+
+    In COO storage the loop iterates over every stored synapse index ``s``:
+    if ``post_spike[post_ids[s]]`` is active, then
+    ``weight[s] += pre_trace[pre_ids[s]]``.
+
+    The kernel is dispatched through ``update_coo_on_binary_post_p``, an
+    :class:`~brainevent._op.XLACustomKernel` instance that selects among
+    Numba (CPU), Warp (GPU), and Pallas/Triton (GPU) implementations
+    according to *backend* and the runtime platform.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._coo.plasticity_binary import update_coo_on_binary_post
+        >>> weight = jnp.array([0.5, 0.3, 0.8])
+        >>> pre_ids = jnp.array([0, 1, 0])
+        >>> post_ids = jnp.array([1, 0, 2])
+        >>> pre_trace = jnp.array([0.1, 0.2])
+        >>> post_spike = jnp.array([True, False, True])
+        >>> new_w = update_coo_on_binary_post(
+        ...     weight, pre_ids, post_ids, pre_trace, post_spike,
+        ...     w_min=0.0, w_max=1.0,
+        ... )
     """
     weight, wunit = u.split_mantissa_unit(weight)
     pre_trace = u.Quantity(pre_trace).to(wunit).mantissa
@@ -499,8 +715,73 @@ def _coo_on_post_prim_call(
     pre_trace,
     post_spike,
     *,
-    backend=None
+    backend: Optional[str] = None
 ):
+    """
+    Validate inputs and dispatch the postsynaptic COO plasticity primitive.
+
+    This is the low-level call wrapper around
+    :data:`update_coo_on_binary_post_p`. It performs shape and dimensionality
+    checks on every operand, constructs the required
+    :class:`jax.ShapeDtypeStruct` metadata, and forwards the call to the
+    ``XLACustomKernel`` instance which selects the appropriate backend
+    kernel.
+
+    Parameters
+    ----------
+    weight : jax.Array
+        Unitless weight mantissa array, shape ``(n_synapses,)``.
+    pre_ids : jax.Array
+        Presynaptic neuron indices, shape ``(n_synapses,)``.
+    post_ids : jax.Array
+        Postsynaptic neuron indices, shape ``(n_synapses,)``.
+    pre_trace : jax.Array
+        Unitless trace mantissa for presynaptic neurons, shape ``(n_pre,)``.
+    post_spike : jax.Array
+        Binary spike indicator for postsynaptic neurons, shape ``(n_post,)``.
+    backend : str or None, optional
+        Backend override forwarded to the kernel dispatcher. When ``None``,
+        the platform default is used.
+
+    Returns
+    -------
+    tuple of jax.Array
+        A single-element tuple ``(updated_weight,)`` where
+        ``updated_weight`` has the same shape and dtype as *weight*.
+
+    Raises
+    ------
+    AssertionError
+        If *weight* is not 1-D, if the shapes of *weight*, *pre_ids*, and
+        *post_ids* do not match, or if *pre_trace* / *post_spike* are not
+        1-D.
+
+    See Also
+    --------
+    update_coo_on_binary_post : High-level wrapper that handles units and
+        clipping before calling this function.
+    update_coo_on_binary_post_p : The ``XLACustomKernel`` instance invoked
+        by this function.
+
+    Notes
+    -----
+    Callers are expected to strip physical units from *weight* and
+    *pre_trace* before calling this function. Unit handling is performed by
+    :func:`update_coo_on_binary_post`.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._coo.plasticity_binary import _coo_on_post_prim_call
+        >>> w = jnp.array([0.5, 0.3, 0.8])
+        >>> pre = jnp.array([0, 1, 0])
+        >>> post = jnp.array([1, 0, 2])
+        >>> trace = jnp.array([0.1, 0.2])
+        >>> spike = jnp.array([True, False, True])
+        >>> (new_w,) = _coo_on_post_prim_call(w, pre, post, trace, spike)
+    """
     assert weight.ndim == 1, 'coo_on_post only supports 1D weight.'
     assert weight.shape == pre_ids.shape == post_ids.shape, (
         f'weight shape ({weight.shape}), '

@@ -65,6 +65,82 @@ def jitn(
     corder: bool = True,
     backend: Optional[str] = None,
 ) -> Data:
+    """Materialise a JIT normally-distributed random connectivity matrix.
+
+    Generates a dense matrix of shape *shape* (or its transpose) where each
+    element is drawn from ``Normal(w_loc, w_scale)`` with independent
+    Bernoulli masking at probability *prob*.
+
+    Parameters
+    ----------
+    w_loc : scalar or Quantity
+        Mean of the normal weight distribution.
+    w_scale : scalar or Quantity
+        Standard deviation of the normal weight distribution.  Must have
+        the same physical unit as *w_loc*.
+    prob : float
+        Connection probability in ``[0, 1]``.
+    seed : int
+        RNG seed for reproducible connectivity.
+    shape : tuple of int
+        Logical matrix shape ``(n_pre, n_post)``.
+    transpose : bool, optional
+        If ``True``, return the transposed matrix of shape
+        ``(n_post, n_pre)``.  Default is ``False``.
+    corder : bool, optional
+        If ``True`` (default), iterate in column-major order internally.
+    backend : str or None, optional
+        Compute backend (e.g. ``'numba'``, ``'warp'``, ``'pallas'``).
+
+    Returns
+    -------
+    jax.Array or Quantity
+        Dense matrix of shape ``shape`` (or ``shape[::-1]`` when
+        *transpose* is ``True``).
+
+    Raises
+    ------
+    ValueError
+        If ``prob`` is not a scalar, is not finite, or is outside ``[0, 1]``.
+
+    See Also
+    --------
+    jitnmv : Matrix-vector multiply without materialising the matrix.
+    jitnmm : Matrix-matrix multiply without materialising the matrix.
+    jits : Scalar-weight variant (all non-zeros share one weight).
+    jitu : Uniform-weight variant.
+
+    Notes
+    -----
+    Each entry ``W[i, j]`` of the generated matrix follows the model:
+
+        ``W[i, j] = N(w_loc, w_scale) * B[i, j]``
+
+    where ``N(w_loc, w_scale)`` is a draw from a normal distribution and
+    ``B[i, j] ~ Bernoulli(prob)`` is a binary mask.  Equivalently:
+
+    - ``W[i, j] ~ Normal(w_loc, w_scale)`` with probability ``prob``
+    - ``W[i, j] = 0`` with probability ``1 - prob``
+
+    The expected value of each entry is ``E[W[i, j]] = prob * w_loc``.
+
+    The connectivity pattern and normal variates are fully determined by
+    ``seed`` and ``prob``.  Using the same ``seed`` always produces the
+    same matrix.
+
+    This function materialises the full dense matrix.  For implicit
+    (non-materialised) products, use :func:`jitnmv` or :func:`jitnmm`.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._jit_normal.float import jitn
+        >>> W = jitn(0.0, 1.0, prob=0.1, seed=42, shape=(100, 50))
+        >>> W.shape
+        (100, 50)
+    """
     u.fail_for_dimension_mismatch(w_loc, w_scale, "w_loc and w_scale must have the same dimension.")
     w_loc, unitd = u.split_mantissa_unit(w_loc)
     w_scale = u.Quantity(w_scale).to(unitd).mantissa
@@ -98,6 +174,84 @@ def jitnmv(
     corder: bool = True,
     backend: Optional[str] = None,
 ) -> Data:
+    """JIT normally-distributed matrix-vector product.
+
+    Computes ``W @ v`` (or ``W.T @ v``) where ``W`` is a random matrix
+    with entries drawn from ``Normal(w_loc, w_scale)`` masked by
+    Bernoulli(*prob*), without materialising ``W``.
+
+    Parameters
+    ----------
+    w_loc : scalar or Quantity
+        Mean of the normal weight distribution.
+    w_scale : scalar or Quantity
+        Standard deviation.  Must share units with *w_loc*.
+    prob : float
+        Connection probability in ``[0, 1]``.
+    vector : jax.Array or Quantity
+        Input vector of shape ``(k,)`` where ``k`` equals ``shape[0]``
+        when *transpose* is ``True``, or ``shape[1]`` otherwise.
+    seed : int or None, optional
+        RNG seed.  ``None`` generates a random seed.
+    shape : tuple of int
+        Logical matrix shape ``(n_pre, n_post)``.
+    transpose : bool, optional
+        If ``True``, multiply by the transpose.  Default is ``False``.
+    corder : bool, optional
+        Column-major iteration order.  Default is ``True``.
+    backend : str or None, optional
+        Compute backend.
+
+    Returns
+    -------
+    jax.Array or Quantity
+        Output vector.  Shape is ``(shape[1],)`` when *transpose* is
+        ``True``, or ``(shape[0],)`` otherwise.
+
+    Raises
+    ------
+    ValueError
+        If ``prob`` is not a scalar, is not finite, or is outside ``[0, 1]``.
+    ValueError
+        If *vector* is not 1-D or its length does not match the matrix shape.
+
+    See Also
+    --------
+    jitn : Materialise the full matrix.
+    jitnmm : Matrix-matrix multiply variant.
+
+    Notes
+    -----
+    The connectivity matrix ``W`` of shape ``(m, n)`` follows the model:
+
+        ``W[i, j] = N(w_loc, w_scale) * B[i, j]``
+
+    where ``N(w_loc, w_scale)`` is a normal draw and
+    ``B[i, j] ~ Bernoulli(prob)`` is a binary mask, both determined by
+    ``seed``.
+
+    The matrix-vector product computes:
+
+        ``y[i] = sum_{j=0}^{n-1} W[i, j] * v[j]``
+
+    When ``transpose=True``, the operation becomes ``y = W^T @ v``:
+
+        ``y[j] = sum_{i=0}^{m-1} W[i, j] * v[i]``
+
+    The matrix is never materialised; weights are generated and consumed
+    on the fly, avoiding ``O(m * n)`` memory.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._jit_normal.float import jitnmv
+        >>> v = jnp.ones(50)
+        >>> y = jitnmv(0.0, 1.0, 0.1, v, seed=42, shape=(100, 50))
+        >>> y.shape
+        (100,)
+    """
     u.fail_for_dimension_mismatch(w_loc, w_scale, "w_loc and w_scale must have the same dimension.")
     seed = _initialize_seed(seed)
     w_loc, unitd = u.split_mantissa_unit(w_loc)
@@ -141,6 +295,86 @@ def jitnmm(
     corder: bool = True,
     backend: Optional[str] = None,
 ) -> Data:
+    """JIT normally-distributed matrix-matrix product.
+
+    Computes ``W @ B`` (or ``W.T @ B``) where ``W`` is a random matrix
+    with entries drawn from ``Normal(w_loc, w_scale)`` masked by
+    Bernoulli(*prob*), without materialising ``W``.
+
+    Parameters
+    ----------
+    w_loc : scalar or Quantity
+        Mean of the normal weight distribution.
+    w_scale : scalar or Quantity
+        Standard deviation.  Must share units with *w_loc*.
+    prob : float
+        Connection probability in ``[0, 1]``.
+    B : jax.Array or Quantity
+        Right-hand matrix of shape ``(k, n)`` where ``k`` equals
+        ``shape[0]`` when *transpose* is ``True``, or ``shape[1]``
+        otherwise.
+    seed : int or None, optional
+        RNG seed.  ``None`` generates a random seed.
+    shape : tuple of int
+        Logical matrix shape ``(n_pre, n_post)``.
+    transpose : bool, optional
+        If ``True``, multiply by the transpose.  Default is ``False``.
+    corder : bool, optional
+        Column-major iteration order.  Default is ``True``.
+    backend : str or None, optional
+        Compute backend.
+
+    Returns
+    -------
+    jax.Array or Quantity
+        Output matrix of shape ``(shape[1], n)`` when *transpose* is
+        ``True``, or ``(shape[0], n)`` otherwise.
+
+    Raises
+    ------
+    ValueError
+        If ``prob`` is not a scalar, is not finite, or is outside ``[0, 1]``.
+    ValueError
+        If *B* is not 2-D or its leading dimension does not match the
+        matrix shape.
+
+    See Also
+    --------
+    jitn : Materialise the full matrix.
+    jitnmv : Matrix-vector multiply variant.
+
+    Notes
+    -----
+    The connectivity matrix ``W`` of shape ``(m, n)`` follows the model:
+
+        ``W[i, j] = N(w_loc, w_scale) * B_mask[i, j]``
+
+    where ``N(w_loc, w_scale)`` is a normal draw and
+    ``B_mask[i, j] ~ Bernoulli(prob)`` is a binary mask, both determined
+    by ``seed``.
+
+    The matrix-matrix product computes:
+
+        ``Y[i, c] = sum_{j=0}^{n-1} W[i, j] * B[j, c]``
+
+    When ``transpose=True``, the operation becomes ``Y = W^T @ B``:
+
+        ``Y[j, c] = sum_{i=0}^{m-1} W[i, j] * B[i, c]``
+
+    The matrix ``W`` is never materialised; weights are generated and
+    consumed on the fly.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._jit_normal.float import jitnmm
+        >>> B = jnp.ones((50, 10))
+        >>> Y = jitnmm(0.0, 1.0, 0.1, B, seed=42, shape=(100, 50))
+        >>> Y.shape
+        (100, 10)
+    """
     u.fail_for_dimension_mismatch(w_loc, w_scale, "w_loc and w_scale must have the same dimension.")
     seed = _initialize_seed(seed)
     w_loc, unitd = u.split_mantissa_unit(w_loc)
@@ -407,7 +641,7 @@ def _jitn_jvp_wlow(w_loc_dot, w_loc, w_scale, clen, seed, *, out_info, **kwargs)
 
 def _jitn_jvp_whigh(
     w_scale_dot, w_loc, w_scale, clen, seed, *,
-    shape, transpose: bool, corder: bool, backend=None, **kwargs
+    shape, transpose: bool, corder: bool, backend: Optional[str] = None, **kwargs
 ):
     return jitn_p_call(
         0., w_scale_dot, clen, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
@@ -416,7 +650,7 @@ def _jitn_jvp_whigh(
 
 def _jitn_transpose(
     ct, w_loc, w_scale, clen, seed, *,
-    shape, transpose: bool, corder: bool, backend=None, **kwargs
+    shape, transpose: bool, corder: bool, backend: Optional[str] = None, **kwargs
 ):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
@@ -461,6 +695,59 @@ def _jitn_benchmark_data(*, platform):
 def jitn_p_call(
     w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool, backend: Optional[str] = None
 ):
+    """Dispatch the JIT normal matrix materialisation primitive.
+
+    Parameters
+    ----------
+    w_loc : jax.Array
+        Weight mean, shape ``(1,)``.
+    w_scale : jax.Array
+        Weight standard deviation, shape ``(1,)``.
+    clen : jax.Array
+        Connection length derived from *prob*, shape ``(1,)``.
+    seed : jax.Array
+        RNG seed, shape ``(1,)``.
+    shape : tuple of int
+        Logical matrix shape ``(n_pre, n_post)``.
+    transpose : bool
+        Whether to transpose the output.
+    corder : bool
+        Column-major iteration order.
+    backend : str or None, optional
+        Compute backend.
+
+    Returns
+    -------
+    tuple of jax.Array
+        Single-element tuple containing the materialised matrix.
+
+    See Also
+    --------
+    jitn : High-level wrapper with unit support.
+    jitnmv_p_call : Low-level matrix-vector multiply primitive.
+
+    Notes
+    -----
+    Scalar inputs (``w_loc``, ``w_scale``, ``clen``, ``seed``) are
+    automatically promoted to 1-D arrays of shape ``(1,)``.
+
+    The generated matrix has entry model:
+
+        ``W[i, j] = Normal(w_loc[0], w_scale[0]) * Bernoulli(prob)``
+
+    where ``prob`` is implicitly encoded through ``clen = 2 / prob``.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._jit_normal.float import jitn_p_call
+        >>> out = jitn_p_call(
+        ...     jnp.array([0.0]), jnp.array([1.0]),
+        ...     jnp.array([20.0]), jnp.array([42]),
+        ...     shape=(10, 5), transpose=False, corder=True)
+    """
     seed = _initialize_seed(seed)
     w_loc = jnp.atleast_1d(w_loc)
     w_scale = jnp.atleast_1d(w_scale)
@@ -770,26 +1057,26 @@ def _jitnmv_pallas_kernel_generator(
     return run
 
 
-def _jitnmv_jvp_v(v_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend=None, **kwargs):
+def _jitnmv_jvp_v(v_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend: Optional[str] = None, **kwargs):
     return jitnmv_p_call(
         w_loc, w_scale, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
     )
 
 
-def _jitnmv_jvp_wloc(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend=None, **kwargs):
+def _jitnmv_jvp_wloc(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend: Optional[str] = None, **kwargs):
     return jitnmv_p_call(
         w_dot, w_scale, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
     )
 
 
-def _jitnmv_jvp_wscale(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend=None, **kwargs):
+def _jitnmv_jvp_wscale(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend: Optional[str] = None, **kwargs):
     return jitnmv_p_call(
         w_loc, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
     )
 
 
 def _jitnmv_transpose_rules(
-    ct, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend=None, **kwargs
+    ct, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend: Optional[str] = None, **kwargs
 ):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
@@ -912,6 +1199,68 @@ def jitnmv_p_call(
     corder: bool,
     backend: Optional[str] = None,
 ):
+    """Dispatch the JIT normal matrix-vector multiply primitive.
+
+    Parameters
+    ----------
+    w_loc : jax.Array
+        Weight mean, shape ``(1,)``.
+    w_scale : jax.Array
+        Weight standard deviation, shape ``(1,)``.
+    clen : jax.Array
+        Connection length, shape ``(1,)``.
+    vector : jax.Array
+        Input 1-D vector.
+    seed : jax.Array
+        RNG seed, shape ``(1,)``.
+    shape : tuple of int
+        Logical matrix shape ``(n_pre, n_post)``.
+    transpose : bool
+        Whether to use the transposed matrix.
+    corder : bool
+        Column-major iteration order.
+    backend : str or None, optional
+        Compute backend.
+
+    Returns
+    -------
+    tuple of jax.Array
+        Single-element tuple containing the output vector.
+
+    Raises
+    ------
+    AssertionError
+        If ``shape`` is not length 2, or if ``w_loc``, ``w_scale``,
+        ``clen``, ``seed`` do not have shape ``(1,)``, or if ``vector``
+        is not 1-D, or if the matrix shape and vector length are
+        incompatible.
+
+    See Also
+    --------
+    jitnmv : High-level wrapper with unit support.
+    jitn_p_call : Matrix materialisation primitive.
+    jitnmm_p_call : Matrix-matrix multiply primitive.
+
+    Notes
+    -----
+    The product is computed without materialising the full matrix:
+
+        ``y[i] = sum_{j} Normal(w_loc, w_scale) * Bernoulli(prob) * v[j]``
+
+    Each weight is generated on the fly using a deterministic PRNG seeded
+    by ``seed``.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._jit_normal.float import jitnmv_p_call
+        >>> out = jitnmv_p_call(
+        ...     jnp.array([0.0]), jnp.array([1.0]),
+        ...     jnp.array([20.0]), jnp.ones(5), jnp.array([42]),
+        ...     shape=(10, 5), transpose=False, corder=True)
+    """
     w_loc = jnp.atleast_1d(w_loc)
     w_scale = jnp.atleast_1d(w_scale)
     clen = jnp.atleast_1d(clen)
@@ -1317,23 +1666,23 @@ def _jitnmm_pallas_kernel_generator(
     return run
 
 
-def _jitnmm_jvp_wloc(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend=None, **kwargs):
+def _jitnmm_jvp_wloc(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend: Optional[str] = None, **kwargs):
     return jitnmm_p_call(
         w_dot, w_scale, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
     )
 
 
-def _jitnmm_jvp_wscale(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend=None, **kwargs):
+def _jitnmm_jvp_wscale(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend: Optional[str] = None, **kwargs):
     return jitnmm_p_call(w_loc, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=backend)
 
 
-def _jitnmm_jvp_B(B_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend=None, **kwargs):
+def _jitnmm_jvp_B(B_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend: Optional[str] = None, **kwargs):
     return jitnmm_p_call(
         w_loc, w_scale, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
     )
 
 
-def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend=None, **kwargs):
+def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend: Optional[str] = None, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
 
@@ -1443,6 +1792,67 @@ def jitnmm_p_call(
     shape: MatrixShape, transpose: bool, corder: bool,
     backend: Optional[str] = None
 ):
+    """Dispatch the JIT normal matrix-matrix multiply primitive.
+
+    Parameters
+    ----------
+    w_loc : jax.Array
+        Weight mean, shape ``(1,)``.
+    w_scale : jax.Array
+        Weight standard deviation, shape ``(1,)``.
+    clen : jax.Array
+        Connection length, shape ``(1,)``.
+    B : jax.Array
+        Right-hand 2-D matrix.
+    seed : jax.Array
+        RNG seed, shape ``(1,)``.
+    shape : tuple of int
+        Logical matrix shape ``(n_pre, n_post)``.
+    transpose : bool
+        Whether to use the transposed matrix.
+    corder : bool
+        Column-major iteration order.
+    backend : str or None, optional
+        Compute backend.
+
+    Returns
+    -------
+    tuple of jax.Array
+        Single-element tuple containing the output matrix.
+
+    Raises
+    ------
+    AssertionError
+        If ``shape`` is not length 2, or if ``B`` is not 2-D, or if
+        ``w_loc``, ``w_scale``, ``clen``, ``seed`` do not have the
+        expected shapes, or if the matrix dimensions are incompatible.
+
+    See Also
+    --------
+    jitnmm : High-level wrapper with unit support.
+    jitn_p_call : Matrix materialisation primitive.
+    jitnmv_p_call : Matrix-vector multiply primitive.
+
+    Notes
+    -----
+    The product is computed without materialising the full matrix:
+
+        ``Y[i, c] = sum_{j} Normal(w_loc, w_scale) * Bernoulli(prob) * B[j, c]``
+
+    Each weight is generated on the fly using a deterministic PRNG seeded
+    by ``seed``.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._jit_normal.float import jitnmm_p_call
+        >>> out = jitnmm_p_call(
+        ...     jnp.array([0.0]), jnp.array([1.0]),
+        ...     jnp.array([20.0]), jnp.ones((5, 3)), jnp.array([42]),
+        ...     shape=(10, 5), transpose=False, corder=True)
+    """
     w_loc = jnp.atleast_1d(w_loc)
     w_scale = jnp.atleast_1d(w_scale)
     clen = jnp.atleast_1d(clen)

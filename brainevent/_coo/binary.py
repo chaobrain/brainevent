@@ -51,21 +51,90 @@ def binary_coomv(
     backend: Optional[str] = None,
 ) -> Data:
     """
-    Perform a COO sparse matrix-vector multiplication with event-based inputs.
+    Perform event-driven COO sparse matrix-vector multiplication.
 
-    This function multiplies a sparse matrix in COO format by a dense vector,
-    where the vector is treated as containing binary events (spikes).
+    Computes the product of a sparse matrix stored in COO (Coordinate) format
+    and a dense vector, where the vector ``v`` is treated as containing binary
+    events (spikes). Only entries corresponding to active (nonzero / ``True``)
+    events contribute to the output, making this operation efficient for
+    spike-based neural network simulations.
 
-    Args:
-        data: The non-zero values of the sparse matrix.
-        row: The row indices of the non-zero values.
-        col: The column indices of the non-zero values.
-        v: The dense vector to multiply (treated as events).
-        shape: The shape of the sparse matrix (rows, cols).
-        transpose: If True, multiply by the transposed matrix.
+    Mathematically, with ``transpose=False`` the operation is
 
-    Returns:
-        The result of the matrix-vector multiplication.
+    ``result[i] = sum_j A[i, j] * (v[j] > 0)``
+
+    and with ``transpose=True``:
+
+    ``result[j] = sum_i A[i, j] * (v[i] > 0)``
+
+    where ``A`` is the sparse matrix defined by (``data``, ``row``, ``col``).
+
+    Parameters
+    ----------
+    data : jax.Array
+        The non-zero weight values of the sparse matrix.  Can be either a
+        scalar (shape ``(1,)``, homogeneous weights) or a 1-D array of
+        length ``nnz`` (heterogeneous weights).
+    row : jax.Array
+        1-D array of row indices for each non-zero element, with length
+        ``nnz``.
+    col : jax.Array
+        1-D array of column indices for each non-zero element, with length
+        ``nnz``.
+    v : jax.Array
+        Dense input vector treated as binary events. Elements are
+        interpreted as active when ``True`` (boolean dtype) or ``> 0``
+        (numeric dtype).  Shape must be ``(shape[0],)`` when
+        ``transpose=True`` or ``(shape[1],)`` when ``transpose=False``.
+    shape : tuple of int
+        The ``(m, k)`` shape of the sparse matrix.
+    transpose : bool, optional
+        If ``True``, multiply by the transpose of the sparse matrix,
+        i.e. ``A^T @ v``.  Default is ``False``.
+    backend : str or None, optional
+        Compute backend to use (e.g. ``'numba'``, ``'warp'``,
+        ``'pallas'``).  When ``None`` the backend is chosen automatically.
+
+    Returns
+    -------
+    jax.Array
+        Result vector of the matrix-vector product.  Shape is
+        ``(shape[0],)`` when ``transpose=False`` or ``(shape[1],)`` when
+        ``transpose=True``.
+
+    Raises
+    ------
+    ValueError
+        If ``row`` or ``col`` are not 1-D, have mismatched lengths, ``v``
+        is not 1-D, ``data`` is not scalar or 1-D, or array dimensions
+        are incompatible with ``shape`` and ``transpose``.
+
+    See Also
+    --------
+    binary_coomm : Event-driven COO sparse matrix-matrix multiplication.
+    binary_coomv_p_call : Lower-level primitive call without unit handling.
+    coomv : Standard (non-event-driven) COO sparse matrix-vector multiplication.
+
+    Notes
+    -----
+    Physical units attached via ``brainunit`` are automatically split off
+    before the computation and re-applied to the result.
+
+    This function supports automatic differentiation (JVP and transpose
+    rules), ``vmap`` batching, and multiple hardware backends (CPU via
+    Numba, GPU via Warp or Pallas/Triton, TPU via Pallas/Mosaic).
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._coo.binary import binary_coomv
+        >>> data = jnp.array([0.5])          # homogeneous weight
+        >>> row = jnp.array([0, 1, 2])
+        >>> col = jnp.array([1, 0, 2])
+        >>> v = jnp.array([True, False, True])  # binary events
+        >>> binary_coomv(data, row, col, v, shape=(3, 3), transpose=False)
     """
     data, unitd = u.split_mantissa_unit(data)
     v, unitv = u.split_mantissa_unit(v)
@@ -90,21 +159,90 @@ def binary_coomm(
     backend: Optional[str] = None,
 ) -> Data:
     """
-    Perform a COO sparse matrix-matrix multiplication with event-based inputs.
+    Perform event-driven COO sparse matrix-matrix multiplication.
 
-    This function multiplies a sparse matrix in COO format by a dense matrix,
-    where the matrix B is treated as containing binary events (spikes).
+    Computes the product of a sparse matrix stored in COO (Coordinate) format
+    and a dense matrix ``B``, where ``B`` is treated as containing binary
+    events (spikes). Only entries of ``B`` that are active (nonzero /
+    ``True``) contribute to the output.
 
-    Args:
-        data: The non-zero values of the sparse matrix.
-        row: The row indices of the non-zero values.
-        col: The column indices of the non-zero values.
-        B: The dense matrix to multiply (treated as events).
-        shape: The shape of the sparse matrix (rows, cols).
-        transpose: If True, multiply by the transposed matrix.
+    Mathematically, with ``transpose=False`` the operation is
 
-    Returns:
-        The result of the matrix-matrix multiplication.
+    ``result[i, n] = sum_j A[i, j] * (B[j, n] > 0)``
+
+    and with ``transpose=True``:
+
+    ``result[j, n] = sum_i A[i, j] * (B[i, n] > 0)``
+
+    where ``A`` is the sparse matrix defined by (``data``, ``row``, ``col``).
+
+    Parameters
+    ----------
+    data : jax.Array
+        The non-zero weight values of the sparse matrix.  Can be either a
+        scalar (shape ``(1,)``, homogeneous weights) or a 1-D array of
+        length ``nnz`` (heterogeneous weights).
+    row : jax.Array
+        1-D array of row indices for each non-zero element, with length
+        ``nnz``.
+    col : jax.Array
+        1-D array of column indices for each non-zero element, with length
+        ``nnz``.
+    B : jax.Array
+        Dense input matrix treated as binary events.  Shape must be
+        ``(shape[0], n)`` when ``transpose=True`` or ``(shape[1], n)``
+        when ``transpose=False``.
+    shape : tuple of int
+        The ``(m, k)`` shape of the sparse matrix.
+    transpose : bool, optional
+        If ``True``, multiply by the transpose of the sparse matrix,
+        i.e. ``A^T @ B``.  Default is ``False``.
+    backend : str or None, optional
+        Compute backend to use (e.g. ``'numba'``, ``'warp'``,
+        ``'pallas'``).  When ``None`` the backend is chosen automatically.
+
+    Returns
+    -------
+    jax.Array
+        Result matrix of the multiplication.  Shape is
+        ``(shape[0], n)`` when ``transpose=False`` or ``(shape[1], n)``
+        when ``transpose=True``.
+
+    Raises
+    ------
+    ValueError
+        If ``row`` or ``col`` are not 1-D, have mismatched lengths, ``B``
+        is not 2-D, ``data`` is not scalar or 1-D, or array dimensions
+        are incompatible with ``shape`` and ``transpose``.
+
+    See Also
+    --------
+    binary_coomv : Event-driven COO sparse matrix-vector multiplication.
+    binary_coomm_p_call : Lower-level primitive call without unit handling.
+    coomm : Standard (non-event-driven) COO sparse matrix-matrix multiplication.
+
+    Notes
+    -----
+    Physical units attached via ``brainunit`` are automatically split off
+    before the computation and re-applied to the result.
+
+    This function supports automatic differentiation (JVP and transpose
+    rules), ``vmap`` batching, and multiple hardware backends (CPU via
+    Numba, GPU via Warp or Pallas/Triton, TPU via Pallas/Mosaic).
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._coo.binary import binary_coomm
+        >>> data = jnp.array([0.5])          # homogeneous weight
+        >>> row = jnp.array([0, 1, 2])
+        >>> col = jnp.array([1, 0, 2])
+        >>> B = jnp.array([[True, False],
+        ...                [False, True],
+        ...                [True, True]])    # binary event matrix
+        >>> binary_coomm(data, row, col, B, shape=(3, 3), transpose=False)
     """
     data, unitd = u.split_mantissa_unit(data)
     B, unitb = u.split_mantissa_unit(B)
@@ -754,32 +892,84 @@ def binary_coomv_p_call(
     backend: Optional[str] = None,
 ):
     """
-    Perform a custom sparse matrix-vector multiplication operation.
+    Low-level primitive call for event-driven COO sparse matrix-vector multiplication.
 
-    This function takes a sparse matrix represented in COO (Coordinate) format
-    and a dense vector, then performs a matrix-vector multiplication.
+    Validates inputs, constructs output metadata, and dispatches to the
+    registered ``XLACustomKernel`` (``binary_coomv_p``) which selects a
+    backend-specific kernel (Numba, Warp, Pallas GPU, or Pallas TPU).
+
+    Unlike :func:`binary_coomv`, this function does **not** handle physical
+    units and returns a raw list of JAX arrays.
 
     Parameters
     ----------
     weights : jax.Array
-        The non-zero values of the sparse matrix.
+        Non-zero values of the sparse matrix.  Must be a floating-point
+        scalar (shape ``(1,)``) for homogeneous weights or a 1-D array
+        of length ``nnz`` for heterogeneous weights.
     row : jax.Array
-        The row indices of the non-zero values in the sparse matrix.
+        1-D integer array of row indices with length ``nnz``.
     col : jax.Array
-        The column indices of the non-zero values in the sparse matrix.
+        1-D integer array of column indices with length ``nnz``.
     v : jax.Array
-        The dense vector to multiply with the sparse matrix.
+        Dense event vector.  Entries are treated as active when ``True``
+        (boolean) or ``> 0`` (numeric).  Shape must be ``(shape[0],)``
+        when ``transpose=True`` or ``(shape[1],)`` when
+        ``transpose=False``.
     shape : Sequence[int]
-        The shape of the sparse matrix.
+        The ``(m, k)`` shape of the logical sparse matrix.
     transpose : bool
-        Whether to transpose the sparse matrix before multiplication.
-    backend : str, optional
-        Backend to use for computation.
+        If ``True``, compute ``A^T @ v`` instead of ``A @ v``.
+    backend : str or None, optional
+        Compute backend override (``'numba'``, ``'warp'``, ``'pallas'``).
+        When ``None`` the backend is selected automatically.
 
     Returns
     -------
-    jax.Array
-        The result of the sparse matrix-vector multiplication.
+    list of jax.Array
+        A single-element list containing the result vector.  Shape is
+        ``(shape[0],)`` when ``transpose=False`` or ``(shape[1],)`` when
+        ``transpose=True``, with dtype matching ``weights``.
+
+    Raises
+    ------
+    ValueError
+        If ``row`` or ``col`` are not 1-D arrays, have different lengths,
+        ``v`` is not 1-D, ``weights`` is not scalar or 1-D, weights
+        length is neither 1 nor ``nnz``, or ``v`` length is incompatible
+        with ``shape`` and ``transpose``.
+    AssertionError
+        If ``weights`` dtype is not a floating-point type.
+
+    See Also
+    --------
+    binary_coomv : High-level wrapper with physical unit support.
+    binary_coomm_p_call : Primitive call for event-driven matrix-matrix multiplication.
+    coomv_p_call : Primitive call for standard COO matrix-vector multiplication.
+
+    Notes
+    -----
+    When ``nnz == 0`` the function short-circuits and returns a zero vector
+    without dispatching to any kernel.
+
+    The function registers JVP rules, transpose rules, and batching rules
+    on the underlying ``binary_coomv_p`` primitive so that it integrates
+    with JAX's autodiff and ``vmap`` transformations.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._coo.binary import binary_coomv_p_call
+        >>> weights = jnp.array([1.0, 2.0, 3.0])
+        >>> row = jnp.array([0, 1, 2])
+        >>> col = jnp.array([2, 0, 1])
+        >>> v = jnp.array([True, False, True])
+        >>> result = binary_coomv_p_call(
+        ...     weights, row, col, v, shape=(3, 3), transpose=False
+        ... )
+        >>> result[0]  # the output vector
     """
     row = jnp.asarray(row)
     col = jnp.asarray(col)
@@ -1541,32 +1731,86 @@ def binary_coomm_p_call(
     backend: Optional[str] = None,
 ):
     """
-    Perform a custom sparse matrix-matrix multiplication operation.
+    Low-level primitive call for event-driven COO sparse matrix-matrix multiplication.
 
-    This function takes a sparse matrix represented in COO (Coordinate) format
-    and a dense matrix, then performs a matrix-matrix multiplication.
+    Validates inputs, constructs output metadata, and dispatches to the
+    registered ``XLACustomKernel`` (``binary_coomm_p``) which selects a
+    backend-specific kernel (Numba, Warp, Pallas GPU, or Pallas TPU).
+
+    Unlike :func:`binary_coomm`, this function does **not** handle physical
+    units and returns a raw list of JAX arrays.
 
     Parameters
     ----------
     weights : jax.Array
-        The non-zero values of the sparse matrix.
+        Non-zero values of the sparse matrix.  Must be a floating-point
+        scalar (shape ``(1,)``) for homogeneous weights or a 1-D array
+        of length ``nnz`` for heterogeneous weights.
     row : jax.Array
-        The row indices of the non-zero values in the sparse matrix.
+        1-D integer array of row indices with length ``nnz``.
     col : jax.Array
-        The column indices of the non-zero values in the sparse matrix.
+        1-D integer array of column indices with length ``nnz``.
     B : jax.Array
-        The dense matrix to multiply with the sparse matrix.
+        Dense event matrix of shape ``(shape[0], n)`` when
+        ``transpose=True`` or ``(shape[1], n)`` when ``transpose=False``.
+        Entries are treated as active when ``True`` (boolean) or ``> 0``
+        (numeric).
     shape : Sequence[int]
-        The shape of the sparse matrix.
+        The ``(m, k)`` shape of the logical sparse matrix.
     transpose : bool
-        Whether to transpose the sparse matrix before multiplication.
-    backend : str, optional
-        Backend to use for computation.
+        If ``True``, compute ``A^T @ B`` instead of ``A @ B``.
+    backend : str or None, optional
+        Compute backend override (``'numba'``, ``'warp'``, ``'pallas'``).
+        When ``None`` the backend is selected automatically.
 
     Returns
     -------
-    jax.Array
-        The result of the sparse matrix-matrix multiplication.
+    list of jax.Array
+        A single-element list containing the result matrix.  Shape is
+        ``(shape[0], n)`` when ``transpose=False`` or ``(shape[1], n)``
+        when ``transpose=True``, with dtype matching ``weights``.
+
+    Raises
+    ------
+    ValueError
+        If ``row`` or ``col`` are not 1-D arrays, have different lengths,
+        ``B`` is not 2-D, ``weights`` is not scalar or 1-D, weights
+        length is neither 1 nor ``nnz``, or ``B`` row count is
+        incompatible with ``shape`` and ``transpose``.
+    AssertionError
+        If ``weights`` dtype is not a floating-point type.
+
+    See Also
+    --------
+    binary_coomm : High-level wrapper with physical unit support.
+    binary_coomv_p_call : Primitive call for event-driven matrix-vector multiplication.
+    coomm_p_call : Primitive call for standard COO matrix-matrix multiplication.
+
+    Notes
+    -----
+    When ``nnz == 0`` the function short-circuits and returns a zero
+    matrix without dispatching to any kernel.
+
+    The function registers JVP rules, transpose rules, and batching rules
+    on the underlying ``binary_coomm_p`` primitive so that it integrates
+    with JAX's autodiff and ``vmap`` transformations.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._coo.binary import binary_coomm_p_call
+        >>> weights = jnp.array([1.0, 2.0, 3.0])
+        >>> row = jnp.array([0, 1, 2])
+        >>> col = jnp.array([2, 0, 1])
+        >>> B = jnp.array([[True, False],
+        ...                [False, True],
+        ...                [True, True]])
+        >>> result = binary_coomm_p_call(
+        ...     weights, row, col, B, shape=(3, 3), transpose=False
+        ... )
+        >>> result[0]  # the output matrix
     """
     row = jnp.asarray(row)
     col = jnp.asarray(col)

@@ -44,11 +44,13 @@ _FFI_CALLBACK_LOCK = threading.Lock()
 
 
 class XLA_FFI_Extension_Type(enum.IntEnum):
+    """XLA FFI extension type enumeration."""
     Metadata = 1
 
 
 # Forward-declared for self-referencing pointer
 class XLA_FFI_Extension_Base(Structure):
+    """Base ctypes struct for XLA FFI extension chain nodes."""
     pass
 
 
@@ -60,6 +62,7 @@ XLA_FFI_Extension_Base._fields_ = [
 
 
 class XLA_FFI_Api_Version(Structure):
+    """ctypes struct for XLA FFI API version information."""
     _fields_ = [
         ("struct_size", c_size_t),
         ("extension_start", POINTER(XLA_FFI_Extension_Base)),
@@ -69,10 +72,12 @@ class XLA_FFI_Api_Version(Structure):
 
 
 class XLA_FFI_Handler_TraitsBits(enum.IntEnum):
+    """Bit flags for XLA FFI handler traits."""
     COMMAND_BUFFER_COMPATIBLE = 1 << 0
 
 
 class XLA_FFI_Metadata(Structure):
+    """ctypes struct for XLA FFI handler metadata."""
     _fields_ = [
         ("struct_size", c_size_t),
         ("api_version", XLA_FFI_Api_Version),
@@ -81,6 +86,7 @@ class XLA_FFI_Metadata(Structure):
 
 
 class XLA_FFI_Metadata_Extension(Structure):
+    """ctypes struct for XLA FFI metadata extension node."""
     _fields_ = [
         ("extension_base", XLA_FFI_Extension_Base),
         ("metadata", POINTER(XLA_FFI_Metadata)),
@@ -88,6 +94,7 @@ class XLA_FFI_Metadata_Extension(Structure):
 
 
 class XLA_FFI_Buffer(Structure):
+    """ctypes struct for an XLA FFI buffer (tensor argument or return value)."""
     _fields_ = [
         ("struct_size", c_size_t),
         ("extension_start", POINTER(XLA_FFI_Extension_Base)),
@@ -99,6 +106,7 @@ class XLA_FFI_Buffer(Structure):
 
 
 class XLA_FFI_Args(Structure):
+    """ctypes struct for XLA FFI call-frame input arguments."""
     _fields_ = [
         ("struct_size", c_size_t),
         ("extension_start", POINTER(XLA_FFI_Extension_Base)),
@@ -109,6 +117,7 @@ class XLA_FFI_Args(Structure):
 
 
 class XLA_FFI_Rets(Structure):
+    """ctypes struct for XLA FFI call-frame return values."""
     _fields_ = [
         ("struct_size", c_size_t),
         ("extension_start", POINTER(XLA_FFI_Extension_Base)),
@@ -119,6 +128,7 @@ class XLA_FFI_Rets(Structure):
 
 
 class XLA_FFI_Attrs(Structure):
+    """ctypes struct for XLA FFI call-frame attributes."""
     _fields_ = [
         ("struct_size", c_size_t),
         ("extension_start", POINTER(XLA_FFI_Extension_Base)),
@@ -130,6 +140,7 @@ class XLA_FFI_Attrs(Structure):
 
 
 class XLA_FFI_CallFrame(Structure):
+    """ctypes struct for an XLA FFI call frame passed to handler callbacks."""
     _fields_ = [
         ("struct_size", c_size_t),
         ("extension_start", POINTER(XLA_FFI_Extension_Base)),
@@ -318,24 +329,35 @@ def numba_kernel(
 ):
     """Create a JAX-callable function from a Numba CPU kernel.
 
-    This function wraps a Numba JIT-compiled CPU kernel (decorated with @numba.njit)
-    so it can be called from JAX on CPU. The kernel operates on memory directly
-    through the XLA FFI (Foreign Function Interface).
+    Wraps a Numba JIT-compiled CPU kernel (decorated with ``@numba.njit``)
+    so it can be called from JAX on CPU.  The kernel operates on memory
+    directly through the XLA FFI (Foreign Function Interface).
 
-    Args:
-        kernel: A Numba CPU kernel function decorated with @numba.njit.
-        outs: Output specification. Can be a single jax.ShapeDtypeStruct or a
-            sequence of them for multiple outputs.
-        vmap_method: The method to use for vmapping this kernel. See JAX documentation
-            for jax.ffi.ffi_call for details. Default is None.
-        input_output_aliases: A dictionary mapping input indices to output indices
-            for in-place operations. See JAX documentation for details. Default is None.
+    Parameters
+    ----------
+    kernel : callable
+        A Numba CPU kernel function decorated with ``@numba.njit``.
+    outs : jax.ShapeDtypeStruct or sequence of jax.ShapeDtypeStruct
+        Output specification.  A single struct for one output, or a
+        sequence for multiple outputs.
+    vmap_method : str or None, optional
+        The method to use for vmapping this kernel.  See JAX documentation
+        for ``jax.ffi.ffi_call``.  Default is ``None``.
+    input_output_aliases : dict of int to int or None, optional
+        Mapping from input indices to output indices for in-place
+        operations.  Default is ``None``.
 
-    Returns:
-        A callable that takes JAX arrays as inputs and returns JAX arrays as outputs.
-        The callable can be used inside jax.jit and other JAX transformations.
+    Returns
+    -------
+    callable
+        A function that takes JAX arrays as inputs and returns JAX
+        arrays as outputs.  Compatible with ``jax.jit`` and other
+        transformations.
 
-    Example:
+    Examples
+    --------
+    .. code-block:: python
+
         >>> import numba
         >>> import jax.numpy as jnp
         >>> import jax

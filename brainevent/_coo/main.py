@@ -168,19 +168,37 @@ class COO(u.sparse.SparseMatrix):
 
     @property
     def dtype(self):
+        """Data type of the stored non-zero values.
+
+        Returns
+        -------
+        numpy.dtype
+            Element data type, e.g. ``jnp.float32``.
+        """
         return self.data.dtype
 
     @property
     def nse(self):
+        """Number of stored elements (non-zeros).
+
+        Returns
+        -------
+        int
+            Total count of explicitly stored entries.
+        """
         return self.data.size
 
     @property
     def info(self):
-        return COOInfo(shape=self.shape, rows_sorted=self.rows_sorted, cols_sorted=self.cols_sorted)
+        """Structural metadata for the COO matrix.
 
-    @property
-    def _bufs(self):
-        return (self.data, self.row, self.col, self.ptr)
+        Returns
+        -------
+        COOInfo
+            A named tuple containing ``shape``, ``rows_sorted``, and
+            ``cols_sorted``.
+        """
+        return COOInfo(shape=self.shape, rows_sorted=self.rows_sorted, cols_sorted=self.cols_sorted)
 
     def _csr_params(self):
         """Return (indices, indptr, csr_shape, flip_transpose) for CSR dispatch."""
@@ -398,6 +416,46 @@ class COO(u.sparse.SparseMatrix):
         inplace: bool = False,
         backend: Optional[str] = None,
     ):
+        """Update synaptic weights based on pre-synaptic events (pre-spike rule).
+
+        Applies a spike-timing-dependent plasticity (STDP) update to the
+        stored weights.  For each non-zero element ``(i, j)`` in the COO
+        matrix whose pre-synaptic neuron ``j`` is active in *pre_events*,
+        the weight is updated according to the post-synaptic trace value.
+
+        Parameters
+        ----------
+        pre_events : EventRepresentation
+            Pre-synaptic spike events.  Currently only ``BinaryArray`` is
+            supported.
+        post_trace : jax.Array or Quantity
+            Post-synaptic eligibility trace, shape ``(num_post,)``.
+        w_min : jax.Array or Quantity or None, optional
+            Minimum weight bound.  ``None`` means no lower clipping.
+        w_max : jax.Array or Quantity or None, optional
+            Maximum weight bound.  ``None`` means no upper clipping.
+        inplace : bool, optional
+            If ``True``, mutate ``self.data`` in place and return ``None``.
+            If ``False`` (default), return the updated weight array.
+        backend : str or None, optional
+            Compute backend (e.g. ``'numba'``, ``'warp'``).
+
+        Returns
+        -------
+        jax.Array or Quantity or None
+            Updated weight data, or ``None`` when *inplace* is ``True``.
+
+        Raises
+        ------
+        NotImplementedError
+            If *pre_events* is not a ``BinaryArray``, or if the matrix uses
+            ``cols_sorted`` pointers (not yet supported).
+
+        See Also
+        --------
+        update_on_post : Post-synaptic plasticity update.
+        update_coo_on_binary_pre : Underlying COO pre-spike kernel.
+        """
         if isinstance(pre_events, BinaryArray):
             if self.ptr is not None:
                 if self.rows_sorted:
@@ -430,6 +488,45 @@ class COO(u.sparse.SparseMatrix):
         inplace: bool = False,
         backend: Optional[str] = None,
     ):
+        """Update synaptic weights based on post-synaptic events (post-spike rule).
+
+        Applies a spike-timing-dependent plasticity (STDP) update to the
+        stored weights.  For each non-zero element ``(i, j)`` whose
+        post-synaptic neuron ``i`` is active in *post_events*, the weight
+        is updated according to the pre-synaptic trace value.
+
+        Parameters
+        ----------
+        post_events : EventRepresentation
+            Post-synaptic spike events.  Currently only ``BinaryArray`` is
+            supported.
+        pre_trace : jax.Array or Quantity
+            Pre-synaptic eligibility trace, shape ``(num_pre,)``.
+        w_min : jax.Array or Quantity or None, optional
+            Minimum weight bound.
+        w_max : jax.Array or Quantity or None, optional
+            Maximum weight bound.
+        inplace : bool, optional
+            If ``True``, mutate ``self.data`` in place and return ``None``.
+        backend : str or None, optional
+            Compute backend.
+
+        Returns
+        -------
+        jax.Array or Quantity or None
+            Updated weight data, or ``None`` when *inplace* is ``True``.
+
+        Raises
+        ------
+        NotImplementedError
+            If *post_events* is not a ``BinaryArray``, or if the matrix uses
+            unsupported pointer layout.
+
+        See Also
+        --------
+        update_on_pre : Pre-synaptic plasticity update.
+        update_coo_on_binary_post : Underlying COO post-spike kernel.
+        """
         if isinstance(post_events, BinaryArray):
             if self.ptr is not None:
                 if self.rows_sorted:
@@ -478,12 +575,33 @@ class COO(u.sparse.SparseMatrix):
         )
 
     def __abs__(self):
+        """Return element-wise absolute value, preserving COO structure.
+
+        Returns
+        -------
+        COO
+            A new COO matrix with ``abs(data)`` as the non-zero values.
+        """
         return self.apply(operator.abs)
 
     def __neg__(self):
+        """Return element-wise negation, preserving COO structure.
+
+        Returns
+        -------
+        COO
+            A new COO matrix with ``-data`` as the non-zero values.
+        """
         return self.apply(operator.neg)
 
     def __pos__(self):
+        """Return a copy of the COO matrix (unary positive).
+
+        Returns
+        -------
+        COO
+            A new COO matrix with the same data.
+        """
         return self.apply(operator.pos)
 
     def _binary_op(self, other, op):
@@ -606,27 +724,124 @@ class COO(u.sparse.SparseMatrix):
         return self.apply2(other, operator.mul, reverse=True)
 
     def __truediv__(self, other: Data) -> 'COO':
+        """Element-wise true division ``self / other``.
+
+        Parameters
+        ----------
+        other : scalar or array_like
+            Divisor.
+
+        Returns
+        -------
+        COO
+            Result with the same sparsity structure.
+        """
         return self.apply2(other, operator.truediv)
 
     def __rtruediv__(self, other: Data) -> 'COO':
+        """Element-wise true division ``other / self``.
+
+        Parameters
+        ----------
+        other : scalar or array_like
+            Dividend.
+
+        Returns
+        -------
+        COO
+            Result with the same sparsity structure.
+        """
         return self.apply2(other, operator.truediv, reverse=True)
 
     def __add__(self, other: Data) -> 'COO':
+        """Element-wise addition ``self + other``.
+
+        Parameters
+        ----------
+        other : scalar or array_like
+            Addend.
+
+        Returns
+        -------
+        COO or jax.Array
+            For scalar or shape-matched *other*, returns a COO.  For
+            addition, the sparse matrix is first densified.
+        """
         return self.apply2(other, operator.add)
 
     def __radd__(self, other: Data) -> 'COO':
+        """Element-wise addition ``other + self``.
+
+        Parameters
+        ----------
+        other : scalar or array_like
+            Left addend.
+
+        Returns
+        -------
+        COO or jax.Array
+            Result of the addition.
+        """
         return self.apply2(other, operator.add, reverse=True)
 
     def __sub__(self, other: Data) -> 'COO':
+        """Element-wise subtraction ``self - other``.
+
+        Parameters
+        ----------
+        other : scalar or array_like
+            Subtrahend.
+
+        Returns
+        -------
+        COO or jax.Array
+            Result of the subtraction.
+        """
         return self.apply2(other, operator.sub)
 
     def __rsub__(self, other: Data) -> 'COO':
+        """Element-wise subtraction ``other - self``.
+
+        Parameters
+        ----------
+        other : scalar or array_like
+            Minuend.
+
+        Returns
+        -------
+        COO or jax.Array
+            Result of the subtraction.
+        """
         return self.apply2(other, operator.sub, reverse=True)
 
     def __mod__(self, other: Data) -> 'COO':
+        """Element-wise modulo ``self % other``.
+
+        Parameters
+        ----------
+        other : scalar or array_like
+            Divisor for the modulo operation.
+
+        Returns
+        -------
+        COO
+            Result with the same sparsity structure.
+        """
         return self.apply2(other, operator.mod)
 
     def __rmod__(self, other: Data) -> 'COO':
+        """Element-wise modulo ``other % self``.
+
+        Parameters
+        ----------
+        other : scalar or array_like
+            Dividend for the modulo operation.
+
+        Returns
+        -------
+        COO
+            Result with the same sparsity structure.
+        """
         return self.apply2(other, operator.mod, reverse=True)
 
     def __matmul__(self, other: Data) -> Data:

@@ -51,6 +51,108 @@ def binary_jitnmv(
     corder: bool = True,
     backend: Optional[str] = None,
 ) -> Data:
+    """
+    Event-driven matrix-vector multiplication with a JIT normal-distributed connectivity matrix.
+
+    Computes ``M @ v`` where ``M`` is a sparse matrix whose non-zero entries are
+    drawn from a normal distribution with parameters ``w_loc`` (mean) and ``w_scale``
+    (standard deviation), and ``v`` is a binary event vector. Only positions where
+    ``v`` is active (True or > 0) contribute to the output, making this operation
+    event-driven and efficient for sparse neural activity patterns.
+
+    Parameters
+    ----------
+    w_loc : Data
+        Location (mean) parameter of the normal distribution for the matrix
+        weights. Scalar or 1-element array, optionally with physical units.
+    w_scale : Data
+        Scale (standard deviation) parameter of the normal distribution for the
+        matrix weights. Must have the same physical dimension as ``w_loc``.
+    prob : float
+        Connection probability in the range ``[0, 1]``. Controls the sparsity of
+        the generated connectivity matrix.
+    vector : Data
+        The binary event vector to multiply with. Elements are treated as events
+        (True/False or >0/<=0). Shape must be compatible with ``shape``.
+    seed : int, optional
+        Random seed for reproducible matrix generation. If None, a random seed
+        is generated at compile time.
+    shape : MatrixShape
+        Shape of the implicit connectivity matrix as ``(rows, cols)``.
+    transpose : bool, optional
+        If True, compute ``M.T @ v`` instead of ``M @ v``. Default is False.
+    corder : bool, optional
+        Memory layout order for kernel dispatch. True for C-order (row-major),
+        False for Fortran-order (column-major). Default is True.
+    backend : str, optional
+        Compute backend to use (``'numba'``, ``'warp'``, ``'pallas'``, or None
+        for automatic selection).
+
+    Returns
+    -------
+    Data
+        The result vector of the matrix-vector product. If the inputs carry
+        physical units, the output will have units equal to the product of the
+        weight units and the vector units.
+
+    Raises
+    ------
+    brainunit.DimensionMismatchError
+        If ``w_loc`` and ``w_scale`` do not have the same physical dimension.
+
+    See Also
+    --------
+    binary_jitnmm : Event-driven matrix-matrix multiplication variant.
+    jitnmv : Float (non-event) matrix-vector multiplication with normal weights.
+    binary_jitnmv_p_call : Lower-level primitive call for this operation.
+
+    Notes
+    -----
+    The connectivity matrix ``W`` is never materialized in memory. Instead, the
+    pseudo-random structure is regenerated on-the-fly using the ``seed`` and
+    ``prob`` parameters, following the same PRNG sequence as ``jitn`` to ensure
+    consistency with ``todense()``.
+
+    The implicit weight matrix has entries:
+
+    ``W[i, j] = Normal(w_loc, w_scale) * Bernoulli(prob)``
+
+    where ``Normal(w_loc, w_scale)`` is an independent draw for each non-zero
+    position, and ``Bernoulli(prob)`` is 1 with probability ``prob`` and 0
+    otherwise. The connection mask is determined by a deterministic hash of
+    ``(seed, i, j)``.
+
+    The event-driven matrix-vector product computes:
+
+    ``y[i] = sum_{j in C(i)} N_ij * spike[j]``
+
+    where ``C(i) = {j : Bernoulli_ij = 1}`` is the set of connected
+    pre-synaptic indices for post-synaptic neuron ``i``, ``N_ij ~ Normal(w_loc,
+    w_scale)`` is the connection weight, and ``spike[j]`` is treated as a
+    binary event (True/False or >0/<=0). Equivalently:
+
+    ``y[i] = sum_{j in C(i) : spike[j]=1} N_ij``
+
+    The connection length parameter ``clen = 2 / prob`` controls the average
+    stride between non-zero entries.
+
+    This operation supports automatic differentiation (JVP and transpose rules)
+    for ``w_loc``, ``w_scale``, and ``vector``. Batching over the vector
+    dimension is promoted to ``binary_jitnmm``.
+
+    Examples
+    --------
+
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._jit_normal.binary import binary_jitnmv
+        >>> w_loc = jnp.array([1.0])
+        >>> w_scale = jnp.array([0.1])
+        >>> events = jnp.array([True, False, True, True, False])
+        >>> result = binary_jitnmv(w_loc, w_scale, 0.5, events, seed=42,
+        ...                        shape=(3, 5))
+    """
     u.fail_for_dimension_mismatch(w_loc, w_scale, "w_loc and w_scale must have the same dimension.")
     seed = _initialize_seed(seed)
     w_loc, unitd = u.split_mantissa_unit(w_loc)
@@ -83,6 +185,105 @@ def binary_jitnmm(
     corder: bool = True,
     backend: Optional[str] = None,
 ) -> Data:
+    """
+    Event-driven matrix-matrix multiplication with a JIT normal-distributed connectivity matrix.
+
+    Computes ``M @ B`` where ``M`` is a sparse matrix whose non-zero entries are
+    drawn from a normal distribution with parameters ``w_loc`` (mean) and ``w_scale``
+    (standard deviation), and ``B`` is a 2-D binary event matrix. Only positions
+    where ``B`` elements are active (True or > 0) contribute to the output.
+
+    Parameters
+    ----------
+    w_loc : Data
+        Location (mean) parameter of the normal distribution for the matrix
+        weights. Scalar or 1-element array, optionally with physical units.
+    w_scale : Data
+        Scale (standard deviation) parameter of the normal distribution for the
+        matrix weights. Must have the same physical dimension as ``w_loc``.
+    prob : float
+        Connection probability in the range ``[0, 1]``. Controls the sparsity of
+        the generated connectivity matrix.
+    B : Data
+        The binary event matrix to multiply with, shape ``(k, n)``. Elements are
+        treated as events (True/False or >0/<=0).
+    seed : int, optional
+        Random seed for reproducible matrix generation. If None, a random seed
+        is generated at compile time.
+    shape : MatrixShape
+        Shape of the implicit connectivity matrix as ``(rows, cols)``.
+    transpose : bool, optional
+        If True, compute ``M.T @ B`` instead of ``M @ B``. Default is False.
+    corder : bool, optional
+        Memory layout order for kernel dispatch. True for C-order (row-major),
+        False for Fortran-order (column-major). Default is True.
+    backend : str, optional
+        Compute backend to use (``'numba'``, ``'warp'``, ``'pallas'``, or None
+        for automatic selection).
+
+    Returns
+    -------
+    Data
+        The result matrix of the matrix-matrix product with shape
+        ``(shape[0], B.shape[1])`` (or ``(shape[1], B.shape[1])`` if transposed).
+        If the inputs carry physical units, the output will have units equal to
+        the product of the weight units and the ``B`` units.
+
+    Raises
+    ------
+    brainunit.DimensionMismatchError
+        If ``w_loc`` and ``w_scale`` do not have the same physical dimension.
+
+    See Also
+    --------
+    binary_jitnmv : Event-driven matrix-vector multiplication variant.
+    jitnmm : Float (non-event) matrix-matrix multiplication with normal weights.
+    binary_jitnmm_p_call : Lower-level primitive call for this operation.
+
+    Notes
+    -----
+    The connectivity matrix ``W`` is never materialized in memory. The
+    pseudo-random structure is regenerated on-the-fly using the ``seed`` and
+    ``prob`` parameters, matching the PRNG sequence used by ``jitn``.
+
+    The implicit weight matrix has entries:
+
+    ``W[i, j] = Normal(w_loc, w_scale) * Bernoulli(prob)``
+
+    where ``Normal(w_loc, w_scale)`` is an independent draw for each non-zero
+    position, and ``Bernoulli(prob)`` is 1 with probability ``prob`` and 0
+    otherwise.
+
+    The event-driven matrix-matrix product computes:
+
+    ``Y[i, k] = sum_{j in C(i)} N_ij * spike[j, k]``
+
+    where ``C(i) = {j : Bernoulli_ij = 1}`` is the set of connected
+    pre-synaptic indices for post-synaptic neuron ``i``, ``N_ij ~ Normal(w_loc,
+    w_scale)`` is the connection weight, and ``spike[j, k]`` is treated as a
+    binary event. Each column ``k`` of ``B`` is processed independently.
+
+    The connection length parameter ``clen = 2 / prob`` controls the average
+    stride between non-zero entries.
+
+    This operation supports automatic differentiation (JVP and transpose rules)
+    for ``w_loc``, ``w_scale``, and ``B``. Batching over the ``B`` dimension
+    is supported along axes 0, 1, and 2.
+
+    Examples
+    --------
+
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._jit_normal.binary import binary_jitnmm
+        >>> w_loc = jnp.array([1.0])
+        >>> w_scale = jnp.array([0.1])
+        >>> B = jnp.array([[True, False], [False, True], [True, True],
+        ...                [False, False], [True, False]])
+        >>> result = binary_jitnmm(w_loc, w_scale, 0.5, B, seed=42,
+        ...                        shape=(3, 5))
+    """
     u.fail_for_dimension_mismatch(w_loc, w_scale, "w_loc and w_scale must have the same dimension.")
     seed = _initialize_seed(seed)
     w_loc, unitd = u.split_mantissa_unit(w_loc)
@@ -494,24 +695,28 @@ def _jitc_mv_normal_pallas_kernel_generator(
 
 
 def _jitc_mv_normal_jvp_v(v_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
+    """JVP rule for the vector argument of binary_jitnmv."""
     return jitnmv_p_call(
         w_loc, w_scale, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
     )
 
 
 def _jitc_mv_normal_jvp_wloc(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
+    """JVP rule for the w_loc argument of binary_jitnmv."""
     return binary_jitnmv_p_call(
         w_dot, w_scale, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
     )
 
 
 def _jitc_mv_normal_jvp_wscale(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
+    """JVP rule for the w_scale argument of binary_jitnmv."""
     return binary_jitnmv_p_call(
         w_loc, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
     )
 
 
 def _jitc_mv_normal_transpose_rules(ct, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, **kwargs):
+    """Transpose (VJP) rule for binary_jitnmv."""
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
 
@@ -556,6 +761,7 @@ def _jitc_mv_normal_transpose_rules(ct, w_loc, w_scale, clen, vector, seed, *, s
 
 
 def _jitc_mv_normal_batching(args, axes, **kwargs):
+    """Batching rule for binary_jitnmv, promoting to binary_jitnmm when batched."""
     if tuple(axes) == (None, None, None, 0, None):
         assert args[3].ndim == 2, 'Batching axis 0 requires 2D input.'
         r = binary_jitnmm_p_call(
@@ -594,6 +800,7 @@ def _jitc_mv_normal_batching(args, axes, **kwargs):
 
 
 def _binary_jitnmv_benchmark_data(*, platform):
+    """Generate benchmark configurations for binary_jitnmv."""
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -627,6 +834,50 @@ def binary_jitnmv_p_call(
     corder: bool,
     backend: Optional[str] = None,
 ):
+    """
+    Low-level primitive call for event-driven matrix-vector multiplication with normal weights.
+
+    This function validates inputs, computes the output shape, and dispatches to
+    the ``binary_jitnmv_p`` XLA custom kernel. It is called by ``binary_jitnmv``
+    after unit handling and seed initialization, and is also used directly by
+    JVP, transpose, and batching rules.
+
+    Parameters
+    ----------
+    w_loc : jax.Array
+        Location (mean) parameter, shape ``(1,)``.
+    w_scale : jax.Array
+        Scale (standard deviation) parameter, shape ``(1,)``.
+    clen : jax.Array
+        Connection length (approximately ``2 / prob``), shape ``(1,)``.
+    vector : jax.Array
+        1-D binary event vector.
+    seed : jax.Array
+        Random seed, shape ``(1,)``.
+    shape : Sequence[int]
+        Shape of the implicit connectivity matrix ``(m, n)``.
+    transpose : bool
+        If True, compute ``M.T @ v`` instead of ``M @ v``.
+    corder : bool
+        Memory layout order flag for kernel dispatch.
+    backend : str, optional
+        Compute backend override.
+
+    Returns
+    -------
+    tuple
+        A single-element tuple containing the output vector as a JAX array.
+
+    Raises
+    ------
+    AssertionError
+        If input shapes or dimensions are incompatible.
+
+    See Also
+    --------
+    binary_jitnmv : High-level API with unit handling.
+    binary_jitnmv_p : The underlying XLA custom kernel primitive.
+    """
     w_loc = jnp.atleast_1d(w_loc)
     w_scale = jnp.atleast_1d(w_scale)
     clen = jnp.atleast_1d(clen)
@@ -1081,24 +1332,28 @@ def _jitc_mm_normal_pallas_kernel_generator(
 
 
 def _jitc_mm_normal_jvp_wloc(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
+    """JVP rule for the w_loc argument of binary_jitnmm."""
     return binary_jitnmm_p_call(
         w_dot, w_scale, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
     )
 
 
 def _jitc_mm_normal_jvp_wscale(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
+    """JVP rule for the w_scale argument of binary_jitnmm."""
     return binary_jitnmm_p_call(
         w_loc, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
     )
 
 
 def _jitc_mm_normal_jvp_B(B_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
+    """JVP rule for the B argument of binary_jitnmm."""
     return jitnmm_p_call(
         w_loc, w_scale, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=kwargs['backend'],
     )
 
 
 def _jitc_mm_normal_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, **kwargs):
+    """Transpose (VJP) rule for binary_jitnmm."""
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
 
@@ -1143,6 +1398,7 @@ def _jitc_mm_normal_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape,
 
 
 def _batching_axis1(args, axis=1, **kwargs):
+    """Helper for batching binary_jitnmm along axis 1 (or transposed axis 0)."""
     assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
     m, maybe_batch1, maybe_batch2 = args[3].shape
     B = args[3].reshape(m, maybe_batch1 * maybe_batch2)
@@ -1162,6 +1418,7 @@ def _batching_axis1(args, axis=1, **kwargs):
 
 
 def _jitc_mm_normal_batching(args, axes, **kwargs):
+    """Batching rule for binary_jitnmm."""
     if tuple(axes) == (None, None, None, 0, None):
         assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
         args = list(args)
@@ -1179,6 +1436,7 @@ def _jitc_mm_normal_batching(args, axes, **kwargs):
 
 
 def _binary_jitnmm_benchmark_data(*, platform):
+    """Generate benchmark configurations for binary_jitnmm."""
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for transpose in (False, True):
@@ -1216,6 +1474,51 @@ def binary_jitnmm_p_call(
     corder: bool,
     backend: Optional[str] = None,
 ):
+    """
+    Low-level primitive call for event-driven matrix-matrix multiplication with normal weights.
+
+    This function validates inputs, computes the output shape, and dispatches to
+    the ``binary_jitnmm_p`` XLA custom kernel. It is called by ``binary_jitnmm``
+    after unit handling and seed initialization, and is also used directly by
+    JVP, transpose, and batching rules.
+
+    Parameters
+    ----------
+    w_loc : jax.Array
+        Location (mean) parameter, shape ``(1,)``.
+    w_scale : jax.Array
+        Scale (standard deviation) parameter, shape ``(1,)``.
+    clen : jax.Array
+        Connection length (approximately ``2 / prob``), shape ``(1,)``.
+    B : jax.Array
+        2-D binary event matrix, shape ``(k, n)``.
+    seed : jax.Array
+        Random seed, shape ``(1,)``.
+    shape : MatrixShape
+        Shape of the implicit connectivity matrix ``(m, k)`` (or ``(k, m)`` when
+        ``transpose=True``).
+    transpose : bool
+        If True, compute ``M.T @ B`` instead of ``M @ B``.
+    corder : bool
+        Memory layout order flag for kernel dispatch.
+    backend : str, optional
+        Compute backend override.
+
+    Returns
+    -------
+    tuple
+        A single-element tuple containing the output matrix as a JAX array.
+
+    Raises
+    ------
+    AssertionError
+        If input shapes or dimensions are incompatible.
+
+    See Also
+    --------
+    binary_jitnmm : High-level API with unit handling.
+    binary_jitnmm_p : The underlying XLA custom kernel primitive.
+    """
     w_loc = jnp.atleast_1d(w_loc)
     w_scale = jnp.atleast_1d(w_scale)
     clen = jnp.atleast_1d(clen)

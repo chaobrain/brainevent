@@ -27,19 +27,36 @@ def sddmm_indices(
     B: jax.Array,
     indices: jax.Array,
 ) -> BCOO:
-    """
-    Sampled Dense-Dense Matrix Multiplication using JAX BCOO.
+    """Sampled Dense-Dense Matrix Multiplication using JAX BCOO.
 
-    Computes: S = (A @ B) ⊙ M
-    where M is the sparsity pattern (mask), and the result is sampled
-    only at the non-zero positions of M.
+    Computes ``S = (A @ B) * M`` where ``M`` is the sparsity pattern
+    (mask), and the result is sampled only at the non-zero positions
+    of ``M``.
 
-    Args:
-        A: Dense matrix of shape (M, K)
-        B: Dense matrix of shape (K, N)
+    Parameters
+    ----------
+    A : jax.Array
+        Dense matrix of shape ``(m, k)``.
+    B : jax.Array
+        Dense matrix of shape ``(k, n)``.
+    indices : jax.Array
+        2-D index array of shape ``(nse, 2)`` specifying the
+        ``(row, col)`` positions of non-zero entries in the mask.
 
-    Returns:
-        BCOO sparse matrix with the sampled results at non-zero positions
+    Returns
+    -------
+    BCOO
+        BCOO sparse matrix with the sampled results at non-zero positions.
+
+    Notes
+    -----
+    The SDDMM operation computes the element-wise product of a dense
+    matrix product and a sparse mask:
+
+        ``S[i, j] = (A @ B)[i, j]``  for ``(i, j)`` in the sparsity pattern
+
+    This avoids forming the full ``(m, n)`` product, only computing
+    entries at the ``nse`` positions specified by ``indices``.
     """
     assert A.ndim == 2
     assert B.ndim == 2
@@ -63,21 +80,32 @@ def sddmm_coo_indices(
     pre_idx: jax.Array,
     post_idx: jax.Array,
 ) -> BCOO:
-    """
-    Sampled Dense-Dense Matrix Multiplication using JAX BCOO.
+    """Sampled Dense-Dense Matrix Multiplication with COO-style indices.
 
-    Computes: S = (A @ B) ⊙ M
-    where M is the sparsity pattern (mask), and the result is sampled
-    only at the non-zero positions of M.
+    Computes ``S = (A @ B) * M`` where ``M`` is the sparsity pattern
+    defined by separate row and column index arrays.
 
-    Args:
-        A: Dense matrix of shape (M, K)
-        B: Dense matrix of shape (K, N)
-        sparsity_pattern: BCOO sparse matrix defining where to sample.
-                         Shape should be (M, N)
+    Parameters
+    ----------
+    A : jax.Array
+        Dense matrix of shape ``(m, k)``.
+    B : jax.Array
+        Dense matrix of shape ``(k, n)``.
+    pre_idx : jax.Array
+        1-D array of row indices for the non-zero positions.
+    post_idx : jax.Array
+        1-D array of column indices for the non-zero positions.
+        Must have the same shape as ``pre_idx``.
 
-    Returns:
-        BCOO sparse matrix with the sampled results at non-zero positions
+    Returns
+    -------
+    BCOO
+        BCOO sparse matrix with the sampled results at non-zero positions.
+
+    See Also
+    --------
+    sddmm_indices : Variant accepting a single ``(nse, 2)`` index array.
+    sddmm_bcoo : Variant accepting a BCOO sparsity pattern directly.
     """
     assert pre_idx.ndim == 1
     assert post_idx.ndim == 1
@@ -93,20 +121,29 @@ def sddmm_bcoo(
     B: jax.Array,
     sparsity_pattern: BCOO,
 ) -> BCOO:
-    """
-    Sampled Dense-Dense Matrix Multiplication using JAX BCOO.
+    """Sampled Dense-Dense Matrix Multiplication with a BCOO sparsity pattern.
 
-    Computes: S = (A @ B) ⊙ M
-    where M is the sparsity pattern (mask), and the result is sampled
-    only at the non-zero positions of M.
+    Computes ``S = (A @ B) * M`` where ``M`` is a BCOO sparse matrix
+    defining the sparsity pattern.
 
-    Args:
-        A: Dense matrix of shape (M, K)
-        B: Dense matrix of shape (K, N)
-        sparsity_pattern: BCOO sparse matrix defining where to sample.
-                         Shape should be (M, N)
+    Parameters
+    ----------
+    A : jax.Array
+        Dense matrix of shape ``(m, k)``.
+    B : jax.Array
+        Dense matrix of shape ``(k, n)``.
+    sparsity_pattern : BCOO
+        BCOO sparse matrix of shape ``(m, n)`` defining the positions at
+        which to sample the dense product.
 
-    Returns:
-        BCOO sparse matrix with the sampled results at non-zero positions
+    Returns
+    -------
+    BCOO
+        BCOO sparse matrix with the sampled results at non-zero positions.
+
+    See Also
+    --------
+    sddmm_indices : Variant accepting a raw index array.
+    sddmm_coo_indices : Variant accepting separate row/col arrays.
     """
     return sddmm_indices(A, B, sparsity_pattern.indices)

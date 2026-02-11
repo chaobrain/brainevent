@@ -27,6 +27,38 @@ from brainevent._op.benchmark import BenchmarkConfig
 
 @namescope
 def binary_array_index(spikes, *, backend: Optional[str] = None):
+    """Extract indices and count of non-zero elements from a binary spike array.
+
+    Scans a 1-D or 2-D array and returns the positions of all non-zero
+    entries together with the total count.
+
+    Parameters
+    ----------
+    spikes : jax.Array
+        A 1-D or 2-D boolean or numeric array.  Non-zero entries are
+        treated as active events.
+    backend : str or None, optional
+        Compute backend for the extraction kernel (e.g. ``'numba'``,
+        ``'warp'``, ``'pallas'``).  ``None`` selects the default.
+
+    Returns
+    -------
+    indices : jax.Array
+        Int32 array containing the positions of non-zero elements.
+        Only the first ``count[0]`` entries are valid.
+    count : jax.Array
+        Int32 array of shape ``(1,)`` with the number of non-zero elements.
+
+    Raises
+    ------
+    ValueError
+        If *spikes* has more than 2 dimensions.
+
+    See Also
+    --------
+    binary_1d_array_index_p_call : 1-D extraction kernel.
+    binary_2d_array_index_p_call : 2-D extraction kernel (not yet implemented).
+    """
     if spikes.ndim == 1:
         indices, count = binary_1d_array_index_p_call(spikes, backend=backend)
     elif spikes.ndim == 2:
@@ -239,6 +271,22 @@ def _binary_1d_array_index_benchmark_data(*, platform):
 
 
 def binary_1d_array_index_p_call(spikes, *, backend: Optional[str] = None):
+    """Dispatch the 1-D binary index extraction primitive.
+
+    Parameters
+    ----------
+    spikes : jax.Array
+        A 1-D boolean or numeric array.
+    backend : str or None, optional
+        Compute backend (e.g. ``'numba'``, ``'warp'``, ``'pallas'``).
+
+    Returns
+    -------
+    indices : jax.Array
+        Int32 array of shape ``(n,)`` with non-zero positions.
+    count : jax.Array
+        Int32 array of shape ``(1,)`` with the count of non-zero elements.
+    """
     indices_info = jax.ShapeDtypeStruct([spikes.shape[0]], jnp.int32)
     count_info = jax.ShapeDtypeStruct([1], jnp.int32)
     return binary_1d_array_index_p(
@@ -264,5 +312,19 @@ binary_1d_array_index_p.def_benchmark_data(_binary_1d_array_index_benchmark_data
 
 
 def binary_2d_array_index_p_call(spikes, *, backend: Optional[str] = None):
+    """Dispatch the 2-D binary index extraction primitive.
+
+    Parameters
+    ----------
+    spikes : jax.Array
+        A 2-D boolean or numeric array.
+    backend : str or None, optional
+        Compute backend.
+
+    Raises
+    ------
+    NotImplementedError
+        Always — 2-D extraction is not yet implemented.
+    """
     out = jax.ShapeDtypeStruct([spikes.shape[0]], jnp.int32)
     raise NotImplementedError("2D binary array index extraction is not implemented yet.")

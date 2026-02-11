@@ -35,5 +35,4 @@ __all__ = [
     'update_csr_on_binary_post', 'update_csr_on_binary_post_p',
     'spfloat_csrmv', 'spfloat_csrmv_p',
     'spfloat_csrmm', 'spfloat_csrmm_p',
-    'csr_solve',
 ]

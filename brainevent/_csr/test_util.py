@@ -22,6 +22,28 @@ import numpy as np
 
 
 def get_csr(n_pre, n_post, prob, replace=True):
+    """Generate random CSR index arrays for testing.
+
+    Parameters
+    ----------
+    n_pre : int
+        Number of rows (pre-synaptic neurons).
+    n_post : int
+        Number of columns (post-synaptic neurons).
+    prob : float
+        Connection probability, determining the number of non-zeros
+        per row as ``int(n_post * prob)``.
+    replace : bool, optional
+        Whether to sample column indices with replacement.
+        Default is ``True``.
+
+    Returns
+    -------
+    indptr : numpy.ndarray
+        Row pointer array of shape ``(n_pre + 1,)``.
+    indices : jax.Array
+        Column index array of shape ``(n_pre * n_conn,)``.
+    """
     n_conn = int(n_post * prob)
     indptr = np.arange(n_pre + 1) * n_conn
     if replace:
@@ -43,6 +65,30 @@ def _get_n_conn(indptr):
 
 
 def vector_csr(x, w, indices, indptr, shape, n_conn=None):
+    """Reference implementation of transposed CSR matrix-vector product.
+
+    Computes ``y = A.T @ x`` where ``A`` is a CSR sparse matrix.
+
+    Parameters
+    ----------
+    x : jax.Array
+        Input vector of shape ``(shape[0],)``.
+    w : jax.Array
+        Non-zero values.  Shape ``(nse,)`` or ``(1,)`` for homogeneous.
+    indices : jax.Array
+        Column indices of the non-zero entries.
+    indptr : jax.Array
+        Row pointer array of the CSR format.
+    shape : tuple of int
+        Logical matrix shape ``(m, n)``.
+    n_conn : int or None, optional
+        Number of connections per row.  Inferred from ``indptr`` if ``None``.
+
+    Returns
+    -------
+    jax.Array
+        Result vector of shape ``(shape[1],)``.
+    """
     if n_conn is None:
         n_conn = _get_n_conn(indptr)
     return _vector_csr_impl(x, w, indices, indptr, shape, n_conn)
@@ -68,6 +114,31 @@ def _vector_csr_impl(x, w, indices, indptr, shape, n_conn):
 
 
 def matrix_csr(xs, w, indices, indptr, shape, n_conn=None):
+    """Reference implementation of transposed CSR matrix-matrix product.
+
+    Computes ``Y = A.T @ X`` where ``A`` is a CSR sparse matrix and
+    ``X`` is a dense matrix.
+
+    Parameters
+    ----------
+    xs : jax.Array
+        Input matrix of shape ``(batch, shape[0])``.
+    w : jax.Array
+        Non-zero values.  Shape ``(nse,)`` or ``(1,)`` for homogeneous.
+    indices : jax.Array
+        Column indices of the non-zero entries.
+    indptr : jax.Array
+        Row pointer array of the CSR format.
+    shape : tuple of int
+        Logical matrix shape ``(m, n)``.
+    n_conn : int or None, optional
+        Number of connections per row.  Inferred from ``indptr`` if ``None``.
+
+    Returns
+    -------
+    jax.Array
+        Result matrix of shape ``(batch, shape[1])``.
+    """
     if n_conn is None:
         n_conn = _get_n_conn(indptr)
     return _matrix_csr_impl(xs, w, indices, indptr, shape, n_conn)
@@ -93,6 +164,30 @@ def _matrix_csr_impl(xs, w, indices, indptr, shape, n_conn):
 
 
 def csr_vector(x, w, indices, indptr, shape, n_conn=None):
+    """Reference implementation of CSR matrix-vector product.
+
+    Computes ``y = A @ x`` where ``A`` is a CSR sparse matrix.
+
+    Parameters
+    ----------
+    x : jax.Array
+        Input vector of shape ``(shape[1],)``.
+    w : jax.Array
+        Non-zero values.  Shape ``(nse,)`` or ``(1,)`` for homogeneous.
+    indices : jax.Array
+        Column indices of the non-zero entries.
+    indptr : jax.Array
+        Row pointer array of the CSR format.
+    shape : tuple of int
+        Logical matrix shape ``(m, n)``.
+    n_conn : int or None, optional
+        Number of connections per row.  Inferred from ``indptr`` if ``None``.
+
+    Returns
+    -------
+    jax.Array
+        Result vector of shape ``(shape[0],)``.
+    """
     if n_conn is None:
         n_conn = _get_n_conn(indptr)
     return _csr_vector_impl(x, w, indices, indptr, shape, n_conn)
@@ -113,6 +208,31 @@ def _csr_vector_impl(x, w, indices, indptr, shape, n_conn):
 
 
 def csr_matrix(xs, w, indices, indptr, shape, n_conn=None):
+    """Reference implementation of CSR matrix-matrix product.
+
+    Computes ``Y = A @ X`` where ``A`` is a CSR sparse matrix and
+    ``X`` is a dense matrix.
+
+    Parameters
+    ----------
+    xs : jax.Array
+        Input matrix of shape ``(shape[1], n_cols)``.
+    w : jax.Array
+        Non-zero values.  Shape ``(nse,)`` or ``(1,)`` for homogeneous.
+    indices : jax.Array
+        Column indices of the non-zero entries.
+    indptr : jax.Array
+        Row pointer array of the CSR format.
+    shape : tuple of int
+        Logical matrix shape ``(m, n)``.
+    n_conn : int or None, optional
+        Number of connections per row.  Inferred from ``indptr`` if ``None``.
+
+    Returns
+    -------
+    jax.Array
+        Result matrix of shape ``(shape[0], n_cols)``.
+    """
     if n_conn is None:
         n_conn = _get_n_conn(indptr)
     return _csr_matrix_impl(xs, w, indices, indptr, shape, n_conn)

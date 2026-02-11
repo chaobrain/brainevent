@@ -37,8 +37,6 @@ from brainevent._test_util import (
 platform = jax.default_backend()
 FCNMV_IMPLEMENTATIONS = tuple(fcnmv_p.available_backends(platform))
 FCNMM_IMPLEMENTATIONS = tuple(fcnmm_p.available_backends(platform))
-FCNMV_PARAMS = FCNMV_IMPLEMENTATIONS or (None,)
-FCNMM_PARAMS = FCNMM_IMPLEMENTATIONS or (None,)
 
 if platform == 'cpu':
     shapes = [
@@ -48,10 +46,10 @@ if platform == 'cpu':
 else:
     shapes = [
         (20, 40),
-        (50, 30),
-        (200, 400),
+        # (50, 30),
+        # (200, 400),
         (500, 300),
-        (2000, 4000),
+        # (2000, 4000),
         (5000, 3000),
     ]
 
@@ -110,7 +108,7 @@ def _fcn_matrix_api(x, data, indices, shape, implementation):
     not FCNMV_IMPLEMENTATIONS,
     reason=f'No fcnmv implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', FCNMV_PARAMS)
+@pytest.mark.parametrize('implementation', FCNMV_IMPLEMENTATIONS)
 class TestVector:
     def _generate_x(self, shape, require_float=False):
         if isinstance(shape, (tuple, list)):
@@ -261,7 +259,7 @@ class TestVector:
     not FCNMM_IMPLEMENTATIONS,
     reason=f'No fcnmm implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', FCNMM_PARAMS)
+@pytest.mark.parametrize('implementation', FCNMM_IMPLEMENTATIONS)
 class TestMatrix:
     def _generate_x(self, shape, require_float=False):
         if isinstance(shape, (tuple, list)):

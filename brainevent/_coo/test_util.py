@@ -49,6 +49,29 @@ def _coo_matvec_impl(data, row, col, v, *, spinfo, transpose):
 
 @brainstate.transform.jit(static_argnames=['shape'], static_argnums=4)
 def vector_coo(x, w, row, col, shape):
+    """Reference implementation of transposed COO matrix-vector product.
+
+    Computes ``y = A.T @ x`` where ``A`` is a COO sparse matrix defined
+    by ``(w, row, col)`` and ``x`` is a dense vector.
+
+    Parameters
+    ----------
+    x : jax.Array
+        Input vector of shape ``(shape[0],)``.
+    w : jax.Array
+        Non-zero values.  Shape ``(nse,)`` or ``(1,)`` for homogeneous.
+    row : jax.Array
+        Row indices of the non-zero entries.
+    col : jax.Array
+        Column indices of the non-zero entries.
+    shape : tuple of int
+        Logical matrix shape ``(m, n)``.
+
+    Returns
+    -------
+    jax.Array
+        Result vector of shape ``(shape[1],)``.
+    """
     homo_w = jnp.size(w) == 1
     if homo_w:
         data = jnp.ones(row.shape) * w
@@ -59,6 +82,29 @@ def vector_coo(x, w, row, col, shape):
 
 @brainstate.transform.jit(static_argnames=['shape'], static_argnums=4)
 def coo_vector(x, w, row, col, shape):
+    """Reference implementation of COO matrix-vector product.
+
+    Computes ``y = A @ x`` where ``A`` is a COO sparse matrix defined
+    by ``(w, row, col)`` and ``x`` is a dense vector.
+
+    Parameters
+    ----------
+    x : jax.Array
+        Input vector of shape ``(shape[1],)``.
+    w : jax.Array
+        Non-zero values.  Shape ``(nse,)`` or ``(1,)`` for homogeneous.
+    row : jax.Array
+        Row indices of the non-zero entries.
+    col : jax.Array
+        Column indices of the non-zero entries.
+    shape : tuple of int
+        Logical matrix shape ``(m, n)``.
+
+    Returns
+    -------
+    jax.Array
+        Result vector of shape ``(shape[0],)``.
+    """
     homo_w = jnp.size(w) == 1
     if homo_w:
         data = jnp.ones(row.shape) * w
@@ -69,6 +115,29 @@ def coo_vector(x, w, row, col, shape):
 
 @brainstate.transform.jit(static_argnames=['shape'], static_argnums=4)
 def matrix_coo(xs, w, row, col, shape):
+    """Reference implementation of transposed COO matrix-matrix product.
+
+    Computes ``Y = A.T @ X`` where ``A`` is a COO sparse matrix defined
+    by ``(w, row, col)`` and ``X`` is a dense matrix.
+
+    Parameters
+    ----------
+    xs : jax.Array
+        Input matrix of shape ``(batch, shape[0])``.
+    w : jax.Array
+        Non-zero values.  Shape ``(nse,)`` or ``(1,)`` for homogeneous.
+    row : jax.Array
+        Row indices of the non-zero entries.
+    col : jax.Array
+        Column indices of the non-zero entries.
+    shape : tuple of int
+        Logical matrix shape ``(m, n)``.
+
+    Returns
+    -------
+    jax.Array
+        Result matrix of shape ``(batch, shape[1])``.
+    """
     homo_w = jnp.size(w) == 1
     data = jnp.ones(row.shape) * w if homo_w else w
     row = jnp.asarray(row)
@@ -89,6 +158,29 @@ def matrix_coo(xs, w, row, col, shape):
 
 @brainstate.transform.jit(static_argnames=['shape'], static_argnums=4)
 def coo_matrix(xs, w, row, col, shape):
+    """Reference implementation of COO matrix-matrix product.
+
+    Computes ``Y = A @ X`` where ``A`` is a COO sparse matrix defined
+    by ``(w, row, col)`` and ``X`` is a dense matrix.
+
+    Parameters
+    ----------
+    xs : jax.Array
+        Input matrix of shape ``(shape[1], n_cols)``.
+    w : jax.Array
+        Non-zero values.  Shape ``(nse,)`` or ``(1,)`` for homogeneous.
+    row : jax.Array
+        Row indices of the non-zero entries.
+    col : jax.Array
+        Column indices of the non-zero entries.
+    shape : tuple of int
+        Logical matrix shape ``(m, n)``.
+
+    Returns
+    -------
+    jax.Array
+        Result matrix of shape ``(shape[0], n_cols)``.
+    """
     homo_w = jnp.size(w) == 1
     data = jnp.ones(row.shape) * w if homo_w else w
     row = jnp.asarray(row)

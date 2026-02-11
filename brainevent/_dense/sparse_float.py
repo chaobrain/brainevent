@@ -46,44 +46,68 @@ __all__ = [
 @namescope()
 def dsfmv(weights, spikes, *, backend: Optional[str] = None):
     """
-    Performs event-driven matrix-vector multiplication: `weights @ spikes`.
+    Perform dense matrix times sparse-float vector multiplication.
 
-    This function computes the product of a dense weight matrix and a binary
-    vector, where the binary vector often represents events (e.g., neural spikes).
-    It handles potential units associated with the input arrays using the
-    `brainunit` library. The actual computation is dispatched to specialized
-    CPU/GPU kernels via `dmsfv_p_call`.
+    Computes ``weights @ spikes -> out`` where ``spikes`` is a sparse-float
+    vector (nonzero entries carry their float value, not just a binary
+    indicator).
 
     Parameters
     ----------
     weights : array_like
-        The weight matrix, typically with shape (M, K). Can be a `brainunit`
+        The weight matrix with shape ``(m, k)``. Can be a ``brainunit``
         quantity.
     spikes : array_like
-        The binary vector, typically with shape (K,). Can be boolean or float.
-        If boolean, True indicates an event. If float, non-zero values
-        indicate an event. Can be a `brainunit` quantity.
+        The sparse-float vector with shape ``(k,)``. Nonzero entries
+        contribute ``weights[:, k] * spikes[k]`` to the output. Can be
+        boolean or float. Can be a ``brainunit`` quantity.
+    backend : str, optional
+        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` (auto-select).
 
     Returns
     -------
-    array_like
-        The result of the event-driven matrix-vector multiplication, with shape (M,).
-        If inputs had units, the output will also have appropriate units
-        (product of weights unit and spikes unit).
+    result : array_like
+        The result vector with shape ``(m,)``. If inputs carry units, the
+        result carries the product of the weight and spike units.
+
+    Raises
+    ------
+    AssertionError
+        If ``spikes.shape[0] != weights.shape[1]``.
+
+    See Also
+    --------
+    sfdvm : Sparse-float vector times dense matrix (transpose operation).
+    dsfmm : Dense matrix times sparse-float matrix.
+    dsfmv_p_call : Low-level primitive call without unit handling.
 
     Notes
     -----
-    The core computation performed is equivalent to:
+    The core computation is:
 
-    `output[m] = sum_{k} weights[m, k] * f(spikes[k])`
+    ``out[i] = sum_{j where s[j] != 0} W[i, j] * s[j]``
 
-    where the function `f(s)` is defined as:
-    - If `spikes` is boolean: `f(s) = 1` if `s` is True, `0` otherwise.
-    - If `spikes` is float: `f(s) = 1` if `s != 0`, `0` otherwise.
+    where ``W`` is the weight matrix of shape ``(m, k)`` and ``s`` is the
+    sparse-float spike vector of shape ``(k,)``. Unlike
+    :func:`~brainevent._dense.binary.binary_densemv`, here the nonzero
+    spike values are multiplied into the result (sparse-float semantics)
+    rather than simply selecting weight columns (binary semantics).
 
-    The function ensures inputs are JAX arrays and handles unit consistency
-    using `brainunit`. The computation is delegated to a JAX primitive
-    `dsfmv_p` for potential hardware acceleration.
+    This is mathematically equivalent to the standard matrix-vector
+    product ``W @ s``, but the event-driven implementation skips zero
+    entries for efficiency.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.sparse_float import dsfmv
+        >>> weights = jnp.eye(3, dtype=jnp.float32)
+        >>> spikes = jnp.array([2.0, 0.0, 3.0], dtype=jnp.float32)
+        >>> dsfmv(weights, spikes)
+        Array([2., 0., 3.], dtype=float32)
     """
     with jax.ensure_compile_time_eval():
         weights = u.math.asarray(weights)
@@ -254,6 +278,59 @@ def _dsfmv_benchmark_data(*, platform):
 
 
 def dsfmv_p_call(weights, spikes, *, backend: Optional[str] = None):
+    """
+    Low-level primitive call for dense matrix times sparse-float vector multiplication.
+
+    This function validates input shapes, constructs the output shape
+    descriptor, and invokes the ``dsfmv_p`` JAX primitive. Unlike
+    :func:`dsfmv`, this function operates on raw numerical arrays without
+    ``brainunit`` unit handling.
+
+    Parameters
+    ----------
+    weights : jax.Array
+        The weight matrix with shape ``(m, k)``.
+    spikes : jax.Array
+        The sparse-float vector with shape ``(k,)``.
+    backend : str, optional
+        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` (auto-select).
+
+    Returns
+    -------
+    result : list of jax.Array
+        A single-element list containing the result vector with shape
+        ``(m,)``.
+
+    Raises
+    ------
+    AssertionError
+        If ``spikes.shape[0] != weights.shape[1]``.
+
+    See Also
+    --------
+    dsfmv : High-level function with unit handling.
+
+    Notes
+    -----
+    This is the low-level entry point that bypasses unit handling. The
+    mathematical operation is identical to :func:`dsfmv`:
+
+    ``out[i] = sum_{j where s[j] != 0} weights[i, j] * s[j]``
+
+    The function returns a single-element list to conform to the JAX
+    primitive output convention.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.sparse_float import dsfmv_p_call
+        >>> weights = jnp.eye(3, dtype=jnp.float32)
+        >>> spikes = jnp.array([2.0, 0.0, 3.0], dtype=jnp.float32)
+        >>> dsfmv_p_call(weights, spikes)
+    """
     assert spikes.shape[0] == weights.shape[1], (
         f"spikes shape {spikes.shape} and weights shape {weights.shape} are not compatible"
     )
@@ -281,35 +358,66 @@ dsfmv_p.def_benchmark_data(_dsfmv_benchmark_data)
 
 
 def sfdvm(spikes, weights, *, backend: Optional[str] = None):
-    """Performs event-driven vector-matrix multiplication: `spikes @ weights`.
+    """
+    Perform sparse-float vector times dense matrix multiplication.
 
-    This function computes the vector-matrix product of a spike vector and a
-    weight matrix, where the spike vector typically represents binary events
-    (e.g., neural spikes). It handles units attached to input arrays using the
-    `brainunit` library and dispatches computation to specialized kernels via
-    `sfvdm_p_call`.
+    Computes ``spikes @ weights -> out`` where ``spikes`` is a sparse-float
+    vector (nonzero entries carry their float value).
 
     Parameters
     ----------
     spikes : array_like
-        The spike vector with shape (K,). Can be boolean or float.
-        If boolean, True indicates an event. If float, non-zero values indicate events.
-        Can be a `brainunit` quantity.
+        The sparse-float vector with shape ``(k,)``. Nonzero entries
+        contribute ``spikes[k] * weights[k, :]`` to the output. Can be
+        boolean or float. Can be a ``brainunit`` quantity.
     weights : array_like
-        The weight matrix, typically with shape (K, N). Can be a `brainunit` quantity.
+        The weight matrix with shape ``(k, n)``. Can be a ``brainunit``
+        quantity.
+    backend : str, optional
+        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` (auto-select).
 
     Returns
     -------
-    array_like
-        The result of the event-driven vector-matrix multiplication, with shape (N,).
-        If inputs had units, the output will have appropriate units
-        (product of spikes unit and weights unit).
+    result : array_like
+        The result vector with shape ``(n,)``. If inputs carry units, the
+        result carries the product of the spike and weight units.
+
+    Raises
+    ------
+    AssertionError
+        If ``spikes.shape[0] != weights.shape[0]``.
+
+    See Also
+    --------
+    dsfmv : Dense matrix times sparse-float vector (transpose operation).
+    sfdmm : Sparse-float matrix times dense matrix.
+    sfvdm_p_call : Low-level primitive call without unit handling.
 
     Notes
     -----
-    The computation is optimized for sparse activations in the spike vector.
-    For boolean spikes, only the rows corresponding to True values contribute
-    to the output. For float spikes, only non-zero values contribute.
+    The core computation is:
+
+    ``out[j] = sum_{i where s[i] != 0} s[i] * W[i, j]``
+
+    where ``s`` is the sparse-float spike vector of shape ``(k,)`` and
+    ``W`` is the weight matrix of shape ``(k, n)``. Only the entries with
+    ``spikes[k] != 0`` contribute.
+
+    This is mathematically equivalent to the standard vector-matrix
+    product ``s @ W``, but the event-driven implementation skips zero
+    entries for efficiency.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.sparse_float import sfdvm
+        >>> spikes = jnp.array([2.0, 0.0, 3.0], dtype=jnp.float32)
+        >>> weights = jnp.eye(3, dtype=jnp.float32)
+        >>> sfdvm(spikes, weights)
+        Array([2., 0., 3.], dtype=float32)
     """
     with jax.ensure_compile_time_eval():
         weights = u.math.asarray(weights)
@@ -479,6 +587,59 @@ def _sfdvm_benchmark_data(*, platform):
 
 
 def sfvdm_p_call(spikes, weights, *, backend: Optional[str] = None):
+    """
+    Low-level primitive call for sparse-float vector times dense matrix multiplication.
+
+    This function validates input shapes, constructs the output shape
+    descriptor, and invokes the ``sfdvm_p`` JAX primitive. Unlike
+    :func:`sfdvm`, this function operates on raw numerical arrays without
+    ``brainunit`` unit handling.
+
+    Parameters
+    ----------
+    spikes : jax.Array
+        The sparse-float vector with shape ``(k,)``.
+    weights : jax.Array
+        The weight matrix with shape ``(k, n)``.
+    backend : str, optional
+        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` (auto-select).
+
+    Returns
+    -------
+    result : list of jax.Array
+        A single-element list containing the result vector with shape
+        ``(n,)``.
+
+    Raises
+    ------
+    AssertionError
+        If ``spikes.shape[0] != weights.shape[0]``.
+
+    See Also
+    --------
+    sfdvm : High-level function with unit handling.
+
+    Notes
+    -----
+    This is the low-level entry point that bypasses unit handling. The
+    mathematical operation is identical to :func:`sfdvm`:
+
+    ``out[j] = sum_{i where s[i] != 0} s[i] * weights[i, j]``
+
+    The function returns a single-element list to conform to the JAX
+    primitive output convention.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.sparse_float import sfvdm_p_call
+        >>> spikes = jnp.array([2.0, 0.0, 3.0], dtype=jnp.float32)
+        >>> weights = jnp.eye(3, dtype=jnp.float32)
+        >>> sfvdm_p_call(spikes, weights)
+    """
     assert spikes.shape[0] == weights.shape[0], (
         f"shapes {spikes.shape} and {weights.shape} not aligned: "
         f"{spikes.shape[0]} (dim 0) != {weights.shape[0]} (dim 0)"
@@ -508,44 +669,69 @@ sfdvm_p.def_benchmark_data(_sfdvm_benchmark_data)
 
 def dsfmm(weights, spikes, *, backend: Optional[str] = None):
     """
-    Performs event-driven matrix-matrix multiplication: `weights @ spikes`.
+    Perform dense matrix times sparse-float matrix multiplication.
 
-    This function computes the product of a dense weight matrix and a binary
-    matrix, where the binary matrix typically represents events (e.g., neural spikes).
-    It handles potential units associated with the input arrays using the
-    `brainunit` library. The actual computation is dispatched to specialized
-    CPU/GPU kernels via `dmsfm_p_call`.
+    Computes ``weights @ spikes -> out`` where ``spikes`` is a sparse-float
+    matrix (nonzero entries carry their float value).
 
     Parameters
     ----------
     weights : array_like
-        The weight matrix, typically with shape (M, K). Can be a `brainunit`
+        The weight matrix with shape ``(m, k)``. Can be a ``brainunit``
         quantity.
     spikes : array_like
-        The binary matrix, typically with shape (K, N). Can be boolean or float.
-        If boolean, True indicates an event. If float, non-zero values
-        indicate an event. Can be a `brainunit` quantity.
+        The sparse-float matrix with shape ``(k, n)``. Nonzero entries
+        contribute ``weights[:, k] * spikes[k, n]`` to the output column.
+        Can be boolean or float. Can be a ``brainunit`` quantity.
+    backend : str, optional
+        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` (auto-select).
 
     Returns
     -------
-    array_like
-        The result of the event-driven matrix-matrix multiplication, with shape (M, N).
-        If inputs had units, the output will also have appropriate units
-        (product of weights unit and spikes unit).
+    result : array_like
+        The result matrix with shape ``(m, n)``. If inputs carry units,
+        the result carries the product of the weight and spike units.
+
+    Raises
+    ------
+    AssertionError
+        If ``weights.shape[1] != spikes.shape[0]``.
+
+    See Also
+    --------
+    dsfmv : Dense matrix times sparse-float vector.
+    sfdmm : Sparse-float matrix times dense matrix.
+    dmsfm_p_call : Low-level primitive call without unit handling.
 
     Notes
     -----
-    The core computation performed is equivalent to:
+    The core computation is:
 
-    `output[m, n] = sum_{k} weights[m, k] * f(spikes[k, n])`
+    ``out[i, j] = sum_{k where s[k, j] != 0} W[i, k] * s[k, j]``
 
-    where the function `f(s)` is defined as:
-    - If `spikes` is boolean: `f(s) = 1` if `s` is True, `0` otherwise.
-    - If `spikes` is float: `f(s) = 1` if `s != 0`, `0` otherwise.
+    where ``W`` is the weight matrix of shape ``(m, k)`` and ``s`` is the
+    sparse-float spike matrix of shape ``(k, n)``. The nonzero spike
+    values are multiplied into the result (sparse-float semantics).
 
-    The function ensures inputs are JAX arrays and handles unit consistency
-    using `brainunit`. The computation is delegated to a JAX primitive
-    `dsfmm_p` for potential hardware acceleration.
+    This is mathematically equivalent to the standard matrix-matrix
+    product ``W @ s``, but the event-driven implementation skips zero
+    entries for efficiency.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.sparse_float import dsfmm
+        >>> weights = jnp.eye(3, dtype=jnp.float32)
+        >>> spikes = jnp.array([[2.0, 0.0],
+        ...                     [0.0, 3.0],
+        ...                     [1.0, 0.0]], dtype=jnp.float32)
+        >>> dsfmm(weights, spikes)
+        Array([[2., 0.],
+               [0., 3.],
+               [1., 0.]], dtype=float32)
     """
     with jax.ensure_compile_time_eval():
         weights = u.math.asarray(weights)
@@ -766,6 +952,61 @@ def _dsfmm_benchmark_data(*, platform):
 
 
 def dmsfm_p_call(weights, spikes, *, backend: Optional[str] = None):
+    """
+    Low-level primitive call for dense matrix times sparse-float matrix multiplication.
+
+    This function validates input shapes, constructs the output shape
+    descriptor, and invokes the ``dsfmm_p`` JAX primitive. Unlike
+    :func:`dsfmm`, this function operates on raw numerical arrays without
+    ``brainunit`` unit handling.
+
+    Parameters
+    ----------
+    weights : jax.Array
+        The weight matrix with shape ``(m, k)``.
+    spikes : jax.Array
+        The sparse-float matrix with shape ``(k, n)``.
+    backend : str, optional
+        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` (auto-select).
+
+    Returns
+    -------
+    result : list of jax.Array
+        A single-element list containing the result matrix with shape
+        ``(m, n)``.
+
+    Raises
+    ------
+    AssertionError
+        If ``weights.shape[1] != spikes.shape[0]``.
+
+    See Also
+    --------
+    dsfmm : High-level function with unit handling.
+
+    Notes
+    -----
+    This is the low-level entry point that bypasses unit handling. The
+    mathematical operation is identical to :func:`dsfmm`:
+
+    ``out[i, j] = sum_{k where s[k, j] != 0} weights[i, k] * s[k, j]``
+
+    The function returns a single-element list to conform to the JAX
+    primitive output convention.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.sparse_float import dmsfm_p_call
+        >>> weights = jnp.eye(3, dtype=jnp.float32)
+        >>> spikes = jnp.array([[2.0, 0.0],
+        ...                     [0.0, 3.0],
+        ...                     [1.0, 0.0]], dtype=jnp.float32)
+        >>> dmsfm_p_call(weights, spikes)
+    """
     assert weights.shape[1] == spikes.shape[0], (
         f"weights.shape[1] ({weights.shape[1]}) != spikes.shape[0] ({spikes.shape[0]})"
         f", weights: {weights.shape}, spikes: {spikes.shape} in dmsfm_p_call"
@@ -795,29 +1036,67 @@ dsfmm_p.def_benchmark_data(_dsfmm_benchmark_data)
 
 def sfdmm(spikes, weights, *, backend: Optional[str] = None):
     """
-    Performs event-driven binary matrix - dense matrix multiplication: `spikes @ weights`.
+    Perform sparse-float matrix times dense matrix multiplication.
 
-    This function computes the product of a binary matrix and a dense matrix,
-    where the binary matrix typically represents events (e.g., neural spikes).
-    It handles potential units associated with the input arrays using the
-    `brainunit` library. The actual computation is dispatched to specialized
-    CPU/GPU kernels via `sfm_dm_p_call`.
+    Computes ``spikes @ weights -> out`` where ``spikes`` is a sparse-float
+    matrix (nonzero entries carry their float value).
 
     Parameters
     ----------
     spikes : array_like
-        The binary matrix, typically with shape (M, K). Can be boolean or float.
-        If boolean, True indicates an event. If float, non-zero values
-        indicate an event. Can be a `brainunit` quantity.
+        The sparse-float matrix with shape ``(m, k)``. Nonzero entries
+        contribute ``spikes[m, k] * weights[k, :]`` to the output row.
+        Can be boolean or float. Can be a ``brainunit`` quantity.
     weights : array_like
-        The dense weight matrix, typically with shape (K, N). Can be a `brainunit` quantity.
+        The dense weight matrix with shape ``(k, n)``. Can be a
+        ``brainunit`` quantity.
+    backend : str, optional
+        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` (auto-select).
 
     Returns
     -------
-    array_like
-        The result of the event-driven matrix-matrix multiplication, with shape (M, N).
-        If inputs had units, the output will also have appropriate units
-        (product of spikes unit and weights unit).
+    result : array_like
+        The result matrix with shape ``(m, n)``. If inputs carry units,
+        the result carries the product of the spike and weight units.
+
+    Raises
+    ------
+    AssertionError
+        If ``spikes.shape[1] != weights.shape[0]``.
+
+    See Also
+    --------
+    sfdvm : Sparse-float vector times dense matrix.
+    dsfmm : Dense matrix times sparse-float matrix.
+    sfdmm_p_call : Low-level primitive call without unit handling.
+
+    Notes
+    -----
+    The core computation is:
+
+    ``out[i, j] = sum_{k where s[i, k] != 0} s[i, k] * W[k, j]``
+
+    where ``s`` is the sparse-float spike matrix of shape ``(m, k)`` and
+    ``W`` is the dense weight matrix of shape ``(k, n)``. Only the
+    entries with ``spikes[i, k] != 0`` contribute.
+
+    This is mathematically equivalent to the standard matrix-matrix
+    product ``s @ W``, but the event-driven implementation skips zero
+    entries for efficiency.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.sparse_float import sfdmm
+        >>> spikes = jnp.array([[2.0, 0.0, 1.0],
+        ...                     [0.0, 3.0, 0.0]], dtype=jnp.float32)
+        >>> weights = jnp.eye(3, dtype=jnp.float32)
+        >>> sfdmm(spikes, weights)
+        Array([[2., 0., 1.],
+               [0., 3., 0.]], dtype=float32)
     """
     with jax.ensure_compile_time_eval():
         # Ensure inputs are JAX arrays, potentially handling brainunit quantities
@@ -1044,6 +1323,60 @@ def _sfdmm_benchmark_data(*, platform):
 
 
 def sfdmm_p_call(spikes, weights, *, backend: Optional[str] = None):
+    """
+    Low-level primitive call for sparse-float matrix times dense matrix multiplication.
+
+    This function validates input shapes, constructs the output shape
+    descriptor, and invokes the ``sfdmm_p`` JAX primitive. Unlike
+    :func:`sfdmm`, this function operates on raw numerical arrays without
+    ``brainunit`` unit handling.
+
+    Parameters
+    ----------
+    spikes : jax.Array
+        The sparse-float matrix with shape ``(m, k)``.
+    weights : jax.Array
+        The dense weight matrix with shape ``(k, n)``.
+    backend : str, optional
+        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        ``'pallas'``, or ``None`` (auto-select).
+
+    Returns
+    -------
+    result : list of jax.Array
+        A single-element list containing the result matrix with shape
+        ``(m, n)``.
+
+    Raises
+    ------
+    AssertionError
+        If ``spikes.shape[1] != weights.shape[0]``.
+
+    See Also
+    --------
+    sfdmm : High-level function with unit handling.
+
+    Notes
+    -----
+    This is the low-level entry point that bypasses unit handling. The
+    mathematical operation is identical to :func:`sfdmm`:
+
+    ``out[i, j] = sum_{k where s[i, k] != 0} s[i, k] * weights[k, j]``
+
+    The function returns a single-element list to conform to the JAX
+    primitive output convention.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.sparse_float import sfdmm_p_call
+        >>> spikes = jnp.array([[2.0, 0.0, 1.0],
+        ...                     [0.0, 3.0, 0.0]], dtype=jnp.float32)
+        >>> weights = jnp.eye(3, dtype=jnp.float32)
+        >>> sfdmm_p_call(spikes, weights)
+    """
     assert spikes.shape[1] == weights.shape[0], (
         f"spikes shape {spikes.shape} and weights shape {weights.shape} do not match"
         f"for event matrix multiplication"

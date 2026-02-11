@@ -48,19 +48,81 @@ def coomv(
     transpose: bool = False,
     backend: Optional[str] = None,
 ) -> Data:
-    """
-    Perform COO sparse matrix-vector multiplication.
+    """Perform COO sparse matrix-vector multiplication.
 
-    Args:
-        data: The non-zero values of the sparse matrix.
-        row: The row indices of the non-zero values.
-        col: The column indices of the non-zero values.
-        vector: The dense vector to multiply.
-        shape: The shape of the sparse matrix (rows, cols).
-        transpose: If True, multiply by the transposed matrix.
+    Computes the product of a sparse matrix stored in COO (Coordinate)
+    format and a dense vector.
 
-    Returns:
-        The result of the matrix-vector multiplication.
+    With ``transpose=False`` the operation computes:
+
+        ``y[i] = sum_{k} A[i, k] * v[k]``
+
+    With ``transpose=True``:
+
+        ``y[k] = sum_{i} A[i, k] * v[i]``
+
+    where ``A`` is the sparse matrix defined by (*data*, *row*, *col*).
+
+    Parameters
+    ----------
+    data : jax.Array or Quantity
+        Non-zero values of the sparse matrix.  Either a scalar (shape
+        ``(1,)`` for homogeneous weights) or a 1-D array of length
+        ``nnz`` (heterogeneous weights).
+    row : jax.Array
+        1-D int array of row indices, length ``nnz``.
+    col : jax.Array
+        1-D int array of column indices, length ``nnz``.
+    vector : jax.Array or Quantity
+        Dense input vector.  Shape ``(shape[1],)`` when
+        ``transpose=False``, or ``(shape[0],)`` when ``transpose=True``.
+    shape : tuple of int
+        Logical ``(m, k)`` shape of the sparse matrix.
+    transpose : bool, optional
+        If ``True``, multiply by ``A.T``.  Default is ``False``.
+    backend : str or None, optional
+        Compute backend (e.g. ``'numba'``, ``'warp'``, ``'pallas'``).
+        ``None`` selects the default.
+
+    Returns
+    -------
+    jax.Array or Quantity
+        Result vector.  Shape ``(shape[0],)`` when ``transpose=False``,
+        or ``(shape[1],)`` when ``transpose=True``.  Carries the product
+        of the units of *data* and *vector* if applicable.
+
+    See Also
+    --------
+    coomm : COO sparse matrix-matrix multiplication.
+    binary_coomv : Event-driven (binary) COO matrix-vector multiplication.
+
+    Notes
+    -----
+    The kernel iterates over all ``nnz`` stored elements and, for each
+    triplet ``(data[s], row[s], col[s])``, accumulates
+    ``data[s] * vector[col[s]]`` into ``y[row[s]]`` (forward) or
+    ``data[s] * vector[row[s]]`` into ``y[col[s]]`` (transpose).
+
+    When *data* is a scalar the same weight is used for every non-zero,
+    enabling a more compact kernel.
+
+    Physical units attached via ``brainunit`` are split before the
+    computation and re-applied to the result.
+
+    This function supports automatic differentiation (JVP and transpose
+    rules), ``vmap`` batching, and multiple hardware backends.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent import coomv
+        >>> data = jnp.array([1.0, 2.0, 3.0])
+        >>> row = jnp.array([0, 1, 2])
+        >>> col = jnp.array([1, 0, 2])
+        >>> v = jnp.array([1.0, 2.0, 3.0])
+        >>> coomv(data, row, col, v, shape=(3, 3))
     """
     data, unitd = u.split_mantissa_unit(data)
     vector, unitv = u.split_mantissa_unit(vector)
@@ -87,19 +149,71 @@ def coomm(
     transpose: bool = False,
     backend: Optional[str] = None,
 ):
-    """
-    Perform COO sparse matrix-matrix multiplication.
+    """Perform COO sparse matrix-matrix multiplication.
 
-    Args:
-        data: The non-zero values of the sparse matrix.
-        row: The row indices of the non-zero values.
-        col: The column indices of the non-zero values.
-        B: The dense matrix to multiply.
-        shape: The shape of the sparse matrix (rows, cols).
-        transpose: If True, multiply by the transposed matrix.
+    Computes the product of a sparse matrix stored in COO format and a
+    dense matrix ``B``.
 
-    Returns:
-        The result of the matrix-matrix multiplication.
+    With ``transpose=False``:
+
+        ``Y[i, n] = sum_{k} A[i, k] * B[k, n]``
+
+    With ``transpose=True``:
+
+        ``Y[k, n] = sum_{i} A[i, k] * B[i, n]``
+
+    Parameters
+    ----------
+    data : jax.Array or Quantity
+        Non-zero values of the sparse matrix.  Either a scalar (shape
+        ``(1,)`` for homogeneous weights) or a 1-D array of length
+        ``nnz``.
+    row : jax.Array
+        1-D int array of row indices, length ``nnz``.
+    col : jax.Array
+        1-D int array of column indices, length ``nnz``.
+    B : jax.Array or Quantity
+        Dense right-hand matrix.  Shape ``(shape[1], n)`` when
+        ``transpose=False``, or ``(shape[0], n)`` when
+        ``transpose=True``.
+    shape : tuple of int
+        Logical ``(m, k)`` shape of the sparse matrix.
+    transpose : bool, optional
+        If ``True``, multiply by ``A.T``.  Default is ``False``.
+    backend : str or None, optional
+        Compute backend.  ``None`` selects the default.
+
+    Returns
+    -------
+    jax.Array or Quantity
+        Result matrix.  Shape ``(shape[0], n)`` when ``transpose=False``,
+        or ``(shape[1], n)`` when ``transpose=True``.
+
+    See Also
+    --------
+    coomv : COO sparse matrix-vector multiplication.
+    binary_coomm : Event-driven (binary) COO matrix-matrix multiplication.
+
+    Notes
+    -----
+    The kernel iterates over all ``nnz`` stored elements and, for each
+    triplet ``(data[s], row[s], col[s])``, adds
+    ``data[s] * B[col[s], :]`` into ``Y[row[s], :]`` (forward) or
+    ``data[s] * B[row[s], :]`` into ``Y[col[s], :]`` (transpose).
+
+    Physical units from ``brainunit`` are handled transparently.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent import coomm
+        >>> data = jnp.array([1.0, 2.0])
+        >>> row = jnp.array([0, 1])
+        >>> col = jnp.array([1, 0])
+        >>> B = jnp.ones((2, 3))
+        >>> coomm(data, row, col, B, shape=(2, 2))
     """
     data, unitd = u.split_mantissa_unit(data)
     B, unitb = u.split_mantissa_unit(B)
@@ -671,30 +785,43 @@ def coomv_p_call(
     transpose: bool,
     backend: Optional[str] = None,
 ):
-    """
-    Perform a COO sparse matrix-vector multiplication.
+    """Low-level primitive call for COO sparse matrix-vector multiplication.
+
+    Validates inputs, normalises *weights* to at least 1-D, and dispatches
+    the ``coomv_p`` XLA custom kernel.
 
     Parameters
     ----------
     weights : jax.Array
-        The non-zero values of the sparse matrix.
+        Non-zero values (unitless mantissa).  Scalar or 1-D of length
+        ``nnz``.
     row : jax.Array
-        The row indices of the non-zero values.
+        1-D int array of row indices, length ``nnz``.
     col : jax.Array
-        The column indices of the non-zero values.
+        1-D int array of column indices, length ``nnz``.
     v : jax.Array
-        The dense vector to multiply.
+        Dense input vector.
     shape : Sequence[int]
-        The shape of the sparse matrix.
+        Logical ``(m, k)`` matrix shape.
     transpose : bool
-        Whether to transpose the sparse matrix.
-    backend : str, optional
-        Backend to use for computation.
+        Whether to use the transposed matrix.
+    backend : str or None, optional
+        Compute backend.
 
     Returns
     -------
-    jax.Array
-        The result of the matrix-vector multiplication.
+    tuple of jax.Array
+        Single-element tuple containing the result vector.
+
+    Raises
+    ------
+    ValueError
+        If *row* or *col* are not 1-D, have different lengths, or *v*
+        is not 1-D.
+
+    See Also
+    --------
+    coomv : Public API with unit handling.
     """
     row = jnp.asarray(row)
     col = jnp.asarray(col)
@@ -1277,30 +1404,43 @@ def coomm_p_call(
     transpose: bool,
     backend: Optional[str] = None,
 ):
-    """
-    Perform a COO sparse matrix-matrix multiplication.
+    """Low-level primitive call for COO sparse matrix-matrix multiplication.
+
+    Validates inputs, normalises *weights* to at least 1-D, and dispatches
+    the ``coomm_p`` XLA custom kernel.
 
     Parameters
     ----------
     weights : jax.Array
-        The non-zero values of the sparse matrix.
+        Non-zero values (unitless mantissa).  Scalar or 1-D of length
+        ``nnz``.
     row : jax.Array
-        The row indices of the non-zero values.
+        1-D int array of row indices, length ``nnz``.
     col : jax.Array
-        The column indices of the non-zero values.
+        1-D int array of column indices, length ``nnz``.
     B : jax.Array
-        The dense matrix to multiply.
+        Dense right-hand matrix, shape ``(k, n)``.
     shape : Sequence[int]
-        The shape of the sparse matrix.
+        Logical ``(m, k)`` matrix shape.
     transpose : bool
-        Whether to transpose the sparse matrix.
-    backend : str, optional
-        Backend to use for computation.
+        Whether to use the transposed matrix.
+    backend : str or None, optional
+        Compute backend.
 
     Returns
     -------
-    jax.Array
-        The result of the matrix-matrix multiplication.
+    tuple of jax.Array
+        Single-element tuple containing the result matrix.
+
+    Raises
+    ------
+    ValueError
+        If *row* or *col* are not 1-D, have different lengths, or *B*
+        is not 2-D.
+
+    See Also
+    --------
+    coomm : Public API with unit handling.
     """
     row = jnp.asarray(row)
     col = jnp.asarray(col)

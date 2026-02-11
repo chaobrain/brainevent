@@ -187,17 +187,26 @@ def benchmark_function(
 ) -> Tuple[float, float, float, float, Any]:
     """Benchmark a function and return timing statistics.
 
-    Args:
-        fn: A callable that takes no arguments and returns the result.
-        n_warmup: Number of warmup runs (not timed).
-        n_runs: Number of timed runs.
-        batch_mode: If False (default), block after each function call and time
-            each run individually (measures per-call latency). If True, run all
-            n_runs calls first, then block once at the end and measure total time
-            (measures throughput, useful for async GPU/TPU execution).
+    Parameters
+    ----------
+    fn : callable
+        A callable that takes no arguments and returns the result.
+    n_warmup : int
+        Number of warmup runs (not timed).
+    n_runs : int
+        Number of timed runs.
+    batch_mode : bool, optional
+        If ``False`` (default), block after each function call and time
+        each run individually (measures per-call latency).  If ``True``,
+        run all *n_runs* calls first, then block once at the end and
+        measure total time (measures throughput, useful for async
+        GPU/TPU execution).
 
-    Returns:
-        A tuple of (mean_time, std_time, min_time, max_time, output).
+    Returns
+    -------
+    tuple of (float, float, float, float, Any)
+        ``(mean_time, std_time, min_time, max_time, output)`` where
+        times are in seconds.
     """
     # Warmup runs
     output = None

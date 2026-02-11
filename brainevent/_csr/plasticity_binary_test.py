@@ -23,13 +23,29 @@ import pytest
 import scipy.sparse as sp
 
 import brainevent
-from brainevent._csr.plasticity_binary import update_csr_on_binary_pre, update_csr_on_binary_post
+from brainevent._csr.plasticity_binary import (
+    update_csr_on_binary_pre,
+    update_csr_on_binary_post,
+    update_csr_on_binary_pre_p,
+    update_csr_on_binary_post_p,
+)
+
+PLATFORM = jax.default_backend()
+PRE_BACKENDS = tuple(update_csr_on_binary_pre_p.available_backends(PLATFORM))
+POST_BACKENDS = tuple(update_csr_on_binary_post_p.available_backends(PLATFORM))
+
+shapes = [
+    (20, 100),
+    (100, 100),
+    (100, 50),
+]
 
 
 class Test_csr_on_pre:
-    def test_csr_on_pre_v1(self):
-        n_pre = 20
-        n_post = 100
+    @pytest.mark.parametrize('backend', PRE_BACKENDS)
+    @pytest.mark.parametrize('shape', shapes)
+    def test_csr_on_pre_v1(self, backend, shape):
+        n_pre, n_post = shape
         mat = brainstate.random.random((n_pre, n_post))
         mask = mat < 0.5
         mat = jnp.where(mask, mat, 0.)
@@ -39,19 +55,22 @@ class Test_csr_on_pre:
 
         csr = brainevent.CSR.fromdense(mat)
         csr2 = csr.with_data(
-            update_csr_on_binary_pre(csr.data, csr.indices, csr.indptr, pre_spike, post_trace, shape=csr.shape))
+            update_csr_on_binary_pre(csr.data, csr.indices, csr.indptr, pre_spike, post_trace,
+                                     shape=csr.shape, backend=backend)
+        )
         dense2 = jnp.where(mask, mat + jnp.outer(pre_spike.astype(float), post_trace), 0.)
 
         assert jnp.allclose(csr2.todense(), dense2)
 
         jax.block_until_ready((mat, pre_spike, post_trace))
 
+    @pytest.mark.parametrize('backend', PRE_BACKENDS)
+    @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('mat_unit', [u.mV, u.ms])
     @pytest.mark.parametrize('trace_unit', [u.mV, u.ms])
-    def test_csr_on_pre_with_unit(self, mat_unit, trace_unit):
+    def test_csr_on_pre_with_unit(self, backend, shape, mat_unit, trace_unit):
         def run():
-            n_pre = 100
-            n_post = 100
+            n_pre, n_post = shape
             mat = brainstate.random.random((n_pre, n_post))
             mask = mat < 0.5
             mat = jnp.where(mask, mat, 0.) * mat_unit
@@ -60,7 +79,9 @@ class Test_csr_on_pre:
 
             csr = brainevent.CSR.fromdense(mat)
             csr = csr.with_data(
-                update_csr_on_binary_pre(csr.data, csr.indices, csr.indptr, pre_spike, post_trace, shape=csr.shape))
+                update_csr_on_binary_pre(csr.data, csr.indices, csr.indptr, pre_spike, post_trace,
+                                         shape=csr.shape, backend=backend)
+            )
 
             dense = mat + u.math.outer(pre_spike.astype(float), post_trace)
             dense = u.math.where(mask, dense, 0. * mat_unit)
@@ -75,11 +96,12 @@ class Test_csr_on_pre:
             with pytest.raises(u.UnitMismatchError):
                 run()
 
+    @pytest.mark.parametrize('backend', PRE_BACKENDS)
+    @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('w_in', [None, 0.1])
     @pytest.mark.parametrize('w_max', [None, 0.5])
-    def test_csr_on_pre_v2(self, w_in, w_max):
-        n_pre = 100
-        n_post = 100
+    def test_csr_on_pre_v2(self, backend, shape, w_in, w_max):
+        n_pre, n_post = shape
         mat = brainstate.random.random((n_pre, n_post))
         mask = mat < 0.5
         mat = jnp.where(mask, mat, 0.)
@@ -89,7 +111,7 @@ class Test_csr_on_pre:
         csr = brainevent.CSR.fromdense(mat)
         csr = csr.with_data(
             update_csr_on_binary_pre(csr.data, csr.indices, csr.indptr, pre_spike, post_trace,
-                                     w_min=w_in, w_max=w_max, shape=csr.shape)
+                                     w_min=w_in, w_max=w_max, shape=csr.shape, backend=backend)
         )
 
         mat = mat + jnp.outer(pre_spike.astype(float), post_trace)
@@ -144,9 +166,10 @@ def _csr_to_csc_with_weight_indices(csr_data, csr_indices, csr_indptr, shape):
 
 
 class Test_on_post:
-    def test_csr_on_post_v1(self):
-        n_pre = 20
-        n_post = 100
+    @pytest.mark.parametrize('backend', POST_BACKENDS)
+    @pytest.mark.parametrize('shape', shapes)
+    def test_csr_on_post_v1(self, backend, shape):
+        n_pre, n_post = shape
         mat = brainstate.random.random((n_pre, n_post))
         mask = mat < 0.5
         mat = jnp.where(mask, mat, 0.)
@@ -162,7 +185,7 @@ class Test_on_post:
 
         new_weights = update_csr_on_binary_post(
             csr.data, csc_indices, csc_indptr, weight_indices,
-            pre_trace, post_spike, shape=csr.shape
+            pre_trace, post_spike, shape=csr.shape, backend=backend
         )
         csr2 = csr.with_data(new_weights)
         dense2 = jnp.where(mask, mat + jnp.outer(pre_trace, post_spike.astype(float)), 0.)
@@ -171,12 +194,13 @@ class Test_on_post:
 
         jax.block_until_ready((mat, post_spike, pre_trace))
 
+    @pytest.mark.parametrize('backend', POST_BACKENDS)
+    @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('mat_unit', [u.mV, u.ms])
     @pytest.mark.parametrize('trace_unit', [u.mV, u.ms])
-    def test_csr_on_post_with_unit(self, mat_unit, trace_unit):
+    def test_csr_on_post_with_unit(self, backend, shape, mat_unit, trace_unit):
         def run():
-            n_pre = 100
-            n_post = 100
+            n_pre, n_post = shape
             mat = brainstate.random.random((n_pre, n_post))
             mask = mat < 0.5
             mat = jnp.where(mask, mat, 0.) * mat_unit
@@ -191,7 +215,7 @@ class Test_on_post:
 
             new_weights = update_csr_on_binary_post(
                 csr.data, csc_indices, csc_indptr, weight_indices,
-                pre_trace, post_spike, shape=csr.shape
+                pre_trace, post_spike, shape=csr.shape, backend=backend
             )
             csr = csr.with_data(new_weights)
 
@@ -208,11 +232,12 @@ class Test_on_post:
             with pytest.raises(u.UnitMismatchError):
                 run()
 
+    @pytest.mark.parametrize('backend', POST_BACKENDS)
+    @pytest.mark.parametrize('shape', shapes)
     @pytest.mark.parametrize('w_in', [None, 0.1])
     @pytest.mark.parametrize('w_max', [None, 0.5])
-    def test_csr_on_post_v2(self, w_in, w_max):
-        n_pre = 100
-        n_post = 100
+    def test_csr_on_post_v2(self, backend, shape, w_in, w_max):
+        n_pre, n_post = shape
         mat = brainstate.random.random((n_pre, n_post))
         mask = mat < 0.5
         mat = jnp.where(mask, mat, 0.)
@@ -227,7 +252,7 @@ class Test_on_post:
 
         new_weights = update_csr_on_binary_post(
             csr.data, csc_indices, csc_indptr, weight_indices,
-            pre_trace, post_spike, w_min=w_in, w_max=w_max, shape=csr.shape
+            pre_trace, post_spike, w_min=w_in, w_max=w_max, shape=csr.shape, backend=backend
         )
         csr = csr.with_data(new_weights)
 
