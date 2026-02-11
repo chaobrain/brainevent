@@ -183,9 +183,9 @@ class TestLFSR88RNG:
     def test_initialization_zero_seed(self):
         """Test that zero seed works correctly."""
         rng = PallasLFSR88RNG(seed=0)
-        assert rng.key[0] == 1  # seed + 1
-        assert rng.key[1] == 7  # seed + 7
-        assert rng.key[2] == 15  # seed + 15
+        assert rng.key[0] == 2  # seed + 2
+        assert rng.key[1] == 8  # seed + 8
+        assert rng.key[2] == 16  # seed + 16
         assert rng.key[3] == 0
 
     def test_initialization_negative_seed(self):
@@ -418,7 +418,7 @@ class TestLFSR113RNG:
     def test_initialization_fourth_element(self):
         """Test that LFSR113 uses all 4 elements."""
         rng = PallasLFSR113RNG(seed=42)
-        assert rng.key[3] == 169  # 42 + 127
+        assert rng.key[3] == 170  # 42 + 128
 
     def test_rand_in_range(self):
         """Test that rand() returns values in [0, 1)."""
