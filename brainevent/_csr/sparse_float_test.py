@@ -86,7 +86,7 @@ class TestSparseFloatCSRMV:
         data = _make_data(homo_w, indices.shape)
 
         result = _spfloat_csrmv_api(data, indices, indptr, v, (m, n), transpose, implementation)
-        expected = csrmv(data, indices, indptr, v, shape=(m, n), transpose=transpose)
+        expected = csrmv(data, indices, indptr, v, shape=(m, n), transpose=transpose, backend=implementation)
         assert jnp.allclose(result, expected, rtol=1e-5, atol=1e-5)
 
         jax.block_until_ready((v, indptr, indices, data, result, expected))
@@ -100,7 +100,7 @@ class TestSparseFloatCSRMV:
         data = _make_data(homo_w, indices.shape)
 
         result = _spfloat_csrmv_api(data, indices, indptr, v, (m, n), transpose, implementation)
-        expected = csrmv(data, indices, indptr, v, shape=(m, n), transpose=transpose)
+        expected = csrmv(data, indices, indptr, v, shape=(m, n), transpose=transpose, backend=implementation)
         assert jnp.allclose(result, expected, rtol=1e-5, atol=1e-5)
 
         jax.block_until_ready((v, indptr, indices, data, result, expected))
@@ -112,7 +112,7 @@ class TestSparseFloatCSRMV:
         data = jnp.asarray(2.5, dtype=jnp.float32)
 
         result = _spfloat_csrmv_api(data, indices, indptr, v, (m, n), False, implementation)
-        expected = csrmv(data, indices, indptr, v, shape=(m, n), transpose=False)
+        expected = csrmv(data, indices, indptr, v, shape=(m, n), transpose=False, backend=implementation)
         assert jnp.allclose(result, expected, rtol=1e-5, atol=1e-5)
 
         jax.block_until_ready((v, indptr, indices, data, result, expected))
@@ -129,7 +129,7 @@ class TestSparseFloatCSRMV:
             return _spfloat_csrmv_api(data, indices, indptr, v_arg, (m, n), transpose, implementation).sum()
 
         def f_ref(v_arg):
-            return csrmv(data, indices, indptr, v_arg, shape=(m, n), transpose=transpose).sum()
+            return csrmv(data, indices, indptr, v_arg, shape=(m, n), transpose=transpose, backend=implementation).sum()
 
         grad_test = jax.grad(f_test)(v)
         grad_ref = jax.grad(f_ref)(v)
@@ -149,7 +149,7 @@ class TestSparseFloatCSRMV:
             return _spfloat_csrmv_api(w_arg, indices, indptr, v, (m, n), transpose, implementation).sum()
 
         def f_ref(w_arg):
-            return csrmv(w_arg, indices, indptr, v, shape=(m, n), transpose=transpose).sum()
+            return csrmv(w_arg, indices, indptr, v, shape=(m, n), transpose=transpose, backend=implementation).sum()
 
         grad_test = jax.grad(f_test)(data)
         grad_ref = jax.grad(f_ref)(data)
@@ -170,7 +170,7 @@ class TestSparseFloatCSRMV:
             return _spfloat_csrmv_api(data, indices, indptr, v_arg, (m, n), transpose, implementation)
 
         def f_ref(v_arg):
-            return csrmv(data, indices, indptr, v_arg, shape=(m, n), transpose=transpose)
+            return csrmv(data, indices, indptr, v_arg, shape=(m, n), transpose=transpose, backend=implementation)
 
         primal_test, tangent_test = jax.jvp(f_test, (v,), (v_dot,))
         primal_ref, tangent_ref = jax.jvp(f_ref, (v,), (v_dot,))
@@ -192,7 +192,7 @@ class TestSparseFloatCSRMV:
             return _spfloat_csrmv_api(w_arg, indices, indptr, v, (m, n), transpose, implementation)
 
         def f_ref(w_arg):
-            return csrmv(w_arg, indices, indptr, v, shape=(m, n), transpose=transpose)
+            return csrmv(w_arg, indices, indptr, v, shape=(m, n), transpose=transpose, backend=implementation)
 
         primal_test, tangent_test = jax.jvp(f_test, (data,), (data_dot,))
         primal_ref, tangent_ref = jax.jvp(f_ref, (data,), (data_dot,))
@@ -209,7 +209,7 @@ class TestSparseFloatCSRMV:
         data = _make_data(homo_w, indices.shape)
 
         f_test = lambda v: _spfloat_csrmv_api(data, indices, indptr, v, (m, n), False, implementation)
-        f_ref = lambda v: csrmv(data, indices, indptr, v, shape=(m, n), transpose=False)
+        f_ref = lambda v: csrmv(data, indices, indptr, v, shape=(m, n), transpose=False, backend=implementation)
 
         result = jax.vmap(f_test)(vs)
         expected = jax.vmap(f_ref)(vs)
@@ -225,7 +225,7 @@ class TestSparseFloatCSRMV:
         data = _make_data(homo_w, indices.shape)
 
         f_test = lambda v: _spfloat_csrmv_api(data, indices, indptr, v, (m, n), True, implementation)
-        f_ref = lambda v: csrmv(data, indices, indptr, v, shape=(m, n), transpose=True)
+        f_ref = lambda v: csrmv(data, indices, indptr, v, shape=(m, n), transpose=True, backend=implementation)
 
         result = jax.vmap(f_test)(vs)
         expected = jax.vmap(f_ref)(vs)
@@ -245,7 +245,7 @@ class TestSparseFloatCSRMV:
             data = braintools.init.Normal(0.0, 1.0)((b,) + indices.shape)
 
         f_test = lambda w: _spfloat_csrmv_api(w, indices, indptr, v, (m, n), False, implementation)
-        f_ref = lambda w: csrmv(w, indices, indptr, v, shape=(m, n), transpose=False)
+        f_ref = lambda w: csrmv(w, indices, indptr, v, shape=(m, n), transpose=False, backend=implementation)
 
         result = jax.vmap(f_test)(data)
         expected = jax.vmap(f_ref)(data)
@@ -264,7 +264,7 @@ class TestSparseFloatCSRMV:
             return _spfloat_csrmv_api(w_arg, indices, indptr, v_arg, (m, n), False, implementation).sum()
 
         def f_ref(v_arg, w_arg):
-            return csrmv(w_arg, indices, indptr, v_arg, shape=(m, n), transpose=False).sum()
+            return csrmv(w_arg, indices, indptr, v_arg, shape=(m, n), transpose=False, backend=implementation).sum()
 
         grad_test = jax.vmap(lambda v: jax.grad(f_test, argnums=(0, 1))(v, data))(vs)
         grad_ref = jax.vmap(lambda v: jax.grad(f_ref, argnums=(0, 1))(v, data))(vs)
@@ -282,7 +282,7 @@ class TestSparseFloatCSRMV:
         data = _make_data(homo_w, indices.shape)
 
         f_test = lambda v: _spfloat_csrmv_api(data, indices, indptr, v, (m, n), False, implementation)
-        f_ref = lambda v: csrmv(data, indices, indptr, v, shape=(m, n), transpose=False)
+        f_ref = lambda v: csrmv(data, indices, indptr, v, shape=(m, n), transpose=False, backend=implementation)
 
         primal_test, tangent_test = jax.vmap(lambda v, vd: jax.jvp(f_test, (v,), (vd,)))(vs, v_dots)
         primal_ref, tangent_ref = jax.vmap(lambda v, vd: jax.jvp(f_ref, (v,), (vd,)))(vs, v_dots)
@@ -307,7 +307,7 @@ class TestSparseFloatCSRMM:
         data = _make_data(homo_w, indices.shape)
 
         result = _spfloat_csrmm_api(data, indices, indptr, B, (m, n), transpose, implementation)
-        expected = csrmm(data, indices, indptr, B, shape=(m, n), transpose=transpose)
+        expected = csrmm(data, indices, indptr, B, shape=(m, n), transpose=transpose, backend=implementation)
         assert jnp.allclose(result, expected, rtol=1e-5, atol=1e-5)
 
         jax.block_until_ready((B, indptr, indices, data, result, expected))
@@ -321,7 +321,7 @@ class TestSparseFloatCSRMM:
         data = _make_data(homo_w, indices.shape)
 
         result = _spfloat_csrmm_api(data, indices, indptr, B, (m, n), transpose, implementation)
-        expected = csrmm(data, indices, indptr, B, shape=(m, n), transpose=transpose)
+        expected = csrmm(data, indices, indptr, B, shape=(m, n), transpose=transpose, backend=implementation)
         assert jnp.allclose(result, expected, rtol=1e-5, atol=1e-5)
 
         jax.block_until_ready((B, indptr, indices, data, result, expected))
@@ -333,7 +333,7 @@ class TestSparseFloatCSRMM:
         data = jnp.asarray(2.5, dtype=jnp.float32)
 
         result = _spfloat_csrmm_api(data, indices, indptr, B, (m, n), False, implementation)
-        expected = csrmm(data, indices, indptr, B, shape=(m, n), transpose=False)
+        expected = csrmm(data, indices, indptr, B, shape=(m, n), transpose=False, backend=implementation)
         assert jnp.allclose(result, expected, rtol=1e-5, atol=1e-5)
 
         jax.block_until_ready((B, indptr, indices, data, result, expected))
@@ -350,7 +350,7 @@ class TestSparseFloatCSRMM:
             return _spfloat_csrmm_api(data, indices, indptr, B_arg, (m, n), transpose, implementation).sum()
 
         def f_ref(B_arg):
-            return csrmm(data, indices, indptr, B_arg, shape=(m, n), transpose=transpose).sum()
+            return csrmm(data, indices, indptr, B_arg, shape=(m, n), transpose=transpose, backend=implementation).sum()
 
         grad_test = jax.grad(f_test)(B)
         grad_ref = jax.grad(f_ref)(B)
@@ -370,7 +370,7 @@ class TestSparseFloatCSRMM:
             return _spfloat_csrmm_api(w_arg, indices, indptr, B, (m, n), transpose, implementation).sum()
 
         def f_ref(w_arg):
-            return csrmm(w_arg, indices, indptr, B, shape=(m, n), transpose=transpose).sum()
+            return csrmm(w_arg, indices, indptr, B, shape=(m, n), transpose=transpose, backend=implementation).sum()
 
         grad_test = jax.grad(f_test)(data)
         grad_ref = jax.grad(f_ref)(data)
@@ -391,7 +391,7 @@ class TestSparseFloatCSRMM:
             return _spfloat_csrmm_api(data, indices, indptr, B_arg, (m, n), transpose, implementation)
 
         def f_ref(B_arg):
-            return csrmm(data, indices, indptr, B_arg, shape=(m, n), transpose=transpose)
+            return csrmm(data, indices, indptr, B_arg, shape=(m, n), transpose=transpose, backend=implementation)
 
         primal_test, tangent_test = jax.jvp(f_test, (B,), (B_dot,))
         primal_ref, tangent_ref = jax.jvp(f_ref, (B,), (B_dot,))
@@ -413,7 +413,7 @@ class TestSparseFloatCSRMM:
             return _spfloat_csrmm_api(w_arg, indices, indptr, B, (m, n), transpose, implementation)
 
         def f_ref(w_arg):
-            return csrmm(w_arg, indices, indptr, B, shape=(m, n), transpose=transpose)
+            return csrmm(w_arg, indices, indptr, B, shape=(m, n), transpose=transpose, backend=implementation)
 
         primal_test, tangent_test = jax.jvp(f_test, (data,), (data_dot,))
         primal_ref, tangent_ref = jax.jvp(f_ref, (data,), (data_dot,))
@@ -430,7 +430,7 @@ class TestSparseFloatCSRMM:
         data = _make_data(homo_w, indices.shape)
 
         f_test = lambda B: _spfloat_csrmm_api(data, indices, indptr, B, (m, n), False, implementation)
-        f_ref = lambda B: csrmm(data, indices, indptr, B, shape=(m, n), transpose=False)
+        f_ref = lambda B: csrmm(data, indices, indptr, B, shape=(m, n), transpose=False, backend=implementation)
 
         result = jax.vmap(f_test)(Bs)
         expected = jax.vmap(f_ref)(Bs)
@@ -446,7 +446,7 @@ class TestSparseFloatCSRMM:
         data = _make_data(homo_w, indices.shape)
 
         f_test = lambda B: _spfloat_csrmm_api(data, indices, indptr, B, (m, n), True, implementation)
-        f_ref = lambda B: csrmm(data, indices, indptr, B, shape=(m, n), transpose=True)
+        f_ref = lambda B: csrmm(data, indices, indptr, B, shape=(m, n), transpose=True, backend=implementation)
 
         result = jax.vmap(f_test)(Bs)
         expected = jax.vmap(f_ref)(Bs)

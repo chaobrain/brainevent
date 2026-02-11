@@ -594,7 +594,7 @@ def csrmm(
         B,
         shape=shape,
         transpose=transpose,
-        backend=kwargs['backend'],
+        backend=backend,
     )[0]
     return u.maybe_decimal(res * (unitd * unitb))
 
@@ -1147,7 +1147,7 @@ def csrmv_yw2y(
 ) -> Data:
     w, w_unit = u.split_mantissa_unit(w)
     y, _ = u.split_mantissa_unit(y)
-    res = csrmv_yw2y_p_call(y, w, indices, indptr, shape=shape, transpose=transpose, backend=kwargs['backend'])[0]
+    res = csrmv_yw2y_p_call(y, w, indices, indptr, shape=shape, transpose=transpose, backend=backend)[0]
     return u.maybe_decimal(res * w_unit)
 
 
