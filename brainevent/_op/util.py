@@ -53,6 +53,7 @@ __all__ = [
     'jaxtype_to_warptype',
     'jaxinfo_to_warpinfo',
     'check_pallas_jax_version',
+    'check_warp_installed',
 ]
 
 _MIN_JAX_VERSION_FOR_PALLAS = (0, 7, 1)
@@ -70,6 +71,21 @@ def check_pallas_jax_version():
             f"Pallas kernels require JAX >= {min_ver}, "
             f"but found JAX {jax.__version__}. "
             f"Please upgrade JAX: pip install --upgrade jax"
+        )
+
+
+def check_warp_installed():
+    """Check that Warp is installed for Warp kernel support.
+
+    Raises:
+        RuntimeError: If Warp is not installed.
+    """
+    if not warp_installed:
+        raise RuntimeError(
+            "Warp kernels require the 'warp' package, but it is not installed.\n"
+            "Please install Warp using one of the following methods:\n"
+            "  pip install warp-lang\n"
+            "For more information, visit: https://nvidia.github.io/warp/user_guide/installation.html"
         )
 
 

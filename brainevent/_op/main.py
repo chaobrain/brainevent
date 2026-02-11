@@ -25,7 +25,7 @@ from brainevent._compatible_import import Primitive
 from brainevent._error import KernelFallbackExhaustedError
 from brainevent._typing import KernelGenerator
 from .benchmark import BenchmarkResult, BenchmarkReport, benchmark_function
-from .util import general_batching_rule, defjvp, OutType, abstract_arguments, check_pallas_jax_version
+from .util import general_batching_rule, defjvp, OutType, abstract_arguments, check_pallas_jax_version, check_warp_installed
 
 __all__ = [
     'XLACustomKernel',
@@ -268,6 +268,8 @@ class XLACustomKernel:
 
             if backend_to_use == 'pallas':
                 check_pallas_jax_version()
+            elif backend_to_use == 'warp':
+                check_warp_installed()
 
             entry = kernels[backend_to_use]
             kernel = entry.kernel_generator(**kwargs)
