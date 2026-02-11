@@ -377,7 +377,7 @@ def _sparse_float_csrmv_pallas_kernel(
                             offset = col_start + index * block_dim
                             mask = offset + jnp.arange(block_dim) < col_end
 
-                            rows = load(indices_ref.at[pl.dslice(offset, block_dim)], mask=mask, other=0)
+                            rows = load(indices_ref.at[pl.ds(offset, block_dim)], mask=mask, other=0)
 
                             # GUARD 2: Indirect Access Boundary Check (Scatter)
                             valid_idx_mask = rows < out_dim
@@ -412,7 +412,7 @@ def _sparse_float_csrmv_pallas_kernel(
                     def loop_fn(index, _):
                         offset = col_start + index * block_dim
                         mask = offset + jnp.arange(block_dim) < col_end
-                        rows = load(indices_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0)
+                        rows = load(indices_ref.at[pl.ds(offset, block_dim)], mask=mask, other=0)
 
                         # GUARD 2: Indirect Access Boundary Check
                         valid_idx_mask = rows < out_dim
@@ -457,8 +457,8 @@ def _sparse_float_csrmv_pallas_kernel(
                         def loop_fn(index, _):
                             offset = col_start + index * block_dim
                             mask = offset + jnp.arange(block_dim) < col_end
-                            rows = load(indices_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0)
-                            val_A = load(data_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0.0)
+                            rows = load(indices_ref.at[pl.ds(offset, block_dim)], mask=mask, other=0)
+                            val_A = load(data_ref.at[pl.ds(offset, block_dim)], mask=mask, other=0.0)
 
                             # GUARD 2: Indirect Access Boundary Check
                             valid_idx_mask = rows < out_dim
@@ -492,8 +492,8 @@ def _sparse_float_csrmv_pallas_kernel(
                     def loop_fn(index, _):
                         offset = col_start + index * block_dim
                         mask = offset + jnp.arange(block_dim) < col_end
-                        rows = load(indices_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0)
-                        val_A = load(data_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0.0)
+                        rows = load(indices_ref, (pl.ds(offset, block_dim),), mask=mask, other=0)
+                        val_A = load(data_ref, (pl.ds(offset, block_dim),), mask=mask, other=0.0)
 
                         # GUARD 2: Indirect Access Boundary Check
                         valid_idx_mask = rows < out_dim
@@ -567,13 +567,13 @@ def _sparse_float_csrmv_pallas_kernel(
                         offset = row_start + index * block_dim
                         mask = offset + jnp.arange(block_dim) < row_end
 
-                        cols = load(indices_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0)
+                        cols = load(indices_ref.at[pl.ds(offset, block_dim)], mask=mask, other=0)
 
                         # GUARD 2: Indirect Access Boundary Check (Gather)
                         safe_cols = jnp.minimum(cols, vec_len - 1)
                         valid_col_mask = cols < vec_len
 
-                        val_B = load(vector_ref, safe_cols)
+                        val_B = load(vector_ref.at[safe_cols])
                         calc_mask = mask & valid_col_mask
 
                         sum_ += val_A * jnp.sum(jnp.where(calc_mask, val_B, 0.0))
@@ -613,13 +613,13 @@ def _sparse_float_csrmv_pallas_kernel(
                         offset = row_start + index * block_dim
                         mask = offset + jnp.arange(block_dim) < row_end
 
-                        cols = load(indices_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0)
-                        val_A = load(data_ref, (pl.dslice(offset, block_dim),), mask=mask, other=0.0)
+                        cols = load(indices_ref.at[pl.ds(offset, block_dim)], mask=mask, other=0)
+                        val_A = load(data_ref.at[pl.ds(offset, block_dim)], mask=mask, other=0.0)
 
                         # GUARD 2: Indirect Access Boundary Check (Gather)
                         safe_cols = jnp.minimum(cols, vec_len - 1)
                         valid_col_mask = cols < vec_len
-                        val_B = load(vector_ref, safe_cols)
+                        val_B = load(vector_ref.at[safe_cols])
 
                         calc_mask = mask & valid_col_mask
                         sum_ += jnp.sum(jnp.where(calc_mask, val_A * val_B, 0.0))
@@ -966,6 +966,7 @@ def _sparse_float_csrmm_pallas_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
+    from jax.experimental.pallas.triton import store, atomic_add
 
     m, k = shape
     n = vector_info.shape[1]
@@ -999,8 +1000,8 @@ def _sparse_float_csrmm_pallas_kernel(
 
                     mask = (i_n_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
 
-                    B_row = B_ref[i_k, pl.dslice(i_n_start, block_dim_n)]
-                    # B_row = pl.load(B_ref, (pl.dslice(i_n_start, block_dim_n),), mask=mask, other=0.0)
+                    B_row = B_ref[i_k, pl.ds(i_n_start, block_dim_n)]
+                    # B_row = pl.load(B_ref, (pl.ds(i_n_start, block_dim_n),), mask=mask, other=0.0)
 
                     val = B_row * data_ref[0]
 
@@ -1015,7 +1016,7 @@ def _sparse_float_csrmm_pallas_kernel(
                         row_valid = i_row < out_rows
                         final_mask = mask & row_valid
 
-                        pl.atomic_add(posts_ref, (i_row, pl.dslice(i_n_start, block_dim_n)), val, mask=final_mask)
+                        atomic_add(posts_ref, (i_row, pl.ds(i_n_start, block_dim_n)), val, mask=final_mask)
 
                     jax.lax.fori_loop(indptr_start, indptr_end, loop_fn, None)
 
@@ -1044,8 +1045,8 @@ def _sparse_float_csrmm_pallas_kernel(
                     i_n_start = i_n_block * block_dim_n
 
                     mask = (i_n_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
-                    B_row = B_ref[i_k, pl.dslice(i_n_start, block_dim_n)]
-                    # B_row = pl.load(B_ref, (pl.dslice(i_n_start, block_dim_n),), mask=mask, other=0.0)
+                    B_row = B_ref[i_k, pl.ds(i_n_start, block_dim_n)]
+                    # B_row = pl.load(B_ref, (pl.ds(i_n_start, block_dim_n),), mask=mask, other=0.0)
 
                     out_rows = posts_ref.shape[0]
 
@@ -1060,7 +1061,7 @@ def _sparse_float_csrmm_pallas_kernel(
                         row_valid = i_row < out_rows
                         final_mask = mask & row_valid
 
-                        pl.atomic_add(posts_ref, (i_row, pl.dslice(i_n_start, block_dim_n)), val, mask=final_mask)
+                        atomic_add(posts_ref, (i_row, pl.ds(i_n_start, block_dim_n)), val, mask=final_mask)
 
                     jax.lax.fori_loop(indptr_ref[i_k], indptr_ref[i_k + 1], loop_fn, None)
 
@@ -1125,8 +1126,8 @@ def _sparse_float_csrmm_pallas_kernel(
                         k_valid = i_k < b_rows
                         final_mask = mask & k_valid
 
-                        # B_row = pl.load(B_ref, (safe_k, pl.dslice(i_n_start, block_dim_n),), mask=final_mask, other=0.0)
-                        B_row = B_ref[safe_k, pl.dslice(i_n_start, block_dim_n)]
+                        # B_row = pl.load(B_ref, (safe_k, pl.ds(i_n_start, block_dim_n),), mask=final_mask, other=0.0)
+                        B_row = B_ref[safe_k, pl.ds(i_n_start, block_dim_n)]
                         B_row = jnp.where(final_mask, B_row, 0.0)
                         out += weight * B_row
                         return out
@@ -1137,9 +1138,8 @@ def _sparse_float_csrmm_pallas_kernel(
                         loop_fn,
                         jnp.zeros([block_dim_n], dtype=posts_ref.dtype)
                     )
-                    pl.store(
-                        posts_ref,
-                        (i_m, pl.dslice(i_n_start, block_dim_n)),
+                    store(
+                        posts_ref.at[i_m, pl.ds(i_n_start, block_dim_n)],
                         i_row_out,
                         mask=mask
                     )
@@ -1181,9 +1181,9 @@ def _sparse_float_csrmm_pallas_kernel(
                         col_valid = i_col < b_rows
                         final_mask = mask & col_valid
 
-                        # val_B = pl.load(B_ref, (safe_col, pl.dslice(i_n_start, block_dim_n),), mask=final_mask, other=0.0)
+                        # val_B = pl.load(B_ref, (safe_col, pl.ds(i_n_start, block_dim_n),), mask=final_mask, other=0.0)
 
-                        val_B = B_ref[safe_col, pl.dslice(i_n_start, block_dim_n)]
+                        val_B = B_ref[safe_col, pl.ds(i_n_start, block_dim_n)]
                         val_B = jnp.where(final_mask, val_B, 0.0)
                         out += val_A * val_B
                         return out
@@ -1194,9 +1194,8 @@ def _sparse_float_csrmm_pallas_kernel(
                         loop_fn,
                         jnp.zeros([block_dim_n], dtype=posts_ref.dtype)
                     )
-                    pl.store(
-                        posts_ref,
-                        (i_m, pl.dslice(i_n_start, block_dim_n)),
+                    store(
+                        posts_ref.at[i_m, pl.ds(i_n_start, block_dim_n)],
                         i_row_out,
                         mask=mask
                     )
