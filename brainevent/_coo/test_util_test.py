@@ -65,6 +65,7 @@ def test_vector_coo_matches_dense(homo_w, allow_duplicates):
     y_ref = x @ dense
     y = vector_coo(jnp.asarray(x), w, row, col, shape)
     assert jnp.allclose(y, y_ref, rtol=1e-5, atol=1e-5)
+    jax.block_until_ready((y,))
 
 
 @pytest.mark.parametrize("homo_w", [True, False])
@@ -86,6 +87,7 @@ def test_coo_vector_matches_dense(homo_w, allow_duplicates):
     y_ref = dense @ v
     y = coo_vector(jnp.asarray(v), w, row, col, shape)
     assert jnp.allclose(y, y_ref, rtol=1e-5, atol=1e-5)
+    jax.block_until_ready((y,))
 
 
 @pytest.mark.parametrize("homo_w", [True, False])
@@ -107,6 +109,7 @@ def test_matrix_coo_matches_dense(homo_w, allow_duplicates):
     y_ref = xs @ dense
     y = matrix_coo(jnp.asarray(xs), w, row, col, shape)
     assert jnp.allclose(y, y_ref, rtol=1e-5, atol=1e-5)
+    jax.block_until_ready((y,))
 
 
 @pytest.mark.parametrize("homo_w", [True, False])
@@ -128,6 +131,7 @@ def test_coo_matrix_matches_dense(homo_w, allow_duplicates):
     y_ref = dense @ xs
     y = coo_matrix(jnp.asarray(xs), w, row, col, shape)
     assert jnp.allclose(y, y_ref, rtol=1e-5, atol=1e-5)
+    jax.block_until_ready((y,))
 
 
 def test_empty_coo_outputs_zeros():
@@ -155,6 +159,7 @@ def test_empty_coo_outputs_zeros():
     out_coo_matrix = coo_matrix(xs_right, jnp.array([], dtype=jnp.float32), row, col, shape)
     assert out_coo_matrix.shape == (shape[0], xs_right.shape[1])
     assert jnp.all(out_coo_matrix == 0)
+    jax.block_until_ready((x, v, xs_left, xs_right, out_vector, out_coo_vector, out_matrix, out_coo_matrix))
 
 
 def test_matrix_coo_jit_matches_dense():
@@ -169,6 +174,7 @@ def test_matrix_coo_jit_matches_dense():
     f = jax.jit(lambda x: matrix_coo(x, w, row, col, shape))
     y = f(xs)
     assert jnp.allclose(y, y_ref, rtol=1e-5, atol=1e-5)
+    jax.block_until_ready((xs, w, dense, y_ref, y))
 
 
 def test_coo_matrix_jit_matches_dense():
@@ -183,6 +189,7 @@ def test_coo_matrix_jit_matches_dense():
     f = jax.jit(lambda x: coo_matrix(x, w, row, col, shape))
     y = f(xs)
     assert jnp.allclose(y, y_ref, rtol=1e-5, atol=1e-5)
+    jax.block_until_ready((xs, w, dense, y_ref, y))
 
 
 def test_matrix_coo_grad_matches_dense():
@@ -203,6 +210,7 @@ def test_matrix_coo_grad_matches_dense():
 
     assert jnp.allclose(g[0], g_ref[0], rtol=1e-5, atol=1e-5)
     assert jnp.allclose(g[1], g_ref[1], rtol=1e-5, atol=1e-5)
+    jax.block_until_ready((xs, w, g, g_ref))
 
 
 def test_coo_matrix_grad_matches_dense():
@@ -223,3 +231,4 @@ def test_coo_matrix_grad_matches_dense():
 
     assert jnp.allclose(g[0], g_ref[0], rtol=1e-5, atol=1e-5)
     assert jnp.allclose(g[1], g_ref[1], rtol=1e-5, atol=1e-5)
+    jax.block_until_ready((xs, w, g, g_ref))

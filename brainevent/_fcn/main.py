@@ -31,6 +31,11 @@ from .binary import binary_fcnmv, binary_fcnmm
 from .float import fcnmv, fcnmm
 from .sparse_float import spfloat_fcnmv, spfloat_fcnmm
 
+# Use full-precision GEMM on GPU to keep dense-reference paths numerically
+# consistent with sparse kernels (avoid TF32 drift on large reductions).
+if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is None:
+    jax.config.update('jax_default_matmul_precision', 'highest')
+
 __all__ = [
     'FixedPostNumConn',
     'FixedPreNumConn',
@@ -988,7 +993,9 @@ def fixed_post_num_to_coo(self: FixedPostNumConn):
     """
     pre_ids = jnp.repeat(jnp.arange(self.indices.shape[0]), self.indices.shape[1])
     post_ids = self.indices.flatten()
-    spinfo = COOInfo(self.shape, rows_sorted=True, cols_sorted=False)
+    # Keep COO metadata unsorted to preserve duplicate accumulation semantics
+    # in coo_todense on GPU (sorted paths may overwrite duplicates).
+    spinfo = COOInfo(self.shape, rows_sorted=False, cols_sorted=False)
     return pre_ids, post_ids, spinfo
 
 
@@ -1012,5 +1019,7 @@ def fixed_pre_num_to_coo(self: FixedPreNumConn):
     """
     pre_ids = self.indices.flatten()
     post_ids = jnp.repeat(jnp.arange(self.indices.shape[0]), self.indices.shape[1])
-    spinfo = COOInfo(self.shape, rows_sorted=False, cols_sorted=True)
+    # Keep COO metadata unsorted to preserve duplicate accumulation semantics
+    # in coo_todense on GPU (sorted paths may overwrite duplicates).
+    spinfo = COOInfo(self.shape, rows_sorted=False, cols_sorted=False)
     return pre_ids, post_ids, spinfo

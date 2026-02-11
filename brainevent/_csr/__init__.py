@@ -26,10 +26,14 @@ from .spsolve import csr_solve
 
 __all__ = [
     'CSR', 'CSC',
-    'binary_csrmv', 'binary_csrmv_p', 'binary_csrmm', 'binary_csrmm_p',
-    'csrmv', 'csrmv_p', 'csrmm', 'csrmm_p', 'csrmv_yw2y', 'csrmv_yw2y_p',
+    'binary_csrmv', 'binary_csrmv_p',
+    'binary_csrmm', 'binary_csrmm_p',
+    'csrmv', 'csrmv_p',
+    'csrmm', 'csrmm_p',
+    'csrmv_yw2y', 'csrmv_yw2y_p',
     'update_csr_on_binary_pre', 'update_csr_on_binary_pre_p',
     'update_csr_on_binary_post', 'update_csr_on_binary_post_p',
-    'spfloat_csrmv', 'spfloat_csrmv_p', 'spfloat_csrmm', 'spfloat_csrmm_p',
+    'spfloat_csrmv', 'spfloat_csrmv_p',
+    'spfloat_csrmm', 'spfloat_csrmm_p',
     'csr_solve',
 ]

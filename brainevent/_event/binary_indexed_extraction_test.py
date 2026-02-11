@@ -17,7 +17,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from brainevent._event.indexed_binary_extraction import (
+from brainevent._event.binary_indexed_extraction import (
     binary_array_index,
     binary_1d_array_index_p,
     _binary_1d_array_index_numba_kernel,

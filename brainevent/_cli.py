@@ -147,10 +147,13 @@ def _run_benchmark(args) -> int:
                     print(f"  {display_name:<35} {result.backend:<15} {result.mean_time * 1000:>12.3f} "
                           f"{result.std_time * 1000:>12.3f} {result.min_time * 1000:>12.3f} {winner:>8}")
                 else:
-                    error_short = result.error[:30] + '...' if result.error and len(result.error) > 30 else (
-                            result.error or '')
+                    error_short = (
+                        result.error[:30] +
+                        '...' if result.error and len(result.error) > 30 else (result.error or '')
+                    )
                     print(
-                        f"  {display_name:<35} {result.backend:<15} {'FAILED':>12} {'':>12} {'':>12} {error_short:>8}")
+                        f"  {display_name:<35} {result.backend:<15} {'FAILED':>12} {'':>12} {'':>12} {error_short:>8}"
+                    )
 
             # Track wins for voting
             if fastest:

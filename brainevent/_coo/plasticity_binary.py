@@ -22,7 +22,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent._misc import generate_block_dim
+from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 
@@ -34,6 +34,7 @@ __all__ = [
 ]
 
 
+@namescope
 def update_coo_on_binary_pre(
     weight: Union[u.Quantity, jax.Array],
     pre_ids: jax.Array,
@@ -42,6 +43,8 @@ def update_coo_on_binary_pre(
     post_trace: Union[u.Quantity, jax.Array],
     w_min: Optional[Union[u.Quantity, jax.Array]] = None,
     w_max: Optional[Union[u.Quantity, jax.Array]] = None,
+    *,
+    backend: Optional[str] = None,
 ):
     """Updates synaptic weights in COO format based on presynaptic spike events and postsynaptic traces.
 
@@ -70,15 +73,17 @@ def update_coo_on_binary_pre(
     """
     weight, wunit = u.split_mantissa_unit(weight)
     post_trace = u.Quantity(post_trace).to(wunit).mantissa
-    weight = u.maybe_decimal(_coo_on_pre_prim_call(weight, pre_ids, post_ids, pre_spike, post_trace)[0] * wunit)
+    weight = u.maybe_decimal(
+        _coo_on_pre_prim_call(
+            weight, pre_ids, post_ids, pre_spike, post_trace,
+            backend=backend
+        )[0] * wunit
+    )
     weight = u.math.clip(weight, w_min, w_max)
     return weight
 
 
-def _coo_on_pre_numba_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
+def _coo_on_pre_numba_kernel(**kwargs):
     import numba
 
     @numba.njit(fastmath=True)
@@ -105,7 +110,6 @@ def _coo_on_pre_warp_kernel(
     import warp
     from warp.jax_experimental import jax_kernel
 
-    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
     pre_ids_warp_info = jaxinfo_to_warpinfo(pre_ids_info)
     post_ids_warp_info = jaxinfo_to_warpinfo(post_ids_info)
     spike_warp_info = jaxinfo_to_warpinfo(spike_info)
@@ -115,7 +119,6 @@ def _coo_on_pre_warp_kernel(
     if spike_info.dtype == jnp.bool_:
         @warp.kernel
         def update_kernel(
-            weight: weight_warp_info,
             pre_ids: pre_ids_warp_info,
             post_ids: post_ids_warp_info,
             pre_spike: spike_warp_info,
@@ -123,35 +126,46 @@ def _coo_on_pre_warp_kernel(
             out_w: out_warp_info,
         ):
             i = warp.tid()
-            out_w[i] = weight[i]
             if pre_spike[pre_ids[i]]:
                 out_w[i] += post_trace[post_ids[i]]
     else:
-        @warp.kernel
-        def update_kernel(
-            weight: weight_warp_info,
-            pre_ids: pre_ids_warp_info,
-            post_ids: post_ids_warp_info,
-            pre_spike: spike_warp_info,
-            post_trace: trace_warp_info,
-            out_w: out_warp_info,
-        ):
-            i = warp.tid()
-            out_w[i] = weight[i]
-            if pre_spike[pre_ids[i]] != 0.:
-                out_w[i] += post_trace[post_ids[i]]
+        if spike_info.dtype == jnp.float16:
+            @warp.kernel
+            def update_kernel(
+                pre_ids: pre_ids_warp_info,
+                post_ids: post_ids_warp_info,
+                pre_spike: spike_warp_info,
+                post_trace: trace_warp_info,
+                out_w: out_warp_info,
+            ):
+                i = warp.tid()
+                if pre_spike[pre_ids[i]] != warp.float16(0.0):
+                    out_w[i] += post_trace[post_ids[i]]
+        else:
+            @warp.kernel
+            def update_kernel(
+                pre_ids: pre_ids_warp_info,
+                post_ids: post_ids_warp_info,
+                pre_spike: spike_warp_info,
+                post_trace: trace_warp_info,
+                out_w: out_warp_info,
+            ):
+                i = warp.tid()
+                if pre_spike[pre_ids[i]] != 0.:
+                    out_w[i] += post_trace[post_ids[i]]
 
     n_syn = weight_info.shape[0]
-    out_info = kwargs['outs'][0]
 
     def run(weight, pre_ids, post_ids, pre_spike, post_trace):
-        fn = jax_kernel(update_kernel, launch_dims=n_syn, num_outputs=1, in_out_argnames=['out_w'])
-        return fn(weight, pre_ids, post_ids, pre_spike, post_trace, jnp.zeros(out_info.shape, out_info.dtype))
+        if n_syn == 0:
+            return (weight,)
+        fn = jax_kernel(update_kernel, launch_dims=[n_syn], num_outputs=1, in_out_argnames=['out_w'])
+        return fn(pre_ids, post_ids, pre_spike, post_trace, weight)
 
     return run
 
 
-def _coo_on_pre_pallas_gpu_kernel(
+def _coo_on_pre_pallas_kernel(
     weight_info: jax.ShapeDtypeStruct,
     spike_info: jax.ShapeDtypeStruct,
     **kwargs
@@ -159,65 +173,51 @@ def _coo_on_pre_pallas_gpu_kernel(
     from jax.experimental import pallas as pl
 
     n_syn = weight_info.shape[0]
-    block_dim = generate_block_dim(n_syn)
+    block_dim = generate_block_dim(n_syn, 512)
     block_dim = 32 if block_dim < 32 else block_dim
 
     if spike_info.dtype == jnp.bool_:
-        def kernel(weight_ref, pre_ids_ref, post_ids_ref, spike_ref, trace_ref, _, out_w_ref):
+        def kernel(weight_ref, pre_ids_ref, post_ids_ref, spike_ref, trace_ref, out_w_ref):
             i = pl.program_id(0)
             i_start = i * block_dim
             mask = i_start + jnp.arange(block_dim) < n_syn
-
-            # Read indices
-            pre_ids = pre_ids_ref[pl.dslice(i_start, block_dim)]
-            post_ids = post_ids_ref[pl.dslice(i_start, block_dim)]
-
-            # Read spikes and compute spike mask
-            spikes = spike_ref[pre_ids]
-            all_mask = mask & spikes
-
-            # Read traces and weights
-            traces = trace_ref[post_ids]
-            old_w = weight_ref[pl.dslice(i_start, block_dim)]
-
-            # Compute update (only where spike occurred)
-            new_w = jnp.where(all_mask, old_w + traces, old_w)
-
-            # Write result
-            out_w_ref[pl.dslice(i_start, block_dim)] = jnp.where(mask, new_w, out_w_ref[pl.dslice(i_start, block_dim)])
+            pre_ids = pre_ids_ref[pl.ds(i_start, block_dim)]
+            post_ids = post_ids_ref[pl.ds(i_start, block_dim)]
+            safe_pre_ids = jnp.where(mask, pre_ids, 0)
+            spikes = spike_ref[safe_pre_ids]
+            active = mask & spikes
+            safe_post_ids = jnp.where(active, post_ids, 0)
+            traces = trace_ref[safe_post_ids]
+            old_w = out_w_ref[pl.ds(i_start, block_dim)]
+            new_w = jnp.where(active, old_w + traces, old_w)
+            out_w_ref[pl.ds(i_start, block_dim)] = new_w
     else:
-        def kernel(weight_ref, pre_ids_ref, post_ids_ref, spike_ref, trace_ref, _, out_w_ref):
+        def kernel(weight_ref, pre_ids_ref, post_ids_ref, spike_ref, trace_ref, out_w_ref):
             i = pl.program_id(0)
             i_start = i * block_dim
             mask = i_start + jnp.arange(block_dim) < n_syn
-
-            # Read indices
-            pre_ids = pre_ids_ref[pl.dslice(i_start, block_dim)]
-            post_ids = post_ids_ref[pl.dslice(i_start, block_dim)]
-
-            # Read spikes and compute spike mask
-            spikes = spike_ref[pre_ids]
-            all_mask = mask & (spikes != 0.)
-
-            # Read traces and weights
-            traces = trace_ref[post_ids]
-            old_w = weight_ref[pl.dslice(i_start, block_dim)]
-
-            # Compute update (only where spike occurred)
-            new_w = jnp.where(all_mask, old_w + traces, old_w)
-
-            # Write result
-            out_w_ref[pl.dslice(i_start, block_dim)] = jnp.where(mask, new_w, out_w_ref[pl.dslice(i_start, block_dim)])
+            pre_ids = pre_ids_ref[pl.ds(i_start, block_dim)]
+            post_ids = post_ids_ref[pl.ds(i_start, block_dim)]
+            safe_pre_ids = jnp.where(mask, pre_ids, 0)
+            spikes = spike_ref[safe_pre_ids]
+            active = mask & (spikes != 0.)
+            safe_post_ids = jnp.where(active, post_ids, 0)
+            traces = trace_ref[safe_post_ids]
+            old_w = out_w_ref[pl.ds(i_start, block_dim)]
+            new_w = jnp.where(active, old_w + traces, old_w)
+            out_w_ref[pl.ds(i_start, block_dim)] = new_w
 
     def run(weight, pre_ids, post_ids, pre_spike, post_trace):
+        if n_syn == 0:
+            return (weight,)
         fn = pl.pallas_call(
             kernel,
             grid=(pl.cdiv(n_syn, block_dim),),
-            input_output_aliases={5: 0},
-            out_shape=kwargs['outs']
+            input_output_aliases={0: 0},
+            out_shape=kwargs['outs'],
+            backend='triton',
         )
-        out = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
-        return fn(weight, pre_ids, post_ids, pre_spike, post_trace, out)
+        return fn(weight, pre_ids, post_ids, pre_spike, post_trace)
 
     return run
 
@@ -241,7 +241,15 @@ def _coo_pre_benchmark_data(*, platform):
     return configs
 
 
-def _coo_on_pre_prim_call(weight, pre_ids, post_ids, pre_spike, post_trace):
+def _coo_on_pre_prim_call(
+    weight,
+    pre_ids,
+    post_ids,
+    pre_spike,
+    post_trace,
+    *,
+    backend=None
+):
     assert weight.ndim == 1, 'coo_on_pre only supports 1D weight.'
     assert weight.shape == pre_ids.shape == post_ids.shape, (
         f'weight shape ({weight.shape}), '
@@ -259,14 +267,14 @@ def _coo_on_pre_prim_call(weight, pre_ids, post_ids, pre_spike, post_trace):
         post_ids_info=jax.ShapeDtypeStruct(post_ids.shape, post_ids.dtype),
         spike_info=jax.ShapeDtypeStruct(pre_spike.shape, pre_spike.dtype),
         trace_info=jax.ShapeDtypeStruct(post_trace.shape, post_trace.dtype),
+        backend=backend,
     )
 
 
 update_coo_on_binary_pre_p = XLACustomKernel('coo_on_pre')
 update_coo_on_binary_pre_p.def_numba_kernel(_coo_on_pre_numba_kernel)
 update_coo_on_binary_pre_p.def_warp_kernel(_coo_on_pre_warp_kernel)
-update_coo_on_binary_pre_p.def_pallas_kernel('gpu', _coo_on_pre_pallas_gpu_kernel)
-update_coo_on_binary_pre_p.def_pallas_kernel('tpu', _coo_on_pre_pallas_gpu_kernel)
+update_coo_on_binary_pre_p.def_pallas_kernel('gpu', _coo_on_pre_pallas_kernel)
 update_coo_on_binary_pre_p.def_call(_coo_on_pre_prim_call)
 update_coo_on_binary_pre_p.def_tags('coo', 'plasticity')
 update_coo_on_binary_pre_p.def_benchmark_data(_coo_pre_benchmark_data)
@@ -277,6 +285,7 @@ update_coo_on_binary_pre_p.def_benchmark_data(_coo_pre_benchmark_data)
 # =============================================================================
 
 
+@namescope
 def update_coo_on_binary_post(
     weight: Union[u.Quantity, jax.Array],
     pre_ids: jax.Array,
@@ -285,6 +294,8 @@ def update_coo_on_binary_post(
     post_spike: jax.Array,
     w_min: Optional[Union[u.Quantity, jax.Array]] = None,
     w_max: Optional[Union[u.Quantity, jax.Array]] = None,
+    *,
+    backend: Optional[str] = None,
 ):
     """Updates synaptic weights in COO format based on postsynaptic spike events and presynaptic traces.
 
@@ -313,15 +324,16 @@ def update_coo_on_binary_post(
     """
     weight, wunit = u.split_mantissa_unit(weight)
     pre_trace = u.Quantity(pre_trace).to(wunit).mantissa
-    weight = u.maybe_decimal(_coo_on_post_prim_call(weight, pre_ids, post_ids, pre_trace, post_spike)[0] * wunit)
+    weight = u.maybe_decimal(
+        _coo_on_post_prim_call(
+            weight, pre_ids, post_ids, pre_trace, post_spike, backend=backend
+        )[0] * wunit
+    )
     weight = u.math.clip(weight, w_min, w_max)
     return weight
 
 
-def _coo_on_post_numba_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
+def _coo_on_post_numba_kernel(**kwargs):
     import numba
 
     @numba.njit(fastmath=True)
@@ -348,7 +360,6 @@ def _coo_on_post_warp_kernel(
     import warp
     from warp.jax_experimental import jax_kernel
 
-    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
     pre_ids_warp_info = jaxinfo_to_warpinfo(pre_ids_info)
     post_ids_warp_info = jaxinfo_to_warpinfo(post_ids_info)
     trace_warp_info = jaxinfo_to_warpinfo(trace_info)
@@ -358,7 +369,6 @@ def _coo_on_post_warp_kernel(
     if spike_info.dtype == jnp.bool_:
         @warp.kernel
         def update_kernel(
-            weight: weight_warp_info,
             pre_ids: pre_ids_warp_info,
             post_ids: post_ids_warp_info,
             pre_trace: trace_warp_info,
@@ -366,35 +376,46 @@ def _coo_on_post_warp_kernel(
             out_w: out_warp_info,
         ):
             i = warp.tid()
-            out_w[i] = weight[i]
             if post_spike[post_ids[i]]:
                 out_w[i] += pre_trace[pre_ids[i]]
     else:
-        @warp.kernel
-        def update_kernel(
-            weight: weight_warp_info,
-            pre_ids: pre_ids_warp_info,
-            post_ids: post_ids_warp_info,
-            pre_trace: trace_warp_info,
-            post_spike: spike_warp_info,
-            out_w: out_warp_info,
-        ):
-            i = warp.tid()
-            out_w[i] = weight[i]
-            if post_spike[post_ids[i]] != 0.:
-                out_w[i] += pre_trace[pre_ids[i]]
+        if spike_info.dtype == jnp.float16:
+            @warp.kernel
+            def update_kernel(
+                pre_ids: pre_ids_warp_info,
+                post_ids: post_ids_warp_info,
+                pre_trace: trace_warp_info,
+                post_spike: spike_warp_info,
+                out_w: out_warp_info,
+            ):
+                i = warp.tid()
+                if post_spike[post_ids[i]] != warp.float16(0.0):
+                    out_w[i] += pre_trace[pre_ids[i]]
+        else:
+            @warp.kernel
+            def update_kernel(
+                pre_ids: pre_ids_warp_info,
+                post_ids: post_ids_warp_info,
+                pre_trace: trace_warp_info,
+                post_spike: spike_warp_info,
+                out_w: out_warp_info,
+            ):
+                i = warp.tid()
+                if post_spike[post_ids[i]] != 0.:
+                    out_w[i] += pre_trace[pre_ids[i]]
 
     n_syn = weight_info.shape[0]
-    out_info = kwargs['outs'][0]
 
     def run(weight, pre_ids, post_ids, pre_trace, post_spike):
-        fn = jax_kernel(update_kernel, launch_dims=n_syn, num_outputs=1, in_out_argnames=['out_w'])
-        return fn(weight, pre_ids, post_ids, pre_trace, post_spike, jnp.zeros(out_info.shape, out_info.dtype))
+        if n_syn == 0:
+            return (weight,)
+        fn = jax_kernel(update_kernel, launch_dims=[n_syn], num_outputs=1, in_out_argnames=['out_w'])
+        return fn(pre_ids, post_ids, pre_trace, post_spike, weight)
 
     return run
 
 
-def _coo_on_post_pallas_gpu_kernel(
+def _coo_on_post_pallas_kernel(
     weight_info: jax.ShapeDtypeStruct,
     spike_info: jax.ShapeDtypeStruct,
     **kwargs
@@ -402,65 +423,51 @@ def _coo_on_post_pallas_gpu_kernel(
     from jax.experimental import pallas as pl
 
     n_syn = weight_info.shape[0]
-    block_dim = generate_block_dim(n_syn)
+    block_dim = generate_block_dim(n_syn, 512)
     block_dim = 32 if block_dim < 32 else block_dim
 
     if spike_info.dtype == jnp.bool_:
-        def kernel(weight_ref, pre_ids_ref, post_ids_ref, trace_ref, spike_ref, _, out_w_ref):
+        def kernel(weight_ref, pre_ids_ref, post_ids_ref, trace_ref, spike_ref, out_w_ref):
             i = pl.program_id(0)
             i_start = i * block_dim
             mask = i_start + jnp.arange(block_dim) < n_syn
-
-            # Read indices
-            pre_ids = pre_ids_ref[pl.dslice(i_start, block_dim)]
-            post_ids = post_ids_ref[pl.dslice(i_start, block_dim)]
-
-            # Read spikes and compute spike mask
-            spikes = spike_ref[post_ids]
-            all_mask = mask & spikes
-
-            # Read traces and weights
-            traces = trace_ref[pre_ids]
-            old_w = weight_ref[pl.dslice(i_start, block_dim)]
-
-            # Compute update (only where spike occurred)
-            new_w = jnp.where(all_mask, old_w + traces, old_w)
-
-            # Write result
-            out_w_ref[pl.dslice(i_start, block_dim)] = jnp.where(mask, new_w, out_w_ref[pl.dslice(i_start, block_dim)])
+            pre_ids = pre_ids_ref[pl.ds(i_start, block_dim)]
+            post_ids = post_ids_ref[pl.ds(i_start, block_dim)]
+            safe_post_ids = jnp.where(mask, post_ids, 0)
+            spikes = spike_ref[safe_post_ids]
+            active = mask & spikes
+            safe_pre_ids = jnp.where(active, pre_ids, 0)
+            traces = trace_ref[safe_pre_ids]
+            old_w = out_w_ref[pl.ds(i_start, block_dim)]
+            new_w = jnp.where(active, old_w + traces, old_w)
+            out_w_ref[pl.ds(i_start, block_dim)] = new_w
     else:
-        def kernel(weight_ref, pre_ids_ref, post_ids_ref, trace_ref, spike_ref, _, out_w_ref):
+        def kernel(weight_ref, pre_ids_ref, post_ids_ref, trace_ref, spike_ref, out_w_ref):
             i = pl.program_id(0)
             i_start = i * block_dim
             mask = i_start + jnp.arange(block_dim) < n_syn
-
-            # Read indices
-            pre_ids = pre_ids_ref[pl.dslice(i_start, block_dim)]
-            post_ids = post_ids_ref[pl.dslice(i_start, block_dim)]
-
-            # Read spikes and compute spike mask
-            spikes = spike_ref[post_ids]
-            all_mask = mask & (spikes != 0.)
-
-            # Read traces and weights
-            traces = trace_ref[pre_ids]
-            old_w = weight_ref[pl.dslice(i_start, block_dim)]
-
-            # Compute update (only where spike occurred)
-            new_w = jnp.where(all_mask, old_w + traces, old_w)
-
-            # Write result
-            out_w_ref[pl.dslice(i_start, block_dim)] = jnp.where(mask, new_w, out_w_ref[pl.dslice(i_start, block_dim)])
+            pre_ids = pre_ids_ref[pl.ds(i_start, block_dim)]
+            post_ids = post_ids_ref[pl.ds(i_start, block_dim)]
+            safe_post_ids = jnp.where(mask, post_ids, 0)
+            spikes = spike_ref[safe_post_ids]
+            active = mask & (spikes != 0.)
+            safe_pre_ids = jnp.where(active, pre_ids, 0)
+            traces = trace_ref[safe_pre_ids]
+            old_w = out_w_ref[pl.ds(i_start, block_dim)]
+            new_w = jnp.where(active, old_w + traces, old_w)
+            out_w_ref[pl.ds(i_start, block_dim)] = new_w
 
     def run(weight, pre_ids, post_ids, pre_trace, post_spike):
+        if n_syn == 0:
+            return (weight,)
         fn = pl.pallas_call(
             kernel,
             grid=(pl.cdiv(n_syn, block_dim),),
-            input_output_aliases={5: 0},
-            out_shape=kwargs['outs']
+            input_output_aliases={0: 0},
+            out_shape=kwargs['outs'],
+            backend='triton',
         )
-        out = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
-        return fn(weight, pre_ids, post_ids, pre_trace, post_spike, out)
+        return fn(weight, pre_ids, post_ids, pre_trace, post_spike)
 
     return run
 
@@ -480,11 +487,20 @@ def _coo_post_benchmark_data(*, platform):
             post_spike = jnp.asarray(np.random.rand(n_post), dtype=dtype)
         name = f"{'bool' if bool_event else 'float'}"
         configs.append(
-            BenchmarkConfig(name, (weight, jnp.asarray(pre_ids), jnp.asarray(post_ids), pre_trace, post_spike)))
+            BenchmarkConfig(name, (weight, jnp.asarray(pre_ids), jnp.asarray(post_ids), pre_trace, post_spike))
+        )
     return configs
 
 
-def _coo_on_post_prim_call(weight, pre_ids, post_ids, pre_trace, post_spike):
+def _coo_on_post_prim_call(
+    weight,
+    pre_ids,
+    post_ids,
+    pre_trace,
+    post_spike,
+    *,
+    backend=None
+):
     assert weight.ndim == 1, 'coo_on_post only supports 1D weight.'
     assert weight.shape == pre_ids.shape == post_ids.shape, (
         f'weight shape ({weight.shape}), '
@@ -502,14 +518,14 @@ def _coo_on_post_prim_call(weight, pre_ids, post_ids, pre_trace, post_spike):
         post_ids_info=jax.ShapeDtypeStruct(post_ids.shape, post_ids.dtype),
         trace_info=jax.ShapeDtypeStruct(pre_trace.shape, pre_trace.dtype),
         spike_info=jax.ShapeDtypeStruct(post_spike.shape, post_spike.dtype),
+        backend=backend,
     )
 
 
 update_coo_on_binary_post_p = XLACustomKernel('coo_on_post')
 update_coo_on_binary_post_p.def_numba_kernel(_coo_on_post_numba_kernel)
 update_coo_on_binary_post_p.def_warp_kernel(_coo_on_post_warp_kernel)
-update_coo_on_binary_post_p.def_pallas_kernel('gpu', _coo_on_post_pallas_gpu_kernel)
-update_coo_on_binary_post_p.def_pallas_kernel('tpu', _coo_on_post_pallas_gpu_kernel)
+update_coo_on_binary_post_p.def_pallas_kernel('gpu', _coo_on_post_pallas_kernel)
 update_coo_on_binary_post_p.def_call(_coo_on_post_prim_call)
 update_coo_on_binary_post_p.def_tags('coo', 'plasticity')
 update_coo_on_binary_post_p.def_benchmark_data(_coo_post_benchmark_data)

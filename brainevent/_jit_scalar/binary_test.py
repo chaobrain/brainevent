@@ -20,6 +20,10 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+# Keep GPU matmul reference numerics stable (avoid TF32 drift in dense @ B checks).
+if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is None:
+    jax.config.update('jax_default_matmul_precision', 'highest')
+
 from brainevent._jit_scalar.binary import (
     binary_jitsmv,
     binary_jitsmv_p,
@@ -108,8 +112,10 @@ def test_binary_jitsmv_forward_matches_reference(implementation, shape, transpos
         shape=shape,
         transpose=transpose,
         corder=corder,
+        backend=implementation,
     )
     assert allclose(y, y_ref, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((weight, vector, vector_ref, y, y_ref))
 
 
 @pytest.mark.parametrize('implementation', JITSMM_PARAMS)
@@ -144,8 +150,10 @@ def test_binary_jitsmm_forward_matches_reference(implementation, shape, transpos
         shape=shape,
         transpose=transpose,
         corder=corder,
+        backend=implementation,
     )
     assert allclose(y, y_ref, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((weight, matrix, matrix_ref, y, y_ref))
 
 
 @pytest.mark.parametrize('implementation', JITSMV_PARAMS)
@@ -181,6 +189,7 @@ def test_binary_jitsmv_thresholds_float_events(implementation, shape, transpose,
         backend=implementation,
     )
     assert allclose(y_float, y_binary, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((weight, vector, vector_binary, y_float, y_binary))
 
 
 @pytest.mark.parametrize('implementation', JITSMM_PARAMS)
@@ -217,6 +226,7 @@ def test_binary_jitsmm_thresholds_float_events(implementation, shape, transpose,
         backend=implementation,
     )
     assert allclose(y_float, y_binary, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((weight, matrix, matrix_binary, y_float, y_binary))
 
 
 @pytest.mark.parametrize('implementation', JITSMV_PARAMS)
@@ -250,6 +260,7 @@ def test_binary_jitsmv_jvp_and_vjp_match_reference(implementation, transpose, co
             shape=shape,
             transpose=transpose,
             corder=corder,
+            backend=implementation,
         )
 
     primals = (jnp.asarray(1.5, dtype=jnp.float32), vector)
@@ -264,6 +275,8 @@ def test_binary_jitsmv_jvp_and_vjp_match_reference(implementation, transpose, co
     g_w2, g_v2 = jax.grad(lambda w, v: f_ref(w, v).sum(), argnums=(0, 1))(*primals)
     assert allclose(g_w1, g_w2, rtol=1e-4, atol=1e-4)
     assert allclose(g_v1, g_v2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready(
+        (vector, primals[0], tangents[0], tangents[1], out1, jvp1, out2, jvp2, g_w1, g_v1, g_w2, g_v2))
 
 
 @pytest.mark.parametrize('implementation', JITSMM_PARAMS)
@@ -298,6 +311,7 @@ def test_binary_jitsmm_jvp_matches_reference(implementation, transpose, corder):
             shape=shape,
             transpose=transpose,
             corder=corder,
+            backend=implementation,
         )
 
     primals = (jnp.asarray(1.5, dtype=jnp.float32), matrix)
@@ -306,6 +320,7 @@ def test_binary_jitsmm_jvp_matches_reference(implementation, transpose, corder):
     out2, jvp2 = jax.jvp(f_ref, primals, tangents)
     assert allclose(out1, out2, rtol=1e-4, atol=1e-4)
     assert allclose(jvp1, jvp2, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((matrix, primals[0], tangents[0], tangents[1], out1, jvp1, out2, jvp2))
 
 
 @pytest.mark.parametrize('implementation', JITSMV_PARAMS)
@@ -340,9 +355,13 @@ def test_binary_jitsmv_vmap_matches_reference(implementation, transpose, corder)
             shape=shape,
             transpose=transpose,
             corder=corder,
+            backend=implementation,
         )
     )
-    assert allclose(f_binary(vectors), f_ref(vectors), rtol=1e-4, atol=1e-4)
+    result_binary = f_binary(vectors)
+    result_ref = f_ref(vectors)
+    assert allclose(result_binary, result_ref, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((vectors, result_binary, result_ref))
 
 
 @pytest.mark.parametrize('implementation', JITSMM_PARAMS)
@@ -378,6 +397,10 @@ def test_binary_jitsmm_vmap_matches_reference(implementation, transpose, corder)
             shape=shape,
             transpose=transpose,
             corder=corder,
+            backend=implementation,
         )
     )
-    assert allclose(f_binary(matrices), f_ref(matrices), rtol=1e-4, atol=1e-4)
+    result_binary = f_binary(matrices)
+    result_ref = f_ref(matrices)
+    assert allclose(result_binary, result_ref, rtol=1e-4, atol=1e-4)
+    jax.block_until_ready((matrices, result_binary, result_ref))

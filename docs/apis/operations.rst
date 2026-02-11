@@ -101,26 +101,20 @@ Dense-matrix @ binary-vector / binary-matrix.
 .. autosummary::
    :toctree: generated/
 
-   dbmv
-   dbmv_p
-   bdvm
-   bdvm_p
-   dbmm
-   dbmm_p
-   bdmm
-   bdmm_p
+   binary_densemv
+   binary_densemv_p
+   binary_densemm
+   binary_densemm_p
 
 Indexed binary operations.
 
 .. autosummary::
    :toctree: generated/
 
-   indexed_bdvm
-   indexed_bdvm_p
-   indexed_dbmv
-   indexed_dbmm
-   indexed_bdmm
-   indexed_bdmm_p
+   indexed_binary_densemv
+   indexed_binary_densemv_p
+   indexed_binary_densemm
+   indexed_binary_densemm_p
 
 Dense-matrix @ sparse-float-vector / sparse-float-matrix.
 

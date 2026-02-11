@@ -1,3 +1,4 @@
+import jax
 import numpy as np
 import pytest
 
@@ -20,6 +21,7 @@ class TestSparseFloatMatMul:
         result = self.vector @ self.dense_matrix
         expected = np.array([22.0, 28.0])
         assert np.allclose(result, expected, rtol=1e-3, atol=1e-3)
+        jax.block_until_ready((result,))
 
     def test_matrix_matmul_vector(self):
         # Test matrix @ vector (using rmatmul)
@@ -48,6 +50,7 @@ class TestSparseFloatMatMul:
         expected = np.array([[9.0, 12.0, 15.0], [19.0, 26.0, 33.0], [29.0, 40.0, 51.0]])
         assert np.array_equal(matrix_copy.value, expected)
         assert id(matrix_copy) != original_id
+        jax.block_until_ready((matrix_copy.value,))
 
     def test_scalar_matmul_error(self):
         # Test error for scalar in matrix multiplication

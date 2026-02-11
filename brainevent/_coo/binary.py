@@ -244,7 +244,7 @@ def _coomv_warp_kernel(
                     i = warp.tid()
                     w = weights[0]
                     if v[row[i]]:
-                        posts[col[i]] += w
+                        warp.atomic_add(posts, col[i], w)
             else:
                 @warp.kernel
                 def mv(
@@ -257,7 +257,7 @@ def _coomv_warp_kernel(
                     i = warp.tid()
                     w = weights[0]
                     if v[row[i]] > 0.:
-                        posts[col[i]] += w
+                        warp.atomic_add(posts, col[i], w)
         else:
             # transpose=True, heterogeneous
             if vector_info.dtype == jnp.bool_:
@@ -272,7 +272,7 @@ def _coomv_warp_kernel(
                 ):
                     i = warp.tid()
                     if v[row[i]]:
-                        posts[col[i]] += weights[i]
+                        warp.atomic_add(posts, col[i], weights[i])
             else:
                 @warp.kernel
                 def mv(
@@ -284,7 +284,7 @@ def _coomv_warp_kernel(
                 ):
                     i = warp.tid()
                     if v[row[i]] > 0.:
-                        posts[col[i]] += weights[i]
+                        warp.atomic_add(posts, col[i], weights[i])
     else:
         if weight_info.size == 1:
             # transpose=False, homogeneous
@@ -301,7 +301,7 @@ def _coomv_warp_kernel(
                     i = warp.tid()
                     w = weights[0]
                     if v[col[i]]:
-                        posts[row[i]] += w
+                        warp.atomic_add(posts, row[i], w)
             else:
                 @warp.kernel
                 def mv(
@@ -314,7 +314,7 @@ def _coomv_warp_kernel(
                     i = warp.tid()
                     w = weights[0]
                     if v[col[i]] > 0.:
-                        posts[row[i]] += w
+                        warp.atomic_add(posts, row[i], w)
         else:
             # transpose=False, heterogeneous
             if vector_info.dtype == jnp.bool_:
@@ -329,7 +329,7 @@ def _coomv_warp_kernel(
                 ):
                     i = warp.tid()
                     if v[col[i]]:
-                        posts[row[i]] += weights[i]
+                        warp.atomic_add(posts, row[i], weights[i])
             else:
                 @warp.kernel
                 def mv(
@@ -341,13 +341,12 @@ def _coomv_warp_kernel(
                 ):
                     i = warp.tid()
                     if v[col[i]] > 0.:
-                        posts[row[i]] += weights[i]
-
-    dim = row_info.shape[0]
-    out_info = kwargs['outs'][0]
+                        warp.atomic_add(posts, row[i], weights[i])
 
     def kernel(weights, row, col, v):
-        fn = jax_kernel(mv, launch_dims=dim, num_outputs=1, in_out_argnames=['posts'])
+        dim = row_info.shape[0]
+        out_info = kwargs['outs'][0]
+        fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
         return fn(weights, row, col, v, jnp.zeros(out_info.shape, out_info.dtype))
 
     return kernel
@@ -360,6 +359,7 @@ def _coomv_pallas_gpu_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
+    from jax.experimental.pallas import triton as plgpu
     from jax.experimental.pallas.triton import atomic_add
 
     nnz = row_info.shape[0]
@@ -385,16 +385,20 @@ def _coomv_pallas_gpu_kernel(
                 i = pl.program_id(0)
                 i_start = i * block_dim
                 mask = i_start + jnp.arange(block_dim) < nnz
-                rows = row_ref[pl.dslice(i_start, block_dim)]
-                cols = col_ref[pl.dslice(i_start, block_dim)]
-                events = vector_ref[rows]
+                rows = plgpu.load(row_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
+                cols = plgpu.load(col_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
+                events = plgpu.load(
+                    vector_ref.at[rows],
+                    mask=mask,
+                    other=False if vector_ref.dtype == jnp.bool_ else 0
+                )
 
                 if vector_ref.dtype == jnp.bool_:
                     event_mask = mask & events
                 else:
                     event_mask = mask & (events > 0.)
 
-                data = jnp.ones((block_dim,), dtype=posts_ref.dtype) * data_ref[0]
+                data = jnp.full((block_dim,), jnp.asarray(data_ref[0], dtype=posts_ref.dtype), dtype=posts_ref.dtype)
                 atomic_add(posts_ref, cols, data, mask=event_mask)
 
         else:
@@ -415,10 +419,14 @@ def _coomv_pallas_gpu_kernel(
                 i = pl.program_id(0)
                 i_start = i * block_dim
                 mask = i_start + jnp.arange(block_dim) < nnz
-                rows = row_ref[pl.dslice(i_start, block_dim)]
-                cols = col_ref[pl.dslice(i_start, block_dim)]
-                weights = data_ref[pl.dslice(i_start, block_dim)]
-                events = vector_ref[rows]
+                rows = plgpu.load(row_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
+                cols = plgpu.load(col_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
+                weights = plgpu.load(data_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
+                events = plgpu.load(
+                    vector_ref.at[rows],
+                    mask=mask,
+                    other=False if vector_ref.dtype == jnp.bool_ else 0
+                )
 
                 if vector_ref.dtype == jnp.bool_:
                     event_mask = mask & events
@@ -433,7 +441,8 @@ def _coomv_pallas_gpu_kernel(
                 mv,
                 grid=(pl.cdiv(nnz, block_dim),),
                 input_output_aliases={4: 0},
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
             return fn(data, row, col, vector, posts)
@@ -461,16 +470,20 @@ def _coomv_pallas_gpu_kernel(
                 i = pl.program_id(0)
                 i_start = i * block_dim
                 mask = i_start + jnp.arange(block_dim) < nnz
-                rows = row_ref[pl.dslice(i_start, block_dim)]
-                cols = col_ref[pl.dslice(i_start, block_dim)]
-                events = vector_ref[cols]
+                rows = plgpu.load(row_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
+                cols = plgpu.load(col_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
+                events = plgpu.load(
+                    vector_ref.at[cols],
+                    mask=mask,
+                    other=False if vector_ref.dtype == jnp.bool_ else 0
+                )
 
                 if vector_ref.dtype == jnp.bool_:
                     event_mask = mask & events
                 else:
                     event_mask = mask & (events > 0.)
 
-                data = jnp.ones((block_dim,), dtype=posts_ref.dtype) * data_ref[0]
+                data = jnp.full((block_dim,), jnp.asarray(data_ref[0], dtype=posts_ref.dtype), dtype=posts_ref.dtype)
                 atomic_add(posts_ref, rows, data, mask=event_mask)
 
         else:
@@ -491,10 +504,14 @@ def _coomv_pallas_gpu_kernel(
                 i = pl.program_id(0)
                 i_start = i * block_dim
                 mask = i_start + jnp.arange(block_dim) < nnz
-                rows = row_ref[pl.dslice(i_start, block_dim)]
-                cols = col_ref[pl.dslice(i_start, block_dim)]
-                weights = data_ref[pl.dslice(i_start, block_dim)]
-                events = vector_ref[cols]
+                rows = plgpu.load(row_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
+                cols = plgpu.load(col_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
+                weights = plgpu.load(data_ref.at[pl.ds(i_start, block_dim)], mask=mask, other=0)
+                events = plgpu.load(
+                    vector_ref.at[cols],
+                    mask=mask,
+                    other=False if vector_ref.dtype == jnp.bool_ else 0
+                )
 
                 if vector_ref.dtype == jnp.bool_:
                     event_mask = mask & events
@@ -509,7 +526,8 @@ def _coomv_pallas_gpu_kernel(
                 mv,
                 grid=(pl.cdiv(nnz, block_dim),),
                 input_output_aliases={4: 0},
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
             return fn(data, row, col, vector, posts)
@@ -517,25 +535,123 @@ def _coomv_pallas_gpu_kernel(
         return kernel
 
 
+def _coomv_pallas_tpu_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    row_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs
+):
+    from jax.experimental import pallas as pl
+
+    nnz = row_info.shape[0]
+    block_dim = generate_block_dim(nnz)
+    block_dim = 32 if block_dim < 32 else block_dim
+    num_nnz_blocks = pl.cdiv(nnz, block_dim)
+    out_len = kwargs['outs'][0].shape[0]
+
+    if weight_info.size == 1:
+        def mv(
+            data_ref,  # [1]
+            row_ref,  # [nnz]
+            col_ref,  # [nnz]
+            vector_ref,  # [m] or [k]
+            _,  # [k] or [m]
+            posts_ref,  # [k] or [m]
+        ):
+            i_out = pl.program_id(0)
+            scalar_w = jnp.asarray(data_ref[0], dtype=posts_ref.dtype)
+
+            def loop_fn(i_blk, acc):
+                i_start = i_blk * block_dim
+                elems = i_start + jnp.arange(block_dim)
+                valid = elems < nnz
+                safe_elems = jnp.where(valid, elems, 0)
+                rows = row_ref[safe_elems]
+                cols = col_ref[safe_elems]
+                safe_rows = jnp.where(valid, rows, 0)
+                safe_cols = jnp.where(valid, cols, 0)
+
+                if transpose:
+                    events = vector_ref[safe_rows]
+                    out_idx = cols
+                else:
+                    events = vector_ref[safe_cols]
+                    out_idx = rows
+
+                if vector_ref.dtype == jnp.bool_:
+                    active = events
+                else:
+                    active = events > 0.
+
+                lane_mask = valid & (out_idx == i_out) & active
+                return acc + jnp.sum(jnp.where(lane_mask, scalar_w, 0))
+
+            acc0 = jnp.asarray(0, dtype=posts_ref.dtype)
+            posts_ref[i_out] = jax.lax.fori_loop(0, num_nnz_blocks, loop_fn, acc0)
+
+    else:
+        def mv(
+            data_ref,  # [nnz]
+            row_ref,  # [nnz]
+            col_ref,  # [nnz]
+            vector_ref,  # [m] or [k]
+            _,  # [k] or [m]
+            posts_ref,  # [k] or [m]
+        ):
+            i_out = pl.program_id(0)
+
+            def loop_fn(i_blk, acc):
+                i_start = i_blk * block_dim
+                elems = i_start + jnp.arange(block_dim)
+                valid = elems < nnz
+                safe_elems = jnp.where(valid, elems, 0)
+                rows = row_ref[safe_elems]
+                cols = col_ref[safe_elems]
+                weights = jnp.asarray(data_ref[safe_elems], dtype=posts_ref.dtype)
+                safe_rows = jnp.where(valid, rows, 0)
+                safe_cols = jnp.where(valid, cols, 0)
+
+                if transpose:
+                    events = vector_ref[safe_rows]
+                    out_idx = cols
+                else:
+                    events = vector_ref[safe_cols]
+                    out_idx = rows
+
+                if vector_ref.dtype == jnp.bool_:
+                    active = events
+                else:
+                    active = events > 0.
+
+                lane_mask = valid & (out_idx == i_out) & active
+                return acc + jnp.sum(jnp.where(lane_mask, weights, 0))
+
+            acc0 = jnp.asarray(0, dtype=posts_ref.dtype)
+            posts_ref[i_out] = jax.lax.fori_loop(0, num_nnz_blocks, loop_fn, acc0)
+
+    def kernel(data, row, col, vector):
+        fn = pl.pallas_call(
+            mv,
+            grid=(out_len,),
+            input_output_aliases={4: 0},
+            out_shape=kwargs['outs'],
+            backend='mosaic_tpu',
+        )
+        posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
+        return fn(data, row, col, vector, posts)
+
+    return kernel
+
+
 def _coomv_jvp_vector(v_dot, data, row, col, v, *, shape, transpose, **kwargs):
     return [coomv(data, row, col, v_dot, shape=shape, transpose=transpose)]
 
 
 def _coomv_jvp_weights(data_dot, data, row, col, v, *, shape, transpose, **kwargs):
-    return binary_coomv_p_call(data_dot, row, col, v, shape=shape, transpose=transpose)
+    return binary_coomv_p_call(data_dot, row, col, v, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
 
-def _coomv_transpose_rule(
-    ct,
-    data,
-    row,
-    col,
-    events,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
+def _coomv_transpose_rule(ct, data, row, col, events, *, shape, transpose, **kwargs):
     assert not ad.is_undefined_primal(row)
     assert not ad.is_undefined_primal(col)
     ct = ct[0]
@@ -550,7 +666,8 @@ def _coomv_transpose_rule(
                 col,
                 ct,
                 shape=shape,
-                transpose=not transpose
+                transpose=not transpose,
+                backend=kwargs['backend']
             )
         return data, row, col, ct_events
     else:
@@ -565,6 +682,7 @@ def _coomv_transpose_rule(
                     events,
                     shape=shape,
                     transpose=transpose,
+                    backend=kwargs['backend']
                 )[0]
                 ct_values = jnp.inner(ct, ct_values).reshape(*data.aval.shape)
             else:
@@ -582,6 +700,7 @@ def _coomv_batching(args, axes, **kwargs):
             args[3].T,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )
         return r, [1]
 
@@ -594,6 +713,7 @@ def _coomv_batching(args, axes, **kwargs):
             args[3].T,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )
         return r, [1]
 
@@ -661,19 +781,37 @@ def binary_coomv_p_call(
     jax.Array
         The result of the sparse matrix-vector multiplication.
     """
-    # Convert scalar weights to a single-element array
+    row = jnp.asarray(row)
+    col = jnp.asarray(col)
+    v = jnp.asarray(v)
+    if row.ndim != 1 or col.ndim != 1:
+        raise ValueError(f'`row` and `col` must be 1D arrays, got row.ndim={row.ndim}, col.ndim={col.ndim}.')
+    if row.shape[0] != col.shape[0]:
+        raise ValueError(f'`row` and `col` must have the same length, got {row.shape[0]} and {col.shape[0]}.')
+    if v.ndim != 1:
+        raise ValueError(f'`v` must be a 1D array, got ndim={v.ndim}.')
+
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
+    else:
+        weights = jnp.asarray(weights)
+    if weights.ndim != 1:
+        raise ValueError(f'`weights` must be a scalar or 1D array, got ndim={weights.ndim}.')
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
-    # Determine the output shape based on whether the sparse matrix is transposed
-    out_info = (
-        # If transposed, the output shape is [shape[1]]
-        jax.ShapeDtypeStruct([shape[1]], weights.dtype)
-        if transpose else
-        # If not transposed, the output shape is [shape[0]]
-        jax.ShapeDtypeStruct([shape[0]], weights.dtype)
-    )
+    nnz = row.shape[0]
+    if weights.shape[0] not in (1, nnz):
+        raise ValueError(f'`weights` length must be 1 or nnz={nnz}, got {weights.shape[0]}.')
+
+    expected_v = shape[0] if transpose else shape[1]
+    if v.shape[0] != expected_v:
+        raise ValueError(f'`v` has incompatible length {v.shape[0]} for shape={tuple(shape)}, transpose={transpose}.')
+
+    out_len = shape[1] if transpose else shape[0]
+    if nnz == 0:
+        return [jnp.zeros((out_len,), dtype=weights.dtype)]
+
+    out_info = jax.ShapeDtypeStruct([out_len], weights.dtype)
 
     # Call the custom kernel with the provided arguments and output information
     return binary_coomv_p(
@@ -700,7 +838,7 @@ binary_coomv_p = XLACustomKernel('binary_coomv')
 binary_coomv_p.def_numba_kernel(_coomv_numba_kernel)
 binary_coomv_p.def_warp_kernel(_coomv_warp_kernel)
 binary_coomv_p.def_pallas_kernel('gpu', _coomv_pallas_gpu_kernel)
-binary_coomv_p.def_pallas_kernel('tpu', _coomv_pallas_gpu_kernel)
+binary_coomv_p.def_pallas_kernel('tpu', _coomv_pallas_tpu_kernel)
 binary_coomv_p.def_jvp_rule2(_coomv_jvp_weights, None, None, _coomv_jvp_vector)
 binary_coomv_p.def_transpose_rule(_coomv_transpose_rule)
 binary_coomv_p.def_batching_rule(_coomv_batching)
@@ -844,7 +982,7 @@ def _coomm_warp_kernel(
                     i, j = warp.tid()
                     w = weights[0]
                     if B[row[i], j]:
-                        posts[col[i], j] += w
+                        warp.atomic_add(posts, col[i], j, w)
             else:
                 @warp.kernel
                 def mm(
@@ -857,7 +995,7 @@ def _coomm_warp_kernel(
                     i, j = warp.tid()
                     w = weights[0]
                     if B[row[i], j] > 0.:
-                        posts[col[i], j] += w
+                        warp.atomic_add(posts, col[i], j, w)
         else:
             # transpose=True, heterogeneous
             if matrix_info.dtype == jnp.bool_:
@@ -872,7 +1010,7 @@ def _coomm_warp_kernel(
                 ):
                     i, j = warp.tid()
                     if B[row[i], j]:
-                        posts[col[i], j] += weights[i]
+                        warp.atomic_add(posts, col[i], j, weights[i])
             else:
                 @warp.kernel
                 def mm(
@@ -884,7 +1022,7 @@ def _coomm_warp_kernel(
                 ):
                     i, j = warp.tid()
                     if B[row[i], j] > 0.:
-                        posts[col[i], j] += weights[i]
+                        warp.atomic_add(posts, col[i], j, weights[i])
     else:
         if weight_info.size == 1:
             # transpose=False, homogeneous
@@ -901,7 +1039,7 @@ def _coomm_warp_kernel(
                     i, j = warp.tid()
                     w = weights[0]
                     if B[col[i], j]:
-                        posts[row[i], j] += w
+                        warp.atomic_add(posts, row[i], j, w)
             else:
                 @warp.kernel
                 def mm(
@@ -914,7 +1052,7 @@ def _coomm_warp_kernel(
                     i, j = warp.tid()
                     w = weights[0]
                     if B[col[i], j] > 0.:
-                        posts[row[i], j] += w
+                        warp.atomic_add(posts, row[i], j, w)
         else:
             # transpose=False, heterogeneous
             if matrix_info.dtype == jnp.bool_:
@@ -929,7 +1067,7 @@ def _coomm_warp_kernel(
                 ):
                     i, j = warp.tid()
                     if B[col[i], j]:
-                        posts[row[i], j] += weights[i]
+                        warp.atomic_add(posts, row[i], j, weights[i])
             else:
                 @warp.kernel
                 def mm(
@@ -941,12 +1079,11 @@ def _coomm_warp_kernel(
                 ):
                     i, j = warp.tid()
                     if B[col[i], j] > 0.:
-                        posts[row[i], j] += weights[i]
-
-    dim = (row_info.shape[0], matrix_info.shape[1])
-    out_info = kwargs['outs'][0]
+                        warp.atomic_add(posts, row[i], j, weights[i])
 
     def kernel(weights, row, col, B):
+        dim = (row_info.shape[0], matrix_info.shape[1])
+        out_info = kwargs['outs'][0]
         fn = jax_kernel(mm, launch_dims=dim, num_outputs=1, in_out_argnames=['posts'])
         return fn(weights, row, col, B, jnp.zeros(out_info.shape, out_info.dtype))
 
@@ -957,12 +1094,11 @@ def _coomm_pallas_gpu_kernel(
     weight_info: jax.ShapeDtypeStruct,
     matrix_info: jax.ShapeDtypeStruct,
     row_info: jax.ShapeDtypeStruct,
-    shape: MatrixShape,
     transpose: bool,
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    from jax.experimental.pallas.triton import atomic_add
+    from jax.experimental.pallas import triton as plgpu
 
     nnz = row_info.shape[0]
     n = matrix_info.shape[1]
@@ -992,23 +1128,24 @@ def _coomm_pallas_gpu_kernel(
                 col_mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
 
                 i_start = i * block_dim
-                mask = i_start + jnp.arange(block_dim) < nnz
-                rows = row_ref[pl.dslice(i_start, block_dim)]
-                cols = col_ref[pl.dslice(i_start, block_dim)]
+                scalar_w = jnp.asarray(data_ref[0], dtype=posts_ref.dtype)
 
                 def loop_fn(idx, _):
-                    row_idx = rows[idx]
-                    col_idx = cols[idx]
-                    events = B_ref[row_idx, pl.dslice(i_col_start, block_dim_n)]
-
-                    @pl.when(mask[idx])
-                    def process():
-                        if B_ref.dtype == jnp.bool_:
-                            event_mask = col_mask & events
-                        else:
-                            event_mask = col_mask & (events > 0.)
-                        data = jnp.ones((block_dim_n,), dtype=posts_ref.dtype) * data_ref[0]
-                        atomic_add(posts_ref, (col_idx, pl.dslice(i_col_start, block_dim_n)), data, mask=event_mask)
+                    elem = i_start + idx
+                    valid = elem < nnz
+                    row_idx = plgpu.load(row_ref.at[elem], mask=valid, other=0)
+                    col_idx = plgpu.load(col_ref.at[elem], mask=valid, other=0)
+                    events = plgpu.load(
+                        B_ref.at[row_idx, pl.ds(i_col_start, block_dim_n)],
+                        mask=col_mask,
+                        other=False if B_ref.dtype == jnp.bool_ else 0
+                    )
+                    if B_ref.dtype == jnp.bool_:
+                        event_mask = col_mask & events & valid
+                    else:
+                        event_mask = col_mask & (events > 0.) & valid
+                    data = jnp.full((block_dim_n,), scalar_w, dtype=posts_ref.dtype)
+                    plgpu.atomic_add(posts_ref, (col_idx, pl.ds(i_col_start, block_dim_n)), data, mask=event_mask)
 
                 jax.lax.fori_loop(0, block_dim, loop_fn, None)
 
@@ -1033,25 +1170,24 @@ def _coomm_pallas_gpu_kernel(
                 col_mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
 
                 i_start = i * block_dim
-                mask = i_start + jnp.arange(block_dim) < nnz
-                rows = row_ref[pl.dslice(i_start, block_dim)]
-                cols = col_ref[pl.dslice(i_start, block_dim)]
-                weights = data_ref[pl.dslice(i_start, block_dim)]
 
                 def loop_fn(idx, _):
-                    row_idx = rows[idx]
-                    col_idx = cols[idx]
-                    w = weights[idx]
-                    events = B_ref[row_idx, pl.dslice(i_col_start, block_dim_n)]
-
-                    @pl.when(mask[idx])
-                    def process():
-                        if B_ref.dtype == jnp.bool_:
-                            event_mask = col_mask & events
-                        else:
-                            event_mask = col_mask & (events > 0.)
-                        data = jnp.ones((block_dim_n,), dtype=posts_ref.dtype) * w
-                        atomic_add(posts_ref, (col_idx, pl.dslice(i_col_start, block_dim_n)), data, mask=event_mask)
+                    elem = i_start + idx
+                    valid = elem < nnz
+                    row_idx = plgpu.load(row_ref.at[elem], mask=valid, other=0)
+                    col_idx = plgpu.load(col_ref.at[elem], mask=valid, other=0)
+                    w = jnp.asarray(plgpu.load(data_ref.at[elem], mask=valid, other=0), dtype=posts_ref.dtype)
+                    events = plgpu.load(
+                        B_ref.at[row_idx, pl.ds(i_col_start, block_dim_n)],
+                        mask=col_mask,
+                        other=False if B_ref.dtype == jnp.bool_ else 0
+                    )
+                    if B_ref.dtype == jnp.bool_:
+                        event_mask = col_mask & events & valid
+                    else:
+                        event_mask = col_mask & (events > 0.) & valid
+                    data = jnp.full((block_dim_n,), w, dtype=posts_ref.dtype)
+                    plgpu.atomic_add(posts_ref, (col_idx, pl.ds(i_col_start, block_dim_n)), data, mask=event_mask)
 
                 jax.lax.fori_loop(0, block_dim, loop_fn, None)
 
@@ -1060,7 +1196,8 @@ def _coomm_pallas_gpu_kernel(
                 mm,
                 grid=(pl.cdiv(nnz, block_dim), pl.cdiv(n, block_dim_n)),
                 input_output_aliases={4: 0},
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
             return fn(data, row, col, B, posts)
@@ -1090,23 +1227,24 @@ def _coomm_pallas_gpu_kernel(
                 col_mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
 
                 i_start = i * block_dim
-                mask = i_start + jnp.arange(block_dim) < nnz
-                rows = row_ref[pl.dslice(i_start, block_dim)]
-                cols = col_ref[pl.dslice(i_start, block_dim)]
+                scalar_w = jnp.asarray(data_ref[0], dtype=posts_ref.dtype)
 
                 def loop_fn(idx, _):
-                    row_idx = rows[idx]
-                    col_idx = cols[idx]
-                    events = B_ref[col_idx, pl.dslice(i_col_start, block_dim_n)]
-
-                    @pl.when(mask[idx])
-                    def process():
-                        if B_ref.dtype == jnp.bool_:
-                            event_mask = col_mask & events
-                        else:
-                            event_mask = col_mask & (events > 0.)
-                        data = jnp.ones((block_dim_n,), dtype=posts_ref.dtype) * data_ref[0]
-                        atomic_add(posts_ref, (row_idx, pl.dslice(i_col_start, block_dim_n)), data, mask=event_mask)
+                    elem = i_start + idx
+                    valid = elem < nnz
+                    row_idx = plgpu.load(row_ref.at[elem], mask=valid, other=0)
+                    col_idx = plgpu.load(col_ref.at[elem], mask=valid, other=0)
+                    events = plgpu.load(
+                        B_ref.at[col_idx, pl.ds(i_col_start, block_dim_n)],
+                        mask=col_mask,
+                        other=False if B_ref.dtype == jnp.bool_ else 0
+                    )
+                    if B_ref.dtype == jnp.bool_:
+                        event_mask = col_mask & events & valid
+                    else:
+                        event_mask = col_mask & (events > 0.) & valid
+                    data = jnp.full((block_dim_n,), scalar_w, dtype=posts_ref.dtype)
+                    plgpu.atomic_add(posts_ref, (row_idx, pl.ds(i_col_start, block_dim_n)), data, mask=event_mask)
 
                 jax.lax.fori_loop(0, block_dim, loop_fn, None)
 
@@ -1131,25 +1269,24 @@ def _coomm_pallas_gpu_kernel(
                 col_mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
 
                 i_start = i * block_dim
-                mask = i_start + jnp.arange(block_dim) < nnz
-                rows = row_ref[pl.dslice(i_start, block_dim)]
-                cols = col_ref[pl.dslice(i_start, block_dim)]
-                weights = data_ref[pl.dslice(i_start, block_dim)]
 
                 def loop_fn(idx, _):
-                    row_idx = rows[idx]
-                    col_idx = cols[idx]
-                    w = weights[idx]
-                    events = B_ref[col_idx, pl.dslice(i_col_start, block_dim_n)]
-
-                    @pl.when(mask[idx])
-                    def process():
-                        if B_ref.dtype == jnp.bool_:
-                            event_mask = col_mask & events
-                        else:
-                            event_mask = col_mask & (events > 0.)
-                        data = jnp.ones((block_dim_n,), dtype=posts_ref.dtype) * w
-                        atomic_add(posts_ref, (row_idx, pl.dslice(i_col_start, block_dim_n)), data, mask=event_mask)
+                    elem = i_start + idx
+                    valid = elem < nnz
+                    row_idx = plgpu.load(row_ref.at[elem], mask=valid, other=0)
+                    col_idx = plgpu.load(col_ref.at[elem], mask=valid, other=0)
+                    w = jnp.asarray(plgpu.load(data_ref.at[elem], mask=valid, other=0), dtype=posts_ref.dtype)
+                    events = plgpu.load(
+                        B_ref.at[col_idx, pl.ds(i_col_start, block_dim_n)],
+                        mask=col_mask,
+                        other=False if B_ref.dtype == jnp.bool_ else 0
+                    )
+                    if B_ref.dtype == jnp.bool_:
+                        event_mask = col_mask & events & valid
+                    else:
+                        event_mask = col_mask & (events > 0.) & valid
+                    data = jnp.full((block_dim_n,), w, dtype=posts_ref.dtype)
+                    plgpu.atomic_add(posts_ref, (row_idx, pl.ds(i_col_start, block_dim_n)), data, mask=event_mask)
 
                 jax.lax.fori_loop(0, block_dim, loop_fn, None)
 
@@ -1158,12 +1295,137 @@ def _coomm_pallas_gpu_kernel(
                 mm,
                 grid=(pl.cdiv(nnz, block_dim), pl.cdiv(n, block_dim_n)),
                 input_output_aliases={4: 0},
-                out_shape=kwargs['outs']
+                out_shape=kwargs['outs'],
+                backend='triton',
             )
             posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
             return fn(data, row, col, B, posts)
 
         return kernel
+
+
+def _coomm_pallas_tpu_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    matrix_info: jax.ShapeDtypeStruct,
+    row_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    transpose: bool,
+    **kwargs
+):
+    from jax.experimental import pallas as pl
+    from jax.experimental.pallas import tpu as pltpu
+
+    nnz = row_info.shape[0]
+    n = matrix_info.shape[1]
+    block_dim = generate_block_dim(nnz)
+    block_dim = 32 if block_dim < 32 else block_dim
+    block_dim_n = generate_block_dim(n, 512)
+    num_nnz_blocks = pl.cdiv(nnz, block_dim)
+    out_rows = kwargs['outs'][0].shape[0]
+
+    if weight_info.size == 1:
+        def mm(
+            data_ref,  # [1]
+            row_ref,  # [nnz]
+            col_ref,  # [nnz]
+            B_ref,  # [m, n] or [k, n]
+            _,  # [k, n] or [m, n]
+            posts_ref,  # [k, n] or [m, n]
+        ):
+            i_out = pl.program_id(0)
+            i_n = pl.program_id(1)
+            i_col_start = i_n * block_dim_n
+            col_mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
+            scalar_w = jnp.asarray(data_ref[0], dtype=posts_ref.dtype)
+
+            def loop_fn(i_blk, acc):
+                i_start = i_blk * block_dim
+                elems = i_start + jnp.arange(block_dim)
+                valid = elems < nnz
+                safe_elems = jnp.where(valid, elems, 0)
+                rows = row_ref[safe_elems]
+                cols = col_ref[safe_elems]
+                safe_rows = jnp.where(valid, rows, 0)
+                safe_cols = jnp.where(valid, cols, 0)
+
+                if transpose:
+                    events = B_ref[safe_rows, pl.ds(i_col_start, block_dim_n)]
+                    out_idx = cols
+                else:
+                    events = B_ref[safe_cols, pl.ds(i_col_start, block_dim_n)]
+                    out_idx = rows
+
+                if B_ref.dtype == jnp.bool_:
+                    active = events
+                else:
+                    active = events > 0.
+
+                lane_mask = valid & (out_idx == i_out)
+                active_mask = lane_mask[:, None] & active & col_mask[None, :]
+                return acc + jnp.sum(jnp.where(active_mask, scalar_w, 0), axis=0)
+
+            acc0 = jnp.zeros((block_dim_n,), dtype=posts_ref.dtype)
+            acc = jax.lax.fori_loop(0, num_nnz_blocks, loop_fn, acc0)
+            pltpu.store(posts_ref.at[i_out, pl.ds(i_col_start, block_dim_n)], acc, mask=col_mask)
+
+    else:
+        def mm(
+            data_ref,  # [nnz]
+            row_ref,  # [nnz]
+            col_ref,  # [nnz]
+            B_ref,  # [m, n] or [k, n]
+            _,  # [k, n] or [m, n]
+            posts_ref,  # [k, n] or [m, n]
+        ):
+            i_out = pl.program_id(0)
+            i_n = pl.program_id(1)
+            i_col_start = i_n * block_dim_n
+            col_mask = (i_col_start + jnp.arange(block_dim_n)) < B_ref.shape[1]
+
+            def loop_fn(i_blk, acc):
+                i_start = i_blk * block_dim
+                elems = i_start + jnp.arange(block_dim)
+                valid = elems < nnz
+                safe_elems = jnp.where(valid, elems, 0)
+                rows = row_ref[safe_elems]
+                cols = col_ref[safe_elems]
+                weights = jnp.asarray(data_ref[safe_elems], dtype=posts_ref.dtype)
+                safe_rows = jnp.where(valid, rows, 0)
+                safe_cols = jnp.where(valid, cols, 0)
+
+                if transpose:
+                    events = B_ref[safe_rows, pl.ds(i_col_start, block_dim_n)]
+                    out_idx = cols
+                else:
+                    events = B_ref[safe_cols, pl.ds(i_col_start, block_dim_n)]
+                    out_idx = rows
+
+                if B_ref.dtype == jnp.bool_:
+                    active = events
+                else:
+                    active = events > 0.
+
+                lane_mask = valid & (out_idx == i_out)
+                active_mask = lane_mask[:, None] & active & col_mask[None, :]
+                weighted = jnp.where(active_mask, weights[:, None], 0)
+                return acc + jnp.sum(weighted, axis=0)
+
+            acc0 = jnp.zeros((block_dim_n,), dtype=posts_ref.dtype)
+            acc = jax.lax.fori_loop(0, num_nnz_blocks, loop_fn, acc0)
+            pltpu.store(posts_ref.at[i_out, pl.ds(i_col_start, block_dim_n)], acc, mask=col_mask)
+
+    def kernel(data, row, col, B):
+        fn = pl.pallas_call(
+            mm,
+            grid=(out_rows, pl.cdiv(n, block_dim_n)),
+            input_output_aliases={4: 0},
+            out_shape=kwargs['outs'],
+            backend='mosaic_tpu',
+        )
+        posts = jnp.zeros(kwargs['outs'][0].shape, dtype=kwargs['outs'][0].dtype)
+        return fn(data, row, col, B, posts)
+
+    return kernel
 
 
 def _coomm_jvp_left(data_dot, data, row, col, B, *, shape, transpose, **kwargs):
@@ -1174,17 +1436,7 @@ def _coomm_jvp_right(B_dot, data, row, col, B, *, shape, transpose, **kwargs):
     return [coomm(data, row, col, B_dot, shape=shape, transpose=transpose)]
 
 
-def _coomm_transpose_rule(
-    ct,
-    data,
-    row,
-    col,
-    B,
-    *,
-    shape,
-    transpose,
-    **kwargs
-):
+def _coomm_transpose_rule(ct, data, row, col, B, *, shape, transpose, **kwargs):
     assert not ad.is_undefined_primal(row)
     assert not ad.is_undefined_primal(col)
     ct = ct[0]
@@ -1215,6 +1467,7 @@ def _coomm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )
         r = jnp.reshape(r[0], [r[0].shape[0], batch_size, n])
         return [r], [1]
@@ -1230,6 +1483,7 @@ def _coomm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )
         r = jnp.reshape(r[0], [r[0].shape[0], batch_size, n])
         return [r], [1]
@@ -1245,6 +1499,7 @@ def _coomm_batching(args, axes, **kwargs):
             B,
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
+            backend=kwargs['backend'],
         )
         r = jnp.reshape(r[0], [r[0].shape[0], n, batch_size])
         return [r], [2]
@@ -1313,19 +1568,37 @@ def binary_coomm_p_call(
     jax.Array
         The result of the sparse matrix-matrix multiplication.
     """
-    # Convert scalar weights to a single-element array
+    row = jnp.asarray(row)
+    col = jnp.asarray(col)
+    B = jnp.asarray(B)
+    if row.ndim != 1 or col.ndim != 1:
+        raise ValueError(f'`row` and `col` must be 1D arrays, got row.ndim={row.ndim}, col.ndim={col.ndim}.')
+    if row.shape[0] != col.shape[0]:
+        raise ValueError(f'`row` and `col` must have the same length, got {row.shape[0]} and {col.shape[0]}.')
+    if B.ndim != 2:
+        raise ValueError(f'`B` must be a 2D array, got ndim={B.ndim}.')
+
     if jnp.ndim(weights) == 0:
         weights = jnp.asarray([weights])
+    else:
+        weights = jnp.asarray(weights)
+    if weights.ndim != 1:
+        raise ValueError(f'`weights` must be a scalar or 1D array, got ndim={weights.ndim}.')
     assert jnp.issubdtype(weights.dtype, jnp.floating), 'Weights must be a floating-point type.'
 
-    # Determine the output shape based on whether the sparse matrix is transposed
-    out_info = (
-        # If transposed, the output shape is [shape[1], B.shape[1]]
-        jax.ShapeDtypeStruct([shape[1], B.shape[1]], weights.dtype)
-        if transpose else
-        # If not transposed, the output shape is [shape[0], B.shape[1]]
-        jax.ShapeDtypeStruct([shape[0], B.shape[1]], weights.dtype)
-    )
+    nnz = row.shape[0]
+    if weights.shape[0] not in (1, nnz):
+        raise ValueError(f'`weights` length must be 1 or nnz={nnz}, got {weights.shape[0]}.')
+
+    expected_b_rows = shape[0] if transpose else shape[1]
+    if B.shape[0] != expected_b_rows:
+        raise ValueError(f'`B` has incompatible shape {B.shape} for shape={tuple(shape)}, transpose={transpose}.')
+
+    out_rows = shape[1] if transpose else shape[0]
+    if nnz == 0:
+        return [jnp.zeros((out_rows, B.shape[1]), dtype=weights.dtype)]
+
+    out_info = jax.ShapeDtypeStruct([out_rows, B.shape[1]], weights.dtype)
     # Call the custom kernel with the provided arguments and output information
     return binary_coomm_p(
         weights,
@@ -1347,7 +1620,7 @@ binary_coomm_p = XLACustomKernel('binary_coomm')
 binary_coomm_p.def_numba_kernel(_coomm_numba_kernel)
 binary_coomm_p.def_warp_kernel(_coomm_warp_kernel)
 binary_coomm_p.def_pallas_kernel('gpu', _coomm_pallas_gpu_kernel)
-binary_coomm_p.def_pallas_kernel('tpu', _coomm_pallas_gpu_kernel)
+binary_coomm_p.def_pallas_kernel('tpu', _coomm_pallas_tpu_kernel)
 binary_coomm_p.def_jvp_rule2(_coomm_jvp_left, None, None, _coomm_jvp_right)
 binary_coomm_p.def_transpose_rule(_coomm_transpose_rule)
 binary_coomm_p.def_batching_rule(_coomm_batching)

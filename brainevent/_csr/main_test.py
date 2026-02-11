@@ -78,6 +78,8 @@ class Test_CSR_BinaryOperator:
                 v @ csr,
             )
 
+            jax.block_until_ready((mask,))
+
     def test_event_homo_heter(self):
         mat = brainstate.random.rand(10, 20)
         mask = (brainstate.random.rand(10, 20) < 0.1) * mat
@@ -95,6 +97,8 @@ class Test_CSR_BinaryOperator:
             v.value.astype(float) @ mask.astype(float),
             v @ csr,
         )
+
+        jax.block_until_ready((mat, mask))
 
     def test_event_heter_float_as_bool(self):
         mat = brainstate.random.rand(10, 20)
@@ -114,6 +118,8 @@ class Test_CSR_BinaryOperator:
             v @ csr,
         )
 
+        jax.block_until_ready((mat, mask))
+
 
 class Test_CSR_FloatVectorOperator:
     @pytest.mark.parametrize('homo_w', [True, False])
@@ -128,6 +134,8 @@ class Test_CSR_FloatVectorOperator:
         y_ref = vector_csr(x, csr.data, indices, indptr, (m, n))
         assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
 
+        jax.block_until_ready((x, indptr, indices, data, y, y_ref))
+
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_csr_vector(self, homo_w):
         m, n = 20, 40
@@ -140,6 +148,8 @@ class Test_CSR_FloatVectorOperator:
         y_ref = csr_vector(x, csr.data, indices, indptr, (m, n))
         assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
 
+        jax.block_until_ready((x, indptr, indices, data, y, y_ref))
+
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_vector_csr_vmap_vector(self, homo_w):
         n_batch, m, n = 10, 20, 40
@@ -151,6 +161,8 @@ class Test_CSR_FloatVectorOperator:
         y = brainstate.transform.vmap2(lambda x: x @ csr)(xs)
         y_ref = brainstate.transform.vmap2(lambda x: vector_csr(x, csr.data, indices, indptr, (m, n)))(xs)
         assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((xs, indptr, indices, data, y, y_ref))
 
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('replace', [True, False])
@@ -181,6 +193,8 @@ class Test_CSR_FloatVectorOperator:
         assert jnp.allclose(r[0], r_ref[0], rtol=1e-3, atol=1e-3)
         assert jnp.allclose(r[1], r_ref[1], rtol=1e-3, atol=1e-3)
 
+        jax.block_until_ready((x, indptr, indices, w, r, r_ref))
+
     @pytest.mark.parametrize('homo_w', [True, False])
     @pytest.mark.parametrize('replace', [True, False])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -210,6 +224,8 @@ class Test_CSR_FloatVectorOperator:
         assert jnp.allclose(r1, r2, rtol=1e-3, atol=1e-3)
         assert jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3)
 
+        jax.block_until_ready((x, indptr, indices, w, o1, r1, o2, r2))
+
 
 @pytest.mark.skipif(
     not FLOAT_CSRMM_IMPLEMENTATIONS,
@@ -228,6 +244,8 @@ class Test_CSR_FloatMatrixOperator:
         y_ref = matrix_csr(x, csr.data, indices, indptr, (m, n))
         assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
 
+        jax.block_until_ready((x, indptr, indices, data, y, y_ref))
+
     @pytest.mark.parametrize('homo_w', [True, False])
     def test_csr_matrix(self, homo_w):
         m, n, k = 20, 40, 10
@@ -239,6 +257,8 @@ class Test_CSR_FloatMatrixOperator:
         y = csr @ x
         y_ref = csr_matrix(x, csr.data, indices, indptr, (m, n))
         assert jnp.allclose(y, y_ref, rtol=1e-3, atol=1e-3)
+
+        jax.block_until_ready((x, indptr, indices, data, y, y_ref))
 
 
 class Test_CSC_CSR_Conversion:
@@ -259,6 +279,8 @@ class Test_CSC_CSR_Conversion:
         assert jnp.allclose(out1, out3)
         assert jnp.allclose(out1, out4)
 
+        jax.block_until_ready((matrix, out1, out2, out3, out4))
+
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_csr_vec(self, shape):
         matrix = gen_sparse_matrix(shape)
@@ -270,6 +292,8 @@ class Test_CSC_CSR_Conversion:
         out1 = csr @ vector
         out2 = vector @ csc
         assert jnp.allclose(out1, out2)
+
+        jax.block_until_ready((matrix, vector, out1, out2))
 
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_vec_csr(self, shape):
@@ -283,6 +307,8 @@ class Test_CSC_CSR_Conversion:
         out2 = csc @ vector
         assert jnp.allclose(out1, out2)
 
+        jax.block_until_ready((matrix, vector, out1, out2))
+
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_csr_mat(self, k, shape):
@@ -295,6 +321,8 @@ class Test_CSC_CSR_Conversion:
         out1 = jax.jit(lambda: csr @ matrix)()
         out2 = jax.jit(lambda: (matrix.T @ csc).T)()
         assert jnp.allclose(out1, out2)
+
+        jax.block_until_ready((matrix, out1, out2))
 
     # TODO: GPU pallas bug
     @pytest.mark.parametrize('k', [10])
@@ -310,6 +338,8 @@ class Test_CSC_CSR_Conversion:
         out2 = jax.jit(lambda: (csc @ matrix.T).T)()
         assert jnp.allclose(out1, out2, atol=1e-4, rtol=1e-4)
 
+        jax.block_until_ready((matrix, out1, out2))
+
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_csr_vec_event(self, shape):
         matrix = gen_sparse_matrix(shape)
@@ -321,6 +351,8 @@ class Test_CSC_CSR_Conversion:
         out1 = jax.jit(lambda: csr @ vector)()
         out2 = jax.jit(lambda: vector @ csc)()
         assert jnp.allclose(out1, out2)
+
+        jax.block_until_ready((matrix, out1, out2))
 
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_vec_csr_event(self, shape):
@@ -334,6 +366,8 @@ class Test_CSC_CSR_Conversion:
         out2 = jax.jit(lambda: csc @ vector)()
         assert jnp.allclose(out1, out2)
 
+        jax.block_until_ready((matrix, out1, out2))
+
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_csr_mat_event(self, k, shape):
@@ -346,6 +380,8 @@ class Test_CSC_CSR_Conversion:
         out1 = jax.jit(lambda: csr @ matrix)()
         out2 = jax.jit(lambda: (matrix.value.T @ csc).T)()
         assert jnp.allclose(out1, out2)
+
+        jax.block_until_ready((matrix, out1, out2))
 
     # TODO: GPU test error: CUDA_ERROR_ILLEGAL_ADDRESS
     @pytest.mark.parametrize('k', [10])
@@ -361,6 +397,8 @@ class Test_CSC_CSR_Conversion:
         out2 = jax.jit(lambda: (csc @ matrix.value.T).T)()
         assert jnp.allclose(out1, out2, atol=1e-4, rtol=1e-4)
 
+        jax.block_until_ready((matrix, out1, out2))
+
 
 class Test_CSR:
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
@@ -372,12 +410,16 @@ class Test_CSR:
 
         assert jnp.allclose(matrix, dense)
 
+        jax.block_until_ready((matrix, dense))
+
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_todense(self, shape):
         matrix = gen_sparse_matrix(shape)
         csr = brainevent.CSR.fromdense(matrix)
         dense = csr.todense()
         assert jnp.allclose(matrix, dense)
+
+        jax.block_until_ready((matrix, dense))
 
     # TODO: GPU pallas error: CUDA_ERROR_ILLEGAL_ADDRESS
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
@@ -411,6 +453,8 @@ class Test_CSR:
         assert jnp.allclose(g00, g10, rtol=rtol, atol=rtol)
         assert jnp.allclose(g01, g11, rtol=rtol, atol=rtol)
 
+        jax.block_until_ready((xs, r1, r2, g00, g01, g10, g11))
+
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -443,6 +487,8 @@ class Test_CSR:
         assert jnp.allclose(g00, g10, rtol=1e-2, atol=1e-2)
         assert jnp.allclose(g01, g11, rtol=1e-2, atol=1e-2)
 
+        jax.block_until_ready((xs, r1, r2, g00, g01, g10, g11))
+
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('transpose', [True, False])
     def test_csr_vec_vjp_heter_weight(self, shape, transpose):
@@ -471,6 +517,8 @@ class Test_CSR:
         assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
         assert jnp.allclose(g00, g10, rtol=1e-2, atol=1e-2)
         assert jnp.allclose(g01, g11, rtol=1e-2, atol=1e-2)
+
+        jax.block_until_ready((xs, r1, r2, g00, g01, g10, g11))
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -503,6 +551,8 @@ class Test_CSR:
         assert jnp.allclose(r1, r2, rtol=tol, atol=tol)
         assert jnp.allclose(g00, g10, rtol=tol, atol=tol)
         assert jnp.allclose(g01, g11, rtol=tol, atol=tol)
+
+        jax.block_until_ready((xs, r1, r2, g00, g01, g10, g11))
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('k', [10])
@@ -537,6 +587,8 @@ class Test_CSR:
         tol = 1e-1 if brainstate.environ.get_platform() else 1e-4
         assert jnp.allclose(r1, r2, rtol=tol, atol=tol)
         assert jnp.allclose(g1, g2, rtol=tol, atol=tol)
+
+        jax.block_until_ready((xs, r1, g1, r2, g2))
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('k', [10])
@@ -574,6 +626,8 @@ class Test_CSR:
         assert jnp.allclose(r1, r2, rtol=tol, atol=tol)
         assert jnp.allclose(g1, g2, rtol=tol, atol=tol)
 
+        jax.block_until_ready((xs, r1, g1, r2, g2))
+
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('transpose', [True, False])
     def test_csr_vec_jvp_heter_weight(self, shape, transpose):
@@ -605,6 +659,8 @@ class Test_CSR:
 
         assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
         assert jnp.allclose(g1, g2, rtol=1e-2, atol=1e-2)
+
+        jax.block_until_ready((xs, r1, g1, r2, g2))
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -641,6 +697,8 @@ class Test_CSR:
         print(g1, g2)
         assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
         assert jnp.allclose(g1, g2, rtol=1e-2, atol=1e-2)
+
+        jax.block_until_ready((xs, r1, g1, r2, g2))
 
 
 class Test_CSR_Event:
@@ -679,6 +737,8 @@ class Test_CSR_Event:
         assert jnp.allclose(g00.value, g10.value, rtol=1e-2, atol=1e-2)
         assert jnp.allclose(g01, g11, rtol=1e-2, atol=1e-2)
 
+        jax.block_until_ready((r1, r2, g00, g01, g10, g11))
+
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -714,6 +774,8 @@ class Test_CSR_Event:
         assert jnp.allclose(g00.value, g10.value, rtol=1e-2, atol=1e-2)
         assert jnp.allclose(g01, g11, rtol=1e-2, atol=1e-2)
 
+        jax.block_until_ready((r1, r2, g00, g01, g10, g11))
+
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('transpose', [True, False])
     def test_csr_vec_vjp_heter_weight(self, shape, transpose):
@@ -746,6 +808,8 @@ class Test_CSR_Event:
         assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
         assert jnp.allclose(g00.value, g10.value, rtol=1e-2, atol=1e-2)
         assert jnp.allclose(g01, g11, rtol=1e-2, atol=1e-2)
+
+        jax.block_until_ready((r1, r2, g00, g01, g10, g11))
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -781,6 +845,8 @@ class Test_CSR_Event:
         assert jnp.allclose(g00.value, g10.value, rtol=1e-2, atol=1e-2)
         assert jnp.allclose(g01, g11, rtol=1e-2, atol=1e-2)
 
+        jax.block_until_ready((r1, r2, g00, g01, g10, g11))
+
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('k', [10])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -813,6 +879,8 @@ class Test_CSR_Event:
 
         assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
         assert jnp.allclose(g1, g2, rtol=1e-2, atol=1e-2)
+
+        jax.block_until_ready((r1, g1, r2, g2))
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('k', [10])
@@ -849,6 +917,8 @@ class Test_CSR_Event:
         assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
         assert jnp.allclose(g1, g2, rtol=1e-2, atol=1e-2)
 
+        jax.block_until_ready((r1, g1, r2, g2))
+
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('transpose', [True, False])
     def test_csr_vec_jvp_heter_weight(self, shape, transpose):
@@ -881,6 +951,8 @@ class Test_CSR_Event:
 
         assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
         assert jnp.allclose(g1, g2, rtol=1e-2, atol=1e-2)
+
+        jax.block_until_ready((r1, g1, r2, g2))
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50)])
     @pytest.mark.parametrize('transpose', [True, False])
@@ -916,6 +988,8 @@ class Test_CSR_Event:
         assert jnp.allclose(r1, r2, rtol=1e-2, atol=1e-2)
         assert jnp.allclose(g1, g2, rtol=1e-2, atol=1e-2)
 
+        jax.block_until_ready((r1, g1, r2, g2))
+
 
 class Test_CSC:
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
@@ -926,12 +1000,16 @@ class Test_CSC:
         dense = coo.todense()
         assert jnp.allclose(matrix.T, dense)
 
+        jax.block_until_ready((dense,))
+
     @pytest.mark.parametrize('shape', [(20, 30), (100, 50)])
     def test_todense(self, shape):
         matrix = gen_sparse_matrix(shape)
         csr = brainevent.CSR.fromdense(matrix).T
         dense = csr.todense()
         assert jnp.allclose(matrix.T, dense)
+
+        jax.block_until_ready((dense,))
 
 
 class Test_diag_add:
@@ -953,6 +1031,8 @@ class Test_diag_add:
 
         assert jnp.allclose(new_dense, dense)
 
+        jax.block_until_ready((dense, diag, new_dense))
+
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50), (400, 400)])
     def test_csc(self, shape):
         dense = brainstate.random.rand(*shape)
@@ -970,6 +1050,8 @@ class Test_diag_add:
         print(dense)
 
         assert jnp.allclose(new_dense, dense)
+
+        jax.block_until_ready((dense, diag, new_dense))
 
     @pytest.mark.parametrize('shape', [(200, 300), (100, 50), (400, 400)])
     def test_csr_and_csc(self, shape):
@@ -990,6 +1072,8 @@ class Test_diag_add:
 
         assert jnp.allclose(new_dense, dense)
 
+        jax.block_until_ready((dense, diag, new_dense))
+
 
 class Test_solve:
     @pytest.mark.parametrize('shape', [(200, 200), (400, 400)])
@@ -1006,6 +1090,8 @@ class Test_solve:
         x2 = jnp.linalg.solve(dense, b)
         assert jnp.allclose(x, x2, atol=1e0, rtol=1e0)
 
+        jax.block_until_ready((dense, b, x, x2))
+
     @pytest.mark.parametrize('shape', [(200, 200), (400, 400)])
     def test_csc(self, shape: brainstate.typing.Shape):
         dense = brainstate.random.rand(*shape)
@@ -1019,3 +1105,5 @@ class Test_solve:
 
         x2 = jnp.linalg.solve(dense, b)
         assert jnp.allclose(x, x2, atol=1e0, rtol=1e0)
+
+        jax.block_until_ready((dense, b, x, x2))
