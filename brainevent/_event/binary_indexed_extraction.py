@@ -56,8 +56,6 @@ def binary_array_index(spikes, *, backend: Optional[str] = None):
 
     See Also
     --------
-    binary_1d_array_index_p_call : 1-D extraction kernel.
-    binary_2d_array_index_p_call : 2-D extraction kernel (not yet implemented).
     """
     if spikes.ndim == 1:
         indices, count = binary_1d_array_index_p_call(spikes, backend=backend)
@@ -299,7 +297,30 @@ def binary_1d_array_index_p_call(spikes, *, backend: Optional[str] = None):
     )
 
 
-binary_1d_array_index_p = XLACustomKernel('binary_1d_array_index')
+binary_1d_array_index_p = XLACustomKernel(
+    'binary_1d_array_index',
+    doc="""
+Low-level XLA custom-kernel primitive for ``binary_array_index``.
+
+This ``XLACustomKernel`` instance dispatches the binary 1D array indexing
+operation to registered backends (``numba``, ``warp``, ``pallas``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+Extracts indices of non-zero elements from a binary event array, enabling
+efficient event-driven processing by identifying which elements are active.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``binary_1d_array_index_p.available_backends(platform)``,
+and the default backend can be configured with ``binary_1d_array_index_p.set_default(platform, backend)``.
+
+See Also
+--------
+binary_array_index : High-level user-facing function wrapper.
+"""
+)
 binary_1d_array_index_p.def_numba_kernel(_binary_1d_array_index_numba_kernel)
 binary_1d_array_index_p.def_warp_kernel(_binary_1d_array_index_warp_kernel)
 binary_1d_array_index_p.def_pallas_kernel('gpu', _binary_1d_array_index_pallas_kernel)

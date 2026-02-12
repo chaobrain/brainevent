@@ -85,7 +85,6 @@ def fcnmv(
     --------
     fcnmm : Float sparse matrix--matrix product with fixed connection number.
     binary_fcnmv : Event-driven (binary) variant.
-    fcnmv_p_call : Lower-level primitive call without unit handling.
 
     Notes
     -----
@@ -561,7 +560,32 @@ def fcnmv_p_call(
     )
 
 
-fcnmv_p = XLACustomKernel('fixed_num_mv')
+fcnmv_p = XLACustomKernel(
+    'fixed_num_mv',
+    doc="""
+Low-level XLA custom-kernel primitive for ``fcnmv``.
+
+This ``XLACustomKernel`` instance dispatches the fixed-connection matrix-vector
+multiplication operation with floating-point weights to registered backends
+(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata provided
+by the high-level wrapper.
+
+Fixed-connection format stores connectivity where each neuron has a fixed number
+of incoming or outgoing connections. Unlike the binary variant, this operation
+uses full floating-point weights and processes all entries (not just spikes).
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``fcnmv_p.available_backends(platform)``,
+and the default backend can be configured with ``fcnmv_p.set_default(platform, backend)``.
+
+See Also
+--------
+fcnmv : High-level user-facing function wrapper.
+"""
+)
 fcnmv_p.def_numba_kernel(_fcnmv_numba_kernel)
 fcnmv_p.def_warp_kernel(_fcnmv_warp_kernel)
 fcnmv_p.def_pallas_kernel('gpu', _fcnmv_pallas_kernel)
@@ -622,7 +646,6 @@ def fcnmm(
     --------
     fcnmv : Float sparse matrix--vector product with fixed connection number.
     binary_fcnmm : Event-driven (binary) variant.
-    fcnmm_p_call : Lower-level primitive call without unit handling.
 
     Notes
     -----
@@ -1118,7 +1141,32 @@ def fcnmm_p_call(
     )
 
 
-fcnmm_p = XLACustomKernel('fixed_num_mm')
+fcnmm_p = XLACustomKernel(
+    'fixed_num_mm',
+    doc="""
+Low-level XLA custom-kernel primitive for ``fcnmm``.
+
+This ``XLACustomKernel`` instance dispatches the fixed-connection matrix-matrix
+multiplication operation with floating-point weights to registered backends
+(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata provided
+by the high-level wrapper.
+
+Fixed-connection format stores connectivity where each neuron has a fixed number
+of incoming or outgoing connections. Unlike the binary variant, this operation
+uses full floating-point weights and processes all entries (not just spikes).
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``fcnmm_p.available_backends(platform)``,
+and the default backend can be configured with ``fcnmm_p.set_default(platform, backend)``.
+
+See Also
+--------
+fcnmm : High-level user-facing function wrapper.
+"""
+)
 fcnmm_p.def_numba_kernel(_fcnmm_numba_kernel)
 fcnmm_p.def_warp_kernel(_fcnmm_warp_kernel)
 fcnmm_p.def_pallas_kernel('gpu', _fcnmm_pallas_kernel)

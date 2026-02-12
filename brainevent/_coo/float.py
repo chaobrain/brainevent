@@ -875,7 +875,34 @@ def coomv_p_call(
     )
 
 
-coomv_p = XLACustomKernel('coomv')
+coomv_p = XLACustomKernel(
+    'coomv',
+    doc="""
+Low-level XLA custom-kernel primitive for ``coomv``.
+
+This ``XLACustomKernel`` instance dispatches the COO sparse matrix-vector
+multiplication with floating-point weights operation to registered backends
+(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata
+provided by the high-level wrapper.
+
+The operation computes ``y[i] = sum_k A[i, k] * v[k]`` when
+``transpose=False`` or ``y[k] = sum_i A[i, k] * v[i]`` when
+``transpose=True``, where ``A`` is a sparse matrix defined by (data, row,
+col) in COO format and ``v`` is a dense vector. This is the standard
+sparse matrix-vector multiplication with full floating-point arithmetic.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``coomv_p.available_backends(platform)``,
+and the default backend can be configured with ``coomv_p.set_default(platform, backend)``.
+
+See Also
+--------
+coomv : High-level user-facing function wrapper.
+"""
+)
 coomv_p.def_numba_kernel(_coomv_numba_kernel)
 coomv_p.def_warp_kernel(_coomv_warp_kernel)
 coomv_p.def_pallas_kernel('gpu', _coomv_pallas_gpu_kernel)
@@ -1498,7 +1525,34 @@ def coomm_p_call(
     )
 
 
-coomm_p = XLACustomKernel('coomm')
+coomm_p = XLACustomKernel(
+    'coomm',
+    doc="""
+Low-level XLA custom-kernel primitive for ``coomm``.
+
+This ``XLACustomKernel`` instance dispatches the COO sparse matrix-matrix
+multiplication with floating-point weights operation to registered backends
+(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata
+provided by the high-level wrapper.
+
+The operation computes ``Y[i, n] = sum_k A[i, k] * B[k, n]`` when
+``transpose=False`` or ``Y[k, n] = sum_i A[i, k] * B[i, n]`` when
+``transpose=True``, where ``A`` is a sparse matrix in COO format and ``B``
+is a dense matrix. This is the standard sparse matrix-matrix multiplication
+with full floating-point arithmetic.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``coomm_p.available_backends(platform)``,
+and the default backend can be configured with ``coomm_p.set_default(platform, backend)``.
+
+See Also
+--------
+coomm : High-level user-facing function wrapper.
+"""
+)
 coomm_p.def_numba_kernel(_coomm_numba_kernel)
 coomm_p.def_warp_kernel(_coomm_warp_kernel)
 coomm_p.def_pallas_kernel('gpu', _coomm_pallas_gpu_kernel)

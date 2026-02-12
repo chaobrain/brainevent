@@ -91,7 +91,6 @@ def binary_fcnmv(
     --------
     binary_fcnmm : Event-driven sparse matrix--matrix product.
     fcnmv : Float (non-event-driven) sparse matrix--vector product.
-    binary_fcnmv_p_call : Lower-level primitive call without unit handling.
 
     Notes
     -----
@@ -398,9 +397,7 @@ def _binary_fcnmv_pallas_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    atomic_add = getattr(pl, "atomic_add", None)
-    if atomic_add is None:
-        from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
+    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
     if len(shape) > 2:
         raise ValueError("shape must be a tuple of length 2")
@@ -445,13 +442,8 @@ def _binary_fcnmv_pallas_kernel(
                 jax.lax.fori_loop(0, pl.cdiv(n_conn, block_dim), loop_fn, None)
 
         def kernel(weights, indices, vector):
-            fn = pl.pallas_call(
-                _raw_kernel,
-                grid=(n_pre,),
-                input_output_aliases={3: 0},
-                out_shape=kwargs['outs'],
-                backend='triton',
-            )
+            fn = pl.pallas_call(_raw_kernel, grid=(n_pre,), input_output_aliases={3: 0},
+                                out_shape=kwargs['outs'], backend='triton')
             out_info = kwargs['outs'][0]
             placeholder = jnp.zeros(out_info.shape, out_info.dtype)
             return fn(weights, indices, vector, placeholder)
@@ -669,7 +661,32 @@ def binary_fcnmv_p_call(
     )
 
 
-binary_fcnmv_p = XLACustomKernel('binary_fcnmv')
+binary_fcnmv_p = XLACustomKernel(
+    'binary_fcnmv',
+    doc="""
+Low-level XLA custom-kernel primitive for ``binary_fcnmv``.
+
+This ``XLACustomKernel`` instance dispatches the binary (event-driven)
+fixed-connection matrix-vector multiplication operation to registered backends
+(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata provided
+by the high-level wrapper.
+
+Fixed-connection format stores connectivity where each neuron has a fixed number
+of incoming or outgoing connections. The event-driven formulation only processes
+active (spiking) neurons, skipping zero entries for efficiency.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``binary_fcnmv_p.available_backends(platform)``,
+and the default backend can be configured with ``binary_fcnmv_p.set_default(platform, backend)``.
+
+See Also
+--------
+binary_fcnmv : High-level user-facing function wrapper.
+"""
+)
 binary_fcnmv_p.def_numba_kernel(_binary_fcnmv_numba_kernel)
 binary_fcnmv_p.def_warp_kernel(_binary_fcnmv_warp_kernel)
 binary_fcnmv_p.def_pallas_kernel('gpu', _binary_fcnmv_pallas_kernel)
@@ -731,7 +748,6 @@ def binary_fcnmm(
     --------
     binary_fcnmv : Event-driven sparse matrix--vector product.
     fcnmm : Float (non-event-driven) sparse matrix--matrix product.
-    binary_fcnmm_p_call : Lower-level primitive call without unit handling.
 
     Notes
     -----
@@ -1206,7 +1222,32 @@ def binary_fcnmm_p_call(
     )
 
 
-binary_fcnmm_p = XLACustomKernel('binary_fcnmm')
+binary_fcnmm_p = XLACustomKernel(
+    'binary_fcnmm',
+    doc="""
+Low-level XLA custom-kernel primitive for ``binary_fcnmm``.
+
+This ``XLACustomKernel`` instance dispatches the binary (event-driven)
+fixed-connection matrix-matrix multiplication operation to registered backends
+(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata provided
+by the high-level wrapper.
+
+Fixed-connection format stores connectivity where each neuron has a fixed number
+of incoming or outgoing connections. The event-driven formulation only processes
+active (spiking) entries, skipping zero entries for efficiency.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``binary_fcnmm_p.available_backends(platform)``,
+and the default backend can be configured with ``binary_fcnmm_p.set_default(platform, backend)``.
+
+See Also
+--------
+binary_fcnmm : High-level user-facing function wrapper.
+"""
+)
 binary_fcnmm_p.def_numba_kernel(_binary_fcnmm_numba_kernel)
 binary_fcnmm_p.def_pallas_kernel('gpu', _binary_fcnmm_pallas_kernel)
 binary_fcnmm_p.def_jvp_rule2(_binary_fcnmm_jvp_weights, None, _binary_fcnmm_jvp_matrix, None)

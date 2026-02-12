@@ -85,7 +85,6 @@ def binary_densemv(weights, spikes, *, transpose, backend: Optional[str] = None)
     See Also
     --------
     binary_densemm : Matrix-matrix variant of binary dense multiplication.
-    binary_densemv_p_call : Low-level primitive call without unit handling.
 
     Notes
     -----
@@ -494,7 +493,31 @@ def binary_densemv_p_call(weights, spikes, *, transpose, backend: Optional[str] 
     )
 
 
-binary_densemv_p = XLACustomKernel('binary_densemv')
+binary_densemv_p = XLACustomKernel(
+    'binary_densemv',
+    doc="""
+Low-level XLA custom-kernel primitive for ``binary_densemv``.
+
+This ``XLACustomKernel`` instance dispatches the binary (event-driven) dense
+matrix-vector multiplication operation to registered backends (``numba``, ``warp``,
+``pallas``), using runtime shape/dtype metadata provided by the high-level wrapper.
+
+The operation computes ``weights[m,k] @ spikes[k] -> out[m]`` when ``transpose=False``,
+or ``spikes[k] @ weights[k,n] -> out[n]`` when ``transpose=True``, where only active
+(nonzero) spike entries contribute to the output.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``binary_densemv_p.available_backends(platform)``,
+and the default backend can be configured with ``binary_densemv_p.set_default(platform, backend)``.
+
+See Also
+--------
+binary_densemv : High-level user-facing function wrapper.
+"""
+)
 binary_densemv_p.def_numba_kernel(_binary_densemv_numba_kernel)
 binary_densemv_p.def_warp_kernel(_binary_densemv_warp_kernel)
 binary_densemv_p.def_pallas_kernel('gpu', _binary_densemv_pallas_kernel)
@@ -557,7 +580,6 @@ def binary_densemm(weights, spikes, *, transpose, backend: Optional[str] = None)
     See Also
     --------
     binary_densemv : Matrix-vector variant of binary dense multiplication.
-    binary_densemm_p_call : Low-level primitive call without unit handling.
 
     Notes
     -----
@@ -1118,7 +1140,31 @@ def binary_densemm_p_call(weights, spikes, *, transpose, backend: Optional[str] 
     )
 
 
-binary_densemm_p = XLACustomKernel('binary_densemm')
+binary_densemm_p = XLACustomKernel(
+    'binary_densemm',
+    doc="""
+Low-level XLA custom-kernel primitive for ``binary_densemm``.
+
+This ``XLACustomKernel`` instance dispatches the binary (event-driven) dense
+matrix-matrix multiplication operation to registered backends (``numba``, ``warp``,
+``pallas``), using runtime shape/dtype metadata provided by the high-level wrapper.
+
+The operation computes ``weights[m,k] @ spikes[k,n] -> out[m,n]`` when ``transpose=False``,
+or ``weights[k,m].T @ spikes[k,n] -> out[m,n]`` when ``transpose=True``, where only active
+(nonzero) spike entries contribute to the output.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``binary_densemm_p.available_backends(platform)``,
+and the default backend can be configured with ``binary_densemm_p.set_default(platform, backend)``.
+
+See Also
+--------
+binary_densemm : High-level user-facing function wrapper.
+"""
+)
 binary_densemm_p.def_numba_kernel(_binary_densemm_numba_kernel)
 binary_densemm_p.def_warp_kernel(_binary_densemm_warp_kernel)
 binary_densemm_p.def_pallas_kernel('gpu', _binary_densemm_pallas_kernel)

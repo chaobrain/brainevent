@@ -297,7 +297,7 @@ def _coo_on_pre_pallas_kernel(
     return run
 
 
-def _coo_pre_benchmark_data(*, platform):
+def _coo_on_pre_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for bool_event in (True, False):
@@ -411,13 +411,40 @@ def _coo_on_pre_prim_call(
     )
 
 
-update_coo_on_binary_pre_p = XLACustomKernel('coo_on_pre')
+update_coo_on_binary_pre_p = XLACustomKernel(
+    'coo_on_pre',
+    doc="""
+Low-level XLA custom-kernel primitive for ``update_coo_on_binary_pre``.
+
+This ``XLACustomKernel`` instance dispatches the COO weight update for
+pre-synaptic binary plasticity operation to registered backends (``numba``,
+``warp``, ``pallas``), using runtime shape/dtype metadata provided by the
+high-level wrapper.
+
+For each synapse ``i`` in COO format, if the presynaptic neuron fires
+(``pre_spike[pre_ids[i]]`` is nonzero), the weight is updated as
+``weight[i] += post_trace[post_ids[i]]``. This implements the presynaptic
+half of a spike-timing-dependent plasticity (STDP) rule, where the update
+magnitude depends on the postsynaptic eligibility trace.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``update_coo_on_binary_pre_p.available_backends(platform)``,
+and the default backend can be configured with ``update_coo_on_binary_pre_p.set_default(platform, backend)``.
+
+See Also
+--------
+update_coo_on_binary_pre : High-level user-facing function wrapper.
+"""
+)
 update_coo_on_binary_pre_p.def_numba_kernel(_coo_on_pre_numba_kernel)
 update_coo_on_binary_pre_p.def_warp_kernel(_coo_on_pre_warp_kernel)
 update_coo_on_binary_pre_p.def_pallas_kernel('gpu', _coo_on_pre_pallas_kernel)
 update_coo_on_binary_pre_p.def_call(_coo_on_pre_prim_call)
 update_coo_on_binary_pre_p.def_tags('coo', 'plasticity')
-update_coo_on_binary_pre_p.def_benchmark_data(_coo_pre_benchmark_data)
+update_coo_on_binary_pre_p.def_benchmark_data(_coo_on_pre_benchmark_data)
 
 
 # =============================================================================
@@ -688,7 +715,7 @@ def _coo_on_post_pallas_kernel(
     return run
 
 
-def _coo_post_benchmark_data(*, platform):
+def _coo_on_post_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
     for bool_event in (True, False):
@@ -803,10 +830,37 @@ def _coo_on_post_prim_call(
     )
 
 
-update_coo_on_binary_post_p = XLACustomKernel('coo_on_post')
+update_coo_on_binary_post_p = XLACustomKernel(
+    'coo_on_post',
+    doc="""
+Low-level XLA custom-kernel primitive for ``update_coo_on_binary_post``.
+
+This ``XLACustomKernel`` instance dispatches the COO weight update for
+post-synaptic binary plasticity operation to registered backends (``numba``,
+``warp``, ``pallas``), using runtime shape/dtype metadata provided by the
+high-level wrapper.
+
+For each synapse ``i`` in COO format, if the postsynaptic neuron fires
+(``post_spike[post_ids[i]]`` is nonzero), the weight is updated as
+``weight[i] += pre_trace[pre_ids[i]]``. This implements the postsynaptic
+half of a spike-timing-dependent plasticity (STDP) rule, where the update
+magnitude depends on the presynaptic eligibility trace.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``update_coo_on_binary_post_p.available_backends(platform)``,
+and the default backend can be configured with ``update_coo_on_binary_post_p.set_default(platform, backend)``.
+
+See Also
+--------
+update_coo_on_binary_post : High-level user-facing function wrapper.
+"""
+)
 update_coo_on_binary_post_p.def_numba_kernel(_coo_on_post_numba_kernel)
 update_coo_on_binary_post_p.def_warp_kernel(_coo_on_post_warp_kernel)
 update_coo_on_binary_post_p.def_pallas_kernel('gpu', _coo_on_post_pallas_kernel)
 update_coo_on_binary_post_p.def_call(_coo_on_post_prim_call)
 update_coo_on_binary_post_p.def_tags('coo', 'plasticity')
-update_coo_on_binary_post_p.def_benchmark_data(_coo_post_benchmark_data)
+update_coo_on_binary_post_p.def_benchmark_data(_coo_on_post_benchmark_data)

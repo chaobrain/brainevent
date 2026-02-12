@@ -93,7 +93,6 @@ def spfloat_fcnmv(
     spfloat_fcnmm : Sparse-float event-driven matrix--matrix product.
     binary_fcnmv : Binary event-driven variant (ignores spike values).
     fcnmv : Dense float variant (no event-driven skipping).
-    spfloat_fcnmv_p_call : Lower-level primitive call without unit handling.
 
     Notes
     -----
@@ -565,7 +564,33 @@ def spfloat_fcnmv_p_call(
     )
 
 
-spfloat_fcnmv_p = XLACustomKernel('spfloat_fcnmv')
+spfloat_fcnmv_p = XLACustomKernel(
+    'spfloat_fcnmv',
+    doc="""
+Low-level XLA custom-kernel primitive for ``spfloat_fcnmv``.
+
+This ``XLACustomKernel`` instance dispatches the fixed-connection matrix-vector
+multiplication operation with sparse-float inputs to registered backends
+(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata provided
+by the high-level wrapper.
+
+Fixed-connection format stores connectivity where each neuron has a fixed number
+of incoming or outgoing connections. This sparse-float variant skips zero entries
+in the input vector while preserving their actual floating-point values (unlike
+the binary variant which treats all non-zero entries as 1).
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``spfloat_fcnmv_p.available_backends(platform)``,
+and the default backend can be configured with ``spfloat_fcnmv_p.set_default(platform, backend)``.
+
+See Also
+--------
+spfloat_fcnmv : High-level user-facing function wrapper.
+"""
+)
 spfloat_fcnmv_p.def_numba_kernel(_spfloat_fcnmv_numba_kernel)
 spfloat_fcnmv_p.def_warp_kernel(_spfloat_fcnmv_warp_kernel)
 spfloat_fcnmv_p.def_pallas_kernel('gpu', _spfloat_fcnmv_pallas_kernel)
@@ -629,7 +654,6 @@ def spfloat_fcnmm(
     spfloat_fcnmv : Sparse-float event-driven matrix--vector product.
     binary_fcnmm : Binary event-driven variant.
     fcnmm : Dense float variant.
-    spfloat_fcnmm_p_call : Lower-level primitive call without unit handling.
 
     Notes
     -----
@@ -1124,7 +1148,33 @@ def spfloat_fcnmm_p_call(
     )
 
 
-spfloat_fcnmm_p = XLACustomKernel('spfloat_fcnmm')
+spfloat_fcnmm_p = XLACustomKernel(
+    'spfloat_fcnmm',
+    doc="""
+Low-level XLA custom-kernel primitive for ``spfloat_fcnmm``.
+
+This ``XLACustomKernel`` instance dispatches the fixed-connection matrix-matrix
+multiplication operation with sparse-float inputs to registered backends
+(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata provided
+by the high-level wrapper.
+
+Fixed-connection format stores connectivity where each neuron has a fixed number
+of incoming or outgoing connections. This sparse-float variant skips zero entries
+in the input matrix while preserving their actual floating-point values (unlike
+the binary variant which treats all non-zero entries as 1).
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``spfloat_fcnmm_p.available_backends(platform)``,
+and the default backend can be configured with ``spfloat_fcnmm_p.set_default(platform, backend)``.
+
+See Also
+--------
+spfloat_fcnmm : High-level user-facing function wrapper.
+"""
+)
 spfloat_fcnmm_p.def_numba_kernel(_spfloat_fcnmm_numba_kernel)
 spfloat_fcnmm_p.def_warp_kernel(_spfloat_fcnmm_warp_kernel)
 spfloat_fcnmm_p.def_pallas_kernel('gpu', _spfloat_fcnmm_pallas_kernel)

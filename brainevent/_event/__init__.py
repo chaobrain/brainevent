@@ -16,13 +16,19 @@
 
 from .base import EventRepresentation, IndexedEventRepresentation
 from .binary import BinaryArray
+from .binary_indexed import IndexedBinary1d, IndexedBinary2d
 from .binary_indexed_extraction import binary_array_index
 from .sparse_float import SparseFloat
+from .sparse_float_indexed import IndexedSpFloat1d, IndexedSpFloat2d
 
 __all__ = [
     'EventRepresentation',
     'IndexedEventRepresentation',
     'BinaryArray',
+    'IndexedBinary1d',
+    'IndexedBinary2d',
     'SparseFloat',
+    'IndexedSpFloat1d',
+    'IndexedSpFloat2d',
     'binary_array_index',
 ]

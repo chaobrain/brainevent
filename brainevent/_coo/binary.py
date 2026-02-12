@@ -112,7 +112,6 @@ def binary_coomv(
     See Also
     --------
     binary_coomm : Event-driven COO sparse matrix-matrix multiplication.
-    binary_coomv_p_call : Lower-level primitive call without unit handling.
     coomv : Standard (non-event-driven) COO sparse matrix-vector multiplication.
 
     Notes
@@ -218,7 +217,6 @@ def binary_coomm(
     See Also
     --------
     binary_coomv : Event-driven COO sparse matrix-vector multiplication.
-    binary_coomm_p_call : Lower-level primitive call without unit handling.
     coomm : Standard (non-event-driven) COO sparse matrix-matrix multiplication.
 
     Notes
@@ -948,8 +946,6 @@ def binary_coomv_p_call(
     See Also
     --------
     binary_coomv : High-level wrapper with physical unit support.
-    binary_coomm_p_call : Primitive call for event-driven matrix-matrix multiplication.
-    coomv_p_call : Primitive call for standard COO matrix-vector multiplication.
 
     Notes
     -----
@@ -1028,7 +1024,34 @@ def binary_coomv_p_call(
     )
 
 
-binary_coomv_p = XLACustomKernel('binary_coomv')
+binary_coomv_p = XLACustomKernel(
+    'binary_coomv',
+    doc="""
+Low-level XLA custom-kernel primitive for ``binary_coomv``.
+
+This ``XLACustomKernel`` instance dispatches the binary (event-driven) COO
+sparse matrix-vector multiplication operation to registered backends
+(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata
+provided by the high-level wrapper.
+
+The operation computes ``result[i] = sum_j A[i, j] * (v[j] > 0)`` when
+``transpose=False`` or ``result[j] = sum_i A[i, j] * (v[i] > 0)`` when
+``transpose=True``, where only active (nonzero) events in ``v`` contribute
+to the output. This makes the operation efficient for spike-based neural
+network simulations.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``binary_coomv_p.available_backends(platform)``,
+and the default backend can be configured with ``binary_coomv_p.set_default(platform, backend)``.
+
+See Also
+--------
+binary_coomv : High-level user-facing function wrapper.
+"""
+)
 binary_coomv_p.def_numba_kernel(_coomv_numba_kernel)
 binary_coomv_p.def_warp_kernel(_coomv_warp_kernel)
 binary_coomv_p.def_pallas_kernel('gpu', _coomv_pallas_gpu_kernel)
@@ -1791,8 +1814,6 @@ def binary_coomm_p_call(
     See Also
     --------
     binary_coomm : High-level wrapper with physical unit support.
-    binary_coomv_p_call : Primitive call for event-driven matrix-vector multiplication.
-    coomm_p_call : Primitive call for standard COO matrix-matrix multiplication.
 
     Notes
     -----
@@ -1868,7 +1889,34 @@ def binary_coomm_p_call(
     )
 
 
-binary_coomm_p = XLACustomKernel('binary_coomm')
+binary_coomm_p = XLACustomKernel(
+    'binary_coomm',
+    doc="""
+Low-level XLA custom-kernel primitive for ``binary_coomm``.
+
+This ``XLACustomKernel`` instance dispatches the binary (event-driven) COO
+sparse matrix-matrix multiplication operation to registered backends
+(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata
+provided by the high-level wrapper.
+
+The operation computes ``result[i, n] = sum_j A[i, j] * (B[j, n] > 0)`` when
+``transpose=False`` or ``result[j, n] = sum_i A[i, j] * (B[i, n] > 0)`` when
+``transpose=True``, where only active (nonzero) events in the dense matrix
+``B`` contribute to the output. This is efficient for processing batches of
+spike events in neural network simulations.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``binary_coomm_p.available_backends(platform)``,
+and the default backend can be configured with ``binary_coomm_p.set_default(platform, backend)``.
+
+See Also
+--------
+binary_coomm : High-level user-facing function wrapper.
+"""
+)
 binary_coomm_p.def_numba_kernel(_coomm_numba_kernel)
 binary_coomm_p.def_warp_kernel(_coomm_warp_kernel)
 binary_coomm_p.def_pallas_kernel('gpu', _coomm_pallas_gpu_kernel)

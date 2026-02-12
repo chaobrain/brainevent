@@ -103,7 +103,6 @@ def binary_jitumv(
 
     See Also
     --------
-    binary_jitumv_p_call : Lower-level primitive call with pre-processed arguments.
     binary_jitumm : Event-driven matrix-matrix variant.
     jitumv : Float (non-event) matrix-vector variant.
 
@@ -227,7 +226,6 @@ def binary_jitumm(
 
     See Also
     --------
-    binary_jitumm_p_call : Lower-level primitive call with pre-processed arguments.
     binary_jitumv : Event-driven matrix-vector variant.
     jitumm : Float (non-event) matrix-matrix variant.
 
@@ -1100,7 +1098,31 @@ def binary_jitumv_p_call(
     )
 
 
-binary_jitumv_p = XLACustomKernel('binary_jitumv')
+binary_jitumv_p = XLACustomKernel(
+    'binary_jitumv',
+    doc="""
+Low-level XLA custom-kernel primitive for ``binary_jitumv``.
+
+This ``XLACustomKernel`` instance dispatches the binary (event-driven) JIT uniform connectivity
+matrix-vector multiplication operation to registered backends (``numba``, ``warp``, ``pallas``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+In this operation, the connectivity matrix has weights uniformly distributed between specified
+bounds, and the input vector is treated as binary events (spikes). Only active events
+contribute to the output computation.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``binary_jitumv_p.available_backends(platform)``,
+and the default backend can be configured with ``binary_jitumv_p.set_default(platform, backend)``.
+
+See Also
+--------
+binary_jitumv : High-level user-facing function wrapper.
+"""
+)
 binary_jitumv_p.def_numba_kernel(_jitumv_numba_kernel_generator)
 binary_jitumv_p.def_warp_kernel(_jitumv_warp_kernel_generator)
 binary_jitumv_p.def_pallas_kernel('gpu', _jitumv_pallas_kernel_generator)
@@ -1977,7 +1999,31 @@ def binary_jitumm_p_call(
     )
 
 
-binary_jitumm_p = XLACustomKernel('binary_jitumm')
+binary_jitumm_p = XLACustomKernel(
+    'binary_jitumm',
+    doc="""
+Low-level XLA custom-kernel primitive for ``binary_jitumm``.
+
+This ``XLACustomKernel`` instance dispatches the binary (event-driven) JIT uniform connectivity
+matrix-matrix multiplication operation to registered backends (``numba``, ``warp``, ``pallas``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+In this operation, the connectivity matrix has weights uniformly distributed between specified
+bounds, and the input matrix is treated as binary events (spikes). Each column of the input
+is processed independently as an event vector.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``binary_jitumm_p.available_backends(platform)``,
+and the default backend can be configured with ``binary_jitumm_p.set_default(platform, backend)``.
+
+See Also
+--------
+binary_jitumm : High-level user-facing function wrapper.
+"""
+)
 binary_jitumm_p.def_numba_kernel(_jitumm_numba_kernel_generator)
 binary_jitumm_p.def_warp_kernel(_jitumm_warp_kernel_generator)
 binary_jitumm_p.def_pallas_kernel('gpu', _jitumm_pallas_kernel_generator)

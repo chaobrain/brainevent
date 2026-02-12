@@ -94,8 +94,6 @@ def csrmv(
 
     See Also
     --------
-    csrmv_p_call : Low-level primitive call for CSR matrix--vector
-        multiplication.
     csrmm : CSR matrix--matrix multiplication.
     binary_csrmv : Event-driven (binary) CSR matrix--vector multiplication.
 
@@ -698,8 +696,6 @@ def csrmv_p_call(
     See Also
     --------
     csrmv : High-level wrapper with unit support.
-    csrmm_p_call : Low-level primitive call for CSR matrix--matrix
-        multiplication.
 
     Notes
     -----
@@ -766,7 +762,30 @@ def csrmv_p_call(
     )
 
 
-csrmv_p = XLACustomKernel('csrmv')
+csrmv_p = XLACustomKernel(
+    'csrmv',
+    doc="""
+Low-level XLA custom-kernel primitive for ``csrmv``.
+
+This ``XLACustomKernel`` instance dispatches the CSR sparse matrix-vector multiplication with floating-point weights
+operation to registered backends (``numba``, ``warp``, ``pallas``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+All elements of the input vector contribute to the result, regardless of sign or magnitude,
+performing standard sparse matrix-vector multiplication with explicit floating-point weights.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``csrmv_p.available_backends(platform)``,
+and the default backend can be configured with ``csrmv_p.set_default(platform, backend)``.
+
+See Also
+--------
+csrmv : High-level user-facing function wrapper.
+"""
+)
 csrmv_p.def_numba_kernel(_csrmv_numba_kernel_generator)
 csrmv_p.def_warp_kernel(_csrmv_warp_kernel_generator)
 csrmv_p.def_pallas_kernel('gpu', _csrmv_pallas_kernel_generator)
@@ -830,8 +849,6 @@ def csrmm(
 
     See Also
     --------
-    csrmm_p_call : Low-level primitive call for CSR matrix--matrix
-        multiplication.
     csrmv : CSR matrix--vector multiplication.
     binary_csrmm : Event-driven (binary) CSR matrix--matrix multiplication.
 
@@ -1495,8 +1512,6 @@ def csrmm_p_call(
     See Also
     --------
     csrmm : High-level wrapper with unit support.
-    csrmv_p_call : Low-level primitive call for CSR matrix--vector
-        multiplication.
 
     Notes
     -----
@@ -1565,7 +1580,30 @@ def csrmm_p_call(
     )
 
 
-csrmm_p = XLACustomKernel('csrmm')
+csrmm_p = XLACustomKernel(
+    'csrmm',
+    doc="""
+Low-level XLA custom-kernel primitive for ``csrmm``.
+
+This ``XLACustomKernel`` instance dispatches the CSR sparse matrix-matrix multiplication with floating-point weights
+operation to registered backends (``numba``, ``warp``, ``pallas``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+All elements of the input matrix contribute to the result, performing standard
+sparse matrix-matrix multiplication with explicit floating-point weights.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``csrmm_p.available_backends(platform)``,
+and the default backend can be configured with ``csrmm_p.set_default(platform, backend)``.
+
+See Also
+--------
+csrmm : High-level user-facing function wrapper.
+"""
+)
 csrmm_p.def_numba_kernel(_csrmm_numba_kernel_generator)
 csrmm_p.def_warp_kernel(_csrmm_warp_kernel_generator)
 csrmm_p.def_pallas_kernel('gpu', _csrmm_pallas_kernel_generator)
@@ -1635,7 +1673,6 @@ def csrmv_yw2y(
 
     See Also
     --------
-    csrmv_yw2y_p_call : Low-level primitive call for this operation.
     csrmv : Standard CSR matrix--vector multiplication.
 
     Notes
@@ -2019,7 +2056,31 @@ def csrmv_yw2y_p_call(
     )
 
 
-csrmv_yw2y_p = XLACustomKernel('csrmv_yw2y')
+csrmv_yw2y_p = XLACustomKernel(
+    'csrmv_yw2y',
+    doc="""
+Low-level XLA custom-kernel primitive for ``csrmv_yw2y``.
+
+This ``XLACustomKernel`` instance dispatches the CSR sparse matrix-vector multiplication with element-wise product (y * W -> y)
+operation to registered backends (``numba``, ``warp``, ``pallas``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+For each non-zero entry at position (row, col) in the CSR matrix, computes
+out[j] = w[j] * y[row] (non-transposed) or out[j] = w[j] * y[col] (transposed),
+producing one output element per structural non-zero.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``csrmv_yw2y_p.available_backends(platform)``,
+and the default backend can be configured with ``csrmv_yw2y_p.set_default(platform, backend)``.
+
+See Also
+--------
+csrmv_yw2y : High-level user-facing function wrapper.
+"""
+)
 csrmv_yw2y_p.def_numba_kernel(_csrmv_yw2y_numba_kernels)
 csrmv_yw2y_p.def_warp_kernel(_csrmv_yw2y_warp_kernel_generator)
 csrmv_yw2y_p.def_pallas_kernel('gpu', _csrmv_yw2y_pallas_kernels)
