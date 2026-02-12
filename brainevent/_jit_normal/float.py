@@ -696,7 +696,6 @@ def jitn_p_call(
     See Also
     --------
     jitn : High-level wrapper with unit support.
-    jitnmv_p_call : Low-level matrix-vector multiply primitive.
 
     Notes
     -----
@@ -1182,8 +1181,6 @@ def jitnmv_p_call(
     See Also
     --------
     jitnmv : High-level wrapper with unit support.
-    jitn_p_call : Matrix materialisation primitive.
-    jitnmm_p_call : Matrix-matrix multiply primitive.
 
     Notes
     -----
@@ -1773,8 +1770,6 @@ def jitnmm_p_call(
     See Also
     --------
     jitnmm : High-level wrapper with unit support.
-    jitn_p_call : Matrix materialisation primitive.
-    jitnmv_p_call : Matrix-vector multiply primitive.
 
     Notes
     -----

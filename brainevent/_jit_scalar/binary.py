@@ -954,7 +954,6 @@ def binary_jitsmv_p_call(
     See Also
     --------
     binary_jitsmv : High-level function with unit handling.
-    binary_jitsmm_p_call : Low-level matrix-matrix variant.
     """
 
     weight = jnp.atleast_1d(weight)
@@ -1725,7 +1724,6 @@ def binary_jitsmm_p_call(
     See Also
     --------
     binary_jitsmm : High-level function with unit handling.
-    binary_jitsmv_p_call : Low-level matrix-vector variant.
     """
     weight = jnp.atleast_1d(weight)
     clen = jnp.atleast_1d(clen)

@@ -85,7 +85,6 @@ def fcnmv(
     --------
     fcnmm : Float sparse matrix--matrix product with fixed connection number.
     binary_fcnmv : Event-driven (binary) variant.
-    fcnmv_p_call : Lower-level primitive call without unit handling.
 
     Notes
     -----
@@ -647,7 +646,6 @@ def fcnmm(
     --------
     fcnmv : Float sparse matrix--vector product with fixed connection number.
     binary_fcnmm : Event-driven (binary) variant.
-    fcnmm_p_call : Lower-level primitive call without unit handling.
 
     Notes
     -----

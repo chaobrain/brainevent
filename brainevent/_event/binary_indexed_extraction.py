@@ -56,8 +56,6 @@ def binary_array_index(spikes, *, backend: Optional[str] = None):
 
     See Also
     --------
-    binary_1d_array_index_p_call : 1-D extraction kernel.
-    binary_2d_array_index_p_call : 2-D extraction kernel (not yet implemented).
     """
     if spikes.ndim == 1:
         indices, count = binary_1d_array_index_p_call(spikes, backend=backend)

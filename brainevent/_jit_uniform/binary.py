@@ -103,7 +103,6 @@ def binary_jitumv(
 
     See Also
     --------
-    binary_jitumv_p_call : Lower-level primitive call with pre-processed arguments.
     binary_jitumm : Event-driven matrix-matrix variant.
     jitumv : Float (non-event) matrix-vector variant.
 
@@ -227,7 +226,6 @@ def binary_jitumm(
 
     See Also
     --------
-    binary_jitumm_p_call : Lower-level primitive call with pre-processed arguments.
     binary_jitumv : Event-driven matrix-vector variant.
     jitumm : Float (non-event) matrix-matrix variant.
 

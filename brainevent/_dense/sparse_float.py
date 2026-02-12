@@ -91,7 +91,6 @@ def spfloat_densemv(weights, spikes, *, transpose, backend: Optional[str] = None
     --------
     dsfmv : Alias for ``spfloat_densemv(..., transpose=False)``.
     sfdvm : Alias for ``spfloat_densemv(..., transpose=True)``.
-    spfloat_densemv_p_call : Low-level primitive call without unit handling.
 
     Notes
     -----
@@ -602,7 +601,6 @@ def spfloat_densemm(weights, spikes, *, transpose, backend: Optional[str] = None
     See Also
     --------
     spfloat_densemv : Matrix-vector variant of sparse-float dense multiplication.
-    spfloat_densemm_p_call : Low-level primitive call without unit handling.
 
     Notes
     -----

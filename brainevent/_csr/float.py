@@ -94,8 +94,6 @@ def csrmv(
 
     See Also
     --------
-    csrmv_p_call : Low-level primitive call for CSR matrix--vector
-        multiplication.
     csrmm : CSR matrix--matrix multiplication.
     binary_csrmv : Event-driven (binary) CSR matrix--vector multiplication.
 
@@ -698,8 +696,6 @@ def csrmv_p_call(
     See Also
     --------
     csrmv : High-level wrapper with unit support.
-    csrmm_p_call : Low-level primitive call for CSR matrix--matrix
-        multiplication.
 
     Notes
     -----
@@ -853,8 +849,6 @@ def csrmm(
 
     See Also
     --------
-    csrmm_p_call : Low-level primitive call for CSR matrix--matrix
-        multiplication.
     csrmv : CSR matrix--vector multiplication.
     binary_csrmm : Event-driven (binary) CSR matrix--matrix multiplication.
 
@@ -1518,8 +1512,6 @@ def csrmm_p_call(
     See Also
     --------
     csrmm : High-level wrapper with unit support.
-    csrmv_p_call : Low-level primitive call for CSR matrix--vector
-        multiplication.
 
     Notes
     -----
@@ -1681,7 +1673,6 @@ def csrmv_yw2y(
 
     See Also
     --------
-    csrmv_yw2y_p_call : Low-level primitive call for this operation.
     csrmv : Standard CSR matrix--vector multiplication.
 
     Notes

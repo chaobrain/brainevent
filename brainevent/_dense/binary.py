@@ -85,7 +85,6 @@ def binary_densemv(weights, spikes, *, transpose, backend: Optional[str] = None)
     See Also
     --------
     binary_densemm : Matrix-matrix variant of binary dense multiplication.
-    binary_densemv_p_call : Low-level primitive call without unit handling.
 
     Notes
     -----
@@ -581,7 +580,6 @@ def binary_densemm(weights, spikes, *, transpose, backend: Optional[str] = None)
     See Also
     --------
     binary_densemv : Matrix-vector variant of binary dense multiplication.
-    binary_densemm_p_call : Low-level primitive call without unit handling.
 
     Notes
     -----
