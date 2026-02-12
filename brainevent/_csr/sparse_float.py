@@ -879,7 +879,30 @@ def sparse_float_csrmv_p_call(
     )
 
 
-spfloat_csrmv_p = XLACustomKernel('sparse_float_csrmv')
+spfloat_csrmv_p = XLACustomKernel(
+    'sparse_float_csrmv',
+    doc="""
+Low-level XLA custom-kernel primitive for ``spfloat_csrmv``.
+
+This ``XLACustomKernel`` instance dispatches the CSR sparse matrix-vector multiplication with sparse-float inputs
+operation to registered backends (``numba``, ``pallas``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+Performs standard sparse matrix-vector multiplication with explicit floating-point weights,
+skipping zero-valued entries in the input vector for efficiency.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``spfloat_csrmv_p.available_backends(platform)``,
+and the default backend can be configured with ``spfloat_csrmv_p.set_default(platform, backend)``.
+
+See Also
+--------
+spfloat_csrmv : High-level user-facing function wrapper.
+"""
+)
 spfloat_csrmv_p.def_numba_kernel(_sparse_float_csrmv_numba_kernel)
 spfloat_csrmv_p.def_pallas_kernel('gpu', _sparse_float_csrmv_pallas_kernel)
 spfloat_csrmv_p.def_pallas_kernel('tpu', _sparse_float_csrmv_pallas_kernel)
@@ -1459,7 +1482,30 @@ def sparse_float_csrmm_p_call(
     )
 
 
-spfloat_csrmm_p = XLACustomKernel('sparse_float_csrmm')
+spfloat_csrmm_p = XLACustomKernel(
+    'sparse_float_csrmm',
+    doc="""
+Low-level XLA custom-kernel primitive for ``spfloat_csrmm``.
+
+This ``XLACustomKernel`` instance dispatches the CSR sparse matrix-matrix multiplication with sparse-float inputs
+operation to registered backends (``numba``, ``pallas``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+Performs standard sparse matrix-matrix multiplication with explicit floating-point weights,
+skipping zero-valued entries in the input matrix for efficiency.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``spfloat_csrmm_p.available_backends(platform)``,
+and the default backend can be configured with ``spfloat_csrmm_p.set_default(platform, backend)``.
+
+See Also
+--------
+spfloat_csrmm : High-level user-facing function wrapper.
+"""
+)
 spfloat_csrmm_p.def_numba_kernel(_sparse_float_csrmm_numba_kernel)
 spfloat_csrmm_p.def_pallas_kernel('gpu', _sparse_float_csrmm_pallas_kernel)
 spfloat_csrmm_p.def_pallas_kernel('tpu', _sparse_float_csrmm_pallas_kernel)

@@ -413,7 +413,31 @@ def csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, shap
     )
 
 
-update_csr_on_binary_pre_p = XLACustomKernel('binary_csr_plast')
+update_csr_on_binary_pre_p = XLACustomKernel(
+    'binary_csr_plast',
+    doc="""
+Low-level XLA custom-kernel primitive for ``update_csr_on_binary_pre``.
+
+This ``XLACustomKernel`` instance dispatches the CSR weight update for pre-synaptic binary plasticity
+operation to registered backends (``numba``, ``warp``, ``pallas``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+For each presynaptic neuron that fires, updates all outgoing synaptic weights
+by adding the corresponding postsynaptic trace values, implementing the pre-synaptic
+component of spike-timing-dependent plasticity (STDP).
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``update_csr_on_binary_pre_p.available_backends(platform)``,
+and the default backend can be configured with ``update_csr_on_binary_pre_p.set_default(platform, backend)``.
+
+See Also
+--------
+update_csr_on_binary_pre : High-level user-facing function wrapper.
+"""
+)
 update_csr_on_binary_pre_p.def_numba_kernel(_csr_on_pre_numba_kernel_generator)
 update_csr_on_binary_pre_p.def_warp_kernel(_csr_on_pre_warp_kernel_generator)
 update_csr_on_binary_pre_p.def_pallas_kernel('gpu', partial(_csr_on_pre_pallas_kernel_generator, 'triton'))
@@ -836,7 +860,32 @@ def csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace
     )
 
 
-update_csr_on_binary_post_p = XLACustomKernel('csr2csc_on_post')
+update_csr_on_binary_post_p = XLACustomKernel(
+    'csr2csc_on_post',
+    doc="""
+Low-level XLA custom-kernel primitive for ``update_csr_on_binary_post``.
+
+This ``XLACustomKernel`` instance dispatches the CSR weight update for post-synaptic binary plasticity (CSR to CSC conversion)
+operation to registered backends (``numba``, ``warp``, ``pallas``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+For each postsynaptic neuron that fires, updates all incoming synaptic weights
+by adding the corresponding presynaptic trace values, implementing the post-synaptic
+component of spike-timing-dependent plasticity (STDP). Uses a CSC structure internally
+for efficient iteration over postsynaptic spikes.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``update_csr_on_binary_post_p.available_backends(platform)``,
+and the default backend can be configured with ``update_csr_on_binary_post_p.set_default(platform, backend)``.
+
+See Also
+--------
+update_csr_on_binary_post : High-level user-facing function wrapper.
+"""
+)
 update_csr_on_binary_post_p.def_numba_kernel(_csr2csc_on_post_numba_kernel_generator)
 update_csr_on_binary_post_p.def_warp_kernel(_csr2csc_on_post_warp_kernel_generator)
 update_csr_on_binary_post_p.def_pallas_kernel('gpu', partial(_csr2csc_on_post_pallas_kernel_generator, 'triton'))

@@ -750,7 +750,31 @@ def jitn_p_call(
     )
 
 
-jitn_p = XLACustomKernel('float_jitn')
+jitn_p = XLACustomKernel(
+    'float_jitn',
+    doc="""
+Low-level XLA custom-kernel primitive for ``jitn``.
+
+This ``XLACustomKernel`` instance dispatches the JIT normal connectivity matrix generation
+operation to registered backends (``numba``, ``warp``, ``pallas``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+This operation generates a sparse connectivity matrix where weights are normally distributed
+with specified mean and standard deviation. The connectivity pattern is generated on-the-fly
+using a deterministic PRNG seeded by the provided seed value.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``jitn_p.available_backends(platform)``,
+and the default backend can be configured with ``jitn_p.set_default(platform, backend)``.
+
+See Also
+--------
+jitn : High-level user-facing function wrapper.
+"""
+)
 jitn_p.def_numba_kernel(_jitn_numba_kernel_generator)
 jitn_p.def_warp_kernel(_jitn_warp_kernel_generator)
 jitn_p.def_pallas_kernel('gpu', _jitn_pallas_kernel_generator)
@@ -1223,7 +1247,32 @@ def jitnmv_p_call(
     )
 
 
-jitnmv_p = XLACustomKernel('float_jitnmv')
+jitnmv_p = XLACustomKernel(
+    'float_jitnmv',
+    doc="""
+Low-level XLA custom-kernel primitive for ``jitnmv``.
+
+This ``XLACustomKernel`` instance dispatches the JIT normal connectivity matrix-vector
+multiplication with floating-point weights operation to registered backends
+(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata provided by
+the high-level wrapper.
+
+In this operation, the connectivity matrix has weights normally distributed with specified
+mean and standard deviation, and the input vector contains floating-point values. The
+operation computes a standard matrix-vector product without event-driven sparsity.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``jitnmv_p.available_backends(platform)``,
+and the default backend can be configured with ``jitnmv_p.set_default(platform, backend)``.
+
+See Also
+--------
+jitnmv : High-level user-facing function wrapper.
+"""
+)
 jitnmv_p.def_numba_kernel(_jitnmv_numba_kernel_generator)
 jitnmv_p.def_warp_kernel(_jitnmv_warp_kernel_generator)
 jitnmv_p.def_pallas_kernel('gpu', _jitnmv_pallas_kernel_generator)
@@ -1792,7 +1841,32 @@ def jitnmm_p_call(
     )
 
 
-jitnmm_p = XLACustomKernel('float_jitnmm')
+jitnmm_p = XLACustomKernel(
+    'float_jitnmm',
+    doc="""
+Low-level XLA custom-kernel primitive for ``jitnmm``.
+
+This ``XLACustomKernel`` instance dispatches the JIT normal connectivity matrix-matrix
+multiplication with floating-point weights operation to registered backends
+(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata provided by
+the high-level wrapper.
+
+In this operation, the connectivity matrix has weights normally distributed with specified
+mean and standard deviation, and the input matrix contains floating-point values. Each
+column of the input is processed independently in a standard matrix-matrix product.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``jitnmm_p.available_backends(platform)``,
+and the default backend can be configured with ``jitnmm_p.set_default(platform, backend)``.
+
+See Also
+--------
+jitnmm : High-level user-facing function wrapper.
+"""
+)
 jitnmm_p.def_numba_kernel(_jitnmm_numba_kernel_generator)
 jitnmm_p.def_warp_kernel(_jitnmm_warp_kernel_generator)
 jitnmm_p.def_pallas_kernel('gpu', _jitnmm_pallas_kernel_generator)

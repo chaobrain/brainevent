@@ -1017,7 +1017,31 @@ def binary_csrmv_p_call(
     )
 
 
-binary_csrmv_p = XLACustomKernel('binary_csrmv')
+binary_csrmv_p = XLACustomKernel(
+    'binary_csrmv',
+    doc="""
+Low-level XLA custom-kernel primitive for ``binary_csrmv``.
+
+This ``XLACustomKernel`` instance dispatches the binary (event-driven) CSR sparse matrix-vector multiplication
+operation to registered backends (``numba``, ``warp``, ``pallas``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+Only entries of ``v`` that are ``True`` (boolean) or positive (float) are considered active events
+and contribute to the output, enabling efficient event-driven sparse-dense products commonly used
+in spiking neural networks.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``binary_csrmv_p.available_backends(platform)``,
+and the default backend can be configured with ``binary_csrmv_p.set_default(platform, backend)``.
+
+See Also
+--------
+binary_csrmv : High-level user-facing function wrapper.
+"""
+)
 binary_csrmv_p.def_numba_kernel(_csrmv_numba_kernel)
 binary_csrmv_p.def_warp_kernel(_csrmv_warp_kernel)
 binary_csrmv_p.def_pallas_kernel('gpu', _csrmv_pallas_gpu_kernel)
@@ -1883,7 +1907,31 @@ def binary_csrmm_p_call(
     )
 
 
-binary_csrmm_p = XLACustomKernel('binary_csrmm')
+binary_csrmm_p = XLACustomKernel(
+    'binary_csrmm',
+    doc="""
+Low-level XLA custom-kernel primitive for ``binary_csrmm``.
+
+This ``XLACustomKernel`` instance dispatches the binary (event-driven) CSR sparse matrix-matrix multiplication
+operation to registered backends (``numba``, ``warp``, ``pallas``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+Only entries of ``B`` that are ``True`` (boolean) or positive (float) are considered active events
+and contribute to the output, enabling efficient event-driven sparse-dense products commonly used
+in spiking neural networks.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``binary_csrmm_p.available_backends(platform)``,
+and the default backend can be configured with ``binary_csrmm_p.set_default(platform, backend)``.
+
+See Also
+--------
+binary_csrmm : High-level user-facing function wrapper.
+"""
+)
 binary_csrmm_p.def_numba_kernel(_csrmm_numba_kernel)
 binary_csrmm_p.def_warp_kernel(_csrmm_warp_kernel)
 binary_csrmm_p.def_pallas_kernel('gpu', _csrmm_pallas_gpu_kernel)

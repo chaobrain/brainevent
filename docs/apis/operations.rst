@@ -121,14 +121,10 @@ Dense-matrix @ sparse-float-vector / sparse-float-matrix.
 .. autosummary::
    :toctree: generated/
 
-   dsfmv
-   dsfmv_p
-   sfdvm
-   sfdvm_p
-   dsfmm
-   dsfmm_p
-   sfdmm
-   sfdmm_p
+   spfloat_densemv
+   spfloat_densemv_p
+   spfloat_densemm
+   spfloat_densemm_p
 
 Plasticity operations.
 
