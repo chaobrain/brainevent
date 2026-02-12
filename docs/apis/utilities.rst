@@ -18,21 +18,8 @@ Index Conversion
    binary_array_index
 
 
-Kernel Helpers
---------------
-
-.. autosummary::
-   :toctree: generated/
-
-   register_cuda_kernels
-   defjvp
-   general_batching_rule
-   jaxtype_to_warptype
-   jaxinfo_to_warpinfo
-
-
-GPU/TPU Random Number Generators
---------------------------------
+GPU/TPU Random Number Generator
+-------------------------------
 
 .. autosummary::
    :toctree: generated/
@@ -111,3 +98,32 @@ LFSR functions at kernel-generation time.
    get_numba_lfsr_uniform
    get_numba_lfsr_normal
    get_numba_lfsr_funcs
+
+
+Benchmarking
+------------
+
+.. autosummary::
+   :toctree: generated/
+   :template: classtemplate.rst
+
+   BenchmarkResult
+   BenchmarkReport
+
+.. autosummary::
+   :toctree: generated/
+
+   benchmark_function
+
+
+Kernel Helpers
+--------------
+
+.. autosummary::
+   :toctree: generated/
+
+   register_cuda_kernels
+   defjvp
+   general_batching_rule
+   jaxtype_to_warptype
+   jaxinfo_to_warpinfo
