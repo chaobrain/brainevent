@@ -23,13 +23,12 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from brainevent._csr.float import csrmv, csrmv_p, csrmm, csrmm_p, csrmv_yw2y, csrmv_yw2y_p
+from brainevent._csr.float import csrmv, csrmv_p, csrmm, csrmm_p
 from brainevent._csr.test_util import get_csr, vector_csr, matrix_csr, csr_vector, csr_matrix
 
 platform = jax.default_backend()
 CSRMV_IMPLEMENTATIONS = tuple(csrmv_p.available_backends(platform))
 CSRMM_IMPLEMENTATIONS = tuple(csrmm_p.available_backends(platform))
-CSRMV_YW2Y_IMPLEMENTATIONS = tuple(csrmv_yw2y_p.available_backends(platform))
 
 
 def _make_data(homo_w, shape):
@@ -304,4 +303,3 @@ class TestFloatCSRMM:
         assert jnp.allclose(o1, o2, rtol=1e-3, atol=1e-3)
 
         jax.block_until_ready((x, indptr, indices, w, o1, r1, o2, r2))
-

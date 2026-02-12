@@ -29,8 +29,6 @@ from brainevent._csr.yw2y import csrmv_yw2y, csrmv_yw2y_p
 from brainevent._csr.test_util import get_csr
 
 platform = jax.default_backend()
-CSRMV_IMPLEMENTATIONS = tuple(csrmv_p.available_backends(platform))
-CSRMM_IMPLEMENTATIONS = tuple(csrmm_p.available_backends(platform))
 CSRMV_YW2Y_IMPLEMENTATIONS = tuple(csrmv_yw2y_p.available_backends(platform))
 
 
