@@ -992,7 +992,31 @@ def jitu_p_call(
     )
 
 
-jitu_p = XLACustomKernel('float_jitu')
+jitu_p = XLACustomKernel(
+    'float_jitu',
+    doc="""
+Low-level XLA custom-kernel primitive for ``jitu``.
+
+This ``XLACustomKernel`` instance dispatches the JIT uniform connectivity matrix generation
+operation to registered backends (``numba``, ``warp``, ``pallas``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+This operation generates a sparse connectivity matrix where weights are uniformly distributed
+between specified lower and upper bounds. The connectivity pattern is generated on-the-fly
+using a deterministic PRNG seeded by the provided seed value.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``jitu_p.available_backends(platform)``,
+and the default backend can be configured with ``jitu_p.set_default(platform, backend)``.
+
+See Also
+--------
+jitu : High-level user-facing function wrapper.
+"""
+)
 jitu_p.def_numba_kernel(_jitu_numba_kernel_generator)
 jitu_p.def_warp_kernel(_jitu_warp_kernel_generator)
 jitu_p.def_pallas_kernel('gpu', _jitu_pallas_kernel_generator)
@@ -1698,7 +1722,32 @@ def jitumv_p_call(
     )
 
 
-jitumv_p = XLACustomKernel('float_jitumv')
+jitumv_p = XLACustomKernel(
+    'float_jitumv',
+    doc="""
+Low-level XLA custom-kernel primitive for ``jitumv``.
+
+This ``XLACustomKernel`` instance dispatches the JIT uniform connectivity matrix-vector
+multiplication with floating-point weights operation to registered backends
+(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata provided by
+the high-level wrapper.
+
+In this operation, the connectivity matrix has weights uniformly distributed between
+specified bounds, and the input vector contains floating-point values. The operation
+computes a standard matrix-vector product without event-driven sparsity.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``jitumv_p.available_backends(platform)``,
+and the default backend can be configured with ``jitumv_p.set_default(platform, backend)``.
+
+See Also
+--------
+jitumv : High-level user-facing function wrapper.
+"""
+)
 jitumv_p.def_numba_kernel(_jitumv_numba_kernel_generator)
 jitumv_p.def_warp_kernel(_jitumv_warp_kernel_generator)
 jitumv_p.def_pallas_kernel('gpu', _jitumv_pallas_kernel_generator)
@@ -2472,7 +2521,32 @@ def jitumm_p_call(
     )
 
 
-jitumm_p = XLACustomKernel('float_jitumm')
+jitumm_p = XLACustomKernel(
+    'float_jitumm',
+    doc="""
+Low-level XLA custom-kernel primitive for ``jitumm``.
+
+This ``XLACustomKernel`` instance dispatches the JIT uniform connectivity matrix-matrix
+multiplication with floating-point weights operation to registered backends
+(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata provided by
+the high-level wrapper.
+
+In this operation, the connectivity matrix has weights uniformly distributed between
+specified bounds, and the input matrix contains floating-point values. Each column of
+the input is processed independently in a standard matrix-matrix product.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``jitumm_p.available_backends(platform)``,
+and the default backend can be configured with ``jitumm_p.set_default(platform, backend)``.
+
+See Also
+--------
+jitumm : High-level user-facing function wrapper.
+"""
+)
 jitumm_p.def_numba_kernel(_jitumm_numba_kernel_generator)
 jitumm_p.def_warp_kernel(_jitumm_warp_kernel_generator)
 jitumm_p.def_pallas_kernel('gpu', _jitumm_pallas_kernel_generator)
