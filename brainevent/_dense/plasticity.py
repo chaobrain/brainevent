@@ -362,7 +362,31 @@ def _dense_on_pre_batching(args, axes, **kwargs):
     return general_batching_rule(update_dense_on_binary_pre_p, args, axes, **kwargs)
 
 
-update_dense_on_binary_pre_p = XLACustomKernel('dense_on_pre')
+update_dense_on_binary_pre_p = XLACustomKernel(
+    'dense_on_pre',
+    doc="""
+Low-level XLA custom-kernel primitive for ``update_dense_on_binary_pre``.
+
+This ``XLACustomKernel`` instance dispatches the dense weight update for
+pre-synaptic binary plasticity operation to registered backends (``numba``, ``warp``,
+``pallas``), using runtime shape/dtype metadata provided by the high-level wrapper.
+
+The operation updates synaptic weights based on presynaptic spike events and
+postsynaptic trace values: for each presynaptic neuron ``i`` that fires,
+``weight[i, :] += post_trace``.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``update_dense_on_binary_pre_p.available_backends(platform)``,
+and the default backend can be configured with ``update_dense_on_binary_pre_p.set_default(platform, backend)``.
+
+See Also
+--------
+update_dense_on_binary_pre : High-level user-facing function wrapper.
+"""
+)
 update_dense_on_binary_pre_p.def_numba_kernel(_dense_on_pre_numba_kernel)
 update_dense_on_binary_pre_p.def_warp_kernel(_dense_on_pre_warp_kernel)
 update_dense_on_binary_pre_p.def_pallas_kernel('gpu', _dense_on_pre_pallas_kernel)
@@ -698,7 +722,31 @@ def _update_dense_post_benchmark_data(*, platform):
     return configs
 
 
-update_dense_on_binary_post_p = XLACustomKernel('dense_on_post')
+update_dense_on_binary_post_p = XLACustomKernel(
+    'dense_on_post',
+    doc="""
+Low-level XLA custom-kernel primitive for ``update_dense_on_binary_post``.
+
+This ``XLACustomKernel`` instance dispatches the dense weight update for
+post-synaptic binary plasticity operation to registered backends (``numba``, ``warp``,
+``pallas``), using runtime shape/dtype metadata provided by the high-level wrapper.
+
+The operation updates synaptic weights based on postsynaptic spike events and
+presynaptic trace values: for each postsynaptic neuron ``j`` that fires,
+``weight[:, j] += pre_trace``.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``update_dense_on_binary_post_p.available_backends(platform)``,
+and the default backend can be configured with ``update_dense_on_binary_post_p.set_default(platform, backend)``.
+
+See Also
+--------
+update_dense_on_binary_post : High-level user-facing function wrapper.
+"""
+)
 update_dense_on_binary_post_p.def_numba_kernel(_dense_on_post_numba_kernel)
 update_dense_on_binary_post_p.def_warp_kernel(_dense_on_post_warp_kernel)
 update_dense_on_binary_post_p.def_pallas_kernel('gpu', _dense_on_post_pallas_kernel)

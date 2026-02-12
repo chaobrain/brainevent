@@ -16,7 +16,7 @@
 
 from jax.tree_util import register_pytree_node_class
 
-from brainevent._dense import dsfmm, sfdmm, dsfmv, sfdvm
+from brainevent._dense import spfloat_densemv, spfloat_densemm
 from brainevent._error import MathError
 from .base import EventRepresentation
 from .base import extract_raw_value, is_known_type
@@ -63,8 +63,7 @@ class SparseFloat(EventRepresentation):
     See Also
     --------
     BinaryArray : Similar wrapper for binary (0/1) event arrays.
-    sfdvm : Underlying primitive for sparse-float vector @ dense matrix.
-    dsfmv : Underlying primitive for dense matrix @ sparse-float vector.
+    spfloat_densemv : Unified primitive for sparse-float vector-matrix multiplication.
 
     Examples
     --------
@@ -116,8 +115,8 @@ class SparseFloat(EventRepresentation):
 
         See Also
         --------
-        sfdvm : Sparse-float vector @ dense matrix primitive.
-        sfdmm : Sparse-float matrix @ dense matrix primitive.
+        spfloat_densemv : Sparse-float vector @ dense matrix primitive.
+        spfloat_densemm : Unified sparse-float matrix multiplication primitive.
         """
         if is_known_type(oc):
             oc = extract_raw_value(oc)
@@ -142,9 +141,9 @@ class SparseFloat(EventRepresentation):
 
             # Perform the appropriate multiplication based on dimensions
             if self.ndim == 1:
-                return sfdvm(self.value, oc)
+                return spfloat_densemv(oc, self.value, transpose=True)
             else:  # self.ndim == 2
-                return sfdmm(self.value, oc)
+                return spfloat_densemm(oc, self.value, transpose=True)
         else:
             return oc.__rmatmul__(self)
 
@@ -178,8 +177,8 @@ class SparseFloat(EventRepresentation):
 
         See Also
         --------
-        dsfmv : Dense matrix @ sparse-float vector primitive.
-        dsfmm : Dense matrix @ sparse-float matrix primitive.
+        spfloat_densemv : Dense matrix @ sparse-float vector primitive.
+        spfloat_densemm : Unified sparse-float matrix multiplication primitive.
         """
         if is_known_type(oc):
             oc = extract_raw_value(oc)
@@ -204,9 +203,9 @@ class SparseFloat(EventRepresentation):
 
             # Perform the appropriate multiplication based on dimensions
             if self.ndim == 1:
-                return dsfmv(oc, self.value)
+                return spfloat_densemv(oc, self.value, transpose=False)
             else:
-                return dsfmm(oc, self.value)
+                return spfloat_densemm(oc, self.value, transpose=False)
         else:
             return oc.__matmul__(self)
 

@@ -40,8 +40,8 @@ from ._dense import (
     indexed_binary_densemm, indexed_binary_densemm_p,
     update_dense_on_binary_pre, update_dense_on_binary_pre_p,
     update_dense_on_binary_post, update_dense_on_binary_post_p,
-    dsfmv, dsfmv_p, sfdvm, sfdvm_p,
-    dsfmm, dsfmm_p, sfdmm, sfdmm_p,
+    spfloat_densemv, spfloat_densemv_p,
+    spfloat_densemm, spfloat_densemm_p,
 )
 from ._error import (
     MathError,
@@ -54,8 +54,13 @@ from ._event import (
     EventRepresentation,
     IndexedEventRepresentation,
     BinaryArray,
+    IndexedBinary1d,
+    IndexedBinary2d,
     SparseFloat,
+    IndexedSpFloat1d,
+    IndexedSpFloat2d,
     binary_array_index,
+
 )
 from ._fcn import (
     FixedNumConn, FixedPreNumConn, FixedPostNumConn,
@@ -102,7 +107,11 @@ __all__ = [
     'EventRepresentation',
     'IndexedEventRepresentation',
     'BinaryArray',
+    'IndexedBinary1d',
+    'IndexedBinary2d',
     'SparseFloat',
+    'IndexedSpFloat1d',
+    'IndexedSpFloat2d',
     'binary_array_index',
 
     # --- COO --- #
@@ -133,8 +142,8 @@ __all__ = [
     'indexed_binary_densemm', 'indexed_binary_densemm_p',
     'update_dense_on_binary_pre', 'update_dense_on_binary_pre_p',
     'update_dense_on_binary_post', 'update_dense_on_binary_post_p',
-    'dsfmv', 'dsfmv_p', 'sfdvm', 'sfdvm_p',
-    'dsfmm', 'dsfmm_p', 'sfdmm', 'sfdmm_p',
+    'spfloat_densemv', 'spfloat_densemv_p',
+    'spfloat_densemm', 'spfloat_densemm_p',
 
     # --- Just-In-Time Connectivity matrix --- #
     'JITCMatrix',

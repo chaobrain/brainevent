@@ -21,23 +21,17 @@ import jax
 import pytest
 
 from brainevent._dense.sparse_float import (
-    dsfmv,
-    dsfmv_p,
-    sfdvm,
-    sfdvm_p,
-    dsfmm,
-    dsfmm_p,
-    sfdmm,
-    sfdmm_p,
+    spfloat_densemv,
+    spfloat_densemv_p,
+    spfloat_densemm,
+    spfloat_densemm_p,
 )
 
 jax.config.update('jax_default_matmul_precision', 'highest')
 
 platform = jax.default_backend()
-DSFMV_IMPLEMENTATIONS = tuple(dsfmv_p.available_backends(platform))
-SFDVM_IMPLEMENTATIONS = tuple(sfdvm_p.available_backends(platform))
-DSFMM_IMPLEMENTATIONS = tuple(dsfmm_p.available_backends(platform))
-SFDMM_IMPLEMENTATIONS = tuple(sfdmm_p.available_backends(platform))
+SPFLOAT_DENSEMV_IMPLEMENTATIONS = tuple(spfloat_densemv_p.available_backends(platform))
+SPFLOAT_DENSEMM_IMPLEMENTATIONS = tuple(spfloat_densemm_p.available_backends(platform))
 
 
 def _as_float(x):
@@ -56,10 +50,10 @@ def _primitive_backend(primitive, implementation):
 
 
 @pytest.mark.skipif(
-    not DSFMV_IMPLEMENTATIONS,
-    reason=f'No dsfmv implementation on platform={platform}',
+    not SPFLOAT_DENSEMV_IMPLEMENTATIONS,
+    reason=f'No spfloat_densemv implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', DSFMV_IMPLEMENTATIONS)
+@pytest.mark.parametrize('implementation', SPFLOAT_DENSEMV_IMPLEMENTATIONS)
 class TestDSFMV:
     @pytest.mark.parametrize('dtype', [bool, float])
     def test_forward(self, implementation, dtype):
@@ -69,7 +63,7 @@ class TestDSFMV:
         if dtype is float:
             spikes = _as_float(spikes)
 
-        result = dsfmv(weights, spikes, backend=implementation)
+        result = spfloat_densemv(weights, spikes, transpose=False, backend=implementation)
         expected = weights @ _as_float(spikes)
         assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
         jax.block_until_ready((weights, spikes, result, expected))
@@ -80,7 +74,7 @@ class TestDSFMV:
         spikes = _as_float(brainstate.random.randn(k))
 
         def f_test(w):
-            return dsfmv(w, spikes, backend=implementation).sum()
+            return spfloat_densemv(w, spikes, transpose=False, backend=implementation).sum()
 
         def f_ref(w):
             return (w @ spikes).sum()
@@ -95,17 +89,17 @@ class TestDSFMV:
         weights = brainstate.random.randn(m, k)
         spikes = _as_float(brainstate.random.randn(b, k) * (brainstate.random.randn(b, k) > 0.0))
 
-        result = jax.vmap(lambda s: dsfmv(weights, s, backend=implementation))(spikes)
+        result = jax.vmap(lambda s: spfloat_densemv(weights, s, transpose=False, backend=implementation))(spikes)
         expected = jax.vmap(lambda s: weights @ s)(spikes)
         assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
         jax.block_until_ready((weights, spikes, result, expected))
 
 
 @pytest.mark.skipif(
-    not SFDVM_IMPLEMENTATIONS,
-    reason=f'No sfdvm implementation on platform={platform}',
+    not SPFLOAT_DENSEMV_IMPLEMENTATIONS,
+    reason=f'No spfloat_densemv implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', SFDVM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('implementation', SPFLOAT_DENSEMV_IMPLEMENTATIONS)
 class TestSFDVM:
     @pytest.mark.parametrize('dtype', [bool, float])
     def test_forward(self, implementation, dtype):
@@ -115,8 +109,8 @@ class TestSFDVM:
             spikes = _as_float(spikes)
         weights = brainstate.random.randn(k, n)
 
-        with _primitive_backend(sfdvm_p, implementation):
-            result = sfdvm(spikes, weights)
+        with _primitive_backend(spfloat_densemv_p, implementation):
+            result = spfloat_densemv(weights, spikes, transpose=True)
         expected = _as_float(spikes) @ weights
         assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
         jax.block_until_ready((spikes, weights, result, expected))
@@ -129,8 +123,8 @@ class TestSFDVM:
         def f_ref(w):
             return (spikes @ w).sum()
 
-        with _primitive_backend(sfdvm_p, implementation):
-            grad_test = jax.grad(lambda w: sfdvm(spikes, w).sum())(weights)
+        with _primitive_backend(spfloat_densemv_p, implementation):
+            grad_test = jax.grad(lambda w: spfloat_densemv(w, spikes, transpose=True).sum())(weights)
         grad_ref = jax.grad(f_ref)(weights)
         assert u.math.allclose(grad_test, grad_ref, atol=1e-3, rtol=1e-3)
         jax.block_until_ready((spikes, weights, grad_test, grad_ref))
@@ -140,18 +134,18 @@ class TestSFDVM:
         spikes = _as_float(brainstate.random.randn(b, k) * (brainstate.random.randn(b, k) > 0.0))
         weights = brainstate.random.randn(k, n)
 
-        with _primitive_backend(sfdvm_p, implementation):
-            result = jax.vmap(lambda s: sfdvm(s, weights))(spikes)
+        with _primitive_backend(spfloat_densemv_p, implementation):
+            result = jax.vmap(lambda s: spfloat_densemv(weights, s, transpose=True))(spikes)
         expected = jax.vmap(lambda s: s @ weights)(spikes)
         assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
         jax.block_until_ready((spikes, weights, result, expected))
 
 
 @pytest.mark.skipif(
-    not DSFMM_IMPLEMENTATIONS,
-    reason=f'No dsfmm implementation on platform={platform}',
+    not SPFLOAT_DENSEMM_IMPLEMENTATIONS,
+    reason=f'No spfloat_densemm implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', DSFMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('implementation', SPFLOAT_DENSEMM_IMPLEMENTATIONS)
 class TestDSFMM:
     @pytest.mark.parametrize('dtype', [bool, float])
     def test_forward(self, implementation, dtype):
@@ -161,8 +155,8 @@ class TestDSFMM:
         if dtype is float:
             spikes = _as_float(spikes)
 
-        with _primitive_backend(dsfmm_p, implementation):
-            result = dsfmm(weights, spikes)
+        with _primitive_backend(spfloat_densemm_p, implementation):
+            result = spfloat_densemm(weights, spikes, transpose=False)
         expected = weights @ _as_float(spikes)
         assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
         jax.block_until_ready((weights, spikes, result, expected))
@@ -175,8 +169,8 @@ class TestDSFMM:
         def f_ref(w):
             return (w @ spikes).sum()
 
-        with _primitive_backend(dsfmm_p, implementation):
-            grad_test = jax.grad(lambda w: dsfmm(w, spikes).sum())(weights)
+        with _primitive_backend(spfloat_densemm_p, implementation):
+            grad_test = jax.grad(lambda w: spfloat_densemm(w, spikes, transpose=False).sum())(weights)
         grad_ref = jax.grad(f_ref)(weights)
         assert u.math.allclose(grad_test, grad_ref, atol=1e-3, rtol=1e-3)
         jax.block_until_ready((weights, spikes, grad_test, grad_ref))
@@ -186,18 +180,18 @@ class TestDSFMM:
         weights = brainstate.random.randn(m, k)
         spikes = _as_float(brainstate.random.randn(b, k, n) * (brainstate.random.randn(b, k, n) > 0.0))
 
-        with _primitive_backend(dsfmm_p, implementation):
-            result = jax.vmap(lambda s: dsfmm(weights, s))(spikes)
+        with _primitive_backend(spfloat_densemm_p, implementation):
+            result = jax.vmap(lambda s: spfloat_densemm(weights, s, transpose=False))(spikes)
         expected = jax.vmap(lambda s: weights @ s)(spikes)
         assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
         jax.block_until_ready((weights, spikes, result, expected))
 
 
 @pytest.mark.skipif(
-    not SFDMM_IMPLEMENTATIONS,
-    reason=f'No sfdmm implementation on platform={platform}',
+    not SPFLOAT_DENSEMM_IMPLEMENTATIONS,
+    reason=f'No spfloat_densemm implementation on platform={platform}',
 )
-@pytest.mark.parametrize('implementation', SFDMM_IMPLEMENTATIONS)
+@pytest.mark.parametrize('implementation', SPFLOAT_DENSEMM_IMPLEMENTATIONS)
 class TestSFDMM:
     @pytest.mark.parametrize('dtype', [bool, float])
     def test_forward(self, implementation, dtype):
@@ -207,8 +201,8 @@ class TestSFDMM:
             spikes = _as_float(spikes)
         weights = brainstate.random.randn(k, n)
 
-        with _primitive_backend(sfdmm_p, implementation):
-            result = sfdmm(spikes, weights)
+        with _primitive_backend(spfloat_densemm_p, implementation):
+            result = spfloat_densemm(weights, spikes, transpose=True)
         expected = _as_float(spikes) @ weights
         assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
         jax.block_until_ready((spikes, weights, result, expected))
@@ -221,8 +215,8 @@ class TestSFDMM:
         def f_ref(w):
             return (spikes @ w).sum()
 
-        with _primitive_backend(sfdmm_p, implementation):
-            grad_test = jax.grad(lambda w: sfdmm(spikes, w).sum())(weights)
+        with _primitive_backend(spfloat_densemm_p, implementation):
+            grad_test = jax.grad(lambda w: spfloat_densemm(w, spikes, transpose=True).sum())(weights)
         grad_ref = jax.grad(f_ref)(weights)
         assert u.math.allclose(grad_test, grad_ref, atol=1e-3, rtol=1e-3)
         jax.block_until_ready((spikes, weights, grad_test, grad_ref))
@@ -232,8 +226,8 @@ class TestSFDMM:
         spikes = _as_float(brainstate.random.randn(b, m, k) * (brainstate.random.randn(b, m, k) > 0.0))
         weights = brainstate.random.randn(k, n)
 
-        with _primitive_backend(sfdmm_p, implementation):
-            result = jax.vmap(lambda s: sfdmm(s, weights))(spikes)
+        with _primitive_backend(spfloat_densemm_p, implementation):
+            result = jax.vmap(lambda s: spfloat_densemm(weights, s, transpose=True))(spikes)
         expected = jax.vmap(lambda s: s @ weights)(spikes)
         assert u.math.allclose(result, expected, atol=1e-3, rtol=1e-3)
         jax.block_until_ready((spikes, weights, result, expected))

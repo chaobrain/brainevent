@@ -996,7 +996,31 @@ def binary_jitsmv_p_call(
     )
 
 
-binary_jitsmv_p = XLACustomKernel('binary_jitsmv')
+binary_jitsmv_p = XLACustomKernel(
+    'binary_jitsmv',
+    doc="""
+Low-level XLA custom-kernel primitive for ``binary_jitsmv``.
+
+This ``XLACustomKernel`` instance dispatches the binary (event-driven) JIT scalar connectivity
+matrix-vector multiplication operation to registered backends (``numba``, ``warp``, ``pallas``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+In this operation, the connectivity matrix has all weights set to a single scalar value,
+and the input vector is treated as binary events (spikes). Only active events contribute
+to the output computation.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``binary_jitsmv_p.available_backends(platform)``,
+and the default backend can be configured with ``binary_jitsmv_p.set_default(platform, backend)``.
+
+See Also
+--------
+binary_jitsmv : High-level user-facing function wrapper.
+"""
+)
 binary_jitsmv_p.def_numba_kernel(_jitsmv_numba_kernel)
 binary_jitsmv_p.def_warp_kernel(_jitsmv_warp_kernel)
 binary_jitsmv_p.def_pallas_kernel('gpu', _jitsmv_pallas_kernel)
@@ -1745,7 +1769,31 @@ def binary_jitsmm_p_call(
     )
 
 
-binary_jitsmm_p = XLACustomKernel('binary_jitsmm')
+binary_jitsmm_p = XLACustomKernel(
+    'binary_jitsmm',
+    doc="""
+Low-level XLA custom-kernel primitive for ``binary_jitsmm``.
+
+This ``XLACustomKernel`` instance dispatches the binary (event-driven) JIT scalar connectivity
+matrix-matrix multiplication operation to registered backends (``numba``, ``warp``, ``pallas``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+In this operation, the connectivity matrix has all weights set to a single scalar value,
+and the input matrix is treated as binary events (spikes). Each column of the input is
+processed independently as an event vector.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``binary_jitsmm_p.available_backends(platform)``,
+and the default backend can be configured with ``binary_jitsmm_p.set_default(platform, backend)``.
+
+See Also
+--------
+binary_jitsmm : High-level user-facing function wrapper.
+"""
+)
 binary_jitsmm_p.def_numba_kernel(_jitsmm_numba_kernel)
 binary_jitsmm_p.def_warp_kernel(_jitsmm_warp_kernel)
 binary_jitsmm_p.def_pallas_kernel('gpu', _jitsmm_pallas_kernel)
