@@ -875,9 +875,13 @@ def _coomv_benchmark_data(*, platform):
                 else:
                     vector = jnp.asarray(np.random.rand(v_size), dtype=dtype)
                 name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
-                configs.append(BenchmarkConfig(name, (weights, jnp.asarray(row), jnp.asarray(col), vector), {
-                    'shape': (n_pre, n_post), 'transpose': transpose
-                }))
+                configs.append(
+                    BenchmarkConfig(
+                        name,
+                        (weights, jnp.asarray(row), jnp.asarray(col), vector),
+                        {'shape': (n_pre, n_post), 'transpose': transpose}
+                    )
+                )
     return configs
 
 
