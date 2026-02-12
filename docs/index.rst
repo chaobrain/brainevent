@@ -175,8 +175,8 @@ See also the ecosystem
    :maxdepth: 2
    :caption: API Reference
 
-   apis/eventarray.rst
-   apis/datastructure.rst
+   apis/events.rst
+   apis/sparsedata.rst
    apis/operations.rst
    apis/operator.rst
    apis/errors.rst
