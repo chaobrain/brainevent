@@ -158,11 +158,13 @@ class XLACustomKernel:
 
     __module__ = 'brainevent'
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, doc: str = None):
         # primitive
         self.name = name
         self.primitive = Primitive(name)
         self.primitive.multiple_results = True
+        if doc is not None:
+            self.__doc__ = doc
 
         # abstract evaluation
         self.primitive.def_impl(functools.partial(xla.apply_primitive, self.primitive))
