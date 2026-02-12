@@ -804,7 +804,8 @@ def _mm_jvp_spikes(spikes_dot, spikes, indices, count, weights, *, transpose, **
 
 
 def _mm_jvp_weights(weights_dot, spikes, indices, count, weights, *, transpose, **kwargs):
-    return indexed_binary_densemm_p_call(spikes, indices, count, weights_dot, transpose=transpose)
+    return indexed_binary_densemm_p_call(spikes, indices, count, weights_dot,
+                                         transpose=transpose, backend=kwargs['backend'])
 
 
 def _mm_transpose(ct, spikes, indices, count, weights, *, transpose, **kwargs):

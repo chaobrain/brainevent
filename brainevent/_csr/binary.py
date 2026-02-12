@@ -790,7 +790,8 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, events, *, shape, transpose
         if type(ct) is ad.Zero:
             ct_events = ad.Zero(events)
         else:
-            ct_events = csrmv(data, indices, indptr, ct, shape=shape, transpose=not transpose)
+            ct_events = csrmv(data, indices, indptr, ct,
+                              shape=shape, transpose=not transpose, backend=kwargs['backend'])
         return data, indices, indptr, ct_events
     else:
         if type(ct) is ad.Zero:
@@ -1634,7 +1635,7 @@ def _csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose, **k
     assert not ad.is_undefined_primal(indptr)
 
     if ad.is_undefined_primal(B):
-        dB = csrmm(data, indices, indptr, ct, shape=shape, transpose=not transpose)
+        dB = csrmm(data, indices, indptr, ct, shape=shape, transpose=not transpose, backend=kwargs['backend'])
         return data, indices, indptr, dB
     else:
         B = jnp.asarray(B)

@@ -1328,7 +1328,7 @@ def _csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose, **k
     ct = ct[0]
 
     if ad.is_undefined_primal(B):
-        dB = csrmm(data, indices, indptr, ct, shape=shape, transpose=not transpose)
+        dB = csrmm(data, indices, indptr, ct, shape=shape, transpose=not transpose, backend=kwargs['backend'])
         return data, indices, indptr, dB
     else:
         B = jnp.asarray(B)
