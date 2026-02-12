@@ -23,6 +23,11 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+# Use full-precision GEMM on GPU to keep dense-reference paths numerically
+# consistent with sparse kernels (avoid TF32 drift on large reductions).
+if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is None:
+    jax.config.update('jax_default_matmul_precision', 'highest')
+
 import brainevent
 from brainevent._test_util import (
     allclose,
