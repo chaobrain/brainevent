@@ -89,8 +89,8 @@ def spfloat_densemv(weights, spikes, *, transpose, backend: Optional[str] = None
 
     See Also
     --------
-    dsfmv : Alias for ``spfloat_densemv(..., transpose=False)``.
-    sfdvm : Alias for ``spfloat_densemv(..., transpose=True)``.
+    spfloat_densemm : Matrix-matrix variant of sparse-float dense multiplication.
+    binary_densemv : Binary (event-driven) dense matrix-vector multiplication.
 
     Notes
     -----

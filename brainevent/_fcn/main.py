@@ -103,7 +103,9 @@ class FixedNumConn(u.sparse.SparseMatrix):
     ------
     ValueError
         If ``indices`` is not 2-D, if the row count does not match the expected
-        dimension, or if the index dtype is not integer.
+        dimension, if the index dtype is not integer, if ``data`` shape does not
+        match ``indices`` shape (except when ``data`` is scalar), or if any
+        indices are out of bounds (negative or >= the target dimension).
 
     See Also
     --------
