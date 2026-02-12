@@ -31,11 +31,6 @@ from .binary import binary_fcnmv, binary_fcnmm
 from .float import fcnmv, fcnmm
 from .sparse_float import spfloat_fcnmv, spfloat_fcnmm
 
-# Use full-precision GEMM on GPU to keep dense-reference paths numerically
-# consistent with sparse kernels (avoid TF32 drift on large reductions).
-if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is None:
-    jax.config.update('jax_default_matmul_precision', 'highest')
-
 __all__ = [
     'FixedPostNumConn',
     'FixedPreNumConn',
