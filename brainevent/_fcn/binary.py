@@ -91,7 +91,6 @@ def binary_fcnmv(
     --------
     binary_fcnmm : Event-driven sparse matrix--matrix product.
     fcnmv : Float (non-event-driven) sparse matrix--vector product.
-    binary_fcnmv_p_call : Lower-level primitive call without unit handling.
 
     Notes
     -----
@@ -398,9 +397,7 @@ def _binary_fcnmv_pallas_kernel(
     **kwargs
 ):
     from jax.experimental import pallas as pl
-    atomic_add = getattr(pl, "atomic_add", None)
-    if atomic_add is None:
-        from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
+    from jax.experimental.pallas.triton import atomic_add  # type: ignore[assignment]
 
     if len(shape) > 2:
         raise ValueError("shape must be a tuple of length 2")
@@ -445,13 +442,8 @@ def _binary_fcnmv_pallas_kernel(
                 jax.lax.fori_loop(0, pl.cdiv(n_conn, block_dim), loop_fn, None)
 
         def kernel(weights, indices, vector):
-            fn = pl.pallas_call(
-                _raw_kernel,
-                grid=(n_pre,),
-                input_output_aliases={3: 0},
-                out_shape=kwargs['outs'],
-                backend='triton',
-            )
+            fn = pl.pallas_call(_raw_kernel, grid=(n_pre,), input_output_aliases={3: 0},
+                                out_shape=kwargs['outs'], backend='triton')
             out_info = kwargs['outs'][0]
             placeholder = jnp.zeros(out_info.shape, out_info.dtype)
             return fn(weights, indices, vector, placeholder)
@@ -756,7 +748,6 @@ def binary_fcnmm(
     --------
     binary_fcnmv : Event-driven sparse matrix--vector product.
     fcnmm : Float (non-event-driven) sparse matrix--matrix product.
-    binary_fcnmm_p_call : Lower-level primitive call without unit handling.
 
     Notes
     -----

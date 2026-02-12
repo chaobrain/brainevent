@@ -805,8 +805,6 @@ def sparse_float_csrmv_p_call(
     See Also
     --------
     spfloat_csrmv : High-level wrapper with unit handling.
-    sparse_float_csrmm_p_call : Analogous primitive call for matrix-matrix
-        multiplication.
 
     Notes
     -----
@@ -1408,8 +1406,6 @@ def sparse_float_csrmm_p_call(
     See Also
     --------
     spfloat_csrmm : High-level wrapper with unit handling.
-    sparse_float_csrmv_p_call : Analogous primitive call for matrix-vector
-        multiplication.
 
     Notes
     -----

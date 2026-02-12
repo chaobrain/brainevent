@@ -815,8 +815,6 @@ def jits_p_call(
     See Also
     --------
     jits : High-level function with unit handling.
-    jitsmv_p_call : Low-level matrix-vector product variant.
-    jitsmm_p_call : Low-level matrix-matrix product variant.
     """
     weight = jnp.atleast_1d(weight)
     clen = jnp.atleast_1d(clen)
@@ -1462,7 +1460,6 @@ def jitsmv_p_call(
     See Also
     --------
     jitsmv : High-level function with unit handling.
-    jitsmm_p_call : Low-level matrix-matrix product variant.
     """
 
     weight = jnp.atleast_1d(weight)
@@ -2126,8 +2123,6 @@ def jitsmm_p_call(
     See Also
     --------
     jitsmm : High-level function with unit handling.
-    jitsmv_p_call : Low-level matrix-vector product variant.
-    jits_p_call : Low-level matrix generation variant.
     """
     weight = jnp.atleast_1d(weight)
     clen = jnp.atleast_1d(clen)

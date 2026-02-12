@@ -105,7 +105,6 @@ def binary_jitnmv(
     --------
     binary_jitnmm : Event-driven matrix-matrix multiplication variant.
     jitnmv : Float (non-event) matrix-vector multiplication with normal weights.
-    binary_jitnmv_p_call : Lower-level primitive call for this operation.
 
     Notes
     -----
@@ -239,7 +238,6 @@ def binary_jitnmm(
     --------
     binary_jitnmv : Event-driven matrix-vector multiplication variant.
     jitnmm : Float (non-event) matrix-matrix multiplication with normal weights.
-    binary_jitnmm_p_call : Lower-level primitive call for this operation.
 
     Notes
     -----

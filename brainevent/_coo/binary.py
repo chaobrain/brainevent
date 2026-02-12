@@ -112,7 +112,6 @@ def binary_coomv(
     See Also
     --------
     binary_coomm : Event-driven COO sparse matrix-matrix multiplication.
-    binary_coomv_p_call : Lower-level primitive call without unit handling.
     coomv : Standard (non-event-driven) COO sparse matrix-vector multiplication.
 
     Notes
@@ -218,7 +217,6 @@ def binary_coomm(
     See Also
     --------
     binary_coomv : Event-driven COO sparse matrix-vector multiplication.
-    binary_coomm_p_call : Lower-level primitive call without unit handling.
     coomm : Standard (non-event-driven) COO sparse matrix-matrix multiplication.
 
     Notes
@@ -944,8 +942,6 @@ def binary_coomv_p_call(
     See Also
     --------
     binary_coomv : High-level wrapper with physical unit support.
-    binary_coomm_p_call : Primitive call for event-driven matrix-matrix multiplication.
-    coomv_p_call : Primitive call for standard COO matrix-vector multiplication.
 
     Notes
     -----
@@ -1814,8 +1810,6 @@ def binary_coomm_p_call(
     See Also
     --------
     binary_coomm : High-level wrapper with physical unit support.
-    binary_coomv_p_call : Primitive call for event-driven matrix-vector multiplication.
-    coomm_p_call : Primitive call for standard COO matrix-matrix multiplication.
 
     Notes
     -----

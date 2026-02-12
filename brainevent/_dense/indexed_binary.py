@@ -99,7 +99,6 @@ def indexed_binary_densemv(weights, binary_index, *, transpose, backend: Optiona
     See Also
     --------
     indexed_binary_densemm : Batched (matrix-matrix) variant.
-    indexed_binary_densemv_p_call : Low-level primitive call.
 
     Notes
     -----
@@ -598,7 +597,6 @@ def indexed_binary_densemm(weights, binary_arr, *, transpose, backend: Optional[
     See Also
     --------
     indexed_binary_densemv : Unbatched (matrix-vector) variant.
-    indexed_binary_densemm_p_call : Low-level primitive call.
 
     Notes
     -----

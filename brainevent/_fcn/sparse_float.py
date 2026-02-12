@@ -93,7 +93,6 @@ def spfloat_fcnmv(
     spfloat_fcnmm : Sparse-float event-driven matrix--matrix product.
     binary_fcnmv : Binary event-driven variant (ignores spike values).
     fcnmv : Dense float variant (no event-driven skipping).
-    spfloat_fcnmv_p_call : Lower-level primitive call without unit handling.
 
     Notes
     -----
@@ -655,7 +654,6 @@ def spfloat_fcnmm(
     spfloat_fcnmv : Sparse-float event-driven matrix--vector product.
     binary_fcnmm : Binary event-driven variant.
     fcnmm : Dense float variant.
-    spfloat_fcnmm_p_call : Lower-level primitive call without unit handling.
 
     Notes
     -----

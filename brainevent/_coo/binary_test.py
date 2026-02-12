@@ -29,8 +29,6 @@ from brainevent._coo.test_util import _get_coo, vector_coo, matrix_coo, coo_vect
 PLATFORM = jax.default_backend()
 COOMV_IMPLEMENTATIONS = tuple(binary_coomv_p.available_backends(PLATFORM))
 COOMM_IMPLEMENTATIONS = tuple(binary_coomm_p.available_backends(PLATFORM))
-# COOMV_IMPLEMENTATIONS = ['pallas']
-# COOMM_IMPLEMENTATIONS = ['pallas']
 
 if not COOMV_IMPLEMENTATIONS:
     pytest.skip(f'No binary_coomv implementation on platform={PLATFORM}', allow_module_level=True)

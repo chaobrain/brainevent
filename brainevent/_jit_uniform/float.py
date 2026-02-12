@@ -93,7 +93,6 @@ def jitu(
 
     See Also
     --------
-    jitu_p_call : Lower-level primitive call with pre-processed arguments.
     jitumv : Matrix-vector product without materializing the matrix.
 
     Notes
@@ -210,7 +209,6 @@ def jitumv(
 
     See Also
     --------
-    jitumv_p_call : Lower-level primitive call with pre-processed arguments.
     jitumm : Matrix-matrix variant.
     binary_jitumv : Event-driven (binary) variant.
 
@@ -328,7 +326,6 @@ def jitumm(
 
     See Also
     --------
-    jitumm_p_call : Lower-level primitive call with pre-processed arguments.
     jitumv : Matrix-vector variant.
     binary_jitumm : Event-driven (binary) variant.
 
