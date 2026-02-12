@@ -782,7 +782,7 @@ def _coomv_pallas_tpu_kernel(
 
 
 def _coomv_jvp_vector(v_dot, data, row, col, v, *, shape, transpose, **kwargs):
-    return [coomv(data, row, col, v_dot, shape=shape, transpose=transpose)]
+    return [coomv(data, row, col, v_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
 
 def _coomv_jvp_weights(data_dot, data, row, col, v, *, shape, transpose, **kwargs):
@@ -1619,11 +1619,11 @@ def _coomm_pallas_tpu_kernel(
 
 
 def _coomm_jvp_left(data_dot, data, row, col, B, *, shape, transpose, **kwargs):
-    return [coomm(data_dot, row, col, B, shape=shape, transpose=transpose)]
+    return [coomm(data_dot, row, col, B, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
 
 def _coomm_jvp_right(B_dot, data, row, col, B, *, shape, transpose, **kwargs):
-    return [coomm(data, row, col, B_dot, shape=shape, transpose=transpose)]
+    return [coomm(data, row, col, B_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
 
 def _coomm_transpose_rule(ct, data, row, col, B, *, shape, transpose, **kwargs):
@@ -1635,7 +1635,7 @@ def _coomm_transpose_rule(ct, data, row, col, B, *, shape, transpose, **kwargs):
         if type(ct) is ad.Zero:
             dB = ad.Zero(B)
         else:
-            dB = coomm(data, row, col, ct, shape=shape, transpose=not transpose)
+            dB = coomm(data, row, col, ct, shape=shape, transpose=not transpose, backend=kwargs['backend'])
         return data, row, col, dB
     else:
         if type(ct) is ad.Zero:
@@ -1714,9 +1714,13 @@ def _coomm_benchmark_data(*, platform):
                 else:
                     B = jnp.asarray(np.random.rand(b_rows, 10), dtype=dtype)
                 name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
-                configs.append(BenchmarkConfig(name, (weights, jnp.asarray(row), jnp.asarray(col), B), {
-                    'shape': (n_pre, n_post), 'transpose': transpose
-                }))
+                configs.append(
+                    BenchmarkConfig(
+                        name,
+                        (weights, jnp.asarray(row), jnp.asarray(col), B),
+                        {'shape': (n_pre, n_post), 'transpose': transpose}
+                    )
+                )
     return configs
 
 

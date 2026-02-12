@@ -34,7 +34,6 @@ platform = jax.default_backend()
 JITNMV_IMPLEMENTATIONS = tuple(binary_jitnmv_p.available_backends(platform))
 JITNMM_IMPLEMENTATIONS = tuple(binary_jitnmm_p.available_backends(platform))
 
-
 if platform == 'cpu':
     SHAPES = ((20, 30), (100, 50))
 else:

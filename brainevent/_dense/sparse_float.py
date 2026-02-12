@@ -23,10 +23,10 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent.config import get_numba_parallel
 from brainevent._misc import cdiv, generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
+from brainevent.config import get_numba_parallel
 
 __all__ = [
     'dsfmv',
@@ -233,14 +233,15 @@ def _dsfmv_pallas_kernel(
         out_ref[safe_rows] = jnp.where(mask, i_row_out, 0.0)
 
     def run(weights, spikes):
-        fn = pl.pallas_call(kernel, grid=(cdiv(weight_info.shape[0], mat_block_dim),), out_shape=kwargs['outs'], backend='triton')
+        fn = pl.pallas_call(kernel, grid=(cdiv(weight_info.shape[0], mat_block_dim),), out_shape=kwargs['outs'],
+                            backend='triton')
         return fn(weights, spikes)
 
     return run
 
 
 def _dsfmv_jvp_weights(w_dot, weights, spikes, **kwargs):
-    return dsfmv_p_call(w_dot, spikes, backend=kwargs['backend'], )
+    return dsfmv_p_call(w_dot, spikes, backend=kwargs['backend'])
 
 
 def _dsfmv_jvp_spikes(spk_dot, weights, spikes, **kwargs):
@@ -543,14 +544,15 @@ def _sfdvm_pallas_kernel(
         out_ref[safe_cols] = jnp.where(mask, i_col_out, 0.0)
 
     def run(spikes, weights):
-        fn = pl.pallas_call(kernel, grid=(cdiv(weight_info.shape[1], block_dim),), out_shape=kwargs['outs'], backend='triton')
+        fn = pl.pallas_call(kernel, grid=(cdiv(weight_info.shape[1], block_dim),), out_shape=kwargs['outs'],
+                            backend='triton')
         return fn(spikes, weights)
 
     return run
 
 
 def _sfdvm_jvp_weights(w_dot, spikes, weights, **kwargs):
-    return sfvdm_p_call(spikes, w_dot, backend=kwargs['backend'], )
+    return sfvdm_p_call(spikes, w_dot, backend=kwargs['backend'])
 
 
 def _sfdvm_jvp_spikes(spk_dot, spikes, weights, **kwargs):
@@ -570,10 +572,10 @@ def _sfdvm_transpose_rule(ct, spikes, weights, **kwargs):
 
 def _event_matrix_batching(args, axes, **kwargs):
     if axes == (0, None):
-        r = sfdmm(args[0], args[1])
+        r = sfdmm(args[0], args[1], backend=kwargs['backend'])
         return [r], [0]
     if axes == (1, None):
-        r = sfdmm(args[0].T, args[1])
+        r = sfdmm(args[0].T, args[1], backend=kwargs['backend'])
         return [r], [0]
     else:
         return general_batching_rule(sfdvm_p, args, axes, **kwargs)
@@ -882,7 +884,7 @@ def _dsfmm_pallas_kernel(
 
 
 def _dsfmm_jvp_weights(w_dot, weights, spikes, **kwargs):
-    return dmsfm_p_call(w_dot, spikes, backend=kwargs['backend'], )
+    return dmsfm_p_call(w_dot, spikes, backend=kwargs['backend'])
 
 
 def _dsfmm_jvp_spikes(spk_dot, weights, spikes, **kwargs):
@@ -895,7 +897,7 @@ def _dsfmm_transpose_rule(ct, weights, spikes, **kwargs):
         ct_events = weights.T @ ct
         return weights, (ad.Zero(spikes) if type(ct) is ad.Zero else ct_events)
     else:
-        ct_weights = dsfmm(ct, spikes.T)
+        ct_weights = dsfmm(ct, spikes.T, backend=kwargs['backend'])
         return (ad.Zero(weights) if type(ct) is ad.Zero else ct_weights), spikes
 
 
@@ -905,7 +907,7 @@ def _dsfmm_batching_events_fn(args, axis=1, **kwargs):
     assert axis > 0, 'axis must be greater than 0'
     k, maybe_batch1, maybe_batch2 = args[1].shape
     events = args[1].reshape(k, maybe_batch1 * maybe_batch2)
-    r = dmsfm_p_call(args[0], events, backend=kwargs['backend'], )
+    r = dmsfm_p_call(args[0], events, backend=kwargs['backend'])
     r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
     return [r], [axis]
 
@@ -916,7 +918,7 @@ def _dsfmm_batching_weight_fn(args, axis=0, **kwargs):
     assert axis < 2, 'axis must be less than 2'
     maybe_batch1, maybe_batch2, k = args[0].shape
     weights = args[0].reshape(maybe_batch1 * maybe_batch2, k)
-    r = dmsfm_p_call(weights, args[1], backend=kwargs['backend'], )
+    r = dmsfm_p_call(weights, args[1], backend=kwargs['backend'])
     r = jnp.reshape(r[0], [maybe_batch1, maybe_batch2, r[0].shape[-1]])
     return [r], [axis]
 
@@ -1253,7 +1255,7 @@ def _sfdmm_pallas_kernel(
 
 
 def _sfdmm_jvp_weights(w_dot, spikes, weights, **kwargs):
-    return sfdmm_p_call(spikes, w_dot, backend=kwargs['backend'], )
+    return sfdmm_p_call(spikes, w_dot, backend=kwargs['backend'])
 
 
 def _sfdmm_jvp_spikes(spk_dot, spikes, weights, **kwargs):
@@ -1276,7 +1278,7 @@ def _sfdmm_batching_spk_base_fn(args, axis=0, **kwargs):
     assert args[1].ndim == 2, 'requires 3D weights.'
     maybe_batch1, maybe_batch2, n = args[0].shape
     events = args[0].reshape(maybe_batch1 * maybe_batch2, n)
-    r = sfdmm_p_call(events, args[1], backend=kwargs['backend'], )
+    r = sfdmm_p_call(events, args[1], backend=kwargs['backend'])
     r = jnp.reshape(r[0], [maybe_batch1, maybe_batch2, r[0].shape[1]])
     return [r], [axis]
 
@@ -1287,7 +1289,7 @@ def _sfdmm_batching_weight_base_fn(args, axis=0, **kwargs):
     k, maybe_batch1, maybe_batch2 = args[1].shape
     events = args[0]
     weights = args[1].reshape(k, maybe_batch1 * maybe_batch2)
-    r = sfdmm_p_call(events, weights, backend=kwargs['backend'], )
+    r = sfdmm_p_call(events, weights, backend=kwargs['backend'])
     r = jnp.reshape(r[0], [r[0].shape[0], maybe_batch1, maybe_batch2])
     return [r], [axis]
 

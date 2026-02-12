@@ -24,11 +24,11 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent.config import get_numba_parallel
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
+from brainevent.config import get_numba_parallel
 from .float import fcnmv_p_call, fcnmm_p_call
 
 __all__ = [
@@ -401,11 +401,11 @@ def _spfloat_fcnmv_pallas_kernel(
 
 
 def _spfloat_fcnmv_jvp_spikes(spk_dot, weights, indices, spikes, *, shape, transpose, **kwargs):
-    return fcnmv_p_call(weights, indices, spk_dot, shape=shape, transpose=transpose, backend=kwargs['backend'], )
+    return fcnmv_p_call(weights, indices, spk_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
 
 def _spfloat_fcnmv_jvp_weights(w_dot, weights, indices, spikes, *, shape, transpose, **kwargs):
-    return spfloat_fcnmv_p_call(w_dot, indices, spikes, shape=shape, transpose=transpose)
+    return spfloat_fcnmv_p_call(w_dot, indices, spikes, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
 
 def _spfloat_fcnmv_transpose_rule(ct, weights, indices, spikes, *, shape, transpose, weight_info, **kwargs):
@@ -437,6 +437,7 @@ def _spfloat_fcnmv_transpose_rule(ct, weights, indices, spikes, *, shape, transp
                 spikes,
                 shape=shape,
                 transpose=transpose,
+                backend=kwargs['backend']
             )
             ct_gmax = jnp.inner(ct, ct_gmax[0]).reshape(*weight_info.shape)
         else:

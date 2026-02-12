@@ -22,11 +22,12 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent.config import get_numba_parallel
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescope
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
+from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
+from brainevent.config import get_numba_parallel
 from .float import csrmv, csrmm
 
 __all__ = [
@@ -1248,11 +1249,9 @@ def _csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose, **k
         else:
             row, col = _csr_to_coo(indices, indptr)
             if transpose:
-                dCSR = B @ ct.T
-                d_data = dCSR[row, col]
+                d_data = sddmm_coo_indices(B, ct.T, row, col).data
             else:
-                dCSR = B @ ct.T
-                d_data = dCSR[col, row]
+                d_data = sddmm_coo_indices(B, ct.T, col, row).data
             return d_data, indices, indptr, B
 
 
