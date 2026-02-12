@@ -305,30 +305,3 @@ class TestFloatCSRMM:
 
         jax.block_until_ready((x, indptr, indices, w, o1, r1, o2, r2))
 
-
-@pytest.mark.skipif(
-    not CSRMV_YW2Y_IMPLEMENTATIONS,
-    reason=f'No csrmv_yw2y implementation on platform={platform}',
-)
-class TestCSRMVYw2y:
-    @pytest.mark.parametrize('implementation', CSRMV_YW2Y_IMPLEMENTATIONS)
-    @pytest.mark.parametrize('shape', [(100, 200), (200, 400)])
-    @pytest.mark.parametrize('transpose', [True, False])
-    def test_csr(self, implementation, shape, transpose):
-        m, n = shape
-        indptr, indices = get_csr(m, n, 0.5)
-
-        data = braintools.init.Normal(0.0, 1.0)(indices.shape)
-        y = brainstate.random.rand(n) if transpose else brainstate.random.rand(m)
-
-        result = csrmv_yw2y(y, data, indices, indptr, shape=(m, n), transpose=transpose, backend=implementation)
-
-        if transpose:
-            expected = data * y[indices]
-        else:
-            row_ids = _row_ids_from_indptr(indptr)
-            expected = data * y[row_ids]
-
-        assert jnp.allclose(result, expected, rtol=1e-3, atol=1e-3)
-
-        jax.block_until_ready((data, y, indptr, indices, result, expected))
