@@ -612,7 +612,31 @@ def csr_diag_add_call(csr_value, diag_position, diag_value, *, backend: Optional
     )
 
 
-csr_diag_add_p = XLACustomKernel('csr_diag_add')
+csr_diag_add_p = XLACustomKernel(
+    'csr_diag_add',
+    doc="""
+Low-level XLA custom-kernel primitive for ``csr_diag_add``.
+
+This ``XLACustomKernel`` instance dispatches the CSR diagonal addition operation
+operation to registered backends (``numba``, ``warp``, ``pallas``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+Adds values to the diagonal elements of a CSR sparse matrix using a position array
+that maps diagonal indices to CSR data positions, equivalent to A = A + diag(diag_value)
+restricted to the existing sparsity pattern.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``csr_diag_add_p.available_backends(platform)``,
+and the default backend can be configured with ``csr_diag_add_p.set_default(platform, backend)``.
+
+See Also
+--------
+csr_diag_add : High-level user-facing function wrapper.
+"""
+)
 csr_diag_add_p.def_numba_kernel(_csr_diag_add_numba_kernel_generator)
 csr_diag_add_p.def_warp_kernel(_csr_diag_add_warp_kernel_generator)
 csr_diag_add_p.def_pallas_kernel('gpu', _csr_diag_add_pallas_kernel_generator)
