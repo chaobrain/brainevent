@@ -499,7 +499,35 @@ def spfloat_densemv_p_call(weights, spikes, *, transpose, backend: Optional[str]
     )
 
 
-spfloat_densemv_p = XLACustomKernel('spfloat_densemv')
+spfloat_densemv_p = XLACustomKernel(
+    'spfloat_densemv',
+    doc="""
+Low-level XLA custom-kernel primitive for ``spfloat_densemv``.
+
+This ``XLACustomKernel`` instance dispatches the sparse-float dense matrix-vector
+multiplication operation to registered backends (``numba``, ``warp``, ``pallas``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+The primitive handles two transpose modes controlled by the ``transpose`` parameter:
+
+- **transpose=False**: Computes ``weights[m, k] @ spikes[k] -> out[m]``
+  (dense matrix multiplies sparse-float vector from the right).
+
+- **transpose=True**: Computes ``spikes[k] @ weights[k, n] -> out[n]``
+  (sparse-float vector multiplies dense matrix from the left).
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``spfloat_densemv_p.available_backends(platform)``,
+and the default backend can be configured with ``spfloat_densemv_p.set_default(platform, backend)``.
+
+See Also
+--------
+spfloat_densemv : High-level user-facing function wrapper.
+"""
+)
 """
 Low-level XLA custom-kernel primitive for ``spfloat_densemv``.
 
@@ -1003,7 +1031,35 @@ def spfloat_densemm_p_call(weights, spikes, *, transpose, backend: Optional[str]
     )
 
 
-spfloat_densemm_p = XLACustomKernel('spfloat_densemm')
+spfloat_densemm_p = XLACustomKernel(
+    'spfloat_densemm',
+    doc="""
+Low-level XLA custom-kernel primitive for ``spfloat_densemm``.
+
+This ``XLACustomKernel`` instance dispatches the sparse-float dense matrix-matrix
+multiplication operation to registered backends (``numba``, ``warp``, ``pallas``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+The primitive handles two transpose modes controlled by the ``transpose`` parameter:
+
+- **transpose=False**: Computes ``weights[m, k] @ spikes[k, n] -> out[m, n]``
+  (dense matrix multiplies sparse-float matrix from the right).
+
+- **transpose=True**: Computes ``spikes[m, k] @ weights[k, n] -> out[m, n]``
+  (sparse-float matrix multiplies dense matrix from the left).
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``spfloat_densemm_p.available_backends(platform)``,
+and the default backend can be configured with ``spfloat_densemm_p.set_default(platform, backend)``.
+
+See Also
+--------
+spfloat_densemm : High-level user-facing function wrapper.
+"""
+)
 spfloat_densemm_p.def_numba_kernel(_spfloat_densemm_numba_kernel)
 spfloat_densemm_p.def_warp_kernel(_spfloat_densemm_warp_kernel)
 spfloat_densemm_p.def_pallas_kernel('gpu', _spfloat_densemm_pallas_kernel)
