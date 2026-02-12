@@ -21,10 +21,10 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent.config import get_numba_parallel
 from brainevent._misc import cdiv, generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
+from brainevent.config import get_numba_parallel
 
 __all__ = [
     'indexed_binary_densemv',
@@ -279,7 +279,8 @@ def _mv_pallas_kernel(
             out_ref[safe_cols] = jnp.where(mask, out, 0.0)
 
         def run(spikes, indices, count, weights):
-            fn = pl.pallas_call(kernel, grid=(cdiv(weights_info.shape[1], block_dim),), out_shape=kwargs['outs'], backend='triton')
+            fn = pl.pallas_call(kernel, grid=(cdiv(weights_info.shape[1], block_dim),), out_shape=kwargs['outs'],
+                                backend='triton')
             return fn(indices, count, weights)
     else:
         # weights[m,k], select columns -> out[m]
@@ -309,7 +310,8 @@ def _mv_pallas_kernel(
             out_ref[safe_rows] = jnp.where(mask, out, 0.0)
 
         def run(spikes, indices, count, weights):
-            fn = pl.pallas_call(kernel, grid=(cdiv(weights_info.shape[0], block_dim),), out_shape=kwargs['outs'], backend='triton')
+            fn = pl.pallas_call(kernel, grid=(cdiv(weights_info.shape[0], block_dim),), out_shape=kwargs['outs'],
+                                backend='triton')
             return fn(indices, count, weights)
 
     return run

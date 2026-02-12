@@ -30,7 +30,6 @@ JITU_IMPLEMENTATIONS = tuple(jitu_p.available_backends(platform))
 JITUMV_IMPLEMENTATIONS = tuple(jitumv_p.available_backends(platform))
 JITUMM_IMPLEMENTATIONS = tuple(jitumm_p.available_backends(platform))
 
-
 SHAPES = [(20, 30), (100, 50)]
 W_LOW = -1.5
 W_HIGH = 1.5
@@ -109,7 +108,8 @@ def test_jitumm_forward(implementation, k, shape, corder):
     out = jitumm(W_LOW, W_HIGH, PROB, matrix, SEED, shape=shape, corder=corder, backend=implementation)
     # Validate against jitumv column-by-column (exact match expected)
     for j in range(k):
-        expected_col = jitumv(W_LOW, W_HIGH, PROB, matrix[:, j], SEED, shape=shape, corder=corder, backend=implementation)
+        expected_col = jitumv(W_LOW, W_HIGH, PROB, matrix[:, j], SEED, shape=shape, corder=corder,
+                              backend=implementation)
         assert jnp.allclose(out[:, j], expected_col, rtol=1e-4, atol=1e-4), (
             f"Column {j} mismatch: max_diff={float(jnp.max(jnp.abs(out[:, j] - expected_col)))}"
         )

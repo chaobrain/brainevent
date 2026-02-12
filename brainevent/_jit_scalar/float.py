@@ -24,12 +24,11 @@ from jax.interpreters import ad
 
 from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
+from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
-from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers
 from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
-
 
 __all__ = [
     "jits",

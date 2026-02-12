@@ -405,7 +405,6 @@ class Test_JITC_To_Dense:
         assert allclose(true_grad, jitc_grad)
         jax.block_until_ready((base, primals, true_grad, expected_grad, jitc_grad))
 
-
 # class Test_JITC_Normal_Validation:
 #     @pytest.mark.parametrize('cls', [brainevent.JITCNormalR, brainevent.JITCNormalC])
 #     @pytest.mark.parametrize('corder', [True, False])
