@@ -30,3 +30,13 @@ Numba Runtime Controls
    set_numba_parallel
    get_numba_parallel
    get_numba_num_threads
+
+
+LFSR Algorithm Selection
+------------------------
+
+.. autosummary::
+   :toctree: generated/
+
+   set_lfsr_algorithm
+   get_lfsr_algorithm

@@ -63,6 +63,12 @@ GPU/TPU Kernel (Pallas)
    PallasLFSR113RNG
    PallasLFSR128RNG
 
+.. autosummary::
+   :toctree: generated/
+
+   PallasLFSRRNG
+   get_pallas_lfsr_rng_class
+
 
 Helpers
 -------
@@ -70,8 +76,8 @@ Helpers
 .. autosummary::
    :toctree: generated/
 
-   register_cuda_kernels
    defjvp
    general_batching_rule
    jaxtype_to_warptype
    jaxinfo_to_warpinfo
+

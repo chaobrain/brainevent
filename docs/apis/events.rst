@@ -14,6 +14,7 @@ Base
    :template: classtemplate.rst
 
    EventRepresentation
+   IndexedEventRepresentation
 
 
 Binary Events
@@ -23,7 +24,6 @@ Binary Events
    :toctree: generated/
    :template: classtemplate.rst
 
-   BinaryArray
    BinaryArray
 
 
@@ -37,10 +37,24 @@ Sparse Float Events
    SparseFloat
 
 
-Utility
--------
+Indexed Events
+--------------
 
 .. autosummary::
    :toctree: generated/
+   :template: classtemplate.rst
 
-   binary_array_index
+   IndexedBinary1d
+   IndexedBinary2d
+
+
+Indexed Sparse Float
+--------------------
+
+.. autosummary::
+   :toctree: generated/
+   :template: classtemplate.rst
+
+   IndexedSpFloat1d
+   IndexedSpFloat2d
+
