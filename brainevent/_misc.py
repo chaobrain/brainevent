@@ -222,6 +222,40 @@ def _block_csr_tocsr(
     indptr: jax.Array,
     shape: MatrixShape
 ) -> Tuple[jax.Array, jax.Array, jax.Array]:
+    """Convert block CSR format to regular CSR format by expanding blocks.
+
+    Takes a block-sparse CSR matrix where each stored element is an (n, m)
+    dense block and converts it to a regular CSR matrix by expanding all
+    blocks into individual scalar elements. Zero elements within blocks are
+    dropped from the output.
+
+    Parameters
+    ----------
+    data : jax.Array
+        Block data array of shape ``(num_blocks, n, m)`` where each entry is
+        an ``n × m`` dense block.
+    indices : jax.Array
+        Block column indices array of shape ``(num_blocks,)``.
+    indptr : jax.Array
+        Block row pointer array of shape ``(n_block_rows + 1,)``.
+    shape : tuple of int
+        Shape ``(N, M)`` of the full (expanded) matrix.
+
+    Returns
+    -------
+    csr_data : jax.Array
+        CSR data array containing non-zero scalar values.
+    csr_indices : jax.Array
+        CSR column indices for each stored element.
+    csr_indptr : jax.Array
+        CSR row pointer array of shape ``(N + 1,)``.
+
+    Notes
+    -----
+    This function is used internally for converting block-compressed
+    representations to standard CSR format. The output CSR matrix has the same
+    logical shape ``(N, M)`` as specified by the ``shape`` parameter.
+    """
     n, m = data.shape[1:]
     N, M = shape
     n_block_rows = indptr.shape[0] - 1
@@ -261,6 +295,44 @@ def _block_csr_tocoo(
     indices: jax.Array,
     indptr: jax.Array
 ) -> Tuple[jax.Array, jax.Array]:
+    """Convert block CSR format to COO format by expanding blocks.
+
+    Takes a block-sparse CSR matrix where each stored block has shape ``(n, m)``
+    and expands it into COO coordinate format with separate row and column
+    index arrays. This function assumes all blocks are fully dense (no internal
+    zeros are dropped).
+
+    Parameters
+    ----------
+    n : int
+        Number of rows per block.
+    m : int
+        Number of columns per block.
+    dense_shape_row : int
+        Total number of rows ``N`` in the expanded matrix.
+    nse : int
+        Number of stored elements (non-zeros) in the output COO format.
+        This should equal ``num_blocks * n * m``.
+    indices : jax.Array
+        Block column indices array of shape ``(num_blocks,)``.
+    indptr : jax.Array
+        Block row pointer array of shape ``(n_block_rows + 1,)``.
+
+    Returns
+    -------
+    pre_ids : jax.Array
+        Row indices (pre-synaptic IDs) for each stored element in COO format,
+        shape ``(nse,)``.
+    post_ids : jax.Array
+        Column indices (post-synaptic IDs) for each stored element in COO
+        format, shape ``(nse,)``.
+
+    Notes
+    -----
+    This function is JIT-compiled with static arguments for block size and
+    shape to enable efficient lowering. It uses a nested loop structure with
+    ``jax.lax.fori_loop`` and ``jax.lax.while_loop`` for JAX compatibility.
+    """
     nrows = dense_shape_row // n
     delta_row_array = jnp.arange(n).repeat(m)
     delta_col_array = jnp.tile(jnp.arange(m), n)
@@ -380,6 +452,39 @@ def estimate_block_size(csr, efficiency: float = 0.7) -> Tuple[int, int]:
 
 
 def _count_blocks(N, M, n, m, indptr, indices):
+    """Count the number of unique blocks needed for a block-sparse representation.
+
+    Given a CSR matrix and a target block size ``(n, m)``, counts how many
+    distinct ``n × m`` blocks would be needed to represent the non-zero
+    structure in block-sparse format.
+
+    Parameters
+    ----------
+    N : int
+        Number of rows in the full matrix.
+    M : int
+        Number of columns in the full matrix.
+    n : int
+        Number of rows per block.
+    m : int
+        Number of columns per block.
+    indptr : array_like
+        CSR row pointer array of shape ``(N + 1,)``.
+    indices : array_like
+        CSR column index array.
+
+    Returns
+    -------
+    int
+        The number of unique blocks required to cover all non-zero entries.
+
+    Notes
+    -----
+    This function uses a marking array (``mask``) to track which blocks have
+    already been counted in each block row, ensuring each block is counted
+    only once even if multiple scalar elements from the CSR matrix fall
+    within it.
+    """
     mask = np.full(M // m + 1, -1, dtype=np.int32)
     n_blks = 0
 

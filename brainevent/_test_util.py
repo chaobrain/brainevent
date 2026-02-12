@@ -17,6 +17,7 @@
 
 
 import random
+from typing import Union
 
 import brainstate
 import jax
@@ -29,7 +30,7 @@ def generate_fixed_conn_num_indices(
     n_pre: int,
     n_post: int,
     n_conn: int,
-    replace: bool = 'rand',
+    replace: Union[bool, str] = 'rand',
     rng=brainstate.random.DEFAULT
 ):
     """Generate random post-synaptic index arrays for fixed-number connectivity.
