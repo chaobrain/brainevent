@@ -21,10 +21,10 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent.config import get_numba_parallel
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
+from brainevent.config import get_numba_parallel
 
 __all__ = [
     'update_dense_on_binary_pre',

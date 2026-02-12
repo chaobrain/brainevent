@@ -20,6 +20,12 @@ from jax.experimental.sparse import BCOO
 
 from brainevent._misc import namescope
 
+__all__ = [
+    'sddmm_indices',
+    'sddmm_coo_indices',
+    'sddmm_bcoo',
+]
+
 
 @namescope
 def sddmm_indices(

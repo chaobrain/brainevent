@@ -732,7 +732,8 @@ def _csr2csc_on_post_benchmark_data(*, platform):
     return configs
 
 
-def csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace, post_spike, *, shape, backend: Optional[str] = None):
+def csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace, post_spike, *, shape,
+                              backend: Optional[str] = None):
     """Invoke the low-level XLA custom kernel for postsynaptic plasticity updates.
 
     Validates input shapes and dimensions, then dispatches to

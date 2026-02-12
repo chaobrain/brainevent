@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Optional, Sequence
+from typing import Optional
 
 import brainunit as u
 import jax
@@ -21,12 +21,12 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent.config import get_numba_parallel
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescope
 from brainevent._op import jaxinfo_to_warpinfo, numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
+from brainevent.config import get_numba_parallel
 from .float import csrmv, csrmm
 
 __all__ = [
@@ -790,7 +790,8 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, events, *, shape, transpose
         if type(ct) is ad.Zero:
             ct_events = ad.Zero(events)
         else:
-            ct_events = csrmv(data, indices, indptr, ct, shape=shape, transpose=not transpose)
+            ct_events = csrmv(data, indices, indptr, ct,
+                              shape=shape, transpose=not transpose, backend=kwargs['backend'])
         return data, indices, indptr, ct_events
     else:
         if type(ct) is ad.Zero:
@@ -1368,17 +1369,17 @@ def _csrmm_pallas_kernel(
         # result: [m, n]
         #
         def mm(
-            data_ref,   # [1]
-            indices_ref, # [nse]
+            data_ref,  # [1]
+            indices_ref,  # [nse]
             indptr_ref,  # [m + 1]
-            B_ref,      # [k, n]
+            B_ref,  # [k, n]
             posts_ref,  # [m, n]
         ):
             # 1. Grid Info
             i_row = pl.program_id(0)
             i_n = pl.program_id(1)
 
-            #Grid Guard
+            # Grid Guard
             num_rows = indptr_ref.shape[0] - 1
 
             def _body():
@@ -1402,7 +1403,7 @@ def _csrmm_pallas_kernel(
                     cols = load(indices_ref.at[pl.ds(offset, block_dim)], mask=nnz_mask, other=0)
 
                     safe_cols = jnp.minimum(cols, limit_k)
-                    
+
                     events = B_ref[safe_cols, pl.ds(i_col_start, block_dim_n)]
                     events = jnp.asarray(events, dtype=posts_ref.dtype)
 
@@ -1414,10 +1415,10 @@ def _csrmm_pallas_kernel(
                     0, num_blocks, loop_fn,
                     jnp.zeros([block_dim_n], dtype=posts_ref.dtype)
                 )
-                
+
                 store(
                     posts_ref.at[i_row, pl.ds(i_col_start, block_dim_n)],
-                    i_row_sum, 
+                    i_row_sum,
                     mask=col_mask
                 )
 
@@ -1438,11 +1439,11 @@ def _csrmm_pallas_kernel(
         # result: [m, n]
         #
         def mm(
-            data_ref,     # [nse]
+            data_ref,  # [nse]
             indices_ref,  # [nse]
-            indptr_ref,   # [m + 1]
-            B_ref,        # [k, n]
-            posts_ref,    # [m, n]
+            indptr_ref,  # [m + 1]
+            B_ref,  # [k, n]
+            posts_ref,  # [m, n]
         ):
             i_row = pl.program_id(0)
             num_rows = indptr_ref.shape[0] - 1
@@ -1467,20 +1468,19 @@ def _csrmm_pallas_kernel(
 
                     cols = load(indices_ref.at[pl.ds(offset, block_dim)], mask=nnz_mask, other=0)
                     val_A = load(data_ref.at[pl.ds(offset, block_dim)], mask=nnz_mask, other=0.0)
-                    
 
                     valid_cols = cols < num_B_rows
                     safe_cols = jnp.minimum(cols, num_B_rows - 1)
 
                     mask_B_dim0 = nnz_mask & valid_cols
                     mask_B = mask_B_dim0[:, None] & col_mask[None, :]
-                    
+
                     events = load(B_ref.at[safe_cols, pl.ds(i_col_start, block_dim_n)], mask=mask_B, other=0.0)
-   
+
                     weighted = val_A[:, None] * events
 
-                    contribution = jnp.sum(weighted, axis=0) 
-                    
+                    contribution = jnp.sum(weighted, axis=0)
+
                     sum_ += contribution
                     return sum_
 
@@ -1488,7 +1488,7 @@ def _csrmm_pallas_kernel(
                     0, num_blocks, loop_fn,
                     jnp.zeros([block_dim_n], dtype=posts_ref.dtype)
                 )
-                
+
                 store(posts_ref.at[i_row, pl.ds(i_col_start, block_dim_n)], i_row_sum, mask=col_mask)
 
             jax.lax.cond(i_row < num_rows, _body, lambda: None)
@@ -1515,7 +1515,6 @@ def _csrmm_pallas_gpu_kernel(
 ):
     from jax.experimental import pallas as pl
     from jax.experimental.pallas.triton import load, atomic_add
-
 
     m, k = shape
     n = vector_info.shape[1]
@@ -1634,7 +1633,7 @@ def _csrmm_transpose_rule(ct, data, indices, indptr, B, *, shape, transpose, **k
     assert not ad.is_undefined_primal(indptr)
 
     if ad.is_undefined_primal(B):
-        dB = csrmm(data, indices, indptr, ct, shape=shape, transpose=not transpose)
+        dB = csrmm(data, indices, indptr, ct, shape=shape, transpose=not transpose, backend=kwargs['backend'])
         return data, indices, indptr, dB
     else:
         B = jnp.asarray(B)

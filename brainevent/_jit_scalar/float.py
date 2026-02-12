@@ -24,12 +24,11 @@ from jax.interpreters import ad
 
 from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
+from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
-from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers
 from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
-
 
 __all__ = [
     "jits",
@@ -386,7 +385,7 @@ def _jitc_homo_matrix_numba_kernel(
         If True, iterate over rows as the outer loop (each row samples column
         indices). If False, iterate over columns as the outer loop (each column
         samples row indices).
-    **kwargs : dict
+    **kwargs
         Additional keyword arguments, must include ``'outs'`` specifying
         the output shape/dtype information.
 
@@ -462,7 +461,7 @@ def _jitc_homo_matrix_warp_kernel(
     corder : bool, default=True
         If True, each GPU thread handles one row. If False, each thread
         handles one column.
-    **kwargs : dict
+    **kwargs
         Additional keyword arguments, must include ``'outs'``.
 
     Returns
@@ -545,7 +544,7 @@ def _jitc_homo_matrix_pallas_kernel(
     corder : bool, default=True
         If True, each Pallas program handles one row. If False, each program
         handles one column.
-    **kwargs : dict
+    **kwargs
         Additional keyword arguments, must include ``'outs'``.
 
     Returns
@@ -629,7 +628,7 @@ def _jitc_homo_matrix_jvp_weight(weight_dot, weight, clen, seed, *, shape, trans
         Whether the matrix is transposed.
     corder : bool
         Column-order flag.
-    **kwargs : dict
+    **kwargs
         Must contain ``'backend'``.
 
     Returns
@@ -661,7 +660,7 @@ def _jitc_homo_matrix_transpose(ct, weight, clen, seed, *, shape, transpose: boo
         Whether the forward pass generated a transposed matrix.
     corder : bool
         Column-order flag used in the forward pass.
-    **kwargs : dict
+    **kwargs
         Must contain ``'backend'``.
 
     Returns
@@ -701,7 +700,7 @@ def _jitc_homo_matrix_batching(args, axes, **kwargs):
         The batched arguments ``(weight, clen, seed)``.
     axes : tuple
         The batch axes for each argument.
-    **kwargs : dict
+    **kwargs
         Keyword arguments including ``'shape'``, ``'transpose'``, ``'corder'``,
         and ``'backend'``.
 
@@ -871,7 +870,7 @@ def _jitsmv_numba_kernel(
         accumulating the weighted sum of input vector elements. If False,
         iterate over rows (input dimension) as the outer loop, scattering
         weighted values to the output via accumulation.
-    **kwargs : dict
+    **kwargs
         Additional keyword arguments, must include ``'outs'`` specifying
         the output shape/dtype information.
 
@@ -951,7 +950,7 @@ def _jitsmv_warp_kernel(
     corder : bool, default=True
         If True, each GPU thread handles one output element.
         If False, each thread handles one input element using atomic additions.
-    **kwargs : dict
+    **kwargs
         Additional keyword arguments, must include ``'outs'``.
 
     Returns
@@ -1038,7 +1037,7 @@ def _jitsmv_pallas_kernel(
     corder : bool, default=True
         If True, vectorize over output elements. If False, vectorize over
         input elements with atomic additions.
-    **kwargs : dict
+    **kwargs
         Additional keyword arguments, must include ``'outs'``.
 
     Returns
@@ -1171,7 +1170,7 @@ def _jitsmv_jvp_v(v_dot, weight, clen, vector, seed, _, *, shape, transpose, cor
         Whether the matrix is transposed.
     corder : bool
         Column-order flag.
-    **kwargs : dict
+    **kwargs
         Must contain ``'backend'``.
 
     Returns
@@ -1200,7 +1199,7 @@ def _jitsmv_jvp_weights(w_dot, weight, clen, vector, seed, _, *, shape, transpos
         Whether the matrix is transposed.
     corder : bool
         Column-order flag.
-    **kwargs : dict
+    **kwargs
         Must contain ``'backend'``.
 
     Returns
@@ -1234,7 +1233,7 @@ def _jitsmv_transpose_rules(ct, weight, clen, vector, seed, _, *, shape, transpo
         Whether the forward pass used a transposed matrix.
     corder : bool
         Column-order flag used in the forward pass.
-    **kwargs : dict
+    **kwargs
         Must contain ``'backend'``.
 
     Returns
@@ -1300,7 +1299,7 @@ def _jitsmv_batching(
         The batched arguments ``(weight, clen, vector, seed, _)``.
     axes : tuple
         The batch axes for each argument.
-    **kwargs : dict
+    **kwargs
         Keyword arguments including ``'shape'``, ``'transpose'``, ``'corder'``,
         and ``'backend'``.
 
@@ -1506,7 +1505,7 @@ def _jitsmm_numba_kernel(
         If True, iterate over output rows as the outer loop, gathering from
         the input matrix ``B``. If False, iterate over input rows as the
         outer loop, scattering weighted row values to the output.
-    **kwargs : dict
+    **kwargs
         Additional keyword arguments, must include ``'outs'`` specifying
         the output shape/dtype information.
 
@@ -1592,7 +1591,7 @@ def _jitsmm_warp_kernel(
     corder : bool, default=True
         If True, each GPU thread handles one output row.
         If False, each thread handles one input row using atomic additions.
-    **kwargs : dict
+    **kwargs
         Additional keyword arguments, must include ``'outs'``.
 
     Returns
@@ -1686,7 +1685,7 @@ def _jitsmm_pallas_kernel(
     corder : bool, default=True
         If True, vectorize over output rows. If False, use scalar indexing
         over input rows with atomic additions.
-    **kwargs : dict
+    **kwargs
         Additional keyword arguments, must include ``'outs'``.
 
     Returns
@@ -1799,7 +1798,7 @@ def _jitsmm_jvp_w(w_dot, weight, clen, B, seed, _, *, shape, transpose, corder, 
         Whether the matrix is transposed.
     corder : bool
         Column-order flag.
-    **kwargs : dict
+    **kwargs
         Must contain ``'backend'``.
 
     Returns
@@ -1828,7 +1827,7 @@ def _jitsmm_jvp_B(B_dot, weight, clen, B, seed, _, *, shape, transpose, corder, 
         Whether the matrix is transposed.
     corder : bool
         Column-order flag.
-    **kwargs : dict
+    **kwargs
         Must contain ``'backend'``.
 
     Returns
@@ -1862,7 +1861,7 @@ def _jitsmm_transpose_rules(ct, weight, clen, B, seed, _, *, shape, transpose, c
         Whether the forward pass used a transposed matrix.
     corder : bool
         Column-order flag used in the forward pass.
-    **kwargs : dict
+    **kwargs
         Must contain ``'backend'``.
 
     Returns
@@ -1927,7 +1926,7 @@ def _batching_axis1(args, axis=1, **kwargs):
         The batched arguments ``(weight, clen, B, seed, _)``, where ``B`` is 3-D.
     axis : int, default=1
         The batch axis in the output.
-    **kwargs : dict
+    **kwargs
         Keyword arguments including ``'shape'``, ``'transpose'``, ``'corder'``,
         and ``'backend'``.
 
@@ -1966,7 +1965,7 @@ def _jitsmm_batching(args, axes, **kwargs):
         The batched arguments ``(weight, clen, B, seed, _)``.
     axes : tuple
         The batch axes for each argument.
-    **kwargs : dict
+    **kwargs
         Keyword arguments including ``'shape'``, ``'transpose'``, ``'corder'``,
         and ``'backend'``.
 

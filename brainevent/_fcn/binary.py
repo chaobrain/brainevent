@@ -24,11 +24,11 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent.config import get_numba_parallel
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
+from brainevent.config import get_numba_parallel
 from .float import fcnmv_p_call, fcnmm_p_call
 
 __all__ = [
@@ -505,11 +505,11 @@ def _binary_fcnmv_pallas_kernel(
 
 
 def _binary_fcnmv_jvp_spikes(spk_dot, weights, indices, spikes, *, shape, transpose, **kwargs):
-    return fcnmv_p_call(weights, indices, spk_dot, shape=shape, transpose=transpose, backend=kwargs['backend'], )
+    return fcnmv_p_call(weights, indices, spk_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
 
 def _binary_fcnmv_jvp_weights(w_dot, weights, indices, spikes, *, shape, transpose, **kwargs):
-    return binary_fcnmv_p_call(w_dot, indices, spikes, shape=shape, transpose=transpose, backend=kwargs['backend'], )
+    return binary_fcnmv_p_call(w_dot, indices, spikes, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
 
 def _binary_fcnmv_transpose_rule(ct, weights, indices, spikes, *, shape, transpose, weight_info, **kwargs):
@@ -669,7 +669,7 @@ def binary_fcnmv_p_call(
     )
 
 
-binary_fcnmv_p = XLACustomKernel('binary_fcnmv', )
+binary_fcnmv_p = XLACustomKernel('binary_fcnmv')
 binary_fcnmv_p.def_numba_kernel(_binary_fcnmv_numba_kernel)
 binary_fcnmv_p.def_warp_kernel(_binary_fcnmv_warp_kernel)
 binary_fcnmv_p.def_pallas_kernel('gpu', _binary_fcnmv_pallas_kernel)
@@ -1024,7 +1024,7 @@ def _binary_fcnmm_pallas_kernel(
 
 
 def _binary_fcnmm_jvp_matrix(matrix_dot, weights, indices, matrix, *, shape, transpose, **kwargs):
-    return fcnmm_p_call(weights, indices, matrix_dot, shape=shape, transpose=transpose)
+    return fcnmm_p_call(weights, indices, matrix_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
 
 def _binary_fcnmm_jvp_weights(weights_dot, weights, indices, matrix, *, shape, transpose, **kwargs):
@@ -1051,7 +1051,8 @@ def _binary_fcnmm_transpose_rule(ct, weights, indices, matrix, *, shape, transpo
                 indices,
                 ct,
                 shape=shape,
-                transpose=not transpose
+                transpose=not transpose,
+                backend=kwargs['backend']
             )[0]
 
         return weights, indices, ct_vector

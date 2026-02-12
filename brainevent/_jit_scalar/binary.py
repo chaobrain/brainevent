@@ -24,9 +24,9 @@ from jax.interpreters import ad
 
 from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
+from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
-from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers
 from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
 from .float import jitsmv_p_call, jitsmm_p_call
@@ -1039,83 +1039,83 @@ def _jitsmm_numba_kernel(
     _lfsr_random_integers = get_numba_lfsr_random_integers()
 
     if corder:
-            # JIT Matrix.T @ B
-            # - JIT matrix: [k, m]
-            # - B: [k, n]
-            if B_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True)
-                def kernel_impl(weight, clen, B, seed, posts):
-                    m = posts.shape[0]
-                    n = posts.shape[1]
-                    k = B.shape[0]
-                    weight0 = weight[0]
-                    seed0 = seed[0]
-                    clen0 = clen[0]
-                    for i_m in range(m):
-                        state = _lfsr_seed(seed0 + i_m * k)
-                        i_k = _lfsr_random_integers(state, 0, clen0 - 1)
-                        out = np.zeros(n, dtype=weight.dtype)
-                        while i_k < k:
-                            for j in range(B.shape[1]):
-                                if B[i_k, j]:
-                                    out[j] += 1.0
-                            i_k += _lfsr_random_integers(state, 1, clen0 - 1)
-                        posts[i_m] = out * weight0
-            else:
-                @numba.njit(fastmath=True)
-                def kernel_impl(weight, clen, B, seed, posts):
-                    m = posts.shape[0]
-                    n = posts.shape[1]
-                    k = B.shape[0]
-                    weight0 = weight[0]
-                    seed0 = seed[0]
-                    clen0 = clen[0]
-                    for i_m in range(m):
-                        state = _lfsr_seed(seed0 + i_m * k)
-                        i_k = _lfsr_random_integers(state, 0, clen0 - 1)
-                        out = np.zeros(n, dtype=weight.dtype)
-                        while i_k < k:
-                            for j in range(B.shape[1]):
-                                if B[i_k, j] > 0.:
-                                    out[j] += 1.0
-                            i_k += _lfsr_random_integers(state, 1, clen0 - 1)
-                        posts[i_m] = out * weight0
+        # JIT Matrix.T @ B
+        # - JIT matrix: [k, m]
+        # - B: [k, n]
+        if B_info.dtype == jnp.bool_:
+            @numba.njit(fastmath=True)
+            def kernel_impl(weight, clen, B, seed, posts):
+                m = posts.shape[0]
+                n = posts.shape[1]
+                k = B.shape[0]
+                weight0 = weight[0]
+                seed0 = seed[0]
+                clen0 = clen[0]
+                for i_m in range(m):
+                    state = _lfsr_seed(seed0 + i_m * k)
+                    i_k = _lfsr_random_integers(state, 0, clen0 - 1)
+                    out = np.zeros(n, dtype=weight.dtype)
+                    while i_k < k:
+                        for j in range(B.shape[1]):
+                            if B[i_k, j]:
+                                out[j] += 1.0
+                        i_k += _lfsr_random_integers(state, 1, clen0 - 1)
+                    posts[i_m] = out * weight0
+        else:
+            @numba.njit(fastmath=True)
+            def kernel_impl(weight, clen, B, seed, posts):
+                m = posts.shape[0]
+                n = posts.shape[1]
+                k = B.shape[0]
+                weight0 = weight[0]
+                seed0 = seed[0]
+                clen0 = clen[0]
+                for i_m in range(m):
+                    state = _lfsr_seed(seed0 + i_m * k)
+                    i_k = _lfsr_random_integers(state, 0, clen0 - 1)
+                    out = np.zeros(n, dtype=weight.dtype)
+                    while i_k < k:
+                        for j in range(B.shape[1]):
+                            if B[i_k, j] > 0.:
+                                out[j] += 1.0
+                        i_k += _lfsr_random_integers(state, 1, clen0 - 1)
+                    posts[i_m] = out * weight0
     else:
-            # JIT Matrix.T @ B
-            # - JIT matrix: [k, m]
-            # - B: [k, n]
-            if B_info.dtype == jnp.bool_:
-                @numba.njit(fastmath=True)
-                def kernel_impl(weight, clen, B, seed, posts):
-                    posts[:] = 0.
-                    m = posts.shape[0]
-                    k = B.shape[0]
-                    weight0 = weight[0]
-                    seed0 = seed[0]
-                    clen0 = clen[0]
-                    for i_k in range(k):
-                        state = _lfsr_seed(seed0 + i_k * m)
-                        indices = np.where(B[i_k])[0]
-                        i_m = _lfsr_random_integers(state, 0, clen0 - 1)
-                        while i_m < m:
-                            posts[i_m, indices] += weight0
-                            i_m += _lfsr_random_integers(state, 1, clen0 - 1)
-            else:
-                @numba.njit(fastmath=True)
-                def kernel_impl(weight, clen, B, seed, posts):
-                    posts[:] = 0.
-                    m = posts.shape[0]
-                    k = B.shape[0]
-                    weight0 = weight[0]
-                    seed0 = seed[0]
-                    clen0 = clen[0]
-                    for i_k in range(k):
-                        state = _lfsr_seed(seed0 + i_k * m)
-                        indices = np.where(B[i_k] > 0.)[0]
-                        i_m = _lfsr_random_integers(state, 0, clen0 - 1)
-                        while i_m < m:
-                            posts[i_m, indices] += weight0
-                            i_m += _lfsr_random_integers(state, 1, clen0 - 1)
+        # JIT Matrix.T @ B
+        # - JIT matrix: [k, m]
+        # - B: [k, n]
+        if B_info.dtype == jnp.bool_:
+            @numba.njit(fastmath=True)
+            def kernel_impl(weight, clen, B, seed, posts):
+                posts[:] = 0.
+                m = posts.shape[0]
+                k = B.shape[0]
+                weight0 = weight[0]
+                seed0 = seed[0]
+                clen0 = clen[0]
+                for i_k in range(k):
+                    state = _lfsr_seed(seed0 + i_k * m)
+                    indices = np.where(B[i_k])[0]
+                    i_m = _lfsr_random_integers(state, 0, clen0 - 1)
+                    while i_m < m:
+                        posts[i_m, indices] += weight0
+                        i_m += _lfsr_random_integers(state, 1, clen0 - 1)
+        else:
+            @numba.njit(fastmath=True)
+            def kernel_impl(weight, clen, B, seed, posts):
+                posts[:] = 0.
+                m = posts.shape[0]
+                k = B.shape[0]
+                weight0 = weight[0]
+                seed0 = seed[0]
+                clen0 = clen[0]
+                for i_k in range(k):
+                    state = _lfsr_seed(seed0 + i_k * m)
+                    indices = np.where(B[i_k] > 0.)[0]
+                    i_m = _lfsr_random_integers(state, 0, clen0 - 1)
+                    while i_m < m:
+                        posts[i_m, indices] += weight0
+                        i_m += _lfsr_random_integers(state, 1, clen0 - 1)
 
     def kernel(weight, clen, B, seed, _):
         return numba_kernel(kernel_impl, outs=kwargs['outs'])(weight, clen, B, seed)

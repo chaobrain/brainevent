@@ -25,9 +25,9 @@ from jax.interpreters import ad
 from brainevent._compatible_import import Tracer
 from brainevent._jitc_matrix import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim
+from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_normal
 from brainevent._op import XLACustomKernel, jaxinfo_to_warpinfo, numba_kernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
-from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_normal
 from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
 
@@ -597,7 +597,8 @@ def _jitn_pallas_kernel_generator(
             )
 
     def run(w_loc, w_scale, clen, seed):
-        fn = pl.pallas_call(kernel, grid=(n_block,), input_output_aliases={4: 0}, out_shape=kwargs['outs'], backend='triton')
+        fn = pl.pallas_call(kernel, grid=(n_block,), input_output_aliases={4: 0}, out_shape=kwargs['outs'],
+                            backend='triton')
         out = kwargs['outs'][0]
         placeholder = jnp.zeros(out.shape, out.dtype)
         return fn(w_loc, w_scale, clen, seed, placeholder)
@@ -612,7 +613,7 @@ def _jitn_jvp_wlow(w_loc_dot, w_loc, w_scale, clen, seed, *, out_info, **kwargs)
 
 def _jitn_jvp_whigh(
     w_scale_dot, w_loc, w_scale, clen, seed, *,
-    shape, transpose: bool, corder: bool, backend: Optional[str] = None, **kwargs
+    shape, transpose: bool, corder: bool, backend, **kwargs
 ):
     return jitn_p_call(
         0., w_scale_dot, clen, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
@@ -621,7 +622,7 @@ def _jitn_jvp_whigh(
 
 def _jitn_transpose(
     ct, w_loc, w_scale, clen, seed, *,
-    shape, transpose: bool, corder: bool, backend: Optional[str] = None, **kwargs
+    shape, transpose: bool, corder: bool, backend, **kwargs
 ):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
@@ -664,7 +665,7 @@ def _jitn_benchmark_data(*, platform):
 
 
 def jitn_p_call(
-    w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool, backend: Optional[str] = None
+    w_loc, w_scale, clen, seed, *, shape, transpose: bool, corder: bool, backend
 ):
     """Dispatch the JIT normal matrix materialisation primitive.
 
@@ -976,26 +977,26 @@ def _jitnmv_pallas_kernel_generator(
     return run
 
 
-def _jitnmv_jvp_v(v_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend: Optional[str] = None, **kwargs):
+def _jitnmv_jvp_v(v_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend, **kwargs):
     return jitnmv_p_call(
         w_loc, w_scale, clen, v_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
     )
 
 
-def _jitnmv_jvp_wloc(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend: Optional[str] = None, **kwargs):
+def _jitnmv_jvp_wloc(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend, **kwargs):
     return jitnmv_p_call(
         w_dot, w_scale, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
     )
 
 
-def _jitnmv_jvp_wscale(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend: Optional[str] = None, **kwargs):
+def _jitnmv_jvp_wscale(w_dot, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend, **kwargs):
     return jitnmv_p_call(
         w_loc, w_dot, clen, vector, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
     )
 
 
 def _jitnmv_transpose_rules(
-    ct, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend: Optional[str] = None, **kwargs
+    ct, w_loc, w_scale, clen, vector, seed, *, shape, transpose, corder, backend, **kwargs
 ):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
@@ -1116,7 +1117,7 @@ def jitnmv_p_call(
     shape,
     transpose: bool,
     corder: bool,
-    backend: Optional[str] = None,
+    backend,
 ):
     """Dispatch the JIT normal matrix-vector multiply primitive.
 
@@ -1559,23 +1560,23 @@ def _jitnmm_pallas_kernel_generator(
     return run
 
 
-def _jitnmm_jvp_wloc(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend: Optional[str] = None, **kwargs):
+def _jitnmm_jvp_wloc(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend, **kwargs):
     return jitnmm_p_call(
         w_dot, w_scale, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
     )
 
 
-def _jitnmm_jvp_wscale(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend: Optional[str] = None, **kwargs):
+def _jitnmm_jvp_wscale(w_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend, **kwargs):
     return jitnmm_p_call(w_loc, w_dot, clen, B, seed, shape=shape, transpose=transpose, corder=corder, backend=backend)
 
 
-def _jitnmm_jvp_B(B_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend: Optional[str] = None, **kwargs):
+def _jitnmm_jvp_B(B_dot, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend, **kwargs):
     return jitnmm_p_call(
         w_loc, w_scale, clen, B_dot, seed, shape=shape, transpose=transpose, corder=corder, backend=backend
     )
 
 
-def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend: Optional[str] = None, **kwargs):
+def _jitnmm_transpose_rules(ct, w_loc, w_scale, clen, B, seed, *, shape, transpose, corder, backend, **kwargs):
     assert not ad.is_undefined_primal(clen)
     assert not ad.is_undefined_primal(seed)
 
@@ -1674,7 +1675,7 @@ def _jitnmm_benchmark_data(*, platform):
                 BenchmarkConfig(
                     name,
                     (w_loc, w_scale, clen, B, seed),
-                    {'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder }
+                    {'shape': (n_pre, n_post), 'transpose': transpose, 'corder': corder}
                 )
             )
     return configs
@@ -1683,7 +1684,7 @@ def _jitnmm_benchmark_data(*, platform):
 def jitnmm_p_call(
     w_loc, w_scale, clen, B, seed, *,
     shape: MatrixShape, transpose: bool, corder: bool,
-    backend: Optional[str] = None
+    backend
 ):
     """Dispatch the JIT normal matrix-matrix multiply primitive.
 
