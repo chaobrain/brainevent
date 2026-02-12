@@ -24,8 +24,13 @@ from jax.interpreters import xla, batching, ad, mlir
 from brainevent._compatible_import import Primitive
 from brainevent._error import KernelFallbackExhaustedError
 from brainevent._typing import KernelGenerator
+from brainevent.config import load_user_defaults
 from .benchmark import BenchmarkResult, BenchmarkReport, benchmark_function
-from .util import general_batching_rule, defjvp, OutType, abstract_arguments, check_pallas_jax_version, check_warp_installed
+from .util import (
+    general_batching_rule, defjvp, OutType,
+    abstract_arguments, check_pallas_jax_version,
+    check_warp_installed
+)
 
 __all__ = [
     'XLACustomKernel',
@@ -1037,7 +1042,6 @@ class XLACustomKernel:
         if self._user_defaults_applied:
             return
         self._user_defaults_applied = True
-        from brainevent.config import load_user_defaults
         prim_defaults = load_user_defaults().get(self.name, {})
         for plat, backend in prim_defaults.items():
             if plat in self._kernels and backend in self._kernels[plat]:
