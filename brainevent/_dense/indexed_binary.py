@@ -496,6 +496,18 @@ def indexed_binary_densemv_p_call(spikes, indices, count, weights, *, transpose,
 
 
 indexed_binary_densemv_p = XLACustomKernel('indexed_binary_densemv')
+"""
+Low-level XLA custom-kernel primitive for ``indexed_binary_densemv``.
+
+This ``XLACustomKernel`` instance dispatches the ``indexed_binary_densemv`` operation
+to the backend registered below (for example ``numba``, ``warp``, and
+``pallas``), using runtime shape/dtype metadata provided by the high-level
+wrapper.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation
+integrates correctly with ``jit``, ``vmap``, and autodiff.
+"""
 indexed_binary_densemv_p.def_numba_kernel(_mv_numba_kernel)
 indexed_binary_densemv_p.def_warp_kernel(_mv_warp_kernel)
 indexed_binary_densemv_p.def_pallas_kernel('gpu', _mv_pallas_kernel)
@@ -978,3 +990,15 @@ indexed_binary_densemm_p.def_batching_rule(_mm_batching)
 indexed_binary_densemm_p.def_call(indexed_binary_densemm_p_call)
 indexed_binary_densemm_p.def_tags('dense', 'indexed_binary')
 indexed_binary_densemm_p.def_benchmark_data(_mm_benchmark_data)
+indexed_binary_densemm_p.__doc__ = """
+Low-level XLA custom-kernel primitive for ``indexed_binary_densemm``.
+
+This ``XLACustomKernel`` instance dispatches the ``indexed_binary_densemm`` operation
+to the backend registered below (for example ``numba``, ``warp``, and
+``pallas``), using runtime shape/dtype metadata provided by the high-level
+wrapper.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation
+integrates correctly with ``jit``, ``vmap``, and autodiff.
+"""

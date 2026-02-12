@@ -363,6 +363,18 @@ def _dense_on_pre_batching(args, axes, **kwargs):
 
 
 update_dense_on_binary_pre_p = XLACustomKernel('dense_on_pre')
+"""
+Low-level XLA custom-kernel primitive for ``update_dense_on_binary_pre``.
+
+This ``XLACustomKernel`` instance dispatches the ``dense_on_pre`` operation
+to the backend registered below (for example ``numba``, ``warp``, and
+``pallas``), using runtime shape/dtype metadata provided by the high-level
+wrapper.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation
+integrates correctly with ``jit``, ``vmap``, and autodiff.
+"""
 update_dense_on_binary_pre_p.def_numba_kernel(_dense_on_pre_numba_kernel)
 update_dense_on_binary_pre_p.def_warp_kernel(_dense_on_pre_warp_kernel)
 update_dense_on_binary_pre_p.def_pallas_kernel('gpu', _dense_on_pre_pallas_kernel)
@@ -699,6 +711,18 @@ def _update_dense_post_benchmark_data(*, platform):
 
 
 update_dense_on_binary_post_p = XLACustomKernel('dense_on_post')
+"""
+Low-level XLA custom-kernel primitive for ``update_dense_on_binary_post``.
+
+This ``XLACustomKernel`` instance dispatches the ``dense_on_post`` operation
+to the backend registered below (for example ``numba``, ``warp``, and
+``pallas``), using runtime shape/dtype metadata provided by the high-level
+wrapper.
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation
+integrates correctly with ``jit``, ``vmap``, and autodiff.
+"""
 update_dense_on_binary_post_p.def_numba_kernel(_dense_on_post_numba_kernel)
 update_dense_on_binary_post_p.def_warp_kernel(_dense_on_post_warp_kernel)
 update_dense_on_binary_post_p.def_pallas_kernel('gpu', _dense_on_post_pallas_kernel)
