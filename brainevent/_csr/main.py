@@ -27,7 +27,8 @@ from brainevent._misc import _csr_to_coo, _csr_todense
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .binary import binary_csrmv, binary_csrmm
 from .diag_add import csr_diag_position_v2, csr_diag_add_v2
-from .float import csrmv, csrmm, csrmv_yw2y
+from .float import csrmv, csrmm
+from .yw2y import csrmv_yw2y
 from .sparse_float import spfloat_csrmv, spfloat_csrmm
 from .spsolve import csr_solve
 
