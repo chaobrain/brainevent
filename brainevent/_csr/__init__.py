@@ -23,6 +23,7 @@ from .plasticity_binary import (
     update_csr_on_binary_post, update_csr_on_binary_post_p,
 )
 from .sparse_float import spfloat_csrmv, spfloat_csrmv_p, spfloat_csrmm, spfloat_csrmm_p
+from .slice import csr_slice_rows, csr_slice_rows_p
 from .spsolve import csr_solve
 
 __all__ = [
@@ -36,4 +37,5 @@ __all__ = [
     'update_csr_on_binary_post', 'update_csr_on_binary_post_p',
     'spfloat_csrmv', 'spfloat_csrmv_p',
     'spfloat_csrmm', 'spfloat_csrmm_p',
+    'csr_slice_rows', 'csr_slice_rows_p',
 ]

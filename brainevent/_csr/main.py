@@ -28,6 +28,7 @@ from brainevent._typing import Data, Indptr, Index, MatrixShape
 from .binary import binary_csrmv, binary_csrmm
 from .diag_add import csr_diag_position_v2, csr_diag_add_v2
 from .float import csrmv, csrmm
+from .slice import csr_slice_rows
 from .yw2y import csrmv_yw2y
 from .sparse_float import spfloat_csrmv, spfloat_csrmm
 from .spsolve import csr_solve
@@ -1043,6 +1044,34 @@ class CSR(BaseCLS):
         """
         return CSR(fn(self.data), self.indices, self.indptr, shape=self.shape)._diag_pos(self.diag_positions)
 
+    def __getitem__(self, index):
+        """Extract rows from the CSR matrix as a dense array.
+
+        Parameters
+        ----------
+        index : int, tuple, list, or array
+            Row index or indices to extract.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            For a single integer index, a 1-D dense vector of length
+            ``n_cols``. For multiple indices, a 2-D dense matrix of shape
+            ``(len(index), n_cols)``.
+        """
+        if isinstance(index, (int, np.integer)):
+            row_indices = jnp.array([index], dtype=jnp.int32)
+            result = csr_slice_rows(self.data, self.indices, self.indptr, row_indices, shape=self.shape)
+            return result[0]
+        elif isinstance(index, (tuple, list)):
+            row_indices = jnp.asarray(index, dtype=jnp.int32)
+            return csr_slice_rows(self.data, self.indices, self.indptr, row_indices, shape=self.shape)
+        elif isinstance(index, (jnp.ndarray, np.ndarray)):
+            row_indices = jnp.asarray(index, dtype=jnp.int32)
+            return csr_slice_rows(self.data, self.indices, self.indptr, row_indices, shape=self.shape)
+        else:
+            raise IndexError(f"Unsupported index type: {type(index)}")
+
     def _binary_op(self, other, op) -> 'CSR':
         if op in [operator.add, operator.sub]:
             jnp.broadcast_shapes(self.shape, other.shape)
@@ -1652,6 +1681,40 @@ class CSC(BaseCLS):
             squared = csc.apply(lambda x: x ** 2)
         """
         return CSC((fn(self.data), self.indices, self.indptr), shape=self.shape)._diag_pos(self.diag_positions)
+
+    def __getitem__(self, index):
+        """Extract columns from the CSC matrix as a dense array.
+
+        Parameters
+        ----------
+        index : int, tuple, list, or array
+            Column index or indices to extract.
+
+        Returns
+        -------
+        jax.Array or brainunit.Quantity
+            For a single integer index, a 1-D dense vector of length
+            ``n_rows``. For multiple indices, a 2-D dense matrix of shape
+            ``(n_rows, len(index))``.
+        """
+        # CSC stores columns as "rows" of the transposed CSR.
+        # csr_slice_rows on the transposed shape gives us (num_selected, n_rows).
+        # We transpose the result to get (n_rows, num_selected).
+        transposed_shape = self.shape[::-1]
+        if isinstance(index, (int, np.integer)):
+            col_indices = jnp.array([index], dtype=jnp.int32)
+            result = csr_slice_rows(self.data, self.indices, self.indptr, col_indices, shape=transposed_shape)
+            return result[0]  # shape (n_rows,) — a single column as a vector
+        elif isinstance(index, (tuple, list)):
+            col_indices = jnp.asarray(index, dtype=jnp.int32)
+            result = csr_slice_rows(self.data, self.indices, self.indptr, col_indices, shape=transposed_shape)
+            return result.T  # shape (n_rows, num_selected)
+        elif isinstance(index, (jnp.ndarray, np.ndarray)):
+            col_indices = jnp.asarray(index, dtype=jnp.int32)
+            result = csr_slice_rows(self.data, self.indices, self.indptr, col_indices, shape=transposed_shape)
+            return result.T  # shape (n_rows, num_selected)
+        else:
+            raise IndexError(f"Unsupported index type: {type(index)}")
 
     def _binary_op(self, other, op) -> 'CSC':
         if op in [operator.add, operator.sub]:

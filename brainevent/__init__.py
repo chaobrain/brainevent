@@ -32,6 +32,7 @@ from ._csr import (
     update_csr_on_binary_pre, update_csr_on_binary_pre_p,
     update_csr_on_binary_post, update_csr_on_binary_post_p,
     spfloat_csrmv, spfloat_csrmv_p, spfloat_csrmm, spfloat_csrmm_p,
+    csr_slice_rows, csr_slice_rows_p,
 )
 from ._dense import (
     binary_densemv, binary_densemv_p,
