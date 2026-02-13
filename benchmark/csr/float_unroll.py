@@ -30,7 +30,7 @@ from brainevent.config import get_numba_parallel
 
 __all__ = [
     'csrmv',
-    'csrmv_p',
+    'csrmv_p_unroll',
     'csrmm',
     'csrmm_p',
     'csrmv_yw2y',
@@ -139,7 +139,7 @@ def csrmv(
     """
     data, unitd = u.split_mantissa_unit(data)
     v, unitv = u.split_mantissa_unit(v)
-    res = csrmv_p_call(data, indices, indptr, v, shape=shape, transpose=transpose, backend=backend)[0]
+    res = csrmv_p_unroll_call(data, indices, indptr, v, shape=shape, transpose=transpose, backend=backend)[0]
     return u.maybe_decimal(res * unitd * unitv)
 
 
@@ -301,8 +301,9 @@ def _csrmv_warp_kernel_generator(
 
     return kernel
 
+dummy_buffer_global = jnp.zeros((1024,), dtype=jnp.float32)
 
-def _csrmv_pallas_kernel_generator(
+def _csrmv_p_unrollallas_kernel_generator(
     weight_info: jax.ShapeDtypeStruct,
     indices_info: jax.ShapeDtypeStruct,
     shape: MatrixShape,
@@ -316,6 +317,8 @@ def _csrmv_pallas_kernel_generator(
     block_dim = generate_block_dim(pl.cdiv(indices_info.size, shape[1] if transpose else shape[0]))
     block_dim = max(1, block_dim // 2)
     block_dim = 32 if block_dim < 32 else block_dim
+    UNROLL = 4
+    block_dim = 32
 
     if transpose:
 
@@ -365,6 +368,7 @@ def _csrmv_pallas_kernel_generator(
 
         else:
             # csr.T @ B (Vector Weight)
+            '''
             def mv(
                 data_ref,  # [nse]
                 indices_ref,  # [nse]
@@ -402,6 +406,89 @@ def _csrmv_pallas_kernel_generator(
 
                 # GUARD 1: Grid / Indptr Boundary Check using jax.lax.cond
                 jax.lax.cond(i_row < num_rows, _body, lambda: None)
+                '''
+            
+            def mv(
+                data_ref,
+                indices_ref,
+                indptr_ref,
+                vector_ref,
+                _,
+                posts_ref,
+            ):
+                i_row = pl.program_id(0)
+                num_rows = indptr_ref.shape[0] - 1
+                def _body():
+                    col_start = indptr_ref[i_row]
+                    col_end = indptr_ref[i_row + 1]
+                    col_nnz = col_end - col_start
+
+                    num_blocks = (col_nnz + block_dim * UNROLL - 1) //(block_dim * UNROLL) 
+
+                    val_vector = vector_ref[i_row]
+
+                    out_dim = posts_ref.shape[0]
+                    lane_ids = jnp.arange(block_dim)
+
+                    def loop_fn(i, _):
+                        base_offset = col_start + i * block_dim * UNROLL
+                        
+                        # --- Unroll 0 ---
+                        off_0 = base_offset
+                        mask_0 = (off_0 + lane_ids) < col_end
+                        
+                        rows_0 = load(indices_ref.at[pl.ds(off_0, block_dim)], mask=mask_0, other=0)
+                        val_A_0 = load(data_ref.at[pl.ds(off_0, block_dim)], mask=mask_0, other=0.0)
+                        
+                        valid_idx_0 = (rows_0 < out_dim) & mask_0
+
+                        contrib_0 = jnp.where(valid_idx_0, val_A_0 * val_vector, 0.0)
+
+                        
+
+                        # --- Unroll 1 ---
+                        off_1 = base_offset + block_dim
+                        mask_1 = (off_1 + lane_ids) < col_end
+                        
+                        rows_1 = load(indices_ref.at[pl.ds(off_1, block_dim)], mask=mask_1, other=0)
+                        val_A_1 = load(data_ref.at[pl.ds(off_1, block_dim)], mask=mask_1, other=0.0)
+                        
+                        valid_idx_1 = (rows_1 < out_dim) & mask_1
+                        contrib_1 = jnp.where(valid_idx_1, val_A_1 * val_vector, 0.0)
+                        
+
+                        # --- Unroll 2 ---
+                        off_2 = base_offset + block_dim * 2
+                        mask_2 = (off_2 + lane_ids) < col_end
+                        
+                        rows_2 = load(indices_ref.at[pl.ds(off_2, block_dim)], mask=mask_2, other=0)
+                        val_A_2 = load(data_ref.at[pl.ds(off_2, block_dim)], mask=mask_2, other=0.0)
+                        
+                        valid_idx_2 = (rows_2 < out_dim) & mask_2
+                        contrib_2 = jnp.where(valid_idx_2, val_A_2 * val_vector, 0.0)
+                        
+
+                        # --- Unroll 3 ---
+                        off_3 = base_offset + block_dim * 3
+                        mask_3 = (off_3 + lane_ids) < col_end
+                        
+                        rows_3 = load(indices_ref.at[pl.ds(off_3, block_dim)], mask=mask_3, other=0)
+                        val_A_3 = load(data_ref.at[pl.ds(off_3, block_dim)], mask=mask_3, other=0.0)
+                        
+                        valid_idx_3 = (rows_3 < out_dim) & mask_3
+                        contrib_3 = jnp.where(valid_idx_3, val_A_3 * val_vector, 0.0)
+
+
+                        atomic_add(posts_ref, rows_0, contrib_0, mask=valid_idx_0)
+                        atomic_add(posts_ref, rows_1, contrib_1, mask=valid_idx_1)
+                        atomic_add(posts_ref, rows_2, contrib_2, mask=valid_idx_2)
+                        atomic_add(posts_ref, rows_3, contrib_3, mask=valid_idx_3)
+
+                    jax.lax.fori_loop(0, num_blocks, loop_fn, None)
+
+                # GUARD 1: Grid / Indptr Boundary Check
+                jax.lax.cond(i_row < num_rows, _body, lambda: None)
+
 
         def kernel(data, indices, indptr, vector):
             out_info = kwargs['outs'][0]
@@ -434,16 +521,17 @@ def _csrmv_pallas_kernel_generator(
             ):
                 i_row = pl.program_id(0)
                 num_rows = indptr_ref.shape[0] - 1
+                val_A = data_ref[0]
 
                 def _body():
                     row_start = indptr_ref[i_row]
                     row_end = indptr_ref[i_row + 1]
                     row_nnz = row_end - row_start
-                    num_blocks = (row_nnz + block_dim - 1) // block_dim
 
-                    val_A = data_ref[0]
-
+                    num_blocks = (row_nnz + block_dim * UNROLL - 1) // (block_dim * UNROLL)
                     vec_len = vector_ref.shape[0]
+
+                    #lane_ids = jnp.arange(block_dim)
 
                     init_acc = jnp.zeros((block_dim,), dtype=vector_ref.dtype)
 
@@ -488,28 +576,68 @@ def _csrmv_pallas_kernel_generator(
                     row_start = indptr_ref[i_row]
                     row_end = indptr_ref[i_row + 1]
                     row_nnz = row_end - row_start
-                    num_blocks = (row_nnz + block_dim - 1) // block_dim
+
+                    num_blocks = (row_nnz + block_dim * UNROLL - 1) // (block_dim * UNROLL)
+                    vec_len = vector_ref.shape[0]
+
                     vec_len = vector_ref.shape[0]
 
                     #OP_1
                     init_acc = jnp.zeros((block_dim,), dtype=vector_ref.dtype)
+                    lane_ids = jnp.arange(block_dim)
 
-                    def loop_fn(index, acc_vec):
-                        offset = row_start + index * block_dim
+                    def loop_fn(i, acc_vec):
 
-                        mask = offset + jnp.arange(block_dim) < row_end
+                        base_offset = row_start + i * block_dim * UNROLL
+                        
+                        # Unroll 0
+                        off_0 = base_offset
+                        mask_0 = (off_0 + lane_ids) < row_end
+                        
+                        # Unroll 1
+                        off_1 = base_offset + block_dim
+                        mask_1 = (off_1 + lane_ids) < row_end
+                        
+                        # Unroll 2
+                        off_2 = base_offset + block_dim * 2
+                        mask_2 = (off_2 + lane_ids) < row_end
+                        
+                        # Unroll 3
+                        off_3 = base_offset + block_dim * 3
+                        mask_3 = (off_3 + lane_ids) < row_end
 
-                        # Load Indices & Data
-                        cols = load(indices_ref.at[pl.ds(offset, block_dim)], mask=mask, other=0)
-                        val_A = load(data_ref.at[pl.ds(offset, block_dim)], mask=mask, other=0.0)
+                        cols_0 = load(indices_ref.at[pl.ds(off_0, block_dim)], mask=mask_0, other=0)
+                        cols_1 = load(indices_ref.at[pl.ds(off_1, block_dim)], mask=mask_1, other=0)
+                        cols_2 = load(indices_ref.at[pl.ds(off_2, block_dim)], mask=mask_2, other=0)
+                        cols_3 = load(indices_ref.at[pl.ds(off_3, block_dim)], mask=mask_3, other=0)
 
-                        # Vector Load (Gather)
-                        safe_cols = jnp.minimum(cols, vec_len - 1)
+                        
+                        safe_cols_0 = jnp.minimum(cols_0, vec_len - 1)
+                        safe_cols_1 = jnp.minimum(cols_1, vec_len - 1)
+                        safe_cols_2 = jnp.minimum(cols_2, vec_len - 1)
+                        safe_cols_3 = jnp.minimum(cols_3, vec_len - 1)
+                        
+                        val_B_0 = load(vector_ref.at[safe_cols_0], mask=mask_0, other=0.0)
+                        val_B_1 = load(vector_ref.at[safe_cols_1], mask=mask_1, other=0.0)
+                        val_B_2 = load(vector_ref.at[safe_cols_2], mask=mask_2, other=0.0)
+                        val_B_3 = load(vector_ref.at[safe_cols_3], mask=mask_3, other=0.0)
 
-                        val_B = load(vector_ref.at[safe_cols], mask=mask, other=0.0) 
+                        val_A_0 = load(data_ref.at[pl.ds(off_0, block_dim)], mask=mask_0, other=0.0)
+                        val_A_1 = load(data_ref.at[pl.ds(off_1, block_dim)], mask=mask_1, other=0.0)
+                        val_A_2 = load(data_ref.at[pl.ds(off_2, block_dim)], mask=mask_2, other=0.0)
+                        val_A_3 = load(data_ref.at[pl.ds(off_3, block_dim)], mask=mask_3, other=0.0)
 
-                        #OP_2
-                        return acc_vec + jnp.where(mask, val_A * val_B, 0.0)
+                        valid_0 = (cols_0 < vec_len) & mask_0
+                        valid_1 = (cols_1 < vec_len) & mask_1
+                        valid_2 = (cols_2 < vec_len) & mask_2
+                        valid_3 = (cols_3 < vec_len) & mask_3
+
+                        term_0 = jnp.where(valid_0, val_A_0 * val_B_0, 0.0)
+                        term_1 = jnp.where(valid_1, val_A_1 * val_B_1, 0.0)
+                        term_2 = jnp.where(valid_2, val_A_2 * val_B_2, 0.0)
+                        term_3 = jnp.where(valid_3, val_A_3 * val_B_3, 0.0)
+
+                        return acc_vec + term_0 + term_1 + term_2 + term_3
 
                     final_acc_vec = jax.lax.fori_loop(
                         0,
@@ -538,7 +666,7 @@ def _csrmv_jvp_v(v_dot, data, indices, indptr, v, *, shape, transpose, **kwargs)
 
 
 def _csrmv_jvp_weights(data_dot, data, indices, indptr, v, *, shape, transpose, **kwargs):
-    return csrmv_p_call(data_dot, indices, indptr, v, shape=shape, transpose=transpose, backend=kwargs['backend'])
+    return csrmv_p_unroll_call(data_dot, indices, indptr, v, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
 
 def _csrmv_transpose_rule(ct, data, indices, indptr, vector, *, shape, transpose, **kwargs):
@@ -568,7 +696,7 @@ def _csrmv_transpose_rule(ct, data, indices, indptr, vector, *, shape, transpose
             ct_values = ad.Zero(data)
         else:
             if data.aval.shape[0] == 1:  # scalar
-                ct_values = csrmv_p_call(
+                ct_values = csrmv_p_unroll_call(
                     jnp.ones(1, dtype=data.aval.dtype),
                     indices,
                     indptr,
@@ -612,7 +740,7 @@ def _csrmv_batching(args, axes, **kwargs):
         return r, [1]
 
     else:
-        return general_batching_rule(csrmv_p, args, axes, **kwargs)
+        return general_batching_rule(csrmv_p_unroll, args, axes, **kwargs)
 
 
 def _csrmv_benchmark_data(*, platform):
@@ -637,7 +765,7 @@ def _csrmv_benchmark_data(*, platform):
     return configs
 
 
-def csrmv_p_call(
+def csrmv_p_unroll_call(
     weights,
     indices,
     indptr,
@@ -651,7 +779,7 @@ def csrmv_p_call(
     Low-level primitive call for CSR matrix--vector multiplication.
 
     Prepares inputs, validates shapes and dtypes, and dispatches the
-    ``csrmv_p`` XLA custom kernel to compute ``y = A @ v`` (or
+    ``csrmv_p_unroll`` XLA custom kernel to compute ``y = A @ v`` (or
     ``y = A.T @ v``), where ``A`` is a CSR matrix and ``v`` is a dense
     vector.
 
@@ -725,12 +853,12 @@ def csrmv_p_call(
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent._csr.float import csrmv_p_call
+        >>> from brainevent._csr.float import csrmv_p_unroll_call
         >>> weights = jnp.array([1.0, 2.0, 3.0, 4.0])
         >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
         >>> indptr = jnp.array([0, 2, 4], dtype=jnp.int32)
         >>> vector = jnp.array([1.0, 2.0, 3.0])
-        >>> result = csrmv_p_call(
+        >>> result = csrmv_p_unroll_call(
         ...     weights, indices, indptr, vector,
         ...     shape=(2, 3), transpose=False)
     """
@@ -753,7 +881,7 @@ def csrmv_p_call(
         if transpose else
         jax.ShapeDtypeStruct([shape[0]], weights.dtype)
     )
-    return csrmv_p(
+    return csrmv_p_unroll(
         weights,
         indices,
         indptr,
@@ -769,7 +897,7 @@ def csrmv_p_call(
     )
 
 
-csrmv_p = XLACustomKernel(
+csrmv_p_unroll = XLACustomKernel(
     'csrmv',
     doc="""
 Low-level XLA custom-kernel primitive for ``csrmv``.
@@ -785,23 +913,23 @@ Beyond backend dispatch, the primitive stores JAX transformation bindings
 (JVP, transpose, batching, and call registration) so the operation integrates
 correctly with ``jit``, ``vmap``, and autodiff.
 
-Available backends can be queried with ``csrmv_p.available_backends(platform)``,
-and the default backend can be configured with ``csrmv_p.set_default(platform, backend)``.
+Available backends can be queried with ``csrmv_p_unroll.available_backends(platform)``,
+and the default backend can be configured with ``csrmv_p_unroll.set_default(platform, backend)``.
 
 See Also
 --------
 csrmv : High-level user-facing function wrapper.
 """
 )
-csrmv_p.def_numba_kernel(_csrmv_numba_kernel_generator)
-csrmv_p.def_warp_kernel(_csrmv_warp_kernel_generator)
-csrmv_p.def_pallas_kernel('gpu', _csrmv_pallas_kernel_generator)
-csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
-csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
-csrmv_p.def_batching_rule(_csrmv_batching)
-csrmv_p.def_call(csrmv_p_call)
-csrmv_p.def_tags('csr', 'float')
-csrmv_p.def_benchmark_data(_csrmv_benchmark_data)
+csrmv_p_unroll.def_numba_kernel(_csrmv_numba_kernel_generator)
+csrmv_p_unroll.def_warp_kernel(_csrmv_warp_kernel_generator)
+csrmv_p_unroll.def_pallas_kernel('gpu', _csrmv_p_unrollallas_kernel_generator)
+csrmv_p_unroll.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
+csrmv_p_unroll.def_transpose_rule(_csrmv_transpose_rule)
+csrmv_p_unroll.def_batching_rule(_csrmv_batching)
+csrmv_p_unroll.def_call(csrmv_p_unroll_call)
+csrmv_p_unroll.def_tags('csr', 'float')
+csrmv_p_unroll.def_benchmark_data(_csrmv_benchmark_data)
 
 
 @namescope(static_argnames=("shape", "transpose"))
