@@ -216,9 +216,19 @@ def _csr_slice_rows_transpose_rule(ct, data, indices, indptr, row_indices, *, sh
 
 
 def _csr_slice_rows_batching(args, axes, **kwargs):
-    if axes[:-1] == (None, None, None):
-        # Batched over row_indices: we can directly batch the kernel by treating row_indices as an extra batch dimension.
-        return general_batching_rule(csr_slice_rows_p, args, axes, **kwargs)
+    if axes[:3] == (None, None, None) and axes[3] is not None:
+        # Only row_indices is batched: flatten to one call, then reshape output.
+        data, indices, indptr, row_indices = args
+        if axes[3] != 0:
+            row_indices = jnp.moveaxis(row_indices, axes[3], 0)
+        batch_size, num_sel = row_indices.shape
+        flat_row_indices = row_indices.reshape(-1)
+        result = csr_slice_rows_p_call(
+            data, indices, indptr, flat_row_indices,
+            shape=kwargs['shape'], backend=kwargs['backend'],
+        )
+        out = result[0].reshape(batch_size, num_sel, kwargs['shape'][1])
+        return (out,), (0,)
     return general_batching_rule(csr_slice_rows_p, args, axes, **kwargs)
 
 
