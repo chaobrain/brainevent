@@ -51,7 +51,8 @@ def csr_slice_rows(
     Parameters
     ----------
     data : jax.Array or brainunit.Quantity
-        Non-zero values of the CSR matrix, shape ``(nnz,)``.
+        Non-zero values of the CSR matrix, shape ``(nnz,)`` for
+        heterogeneous weights or ``(1,)`` for a single homogeneous weight.
     indices : jax.Array
         Column indices array, shape ``(nnz,)`` with integer dtype.
     indptr : jax.Array
@@ -85,15 +86,27 @@ def _csr_slice_rows_numba_kernel_generator(
 
     m, n = shape
     num_selected = row_indices_info.shape[0]
+    homo = kwargs['data_info'].shape[0] == 1
 
-    @numba.njit(fastmath=True)
-    def slice_rows(data, indices, indptr, row_indices, out):
-        out[:] = 0.
-        for k in range(num_selected):
-            r = row_indices[k]
-            if 0 <= r < m:
-                for j in range(indptr[r], indptr[r + 1]):
-                    out[k, indices[j]] += data[j]
+    if homo:
+        @numba.njit(fastmath=True)
+        def slice_rows(data, indices, indptr, row_indices, out):
+            out[:] = 0.
+            w = data[0]
+            for k in range(num_selected):
+                r = row_indices[k]
+                if 0 <= r < m:
+                    for j in range(indptr[r], indptr[r + 1]):
+                        out[k, indices[j]] += w
+    else:
+        @numba.njit(fastmath=True)
+        def slice_rows(data, indices, indptr, row_indices, out):
+            out[:] = 0.
+            for k in range(num_selected):
+                r = row_indices[k]
+                if 0 <= r < m:
+                    for j in range(indptr[r], indptr[r + 1]):
+                        out[k, indices[j]] += data[j]
 
     def kernel(data, indices, indptr, row_indices):
         return numba_kernel(slice_rows, outs=kwargs['outs'])(data, indices, indptr, row_indices)
@@ -120,21 +133,39 @@ def _csr_slice_rows_warp_kernel_generator(
 
     m, n = shape
     num_selected = row_indices_info.shape[0]
+    homo = data_info.shape[0] == 1
 
-    @warp.kernel
-    def slice_rows_warp(
-        data: data_warp,
-        indices: indices_warp,
-        indptr: indptr_warp,
-        row_indices: row_indices_warp,
-        out: out_warp,
-    ):
-        k = warp.tid()
-        r = row_indices[k]
-        if 0 <= r < m:
-            for j in range(indptr[r], indptr[r + 1]):
-                col = indices[j]
-                warp.atomic_add(out, k, col, data[j])
+    if homo:
+        @warp.kernel
+        def slice_rows_warp(
+            data: data_warp,
+            indices: indices_warp,
+            indptr: indptr_warp,
+            row_indices: row_indices_warp,
+            out: out_warp,
+        ):
+            k = warp.tid()
+            r = row_indices[k]
+            if 0 <= r < m:
+                w = data[0]
+                for j in range(indptr[r], indptr[r + 1]):
+                    col = indices[j]
+                    warp.atomic_add(out, k, col, w)
+    else:
+        @warp.kernel
+        def slice_rows_warp(
+            data: data_warp,
+            indices: indices_warp,
+            indptr: indptr_warp,
+            row_indices: row_indices_warp,
+            out: out_warp,
+        ):
+            k = warp.tid()
+            r = row_indices[k]
+            if 0 <= r < m:
+                for j in range(indptr[r], indptr[r + 1]):
+                    col = indices[j]
+                    warp.atomic_add(out, k, col, data[j])
 
     def kernel(data, indices, indptr, row_indices):
         out_info = kwargs['outs'][0]
@@ -159,24 +190,44 @@ def _csr_slice_rows_pallas_kernel_generator(
 
     m, n = shape
     num_selected = row_indices_info.shape[0]
+    homo = kwargs['data_info'].shape[0] == 1
 
-    def slice_rows_pallas(data_ref, indices_ref, indptr_ref, row_indices_ref, _, out_ref):
-        k = pl.program_id(0)
-        r = row_indices_ref[k]
+    if homo:
+        def slice_rows_pallas(data_ref, indices_ref, indptr_ref, row_indices_ref, _, out_ref):
+            k = pl.program_id(0)
+            r = row_indices_ref[k]
+            w = data_ref[0]
 
-        i_start = jnp.where(r < m, indptr_ref[jnp.minimum(r, m - 1)], 0)
-        i_end = jnp.where(r < m, indptr_ref[jnp.minimum(r + 1, m)], 0)
-        nnz_in_row = i_end - i_start
+            i_start = jnp.where(r < m, indptr_ref[jnp.minimum(r, m - 1)], 0)
+            i_end = jnp.where(r < m, indptr_ref[jnp.minimum(r + 1, m)], 0)
+            nnz_in_row = i_end - i_start
 
-        def body_fn(j, _):
-            idx = i_start + j
-            col = indices_ref[idx]
-            val = data_ref[idx]
-            valid = (j < nnz_in_row) & (r >= 0) & (r < m)
-            out_ref[k, col] = jnp.where(valid, out_ref[k, col] + val, out_ref[k, col])
+            def body_fn(j, _):
+                idx = i_start + j
+                col = indices_ref[idx]
+                valid = (j < nnz_in_row) & (r >= 0) & (r < m)
+                out_ref[k, col] = jnp.where(valid, out_ref[k, col] + w, out_ref[k, col])
 
-        max_nnz = jnp.where(r < m, nnz_in_row, 0)
-        jax.lax.fori_loop(0, max_nnz, body_fn, None)
+            max_nnz = jnp.where(r < m, nnz_in_row, 0)
+            jax.lax.fori_loop(0, max_nnz, body_fn, None)
+    else:
+        def slice_rows_pallas(data_ref, indices_ref, indptr_ref, row_indices_ref, _, out_ref):
+            k = pl.program_id(0)
+            r = row_indices_ref[k]
+
+            i_start = jnp.where(r < m, indptr_ref[jnp.minimum(r, m - 1)], 0)
+            i_end = jnp.where(r < m, indptr_ref[jnp.minimum(r + 1, m)], 0)
+            nnz_in_row = i_end - i_start
+
+            def body_fn(j, _):
+                idx = i_start + j
+                col = indices_ref[idx]
+                val = data_ref[idx]
+                valid = (j < nnz_in_row) & (r >= 0) & (r < m)
+                out_ref[k, col] = jnp.where(valid, out_ref[k, col] + val, out_ref[k, col])
+
+            max_nnz = jnp.where(r < m, nnz_in_row, 0)
+            jax.lax.fori_loop(0, max_nnz, body_fn, None)
 
     def kernel(data, indices, indptr, row_indices):
         out_info = kwargs['outs'][0]
@@ -210,6 +261,8 @@ def _csr_slice_rows_transpose_rule(ct, data, indices, indptr, row_indices, *, sh
             ct_data = csr_slice_rows_grad_p_call(
                 ct, indices, indptr, row_indices, shape=shape, backend=kwargs['backend'],
             )[0]
+            if data.aval.shape[0] == 1:
+                ct_data = jnp.sum(ct_data).reshape(1)
         return ct_data, indices, indptr, row_indices
     else:
         raise ValueError("Cannot transpose with respect to indices, indptr, or row_indices.")
@@ -274,6 +327,7 @@ def csr_slice_rows_p_call(
     tuple of jax.Array
         Single-element tuple with dense matrix of shape ``(num_selected, n_cols)``.
     """
+    data = jnp.atleast_1d(data)
     assert data.ndim == 1, "data must be 1D"
     assert indices.ndim == 1, "indices must be 1D"
     assert indptr.ndim == 1, "indptr must be 1D"
@@ -339,6 +393,50 @@ csr_slice_rows_p.def_batching_rule(_csr_slice_rows_batching)
 csr_slice_rows_p.def_call(csr_slice_rows_p_call)
 csr_slice_rows_p.def_tags('csr', 'slice')
 csr_slice_rows_p.def_benchmark_data(_csr_slice_rows_benchmark_data)
+
+
+@namescope(static_argnames=['shape'])
+def csr_slice_rows_grad(
+    ct,
+    indices,
+    indptr,
+    row_indices,
+    *,
+    shape: MatrixShape,
+    backend: Optional[str] = None,
+):
+    """Extract selected rows from a CSR matrix as a dense submatrix.
+
+    For each row index ``k`` in ``row_indices``, extracts the corresponding
+    row of the CSR matrix and places it in the output. The result is a dense
+    matrix of shape ``(len(row_indices), shape[1])``.
+
+    Parameters
+    ----------
+    data : jax.Array or brainunit.Quantity
+        Non-zero values of the CSR matrix, shape ``(nnz,)`` for
+        heterogeneous weights or ``(1,)`` for a single homogeneous weight.
+    indices : jax.Array
+        Column indices array, shape ``(nnz,)`` with integer dtype.
+    indptr : jax.Array
+        Row pointer array, shape ``(n_rows + 1,)`` with integer dtype.
+    row_indices : jax.Array
+        1-D integer array of row indices to extract.
+    shape : tuple of int
+        Shape of the CSR matrix as ``(n_rows, n_cols)``.
+    backend : str or None, optional
+        Compute backend. Default is ``None`` (auto-select).
+
+    Returns
+    -------
+    jax.Array or brainunit.Quantity
+        Dense matrix of shape ``(len(row_indices), shape[1])``.
+    """
+    ct, ct_unit = u.split_mantissa_unit(ct)
+    result = csr_slice_rows_grad_p_call(
+        ct, indices, indptr, row_indices, shape=shape, backend=backend,
+    )[0]
+    return u.maybe_decimal(result * ct_unit)
 
 
 def _csr_slice_rows_grad_numba_kernel_generator(
@@ -459,51 +557,6 @@ def _csr_slice_rows_grad_pallas_kernel_generator(
     return kernel
 
 
-def csr_slice_rows_grad_p_call(
-    ct, indices, indptr, row_indices,
-    *, shape: MatrixShape, backend: Optional[str] = None,
-):
-    """Low-level primitive call for CSR row slice gradient.
-
-    Parameters
-    ----------
-    ct : jax.Array
-        Cotangent of the output, shape ``(num_selected, n_cols)``.
-    indices : jax.Array
-        Column indices, shape ``(nnz,)``, integer dtype.
-    indptr : jax.Array
-        Row pointers, shape ``(n_rows + 1,)``, integer dtype.
-    row_indices : jax.Array
-        Row indices that were extracted, shape ``(num_selected,)``, integer dtype.
-    shape : tuple of int
-        Shape ``(n_rows, n_cols)`` of the CSR matrix.
-    backend : str or None, optional
-        Compute backend.
-
-    Returns
-    -------
-    tuple of jax.Array
-        Single-element tuple with gradient w.r.t. data, shape ``(nnz,)``.
-    """
-    assert ct.ndim == 2, "ct must be 2D"
-    assert indices.ndim == 1, "indices must be 1D"
-    assert indptr.ndim == 1, "indptr must be 1D"
-    assert row_indices.ndim == 1, "row_indices must be 1D"
-
-    nnz = indices.shape[0]
-
-    return csr_slice_rows_grad_p(
-        ct, indices, indptr, row_indices,
-        outs=[jax.ShapeDtypeStruct((nnz,), ct.dtype)],
-        shape=tuple(shape),
-        backend=backend,
-        ct_info=jax.ShapeDtypeStruct(ct.shape, ct.dtype),
-        indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
-        indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
-        row_indices_info=jax.ShapeDtypeStruct(row_indices.shape, row_indices.dtype),
-    )
-
-
 def _csr_slice_rows_grad_jvp_ct(dot, ct, indices, indptr, row_indices, *, shape, **kwargs):
     """JVP for ct input: the grad operation is linear in ct, so tangent is just grad applied to dot."""
     return csr_slice_rows_grad_p_call(dot, indices, indptr, row_indices, shape=shape, backend=kwargs['backend'])
@@ -553,6 +606,51 @@ def _csr_slice_rows_grad_transpose_rule(ct, ct_input, indices, indptr, row_indic
         return ct_ct, indices, indptr, row_indices
     else:
         raise ValueError("Cannot transpose with respect to indices, indptr, or row_indices.")
+
+
+def csr_slice_rows_grad_p_call(
+    ct, indices, indptr, row_indices,
+    *, shape: MatrixShape, backend: Optional[str] = None,
+):
+    """Low-level primitive call for CSR row slice gradient.
+
+    Parameters
+    ----------
+    ct : jax.Array
+        Cotangent of the output, shape ``(num_selected, n_cols)``.
+    indices : jax.Array
+        Column indices, shape ``(nnz,)``, integer dtype.
+    indptr : jax.Array
+        Row pointers, shape ``(n_rows + 1,)``, integer dtype.
+    row_indices : jax.Array
+        Row indices that were extracted, shape ``(num_selected,)``, integer dtype.
+    shape : tuple of int
+        Shape ``(n_rows, n_cols)`` of the CSR matrix.
+    backend : str or None, optional
+        Compute backend.
+
+    Returns
+    -------
+    tuple of jax.Array
+        Single-element tuple with gradient w.r.t. data, shape ``(nnz,)``.
+    """
+    assert ct.ndim == 2, "ct must be 2D"
+    assert indices.ndim == 1, "indices must be 1D"
+    assert indptr.ndim == 1, "indptr must be 1D"
+    assert row_indices.ndim == 1, "row_indices must be 1D"
+
+    nnz = indices.shape[0]
+
+    return csr_slice_rows_grad_p(
+        ct, indices, indptr, row_indices,
+        outs=[jax.ShapeDtypeStruct((nnz,), ct.dtype)],
+        shape=tuple(shape),
+        backend=backend,
+        ct_info=jax.ShapeDtypeStruct(ct.shape, ct.dtype),
+        indices_info=jax.ShapeDtypeStruct(indices.shape, indices.dtype),
+        indptr_info=jax.ShapeDtypeStruct(indptr.shape, indptr.dtype),
+        row_indices_info=jax.ShapeDtypeStruct(row_indices.shape, row_indices.dtype),
+    )
 
 
 csr_slice_rows_grad_p = XLACustomKernel(
