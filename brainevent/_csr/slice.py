@@ -297,7 +297,39 @@ def csr_slice_rows_p_call(
     )
 
 
-csr_slice_rows_p = XLACustomKernel('csr_slice_rows')
+csr_slice_rows_p = XLACustomKernel(
+    'csr_slice_rows',
+    doc="""
+Low-level XLA custom-kernel primitive for ``csr_slice_rows``.
+
+This ``XLACustomKernel`` instance dispatches the CSR row slicing operation
+to registered backends (``numba``, ``warp``, ``pallas``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+Extracts selected rows from a CSR sparse matrix and returns a dense
+submatrix of shape ``(num_selected, n_cols)``. Each selected row is
+independently gathered: for row index *r*, non-zero entries in
+``data[indptr[r]:indptr[r+1]]`` are scattered into the corresponding
+columns of the output. Out-of-bounds row indices produce zero rows.
+
+The operation is linear in ``data``, so forward-mode (JVP) simply
+applies the same slice to the tangent. Reverse-mode (transpose) calls
+the companion gradient primitive ``csr_slice_rows_grad_p`` to gather
+cotangent contributions back into a vector of shape ``(nnz,)``.
+
+When ``row_indices`` is the only batched argument (e.g. under ``vmap``),
+the batching rule flattens the batch of row index arrays into a single
+kernel call and reshapes the output, avoiding a sequential scan.
+
+Available backends can be queried with ``csr_slice_rows_p.available_backends(platform)``,
+and the default backend can be configured with ``csr_slice_rows_p.set_default(platform, backend)``.
+
+See Also
+--------
+csr_slice_rows : High-level user-facing function wrapper.
+csr_slice_rows_grad_p : Companion gradient primitive used by the transpose rule.
+"""
+)
 csr_slice_rows_p.def_numba_kernel(_csr_slice_rows_numba_kernel_generator)
 csr_slice_rows_p.def_warp_kernel(_csr_slice_rows_warp_kernel_generator)
 csr_slice_rows_p.def_pallas_kernel('gpu', _csr_slice_rows_pallas_kernel_generator)
@@ -523,7 +555,37 @@ def _csr_slice_rows_grad_transpose_rule(ct, ct_input, indices, indptr, row_indic
         raise ValueError("Cannot transpose with respect to indices, indptr, or row_indices.")
 
 
-csr_slice_rows_grad_p = XLACustomKernel('_csr_slice_rows_grad')
+csr_slice_rows_grad_p = XLACustomKernel(
+    'csr_slice_rows_grad',
+    doc="""
+Low-level XLA custom-kernel primitive for the gradient of ``csr_slice_rows``.
+
+This ``XLACustomKernel`` instance dispatches the backward pass of the CSR
+row slicing operation to registered backends (``numba``, ``warp``, ``pallas``),
+using runtime shape/dtype metadata provided by the calling transpose rule.
+
+Given a cotangent matrix ``ct`` of shape ``(num_selected, n_cols)`` (the
+upstream gradient with respect to the sliced output), this primitive
+computes the gradient with respect to the CSR ``data`` array of shape
+``(nnz,)``. For each selected row *r* (from ``row_indices``), the kernel
+gathers ``ct[k, indices[j]]`` for every non-zero position *j* in
+``[indptr[r], indptr[r+1])`` and accumulates into ``ct_data[j]``.
+
+The operation is linear in ``ct``, so its JVP rule applies the same
+gather to the tangent. Its transpose rule calls the forward primitive
+``csr_slice_rows_p`` (transpose of the transpose is the original
+operation), enabling second-order differentiation (e.g. ``grad(grad(...))``
+and ``jvp(grad(...))``).
+
+Available backends can be queried with ``csr_slice_rows_grad_p.available_backends(platform)``,
+and the default backend can be configured with ``csr_slice_rows_grad_p.set_default(platform, backend)``.
+
+See Also
+--------
+csr_slice_rows_p : Forward primitive whose transpose rule invokes this gradient primitive.
+csr_slice_rows : High-level user-facing function wrapper.
+"""
+)
 csr_slice_rows_grad_p.def_numba_kernel(_csr_slice_rows_grad_numba_kernel_generator)
 csr_slice_rows_grad_p.def_warp_kernel(_csr_slice_rows_grad_warp_kernel_generator)
 csr_slice_rows_grad_p.def_pallas_kernel('gpu', _csr_slice_rows_grad_pallas_kernel_generator)
