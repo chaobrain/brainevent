@@ -15,7 +15,7 @@
 
 
 import operator
-from typing import Optional, Union, Sequence, Tuple
+from typing import Optional, Union, Sequence, Dict
 
 import brainunit as u
 import jax
@@ -94,6 +94,7 @@ class CompressedSparseData(DataRepresentation):
         *,
         shape: MatrixShape,
         backend: Optional[str] = None,
+        buffers: Optional[Dict] = None,
     ):
         if indices is None and indptr is None:
             # Tuple syntax: CSR((data, indices, indptr), shape=...)
@@ -104,9 +105,8 @@ class CompressedSparseData(DataRepresentation):
 
         assert len(args) == 3, "Expected three arguments: data, indices, indptr."
         self.data, self.indices, self.indptr = map(u.math.asarray, args)
-        super().__init__(args, shape=shape)
         self.backend = backend
-        self.diag_positions = None
+        super().__init__(args, shape=shape, buffers=buffers)
 
     @property
     def nse(self):
@@ -160,8 +160,8 @@ class CompressedSparseData(DataRepresentation):
             'indptr': self.indptr,
             'shape': self.shape,
             'backend': self.backend,
-            'diag_positions': self.diag_positions,
         }
+        aux.update(self._flatten_buffers())
         return (self.data,), aux
 
     @classmethod
@@ -193,6 +193,8 @@ class CompressedSparseData(DataRepresentation):
         """
         obj = object.__new__(cls)
         obj.data, = children
+        registry = aux_data.pop('_buffer_registry', frozenset())
+        obj._buffer_registry = set(registry)
         for k, v in aux_data.items():
             setattr(obj, k, v)
         return obj
@@ -720,7 +722,10 @@ class CompressedSparseData(DataRepresentation):
           `csr_diag_add_v2` to perform the actual addition.
         """
         if self.diag_positions is None:
-            self.diag_positions = csr_diag_position_v2(self.indptr, self.indices, self.shape)
+            self.register_buffer(
+                'diag_positions',
+                csr_diag_position_v2(self.indptr, self.indices, self.shape)
+            )
         assert not isinstance(other, u.sparse.SparseMatrix), "diag_add does not support JAXSparse objects."
         return self.with_data(csr_diag_add_v2(self.data, self.diag_positions, other))
 
@@ -746,26 +751,6 @@ class CompressedSparseData(DataRepresentation):
             in the matrix.
         """
         raise NotImplementedError
-
-    def _diag_pos(self, pos):
-        """
-        Attach precomputed diagonal positions and return ``self``.
-
-        This is a private helper used during construction to carry forward
-        cached diagonal-position information.
-
-        Parameters
-        ----------
-        pos : array_like or None
-            Precomputed diagonal positions, or ``None``.
-
-        Returns
-        -------
-        CompressedSparseData
-            ``self``, with ``diag_positions`` set to ``pos``.
-        """
-        self.diag_positions = pos
-        return self
 
 
 @jax.tree_util.register_pytree_node_class
@@ -837,7 +822,14 @@ class CSR(CompressedSparseData):
     __module__ = 'brainevent'
 
     @classmethod
-    def fromdense(cls, mat, *, nse=None, index_dtype=jnp.int32) -> 'CSR':
+    def fromdense(
+        cls,
+        mat,
+        *,
+        nse: Optional[int] = None,
+        index_dtype=jnp.int32,
+        backend: Optional[str] = None,
+    ) -> 'CSR':
         """
         Create a CSR matrix from a dense matrix.
 
@@ -871,7 +863,7 @@ class CSR(CompressedSparseData):
         if nse is None:
             nse = (u.get_mantissa(mat) != 0).sum()
         csr = u.sparse.csr_fromdense(mat, nse=nse, index_dtype=index_dtype)
-        return CSR((csr.data, csr.indices, csr.indptr), shape=csr.shape)
+        return CSR(csr.data, csr.indices, csr.indptr, shape=csr.shape, backend=backend)
 
     def with_data(self, data: Data) -> 'CSR':
         """
@@ -906,7 +898,7 @@ class CSR(CompressedSparseData):
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
-        return CSR((data, self.indices, self.indptr), shape=self.shape)._diag_pos(self.diag_positions)
+        return CSR((data, self.indices, self.indptr), shape=self.shape, buffers=self.buffers)
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """
@@ -954,7 +946,7 @@ class CSR(CompressedSparseData):
         """
         from brainevent import COO
         pre_ids, post_ids = _csr_to_coo(self.indices, self.indptr)
-        return COO((self.data, pre_ids, post_ids), shape=self.shape)
+        return COO((self.data, pre_ids, post_ids), shape=self.shape, backend=self.backend)
 
     def transpose(self, axes=None) -> 'CSC':
         """
@@ -990,7 +982,10 @@ class CSR(CompressedSparseData):
             csc = csr.T
         """
         assert axes is None, "transpose does not support axes argument."
-        return CSC((self.data, self.indices, self.indptr), shape=self.shape[::-1])._diag_pos(self.diag_positions)
+        return CSC(
+            self.data, self.indices, self.indptr,
+            shape=self.shape[::-1], buffers=self.buffers, backend=self.backend
+        )
 
     def apply(self, fn) -> 'CSR':
         """
@@ -1018,7 +1013,10 @@ class CSR(CompressedSparseData):
 
             squared = csr.apply(lambda x: x ** 2)
         """
-        return CSR(fn(self.data), self.indices, self.indptr, shape=self.shape)._diag_pos(self.diag_positions)
+        return CSR(
+            fn(self.data), self.indices, self.indptr,
+            shape=self.shape, buffers=self.buffers, backend=self.backend,
+        )
 
     def __getitem__(self, index):
         """Extract rows from the CSR matrix as a dense array.
@@ -1037,17 +1035,23 @@ class CSR(CompressedSparseData):
         """
         if isinstance(index, (int, np.integer)):
             row_indices = jnp.array([index], dtype=jnp.int32)
-            result = csr_slice_rows(self.data, self.indices, self.indptr, row_indices, shape=self.shape,
-                                    backend=self.backend)
+            result = csr_slice_rows(
+                self.data, self.indices, self.indptr, row_indices, shape=self.shape,
+                backend=self.backend
+            )
             return result[0]
         elif isinstance(index, (tuple, list)):
             row_indices = jnp.asarray(index, dtype=jnp.int32)
-            return csr_slice_rows(self.data, self.indices, self.indptr, row_indices, shape=self.shape,
-                                  backend=self.backend)
+            return csr_slice_rows(
+                self.data, self.indices, self.indptr, row_indices, shape=self.shape,
+                backend=self.backend
+            )
         elif isinstance(index, (jnp.ndarray, np.ndarray)):
             row_indices = jnp.asarray(index, dtype=jnp.int32)
-            return csr_slice_rows(self.data, self.indices, self.indptr, row_indices, shape=self.shape,
-                                  backend=self.backend)
+            return csr_slice_rows(
+                self.data, self.indices, self.indptr, row_indices, shape=self.shape,
+                backend=self.backend
+            )
         else:
             raise IndexError(f"Unsupported index type: {type(index)}")
 
@@ -1061,30 +1065,36 @@ class CSR(CompressedSparseData):
         if isinstance(other, CSR):
             if id(other.indices) == id(self.indices) and id(other.indptr) == id(self.indptr):
                 return CSR(
-                    (op(self.data, other.data),
-                     self.indices,
-                     self.indptr),
-                    shape=self.shape
-                )._diag_pos(self.diag_positions)
+                    op(self.data, other.data,
+                       self.indices,
+                       self.indptr),
+                    shape=self.shape,
+                    buffers=self.buffers,
+                    backend=self.backend,
+                )
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
         if other.size == 1:
             return CSR(
-                (op(self.data, other), self.indices, self.indptr),
-                shape=self.shape
-            )._diag_pos(self.diag_positions)
+                op(self.data, other), self.indices, self.indptr,
+                shape=self.shape,
+                buffers=self.buffers,
+                backend=self.backend,
+            )
 
         elif other.ndim == 2 and other.shape == self.shape:
             rows, cols = _csr_to_coo(self.indices, self.indptr)
             other = other[rows, cols]
             return CSR(
-                (op(self.data, other),
-                 self.indices,
-                 self.indptr),
-                shape=self.shape
-            )._diag_pos(self.diag_positions)
+                op(self.data, other),
+                self.indices,
+                self.indptr,
+                shape=self.shape,
+                buffers=self.buffers,
+                backend=self.backend,
+            )
 
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
@@ -1099,31 +1109,37 @@ class CSR(CompressedSparseData):
         if isinstance(other, CSR):
             if id(other.indices) == id(self.indices) and id(other.indptr) == id(self.indptr):
                 return CSR(
-                    (op(other.data, self.data),
-                     self.indices,
-                     self.indptr),
-                    shape=self.shape
-                )._diag_pos(self.diag_positions)
+                    op(other.data, self.data),
+                    self.indices,
+                    self.indptr,
+                    shape=self.shape,
+                    buffers=self.buffers,
+                    backend=self.backend,
+                )
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
         other = u.math.asarray(other)
         if other.size == 1:
             return CSR(
-                (op(other, self.data),
-                 self.indices,
-                 self.indptr),
-                shape=self.shape
-            )._diag_pos(self.diag_positions)
+                op(other, self.data),
+                self.indices,
+                self.indptr,
+                shape=self.shape,
+                buffers=self.buffers,
+                backend=self.backend,
+            )
         elif other.ndim == 2 and other.shape == self.shape:
             rows, cols = _csr_to_coo(self.indices, self.indptr)
             other = other[rows, cols]
             return CSR(
-                (op(other, self.data),
-                 self.indices,
-                 self.indptr),
-                shape=self.shape
-            )._diag_pos(self.diag_positions)
+                op(other, self.data),
+                self.indices,
+                self.indptr,
+                shape=self.shape,
+                buffers=self.buffers,
+                backend=self.backend,
+            )
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
@@ -1174,20 +1190,22 @@ class CSR(CompressedSparseData):
         if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
-                return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape, backend=self.backend)
+                return binary_csrmv(self.data, self.indices, self.indptr, other,
+                                    shape=self.shape, backend=self.backend)
             elif other.ndim == 2:
-                return binary_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape, backend=self.backend)
+                return binary_csrmm(self.data, self.indices, self.indptr, other,
+                                    shape=self.shape, backend=self.backend)
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
         elif isinstance(other, SparseFloat):
             other = other.value
             if other.ndim == 1:
-                return spfloat_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape,
-                                     backend=self.backend)
+                return spfloat_csrmv(self.data, self.indices, self.indptr, other,
+                                     shape=self.shape, backend=self.backend)
             elif other.ndim == 2:
-                return spfloat_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape,
-                                     backend=self.backend)
+                return spfloat_csrmm(self.data, self.indices, self.indptr, other,
+                                     shape=self.shape, backend=self.backend)
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -1256,12 +1274,12 @@ class CSR(CompressedSparseData):
         if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
-                return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True,
-                                    backend=self.backend)
+                return binary_csrmv(self.data, self.indices, self.indptr, other,
+                                    shape=self.shape, transpose=True, backend=self.backend)
             elif other.ndim == 2:
                 other = other.T
-                r = binary_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True,
-                                 backend=self.backend)
+                r = binary_csrmm(self.data, self.indices, self.indptr, other,
+                                 shape=self.shape, transpose=True, backend=self.backend)
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -1387,8 +1405,8 @@ class CSR(CompressedSparseData):
         -----
         Internally calls ``csrmv_yw2y`` with ``transpose=False``.
         """
-        return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape, transpose=False,
-                          backend=self.backend)
+        return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr,
+                          shape=self.shape, transpose=False, backend=self.backend)
 
     def yw_to_w_transposed(
         self,
@@ -1422,8 +1440,8 @@ class CSR(CompressedSparseData):
         -----
         Internally calls ``csrmv_yw2y`` with ``transpose=True``.
         """
-        return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape, transpose=True,
-                          backend=self.backend)
+        return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr,
+                          shape=self.shape, transpose=True, backend=self.backend)
 
 
 @jax.tree_util.register_pytree_node_class
@@ -1491,7 +1509,14 @@ class CSC(CompressedSparseData):
     __module__ = 'brainevent'
 
     @classmethod
-    def fromdense(cls, mat, *, nse=None, index_dtype=jnp.int32) -> 'CSC':
+    def fromdense(
+        cls,
+        mat,
+        *,
+        nse: int = None,
+        index_dtype=jnp.int32,
+        backend: Optional[str] = None,
+    ) -> 'CSC':
         """
         Create a CSC (Compressed Sparse Column) matrix from a dense matrix.
 
@@ -1526,7 +1551,7 @@ class CSC(CompressedSparseData):
         if nse is None:
             nse = (u.get_mantissa(mat) != 0).sum()
         csc = u.sparse.csr_fromdense(mat.T, nse=nse, index_dtype=index_dtype).T
-        return CSC((csc.data, csc.indices, csc.indptr), shape=csc.shape)
+        return CSC((csc.data, csc.indices, csc.indptr), shape=csc.shape, backend=backend)
 
     def with_data(self, data: Data) -> 'CSC':
         """
@@ -1561,7 +1586,7 @@ class CSC(CompressedSparseData):
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
-        return CSC((data, self.indices, self.indptr), shape=self.shape)._diag_pos(self.diag_positions)
+        return CSC((data, self.indices, self.indptr), shape=self.shape, buffers=self.buffers, backend=self.backend)
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """
@@ -1609,7 +1634,7 @@ class CSC(CompressedSparseData):
         """
         from brainevent import COO
         post_ids, pre_ids = _csr_to_coo(self.indices, self.indptr)
-        return COO((self.data, pre_ids, post_ids), shape=self.shape)
+        return COO((self.data, pre_ids, post_ids), shape=self.shape, backend=self.backend)
 
     def transpose(self, axes=None) -> 'CSR':
         """
@@ -1643,7 +1668,8 @@ class CSC(CompressedSparseData):
             csr = csc.T
         """
         assert axes is None
-        return CSR((self.data, self.indices, self.indptr), shape=self.shape[::-1])._diag_pos(self.diag_positions)
+        return CSR((self.data, self.indices, self.indptr),
+                   shape=self.shape[::-1], buffers=self.buffers, backend=self.backend)
 
     def apply(self, fn) -> 'CSC':
         """
@@ -1671,7 +1697,8 @@ class CSC(CompressedSparseData):
 
             squared = csc.apply(lambda x: x ** 2)
         """
-        return CSC((fn(self.data), self.indices, self.indptr), shape=self.shape)._diag_pos(self.diag_positions)
+        return CSC((fn(self.data), self.indices, self.indptr),
+                   shape=self.shape, buffers=self.buffers, backend=self.backend)
 
     def __getitem__(self, index):
         """Extract columns from the CSC matrix as a dense array.
@@ -1722,8 +1749,10 @@ class CSC(CompressedSparseData):
                     (op(self.data, other.data),
                      self.indices,
                      self.indptr),
-                    shape=self.shape
-                )._diag_pos(self.diag_positions)
+                    shape=self.shape,
+                    buffers=self.buffers,
+                    backend=self.backend,
+                )
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
@@ -1733,8 +1762,10 @@ class CSC(CompressedSparseData):
                 (op(self.data, other),
                  self.indices,
                  self.indptr),
-                shape=self.shape
-            )._diag_pos(self.diag_positions)
+                shape=self.shape,
+                buffers=self.buffers,
+                backend=self.backend,
+            )
         elif other.ndim == 2 and other.shape == self.shape:
             cols, rows = _csr_to_coo(self.indices, self.indptr)
             other = other[rows, cols]
@@ -1742,8 +1773,10 @@ class CSC(CompressedSparseData):
                 (op(self.data, other),
                  self.indices,
                  self.indptr),
-                shape=self.shape
-            )._diag_pos(self.diag_positions)
+                shape=self.shape,
+                buffers=self.buffers,
+                backend=self.backend,
+            )
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
@@ -1759,8 +1792,10 @@ class CSC(CompressedSparseData):
                     (op(other.data, self.data),
                      self.indices,
                      self.indptr),
-                    shape=self.shape
-                )._diag_pos(self.diag_positions)
+                    shape=self.shape,
+                    buffers=self.buffers,
+                    backend=self.backend,
+                )
         if isinstance(other, u.sparse.SparseMatrix):
             raise NotImplementedError(f"binary operation {op} between two sparse objects.")
 
@@ -1770,8 +1805,10 @@ class CSC(CompressedSparseData):
                 (op(other, self.data),
                  self.indices,
                  self.indptr),
-                shape=self.shape
-            )._diag_pos(self.diag_positions)
+                shape=self.shape,
+                buffers=self.buffers,
+                backend=self.backend,
+            )
         elif other.ndim == 2 and other.shape == self.shape:
             cols, rows = _csr_to_coo(self.indices, self.indptr)
             other = other[rows, cols]
@@ -1779,8 +1816,10 @@ class CSC(CompressedSparseData):
                 (op(other, self.data),
                  self.indices,
                  self.indptr),
-                shape=self.shape
-            )._diag_pos(self.diag_positions)
+                shape=self.shape,
+                buffers=self.buffers,
+                backend=self.backend,
+            )
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
 
@@ -1928,12 +1967,10 @@ class CSC(CompressedSparseData):
             other = other.value
             if other.ndim == 1:
                 return binary_csrmv(data, self.indices, self.indptr, other,
-                                    shape=self.shape[::-1],
-                                    transpose=False, backend=self.backend)
+                                    shape=self.shape[::-1], transpose=False, backend=self.backend)
             elif other.ndim == 2:
                 return binary_csrmm(data, self.indices, self.indptr, other.T,
-                                    shape=self.shape[::-1],
-                                    transpose=False, backend=self.backend).T
+                                    shape=self.shape[::-1], transpose=False, backend=self.backend).T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -1941,12 +1978,10 @@ class CSC(CompressedSparseData):
             other = other.value
             if other.ndim == 1:
                 return spfloat_csrmv(data, self.indices, self.indptr, other,
-                                     shape=self.shape[::-1],
-                                     transpose=False, backend=self.backend)
+                                     shape=self.shape[::-1], transpose=False, backend=self.backend)
             elif other.ndim == 2:
                 return spfloat_csrmm(data, self.indices, self.indptr, other.T,
-                                     shape=self.shape[::-1],
-                                     transpose=False, backend=self.backend).T
+                                     shape=self.shape[::-1], transpose=False, backend=self.backend).T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 

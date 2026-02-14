@@ -16,7 +16,7 @@
 # -*- coding: utf-8 -*-
 
 
-from typing import Union, Tuple, Optional
+from typing import Union, Tuple, Optional, Dict
 
 import brainunit as u
 import jax
@@ -160,6 +160,7 @@ class JITCNormalMatrix(JITCMatrix):
         shape: MatrixShape,
         corder: bool = False,
         backend: Optional[str] = None,
+        buffers: Optional[Dict] = None,
     ):
         """
         Initialize a normal distribution sparse matrix.
@@ -201,7 +202,7 @@ class JITCNormalMatrix(JITCMatrix):
         self.wscale = u.math.asarray(scale)
         self.corder = corder
         self.backend = backend
-        super().__init__(data, shape=shape)
+        super().__init__(data, shape=shape, buffers=buffers)
 
     def __repr__(self):
         """
@@ -311,6 +312,7 @@ class JITCNormalMatrix(JITCMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
+            buffers=self.buffers,
         )
 
     def tree_flatten(self):
@@ -329,6 +331,7 @@ class JITCNormalMatrix(JITCMatrix):
         tree_unflatten : Reconstruct the matrix from flattened data.
         """
         aux = {'shape': self.shape, 'corder': self.corder, 'backend': self.backend}
+        aux.update(self._flatten_buffers())
         return (self.wloc, self.wscale, self.prob, self.seed), aux
 
     @classmethod
@@ -354,6 +357,8 @@ class JITCNormalMatrix(JITCMatrix):
         """
         obj = object.__new__(cls)
         obj.wloc, obj.wscale, obj.prob, obj.seed = children
+        registry = aux_data.pop('_buffer_registry', frozenset())
+        obj._buffer_registry = set(registry)
         for k, v in aux_data.items():
             setattr(obj, k, v)
         return obj
@@ -588,6 +593,7 @@ class JITCNormalR(JITCNormalMatrix):
             shape=(self.shape[1], self.shape[0]),
             corder=not self.corder,
             backend=self.backend,
+            buffers = self.buffers,
         )
 
     def _new_mat(self, loc, scale, prob=None, seed=None):
@@ -620,6 +626,7 @@ class JITCNormalR(JITCNormalMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
+            buffers=self.buffers,
         )
 
     def _unitary_op(self, op) -> 'JITCNormalR':
@@ -1119,6 +1126,7 @@ class JITCNormalC(JITCNormalMatrix):
             shape=(self.shape[1], self.shape[0]),
             corder=not self.corder,
             backend=self.backend,
+            buffers=self.buffers,
         )
 
     def _new_mat(self, loc, scale, prob=None, seed=None):
@@ -1151,6 +1159,7 @@ class JITCNormalC(JITCNormalMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
+            buffers=self.buffers,
         )
 
     def _unitary_op(self, op) -> 'JITCNormalC':

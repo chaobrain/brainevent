@@ -17,7 +17,7 @@
 
 
 import operator
-from typing import Any, Tuple, Optional
+from typing import Any, Tuple, Optional, Dict
 
 import brainunit as u
 import jax
@@ -107,6 +107,7 @@ class COO(DataRepresentation):
         rows_sorted: bool = False,
         cols_sorted: bool = False,
         backend: Optional[str] = None,
+        buffers: Optional[Dict] = None,
     ):
         """
         Initialize a COO matrix.
@@ -167,7 +168,7 @@ class COO(DataRepresentation):
         self.ptr = ptr
         self.backend = backend
 
-        super().__init__(args, shape=shape)
+        super().__init__(args, shape=shape, buffers=buffers)
 
     @property
     def dtype(self):
@@ -216,7 +217,8 @@ class COO(DataRepresentation):
         mat: Data,
         *,
         nse: int | None = None,
-        index_dtype: jax.typing.DTypeLike = np.int32
+        index_dtype: jax.typing.DTypeLike = np.int32,
+        backend: Optional[str] = None,
     ) -> 'COO':
         """
         Create a COO (Coordinate Format) sparse matrix from a dense matrix.
@@ -242,7 +244,7 @@ class COO(DataRepresentation):
         if nse is None:
             nse = (u.get_mantissa(mat) != 0.).sum()
         coo = u.sparse.coo_fromdense(mat, nse=nse, index_dtype=index_dtype)
-        return COO(coo.data, coo.row, coo.col, shape=coo.shape)
+        return COO(coo.data, coo.row, coo.col, shape=coo.shape, backend=backend)
 
     def sort_indices(self) -> 'COO':
         """Return a copy of the COO matrix with sorted indices.
@@ -254,7 +256,15 @@ class COO(DataRepresentation):
             return self
         data, unit = u.split_mantissa_unit(self.data)
         row, col, data = jax.lax.sort((self.row, self.col, data), num_keys=2)
-        return COO(u.maybe_decimal(data * unit), row, col, shape=self.shape, rows_sorted=True)
+        return COO(
+            u.maybe_decimal(data * unit),
+            row,
+            col,
+            shape=self.shape,
+            rows_sorted=True,
+            buffers=self.buffers,
+            backend=self.backend,
+        )
 
     def with_data(self, data: Data) -> 'COO':
         """
@@ -289,6 +299,8 @@ class COO(DataRepresentation):
             shape=self.shape,
             rows_sorted=self.rows_sorted,
             cols_sorted=self.cols_sorted,
+            buffers=self.buffers,
+            backend=self.backend,
         )
 
     def todense(self) -> Data:
@@ -353,6 +365,8 @@ class COO(DataRepresentation):
             shape=self.shape[::-1],
             rows_sorted=self.cols_sorted,
             cols_sorted=self.rows_sorted,
+            buffers=self.buffers,
+            backend=self.backend,
         )
 
     def tree_flatten(self) -> Tuple[
@@ -379,6 +393,7 @@ class COO(DataRepresentation):
             col=self.col,
             backend=self.backend,
         )
+        aux.update(self._flatten_buffers())
         return (self.data,), aux
 
     @classmethod
@@ -407,6 +422,8 @@ class COO(DataRepresentation):
         """
         obj = object.__new__(cls)
         obj.data, = children
+        registry = aux_data.pop('_buffer_registry', frozenset())
+        obj._buffer_registry = set(registry)
         for k, v in aux_data.items():
             setattr(obj, k, v)
         return obj
@@ -583,6 +600,8 @@ class COO(DataRepresentation):
             shape=self.shape,
             rows_sorted=self.rows_sorted,
             cols_sorted=self.cols_sorted,
+            buffers=self.buffers,
+            backend=self.backend,
         )
 
     def __abs__(self):
@@ -631,6 +650,8 @@ class COO(DataRepresentation):
                 shape=self.shape,
                 rows_sorted=self.rows_sorted,
                 cols_sorted=self.cols_sorted,
+                backend=self.backend,
+                buffers=self.buffers,
             )
         elif other.ndim == 2 and other.shape == self.shape:
             other = other[self.row, self.col]
@@ -639,6 +660,8 @@ class COO(DataRepresentation):
                 shape=self.shape,
                 rows_sorted=self.rows_sorted,
                 cols_sorted=self.cols_sorted,
+                backend=self.backend,
+                buffers=self.buffers,
             )
         else:
             raise NotImplementedError(f"{op.__name__} with object of shape {other.shape}")
@@ -659,6 +682,8 @@ class COO(DataRepresentation):
                 shape=self.shape,
                 rows_sorted=self.rows_sorted,
                 cols_sorted=self.cols_sorted,
+                backend=self.backend,
+                buffers=self.buffers,
             )
         elif other.ndim == 2 and other.shape == self.shape:
             other = other[self.row, self.col]
@@ -667,6 +692,8 @@ class COO(DataRepresentation):
                 shape=self.shape,
                 rows_sorted=self.rows_sorted,
                 cols_sorted=self.cols_sorted,
+                backend=self.backend,
+                buffers=self.buffers,
             )
         else:
             raise NotImplementedError(f"{op.__name__} with object of shape {other.shape}")
@@ -891,11 +918,15 @@ class COO(DataRepresentation):
             if isinstance(other, BinaryArray):
                 other = other.value
                 if other.ndim == 1:
-                    return binary_csrmv(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose,
-                                        backend=self.backend)
+                    return binary_csrmv(
+                        data, indices, indptr, other,
+                        shape=csr_shape, transpose=actual_transpose, backend=self.backend
+                    )
                 elif other.ndim == 2:
-                    return binary_csrmm(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose,
-                                        backend=self.backend)
+                    return binary_csrmm(
+                        data, indices, indptr, other,
+                        shape=csr_shape, transpose=actual_transpose, backend=self.backend
+                    )
                 else:
                     raise NotImplementedError(f"matmul with object of shape {other.shape}")
             elif isinstance(other, SparseFloat):
@@ -906,11 +937,15 @@ class COO(DataRepresentation):
                 other = u.math.asarray(other)
                 data, other = u.math.promote_dtypes(self.data, other)
                 if other.ndim == 1:
-                    return csrmv(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose,
-                                 backend=self.backend)
+                    return csrmv(
+                        data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose,
+                        backend=self.backend
+                    )
                 elif other.ndim == 2:
-                    return csrmm(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose,
-                                 backend=self.backend)
+                    return csrmm(
+                        data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose,
+                        backend=self.backend
+                    )
                 else:
                     raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -971,12 +1006,16 @@ class COO(DataRepresentation):
             if isinstance(other, BinaryArray):
                 other = other.value
                 if other.ndim == 1:
-                    return binary_csrmv(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose,
-                                        backend=self.backend)
+                    return binary_csrmv(
+                        data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose,
+                        backend=self.backend
+                    )
                 elif other.ndim == 2:
                     other = other.T
-                    r = binary_csrmm(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose,
-                                     backend=self.backend)
+                    r = binary_csrmm(
+                        data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose,
+                        backend=self.backend
+                    )
                     return r.T
                 else:
                     raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -988,12 +1027,16 @@ class COO(DataRepresentation):
                 other = u.math.asarray(other)
                 data, other = u.math.promote_dtypes(self.data, other)
                 if other.ndim == 1:
-                    return csrmv(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose,
-                                 backend=self.backend)
+                    return csrmv(
+                        data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose,
+                        backend=self.backend
+                    )
                 elif other.ndim == 2:
                     other = other.T
-                    r = csrmm(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose,
-                              backend=self.backend)
+                    r = csrmm(
+                        data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose,
+                        backend=self.backend
+                    )
                     return r.T
                 else:
                     raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -1001,12 +1044,16 @@ class COO(DataRepresentation):
         if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
-                return binary_coomv(data, self.row, self.col, other, shape=self.shape, transpose=True,
-                                    backend=self.backend)
+                return binary_coomv(
+                    data, self.row, self.col, other, shape=self.shape, transpose=True,
+                    backend=self.backend
+                )
             elif other.ndim == 2:
                 other = other.T
-                r = binary_coomm(data, self.row, self.col, other, shape=self.shape, transpose=True,
-                                 backend=self.backend)
+                r = binary_coomm(
+                    data, self.row, self.col, other, shape=self.shape, transpose=True,
+                    backend=self.backend
+                )
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -1020,10 +1067,16 @@ class COO(DataRepresentation):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
-                return coomv(data, self.row, self.col, other, shape=self.shape, transpose=True, backend=self.backend)
+                return coomv(
+                    data, self.row, self.col, other,
+                    shape=self.shape, transpose=True, backend=self.backend
+                )
             elif other.ndim == 2:
                 other = other.T
-                r = coomm(data, self.row, self.col, other, shape=self.shape, transpose=True, backend=self.backend)
+                r = coomm(
+                    data, self.row, self.col, other,
+                    shape=self.shape, transpose=True, backend=self.backend
+                )
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
