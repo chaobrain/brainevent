@@ -1722,7 +1722,7 @@ class CSC(CompressedSparseData):
             self.data, self.indices, self.indptr, col_indices,
             shape=transposed_shape, backend=self.backend
         )
-        return result[0] if col_indices.ndim == 0 else result.T
+        return result if col_indices.ndim == 0 else result.T
 
     def _binary_op(self, other, op) -> 'CSC':
         if op in [operator.add, operator.sub]:
