@@ -1712,20 +1712,17 @@ class CSC(CompressedSparseData):
         transposed_shape = self.shape[::-1]
         if isinstance(index, (int, np.integer)):
             col_indices = jnp.array(index, dtype=jnp.int32)
-            homo = True
         elif isinstance(index, (tuple, list)):
             col_indices = jnp.asarray(index, dtype=jnp.int32)
-            homo = False
         elif isinstance(index, (jnp.ndarray, np.ndarray)):
             col_indices = jnp.asarray(index, dtype=jnp.int32)
-            homo = index.ndim == 0
         else:
             raise IndexError(f"Unsupported index type: {type(index)}")
         result = csr_slice_rows(
             self.data, self.indices, self.indptr, col_indices,
             shape=transposed_shape, backend=self.backend
         )
-        return result[0] if homo else result.T
+        return result[0] if col_indices.ndim == 0 else result.T
 
     def _binary_op(self, other, op) -> 'CSC':
         if op in [operator.add, operator.sub]:
