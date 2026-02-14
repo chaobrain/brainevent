@@ -79,7 +79,7 @@ from ._jit_normal import (
     jitn, jitn_p, jitnmv, jitnmv_p, jitnmm, jitnmm_p,
 )
 from ._jit_scalar import (
-    JITScalarMatrix, JITCScalarR, JITCScalarC,
+    JITCScalarMatrix, JITCScalarR, JITCScalarC,
     binary_jitsmv, binary_jitsmv_p, binary_jitsmm, binary_jitsmm_p,
     jits, jits_p, jitsmv, jitsmv_p, jitsmm, jitsmm_p,
 )
@@ -155,7 +155,7 @@ __all__ = [
 
     # --- Just-In-Time Connectivity matrix --- #
     'JITCMatrix',
-    'JITScalarMatrix', 'JITCScalarR', 'JITCScalarC',
+    'JITCScalarMatrix', 'JITCScalarR', 'JITCScalarC',
     'binary_jitsmv', 'binary_jitsmv_p',
     'binary_jitsmm', 'binary_jitsmm_p',
     'jits', 'jits_p',

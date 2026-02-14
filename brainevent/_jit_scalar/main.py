@@ -42,7 +42,7 @@ __all__ = [
 ]
 
 
-class JITScalarMatrix(JITCMatrix):
+class JITCScalarMatrix(JITCMatrix):
     """
     Base class for Just-In-Time Connectivity Scalar-weight matrices.
 
@@ -69,7 +69,7 @@ class JITScalarMatrix(JITCMatrix):
 
     Returns
     -------
-    JITScalarMatrix
+    JITCScalarMatrix
         A new scalar-weight JIT connectivity matrix instance.
 
     Raises
@@ -218,7 +218,7 @@ class JITScalarMatrix(JITCMatrix):
 
         Examples
         --------
-        >>> matrix = JITScalarMatrix((0.5, 0.1, 42), shape=(10, 10))
+        >>> matrix = JITCScalarMatrix((0.5, 0.1, 42), shape=(10, 10))
         >>> repr(matrix)
         'JITHomoMatrix(shape=(10, 10), weight=0.5, prob=0.1, seed=42, corder=False)'
         """
@@ -285,7 +285,7 @@ class JITScalarMatrix(JITCMatrix):
 
         Returns
         -------
-        JITScalarMatrix
+        JITCScalarMatrix
             A new matrix instance of the same concrete type with the updated weight.
 
         Raises
@@ -336,7 +336,7 @@ class JITScalarMatrix(JITCMatrix):
 
         Returns
         -------
-        JITScalarMatrix
+        JITCScalarMatrix
             A reconstructed matrix instance with attributes restored from both
             ``children`` and ``aux_data``.
 
@@ -356,7 +356,7 @@ class JITScalarMatrix(JITCMatrix):
 
         Parameters
         ----------
-        other : JITScalarMatrix
+        other : JITCScalarMatrix
             The other matrix to check compatibility against.
         op : callable
             The binary operation being attempted, used in error messages.
@@ -396,7 +396,7 @@ class JITScalarMatrix(JITCMatrix):
 
 
 @jax.tree_util.register_pytree_node_class
-class JITCScalarR(JITScalarMatrix):
+class JITCScalarR(JITCScalarMatrix):
     """
     Just-In-Time Connectivity Homogeneous matrix with Row-oriented representation.
 
@@ -500,7 +500,7 @@ class JITCScalarR(JITScalarMatrix):
     See Also
     --------
     JITCScalarC : Column-oriented counterpart of this class.
-    JITScalarMatrix : Base class providing shared functionality.
+    JITCScalarMatrix : Base class providing shared functionality.
     """
     __module__ = 'brainevent'
 
@@ -906,7 +906,7 @@ class JITCScalarR(JITScalarMatrix):
 
 
 @jax.tree_util.register_pytree_node_class
-class JITCScalarC(JITScalarMatrix):
+class JITCScalarC(JITCScalarMatrix):
     """
     Just-In-Time Connectivity Homogeneous matrix with Column-oriented representation.
 
@@ -1002,7 +1002,7 @@ class JITCScalarC(JITScalarMatrix):
     See Also
     --------
     JITCScalarR : Row-oriented counterpart of this class.
-    JITScalarMatrix : Base class providing shared functionality.
+    JITCScalarMatrix : Base class providing shared functionality.
     """
     __module__ = 'brainevent'
 

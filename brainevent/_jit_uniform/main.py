@@ -35,7 +35,7 @@ __all__ = [
 ]
 
 
-class JITUniformMatrix(JITCMatrix):
+class JITCUniformMatrix(JITCMatrix):
     """
     Base class for Just-In-Time Connectivity Uniform Distribution matrices.
 
@@ -208,7 +208,7 @@ class JITUniformMatrix(JITCMatrix):
 
         Examples
         --------
-        >>> matrix = JITUniformMatrix((0.1, 0.5, 0.2, 42), shape=(10, 10))
+        >>> matrix = JITCUniformMatrix((0.1, 0.5, 0.2, 42), shape=(10, 10))
         >>> repr(matrix)
         'JITUniformMatrix(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42, corder=False)'
         """
@@ -282,7 +282,7 @@ class JITUniformMatrix(JITCMatrix):
 
         Returns
         -------
-        JITUniformMatrix
+        JITCUniformMatrix
             A new matrix instance of the same type as the original, with updated
             lower and upper bounds but identical connectivity structure.
 
@@ -355,7 +355,7 @@ class JITUniformMatrix(JITCMatrix):
 
         Returns
         -------
-        JITUniformMatrix
+        JITCUniformMatrix
             A reconstructed matrix instance.
 
         Notes
@@ -376,7 +376,7 @@ class JITUniformMatrix(JITCMatrix):
 
         Parameters
         ----------
-        other : JITUniformMatrix
+        other : JITCUniformMatrix
             The other matrix to check compatibility with.
         op : str
             Name of the binary operation being performed, used in error messages.
@@ -409,7 +409,7 @@ class JITUniformMatrix(JITCMatrix):
 
 
 @jax.tree_util.register_pytree_node_class
-class JITCUniformR(JITUniformMatrix):
+class JITCUniformR(JITCUniformMatrix):
     """
     Just-In-Time Connectivity matrix with Row-oriented representation for uniform weight distributions.
 
@@ -976,7 +976,7 @@ class JITCUniformR(JITUniformMatrix):
 
 
 @jax.tree_util.register_pytree_node_class
-class JITCUniformC(JITUniformMatrix):
+class JITCUniformC(JITCUniformMatrix):
     """
     Just-In-Time Connectivity matrix with Column-oriented representation for uniform weight distributions.
 

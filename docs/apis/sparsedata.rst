@@ -48,7 +48,6 @@ JITC Scalar
    :nosignatures:
    :template: classtemplate.rst
 
-   JITScalarMatrix
    JITCScalarR
    JITCScalarC
 
