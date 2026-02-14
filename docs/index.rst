@@ -175,6 +175,7 @@ See also the ecosystem
    :maxdepth: 2
    :caption: API Reference
 
+   apis/changelog.md
    apis/events.rst
    apis/sparsedata.rst
    apis/operations.rst
