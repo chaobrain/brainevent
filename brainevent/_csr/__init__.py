@@ -16,15 +16,15 @@
 
 from .binary import binary_csrmv, binary_csrmv_p, binary_csrmm, binary_csrmm_p
 from .float import csrmv, csrmv_p, csrmm, csrmm_p
-from .yw2y import csrmv_yw2y, csrmv_yw2y_p
 from .main import CSR, CSC
 from .plasticity_binary import (
     update_csr_on_binary_pre, update_csr_on_binary_pre_p,
     update_csr_on_binary_post, update_csr_on_binary_post_p,
 )
-from .sparse_float import spfloat_csrmv, spfloat_csrmv_p, spfloat_csrmm, spfloat_csrmm_p
 from .slice import csr_slice_rows, csr_slice_rows_p
+from .sparse_float import spfloat_csrmv, spfloat_csrmv_p, spfloat_csrmm, spfloat_csrmm_p
 from .spsolve import csr_solve
+from .yw2y import csrmv_yw2y, csrmv_yw2y_p
 
 __all__ = [
     'CSR', 'CSC',

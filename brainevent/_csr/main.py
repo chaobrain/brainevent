@@ -15,13 +15,14 @@
 
 
 import operator
-from typing import Union, Sequence, Tuple
+from typing import Optional, Union, Sequence, Tuple
 
 import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
 
+from brainevent._data import DataRepresentation
 from brainevent._event import BinaryArray, SparseFloat
 from brainevent._misc import _csr_to_coo, _csr_todense
 from brainevent._typing import Data, Indptr, Index, MatrixShape
@@ -29,9 +30,9 @@ from .binary import binary_csrmv, binary_csrmm
 from .diag_add import csr_diag_position_v2, csr_diag_add_v2
 from .float import csrmv, csrmm
 from .slice import csr_slice_rows
-from .yw2y import csrmv_yw2y
 from .sparse_float import spfloat_csrmv, spfloat_csrmm
 from .spsolve import csr_solve
+from .yw2y import csrmv_yw2y
 
 __all__ = [
     'CSR',
@@ -39,7 +40,7 @@ __all__ = [
 ]
 
 
-class BaseCLS(u.sparse.SparseMatrix):
+class BaseCLS(DataRepresentation):
     """
     Abstract base class for compressed sparse matrix formats.
 
@@ -118,7 +119,8 @@ class BaseCLS(u.sparse.SparseMatrix):
         indices=None,
         indptr=None,
         *,
-        shape: MatrixShape
+        shape: MatrixShape,
+        backend: Optional[str] = None,
     ):
         """
         Initialize a compressed sparse matrix base instance.
@@ -158,6 +160,7 @@ class BaseCLS(u.sparse.SparseMatrix):
         assert len(args) == 3, "Expected three arguments: data, indices, indptr."
         self.data, self.indices, self.indptr = map(u.math.asarray, args)
         super().__init__(args, shape=shape)
+        self.backend = backend
         self.diag_positions = None
 
     def tree_flatten(self):
@@ -184,6 +187,7 @@ class BaseCLS(u.sparse.SparseMatrix):
             'indices': self.indices,
             'indptr': self.indptr,
             'shape': self.shape,
+            'backend': self.backend,
             'diag_positions': self.diag_positions,
         }
         return (self.data,), aux
@@ -1061,14 +1065,17 @@ class CSR(BaseCLS):
         """
         if isinstance(index, (int, np.integer)):
             row_indices = jnp.array([index], dtype=jnp.int32)
-            result = csr_slice_rows(self.data, self.indices, self.indptr, row_indices, shape=self.shape)
+            result = csr_slice_rows(self.data, self.indices, self.indptr, row_indices, shape=self.shape,
+                                    backend=self.backend)
             return result[0]
         elif isinstance(index, (tuple, list)):
             row_indices = jnp.asarray(index, dtype=jnp.int32)
-            return csr_slice_rows(self.data, self.indices, self.indptr, row_indices, shape=self.shape)
+            return csr_slice_rows(self.data, self.indices, self.indptr, row_indices, shape=self.shape,
+                                  backend=self.backend)
         elif isinstance(index, (jnp.ndarray, np.ndarray)):
             row_indices = jnp.asarray(index, dtype=jnp.int32)
-            return csr_slice_rows(self.data, self.indices, self.indptr, row_indices, shape=self.shape)
+            return csr_slice_rows(self.data, self.indices, self.indptr, row_indices, shape=self.shape,
+                                  backend=self.backend)
         else:
             raise IndexError(f"Unsupported index type: {type(index)}")
 
@@ -1195,18 +1202,20 @@ class CSR(BaseCLS):
         if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
-                return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
+                return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape, backend=self.backend)
             elif other.ndim == 2:
-                return binary_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape)
+                return binary_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape, backend=self.backend)
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
         elif isinstance(other, SparseFloat):
             other = other.value
             if other.ndim == 1:
-                return spfloat_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape)
+                return spfloat_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape,
+                                     backend=self.backend)
             elif other.ndim == 2:
-                return spfloat_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape)
+                return spfloat_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape,
+                                     backend=self.backend)
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -1220,7 +1229,8 @@ class CSR(BaseCLS):
                     self.indptr,
                     other,
                     shape=self.shape,
-                    transpose=False
+                    transpose=False,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 return csrmm(
@@ -1229,7 +1239,8 @@ class CSR(BaseCLS):
                     self.indptr,
                     other,
                     shape=self.shape,
-                    transpose=False
+                    transpose=False,
+                    backend=self.backend,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -1273,10 +1284,12 @@ class CSR(BaseCLS):
         if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
-                return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True)
+                return binary_csrmv(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True,
+                                    backend=self.backend)
             elif other.ndim == 2:
                 other = other.T
-                r = binary_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True)
+                r = binary_csrmm(self.data, self.indices, self.indptr, other, shape=self.shape, transpose=True,
+                                 backend=self.backend)
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -1287,14 +1300,16 @@ class CSR(BaseCLS):
                 return spfloat_csrmv(
                     self.data, self.indices, self.indptr, other,
                     shape=self.shape,
-                    transpose=True
+                    transpose=True,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 other = other.T
                 r = spfloat_csrmm(
                     self.data, self.indices, self.indptr, other,
                     shape=self.shape,
-                    transpose=True
+                    transpose=True,
+                    backend=self.backend,
                 )
                 return r.T
             else:
@@ -1310,7 +1325,8 @@ class CSR(BaseCLS):
                     self.indptr,
                     other,
                     shape=self.shape,
-                    transpose=True
+                    transpose=True,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 other = other.T
@@ -1320,7 +1336,8 @@ class CSR(BaseCLS):
                     self.indptr,
                     other,
                     shape=self.shape,
-                    transpose=True
+                    transpose=True,
+                    backend=self.backend,
                 )
                 return r.T
             else:
@@ -1398,7 +1415,8 @@ class CSR(BaseCLS):
         -----
         Internally calls ``csrmv_yw2y`` with ``transpose=False``.
         """
-        return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape, transpose=False)
+        return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape, transpose=False,
+                          backend=self.backend)
 
     def yw_to_w_transposed(
         self,
@@ -1432,7 +1450,8 @@ class CSR(BaseCLS):
         -----
         Internally calls ``csrmv_yw2y`` with ``transpose=True``.
         """
-        return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape, transpose=True)
+        return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape, transpose=True,
+                          backend=self.backend)
 
 
 @jax.tree_util.register_pytree_node_class
@@ -1703,15 +1722,18 @@ class CSC(BaseCLS):
         transposed_shape = self.shape[::-1]
         if isinstance(index, (int, np.integer)):
             col_indices = jnp.array([index], dtype=jnp.int32)
-            result = csr_slice_rows(self.data, self.indices, self.indptr, col_indices, shape=transposed_shape)
+            result = csr_slice_rows(self.data, self.indices, self.indptr, col_indices, shape=transposed_shape,
+                                    backend=self.backend)
             return result[0]  # shape (n_rows,) — a single column as a vector
         elif isinstance(index, (tuple, list)):
             col_indices = jnp.asarray(index, dtype=jnp.int32)
-            result = csr_slice_rows(self.data, self.indices, self.indptr, col_indices, shape=transposed_shape)
+            result = csr_slice_rows(self.data, self.indices, self.indptr, col_indices, shape=transposed_shape,
+                                    backend=self.backend)
             return result.T  # shape (n_rows, num_selected)
         elif isinstance(index, (jnp.ndarray, np.ndarray)):
             col_indices = jnp.asarray(index, dtype=jnp.int32)
-            result = csr_slice_rows(self.data, self.indices, self.indptr, col_indices, shape=transposed_shape)
+            result = csr_slice_rows(self.data, self.indices, self.indptr, col_indices, shape=transposed_shape,
+                                    backend=self.backend)
             return result.T  # shape (n_rows, num_selected)
         else:
             raise IndexError(f"Unsupported index type: {type(index)}")
@@ -1834,13 +1856,15 @@ class CSC(BaseCLS):
                 return binary_csrmv(
                     data, self.indices, self.indptr, other,
                     shape=self.shape[::-1],
-                    transpose=True
+                    transpose=True,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 return binary_csrmm(
                     data, self.indices, self.indptr, other,
                     shape=self.shape[::-1],
-                    transpose=True
+                    transpose=True,
+                    backend=self.backend,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -1851,13 +1875,15 @@ class CSC(BaseCLS):
                 return spfloat_csrmv(
                     data, self.indices, self.indptr, other,
                     shape=self.shape[::-1],
-                    transpose=True
+                    transpose=True,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 return spfloat_csrmm(
                     data, self.indices, self.indptr, other,
                     shape=self.shape[::-1],
-                    transpose=True
+                    transpose=True,
+                    backend=self.backend,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -1873,7 +1899,8 @@ class CSC(BaseCLS):
                     self.indptr,
                     other,
                     shape=self.shape[::-1],
-                    transpose=True
+                    transpose=True,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 return csrmm(
@@ -1882,7 +1909,8 @@ class CSC(BaseCLS):
                     self.indptr,
                     other,
                     shape=self.shape[::-1],
-                    transpose=True
+                    transpose=True,
+                    backend=self.backend,
                 )
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -1929,11 +1957,11 @@ class CSC(BaseCLS):
             if other.ndim == 1:
                 return binary_csrmv(data, self.indices, self.indptr, other,
                                     shape=self.shape[::-1],
-                                    transpose=False)
+                                    transpose=False, backend=self.backend)
             elif other.ndim == 2:
                 return binary_csrmm(data, self.indices, self.indptr, other.T,
                                     shape=self.shape[::-1],
-                                    transpose=False).T
+                                    transpose=False, backend=self.backend).T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -1942,11 +1970,11 @@ class CSC(BaseCLS):
             if other.ndim == 1:
                 return spfloat_csrmv(data, self.indices, self.indptr, other,
                                      shape=self.shape[::-1],
-                                     transpose=False)
+                                     transpose=False, backend=self.backend)
             elif other.ndim == 2:
                 return spfloat_csrmm(data, self.indices, self.indptr, other.T,
                                      shape=self.shape[::-1],
-                                     transpose=False).T
+                                     transpose=False, backend=self.backend).T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -1960,7 +1988,8 @@ class CSC(BaseCLS):
                     self.indptr,
                     other,
                     shape=self.shape[::-1],
-                    transpose=False
+                    transpose=False,
+                    backend=self.backend,
                 )
             elif other.ndim == 2:
                 other = other.T
@@ -1969,7 +1998,8 @@ class CSC(BaseCLS):
                     self.indices,
                     self.indptr, other,
                     shape=self.shape[::-1],
-                    transpose=False
+                    transpose=False,
+                    backend=self.backend,
                 )
                 return r.T
             else:
@@ -2047,7 +2077,8 @@ class CSC(BaseCLS):
         Internally calls ``csrmv_yw2y`` with ``transpose=True`` and reversed
         shape to account for the column-oriented storage format.
         """
-        return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape[::-1], transpose=True)
+        return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape[::-1], transpose=True,
+                          backend=self.backend)
 
     def yw_to_w_transposed(
         self,
@@ -2084,4 +2115,5 @@ class CSC(BaseCLS):
         Internally calls ``csrmv_yw2y`` with ``transpose=False`` and reversed
         shape.
         """
-        return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape[::-1], transpose=False)
+        return csrmv_yw2y(y_dim_arr, w_dim_arr, self.indices, self.indptr, shape=self.shape[::-1], transpose=False,
+                          backend=self.backend)

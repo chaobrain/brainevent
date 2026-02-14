@@ -19,7 +19,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent._jitc_matrix import JITCMatrix, _initialize_seed, _initialize_conn_length
+from brainevent._data import JITCMatrix, _initialize_seed, _initialize_conn_length
 
 
 class _DummyJITCMatrix(JITCMatrix):

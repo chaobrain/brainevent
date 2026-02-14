@@ -28,6 +28,7 @@ from brainevent._csr import (
     CSR, binary_csrmv, binary_csrmm, csrmv, csrmm,
     update_csr_on_binary_pre, update_csr_on_binary_post
 )
+from brainevent._data import DataRepresentation
 from brainevent._event import BinaryArray, SparseFloat, EventRepresentation
 from brainevent._misc import _coo_todense, COOInfo
 from brainevent._typing import MatrixShape, Data, Index
@@ -44,7 +45,7 @@ __all__ = [
 
 
 @jax.tree_util.register_pytree_node_class
-class COO(u.sparse.SparseMatrix):
+class COO(DataRepresentation):
     """
     Coordinate Format (COO) sparse matrix.
 
@@ -105,6 +106,7 @@ class COO(u.sparse.SparseMatrix):
         shape: MatrixShape,
         rows_sorted: bool = False,
         cols_sorted: bool = False,
+        backend: Optional[str] = None,
     ):
         """
         Initialize a COO matrix.
@@ -163,6 +165,7 @@ class COO(u.sparse.SparseMatrix):
             counts = jnp.bincount(sorted_idx, length=length)
             ptr = jnp.concatenate([jnp.zeros(1, dtype=self.row.dtype), jnp.cumsum(counts, dtype=self.row.dtype)])
         self.ptr = ptr
+        self.backend = backend
 
         super().__init__(args, shape=shape)
 
@@ -374,6 +377,7 @@ class COO(u.sparse.SparseMatrix):
             ptr=self.ptr,
             row=self.row,
             col=self.col,
+            backend=self.backend,
         )
         return (self.data,), aux
 
@@ -457,11 +461,12 @@ class COO(u.sparse.SparseMatrix):
         update_coo_on_binary_pre : Underlying COO pre-spike kernel.
         """
         if isinstance(pre_events, BinaryArray):
+            _backend = backend or self.backend
             if self.ptr is not None:
                 if self.rows_sorted:
                     data = update_csr_on_binary_pre(
                         self.data, self.col, self.ptr, pre_events.value, post_trace, w_min, w_max,
-                        shape=self.shape, backend=backend
+                        shape=self.shape, backend=_backend
                     )
                 elif self.cols_sorted:
                     raise NotImplementedError("CSR dispatch for cols_sorted COO matrices is not yet implemented")
@@ -469,7 +474,7 @@ class COO(u.sparse.SparseMatrix):
                     raise NotImplementedError("CSR dispatch requires rows_sorted or cols_sorted to be True")
             else:
                 data = update_coo_on_binary_pre(
-                    self.data, self.row, self.col, pre_events.value, post_trace, w_min, w_max, backend=backend
+                    self.data, self.row, self.col, pre_events.value, post_trace, w_min, w_max, backend=_backend
                 )
 
         else:
@@ -531,6 +536,7 @@ class COO(u.sparse.SparseMatrix):
         update_coo_on_binary_post : Underlying COO post-spike kernel.
         """
         if isinstance(post_events, BinaryArray):
+            _backend = backend or self.backend
             if self.ptr is not None:
                 if self.rows_sorted:
                     update_csr_on_binary_post
@@ -542,7 +548,7 @@ class COO(u.sparse.SparseMatrix):
                 )
             else:
                 data = update_coo_on_binary_post(
-                    self.data, self.row, self.col, post_events.value, pre_trace, w_min, w_max, backend=backend
+                    self.data, self.row, self.col, post_events.value, pre_trace, w_min, w_max, backend=_backend
                 )
         else:
             raise NotImplementedError(
@@ -885,9 +891,11 @@ class COO(u.sparse.SparseMatrix):
             if isinstance(other, BinaryArray):
                 other = other.value
                 if other.ndim == 1:
-                    return binary_csrmv(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose)
+                    return binary_csrmv(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose,
+                                        backend=self.backend)
                 elif other.ndim == 2:
-                    return binary_csrmm(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose)
+                    return binary_csrmm(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose,
+                                        backend=self.backend)
                 else:
                     raise NotImplementedError(f"matmul with object of shape {other.shape}")
             elif isinstance(other, SparseFloat):
@@ -898,18 +906,20 @@ class COO(u.sparse.SparseMatrix):
                 other = u.math.asarray(other)
                 data, other = u.math.promote_dtypes(self.data, other)
                 if other.ndim == 1:
-                    return csrmv(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose)
+                    return csrmv(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose,
+                                 backend=self.backend)
                 elif other.ndim == 2:
-                    return csrmm(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose)
+                    return csrmm(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose,
+                                 backend=self.backend)
                 else:
                     raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
         if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
-                return binary_coomv(data, self.row, self.col, other, shape=self.shape)
+                return binary_coomv(data, self.row, self.col, other, shape=self.shape, backend=self.backend)
             elif other.ndim == 2:
-                return binary_coomm(data, self.row, self.col, other, shape=self.shape)
+                return binary_coomm(data, self.row, self.col, other, shape=self.shape, backend=self.backend)
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
         elif isinstance(other, SparseFloat):
@@ -920,9 +930,9 @@ class COO(u.sparse.SparseMatrix):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
-                return coomv(data, self.row, self.col, other, shape=self.shape)
+                return coomv(data, self.row, self.col, other, shape=self.shape, backend=self.backend)
             elif other.ndim == 2:
-                return coomm(data, self.row, self.col, other, shape=self.shape)
+                return coomm(data, self.row, self.col, other, shape=self.shape, backend=self.backend)
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -961,10 +971,12 @@ class COO(u.sparse.SparseMatrix):
             if isinstance(other, BinaryArray):
                 other = other.value
                 if other.ndim == 1:
-                    return binary_csrmv(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose)
+                    return binary_csrmv(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose,
+                                        backend=self.backend)
                 elif other.ndim == 2:
                     other = other.T
-                    r = binary_csrmm(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose)
+                    r = binary_csrmm(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose,
+                                     backend=self.backend)
                     return r.T
                 else:
                     raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -976,10 +988,12 @@ class COO(u.sparse.SparseMatrix):
                 other = u.math.asarray(other)
                 data, other = u.math.promote_dtypes(self.data, other)
                 if other.ndim == 1:
-                    return csrmv(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose)
+                    return csrmv(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose,
+                                 backend=self.backend)
                 elif other.ndim == 2:
                     other = other.T
-                    r = csrmm(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose)
+                    r = csrmm(data, indices, indptr, other, shape=csr_shape, transpose=actual_transpose,
+                              backend=self.backend)
                     return r.T
                 else:
                     raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -987,10 +1001,12 @@ class COO(u.sparse.SparseMatrix):
         if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
-                return binary_coomv(data, self.row, self.col, other, shape=self.shape, transpose=True)
+                return binary_coomv(data, self.row, self.col, other, shape=self.shape, transpose=True,
+                                    backend=self.backend)
             elif other.ndim == 2:
                 other = other.T
-                r = binary_coomm(data, self.row, self.col, other, shape=self.shape, transpose=True)
+                r = binary_coomm(data, self.row, self.col, other, shape=self.shape, transpose=True,
+                                 backend=self.backend)
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -1004,10 +1020,10 @@ class COO(u.sparse.SparseMatrix):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
-                return coomv(data, self.row, self.col, other, shape=self.shape, transpose=True)
+                return coomv(data, self.row, self.col, other, shape=self.shape, transpose=True, backend=self.backend)
             elif other.ndim == 2:
                 other = other.T
-                r = coomm(data, self.row, self.col, other, shape=self.shape, transpose=True)
+                r = coomm(data, self.row, self.col, other, shape=self.shape, transpose=True, backend=self.backend)
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")

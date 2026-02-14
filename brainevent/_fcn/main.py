@@ -16,6 +16,7 @@
 # -*- coding: utf-8 -*-
 
 import operator
+from typing import Optional
 
 import brainunit as u
 import jax
@@ -23,6 +24,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._coo import COO
+from brainevent._data import DataRepresentation
 from brainevent._event.binary import BinaryArray
 from brainevent._event.sparse_float import SparseFloat
 from brainevent._misc import _coo_todense, COOInfo
@@ -65,7 +67,7 @@ def _contains_invalid_indices(indices: Index, *, upper_bound: int) -> bool:
             )
 
 
-class FixedNumConn(u.sparse.SparseMatrix):
+class FixedNumConn(DataRepresentation):
     """
     Base class for sparse matrices with a fixed number of connections per neuron.
 
@@ -170,6 +172,7 @@ class FixedNumConn(u.sparse.SparseMatrix):
         aux = {
             'indices': self.indices,
             'shape': self.shape,
+            'backend': self.backend,
         }
         return (self.data,), aux
 
@@ -428,7 +431,7 @@ class FixedPostNumConn(FixedNumConn):
     nse = property(lambda self: self.indices.size)
     dtype = property(lambda self: self.data.dtype)
 
-    def __init__(self, data, indices=None, *, shape: MatrixShape):
+    def __init__(self, data, indices=None, *, shape: MatrixShape, backend: Optional[str] = None):
         """
         Initialize a FixedPostNumConn sparse matrix.
 
@@ -449,6 +452,9 @@ class FixedPostNumConn(FixedNumConn):
         shape : tuple[int, int]
             Logical ``(num_pre, num_post)`` shape of the equivalent dense
             matrix.
+        backend : str or None, optional
+            Compute backend override.  When ``None`` the backend is chosen
+            automatically.
 
         Raises
         ------
@@ -464,6 +470,7 @@ class FixedPostNumConn(FixedNumConn):
         else:
             args = (data, indices)
         self.data, self.indices = map(u.math.asarray, args)
+        self.backend = backend
         _validate_fixed_conn_indices(self.indices, expected_rows=shape[0], kind='Post-synaptic')
         if self.data.size != 1 and self.data.shape != self.indices.shape:
             raise ValueError(
@@ -700,18 +707,18 @@ class FixedPostNumConn(FixedNumConn):
         if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
-                return binary_fcnmv(data, self.indices, other, shape=self.shape, transpose=False)
+                return binary_fcnmv(data, self.indices, other, shape=self.shape, transpose=False, backend=self.backend)
             elif other.ndim == 2:
-                return binary_fcnmm(data, self.indices, other, shape=self.shape, transpose=False)
+                return binary_fcnmm(data, self.indices, other, shape=self.shape, transpose=False, backend=self.backend)
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
         elif isinstance(other, SparseFloat):
             other = other.value
             if other.ndim == 1:
-                return spfloat_fcnmv(data, self.indices, other, shape=self.shape, transpose=False)
+                return spfloat_fcnmv(data, self.indices, other, shape=self.shape, transpose=False, backend=self.backend)
             elif other.ndim == 2:
-                return spfloat_fcnmm(data, self.indices, other, shape=self.shape, transpose=False)
+                return spfloat_fcnmm(data, self.indices, other, shape=self.shape, transpose=False, backend=self.backend)
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -719,9 +726,9 @@ class FixedPostNumConn(FixedNumConn):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
-                return fcnmv(data, self.indices, other, shape=self.shape, transpose=False)
+                return fcnmv(data, self.indices, other, shape=self.shape, transpose=False, backend=self.backend)
             elif other.ndim == 2:
-                return fcnmm(data, self.indices, other, shape=self.shape, transpose=False)
+                return fcnmm(data, self.indices, other, shape=self.shape, transpose=False, backend=self.backend)
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -757,9 +764,9 @@ class FixedPostNumConn(FixedNumConn):
         if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
-                return binary_fcnmv(data, self.indices, other, shape=self.shape, transpose=True)
+                return binary_fcnmv(data, self.indices, other, shape=self.shape, transpose=True, backend=self.backend)
             elif other.ndim == 2:
-                r = binary_fcnmm(data, self.indices, other.T, shape=self.shape, transpose=True)
+                r = binary_fcnmm(data, self.indices, other.T, shape=self.shape, transpose=True, backend=self.backend)
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -767,9 +774,9 @@ class FixedPostNumConn(FixedNumConn):
         elif isinstance(other, SparseFloat):
             other = other.value
             if other.ndim == 1:
-                return spfloat_fcnmv(data, self.indices, other, shape=self.shape, transpose=True)
+                return spfloat_fcnmv(data, self.indices, other, shape=self.shape, transpose=True, backend=self.backend)
             elif other.ndim == 2:
-                r = spfloat_fcnmm(data, self.indices, other.T, shape=self.shape, transpose=True)
+                r = spfloat_fcnmm(data, self.indices, other.T, shape=self.shape, transpose=True, backend=self.backend)
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -778,10 +785,10 @@ class FixedPostNumConn(FixedNumConn):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
-                return fcnmv(data, self.indices, other, shape=self.shape, transpose=True)
+                return fcnmv(data, self.indices, other, shape=self.shape, transpose=True, backend=self.backend)
             elif other.ndim == 2:
                 other = other.T
-                r = fcnmm(data, self.indices, other, shape=self.shape, transpose=True)
+                r = fcnmm(data, self.indices, other, shape=self.shape, transpose=True, backend=self.backend)
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -918,7 +925,7 @@ class FixedPreNumConn(FixedNumConn):
     nse = property(lambda self: self.indices.size)
     dtype = property(lambda self: self.data.dtype)
 
-    def __init__(self, data, indices=None, *, shape: MatrixShape):
+    def __init__(self, data, indices=None, *, shape: MatrixShape, backend: Optional[str] = None):
         """
         Initialize a FixedPreNumConn sparse matrix.
 
@@ -939,6 +946,9 @@ class FixedPreNumConn(FixedNumConn):
         shape : tuple[int, int]
             Logical ``(num_pre, num_post)`` shape of the equivalent dense
             matrix.
+        backend : str or None, optional
+            Compute backend override.  When ``None`` the backend is chosen
+            automatically.
 
         Raises
         ------
@@ -954,6 +964,7 @@ class FixedPreNumConn(FixedNumConn):
         else:
             args = (data, indices)
         self.data, self.indices = map(u.math.asarray, args)
+        self.backend = backend
         _validate_fixed_conn_indices(
             self.indices,
             expected_rows=shape[1],
@@ -1207,18 +1218,22 @@ class FixedPreNumConn(FixedNumConn):
         if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
-                return binary_fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=True)
+                return binary_fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=True,
+                                    backend=self.backend)
             elif other.ndim == 2:
-                return binary_fcnmm(data, self.indices, other, shape=self.shape[::-1], transpose=True)
+                return binary_fcnmm(data, self.indices, other, shape=self.shape[::-1], transpose=True,
+                                    backend=self.backend)
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
         elif isinstance(other, SparseFloat):
             other = other.value
             if other.ndim == 1:
-                return spfloat_fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=True)
+                return spfloat_fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=True,
+                                     backend=self.backend)
             elif other.ndim == 2:
-                return spfloat_fcnmm(data, self.indices, other, shape=self.shape[::-1], transpose=True)
+                return spfloat_fcnmm(data, self.indices, other, shape=self.shape[::-1], transpose=True,
+                                     backend=self.backend)
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -1226,9 +1241,9 @@ class FixedPreNumConn(FixedNumConn):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
-                return fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=True)
+                return fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=True, backend=self.backend)
             elif other.ndim == 2:
-                return fcnmm(data, self.indices, other, shape=self.shape[::-1], transpose=True)
+                return fcnmm(data, self.indices, other, shape=self.shape[::-1], transpose=True, backend=self.backend)
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
 
@@ -1264,9 +1279,11 @@ class FixedPreNumConn(FixedNumConn):
         if isinstance(other, BinaryArray):
             other = other.value
             if other.ndim == 1:
-                return binary_fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=False)
+                return binary_fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=False,
+                                    backend=self.backend)
             elif other.ndim == 2:
-                r = binary_fcnmm(data, self.indices, other.T, shape=self.shape[::-1], transpose=False)
+                r = binary_fcnmm(data, self.indices, other.T, shape=self.shape[::-1], transpose=False,
+                                 backend=self.backend)
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -1274,9 +1291,11 @@ class FixedPreNumConn(FixedNumConn):
         elif isinstance(other, SparseFloat):
             other = other.value
             if other.ndim == 1:
-                return spfloat_fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=False)
+                return spfloat_fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=False,
+                                     backend=self.backend)
             elif other.ndim == 2:
-                r = spfloat_fcnmm(data, self.indices, other.T, shape=self.shape[::-1], transpose=False)
+                r = spfloat_fcnmm(data, self.indices, other.T, shape=self.shape[::-1], transpose=False,
+                                  backend=self.backend)
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")
@@ -1285,10 +1304,10 @@ class FixedPreNumConn(FixedNumConn):
             other = u.math.asarray(other)
             data, other = u.math.promote_dtypes(self.data, other)
             if other.ndim == 1:
-                return fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=False)
+                return fcnmv(data, self.indices, other, shape=self.shape[::-1], transpose=False, backend=self.backend)
             elif other.ndim == 2:
                 other = other.T
-                r = fcnmm(data, self.indices, other, shape=self.shape[::-1], transpose=False)
+                r = fcnmm(data, self.indices, other, shape=self.shape[::-1], transpose=False, backend=self.backend)
                 return r.T
             else:
                 raise NotImplementedError(f"matmul with object of shape {other.shape}")

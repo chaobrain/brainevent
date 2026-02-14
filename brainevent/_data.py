@@ -23,10 +23,17 @@ import jax
 import numpy as np
 from jax import numpy as jnp
 
-__all__ = ['JITCMatrix']
+__all__ = [
+    'DataRepresentation',
+    'JITCMatrix',
+]
 
 
-class JITCMatrix(u.sparse.SparseMatrix):
+class DataRepresentation(u.sparse.SparseMatrix):
+    pass
+
+
+class JITCMatrix(DataRepresentation):
     """
     Just-in-time Connectivity (JITC) matrix.
 
