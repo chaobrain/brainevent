@@ -139,11 +139,12 @@ class TestCSRSliceRowsHomo:
         data, indices, indptr, dense = _make_homo_csr_and_dense(m, n)
         for row in [0, 3, m - 1]:
             row_indices = jnp.array([row], dtype=jnp.int32)
-            result = csr_slice_rows(data, indices, indptr, row_indices,
-                                    shape=(m, n), backend=implementation)
+            result = csr_slice_rows(data, indices, indptr, row_indices, shape=(m, n), backend=implementation)
             expected = dense[row:row + 1]
-            assert jnp.allclose(result, expected, atol=1e-5), \
-                f"Row {row}: {result} != {expected}"
+            assert jnp.allclose(result, expected, atol=1e-5), f"Row {row}: {result} != {expected}"
+            row = jnp.array(row, dtype=jnp.int32)
+            result2 = csr_slice_rows(data, indices, indptr, row, shape=(m, n), backend=implementation)
+            assert jnp.allclose(result2, expected[0], atol=1e-5)
 
     @pytest.mark.parametrize('implementation', SLICE_IMPLEMENTATIONS)
     def test_homo_multi_row(self, implementation):

@@ -721,7 +721,7 @@ class CompressedSparseData(DataRepresentation):
         - This method relies on `csr_diag_position_v2` to find diagonal positions and
           `csr_diag_add_v2` to perform the actual addition.
         """
-        if self.diag_positions is None:
+        if not hasattr(self, 'diag_positions'):
             self.register_buffer(
                 'diag_positions',
                 csr_diag_position_v2(self.indptr, self.indices, self.shape)
@@ -1035,25 +1035,21 @@ class CSR(CompressedSparseData):
         """
         if isinstance(index, (int, np.integer)):
             row_indices = jnp.array([index], dtype=jnp.int32)
-            result = csr_slice_rows(
-                self.data, self.indices, self.indptr, row_indices, shape=self.shape,
-                backend=self.backend
-            )
-            return result[0]
+            homo = True
         elif isinstance(index, (tuple, list)):
             row_indices = jnp.asarray(index, dtype=jnp.int32)
-            return csr_slice_rows(
-                self.data, self.indices, self.indptr, row_indices, shape=self.shape,
-                backend=self.backend
-            )
+            homo = False
         elif isinstance(index, (jnp.ndarray, np.ndarray)):
             row_indices = jnp.asarray(index, dtype=jnp.int32)
-            return csr_slice_rows(
-                self.data, self.indices, self.indptr, row_indices, shape=self.shape,
-                backend=self.backend
-            )
+            homo = index.ndim == 0
+            row_indices = jnp.atleast_1d(row_indices) if homo else row_indices
         else:
             raise IndexError(f"Unsupported index type: {type(index)}")
+        result = csr_slice_rows(
+            self.data, self.indices, self.indptr, row_indices, shape=self.shape,
+            backend=self.backend
+        )
+        return result[0] if homo else result
 
     def _binary_op(self, other, op) -> 'CSR':
         if op in [operator.add, operator.sub]:
@@ -1721,21 +1717,21 @@ class CSC(CompressedSparseData):
         transposed_shape = self.shape[::-1]
         if isinstance(index, (int, np.integer)):
             col_indices = jnp.array([index], dtype=jnp.int32)
-            result = csr_slice_rows(self.data, self.indices, self.indptr, col_indices, shape=transposed_shape,
-                                    backend=self.backend)
-            return result[0]  # shape (n_rows,) — a single column as a vector
+            homo = True
         elif isinstance(index, (tuple, list)):
             col_indices = jnp.asarray(index, dtype=jnp.int32)
-            result = csr_slice_rows(self.data, self.indices, self.indptr, col_indices, shape=transposed_shape,
-                                    backend=self.backend)
-            return result.T  # shape (n_rows, num_selected)
+            homo = False
         elif isinstance(index, (jnp.ndarray, np.ndarray)):
             col_indices = jnp.asarray(index, dtype=jnp.int32)
-            result = csr_slice_rows(self.data, self.indices, self.indptr, col_indices, shape=transposed_shape,
-                                    backend=self.backend)
-            return result.T  # shape (n_rows, num_selected)
+            homo = index.ndim == 0
+            col_indices = jnp.atleast_1d(col_indices) if homo else col_indices
         else:
             raise IndexError(f"Unsupported index type: {type(index)}")
+        result = csr_slice_rows(
+            self.data, self.indices, self.indptr, col_indices,
+            shape=transposed_shape, backend=self.backend
+        )
+        return result[0] if homo else result.T
 
     def _binary_op(self, other, op) -> 'CSC':
         if op in [operator.add, operator.sub]:

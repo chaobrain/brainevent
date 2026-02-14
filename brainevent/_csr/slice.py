@@ -328,6 +328,7 @@ def csr_slice_rows_p_call(
         Single-element tuple with dense matrix of shape ``(num_selected, n_cols)``.
     """
     data = jnp.atleast_1d(data)
+    row_indices = jnp.atleast_1d(row_indices)
     assert data.ndim == 1, "data must be 1D"
     assert indices.ndim == 1, "indices must be 1D"
     assert indptr.ndim == 1, "indptr must be 1D"
@@ -634,6 +635,7 @@ def csr_slice_rows_grad_p_call(
     tuple of jax.Array
         Single-element tuple with gradient w.r.t. data, shape ``(nnz,)``.
     """
+    row_indices = jnp.atleast_1d(row_indices)
     assert ct.ndim == 2, "ct must be 2D"
     assert indices.ndim == 1, "indices must be 1D"
     assert indptr.ndim == 1, "indptr must be 1D"
