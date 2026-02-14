@@ -33,7 +33,11 @@ class DataRepresentation(u.sparse.SparseMatrix):
     def __init__(self, *args, shape: Sequence[int], buffers: Optional[Dict] = None):
         super().__init__(*args, shape=shape)
         self._buffer_registry = set()
-        self._apply_buffers(buffers)
+        if buffers is not None:
+            assert isinstance(buffers, dict), "buffers must be a dictionary of name-value pairs."
+            self._buffer_registry.update(buffers.keys())
+            for name, value in buffers.items():
+                self.register_buffer(name, value)
 
     def register_buffer(self, name, value=None):
         """Register a named buffer with a default value."""
@@ -46,25 +50,10 @@ class DataRepresentation(u.sparse.SparseMatrix):
             raise ValueError(f"Buffer '{name}' not registered. Call register_buffer first.")
         setattr(self, name, value)
 
-    def _apply_buffers(self, buffers):
-        """Override registered buffer values from a dict. Called in __init__ after register_buffer."""
-        if buffers:
-            registry = buffers.pop('_buffer_registry', set())
-            self._buffer_registry.update(registry)
-            for name, value in buffers.items():
-                self.register_buffer(name, value)
-
     @property
     def buffers(self):
         """Dict of all registered buffer names to their current values."""
         return {name: getattr(self, name, None) for name in self._buffer_registry}
-
-    def _flatten_buffers(self):
-        """Return dict to merge into tree_flatten aux_data."""
-        result = {'_buffer_registry': frozenset(self._buffer_registry)}
-        for name in self._buffer_registry:
-            result[name] = getattr(self, name, None)
-        return result
 
 
 class JITCMatrix(DataRepresentation):
