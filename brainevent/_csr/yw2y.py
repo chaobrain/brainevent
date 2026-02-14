@@ -13,25 +13,23 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Optional, Sequence
+from typing import Optional
 
 import brainunit as u
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.interpreters import ad
 
-from brainevent._misc import _csr_to_coo, generate_block_dim, namescope
-from brainevent._op import numba_kernel, jaxinfo_to_warpinfo, XLACustomKernel, general_batching_rule
+from brainevent._misc import generate_block_dim, namescope
+from brainevent._op import numba_kernel, jaxinfo_to_warpinfo, XLACustomKernel
 from brainevent._op.benchmark import BenchmarkConfig
-from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
-from brainevent.config import get_numba_parallel
 
 __all__ = [
     'csrmv_yw2y',
     'csrmv_yw2y_p',
 ]
+
 
 @namescope(static_argnames=['shape', 'transpose'])
 def csrmv_yw2y(

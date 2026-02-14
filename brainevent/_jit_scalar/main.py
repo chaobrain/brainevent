@@ -16,15 +16,15 @@
 # -*- coding: utf-8 -*-
 
 
-from typing import Union, Tuple, Optional
+from typing import Union, Tuple, Optional, Dict
 
 import brainunit as u
 import jax
 import numpy as np
 
 from brainevent._compatible_import import Tracer
+from brainevent._data import JITCMatrix
 from brainevent._event.binary import BinaryArray
-from brainevent._jitc_matrix import JITCMatrix
 from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
 from .binary import (
     binary_jitsmv,
@@ -42,7 +42,7 @@ __all__ = [
 ]
 
 
-class JITScalarMatrix(JITCMatrix):
+class JITCScalarMatrix(JITCMatrix):
     """
     Base class for Just-In-Time Connectivity Scalar-weight matrices.
 
@@ -69,7 +69,7 @@ class JITScalarMatrix(JITCMatrix):
 
     Returns
     -------
-    JITScalarMatrix
+    JITCScalarMatrix
         A new scalar-weight JIT connectivity matrix instance.
 
     Raises
@@ -152,6 +152,7 @@ class JITScalarMatrix(JITCMatrix):
         shape: MatrixShape,
         corder: bool = False,
         backend: Optional[str] = None,
+        buffers: Optional[Dict] = None,
     ):
         """
         Initialize a homogeneous sparse just-in-time connectivity matrix.
@@ -204,7 +205,7 @@ class JITScalarMatrix(JITCMatrix):
         self.weight = u.math.asarray(weight)
         self.corder = corder
         self.backend = backend
-        super().__init__(data, shape=shape)
+        super().__init__(data, shape=shape, buffers=buffers)
 
     def __repr__(self):
         """
@@ -218,7 +219,7 @@ class JITScalarMatrix(JITCMatrix):
 
         Examples
         --------
-        >>> matrix = JITScalarMatrix((0.5, 0.1, 42), shape=(10, 10))
+        >>> matrix = JITCScalarMatrix((0.5, 0.1, 42), shape=(10, 10))
         >>> repr(matrix)
         'JITHomoMatrix(shape=(10, 10), weight=0.5, prob=0.1, seed=42, corder=False)'
         """
@@ -285,7 +286,7 @@ class JITScalarMatrix(JITCMatrix):
 
         Returns
         -------
-        JITScalarMatrix
+        JITCScalarMatrix
             A new matrix instance of the same concrete type with the updated weight.
 
         Raises
@@ -301,6 +302,7 @@ class JITScalarMatrix(JITCMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
+            buffers=self.buffers,
         )
 
     def tree_flatten(self):
@@ -319,7 +321,7 @@ class JITScalarMatrix(JITCMatrix):
         tree_unflatten : Reconstruct the matrix from flattened representation.
         """
         aux = {'shape': self.shape, 'corder': self.corder, 'backend': self.backend}
-        return (self.weight, self.prob, self.seed), aux
+        return (self.weight, self.prob, self.seed), (aux, self.buffers)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
@@ -336,7 +338,7 @@ class JITScalarMatrix(JITCMatrix):
 
         Returns
         -------
-        JITScalarMatrix
+        JITCScalarMatrix
             A reconstructed matrix instance with attributes restored from both
             ``children`` and ``aux_data``.
 
@@ -346,7 +348,11 @@ class JITScalarMatrix(JITCMatrix):
         """
         obj = object.__new__(cls)
         obj.weight, obj.prob, obj.seed = children
+        aux_data, buffer = aux_data
+        obj._buffer_registry = set(buffer.keys())
         for k, v in aux_data.items():
+            setattr(obj, k, v)
+        for k, v in buffer.items():
             setattr(obj, k, v)
         return obj
 
@@ -356,7 +362,7 @@ class JITScalarMatrix(JITCMatrix):
 
         Parameters
         ----------
-        other : JITScalarMatrix
+        other : JITCScalarMatrix
             The other matrix to check compatibility against.
         op : callable
             The binary operation being attempted, used in error messages.
@@ -396,7 +402,7 @@ class JITScalarMatrix(JITCMatrix):
 
 
 @jax.tree_util.register_pytree_node_class
-class JITCScalarR(JITScalarMatrix):
+class JITCScalarR(JITCScalarMatrix):
     """
     Just-In-Time Connectivity Homogeneous matrix with Row-oriented representation.
 
@@ -500,7 +506,7 @@ class JITCScalarR(JITScalarMatrix):
     See Also
     --------
     JITCScalarC : Column-oriented counterpart of this class.
-    JITScalarMatrix : Base class providing shared functionality.
+    JITCScalarMatrix : Base class providing shared functionality.
     """
     __module__ = 'brainevent'
 
@@ -606,6 +612,7 @@ class JITCScalarR(JITScalarMatrix):
             shape=(self.shape[1], self.shape[0]),
             corder=not self.corder,
             backend=self.backend,
+            buffers=self.buffers,
         )
 
     def _new_mat(self, weight, prob=None, seed=None):
@@ -635,6 +642,7 @@ class JITCScalarR(JITScalarMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
+            buffers=self.buffers,
         )
 
     def _unitary_op(self, op) -> 'JITCScalarR':
@@ -906,7 +914,7 @@ class JITCScalarR(JITScalarMatrix):
 
 
 @jax.tree_util.register_pytree_node_class
-class JITCScalarC(JITScalarMatrix):
+class JITCScalarC(JITCScalarMatrix):
     """
     Just-In-Time Connectivity Homogeneous matrix with Column-oriented representation.
 
@@ -1002,7 +1010,7 @@ class JITCScalarC(JITScalarMatrix):
     See Also
     --------
     JITCScalarR : Row-oriented counterpart of this class.
-    JITScalarMatrix : Base class providing shared functionality.
+    JITCScalarMatrix : Base class providing shared functionality.
     """
     __module__ = 'brainevent'
 
@@ -1107,6 +1115,7 @@ class JITCScalarC(JITScalarMatrix):
             shape=(self.shape[1], self.shape[0]),
             corder=not self.corder,
             backend=self.backend,
+            buffers=self.buffers,
         )
 
     def _new_mat(self, weight, prob=None, seed=None):
@@ -1136,6 +1145,7 @@ class JITCScalarC(JITScalarMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
+            buffers=self.buffers,
         )
 
     def _unitary_op(self, op) -> 'JITCScalarC':

@@ -6,6 +6,17 @@ Sparse Matrix Data Structures
    :no-index:
 
 
+Data Representation
+-------------------
+
+.. autosummary::
+   :toctree: generated/
+   :nosignatures:
+   :template: classtemplate.rst
+
+   DataRepresentation
+
+
 COO (Coordinate Format)
 ------------------------
 
@@ -48,7 +59,6 @@ JITC Scalar
    :nosignatures:
    :template: classtemplate.rst
 
-   JITScalarMatrix
    JITCScalarR
    JITCScalarC
 
