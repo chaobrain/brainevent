@@ -65,7 +65,6 @@ from ._event import (
     IndexedSpFloat1d,
     IndexedSpFloat2d,
     binary_array_index,
-
 )
 from ._fcn import (
     FixedNumConn, FixedPreNumConn, FixedPostNumConn,
