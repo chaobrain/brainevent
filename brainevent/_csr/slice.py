@@ -70,10 +70,13 @@ def csr_slice_rows(
         Dense matrix of shape ``(len(row_indices), shape[1])``.
     """
     data, data_unit = u.split_mantissa_unit(data)
+    row_indices = jnp.asarray(row_indices, dtype=jnp.int32)
+    homo = row_indices.ndim == 0
     result = csr_slice_rows_p_call(
         data, indices, indptr, row_indices,
         shape=shape, backend=backend,
     )[0]
+    result = result[0] if homo else result
     return u.maybe_decimal(result * data_unit)
 
 

@@ -1035,21 +1035,16 @@ class CSR(CompressedSparseData):
         """
         if isinstance(index, (int, np.integer)):
             row_indices = jnp.array([index], dtype=jnp.int32)
-            homo = True
         elif isinstance(index, (tuple, list)):
             row_indices = jnp.asarray(index, dtype=jnp.int32)
-            homo = False
         elif isinstance(index, (jnp.ndarray, np.ndarray)):
             row_indices = jnp.asarray(index, dtype=jnp.int32)
-            homo = index.ndim == 0
-            row_indices = jnp.atleast_1d(row_indices) if homo else row_indices
         else:
             raise IndexError(f"Unsupported index type: {type(index)}")
-        result = csr_slice_rows(
+        return csr_slice_rows(
             self.data, self.indices, self.indptr, row_indices, shape=self.shape,
             backend=self.backend
         )
-        return result[0] if homo else result
 
     def _binary_op(self, other, op) -> 'CSR':
         if op in [operator.add, operator.sub]:
@@ -1724,7 +1719,6 @@ class CSC(CompressedSparseData):
         elif isinstance(index, (jnp.ndarray, np.ndarray)):
             col_indices = jnp.asarray(index, dtype=jnp.int32)
             homo = index.ndim == 0
-            col_indices = jnp.atleast_1d(col_indices) if homo else col_indices
         else:
             raise IndexError(f"Unsupported index type: {type(index)}")
         result = csr_slice_rows(
