@@ -34,24 +34,28 @@ class _SimpleBuffered(DataRepresentation):
 
     def __init__(self, value, *, shape, buffers=None):
         self.value = jnp.asarray(value)
+        super().__init__((value,), shape=shape)  # creates _buffer_registry
         self.register_buffer('cached_sum', None)
         self.register_buffer('label', None)
-        super().__init__((value,), shape=shape, buffers=buffers)
+        if buffers is not None:
+            for name, val in buffers.items():
+                self.register_buffer(name, val)
 
     def transpose(self, axes=None):
         return self
 
     def tree_flatten(self):
         aux = {'shape': self.shape, 'value': self.value}
-        aux.update(self._flatten_buffers())
-        return (), aux
+        return (), (aux, self.buffers)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
         obj = object.__new__(cls)
-        registry = aux_data.pop('_buffer_registry', frozenset())
-        obj._buffer_registry = set(registry)
+        aux_data, buffer = aux_data
+        obj._buffer_registry = set(buffer.keys())
         for k, v in aux_data.items():
+            setattr(obj, k, v)
+        for k, v in buffer.items():
             setattr(obj, k, v)
         return obj
 
@@ -84,18 +88,7 @@ class TestRegisterBuffer:
         assert obj.cached_sum == 10
         obj.register_buffer('cached_sum', 20)
         assert obj.cached_sum == 20
-        # Still only one entry in the registry
         assert list(obj._buffer_registry).count('cached_sum') == 1
-
-    def test_register_buffer_creates_registry_if_missing(self):
-        """Calling register_buffer on a bare object should create _buffer_registry."""
-        obj = object.__new__(_SimpleBuffered)
-        # No _buffer_registry yet
-        assert not hasattr(obj, '_buffer_registry')
-        obj.register_buffer('foo', 'bar')
-        assert hasattr(obj, '_buffer_registry')
-        assert 'foo' in obj._buffer_registry
-        assert obj.foo == 'bar'
 
 
 # ===========================================================================
@@ -112,11 +105,6 @@ class TestSetBuffer:
         obj = _SimpleBuffered(1.0, shape=(2, 2))
         with pytest.raises(ValueError, match="not registered"):
             obj.set_buffer('nonexistent', 5)
-
-    def test_set_buffer_without_registry_raises(self):
-        obj = object.__new__(_SimpleBuffered)
-        with pytest.raises(ValueError, match="not registered"):
-            obj.set_buffer('whatever', 5)
 
 
 # ===========================================================================
@@ -140,12 +128,6 @@ class TestBuffersProperty:
         assert float(bufs['cached_sum']) == pytest.approx(3.14)
         assert bufs['label'] == 'test'
 
-    def test_empty_registry(self):
-        """An object with no registered buffers should return an empty dict."""
-        obj = object.__new__(_SimpleBuffered)
-        # No _buffer_registry attribute
-        assert obj.buffers == {}
-
     def test_buffers_returns_new_dict_each_time(self):
         obj = _SimpleBuffered(1.0, shape=(2, 2))
         d1 = obj.buffers
@@ -155,34 +137,33 @@ class TestBuffersProperty:
 
 
 # ===========================================================================
-# 4. _apply_buffers
+# 4. Constructor buffers kwarg
 # ===========================================================================
 
-class TestApplyBuffers:
-    def test_apply_overrides_defaults(self):
+class TestBuffersKwarg:
+    def test_overrides_defaults(self):
         bufs = {'cached_sum': jnp.array(7.0), 'label': 'hello'}
         obj = _SimpleBuffered(1.0, shape=(2, 2), buffers=bufs)
         assert float(obj.cached_sum) == 7.0
         assert obj.label == 'hello'
 
-    def test_apply_partial_override(self):
+    def test_partial_override(self):
         bufs = {'cached_sum': jnp.array(5.0)}
         obj = _SimpleBuffered(1.0, shape=(2, 2), buffers=bufs)
         assert float(obj.cached_sum) == 5.0
-        assert obj.label is None  # not overridden
+        assert obj.label is None
 
-    def test_apply_none_is_noop(self):
+    def test_none_is_noop(self):
         obj = _SimpleBuffered(1.0, shape=(2, 2), buffers=None)
         assert obj.cached_sum is None
         assert obj.label is None
 
-    def test_apply_empty_dict_is_noop(self):
+    def test_empty_dict_is_noop(self):
         obj = _SimpleBuffered(1.0, shape=(2, 2), buffers={})
         assert obj.cached_sum is None
         assert obj.label is None
 
-    def test_apply_registers_new_buffers(self):
-        """_apply_buffers calls register_buffer, so new names are added to the registry."""
+    def test_registers_new_buffers(self):
         bufs = {'cached_sum': 1, 'label': 2, 'brand_new': 42}
         obj = _SimpleBuffered(1.0, shape=(2, 2), buffers=bufs)
         assert obj.brand_new == 42
@@ -190,32 +171,7 @@ class TestApplyBuffers:
 
 
 # ===========================================================================
-# 5. _flatten_buffers
-# ===========================================================================
-
-class TestFlattenBuffers:
-    def test_contains_registry_as_frozenset(self):
-        obj = _SimpleBuffered(1.0, shape=(2, 2))
-        flat = obj._flatten_buffers()
-        assert '_buffer_registry' in flat
-        assert isinstance(flat['_buffer_registry'], frozenset)
-        assert flat['_buffer_registry'] == frozenset({'cached_sum', 'label'})
-
-    def test_contains_buffer_values(self):
-        obj = _SimpleBuffered(1.0, shape=(2, 2))
-        obj.cached_sum = jnp.array(42.0)
-        flat = obj._flatten_buffers()
-        assert float(flat['cached_sum']) == 42.0
-        assert flat['label'] is None
-
-    def test_empty_registry(self):
-        obj = object.__new__(_SimpleBuffered)
-        flat = obj._flatten_buffers()
-        assert flat == {'_buffer_registry': frozenset()}
-
-
-# ===========================================================================
-# 6. JAX pytree round-trip
+# 5. JAX pytree round-trip
 # ===========================================================================
 
 class TestPytreeRoundTrip:
@@ -254,7 +210,6 @@ class TestPytreeRoundTrip:
 
     def test_none_buffer_values_roundtrip(self):
         obj = _SimpleBuffered(1.0, shape=(2, 2))
-        # All buffers are None by default
         children, aux = obj.tree_flatten()
         restored = _SimpleBuffered.tree_unflatten(aux, children)
         assert restored.cached_sum is None
@@ -266,13 +221,24 @@ class TestPytreeRoundTrip:
         children, aux = obj.tree_flatten()
         restored = _SimpleBuffered.tree_unflatten(aux, children)
         assert isinstance(restored._buffer_registry, set)
-        # Should be mutable — can add new buffers
         restored.register_buffer('dynamic', 99)
         assert 'dynamic' in restored._buffer_registry
 
+    def test_repeated_unflatten_is_safe(self):
+        """tree_unflatten must not mutate shared aux_data (JAX may call it multiple times)."""
+        obj = _SimpleBuffered(1.0, shape=(2, 2))
+        obj.set_buffer('cached_sum', jnp.array(42.0))
+
+        children, aux = obj.tree_flatten()
+        r1 = _SimpleBuffered.tree_unflatten(aux, children)
+        r2 = _SimpleBuffered.tree_unflatten(aux, children)
+        assert r1._buffer_registry == {'cached_sum', 'label'}
+        assert r2._buffer_registry == {'cached_sum', 'label'}
+        assert float(r2.cached_sum) == 42.0
+
 
 # ===========================================================================
-# 7. CSR buffer integration
+# 6. CSR buffer integration
 # ===========================================================================
 
 class TestCSRBuffers:
@@ -284,7 +250,6 @@ class TestCSRBuffers:
         return brainevent.CSR((data, indices, indptr), shape=(2, 3))
 
     def test_csr_no_buffers_initially(self, csr_mat):
-        """CSR starts with no registered buffers (diag_positions is lazy)."""
         assert csr_mat.buffers == {}
         assert not hasattr(csr_mat, 'diag_positions')
 
@@ -351,7 +316,6 @@ class TestCSRBuffers:
         assert 'diag_positions' in csr._buffer_registry
 
     def test_csr_no_buffers_pytree_roundtrip(self, csr_mat):
-        """CSR with no registered buffers should roundtrip cleanly."""
         children, aux = csr_mat.tree_flatten()
         restored = brainevent.CSR.tree_unflatten(aux, children)
         np.testing.assert_array_equal(restored.data, csr_mat.data)
@@ -361,7 +325,7 @@ class TestCSRBuffers:
 
 
 # ===========================================================================
-# 8. CSC buffer integration
+# 7. CSC buffer integration
 # ===========================================================================
 
 class TestCSCBuffers:
@@ -400,7 +364,7 @@ class TestCSCBuffers:
 
 
 # ===========================================================================
-# 9. COO buffer integration
+# 8. COO buffer integration
 # ===========================================================================
 
 class TestCOOBuffers:
@@ -433,37 +397,28 @@ class TestCOOBuffers:
 
 
 # ===========================================================================
-# 10. diag_add integration (buffers carry through real operations)
+# 9. diag_add integration (buffers carry through real operations)
 # ===========================================================================
 
 class TestDiagAddBufferIntegration:
     def test_diag_add_lazily_registers_diag_positions(self):
-        """diag_add should lazily register and compute diag_positions as a buffer."""
         n = 4
         data = jnp.ones(n * 2, dtype=jnp.float32)
         indices = jnp.array([0, 1, 1, 2, 2, 3, 3, 0], dtype=jnp.int32)
         indptr = jnp.array([0, 2, 4, 6, 8], dtype=jnp.int32)
         csr = brainevent.CSR((data, indices, indptr), shape=(n, n))
 
-        # Before diag_add, no diag_positions attribute
         assert not hasattr(csr, 'diag_positions')
         result = csr.diag_add(jnp.ones(n))
-        # After diag_add, diag_positions should be registered and cached
         assert hasattr(csr, 'diag_positions')
         assert 'diag_positions' in csr._buffer_registry
-        # The returned result carries buffers via with_data
         assert 'diag_positions' in result._buffer_registry
         assert result.diag_positions is not None
 
     def test_diag_add_reuses_cached_positions(self):
-        """Second call to diag_add should reuse the cached diag_positions."""
         n = 3
-        col_indices = []
-        for i in range(n):
-            for j in range(n):
-                col_indices.append(j)
-        nnz = n * n
-        data = jnp.ones(nnz, dtype=jnp.float32)
+        col_indices = [j for i in range(n) for j in range(n)]
+        data = jnp.ones(n * n, dtype=jnp.float32)
         indices = jnp.array(col_indices, dtype=jnp.int32)
         indptr = jnp.array([i * n for i in range(n + 1)], dtype=jnp.int32)
         csr = brainevent.CSR((data, indices, indptr), shape=(n, n))
@@ -475,14 +430,9 @@ class TestDiagAddBufferIntegration:
         np.testing.assert_array_equal(diag_pos1, diag_pos2)
 
     def test_diag_add_positions_survive_jit(self):
-        """diag_positions cached by diag_add survive a jax.jit roundtrip."""
         n = 3
-        col_indices = []
-        for i in range(n):
-            for j in range(n):
-                col_indices.append(j)
-        nnz = n * n
-        data = jnp.ones(nnz, dtype=jnp.float32)
+        col_indices = [j for i in range(n) for j in range(n)]
+        data = jnp.ones(n * n, dtype=jnp.float32)
         indices = jnp.array(col_indices, dtype=jnp.int32)
         indptr = jnp.array([i * n for i in range(n + 1)], dtype=jnp.int32)
         csr = brainevent.CSR((data, indices, indptr), shape=(n, n))
@@ -499,7 +449,7 @@ class TestDiagAddBufferIntegration:
 
 
 # ===========================================================================
-# 11. Multiple buffers on the same instance
+# 10. Multiple buffers on the same instance
 # ===========================================================================
 
 class TestMultipleBuffers:
@@ -525,7 +475,6 @@ class TestMultipleBuffers:
         assert 'only_on_a' not in b._buffer_registry
 
     def test_csr_multiple_custom_buffers(self):
-        """CSR can hold multiple user-registered buffers alongside diag_positions."""
         data = jnp.array([1.0, 2.0])
         indices = jnp.array([0, 1])
         indptr = jnp.array([0, 1, 2])
@@ -542,12 +491,11 @@ class TestMultipleBuffers:
 
 
 # ===========================================================================
-# 12. Edge cases
+# 11. Edge cases
 # ===========================================================================
 
 class TestEdgeCases:
     def test_buffer_value_array_types(self):
-        """Buffers can hold JAX arrays, numpy arrays, Python scalars, strings, None."""
         obj = _SimpleBuffered(1.0, shape=(2, 2))
         for val in [jnp.array([1, 2, 3]), np.array([4.0]), 42, 'text', None]:
             obj.set_buffer('cached_sum', val)
@@ -567,11 +515,9 @@ class TestEdgeCases:
         obj.register_buffer('cached_sum', 1)
         obj.register_buffer('cached_sum', 2)
         assert obj.cached_sum == 2
-        # Registry should contain 'cached_sum' exactly once
         assert sum(1 for n in obj._buffer_registry if n == 'cached_sum') == 1
 
     def test_buffers_kwarg_with_unknown_names_registers_them(self):
-        """Passing unknown buffer names via buffers= kwarg should register them."""
         bufs = {'custom_a': 1, 'custom_b': jnp.array([2.0])}
         obj = _SimpleBuffered(1.0, shape=(2, 2), buffers=bufs)
         assert obj.custom_a == 1

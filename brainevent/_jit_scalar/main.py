@@ -302,7 +302,7 @@ class JITCScalarMatrix(JITCMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
-            buffers=self._flatten_buffers(),
+            buffers=self.buffers,
         )
 
     def tree_flatten(self):
@@ -321,8 +321,7 @@ class JITCScalarMatrix(JITCMatrix):
         tree_unflatten : Reconstruct the matrix from flattened representation.
         """
         aux = {'shape': self.shape, 'corder': self.corder, 'backend': self.backend}
-        aux.update(self._flatten_buffers())
-        return (self.weight, self.prob, self.seed), aux
+        return (self.weight, self.prob, self.seed), (aux, self.buffers)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
@@ -349,9 +348,11 @@ class JITCScalarMatrix(JITCMatrix):
         """
         obj = object.__new__(cls)
         obj.weight, obj.prob, obj.seed = children
-        registry = aux_data.pop('_buffer_registry', frozenset())
-        obj._buffer_registry = set(registry)
+        aux_data, buffer = aux_data
+        obj._buffer_registry = set(buffer.keys())
         for k, v in aux_data.items():
+            setattr(obj, k, v)
+        for k, v in buffer.items():
             setattr(obj, k, v)
         return obj
 
@@ -611,7 +612,7 @@ class JITCScalarR(JITCScalarMatrix):
             shape=(self.shape[1], self.shape[0]),
             corder=not self.corder,
             backend=self.backend,
-            buffers=self._flatten_buffers(),
+            buffers=self.buffers,
         )
 
     def _new_mat(self, weight, prob=None, seed=None):
@@ -641,7 +642,7 @@ class JITCScalarR(JITCScalarMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
-            buffers=self._flatten_buffers(),
+            buffers=self.buffers,
         )
 
     def _unitary_op(self, op) -> 'JITCScalarR':
@@ -1114,7 +1115,7 @@ class JITCScalarC(JITCScalarMatrix):
             shape=(self.shape[1], self.shape[0]),
             corder=not self.corder,
             backend=self.backend,
-            buffers=self._flatten_buffers(),
+            buffers=self.buffers,
         )
 
     def _new_mat(self, weight, prob=None, seed=None):
@@ -1144,7 +1145,7 @@ class JITCScalarC(JITCScalarMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
-            buffers=self._flatten_buffers(),
+            buffers=self.buffers,
         )
 
     def _unitary_op(self, op) -> 'JITCScalarC':

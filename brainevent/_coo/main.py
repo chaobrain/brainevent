@@ -262,7 +262,7 @@ class COO(DataRepresentation):
             col,
             shape=self.shape,
             rows_sorted=True,
-            buffers=self._flatten_buffers(),
+            buffers=self.buffers,
             backend=self.backend,
         )
 
@@ -299,7 +299,7 @@ class COO(DataRepresentation):
             shape=self.shape,
             rows_sorted=self.rows_sorted,
             cols_sorted=self.cols_sorted,
-            buffers=self._flatten_buffers(),
+            buffers=self.buffers,
             backend=self.backend,
         )
 
@@ -365,7 +365,7 @@ class COO(DataRepresentation):
             shape=self.shape[::-1],
             rows_sorted=self.cols_sorted,
             cols_sorted=self.rows_sorted,
-            buffers=self._flatten_buffers(),
+            buffers=self.buffers,
             backend=self.backend,
         )
 
@@ -393,8 +393,7 @@ class COO(DataRepresentation):
             col=self.col,
             backend=self.backend,
         )
-        aux.update(self._flatten_buffers())
-        return (self.data,), aux
+        return (self.data,), (aux, self.buffers)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
@@ -422,9 +421,11 @@ class COO(DataRepresentation):
         """
         obj = object.__new__(cls)
         obj.data, = children
-        registry = aux_data.pop('_buffer_registry', frozenset())
-        obj._buffer_registry = set(registry)
+        aux_data, buffer = aux_data
+        obj._buffer_registry = set(buffer.keys())
         for k, v in aux_data.items():
+            setattr(obj, k, v)
+        for k, v in buffer.items():
             setattr(obj, k, v)
         return obj
 
@@ -600,7 +601,7 @@ class COO(DataRepresentation):
             shape=self.shape,
             rows_sorted=self.rows_sorted,
             cols_sorted=self.cols_sorted,
-            buffers=self._flatten_buffers(),
+            buffers=self.buffers,
             backend=self.backend,
         )
 
@@ -651,7 +652,7 @@ class COO(DataRepresentation):
                 rows_sorted=self.rows_sorted,
                 cols_sorted=self.cols_sorted,
                 backend=self.backend,
-                buffers=self._flatten_buffers(),
+                buffers=self.buffers,
             )
         elif other.ndim == 2 and other.shape == self.shape:
             other = other[self.row, self.col]
@@ -661,7 +662,7 @@ class COO(DataRepresentation):
                 rows_sorted=self.rows_sorted,
                 cols_sorted=self.cols_sorted,
                 backend=self.backend,
-                buffers=self._flatten_buffers(),
+                buffers=self.buffers,
             )
         else:
             raise NotImplementedError(f"{op.__name__} with object of shape {other.shape}")
@@ -683,7 +684,7 @@ class COO(DataRepresentation):
                 rows_sorted=self.rows_sorted,
                 cols_sorted=self.cols_sorted,
                 backend=self.backend,
-                buffers=self._flatten_buffers(),
+                buffers=self.buffers,
             )
         elif other.ndim == 2 and other.shape == self.shape:
             other = other[self.row, self.col]
@@ -693,7 +694,7 @@ class COO(DataRepresentation):
                 rows_sorted=self.rows_sorted,
                 cols_sorted=self.cols_sorted,
                 backend=self.backend,
-                buffers=self._flatten_buffers(),
+                buffers=self.buffers,
             )
         else:
             raise NotImplementedError(f"{op.__name__} with object of shape {other.shape}")

@@ -321,7 +321,7 @@ class JITCUniformMatrix(JITCMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
-            buffers=self._flatten_buffers(),
+            buffers=self.buffers,
         )
 
     def tree_flatten(self):
@@ -341,8 +341,7 @@ class JITCUniformMatrix(JITCMatrix):
         for transformations such as ``jax.jit``, ``jax.grad``, and ``jax.vmap``.
         """
         aux = {'shape': self.shape, 'corder': self.corder, 'backend': self.backend}
-        aux.update(self._flatten_buffers())
-        return (self.wlow, self.whigh, self.prob, self.seed), aux
+        return (self.wlow, self.whigh, self.prob, self.seed), (aux, self.buffers)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
@@ -369,9 +368,11 @@ class JITCUniformMatrix(JITCMatrix):
         """
         obj = object.__new__(cls)
         obj.wlow, obj.whigh, obj.prob, obj.seed = children
-        registry = aux_data.pop('_buffer_registry', frozenset())
-        obj._buffer_registry = set(registry)
+        aux_data, buffer = aux_data
+        obj._buffer_registry = set(buffer.keys())
         for k, v in aux_data.items():
+            setattr(obj, k, v)
+        for k, v in buffer.items():
             setattr(obj, k, v)
         return obj
 
@@ -644,7 +645,7 @@ class JITCUniformR(JITCUniformMatrix):
             shape=(self.shape[1], self.shape[0]),
             corder=not self.corder,
             backend=self.backend,
-            buffers=self._flatten_buffers(),
+            buffers=self.buffers,
         )
 
     def _new_mat(self, wlow, whigh, prob=None, seed=None):
@@ -677,7 +678,7 @@ class JITCUniformR(JITCUniformMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
-            buffers=self._flatten_buffers(),
+            buffers=self.buffers,
         )
 
     def _unitary_op(self, op) -> 'JITCUniformR':
@@ -1217,7 +1218,7 @@ class JITCUniformC(JITCUniformMatrix):
             shape=(self.shape[1], self.shape[0]),
             corder=not self.corder,
             backend=self.backend,
-            buffers=self._flatten_buffers(),
+            buffers=self.buffers,
         )
 
     def _new_mat(self, wlow, whigh, prob=None, seed=None):
@@ -1250,7 +1251,7 @@ class JITCUniformC(JITCUniformMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
-            buffers=self._flatten_buffers(),
+            buffers=self.buffers,
         )
 
     def _unitary_op(self, op) -> 'JITCUniformC':
