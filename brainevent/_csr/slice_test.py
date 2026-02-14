@@ -113,6 +113,91 @@ class TestCSRSliceRows:
         assert jnp.allclose(result, dense, atol=1e-5)
 
 
+def _make_homo_csr_and_dense(m, n, prob=0.3):
+    """Create a homogeneous-weight CSR matrix and its dense equivalent."""
+    indptr, indices = get_csr(m, n, prob)
+    data = jnp.array([1.5], dtype=jnp.float32)
+    dense = np.zeros((m, n), dtype=np.float32)
+    indptr_np = np.asarray(indptr)
+    indices_np = np.asarray(indices)
+    for i in range(m):
+        for j in range(indptr_np[i], indptr_np[i + 1]):
+            dense[i, indices_np[j]] += 1.5
+    return data, indices, indptr, jnp.asarray(dense)
+
+
+@pytest.mark.skipif(
+    not SLICE_IMPLEMENTATIONS,
+    reason=f'No csr_slice_rows implementation on platform={platform}',
+)
+class TestCSRSliceRowsHomo:
+    """Tests for scalar (homogeneous) data support."""
+
+    @pytest.mark.parametrize('implementation', SLICE_IMPLEMENTATIONS)
+    def test_homo_single_row(self, implementation):
+        m, n = 10, 15
+        data, indices, indptr, dense = _make_homo_csr_and_dense(m, n)
+        for row in [0, 3, m - 1]:
+            row_indices = jnp.array([row], dtype=jnp.int32)
+            result = csr_slice_rows(data, indices, indptr, row_indices, shape=(m, n), backend=implementation)
+            expected = dense[row:row + 1]
+            assert jnp.allclose(result, expected, atol=1e-5), f"Row {row}: {result} != {expected}"
+            row = jnp.array(row, dtype=jnp.int32)
+            result2 = csr_slice_rows(data, indices, indptr, row, shape=(m, n), backend=implementation)
+            assert jnp.allclose(result2, expected[0], atol=1e-5)
+
+    @pytest.mark.parametrize('implementation', SLICE_IMPLEMENTATIONS)
+    def test_homo_multi_row(self, implementation):
+        m, n = 10, 15
+        data, indices, indptr, dense = _make_homo_csr_and_dense(m, n)
+        rows = [0, 3, 7]
+        row_indices = jnp.array(rows, dtype=jnp.int32)
+        result = csr_slice_rows(data, indices, indptr, row_indices,
+                                shape=(m, n), backend=implementation)
+        expected = dense[jnp.array(rows)]
+        assert jnp.allclose(result, expected, atol=1e-5)
+
+    @pytest.mark.parametrize('implementation', SLICE_IMPLEMENTATIONS)
+    def test_homo_all_rows(self, implementation):
+        m, n = 8, 12
+        data, indices, indptr, dense = _make_homo_csr_and_dense(m, n)
+        row_indices = jnp.arange(m, dtype=jnp.int32)
+        result = csr_slice_rows(data, indices, indptr, row_indices,
+                                shape=(m, n), backend=implementation)
+        assert jnp.allclose(result, dense, atol=1e-5)
+
+    def test_homo_vjp(self):
+        m, n = 10, 15
+        data, indices, indptr, dense = _make_homo_csr_and_dense(m, n)
+        row_indices = jnp.array([1, 3, 5], dtype=jnp.int32)
+
+        def loss_fn(d):
+            sliced = csr_slice_rows(d, indices, indptr, row_indices, shape=(m, n))
+            return jnp.sum(sliced ** 2)
+
+        grad_data = jax.grad(loss_fn)(data)
+        assert grad_data.shape == (1,)
+
+        eps = 1e-3
+        fd = (loss_fn(data + eps) - loss_fn(data - eps)) / (2 * eps)
+        assert abs(float(grad_data[0]) - float(fd)) < 1e-2, \
+            f"Grad mismatch: analytic={grad_data[0]}, fd={fd}"
+
+    def test_homo_jvp(self):
+        m, n = 10, 15
+        data, indices, indptr, dense = _make_homo_csr_and_dense(m, n)
+        row_indices = jnp.array([0, 2, 4], dtype=jnp.int32)
+        data_dot = jnp.ones_like(data)
+
+        primals, tangents = jax.jvp(
+            lambda d: csr_slice_rows(d, indices, indptr, row_indices, shape=(m, n)),
+            (data,),
+            (data_dot,),
+        )
+        expected_tangent = csr_slice_rows(data_dot, indices, indptr, row_indices, shape=(m, n))
+        assert jnp.allclose(tangents, expected_tangent, atol=1e-5)
+
+
 @pytest.mark.skipif(
     not SLICE_IMPLEMENTATIONS,
     reason=f'No csr_slice_rows implementation on platform={platform}',

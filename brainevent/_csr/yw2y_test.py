@@ -24,7 +24,6 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from brainevent._csr.float import csrmv_p, csrmm_p
 from brainevent._csr.yw2y import csrmv_yw2y, csrmv_yw2y_p
 from brainevent._csr.test_util import get_csr
 
