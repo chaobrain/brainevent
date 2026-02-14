@@ -312,7 +312,7 @@ class JITCNormalMatrix(JITCMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
-            buffers=self.buffers,
+            buffers=self._flatten_buffers(),
         )
 
     def tree_flatten(self):
@@ -593,7 +593,7 @@ class JITCNormalR(JITCNormalMatrix):
             shape=(self.shape[1], self.shape[0]),
             corder=not self.corder,
             backend=self.backend,
-            buffers = self.buffers,
+            buffers = self._flatten_buffers(),
         )
 
     def _new_mat(self, loc, scale, prob=None, seed=None):
@@ -626,7 +626,7 @@ class JITCNormalR(JITCNormalMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
-            buffers=self.buffers,
+            buffers=self._flatten_buffers(),
         )
 
     def _unitary_op(self, op) -> 'JITCNormalR':
@@ -1126,7 +1126,7 @@ class JITCNormalC(JITCNormalMatrix):
             shape=(self.shape[1], self.shape[0]),
             corder=not self.corder,
             backend=self.backend,
-            buffers=self.buffers,
+            buffers=self._flatten_buffers(),
         )
 
     def _new_mat(self, loc, scale, prob=None, seed=None):
@@ -1159,7 +1159,7 @@ class JITCNormalC(JITCNormalMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
-            buffers=self.buffers,
+            buffers=self._flatten_buffers(),
         )
 
     def _unitary_op(self, op) -> 'JITCNormalC':

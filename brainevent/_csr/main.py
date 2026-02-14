@@ -724,7 +724,7 @@ class CompressedSparseData(DataRepresentation):
         if not hasattr(self, 'diag_positions'):
             self.register_buffer(
                 'diag_positions',
-                csr_diag_position_v2(self.indptr, self.indices, self.shape)
+                csr_diag_position_v2(self.indptr, self.indices, shape=self.shape)
             )
         assert not isinstance(other, u.sparse.SparseMatrix), "diag_add does not support JAXSparse objects."
         return self.with_data(csr_diag_add_v2(self.data, self.diag_positions, other))
@@ -898,7 +898,12 @@ class CSR(CompressedSparseData):
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
-        return CSR((data, self.indices, self.indptr), shape=self.shape, buffers=self.buffers)
+        return CSR(
+            (data, self.indices, self.indptr),
+            shape=self.shape,
+            buffers=self._flatten_buffers(),
+            backend=self.backend,
+        )
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """
@@ -984,7 +989,9 @@ class CSR(CompressedSparseData):
         assert axes is None, "transpose does not support axes argument."
         return CSC(
             self.data, self.indices, self.indptr,
-            shape=self.shape[::-1], buffers=self.buffers, backend=self.backend
+            shape=self.shape[::-1],
+            buffers=self._flatten_buffers(),
+            backend=self.backend
         )
 
     def apply(self, fn) -> 'CSR':
@@ -1015,7 +1022,9 @@ class CSR(CompressedSparseData):
         """
         return CSR(
             fn(self.data), self.indices, self.indptr,
-            shape=self.shape, buffers=self.buffers, backend=self.backend,
+            shape=self.shape,
+            buffers=self._flatten_buffers(),
+            backend=self.backend,
         )
 
     def __getitem__(self, index):
@@ -1060,7 +1069,7 @@ class CSR(CompressedSparseData):
                        self.indices,
                        self.indptr),
                     shape=self.shape,
-                    buffers=self.buffers,
+                    buffers=self._flatten_buffers(),
                     backend=self.backend,
                 )
         if isinstance(other, u.sparse.SparseMatrix):
@@ -1071,7 +1080,7 @@ class CSR(CompressedSparseData):
             return CSR(
                 op(self.data, other), self.indices, self.indptr,
                 shape=self.shape,
-                buffers=self.buffers,
+                buffers=self._flatten_buffers(),
                 backend=self.backend,
             )
 
@@ -1083,7 +1092,7 @@ class CSR(CompressedSparseData):
                 self.indices,
                 self.indptr,
                 shape=self.shape,
-                buffers=self.buffers,
+                buffers=self._flatten_buffers(),
                 backend=self.backend,
             )
 
@@ -1104,7 +1113,7 @@ class CSR(CompressedSparseData):
                     self.indices,
                     self.indptr,
                     shape=self.shape,
-                    buffers=self.buffers,
+                    buffers=self._flatten_buffers(),
                     backend=self.backend,
                 )
         if isinstance(other, u.sparse.SparseMatrix):
@@ -1117,7 +1126,7 @@ class CSR(CompressedSparseData):
                 self.indices,
                 self.indptr,
                 shape=self.shape,
-                buffers=self.buffers,
+                buffers=self._flatten_buffers(),
                 backend=self.backend,
             )
         elif other.ndim == 2 and other.shape == self.shape:
@@ -1128,7 +1137,7 @@ class CSR(CompressedSparseData):
                 self.indices,
                 self.indptr,
                 shape=self.shape,
-                buffers=self.buffers,
+                buffers=self._flatten_buffers(),
                 backend=self.backend,
             )
         else:
@@ -1577,7 +1586,10 @@ class CSC(CompressedSparseData):
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
-        return CSC((data, self.indices, self.indptr), shape=self.shape, buffers=self.buffers, backend=self.backend)
+        return CSC((data, self.indices, self.indptr),
+                   shape=self.shape,
+                   buffers=self._flatten_buffers(),
+                   backend=self.backend)
 
     def todense(self) -> Union[jax.Array, u.Quantity]:
         """
@@ -1660,7 +1672,9 @@ class CSC(CompressedSparseData):
         """
         assert axes is None
         return CSR((self.data, self.indices, self.indptr),
-                   shape=self.shape[::-1], buffers=self.buffers, backend=self.backend)
+                   shape=self.shape[::-1],
+                   buffers=self._flatten_buffers(),
+                   backend=self.backend)
 
     def apply(self, fn) -> 'CSC':
         """
@@ -1689,7 +1703,7 @@ class CSC(CompressedSparseData):
             squared = csc.apply(lambda x: x ** 2)
         """
         return CSC((fn(self.data), self.indices, self.indptr),
-                   shape=self.shape, buffers=self.buffers, backend=self.backend)
+                   shape=self.shape, buffers=self._flatten_buffers(), backend=self.backend)
 
     def __getitem__(self, index):
         """Extract columns from the CSC matrix as a dense array.
@@ -1737,7 +1751,7 @@ class CSC(CompressedSparseData):
                      self.indices,
                      self.indptr),
                     shape=self.shape,
-                    buffers=self.buffers,
+                    buffers=self._flatten_buffers(),
                     backend=self.backend,
                 )
         if isinstance(other, u.sparse.SparseMatrix):
@@ -1750,7 +1764,7 @@ class CSC(CompressedSparseData):
                  self.indices,
                  self.indptr),
                 shape=self.shape,
-                buffers=self.buffers,
+                buffers=self._flatten_buffers(),
                 backend=self.backend,
             )
         elif other.ndim == 2 and other.shape == self.shape:
@@ -1761,7 +1775,7 @@ class CSC(CompressedSparseData):
                  self.indices,
                  self.indptr),
                 shape=self.shape,
-                buffers=self.buffers,
+                buffers=self._flatten_buffers(),
                 backend=self.backend,
             )
         else:
@@ -1780,7 +1794,7 @@ class CSC(CompressedSparseData):
                      self.indices,
                      self.indptr),
                     shape=self.shape,
-                    buffers=self.buffers,
+                    buffers=self._flatten_buffers(),
                     backend=self.backend,
                 )
         if isinstance(other, u.sparse.SparseMatrix):
@@ -1793,7 +1807,7 @@ class CSC(CompressedSparseData):
                  self.indices,
                  self.indptr),
                 shape=self.shape,
-                buffers=self.buffers,
+                buffers=self._flatten_buffers(),
                 backend=self.backend,
             )
         elif other.ndim == 2 and other.shape == self.shape:
@@ -1804,7 +1818,7 @@ class CSC(CompressedSparseData):
                  self.indices,
                  self.indptr),
                 shape=self.shape,
-                buffers=self.buffers,
+                buffers=self._flatten_buffers(),
                 backend=self.backend,
             )
         else:

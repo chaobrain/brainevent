@@ -32,38 +32,37 @@ __all__ = [
 class DataRepresentation(u.sparse.SparseMatrix):
     def __init__(self, *args, shape: Sequence[int], buffers: Optional[Dict] = None):
         super().__init__(*args, shape=shape)
+        self._buffer_registry = set()
         self._apply_buffers(buffers)
 
     def register_buffer(self, name, value=None):
         """Register a named buffer with a default value."""
-        if not hasattr(self, '_buffer_registry'):
-            object.__setattr__(self, '_buffer_registry', set())
         self._buffer_registry.add(name)
         setattr(self, name, value)
 
     def set_buffer(self, name, value):
         """Update the value of a previously registered buffer."""
-        if not hasattr(self, '_buffer_registry') or name not in self._buffer_registry:
+        if name not in self._buffer_registry:
             raise ValueError(f"Buffer '{name}' not registered. Call register_buffer first.")
         setattr(self, name, value)
 
     def _apply_buffers(self, buffers):
         """Override registered buffer values from a dict. Called in __init__ after register_buffer."""
         if buffers:
+            registry = buffers.pop('_buffer_registry', set())
+            self._buffer_registry.update(registry)
             for name, value in buffers.items():
                 self.register_buffer(name, value)
 
     @property
     def buffers(self):
         """Dict of all registered buffer names to their current values."""
-        registry = getattr(self, '_buffer_registry', set())
-        return {name: getattr(self, name, None) for name in registry}
+        return {name: getattr(self, name, None) for name in self._buffer_registry}
 
     def _flatten_buffers(self):
         """Return dict to merge into tree_flatten aux_data."""
-        registry = getattr(self, '_buffer_registry', set())
-        result = {'_buffer_registry': frozenset(registry)}
-        for name in registry:
+        result = {'_buffer_registry': frozenset(self._buffer_registry)}
+        for name in self._buffer_registry:
             result[name] = getattr(self, name, None)
         return result
 

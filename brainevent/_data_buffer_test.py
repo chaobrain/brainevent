@@ -283,24 +283,25 @@ class TestCSRBuffers:
         indptr = jnp.array([0, 2, 4])
         return brainevent.CSR((data, indices, indptr), shape=(2, 3))
 
-    def test_csr_has_diag_positions_buffer(self, csr_mat):
-        assert 'diag_positions' in csr_mat._buffer_registry
-        assert csr_mat.diag_positions is None
+    def test_csr_no_buffers_initially(self, csr_mat):
+        """CSR starts with no registered buffers (diag_positions is lazy)."""
+        assert csr_mat.buffers == {}
+        assert not hasattr(csr_mat, 'diag_positions')
 
-    def test_csr_buffers_property(self, csr_mat):
-        bufs = csr_mat.buffers
-        assert 'diag_positions' in bufs
-        assert bufs['diag_positions'] is None
+    def test_csr_register_buffer_then_access(self, csr_mat):
+        csr_mat.register_buffer('diag_positions', jnp.array([0, 3]))
+        assert 'diag_positions' in csr_mat._buffer_registry
+        np.testing.assert_array_equal(csr_mat.diag_positions, jnp.array([0, 3]))
 
     def test_csr_pytree_roundtrip(self, csr_mat):
-        csr_mat.set_buffer('diag_positions', jnp.array([0, 3]))
+        csr_mat.register_buffer('diag_positions', jnp.array([0, 3]))
         children, aux = csr_mat.tree_flatten()
         restored = brainevent.CSR.tree_unflatten(aux, children)
         np.testing.assert_array_equal(restored.diag_positions, jnp.array([0, 3]))
         assert 'diag_positions' in restored._buffer_registry
 
-    def test_csr_jit_preserves_diag_positions(self, csr_mat):
-        csr_mat.set_buffer('diag_positions', jnp.array([0, 3]))
+    def test_csr_jit_preserves_registered_buffer(self, csr_mat):
+        csr_mat.register_buffer('diag_positions', jnp.array([0, 3]))
 
         @jax.jit
         def identity(m):
@@ -310,33 +311,32 @@ class TestCSRBuffers:
         np.testing.assert_array_equal(result.diag_positions, jnp.array([0, 3]))
 
     def test_csr_with_data_preserves_buffers(self, csr_mat):
-        csr_mat.set_buffer('diag_positions', jnp.array([0, 3]))
+        csr_mat.register_buffer('diag_positions', jnp.array([0, 3]))
         new_data = jnp.array([10.0, 20.0, 30.0, 40.0])
         new_csr = csr_mat.with_data(new_data)
         np.testing.assert_array_equal(new_csr.diag_positions, jnp.array([0, 3]))
         np.testing.assert_array_equal(new_csr.data, new_data)
 
     def test_csr_apply_preserves_buffers(self, csr_mat):
-        csr_mat.set_buffer('diag_positions', jnp.array([0, 3]))
+        csr_mat.register_buffer('diag_positions', jnp.array([0, 3]))
         squared = csr_mat.apply(lambda x: x ** 2)
         np.testing.assert_array_equal(squared.diag_positions, jnp.array([0, 3]))
         np.testing.assert_array_equal(squared.data, jnp.array([1.0, 4.0, 9.0, 16.0]))
 
     def test_csr_transpose_preserves_buffers(self, csr_mat):
-        csr_mat.set_buffer('diag_positions', jnp.array([0, 3]))
+        csr_mat.register_buffer('diag_positions', jnp.array([0, 3]))
         csc = csr_mat.transpose()
-        # Transpose should carry buffers to the CSC
         assert 'diag_positions' in csc._buffer_registry
         np.testing.assert_array_equal(csc.diag_positions, jnp.array([0, 3]))
 
     def test_csr_arithmetic_preserves_buffers(self, csr_mat):
-        csr_mat.set_buffer('diag_positions', jnp.array([0, 3]))
+        csr_mat.register_buffer('diag_positions', jnp.array([0, 3]))
         scaled = csr_mat * 2.0
         assert 'diag_positions' in scaled._buffer_registry
         np.testing.assert_array_equal(scaled.diag_positions, jnp.array([0, 3]))
 
     def test_csr_reflected_arithmetic_preserves_buffers(self, csr_mat):
-        csr_mat.set_buffer('diag_positions', jnp.array([0, 3]))
+        csr_mat.register_buffer('diag_positions', jnp.array([0, 3]))
         scaled = 2.0 * csr_mat
         assert 'diag_positions' in scaled._buffer_registry
         np.testing.assert_array_equal(scaled.diag_positions, jnp.array([0, 3]))
@@ -348,6 +348,16 @@ class TestCSRBuffers:
         bufs = {'diag_positions': jnp.array([0, 1])}
         csr = brainevent.CSR((data, indices, indptr), shape=(2, 2), buffers=bufs)
         np.testing.assert_array_equal(csr.diag_positions, jnp.array([0, 1]))
+        assert 'diag_positions' in csr._buffer_registry
+
+    def test_csr_no_buffers_pytree_roundtrip(self, csr_mat):
+        """CSR with no registered buffers should roundtrip cleanly."""
+        children, aux = csr_mat.tree_flatten()
+        restored = brainevent.CSR.tree_unflatten(aux, children)
+        np.testing.assert_array_equal(restored.data, csr_mat.data)
+        np.testing.assert_array_equal(restored.indices, csr_mat.indices)
+        np.testing.assert_array_equal(restored.indptr, csr_mat.indptr)
+        assert restored.shape == csr_mat.shape
 
 
 # ===========================================================================
@@ -362,27 +372,28 @@ class TestCSCBuffers:
         indptr = jnp.array([0, 2, 3, 4])
         return brainevent.CSC((data, indices, indptr), shape=(2, 3))
 
-    def test_csc_has_diag_positions_buffer(self, csc_mat):
-        assert 'diag_positions' in csc_mat._buffer_registry
+    def test_csc_no_buffers_initially(self, csc_mat):
+        assert csc_mat.buffers == {}
+        assert not hasattr(csc_mat, 'diag_positions')
 
     def test_csc_pytree_roundtrip(self, csc_mat):
-        csc_mat.set_buffer('diag_positions', jnp.array([0, 2]))
+        csc_mat.register_buffer('diag_positions', jnp.array([0, 2]))
         children, aux = csc_mat.tree_flatten()
         restored = brainevent.CSC.tree_unflatten(aux, children)
         np.testing.assert_array_equal(restored.diag_positions, jnp.array([0, 2]))
 
     def test_csc_with_data_preserves_buffers(self, csc_mat):
-        csc_mat.set_buffer('diag_positions', jnp.array([0, 2]))
+        csc_mat.register_buffer('diag_positions', jnp.array([0, 2]))
         new_csc = csc_mat.with_data(jnp.array([10.0, 20.0, 30.0, 40.0]))
         np.testing.assert_array_equal(new_csc.diag_positions, jnp.array([0, 2]))
 
     def test_csc_apply_preserves_buffers(self, csc_mat):
-        csc_mat.set_buffer('diag_positions', jnp.array([0, 2]))
+        csc_mat.register_buffer('diag_positions', jnp.array([0, 2]))
         result = csc_mat.apply(lambda x: x * 3)
         np.testing.assert_array_equal(result.diag_positions, jnp.array([0, 2]))
 
     def test_csc_transpose_preserves_buffers(self, csc_mat):
-        csc_mat.set_buffer('diag_positions', jnp.array([0, 2]))
+        csc_mat.register_buffer('diag_positions', jnp.array([0, 2]))
         csr = csc_mat.transpose()
         assert 'diag_positions' in csr._buffer_registry
         np.testing.assert_array_equal(csr.diag_positions, jnp.array([0, 2]))
@@ -426,29 +437,30 @@ class TestCOOBuffers:
 # ===========================================================================
 
 class TestDiagAddBufferIntegration:
-    def test_diag_add_populates_diag_positions_buffer(self):
-        """diag_add should lazily compute and cache diag_positions as a buffer."""
+    def test_diag_add_lazily_registers_diag_positions(self):
+        """diag_add should lazily register and compute diag_positions as a buffer."""
         n = 4
         data = jnp.ones(n * 2, dtype=jnp.float32)
-        # Build a simple CSR: each row has 2 elements in columns
         indices = jnp.array([0, 1, 1, 2, 2, 3, 3, 0], dtype=jnp.int32)
         indptr = jnp.array([0, 2, 4, 6, 8], dtype=jnp.int32)
         csr = brainevent.CSR((data, indices, indptr), shape=(n, n))
 
-        assert csr.diag_positions is None
+        # Before diag_add, no diag_positions attribute
+        assert not hasattr(csr, 'diag_positions')
         result = csr.diag_add(jnp.ones(n))
-        # After diag_add, diag_positions should be cached
-        assert result.diag_positions is not None
+        # After diag_add, diag_positions should be registered and cached
+        assert hasattr(csr, 'diag_positions')
+        assert 'diag_positions' in csr._buffer_registry
+        # The returned result carries buffers via with_data
         assert 'diag_positions' in result._buffer_registry
+        assert result.diag_positions is not None
 
     def test_diag_add_reuses_cached_positions(self):
         """Second call to diag_add should reuse the cached diag_positions."""
         n = 3
-        row_indices = []
         col_indices = []
         for i in range(n):
             for j in range(n):
-                row_indices.append(i)
                 col_indices.append(j)
         nnz = n * n
         data = jnp.ones(nnz, dtype=jnp.float32)
@@ -460,8 +472,30 @@ class TestDiagAddBufferIntegration:
         diag_pos1 = result1.diag_positions
         result2 = result1.diag_add(jnp.ones(n) * 2)
         diag_pos2 = result2.diag_positions
-        # Positions should be identical
         np.testing.assert_array_equal(diag_pos1, diag_pos2)
+
+    def test_diag_add_positions_survive_jit(self):
+        """diag_positions cached by diag_add survive a jax.jit roundtrip."""
+        n = 3
+        col_indices = []
+        for i in range(n):
+            for j in range(n):
+                col_indices.append(j)
+        nnz = n * n
+        data = jnp.ones(nnz, dtype=jnp.float32)
+        indices = jnp.array(col_indices, dtype=jnp.int32)
+        indptr = jnp.array([i * n for i in range(n + 1)], dtype=jnp.int32)
+        csr = brainevent.CSR((data, indices, indptr), shape=(n, n))
+
+        result = csr.diag_add(jnp.ones(n))
+
+        @jax.jit
+        def identity(m):
+            return m
+
+        jitted = identity(result)
+        assert 'diag_positions' in jitted._buffer_registry
+        np.testing.assert_array_equal(jitted.diag_positions, result.diag_positions)
 
 
 # ===========================================================================
@@ -489,6 +523,22 @@ class TestMultipleBuffers:
         a.register_buffer('only_on_a', 10)
         assert 'only_on_a' in a._buffer_registry
         assert 'only_on_a' not in b._buffer_registry
+
+    def test_csr_multiple_custom_buffers(self):
+        """CSR can hold multiple user-registered buffers alongside diag_positions."""
+        data = jnp.array([1.0, 2.0])
+        indices = jnp.array([0, 1])
+        indptr = jnp.array([0, 1, 2])
+        csr = brainevent.CSR((data, indices, indptr), shape=(2, 2))
+        csr.register_buffer('my_mask', jnp.array([True, False]))
+        csr.register_buffer('scale_factor', jnp.array(0.5))
+
+        children, aux = csr.tree_flatten()
+        restored = brainevent.CSR.tree_unflatten(aux, children)
+        np.testing.assert_array_equal(restored.my_mask, jnp.array([True, False]))
+        assert float(restored.scale_factor) == 0.5
+        assert 'my_mask' in restored._buffer_registry
+        assert 'scale_factor' in restored._buffer_registry
 
 
 # ===========================================================================
@@ -519,3 +569,12 @@ class TestEdgeCases:
         assert obj.cached_sum == 2
         # Registry should contain 'cached_sum' exactly once
         assert sum(1 for n in obj._buffer_registry if n == 'cached_sum') == 1
+
+    def test_buffers_kwarg_with_unknown_names_registers_them(self):
+        """Passing unknown buffer names via buffers= kwarg should register them."""
+        bufs = {'custom_a': 1, 'custom_b': jnp.array([2.0])}
+        obj = _SimpleBuffered(1.0, shape=(2, 2), buffers=bufs)
+        assert obj.custom_a == 1
+        np.testing.assert_array_equal(obj.custom_b, jnp.array([2.0]))
+        assert 'custom_a' in obj._buffer_registry
+        assert 'custom_b' in obj._buffer_registry

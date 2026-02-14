@@ -262,7 +262,7 @@ class COO(DataRepresentation):
             col,
             shape=self.shape,
             rows_sorted=True,
-            buffers=self.buffers,
+            buffers=self._flatten_buffers(),
             backend=self.backend,
         )
 
@@ -299,7 +299,7 @@ class COO(DataRepresentation):
             shape=self.shape,
             rows_sorted=self.rows_sorted,
             cols_sorted=self.cols_sorted,
-            buffers=self.buffers,
+            buffers=self._flatten_buffers(),
             backend=self.backend,
         )
 
@@ -365,7 +365,7 @@ class COO(DataRepresentation):
             shape=self.shape[::-1],
             rows_sorted=self.cols_sorted,
             cols_sorted=self.rows_sorted,
-            buffers=self.buffers,
+            buffers=self._flatten_buffers(),
             backend=self.backend,
         )
 
@@ -600,7 +600,7 @@ class COO(DataRepresentation):
             shape=self.shape,
             rows_sorted=self.rows_sorted,
             cols_sorted=self.cols_sorted,
-            buffers=self.buffers,
+            buffers=self._flatten_buffers(),
             backend=self.backend,
         )
 
@@ -651,7 +651,7 @@ class COO(DataRepresentation):
                 rows_sorted=self.rows_sorted,
                 cols_sorted=self.cols_sorted,
                 backend=self.backend,
-                buffers=self.buffers,
+                buffers=self._flatten_buffers(),
             )
         elif other.ndim == 2 and other.shape == self.shape:
             other = other[self.row, self.col]
@@ -661,7 +661,7 @@ class COO(DataRepresentation):
                 rows_sorted=self.rows_sorted,
                 cols_sorted=self.cols_sorted,
                 backend=self.backend,
-                buffers=self.buffers,
+                buffers=self._flatten_buffers(),
             )
         else:
             raise NotImplementedError(f"{op.__name__} with object of shape {other.shape}")
@@ -683,7 +683,7 @@ class COO(DataRepresentation):
                 rows_sorted=self.rows_sorted,
                 cols_sorted=self.cols_sorted,
                 backend=self.backend,
-                buffers=self.buffers,
+                buffers=self._flatten_buffers(),
             )
         elif other.ndim == 2 and other.shape == self.shape:
             other = other[self.row, self.col]
@@ -693,7 +693,7 @@ class COO(DataRepresentation):
                 rows_sorted=self.rows_sorted,
                 cols_sorted=self.cols_sorted,
                 backend=self.backend,
-                buffers=self.buffers,
+                buffers=self._flatten_buffers(),
             )
         else:
             raise NotImplementedError(f"{op.__name__} with object of shape {other.shape}")

@@ -33,7 +33,7 @@ def _is_tracer(x):
     return isinstance(x, (jax.ShapeDtypeStruct, jax.core.ShapedArray, DynamicJaxprTracer, jax.core.Tracer))
 
 
-def csr_diag_position_v2(indptr, indices, shape: MatrixShape):
+def csr_diag_position_v2(indptr, indices, *, shape: MatrixShape):
     """Find the positions of diagonal elements in a CSR sparse matrix (v2).
 
     Searches through each row of the CSR matrix to locate elements that lie on

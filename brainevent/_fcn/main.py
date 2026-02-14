@@ -514,7 +514,12 @@ class FixedPostNumConn(FixedNumConn):
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
-        return FixedPostNumConn((data, self.indices), shape=self.shape, backend=self.backend, buffers=self.buffers)
+        return FixedPostNumConn(
+            (data, self.indices),
+            shape=self.shape,
+            backend=self.backend,
+            buffers=self._flatten_buffers()
+        )
 
     def todense(self):
         """
@@ -651,14 +656,18 @@ class FixedPostNumConn(FixedNumConn):
         # correctly represents the connections in the transposed view for FixedPreNumConn.
         return FixedPreNumConn(
             (self.data, self.indices),
-            shape=self.shape[::-1], backend=self.backend, buffers=self.buffers
+            shape=self.shape[::-1],
+            backend=self.backend,
+            buffers=self._flatten_buffers()
         )
 
     def _unitary_op(self, op):
         return FixedPostNumConn(
             (op(self.data), self.indices),
-            shape=self.shape, backend=self.backend, buffers=self.buffers
-                                )
+            shape=self.shape,
+            backend=self.backend,
+            buffers=self._flatten_buffers()
+        )
 
     def _binary_op(self, other, op):
         if isinstance(other, u.sparse.SparseMatrix):
@@ -668,7 +677,9 @@ class FixedPostNumConn(FixedNumConn):
         if other.size == 1:
             return FixedPostNumConn(
                 (op(self.data, other), self.indices),
-                shape=self.shape, backend=self.backend, buffers=self.buffers
+                shape=self.shape,
+                backend=self.backend,
+                buffers=self._flatten_buffers()
             )
 
         elif other.ndim == 2 and other.shape == self.shape:
@@ -676,7 +687,9 @@ class FixedPostNumConn(FixedNumConn):
             other = other[rows, cols]
             return FixedPostNumConn(
                 (op(self.data, other), self.indices),
-                shape=self.shape, backend=self.backend, buffers=self.buffers
+                shape=self.shape,
+                backend=self.backend,
+                buffers=self._flatten_buffers()
             )
 
         else:
@@ -690,14 +703,18 @@ class FixedPostNumConn(FixedNumConn):
         if other.size == 1:
             return FixedPostNumConn(
                 (op(other, self.data), self.indices),
-                shape=self.shape, backend=self.backend, buffers=self.buffers
+                shape=self.shape,
+                backend=self.backend,
+                buffers=self._flatten_buffers()
             )
         elif other.ndim == 2 and other.shape == self.shape:
             rows, cols, _ = fixed_post_num_to_coo(self)
             other = other[rows, cols]
             return FixedPostNumConn(
                 (op(other, self.data), self.indices,),
-                shape=self.shape, backend=self.backend, buffers=self.buffers
+                shape=self.shape,
+                backend=self.backend,
+                buffers=self._flatten_buffers()
             )
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
@@ -1039,7 +1056,12 @@ class FixedPreNumConn(FixedNumConn):
         assert data.shape == self.data.shape
         assert data.dtype == self.data.dtype
         assert u.get_unit(data) == u.get_unit(self.data)
-        return FixedPreNumConn((data, self.indices), shape=self.shape, backend=self.backend, buffers=self.buffers)
+        return FixedPreNumConn(
+            (data, self.indices),
+                               shape=self.shape,
+            backend=self.backend,
+            buffers=self._flatten_buffers()
+        )
 
     def todense(self):
         """
@@ -1189,13 +1211,17 @@ class FixedPreNumConn(FixedNumConn):
         # correctly represents the connections in the transposed view for FixedPostNumConn.
         return FixedPostNumConn(
             (self.data, self.indices),
-            shape=self.shape[::-1], backend=self.backend, buffers=self.buffers
-                                )
+            shape=self.shape[::-1],
+            backend=self.backend,
+            buffers=self._flatten_buffers()
+        )
 
     def _unitary_op(self, op):
         return FixedPreNumConn(
             (op(self.data), self.indices),
-            shape=self.shape, backend=self.backend, buffers=self.buffers
+            shape=self.shape,
+            backend=self.backend,
+            buffers=self._flatten_buffers()
         )
 
     def _binary_op(self, other, op):
@@ -1206,7 +1232,9 @@ class FixedPreNumConn(FixedNumConn):
         if other.size == 1:
             return FixedPreNumConn(
                 (op(self.data, other), self.indices),
-                shape=self.shape, backend=self.backend, buffers=self.buffers
+                shape=self.shape,
+                backend=self.backend,
+                buffers=self._flatten_buffers()
             )
 
         elif other.ndim == 2 and other.shape == self.shape:
@@ -1214,7 +1242,9 @@ class FixedPreNumConn(FixedNumConn):
             other = other[rows, cols]
             return FixedPreNumConn(
                 (op(self.data, other), self.indices),
-                shape=self.shape, backend=self.backend, buffers=self.buffers
+                shape=self.shape,
+                backend=self.backend,
+                buffers=self._flatten_buffers()
             )
 
         else:
@@ -1228,7 +1258,9 @@ class FixedPreNumConn(FixedNumConn):
         if other.size == 1:
             return FixedPreNumConn(
                 (op(other, self.data), self.indices),
-                shape=self.shape, backend=self.backend, buffers=self.buffers
+                shape=self.shape,
+                backend=self.backend,
+                buffers=self._flatten_buffers()
             )
 
         elif other.ndim == 2 and other.shape == self.shape:
@@ -1236,7 +1268,9 @@ class FixedPreNumConn(FixedNumConn):
             other = other[rows, cols]
             return FixedPreNumConn(
                 (op(other, self.data), self.indices,),
-                shape=self.shape, backend=self.backend, buffers=self.buffers
+                shape=self.shape,
+                backend=self.backend,
+                buffers=self._flatten_buffers()
             )
         else:
             raise NotImplementedError(f"mul with object of shape {other.shape}")
