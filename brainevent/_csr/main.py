@@ -1034,7 +1034,7 @@ class CSR(CompressedSparseData):
             ``(len(index), n_cols)``.
         """
         if isinstance(index, (int, np.integer)):
-            row_indices = jnp.array([index], dtype=jnp.int32)
+            row_indices = jnp.array(index, dtype=jnp.int32)
         elif isinstance(index, (tuple, list)):
             row_indices = jnp.asarray(index, dtype=jnp.int32)
         elif isinstance(index, (jnp.ndarray, np.ndarray)):
@@ -1711,7 +1711,7 @@ class CSC(CompressedSparseData):
         # We transpose the result to get (n_rows, num_selected).
         transposed_shape = self.shape[::-1]
         if isinstance(index, (int, np.integer)):
-            col_indices = jnp.array([index], dtype=jnp.int32)
+            col_indices = jnp.array(index, dtype=jnp.int32)
             homo = True
         elif isinstance(index, (tuple, list)):
             col_indices = jnp.asarray(index, dtype=jnp.int32)
