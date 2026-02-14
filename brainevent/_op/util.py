@@ -193,11 +193,7 @@ def register_tvm_cuda_kernels(
         return ValueError("functions must be a sequence of strings")
 
     # Compile CUDA module
-    _cuda_module = tvm_ffi.cpp.load_inline(
-        name=module,
-        cuda_sources=source_code,
-        functions=functions,
-    )
+    _cuda_module = tvm_ffi.cpp.load_inline(name=module, cuda_sources=source_code, functions=functions)
 
     # Register each kernel with JAX FFI
     for name in functions:

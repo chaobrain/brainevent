@@ -84,14 +84,6 @@ __all__ = [
     'get_numba_lfsr_uniform',
     'get_numba_lfsr_normal',
     'get_numba_lfsr_funcs',
-    # User-level dispatch functions
-    'lfsr_seed',
-    'lfsr_rand',
-    'lfsr_randint',
-    'lfsr_randn',
-    'lfsr_uniform',
-    'lfsr_normal',
-    'lfsr_random_integers',
 ]
 
 
@@ -486,41 +478,3 @@ def get_numba_lfsr_funcs():
         'random_integers': _NUMBA_LFSR_RANDOM_INTEGERS[alg],
     }
 
-
-# ──────────────────────────────────────────────────────────────────────
-#  User-level dispatch functions
-# ──────────────────────────────────────────────────────────────────────
-
-def lfsr_seed(seed):
-    """Create an LFSR state array using the globally configured algorithm."""
-    return get_numba_lfsr_seed()(seed)
-
-
-def lfsr_rand(state):
-    """Generate a uniform random float in [0, 1) using the globally configured algorithm."""
-    return _NUMBA_LFSR_RAND[get_lfsr_algorithm()](state)
-
-
-def lfsr_randint(state):
-    """Generate a random uint32 using the globally configured algorithm."""
-    return _NUMBA_LFSR_RANDINT[get_lfsr_algorithm()](state)
-
-
-def lfsr_randn(state):
-    """Generate a standard-normal random value using the globally configured algorithm."""
-    return _NUMBA_LFSR_RANDN[get_lfsr_algorithm()](state)
-
-
-def lfsr_uniform(state, low, high):
-    """Generate a uniform random float in [low, high) using the globally configured algorithm."""
-    return get_numba_lfsr_uniform()(state, low, high)
-
-
-def lfsr_normal(state, mu, sigma):
-    """Generate a normal random value N(mu, sigma) using the globally configured algorithm."""
-    return get_numba_lfsr_normal()(state, mu, sigma)
-
-
-def lfsr_random_integers(state, low, high):
-    """Generate a random integer in [low, high] using the globally configured algorithm."""
-    return get_numba_lfsr_random_integers()(state, low, high)
