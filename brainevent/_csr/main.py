@@ -40,11 +40,11 @@ __all__ = [
 ]
 
 
-class BaseCLS(DataRepresentation):
+class CompressedSparseData(DataRepresentation):
     """
     Abstract base class for compressed sparse matrix formats.
 
-    ``BaseCLS`` provides the common interface shared by :class:`CSR` and
+    ``CompressedSparseData`` provides the common interface shared by :class:`CSR` and
     :class:`CSC`. It inherits from ``brainunit.sparse.SparseMatrix`` and
     adds arithmetic operators, JAX pytree support, and helper methods for
     event-driven neural simulation.
@@ -86,6 +86,28 @@ class BaseCLS(DataRepresentation):
     indptr: Indptr
     shape: MatrixShape
 
+    def __init__(
+        self,
+        data,
+        indices=None,
+        indptr=None,
+        *,
+        shape: MatrixShape,
+        backend: Optional[str] = None,
+    ):
+        if indices is None and indptr is None:
+            # Tuple syntax: CSR((data, indices, indptr), shape=...)
+            args = data
+        else:
+            # Positional syntax: CSR(data, indices, indptr, shape=...)
+            args = (data, indices, indptr)
+
+        assert len(args) == 3, "Expected three arguments: data, indices, indptr."
+        self.data, self.indices, self.indptr = map(u.math.asarray, args)
+        super().__init__(args, shape=shape)
+        self.backend = backend
+        self.diag_positions = None
+
     @property
     def nse(self):
         """
@@ -112,56 +134,6 @@ class BaseCLS(DataRepresentation):
             The dtype of ``self.data``.
         """
         return self.data.dtype
-
-    def __init__(
-        self,
-        data,
-        indices=None,
-        indptr=None,
-        *,
-        shape: MatrixShape,
-        backend: Optional[str] = None,
-    ):
-        """
-        Initialize a compressed sparse matrix base instance.
-
-        Supports two calling conventions::
-
-            # Tuple syntax (original)
-            CSR((data, indices, indptr), shape=(m, n))
-
-            # Positional-argument syntax
-            CSR(data, indices, indptr, shape=(m, n))
-
-        Parameters
-        ----------
-        data : array or Sequence
-            Either a single array (the ``data`` values) when ``indices`` and
-            ``indptr`` are also provided, or a sequence of three arrays
-            ``(data, indices, indptr)`` when used with the tuple syntax.
-        indices : array, optional
-            Secondary-axis indices for each stored element (column indices for
-            CSR, row indices for CSC). Required when ``data`` is the
-            data array.
-        indptr : array, optional
-            Primary-axis pointers indicating where each row/column starts in
-            the data and indices arrays. Required when ``data`` is the
-            data array.
-        shape : Tuple[int, int]
-            The shape of the matrix as ``(num_rows, num_columns)``.
-        """
-        if indices is None and indptr is None:
-            # Tuple syntax: CSR((data, indices, indptr), shape=...)
-            args = data
-        else:
-            # Positional syntax: CSR(data, indices, indptr, shape=...)
-            args = (data, indices, indptr)
-
-        assert len(args) == 3, "Expected three arguments: data, indices, indptr."
-        self.data, self.indices, self.indptr = map(u.math.asarray, args)
-        super().__init__(args, shape=shape)
-        self.backend = backend
-        self.diag_positions = None
 
     def tree_flatten(self):
         """
@@ -211,7 +183,7 @@ class BaseCLS(DataRepresentation):
 
         Returns
         -------
-        BaseCLS
+        CompressedSparseData
             A new instance of the sparse matrix class with restored
             attributes.
 
@@ -789,7 +761,7 @@ class BaseCLS(DataRepresentation):
 
         Returns
         -------
-        BaseCLS
+        CompressedSparseData
             ``self``, with ``diag_positions`` set to ``pos``.
         """
         self.diag_positions = pos
@@ -797,7 +769,7 @@ class BaseCLS(DataRepresentation):
 
 
 @jax.tree_util.register_pytree_node_class
-class CSR(BaseCLS):
+class CSR(CompressedSparseData):
     """
     Event-driven and Unit-aware Compressed Sparse Row (CSR) matrix.
 
@@ -1455,7 +1427,7 @@ class CSR(BaseCLS):
 
 
 @jax.tree_util.register_pytree_node_class
-class CSC(BaseCLS):
+class CSC(CompressedSparseData):
     """
     Event-driven and Unit-aware Compressed Sparse Column (CSC) matrix.
 

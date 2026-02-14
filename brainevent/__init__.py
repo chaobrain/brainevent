@@ -108,8 +108,7 @@ from ._registry import (
 
 __all__ = [
 
-    # --- data representing events --- #
-    'DataRepresentation',
+    # --- representing events --- #
     'EventRepresentation',
     'IndexedEventRepresentation',
     'BinaryArray',
@@ -119,6 +118,9 @@ __all__ = [
     'IndexedSpFloat1d',
     'IndexedSpFloat2d',
     'binary_array_index',
+
+    # --- representing sparse data --- #
+    'DataRepresentation',
 
     # --- COO --- #
     'COO',
