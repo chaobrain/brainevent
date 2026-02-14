@@ -17,7 +17,6 @@
 
 from typing import Optional
 
-import brainstate
 import brainunit as u
 import jax
 import jax.numpy as jnp
@@ -25,7 +24,7 @@ import numpy as np
 from jax.interpreters import ad
 from jax.interpreters.partial_eval import DynamicJaxprTracer
 
-from brainevent._misc import generate_block_dim
+from brainevent._misc import generate_block_dim, MatrixShape
 from brainevent._op import numba_kernel, jaxinfo_to_warpinfo, XLACustomKernel
 from brainevent._op.benchmark import BenchmarkConfig
 
@@ -34,7 +33,7 @@ def _is_tracer(x):
     return isinstance(x, (jax.ShapeDtypeStruct, jax.core.ShapedArray, DynamicJaxprTracer, jax.core.Tracer))
 
 
-def csr_diag_position_v2(indptr, indices, shape: brainstate.typing.Size):
+def csr_diag_position_v2(indptr, indices, shape: MatrixShape):
     """Find the positions of diagonal elements in a CSR sparse matrix (v2).
 
     Searches through each row of the CSR matrix to locate elements that lie on
@@ -238,7 +237,7 @@ def csr_diag_add_v2(csr_value, positions, diag_value):
     return u.maybe_decimal(csr_value * csr_unit)
 
 
-def csr_diag_position(indptr, indices, shape: brainstate.typing.Size):
+def csr_diag_position(indptr, indices, shape: MatrixShape):
     """Find the positions of diagonal elements in a CSR sparse matrix.
 
     Searches through each row of the CSR matrix to locate elements on the main

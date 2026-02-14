@@ -459,11 +459,14 @@ class COO(u.sparse.SparseMatrix):
         if isinstance(pre_events, BinaryArray):
             if self.ptr is not None:
                 if self.rows_sorted:
-                    data = update_csr_on_binary_pre
+                    data = update_csr_on_binary_pre(
+                        self.data, self.col, self.ptr, pre_events.value, post_trace, w_min, w_max,
+                        shape=self.shape, backend=backend
+                    )
                 elif self.cols_sorted:
-                    raise NotImplementedError
+                    raise NotImplementedError("CSR dispatch for cols_sorted COO matrices is not yet implemented")
                 else:
-                    raise NotImplementedError
+                    raise NotImplementedError("CSR dispatch requires rows_sorted or cols_sorted to be True")
             else:
                 data = update_coo_on_binary_pre(
                     self.data, self.row, self.col, pre_events.value, post_trace, w_min, w_max, backend=backend
@@ -530,11 +533,13 @@ class COO(u.sparse.SparseMatrix):
         if isinstance(post_events, BinaryArray):
             if self.ptr is not None:
                 if self.rows_sorted:
-                    data = update_csr_on_binary_post
-                elif self.cols_sorted:
-                    raise NotImplementedError
-                else:
-                    raise NotImplementedError
+                    update_csr_on_binary_post
+                # CSR dispatch for post-synaptic plasticity requires weight_indices
+                # which is not available in COO format
+                raise NotImplementedError(
+                    "CSR dispatch for post-synaptic plasticity updates is not yet implemented for COO matrices. "
+                    "Use a COO matrix without ptr (rows_sorted=False, cols_sorted=False) instead."
+                )
             else:
                 data = update_coo_on_binary_post(
                     self.data, self.row, self.col, post_events.value, pre_trace, w_min, w_max, backend=backend

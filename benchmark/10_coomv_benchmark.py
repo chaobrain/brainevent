@@ -17,7 +17,7 @@
 
 
 """
-Benchmark Warp COO-matvec against JAX sparse COO (cuSPARSE on GPU).
+Benchmark COO-matvec against JAX sparse COO (cuSPARSE on GPU).
 
 This benchmark covers:
 - transpose in {False, True}
@@ -54,6 +54,8 @@ import numpy as np
 from jax.experimental.sparse import COO as JaxCOO
 
 import brainevent
+
+platform = jax.default_backend()
 
 
 @dataclass(frozen=True)
@@ -255,8 +257,6 @@ def run_case(
             v,
             shape=(case.n_rows, case.n_cols),
             transpose=transpose,
-            sorted_by_output=sorted_output,
-            backend="warp",
         )
 
     @jax.jit
@@ -356,7 +356,7 @@ def _save_csv(rows: List[BenchmarkRow], out_path: Path):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Benchmark Warp COO-matvec against JAX COO baseline.")
-    parser.add_argument("--platform", type=str, default="cpu", choices=["cpu", "gpu", "tpu"])
+    parser.add_argument("--platform", type=str, default=platform, choices=["cpu", "gpu", "tpu"])
     parser.add_argument("--n-warmup", type=int, default=20)
     parser.add_argument("--n-runs", type=int, default=80)
     parser.add_argument("--seed", type=int, default=1234)

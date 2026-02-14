@@ -92,6 +92,14 @@ Sparse linear solver.
 
    csr_solve
 
+Row slicing.
+
+.. autosummary::
+   :toctree: generated/
+
+   csr_slice_rows
+   csr_slice_rows_p
+
 
 Dense Operations
 ----------------

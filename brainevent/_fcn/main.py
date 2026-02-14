@@ -31,11 +31,6 @@ from .binary import binary_fcnmv, binary_fcnmm
 from .float import fcnmv, fcnmm
 from .sparse_float import spfloat_fcnmv, spfloat_fcnmm
 
-# Use full-precision GEMM on GPU to keep dense-reference paths numerically
-# consistent with sparse kernels (avoid TF32 drift on large reductions).
-if jax.default_backend() == 'gpu' and jax.config.jax_default_matmul_precision is None:
-    jax.config.update('jax_default_matmul_precision', 'highest')
-
 __all__ = [
     'FixedPostNumConn',
     'FixedPreNumConn',
@@ -103,7 +98,9 @@ class FixedNumConn(u.sparse.SparseMatrix):
     ------
     ValueError
         If ``indices`` is not 2-D, if the row count does not match the expected
-        dimension, or if the index dtype is not integer.
+        dimension, if the index dtype is not integer, if ``data`` shape does not
+        match ``indices`` shape (except when ``data`` is scalar), or if any
+        indices are out of bounds (negative or >= the target dimension).
 
     See Also
     --------

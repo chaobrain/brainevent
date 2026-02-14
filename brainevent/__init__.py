@@ -32,6 +32,7 @@ from ._csr import (
     update_csr_on_binary_pre, update_csr_on_binary_pre_p,
     update_csr_on_binary_post, update_csr_on_binary_post_p,
     spfloat_csrmv, spfloat_csrmv_p, spfloat_csrmm, spfloat_csrmm_p,
+    csr_slice_rows, csr_slice_rows_p,
 )
 from ._dense import (
     binary_densemv, binary_densemv_p,
@@ -204,18 +205,18 @@ __all__ = [
 def __getattr__(name):
     import warnings
     if name == 'EventArray':
-        warnings.warn(f'EventArray is deprecated, use {BinaryArray.__name__} instead')
+        # warnings.warn(f'EventArray is deprecated, use {BinaryArray.__name__} instead')
         return BinaryArray
     if name == 'csr_on_pre':
-        warnings.warn(f'csr_on_pre is deprecated, use {update_csr_on_binary_pre.__name__} instead')
+        # warnings.warn(f'csr_on_pre is deprecated, use {update_csr_on_binary_pre.__name__} instead')
         return update_csr_on_binary_pre
     if name == 'csr2csc_on_post':
-        warnings.warn(f'csr2csc_on_post is deprecated, use {update_csr_on_binary_post.__name__} instead')
+        # warnings.warn(f'csr2csc_on_post is deprecated, use {update_csr_on_binary_post.__name__} instead')
         return update_csr_on_binary_post
     if name == 'dense_on_pre':
-        warnings.warn(f'dense_on_pre is deprecated, use {update_dense_on_binary_pre.__name__} instead')
+        # warnings.warn(f'dense_on_pre is deprecated, use {update_dense_on_binary_pre.__name__} instead')
         return update_dense_on_binary_pre
     if name == 'dense_on_post':
-        warnings.warn(f'dense_on_post is deprecated, use {update_dense_on_binary_post.__name__} instead')
+        # warnings.warn(f'dense_on_post is deprecated, use {update_dense_on_binary_post.__name__} instead')
         return update_dense_on_binary_post
     raise AttributeError(name)
