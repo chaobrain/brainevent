@@ -168,6 +168,9 @@ See also the ecosystem
    tutorial/03_jit_connectivity.ipynb
    tutorial/04_fixed_connections.ipynb
    tutorial/05_synaptic_plasticity.ipynb
+   tutorial/06_custom_operators_warp.ipynb
+   tutorial/07_custom_operators_numba_cuda.ipynb
+   tutorial/08_custom_operators_numba.ipynb
 
 
 .. toctree::
