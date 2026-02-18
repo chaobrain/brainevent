@@ -1,0 +1,157 @@
+"""
+Binary FCN Matrix-Matrix Multiplication Benchmark
+==================================================
+
+Benchmarks all available GPU backends for ``binary_fcnmm``
+(gather and scatter modes, homo/hetero weights, bool/float matrix inputs)
+across a range of problem sizes.
+
+The key metric is the speedup of the CUDA ``tvmffi`` backend relative to the
+``jax_raw`` baseline.  For typical SNN firing rates (5–50 % spike density),
+the event-driven CUDA kernels avoid touching inactive entries and therefore
+outperform a dense computation.
+
+Backends compared
+-----------------
+- ``tvmffi``   : NVRTC-compiled CUDA kernels (gather: warp/basic; scatter: warp/basic)
+- ``pallas``   : JAX Pallas / Triton GPU kernels
+- ``jax_raw``  : Pure JAX reference (segment_sum / vmap)
+
+Usage
+-----
+    python dev/fcn/benchmark_binary_fcnmm.py
+    python dev/fcn/benchmark_binary_fcnmm.py --n_warmup 5 --n_runs 50
+    python dev/fcn/benchmark_binary_fcnmm.py --spike_rate 0.05 --n_batch 64
+"""
+
+import argparse
+import sys
+from pathlib import Path
+
+_project_root = str(Path(__file__).resolve().parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+from brainevent import BenchmarkConfig
+from brainevent._fcn.binary import binary_fcnmm_p
+
+# Problem sizes: (n_pre, n_post, n_conn)
+CONFIGS = [
+    (500,   1000,  10),
+    (1000,  1000,  32),
+    (1000,  1000,  50),
+    (1000,  1000, 100),
+    (1000,  1000, 128),
+    (5000,  5000, 100),
+    (5000,  5000, 200),
+    (10000, 10000, 500),
+    (10000, 10000, 1000),
+]
+
+
+def _make_benchmark_data(*, platform, spike_rate=None, n_batch=None):
+    rng = np.random.default_rng(42)
+    dtype = jnp.float32
+    spike_rates = (spike_rate,) if spike_rate is not None else (0.01, 0.05, 0.1)
+    n_batches   = (n_batch,)    if n_batch   is not None else (16, 64)
+    for spike_rate in spike_rates:
+        for n_b in n_batches:
+            for n_pre, n_post, n_conn in CONFIGS:
+                indices = jnp.asarray(
+                    rng.integers(0, n_post, (n_pre, n_conn), dtype=np.int32)
+                )
+                for transpose in (False, True):
+                    for homo in (True, False):
+                        for bool_event in (True, False):
+                            if homo:
+                                weights = jnp.ones(1, dtype=dtype)
+                            else:
+                                weights = jnp.asarray(
+                                    rng.standard_normal((n_pre, n_conn)).astype(np.float32)
+                                )
+                            m_rows = n_post if not transpose else n_pre
+                            if bool_event:
+                                mat = jnp.asarray(
+                                    rng.random((m_rows, n_b)) < spike_rate,
+                                    dtype=jnp.bool_,
+                                )
+                            else:
+                                raw  = rng.standard_normal((m_rows, n_b)).astype(np.float32)
+                                mask = rng.random((m_rows, n_b)) < spike_rate
+                                mat  = jnp.asarray(np.where(mask, np.abs(raw), 0.0))
+
+                            name = (
+                                f"{'T' if transpose else 'NT'},"
+                                f"{'homo' if homo else 'hetero'},"
+                                f"{'bool' if bool_event else 'float'},"
+                                f"batch={n_b},"
+                                f"{n_pre}x{n_post}x{n_conn}"
+                            )
+                            yield BenchmarkConfig(
+                                name=name,
+                                args=(weights, indices, mat),
+                                kernel_kwargs={
+                                    'shape': (n_pre, n_post),
+                                    'transpose': transpose,
+                                },
+                                data_kwargs={
+                                    'n_pre': n_pre, 'n_post': n_post, 'n_conn': n_conn,
+                                    'n_batch': n_b, 'transpose': transpose,
+                                    'homo': homo, 'bool_event': bool_event,
+                                    'spike_rate': spike_rate,
+                                },
+                            )
+
+
+def main():
+    parser = argparse.ArgumentParser(description="binary_fcnmm backend benchmark")
+    parser.add_argument("--n_warmup",   type=int,   default=10,
+                        help="Number of warmup iterations (default: 10)")
+    parser.add_argument("--n_runs",     type=int,   default=50,
+                        help="Number of timed iterations (default: 50)")
+    parser.add_argument("--spike_rate", type=float, default=0.1,
+                        help="Fraction of active matrix entries (default: 0.1 = 10%%)")
+    parser.add_argument("--n_batch",    type=int,   default=32,
+                        help="Batch (n) dimension of the input matrix (default: 32)")
+    args = parser.parse_args()
+
+    try:
+        gpu = jax.devices("gpu")[0]
+    except RuntimeError:
+        print("ERROR: No GPU device found.  Run this script on a CUDA-enabled machine.")
+        return
+
+    print(f"binary_fcnmm benchmark  —  GPU: {gpu}")
+    print(f"warmup={args.n_warmup}  runs={args.n_runs}  "
+          f"spike_rate={args.spike_rate:.0%}  n_batch={args.n_batch}")
+    print()
+
+    def _data_gen(*, platform):
+        yield from _make_benchmark_data(
+            platform=platform,
+            spike_rate=args.spike_rate,
+            n_batch=args.n_batch,
+        )
+
+    binary_fcnmm_p.def_benchmark_data(_data_gen)
+
+    result = binary_fcnmm_p.benchmark(
+        platform='gpu',
+        n_warmup=args.n_warmup,
+        n_runs=args.n_runs,
+        compare_results=True,
+        verbose=True,
+    )
+    result.print(
+        order_by=['transpose', 'shape', 'backend'],
+        highlight_best=True,
+        speedup_vs='jax_raw',
+    )
+
+
+if __name__ == "__main__":
+    main()
