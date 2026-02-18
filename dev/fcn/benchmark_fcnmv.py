@@ -65,7 +65,7 @@ def _make_benchmark_data(*, platform):
 def main():
     parser = argparse.ArgumentParser(description="fcnmv backend benchmark")
     parser.add_argument("--n_warmup", type=int, default=10)
-    parser.add_argument("--n_runs", type=int, default=100)
+    parser.add_argument("--n_runs", type=int, default=1)
     args = parser.parse_args()
 
     try:
@@ -86,7 +86,7 @@ def main():
         compare_results=True,
         verbose=True,
     )
-    result.print(group_by='label', highlight_best=True)
+    result.print(order_by=['transpose', 'shape', 'backend'], highlight_best=True, speedup_vs='jax_raw')
 
 
 if __name__ == "__main__":

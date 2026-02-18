@@ -300,16 +300,22 @@ class BenchmarkResult:
         group_by=None,
         compare_by=None,
         highlight_best: bool = True,
+        order_by=None,
+        speedup_vs=None,
     ) -> str:
         if not self._records:
             return f"BenchmarkResult(primitive='{self.primitive_name}', 0 records)"
 
         rows = self._to_flat_rows()
-        rows = self._apply_sort(rows, sort_by)
         rows = self._apply_compare(rows, compare_by)
-        best_map = self._compute_best(rows, group_by) if highlight_best else {}
 
         title = f"BenchmarkResult: {self.primitive_name}" if self.primitive_name else "BenchmarkResult"
+
+        if order_by is not None:
+            return self._format_hierarchical(rows, title, order_by, highlight_best, speedup_vs)
+
+        rows = self._apply_sort(rows, sort_by)
+        best_map = self._compute_best(rows, group_by) if highlight_best else {}
 
         # Attempt pandas + tabulate for the nicest output
         try:
@@ -337,6 +343,124 @@ class BenchmarkResult:
 
         # Manual fallback (no dependencies)
         return self._format_manual(rows, title, best_map, group_by, highlight_best)
+
+    def _format_hierarchical(
+        self,
+        rows: List[OrderedDict],
+        title: str,
+        order_by: List[str],
+        highlight_best: bool,
+        speedup_vs: Optional[str] = None,
+    ) -> str:
+        """Render a hierarchical table grouped by all but the last column in *order_by*.
+
+        Rows are sorted by *order_by*; repeated values in the group-key
+        columns are suppressed after the first row of each group, and a
+        separator line is inserted between groups.  The fastest backend
+        within each group is marked with ``*``.  When *speedup_vs* is
+        given, a ``speedup`` column is appended showing
+        ``baseline_mean / row_mean`` within each group.
+        """
+        if not rows:
+            return title
+
+        # Only keep order_by keys that actually exist in the rows
+        all_keys = list(rows[0].keys())
+        order_by = [k for k in order_by if k in all_keys]
+        if not order_by:
+            return self._format_manual(rows, title, {}, None, highlight_best)
+
+        group_keys = order_by[:-1]
+        leaf_key = order_by[-1]
+
+        # Reorder columns: order_by cols first, then the rest
+        remaining = [k for k in all_keys if k not in order_by]
+        columns = order_by + remaining
+
+        # Sort rows
+        rows = sorted(rows, key=lambda r: tuple(str(r.get(k, '')) for k in order_by))
+
+        # Compute best per group
+        best_map = self._compute_best(rows, group_keys) if highlight_best and group_keys else {}
+        # If no group keys (order_by has only one element), find global best
+        if highlight_best and not group_keys:
+            global_best: Optional[Tuple[float, str]] = None
+            for row in rows:
+                m = row.get('mean_ms')
+                be = row.get(leaf_key, '')
+                if isinstance(m, (int, float)):
+                    if global_best is None or m < global_best[0]:
+                        global_best = (m, be)
+            if global_best is not None:
+                best_map = {(): global_best[1]}
+
+        # Build per-group baseline mean for speedup_vs
+        # baseline_mean_map: group_key_tuple -> float
+        baseline_mean_map: Dict[tuple, float] = {}
+        if speedup_vs is not None:
+            for row in rows:
+                gk = tuple(row.get(k, '') for k in group_keys)
+                if row.get(leaf_key, '') == speedup_vs:
+                    m = row.get('mean_ms')
+                    if isinstance(m, (int, float)):
+                        baseline_mean_map[gk] = m
+
+        # Inject speedup values into rows (as a new key)
+        if speedup_vs is not None:
+            speedup_col = f'vs_{speedup_vs}'
+            if speedup_col not in columns:
+                columns = columns + [speedup_col]
+            for row in rows:
+                gk = tuple(row.get(k, '') for k in group_keys)
+                base = baseline_mean_map.get(gk)
+                m = row.get('mean_ms')
+                if base is not None and isinstance(m, (int, float)) and m > 0:
+                    row[speedup_col] = f'{base / m:.2f}x'
+                else:
+                    row[speedup_col] = ''
+        else:
+            speedup_col = None
+
+        # Compute column widths from actual values (not suppressed display)
+        col_widths = {
+            c: max(len(str(c)), max(len(str(r.get(c, ''))) for r in rows))
+            for c in columns
+        }
+
+        sep = ' | '
+        header = sep.join(str(c).ljust(col_widths[c]) for c in columns)
+        rule = '-+-'.join('-' * col_widths[c] for c in columns)
+
+        lines = [title, header, rule]
+
+        prev_group_key: Optional[tuple] = None
+        for row in rows:
+            group_key = tuple(str(row.get(k, '')) for k in group_keys)
+            is_new_group = (group_key != prev_group_key)
+
+            if is_new_group and prev_group_key is not None:
+                lines.append(rule)
+
+            parts = []
+            for c in columns:
+                val = str(row.get(c, ''))
+                if c in group_keys and not is_new_group:
+                    val = ''
+                parts.append(val.ljust(col_widths[c]))
+            line = sep.join(parts)
+
+            if highlight_best:
+                if group_keys:
+                    lookup_key = tuple(row.get(k, '') for k in group_keys)
+                else:
+                    lookup_key = ()
+                if row.get(leaf_key, '') == best_map.get(lookup_key, ''):
+                    line += '  *'
+
+            lines.append(line)
+            prev_group_key = group_key
+
+        return '\n'.join(lines)
 
     def _format_manual(
         self,
@@ -383,17 +507,19 @@ class BenchmarkResult:
         group_by=None,
         compare_by=None,
         highlight_best: bool = True,
+        order_by=None,
+        speedup_vs=None,
     ) -> None:
         """Print the benchmark table with optional sorting, grouping, and comparison.
 
         Parameters
         ----------
         sort_by : str or list of str or None, optional
-            Column name(s) to sort rows by.
+            Column name(s) to sort rows by.  Ignored when *order_by* is set.
         group_by : str or list of str or None, optional
             Column name(s) to group rows by.  Within each group, the
             fastest backend is identified for highlighting and relative
-            speedup computation.
+            speedup computation.  Ignored when *order_by* is set.
         compare_by : str, callable, or None, optional
             Designate a baseline config for normalising performance.
             Pass a string expression (e.g., ``"label=='baseline'"``)
@@ -403,6 +529,30 @@ class BenchmarkResult:
         highlight_best : bool, optional
             If ``True`` (default), visually mark the best-performing
             config per group with an asterisk (``*``).
+        order_by : list of str or None, optional
+            When provided, render the table in hierarchical mode.  Rows
+            are sorted and visually grouped by all columns in *order_by*
+            except the last one.  Repeated values in the group-key
+            columns are suppressed after the first row of each group, and
+            a separator line is drawn between groups.  The fastest entry
+            within each group (determined by the last column in
+            *order_by*) is marked ``*``.  Overrides *sort_by* and
+            *group_by*.
+
+            Example::
+
+                result.print(order_by=['transpose', 'shape', 'backend'])
+        speedup_vs : str or None, optional
+            Only active with *order_by*.  Name of the leaf-column value
+            (typically a backend name) to use as the per-group baseline.
+            Adds a ``vs_<name>`` column showing ``baseline_mean /
+            row_mean`` for every row in that group.  A value > 1 means
+            the row is faster than the baseline.
+
+            Example::
+
+                result.print(order_by=['transpose', 'shape', 'backend'],
+                             speedup_vs='numba')
         """
         print(
             self._format_table(
@@ -410,6 +560,8 @@ class BenchmarkResult:
                 group_by=group_by,
                 compare_by=compare_by,
                 highlight_best=highlight_best,
+                order_by=order_by,
+                speedup_vs=speedup_vs,
             )
         )
 
