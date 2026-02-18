@@ -1271,6 +1271,500 @@ def _fcnmm_pallas_kernel(
     return kernel
 
 
+def _fcnmm_cuda_kernel(
+    transpose: bool,
+    indices_info: jax.ShapeDtypeStruct,
+    matrix_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    register_tvm_cuda_kernels(
+        module='fcnmm',
+        functions=[
+            'fcnmm_gather_auto', 'fcnmm_gather_basic',
+            'fcnmm_gather_shared', 'fcnmm_gather_vec4',
+            'fcnmm_scatter_auto', 'fcnmm_scatter_block',
+            'fcnmm_scatter_cached', 'fcnmm_scatter_warp',
+        ],
+        source_code=r"""
+#include <cuda_runtime.h>
+#include <cstdint>
+
+// =========================================================================
+// FCN Matrix-Matrix product CUDA kernels
+//
+// Gather mode (transpose=False):
+//   Y[i, j] = sum_{k=0}^{n_conn-1} w[i,k] * M[indices[i,k], j]
+//   indices: [n_pre, n_conn], weights: [1] or [n_pre, n_conn]
+//   M: [n_post, n_col],  Y: [n_pre, n_col]
+//
+// Scatter mode (transpose=True):
+//   Y[indices[i,k], j] += w[i,k] * M[i, j]
+//   M: [n_pre, n_col],  Y: [n_post, n_col]  (Y pre-zeroed at launch)
+//
+// IMPORTANT: weights.data_ptr() returns a GPU device pointer.
+// NEVER dereference on host. GPU threads read weights[0] (homo)
+// or weights[i*n_conn+k] (hetero).
+// =========================================================================
+
+// =========================================================================
+// Gather kernels (transpose=False)
+// =========================================================================
+
+// Basic gather: one thread per output element Y[i,j].
+// Grid: (n_pre, ceil(n_col / 64)), Block: (64,)
+// Threads in a warp read consecutive j positions of M[same_row, j..j+31]
+// giving coalesced loads within each k iteration.
+__global__ void _mm_gather_basic_kern(
+    const int32_t* __restrict__ indices,   // [n_pre, n_conn]
+    const float*   __restrict__ matrix,    // [k_dim, n_col]
+    float*         __restrict__ output,    // [n_pre, n_col]
+    const float*   __restrict__ weights,   // [1] or [n_pre, n_conn]
+    int n_pre, int n_conn, int n_col, int is_homo
+) {
+    int i = blockIdx.x;
+    int j = blockIdx.y * blockDim.x + threadIdx.x;
+    if (i >= n_pre || j >= n_col) return;
+    const int32_t* idx_row = indices + (size_t)i * n_conn;
+    const float*   w_row   = is_homo ? nullptr : weights + (size_t)i * n_conn;
+    float acc = 0.0f;
+    for (int k = 0; k < n_conn; k++) {
+        float w = is_homo ? weights[0] : w_row[k];
+        acc += w * matrix[(size_t)idx_row[k] * n_col + j];
+    }
+    output[(size_t)i * n_col + j] = acc;
+}
+
+// Shared-memory gather: tiles the index and weight arrays into shared memory
+// to reduce global memory traffic for the connection lists.
+// Grid: (n_pre, ceil(n_col / 64)), Block: (64,)
+// Shared mem: MMTK * 8 bytes (idx tile + weight tile).
+// Best when n_conn is large (> 128) and index/weight bandwidth dominates.
+#define MMTK 128
+__global__ void _mm_gather_shared_kern(
+    const int32_t* __restrict__ indices,
+    const float*   __restrict__ matrix,
+    float*         __restrict__ output,
+    const float*   __restrict__ weights,
+    int n_pre, int n_conn, int n_col, int is_homo
+) {
+    extern __shared__ char smem_mm[];
+    int32_t* s_idx = reinterpret_cast<int32_t*>(smem_mm);
+    float*   s_w   = reinterpret_cast<float*>(smem_mm + MMTK * sizeof(int32_t));
+
+    int i = blockIdx.x;
+    int j = blockIdx.y * blockDim.x + threadIdx.x;
+    if (i >= n_pre) return;
+
+    const int32_t* idx_row = indices + (size_t)i * n_conn;
+    const float*   w_row   = is_homo ? nullptr : weights + (size_t)i * n_conn;
+
+    float acc = 0.0f;
+    for (int k0 = 0; k0 < n_conn; k0 += MMTK) {
+        int tile = (k0 + MMTK < n_conn) ? MMTK : (n_conn - k0);
+        // Cooperatively load the connection tile into shared memory.
+        for (int t = threadIdx.x; t < tile; t += blockDim.x) {
+            s_idx[t] = idx_row[k0 + t];
+            s_w[t]   = is_homo ? 1.0f : w_row[k0 + t];
+        }
+        __syncthreads();
+        // Accumulate contributions from this tile.
+        if (j < n_col) {
+            for (int t = 0; t < tile; t++)
+                acc += s_w[t] * matrix[(size_t)s_idx[t] * n_col + j];
+        }
+        __syncthreads();
+    }
+    if (j < n_col)
+        output[(size_t)i * n_col + j] = is_homo ? (weights[0] * acc) : acc;
+}
+
+// Vectorised gather: float4 loads for M and output when n_col % 4 == 0.
+// Each thread processes 4 consecutive j columns simultaneously => 4x throughput.
+// Grid: (n_pre, ceil(n_col/4 / 64)), Block: (64,)
+// Best when n_col is divisible by 4 and >= 64 (memory-bandwidth bound).
+__global__ void _mm_gather_vec4_kern(
+    const int32_t* __restrict__ indices,
+    const float*   __restrict__ matrix,   // [k_dim, n_col], n_col%4==0
+    float*         __restrict__ output,   // [n_pre, n_col]
+    const float*   __restrict__ weights,
+    int n_pre, int n_conn, int n_col, int is_homo
+) {
+    int i   = blockIdx.x;
+    int j4  = blockIdx.y * blockDim.x + threadIdx.x;  // float4 group index
+    int nc4 = n_col >> 2;
+    if (i >= n_pre || j4 >= nc4) return;
+
+    const int32_t* idx_row = indices + (size_t)i * n_conn;
+    const float*   w_row   = is_homo ? nullptr : weights + (size_t)i * n_conn;
+    const float4*  mat4    = reinterpret_cast<const float4*>(matrix);
+
+    float4 acc = {0.0f, 0.0f, 0.0f, 0.0f};
+    for (int k = 0; k < n_conn; k++) {
+        float  w = is_homo ? weights[0] : w_row[k];
+        float4 m = mat4[(size_t)idx_row[k] * nc4 + j4];
+        acc.x += w * m.x;
+        acc.y += w * m.y;
+        acc.z += w * m.z;
+        acc.w += w * m.w;
+    }
+    reinterpret_cast<float4*>(output)[(size_t)i * nc4 + j4] = acc;
+}
+
+// =========================================================================
+// Scatter kernels (transpose=True)
+// Y[indices[i,k], j] += w[i,k] * M[i, j]   (Y pre-zeroed before launch)
+// =========================================================================
+
+// Block scatter: one block per pre-neuron, threads stride over j columns.
+// For each i, sequentially iterates over n_conn connections and atomically
+// accumulates to the target output row. Good for large n_col.
+// Grid: (n_pre,), Block: (256,)
+__global__ void _mm_scatter_block_kern(
+    const int32_t* __restrict__ indices,   // [n_pre, n_conn]
+    const float*   __restrict__ matrix,    // [n_pre, n_col]
+    float*         __restrict__ output,    // [n_post, n_col] (pre-zeroed)
+    const float*   __restrict__ weights,
+    int n_pre, int n_conn, int n_col, int is_homo
+) {
+    int i = blockIdx.x;
+    if (i >= n_pre) return;
+    const int32_t* idx_row = indices + (size_t)i * n_conn;
+    const float*   w_row   = is_homo ? nullptr : weights + (size_t)i * n_conn;
+    const float*   m_row   = matrix + (size_t)i * n_col;
+    for (int k = 0; k < n_conn; k++) {
+        int   tgt = idx_row[k];
+        float w   = is_homo ? weights[0] : w_row[k];
+        float* out_row = output + (size_t)tgt * n_col;
+        for (int j = threadIdx.x; j < n_col; j += blockDim.x)
+            atomicAdd(&out_row[j], w * m_row[j]);
+    }
+}
+
+// Cached scatter: 2D grid — one block per (pre-neuron, n_col tile).
+// Tiles M[i] into shared memory once, then performs all n_conn atomic
+// scatter operations from shmem. Eliminates repeated DRAM reads of M[i]
+// and is especially efficient for large n_conn with moderate n_col.
+// Grid: (n_pre, ceil(n_col / BLOCK_J)), Block: (BLOCK_J,)
+// Shared mem: BLOCK_J * sizeof(float) bytes
+#define MM_SCATTER_BJ 128
+__global__ void _mm_scatter_cached_kern(
+    const int32_t* __restrict__ indices,   // [n_pre, n_conn]
+    const float*   __restrict__ matrix,    // [n_pre, n_col]
+    float*         __restrict__ output,    // [n_post, n_col] (pre-zeroed)
+    const float*   __restrict__ weights,
+    int n_pre, int n_conn, int n_col, int is_homo
+) {
+    extern __shared__ float s_m[];  // cache one M[i] column tile
+    int i = blockIdx.x;
+    int j = blockIdx.y * blockDim.x + threadIdx.x;
+    if (i >= n_pre) return;
+
+    // Load M[i, j] tile into shared memory once.
+    s_m[threadIdx.x] = (j < n_col) ? matrix[(size_t)i * n_col + j] : 0.0f;
+    __syncthreads();
+
+    const int32_t* idx_row = indices + (size_t)i * n_conn;
+    const float*   w_row   = is_homo ? nullptr : weights + (size_t)i * n_conn;
+
+    if (j < n_col) {
+        // All connections from row i scatter to their targets using shmem value.
+        float m_val = s_m[threadIdx.x];
+        for (int k = 0; k < n_conn; k++) {
+            int   tgt = idx_row[k];
+            float w   = is_homo ? weights[0] : w_row[k];
+            atomicAdd(&output[(size_t)tgt * n_col + j], w * m_val);
+        }
+    }
+}
+
+// Warp scatter: grid-stride over (pre-neuron, connection) pairs.
+// Each warp handles one (i, k) pair; lanes stride over j columns.
+// Maximises parallelism over both i and k dimensions. Good for small n_col.
+// Grid: (min(4096, ceil(n_pre*n_conn/8)),), Block: (256,)  [8 warps per block]
+__global__ void _mm_scatter_warp_kern(
+    const int32_t* __restrict__ indices,
+    const float*   __restrict__ matrix,
+    float*         __restrict__ output,
+    const float*   __restrict__ weights,
+    int n_pre, int n_conn, int n_col, int is_homo
+) {
+    int wid     = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;  // global warp id
+    int lane    = threadIdx.x & 31;
+    int n_warps = (gridDim.x * blockDim.x) >> 5;
+    int n_pairs = n_pre * n_conn;
+
+    for (int pair = wid; pair < n_pairs; pair += n_warps) {
+        int i = pair / n_conn;
+        int k = pair % n_conn;
+        int   tgt = indices[(size_t)i * n_conn + k];
+        float w   = is_homo ? weights[0] : weights[(size_t)i * n_conn + k];
+        const float* m_row   = matrix + (size_t)i * n_col;
+        float*       out_row = output + (size_t)tgt * n_col;
+        for (int j = lane; j < n_col; j += 32)
+            atomicAdd(&out_row[j], w * m_row[j]);
+    }
+}
+
+// =========================================================================
+// TVM FFI Entry Points
+// =========================================================================
+// Convention: args = (weights, indices, matrix, output, stream)
+// weights: [1] (homo) or [n_pre, n_conn] (hetero), float32
+// indices: [n_pre, n_conn], int32
+// Gather:  matrix [n_post, n_col], output [n_pre, n_col]
+// Scatter: matrix [n_pre,  n_col], output [n_post, n_col]
+//
+// weights.data_ptr() is a GPU device pointer — NEVER dereference on host.
+// GPU threads read weights[0] (homo) or weights[i*n_conn+k] (hetero).
+
+// --- Gather entry points ---
+
+void fcnmm_gather_basic(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView matrix,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int n_col  = static_cast<int>(matrix.size(1));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const float*   d_mat = static_cast<const float*>(matrix.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    int BJ = 64;
+    dim3 grid(n_pre, (n_col + BJ - 1) / BJ);
+    _mm_gather_basic_kern<<<grid, BJ, 0, s>>>(
+        d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_col, is_homo);
+}
+
+void fcnmm_gather_shared(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView matrix,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int n_col  = static_cast<int>(matrix.size(1));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const float*   d_mat = static_cast<const float*>(matrix.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    int BJ = 64;
+    dim3 grid(n_pre, (n_col + BJ - 1) / BJ);
+    size_t shm = MMTK * (sizeof(int32_t) + sizeof(float));
+    _mm_gather_shared_kern<<<grid, BJ, shm, s>>>(
+        d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_col, is_homo);
+}
+
+void fcnmm_gather_vec4(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView matrix,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int n_col  = static_cast<int>(matrix.size(1));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const float*   d_mat = static_cast<const float*>(matrix.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    int BJ4 = 64;
+    dim3 grid(n_pre, (n_col / 4 + BJ4 - 1) / BJ4);
+    _mm_gather_vec4_kern<<<grid, BJ4, 0, s>>>(
+        d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_col, is_homo);
+}
+
+// Auto-selects the best gather kernel based on n_conn and n_col.
+void fcnmm_gather_auto(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView matrix,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int n_col  = static_cast<int>(matrix.size(1));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const float*   d_mat = static_cast<const float*>(matrix.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+
+    int BJ = 64;
+    if (n_col % 4 == 0 && n_col >= 64) {
+        // Vectorised float4 path: 4x throughput for aligned n_col.
+        dim3 grid(n_pre, (n_col / 4 + BJ - 1) / BJ);
+        _mm_gather_vec4_kern<<<grid, BJ, 0, s>>>(
+            d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_col, is_homo);
+    } else if (n_conn > 128) {
+        // Shared-memory path: amortises index/weight bandwidth for large n_conn.
+        dim3 grid(n_pre, (n_col + BJ - 1) / BJ);
+        size_t shm = MMTK * (sizeof(int32_t) + sizeof(float));
+        _mm_gather_shared_kern<<<grid, BJ, shm, s>>>(
+            d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_col, is_homo);
+    } else {
+        // Basic path: good general-purpose option.
+        dim3 grid(n_pre, (n_col + BJ - 1) / BJ);
+        _mm_gather_basic_kern<<<grid, BJ, 0, s>>>(
+            d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_col, is_homo);
+    }
+}
+
+// --- Scatter entry points (output zeroed before kernel launch) ---
+
+void fcnmm_scatter_block(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView matrix,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int n_post = static_cast<int>(output.size(0));
+    int n_col  = static_cast<int>(matrix.size(1));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const float*   d_mat = static_cast<const float*>(matrix.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    cudaMemsetAsync(d_out, 0, (size_t)n_post * n_col * sizeof(float), s);
+    _mm_scatter_block_kern<<<n_pre, 256, 0, s>>>(
+        d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_col, is_homo);
+}
+
+void fcnmm_scatter_warp(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView matrix,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int n_post = static_cast<int>(output.size(0));
+    int n_col  = static_cast<int>(matrix.size(1));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const float*   d_mat = static_cast<const float*>(matrix.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    cudaMemsetAsync(d_out, 0, (size_t)n_post * n_col * sizeof(float), s);
+    int n_pairs = n_pre * n_conn;
+    int blocks  = min(4096, (n_pairs + 7) / 8);
+    _mm_scatter_warp_kern<<<blocks, 256, 0, s>>>(
+        d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_col, is_homo);
+}
+
+void fcnmm_scatter_cached(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView matrix,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int n_post = static_cast<int>(output.size(0));
+    int n_col  = static_cast<int>(matrix.size(1));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const float*   d_mat = static_cast<const float*>(matrix.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    cudaMemsetAsync(d_out, 0, (size_t)n_post * n_col * sizeof(float), s);
+    int BJ = MM_SCATTER_BJ;
+    dim3 grid(n_pre, (n_col + BJ - 1) / BJ);
+    size_t shm = BJ * sizeof(float);
+    _mm_scatter_cached_kern<<<grid, BJ, shm, s>>>(
+        d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_col, is_homo);
+}
+
+// Auto-selects the best scatter kernel based on problem size.
+void fcnmm_scatter_auto(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView matrix,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int n_post = static_cast<int>(output.size(0));
+    int n_col  = static_cast<int>(matrix.size(1));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const float*   d_mat = static_cast<const float*>(matrix.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    cudaMemsetAsync(d_out, 0, (size_t)n_post * n_col * sizeof(float), s);
+
+    if (n_col <= 64) {
+        // Small n_col: one warp per (i,k) pair maximises SM utilisation.
+        int n_pairs = n_pre * n_conn;
+        int blocks  = min(4096, (n_pairs + 7) / 8);
+        _mm_scatter_warp_kern<<<blocks, 256, 0, s>>>(
+            d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_col, is_homo);
+    } else if (n_conn > 32) {
+        // Moderate-to-large n_conn: cached M[i] in shmem cuts DRAM reads.
+        int BJ = MM_SCATTER_BJ;
+        dim3 grid(n_pre, (n_col + BJ - 1) / BJ);
+        size_t shm = BJ * sizeof(float);
+        _mm_scatter_cached_kern<<<grid, BJ, shm, s>>>(
+            d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_col, is_homo);
+    } else {
+        // Small n_conn: simple block-per-pre-neuron with thread stride.
+        _mm_scatter_block_kern<<<n_pre, 256, 0, s>>>(
+            d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_col, is_homo);
+    }
+}
+""",
+    )
+
+    out_info = kwargs['outs']
+    n_conn = indices_info.shape[1]
+    n_col = matrix_info.shape[1]
+
+    if transpose:
+        # Scatter mode: Y[idx[i,k], j] += w[i,k] * M[i, j]
+        kernel_name = 'fcnmm.fcnmm_scatter_auto'
+
+        def kernel(weights, indices, matrix):
+            return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, matrix)
+
+    else:
+        # Gather mode: Y[i, j] = sum_k w[i,k] * M[idx[i,k], j]
+        if n_col % 4 == 0 and n_col >= 64:
+            kernel_name = 'fcnmm.fcnmm_gather_vec4'
+        elif n_conn > 128:
+            kernel_name = 'fcnmm.fcnmm_gather_shared'
+        else:
+            kernel_name = 'fcnmm.fcnmm_gather_auto'
+
+        def kernel(weights, indices, matrix):
+            return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, matrix)
+
+    return kernel
+
+
 def _fcnmm_jax_kernel(
     shape: Tuple[int, int],
     transpose: bool,
@@ -1515,6 +2009,7 @@ fcnmm : High-level user-facing function wrapper.
 )
 fcnmm_p.def_numba_kernel(_fcnmm_numba_kernel)
 fcnmm_p.def_pallas_kernel('gpu', _fcnmm_pallas_kernel)
+fcnmm_p.def_tvmffi_kernel('gpu', _fcnmm_cuda_kernel)
 fcnmm_p.def_kernel('jax_raw', 'cpu', _fcnmm_jax_kernel)
 fcnmm_p.def_kernel('jax_raw', 'gpu', _fcnmm_jax_kernel)
 fcnmm_p.def_kernel('jax_raw', 'tpu', _fcnmm_jax_kernel)
