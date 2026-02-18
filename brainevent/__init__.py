@@ -60,6 +60,8 @@ from ._error import (
     KernelCompilationError,
     KernelFallbackExhaustedError,
     KernelExecutionError,
+    TVMFFINotInstalledError,
+    TVMModuleAlreadyRegisteredError,
 )
 from ._event import (
     EventRepresentation,
@@ -111,7 +113,7 @@ from ._op import (
     XLACustomKernel, KernelEntry,
     BenchmarkConfig, BenchmarkRecord, BenchmarkResult, benchmark_function,
     numba_kernel, numba_cuda_kernel, numba_cuda_callable,
-    register_tvm_cuda_kernels, defjvp, general_batching_rule,
+    TVMCudaModule, register_tvm_cuda_kernels, defjvp, general_batching_rule,
     jaxtype_to_warptype, jaxinfo_to_warpinfo,
 )
 from ._pallas_random import (
@@ -203,7 +205,7 @@ __all__ = [
     'XLACustomKernel', 'KernelEntry',
     'BenchmarkConfig', 'BenchmarkRecord', 'BenchmarkResult', 'benchmark_function',
     'numba_kernel', 'numba_cuda_kernel', 'numba_cuda_callable',
-    'register_tvm_cuda_kernels', 'defjvp', 'general_batching_rule',
+    'TVMCudaModule', 'register_tvm_cuda_kernels', 'defjvp', 'general_batching_rule',
     'jaxtype_to_warptype', 'jaxinfo_to_warpinfo',
 
     # --- Pallas kernel --- #
@@ -216,6 +218,8 @@ __all__ = [
     'KernelCompilationError',
     'KernelFallbackExhaustedError',
     'KernelExecutionError',
+    'TVMFFINotInstalledError',
+    'TVMModuleAlreadyRegisteredError',
 
     # --- utilities --- #
     'csr_to_coo_index', 'coo_to_csc_index', 'csr_to_csc_index',

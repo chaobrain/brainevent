@@ -9,21 +9,15 @@ Operation: For each pre-synaptic neuron i where spikes[i] == True:
     For each connection j: output[indices[i,j]] += weights[i,j]
 """
 
-import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-
 import jax
 import jax.numpy as jnp
-import jax_tvm_ffi
-import numpy as np
-import tvm_ffi.cpp
 from jax import Array
-import math
+
+import brainevent
 
 # Compile the optimized CUDA kernels
-_cuda_module = tvm_ffi.cpp.load_inline(
-    name="ell_mv_cuda",
-    cuda_sources=r"""
+brainevent.register_tvm_cuda_kernels(
+    source_code=r"""
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <cstdint>
@@ -391,45 +385,9 @@ void ell_mv_warp(
     );
 }
     """,
+    module='ell_mv',
     functions=["ell_mv_cuda", "ell_mv_basic", "ell_mv_gridstride", "ell_mv_warp"],
 )
-
-
-def _register_kernels():
-    """Register CUDA kernels with JAX FFI."""
-    # Main auto-selecting kernel
-    jax_tvm_ffi.register_ffi_target(
-        "ell_mv.cuda",
-        _cuda_module.ell_mv_cuda,
-        ["args", "rets", "ctx.stream"],
-        platform="gpu",
-    )
-
-    # Individual kernel variants for benchmarking
-    jax_tvm_ffi.register_ffi_target(
-        "ell_mv.basic",
-        _cuda_module.ell_mv_basic,
-        ["args", "rets", "ctx.stream"],
-        platform="gpu",
-    )
-
-    jax_tvm_ffi.register_ffi_target(
-        "ell_mv.gridstride",
-        _cuda_module.ell_mv_gridstride,
-        ["args", "rets", "ctx.stream"],
-        platform="gpu",
-    )
-
-    jax_tvm_ffi.register_ffi_target(
-        "ell_mv.warp",
-        _cuda_module.ell_mv_warp,
-        ["args", "rets", "ctx.stream"],
-        platform="gpu",
-    )
-
-
-# Register on module import
-_register_kernels()
 
 
 def ell_mv(
@@ -457,18 +415,17 @@ def ell_mv(
         Float32 array of shape [n_post] with accumulated weights
     """
     kernel_map = {
-        "auto": "ell_mv.cuda",
-        "basic": "ell_mv.basic",
-        "gridstride": "ell_mv.gridstride",
-        "warp": "ell_mv.warp",
+        "auto": "ell_mv.ell_mv_cuda",
+        "basic": "ell_mv.ell_mv_basic",
+        "gridstride": "ell_mv.ell_mv_gridstride",
+        "warp": "ell_mv.ell_mv_warp",
     }
 
     if kernel not in kernel_map:
         raise ValueError(f"Unknown kernel: {kernel}. Choose from {list(kernel_map.keys())}")
 
     return jax.ffi.ffi_call(
-        kernel_map[kernel],
-        jax.ShapeDtypeStruct((n_post,), weights.dtype),
+        kernel_map[kernel], jax.ShapeDtypeStruct((n_post,), weights.dtype),
     )(spikes, indices, weights)
 
 

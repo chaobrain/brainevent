@@ -23,6 +23,8 @@ __all__ = [
     'KernelFallbackExhaustedError',
     'KernelExecutionError',
     'BenchmarkDataFnNotProvidedError',
+    'TVMFFINotInstalledError',
+    'TVMModuleAlreadyRegisteredError',
 ]
 
 
@@ -209,6 +211,68 @@ class KernelExecutionError(Exception):
         >>> from brainevent._error import KernelExecutionError
         >>> raise KernelExecutionError(
         ...     "Warp kernel 'csrmv' failed. Try backend='pallas' instead."
+        ... )  # doctest: +SKIP
+    """
+    __module__ = 'brainevent'
+
+
+class TVMFFINotInstalledError(Exception):
+    """Raised when a TVM FFI operation is requested but the package is not installed.
+
+    This exception is raised by :func:`~brainevent._op.util.register_tvm_cuda_kernels`
+    when ``jax_tvm_ffi`` or ``tvm_ffi.cpp`` is not available in the current
+    environment.
+
+    Parameters
+    ----------
+    message : str
+        A human-readable description indicating that TVM FFI is missing
+        and how to install it.
+
+    See Also
+    --------
+    TVMModuleAlreadyRegisteredError : Raised when the same module name is
+        registered more than once.
+    KernelNotAvailableError : General exception for unavailable backends.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from brainevent._error import TVMFFINotInstalledError
+        >>> raise TVMFFINotInstalledError(
+        ...     "jax_tvm_ffi is not installed. Install with: pip install jax-tvm-ffi"
+        ... )  # doctest: +SKIP
+    """
+    __module__ = 'brainevent'
+
+
+class TVMModuleAlreadyRegisteredError(Exception):
+    """Raised when a TVM CUDA module name is registered more than once.
+
+    :func:`~brainevent._op.util.register_tvm_cuda_kernels` maintains a
+    per-process cache of compiled module names.  Attempting to register
+    the same *module* name a second time raises this exception so that
+    accidental double-registration is caught early rather than silently
+    overwriting existing kernels.
+
+    Parameters
+    ----------
+    message : str
+        A human-readable description including the duplicate module name.
+
+    See Also
+    --------
+    TVMFFINotInstalledError : Raised when TVM FFI is not installed.
+    register_tvm_cuda_kernels : The function that raises this exception.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from brainevent._error import TVMModuleAlreadyRegisteredError
+        >>> raise TVMModuleAlreadyRegisteredError(
+        ...     "TVM CUDA module 'my_kernels' has already been registered."
         ... )  # doctest: +SKIP
     """
     __module__ = 'brainevent'

@@ -42,9 +42,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import jax
 import jax.numpy as jnp
 import numpy as np
-from scipy import sparse as sp
 
-import brainevent
 from brainevent import binary_csrmv_p
 from brainevent._error import BenchmarkDataFnNotProvidedError
 from brainevent._op.benchmark import BenchmarkConfig, BenchmarkRecord, BenchmarkResult
@@ -103,11 +101,7 @@ def example_2_sort_and_group():
     print("Example 2 — Sorting and grouping")
     print("=" * 70)
 
-    result = binary_csrmv_p.benchmark(
-        platform=PLATFORM,
-        n_warmup=N_WARMUP,
-        n_runs=N_RUNS,
-    )
+    result = binary_csrmv_p.benchmark(platform=PLATFORM, n_warmup=N_WARMUP, n_runs=N_RUNS)
 
     print("--- sorted by mean_ms (fastest first) ---")
     result.print(sort_by='mean_ms')
@@ -253,7 +247,6 @@ def example_6_save_load():
     )
 
     with tempfile.TemporaryDirectory() as tmpdir:
-
         # --- JSON (default, human-readable) ---
         json_path = os.path.join(tmpdir, 'bench.json')
         result.save(json_path, format='json')
@@ -418,6 +411,7 @@ def example_9_missing_data_fn():
     def _dummy_kg(**kw):
         def _kernel(*args):
             return (jnp.zeros(1),)
+
         return _kernel
 
     prim.def_numba_kernel(_dummy_kg)

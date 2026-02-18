@@ -25,6 +25,7 @@ from jax import tree_util
 from jax.interpreters import ad
 
 from brainevent._compatible_import import Primitive
+from brainevent._error import TVMFFINotInstalledError, TVMModuleAlreadyRegisteredError
 
 warp_installed = importlib.util.find_spec('warp') is not None
 tvmffi_installed = importlib.util.find_spec('jax_tvm_ffi') is not None
@@ -57,6 +58,12 @@ __all__ = [
 ]
 
 _MIN_JAX_VERSION_FOR_PALLAS = (0, 7, 1)
+
+# Global cache: tracks module names already compiled and registered via
+# register_tvm_cuda_kernels.  Subsequent calls with the same module name
+# are silently skipped so each CUDA module is compiled only once per
+# process.
+_registered_tvm_modules: set = set()
 
 
 def check_pallas_jax_version():
@@ -128,9 +135,12 @@ def register_tvm_cuda_kernels(
 
     Uses the TVM FFI infrastructure (``jax_tvm_ffi`` and ``tvm_ffi.cpp``)
     to compile inline CUDA source and register each resulting function as
-    a JAX FFI target on the GPU platform.  If the TVM FFI packages are
-    not installed the function returns silently, allowing upstream code
-    to fall back to other backends.
+    a JAX FFI target on the GPU platform.
+
+    A per-process cache tracks registered module names.  Calling this
+    function twice with the same *module* name raises
+    :exc:`~brainevent.TVMModuleAlreadyRegisteredError` so that accidental
+    double-registration is detected early.
 
     Parameters
     ----------
@@ -139,21 +149,20 @@ def register_tvm_cuda_kernels(
     module : str
         Module name under which the compiled kernels are registered.
         Each kernel is registered as ``"<module>.<function_name>"``.
+        Must be unique within the process.
     functions : Sequence of str
         Names of the functions (entry points) to extract from the
         compiled module and register with JAX FFI.
 
-    Returns
-    -------
-    None
-
     Raises
     ------
+    TVMFFINotInstalledError
+        If ``jax_tvm_ffi`` or ``tvm_ffi.cpp`` is not installed.
+    TVMModuleAlreadyRegisteredError
+        If *module* has already been registered in this process.
     ValueError
         If *source_code* is not a string, *module* is not a string, or
-        *functions* is not a sequence of strings.  (Note: the current
-        implementation returns the ``ValueError`` instead of raising it;
-        this may change in a future version.)
+        *functions* is not a sequence of strings.
 
     See Also
     --------
@@ -162,12 +171,9 @@ def register_tvm_cuda_kernels(
 
     Notes
     -----
-    The function requires both ``jax_tvm_ffi`` and ``tvm_ffi.cpp``
-    packages to be installed.  If they are not available, the function
-    returns silently with no effect.  The compiled kernels are
-    registered as JAX FFI targets using the naming convention
-    ``"<module>.<function_name>"`` and are available on the ``"gpu"``
-    platform.
+    The compiled kernels are registered as JAX FFI targets using the
+    naming convention ``"<module>.<function_name>"`` and are available
+    on the ``"gpu"`` platform.
 
     Examples
     --------
@@ -183,14 +189,24 @@ def register_tvm_cuda_kernels(
     """
 
     if not tvmffi_installed:
-        return
+        raise TVMFFINotInstalledError(
+            "jax_tvm_ffi is not installed. "
+            "Install it with: pip install jax-tvm-ffi"
+        )
+
+    # Raise if this module name was already registered.
+    if module in _registered_tvm_modules:
+        raise TVMModuleAlreadyRegisteredError(
+            f"TVM CUDA module '{module}' has already been registered. "
+            "Each module name must be unique within a process."
+        )
 
     if not isinstance(source_code, str):
-        return ValueError("source_code must be a string")
+        raise ValueError("source_code must be a string")
     if not isinstance(module, str):
-        return ValueError("module must be a string")
+        raise ValueError("module must be a string")
     if not isinstance(functions, Sequence) or not all(isinstance(f, str) for f in functions):
-        return ValueError("functions must be a sequence of strings")
+        raise ValueError("functions must be a sequence of strings")
 
     # Compile CUDA module
     _cuda_module = tvm_ffi.cpp.load_inline(name=module, cuda_sources=source_code, functions=functions)
@@ -203,6 +219,9 @@ def register_tvm_cuda_kernels(
             ["args", "rets", "ctx.stream"],
             platform="gpu",
         )
+
+    # Mark this module as registered so future calls are no-ops.
+    _registered_tvm_modules.add(module)
 
 
 def defjvp(primitive, *jvp_rules):

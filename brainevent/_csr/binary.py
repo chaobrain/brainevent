@@ -854,17 +854,18 @@ def _binary_csrmv_benchmark_data(*, platform):
             for transpose in (False, True):
                 for homo in (True, False):
                     for event_prob in [0.001, 0.01, 0.1]:
-                        for event_dtype in (np.float32, np.bool_):
+                        for event_type in ('float', 'bool'):
                             indptr = np.arange(n + 1, dtype=np.int32) * n_conn
                             indices = rng.integers(0, n, size=nnz, dtype=np.int32)
                             weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(nnz, dtype=dtype)
                             v_size = n  # square: n_pre == n_post == n
                             data = rng.random(v_size) > event_prob
+                            event_dtype = jnp.float32 if event_type == 'float' else jnp.bool_
                             vector = jnp.asarray(data, dtype=event_dtype)
                             name = (f"{n}x{n},p={p_pct}%,"
                                     f"{'T' if transpose else 'NT'},"
                                     f"{'homo' if homo else 'hetero'},"
-                                    f"{event_dtype}")
+                                    f"{event_type}")
                             yield BenchmarkConfig(
                                 name,
                                 jax.block_until_ready(
@@ -872,7 +873,7 @@ def _binary_csrmv_benchmark_data(*, platform):
                                 ),
                                 {'shape': (n, n), 'transpose': transpose},
                                 {'n_pre': n, 'n_post': n, 'nnz': nnz, 'csr_sparsity': conn_prob,
-                                 'event_sparsity': event_prob, 'event_dtype': event_dtype},
+                                 'event_sparsity': event_prob, 'event_dtype': event_type},
                             )
 
     # ── Sweep C: rectangular (n_pre ≠ n_post), p=0.1 ─────────────────────────
@@ -883,17 +884,18 @@ def _binary_csrmv_benchmark_data(*, platform):
         for transpose in (False, True):
             for homo in (True, False):
                 for event_prob in [0.001, 0.01, 0.1]:
-                    for event_dtype in (np.float32, np.bool_):
+                    for event_type in ('float', 'bool'):
                         indptr = np.arange(n_pre + 1, dtype=np.int32) * n_conn
                         indices = rng.integers(0, n_post, size=nnz, dtype=np.int32)
                         weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(nnz, dtype=dtype)
                         v_size = n_pre if transpose else n_post
                         data = rng.random(v_size) > event_prob
+                        event_dtype = jnp.float32 if event_type == 'float' else jnp.bool_
                         vector = jnp.asarray(data, dtype=event_dtype)
                         name = (f"{n_pre}x{n_post},p=10%,"
                                 f"{'T' if transpose else 'NT'},"
                                 f"{'homo' if homo else 'hetero'},"
-                                f"{event_dtype}")
+                                f"{event_type}")
                         yield BenchmarkConfig(
                             name,
                             jax.block_until_ready(
@@ -901,7 +903,7 @@ def _binary_csrmv_benchmark_data(*, platform):
                             ),
                             {'shape': (n_pre, n_post), 'transpose': transpose},
                             {'n_pre': n_pre, 'n_post': n_post, 'nnz': nnz, 'csr_sparsity': conn_prob,
-                             'event_sparsity': event_prob, 'event_dtype': event_dtype},
+                             'event_sparsity': event_prob, 'event_dtype': event_type},
                         )
 
 
