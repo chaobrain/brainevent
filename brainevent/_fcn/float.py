@@ -376,6 +376,31 @@ def _fcnmv_pallas_kernel(
     return kernel
 
 
+def _fcnmv_jax_kernel(
+    shape: Tuple[int, int],
+    transpose: bool,
+    **kwargs,
+):
+    def kernel(weights, indices, vector):
+        out, weights, n_pre, n_post = check_fixed_conn_num_shape(
+            weights, indices, vector, shape, transpose, require_scalar_weight=True,
+        )
+        if transpose:
+            masked_weights = jnp.broadcast_to(vector[:, None] * weights, indices.shape)
+            return jax.ops.segment_sum(
+                masked_weights.ravel(), indices.ravel(), num_segments=n_post
+            )
+
+        else:
+            scalar_weight = weights.ndim == 0
+            if scalar_weight:
+                return jax.vmap(lambda ind: weights * u.math.sum(vector[ind]))(indices),
+            else:
+                return jax.vmap(lambda w, ind: u.math.sum(w * vector[ind]))(weights, indices),
+
+    return kernel
+
+
 def _fcnmv_jvp_vector(spk_dot, weights, indices, spikes, *, shape, transpose, **kwargs):
     return fcnmv_p_call(weights, indices, spk_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
@@ -426,25 +451,6 @@ def _fcnmv_transpose_rule(ct, weights, indices, vector, *, shape, transpose, wei
             else:
                 ct_weight = jax.vmap(lambda c, ind: c * vector[ind])(ct, indices)
         return ct_weight, indices, vector
-
-
-def _jax_fcnmv_call(
-    weights: Union[jax.Array, u.Quantity],
-    indices: jax.Array,
-    vector: Union[jax.Array, u.Quantity],
-    *,
-    shape: Tuple[int, int],
-    transpose: bool,
-) -> Tuple[Union[jax.Array, u.Quantity]]:
-    assert not transpose, "JAX backend does not support transpose mode."
-    out, weights, n_pre, n_post = check_fixed_conn_num_shape(
-        weights, indices, vector, shape, transpose, require_scalar_weight=True,
-    )
-    scalar_weight = weights.ndim == 0
-    if scalar_weight:
-        return jax.vmap(lambda ind: weights * u.math.sum(vector[ind]))(indices),
-    else:
-        return jax.vmap(lambda w, ind: u.math.sum(w * vector[ind]))(weights, indices),
 
 
 def _fcnmv_batching(args, axes, **kwargs):
@@ -589,7 +595,10 @@ fcnmv : High-level user-facing function wrapper.
 fcnmv_p.def_numba_kernel(_fcnmv_numba_kernel)
 fcnmv_p.def_warp_kernel(_fcnmv_warp_kernel)
 fcnmv_p.def_pallas_kernel('gpu', _fcnmv_pallas_kernel)
-fcnmv_p.def_jvp_rule2(_fcnmv_jvp_weights, None, _fcnmv_jvp_vector, None)
+fcnmv_p.def_kernel('jax_raw', 'cpu', _fcnmv_jax_kernel)
+fcnmv_p.def_kernel('jax_raw', 'gpu', _fcnmv_jax_kernel)
+fcnmv_p.def_kernel('jax_raw', 'tpu', _fcnmv_jax_kernel)
+fcnmv_p.def_jvp_rule2(_fcnmv_jvp_weights, None, _fcnmv_jvp_vector)
 fcnmv_p.def_transpose_rule(_fcnmv_transpose_rule)
 fcnmv_p.def_batching_rule(_fcnmv_batching)
 fcnmv_p.def_call(fcnmv_p_call)
