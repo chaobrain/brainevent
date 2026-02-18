@@ -1089,6 +1089,9 @@ class XLACustomKernel:
         n_runs: int = 20,
         n_batch_per_run: int = 1,
         compare_results: bool = True,
+        rtol: float = 1e-3,
+        atol: float = 1e-3,
+        verbose: bool = False,
     ) -> BenchmarkResult:
         """Benchmark all registered backends across every configured data config.
 
@@ -1117,6 +1120,17 @@ class XLACustomKernel:
             If ``True`` (default), verify that outputs match across
             backends for each config using ``jnp.allclose``.  Mismatches
             are printed as warnings.
+        verbose : bool, optional
+            If ``True``, print a one-line timing summary after each
+            (config, backend) pair completes.  Useful for monitoring
+            progress when the config list is large.  Default is
+            ``False``.
+        rtol : float, optional
+            Relative tolerance for output comparison when *compare_results*
+            is ``True``.  Default is ``1e-3``.
+        atol : float, optional
+            Absolute tolerance for output comparison when *compare_results*
+            is ``True``.  Default is ``1e-3``.
 
         Returns
         -------
@@ -1177,42 +1191,31 @@ class XLACustomKernel:
 
                 run_fn = _make_run_fn(config.args, be, config.kernel_kwargs)
 
-                try:
-                    mean_s, std_s, min_s, _max_s, output = benchmark_function(
-                        run_fn, n_warmup, n_runs, n_batch_per_run=n_batch_per_run
+                mean_s, std_s, min_s, _max_s, output = benchmark_function(
+                    run_fn, n_warmup, n_runs, n_batch_per_run=n_batch_per_run
+                )
+                record = BenchmarkRecord(
+                    platform=platform,
+                    backend=be,
+                    label=config.name,
+                    mean_ms=mean_s * 1000.0,
+                    std_ms=std_s * 1000.0,
+                    min_ms=min_s * 1000.0,
+                    throughput=None,
+                    success=True,
+                    error=None,
+                    kernel_kwargs=dict(config.kernel_kwargs),
+                    data_kwargs=dict(config.data_kwargs),
+                )
+                records.append(record)
+                if verbose:
+                    print(
+                        f"[{self.name}] [{platform}|{be}] {config.name}: "
+                        f"mean={record.mean_ms:.3f}ms  "
+                        f"std={record.std_ms:.3f}ms  "
+                        f"min={record.min_ms:.3f}ms"
                     )
-                    records.append(
-                        BenchmarkRecord(
-                            platform=platform,
-                            backend=be,
-                            label=config.name,
-                            mean_ms=mean_s * 1000.0,
-                            std_ms=std_s * 1000.0,
-                            min_ms=min_s * 1000.0,
-                            throughput=None,
-                            success=True,
-                            error=None,
-                            kernel_kwargs=dict(config.kernel_kwargs),
-                            data_kwargs=dict(config.data_kwargs),
-                        )
-                    )
-                    config_outputs[be] = output
-                except Exception as exc:
-                    records.append(
-                        BenchmarkRecord(
-                            platform=platform,
-                            backend=be,
-                            label=config.name,
-                            mean_ms=0.0,
-                            std_ms=0.0,
-                            min_ms=0.0,
-                            throughput=None,
-                            success=False,
-                            error=str(exc),
-                            kernel_kwargs=dict(config.kernel_kwargs),
-                            data_kwargs=dict(config.data_kwargs),
-                        )
-                    )
+                config_outputs[be] = output
 
             # Optionally compare outputs across backends for this config
             if compare_results and len(config_outputs) > 1:
@@ -1225,13 +1228,13 @@ class XLACustomKernel:
                     try:
                         if isinstance(ref_out, (list, tuple)):
                             for i, (r, o) in enumerate(zip(ref_out, other_out)):
-                                if not jnp.allclose(r, o, rtol=1e-5, atol=1e-5):
+                                if not jnp.allclose(r, o, rtol=rtol, atol=atol):
                                     print(
                                         f"[{self.name}][{config.name}] "
                                         f"{ref_be} vs {other_be}: output[{i}] mismatch"
                                     )
                         else:
-                            if not jnp.allclose(ref_out, other_out, rtol=1e-5, atol=1e-5):
+                            if not jnp.allclose(ref_out, other_out, rtol=rtol, atol=atol):
                                 print(
                                     f"[{self.name}][{config.name}] "
                                     f"{ref_be} vs {other_be}: output mismatch"

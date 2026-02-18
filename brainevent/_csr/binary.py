@@ -842,31 +842,63 @@ def _csrmv_batching(args, axes, **kwargs):
 
 
 def _binary_csrmv_benchmark_data(*, platform):
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for transpose in (False, True):
-        for homo in (True, False):
-            for bool_event in (True, False):
-                n_conn = max(1, int(n_post * prob))
-                indptr = np.arange(n_pre + 1, dtype=np.int32) * n_conn
-                indices = np.random.randint(0, n_post, (n_pre * n_conn,), dtype=np.int32)
-                weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(n_pre * n_conn, dtype=dtype)
-                v_size = n_post if not transpose else n_pre
-                if bool_event:
-                    vector = jnp.asarray(np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
-                else:
-                    vector = jnp.asarray(np.random.rand(v_size), dtype=dtype)
-                name = (f"{'T' if transpose else 'NT'},"
-                        f"{'homo' if homo else 'hetero'},"
-                        f"{'bool' if bool_event else 'float'}")
-                configs.append(
-                    BenchmarkConfig(
-                        name,
-                        (weights, indices, jnp.asarray(indptr), vector),
-                        {'shape': (n_pre, n_post), 'transpose': transpose}
-                    )
-                )
-    return configs
+    rng = np.random.default_rng(0)
+    dtype = jnp.float32
+
+    # ── Sweep A: size × sparsity × variant sweep (square matrices) ───────────
+    for n in (1000, 5000, 10000):
+        for conn_prob in (0.01, 0.1):
+            n_conn = max(1, int(n * conn_prob))
+            nnz = n * n_conn
+            p_pct = int(round(conn_prob * 100))
+            for transpose in (False, True):
+                for homo in (True, False):
+                    for event_prob in [0.001, 0.01, 0.1]:
+                        for event_dtype in (np.float32, np.bool_):
+                            indptr = np.arange(n + 1, dtype=np.int32) * n_conn
+                            indices = rng.integers(0, n, size=nnz, dtype=np.int32)
+                            weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(nnz, dtype=dtype)
+                            v_size = n  # square: n_pre == n_post == n
+                            data = rng.random(v_size) > event_prob
+                            vector = jnp.asarray(data, dtype=event_dtype)
+                            name = (f"{n}x{n},p={p_pct}%,"
+                                    f"{'T' if transpose else 'NT'},"
+                                    f"{'homo' if homo else 'hetero'},"
+                                    f"{event_dtype}")
+                            yield BenchmarkConfig(
+                                name,
+                                (weights, jnp.asarray(indices), jnp.asarray(indptr), vector),
+                                {'shape': (n, n), 'transpose': transpose},
+                                {'n_pre': n, 'n_post': n, 'nnz': nnz, 'csr_sparsity': conn_prob,
+                                 'event_sparsity': event_prob, 'event_dtype': event_dtype},
+                            )
+
+    # ── Sweep C: rectangular (n_pre ≠ n_post), p=0.1 ─────────────────────────
+    for n_pre, n_post in ((1000, 5000), (5000, 1000), (1000, 10000), (10000, 1000)):
+        conn_prob = 0.1
+        n_conn = max(1, int(n_post * conn_prob))
+        nnz = n_pre * n_conn
+        for transpose in (False, True):
+            for homo in (True, False):
+                for event_prob in [0.001, 0.01, 0.1]:
+                    for event_dtype in (np.float32, np.bool_):
+                        indptr = np.arange(n_pre + 1, dtype=np.int32) * n_conn
+                        indices = rng.integers(0, n_post, size=nnz, dtype=np.int32)
+                        weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(nnz, dtype=dtype)
+                        v_size = n_pre if transpose else n_post
+                        data = rng.random(v_size) > event_prob
+                        vector = jnp.asarray(data, dtype=event_dtype)
+                        name = (f"{n_pre}x{n_post},p=10%,"
+                                f"{'T' if transpose else 'NT'},"
+                                f"{'homo' if homo else 'hetero'},"
+                                f"{event_dtype}")
+                        yield BenchmarkConfig(
+                            name,
+                            (weights, jnp.asarray(indices), jnp.asarray(indptr), vector),
+                            {'shape': (n_pre, n_post), 'transpose': transpose},
+                            {'n_pre': n_pre, 'n_post': n_post, 'nnz': nnz, 'csr_sparsity': conn_prob,
+                             'event_sparsity': event_prob, 'event_dtype': event_dtype},
+                        )
 
 
 def binary_csrmv_p_call(
