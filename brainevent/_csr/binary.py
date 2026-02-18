@@ -856,7 +856,9 @@ def _binary_csrmv_benchmark_data(*, platform):
                     vector = jnp.asarray(np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
                 else:
                     vector = jnp.asarray(np.random.rand(v_size), dtype=dtype)
-                name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
+                name = (f"{'T' if transpose else 'NT'},"
+                        f"{'homo' if homo else 'hetero'},"
+                        f"{'bool' if bool_event else 'float'}")
                 configs.append(
                     BenchmarkConfig(
                         name,
@@ -1743,7 +1745,9 @@ def _binary_csrmm_benchmark_data(*, platform):
                     B = jnp.asarray(np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
                 else:
                     B = jnp.asarray(np.random.rand(b_rows, 10), dtype=dtype)
-                name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
+                name = (f"{'T' if transpose else 'NT'},"
+                        f"{'homo' if homo else 'hetero'},"
+                        f"{'bool' if bool_event else 'float'}")
                 configs.append(
                     BenchmarkConfig(
                         name,
