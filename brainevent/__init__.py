@@ -113,7 +113,7 @@ from ._op import (
     XLACustomKernel, KernelEntry,
     BenchmarkConfig, BenchmarkRecord, BenchmarkResult, benchmark_function,
     numba_kernel, numba_cuda_kernel, numba_cuda_callable,
-    TVMCudaModule, register_tvm_cuda_kernels, defjvp, general_batching_rule,
+    register_tvm_cuda_kernels, defjvp, general_batching_rule,
     jaxtype_to_warptype, jaxinfo_to_warpinfo,
 )
 from ._pallas_random import (
@@ -205,7 +205,7 @@ __all__ = [
     'XLACustomKernel', 'KernelEntry',
     'BenchmarkConfig', 'BenchmarkRecord', 'BenchmarkResult', 'benchmark_function',
     'numba_kernel', 'numba_cuda_kernel', 'numba_cuda_callable',
-    'TVMCudaModule', 'register_tvm_cuda_kernels', 'defjvp', 'general_batching_rule',
+    'register_tvm_cuda_kernels', 'defjvp', 'general_batching_rule',
     'jaxtype_to_warptype', 'jaxinfo_to_warpinfo',
 
     # --- Pallas kernel --- #
