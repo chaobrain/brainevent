@@ -24,8 +24,10 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
-from brainevent._op import general_batching_rule, XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
-from brainevent._op.benchmark import BenchmarkConfig
+from brainevent._op import (
+    general_batching_rule, XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, register_tvm_cuda_kernels,
+    BenchmarkConfig
+)
 from brainevent.config import get_numba_parallel
 
 __all__ = [
@@ -73,7 +75,7 @@ def fcnmv(
         pre-synaptic connections, scatter mode).
     backend : str or None, optional
         Execution backend override (``'numba'``, ``'warp'``,
-        ``'pallas'``, or ``None`` for automatic selection).
+        ``'pallas'``, ``'tvmffi'``, or ``None`` for automatic selection).
 
     Returns
     -------
@@ -376,6 +378,501 @@ def _fcnmv_pallas_kernel(
     return kernel
 
 
+def _fcnmv_cuda_kernel(
+    transpose: bool,
+    indices_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    _FCN_MV_FLOAT_CUDA = register_tvm_cuda_kernels(
+        module='fcn_mv_float',
+        functions=[
+            'fcnmv_gather_auto', 'fcnmv_gather_warp',
+            'fcnmv_gather_basic', 'fcnmv_gather_shared', 'fcnmv_gather_vec4',
+            'fcnmv_scatter_auto', 'fcnmv_scatter_warp',
+            'fcnmv_scatter_basic', 'fcnmv_scatter_gridstride',
+        ],
+        source_code=r"""
+#include <cuda_runtime.h>
+#include <cstdint>
+
+// =========================================================================
+// Warp reduction helper
+// =========================================================================
+
+__device__ __inline__ float warp_reduce_sum(float val) {
+    for (int offset = 16; offset > 0; offset >>= 1)
+        val += __shfl_down_sync(0xffffffff, val, offset);
+    return val;
+}
+
+// =========================================================================
+// Gather device kernels (transpose=False)
+// y[i] = sum_k w[i,k] * v[idx[i,k]]
+//
+// weights: device pointer. is_homo=1 => shape (1,); is_homo=0 => shape (n_pre,n_conn)
+// GPU threads read weights[0] for homo, weights[row*n_conn+k] for hetero.
+// =========================================================================
+
+// One warp (32 threads) per output row. Handles any n_conn via loop.
+__global__ void _gather_warp_kern(
+    const int32_t* __restrict__ indices,
+    const float*   __restrict__ vector,
+    float*         __restrict__ output,
+    const float*   __restrict__ weights,
+    int n_pre, int n_conn, int is_homo
+) {
+    int row = blockIdx.x;
+    if (row >= n_pre) return;
+    const int32_t* i_row = indices + (size_t)row * n_conn;
+    const float*   w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
+    float val = 0.0f;
+    for (int k = threadIdx.x; k < n_conn; k += 32)
+        val += is_homo ? vector[i_row[k]] : (w_row[k] * vector[i_row[k]]);
+    val = warp_reduce_sum(val);
+    if (threadIdx.x == 0)
+        output[row] = is_homo ? (weights[0] * val) : val;
+}
+
+// One block (256 threads) per output row with inline block reduction.
+// Uses 32*sizeof(float) of dynamic shared memory for the reduction scratchpad.
+// Best for 32 < n_conn <= 512.
+__global__ void _gather_basic_kern(
+    const int32_t* __restrict__ indices,
+    const float*   __restrict__ vector,
+    float*         __restrict__ output,
+    const float*   __restrict__ weights,
+    int n_pre, int n_conn, int is_homo
+) {
+    extern __shared__ float smem_red[];  // 32 floats for block reduction
+    int row = blockIdx.x;
+    if (row >= n_pre) return;
+    const int32_t* i_row = indices + (size_t)row * n_conn;
+    const float*   w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
+    float val = 0.0f;
+    for (int k = threadIdx.x; k < n_conn; k += blockDim.x)
+        val += is_homo ? vector[i_row[k]] : (w_row[k] * vector[i_row[k]]);
+    // Inline block reduction via dynamic shared memory
+    int lane   = threadIdx.x & 31;
+    int warpid = threadIdx.x >> 5;
+    val = warp_reduce_sum(val);
+    if (lane == 0) smem_red[warpid] = val;
+    __syncthreads();
+    int n_warps = (blockDim.x + 31) >> 5;
+    val = (threadIdx.x < n_warps) ? smem_red[lane] : 0.0f;
+    if (warpid == 0) val = warp_reduce_sum(val);
+    if (threadIdx.x == 0)
+        output[row] = is_homo ? (weights[0] * val) : val;
+}
+
+// One block per row, cooperative tile-load of indices+weights into shared memory.
+// Shared memory layout (dynamic, size = blockDim.x*(4+4) + 32*4 bytes):
+//   [0 .. blockDim.x*4)              : int32_t s_idx[blockDim.x]
+//   [blockDim.x*4 .. 2*blockDim.x*4) : float   s_wt[blockDim.x]
+//   [2*blockDim.x*4 .. +32*4)        : float   s_red[32]  (block reduction)
+// Best for n_conn > 512.
+__global__ void _gather_shared_kern(
+    const int32_t* __restrict__ indices,
+    const float*   __restrict__ vector,
+    float*         __restrict__ output,
+    const float*   __restrict__ weights,
+    int n_pre, int n_conn, int is_homo
+) {
+    extern __shared__ char smem_raw[];
+    int32_t* s_idx = reinterpret_cast<int32_t*>(smem_raw);
+    float*   s_wt  = reinterpret_cast<float*>(smem_raw + blockDim.x * sizeof(int32_t));
+    float*   s_red = reinterpret_cast<float*>(smem_raw + blockDim.x * (sizeof(int32_t) + sizeof(float)));
+
+    int row = blockIdx.x;
+    if (row >= n_pre) return;
+    const int32_t* i_row = indices + (size_t)row * n_conn;
+    const float*   w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
+
+    float val = 0.0f;
+    for (int base = 0; base < n_conn; base += blockDim.x) {
+        int k = base + threadIdx.x;
+        if (k < n_conn) {
+            s_idx[threadIdx.x] = i_row[k];
+            s_wt[threadIdx.x]  = is_homo ? 1.0f : w_row[k];
+        }
+        __syncthreads();
+        int tile = min((int)blockDim.x, n_conn - base);
+        if (threadIdx.x < tile)
+            val += s_wt[threadIdx.x] * vector[s_idx[threadIdx.x]];
+        __syncthreads();
+    }
+
+    // Inline block reduction using s_red from dynamic shared memory
+    int lane   = threadIdx.x & 31;
+    int warpid = threadIdx.x >> 5;
+    val = warp_reduce_sum(val);
+    if (lane == 0) s_red[warpid] = val;
+    __syncthreads();
+    int n_warps = (blockDim.x + 31) >> 5;
+    val = (threadIdx.x < n_warps) ? s_red[lane] : 0.0f;
+    if (warpid == 0) val = warp_reduce_sum(val);
+
+    if (threadIdx.x == 0)
+        output[row] = is_homo ? (weights[0] * val) : val;
+}
+
+// One block per row, float4/int4 vectorised loads with inline block reduction.
+// Uses 32*sizeof(float) of dynamic shared memory for the reduction scratchpad.
+// Best when n_conn % 4 == 0.
+__global__ void _gather_vec4_kern(
+    const int32_t* __restrict__ indices,
+    const float*   __restrict__ vector,
+    float*         __restrict__ output,
+    const float*   __restrict__ weights,
+    int n_pre, int n_conn, int is_homo
+) {
+    extern __shared__ float smem_red[];  // 32 floats for block reduction
+    int row = blockIdx.x;
+    if (row >= n_pre) return;
+    size_t base = (size_t)row * n_conn;
+    const int4*   i4 = reinterpret_cast<const int4*>(indices + base);
+    const float4* w4 = is_homo ? nullptr : reinterpret_cast<const float4*>(weights + base);
+    int n4 = n_conn >> 2;
+    float val = 0.0f;
+    for (int k = threadIdx.x; k < n4; k += blockDim.x) {
+        int4 idx = i4[k];
+        if (!is_homo) {
+            float4 ww = w4[k];
+            val += ww.x * vector[idx.x] + ww.y * vector[idx.y]
+                 + ww.z * vector[idx.z] + ww.w * vector[idx.w];
+        } else {
+            val += vector[idx.x] + vector[idx.y] + vector[idx.z] + vector[idx.w];
+        }
+    }
+    // Scalar remainder (when n_conn % 4 != 0)
+    for (int k = (n4 << 2) + threadIdx.x; k < n_conn; k += blockDim.x) {
+        float v = vector[indices[base + k]];
+        val += is_homo ? v : (weights[base + k] * v);
+    }
+    // Inline block reduction via dynamic shared memory
+    int lane   = threadIdx.x & 31;
+    int warpid = threadIdx.x >> 5;
+    val = warp_reduce_sum(val);
+    if (lane == 0) smem_red[warpid] = val;
+    __syncthreads();
+    int n_warps = (blockDim.x + 31) >> 5;
+    val = (threadIdx.x < n_warps) ? smem_red[lane] : 0.0f;
+    if (warpid == 0) val = warp_reduce_sum(val);
+    if (threadIdx.x == 0)
+        output[row] = is_homo ? (weights[0] * val) : val;
+}
+
+// =========================================================================
+// Scatter device kernels (transpose=True)
+// y[idx[i,k]] += w[i,k] * v[i]   (output must be pre-zeroed)
+// =========================================================================
+
+// One block per pre-neuron, threads stride over n_conn.
+__global__ void _scatter_basic_kern(
+    const int32_t* __restrict__ indices,
+    const float*   __restrict__ vector,
+    float*         __restrict__ output,
+    const float*   __restrict__ weights,
+    int n_pre, int n_conn, int is_homo
+) {
+    int row = blockIdx.x;
+    if (row >= n_pre) return;
+    float v = vector[row];
+    const int32_t* i_row = indices + (size_t)row * n_conn;
+    const float*   w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
+    for (int k = threadIdx.x; k < n_conn; k += blockDim.x)
+        atomicAdd(&output[i_row[k]], (is_homo ? weights[0] : w_row[k]) * v);
+}
+
+// 8 warps per block (256 threads), one warp per pre-neuron.
+// Grid = ceil(n_pre / 8) blocks.
+__global__ void _scatter_warp_kern(
+    const int32_t* __restrict__ indices,
+    const float*   __restrict__ vector,
+    float*         __restrict__ output,
+    const float*   __restrict__ weights,
+    int n_pre, int n_conn, int is_homo
+) {
+    int warp_id   = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    int lane_id   = threadIdx.x & 31;
+    int num_warps = (gridDim.x * blockDim.x) >> 5;
+    for (int row = warp_id; row < n_pre; row += num_warps) {
+        float v = vector[row];
+        const int32_t* i_row = indices + (size_t)row * n_conn;
+        const float*   w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
+        for (int k = lane_id; k < n_conn; k += 32)
+            atomicAdd(&output[i_row[k]], (is_homo ? weights[0] : w_row[k]) * v);
+    }
+}
+
+// Flat grid-stride over all (pre, conn) pairs. Maximises SM occupancy.
+__global__ void _scatter_gs_kern(
+    const int32_t* __restrict__ indices,
+    const float*   __restrict__ vector,
+    float*         __restrict__ output,
+    const float*   __restrict__ weights,
+    int n_pre, int n_conn, int is_homo
+) {
+    int total  = n_pre * n_conn;
+    int tid    = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = blockDim.x * gridDim.x;
+    for (int idx = tid; idx < total; idx += stride) {
+        int row = idx / n_conn;
+        float w = is_homo ? weights[0] : weights[idx];
+        atomicAdd(&output[indices[idx]], w * vector[row]);
+    }
+}
+
+// =========================================================================
+// TVM FFI Entry Points
+// =========================================================================
+// Convention: args = (weights, indices, vector, output, stream)
+// weights: shape (1,) for homo or (n_pre, n_conn) for hetero, float32
+// indices: shape (n_pre, n_conn), int32
+// vector:  shape (n_post,) for gather, (n_pre,) for scatter, float32
+// output:  shape (n_pre,) for gather, (n_post,) for scatter, float32
+//
+// IMPORTANT: weights.data_ptr() is a GPU device pointer.
+// NEVER dereference it on the host. Pass it to kernels unchanged.
+// GPU threads read weights[0] (homo) or weights[row*n_conn+k] (hetero).
+
+// --- Gather entry points ---
+
+void fcnmv_gather_warp(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView vector,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;   // metadata: host-safe
+    const float*   d_weights = static_cast<const float*>(weights.data_ptr());  // device ptr, not dereferenced
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const float*   d_vec = static_cast<const float*>(vector.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    _gather_warp_kern<<<n_pre, 32, 0, s>>>(d_idx, d_vec, d_out, d_weights, n_pre, n_conn, is_homo);
+}
+
+void fcnmv_gather_basic(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView vector,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_weights = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const float*   d_vec = static_cast<const float*>(vector.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    size_t shm = 32 * sizeof(float);
+    _gather_basic_kern<<<n_pre, 256, shm, s>>>(d_idx, d_vec, d_out, d_weights, n_pre, n_conn, is_homo);
+}
+
+void fcnmv_gather_shared(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView vector,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_weights = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const float*   d_vec = static_cast<const float*>(vector.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    int threads = 256;
+    // Dynamic shared mem: s_idx[threads] + s_wt[threads] + s_red[32]
+    size_t shm = (size_t)threads * (sizeof(int32_t) + sizeof(float)) + 32 * sizeof(float);
+    _gather_shared_kern<<<n_pre, threads, shm, s>>>(d_idx, d_vec, d_out, d_weights, n_pre, n_conn, is_homo);
+}
+
+void fcnmv_gather_vec4(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView vector,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_weights = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const float*   d_vec = static_cast<const float*>(vector.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    size_t shm = 32 * sizeof(float);
+    _gather_vec4_kern<<<n_pre, 256, shm, s>>>(d_idx, d_vec, d_out, d_weights, n_pre, n_conn, is_homo);
+}
+
+// Auto-selects the best gather kernel based on n_conn.
+void fcnmv_gather_auto(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView vector,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_weights = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const float*   d_vec = static_cast<const float*>(vector.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+
+    size_t shm_red = 32 * sizeof(float);
+    if (n_conn <= 32) {
+        _gather_warp_kern<<<n_pre, 32, 0, s>>>(d_idx, d_vec, d_out, d_weights, n_pre, n_conn, is_homo);
+    } else if (n_conn % 4 == 0 && n_conn >= 128) {
+        _gather_vec4_kern<<<n_pre, 256, shm_red, s>>>(d_idx, d_vec, d_out, d_weights, n_pre, n_conn, is_homo);
+    } else if (n_conn > 512) {
+        int threads = 256;
+        size_t shm = (size_t)threads * (sizeof(int32_t) + sizeof(float)) + 32 * sizeof(float);
+        _gather_shared_kern<<<n_pre, threads, shm, s>>>(d_idx, d_vec, d_out, d_weights, n_pre, n_conn, is_homo);
+    } else {
+        _gather_basic_kern<<<n_pre, 256, shm_red, s>>>(d_idx, d_vec, d_out, d_weights, n_pre, n_conn, is_homo);
+    }
+}
+
+// --- Scatter entry points (output zeroed before kernel launch) ---
+
+void fcnmv_scatter_basic(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView vector,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int n_post = static_cast<int>(output.size(0));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_weights = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const float*   d_vec = static_cast<const float*>(vector.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    cudaMemsetAsync(d_out, 0, (size_t)n_post * sizeof(float), s);
+    _scatter_basic_kern<<<n_pre, 256, 0, s>>>(d_idx, d_vec, d_out, d_weights, n_pre, n_conn, is_homo);
+}
+
+void fcnmv_scatter_warp(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView vector,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int n_post = static_cast<int>(output.size(0));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_weights = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const float*   d_vec = static_cast<const float*>(vector.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    cudaMemsetAsync(d_out, 0, (size_t)n_post * sizeof(float), s);
+    // 256 threads per block = 8 warps; grid = ceil(n_pre / 8)
+    int blocks = (n_pre + 7) / 8;
+    _scatter_warp_kern<<<blocks, 256, 0, s>>>(d_idx, d_vec, d_out, d_weights, n_pre, n_conn, is_homo);
+}
+
+void fcnmv_scatter_gridstride(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView vector,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int n_post = static_cast<int>(output.size(0));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_weights = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const float*   d_vec = static_cast<const float*>(vector.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    cudaMemsetAsync(d_out, 0, (size_t)n_post * sizeof(float), s);
+    int blocks = min(1024, (n_pre * n_conn + 255) / 256);
+    _scatter_gs_kern<<<blocks, 256, 0, s>>>(d_idx, d_vec, d_out, d_weights, n_pre, n_conn, is_homo);
+}
+
+// Auto-selects the best scatter kernel based on problem size.
+void fcnmv_scatter_auto(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView vector,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int n_post = static_cast<int>(output.size(0));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_weights = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const float*   d_vec = static_cast<const float*>(vector.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    cudaMemsetAsync(d_out, 0, (size_t)n_post * sizeof(float), s);
+
+    if (n_conn <= 32) {
+        // One warp per pre-neuron
+        int blocks = (n_pre + 7) / 8;
+        _scatter_warp_kern<<<blocks, 256, 0, s>>>(d_idx, d_vec, d_out, d_weights, n_pre, n_conn, is_homo);
+    } else if ((long long)n_pre * n_conn > 262144LL) {
+        // Large problem: grid-stride maximises occupancy
+        int blocks = min(1024, (n_pre * n_conn + 255) / 256);
+        _scatter_gs_kern<<<blocks, 256, 0, s>>>(d_idx, d_vec, d_out, d_weights, n_pre, n_conn, is_homo);
+    } else {
+        // Medium problem: one block per pre-neuron
+        _scatter_basic_kern<<<n_pre, 256, 0, s>>>(d_idx, d_vec, d_out, d_weights, n_pre, n_conn, is_homo);
+    }
+}
+""",
+    )
+
+    out_info = kwargs['outs']
+    n_conn = indices_info.shape[1]
+
+    if transpose:
+        # Scatter mode: y[idx[i,k]] += w[i,k] * v[i]
+        if n_conn <= 32:
+            kernel_name = 'fcn_mv_float.fcnmv_scatter_warp'
+        else:
+            kernel_name = 'fcn_mv_float.fcnmv_scatter_auto'
+
+        def kernel(weights, indices, vector):
+            return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, vector)
+
+    else:
+        # Gather mode: y[i] = sum_k w[i,k] * v[idx[i,k]]
+        if n_conn % 4 == 0 and n_conn >= 128:
+            kernel_name = 'fcn_mv_float.fcnmv_gather_vec4'
+        elif n_conn <= 32:
+            kernel_name = 'fcn_mv_float.fcnmv_gather_warp'
+        else:
+            kernel_name = 'fcn_mv_float.fcnmv_gather_auto'
+
+        def kernel(weights, indices, vector):
+            return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, vector)
+
+    return kernel
+
+
 def _fcnmv_jvp_vector(spk_dot, weights, indices, spikes, *, shape, transpose, **kwargs):
     return fcnmv_p_call(weights, indices, spk_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
@@ -512,7 +1009,7 @@ def fcnmv_p_call(
     connection number.
 
     This function validates shapes and dispatches to the registered XLA
-    custom kernel (Numba, Warp, or Pallas) without performing any
+    custom kernel (Numba, Warp, Pallas, or TVM FFI) without performing any
     physical-unit bookkeeping.  It is typically called from :func:`fcnmv`
     or from autodiff rules.
 
@@ -532,8 +1029,8 @@ def fcnmv_p_call(
         ``False`` for gather mode (fixed post-connections), ``True`` for
         scatter mode (fixed pre-connections).
     backend : str or None, optional
-        Backend override (``'numba'``, ``'warp'``, ``'pallas'``, or
-        ``None``).
+        Backend override (``'numba'``, ``'warp'``, ``'pallas'``,
+        ``'tvmffi'``, or ``None``).
 
     Returns
     -------
@@ -567,8 +1064,8 @@ Low-level XLA custom-kernel primitive for ``fcnmv``.
 
 This ``XLACustomKernel`` instance dispatches the fixed-connection matrix-vector
 multiplication operation with floating-point weights to registered backends
-(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata provided
-by the high-level wrapper.
+(``numba``, ``warp``, ``pallas``, ``tvmffi``), using runtime shape/dtype metadata
+provided by the high-level wrapper.
 
 Fixed-connection format stores connectivity where each neuron has a fixed number
 of incoming or outgoing connections. Unlike the binary variant, this operation
@@ -589,7 +1086,8 @@ fcnmv : High-level user-facing function wrapper.
 fcnmv_p.def_numba_kernel(_fcnmv_numba_kernel)
 fcnmv_p.def_warp_kernel(_fcnmv_warp_kernel)
 fcnmv_p.def_pallas_kernel('gpu', _fcnmv_pallas_kernel)
-fcnmv_p.def_jvp_rule2(_fcnmv_jvp_weights, None, _fcnmv_jvp_vector, None)
+fcnmv_p.def_tvmffi_kernel('gpu', _fcnmv_cuda_kernel)
+fcnmv_p.def_jvp_rule2(_fcnmv_jvp_weights, None, _fcnmv_jvp_vector)
 fcnmv_p.def_transpose_rule(_fcnmv_transpose_rule)
 fcnmv_p.def_batching_rule(_fcnmv_batching)
 fcnmv_p.def_call(fcnmv_p_call)

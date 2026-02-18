@@ -137,10 +137,9 @@ def register_tvm_cuda_kernels(
     to compile inline CUDA source and register each resulting function as
     a JAX FFI target on the GPU platform.
 
-    A per-process cache tracks registered module names.  Calling this
-    function twice with the same *module* name raises
-    :exc:`~brainevent.TVMModuleAlreadyRegisteredError` so that accidental
-    double-registration is detected early.
+    A per-process cache tracks registered module names.  If *module* has
+    already been registered, this function returns the previously compiled
+    module from cache and skips recompilation/re-registration.
 
     Parameters
     ----------
@@ -154,12 +153,16 @@ def register_tvm_cuda_kernels(
         Names of the functions (entry points) to extract from the
         compiled module and register with JAX FFI.
 
+    Returns
+    -------
+    object
+        The compiled CUDA module object.  If *module* has already been
+        registered in this process, the cached module is returned.
+
     Raises
     ------
     TVMFFINotInstalledError
         If ``jax_tvm_ffi`` or ``tvm_ffi.cpp`` is not installed.
-    TVMModuleAlreadyRegisteredError
-        If *module* has already been registered in this process.
     ValueError
         If *source_code* is not a string, *module* is not a string, or
         *functions* is not a sequence of strings.
@@ -194,8 +197,9 @@ def register_tvm_cuda_kernels(
             "Install it with: pip install jax-tvm-ffi"
         )
 
-    # Raise if this module name was already registered.
+    # Return cached module if this name is already registered.
     if module in _registered_tvm_modules:
+        return _registered_tvm_modules[module]
         raise TVMModuleAlreadyRegisteredError(
             f"TVM CUDA module '{module}' has already been registered. "
             "Each module name must be unique within a process."
