@@ -200,10 +200,6 @@ def register_tvm_cuda_kernels(
     # Return cached module if this name is already registered.
     if module in _registered_tvm_modules:
         return _registered_tvm_modules[module]
-        raise TVMModuleAlreadyRegisteredError(
-            f"TVM CUDA module '{module}' has already been registered. "
-            "Each module name must be unique within a process."
-        )
 
     if not isinstance(source_code, str):
         raise ValueError("source_code must be a string")
