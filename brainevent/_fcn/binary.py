@@ -25,7 +25,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, register_tvm_cuda_kernels
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
 from brainevent.config import get_numba_parallel
@@ -79,7 +79,7 @@ def binary_fcnmv(
         pre-synaptic connections, scatter mode).
     backend : str or None, optional
         Execution backend override (``'numba'``,
-        ``'pallas'``, or ``None`` for automatic selection).
+        ``'pallas'``, ``'tvmffi'``, or ``None`` for automatic selection).
 
     Returns
     -------
@@ -350,6 +350,562 @@ def _binary_fcnmv_pallas_kernel(
     return kernel
 
 
+def _binary_fcnmv_cuda_kernel(
+    transpose: bool,
+    spike_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    """
+    CUDA TVM FFI kernel generator for ``binary_fcnmv``.
+
+    Implements the event-driven sparse matrix--vector product on GPU via
+    NVRTC-compiled CUDA kernels registered through the TVM FFI infrastructure.
+
+    Kernel variants
+    ---------------
+    **Gather mode** (``transpose=False``):
+    y[i] = sum_k weights[i,k] * is_active(spikes[indices[i,k]])
+
+    - ``_bool_warp``  : bool spikes, one warp (32 threads) per row — best for n_conn ≤ 32
+    - ``_bool_basic`` : bool spikes, one block (256 threads) per row + block reduction — best for n_conn > 32
+    - ``_float_warp`` : float spikes, one warp per row — best for n_conn ≤ 32
+    - ``_float_basic``: float spikes, one block per row + block reduction — best for n_conn > 32
+
+    **Scatter mode** (``transpose=True``):
+    if is_active(spikes[i]):  output[indices[i,k]] += weights[i,k]  for all k
+
+    - ``_bool_warp``  : bool spikes, 8-warps-per-block layout — best for n_conn ≤ 32
+    - ``_bool_basic`` : bool spikes, one block per pre-neuron — best for n_conn > 32
+    - ``_float_warp`` : float spikes, 8-warps-per-block layout — best for n_conn ≤ 32
+    - ``_float_basic``: float spikes, one block per pre-neuron — best for n_conn > 32
+
+    Optimization notes
+    ------------------
+    - Gather kernels use **branchless** computation (multiply by 0/1) to avoid
+      warp divergence from irregular spike patterns.
+    - Scatter kernels use **early block exit** (return/continue if spike inactive)
+      to skip all-inactive pre-neurons, which is highly effective at the typical
+      1–5 % firing rates found in spiking neural networks.
+    - Shared memory is used for block reduction in ``_basic`` gather variants
+      (``extern __shared__``, never static in ``__device__`` functions per
+      NVRTC constraints).
+    - Host C++ entry functions only read metadata (``ndim()``, ``size()``).
+      ``data_ptr()`` is passed unchanged to device kernels and never
+      dereferenced on the host.
+    """
+    register_tvm_cuda_kernels(
+        module='binary_fcnmv',
+        functions=[
+            'binary_fcnmv_gather_bool_warp',
+            'binary_fcnmv_gather_bool_basic',
+            'binary_fcnmv_gather_float_warp',
+            'binary_fcnmv_gather_float_basic',
+            'binary_fcnmv_scatter_bool_warp',
+            'binary_fcnmv_scatter_bool_basic',
+            'binary_fcnmv_scatter_float_warp',
+            'binary_fcnmv_scatter_float_basic',
+        ],
+        source_code=r"""
+#include <cuda_runtime.h>
+#include <cstdint>
+
+// =========================================================================
+// Warp reduction helper
+// =========================================================================
+
+__device__ __inline__ float warp_reduce_sum(float val) {
+    for (int offset = 16; offset > 0; offset >>= 1)
+        val += __shfl_down_sync(0xffffffff, val, offset);
+    return val;
+}
+
+// =========================================================================
+// GATHER kernels  (transpose=False)
+//
+// y[i] = sum_{k=0}^{n_conn-1} weights[i,k] * is_active(spikes[indices[i,k]])
+//
+//   is_active(s) for bool spikes (uint8):  s != 0
+//   is_active(s) for float spikes:         s > 0.0f
+//
+// For homogeneous weights (is_homo=1):
+//   y[i] = weights[0] * count_k( is_active(spikes[indices[i,k]]) )
+//
+// Branchless formulation: val += (float)(is_active(s)) [* weight]
+// avoids warp divergence from irregular spike patterns.
+// =========================================================================
+
+// ---- Gather / Bool spikes ----
+
+// One warp (32 threads) per output row.
+// Best when n_conn <= 32; threads stride with step 32 for larger n_conn.
+__global__ void _bg_bool_warp_kern(
+    const int32_t* __restrict__ indices,   // [n_pre, n_conn]
+    const uint8_t* __restrict__ spikes,    // [n_post], bool stored as uint8
+    float*         __restrict__ output,    // [n_pre]
+    const float*   __restrict__ weights,   // [1] or [n_pre, n_conn]
+    int n_pre, int n_conn, int is_homo
+) {
+    int row = blockIdx.x;
+    if (row >= n_pre) return;
+    const int32_t* i_row = indices + (size_t)row * n_conn;
+    const float*   w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
+    float val = 0.0f;
+    for (int k = threadIdx.x; k < n_conn; k += 32) {
+        float s = (float)(spikes[i_row[k]] != 0);
+        val += is_homo ? s : (s * w_row[k]);
+    }
+    val = warp_reduce_sum(val);
+    if (threadIdx.x == 0)
+        output[row] = is_homo ? (weights[0] * val) : val;
+}
+
+// One block (256 threads) per output row with inline block reduction.
+// Uses 32*sizeof(float) of dynamic shared memory for the reduction scratchpad.
+// Best when n_conn > 32.
+__global__ void _bg_bool_basic_kern(
+    const int32_t* __restrict__ indices,   // [n_pre, n_conn]
+    const uint8_t* __restrict__ spikes,    // [n_post]
+    float*         __restrict__ output,    // [n_pre]
+    const float*   __restrict__ weights,   // [1] or [n_pre, n_conn]
+    int n_pre, int n_conn, int is_homo
+) {
+    extern __shared__ float smem_red[];   // 32 floats for block reduction
+    int row = blockIdx.x;
+    if (row >= n_pre) return;
+    const int32_t* i_row = indices + (size_t)row * n_conn;
+    const float*   w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
+    float val = 0.0f;
+    for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {
+        float s = (float)(spikes[i_row[k]] != 0);
+        val += is_homo ? s : (s * w_row[k]);
+    }
+    // Inline block reduction via dynamic shared memory
+    int lane   = threadIdx.x & 31;
+    int warpid = threadIdx.x >> 5;
+    val = warp_reduce_sum(val);
+    if (lane == 0) smem_red[warpid] = val;
+    __syncthreads();
+    int n_warps = (blockDim.x + 31) >> 5;
+    val = (threadIdx.x < n_warps) ? smem_red[lane] : 0.0f;
+    if (warpid == 0) val = warp_reduce_sum(val);
+    if (threadIdx.x == 0)
+        output[row] = is_homo ? (weights[0] * val) : val;
+}
+
+// ---- Gather / Float spikes ----
+
+// One warp (32 threads) per output row.
+// Best when n_conn <= 32.
+__global__ void _bg_float_warp_kern(
+    const int32_t* __restrict__ indices,   // [n_pre, n_conn]
+    const float*   __restrict__ spikes,    // [n_post], float spikes
+    float*         __restrict__ output,    // [n_pre]
+    const float*   __restrict__ weights,   // [1] or [n_pre, n_conn]
+    int n_pre, int n_conn, int is_homo
+) {
+    int row = blockIdx.x;
+    if (row >= n_pre) return;
+    const int32_t* i_row = indices + (size_t)row * n_conn;
+    const float*   w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
+    float val = 0.0f;
+    for (int k = threadIdx.x; k < n_conn; k += 32) {
+        float s = (spikes[i_row[k]] > 0.0f) ? 1.0f : 0.0f;
+        val += is_homo ? s : (s * w_row[k]);
+    }
+    val = warp_reduce_sum(val);
+    if (threadIdx.x == 0)
+        output[row] = is_homo ? (weights[0] * val) : val;
+}
+
+// One block (256 threads) per output row with inline block reduction.
+// Best when n_conn > 32.
+__global__ void _bg_float_basic_kern(
+    const int32_t* __restrict__ indices,
+    const float*   __restrict__ spikes,
+    float*         __restrict__ output,
+    const float*   __restrict__ weights,
+    int n_pre, int n_conn, int is_homo
+) {
+    extern __shared__ float smem_red[];
+    int row = blockIdx.x;
+    if (row >= n_pre) return;
+    const int32_t* i_row = indices + (size_t)row * n_conn;
+    const float*   w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
+    float val = 0.0f;
+    for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {
+        float s = (spikes[i_row[k]] > 0.0f) ? 1.0f : 0.0f;
+        val += is_homo ? s : (s * w_row[k]);
+    }
+    int lane   = threadIdx.x & 31;
+    int warpid = threadIdx.x >> 5;
+    val = warp_reduce_sum(val);
+    if (lane == 0) smem_red[warpid] = val;
+    __syncthreads();
+    int n_warps = (blockDim.x + 31) >> 5;
+    val = (threadIdx.x < n_warps) ? smem_red[lane] : 0.0f;
+    if (warpid == 0) val = warp_reduce_sum(val);
+    if (threadIdx.x == 0)
+        output[row] = is_homo ? (weights[0] * val) : val;
+}
+
+// =========================================================================
+// SCATTER kernels  (transpose=True)
+//
+// For each active row i (is_active(spikes[i]) == true):
+//   output[indices[i, k]] += weights[i, k]   for k = 0 .. n_conn-1
+//
+// Output buffer must be pre-zeroed; this is done via cudaMemsetAsync
+// in the TVM FFI entry functions below.
+//
+// Key optimisation: early exit (return / continue) when a pre-neuron is
+// inactive.  With typical SNN firing rates of 1-5 %, this skips 95-99 %
+// of all blocks/warps entirely.
+// =========================================================================
+
+// ---- Scatter / Bool spikes ----
+
+// 8 warps per block (256 threads), one warp per pre-neuron.
+// Grid = ceil(n_pre / 8) blocks.
+// All 32 threads in a warp handle the same row — no intra-warp divergence
+// on the "skip if inactive" check.
+// Best when n_conn <= 32.
+__global__ void _bs_bool_warp_kern(
+    const int32_t* __restrict__ indices,   // [n_pre, n_conn]
+    const uint8_t* __restrict__ spikes,    // [n_pre]
+    float*         __restrict__ output,    // [n_post]
+    const float*   __restrict__ weights,   // [1] or [n_pre, n_conn]
+    int n_pre, int n_conn, int is_homo
+) {
+    int warp_id   = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    int lane_id   = threadIdx.x & 31;
+    int num_warps = (gridDim.x * blockDim.x) >> 5;
+    for (int row = warp_id; row < n_pre; row += num_warps) {
+        if (!spikes[row]) continue;   // all 32 threads in warp take same branch
+        const int32_t* i_row = indices + (size_t)row * n_conn;
+        const float*   w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
+        float w0 = is_homo ? weights[0] : 0.0f;
+        for (int k = lane_id; k < n_conn; k += 32)
+            atomicAdd(&output[i_row[k]], is_homo ? w0 : w_row[k]);
+    }
+}
+
+// One block (256 threads) per pre-neuron.  Entire block exits early
+// if the neuron is inactive.
+// Best when n_conn > 32.
+__global__ void _bs_bool_basic_kern(
+    const int32_t* __restrict__ indices,
+    const uint8_t* __restrict__ spikes,
+    float*         __restrict__ output,
+    const float*   __restrict__ weights,
+    int n_pre, int n_conn, int is_homo
+) {
+    int row = blockIdx.x;
+    if (row >= n_pre) return;
+    if (!spikes[row]) return;   // skip entire block if neuron is inactive
+    const int32_t* i_row = indices + (size_t)row * n_conn;
+    const float*   w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
+    float w0 = is_homo ? weights[0] : 0.0f;
+    for (int k = threadIdx.x; k < n_conn; k += blockDim.x)
+        atomicAdd(&output[i_row[k]], is_homo ? w0 : w_row[k]);
+}
+
+// ---- Scatter / Float spikes ----
+
+// 8 warps per block, one warp per pre-neuron.  Best when n_conn <= 32.
+__global__ void _bs_float_warp_kern(
+    const int32_t* __restrict__ indices,
+    const float*   __restrict__ spikes,
+    float*         __restrict__ output,
+    const float*   __restrict__ weights,
+    int n_pre, int n_conn, int is_homo
+) {
+    int warp_id   = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    int lane_id   = threadIdx.x & 31;
+    int num_warps = (gridDim.x * blockDim.x) >> 5;
+    for (int row = warp_id; row < n_pre; row += num_warps) {
+        if (!(spikes[row] > 0.0f)) continue;
+        const int32_t* i_row = indices + (size_t)row * n_conn;
+        const float*   w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
+        float w0 = is_homo ? weights[0] : 0.0f;
+        for (int k = lane_id; k < n_conn; k += 32)
+            atomicAdd(&output[i_row[k]], is_homo ? w0 : w_row[k]);
+    }
+}
+
+// One block per pre-neuron.  Best when n_conn > 32.
+__global__ void _bs_float_basic_kern(
+    const int32_t* __restrict__ indices,
+    const float*   __restrict__ spikes,
+    float*         __restrict__ output,
+    const float*   __restrict__ weights,
+    int n_pre, int n_conn, int is_homo
+) {
+    int row = blockIdx.x;
+    if (row >= n_pre) return;
+    if (!(spikes[row] > 0.0f)) return;
+    const int32_t* i_row = indices + (size_t)row * n_conn;
+    const float*   w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
+    float w0 = is_homo ? weights[0] : 0.0f;
+    for (int k = threadIdx.x; k < n_conn; k += blockDim.x)
+        atomicAdd(&output[i_row[k]], is_homo ? w0 : w_row[k]);
+}
+
+// =========================================================================
+// TVM FFI Entry Points
+//
+// Convention: args = (weights, indices, spikes, output, stream)
+//   weights : float32, shape (1,) for homo or (n_pre, n_conn) for hetero
+//   indices : int32,   shape (n_pre, n_conn)
+//   spikes  : gather → (n_post,);  scatter → (n_pre,)
+//             bool variant   → uint8 pointer
+//             float variant  → float32 pointer
+//   output  : gather → (n_pre,) float32, written directly (no pre-zero)
+//             scatter → (n_post,) float32, zeroed here via cudaMemsetAsync
+//
+// IMPORTANT: data_ptr() returns a GPU device memory pointer.
+// NEVER dereference it in host C++ code (causes SIGSEGV).
+// Pass it unchanged to device kernels; GPU threads read from it.
+// Only ndim() and size() are host-safe metadata reads.
+// =========================================================================
+
+// ---- Gather / Bool ----
+
+void binary_fcnmv_gather_bool_warp(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView spikes,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;   // host-safe metadata
+    const float*   d_w   = static_cast<const float*>(weights.data_ptr());   // device ptr
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const uint8_t* d_spk = static_cast<const uint8_t*>(spikes.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    _bg_bool_warp_kern<<<n_pre, 32, 0, s>>>(d_idx, d_spk, d_out, d_w, n_pre, n_conn, is_homo);
+}
+
+void binary_fcnmv_gather_bool_basic(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView spikes,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const uint8_t* d_spk = static_cast<const uint8_t*>(spikes.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    size_t shm = 32 * sizeof(float);
+    _bg_bool_basic_kern<<<n_pre, 256, shm, s>>>(d_idx, d_spk, d_out, d_w, n_pre, n_conn, is_homo);
+}
+
+// ---- Gather / Float ----
+
+void binary_fcnmv_gather_float_warp(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView spikes,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const float*   d_spk = static_cast<const float*>(spikes.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    _bg_float_warp_kern<<<n_pre, 32, 0, s>>>(d_idx, d_spk, d_out, d_w, n_pre, n_conn, is_homo);
+}
+
+void binary_fcnmv_gather_float_basic(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView spikes,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const float*   d_spk = static_cast<const float*>(spikes.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    size_t shm = 32 * sizeof(float);
+    _bg_float_basic_kern<<<n_pre, 256, shm, s>>>(d_idx, d_spk, d_out, d_w, n_pre, n_conn, is_homo);
+}
+
+// ---- Scatter / Bool (output pre-zeroed via cudaMemsetAsync) ----
+
+void binary_fcnmv_scatter_bool_warp(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView spikes,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int n_post = static_cast<int>(output.size(0));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const uint8_t* d_spk = static_cast<const uint8_t*>(spikes.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    cudaMemsetAsync(d_out, 0, (size_t)n_post * sizeof(float), s);
+    int blocks = (n_pre + 7) / 8;
+    _bs_bool_warp_kern<<<blocks, 256, 0, s>>>(d_idx, d_spk, d_out, d_w, n_pre, n_conn, is_homo);
+}
+
+void binary_fcnmv_scatter_bool_basic(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView spikes,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int n_post = static_cast<int>(output.size(0));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const uint8_t* d_spk = static_cast<const uint8_t*>(spikes.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    cudaMemsetAsync(d_out, 0, (size_t)n_post * sizeof(float), s);
+    _bs_bool_basic_kern<<<n_pre, 256, 0, s>>>(d_idx, d_spk, d_out, d_w, n_pre, n_conn, is_homo);
+}
+
+// ---- Scatter / Float ----
+
+void binary_fcnmv_scatter_float_warp(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView spikes,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int n_post = static_cast<int>(output.size(0));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const float*   d_spk = static_cast<const float*>(spikes.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    cudaMemsetAsync(d_out, 0, (size_t)n_post * sizeof(float), s);
+    int blocks = (n_pre + 7) / 8;
+    _bs_float_warp_kern<<<blocks, 256, 0, s>>>(d_idx, d_spk, d_out, d_w, n_pre, n_conn, is_homo);
+}
+
+void binary_fcnmv_scatter_float_basic(
+    tvm::ffi::TensorView weights,
+    tvm::ffi::TensorView indices,
+    tvm::ffi::TensorView spikes,
+    tvm::ffi::TensorView output,
+    int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    int n_pre  = static_cast<int>(indices.size(0));
+    int n_conn = static_cast<int>(indices.size(1));
+    int n_post = static_cast<int>(output.size(0));
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;
+    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
+    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
+    const float*   d_spk = static_cast<const float*>(spikes.data_ptr());
+    float*         d_out = static_cast<float*>(output.data_ptr());
+    cudaMemsetAsync(d_out, 0, (size_t)n_post * sizeof(float), s);
+    _bs_float_basic_kern<<<n_pre, 256, 0, s>>>(d_idx, d_spk, d_out, d_w, n_pre, n_conn, is_homo);
+}
+""",
+    )
+
+    out_info = kwargs['outs']
+    n_conn = indices_info.shape[1]
+    is_bool_spike = (spike_info.dtype == jnp.bool_)
+
+    if transpose:
+        # Scatter mode: if is_active(spikes[i]) → output[indices[i,k]] += weights[i,k]
+        if is_bool_spike:
+            kernel_name = (
+                'binary_fcnmv.binary_fcnmv_scatter_bool_warp'
+                if n_conn <= 32
+                else 'binary_fcnmv.binary_fcnmv_scatter_bool_basic'
+            )
+        else:
+            kernel_name = (
+                'binary_fcnmv.binary_fcnmv_scatter_float_warp'
+                if n_conn <= 32
+                else 'binary_fcnmv.binary_fcnmv_scatter_float_basic'
+            )
+    else:
+        # Gather mode: y[i] = sum_k weights[i,k] * is_active(spikes[indices[i,k]])
+        if is_bool_spike:
+            kernel_name = (
+                'binary_fcnmv.binary_fcnmv_gather_bool_warp'
+                if n_conn <= 32
+                else 'binary_fcnmv.binary_fcnmv_gather_bool_basic'
+            )
+        else:
+            kernel_name = (
+                'binary_fcnmv.binary_fcnmv_gather_float_warp'
+                if n_conn <= 32
+                else 'binary_fcnmv.binary_fcnmv_gather_float_basic'
+            )
+
+    def kernel(weights, indices, spikes):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, spikes)
+
+    return kernel
+
+
+def _binary_fcnmv_jax_kernel(
+    shape: Tuple[int, int],
+    transpose: bool,
+    **kwargs,
+):
+    """Pure JAX reference implementation for benchmarking comparison."""
+    n_pre, n_post = shape
+
+    def kernel(weights, indices, spikes):
+        # Convert spikes to float: bool→{0,1}, float→{0,1} based on >0
+        if spikes.dtype == jnp.bool_:
+            spk_f = spikes.astype(weights.dtype)
+        else:
+            spk_f = (spikes > 0).astype(weights.dtype)
+
+        if transpose:
+            # Scatter: y[indices[i,k]] += weights[i,k] * spk_f[i]
+            masked = jnp.broadcast_to(spk_f[:, None] * weights, indices.shape)
+            return jax.ops.segment_sum(
+                masked.ravel(), indices.ravel(), num_segments=n_post
+            ),
+        else:
+            # Gather: y[i] = sum_k weights[i,k] * spk_f[indices[i,k]]
+            if weights.size == 1:
+                w = weights[0]
+                return jax.vmap(lambda ind: w * jnp.sum(spk_f[ind]))(indices),
+            else:
+                return jax.vmap(lambda w, ind: jnp.sum(w * spk_f[ind]))(weights, indices),
+
+    return kernel
+
+
 def _binary_fcnmv_jvp_spikes(spk_dot, weights, indices, spikes, *, shape, transpose, **kwargs):
     return fcnmv_p_call(weights, indices, spk_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
@@ -463,7 +1019,7 @@ def binary_fcnmv_p_call(
     with fixed connection number.
 
     This function validates shapes and dispatches to the registered XLA
-    custom kernel (Numba or Pallas) without performing any
+    custom kernel (Numba, Pallas, or TVM FFI) without performing any
     physical-unit bookkeeping.  It is typically called from
     :func:`binary_fcnmv` or from autodiff rules.
 
@@ -483,7 +1039,7 @@ def binary_fcnmv_p_call(
         ``False`` for gather mode (fixed post-connections), ``True`` for
         scatter mode (fixed pre-connections).  Default is ``False``.
     backend : str or None, optional
-        Backend override (``'numba'``, ``'pallas'``, or
+        Backend override (``'numba'``, ``'pallas'``, ``'tvmffi'``, or
         ``None``).
 
     Returns
@@ -518,7 +1074,7 @@ Low-level XLA custom-kernel primitive for ``binary_fcnmv``.
 
 This ``XLACustomKernel`` instance dispatches the binary (event-driven)
 fixed-connection matrix-vector multiplication operation to registered backends
-(``numba``, ``pallas``), using runtime shape/dtype metadata provided
+(``numba``, ``pallas``, ``tvmffi``), using runtime shape/dtype metadata provided
 by the high-level wrapper.
 
 Fixed-connection format stores connectivity where each neuron has a fixed number
@@ -539,6 +1095,9 @@ binary_fcnmv : High-level user-facing function wrapper.
 )
 binary_fcnmv_p.def_numba_kernel(_binary_fcnmv_numba_kernel)
 binary_fcnmv_p.def_pallas_kernel('gpu', _binary_fcnmv_pallas_kernel)
+binary_fcnmv_p.def_tvmffi_kernel('gpu', _binary_fcnmv_cuda_kernel)
+binary_fcnmv_p.def_kernel('jax_raw', 'cpu', _binary_fcnmv_jax_kernel)
+binary_fcnmv_p.def_kernel('jax_raw', 'gpu', _binary_fcnmv_jax_kernel)
 binary_fcnmv_p.def_jvp_rule2(_binary_fcnmv_jvp_weights, None, _binary_fcnmv_jvp_spikes, None)
 binary_fcnmv_p.def_transpose_rule(_binary_fcnmv_transpose_rule)
 binary_fcnmv_p.def_batching_rule(_binary_fcnmv_batching)
