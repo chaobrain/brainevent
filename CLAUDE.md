@@ -1,0 +1,195 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+BrainEvent is a Python library for event-driven sparse computation in spiking neural networks, targeting CPU/GPU/TPU via JAX. It provides specialized sparse matrix formats and operations optimized for binary (spike) events and synaptic weight updates.
+
+## Build & Test Commands
+
+```bash
+# Install for development (CPU)
+pip install -r requirements-dev-cpu.txt && pip install . --no-cache-dir
+
+# Install for development (GPU)
+pip install -r requirements-dev-gpu.txt && pip install ".[cuda13]" --no-cache-dir
+
+# Run all tests
+pytest brainevent/
+
+# Run tests for a specific module
+pytest brainevent/_csr/
+
+# Run a single test file
+pytest brainevent/_csr/binary_test.py
+
+# Run a single test
+pytest brainevent/_csr/binary_test.py::test_function_name
+
+# Linting (pre-commit hooks: end-of-file-fixer, debug-statements, trailing-whitespace, flake8)
+pre-commit run --all
+```
+
+## Architecture
+
+### Computation Backends
+
+Each operation supports multiple backends selected at runtime:
+- **numba** — CPU JIT compilation (default on CPU)
+- **pallas** — JAX Pallas kernels for GPU/TPU
+
+Backend config is persisted per-primitive in `~/.config/brainevent/defaults.json` (Linux). See `brainevent/config.py`.
+
+### Sparse Matrix Formats
+
+Each format lives in its own subpackage under `brainevent/`:
+
+| Subpackage | Format | Class(es) |
+|---|---|---|
+| `_coo/` | Coordinate | `COO` |
+| `_csr/` | Compressed Sparse Row/Col | `CSR`, `CSC` |
+| `_dense/` | Dense matrix | (no class, operations only) |
+| `_fcn/` | Fixed Number Connectivity | `FixedNumConn`, `FixedPreNumConn`, `FixedPostNumConn` |
+| `_jit_scalar/` | JITC with scalar weights | `JITCScalarR`, `JITCScalarC` |
+| `_jit_normal/` | JITC with normal-distributed weights | `JITCNormalR`, `JITCNormalC` |
+| `_jit_uniform/` | JITC with uniform-distributed weights | `JITCUniformR`, `JITCUniformC` |
+
+### Module Internal Structure (repeated per format)
+
+Each subpackage follows a consistent layout:
+- `main.py` — Sparse matrix class definition (JAX pytree, `tree_flatten`/`tree_unflatten`)
+- `binary.py` — Event-driven (binary spike) matmul kernels (`binary_*mv`, `binary_*mm`)
+- `float.py` — Float-valued matmul kernels (`*mv`, `*mm`)
+- `plasticity_binary.py` — Synaptic plasticity / weight update rules (`update_*_on_binary_pre/post`)
+- `sparse_float.py` — Sparse float operations (where applicable)
+- `test_util.py` — Reference (naive) implementations for validation
+- `*_test.py` — Tests
+
+### Function Naming Convention
+
+- `binary_*mv` / `binary_*mm` — Event-driven (binary) matrix-vector / matrix-matrix multiply
+- `*mv` / `*mm` — Float-valued matrix-vector / matrix-matrix multiply
+- `spfloat_*mv` / `spfloat_*mm` — Sparse float operations
+- `update_*_on_binary_pre` / `update_*_on_binary_post` — Plasticity weight updates
+- `*_p` suffix — The raw JAX primitive version (lower-level); the unsuffixed version is the user-facing wrapper
+
+### Class Hierarchy
+
+```
+brainunit.sparse.SparseMatrix  (sets self.shape)
+  └── DataRepresentation       (adds buffer registry for mutable state)
+        └── JITCMatrix          (adds unitary/binary ops, apply/apply2)
+              ├── JITCScalarR/C
+              ├── JITCNormalR/C
+              └── JITCUniformR/C
+```
+
+`COO`, `CSR`, `CSC` extend `DataRepresentation` directly.
+
+### Custom Kernel Registration (`_op/`)
+
+- `_op/main.py` — `XLACustomKernel` base class for registering JAX primitives with multiple backend implementations (`KernelEntry` per backend)
+- `_op/util.py` — Helpers: `defjvp`, `general_batching_rule`, type conversions
+- `_op/numba_ffi.py` / `numba_cuda_ffi.py` — Numba CPU/CUDA FFI kernel registration
+
+### Event Representations (`_event/`)
+
+- `BinaryArray` — Wraps boolean arrays representing spikes
+- `SparseFloat` — Sparse float event representation
+- `Indexed*` variants — For pre-sliced/indexed subsets of events
+
+### Key Files
+
+- `brainevent/_compatible_import.py` — JAX version compatibility shims
+- `brainevent/_misc.py` — Index conversion utilities (`csr_to_coo_index`, etc.), `COOInfo` namedtuple
+- `brainevent/_pallas_random.py` — LFSR-based RNG for Pallas GPU kernels
+- `brainevent/_registry.py` — Global primitive registry, lookup by name or tags
+
+## GPU Kernel Pitfalls
+
+- **Backend passthrough**: JVP/transpose/batching rules must forward `backend=` to `*_p_call()` functions, otherwise tangent computation may silently use the wrong backend.
+
+- **TVM FFI — NEVER dereference `data_ptr()` on the host**: `TensorView::data_ptr()` returns a **GPU device memory pointer**. Dereferencing it from C++ host code (inside a TVM FFI entry function) causes an immediate SIGSEGV. The common offender is:
+  ```c
+  // WRONG — causes SIGSEGV: dereferences a GPU pointer from the CPU host
+  bool is_homo = (weights.ndim() == 1);
+  float homo_w = is_homo ? *static_cast<const float*>(weights.data_ptr()) : 0.0f;
+  ```
+  **The fix**: only read host-safe *metadata* (`ndim()`, `size(0)`, etc.) on the host; pass the raw device pointer to the kernel and let GPU threads read from it:
+  ```c
+  // CORRECT — metadata is host-safe; device ptr is passed to kernel, not dereferenced
+  int is_homo = (weights.ndim() == 1) ? 1 : 0;          // metadata: OK on host
+  const float* d_weights = static_cast<const float*>(weights.data_ptr()); // device ptr
+  my_kernel<<<grid, block, shm, stream>>>(d_weights, ..., is_homo);
+  // Inside the kernel, GPU threads read: weights[0] (homo) or weights[row*n_conn+k] (hetero)
+  ```
+
+- **NVRTC (TVM FFI) — no static `__shared__` in `__device__` functions**: TVM FFI uses NVRTC to JIT-compile CUDA code. NVRTC does **not** correctly handle `__shared__` variables declared inside `__device__` (non-kernel) functions — this produces a segfault at kernel launch time. **Always use `extern __shared__` (dynamic shared memory) in the calling `__global__` kernel.** Never write patterns like:
+  ```c
+  // WRONG — causes segfault with NVRTC/TVM FFI
+  __device__ float block_reduce(float val) {
+      __shared__ float smem[32];  // static __shared__ in __device__ function
+      ...
+  }
+  ```
+  Instead, inline the reduction directly in the `__global__` kernel using `extern __shared__`:
+  ```c
+  // CORRECT — allocate shared mem in kernel, use extern __shared__
+  __global__ void my_kern(...) {
+      extern __shared__ float smem_red[];  // allocated at launch: 32*sizeof(float)
+      int lane = threadIdx.x & 31, warpid = threadIdx.x >> 5;
+      val = warp_reduce_sum(val);
+      if (lane == 0) smem_red[warpid] = val;
+      __syncthreads();
+      int n_warps = (blockDim.x + 31) >> 5;
+      val = (threadIdx.x < n_warps) ? smem_red[lane] : 0.0f;
+      if (warpid == 0) val = warp_reduce_sum(val);
+  }
+  // Launch with: <<<grid, 256, 32*sizeof(float), stream>>>
+  ```
+
+## Dev Script Path Fix
+
+When running benchmark/dev scripts directly (e.g. `python dev/fcn/benchmark_fcnmv.py`), Python adds the **script's directory** to `sys.path[0]` — not the project root. This causes Python to import the **installed** `brainevent` from site-packages instead of the development version, silently hiding any local changes.
+
+Fix: add this block at the top of every script in a `dev/` subdirectory:
+```python
+import sys
+from pathlib import Path
+_project_root = str(Path(__file__).resolve().parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+```
+Or equivalently run with: `PYTHONPATH=/path/to/project python dev/subdir/script.py`
+
+## Benchmarking Primitives
+
+Prefer using the built-in `.benchmark()` method on `XLACustomKernel` primitives (e.g. `fcnmv_p`, `fcnmm_p`) rather than writing custom timing loops. The pattern:
+
+1. Define a data generator that `yield`s or returns `BenchmarkConfig` instances:
+   ```python
+   from brainevent import BenchmarkConfig
+
+   def _my_benchmark_data(*, platform):
+       for n in [1000, 5000, 10000]:
+           ...
+           yield BenchmarkConfig(
+               name=f"NT,homo,{n}",
+               args=(weights, indices, vector),
+               kernel_kwargs={'shape': (n, n), 'transpose': False},
+               data_kwargs={'n': n},
+           )
+   ```
+2. Register it and call `.benchmark()`:
+   ```python
+   fcnmv_p.def_benchmark_data(_my_benchmark_data)
+   result = fcnmv_p.benchmark(platform='gpu', n_warmup=10, n_runs=100, verbose=True)
+   result.print(group_by='label', highlight_best=True)
+   ```
+
+This handles warmup, timing, cross-backend comparison, and tabular display automatically. See `dev/fcn/benchmark_fcnmv.py` for a complete example.
+
+## Linter
+
+A linter runs on file save and may revert changes. When making many edits to a single file, prefer writing the entire file at once rather than incremental edits.
