@@ -645,7 +645,7 @@ def check_correctness(
 # Comprehensive Benchmark Suite
 # =============================================================================
 
-def run_benchmark(n_warmup: int = 20, n_runs: int = 100) -> None:
+def run_benchmark(n_warmup: int = 20, n_runs: int = 1000) -> None:
     """Run a comprehensive benchmark across multiple problem configurations."""
     print("=" * 75)
     print("ELL Sparse Matrix-Vector Multiplication — CUDA Kernel Benchmark")

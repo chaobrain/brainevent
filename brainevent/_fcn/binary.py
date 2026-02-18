@@ -573,7 +573,6 @@ def _binary_fcnmv_batching(args, axes, **kwargs):
 
 def _binary_fcnmv_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
     for transpose in (False, True):
         for homo in (True, False):
             for bool_event in (True, False):
@@ -589,14 +588,11 @@ def _binary_fcnmv_benchmark_data(*, platform):
                 else:
                     spikes = jnp.asarray(np.random.rand(v_size), dtype=dtype)
                 name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
-                configs.append(
-                    BenchmarkConfig(
-                        name,
-                        (weights, indices, spikes),
-                        {'shape': (n_pre, n_post), 'transpose': transpose}
-                    )
+                yield BenchmarkConfig(
+                    name,
+                    (weights, indices, spikes),
+                    {'shape': (n_pre, n_post), 'transpose': transpose}
                 )
-    return configs
 
 
 def binary_fcnmv_p_call(
