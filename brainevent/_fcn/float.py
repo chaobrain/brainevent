@@ -389,7 +389,7 @@ def _fcnmv_jax_kernel(
             masked_weights = jnp.broadcast_to(vector[:, None] * weights, indices.shape)
             return jax.ops.segment_sum(
                 masked_weights.ravel(), indices.ravel(), num_segments=n_post
-            )
+            ),
 
         else:
             scalar_weight = weights.ndim == 0
