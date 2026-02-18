@@ -53,10 +53,11 @@ CONFIGS = [
 ]
 
 
-def _make_benchmark_data(*, platform):
+def _make_benchmark_data(*, platform, spike_rate=None):
     rng = np.random.default_rng(42)
     dtype = jnp.float32
-    for spike_rate in (0.01, 0.05, 0.1):
+    spike_rates = (spike_rate,) if spike_rate is not None else (0.01, 0.05, 0.1)
+    for spike_rate in spike_rates:
         for n_pre, n_post, n_conn in CONFIGS:
             indices = jnp.asarray(rng.integers(0, n_post, (n_pre, n_conn), dtype=np.int32))
             for transpose in (False, True):
