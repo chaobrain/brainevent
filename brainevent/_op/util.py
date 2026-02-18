@@ -63,7 +63,7 @@ _MIN_JAX_VERSION_FOR_PALLAS = (0, 7, 1)
 # register_tvm_cuda_kernels.  Subsequent calls with the same module name
 # are silently skipped so each CUDA module is compiled only once per
 # process.
-_registered_tvm_modules: set = set()
+_registered_tvm_modules: dict = dict()
 
 
 def check_pallas_jax_version():
@@ -221,7 +221,8 @@ def register_tvm_cuda_kernels(
         )
 
     # Mark this module as registered so future calls are no-ops.
-    _registered_tvm_modules.add(module)
+    _registered_tvm_modules[module] = _cuda_module
+    return _cuda_module
 
 
 def defjvp(primitive, *jvp_rules):

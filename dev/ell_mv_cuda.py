@@ -62,7 +62,7 @@ import brainevent
 # CUDA Kernel Source Code
 # =============================================================================
 
-brainevent.register_tvm_cuda_kernels(
+cuda_module = brainevent.register_tvm_cuda_kernels(
     module='ell_mv',
     functions=[
         "ell_mv_cuda",  # auto-selection
