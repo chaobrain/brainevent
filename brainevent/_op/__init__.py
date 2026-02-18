@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-from .benchmark import BenchmarkConfig, BenchmarkResult, BenchmarkReport, benchmark_function
+from .benchmark import BenchmarkConfig, BenchmarkRecord, BenchmarkResult, benchmark_function
 from .main import XLACustomKernel, KernelEntry
 from .numba_cuda_ffi import numba_cuda_kernel, numba_cuda_callable
 from .numba_ffi import numba_kernel
@@ -21,7 +21,7 @@ from .util import register_tvm_cuda_kernels, defjvp, general_batching_rule, jaxi
 
 __all__ = [
     'XLACustomKernel', 'KernelEntry',
-    'BenchmarkConfig', 'BenchmarkResult', 'BenchmarkReport', 'benchmark_function',
+    'BenchmarkConfig', 'BenchmarkRecord', 'BenchmarkResult', 'benchmark_function',
     'numba_kernel', 'numba_cuda_kernel', 'numba_cuda_callable',
     'register_tvm_cuda_kernels', 'defjvp', 'general_batching_rule',
     'jaxinfo_to_warpinfo', 'jaxtype_to_warptype',

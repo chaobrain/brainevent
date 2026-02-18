@@ -204,7 +204,7 @@ class TestMultiBenchmarkData:
             assert isinstance(config, BenchmarkConfig)
             assert isinstance(config.name, str)
             assert isinstance(config.args, tuple)
-            assert isinstance(config.kwargs, dict)
+            assert isinstance(config.kernel_kwargs, dict)
 
 
 class TestMultiBenchmarkIntegration:
@@ -227,8 +227,8 @@ class TestMultiBenchmarkIntegration:
             assert isinstance(config, BenchmarkConfig)
             assert isinstance(config.name, str)
             assert isinstance(config.args, tuple)
-            assert isinstance(config.kwargs, dict)
-            assert 'shape' in config.kwargs
+            assert isinstance(config.kernel_kwargs, dict)
+            assert 'shape' in config.kernel_kwargs
 
     def test_registry_primitives_benchmark_data_structure(self):
         """All primitives with benchmark data should return proper BenchmarkConfig lists."""
@@ -255,8 +255,8 @@ class TestMultiBenchmarkIntegration:
                 assert isinstance(config.args, tuple), (
                     f"Primitive '{name}': args should be a tuple"
                 )
-                assert isinstance(config.kwargs, dict), (
-                    f"Primitive '{name}': kwargs should be a dict"
+                assert isinstance(config.kernel_kwargs, dict), (
+                    f"Primitive '{name}': kernel_kwargs should be a dict"
                 )
 
 

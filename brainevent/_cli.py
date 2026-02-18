@@ -75,6 +75,7 @@ def _run_benchmark(args) -> int:
     """Run the benchmark-performance command."""
     # Import brainevent to trigger all primitive registrations
     import brainevent  # noqa: F401
+    from brainevent._error import BenchmarkDataFnNotProvidedError
     from brainevent._registry import get_registry
     from brainevent.config import save_user_defaults
 
@@ -89,12 +90,7 @@ def _run_benchmark(args) -> int:
     print(f"Parameters: n_warmup={args.n_warmup}, n_runs={args.n_runs}")
     print()
 
-    # Table header
-    header = f"{'Operator':<35} {'Backend':<15} {'Mean (ms)':>12} {'Std (ms)':>12} {'Min (ms)':>12} {'Winner':>8}"
-    print(header)
-    print("-" * len(header))
-
-    all_reports = []
+    all_results = []
     optimal_defaults: Dict[str, Dict[str, str]] = {}
 
     for name in sorted(filtered.keys()):
@@ -111,62 +107,36 @@ def _run_benchmark(args) -> int:
         if not backends:
             continue
 
-        # Generate all benchmark configs from the data function
+        print(f"  {name}")
         try:
-            configs = prim._benchmark_data_fn(platform=args.platform)
+            result = prim.benchmark(
+                platform=args.platform,
+                n_warmup=args.n_warmup,
+                n_runs=args.n_runs,
+            )
+        except BenchmarkDataFnNotProvidedError:
+            print(f"    SKIP — no benchmark data function registered")
+            continue
         except Exception as e:
-            print(f"  {name:<35} {'SKIP':<15} Data generation failed: {e}")
+            print(f"    ERROR — {e}")
             continue
 
-        # Track wins per backend across all configs for voting
+        result.print(group_by='label', highlight_best=True)
+        print()
+
+        all_results.append(result)
+
+        # Vote for the best backend across all configs for this primitive
         backend_wins: Dict[str, int] = {}
-
-        for config in configs:
-            display_name = f"{name} [{config.name}]"
-
-            # Run benchmark
-            try:
-                report = prim.benchmark(
-                    *config.args,
-                    platform=args.platform,
-                    n_warmup=args.n_warmup,
-                    n_runs=args.n_runs,
-                    **config.kwargs,
-                )
-            except Exception as e:
-                print(f"  {display_name:<35} {'ERROR':<15} Benchmark failed: {e}")
-                continue
-
-            all_reports.append(report)
-
-            # Find winner
-            fastest = report.fastest()
-            for result in sorted(report.results, key=lambda r: (not r.success, r.mean_time)):
-                winner = '*' if (result.success and fastest and result.backend == fastest.backend) else ''
-                if result.success:
-                    print(f"  {display_name:<35} {result.backend:<15} {result.mean_time * 1000:>12.3f} "
-                          f"{result.std_time * 1000:>12.3f} {result.min_time * 1000:>12.3f} {winner:>8}")
-                else:
-                    error_short = (
-                        result.error[:30] +
-                        '...' if result.error and len(result.error) > 30 else (result.error or '')
-                    )
-                    print(
-                        f"  {display_name:<35} {result.backend:<15} {'FAILED':>12} {'':>12} {'':>12} {error_short:>8}"
-                    )
-
-            # Track wins for voting
+        labels = list(dict.fromkeys(r.label for r in result.records))
+        for label in labels:
+            fastest = result.fastest(label=label)
             if fastest:
                 backend_wins[fastest.backend] = backend_wins.get(fastest.backend, 0) + 1
 
-        # Always persist optimal backend via voting across all configs
         if backend_wins:
             best_backend = max(backend_wins, key=backend_wins.get)
-            if name not in optimal_defaults:
-                optimal_defaults[name] = {}
-            optimal_defaults[name][args.platform] = best_backend
-
-    print()
+            optimal_defaults.setdefault(name, {})[args.platform] = best_backend
 
     # Always persist optimal defaults
     if optimal_defaults:
@@ -175,13 +145,13 @@ def _run_benchmark(args) -> int:
             'platform': args.platform,
         }
         save_user_defaults(optimal_defaults, metadata=metadata)
-        print(f"Optimal defaults persisted to config file.")
+        print("Optimal defaults persisted to config file.")
 
     # Write JSON output if requested
     if args.output:
         output_data = {
             'platform': args.platform,
-            'reports': [r.to_dict() for r in all_reports],
+            'results': [r.to_dict() for r in all_results],
             'optimal_defaults': optimal_defaults,
         }
         with open(args.output, 'w', encoding='utf-8') as f:

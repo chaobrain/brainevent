@@ -22,6 +22,7 @@ __all__ = [
     'KernelCompilationError',
     'KernelFallbackExhaustedError',
     'KernelExecutionError',
+    'BenchmarkDataFnNotProvidedError',
 ]
 
 
@@ -208,6 +209,41 @@ class KernelExecutionError(Exception):
         >>> from brainevent._error import KernelExecutionError
         >>> raise KernelExecutionError(
         ...     "Warp kernel 'csrmv' failed. Try backend='pallas' instead."
+        ... )  # doctest: +SKIP
+    """
+    __module__ = 'brainevent'
+
+
+class BenchmarkDataFnNotProvidedError(Exception):
+    """Raised when ``benchmark()`` is called but no data function has been registered.
+
+    :meth:`~brainevent._op.main.XLACustomKernel.benchmark` requires a
+    benchmark data generator to be registered via
+    :meth:`~brainevent._op.main.XLACustomKernel.def_benchmark_data`.
+    This exception is raised if that function is missing so that the
+    caller receives a clear, actionable error instead of a silent
+    fallback.
+
+    Parameters
+    ----------
+    message : str
+        A description indicating which primitive is missing its data
+        function and how to fix the problem.
+
+    See Also
+    --------
+    XLACustomKernel.def_benchmark_data : Register a benchmark data
+        generator for a primitive.
+    XLACustomKernel.benchmark : The method that raises this exception.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from brainevent._error import BenchmarkDataFnNotProvidedError
+        >>> raise BenchmarkDataFnNotProvidedError(
+        ...     "No benchmark data function registered for 'csrmv'. "
+        ...     "Use def_benchmark_data() to register one."
         ... )  # doctest: +SKIP
     """
     __module__ = 'brainevent'
