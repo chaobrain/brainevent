@@ -867,7 +867,9 @@ def _binary_csrmv_benchmark_data(*, platform):
                                     f"{event_dtype}")
                             yield BenchmarkConfig(
                                 name,
-                                (weights, jnp.asarray(indices), jnp.asarray(indptr), vector),
+                                jax.block_until_ready(
+                                    (weights, jnp.asarray(indices), jnp.asarray(indptr), vector)
+                                ),
                                 {'shape': (n, n), 'transpose': transpose},
                                 {'n_pre': n, 'n_post': n, 'nnz': nnz, 'csr_sparsity': conn_prob,
                                  'event_sparsity': event_prob, 'event_dtype': event_dtype},
@@ -894,7 +896,9 @@ def _binary_csrmv_benchmark_data(*, platform):
                                 f"{event_dtype}")
                         yield BenchmarkConfig(
                             name,
-                            (weights, jnp.asarray(indices), jnp.asarray(indptr), vector),
+                            jax.block_until_ready(
+                                (weights, jnp.asarray(indices), jnp.asarray(indptr), vector)
+                            ),
                             {'shape': (n_pre, n_post), 'transpose': transpose},
                             {'n_pre': n_pre, 'n_post': n_post, 'nnz': nnz, 'csr_sparsity': conn_prob,
                              'event_sparsity': event_prob, 'event_dtype': event_dtype},
