@@ -22,7 +22,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescope
-from brainevent._op import jaxinfo_to_warpinfo, numba_kernel, XLACustomKernel, general_batching_rule
+from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
@@ -88,7 +88,7 @@ def binary_csrmv(
         If ``True``, the sparse matrix is transposed before multiplication,
         i.e. compute ``A.T @ v``.  Default is ``False``.
     backend : str or None, optional
-        Compute backend to use.  One of ``'numba'``, ``'warp'``,
+        Compute backend to use.  One of ``'numba'``,
         ``'pallas'``, or ``None`` (auto-select).  Default is ``None``.
 
     Returns
@@ -211,7 +211,7 @@ def binary_csrmm(
         If ``True``, transpose ``A`` before multiplication.  Default is
         ``False``.
     backend : str or None, optional
-        Compute backend.  One of ``'numba'``, ``'warp'``, ``'pallas'``, or
+        Compute backend.  One of ``'numba'``, ``'pallas'``, or
         ``None`` (auto-select).  Default is ``None``.
 
     Returns
@@ -385,179 +385,6 @@ def _csrmv_numba_kernel(
 
     def kernel(weights, indices, indptr, vector):
         return numba_kernel(mv, outs=kwargs['outs'])(weights, indices, indptr, vector)
-
-    return kernel
-
-
-def _csrmv_warp_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    vector_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    indptr_info: jax.ShapeDtypeStruct,
-    transpose: bool,
-    shape: MatrixShape,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
-    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
-    indptr_warp_info = jaxinfo_to_warpinfo(indptr_info)
-    spike_warp_info = jaxinfo_to_warpinfo(vector_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if transpose:
-        if weight_info.size == 1:
-            if vector_info.dtype == jnp.bool_:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    i = warp.tid()
-                    w = weights[0]
-                    if v[i]:
-                        for j in range(indptr[i], indptr[i + 1]):
-                            posts[indices[j]] += w
-
-            else:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    i = warp.tid()
-                    w = weights[0]
-                    if v[i] > 0.:
-                        for j in range(indptr[i], indptr[i + 1]):
-                            posts[indices[j]] += w
-
-
-        else:
-            if vector_info.dtype == jnp.bool_:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    i = warp.tid()
-                    if v[i]:
-                        for j in range(indptr[i], indptr[i + 1]):
-                            posts[indices[j]] += weights[j]
-
-            else:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    i = warp.tid()
-                    if v[i] > 0.:
-                        for j in range(indptr[i], indptr[i + 1]):
-                            posts[indices[j]] += weights[j]
-
-        def kernel(weights, indices, indptr, v):
-            out_info = (
-                jax.ShapeDtypeStruct([shape[1]], weights.dtype)
-                if transpose else
-                jax.ShapeDtypeStruct([shape[0]], weights.dtype)
-            )
-            dim = vector_info.shape[0] if transpose else indptr_info.shape[0] - 1
-            fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
-            return fn(weights, indices, indptr, v, jnp.zeros(out_info.shape, out_info.dtype))
-
-
-    else:
-        if weight_info.size == 1:
-            if vector_info.dtype == jnp.bool_:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    i = warp.tid()
-                    w = weights[0]
-                    r = weights.dtype(0.)
-                    for j in range(indptr[i], indptr[i + 1]):
-                        if v[indices[j]]:
-                            r += w
-                    posts[i] = r
-
-            else:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    i = warp.tid()
-                    w = weights[0]
-                    r = weights.dtype(0.)
-                    for j in range(indptr[i], indptr[i + 1]):
-                        if v[indices[j]] > 0.:
-                            r += w
-                    posts[i] = r
-
-        else:
-            if vector_info.dtype == jnp.bool_:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    i = warp.tid()
-                    r = weights.dtype(0.)
-                    for j in range(indptr[i], indptr[i + 1]):
-                        if v[indices[j]]:
-                            r += weights[j]
-                    posts[i] = r
-
-            else:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    i = warp.tid()
-                    r = weights.dtype(0.)
-                    for j in range(indptr[i], indptr[i + 1]):
-                        if v[indices[j]] > 0.:
-                            r += weights[j]
-                    posts[i] = r
-
-        def kernel(weights, indices, indptr, v):
-            out_info = (
-                jax.ShapeDtypeStruct([shape[1]], weights.dtype)
-                if transpose else
-                jax.ShapeDtypeStruct([shape[0]], weights.dtype)
-            )
-            dim = vector_info.shape[0] if transpose else indptr_info.shape[0] - 1
-            fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
-            return fn(weights, indices, indptr, v)
 
     return kernel
 
@@ -1057,7 +884,7 @@ binary_csrmv_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``binary_csrmv``.
 
 This ``XLACustomKernel`` instance dispatches the binary (event-driven) CSR sparse matrix-vector multiplication
-operation to registered backends (``numba``, ``warp``, ``pallas``),
+operation to registered backends (``numba``, ``pallas``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 Only entries of ``v`` that are ``True`` (boolean) or positive (float) are considered active events
@@ -1077,7 +904,6 @@ binary_csrmv : High-level user-facing function wrapper.
 """
 )
 binary_csrmv_p.def_numba_kernel(_csrmv_numba_kernel)
-binary_csrmv_p.def_warp_kernel(_csrmv_warp_kernel)
 binary_csrmv_p.def_pallas_kernel('gpu', _csrmv_pallas_gpu_kernel)
 binary_csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
 binary_csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
@@ -1215,179 +1041,6 @@ def _csrmm_numba_kernel(
 
     def kernel(weights, indices, indptr, B):
         return numba_kernel(mm, kwargs['outs'])(weights, indices, indptr, B)
-
-    return kernel
-
-
-def _csrmm_warp_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    vector_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    indptr_info: jax.ShapeDtypeStruct,
-    transpose: bool,
-    shape: MatrixShape,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
-    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
-    indptr_warp_info = jaxinfo_to_warpinfo(indptr_info)
-    spike_warp_info = jaxinfo_to_warpinfo(vector_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if transpose:
-        # csr.T @ B
-        if weight_info.size == 1:
-            if vector_info.dtype == jnp.bool_:
-                @warp.kernel
-                def mm(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    B: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    k, i = warp.tid()
-                    w = weights[0]
-                    if B[i, k]:
-                        for j in range(indptr[i], indptr[i + 1]):
-                            posts[indices[j], k] += w
-
-            else:
-                @warp.kernel
-                def mm(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    B: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    k, i = warp.tid()
-                    w = weights[0]
-                    if B[i, k] > 0.:
-                        for j in range(indptr[i], indptr[i + 1]):
-                            posts[indices[j], k] += w
-
-        else:
-            if vector_info.dtype == jnp.bool_:
-                @warp.kernel
-                def mm(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    B: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    k, i = warp.tid()
-                    if B[i, k]:
-                        for j in range(indptr[i], indptr[i + 1]):
-                            posts[indices[j], k] += weights[j]
-
-            else:
-                @warp.kernel
-                def mm(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    B: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    k, i = warp.tid()
-                    if B[i, k] > 0.:
-                        for j in range(indptr[i], indptr[i + 1]):
-                            posts[indices[j], k] += weights[j]
-
-        def kernel(weights, indices, indptr, B):
-            n = vector_info.shape[1]
-            out_info = jax.ShapeDtypeStruct([shape[1], n], weights.dtype)
-            dim = tuple(reversed(vector_info.shape))  # (n, m)
-            fn = jax_kernel(mm, launch_dims=dim, num_outputs=1, in_out_argnames=['posts'])
-            return fn(weights, indices, indptr, B, jnp.zeros(out_info.shape, out_info.dtype))
-
-    else:
-        # csr @ B
-        if weight_info.size == 1:
-            if vector_info.dtype == jnp.bool_:
-                @warp.kernel
-                def mm(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    B: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    k, i = warp.tid()
-                    w = weights[0]
-                    r = weights.dtype(0.)
-                    for j in range(indptr[i], indptr[i + 1]):
-                        index = indices[j]
-                        if B[index, k]:
-                            r += w
-                    posts[i, k] = r
-
-            else:
-                @warp.kernel
-                def mm(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    B: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    k, i = warp.tid()
-                    w = weights[0]
-                    r = weights.dtype(0.)
-                    for j in range(indptr[i], indptr[i + 1]):
-                        index = indices[j]
-                        if B[index, k] > 0.:
-                            r += w
-                    posts[i, k] = r
-
-        else:
-            # csr @ B
-
-            if vector_info.dtype == jnp.bool_:
-                @warp.kernel
-                def mm(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    B: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    k, i = warp.tid()
-                    r = weights.dtype(0.)
-                    for j in range(indptr[i], indptr[i + 1]):
-                        index = indices[j]
-                        if B[index, k]:
-                            r += weights[j]
-                    posts[i, k] = r
-
-            else:
-                @warp.kernel
-                def mm(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    B: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    k, i = warp.tid()
-                    r = weights.dtype(0.)
-                    for j in range(indptr[i], indptr[i + 1]):
-                        index = indices[j]
-                        if B[index, k] > 0.:
-                            r += weights[j]
-                    posts[i, k] = r
-
-        def kernel(weights, indices, indptr, B):
-            n = vector_info.shape[1]
-            out_info = jax.ShapeDtypeStruct([shape[0], n], weights.dtype)
-            dim = (vector_info.shape[1], indptr_info.shape[0] - 1)
-            fn = jax_kernel(mm, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
-            return fn(weights, indices, indptr, B)
 
     return kernel
 
@@ -1947,7 +1600,7 @@ binary_csrmm_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``binary_csrmm``.
 
 This ``XLACustomKernel`` instance dispatches the binary (event-driven) CSR sparse matrix-matrix multiplication
-operation to registered backends (``numba``, ``warp``, ``pallas``),
+operation to registered backends (``numba``, ``pallas``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 Only entries of ``B`` that are ``True`` (boolean) or positive (float) are considered active events
@@ -1967,7 +1620,6 @@ binary_csrmm : High-level user-facing function wrapper.
 """
 )
 binary_csrmm_p.def_numba_kernel(_csrmm_numba_kernel)
-binary_csrmm_p.def_warp_kernel(_csrmm_warp_kernel)
 binary_csrmm_p.def_pallas_kernel('gpu', _csrmm_pallas_gpu_kernel)
 binary_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 binary_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)

@@ -25,7 +25,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
-from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
 from brainevent.config import get_numba_parallel
@@ -78,7 +78,7 @@ def binary_fcnmv(
         connections).  If ``True``, compute ``W^T @ s`` (fixed
         pre-synaptic connections, scatter mode).
     backend : str or None, optional
-        Execution backend override (``'numba'``, ``'warp'``,
+        Execution backend override (``'numba'``,
         ``'pallas'``, or ``None`` for automatic selection).
 
     Returns
@@ -239,152 +239,6 @@ def _binary_fcnmv_numba_kernel(
 
     def kernel(weights, indices, spikes):
         return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, spikes)
-
-    return kernel
-
-
-def _binary_fcnmv_warp_kernel(
-    transpose: bool,
-    weight_info: jax.ShapeDtypeStruct,
-    spike_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
-    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
-    spike_warp_info = jaxinfo_to_warpinfo(spike_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if transpose:
-        if weight_info.size == 1:
-            if spike_info.dtype == jnp.bool_:
-                @warp.kernel
-                def ell_mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    spikes: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i = warp.tid()
-                    w = weights[0]
-                    if spikes[i]:
-                        for j in range(indices.shape[1]):
-                            warp.atomic_add(posts, indices[i, j], w)
-            else:
-                @warp.kernel
-                def ell_mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    spikes: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i = warp.tid()
-                    w = weights[0]
-                    if spikes[i] > 0.:
-                        for j in range(indices.shape[1]):
-                            warp.atomic_add(posts, indices[i, j], w)
-        else:
-            if spike_info.dtype == jnp.bool_:
-                @warp.kernel
-                def ell_mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    spikes: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i = warp.tid()
-                    if spikes[i]:
-                        for j in range(indices.shape[1]):
-                            warp.atomic_add(posts, indices[i, j], weights[i, j])
-            else:
-                @warp.kernel
-                def ell_mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    spikes: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i = warp.tid()
-                    if spikes[i] > 0.:
-                        for j in range(indices.shape[1]):
-                            warp.atomic_add(posts, indices[i, j], weights[i, j])
-
-        def kernel(weights, indices, spikes):
-            out_info = kwargs['outs'][0]
-            dim = spike_info.shape[0]
-            fn = jax_kernel(ell_mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
-            return fn(weights, indices, spikes, jnp.zeros(out_info.shape, out_info.dtype))
-
-    else:
-        if weight_info.size == 1:
-            if spike_info.dtype == jnp.bool_:
-                @warp.kernel
-                def ell_mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    spikes: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i = warp.tid()
-                    w = weights[0]
-                    r = weights.dtype(0.)
-                    for j in range(indices.shape[1]):
-                        if spikes[indices[i, j]]:
-                            r += w
-                    posts[i] = r
-            else:
-                @warp.kernel
-                def ell_mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    spikes: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i = warp.tid()
-                    w = weights[0]
-                    r = weights.dtype(0.)
-                    for j in range(indices.shape[1]):
-                        if spikes[indices[i, j]] > 0.:
-                            r += w
-                    posts[i] = r
-        else:
-            if spike_info.dtype == jnp.bool_:
-                @warp.kernel
-                def ell_mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    spikes: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i = warp.tid()
-                    r = weights.dtype(0.)
-                    for j in range(indices.shape[1]):
-                        if spikes[indices[i, j]]:
-                            r += weights[i, j]
-                    posts[i] = r
-            else:
-                @warp.kernel
-                def ell_mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    spikes: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i = warp.tid()
-                    r = weights.dtype(0.)
-                    for j in range(indices.shape[1]):
-                        if spikes[indices[i, j]] > 0.:
-                            r += weights[i, j]
-                    posts[i] = r
-
-        def kernel(weights, indices, spikes):
-            out_info = kwargs['outs'][0]
-            dim = indices_info.shape[0]
-            fn = jax_kernel(ell_mv, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
-            return fn(weights, indices, spikes)
 
     return kernel
 
@@ -609,7 +463,7 @@ def binary_fcnmv_p_call(
     with fixed connection number.
 
     This function validates shapes and dispatches to the registered XLA
-    custom kernel (Numba, Warp, or Pallas) without performing any
+    custom kernel (Numba or Pallas) without performing any
     physical-unit bookkeeping.  It is typically called from
     :func:`binary_fcnmv` or from autodiff rules.
 
@@ -629,7 +483,7 @@ def binary_fcnmv_p_call(
         ``False`` for gather mode (fixed post-connections), ``True`` for
         scatter mode (fixed pre-connections).  Default is ``False``.
     backend : str or None, optional
-        Backend override (``'numba'``, ``'warp'``, ``'pallas'``, or
+        Backend override (``'numba'``, ``'pallas'``, or
         ``None``).
 
     Returns
@@ -664,7 +518,7 @@ Low-level XLA custom-kernel primitive for ``binary_fcnmv``.
 
 This ``XLACustomKernel`` instance dispatches the binary (event-driven)
 fixed-connection matrix-vector multiplication operation to registered backends
-(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata provided
+(``numba``, ``pallas``), using runtime shape/dtype metadata provided
 by the high-level wrapper.
 
 Fixed-connection format stores connectivity where each neuron has a fixed number
@@ -684,7 +538,6 @@ binary_fcnmv : High-level user-facing function wrapper.
 """
 )
 binary_fcnmv_p.def_numba_kernel(_binary_fcnmv_numba_kernel)
-binary_fcnmv_p.def_warp_kernel(_binary_fcnmv_warp_kernel)
 binary_fcnmv_p.def_pallas_kernel('gpu', _binary_fcnmv_pallas_kernel)
 binary_fcnmv_p.def_jvp_rule2(_binary_fcnmv_jvp_weights, None, _binary_fcnmv_jvp_spikes, None)
 binary_fcnmv_p.def_transpose_rule(_binary_fcnmv_transpose_rule)
@@ -1225,7 +1078,7 @@ Low-level XLA custom-kernel primitive for ``binary_fcnmm``.
 
 This ``XLACustomKernel`` instance dispatches the binary (event-driven)
 fixed-connection matrix-matrix multiplication operation to registered backends
-(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata provided
+(``numba``, ``pallas``), using runtime shape/dtype metadata provided
 by the high-level wrapper.
 
 Fixed-connection format stores connectivity where each neuron has a fixed number

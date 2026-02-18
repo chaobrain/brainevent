@@ -95,7 +95,7 @@ class KernelNotAvailableError(Exception):
 
         >>> from brainevent._error import KernelNotAvailableError
         >>> raise KernelNotAvailableError(
-        ...     "Warp is not installed. Install with: pip install warp-lang"
+        ...     "Pallas is not available on this platform."
         ... )  # doctest: +SKIP
     """
     __module__ = 'brainevent'

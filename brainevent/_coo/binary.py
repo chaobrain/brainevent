@@ -25,7 +25,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, namescope
-from brainevent._op import jaxinfo_to_warpinfo, numba_kernel, XLACustomKernel, general_batching_rule
+from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Row, Col, MatrixShape
@@ -92,8 +92,8 @@ def binary_coomv(
         If ``True``, multiply by the transpose of the sparse matrix,
         i.e. ``A^T @ v``.  Default is ``False``.
     backend : str or None, optional
-        Compute backend to use (e.g. ``'numba'``, ``'warp'``,
-        ``'pallas'``).  When ``None`` the backend is chosen automatically.
+        Compute backend to use (e.g. ``'numba'``, ``'pallas'``).
+        When ``None`` the backend is chosen automatically.
 
     Returns
     -------
@@ -121,7 +121,7 @@ def binary_coomv(
 
     This function supports automatic differentiation (JVP and transpose
     rules), ``vmap`` batching, and multiple hardware backends (CPU via
-    Numba, GPU via Warp or Pallas/Triton, TPU via Pallas/Mosaic).
+    Numba, GPU via Pallas/Triton, TPU via Pallas/Mosaic).
 
     Examples
     --------
@@ -197,8 +197,8 @@ def binary_coomm(
         If ``True``, multiply by the transpose of the sparse matrix,
         i.e. ``A^T @ B``.  Default is ``False``.
     backend : str or None, optional
-        Compute backend to use (e.g. ``'numba'``, ``'warp'``,
-        ``'pallas'``).  When ``None`` the backend is chosen automatically.
+        Compute backend to use (e.g. ``'numba'``, ``'pallas'``).
+        When ``None`` the backend is chosen automatically.
 
     Returns
     -------
@@ -226,7 +226,7 @@ def binary_coomm(
 
     This function supports automatic differentiation (JVP and transpose
     rules), ``vmap`` batching, and multiple hardware backends (CPU via
-    Numba, GPU via Warp or Pallas/Triton, TPU via Pallas/Mosaic).
+    Numba, GPU via Pallas/Triton, TPU via Pallas/Mosaic).
 
     Examples
     --------
@@ -343,147 +343,6 @@ def _coomv_numba_kernel(
 
     def kernel(weights, row, col, v):
         return numba_kernel(mv, outs=kwargs['outs'])(weights, row, col, v)
-
-    return kernel
-
-
-def _coomv_warp_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    vector_info: jax.ShapeDtypeStruct,
-    row_info: jax.ShapeDtypeStruct,
-    col_info: jax.ShapeDtypeStruct,
-    transpose: bool,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
-    row_warp_info = jaxinfo_to_warpinfo(row_info)
-    col_warp_info = jaxinfo_to_warpinfo(col_info)
-    spike_warp_info = jaxinfo_to_warpinfo(vector_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if transpose:
-        if weight_info.size == 1:
-            # transpose=True, homogeneous
-            if vector_info.dtype == jnp.bool_:
-                # bool
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i = warp.tid()
-                    w = weights[0]
-                    if v[row[i]]:
-                        warp.atomic_add(posts, col[i], w)
-            else:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i = warp.tid()
-                    w = weights[0]
-                    if v[row[i]] > 0.:
-                        warp.atomic_add(posts, col[i], w)
-        else:
-            # transpose=True, heterogeneous
-            if vector_info.dtype == jnp.bool_:
-                # bool
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i = warp.tid()
-                    if v[row[i]]:
-                        warp.atomic_add(posts, col[i], weights[i])
-            else:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i = warp.tid()
-                    if v[row[i]] > 0.:
-                        warp.atomic_add(posts, col[i], weights[i])
-    else:
-        if weight_info.size == 1:
-            # transpose=False, homogeneous
-            if vector_info.dtype == jnp.bool_:
-                # bool
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i = warp.tid()
-                    w = weights[0]
-                    if v[col[i]]:
-                        warp.atomic_add(posts, row[i], w)
-            else:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i = warp.tid()
-                    w = weights[0]
-                    if v[col[i]] > 0.:
-                        warp.atomic_add(posts, row[i], w)
-        else:
-            # transpose=False, heterogeneous
-            if vector_info.dtype == jnp.bool_:
-                # bool
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i = warp.tid()
-                    if v[col[i]]:
-                        warp.atomic_add(posts, row[i], weights[i])
-            else:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i = warp.tid()
-                    if v[col[i]] > 0.:
-                        warp.atomic_add(posts, row[i], weights[i])
-
-    def kernel(weights, row, col, v):
-        dim = row_info.shape[0]
-        out_info = kwargs['outs'][0]
-        fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
-        return fn(weights, row, col, v, jnp.zeros(out_info.shape, out_info.dtype))
 
     return kernel
 
@@ -898,7 +757,7 @@ def binary_coomv_p_call(
 
     Validates inputs, constructs output metadata, and dispatches to the
     registered ``XLACustomKernel`` (``binary_coomv_p``) which selects a
-    backend-specific kernel (Numba, Warp, Pallas GPU, or Pallas TPU).
+    backend-specific kernel (Numba, Pallas GPU, or Pallas TPU).
 
     Unlike :func:`binary_coomv`, this function does **not** handle physical
     units and returns a raw list of JAX arrays.
@@ -923,7 +782,7 @@ def binary_coomv_p_call(
     transpose : bool
         If ``True``, compute ``A^T @ v`` instead of ``A @ v``.
     backend : str or None, optional
-        Compute backend override (``'numba'``, ``'warp'``, ``'pallas'``).
+        Compute backend override (``'numba'``, ``'pallas'``).
         When ``None`` the backend is selected automatically.
 
     Returns
@@ -1031,7 +890,7 @@ Low-level XLA custom-kernel primitive for ``binary_coomv``.
 
 This ``XLACustomKernel`` instance dispatches the binary (event-driven) COO
 sparse matrix-vector multiplication operation to registered backends
-(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata
+(``numba``, ``pallas``), using runtime shape/dtype metadata
 provided by the high-level wrapper.
 
 The operation computes ``result[i] = sum_j A[i, j] * (v[j] > 0)`` when
@@ -1053,7 +912,6 @@ binary_coomv : High-level user-facing function wrapper.
 """
 )
 binary_coomv_p.def_numba_kernel(_coomv_numba_kernel)
-binary_coomv_p.def_warp_kernel(_coomv_warp_kernel)
 binary_coomv_p.def_pallas_kernel('gpu', _coomv_pallas_gpu_kernel)
 binary_coomv_p.def_pallas_kernel('tpu', _coomv_pallas_tpu_kernel)
 binary_coomv_p.def_jvp_rule2(_coomv_jvp_weights, None, None, _coomv_jvp_vector)
@@ -1162,147 +1020,6 @@ def _coomm_numba_kernel(
 
     def kernel(weights, row, col, B):
         return numba_kernel(mm, outs=kwargs['outs'])(weights, row, col, B)
-
-    return kernel
-
-
-def _coomm_warp_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    matrix_info: jax.ShapeDtypeStruct,
-    row_info: jax.ShapeDtypeStruct,
-    col_info: jax.ShapeDtypeStruct,
-    transpose: bool,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
-    row_warp_info = jaxinfo_to_warpinfo(row_info)
-    col_warp_info = jaxinfo_to_warpinfo(col_info)
-    spike_warp_info = jaxinfo_to_warpinfo(matrix_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if transpose:
-        if weight_info.size == 1:
-            # transpose=True, homogeneous
-            if matrix_info.dtype == jnp.bool_:
-                # bool
-                @warp.kernel
-                def mm(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    B: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i, j = warp.tid()
-                    w = weights[0]
-                    if B[row[i], j]:
-                        warp.atomic_add(posts, col[i], j, w)
-            else:
-                @warp.kernel
-                def mm(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    B: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i, j = warp.tid()
-                    w = weights[0]
-                    if B[row[i], j] > 0.:
-                        warp.atomic_add(posts, col[i], j, w)
-        else:
-            # transpose=True, heterogeneous
-            if matrix_info.dtype == jnp.bool_:
-                # bool
-                @warp.kernel
-                def mm(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    B: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i, j = warp.tid()
-                    if B[row[i], j]:
-                        warp.atomic_add(posts, col[i], j, weights[i])
-            else:
-                @warp.kernel
-                def mm(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    B: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i, j = warp.tid()
-                    if B[row[i], j] > 0.:
-                        warp.atomic_add(posts, col[i], j, weights[i])
-    else:
-        if weight_info.size == 1:
-            # transpose=False, homogeneous
-            if matrix_info.dtype == jnp.bool_:
-                # bool
-                @warp.kernel
-                def mm(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    B: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i, j = warp.tid()
-                    w = weights[0]
-                    if B[col[i], j]:
-                        warp.atomic_add(posts, row[i], j, w)
-            else:
-                @warp.kernel
-                def mm(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    B: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i, j = warp.tid()
-                    w = weights[0]
-                    if B[col[i], j] > 0.:
-                        warp.atomic_add(posts, row[i], j, w)
-        else:
-            # transpose=False, heterogeneous
-            if matrix_info.dtype == jnp.bool_:
-                # bool
-                @warp.kernel
-                def mm(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    B: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i, j = warp.tid()
-                    if B[col[i], j]:
-                        warp.atomic_add(posts, row[i], j, weights[i])
-            else:
-                @warp.kernel
-                def mm(
-                    weights: weight_warp_info,
-                    row: row_warp_info,
-                    col: col_warp_info,
-                    B: spike_warp_info,
-                    posts: out_warp_info
-                ):
-                    i, j = warp.tid()
-                    if B[col[i], j] > 0.:
-                        warp.atomic_add(posts, row[i], j, weights[i])
-
-    def kernel(weights, row, col, B):
-        dim = (row_info.shape[0], matrix_info.shape[1])
-        out_info = kwargs['outs'][0]
-        fn = jax_kernel(mm, launch_dims=dim, num_outputs=1, in_out_argnames=['posts'])
-        return fn(weights, row, col, B, jnp.zeros(out_info.shape, out_info.dtype))
 
     return kernel
 
@@ -1766,7 +1483,7 @@ def binary_coomm_p_call(
 
     Validates inputs, constructs output metadata, and dispatches to the
     registered ``XLACustomKernel`` (``binary_coomm_p``) which selects a
-    backend-specific kernel (Numba, Warp, Pallas GPU, or Pallas TPU).
+    backend-specific kernel (Numba, Pallas GPU, or Pallas TPU).
 
     Unlike :func:`binary_coomm`, this function does **not** handle physical
     units and returns a raw list of JAX arrays.
@@ -1791,7 +1508,7 @@ def binary_coomm_p_call(
     transpose : bool
         If ``True``, compute ``A^T @ B`` instead of ``A @ B``.
     backend : str or None, optional
-        Compute backend override (``'numba'``, ``'warp'``, ``'pallas'``).
+        Compute backend override (``'numba'``, ``'pallas'``).
         When ``None`` the backend is selected automatically.
 
     Returns
@@ -1896,7 +1613,7 @@ Low-level XLA custom-kernel primitive for ``binary_coomm``.
 
 This ``XLACustomKernel`` instance dispatches the binary (event-driven) COO
 sparse matrix-matrix multiplication operation to registered backends
-(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata
+(``numba``, ``pallas``), using runtime shape/dtype metadata
 provided by the high-level wrapper.
 
 The operation computes ``result[i, n] = sum_j A[i, j] * (B[j, n] > 0)`` when
@@ -1918,7 +1635,6 @@ binary_coomm : High-level user-facing function wrapper.
 """
 )
 binary_coomm_p.def_numba_kernel(_coomm_numba_kernel)
-binary_coomm_p.def_warp_kernel(_coomm_warp_kernel)
 binary_coomm_p.def_pallas_kernel('gpu', _coomm_pallas_gpu_kernel)
 binary_coomm_p.def_pallas_kernel('tpu', _coomm_pallas_tpu_kernel)
 binary_coomm_p.def_jvp_rule2(_coomm_jvp_left, None, None, _coomm_jvp_right)

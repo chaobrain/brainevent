@@ -22,7 +22,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, namescope
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, jaxinfo_to_warpinfo
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent.config import get_numba_parallel
 
@@ -73,7 +73,7 @@ def update_dense_on_binary_pre(
         Upper bound for weight clipping. Must have the same units as
         ``weight``. If ``None``, no upper bound is applied.
     backend : str, optional
-        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        Backend to use for the computation. One of ``'numba'``,
         ``'pallas'``, or ``None`` (auto-select).
 
     Returns
@@ -197,46 +197,6 @@ def _dense_on_pre_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, *
     return run
 
 
-def _dense_on_pre_warp_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    spike_info: jax.ShapeDtypeStruct,
-    trace_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    n_pre, n_post = weight_info.shape
-    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
-    spike_warp_info = jaxinfo_to_warpinfo(spike_info)
-    trace_warp_info = jaxinfo_to_warpinfo(trace_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if spike_info.dtype == jnp.bool_:
-        @warp.kernel
-        def kernel(weight: weight_warp_info,
-                   spike: spike_warp_info,
-                   trace: trace_warp_info,
-                   out_w: out_warp_info):
-            i, j = warp.tid()
-            out_w[i, j] = weight[i, j] + trace[j] if spike[i] else weight[i, j]
-    else:
-        @warp.kernel
-        def kernel(weight: weight_warp_info,
-                   spike: spike_warp_info,
-                   trace: trace_warp_info,
-                   out_w: out_warp_info):
-            i, j = warp.tid()
-            out_w[i, j] = weight[i, j] + trace[j] if spike[i] != 0. else weight[i, j]
-
-    def run(weight, spike, trace):
-        out_info = kwargs['outs'][0]
-        fn = jax_kernel(kernel, launch_dims=(n_pre, n_post), num_outputs=1, output_dims={'out_w': out_info.shape})
-        return fn(weight, spike, trace)
-
-    return run
-
-
 def _dense_on_pre_prim_call(weight, pre_spike, post_trace, backend: Optional[str] = None):
     """
     Low-level primitive call for pre-synaptic plasticity weight update.
@@ -257,7 +217,7 @@ def _dense_on_pre_prim_call(weight, pre_spike, post_trace, backend: Optional[str
     post_trace : jax.Array
         Postsynaptic trace values with shape ``(n_post,)``.
     backend : str, optional
-        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        Backend to use for the computation. One of ``'numba'``,
         ``'pallas'``, or ``None`` (auto-select).
 
     Returns
@@ -368,7 +328,7 @@ update_dense_on_binary_pre_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``update_dense_on_binary_pre``.
 
 This ``XLACustomKernel`` instance dispatches the dense weight update for
-pre-synaptic binary plasticity operation to registered backends (``numba``, ``warp``,
+pre-synaptic binary plasticity operation to registered backends (``numba``,
 ``pallas``), using runtime shape/dtype metadata provided by the high-level wrapper.
 
 The operation updates synaptic weights based on presynaptic spike events and
@@ -388,7 +348,6 @@ update_dense_on_binary_pre : High-level user-facing function wrapper.
 """
 )
 update_dense_on_binary_pre_p.def_numba_kernel(_dense_on_pre_numba_kernel)
-update_dense_on_binary_pre_p.def_warp_kernel(_dense_on_pre_warp_kernel)
 update_dense_on_binary_pre_p.def_pallas_kernel('gpu', _dense_on_pre_pallas_kernel)
 update_dense_on_binary_pre_p.def_jvp_rule2(_dense_on_pre_jvp_weight, None, None)
 update_dense_on_binary_pre_p.def_transpose_rule(_dense_on_pre_transpose_rule)
@@ -437,7 +396,7 @@ def update_dense_on_binary_post(
         Upper bound for weight clipping. Must have the same units as
         ``weight``. If ``None``, no upper bound is applied.
     backend : str, optional
-        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        Backend to use for the computation. One of ``'numba'``,
         ``'pallas'``, or ``None`` (auto-select).
 
     Returns
@@ -561,46 +520,6 @@ def _dense_on_post_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, 
     return run
 
 
-def _dense_on_post_warp_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    spike_info: jax.ShapeDtypeStruct,
-    trace_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    n_pre, n_post = weight_info.shape
-    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
-    trace_warp_info = jaxinfo_to_warpinfo(trace_info)
-    spike_warp_info = jaxinfo_to_warpinfo(spike_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if spike_info.dtype == jnp.bool_:
-        @warp.kernel
-        def kernel(weight: weight_warp_info,
-                   trace: trace_warp_info,
-                   spike: spike_warp_info,
-                   out_w: out_warp_info):
-            i, j = warp.tid()
-            out_w[i, j] = weight[i, j] + trace[i] if spike[j] else weight[i, j]
-    else:
-        @warp.kernel
-        def kernel(weight: weight_warp_info,
-                   trace: trace_warp_info,
-                   spike: spike_warp_info,
-                   out_w: out_warp_info):
-            i, j = warp.tid()
-            out_w[i, j] = weight[i, j] + trace[i] if spike[j] != 0. else weight[i, j]
-
-    def run(weight, trace, spike):
-        out_info = kwargs['outs'][0]
-        fn = jax_kernel(kernel, launch_dims=(n_pre, n_post), num_outputs=1, output_dims={'out_w': out_info.shape})
-        return fn(weight, trace, spike)
-
-    return run
-
-
 def _dense_on_post_prim_call(weight, pre_trace, post_spike, backend: Optional[str] = None):
     """
     Low-level primitive call for post-synaptic plasticity weight update.
@@ -621,7 +540,7 @@ def _dense_on_post_prim_call(weight, pre_trace, post_spike, backend: Optional[st
         Binary or boolean array of postsynaptic spike events with shape
         ``(n_post,)``.
     backend : str, optional
-        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        Backend to use for the computation. One of ``'numba'``,
         ``'pallas'``, or ``None`` (auto-select).
 
     Returns
@@ -728,7 +647,7 @@ update_dense_on_binary_post_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``update_dense_on_binary_post``.
 
 This ``XLACustomKernel`` instance dispatches the dense weight update for
-post-synaptic binary plasticity operation to registered backends (``numba``, ``warp``,
+post-synaptic binary plasticity operation to registered backends (``numba``,
 ``pallas``), using runtime shape/dtype metadata provided by the high-level wrapper.
 
 The operation updates synaptic weights based on postsynaptic spike events and
@@ -748,7 +667,6 @@ update_dense_on_binary_post : High-level user-facing function wrapper.
 """
 )
 update_dense_on_binary_post_p.def_numba_kernel(_dense_on_post_numba_kernel)
-update_dense_on_binary_post_p.def_warp_kernel(_dense_on_post_warp_kernel)
 update_dense_on_binary_post_p.def_pallas_kernel('gpu', _dense_on_post_pallas_kernel)
 update_dense_on_binary_post_p.def_jvp_rule2(_dense_on_post_jvp_weight, None, None)
 update_dense_on_binary_post_p.def_transpose_rule(_dense_on_post_transpose_rule)

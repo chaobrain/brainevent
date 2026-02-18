@@ -131,7 +131,7 @@ class JITCScalarMatrix(JITCMatrix):
         Flag indicating the memory layout order of the matrix.
         False (default) for Fortran-order (column-major), True for C-order (row-major).
     backend : str or None
-        The computation backend to use (e.g., ``'warp'``, ``'pallas'``). If ``None``,
+        The computation backend to use (e.g., ``'numba'``, ``'pallas'``). If ``None``,
         the default backend is selected automatically.
     """
     __module__ = 'brainevent'

@@ -44,7 +44,7 @@ class IndexedBinary1d(IndexedEventRepresentation):
         active events.
     backend : str or None, optional
         Compute backend for the index-extraction kernel (e.g. ``'numba'``,
-        ``'warp'``, ``'pallas'``).  ``None`` selects the default.
+        ``'pallas'``).  ``None`` selects the default.
 
     Notes
     -----

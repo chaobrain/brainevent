@@ -130,11 +130,11 @@ class TestLoadSaveUserDefaults:
 
     def test_save_merges(self, isolate_config):
         save_user_defaults({'prim_a': {'cpu': 'numba'}})
-        save_user_defaults({'prim_b': {'gpu': 'warp'}})
+        save_user_defaults({'prim_b': {'gpu': 'pallas'}})
         invalidate_cache()
         defaults = load_user_defaults()
         assert defaults['prim_a']['cpu'] == 'numba'
-        assert defaults['prim_b']['gpu'] == 'warp'
+        assert defaults['prim_b']['gpu'] == 'pallas'
 
     def test_save_with_metadata(self, isolate_config):
         metadata = {'last_run': '2026-02-07T12:00:00Z', 'platform': 'cpu'}

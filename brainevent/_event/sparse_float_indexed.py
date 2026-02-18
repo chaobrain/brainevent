@@ -42,7 +42,7 @@ class IndexedSpFloat1d(IndexedEventRepresentation):
         A 1-D numeric array.  Non-zero entries are considered active.
     backend : str or None, optional
         Compute backend for the index-extraction kernel (e.g. ``'numba'``,
-        ``'warp'``, ``'pallas'``).  ``None`` selects the default.
+        ``'pallas'``).  ``None`` selects the default.
 
     Notes
     -----

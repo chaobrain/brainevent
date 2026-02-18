@@ -25,7 +25,7 @@ from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
 from brainevent._op import (
-    general_batching_rule, XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, register_tvm_cuda_kernels,
+    general_batching_rule, XLACustomKernel, numba_kernel, register_tvm_cuda_kernels,
     BenchmarkConfig
 )
 from brainevent.config import get_numba_parallel
@@ -74,7 +74,7 @@ def fcnmv(
         gather mode).  If ``True``, compute ``W^T @ v`` (fixed
         pre-synaptic connections, scatter mode).
     backend : str or None, optional
-        Execution backend override (``'numba'``, ``'warp'``,
+        Execution backend override (``'numba'``,
         ``'pallas'``, ``'tvmffi'``, or ``None`` for automatic selection).
 
     Returns
@@ -186,100 +186,6 @@ def _fcnmv_numba_kernel(
     return kernel
 
 
-def _fcnmv_warp_kernel(
-    transpose: bool,
-    weight_info: jax.ShapeDtypeStruct,
-    vector_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
-    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
-    vector_warp_info = jaxinfo_to_warpinfo(vector_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if transpose:
-        # Sparse Matrix: [k, m]
-        # vector: [k]
-
-        # fixed pre connection number
-        if weight_info.size == 1:
-            @warp.kernel
-            def ell_mv(
-                weights: weight_warp_info,
-                indices: indices_warp_info,
-                vector: vector_warp_info,
-                posts: out_warp_info
-            ):
-                i_k = warp.tid()
-                w = weights[0]
-                wv = w * vector[i_k]
-                for j in range(indices.shape[1]):
-                    warp.atomic_add(posts, indices[i_k, j], wv)
-        else:
-            @warp.kernel
-            def ell_mv(
-                weights: weight_warp_info,
-                indices: indices_warp_info,
-                vector: vector_warp_info,
-                posts: out_warp_info
-            ):
-                i = warp.tid()
-                v = vector[i]
-                for j in range(indices.shape[1]):
-                    warp.atomic_add(posts, indices[i, j], weights[i, j] * v)
-
-        def kernel(weights, indices, vector):
-            out_info = kwargs['outs'][0]
-            dim = vector_info.shape[0]
-            fn = jax_kernel(ell_mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
-            return fn(weights, indices, vector, jnp.zeros(out_info.shape, out_info.dtype))
-
-    else:
-        # fixed post connection number
-        # Sparse Matrix: [m, k]
-        # vector: [k]
-
-        if weight_info.size == 1:
-            @warp.kernel
-            def ell_mv(
-                weights: weight_warp_info,
-                indices: indices_warp_info,
-                vector: vector_warp_info,
-                posts: out_warp_info
-            ):
-                i_m = warp.tid()
-                w = weights[0]
-                r = weights.dtype(0.)
-                for j in range(indices.shape[1]):
-                    r += vector[indices[i_m, j]]
-                posts[i_m] = w * r
-        else:
-            @warp.kernel
-            def ell_mv(
-                weights: weight_warp_info,
-                indices: indices_warp_info,
-                vector: vector_warp_info,
-                posts: out_warp_info
-            ):
-                i_m = warp.tid()
-                r = weights.dtype(0.)
-                for j in range(indices.shape[1]):
-                    r += weights[i_m, j] * vector[indices[i_m, j]]
-                posts[i_m] = r
-
-        def kernel(weights, indices, vector):
-            out_info = kwargs['outs'][0]
-            dim = indices_info.shape[0]
-            fn = jax_kernel(ell_mv, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
-            return fn(weights, indices, vector)
-
-    return kernel
-
-
 def _fcnmv_pallas_kernel(
     shape: Sequence[int],
     transpose: bool,
@@ -384,7 +290,7 @@ def _fcnmv_cuda_kernel(
     **kwargs
 ):
     _FCN_MV_FLOAT_CUDA = register_tvm_cuda_kernels(
-        module='fcn_mv_float',
+        module='fcnmv',
         functions=[
             'fcnmv_gather_auto', 'fcnmv_gather_warp',
             'fcnmv_gather_basic', 'fcnmv_gather_shared', 'fcnmv_gather_vec4',
@@ -851,9 +757,9 @@ void fcnmv_scatter_auto(
     if transpose:
         # Scatter mode: y[idx[i,k]] += w[i,k] * v[i]
         if n_conn <= 32:
-            kernel_name = 'fcn_mv_float.fcnmv_scatter_warp'
+            kernel_name = 'fcnmv.fcnmv_scatter_warp'
         else:
-            kernel_name = 'fcn_mv_float.fcnmv_scatter_auto'
+            kernel_name = 'fcnmv.fcnmv_scatter_auto'
 
         def kernel(weights, indices, vector):
             return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, vector)
@@ -861,11 +767,11 @@ void fcnmv_scatter_auto(
     else:
         # Gather mode: y[i] = sum_k w[i,k] * v[idx[i,k]]
         if n_conn % 4 == 0 and n_conn >= 128:
-            kernel_name = 'fcn_mv_float.fcnmv_gather_vec4'
+            kernel_name = 'fcnmv.fcnmv_gather_vec4'
         elif n_conn <= 32:
-            kernel_name = 'fcn_mv_float.fcnmv_gather_warp'
+            kernel_name = 'fcnmv.fcnmv_gather_warp'
         else:
-            kernel_name = 'fcn_mv_float.fcnmv_gather_auto'
+            kernel_name = 'fcnmv.fcnmv_gather_auto'
 
         def kernel(weights, indices, vector):
             return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, vector)
@@ -1015,7 +921,7 @@ def fcnmv_p_call(
     connection number.
 
     This function validates shapes and dispatches to the registered XLA
-    custom kernel (Numba, Warp, Pallas, or TVM FFI) without performing any
+    custom kernel (Numba, Pallas, or TVM FFI) without performing any
     physical-unit bookkeeping.  It is typically called from :func:`fcnmv`
     or from autodiff rules.
 
@@ -1035,7 +941,7 @@ def fcnmv_p_call(
         ``False`` for gather mode (fixed post-connections), ``True`` for
         scatter mode (fixed pre-connections).
     backend : str or None, optional
-        Backend override (``'numba'``, ``'warp'``, ``'pallas'``,
+        Backend override (``'numba'``, ``'pallas'``,
         ``'tvmffi'``, or ``None``).
 
     Returns
@@ -1070,7 +976,7 @@ Low-level XLA custom-kernel primitive for ``fcnmv``.
 
 This ``XLACustomKernel`` instance dispatches the fixed-connection matrix-vector
 multiplication operation with floating-point weights to registered backends
-(``numba``, ``warp``, ``pallas``, ``tvmffi``), using runtime shape/dtype metadata
+(``numba``, ``pallas``, ``tvmffi``), using runtime shape/dtype metadata
 provided by the high-level wrapper.
 
 Fixed-connection format stores connectivity where each neuron has a fixed number
@@ -1090,10 +996,8 @@ fcnmv : High-level user-facing function wrapper.
 """
 )
 fcnmv_p.def_numba_kernel(_fcnmv_numba_kernel)
-fcnmv_p.def_warp_kernel(_fcnmv_warp_kernel)
 fcnmv_p.def_pallas_kernel('gpu', _fcnmv_pallas_kernel)
 fcnmv_p.def_tvmffi_kernel('gpu', _fcnmv_cuda_kernel)
-fcnmv_p.def_jvp_rule2(_fcnmv_jvp_weights, None, _fcnmv_jvp_vector)
 fcnmv_p.def_kernel('jax_raw', 'cpu', _fcnmv_jax_kernel)
 fcnmv_p.def_kernel('jax_raw', 'gpu', _fcnmv_jax_kernel)
 fcnmv_p.def_kernel('jax_raw', 'tpu', _fcnmv_jax_kernel)
@@ -1262,104 +1166,6 @@ def _fcnmm_numba_kernel(
 
     def kernel(weights, indices, matrix):
         return numba_kernel(ell_mv, outs=kwargs['outs'])(weights, indices, matrix)
-
-    return kernel
-
-
-def _fcnmm_warp_kernel(
-    transpose: bool,
-    weight_info: jax.ShapeDtypeStruct,
-    matrix_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
-    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
-    B_warp_info = jaxinfo_to_warpinfo(matrix_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if transpose:
-        # fixed pre connection number
-        # Sparse Matrix: [k, m]
-        # matrix: [k, n]
-
-        if weight_info.size == 1:
-            @warp.kernel
-            def mm(
-                weights: weight_warp_info,
-                indices: indices_warp_info,
-                B: B_warp_info,
-                posts: out_warp_info,
-            ):
-                i_k, i_n = warp.tid()
-                v = B[i_k, i_n] * weights[0]
-                for j in range(indices.shape[1]):
-                    i_m = indices[i_k, j]
-                    warp.atomic_add(posts, i_m, i_n, v)
-        else:
-            @warp.kernel
-            def mm(
-                weights: weight_warp_info,
-                indices: indices_warp_info,
-                B: B_warp_info,
-                posts: out_warp_info,
-            ):
-                i_k, i_n = warp.tid()
-                b = B[i_k, i_n]
-                for j in range(indices.shape[1]):
-                    i_m = indices[i_k, j]
-                    w = weights[i_k, j]
-                    warp.atomic_add(posts, i_m, i_n, w * b)
-
-        def kernel(weights, indices, matrix):
-            out_info = kwargs['outs'][0]
-            dim = (matrix_info.shape[0], matrix_info.shape[1])
-            fn = jax_kernel(mm, launch_dims=dim, num_outputs=1, in_out_argnames=['posts'])
-            return fn(weights, indices, matrix, jnp.zeros(out_info.shape, out_info.dtype))
-
-    else:
-        # fixed post connection number
-        # Sparse Matrix: [m, k]
-        # matrix: [k, n]
-
-        if weight_info.size == 1:
-            @warp.kernel
-            def mm(
-                weights: weight_warp_info,
-                indices: indices_warp_info,
-                B: B_warp_info,
-                posts: out_warp_info,
-            ):
-                i_m, i_n = warp.tid()
-                r = weights.dtype(0.)
-                for j in range(indices.shape[1]):
-                    i_k = indices[i_m, j]
-                    r += B[i_k, i_n]
-                posts[i_m, i_n] = r * weights[0]
-        else:
-            @warp.kernel
-            def mm(
-                weights: weight_warp_info,
-                indices: indices_warp_info,
-                B: B_warp_info,
-                posts: out_warp_info,
-            ):
-                i_m, i_n = warp.tid()
-                r = weights.dtype(0.)
-                for j in range(indices.shape[1]):
-                    i_k = indices[i_m, j]
-                    w = weights[i_m, j]
-                    r += w * B[i_k, i_n]
-                posts[i_m, i_n] = r
-
-        def kernel(weights, indices, matrix):
-            out_info = kwargs['outs'][0]
-            dim = (indices_info.shape[0], matrix_info.shape[1])
-            fn = jax_kernel(mm, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
-            return fn(weights, indices, matrix)
 
     return kernel
 
@@ -1627,7 +1433,7 @@ def fcnmm_p_call(
     connection number.
 
     This function validates shapes and dispatches to the registered XLA
-    custom kernel (Numba, Warp, or Pallas) without performing any
+    custom kernel (Numba or Pallas) without performing any
     physical-unit bookkeeping.  It is typically called from :func:`fcnmm`
     or from autodiff rules.
 
@@ -1647,7 +1453,7 @@ def fcnmm_p_call(
         ``False`` for gather mode (fixed post-connections), ``True`` for
         scatter mode (fixed pre-connections).
     backend : str or None, optional
-        Backend override (``'numba'``, ``'warp'``, ``'pallas'``, or
+        Backend override (``'numba'``, ``'pallas'``, or
         ``None``).
 
     Returns
@@ -1688,7 +1494,7 @@ Low-level XLA custom-kernel primitive for ``fcnmm``.
 
 This ``XLACustomKernel`` instance dispatches the fixed-connection matrix-matrix
 multiplication operation with floating-point weights to registered backends
-(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata provided
+(``numba``, ``pallas``), using runtime shape/dtype metadata provided
 by the high-level wrapper.
 
 Fixed-connection format stores connectivity where each neuron has a fixed number
@@ -1708,12 +1514,11 @@ fcnmm : High-level user-facing function wrapper.
 """
 )
 fcnmm_p.def_numba_kernel(_fcnmm_numba_kernel)
-fcnmm_p.def_warp_kernel(_fcnmm_warp_kernel)
 fcnmm_p.def_pallas_kernel('gpu', _fcnmm_pallas_kernel)
 fcnmm_p.def_kernel('jax_raw', 'cpu', _fcnmm_jax_kernel)
 fcnmm_p.def_kernel('jax_raw', 'gpu', _fcnmm_jax_kernel)
 fcnmm_p.def_kernel('jax_raw', 'tpu', _fcnmm_jax_kernel)
-fcnmm_p.def_jvp_rule2(_fcnmm_jvp_weights, None, _fcnmm_jvp_matrix, None)
+fcnmm_p.def_jvp_rule2(_fcnmm_jvp_weights, None, _fcnmm_jvp_matrix)
 fcnmm_p.def_transpose_rule(_fcnmm_transpose_rule)
 fcnmm_p.def_batching_rule(_fcnmm_batching)
 fcnmm_p.def_call(fcnmm_p_call)

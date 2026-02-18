@@ -21,7 +21,6 @@ from brainevent._event.binary_indexed_extraction import (
     binary_array_index,
     binary_1d_array_index_p,
     _binary_1d_array_index_numba_kernel,
-    _binary_1d_array_index_warp_kernel,
 )
 
 
@@ -173,26 +172,6 @@ class TestBinary1DArrayIndexKernels:
             outs=[indices_info, count_info],
         )
         assert kernel is not None
-
-    def test_warp_kernel_generator(self):
-        """Test Warp kernel generator."""
-        try:
-            import warp
-        except ImportError:
-            pytest.skip("Warp not installed")
-
-        spikes_info = jax.ShapeDtypeStruct((5,), jnp.bool_)
-        indices_info = jax.ShapeDtypeStruct((5,), jnp.int32)
-        count_info = jax.ShapeDtypeStruct((1,), jnp.int32)
-
-        kernel = _binary_1d_array_index_warp_kernel(
-            spikes_info=spikes_info,
-            indices_info=indices_info,
-            count_info=count_info,
-            outs=[indices_info, count_info],
-        )
-        assert kernel is not None
-
 
 class TestBinary1DArrayIndexEdgeCases:
     """Test edge cases and error handling."""

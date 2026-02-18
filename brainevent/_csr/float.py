@@ -22,7 +22,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescope
-from brainevent._op import numba_kernel, jaxinfo_to_warpinfo, XLACustomKernel, general_batching_rule
+from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
@@ -81,7 +81,7 @@ def csrmv(
         If ``True``, the sparse matrix is transposed before multiplication,
         i.e. compute ``A.T @ v``.  Default is ``False``.
     backend : str or None, optional
-        Compute backend to use.  One of ``'numba'``, ``'warp'``,
+        Compute backend to use.  One of ``'numba'``,
         ``'pallas'``, or ``None`` (auto-select).  Default is ``None``.
 
     Returns
@@ -194,108 +194,6 @@ def _csrmv_numba_kernel_generator(
 
     def kernel(weights, indices, indptr, vector):
         return numba_kernel(mv, outs=kwargs['outs'])(weights, indices, indptr, vector)
-
-    return kernel
-
-
-def _csrmv_warp_kernel_generator(
-    weight_info: jax.ShapeDtypeStruct,
-    vector_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    indptr_info: jax.ShapeDtypeStruct,
-    transpose: bool,
-    shape: MatrixShape,
-    **kwargs
-):
-    import warp  # pylint: disable=import-outside-toplevel
-    from warp.jax_experimental import jax_kernel
-
-    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
-    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
-    indptr_warp_info = jaxinfo_to_warpinfo(indptr_info)
-    vector_warp_info = jaxinfo_to_warpinfo(vector_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if transpose:
-        if weight_info.size == 1:
-            # [m, k].T @ [m]
-            @warp.kernel
-            def mv(
-                weights: weight_warp_info,
-                indices: indices_warp_info,
-                indptr: indptr_warp_info,
-                vector: vector_warp_info,
-                posts: out_warp_info,
-            ):
-                i = warp.tid()
-                w = weights[0]
-                wsp = w * vector[i]
-                for j in range(indptr[i], indptr[i + 1]):
-                    posts[indices[j]] += wsp
-
-        else:
-            # [m, k].T @ [m]
-            @warp.kernel
-            def mv(
-                weights: weight_warp_info,
-                indices: indices_warp_info,
-                indptr: indptr_warp_info,
-                v: vector_warp_info,
-                posts: out_warp_info,
-            ):
-                i = warp.tid()
-                sp = v[i]
-                for j in range(indptr[i], indptr[i + 1]):
-                    posts[indices[j]] += weights[j] * sp
-
-        def kernel(weights, indices, indptr, vector):
-            out_info = jax.ShapeDtypeStruct([shape[1]], weights.dtype)
-            dim = vector_info.shape[0]
-            fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
-            return fn(weights, indices, indptr, vector, jnp.zeros(out_info.shape, out_info.dtype))
-
-    else:
-        if weight_info.size == 1:
-            # [m, k] @ [k]
-            @warp.kernel
-            def mv(
-                weights: weight_warp_info,
-                indices: indices_warp_info,
-                indptr: indptr_warp_info,
-                v: vector_warp_info,
-                posts: out_warp_info,
-            ):
-                i_m = warp.tid()
-                w = weights[0]
-                r = weights.dtype(0.)
-                for j in range(indptr[i_m], indptr[i_m + 1]):
-                    r += w * v[indices[j]]
-                posts[i_m] = r
-
-        else:
-            # [m, k] @ [k]
-            @warp.kernel
-            def mv(
-                weights: weight_warp_info,
-                indices: indices_warp_info,
-                indptr: indptr_warp_info,
-                v: vector_warp_info,
-                posts: out_warp_info,
-            ):
-                i_row = warp.tid()
-                r = weights.dtype(0.)
-                for index in range(indptr[i_row], indptr[i_row + 1]):
-                    i_k = indices[index]
-                    c = v[i_k]
-                    w = weights[index]
-                    r += w * c
-                posts[i_row] = r
-
-        def kernel(weights, indices, indptr, vector):
-            out_info = jax.ShapeDtypeStruct([shape[0]], weights.dtype)
-            dim = indptr_info.shape[0] - 1
-            fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
-            return fn(weights, indices, indptr, vector)
 
     return kernel
 
@@ -766,7 +664,7 @@ csrmv_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``csrmv``.
 
 This ``XLACustomKernel`` instance dispatches the CSR sparse matrix-vector multiplication with floating-point weights
-operation to registered backends (``numba``, ``warp``, ``pallas``),
+operation to registered backends (``numba``, ``pallas``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 All elements of the input vector contribute to the result, regardless of sign or magnitude,
@@ -785,7 +683,6 @@ csrmv : High-level user-facing function wrapper.
 """
 )
 csrmv_p.def_numba_kernel(_csrmv_numba_kernel_generator)
-csrmv_p.def_warp_kernel(_csrmv_warp_kernel_generator)
 csrmv_p.def_pallas_kernel('gpu', _csrmv_pallas_kernel_generator)
 csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
 csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
@@ -836,7 +733,7 @@ def csrmm(
         If ``True``, transpose ``A`` before multiplication.  Default is
         ``False``.
     backend : str or None, optional
-        Compute backend.  One of ``'numba'``, ``'warp'``, ``'pallas'``, or
+        Compute backend.  One of ``'numba'``, ``'pallas'``, or
         ``None`` (auto-select).  Default is ``None``.
 
     Returns
@@ -980,115 +877,6 @@ def _csrmm_numba_kernel_generator(
 
     def kernel(weights, indices, indptr, B):
         return numba_kernel(mm, outs=kwargs['outs'])(weights, indices, indptr, B)
-
-    return kernel
-
-
-def _csrmm_warp_kernel_generator(
-    weight_info: jax.ShapeDtypeStruct,
-    vector_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    indptr_info: jax.ShapeDtypeStruct,
-    transpose: bool,
-    shape: MatrixShape,
-    **kwargs
-):
-    import warp  # pylint: disable=import-outside-toplevel
-    from warp.jax_experimental import jax_kernel
-
-    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
-    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
-    indptr_warp_info = jaxinfo_to_warpinfo(indptr_info)
-    B_warp_info = jaxinfo_to_warpinfo(vector_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    n = vector_info.shape[1]
-
-    if transpose:
-        if weight_info.size == 1:
-            # csr.T @ B — scatter pattern, needs atomic_add
-            @warp.kernel
-            def mm(
-                weights: weight_warp_info,
-                indices: indices_warp_info,
-                indptr: indptr_warp_info,
-                B: B_warp_info,
-                posts: out_warp_info,
-            ):
-                i_k = warp.tid()
-                w = weights[0]
-                col_start = indptr[i_k]
-                col_end = indptr[i_k + 1]
-                for index in range(col_start, col_end):
-                    i_row = indices[index]
-                    for j in range(B.shape[1]):
-                        warp.atomic_add(posts, i_row, j, w * B[i_k, j])
-
-        else:
-            # csr.T @ B — scatter pattern, needs atomic_add
-            @warp.kernel
-            def mm(
-                weights: weight_warp_info,
-                indices: indices_warp_info,
-                indptr: indptr_warp_info,
-                B: B_warp_info,
-                posts: out_warp_info,
-            ):
-                i_k = warp.tid()
-                col_start = indptr[i_k]
-                col_end = indptr[i_k + 1]
-                for index in range(col_start, col_end):
-                    i_row = indices[index]
-                    weight = weights[index]
-                    for j in range(B.shape[1]):
-                        warp.atomic_add(posts, i_row, j, weight * B[i_k, j])
-
-        def kernel(weights, indices, indptr, B):
-            out_info = jax.ShapeDtypeStruct([shape[1], n], weights.dtype)
-            dim = vector_info.shape[0]
-            fn = jax_kernel(mm, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
-            return fn(weights, indices, indptr, B, jnp.zeros(out_info.shape, out_info.dtype))
-
-    else:
-        if weight_info.size == 1:
-            # csr @ B — gather pattern, each thread owns its output row
-            @warp.kernel
-            def mm(
-                weights: weight_warp_info,
-                indices: indices_warp_info,
-                indptr: indptr_warp_info,
-                B: B_warp_info,
-                posts: out_warp_info,
-            ):
-                i_m = warp.tid()
-                weight = weights[0]
-                for index in range(indptr[i_m], indptr[i_m + 1]):
-                    i_k = indices[index]
-                    for j in range(B.shape[1]):
-                        posts[i_m, j] += weight * B[i_k, j]
-
-        else:
-            # csr @ B — gather pattern, each thread owns its output row
-            @warp.kernel
-            def mm(
-                weights: weight_warp_info,
-                indices: indices_warp_info,
-                indptr: indptr_warp_info,
-                B: B_warp_info,
-                posts: out_warp_info,
-            ):
-                i_m = warp.tid()
-                for index in range(indptr[i_m], indptr[i_m + 1]):
-                    i_k = indices[index]
-                    weight = weights[index]
-                    for j in range(B.shape[1]):
-                        posts[i_m, j] += weight * B[i_k, j]
-
-        def kernel(weights, indices, indptr, B):
-            out_info = jax.ShapeDtypeStruct([shape[0], n], weights.dtype)
-            dim = indptr_info.shape[0] - 1
-            fn = jax_kernel(mm, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
-            return fn(weights, indices, indptr, B, jnp.zeros(out_info.shape, out_info.dtype))
 
     return kernel
 
@@ -1540,8 +1328,8 @@ def csrmm_p_call(
         ...                [2.0, 1.5],
         ...                [3.0, 2.5]])
         >>> result = csrmm_p_call(
-        ...     weights, indices, indptr, B,
-        ...     shape=(2, 3), transpose=False)
+        ...             weights, indices, indptr, B,
+        ...             shape=(2, 3), transpose=False)
     """
     assert indices.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indices must be int32 or int64."
     assert indptr.dtype in [jnp.int32, jnp.int64, jnp.uint32, jnp.uint64], "Indptr must be int32 or int64."
@@ -1584,7 +1372,7 @@ csrmm_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``csrmm``.
 
 This ``XLACustomKernel`` instance dispatches the CSR sparse matrix-matrix multiplication with floating-point weights
-operation to registered backends (``numba``, ``warp``, ``pallas``),
+operation to registered backends (``numba``, ``pallas``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 All elements of the input matrix contribute to the result, performing standard
@@ -1603,7 +1391,6 @@ csrmm : High-level user-facing function wrapper.
 """
 )
 csrmm_p.def_numba_kernel(_csrmm_numba_kernel_generator)
-csrmm_p.def_warp_kernel(_csrmm_warp_kernel_generator)
 csrmm_p.def_pallas_kernel('gpu', _csrmm_pallas_kernel_generator)
 csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 csrmm_p.def_transpose_rule(_csrmm_transpose_rule)

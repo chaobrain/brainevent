@@ -211,7 +211,7 @@ class Test_coo_gpu_backend_parity:
         post_ids[:hot] = post_ids[0]
         return jnp.asarray(pre_ids), jnp.asarray(post_ids)
 
-    @pytest.mark.parametrize('backend', [b for b in ('warp', 'pallas') if b in PRE_BACKENDS])
+    @pytest.mark.parametrize('backend', PRE_BACKENDS)
     @pytest.mark.parametrize('dtype', [jnp.float32, jnp.float16])
     @pytest.mark.parametrize('bool_spike', [True, False])
     @pytest.mark.parametrize('n_syn', [0, 33, 4097])
@@ -236,7 +236,7 @@ class Test_coo_gpu_backend_parity:
         assert jnp.allclose(out, ref, rtol=rtol, atol=atol)
         jax.block_until_ready((out, ref))
 
-    @pytest.mark.parametrize('backend', [b for b in ('warp', 'pallas') if b in POST_BACKENDS])
+    @pytest.mark.parametrize('backend', POST_BACKENDS)
     @pytest.mark.parametrize('dtype', [jnp.float32, jnp.float16])
     @pytest.mark.parametrize('bool_spike', [True, False])
     @pytest.mark.parametrize('n_syn', [0, 33, 4097])

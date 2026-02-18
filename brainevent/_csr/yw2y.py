@@ -21,7 +21,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._misc import generate_block_dim, namescope
-from brainevent._op import numba_kernel, jaxinfo_to_warpinfo, XLACustomKernel
+from brainevent._op import numba_kernel, XLACustomKernel
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 
@@ -256,65 +256,6 @@ def _csrmv_yw2y_pallas_kernels(
     return kernel
 
 
-def _csrmv_yw2y_warp_kernel_generator(
-    y_info: jax.ShapeDtypeStruct,
-    w_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    indptr_info: jax.ShapeDtypeStruct,
-    transpose: bool,
-    shape: MatrixShape,
-    **kwargs
-):
-    import warp  # pylint: disable=import-outside-toplevel
-    from warp.jax_experimental import jax_kernel
-
-    y_warp_info = jaxinfo_to_warpinfo(y_info)
-    w_warp_info = jaxinfo_to_warpinfo(w_info)
-    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
-    indptr_warp_info = jaxinfo_to_warpinfo(indptr_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if transpose:
-        @warp.kernel
-        def yw2y(
-            y: y_warp_info,
-            w: w_warp_info,
-            indices: indices_warp_info,
-            indptr: indptr_warp_info,
-            posts: out_warp_info,
-        ):
-            i_row = warp.tid()
-            for j in range(indptr[i_row], indptr[i_row + 1]):
-                posts[j] = w[j] * y[indices[j]]
-
-        def kernel(y, w, indices, indptr):
-            out_info = kwargs['outs'][0]
-            dim = shape[0]
-            fn = jax_kernel(yw2y, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
-            return fn(y, w, indices, indptr)
-
-    else:
-        @warp.kernel
-        def yw2y(
-            y: y_warp_info,
-            w: w_warp_info,
-            indptr: indptr_warp_info,
-            posts: out_warp_info,
-        ):
-            i_row = warp.tid()
-            y_val = y[i_row]
-            for j in range(indptr[i_row], indptr[i_row + 1]):
-                posts[j] = w[j] * y_val
-
-        def kernel(y, w, indices, indptr):
-            out_info = kwargs['outs'][0]
-            dim = shape[0]
-            fn = jax_kernel(yw2y, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
-            return fn(y, w, indptr)
-
-    return kernel
-
-
 def _csrmv_yw2y_jvp_y(y_dot, y, w, indices, indptr, *, shape, transpose, **kwargs):
     return csrmv_yw2y_p_call(y_dot, w, indices, indptr, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
@@ -477,7 +418,7 @@ csrmv_yw2y_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``csrmv_yw2y``.
 
 This ``XLACustomKernel`` instance dispatches the CSR sparse matrix-vector multiplication with element-wise product (y * W -> y)
-operation to registered backends (``numba``, ``warp``, ``pallas``),
+operation to registered backends (``numba``, ``pallas``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 For each non-zero entry at position (row, col) in the CSR matrix, computes
@@ -497,7 +438,6 @@ csrmv_yw2y : High-level user-facing function wrapper.
 """
 )
 csrmv_yw2y_p.def_numba_kernel(_csrmv_yw2y_numba_kernels)
-csrmv_yw2y_p.def_warp_kernel(_csrmv_yw2y_warp_kernel_generator)
 csrmv_yw2y_p.def_pallas_kernel('gpu', _csrmv_yw2y_pallas_kernels)
 csrmv_yw2y_p.def_jvp_rule2(_csrmv_yw2y_jvp_y, _csrmv_yw2y_jvp_w, None, None)
 csrmv_yw2y_p.def_call(csrmv_yw2y_p_call)
