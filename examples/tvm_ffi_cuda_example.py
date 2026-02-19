@@ -44,7 +44,7 @@ Usage
     y = ell_mv(spikes, indices, weights, n_post=n_post)
 
     # Run full benchmark suite
-    python ell_mv_cuda.py
+    python tvm_ffi_cuda_example.py
 """
 
 import time
