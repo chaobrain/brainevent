@@ -1,5 +1,5 @@
 numpy
-jax>=0.5.0
+jax>=0.5.0  # need for pallas changes
 brainunit>=0.0.4
 brainstate
 absl-py

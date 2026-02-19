@@ -20,7 +20,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from brainevent._dense.plasticity import update_dense_on_binary_pre, update_dense_on_binary_post
+from brainevent import update_dense_on_binary_pre, update_dense_on_binary_post
 
 
 class Test_dense_on_pre:

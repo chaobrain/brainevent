@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+from pathlib import Path
 from typing import Optional, Union
 
 import brainunit as u
@@ -22,7 +23,9 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, namescope
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
+from brainevent._op import (
+    XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, register_tvm_cuda_from_file,
+)
 from brainevent.config import get_numba_parallel
 
 __all__ = [
@@ -196,6 +199,42 @@ def _dense_on_pre_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, *
     return run
 
 
+def _dense_on_pre_cuda_kernel(weight_info, spike_info, **kwargs):
+    register_tvm_cuda_from_file(
+        module='plasticity_on_pre',
+        source=Path(__file__).parent.joinpath('plasticity_binary_on_pre.cu'),
+    )
+
+    out_info = kwargs['outs']
+    spk_suffix = '_bool' if spike_info.dtype == jnp.bool_ else '_float'
+
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    kernel_name = f'plasticity_on_pre.update_dense_on_pre{wt_sfx}{spk_suffix}'
+
+    def kernel(weight, spike, trace):
+        return jax.ffi.ffi_call(
+            kernel_name,
+            out_info,
+            input_output_aliases={0: 0},
+        )(weight, spike, trace)
+
+    return kernel
+
+
+def _dense_on_pre_jax_kernel(**kwargs):
+    def kernel(weight, spike, trace):
+        s = spike.astype(weight.dtype) if spike.dtype == jnp.bool_ else spike
+        return [weight + jnp.outer(s, trace)]
+
+    return kernel
+
+
 def _dense_on_pre_prim_call(weight, pre_spike, post_trace, backend: Optional[str] = None):
     """
     Low-level primitive call for pre-synaptic plasticity weight update.
@@ -348,6 +387,8 @@ update_dense_on_binary_pre : High-level user-facing function wrapper.
 )
 update_dense_on_binary_pre_p.def_numba_kernel(_dense_on_pre_numba_kernel)
 update_dense_on_binary_pre_p.def_pallas_kernel('gpu', _dense_on_pre_pallas_kernel)
+update_dense_on_binary_pre_p.def_tvmffi_kernel('gpu', _dense_on_pre_cuda_kernel)
+update_dense_on_binary_pre_p.def_kernel('jax_raw', 'gpu', _dense_on_pre_jax_kernel)
 update_dense_on_binary_pre_p.def_jvp_rule2(_dense_on_pre_jvp_weight, None, None)
 update_dense_on_binary_pre_p.def_transpose_rule(_dense_on_pre_transpose_rule)
 update_dense_on_binary_pre_p.def_batching_rule(_dense_on_pre_batching)
@@ -519,6 +560,42 @@ def _dense_on_post_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, 
     return run
 
 
+def _dense_on_post_cuda_kernel(weight_info, spike_info, **kwargs):
+    register_tvm_cuda_from_file(
+        module='plasticity_on_post',
+        source=Path(__file__).parent.joinpath('plasticity_binary_on_post.cu'),
+    )
+
+    out_info = kwargs['outs']
+    spk_suffix = '_bool' if spike_info.dtype == jnp.bool_ else '_float'
+
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    kernel_name = f'plasticity_on_post.update_dense_on_post{wt_sfx}{spk_suffix}'
+
+    def kernel(weight, trace, spike):
+        return jax.ffi.ffi_call(
+            kernel_name,
+            out_info,
+            input_output_aliases={0: 0},
+        )(weight, trace, spike)
+
+    return kernel
+
+
+def _dense_on_post_jax_kernel(**kwargs):
+    def kernel(weight, trace, spike):
+        s = spike.astype(weight.dtype) if spike.dtype == jnp.bool_ else spike
+        return [weight + jnp.outer(trace, s)]
+
+    return kernel
+
+
 def _dense_on_post_prim_call(weight, pre_trace, post_spike, backend: Optional[str] = None):
     """
     Low-level primitive call for post-synaptic plasticity weight update.
@@ -667,6 +744,8 @@ update_dense_on_binary_post : High-level user-facing function wrapper.
 )
 update_dense_on_binary_post_p.def_numba_kernel(_dense_on_post_numba_kernel)
 update_dense_on_binary_post_p.def_pallas_kernel('gpu', _dense_on_post_pallas_kernel)
+update_dense_on_binary_post_p.def_tvmffi_kernel('gpu', _dense_on_post_cuda_kernel)
+update_dense_on_binary_post_p.def_kernel('jax_raw', 'gpu', _dense_on_post_jax_kernel)
 update_dense_on_binary_post_p.def_jvp_rule2(_dense_on_post_jvp_weight, None, None)
 update_dense_on_binary_post_p.def_transpose_rule(_dense_on_post_transpose_rule)
 update_dense_on_binary_post_p.def_batching_rule(_dense_on_post_batching)

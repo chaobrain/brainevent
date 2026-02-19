@@ -21,7 +21,7 @@ from .indexed_binary import (
     indexed_binary_densemv, indexed_binary_densemv_p,
     indexed_binary_densemm, indexed_binary_densemm_p,
 )
-from .plasticity import (
+from .plasticity_binary import (
     update_dense_on_binary_pre, update_dense_on_binary_pre_p,
     update_dense_on_binary_post, update_dense_on_binary_post_p,
 )
