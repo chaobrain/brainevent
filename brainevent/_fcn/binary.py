@@ -405,7 +405,7 @@ def _binary_fcnmv_cuda_kernel(
     """
     register_tvm_cuda_from_file(
         module='binary_fcnmv',
-        source_code=Path(__file__).parent.joinpath('binary_fcnmv.cu').read_text(),
+        source=Path(__file__).parent.joinpath('binary_fcnmv.cu'),
     )
 
     out_info = kwargs['outs']
@@ -1199,7 +1199,7 @@ def _binary_fcnmm_cuda_kernel(
     """
     register_tvm_cuda_from_file(
         module='binary_fcnmm',
-        source_code=Path(__file__).parent.joinpath('binary_fcnmm.cu').read_text(),
+        source=Path(__file__).parent.joinpath('binary_fcnmm.cu'),
     )
 
     out_info = kwargs['outs']

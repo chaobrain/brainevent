@@ -330,7 +330,7 @@ def _spfloat_fcnmv_cuda_kernel(
     """
     register_tvm_cuda_from_file(
         module='spfloat_fcnmv',
-        source_code=Path(__file__).parent.joinpath('spfloat_fcnmv.cu').read_text(),
+        source=Path(__file__).parent.joinpath('spfloat_fcnmv.cu'),
     )
 
     out_info = kwargs['outs']
@@ -880,7 +880,7 @@ def _spfloat_fcnmm_cuda_kernel(
     """
     register_tvm_cuda_from_file(
         module='spfloat_fcnmm',
-        source_code=Path(__file__).parent.joinpath('spfloat_fcnmm.cu').read_text(),
+        source=Path(__file__).parent.joinpath('spfloat_fcnmm.cu'),
     )
 
     out_info = kwargs['outs']

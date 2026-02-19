@@ -19,6 +19,7 @@ import functools
 import hashlib
 import importlib.util
 import re
+from pathlib import Path
 from typing import Protocol, Union, Tuple, Sequence
 
 import jax
@@ -312,7 +313,7 @@ def _parse_tvm_entry_functions(source_code: str) -> list:
 
 def register_tvm_cuda_from_file(
     module: str,
-    source_code: str,
+    source: str | Path,
 ):
     """Compile a CUDA source and auto-register all TVM FFI entry points.
 
@@ -331,11 +332,16 @@ def register_tvm_cuda_from_file(
     module : str
         Module name under which the compiled kernels are registered.
         Must be unique within the process.
-    source_code : str
-        CUDA C/C++ source code, typically loaded from a ``.cu`` file::
+    source : str or Path
+        Either a CUDA C/C++ source string, or a path to a ``.cu`` file
+        (as a :class:`pathlib.Path` or a ``str`` pointing to an existing
+        file).  When a path is given the file is read automatically::
 
-            source_code = Path(__file__).parent.joinpath('mykernels.cu').read_text()
-            register_tvm_cuda_from_file('mykernels', source_code)
+            register_tvm_cuda_from_file('mykernels', Path(__file__).parent / 'mykernels.cu')
+
+        A raw CUDA string is also accepted::
+
+            register_tvm_cuda_from_file('mykernels', cuda_source_string)
 
     Returns
     -------
@@ -350,7 +356,7 @@ def register_tvm_cuda_from_file(
         If *module* was already registered with a different source or
         a different set of discovered entry functions.
     ValueError
-        If no TVM FFI entry functions are found in *source_code*.
+        If no TVM FFI entry functions are found in *source*.
 
     See Also
     --------
@@ -368,12 +374,16 @@ def register_tvm_cuda_from_file(
     """
     if not isinstance(module, str):
         raise TypeError(f"module must be a str, got {type(module).__name__}")
-    if not isinstance(source_code, str):
-        raise TypeError(f"source_code must be a str, got {type(source_code).__name__}")
-    if not source_code.strip():
-        raise ValueError(f"source_code for module '{module}' is empty.")
+    if isinstance(source, Path):
+        source = source.read_text()
+    elif isinstance(source, str) and Path(source).is_file():
+        source = Path(source).read_text()
+    if not isinstance(source, str):
+        raise TypeError(f"source must be a str or Path, got {type(source).__name__}")
+    if not source.strip():
+        raise ValueError(f"source for module '{module}' is empty.")
 
-    functions = _parse_tvm_entry_functions(source_code)
+    functions = _parse_tvm_entry_functions(source)
 
     if not functions:
         raise ValueError(
@@ -381,7 +391,7 @@ def register_tvm_cuda_from_file(
             "Entry functions must be top-level 'void' functions (at column 0) "
             "with 'tvm::ffi::TensorView' parameters."
         )
-    return register_tvm_cuda_kernels(source_code=source_code, module=module, functions=functions)
+    return register_tvm_cuda_kernels(source_code=source, module=module, functions=functions)
 
 
 def defjvp(primitive, *jvp_rules):

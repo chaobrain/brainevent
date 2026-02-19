@@ -292,7 +292,7 @@ def _fcnmv_cuda_kernel(
 ):
     _FCN_MV_FLOAT_CUDA = register_tvm_cuda_from_file(
         module='fcnmv',
-        source_code=Path(__file__).parent.joinpath('fcnmv.cu').read_text(),
+        source=Path(__file__).parent.joinpath('fcnmv.cu'),
     )
 
     out_info = kwargs['outs']
@@ -823,7 +823,7 @@ def _fcnmm_cuda_kernel(
 ):
     register_tvm_cuda_from_file(
         module='fcnmm',
-        source_code=Path(__file__).parent.joinpath('fcnmm.cu').read_text(),
+        source=Path(__file__).parent.joinpath('fcnmm.cu'),
     )
 
     out_info = kwargs['outs']
