@@ -190,6 +190,29 @@ Prefer using the built-in `.benchmark()` method on `XLACustomKernel` primitives 
 
 This handles warmup, timing, cross-backend comparison, and tabular display automatically. See `dev/fcn/benchmark_fcnmv.py` for a complete example.
 
+## CUDA Source File Conventions (`.cu` files)
+
+### File layout
+Each `.cu` file must follow this structure, in order:
+
+1. **License header** — Apache 2.0 using `//` C-style line comments (not `#`):
+   ```c
+   // Copyright 2026 BrainX Ecosystem Limited. All Rights Reserved.
+   //
+   // Licensed under the Apache License, Version 2.0 (the "License");
+   // ...
+   // ==============================================================================
+   ```
+2. **Docstring block** — `/* ... */` block comment summarising the public Python API, parameters, and behaviour.
+3. **CUDA kernel source** — `__device__`, `__global__`, and TVM FFI `void` entry functions.
+
+### Keeping CUDA out of Python
+Never embed large CUDA source strings inline in Python files. Instead:
+- Store kernels in a co-located `.cu` file (e.g. `brainevent/_fcn/fcnmv.cu`).
+- Load at runtime: `Path(__file__).parent.joinpath('fcnmv.cu').read_text()`.
+- This keeps Python files readable, allows the CUDA to be edited/compiled independently, and is bundled in wheels via `pyproject.toml` (see below).
+
+
 ## Linter
 
 A linter runs on file save and may revert changes. When making many edits to a single file, prefer writing the entire file at once rather than incremental edits.
