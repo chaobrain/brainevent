@@ -68,10 +68,10 @@ class BenchmarkConfig:
     kernel_kwargs: dict = field(default_factory=dict)
     data_kwargs: dict = field(default_factory=dict)
 
-    def put_args(self):
+    def put_args(self, device=None):
         args = []
         for arg in self.args:
-            args.append(jax.device_put(arg).block_until_ready())
+            args.append(jax.device_put(arg, device=device).block_until_ready())
         return BenchmarkConfig(self.name, tuple(args), self.kernel_kwargs, self.data_kwargs)
 
 

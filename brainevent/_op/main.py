@@ -1092,6 +1092,7 @@ class XLACustomKernel:
         rtol: float = 1e-3,
         atol: float = 1e-3,
         verbose: bool = False,
+        catch_errors: bool = True,
     ) -> BenchmarkResult:
         """Benchmark all registered backends across every configured data config.
 
@@ -1131,13 +1132,22 @@ class XLACustomKernel:
         atol : float, optional
             Absolute tolerance for output comparison when *compare_results*
             is ``True``.  Default is ``1e-3``.
+        catch_errors : bool, optional
+            If ``True`` (default), runtime errors raised by a backend during
+            warmup or timed runs are caught and stored in the returned
+            :class:`~brainevent._op.benchmark.BenchmarkRecord` as
+            ``success=False`` with the exception message in ``error``.
+            The benchmark continues with the remaining backends.
+            Set to ``False`` to let exceptions propagate immediately, which
+            is useful for debugging a specific backend failure.
 
         Returns
         -------
         BenchmarkResult
             A :class:`~brainevent._op.benchmark.BenchmarkResult`
             containing one :class:`~brainevent._op.benchmark.BenchmarkRecord`
-            per (config × backend) pair.
+            per (config × backend) pair.  Failed runs (when
+            *catch_errors* is ``True``) are included with ``success=False``.
 
         Raises
         ------
@@ -1147,6 +1157,8 @@ class XLACustomKernel:
         ValueError
             If no call function has been registered (use :meth:`def_call`
             first), or if no backends are registered for *platform*.
+        Exception
+            Any backend runtime error, when *catch_errors* is ``False``.
 
         See Also
         --------
@@ -1189,31 +1201,72 @@ class XLACustomKernel:
                 def run_fn(*args):
                     return self._call_fn(*args, backend=be, **config.kernel_kwargs)
 
-                mean_s, std_s, min_s, _max_s, output = benchmark_function(
-                    run_fn, n_warmup, n_runs, n_batch_per_run=n_batch_per_run, data=config.args,
-                )
-                record = BenchmarkRecord(
-                    platform=platform,
-                    backend=be,
-                    label=config.name,
-                    mean_ms=mean_s * 1000.0,
-                    std_ms=std_s * 1000.0,
-                    min_ms=min_s * 1000.0,
-                    throughput=None,
-                    success=True,
-                    error=None,
-                    kernel_kwargs=dict(config.kernel_kwargs),
-                    data_kwargs=dict(config.data_kwargs),
-                )
+                if catch_errors:
+                    try:
+                        mean_s, std_s, min_s, _max_s, output = benchmark_function(
+                            run_fn, n_warmup, n_runs, n_batch_per_run=n_batch_per_run, data=config.args,
+                        )
+                        record = BenchmarkRecord(
+                            platform=platform,
+                            backend=be,
+                            label=config.name,
+                            mean_ms=mean_s * 1000.0,
+                            std_ms=std_s * 1000.0,
+                            min_ms=min_s * 1000.0,
+                            throughput=None,
+                            success=True,
+                            error=None,
+                            kernel_kwargs=dict(config.kernel_kwargs),
+                            data_kwargs=dict(config.data_kwargs),
+                        )
+                        config_outputs[be] = output
+                    except Exception as exc:
+                        error_msg = f"{type(exc).__name__}: {exc}"
+                        record = BenchmarkRecord(
+                            platform=platform,
+                            backend=be,
+                            label=config.name,
+                            mean_ms=float('nan'),
+                            std_ms=float('nan'),
+                            min_ms=float('nan'),
+                            throughput=None,
+                            success=False,
+                            error=error_msg,
+                            kernel_kwargs=dict(config.kernel_kwargs),
+                            data_kwargs=dict(config.data_kwargs),
+                        )
+                        if verbose:
+                            print(
+                                f"[{self.name}] [{platform}|{be}] {config.name}: "
+                                f"FAILED — {error_msg}"
+                            )
+                else:
+                    mean_s, std_s, min_s, _max_s, output = benchmark_function(
+                        run_fn, n_warmup, n_runs, n_batch_per_run=n_batch_per_run, data=config.args,
+                    )
+                    record = BenchmarkRecord(
+                        platform=platform,
+                        backend=be,
+                        label=config.name,
+                        mean_ms=mean_s * 1000.0,
+                        std_ms=std_s * 1000.0,
+                        min_ms=min_s * 1000.0,
+                        throughput=None,
+                        success=True,
+                        error=None,
+                        kernel_kwargs=dict(config.kernel_kwargs),
+                        data_kwargs=dict(config.data_kwargs),
+                    )
+                    config_outputs[be] = output
+
                 records.append(record)
-                if verbose:
+                if verbose and record.success:
                     print(
                         f"[{self.name}] [{platform}|{be}] {config.name}: "
                         f"mean={record.mean_ms:.3f}ms  "
                         f"std={record.std_ms:.3f}ms  "
                         f"min={record.min_ms:.3f}ms"
                     )
-                config_outputs[be] = output
 
             # Optionally compare outputs across backends for this config
             if compare_results and len(config_outputs) > 1:

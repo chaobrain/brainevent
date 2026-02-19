@@ -1144,7 +1144,6 @@ def _binary_fcnmm_benchmark_data(*, platform):
 
 
 def _binary_fcnmm_cuda_kernel(
-    shape: Tuple[int, int],
     transpose: bool,
     weight_info: jax.ShapeDtypeStruct,
     matrix_info: jax.ShapeDtypeStruct,
@@ -1207,7 +1206,7 @@ def _binary_fcnmm_cuda_kernel(
     n_conn = indices_info.shape[1]
     is_bool_matrix = (matrix_info.dtype == jnp.bool_)
     _dtype_sfx = {np.dtype('float16'): '_f16', np.dtype('float32'): '', np.dtype('float64'): '_f64'}
-    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '')
+    sfx = _dtype_sfx.get(np.dtype(weight_info.dtype), '')
 
     if transpose:
         # Scatter mode
