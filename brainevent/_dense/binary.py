@@ -15,6 +15,7 @@
 
 # -*- coding: utf-8 -*-
 
+from pathlib import Path
 from typing import Optional
 
 import brainunit as u
@@ -24,7 +25,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import cdiv, generate_block_dim, namescope
-from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
+from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, register_tvm_cuda_from_file
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent.config import get_numba_parallel
 
@@ -250,6 +251,44 @@ def _binary_densemv_pallas_kernel(
     return run
 
 
+def _binary_densemv_jax_kernel(
+    transpose: bool,
+    **kwargs,
+):
+    def kernel(weights, spikes):
+        s = spikes.astype(weights.dtype) if spikes.dtype == jnp.bool_ else spikes
+        if transpose:
+            return s @ weights,
+        else:
+            return weights @ s,
+
+    return kernel
+
+
+def _binary_densemv_cuda_kernel(
+    spk_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs
+):
+    register_tvm_cuda_from_file(
+        module='binary_densemv',
+        source=Path(__file__).parent.joinpath('binary_densemv.cu'),
+    )
+
+    out_info = kwargs['outs']
+    spk_suffix = '_bool' if spk_info.dtype == jnp.bool_ else '_float'
+
+    if transpose:
+        kernel_name = f'binary_densemv.binary_densemv_scatter_f32{spk_suffix}'
+    else:
+        kernel_name = f'binary_densemv.binary_densemv_gather_auto_f32{spk_suffix}'
+
+    def kernel(weights, spikes):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, spikes)
+
+    return kernel
+
+
 def _binary_densemv_jvp_weights(w_dot, weights, spikes, *, transpose, **kwargs):
     return binary_densemv_p_call(w_dot, spikes, transpose=transpose, backend=kwargs['backend'])
 
@@ -431,6 +470,8 @@ binary_densemv : High-level user-facing function wrapper.
 )
 binary_densemv_p.def_numba_kernel(_binary_densemv_numba_kernel)
 binary_densemv_p.def_pallas_kernel('gpu', _binary_densemv_pallas_kernel)
+binary_densemv_p.def_tvmffi_kernel('gpu', _binary_densemv_cuda_kernel)
+binary_densemv_p.def_kernel('jax_raw', 'gpu', _binary_densemv_jax_kernel)
 binary_densemv_p.def_jvp_rule2(_binary_densemv_jvp_weights, _binary_densemv_jvp_spikes)
 binary_densemv_p.def_transpose_rule(_binary_densemv_transpose_rule)
 binary_densemv_p.def_batching_rule(_binary_densemv_batching)
