@@ -63,7 +63,7 @@ def _make_benchmark_data(*, platform):
                     f"{n_pre}x{n_post}x{n_conn},ncol={n_col}"
                 )
                 yield BenchmarkConfig(
-                    name=name,
+                    name='',
                     args=(weights, indices, matrix),
                     kernel_kwargs={'shape': (n_pre, n_post), 'transpose': transpose},
                     data_kwargs={
