@@ -592,6 +592,88 @@ def _csrmv_pallas_gpu_kernel(
         )
 
 
+def _binary_csrmv_jax_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    transpose: bool,
+    **kwargs,
+):
+    """Pure-JAX kernel for binary (event-driven) CSR matrix-vector multiplication."""
+    m, k = shape
+    is_homo = (weight_info.size == 1)
+    is_bool = (vector_info.dtype == jnp.bool_)
+    nse = kwargs['indices_info'].size
+    out_dtype = kwargs['outs'][0].dtype
+
+    if transpose:
+        def kernel(weights, indices, indptr, vector):
+            row_ids = jnp.repeat(
+                jnp.arange(m, dtype=indptr.dtype),
+                jnp.diff(indptr),
+                total_repeat_length=nse,
+            )
+            v_row = vector[row_ids]
+            events = v_row.astype(out_dtype) if is_bool else (v_row > 0.).astype(out_dtype)
+            w = weights[0] if is_homo else weights
+            return (jnp.zeros(k, dtype=out_dtype).at[indices].add(w * events),)
+    else:
+        def kernel(weights, indices, indptr, vector):
+            row_ids = jnp.repeat(
+                jnp.arange(m, dtype=indptr.dtype),
+                jnp.diff(indptr),
+                total_repeat_length=nse,
+            )
+            v_col = vector[indices]
+            events = v_col.astype(out_dtype) if is_bool else (v_col > 0.).astype(out_dtype)
+            w = weights[0] if is_homo else weights
+            return (jnp.zeros(m, dtype=out_dtype).at[row_ids].add(w * events),)
+
+    return kernel
+
+
+def _binary_csrmv_cusparse_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    transpose: bool,
+    **kwargs,
+):
+    """cuSPARSE-backed kernel for binary CSR SpMV via jax.experimental.sparse (GPU only)."""
+    import jax.experimental.sparse as jsparse
+    m, k = shape
+    is_homo = (weight_info.size == 1)
+    is_bool = (vector_info.dtype == jnp.bool_)
+    nse = kwargs['indices_info'].size
+    out_dtype = kwargs['outs'][0].dtype
+
+    if transpose:
+        if is_homo:
+            def kernel(weights, indices, indptr, vector):
+                events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
+                ones = jnp.ones(nse, dtype=out_dtype)
+                mat = jsparse.BCSR((ones, indices, indptr), shape=(m, k))
+                return ((mat.T @ events) * weights[0].astype(out_dtype),)
+        else:
+            def kernel(weights, indices, indptr, vector):
+                events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
+                mat = jsparse.BCSR((weights.astype(out_dtype), indices, indptr), shape=(m, k))
+                return (mat.T @ events,)
+    else:
+        if is_homo:
+            def kernel(weights, indices, indptr, vector):
+                events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
+                ones = jnp.ones(nse, dtype=out_dtype)
+                mat = jsparse.BCSR((ones, indices, indptr), shape=(m, k))
+                return ((mat @ events) * weights[0].astype(out_dtype),)
+        else:
+            def kernel(weights, indices, indptr, vector):
+                events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
+                mat = jsparse.BCSR((weights.astype(out_dtype), indices, indptr), shape=(m, k))
+                return (mat @ events,)
+    return kernel
+
+
 def _csrmv_jvp_v(v_dot, data, indices, indptr, v, *, shape, transpose, **kwargs):
     return [csrmv(data, indices, indptr, v_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
@@ -905,6 +987,10 @@ binary_csrmv : High-level user-facing function wrapper.
 )
 binary_csrmv_p.def_numba_kernel(_csrmv_numba_kernel)
 binary_csrmv_p.def_pallas_kernel('gpu', _csrmv_pallas_gpu_kernel)
+binary_csrmv_p.def_kernel('jax', 'cpu', _binary_csrmv_jax_kernel)
+binary_csrmv_p.def_kernel('jax', 'gpu', _binary_csrmv_jax_kernel)
+binary_csrmv_p.def_kernel('jax', 'tpu', _binary_csrmv_jax_kernel)
+binary_csrmv_p.def_kernel('cusparse', 'gpu', _binary_csrmv_cusparse_kernel)
 binary_csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
 binary_csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
 binary_csrmv_p.def_batching_rule(_csrmv_batching)
@@ -1331,6 +1417,89 @@ def _csrmm_pallas_gpu_kernel(
         )
 
 
+def _binary_csrmm_jax_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    transpose: bool,
+    **kwargs,
+):
+    """Pure-JAX kernel for binary (event-driven) CSR matrix-matrix multiplication."""
+    m, k = shape
+    n = vector_info.shape[1]
+    is_homo = (weight_info.size == 1)
+    is_bool = (vector_info.dtype == jnp.bool_)
+    nse = kwargs['indices_info'].size
+    out_dtype = kwargs['outs'][0].dtype
+
+    if transpose:
+        def kernel(weights, indices, indptr, B):
+            row_ids = jnp.repeat(
+                jnp.arange(m, dtype=indptr.dtype),
+                jnp.diff(indptr),
+                total_repeat_length=nse,
+            )
+            B_rows = B[row_ids]  # [nse, n]
+            events = B_rows.astype(out_dtype) if is_bool else (B_rows > 0.).astype(out_dtype)
+            w = weights[0] if is_homo else weights[:, None]
+            return (jnp.zeros((k, n), dtype=out_dtype).at[indices].add(w * events),)
+    else:
+        def kernel(weights, indices, indptr, B):
+            row_ids = jnp.repeat(
+                jnp.arange(m, dtype=indptr.dtype),
+                jnp.diff(indptr),
+                total_repeat_length=nse,
+            )
+            B_rows = B[indices]  # [nse, n]
+            events = B_rows.astype(out_dtype) if is_bool else (B_rows > 0.).astype(out_dtype)
+            w = weights[0] if is_homo else weights[:, None]
+            return (jnp.zeros((m, n), dtype=out_dtype).at[row_ids].add(w * events),)
+
+    return kernel
+
+
+def _binary_csrmm_cusparse_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    transpose: bool,
+    **kwargs,
+):
+    """cuSPARSE-backed kernel for binary CSR SpMM via jax.experimental.sparse (GPU only)."""
+    import jax.experimental.sparse as jsparse
+    m, k = shape
+    is_homo = (weight_info.size == 1)
+    is_bool = (vector_info.dtype == jnp.bool_)
+    nse = kwargs['indices_info'].size
+    out_dtype = kwargs['outs'][0].dtype
+
+    if transpose:
+        if is_homo:
+            def kernel(weights, indices, indptr, B):
+                events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
+                ones = jnp.ones(nse, dtype=out_dtype)
+                mat = jsparse.BCSR((ones, indices, indptr), shape=(m, k))
+                return ((mat.T @ events) * weights[0].astype(out_dtype),)
+        else:
+            def kernel(weights, indices, indptr, B):
+                events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
+                mat = jsparse.BCSR((weights.astype(out_dtype), indices, indptr), shape=(m, k))
+                return (mat.T @ events,)
+    else:
+        if is_homo:
+            def kernel(weights, indices, indptr, B):
+                events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
+                ones = jnp.ones(nse, dtype=out_dtype)
+                mat = jsparse.BCSR((ones, indices, indptr), shape=(m, k))
+                return ((mat @ events) * weights[0].astype(out_dtype),)
+        else:
+            def kernel(weights, indices, indptr, B):
+                events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
+                mat = jsparse.BCSR((weights.astype(out_dtype), indices, indptr), shape=(m, k))
+                return (mat @ events,)
+    return kernel
+
+
 def _csrmm_jvp_data(data_dot, data, indices, indptr, B, *, shape, transpose, **kwargs):
     return [csrmm(data_dot, indices, indptr, B, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
@@ -1621,6 +1790,10 @@ binary_csrmm : High-level user-facing function wrapper.
 )
 binary_csrmm_p.def_numba_kernel(_csrmm_numba_kernel)
 binary_csrmm_p.def_pallas_kernel('gpu', _csrmm_pallas_gpu_kernel)
+binary_csrmm_p.def_kernel('jax', 'cpu', _binary_csrmm_jax_kernel)
+binary_csrmm_p.def_kernel('jax', 'gpu', _binary_csrmm_jax_kernel)
+binary_csrmm_p.def_kernel('jax', 'tpu', _binary_csrmm_jax_kernel)
+binary_csrmm_p.def_kernel('cusparse', 'gpu', _binary_csrmm_cusparse_kernel)
 binary_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 binary_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 binary_csrmm_p.def_batching_rule(_csrmm_batching)

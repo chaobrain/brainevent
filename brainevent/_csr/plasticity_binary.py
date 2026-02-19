@@ -265,6 +265,32 @@ def _csr_on_pre_benchmark_data(*, platform):
     return configs
 
 
+def _csr_on_pre_jax_kernel(
+    spike_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    **kwargs,
+):
+    """Pure-JAX kernel for CSR pre-synaptic plasticity update (all platforms)."""
+    n_pre, n_post = shape
+    is_bool = (spike_info.dtype == jnp.bool_)
+    nse = kwargs['indices_info'].size
+
+    def kernel(weight, indices, indptr, pre_spike, post_trace):
+        row_ids = jnp.repeat(
+            jnp.arange(n_pre, dtype=indptr.dtype),
+            jnp.diff(indptr),
+            total_repeat_length=nse,
+        )
+        if is_bool:
+            active = pre_spike[row_ids]
+        else:
+            active = pre_spike[row_ids] != 0.
+        delta = jnp.where(active, post_trace[indices], jnp.zeros_like(post_trace[indices]))
+        return [weight + delta]
+
+    return kernel
+
+
 def csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, shape, backend: Optional[str] = None):
     """Invoke the low-level XLA custom kernel for presynaptic plasticity updates.
 
@@ -388,6 +414,9 @@ update_csr_on_binary_pre : High-level user-facing function wrapper.
 update_csr_on_binary_pre_p.def_numba_kernel(_csr_on_pre_numba_kernel_generator)
 update_csr_on_binary_pre_p.def_pallas_kernel('gpu', partial(_csr_on_pre_pallas_kernel_generator, 'triton'))
 update_csr_on_binary_pre_p.def_pallas_kernel('tpu', partial(_csr_on_pre_pallas_kernel_generator, 'mosaic_tpu'))
+update_csr_on_binary_pre_p.def_kernel('jax', 'cpu', _csr_on_pre_jax_kernel)
+update_csr_on_binary_pre_p.def_kernel('jax', 'gpu', _csr_on_pre_jax_kernel)
+update_csr_on_binary_pre_p.def_kernel('jax', 'tpu', _csr_on_pre_jax_kernel)
 update_csr_on_binary_pre_p.def_tags('csr', 'plasticity')
 update_csr_on_binary_pre_p.def_benchmark_data(_csr_on_pre_benchmark_data)
 
@@ -642,6 +671,32 @@ def _csr2csc_on_post_benchmark_data(*, platform):
     return configs
 
 
+def _csr2csc_on_post_jax_kernel(
+    spike_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    **kwargs,
+):
+    """Pure-JAX kernel for CSR post-synaptic plasticity update (all platforms)."""
+    n_pre, n_post = shape
+    is_bool = (spike_info.dtype == jnp.bool_)
+    nse = kwargs['indices_info'].size
+
+    def kernel(weight, indices, indptr, weight_indices, pre_trace, post_spike):
+        col_ids = jnp.repeat(
+            jnp.arange(n_post, dtype=indptr.dtype),
+            jnp.diff(indptr),
+            total_repeat_length=nse,
+        )
+        if is_bool:
+            active = post_spike[col_ids]
+        else:
+            active = post_spike[col_ids] != 0.
+        delta = jnp.where(active, pre_trace[indices], jnp.zeros_like(pre_trace[indices]))
+        return [weight.at[weight_indices].add(delta)]
+
+    return kernel
+
+
 def csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace, post_spike, *, shape,
                               backend: Optional[str] = None):
     """Invoke the low-level XLA custom kernel for postsynaptic plasticity updates.
@@ -775,5 +830,8 @@ update_csr_on_binary_post : High-level user-facing function wrapper.
 update_csr_on_binary_post_p.def_numba_kernel(_csr2csc_on_post_numba_kernel_generator)
 update_csr_on_binary_post_p.def_pallas_kernel('gpu', partial(_csr2csc_on_post_pallas_kernel_generator, 'triton'))
 update_csr_on_binary_post_p.def_pallas_kernel('tpu', partial(_csr2csc_on_post_pallas_kernel_generator, 'mosaic_tpu'))
+update_csr_on_binary_post_p.def_kernel('jax', 'cpu', _csr2csc_on_post_jax_kernel)
+update_csr_on_binary_post_p.def_kernel('jax', 'gpu', _csr2csc_on_post_jax_kernel)
+update_csr_on_binary_post_p.def_kernel('jax', 'tpu', _csr2csc_on_post_jax_kernel)
 update_csr_on_binary_post_p.def_tags('csr', 'plasticity')
 update_csr_on_binary_post_p.def_benchmark_data(_csr2csc_on_post_benchmark_data)

@@ -638,6 +638,80 @@ def _coomv_pallas_tpu_kernel(
     return kernel
 
 
+def _binary_coomv_jax_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    shape,
+    transpose: bool,
+    **kwargs,
+):
+    """Pure-JAX kernel for binary (event-driven) COO matrix-vector multiplication (all platforms)."""
+    m, k = shape
+    is_homo = (weight_info.size == 1)
+    is_bool = (vector_info.dtype == jnp.bool_)
+    out_dtype = kwargs['outs'][0].dtype
+
+    if transpose:
+        def kernel(weights, row, col, vector):
+            v_vals = vector[row]
+            events = v_vals.astype(out_dtype) if is_bool else (v_vals > 0.).astype(out_dtype)
+            w = weights[0] if is_homo else weights
+            return (jnp.zeros(k, dtype=out_dtype).at[col].add(w * events),)
+    else:
+        def kernel(weights, row, col, vector):
+            v_vals = vector[col]
+            events = v_vals.astype(out_dtype) if is_bool else (v_vals > 0.).astype(out_dtype)
+            w = weights[0] if is_homo else weights
+            return (jnp.zeros(m, dtype=out_dtype).at[row].add(w * events),)
+
+    return kernel
+
+
+def _binary_coomv_cusparse_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    shape,
+    transpose: bool,
+    **kwargs,
+):
+    """cuSPARSE-backed kernel for binary COO SpMV via jax.experimental.sparse (GPU only)."""
+    import jax.experimental.sparse as jsparse
+    m, k = shape
+    is_homo = (weight_info.size == 1)
+    is_bool = (vector_info.dtype == jnp.bool_)
+    out_dtype = kwargs['outs'][0].dtype
+
+    if transpose:
+        if is_homo:
+            def kernel(weights, row, col, vector):
+                events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
+                ones = jnp.ones_like(row, dtype=out_dtype)
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((ones, idx), shape=(m, k))
+                return ((mat.T @ events) * weights[0].astype(out_dtype),)
+        else:
+            def kernel(weights, row, col, vector):
+                events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((weights.astype(out_dtype), idx), shape=(m, k))
+                return (mat.T @ events,)
+    else:
+        if is_homo:
+            def kernel(weights, row, col, vector):
+                events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
+                ones = jnp.ones_like(row, dtype=out_dtype)
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((ones, idx), shape=(m, k))
+                return ((mat @ events) * weights[0].astype(out_dtype),)
+        else:
+            def kernel(weights, row, col, vector):
+                events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((weights.astype(out_dtype), idx), shape=(m, k))
+                return (mat @ events,)
+    return kernel
+
+
 def _coomv_jvp_vector(v_dot, data, row, col, v, *, shape, transpose, **kwargs):
     return [coomv(data, row, col, v_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
@@ -914,6 +988,10 @@ binary_coomv : High-level user-facing function wrapper.
 binary_coomv_p.def_numba_kernel(_coomv_numba_kernel)
 binary_coomv_p.def_pallas_kernel('gpu', _coomv_pallas_gpu_kernel)
 binary_coomv_p.def_pallas_kernel('tpu', _coomv_pallas_tpu_kernel)
+binary_coomv_p.def_kernel('jax', 'cpu', _binary_coomv_jax_kernel)
+binary_coomv_p.def_kernel('jax', 'gpu', _binary_coomv_jax_kernel)
+binary_coomv_p.def_kernel('jax', 'tpu', _binary_coomv_jax_kernel)
+binary_coomv_p.def_kernel('cusparse', 'gpu', _binary_coomv_cusparse_kernel)
 binary_coomv_p.def_jvp_rule2(_coomv_jvp_weights, None, None, _coomv_jvp_vector)
 binary_coomv_p.def_transpose_rule(_coomv_transpose_rule)
 binary_coomv_p.def_batching_rule(_coomv_batching)
@@ -1362,6 +1440,80 @@ def _coomm_pallas_tpu_kernel(
     return kernel
 
 
+def _binary_coomm_jax_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    matrix_info: jax.ShapeDtypeStruct,
+    shape,
+    transpose: bool,
+    **kwargs,
+):
+    """Pure-JAX kernel for binary (event-driven) COO matrix-matrix multiplication (all platforms)."""
+    m, k = shape
+    is_homo = (weight_info.size == 1)
+    is_bool = (matrix_info.dtype == jnp.bool_)
+    out_dtype = kwargs['outs'][0].dtype
+
+    if transpose:
+        def kernel(weights, row, col, B):
+            B_rows = B[row]  # [nse, n]
+            events = B_rows.astype(out_dtype) if is_bool else (B_rows > 0.).astype(out_dtype)
+            w = weights[0] if is_homo else weights[:, None]
+            return (jnp.zeros((k, B.shape[1]), dtype=out_dtype).at[col].add(w * events),)
+    else:
+        def kernel(weights, row, col, B):
+            B_rows = B[col]  # [nse, n]
+            events = B_rows.astype(out_dtype) if is_bool else (B_rows > 0.).astype(out_dtype)
+            w = weights[0] if is_homo else weights[:, None]
+            return (jnp.zeros((m, B.shape[1]), dtype=out_dtype).at[row].add(w * events),)
+
+    return kernel
+
+
+def _binary_coomm_cusparse_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    matrix_info: jax.ShapeDtypeStruct,
+    shape,
+    transpose: bool,
+    **kwargs,
+):
+    """cuSPARSE-backed kernel for binary COO SpMM via jax.experimental.sparse (GPU only)."""
+    import jax.experimental.sparse as jsparse
+    m, k = shape
+    is_homo = (weight_info.size == 1)
+    is_bool = (matrix_info.dtype == jnp.bool_)
+    out_dtype = kwargs['outs'][0].dtype
+
+    if transpose:
+        if is_homo:
+            def kernel(weights, row, col, B):
+                events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
+                ones = jnp.ones_like(row, dtype=out_dtype)
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((ones, idx), shape=(m, k))
+                return ((mat.T @ events) * weights[0].astype(out_dtype),)
+        else:
+            def kernel(weights, row, col, B):
+                events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((weights.astype(out_dtype), idx), shape=(m, k))
+                return (mat.T @ events,)
+    else:
+        if is_homo:
+            def kernel(weights, row, col, B):
+                events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
+                ones = jnp.ones_like(row, dtype=out_dtype)
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((ones, idx), shape=(m, k))
+                return ((mat @ events) * weights[0].astype(out_dtype),)
+        else:
+            def kernel(weights, row, col, B):
+                events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((weights.astype(out_dtype), idx), shape=(m, k))
+                return (mat @ events,)
+    return kernel
+
+
 def _coomm_jvp_left(data_dot, data, row, col, B, *, shape, transpose, **kwargs):
     return [coomm(data_dot, row, col, B, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
@@ -1637,6 +1789,10 @@ binary_coomm : High-level user-facing function wrapper.
 binary_coomm_p.def_numba_kernel(_coomm_numba_kernel)
 binary_coomm_p.def_pallas_kernel('gpu', _coomm_pallas_gpu_kernel)
 binary_coomm_p.def_pallas_kernel('tpu', _coomm_pallas_tpu_kernel)
+binary_coomm_p.def_kernel('jax', 'cpu', _binary_coomm_jax_kernel)
+binary_coomm_p.def_kernel('jax', 'gpu', _binary_coomm_jax_kernel)
+binary_coomm_p.def_kernel('jax', 'tpu', _binary_coomm_jax_kernel)
+binary_coomm_p.def_kernel('cusparse', 'gpu', _binary_coomm_cusparse_kernel)
 binary_coomm_p.def_jvp_rule2(_coomm_jvp_left, None, None, _coomm_jvp_right)
 binary_coomm_p.def_transpose_rule(_coomm_transpose_rule)
 binary_coomm_p.def_batching_rule(_coomm_batching)

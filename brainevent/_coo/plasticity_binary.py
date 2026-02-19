@@ -231,6 +231,25 @@ def _coo_on_pre_pallas_kernel(
     return run
 
 
+def _coo_on_pre_jax_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    spike_info: jax.ShapeDtypeStruct,
+    **kwargs,
+):
+    """Pure-JAX kernel for presynaptic COO plasticity update (all platforms)."""
+    is_bool = (spike_info.dtype == jnp.bool_)
+
+    def kernel(weight, pre_ids, post_ids, pre_spike, post_trace):
+        if is_bool:
+            active = pre_spike[pre_ids]
+        else:
+            active = pre_spike[pre_ids] != 0.
+        delta = jnp.where(active, post_trace[post_ids], jnp.zeros_like(post_trace[post_ids]))
+        return [weight + delta]
+
+    return kernel
+
+
 def _coo_on_pre_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
@@ -375,6 +394,9 @@ update_coo_on_binary_pre : High-level user-facing function wrapper.
 )
 update_coo_on_binary_pre_p.def_numba_kernel(_coo_on_pre_numba_kernel)
 update_coo_on_binary_pre_p.def_pallas_kernel('gpu', _coo_on_pre_pallas_kernel)
+update_coo_on_binary_pre_p.def_kernel('jax', 'cpu', _coo_on_pre_jax_kernel)
+update_coo_on_binary_pre_p.def_kernel('jax', 'gpu', _coo_on_pre_jax_kernel)
+update_coo_on_binary_pre_p.def_kernel('jax', 'tpu', _coo_on_pre_jax_kernel)
 update_coo_on_binary_pre_p.def_call(_coo_on_pre_prim_call)
 update_coo_on_binary_pre_p.def_tags('coo', 'plasticity')
 update_coo_on_binary_pre_p.def_benchmark_data(_coo_on_pre_benchmark_data)
@@ -582,6 +604,25 @@ def _coo_on_post_pallas_kernel(
     return run
 
 
+def _coo_on_post_jax_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    spike_info: jax.ShapeDtypeStruct,
+    **kwargs,
+):
+    """Pure-JAX kernel for postsynaptic COO plasticity update (all platforms)."""
+    is_bool = (spike_info.dtype == jnp.bool_)
+
+    def kernel(weight, pre_ids, post_ids, pre_trace, post_spike):
+        if is_bool:
+            active = post_spike[post_ids]
+        else:
+            active = post_spike[post_ids] != 0.
+        delta = jnp.where(active, pre_trace[pre_ids], jnp.zeros_like(pre_trace[pre_ids]))
+        return [weight + delta]
+
+    return kernel
+
+
 def _coo_on_post_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
@@ -727,6 +768,9 @@ update_coo_on_binary_post : High-level user-facing function wrapper.
 )
 update_coo_on_binary_post_p.def_numba_kernel(_coo_on_post_numba_kernel)
 update_coo_on_binary_post_p.def_pallas_kernel('gpu', _coo_on_post_pallas_kernel)
+update_coo_on_binary_post_p.def_kernel('jax', 'cpu', _coo_on_post_jax_kernel)
+update_coo_on_binary_post_p.def_kernel('jax', 'gpu', _coo_on_post_jax_kernel)
+update_coo_on_binary_post_p.def_kernel('jax', 'tpu', _coo_on_post_jax_kernel)
 update_coo_on_binary_post_p.def_call(_coo_on_post_prim_call)
 update_coo_on_binary_post_p.def_tags('coo', 'plasticity')
 update_coo_on_binary_post_p.def_benchmark_data(_coo_on_post_benchmark_data)

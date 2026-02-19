@@ -494,6 +494,70 @@ def _coomv_pallas_tpu_kernel(
     return kernel
 
 
+def _coomv_jax_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    shape,
+    transpose: bool,
+    **kwargs,
+):
+    """Pure-JAX kernel for COO sparse matrix-vector multiplication (all platforms)."""
+    m, k = shape
+    is_homo = (weight_info.size == 1)
+    out_dtype = kwargs['outs'][0].dtype
+
+    if transpose:
+        def kernel(weights, row, col, vector):
+            v_vals = vector[row].astype(out_dtype)
+            w = weights[0] if is_homo else weights
+            return (jnp.zeros(k, dtype=out_dtype).at[col].add(w * v_vals),)
+    else:
+        def kernel(weights, row, col, vector):
+            v_vals = vector[col].astype(out_dtype)
+            w = weights[0] if is_homo else weights
+            return (jnp.zeros(m, dtype=out_dtype).at[row].add(w * v_vals),)
+
+    return kernel
+
+
+def _coomv_cusparse_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    shape,
+    transpose: bool,
+    **kwargs,
+):
+    """cuSPARSE-backed kernel for COO SpMV via jax.experimental.sparse (GPU only)."""
+    import jax.experimental.sparse as jsparse
+    m, k = shape
+    is_homo = (weight_info.size == 1)
+    out_dtype = kwargs['outs'][0].dtype
+
+    if transpose:
+        if is_homo:
+            def kernel(weights, row, col, vector):
+                ones = jnp.ones_like(row, dtype=out_dtype)
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((ones, idx), shape=(m, k))
+                return ((mat.T @ vector.astype(out_dtype)) * weights[0].astype(out_dtype),)
+        else:
+            def kernel(weights, row, col, vector):
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((weights.astype(out_dtype), idx), shape=(m, k))
+                return (mat.T @ vector.astype(out_dtype),)
+    else:
+        if is_homo:
+            def kernel(weights, row, col, vector):
+                ones = jnp.ones_like(row, dtype=out_dtype)
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((ones, idx), shape=(m, k))
+                return ((mat @ vector.astype(out_dtype)) * weights[0].astype(out_dtype),)
+        else:
+            def kernel(weights, row, col, vector):
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((weights.astype(out_dtype), idx), shape=(m, k))
+                return (mat @ vector.astype(out_dtype),)
+    return kernel
+
+
 def _coomv_jvp_vector(vector_dot, data, row, col, vector, *, shape, transpose, **kwargs):
     return coomv_p_call(data, row, col, vector_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
@@ -713,6 +777,13 @@ coomv : High-level user-facing function wrapper.
 coomv_p.def_numba_kernel(_coomv_numba_kernel)
 coomv_p.def_pallas_kernel('gpu', _coomv_pallas_gpu_kernel)
 coomv_p.def_pallas_kernel('tpu', _coomv_pallas_tpu_kernel)
+
+coomv_p.def_kernel('jax', 'cpu', _coomv_jax_kernel)
+coomv_p.def_kernel('jax', 'gpu', _coomv_jax_kernel)
+coomv_p.def_kernel('jax', 'tpu', _coomv_jax_kernel)
+
+coomv_p.def_kernel('cusparse', 'gpu', _coomv_cusparse_kernel)
+
 coomv_p.def_jvp_rule2(_coomv_jvp_weights, None, None, _coomv_jvp_vector)
 coomv_p.def_transpose_rule(_coomv_transpose_rule)
 coomv_p.def_batching_rule(_coomv_batching)
@@ -1130,6 +1201,71 @@ def _coomm_batching(args, axes, **kwargs):
         return general_batching_rule(coomm_p_call, args, axes, **kwargs)
 
 
+def _coomm_jax_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    shape,
+    transpose: bool,
+    **kwargs,
+):
+    """Pure-JAX kernel for COO sparse matrix-matrix multiplication (all platforms)."""
+    m, k = shape
+    is_homo = (weight_info.size == 1)
+    out_dtype = kwargs['outs'][0].dtype
+    out_shape = kwargs['outs'][0].shape  # (out_rows, n)
+
+    if transpose:
+        def kernel(weights, row, col, B):
+            B_rows = B[row].astype(out_dtype)  # [nse, n]
+            w = weights[0] if is_homo else weights[:, None]
+            return (jnp.zeros((k, B.shape[1]), dtype=out_dtype).at[col].add(w * B_rows),)
+    else:
+        def kernel(weights, row, col, B):
+            B_rows = B[col].astype(out_dtype)  # [nse, n]
+            w = weights[0] if is_homo else weights[:, None]
+            return (jnp.zeros((m, B.shape[1]), dtype=out_dtype).at[row].add(w * B_rows),)
+
+    return kernel
+
+
+def _coomm_cusparse_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    shape,
+    transpose: bool,
+    **kwargs,
+):
+    """cuSPARSE-backed kernel for COO SpMM via jax.experimental.sparse (GPU only)."""
+    import jax.experimental.sparse as jsparse
+    m, k = shape
+    is_homo = (weight_info.size == 1)
+    out_dtype = kwargs['outs'][0].dtype
+
+    if transpose:
+        if is_homo:
+            def kernel(weights, row, col, B):
+                ones = jnp.ones_like(row, dtype=out_dtype)
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((ones, idx), shape=(m, k))
+                return ((mat.T @ B.astype(out_dtype)) * weights[0].astype(out_dtype),)
+        else:
+            def kernel(weights, row, col, B):
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((weights.astype(out_dtype), idx), shape=(m, k))
+                return (mat.T @ B.astype(out_dtype),)
+    else:
+        if is_homo:
+            def kernel(weights, row, col, B):
+                ones = jnp.ones_like(row, dtype=out_dtype)
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((ones, idx), shape=(m, k))
+                return ((mat @ B.astype(out_dtype)) * weights[0].astype(out_dtype),)
+        else:
+            def kernel(weights, row, col, B):
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((weights.astype(out_dtype), idx), shape=(m, k))
+                return (mat @ B.astype(out_dtype),)
+    return kernel
+
+
 def _coomm_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
@@ -1282,6 +1418,10 @@ coomm : High-level user-facing function wrapper.
 coomm_p.def_numba_kernel(_coomm_numba_kernel)
 coomm_p.def_pallas_kernel('gpu', _coomm_pallas_gpu_kernel)
 coomm_p.def_pallas_kernel('tpu', _coomm_pallas_tpu_kernel)
+coomm_p.def_kernel('jax', 'cpu', _coomm_jax_kernel)
+coomm_p.def_kernel('jax', 'gpu', _coomm_jax_kernel)
+coomm_p.def_kernel('jax', 'tpu', _coomm_jax_kernel)
+coomm_p.def_kernel('cusparse', 'gpu', _coomm_cusparse_kernel)
 coomm_p.def_jvp_rule2(_coomm_jvp_left, None, None, _coomm_jvp_right)
 coomm_p.def_transpose_rule(_coomm_transpose_rule)
 coomm_p.def_batching_rule(_coomm_batching)

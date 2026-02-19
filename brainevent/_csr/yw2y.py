@@ -289,6 +289,30 @@ def _csrmv_yw2y_benchmark_data(*, platform):
     return configs
 
 
+def _csrmv_yw2y_jax_kernel(
+    shape: MatrixShape,
+    transpose: bool,
+    **kwargs,
+):
+    """Pure-JAX kernel for CSR yw2y (out[j] = w[j] * y[row/col]) (all platforms)."""
+    m, k = shape
+    nse = kwargs['indices_info'].size
+
+    if transpose:
+        # col index is directly in `indices`
+        def kernel(y, w, indices, indptr):
+            return (w * y[indices],)
+    else:
+        def kernel(y, w, indices, indptr):
+            row_ids = jnp.repeat(
+                jnp.arange(m, dtype=indptr.dtype),
+                jnp.diff(indptr),
+                total_repeat_length=nse,
+            )
+            return (w * y[row_ids],)
+    return kernel
+
+
 def csrmv_yw2y_p_call(
     y: Data,
     w: Data,
@@ -439,6 +463,9 @@ csrmv_yw2y : High-level user-facing function wrapper.
 )
 csrmv_yw2y_p.def_numba_kernel(_csrmv_yw2y_numba_kernels)
 csrmv_yw2y_p.def_pallas_kernel('gpu', _csrmv_yw2y_pallas_kernels)
+csrmv_yw2y_p.def_kernel('jax', 'cpu', _csrmv_yw2y_jax_kernel)
+csrmv_yw2y_p.def_kernel('jax', 'gpu', _csrmv_yw2y_jax_kernel)
+csrmv_yw2y_p.def_kernel('jax', 'tpu', _csrmv_yw2y_jax_kernel)
 csrmv_yw2y_p.def_jvp_rule2(_csrmv_yw2y_jvp_y, _csrmv_yw2y_jvp_w, None, None)
 csrmv_yw2y_p.def_call(csrmv_yw2y_p_call)
 csrmv_yw2y_p.def_tags('csr', 'float')
