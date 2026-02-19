@@ -128,14 +128,16 @@ def main():
         platform='gpu',
         n_warmup=args.n_warmup,
         n_runs=args.n_runs,
+        n_batch_per_run=10,
         compare_results=True,
         verbose=True,
     )
-    result.print(
-        order_by=['transpose', 'spike_rate', 'shape', 'backend'],
-        highlight_best=True,
-        speedup_vs='jax_raw',
-    )
+    # result.print(
+    #     order_by=['transpose', 'spike_rate', 'shape', 'backend'],
+    #     highlight_best=True,
+    #     speedup_vs='jax_raw',
+    # )
+    result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw')
 
 
 if __name__ == "__main__":

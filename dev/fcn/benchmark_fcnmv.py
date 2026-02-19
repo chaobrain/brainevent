@@ -86,7 +86,8 @@ def main():
         compare_results=True,
         verbose=True,
     )
-    result.print(order_by=['transpose', 'shape', 'backend'], highlight_best=True, speedup_vs='jax_raw')
+    # result.print(order_by=['transpose', 'shape', 'backend'], highlight_best=True, speedup_vs='jax_raw')
+    result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw')
 
 
 if __name__ == "__main__":
