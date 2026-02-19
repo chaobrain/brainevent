@@ -31,10 +31,8 @@ from brainevent.config import get_numba_parallel
 __all__ = [
     'spfloat_densemv',
     'spfloat_densemv_p',
-    'spfloat_densemv_p_call',
     'spfloat_densemm',
     'spfloat_densemm_p',
-    'spfloat_densemm_p_call',
 ]
 
 

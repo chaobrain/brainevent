@@ -956,9 +956,7 @@ def _binary_fcnmv_jax_kernel(
         if transpose:
             # Scatter: y[indices[i,k]] += weights[i,k] * spk_f[i]
             masked = jnp.broadcast_to(spk_f[:, None] * weights, indices.shape)
-            return jax.ops.segment_sum(
-                masked.ravel(), indices.ravel(), num_segments=n_post
-            ),
+            return jax.ops.segment_sum(masked.ravel(), indices.ravel(), num_segments=n_post),
         else:
             # Gather: y[i] = sum_k weights[i,k] * spk_f[indices[i,k]]
             if weights.size == 1:
@@ -2259,14 +2257,14 @@ def _binary_fcnmm_jax_kernel(
         if transpose:
             # Scatter: Y[n_post, n_batch]; matrix M[n_pre, n_batch]
             # Y[indices[i,k], j] += weights[i,k] * mat_f[i, j]
-            idx_flat = indices.ravel()                                    # [n_pre * n_conn]
-            mat_rep  = jnp.repeat(mat_f, indices.shape[1], axis=0)       # [n_pre*n_conn, n_batch]
+            idx_flat = indices.ravel()  # [n_pre * n_conn]
+            mat_rep = jnp.repeat(mat_f, indices.shape[1], axis=0)  # [n_pre*n_conn, n_batch]
             if weights.size == 1:
                 return jax.ops.segment_sum(
                     mat_rep * weights[0], idx_flat, num_segments=n_post
                 ),
             else:
-                w_flat = weights.ravel()[:, None]                         # [n_pre*n_conn, 1]
+                w_flat = weights.ravel()[:, None]  # [n_pre*n_conn, 1]
                 return jax.ops.segment_sum(
                     mat_rep * w_flat, idx_flat, num_segments=n_post
                 ),

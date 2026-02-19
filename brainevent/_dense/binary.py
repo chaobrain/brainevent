@@ -29,8 +29,8 @@ from brainevent._op.benchmark import BenchmarkConfig
 from brainevent.config import get_numba_parallel
 
 __all__ = [
-    'binary_densemv', 'binary_densemv_p', 'binary_densemv_p_call',
-    'binary_densemm', 'binary_densemm_p', 'binary_densemm_p_call',
+    'binary_densemv', 'binary_densemv_p',
+    'binary_densemm', 'binary_densemm_p',
 ]
 
 
