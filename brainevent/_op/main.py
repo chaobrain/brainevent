@@ -1181,18 +1181,16 @@ class XLACustomKernel:
 
         for config in configs:
             config_outputs = {}  # backend -> output for cross-backend comparison
+            config = config.put_args()
 
             for be in backends_to_test:
-                def _make_run_fn(args, backend, kw):
-                    @jax.jit
-                    def _fn():
-                        return self._call_fn(*args, backend=backend, **kw)
-                    return _fn
 
-                run_fn = _make_run_fn(config.args, be, config.kernel_kwargs)
+                @jax.jit
+                def run_fn(*args):
+                    return self._call_fn(*args, backend=be, **config.kernel_kwargs)
 
                 mean_s, std_s, min_s, _max_s, output = benchmark_function(
-                    run_fn, n_warmup, n_runs, n_batch_per_run=n_batch_per_run
+                    run_fn, n_warmup, n_runs, n_batch_per_run=n_batch_per_run, data=config.args,
                 )
                 record = BenchmarkRecord(
                     platform=platform,

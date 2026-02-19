@@ -16,7 +16,6 @@
 # -*- coding: utf-8 -*-
 
 import csv
-import io
 import json
 import pickle
 import time
@@ -34,6 +33,9 @@ __all__ = [
     'BenchmarkResult',
     'benchmark_function',
 ]
+
+# Columns that are metrics — excluded from fixed/vary grouping keys
+_METRIC_COLS = {'mean_ms', 'std_ms', 'min_ms', 'throughput', 'speedup', 'best'}
 
 
 @dataclass
@@ -65,6 +67,12 @@ class BenchmarkConfig:
     args: tuple
     kernel_kwargs: dict = field(default_factory=dict)
     data_kwargs: dict = field(default_factory=dict)
+
+    def put_args(self):
+        args = []
+        for arg in self.args:
+            args.append(jax.device_put(arg).block_until_ready())
+        return BenchmarkConfig(self.name, tuple(args), self.kernel_kwargs, self.data_kwargs)
 
 
 @dataclass
@@ -115,29 +123,234 @@ class BenchmarkRecord:
 
 
 class BenchmarkResult:
-    """Unified benchmark result container returned by
-    :meth:`~brainevent._op.main.XLACustomKernel.benchmark`.
+    """Unified container for benchmark timing records across all (config × backend) pairs.
 
-    Stores all timing records across every (config × backend) pair and
-    provides rich display, plotting, and persistence utilities.
+    :class:`BenchmarkResult` is returned by
+    :meth:`~brainevent._op.main.XLACustomKernel.benchmark`.  It stores
+    every :class:`BenchmarkRecord` collected during a benchmarking
+    session and exposes methods for display, comparison, plotting, and
+    serialisation.
 
     Parameters
     ----------
     records : list of BenchmarkRecord
-        All collected benchmark records.
+        All collected benchmark records.  Each record represents one
+        (config × backend) pair.
     primitive_name : str, optional
-        Name of the primitive that was benchmarked.
+        Name of the primitive that produced these records.  Used as the
+        table heading when printing.  Defaults to an empty string.
+
+    Attributes
+    ----------
+    primitive_name : str
+        Name label for the benchmarked primitive.
+
+    Methods — Accessors
+    -------------------
+    records
+        Property — return a shallow copy of all stored records.
+    fastest(label=None)
+        Return the :class:`BenchmarkRecord` with the lowest
+        ``mean_ms``, optionally restricted to a specific config *label*.
+
+    Methods — Display
+    -----------------
+    print(sort_by, group_by, compare_by, highlight_best, order_by, speedup_vs)
+        Print a formatted timing table to stdout.  Supports flat,
+        sorted, grouped, and hierarchical layouts, plus relative speedup
+        columns.
+
+    Methods — Plotting
+    ------------------
+    plot(ax, x, y, hue, style, kind, show, **kwargs)
+        Produce a matplotlib figure visualising the results as a line,
+        bar, or scatter chart.
+
+    Methods — Persistence
+    ---------------------
+    save(path, format)
+        Write the result to disk as JSON (default), CSV, or pickle.
+    load(path)
+        Class method — deserialise a previously saved result.  Format is
+        inferred from the file extension.
+    to_dict()
+        Return a JSON-serialisable dictionary representation of all
+        records and metadata.
+
+    Notes
+    -----
+    ``BenchmarkResult`` can also be constructed manually from a list of
+    :class:`BenchmarkRecord` objects, which is useful for offline
+    analysis (merging results from different machines, aggregating saved
+    runs, etc.).
+
+    ``__str__`` / ``__repr__`` delegate to :meth:`print` so a plain
+    ``print(result)`` always shows a formatted table.
 
     Examples
     --------
+    **Typical usage — run and display:**
+
     .. code-block:: python
 
-        >>> result = kernel.benchmark(platform='gpu')  # doctest: +SKIP
-        >>> print(result)           # formatted table             # doctest: +SKIP
-        >>> result.print(sort_by='mean_ms')               # doctest: +SKIP
-        >>> fig = result.plot(x='label', y='mean_ms', hue='backend')  # doctest: +SKIP
-        >>> result.save('bench.json')                     # doctest: +SKIP
-        >>> result2 = BenchmarkResult.load('bench.json') # doctest: +SKIP
+        import brainevent
+        result = brainevent.binary_csrmv_p.benchmark(
+            platform='gpu',
+            n_warmup=5,
+            n_runs=20,
+            verbose=True,
+        )
+        # __str__ / __repr__ renders a formatted table
+        print(result)
+
+    **Hierarchical display with per-group speedup:**
+
+    .. code-block:: python
+
+        # Rows grouped by (transpose, label); best backend per group
+        # marked with *, plus a speedup column vs. the 'numba' baseline.
+        result.print(
+            order_by=['transpose', 'label', 'backend'],
+            highlight_best=True,
+            speedup_vs='numba',
+        )
+
+    **Flat table: sort, group, and baseline comparison:**
+
+    .. code-block:: python
+
+        # Sorted by mean execution time (fastest first)
+        result.print(sort_by='mean_ms')
+
+        # Best backend per config label marked with an asterisk
+        result.print(group_by='label', highlight_best=True)
+
+        # Speedup column relative to the numba baseline (string expression)
+        result.print(compare_by="backend == 'numba'")
+
+        # Callable baseline selector
+        result.print(compare_by=lambda row: row.get('backend') == 'numba')
+
+    **Accessing records programmatically:**
+
+    .. code-block:: python
+
+        # Iterate over all records
+        for rec in result.records:
+            status = 'OK' if rec.success else f'FAILED: {rec.error}'
+            print(f"{rec.backend:10s} | {rec.label:20s} | {rec.mean_ms:.3f} ms | {status}")
+
+        # Overall fastest successful record
+        fastest = result.fastest()
+        if fastest:
+            print(f"Best overall: {fastest.backend} ({fastest.label}) — {fastest.mean_ms:.3f} ms")
+
+        # Fastest backend per config label
+        labels = dict.fromkeys(r.label for r in result.records)
+        for label in labels:
+            rec = result.fastest(label=label)
+            if rec:
+                print(f"[{label}] winner: {rec.backend} ({rec.mean_ms:.4f} ms)")
+
+        # Custom aggregation: average mean_ms per backend
+        from collections import defaultdict
+        backend_times = defaultdict(list)
+        for rec in result.records:
+            if rec.success:
+                backend_times[rec.backend].append(rec.mean_ms)
+        for be, times in sorted(backend_times.items()):
+            avg = sum(times) / len(times)
+            print(f"{be:10s}: avg={avg:.4f} ms over {len(times)} configs")
+
+    **Save and reload:**
+
+    .. code-block:: python
+
+        # JSON (default) — human-readable, round-trips with full fidelity
+        result.save('bench.json')
+        result2 = BenchmarkResult.load('bench.json')
+
+        # CSV — flat table, easy to open in a spreadsheet
+        result.save('bench.csv', format='csv')
+        result3 = BenchmarkResult.load('bench.csv')
+
+        # Pickle — lossless, preserves all dict fields
+        result.save('bench.pkl', format='pkl')
+        result4 = BenchmarkResult.load('bench.pkl')
+
+    **Embedding in a larger JSON document:**
+
+    .. code-block:: python
+
+        import json
+
+        d = result.to_dict()
+        report = {
+            'experiment': 'csrmv_gpu_sweep',
+            'hardware': 'A100',
+            'results': d,
+        }
+        with open('report.json', 'w') as f:
+            json.dump(report, f, indent=2)
+
+    **Building from scratch for offline / cross-platform analysis:**
+
+    .. code-block:: python
+
+        from brainevent._op.benchmark import BenchmarkRecord, BenchmarkResult
+
+        # Combine records collected on two separate machines
+        records = [
+            BenchmarkRecord(
+                platform='cpu', backend='numba', label='1k×1k',
+                mean_ms=3.2, std_ms=0.1, min_ms=3.0,
+                throughput=None, success=True, error=None,
+                kernel_kwargs={'shape': (1000, 1000)},
+                data_kwargs={'nnz': 100_000},
+            ),
+            BenchmarkRecord(
+                platform='gpu', backend='pallas', label='1k×1k',
+                mean_ms=0.42, std_ms=0.01, min_ms=0.40,
+                throughput=None, success=True, error=None,
+                kernel_kwargs={'shape': (1000, 1000)},
+                data_kwargs={'nnz': 100_000},
+            ),
+            BenchmarkRecord(
+                platform='gpu', backend='warp', label='1k×1k',
+                mean_ms=0.60, std_ms=0.02, min_ms=0.58,
+                throughput=None, success=True, error=None,
+                kernel_kwargs={'shape': (1000, 1000)},
+                data_kwargs={'nnz': 100_000},
+            ),
+        ]
+        combined = BenchmarkResult(records, primitive_name='binary_csrmv')
+        combined.print(group_by='label', highlight_best=True)
+        # Speedup vs. CPU numba baseline
+        combined.print(
+            sort_by='mean_ms',
+            compare_by="backend == 'numba' and platform == 'cpu'",
+        )
+
+    **Plotting:**
+
+    .. code-block:: python
+
+        # Bar chart: one bar per (label, backend) pair
+        fig = result.plot(x='label', y='mean_ms', hue='backend', kind='bar')
+        fig.tight_layout()
+        fig.savefig('bench_bar.png', dpi=150)
+
+        # Line chart over config labels, one line per backend
+        fig2 = result.plot(x='label', y='min_ms', hue='backend', kind='line')
+        fig2.savefig('bench_line.png', dpi=150)
+
+    See Also
+    --------
+    BenchmarkConfig : Input specification for one benchmark configuration.
+    BenchmarkRecord : Individual timing record stored in this container.
+    XLACustomKernel.benchmark : Primary method that produces a
+        :class:`BenchmarkResult`.
+    benchmark_function : Low-level timing utility used internally.
     """
 
     def __init__(
@@ -154,7 +367,41 @@ class BenchmarkResult:
 
     @property
     def records(self) -> List[BenchmarkRecord]:
-        """Return a copy of all benchmark records."""
+        """Return a shallow copy of all benchmark records.
+
+        Returns
+        -------
+        list of BenchmarkRecord
+            A new list containing every stored :class:`BenchmarkRecord`.
+            Each record represents one (config × backend) timing run.
+            Modifying the returned list does not affect the internal
+            state.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            result = binary_csrmv_p.benchmark(platform='gpu')
+            print(f"Total records: {len(result.records)}")
+
+            # Filter to successful records only
+            ok = [r for r in result.records if r.success]
+
+            # Custom aggregation: geometric mean per backend
+            import math
+            from collections import defaultdict
+            backend_times = defaultdict(list)
+            for rec in result.records:
+                if rec.success:
+                    backend_times[rec.backend].append(rec.mean_ms)
+            for be, times in sorted(backend_times.items()):
+                gm = math.exp(sum(math.log(t) for t in times) / len(times))
+                print(f"{be}: geomean={gm:.4f} ms over {len(times)} configs")
+
+        See Also
+        --------
+        fastest : Return the single fastest successful record.
+        """
         return list(self._records)
 
     def fastest(self, label: Optional[str] = None) -> Optional[BenchmarkRecord]:
@@ -163,14 +410,45 @@ class BenchmarkResult:
         Parameters
         ----------
         label : str or None, optional
-            If given, consider only records whose :attr:`~BenchmarkRecord.label`
-            matches *label*.
+            If given, consider only records whose
+            :attr:`~BenchmarkRecord.label` matches *label* exactly.
+            Pass ``None`` (default) to search across all records.
 
         Returns
         -------
         BenchmarkRecord or None
-            The record with the smallest ``mean_ms``, or ``None`` if no
-            successful records exist (after optional filtering).
+            The :class:`BenchmarkRecord` with the smallest ``mean_ms``
+            among all successful records (after optional label
+            filtering), or ``None`` if no successful records exist.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            result = binary_csrmv_p.benchmark(platform='gpu')
+
+            # Overall fastest backend across all config labels
+            rec = result.fastest()
+            if rec:
+                print(f"Best overall: {rec.backend} ({rec.label}) — {rec.mean_ms:.3f} ms")
+
+            # Fastest for a specific config label
+            rec = result.fastest(label='NT,homo,bool')
+            if rec:
+                print(f"Best for NT,homo,bool: {rec.backend} — {rec.mean_ms:.3f} ms")
+
+            # Tabulate the winner for every label
+            labels = dict.fromkeys(r.label for r in result.records)
+            for label in labels:
+                r = result.fastest(label=label)
+                if r:
+                    print(f"[{label}] winner: {r.backend} ({r.mean_ms:.4f} ms)")
+
+        See Also
+        --------
+        records : Access all records for custom filtering and aggregation.
+        print : Display a formatted table with ``highlight_best=True``
+            to mark per-group winners visually.
         """
         candidates = [r for r in self._records if r.success]
         if label is not None:
@@ -302,6 +580,7 @@ class BenchmarkResult:
         highlight_best: bool = True,
         order_by=None,
         speedup_vs=None,
+        vary_by=None,
     ) -> str:
         if not self._records:
             return f"BenchmarkResult(primitive='{self.primitive_name}', 0 records)"
@@ -313,6 +592,10 @@ class BenchmarkResult:
 
         if order_by is not None:
             return self._format_hierarchical(rows, title, order_by, highlight_best, speedup_vs)
+
+        if vary_by is not None:
+            fixed_keys, vary_keys = self._get_vary_by_order(vary_by)
+            return self._format_vary_by(rows, title, fixed_keys, vary_keys, highlight_best, speedup_vs)
 
         rows = self._apply_sort(rows, sort_by)
         best_map = self._compute_best(rows, group_by) if highlight_best else {}
@@ -329,6 +612,7 @@ class BenchmarkResult:
                     else:
                         gk = tuple(row_.get(g, '') for g in group_by)
                     return '*' if row_.get('backend') == best_map.get(gk) else ''
+
                 df.insert(len(df.columns), 'best', [_mark(r) for r in rows])
 
             try:
@@ -495,6 +779,129 @@ class BenchmarkResult:
             lines.append(line)
         return '\n'.join(lines)
 
+    def _get_vary_by_order(self, vary_by) -> Tuple[List[str], List[str]]:
+        """Return (fixed_group_keys, vary_keys) from a vary_by spec."""
+        if isinstance(vary_by, str):
+            vary_by = [vary_by]
+        rows = self._to_flat_rows()
+        if not rows:
+            return [], list(vary_by)
+        all_cols = list(rows[0].keys())
+        vary_set = set(vary_by)
+        fixed = [c for c in all_cols if c not in vary_set and c not in _METRIC_COLS]
+        return fixed, list(vary_by)
+
+    def _format_vary_by(
+        self,
+        rows: List[OrderedDict],
+        title: str,
+        fixed_keys: List[str],
+        vary_keys: List[str],
+        highlight_best: bool,
+        speedup_vs: Optional[str],
+    ) -> str:
+        """Render a table grouped by fixed_keys, with vary_keys varying within each group.
+
+        Separator lines appear only between changes in fixed_group_keys.
+        Outer vary levels are suppressed when they repeat consecutively.
+        The * marker and speedup are computed per (fixed_keys + outer_vary_keys) sub-group.
+        """
+        if not rows:
+            return title
+
+        leaf_key = vary_keys[-1]
+        outer_vary_keys = vary_keys[:-1]
+
+        # Column order: fixed, vary_keys, then remaining (metrics)
+        all_keys = list(rows[0].keys())
+        displayed = fixed_keys + vary_keys
+        remaining = [k for k in all_keys if k not in displayed]
+        columns = displayed + remaining
+
+        # Sort: fixed keys, then vary_keys in order
+        sort_keys = fixed_keys + vary_keys
+        rows = sorted(rows, key=lambda r: tuple(str(r.get(k, '')) for k in sort_keys))
+
+        def _subgroup_key(row):
+            return tuple(row.get(k, '') for k in fixed_keys + outer_vary_keys)
+
+        # Compute best per sub-group (lowest mean_ms)
+        best_map: Dict[tuple, str] = {}
+        if highlight_best:
+            sub_best: Dict[tuple, Tuple[float, str]] = {}
+            for row in rows:
+                sk = _subgroup_key(row)
+                m = row.get('mean_ms')
+                lv = row.get(leaf_key, '')
+                if isinstance(m, (int, float)):
+                    if sk not in sub_best or m < sub_best[sk][0]:
+                        sub_best[sk] = (m, lv)
+            best_map = {sk: v[1] for sk, v in sub_best.items()}
+
+        # Inject speedup column
+        speedup_col: Optional[str] = None
+        if speedup_vs is not None:
+            speedup_col = f'vs_{speedup_vs}'
+            if speedup_col not in columns:
+                columns = columns + [speedup_col]
+            baseline_map: Dict[tuple, float] = {}
+            for row in rows:
+                if row.get(leaf_key, '') == speedup_vs:
+                    sk = _subgroup_key(row)
+                    m = row.get('mean_ms')
+                    if isinstance(m, (int, float)):
+                        baseline_map[sk] = m
+            for row in rows:
+                sk = _subgroup_key(row)
+                base = baseline_map.get(sk)
+                m = row.get('mean_ms')
+                if base is not None and isinstance(m, (int, float)) and m > 0:
+                    row[speedup_col] = f'{base / m:.2f}x'
+                else:
+                    row[speedup_col] = ''
+
+        # Compute column widths from actual data values (not suppressed display)
+        col_widths = {
+            c: max(len(str(c)), max((len(str(r.get(c, ''))) for r in rows), default=0))
+            for c in columns
+        }
+
+        sep = ' | '
+        header = sep.join(str(c).ljust(col_widths[c]) for c in columns)
+        rule = '-+-'.join('-' * col_widths[c] for c in columns)
+        lines = [title, header, rule]
+
+        prev_fixed: Optional[tuple] = None
+        prev_outer: Optional[tuple] = None
+        for row in rows:
+            cur_fixed = tuple(str(row.get(k, '')) for k in fixed_keys)
+            cur_outer = tuple(str(row.get(k, '')) for k in outer_vary_keys)
+            new_fixed_group = (cur_fixed != prev_fixed)
+            new_outer_group = new_fixed_group or (cur_outer != prev_outer)
+
+            if new_fixed_group and prev_fixed is not None:
+                lines.append(rule)
+
+            parts = []
+            for c in columns:
+                val = str(row.get(c, ''))
+                if c in fixed_keys and not new_fixed_group:
+                    val = ''
+                elif c in outer_vary_keys and not new_outer_group:
+                    val = ''
+                parts.append(val.ljust(col_widths[c]))
+
+            line = sep.join(parts)
+            if highlight_best:
+                sk = _subgroup_key(row)
+                if row.get(leaf_key, '') == best_map.get(sk, object()):
+                    line += '  *'
+            lines.append(line)
+            prev_fixed = cur_fixed
+            prev_outer = cur_outer
+
+        return '\n'.join(lines)
+
     def __repr__(self) -> str:
         return self._format_table()
 
@@ -509,15 +916,18 @@ class BenchmarkResult:
         highlight_best: bool = True,
         order_by=None,
         speedup_vs=None,
+        vary_by=None,
     ) -> None:
         """Print the benchmark table with optional sorting, grouping, and comparison.
 
         Parameters
         ----------
         sort_by : str or list of str or None, optional
-            Column name(s) to sort rows by.  Ignored when *order_by* is set.
+            Column name(s) to sort rows by.  Numeric columns are sorted
+            numerically; string columns lexicographically.  Ignored
+            when *order_by* is set.
         group_by : str or list of str or None, optional
-            Column name(s) to group rows by.  Within each group, the
+            Column name(s) to group rows by.  Within each group the
             fastest backend is identified for highlighting and relative
             speedup computation.  Ignored when *order_by* is set.
         compare_by : str, callable, or None, optional
@@ -530,29 +940,100 @@ class BenchmarkResult:
             If ``True`` (default), visually mark the best-performing
             config per group with an asterisk (``*``).
         order_by : list of str or None, optional
-            When provided, render the table in hierarchical mode.  Rows
-            are sorted and visually grouped by all columns in *order_by*
-            except the last one.  Repeated values in the group-key
-            columns are suppressed after the first row of each group, and
-            a separator line is drawn between groups.  The fastest entry
-            within each group (determined by the last column in
-            *order_by*) is marked ``*``.  Overrides *sort_by* and
-            *group_by*.
+            When provided, render the table in **hierarchical mode**.
+            Rows are sorted and visually grouped by all columns in
+            *order_by* except the last one.  Repeated values in the
+            group-key columns are suppressed after the first row of each
+            group, and a separator line is drawn between groups.  The
+            fastest entry within each group (determined by the last
+            column in *order_by*) is marked ``*``.  Overrides
+            *sort_by*, *group_by*, and *vary_by*.
 
             Example::
 
                 result.print(order_by=['transpose', 'shape', 'backend'])
         speedup_vs : str or None, optional
-            Only active with *order_by*.  Name of the leaf-column value
-            (typically a backend name) to use as the per-group baseline.
-            Adds a ``vs_<name>`` column showing ``baseline_mean /
-            row_mean`` for every row in that group.  A value > 1 means
-            the row is faster than the baseline.
+            Active with *order_by* or *vary_by*.  Name of the leaf-column
+            value (typically a backend name) to use as the per-group
+            baseline.  Adds a ``vs_<name>`` column showing
+            ``baseline_mean / row_mean`` for every row in that group.
+            A value > 1 means the row is faster than the baseline.
 
             Example::
 
-                result.print(order_by=['transpose', 'shape', 'backend'],
-                             speedup_vs='numba')
+                result.print(
+                    order_by=['transpose', 'shape', 'backend'],
+                    speedup_vs='numba',
+                )
+        vary_by : str or list of str or None, optional
+            **Shorthand grouping mode.**  Names the column(s) that
+            *vary* within each group; everything else (excluding metrics)
+            forms the fixed group boundary.
+
+            - **Single string** — one column varies, all others are the
+              group key.  A separator line is drawn between each group
+              and the fastest leaf-column value is marked ``*``::
+
+                result.print(vary_by='backend')
+
+            - **Ordered list** — multiple columns vary; the separator
+              fires only when the *fixed* columns change; earlier
+              vary-columns are suppressed when they repeat consecutively;
+              the last element is the finest leaf::
+
+                result.print(vary_by=['transpose', 'backend'])
+
+            ``*`` and *speedup_vs* are computed per
+            ``(fixed_keys + outer_vary_keys)`` sub-group.
+            *order_by* takes precedence if both are given.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            result = binary_csrmv_p.benchmark(platform='gpu')
+
+            # Default: plain table in insertion order
+            result.print()
+
+            # Sorted by mean execution time (fastest first)
+            result.print(sort_by='mean_ms')
+
+            # Group by config label; fastest backend per group marked *
+            result.print(group_by='label', highlight_best=True)
+
+            # Speedup column vs. the numba baseline (string expression)
+            result.print(
+                sort_by='mean_ms',
+                compare_by="backend == 'numba'",
+            )
+
+            # Callable baseline selector
+            result.print(compare_by=lambda row: row.get('backend') == 'numba')
+
+            # Hierarchical view: group by (transpose, label), mark best backend
+            result.print(
+                order_by=['transpose', 'label', 'backend'],
+                highlight_best=True,
+            )
+
+            # Hierarchical + per-group speedup vs. numba
+            result.print(
+                order_by=['transpose', 'label', 'backend'],
+                highlight_best=True,
+                speedup_vs='numba',
+            )
+
+            # vary_by shorthand: backend varies, everything else is the group
+            result.print(vary_by='backend', speedup_vs='numba_cuda')
+
+            # vary_by with two levels: transpose is outer, backend is leaf
+            result.print(vary_by=['transpose', 'backend'], speedup_vs='numba_cuda')
+
+        See Also
+        --------
+        fastest : Return the fastest record programmatically.
+        plot : Produce a matplotlib visualisation.
         """
         print(
             self._format_table(
@@ -562,6 +1043,7 @@ class BenchmarkResult:
                 highlight_best=highlight_best,
                 order_by=order_by,
                 speedup_vs=speedup_vs,
+                vary_by=vary_by,
             )
         )
 
@@ -588,13 +1070,14 @@ class BenchmarkResult:
             Axes to draw into.  If ``None``, a new figure and axes are
             created.
         x : str or None, optional
-            Column name for the x-axis.
+            Column name for the x-axis (e.g., ``'label'``, ``'n_pre'``).
         y : str, optional
             Column name for the y-axis.  Defaults to ``'mean_ms'``.
         hue : str or None, optional
-            Column name used to colour-code different series.
+            Column name used to colour-code different series
+            (e.g., ``'backend'``).
         style : str or None, optional
-            Column name used to set line/marker style (seaborn style).
+            Column name used to set line/marker style (seaborn only).
         kind : {'line', 'bar', 'scatter'}, optional
             Plot type.  Defaults to ``'line'``.
         show : bool, optional
@@ -602,7 +1085,7 @@ class BenchmarkResult:
             to ``False``.
         **kwargs
             Additional keyword arguments forwarded to the underlying
-            matplotlib / seaborn call.
+            matplotlib / seaborn plotting function.
 
         Returns
         -------
@@ -612,7 +1095,33 @@ class BenchmarkResult:
         Raises
         ------
         ImportError
-            If *matplotlib* is not installed.
+            If *matplotlib* or *pandas* is not installed.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            result = binary_csrmv_p.benchmark(platform='gpu')
+
+            # Bar chart: mean_ms per config, coloured by backend
+            fig = result.plot(x='label', y='mean_ms', hue='backend', kind='bar')
+            fig.tight_layout()
+            fig.savefig('bench_bar.png', dpi=150)
+
+            # Line chart: min_ms vs. config label
+            fig2 = result.plot(x='label', y='min_ms', hue='backend', kind='line')
+            fig2.savefig('bench_line.png', dpi=150)
+
+            # Scatter: draw into an existing axes
+            import matplotlib.pyplot as plt
+            fig3, ax = plt.subplots()
+            result.plot(ax=ax, x='label', y='mean_ms', kind='scatter')
+            plt.show()
+
+        See Also
+        --------
+        print : Display a formatted text table instead.
+        save : Persist results to disk for later off-line plotting.
         """
         try:
             import matplotlib.pyplot as plt
@@ -666,14 +1175,45 @@ class BenchmarkResult:
         Parameters
         ----------
         path : str or Path
-            Destination file path.
+            Destination file path.  Parent directories are created
+            automatically if they do not exist.
         format : {'json', 'csv', 'pkl'}, optional
-            Serialization format.  Defaults to ``'json'``.
+            Serialization format:
+
+            - ``'json'`` (default) — human-readable JSON; round-trips
+              with full fidelity for all field types supported by
+              :meth:`to_dict`.
+            - ``'csv'`` — flat CSV table; easily opened in spreadsheet
+              tools.  ``kernel_kwargs`` and ``data_kwargs`` are not
+              preserved as nested dicts (they are omitted from the flat
+              rows).
+            - ``'pkl'`` — binary pickle; lossless, preserves all
+              ``dict`` fields but not portable across Python versions.
 
         Raises
         ------
         ValueError
             If *format* is not one of the supported values.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            result = binary_csrmv_p.benchmark(platform='gpu')
+
+            # Default JSON
+            result.save('results/bench.json')
+
+            # CSV for spreadsheet analysis
+            result.save('results/bench.csv', format='csv')
+
+            # Lossless pickle
+            result.save('results/bench.pkl', format='pkl')
+
+        See Also
+        --------
+        load : Deserialise a previously saved file.
+        to_dict : Access the JSON-serialisable dict directly.
         """
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -705,23 +1245,47 @@ class BenchmarkResult:
     def load(cls, path: Union[str, 'Path']) -> 'BenchmarkResult':
         """Deserialize a previously saved result.
 
+        The format is inferred from the file extension (``.json``,
+        ``.csv``, ``.pkl``).  Files without one of these suffixes are
+        assumed to be JSON.
+
         Parameters
         ----------
         path : str or Path
-            Path to the file written by :meth:`save`.  The format is
-            inferred from the file extension (``.json``, ``.csv``,
-            ``.pkl``).
+            Path to the file written by :meth:`save`.
 
         Returns
         -------
         BenchmarkResult
+            A new :class:`BenchmarkResult` populated from the file.
 
         Raises
         ------
         FileNotFoundError
             If *path* does not exist.
         ValueError
-            If a ``.pkl`` file does not contain a ``BenchmarkResult``.
+            If a ``.pkl`` file does not contain a :class:`BenchmarkResult`.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            # Round-trip with JSON
+            result.save('bench.json')
+            reloaded = BenchmarkResult.load('bench.json')
+            print(reloaded)
+
+            # Round-trip with CSV
+            result.save('bench.csv', format='csv')
+            reloaded_csv = BenchmarkResult.load('bench.csv')
+
+            # Round-trip with pickle
+            result.save('bench.pkl', format='pkl')
+            reloaded_pkl = BenchmarkResult.load('bench.pkl')
+
+        See Also
+        --------
+        save : Serialise a result to disk.
         """
         path = Path(path)
         if not path.exists():
@@ -773,7 +1337,56 @@ class BenchmarkResult:
         }
 
     def to_dict(self) -> dict:
-        """Return a JSON-serializable dictionary of the result."""
+        """Return a JSON-serialisable dictionary representation.
+
+        The returned dictionary contains the primitive name and the full
+        list of records in the same format used by :meth:`save` (JSON).
+        It can be passed directly to :func:`json.dump`, embedded in a
+        larger document, or used to reconstruct a :class:`BenchmarkResult`
+        via :meth:`load`.
+
+        Returns
+        -------
+        dict
+            A dictionary with two top-level keys:
+
+            ``'primitive_name'`` : str
+                The benchmarked primitive's name.
+            ``'records'`` : list of dict
+                One dict per :class:`BenchmarkRecord`.  Each dict has
+                keys: ``platform``, ``backend``, ``label``, ``mean_ms``,
+                ``std_ms``, ``min_ms``, ``throughput``, ``success``,
+                ``error``, ``kernel_kwargs``, ``data_kwargs``.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            result = binary_csrmv_p.benchmark(platform='gpu')
+            d = result.to_dict()
+
+            # Pretty-print to console
+            import json
+            print(json.dumps(d, indent=2))
+
+            # Embed in a larger report document
+            report = {
+                'experiment': 'csrmv_gpu_sweep',
+                'hardware': 'A100-SXM4-80GB',
+                'results': d,
+            }
+            with open('report.json', 'w') as f:
+                json.dump(report, f, indent=2)
+
+            # Access individual record fields
+            for rec in d['records']:
+                print(rec['backend'], rec['mean_ms'])
+
+        See Also
+        --------
+        save : Write directly to disk (JSON / CSV / pickle).
+        load : Reconstruct a :class:`BenchmarkResult` from a file.
+        """
         return self._to_serializable_dict()
 
     @classmethod
@@ -903,6 +1516,7 @@ def benchmark_function(
     n_warmup: int,
     n_runs: int,
     n_batch_per_run: int = 1,
+    data: Tuple = (),
 ) -> Tuple[float, float, float, float, Any]:
     """Benchmark a function and return timing statistics.
 
@@ -929,20 +1543,24 @@ def benchmark_function(
         ``(mean_time, std_time, min_time, max_time, output)`` where
         times are in seconds and represent per-call values.
     """
-    # Warmup runs
-    output = None
-    for _ in range(n_warmup):
-        output = fn()
+
+    # Run fn once to get the output structure needed as fori_loop carry init
+    output = fn(*data)
     jax.block_until_ready(output)
+
+    @jax.jit
+    def run_fn(*args):
+        return jax.lax.fori_loop(0, n_batch_per_run, lambda i, carry: fn(*args), output)
+
+    # Warmup runs
+    for _ in range(n_warmup):
+        jax.block_until_ready(run_fn(*data))
 
     times = []
     for _ in range(n_runs):
         start = time.perf_counter()
-        for _ in range(n_batch_per_run):
-            output = fn()
-        jax.block_until_ready(output)
+        jax.block_until_ready(run_fn(*data))
         end = time.perf_counter()
-        # Report per-call time
         times.append((end - start) / n_batch_per_run)
 
     times = np.array(times)
