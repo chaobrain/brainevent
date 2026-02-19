@@ -62,9 +62,7 @@ def _make_benchmark_data(*, platform, spike_rate=None, n_batch=None):
     for spike_rate in spike_rates:
         for n_b in n_batches:
             for n_pre, n_post, n_conn in CONFIGS:
-                indices = jnp.asarray(
-                    rng.integers(0, n_post, (n_pre, n_conn), dtype=np.int32)
-                )
+                indices = jnp.asarray(rng.integers(0, n_post, (n_pre, n_conn), dtype=np.int32))
                 for transpose in (False, True):
                     for homo in (True, False):
                         for bool_event in (True, False):
@@ -74,10 +72,7 @@ def _make_benchmark_data(*, platform, spike_rate=None, n_batch=None):
                                 weights = jnp.asarray(rng.standard_normal((n_pre, n_conn)), dtype=dtype)
                             m_rows = n_post if not transpose else n_pre
                             if bool_event:
-                                mat = jnp.asarray(
-                                    rng.random((m_rows, n_b)) < spike_rate,
-                                    dtype=jnp.bool_,
-                                )
+                                mat = jnp.asarray(rng.random((m_rows, n_b)) < spike_rate, dtype=jnp.bool_)
                             else:
                                 raw = rng.standard_normal((m_rows, n_b))
                                 mask = rng.random((m_rows, n_b)) < spike_rate
@@ -145,6 +140,7 @@ def main():
         n_batch_per_run=1,
         compare_results=True,
         verbose=True,
+        catch_errors=False,
     )
     result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw')
 

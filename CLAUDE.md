@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-BrainEvent is a Python library for event-driven sparse computation in spiking neural networks, targeting CPU/GPU/TPU via JAX. It provides specialized sparse matrix formats and operations optimized for binary (spike) events and synaptic weight updates.
+BrainEvent is a Python library for event-driven sparse computation in spiking neural networks, targeting CPU/GPU/TPU via
+JAX. It provides specialized sparse matrix formats and operations optimized for binary (spike) events and synaptic
+weight updates.
 
 ## Build & Test Commands
 
@@ -36,6 +38,7 @@ pre-commit run --all
 ### Computation Backends
 
 Each operation supports multiple backends selected at runtime:
+
 - **numba** — CPU JIT compilation (default on CPU)
 - **pallas** — JAX Pallas kernels for GPU/TPU
 
@@ -45,19 +48,20 @@ Backend config is persisted per-primitive in `~/.config/brainevent/defaults.json
 
 Each format lives in its own subpackage under `brainevent/`:
 
-| Subpackage | Format | Class(es) |
-|---|---|---|
-| `_coo/` | Coordinate | `COO` |
-| `_csr/` | Compressed Sparse Row/Col | `CSR`, `CSC` |
-| `_dense/` | Dense matrix | (no class, operations only) |
-| `_fcn/` | Fixed Number Connectivity | `FixedNumConn`, `FixedPreNumConn`, `FixedPostNumConn` |
-| `_jit_scalar/` | JITC with scalar weights | `JITCScalarR`, `JITCScalarC` |
-| `_jit_normal/` | JITC with normal-distributed weights | `JITCNormalR`, `JITCNormalC` |
-| `_jit_uniform/` | JITC with uniform-distributed weights | `JITCUniformR`, `JITCUniformC` |
+| Subpackage      | Format                                | Class(es)                                             |
+|-----------------|---------------------------------------|-------------------------------------------------------|
+| `_coo/`         | Coordinate                            | `COO`                                                 |
+| `_csr/`         | Compressed Sparse Row/Col             | `CSR`, `CSC`                                          |
+| `_dense/`       | Dense matrix                          | (no class, operations only)                           |
+| `_fcn/`         | Fixed Number Connectivity             | `FixedNumConn`, `FixedPreNumConn`, `FixedPostNumConn` |
+| `_jit_scalar/`  | JITC with scalar weights              | `JITCScalarR`, `JITCScalarC`                          |
+| `_jit_normal/`  | JITC with normal-distributed weights  | `JITCNormalR`, `JITCNormalC`                          |
+| `_jit_uniform/` | JITC with uniform-distributed weights | `JITCUniformR`, `JITCUniformC`                        |
 
 ### Module Internal Structure (repeated per format)
 
 Each subpackage follows a consistent layout:
+
 - `main.py` — Sparse matrix class definition (JAX pytree, `tree_flatten`/`tree_unflatten`)
 - `binary.py` — Event-driven (binary spike) matmul kernels (`binary_*mv`, `binary_*mm`)
 - `float.py` — Float-valued matmul kernels (`*mv`, `*mm`)
@@ -89,7 +93,8 @@ brainunit.sparse.SparseMatrix  (sets self.shape)
 
 ### Custom Kernel Registration (`_op/`)
 
-- `_op/main.py` — `XLACustomKernel` base class for registering JAX primitives with multiple backend implementations (`KernelEntry` per backend)
+- `_op/main.py` — `XLACustomKernel` base class for registering JAX primitives with multiple backend implementations (
+  `KernelEntry` per backend)
 - `_op/util.py` — Helpers: `defjvp`, `general_batching_rule`, type conversions
 - `_op/numba_ffi.py` / `numba_cuda_ffi.py` — Numba CPU/CUDA FFI kernel registration
 
@@ -108,15 +113,19 @@ brainunit.sparse.SparseMatrix  (sets self.shape)
 
 ## GPU Kernel Pitfalls
 
-- **Backend passthrough**: JVP/transpose/batching rules must forward `backend=` to `*_p_call()` functions, otherwise tangent computation may silently use the wrong backend.
+- **Backend passthrough**: JVP/transpose/batching rules must forward `backend=` to `*_p_call()` functions, otherwise
+  tangent computation may silently use the wrong backend.
 
-- **TVM FFI — NEVER dereference `data_ptr()` on the host**: `TensorView::data_ptr()` returns a **GPU device memory pointer**. Dereferencing it from C++ host code (inside a TVM FFI entry function) causes an immediate SIGSEGV. The common offender is:
+- **TVM FFI — NEVER dereference `data_ptr()` on the host**: `TensorView::data_ptr()` returns a **GPU device memory
+  pointer**. Dereferencing it from C++ host code (inside a TVM FFI entry function) causes an immediate SIGSEGV. The
+  common offender is:
   ```c
   // WRONG — causes SIGSEGV: dereferences a GPU pointer from the CPU host
   bool is_homo = (weights.ndim() == 1);
   float homo_w = is_homo ? *static_cast<const float*>(weights.data_ptr()) : 0.0f;
   ```
-  **The fix**: only read host-safe *metadata* (`ndim()`, `size(0)`, etc.) on the host; pass the raw device pointer to the kernel and let GPU threads read from it:
+  **The fix**: only read host-safe *metadata* (`ndim()`, `size(0)`, etc.) on the host; pass the raw device pointer to
+  the kernel and let GPU threads read from it:
   ```c
   // CORRECT — metadata is host-safe; device ptr is passed to kernel, not dereferenced
   int is_homo = (weights.ndim() == 1) ? 1 : 0;          // metadata: OK on host
@@ -125,7 +134,10 @@ brainunit.sparse.SparseMatrix  (sets self.shape)
   // Inside the kernel, GPU threads read: weights[0] (homo) or weights[row*n_conn+k] (hetero)
   ```
 
-- **NVRTC (TVM FFI) — no static `__shared__` in `__device__` functions**: TVM FFI uses NVRTC to JIT-compile CUDA code. NVRTC does **not** correctly handle `__shared__` variables declared inside `__device__` (non-kernel) functions — this produces a segfault at kernel launch time. **Always use `extern __shared__` (dynamic shared memory) in the calling `__global__` kernel.** Never write patterns like:
+- **NVRTC (TVM FFI) — no static `__shared__` in `__device__` functions**: TVM FFI uses NVRTC to JIT-compile CUDA code.
+  NVRTC does **not** correctly handle `__shared__` variables declared inside `__device__` (non-kernel) functions — this
+  produces a segfault at kernel launch time. **Always use `extern __shared__` (dynamic shared memory) in the
+  calling `__global__` kernel.** Never write patterns like:
   ```c
   // WRONG — causes segfault with NVRTC/TVM FFI
   __device__ float block_reduce(float val) {
@@ -151,21 +163,27 @@ brainunit.sparse.SparseMatrix  (sets self.shape)
 
 ## Dev Script Path Fix
 
-When running benchmark/dev scripts directly (e.g. `python dev/fcn/benchmark_fcnmv.py`), Python adds the **script's directory** to `sys.path[0]` — not the project root. This causes Python to import the **installed** `brainevent` from site-packages instead of the development version, silently hiding any local changes.
+When running benchmark/dev scripts directly (e.g. `python dev/fcn/benchmark_fcnmv.py`), Python adds the **script's
+directory** to `sys.path[0]` — not the project root. This causes Python to import the **installed** `brainevent` from
+site-packages instead of the development version, silently hiding any local changes.
 
 Fix: add this block at the top of every script in a `dev/` subdirectory:
+
 ```python
 import sys
 from pathlib import Path
+
 _project_root = str(Path(__file__).resolve().parent.parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 ```
+
 Or equivalently run with: `PYTHONPATH=/path/to/project python dev/subdir/script.py`
 
 ## Benchmarking Primitives
 
-Prefer using the built-in `.benchmark()` method on `XLACustomKernel` primitives (e.g. `fcnmv_p`, `fcnmm_p`) rather than writing custom timing loops. The pattern:
+Prefer using the built-in `.benchmark()` method on `XLACustomKernel` primitives (e.g. `fcnmv_p`, `fcnmm_p`) rather than
+writing custom timing loops. The pattern:
 
 1. Define a data generator that `yield`s or returns `BenchmarkConfig` instances:
    ```python
@@ -188,11 +206,13 @@ Prefer using the built-in `.benchmark()` method on `XLACustomKernel` primitives 
    result.print(group_by='label', highlight_best=True)
    ```
 
-This handles warmup, timing, cross-backend comparison, and tabular display automatically. See `dev/fcn/benchmark_fcnmv.py` for a complete example.
+This handles warmup, timing, cross-backend comparison, and tabular display automatically. See
+`dev/fcn/benchmark_fcnmv.py` for a complete example.
 
 ## CUDA Source File Conventions (`.cu` files)
 
 ### File layout
+
 Each `.cu` file must follow this structure, in order:
 
 1. **License header** — Apache 2.0 using `//` C-style line comments (not `#`):
@@ -207,12 +227,21 @@ Each `.cu` file must follow this structure, in order:
 3. **CUDA kernel source** — `__device__`, `__global__`, and TVM FFI `void` entry functions.
 
 ### Keeping CUDA out of Python
+
 Never embed large CUDA source strings inline in Python files. Instead:
+
 - Store kernels in a co-located `.cu` file (e.g. `brainevent/_fcn/fcnmv.cu`).
 - Load at runtime: `Path(__file__).parent.joinpath('fcnmv.cu').read_text()`.
-- This keeps Python files readable, allows the CUDA to be edited/compiled independently, and is bundled in wheels via `pyproject.toml` (see below).
+- This keeps Python files readable, allows the CUDA to be edited/compiled independently, and is bundled in wheels via
+  `pyproject.toml` (see below).
 
+### Existing TVM FFI bugs (jax_tvm_ffi<=0.1.2)
+
+Float64 is not handled during dtype mapping (https://github.com/NVIDIA/jax-tvm-ffi/issues/13).
+This means that if you use float64 weights with GPU backends, the TVM FFI will fail to compile the kernel due to an
+unsupported dtype. However, for jax_tvm_ffi>0.1.2, this will be fixed.
 
 ## Linter
 
-A linter runs on file save and may revert changes. When making many edits to a single file, prefer writing the entire file at once rather than incremental edits.
+A linter runs on file save and may revert changes. When making many edits to a single file, prefer writing the entire
+file at once rather than incremental edits.
