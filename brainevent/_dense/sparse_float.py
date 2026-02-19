@@ -720,7 +720,15 @@ def _spfloat_densemm_cuda_kernel(
     if transpose:
         kernel_name = f'spfloat_densemm.spfloat_densemm_t{wt_sfx}'
     else:
-        kernel_name = f'spfloat_densemm.spfloat_densemm_nt{wt_sfx}'
+        # NT: select warp-per-row (small n) vs thread-per-element (large n).
+        # WPR reads weight matrix ceil(n/CHUNK_N) times; TPE reads it once.
+        # CHUNK_N = 32 for f32/f16/bf16, 16 for f64.
+        chunk_n = 16 if jnp.dtype(weight_info.dtype) == jnp.float64 else 32
+        n_cols = spk_info.shape[1]
+        if n_cols <= chunk_n:
+            kernel_name = f'spfloat_densemm.spfloat_densemm_nt{wt_sfx}'
+        else:
+            kernel_name = f'spfloat_densemm.spfloat_densemm_nt_tpe{wt_sfx}'
 
     def kernel(weights, spikes):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, spikes)
