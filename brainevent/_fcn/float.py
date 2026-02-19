@@ -290,10 +290,7 @@ def _fcnmv_cuda_kernel(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    _FCN_MV_FLOAT_CUDA = register_tvm_cuda_from_file(
-        module='fcnmv',
-        source=Path(__file__).parent.joinpath('fcnmv.cu'),
-    )
+    register_tvm_cuda_from_file(module='fcnmv', source=Path(__file__).parent.joinpath('fcnmv.cu'))
 
     out_info = kwargs['outs']
     n_conn = indices_info.shape[1]
@@ -821,10 +818,7 @@ def _fcnmm_cuda_kernel(
     matrix_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='fcnmm',
-        source=Path(__file__).parent.joinpath('fcnmm.cu'),
-    )
+    register_tvm_cuda_from_file(module='fcnmm', source=Path(__file__).parent.joinpath('fcnmm.cu'))
 
     out_info = kwargs['outs']
     n_conn = indices_info.shape[1]
