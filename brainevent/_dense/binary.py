@@ -1118,7 +1118,7 @@ binary_densemm : High-level user-facing function wrapper.
 """
 )
 binary_densemm_p.def_numba_kernel(_binary_densemm_numba_kernel)
-binary_densemm_p.def_pallas_kernel('gpu', _binary_densemm_pallas_kernel)
+# binary_densemm_p.def_pallas_kernel('gpu', _binary_densemm_pallas_kernel)
 binary_densemm_p.def_tvmffi_kernel('gpu', _binary_densemm_cuda_kernel)
 binary_densemm_p.def_kernel('jax_raw', 'cpu', _binary_densemm_jax_kernel)
 binary_densemm_p.def_kernel('jax_raw', 'gpu', _binary_densemm_jax_kernel)
