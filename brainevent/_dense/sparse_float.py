@@ -15,6 +15,7 @@
 
 # -*- coding: utf-8 -*-
 
+from pathlib import Path
 from typing import Optional
 
 import brainunit as u
@@ -24,7 +25,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import cdiv, generate_block_dim, namescope
-from brainevent._op import XLACustomKernel, general_batching_rule, numba_kernel, BenchmarkConfig
+from brainevent._op import XLACustomKernel, general_batching_rule, numba_kernel, BenchmarkConfig, register_tvm_cuda_from_file
 from brainevent.config import get_numba_parallel
 
 __all__ = [
@@ -230,6 +231,50 @@ def _spfloat_densemv_pallas_kernel(
     return run
 
 
+def _spfloat_densemv_jax_kernel(
+    transpose: bool,
+    **kwargs,
+):
+    def kernel(weights, spikes):
+        if transpose:
+            return spikes @ weights,
+        else:
+            return weights @ spikes,
+
+    return kernel
+
+
+def _spfloat_densemv_cuda_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs
+):
+    register_tvm_cuda_from_file(
+        module='spfloat_densemv',
+        source=Path(__file__).parent.joinpath('spfloat_densemv.cu'),
+    )
+
+    out_info = kwargs['outs']
+
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+
+    if transpose:
+        kernel_name = f'spfloat_densemv.spfloat_densemv_scatter{wt_sfx}'
+    else:
+        kernel_name = f'spfloat_densemv.spfloat_densemv_gather_auto{wt_sfx}'
+
+    def kernel(weights, spikes):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, spikes)
+
+    return kernel
+
+
 def _spfloat_densemv_jvp_weights(w_dot, weights, spikes, *, transpose, **kwargs):
     return spfloat_densemv_p_call(w_dot, spikes, transpose=transpose, backend=kwargs['backend'])
 
@@ -355,6 +400,9 @@ def spfloat_densemv_p_call(weights, spikes, *, transpose, backend: Optional[str]
         >>> spikes = jnp.array([2.0, 0.0, 3.0], dtype=jnp.float32)
         >>> spfloat_densemv_p_call(weights, spikes, transpose=False)
     """
+    # Convert bool spikes to float to match weight dtype for CUDA kernels
+    if spikes.dtype == jnp.bool_:
+        spikes = jnp.asarray(spikes, dtype=weights.dtype)
     if transpose:
         # spikes[k] @ weights[k,n] -> out[n]
         assert spikes.shape[0] == weights.shape[0], (
@@ -410,6 +458,8 @@ spfloat_densemv : High-level user-facing function wrapper.
 )
 spfloat_densemv_p.def_numba_kernel(_spfloat_densemv_numba_kernel)
 spfloat_densemv_p.def_pallas_kernel('gpu', _spfloat_densemv_pallas_kernel)
+spfloat_densemv_p.def_tvmffi_kernel('gpu', _spfloat_densemv_cuda_kernel)
+spfloat_densemv_p.def_kernel('jax_raw', 'gpu', _spfloat_densemv_jax_kernel)
 spfloat_densemv_p.def_jvp_rule2(_spfloat_densemv_jvp_weights, _spfloat_densemv_jvp_spikes)
 spfloat_densemv_p.def_transpose_rule(_spfloat_densemv_transpose_rule)
 spfloat_densemv_p.def_batching_rule(_spfloat_densemv_batching)
@@ -631,6 +681,51 @@ def _spfloat_densemm_pallas_kernel(
     return run
 
 
+def _spfloat_densemm_jax_kernel(
+    transpose: bool,
+    **kwargs,
+):
+    def kernel(weights, spikes):
+        if transpose:
+            return spikes @ weights,
+        else:
+            return weights @ spikes,
+
+    return kernel
+
+
+def _spfloat_densemm_cuda_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    spk_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs
+):
+    register_tvm_cuda_from_file(
+        module='spfloat_densemm',
+        source=Path(__file__).parent.joinpath('spfloat_densemm.cu'),
+    )
+
+    out_info = kwargs['outs']
+
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+
+    if transpose:
+        kernel_name = f'spfloat_densemm.spfloat_densemm_t{wt_sfx}'
+    else:
+        kernel_name = f'spfloat_densemm.spfloat_densemm_nt{wt_sfx}'
+
+    def kernel(weights, spikes):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, spikes)
+
+    return kernel
+
+
 def _spfloat_densemm_jvp_weights(w_dot, weights, spikes, *, transpose, **kwargs):
     return spfloat_densemm_p_call(w_dot, spikes, transpose=transpose, backend=kwargs['backend'])
 
@@ -754,6 +849,9 @@ def spfloat_densemm_p_call(weights, spikes, *, transpose, backend: Optional[str]
         ...                     [1.0, 0.0]], dtype=jnp.float32)
         >>> spfloat_densemm_p_call(weights, spikes, transpose=False)
     """
+    # Convert bool spikes to float to match weight dtype for CUDA kernels
+    if spikes.dtype == jnp.bool_:
+        spikes = jnp.asarray(spikes, dtype=weights.dtype)
     if transpose:
         # spikes[m,k] @ weights[k,n] -> out[m,n]
         assert spikes.shape[1] == weights.shape[0], (
@@ -810,6 +908,8 @@ spfloat_densemm : High-level user-facing function wrapper.
 )
 spfloat_densemm_p.def_numba_kernel(_spfloat_densemm_numba_kernel)
 spfloat_densemm_p.def_pallas_kernel('gpu', _spfloat_densemm_pallas_kernel)
+spfloat_densemm_p.def_tvmffi_kernel('gpu', _spfloat_densemm_cuda_kernel)
+spfloat_densemm_p.def_kernel('jax_raw', 'gpu', _spfloat_densemm_jax_kernel)
 spfloat_densemm_p.def_jvp_rule2(_spfloat_densemm_jvp_weights, _spfloat_densemm_jvp_spikes)
 spfloat_densemm_p.def_transpose_rule(_spfloat_densemm_transpose_rule)
 spfloat_densemm_p.def_batching_rule(_spfloat_densemm_batching)
