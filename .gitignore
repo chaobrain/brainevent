@@ -237,3 +237,4 @@ cython_debug/
 /docs/apis/changelog.md
 /ai-coding/
 /claude_logs_fcn/
+/analysis/
