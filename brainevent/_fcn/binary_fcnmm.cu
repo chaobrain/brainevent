@@ -29,10 +29,10 @@
  * Parameters
  * ----------
  * weights : shape (1,) for homogeneous or (num_pre, num_conn) for heterogeneous,
- *           floating-point dtype (float16 / float32 / float64).
+ *           floating-point dtype (float16 / bfloat16 / float32 / float64).
  * indices : shape (num_pre, num_conn), int32 — post-synaptic column indices.
- * matrix  : shape (num_post, n_col) for gather or (num_pre, n_col) for scatter.
- *           bool dtype: active when True.
+ * matrix  : shape (num_post, n_batch) for gather or (num_pre, n_batch) for scatter.
+ *           bool dtype: active when != 0 (stored as uint8).
  *           float dtype: active when > 0.
  * shape   : logical (num_pre, num_post) shape of the dense weight matrix.
  * transpose=False (gather mode):
@@ -40,1217 +40,412 @@
  * transpose=True  (scatter mode):
  *   Y[indices[i,k],j] += weights[i,k] * 1_{M[i,j] active}   for all i,k,j
  *
- * Supported weight dtypes: float32 (default), float64 (_f64 suffix), float16 (_f16 suffix).
- * Supported matrix dtypes: bool (_bool_ kernels) and float (_float_ kernels).
- * Optimization: warp ballot + tile-level early exit to skip all-zero warp columns.
+ * Supported weight dtypes: float32 (_f32), float64 (_f64), float16 (_f16), bfloat16 (_bf16).
+ * Supported matrix dtypes: bool (_bool_) and float (_float_) matching weight dtype.
+ * Float16 and bfloat16 weight accumulation uses float32 for stability.
+ * Bfloat16 requires CUDA 11.0+; bfloat16 atomicAdd requires CC 8.0+.
+ *
+ * Optimization:
+ *   Gather warp  (n_conn ≤ 32): branchless, no __ballot_sync.
+ *   Gather basic (n_conn > 32): __ballot_sync per k; skips all-zero warp chunks.
+ *   Scatter warp (n_conn ≤ 32): tile-level __ballot_sync early exit.
+ *   Scatter basic (n_conn > 32): shared-flag row-level early exit.
  *
  * IMPORTANT: weights.data_ptr() is a GPU device pointer — NEVER dereference on host.
  */
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
+#include <cuda_bf16.h>
 #include <cstdint>
 
 // =========================================================================
-// BINARY FCNMM — Fixed Connection Number Matrix-Matrix CUDA Kernels
-//
-// FCN format:
-//   indices : int32  [n_pre, n_conn]  — post-synaptic (column) indices
-//   weights : float32 [1] (homo) or [n_pre, n_conn] (hetero)
-//
-// GATHER mode (transpose=False):
-//   matrix M : [n_post, n_batch]
-//   output Y : [n_pre,  n_batch]
-//   Y[i, j] = sum_{k=0}^{n_conn-1} weights[i,k] * is_active(M[indices[i,k], j])
-//
-// SCATTER mode (transpose=True):
-//   matrix M : [n_pre,  n_batch]
-//   output Y : [n_post, n_batch]  — pre-zeroed via cudaMemsetAsync
-//   if is_active(M[i,j]):  Y[indices[i,k], j] += weights[i,k]  for all k
-//
-// Activity:  bool matrix (uint8): s != 0    float matrix: s > 0.0f
-//
-// Event-driven strategy:
-//
-//   GATHER, warp variant (n_conn <= 32):
-//     Grid (n_pre, ceil(n_batch/32)), Block 32.
-//     Thread t handles output column j = blockIdx.y*32 + t.
-//     Branchless loop over k (no __ballot_sync): entire row fits in 1-2
-//     cache lines; ballot overhead exceeds savings at 5-10% firing rates.
-//
-//   GATHER, basic variant (n_conn > 32):
-//     Same grid/block.  __ballot_sync per k across 32 j-threads:
-//     if no batch column is active for source row indices[i,k], skip weight load.
-//
-//   SCATTER, warp variant (n_conn <= 32):
-//     Grid (n_pre, ceil(n_batch/32)), Block 32.
-//     Tile-level ballot: skip entire block if no j-column active in tile.
-//     Active threads loop over k <= 32 connections -> atomicAdd.
-//
-//   SCATTER, basic variant (n_conn > 32):
-//     Grid (n_pre,), Block 256.  Shared int flag for row-level early exit.
-//     For active rows: sequential j-loop picks active columns; 256 threads
-//     parallelize inner k-loop with atomicAdd.
-//
-// Memory safety:
-//   bool matrix stored as uint8.
-//   Scatter output pre-zeroed via cudaMemsetAsync in TVM FFI entry functions.
-//   Host entry functions only read ndim()/size() metadata.
-//   data_ptr() passed to kernels, never dereferenced on host (SIGSEGV risk).
+// Spike active predicates (matrix elements)
 // =========================================================================
 
+#define IS_ACTIVE_BOOL(s)       ((s) != 0)
+#define IS_ACTIVE_FLOAT_F32(s)  ((s) > 0.0f)
+#define IS_ACTIVE_FLOAT_F64(s)  ((s) > 0.0)
+#define IS_ACTIVE_FLOAT_F16(s)  (__half2float(s) > 0.0f)
+#define IS_ACTIVE_FLOAT_BF16(s) (__bfloat162float(s) > 0.0f)
+
 // =========================================================================
-// GATHER kernels (transpose=False)
+// Per-dtype weight conversion macros: READ_W converts WEIGHT_T -> ACC_T
 // =========================================================================
 
-// ---- Gather / Bool matrix, warp variant (n_conn <= 32) ----
+#define READ_F32(x)   (x)
+#define WRITE_F32(x)  (x)
+
+#define READ_F64(x)   (x)
+#define WRITE_F64(x)  (x)
+
+#define READ_F16(x)   __half2float(x)
+#define WRITE_F16(x)  __float2half(x)
+
+#define READ_BF16(x)  __bfloat162float(x)
+#define WRITE_BF16(x) __float2bfloat16(x)
+
+// =========================================================================
+// GATHER warp kernel macro (n_conn <= 32, branchless)
+//
 // Grid: (n_pre, ceil(n_batch/32))  Block: 32
 // Thread t handles output Y[row, j], j = blockIdx.y*32 + t.
 // Branchless loop over k; inactive lanes contribute 0. No __ballot_sync.
-__global__ void _bgm_bool_gather_warp_kern(
-    const int32_t* __restrict__ indices,   // [n_pre, n_conn]
-    const uint8_t* __restrict__ matrix,    // [n_post, n_batch] bool->uint8
-    float*         __restrict__ output,    // [n_pre, n_batch]
-    const float*   __restrict__ weights,   // [1] or [n_pre, n_conn]
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    int row = blockIdx.x;
-    int t   = threadIdx.x;
-    int j   = (int)blockIdx.y * 32 + t;
-    if (row >= n_pre) return;
-    bool col_valid = (j < n_batch);
-    int  safe_j    = col_valid ? j : 0;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const float*   w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    float accum = 0.0f;
-    for (int k = 0; k < n_conn; k++) {
-        int src    = i_row[k];
-        bool active = col_valid && (matrix[(size_t)src * n_batch + safe_j] != 0);
-        accum += active ? (is_homo ? 1.0f : w_row[k]) : 0.0f;
-    }
-    if (col_valid)
-        output[(size_t)row * n_batch + j] = is_homo ? (weights[0] * accum) : accum;
-}
+// =========================================================================
 
-// ---- Gather / Bool matrix, basic variant (n_conn > 32) ----
-// Grid: (n_pre, ceil(n_batch/32))  Block: 32
-// __ballot_sync per k across 32 j-threads: if no column is active for source
-// row indices[i,k], skip the weight load (event-driven inner loop).
-__global__ void _bgm_bool_gather_basic_kern(
-    const int32_t* __restrict__ indices,
-    const uint8_t* __restrict__ matrix,
-    float*         __restrict__ output,
-    const float*   __restrict__ weights,
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    int row = blockIdx.x;
-    int t   = threadIdx.x;
-    int j   = (int)blockIdx.y * 32 + t;
-    if (row >= n_pre) return;
-    bool col_valid = (j < n_batch);
-    int  safe_j    = col_valid ? j : 0;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const float*   w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    float accum = 0.0f;
-    for (int k = 0; k < n_conn; k++) {
-        int  src    = i_row[k];
-        bool active = col_valid && (matrix[(size_t)src * n_batch + safe_j] != 0);
-        // Skip weight load if no batch column is active for this source row
-        unsigned ballot = __ballot_sync(0xffffffff, active);
-        if (ballot == 0) continue;
-        if (active)
-            accum += is_homo ? 1.0f : w_row[k];
-    }
-    if (col_valid)
-        output[(size_t)row * n_batch + j] = is_homo ? (weights[0] * accum) : accum;
-}
-
-// ---- Gather / Float matrix, warp variant (n_conn <= 32) ----
-// Grid: (n_pre, ceil(n_batch/32))  Block: 32  Branchless.
-__global__ void _bgm_float_gather_warp_kern(
-    const int32_t* __restrict__ indices,
-    const float*   __restrict__ matrix,    // [n_post, n_batch]
-    float*         __restrict__ output,
-    const float*   __restrict__ weights,
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    int row = blockIdx.x;
-    int t   = threadIdx.x;
-    int j   = (int)blockIdx.y * 32 + t;
-    if (row >= n_pre) return;
-    bool col_valid = (j < n_batch);
-    int  safe_j    = col_valid ? j : 0;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const float*   w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    float accum = 0.0f;
-    for (int k = 0; k < n_conn; k++) {
-        int  src    = i_row[k];
-        bool active = col_valid && (matrix[(size_t)src * n_batch + safe_j] > 0.0f);
-        accum += active ? (is_homo ? 1.0f : w_row[k]) : 0.0f;
-    }
-    if (col_valid)
-        output[(size_t)row * n_batch + j] = is_homo ? (weights[0] * accum) : accum;
-}
-
-// ---- Gather / Float matrix, basic variant (n_conn > 32) ----
-// Grid: (n_pre, ceil(n_batch/32))  Block: 32
-// __ballot_sync per k (same event-driven strategy as bool variant).
-__global__ void _bgm_float_gather_basic_kern(
-    const int32_t* __restrict__ indices,
-    const float*   __restrict__ matrix,
-    float*         __restrict__ output,
-    const float*   __restrict__ weights,
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    int row = blockIdx.x;
-    int t   = threadIdx.x;
-    int j   = (int)blockIdx.y * 32 + t;
-    if (row >= n_pre) return;
-    bool col_valid = (j < n_batch);
-    int  safe_j    = col_valid ? j : 0;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const float*   w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    float accum = 0.0f;
-    for (int k = 0; k < n_conn; k++) {
-        int  src    = i_row[k];
-        bool active = col_valid && (matrix[(size_t)src * n_batch + safe_j] > 0.0f);
-        unsigned ballot = __ballot_sync(0xffffffff, active);
-        if (ballot == 0) continue;
-        if (active)
-            accum += is_homo ? 1.0f : w_row[k];
-    }
-    if (col_valid)
-        output[(size_t)row * n_batch + j] = is_homo ? (weights[0] * accum) : accum;
+#define DEFINE_BGM_WARP(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, WRITE_W) \
+__global__ void _bgm_warp_kern##SUFFIX(                                                \
+    const int32_t* __restrict__ indices,                                               \
+    const SPIKE_T* __restrict__ matrix,                                                \
+    WEIGHT_T*      __restrict__ output,                                                \
+    const WEIGHT_T* __restrict__ weights,                                              \
+    int n_pre, int n_conn, int n_batch, int is_homo                                    \
+) {                                                                                    \
+    int row = blockIdx.x;                                                              \
+    int t   = threadIdx.x;                                                             \
+    int j   = (int)blockIdx.y * 32 + t;                                               \
+    if (row >= n_pre) return;                                                          \
+    bool col_valid = (j < n_batch);                                                    \
+    int  safe_j    = col_valid ? j : 0;                                               \
+    const int32_t*  i_row = indices + (size_t)row * n_conn;                           \
+    const WEIGHT_T* w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;       \
+    ACC_T accum = (ACC_T)0;                                                            \
+    for (int k = 0; k < n_conn; k++) {                                                \
+        int  src    = i_row[k];                                                        \
+        bool active = col_valid && IS_ACTIVE(matrix[(size_t)src * n_batch + safe_j]); \
+        accum += active ? (is_homo ? (ACC_T)1 : READ_W(w_row[k])) : (ACC_T)0;        \
+    }                                                                                  \
+    if (col_valid)                                                                     \
+        output[(size_t)row * n_batch + j] =                                           \
+            WRITE_W(is_homo ? (READ_W(weights[0]) * accum) : accum);                  \
 }
 
 // =========================================================================
-// SCATTER kernels (transpose=True)
+// GATHER basic kernel macro (n_conn > 32, with __ballot_sync per k)
 //
-// if is_active(M[i, j]):  Y[indices[i,k], j] += weights[i,k]  for all k
-//
-// Output buffer must be pre-zeroed; done via cudaMemsetAsync below.
-//
-// Key optimisation: event-driven early exit avoids all atomicAdds for
-// inactive pre-neurons / batch tiles.
+// Grid: (n_pre, ceil(n_batch/32))  Block: 32
+// __ballot_sync per k across 32 j-threads: if no column active for source
+// row indices[i,k], skip weight load (event-driven inner loop).
 // =========================================================================
 
-// ---- Scatter / Bool matrix, warp variant (n_conn <= 32) ----
+#define DEFINE_BGM_BASIC(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, WRITE_W) \
+__global__ void _bgm_basic_kern##SUFFIX(                                                \
+    const int32_t* __restrict__ indices,                                                \
+    const SPIKE_T* __restrict__ matrix,                                                 \
+    WEIGHT_T*      __restrict__ output,                                                 \
+    const WEIGHT_T* __restrict__ weights,                                               \
+    int n_pre, int n_conn, int n_batch, int is_homo                                     \
+) {                                                                                     \
+    int row = blockIdx.x;                                                               \
+    int t   = threadIdx.x;                                                              \
+    int j   = (int)blockIdx.y * 32 + t;                                                \
+    if (row >= n_pre) return;                                                           \
+    bool col_valid = (j < n_batch);                                                     \
+    int  safe_j    = col_valid ? j : 0;                                                \
+    const int32_t*  i_row = indices + (size_t)row * n_conn;                            \
+    const WEIGHT_T* w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;        \
+    ACC_T accum = (ACC_T)0;                                                             \
+    for (int k = 0; k < n_conn; k++) {                                                 \
+        int  src    = i_row[k];                                                         \
+        bool active = col_valid && IS_ACTIVE(matrix[(size_t)src * n_batch + safe_j]);  \
+        unsigned ballot = __ballot_sync(0xffffffff, active);                            \
+        if (ballot == 0) continue;                                                      \
+        if (active)                                                                     \
+            accum += is_homo ? (ACC_T)1 : READ_W(w_row[k]);                            \
+    }                                                                                   \
+    if (col_valid)                                                                      \
+        output[(size_t)row * n_batch + j] =                                            \
+            WRITE_W(is_homo ? (READ_W(weights[0]) * accum) : accum);                   \
+}
+
+// =========================================================================
+// SCATTER warp kernel macro (n_conn <= 32)
+//
 // Grid: (n_pre, ceil(n_batch/32))  Block: 32
-// Each block: one pre-neuron row + one 32-column batch tile.
 // Tile-level ballot: skip if no active column in tile.
-// Active threads loop over k <= 32 connections -> atomicAdd to output.
-__global__ void _bgm_bool_scatter_warp_kern(
-    const int32_t* __restrict__ indices,   // [n_pre, n_conn]
-    const uint8_t* __restrict__ matrix,    // [n_pre, n_batch]
-    float*         __restrict__ output,    // [n_post, n_batch]
-    const float*   __restrict__ weights,   // [1] or [n_pre, n_conn]
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    int row = blockIdx.x;
-    int t   = threadIdx.x;
-    int j   = (int)blockIdx.y * 32 + t;
-    if (row >= n_pre) return;
-    bool col_valid = (j < n_batch);
-    int  safe_j    = col_valid ? j : 0;
-    bool active    = col_valid && (matrix[(size_t)row * n_batch + safe_j] != 0);
-    // Tile-level event-driven exit: skip if no active column in this tile
-    if (__ballot_sync(0xffffffff, active) == 0) return;
-    if (!active) return;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const float*   w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    float w0 = is_homo ? weights[0] : 0.0f;
-    for (int k = 0; k < n_conn; k++)
-        atomicAdd(&output[(size_t)i_row[k] * n_batch + j], is_homo ? w0 : w_row[k]);
+// Active threads loop over k <= 32 connections -> atomicAdd.
+// =========================================================================
+
+#define DEFINE_BSM_WARP(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T)                         \
+__global__ void _bsm_warp_kern##SUFFIX(                                                \
+    const int32_t* __restrict__ indices,                                               \
+    const SPIKE_T* __restrict__ matrix,                                                \
+    WEIGHT_T*      __restrict__ output,                                                \
+    const WEIGHT_T* __restrict__ weights,                                              \
+    int n_pre, int n_conn, int n_batch, int is_homo                                    \
+) {                                                                                    \
+    int row = blockIdx.x;                                                              \
+    int t   = threadIdx.x;                                                             \
+    int j   = (int)blockIdx.y * 32 + t;                                               \
+    if (row >= n_pre) return;                                                          \
+    bool col_valid = (j < n_batch);                                                    \
+    int  safe_j    = col_valid ? j : 0;                                               \
+    bool active    = col_valid && IS_ACTIVE(matrix[(size_t)row * n_batch + safe_j]);  \
+    if (__ballot_sync(0xffffffff, active) == 0) return;                               \
+    if (!active) return;                                                               \
+    const int32_t*  i_row = indices + (size_t)row * n_conn;                           \
+    const WEIGHT_T* w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;       \
+    WEIGHT_T w0 = is_homo ? weights[0] : (WEIGHT_T)0;                                 \
+    for (int k = 0; k < n_conn; k++)                                                  \
+        atomicAdd(&output[(size_t)i_row[k] * n_batch + j], is_homo ? w0 : w_row[k]); \
 }
 
-// ---- Scatter / Bool matrix, basic variant (n_conn > 32) ----
-// Grid: (n_pre,)  Block: 256  Shared memory: sizeof(int) for row-active flag.
+// =========================================================================
+// SCATTER basic kernel macro (n_conn > 32)
+//
+// Grid: (n_pre,)  Block: 256  Shared: sizeof(int) for row-active flag.
 // Row-level early exit: entire block returns if M[i,:] is all-zero.
 // For active rows: sequential j-loop picks active columns; 256 threads
-// parallelise the inner k-loop (stride=blockDim.x) with atomicAdd.
-__global__ void _bgm_bool_scatter_basic_kern(
-    const int32_t* __restrict__ indices,
-    const uint8_t* __restrict__ matrix,
-    float*         __restrict__ output,
-    const float*   __restrict__ weights,
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    extern __shared__ int smem_flag[];
-    int row = blockIdx.x;
-    if (row >= n_pre) return;
-    if (threadIdx.x == 0) smem_flag[0] = 0;
-    __syncthreads();
-    // Check if any M[row, j] is active (all threads scan their portion of j)
-    for (int j = threadIdx.x; j < n_batch; j += blockDim.x)
-        if (matrix[(size_t)row * n_batch + j] != 0) { atomicOr(smem_flag, 1); break; }
-    __syncthreads();
-    if (smem_flag[0] == 0) return;   // row entirely inactive -> skip all atomicAdds
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const float*   w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    float w0 = is_homo ? weights[0] : 0.0f;
-    for (int j = 0; j < n_batch; j++) {
-        if (!matrix[(size_t)row * n_batch + j]) continue;
-        for (int k = threadIdx.x; k < n_conn; k += blockDim.x)
-            atomicAdd(&output[(size_t)i_row[k] * n_batch + j], is_homo ? w0 : w_row[k]);
-    }
-}
+// parallelize inner k-loop with atomicAdd.
+// =========================================================================
 
-// ---- Scatter / Float matrix, warp variant (n_conn <= 32) ----
-// Grid: (n_pre, ceil(n_batch/32))  Block: 32  Same as bool, check > 0.0f.
-__global__ void _bgm_float_scatter_warp_kern(
-    const int32_t* __restrict__ indices,
-    const float*   __restrict__ matrix,
-    float*         __restrict__ output,
-    const float*   __restrict__ weights,
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    int row = blockIdx.x;
-    int t   = threadIdx.x;
-    int j   = (int)blockIdx.y * 32 + t;
-    if (row >= n_pre) return;
-    bool col_valid = (j < n_batch);
-    int  safe_j    = col_valid ? j : 0;
-    bool active    = col_valid && (matrix[(size_t)row * n_batch + safe_j] > 0.0f);
-    if (__ballot_sync(0xffffffff, active) == 0) return;
-    if (!active) return;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const float*   w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    float w0 = is_homo ? weights[0] : 0.0f;
-    for (int k = 0; k < n_conn; k++)
-        atomicAdd(&output[(size_t)i_row[k] * n_batch + j], is_homo ? w0 : w_row[k]);
-}
-
-// ---- Scatter / Float matrix, basic variant (n_conn > 32) ----
-// Grid: (n_pre,)  Block: 256  Shared: sizeof(int).
-__global__ void _bgm_float_scatter_basic_kern(
-    const int32_t* __restrict__ indices,
-    const float*   __restrict__ matrix,
-    float*         __restrict__ output,
-    const float*   __restrict__ weights,
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    extern __shared__ int smem_flag[];
-    int row = blockIdx.x;
-    if (row >= n_pre) return;
-    if (threadIdx.x == 0) smem_flag[0] = 0;
-    __syncthreads();
-    for (int j = threadIdx.x; j < n_batch; j += blockDim.x)
-        if (matrix[(size_t)row * n_batch + j] > 0.0f) { atomicOr(smem_flag, 1); break; }
-    __syncthreads();
-    if (smem_flag[0] == 0) return;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const float*   w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    float w0 = is_homo ? weights[0] : 0.0f;
-    for (int j = 0; j < n_batch; j++) {
-        if (!(matrix[(size_t)row * n_batch + j] > 0.0f)) continue;
-        for (int k = threadIdx.x; k < n_conn; k += blockDim.x)
-            atomicAdd(&output[(size_t)i_row[k] * n_batch + j], is_homo ? w0 : w_row[k]);
-    }
+#define DEFINE_BSM_BASIC(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T)                        \
+__global__ void _bsm_basic_kern##SUFFIX(                                               \
+    const int32_t* __restrict__ indices,                                               \
+    const SPIKE_T* __restrict__ matrix,                                                \
+    WEIGHT_T*      __restrict__ output,                                                \
+    const WEIGHT_T* __restrict__ weights,                                              \
+    int n_pre, int n_conn, int n_batch, int is_homo                                    \
+) {                                                                                    \
+    extern __shared__ int _smem_flag[];                                                \
+    int row = blockIdx.x;                                                              \
+    if (row >= n_pre) return;                                                          \
+    if (threadIdx.x == 0) _smem_flag[0] = 0;                                          \
+    __syncthreads();                                                                   \
+    for (int j = threadIdx.x; j < n_batch; j += blockDim.x)                          \
+        if (IS_ACTIVE(matrix[(size_t)row * n_batch + j])) {                           \
+            atomicOr(_smem_flag, 1); break;                                            \
+        }                                                                              \
+    __syncthreads();                                                                   \
+    if (_smem_flag[0] == 0) return;                                                   \
+    const int32_t*  i_row = indices + (size_t)row * n_conn;                           \
+    const WEIGHT_T* w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;       \
+    WEIGHT_T w0 = is_homo ? weights[0] : (WEIGHT_T)0;                                 \
+    for (int j = 0; j < n_batch; j++) {                                               \
+        if (!IS_ACTIVE(matrix[(size_t)row * n_batch + j])) continue;                  \
+        for (int k = threadIdx.x; k < n_conn; k += blockDim.x)                       \
+            atomicAdd(&output[(size_t)i_row[k] * n_batch + j], is_homo ? w0 : w_row[k]); \
+    }                                                                                  \
 }
 
 // =========================================================================
-// TVM FFI Entry Points
-//
+// Instantiate device kernels: 4 weight dtypes x 2 spike types = 8 combos,
+//                             2 gather + 2 scatter = 4 kernel shapes each
+// =========================================================================
+
+// ---- Float32 ----
+DEFINE_BGM_WARP(_bool_warp_f32,   uint8_t, IS_ACTIVE_BOOL,      float,          float,  READ_F32,  WRITE_F32)
+DEFINE_BGM_WARP(_float_warp_f32,  float,   IS_ACTIVE_FLOAT_F32, float,          float,  READ_F32,  WRITE_F32)
+DEFINE_BGM_BASIC(_bool_basic_f32,  uint8_t, IS_ACTIVE_BOOL,      float,          float,  READ_F32,  WRITE_F32)
+DEFINE_BGM_BASIC(_float_basic_f32, float,   IS_ACTIVE_FLOAT_F32, float,          float,  READ_F32,  WRITE_F32)
+DEFINE_BSM_WARP(_bool_warp_f32,   uint8_t, IS_ACTIVE_BOOL,      float)
+DEFINE_BSM_WARP(_float_warp_f32,  float,   IS_ACTIVE_FLOAT_F32, float)
+DEFINE_BSM_BASIC(_bool_basic_f32,  uint8_t, IS_ACTIVE_BOOL,      float)
+DEFINE_BSM_BASIC(_float_basic_f32, float,   IS_ACTIVE_FLOAT_F32, float)
+
+// ---- Float64 ----
+DEFINE_BGM_WARP(_bool_warp_f64,   uint8_t, IS_ACTIVE_BOOL,      double,         double, READ_F64,  WRITE_F64)
+DEFINE_BGM_WARP(_float_warp_f64,  double,  IS_ACTIVE_FLOAT_F64, double,         double, READ_F64,  WRITE_F64)
+DEFINE_BGM_BASIC(_bool_basic_f64,  uint8_t, IS_ACTIVE_BOOL,      double,         double, READ_F64,  WRITE_F64)
+DEFINE_BGM_BASIC(_float_basic_f64, double,  IS_ACTIVE_FLOAT_F64, double,         double, READ_F64,  WRITE_F64)
+DEFINE_BSM_WARP(_bool_warp_f64,   uint8_t, IS_ACTIVE_BOOL,      double)
+DEFINE_BSM_WARP(_float_warp_f64,  double,  IS_ACTIVE_FLOAT_F64, double)
+DEFINE_BSM_BASIC(_bool_basic_f64,  uint8_t, IS_ACTIVE_BOOL,      double)
+DEFINE_BSM_BASIC(_float_basic_f64, double,  IS_ACTIVE_FLOAT_F64, double)
+
+// ---- Float16 (accumulate in float32 for stability) ----
+DEFINE_BGM_WARP(_bool_warp_f16,   uint8_t, IS_ACTIVE_BOOL,      __half,         float,  READ_F16,  WRITE_F16)
+DEFINE_BGM_WARP(_float_warp_f16,  __half,  IS_ACTIVE_FLOAT_F16, __half,         float,  READ_F16,  WRITE_F16)
+DEFINE_BGM_BASIC(_bool_basic_f16,  uint8_t, IS_ACTIVE_BOOL,      __half,         float,  READ_F16,  WRITE_F16)
+DEFINE_BGM_BASIC(_float_basic_f16, __half,  IS_ACTIVE_FLOAT_F16, __half,         float,  READ_F16,  WRITE_F16)
+DEFINE_BSM_WARP(_bool_warp_f16,   uint8_t, IS_ACTIVE_BOOL,      __half)
+DEFINE_BSM_WARP(_float_warp_f16,  __half,  IS_ACTIVE_FLOAT_F16, __half)
+DEFINE_BSM_BASIC(_bool_basic_f16,  uint8_t, IS_ACTIVE_BOOL,      __half)
+DEFINE_BSM_BASIC(_float_basic_f16, __half,  IS_ACTIVE_FLOAT_F16, __half)
+
+// ---- BFloat16 (accumulate in float32 for stability; requires CUDA 11.0+) ----
+// Note: bfloat16 atomicAdd requires CC 8.0+ (Ampere or newer).
+DEFINE_BGM_WARP(_bool_warp_bf16,   uint8_t,        IS_ACTIVE_BOOL,       __nv_bfloat16, float, READ_BF16, WRITE_BF16)
+DEFINE_BGM_WARP(_float_warp_bf16,  __nv_bfloat16,  IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16)
+DEFINE_BGM_BASIC(_bool_basic_bf16,  uint8_t,        IS_ACTIVE_BOOL,       __nv_bfloat16, float, READ_BF16, WRITE_BF16)
+DEFINE_BGM_BASIC(_float_basic_bf16, __nv_bfloat16,  IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16)
+DEFINE_BSM_WARP(_bool_warp_bf16,   uint8_t,        IS_ACTIVE_BOOL,       __nv_bfloat16)
+DEFINE_BSM_WARP(_float_warp_bf16,  __nv_bfloat16,  IS_ACTIVE_FLOAT_BF16, __nv_bfloat16)
+DEFINE_BSM_BASIC(_bool_basic_bf16,  uint8_t,        IS_ACTIVE_BOOL,       __nv_bfloat16)
+DEFINE_BSM_BASIC(_float_basic_bf16, __nv_bfloat16,  IS_ACTIVE_FLOAT_BF16, __nv_bfloat16)
+
+// =========================================================================
+// TVM FFI Entry Point Macros
+// =========================================================================
 // Convention: args = (weights, indices, matrix, output, stream)
-//   weights : float32, shape (1,) homo or (n_pre, n_conn) hetero
+//   weights : WEIGHT_C_T, shape (1,) homo or (n_pre, n_conn) hetero
 //   indices : int32,   shape (n_pre, n_conn)
-//   matrix  : gather -> (n_post, n_batch);  scatter -> (n_pre, n_batch)
-//             bool variant -> uint8;  float variant -> float32
-//   output  : gather -> (n_pre, n_batch) float32, written directly
-//             scatter -> (n_post, n_batch) float32, zeroed via cudaMemsetAsync
+//   matrix  : gather → (n_post, n_batch);  scatter → (n_pre, n_batch)
+//   output  : gather → (n_pre, n_batch) WEIGHT_C_T, written directly
+//             scatter → (n_post, n_batch) WEIGHT_C_T, zeroed via cudaMemsetAsync
 //
-// IMPORTANT: data_ptr() returns a GPU device memory pointer.
-// NEVER dereference it in host C++ code (causes SIGSEGV).
-// Pass it to device kernels; GPU threads read from it.
-// Only ndim() and size() are host-safe metadata reads.
-// =========================================================================
+// IMPORTANT: data_ptr() returns GPU device memory pointers.
+// NEVER dereference on host. Pass unchanged to device kernels.
 
-// ---- Gather / Bool ----
-
-void binary_fcnmm_gather_bool_warp_f32(
-    tvm::ffi::TensorView weights,
-    tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix,
-    tvm::ffi::TensorView output,
-    int64_t stream
-) {
-    cudaStream_t   s       = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const uint8_t* d_mat = static_cast<const uint8_t*>(matrix.data_ptr());
-    float*         d_out = static_cast<float*>(output.data_ptr());
-    int batch_tiles = (n_batch + 31) / 32;
-    dim3 grid(n_pre, batch_tiles);
-    _bgm_bool_gather_warp_kern<<<grid, 32, 0, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
+// Gather warp FFI: void binary_fcnmm_gather##SUFFIX(...)
+#define FFI_BGM_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                  \
+void binary_fcnmm_gather##SUFFIX(                                                     \
+    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                       \
+    tvm::ffi::TensorView matrix,  tvm::ffi::TensorView output, int64_t stream         \
+) {                                                                                   \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                         \
+    int n_pre   = static_cast<int>(indices.size(0));                                 \
+    int n_conn  = static_cast<int>(indices.size(1));                                 \
+    int n_batch = static_cast<int>(matrix.size(1));                                  \
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;                                    \
+    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr());   \
+    const int32_t*    d_idx = static_cast<const int32_t*>(indices.data_ptr());       \
+    const SPIKE_C_T*  d_mat = static_cast<const SPIKE_C_T*>(matrix.data_ptr());     \
+    WEIGHT_C_T*       d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());           \
+    int batch_tiles = (n_batch + 31) / 32;                                           \
+    dim3 grid(n_pre, batch_tiles);                                                   \
+    _bgm_warp_kern##SUFFIX<<<grid, 32, 0, s>>>(                                       \
+        d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);                  \
 }
 
-void binary_fcnmm_gather_bool_basic_f32(
-    tvm::ffi::TensorView weights,
-    tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix,
-    tvm::ffi::TensorView output,
-    int64_t stream
-) {
-    cudaStream_t   s       = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const uint8_t* d_mat = static_cast<const uint8_t*>(matrix.data_ptr());
-    float*         d_out = static_cast<float*>(output.data_ptr());
-    int batch_tiles = (n_batch + 31) / 32;
-    dim3 grid(n_pre, batch_tiles);
-    _bgm_bool_gather_basic_kern<<<grid, 32, 0, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
+// Gather basic FFI: void binary_fcnmm_gather##SUFFIX(...)
+#define FFI_BGM_BASIC(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                 \
+void binary_fcnmm_gather##SUFFIX(                                                     \
+    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                       \
+    tvm::ffi::TensorView matrix,  tvm::ffi::TensorView output, int64_t stream         \
+) {                                                                                   \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                         \
+    int n_pre   = static_cast<int>(indices.size(0));                                 \
+    int n_conn  = static_cast<int>(indices.size(1));                                 \
+    int n_batch = static_cast<int>(matrix.size(1));                                  \
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;                                    \
+    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr());   \
+    const int32_t*    d_idx = static_cast<const int32_t*>(indices.data_ptr());       \
+    const SPIKE_C_T*  d_mat = static_cast<const SPIKE_C_T*>(matrix.data_ptr());     \
+    WEIGHT_C_T*       d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());           \
+    int batch_tiles = (n_batch + 31) / 32;                                           \
+    dim3 grid(n_pre, batch_tiles);                                                   \
+    _bgm_basic_kern##SUFFIX<<<grid, 32, 0, s>>>(                                      \
+        d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);                  \
 }
 
-// ---- Gather / Float ----
-
-void binary_fcnmm_gather_float_warp_f32(
-    tvm::ffi::TensorView weights,
-    tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix,
-    tvm::ffi::TensorView output,
-    int64_t stream
-) {
-    cudaStream_t   s       = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const float*   d_mat = static_cast<const float*>(matrix.data_ptr());
-    float*         d_out = static_cast<float*>(output.data_ptr());
-    int batch_tiles = (n_batch + 31) / 32;
-    dim3 grid(n_pre, batch_tiles);
-    _bgm_float_gather_warp_kern<<<grid, 32, 0, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
+// Scatter warp FFI: void binary_fcnmm_scatter##SUFFIX(...)
+#define FFI_BSM_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                  \
+void binary_fcnmm_scatter##SUFFIX(                                                    \
+    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                       \
+    tvm::ffi::TensorView matrix,  tvm::ffi::TensorView output, int64_t stream         \
+) {                                                                                   \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                         \
+    int n_pre   = static_cast<int>(indices.size(0));                                 \
+    int n_conn  = static_cast<int>(indices.size(1));                                 \
+    int n_post  = static_cast<int>(output.size(0));                                  \
+    int n_batch = static_cast<int>(matrix.size(1));                                  \
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;                                    \
+    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr());   \
+    const int32_t*    d_idx = static_cast<const int32_t*>(indices.data_ptr());       \
+    const SPIKE_C_T*  d_mat = static_cast<const SPIKE_C_T*>(matrix.data_ptr());     \
+    WEIGHT_C_T*       d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());           \
+    cudaMemsetAsync(d_out, 0, (size_t)n_post * n_batch * sizeof(WEIGHT_C_T), s);    \
+    int batch_tiles = (n_batch + 31) / 32;                                           \
+    dim3 grid(n_pre, batch_tiles);                                                   \
+    _bsm_warp_kern##SUFFIX<<<grid, 32, 0, s>>>(                                       \
+        d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);                  \
 }
 
-void binary_fcnmm_gather_float_basic_f32(
-    tvm::ffi::TensorView weights,
-    tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix,
-    tvm::ffi::TensorView output,
-    int64_t stream
-) {
-    cudaStream_t   s       = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const float*   d_mat = static_cast<const float*>(matrix.data_ptr());
-    float*         d_out = static_cast<float*>(output.data_ptr());
-    int batch_tiles = (n_batch + 31) / 32;
-    dim3 grid(n_pre, batch_tiles);
-    _bgm_float_gather_basic_kern<<<grid, 32, 0, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
-}
-
-// ---- Scatter / Bool (output pre-zeroed via cudaMemsetAsync) ----
-
-void binary_fcnmm_scatter_bool_warp_f32(
-    tvm::ffi::TensorView weights,
-    tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix,
-    tvm::ffi::TensorView output,
-    int64_t stream
-) {
-    cudaStream_t   s       = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_post  = static_cast<int>(output.size(0));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const uint8_t* d_mat = static_cast<const uint8_t*>(matrix.data_ptr());
-    float*         d_out = static_cast<float*>(output.data_ptr());
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * n_batch * sizeof(float), s);
-    int batch_tiles = (n_batch + 31) / 32;
-    dim3 grid(n_pre, batch_tiles);
-    _bgm_bool_scatter_warp_kern<<<grid, 32, 0, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
-}
-
-void binary_fcnmm_scatter_bool_basic_f32(
-    tvm::ffi::TensorView weights,
-    tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix,
-    tvm::ffi::TensorView output,
-    int64_t stream
-) {
-    cudaStream_t   s       = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_post  = static_cast<int>(output.size(0));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const uint8_t* d_mat = static_cast<const uint8_t*>(matrix.data_ptr());
-    float*         d_out = static_cast<float*>(output.data_ptr());
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * n_batch * sizeof(float), s);
-    size_t shm = sizeof(int);
-    _bgm_bool_scatter_basic_kern<<<n_pre, 256, shm, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
-}
-
-// ---- Scatter / Float ----
-
-void binary_fcnmm_scatter_float_warp_f32(
-    tvm::ffi::TensorView weights,
-    tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix,
-    tvm::ffi::TensorView output,
-    int64_t stream
-) {
-    cudaStream_t   s       = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_post  = static_cast<int>(output.size(0));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const float*   d_mat = static_cast<const float*>(matrix.data_ptr());
-    float*         d_out = static_cast<float*>(output.data_ptr());
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * n_batch * sizeof(float), s);
-    int batch_tiles = (n_batch + 31) / 32;
-    dim3 grid(n_pre, batch_tiles);
-    _bgm_float_scatter_warp_kern<<<grid, 32, 0, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
-}
-
-void binary_fcnmm_scatter_float_basic_f32(
-    tvm::ffi::TensorView weights,
-    tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix,
-    tvm::ffi::TensorView output,
-    int64_t stream
-) {
-    cudaStream_t   s       = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_post  = static_cast<int>(output.size(0));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const float*   d_w   = static_cast<const float*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const float*   d_mat = static_cast<const float*>(matrix.data_ptr());
-    float*         d_out = static_cast<float*>(output.data_ptr());
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * n_batch * sizeof(float), s);
-    size_t shm = sizeof(int);
-    _bgm_float_scatter_basic_kern<<<n_pre, 256, shm, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
+// Scatter basic FFI: void binary_fcnmm_scatter##SUFFIX(...)
+#define FFI_BSM_BASIC(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                 \
+void binary_fcnmm_scatter##SUFFIX(                                                    \
+    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                       \
+    tvm::ffi::TensorView matrix,  tvm::ffi::TensorView output, int64_t stream         \
+) {                                                                                   \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                         \
+    int n_pre   = static_cast<int>(indices.size(0));                                 \
+    int n_conn  = static_cast<int>(indices.size(1));                                 \
+    int n_post  = static_cast<int>(output.size(0));                                  \
+    int n_batch = static_cast<int>(matrix.size(1));                                  \
+    int is_homo = (weights.ndim() == 1) ? 1 : 0;                                    \
+    const WEIGHT_C_T* d_w   = static_cast<const WEIGHT_C_T*>(weights.data_ptr());   \
+    const int32_t*    d_idx = static_cast<const int32_t*>(indices.data_ptr());       \
+    const SPIKE_C_T*  d_mat = static_cast<const SPIKE_C_T*>(matrix.data_ptr());     \
+    WEIGHT_C_T*       d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());           \
+    cudaMemsetAsync(d_out, 0, (size_t)n_post * n_batch * sizeof(WEIGHT_C_T), s);    \
+    size_t shm = sizeof(int);                                                        \
+    _bsm_basic_kern##SUFFIX<<<n_pre, 256, shm, s>>>(                                  \
+        d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);                  \
 }
 
 // =========================================================================
-// float64 (double) variants for binary_fcnmm
+// Instantiate TVM FFI entry points via macros + @tvm_ffi annotations
 // =========================================================================
 
-__global__ void _bgm_bool_gather_warp_kern_f64(
-    const int32_t* __restrict__ indices,
-    const uint8_t* __restrict__ matrix,
-    double*        __restrict__ output,
-    const double*  __restrict__ weights,
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    int row = blockIdx.x;
-    int t   = threadIdx.x;
-    int j   = (int)blockIdx.y * 32 + t;
-    if (row >= n_pre) return;
-    bool col_valid = (j < n_batch);
-    int  safe_j    = col_valid ? j : 0;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const double*  w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    double accum = 0.0;
-    for (int k = 0; k < n_conn; k++) {
-        int src    = i_row[k];
-        bool active = col_valid && (matrix[(size_t)src * n_batch + safe_j] != 0);
-        accum += active ? (is_homo ? 1.0 : w_row[k]) : 0.0;
-    }
-    if (col_valid)
-        output[(size_t)row * n_batch + j] = is_homo ? (weights[0] * accum) : accum;
-}
+// ---- Float32 ----
+// @tvm_ffi binary_fcnmm_gather_bool_warp_f32
+FFI_BGM_WARP(_bool_warp_f32,    float,  uint8_t)
+// @tvm_ffi binary_fcnmm_gather_bool_basic_f32
+FFI_BGM_BASIC(_bool_basic_f32,  float,  uint8_t)
+// @tvm_ffi binary_fcnmm_gather_float_warp_f32
+FFI_BGM_WARP(_float_warp_f32,   float,  float)
+// @tvm_ffi binary_fcnmm_gather_float_basic_f32
+FFI_BGM_BASIC(_float_basic_f32, float,  float)
+// @tvm_ffi binary_fcnmm_scatter_bool_warp_f32
+FFI_BSM_WARP(_bool_warp_f32,    float,  uint8_t)
+// @tvm_ffi binary_fcnmm_scatter_bool_basic_f32
+FFI_BSM_BASIC(_bool_basic_f32,  float,  uint8_t)
+// @tvm_ffi binary_fcnmm_scatter_float_warp_f32
+FFI_BSM_WARP(_float_warp_f32,   float,  float)
+// @tvm_ffi binary_fcnmm_scatter_float_basic_f32
+FFI_BSM_BASIC(_float_basic_f32, float,  float)
 
-__global__ void _bgm_bool_gather_basic_kern_f64(
-    const int32_t* __restrict__ indices,
-    const uint8_t* __restrict__ matrix,
-    double*        __restrict__ output,
-    const double*  __restrict__ weights,
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    int row = blockIdx.x;
-    int t   = threadIdx.x;
-    int j   = (int)blockIdx.y * 32 + t;
-    if (row >= n_pre) return;
-    bool col_valid = (j < n_batch);
-    int  safe_j    = col_valid ? j : 0;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const double*  w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    double accum = 0.0;
-    for (int k = 0; k < n_conn; k++) {
-        int  src    = i_row[k];
-        bool active = col_valid && (matrix[(size_t)src * n_batch + safe_j] != 0);
-        unsigned ballot = __ballot_sync(0xffffffff, active);
-        if (ballot == 0) continue;
-        if (active)
-            accum += is_homo ? 1.0 : w_row[k];
-    }
-    if (col_valid)
-        output[(size_t)row * n_batch + j] = is_homo ? (weights[0] * accum) : accum;
-}
+// ---- Float64 ----
+// @tvm_ffi binary_fcnmm_gather_bool_warp_f64
+FFI_BGM_WARP(_bool_warp_f64,    double, uint8_t)
+// @tvm_ffi binary_fcnmm_gather_bool_basic_f64
+FFI_BGM_BASIC(_bool_basic_f64,  double, uint8_t)
+// @tvm_ffi binary_fcnmm_gather_float_warp_f64
+FFI_BGM_WARP(_float_warp_f64,   double, double)
+// @tvm_ffi binary_fcnmm_gather_float_basic_f64
+FFI_BGM_BASIC(_float_basic_f64, double, double)
+// @tvm_ffi binary_fcnmm_scatter_bool_warp_f64
+FFI_BSM_WARP(_bool_warp_f64,    double, uint8_t)
+// @tvm_ffi binary_fcnmm_scatter_bool_basic_f64
+FFI_BSM_BASIC(_bool_basic_f64,  double, uint8_t)
+// @tvm_ffi binary_fcnmm_scatter_float_warp_f64
+FFI_BSM_WARP(_float_warp_f64,   double, double)
+// @tvm_ffi binary_fcnmm_scatter_float_basic_f64
+FFI_BSM_BASIC(_float_basic_f64, double, double)
 
-__global__ void _bgm_float_gather_warp_kern_f64(
-    const int32_t* __restrict__ indices,
-    const double*  __restrict__ matrix,
-    double*        __restrict__ output,
-    const double*  __restrict__ weights,
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    int row = blockIdx.x;
-    int t   = threadIdx.x;
-    int j   = (int)blockIdx.y * 32 + t;
-    if (row >= n_pre) return;
-    bool col_valid = (j < n_batch);
-    int  safe_j    = col_valid ? j : 0;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const double*  w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    double accum = 0.0;
-    for (int k = 0; k < n_conn; k++) {
-        int  src    = i_row[k];
-        bool active = col_valid && (matrix[(size_t)src * n_batch + safe_j] > 0.0);
-        accum += active ? (is_homo ? 1.0 : w_row[k]) : 0.0;
-    }
-    if (col_valid)
-        output[(size_t)row * n_batch + j] = is_homo ? (weights[0] * accum) : accum;
-}
+// ---- Float16 (accumulate in float32 for stability) ----
+// @tvm_ffi binary_fcnmm_gather_bool_warp_f16
+FFI_BGM_WARP(_bool_warp_f16,    __half, uint8_t)
+// @tvm_ffi binary_fcnmm_gather_bool_basic_f16
+FFI_BGM_BASIC(_bool_basic_f16,  __half, uint8_t)
+// @tvm_ffi binary_fcnmm_gather_float_warp_f16
+FFI_BGM_WARP(_float_warp_f16,   __half, __half)
+// @tvm_ffi binary_fcnmm_gather_float_basic_f16
+FFI_BGM_BASIC(_float_basic_f16, __half, __half)
+// @tvm_ffi binary_fcnmm_scatter_bool_warp_f16
+FFI_BSM_WARP(_bool_warp_f16,    __half, uint8_t)
+// @tvm_ffi binary_fcnmm_scatter_bool_basic_f16
+FFI_BSM_BASIC(_bool_basic_f16,  __half, uint8_t)
+// @tvm_ffi binary_fcnmm_scatter_float_warp_f16
+FFI_BSM_WARP(_float_warp_f16,   __half, __half)
+// @tvm_ffi binary_fcnmm_scatter_float_basic_f16
+FFI_BSM_BASIC(_float_basic_f16, __half, __half)
 
-__global__ void _bgm_float_gather_basic_kern_f64(
-    const int32_t* __restrict__ indices,
-    const double*  __restrict__ matrix,
-    double*        __restrict__ output,
-    const double*  __restrict__ weights,
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    int row = blockIdx.x;
-    int t   = threadIdx.x;
-    int j   = (int)blockIdx.y * 32 + t;
-    if (row >= n_pre) return;
-    bool col_valid = (j < n_batch);
-    int  safe_j    = col_valid ? j : 0;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const double*  w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    double accum = 0.0;
-    for (int k = 0; k < n_conn; k++) {
-        int  src    = i_row[k];
-        bool active = col_valid && (matrix[(size_t)src * n_batch + safe_j] > 0.0);
-        unsigned ballot = __ballot_sync(0xffffffff, active);
-        if (ballot == 0) continue;
-        if (active)
-            accum += is_homo ? 1.0 : w_row[k];
-    }
-    if (col_valid)
-        output[(size_t)row * n_batch + j] = is_homo ? (weights[0] * accum) : accum;
-}
-
-__global__ void _bgm_bool_scatter_warp_kern_f64(
-    const int32_t* __restrict__ indices,
-    const uint8_t* __restrict__ matrix,
-    double*        __restrict__ output,
-    const double*  __restrict__ weights,
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    int row = blockIdx.x;
-    int t   = threadIdx.x;
-    int j   = (int)blockIdx.y * 32 + t;
-    if (row >= n_pre) return;
-    bool col_valid = (j < n_batch);
-    int  safe_j    = col_valid ? j : 0;
-    bool active    = col_valid && (matrix[(size_t)row * n_batch + safe_j] != 0);
-    if (__ballot_sync(0xffffffff, active) == 0) return;
-    if (!active) return;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const double*  w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    double w0 = is_homo ? weights[0] : 0.0;
-    for (int k = 0; k < n_conn; k++)
-        atomicAdd(&output[(size_t)i_row[k] * n_batch + j], is_homo ? w0 : w_row[k]);
-}
-
-__global__ void _bgm_bool_scatter_basic_kern_f64(
-    const int32_t* __restrict__ indices,
-    const uint8_t* __restrict__ matrix,
-    double*        __restrict__ output,
-    const double*  __restrict__ weights,
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    extern __shared__ int smem_flag_f64[];
-    int row = blockIdx.x;
-    if (row >= n_pre) return;
-    if (threadIdx.x == 0) smem_flag_f64[0] = 0;
-    __syncthreads();
-    for (int j = threadIdx.x; j < n_batch; j += blockDim.x)
-        if (matrix[(size_t)row * n_batch + j] != 0) { atomicOr(smem_flag_f64, 1); break; }
-    __syncthreads();
-    if (smem_flag_f64[0] == 0) return;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const double*  w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    double w0 = is_homo ? weights[0] : 0.0;
-    for (int j = 0; j < n_batch; j++) {
-        if (!matrix[(size_t)row * n_batch + j]) continue;
-        for (int k = threadIdx.x; k < n_conn; k += blockDim.x)
-            atomicAdd(&output[(size_t)i_row[k] * n_batch + j], is_homo ? w0 : w_row[k]);
-    }
-}
-
-__global__ void _bgm_float_scatter_warp_kern_f64(
-    const int32_t* __restrict__ indices,
-    const double*  __restrict__ matrix,
-    double*        __restrict__ output,
-    const double*  __restrict__ weights,
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    int row = blockIdx.x;
-    int t   = threadIdx.x;
-    int j   = (int)blockIdx.y * 32 + t;
-    if (row >= n_pre) return;
-    bool col_valid = (j < n_batch);
-    int  safe_j    = col_valid ? j : 0;
-    bool active    = col_valid && (matrix[(size_t)row * n_batch + safe_j] > 0.0);
-    if (__ballot_sync(0xffffffff, active) == 0) return;
-    if (!active) return;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const double*  w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    double w0 = is_homo ? weights[0] : 0.0;
-    for (int k = 0; k < n_conn; k++)
-        atomicAdd(&output[(size_t)i_row[k] * n_batch + j], is_homo ? w0 : w_row[k]);
-}
-
-__global__ void _bgm_float_scatter_basic_kern_f64(
-    const int32_t* __restrict__ indices,
-    const double*  __restrict__ matrix,
-    double*        __restrict__ output,
-    const double*  __restrict__ weights,
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    extern __shared__ int smem_flag_f64[];
-    int row = blockIdx.x;
-    if (row >= n_pre) return;
-    if (threadIdx.x == 0) smem_flag_f64[0] = 0;
-    __syncthreads();
-    for (int j = threadIdx.x; j < n_batch; j += blockDim.x)
-        if (matrix[(size_t)row * n_batch + j] > 0.0) { atomicOr(smem_flag_f64, 1); break; }
-    __syncthreads();
-    if (smem_flag_f64[0] == 0) return;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const double*  w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    double w0 = is_homo ? weights[0] : 0.0;
-    for (int j = 0; j < n_batch; j++) {
-        if (!(matrix[(size_t)row * n_batch + j] > 0.0)) continue;
-        for (int k = threadIdx.x; k < n_conn; k += blockDim.x)
-            atomicAdd(&output[(size_t)i_row[k] * n_batch + j], is_homo ? w0 : w_row[k]);
-    }
-}
-
-void binary_fcnmm_gather_bool_warp_f64(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix, tvm::ffi::TensorView output, int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const double*  d_w   = static_cast<const double*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const uint8_t* d_mat = static_cast<const uint8_t*>(matrix.data_ptr());
-    double*        d_out = static_cast<double*>(output.data_ptr());
-    dim3 grid(n_pre, (n_batch + 31) / 32);
-    _bgm_bool_gather_warp_kern_f64<<<grid, 32, 0, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
-}
-
-void binary_fcnmm_gather_bool_basic_f64(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix, tvm::ffi::TensorView output, int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const double*  d_w   = static_cast<const double*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const uint8_t* d_mat = static_cast<const uint8_t*>(matrix.data_ptr());
-    double*        d_out = static_cast<double*>(output.data_ptr());
-    dim3 grid(n_pre, (n_batch + 31) / 32);
-    _bgm_bool_gather_basic_kern_f64<<<grid, 32, 0, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
-}
-
-void binary_fcnmm_gather_float_warp_f64(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix, tvm::ffi::TensorView output, int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const double*  d_w   = static_cast<const double*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const double*  d_mat = static_cast<const double*>(matrix.data_ptr());
-    double*        d_out = static_cast<double*>(output.data_ptr());
-    dim3 grid(n_pre, (n_batch + 31) / 32);
-    _bgm_float_gather_warp_kern_f64<<<grid, 32, 0, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
-}
-
-void binary_fcnmm_gather_float_basic_f64(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix, tvm::ffi::TensorView output, int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const double*  d_w   = static_cast<const double*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const double*  d_mat = static_cast<const double*>(matrix.data_ptr());
-    double*        d_out = static_cast<double*>(output.data_ptr());
-    dim3 grid(n_pre, (n_batch + 31) / 32);
-    _bgm_float_gather_basic_kern_f64<<<grid, 32, 0, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
-}
-
-void binary_fcnmm_scatter_bool_warp_f64(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix, tvm::ffi::TensorView output, int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_post  = static_cast<int>(output.size(0));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const double*  d_w   = static_cast<const double*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const uint8_t* d_mat = static_cast<const uint8_t*>(matrix.data_ptr());
-    double*        d_out = static_cast<double*>(output.data_ptr());
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * n_batch * sizeof(double), s);
-    dim3 grid(n_pre, (n_batch + 31) / 32);
-    _bgm_bool_scatter_warp_kern_f64<<<grid, 32, 0, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
-}
-
-void binary_fcnmm_scatter_bool_basic_f64(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix, tvm::ffi::TensorView output, int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_post  = static_cast<int>(output.size(0));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const double*  d_w   = static_cast<const double*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const uint8_t* d_mat = static_cast<const uint8_t*>(matrix.data_ptr());
-    double*        d_out = static_cast<double*>(output.data_ptr());
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * n_batch * sizeof(double), s);
-    size_t shm = sizeof(int);
-    _bgm_bool_scatter_basic_kern_f64<<<n_pre, 256, shm, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
-}
-
-void binary_fcnmm_scatter_float_warp_f64(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix, tvm::ffi::TensorView output, int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_post  = static_cast<int>(output.size(0));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const double*  d_w   = static_cast<const double*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const double*  d_mat = static_cast<const double*>(matrix.data_ptr());
-    double*        d_out = static_cast<double*>(output.data_ptr());
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * n_batch * sizeof(double), s);
-    dim3 grid(n_pre, (n_batch + 31) / 32);
-    _bgm_float_scatter_warp_kern_f64<<<grid, 32, 0, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
-}
-
-void binary_fcnmm_scatter_float_basic_f64(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix, tvm::ffi::TensorView output, int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_post  = static_cast<int>(output.size(0));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const double*  d_w   = static_cast<const double*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const double*  d_mat = static_cast<const double*>(matrix.data_ptr());
-    double*        d_out = static_cast<double*>(output.data_ptr());
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * n_batch * sizeof(double), s);
-    size_t shm = sizeof(int);
-    _bgm_float_scatter_basic_kern_f64<<<n_pre, 256, shm, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
-}
-
-// =========================================================================
-// float16 (__half) variants for binary_fcnmm — accumulate in float32
-// =========================================================================
-
-__global__ void _bgm_bool_gather_warp_kern_f16(
-    const int32_t* __restrict__ indices,
-    const uint8_t* __restrict__ matrix,
-    __half*        __restrict__ output,
-    const __half*  __restrict__ weights,
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    int row = blockIdx.x;
-    int t   = threadIdx.x;
-    int j   = (int)blockIdx.y * 32 + t;
-    if (row >= n_pre) return;
-    bool col_valid = (j < n_batch);
-    int  safe_j    = col_valid ? j : 0;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const __half*  w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    float accum = 0.0f;
-    for (int k = 0; k < n_conn; k++) {
-        int  src    = i_row[k];
-        bool active = col_valid && (matrix[(size_t)src * n_batch + safe_j] != 0);
-        accum += active ? (is_homo ? 1.0f : __half2float(w_row[k])) : 0.0f;
-    }
-    if (col_valid)
-        output[(size_t)row * n_batch + j] = __float2half(is_homo ? (__half2float(weights[0]) * accum) : accum);
-}
-
-__global__ void _bgm_bool_gather_basic_kern_f16(
-    const int32_t* __restrict__ indices,
-    const uint8_t* __restrict__ matrix,
-    __half*        __restrict__ output,
-    const __half*  __restrict__ weights,
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    int row = blockIdx.x;
-    int t   = threadIdx.x;
-    int j   = (int)blockIdx.y * 32 + t;
-    if (row >= n_pre) return;
-    bool col_valid = (j < n_batch);
-    int  safe_j    = col_valid ? j : 0;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const __half*  w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    float accum = 0.0f;
-    for (int k = 0; k < n_conn; k++) {
-        int  src    = i_row[k];
-        bool active = col_valid && (matrix[(size_t)src * n_batch + safe_j] != 0);
-        unsigned ballot = __ballot_sync(0xffffffff, active);
-        if (ballot == 0) continue;
-        if (active)
-            accum += is_homo ? 1.0f : __half2float(w_row[k]);
-    }
-    if (col_valid)
-        output[(size_t)row * n_batch + j] = __float2half(is_homo ? (__half2float(weights[0]) * accum) : accum);
-}
-
-__global__ void _bgm_float_gather_warp_kern_f16(
-    const int32_t* __restrict__ indices,
-    const __half*  __restrict__ matrix,
-    __half*        __restrict__ output,
-    const __half*  __restrict__ weights,
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    int row = blockIdx.x;
-    int t   = threadIdx.x;
-    int j   = (int)blockIdx.y * 32 + t;
-    if (row >= n_pre) return;
-    bool col_valid = (j < n_batch);
-    int  safe_j    = col_valid ? j : 0;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const __half*  w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    float accum = 0.0f;
-    for (int k = 0; k < n_conn; k++) {
-        int  src    = i_row[k];
-        bool active = col_valid && (__half2float(matrix[(size_t)src * n_batch + safe_j]) > 0.0f);
-        accum += active ? (is_homo ? 1.0f : __half2float(w_row[k])) : 0.0f;
-    }
-    if (col_valid)
-        output[(size_t)row * n_batch + j] = __float2half(is_homo ? (__half2float(weights[0]) * accum) : accum);
-}
-
-__global__ void _bgm_float_gather_basic_kern_f16(
-    const int32_t* __restrict__ indices,
-    const __half*  __restrict__ matrix,
-    __half*        __restrict__ output,
-    const __half*  __restrict__ weights,
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    int row = blockIdx.x;
-    int t   = threadIdx.x;
-    int j   = (int)blockIdx.y * 32 + t;
-    if (row >= n_pre) return;
-    bool col_valid = (j < n_batch);
-    int  safe_j    = col_valid ? j : 0;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const __half*  w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    float accum = 0.0f;
-    for (int k = 0; k < n_conn; k++) {
-        int  src    = i_row[k];
-        bool active = col_valid && (__half2float(matrix[(size_t)src * n_batch + safe_j]) > 0.0f);
-        unsigned ballot = __ballot_sync(0xffffffff, active);
-        if (ballot == 0) continue;
-        if (active)
-            accum += is_homo ? 1.0f : __half2float(w_row[k]);
-    }
-    if (col_valid)
-        output[(size_t)row * n_batch + j] = __float2half(is_homo ? (__half2float(weights[0]) * accum) : accum);
-}
-
-__global__ void _bgm_bool_scatter_warp_kern_f16(
-    const int32_t* __restrict__ indices,
-    const uint8_t* __restrict__ matrix,
-    __half*        __restrict__ output,
-    const __half*  __restrict__ weights,
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    int row = blockIdx.x;
-    int t   = threadIdx.x;
-    int j   = (int)blockIdx.y * 32 + t;
-    if (row >= n_pre) return;
-    bool col_valid = (j < n_batch);
-    int  safe_j    = col_valid ? j : 0;
-    bool active    = col_valid && (matrix[(size_t)row * n_batch + safe_j] != 0);
-    if (__ballot_sync(0xffffffff, active) == 0) return;
-    if (!active) return;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const __half*  w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    float w0 = is_homo ? __half2float(weights[0]) : 0.0f;
-    for (int k = 0; k < n_conn; k++)
-        atomicAdd(&output[(size_t)i_row[k] * n_batch + j],
-                  __float2half(is_homo ? w0 : __half2float(w_row[k])));
-}
-
-__global__ void _bgm_bool_scatter_basic_kern_f16(
-    const int32_t* __restrict__ indices,
-    const uint8_t* __restrict__ matrix,
-    __half*        __restrict__ output,
-    const __half*  __restrict__ weights,
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    extern __shared__ int smem_flag_f16i[];
-    int row = blockIdx.x;
-    if (row >= n_pre) return;
-    if (threadIdx.x == 0) smem_flag_f16i[0] = 0;
-    __syncthreads();
-    for (int j = threadIdx.x; j < n_batch; j += blockDim.x)
-        if (matrix[(size_t)row * n_batch + j] != 0) { atomicOr(smem_flag_f16i, 1); break; }
-    __syncthreads();
-    if (smem_flag_f16i[0] == 0) return;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const __half*  w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    float w0 = is_homo ? __half2float(weights[0]) : 0.0f;
-    for (int j = 0; j < n_batch; j++) {
-        if (!matrix[(size_t)row * n_batch + j]) continue;
-        for (int k = threadIdx.x; k < n_conn; k += blockDim.x)
-            atomicAdd(&output[(size_t)i_row[k] * n_batch + j],
-                      __float2half(is_homo ? w0 : __half2float(w_row[k])));
-    }
-}
-
-__global__ void _bgm_float_scatter_warp_kern_f16(
-    const int32_t* __restrict__ indices,
-    const __half*  __restrict__ matrix,
-    __half*        __restrict__ output,
-    const __half*  __restrict__ weights,
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    int row = blockIdx.x;
-    int t   = threadIdx.x;
-    int j   = (int)blockIdx.y * 32 + t;
-    if (row >= n_pre) return;
-    bool col_valid = (j < n_batch);
-    int  safe_j    = col_valid ? j : 0;
-    bool active    = col_valid && (__half2float(matrix[(size_t)row * n_batch + safe_j]) > 0.0f);
-    if (__ballot_sync(0xffffffff, active) == 0) return;
-    if (!active) return;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const __half*  w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    float w0 = is_homo ? __half2float(weights[0]) : 0.0f;
-    for (int k = 0; k < n_conn; k++)
-        atomicAdd(&output[(size_t)i_row[k] * n_batch + j],
-                  __float2half(is_homo ? w0 : __half2float(w_row[k])));
-}
-
-__global__ void _bgm_float_scatter_basic_kern_f16(
-    const int32_t* __restrict__ indices,
-    const __half*  __restrict__ matrix,
-    __half*        __restrict__ output,
-    const __half*  __restrict__ weights,
-    int n_pre, int n_conn, int n_batch, int is_homo
-) {
-    extern __shared__ int smem_flag_f16i[];
-    int row = blockIdx.x;
-    if (row >= n_pre) return;
-    if (threadIdx.x == 0) smem_flag_f16i[0] = 0;
-    __syncthreads();
-    for (int j = threadIdx.x; j < n_batch; j += blockDim.x)
-        if (__half2float(matrix[(size_t)row * n_batch + j]) > 0.0f) { atomicOr(smem_flag_f16i, 1); break; }
-    __syncthreads();
-    if (smem_flag_f16i[0] == 0) return;
-    const int32_t* i_row = indices + (size_t)row * n_conn;
-    const __half*  w_row = is_homo ? nullptr : weights + (size_t)row * n_conn;
-    float w0 = is_homo ? __half2float(weights[0]) : 0.0f;
-    for (int j = 0; j < n_batch; j++) {
-        if (!(__half2float(matrix[(size_t)row * n_batch + j]) > 0.0f)) continue;
-        for (int k = threadIdx.x; k < n_conn; k += blockDim.x)
-            atomicAdd(&output[(size_t)i_row[k] * n_batch + j],
-                      __float2half(is_homo ? w0 : __half2float(w_row[k])));
-    }
-}
-
-void binary_fcnmm_gather_bool_warp_f16(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix, tvm::ffi::TensorView output, int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const __half*  d_w   = static_cast<const __half*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const uint8_t* d_mat = static_cast<const uint8_t*>(matrix.data_ptr());
-    __half*        d_out = static_cast<__half*>(output.data_ptr());
-    dim3 grid(n_pre, (n_batch + 31) / 32);
-    _bgm_bool_gather_warp_kern_f16<<<grid, 32, 0, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
-}
-
-void binary_fcnmm_gather_bool_basic_f16(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix, tvm::ffi::TensorView output, int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const __half*  d_w   = static_cast<const __half*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const uint8_t* d_mat = static_cast<const uint8_t*>(matrix.data_ptr());
-    __half*        d_out = static_cast<__half*>(output.data_ptr());
-    dim3 grid(n_pre, (n_batch + 31) / 32);
-    _bgm_bool_gather_basic_kern_f16<<<grid, 32, 0, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
-}
-
-void binary_fcnmm_gather_float_warp_f16(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix, tvm::ffi::TensorView output, int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const __half*  d_w   = static_cast<const __half*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const __half*  d_mat = static_cast<const __half*>(matrix.data_ptr());
-    __half*        d_out = static_cast<__half*>(output.data_ptr());
-    dim3 grid(n_pre, (n_batch + 31) / 32);
-    _bgm_float_gather_warp_kern_f16<<<grid, 32, 0, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
-}
-
-void binary_fcnmm_gather_float_basic_f16(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix, tvm::ffi::TensorView output, int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const __half*  d_w   = static_cast<const __half*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const __half*  d_mat = static_cast<const __half*>(matrix.data_ptr());
-    __half*        d_out = static_cast<__half*>(output.data_ptr());
-    dim3 grid(n_pre, (n_batch + 31) / 32);
-    _bgm_float_gather_basic_kern_f16<<<grid, 32, 0, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
-}
-
-void binary_fcnmm_scatter_bool_warp_f16(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix, tvm::ffi::TensorView output, int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_post  = static_cast<int>(output.size(0));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const __half*  d_w   = static_cast<const __half*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const uint8_t* d_mat = static_cast<const uint8_t*>(matrix.data_ptr());
-    __half*        d_out = static_cast<__half*>(output.data_ptr());
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * n_batch * sizeof(__half), s);
-    dim3 grid(n_pre, (n_batch + 31) / 32);
-    _bgm_bool_scatter_warp_kern_f16<<<grid, 32, 0, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
-}
-
-void binary_fcnmm_scatter_bool_basic_f16(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix, tvm::ffi::TensorView output, int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_post  = static_cast<int>(output.size(0));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const __half*  d_w   = static_cast<const __half*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const uint8_t* d_mat = static_cast<const uint8_t*>(matrix.data_ptr());
-    __half*        d_out = static_cast<__half*>(output.data_ptr());
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * n_batch * sizeof(__half), s);
-    size_t shm = sizeof(int);
-    _bgm_bool_scatter_basic_kern_f16<<<n_pre, 256, shm, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
-}
-
-void binary_fcnmm_scatter_float_warp_f16(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix, tvm::ffi::TensorView output, int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_post  = static_cast<int>(output.size(0));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const __half*  d_w   = static_cast<const __half*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const __half*  d_mat = static_cast<const __half*>(matrix.data_ptr());
-    __half*        d_out = static_cast<__half*>(output.data_ptr());
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * n_batch * sizeof(__half), s);
-    dim3 grid(n_pre, (n_batch + 31) / 32);
-    _bgm_float_scatter_warp_kern_f16<<<grid, 32, 0, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
-}
-
-void binary_fcnmm_scatter_float_basic_f16(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix, tvm::ffi::TensorView output, int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre   = static_cast<int>(indices.size(0));
-    int n_conn  = static_cast<int>(indices.size(1));
-    int n_post  = static_cast<int>(output.size(0));
-    int n_batch = static_cast<int>(matrix.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const __half*  d_w   = static_cast<const __half*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const __half*  d_mat = static_cast<const __half*>(matrix.data_ptr());
-    __half*        d_out = static_cast<__half*>(output.data_ptr());
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * n_batch * sizeof(__half), s);
-    size_t shm = sizeof(int);
-    _bgm_float_scatter_basic_kern_f16<<<n_pre, 256, shm, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
-}
+// ---- BFloat16 (requires CUDA 11.0+; scatter atomicAdd requires CC 8.0+) ----
+// @tvm_ffi binary_fcnmm_gather_bool_warp_bf16
+FFI_BGM_WARP(_bool_warp_bf16,    __nv_bfloat16, uint8_t)
+// @tvm_ffi binary_fcnmm_gather_bool_basic_bf16
+FFI_BGM_BASIC(_bool_basic_bf16,  __nv_bfloat16, uint8_t)
+// @tvm_ffi binary_fcnmm_gather_float_warp_bf16
+FFI_BGM_WARP(_float_warp_bf16,   __nv_bfloat16, __nv_bfloat16)
+// @tvm_ffi binary_fcnmm_gather_float_basic_bf16
+FFI_BGM_BASIC(_float_basic_bf16, __nv_bfloat16, __nv_bfloat16)
+// @tvm_ffi binary_fcnmm_scatter_bool_warp_bf16
+FFI_BSM_WARP(_bool_warp_bf16,    __nv_bfloat16, uint8_t)
+// @tvm_ffi binary_fcnmm_scatter_bool_basic_bf16
+FFI_BSM_BASIC(_bool_basic_bf16,  __nv_bfloat16, uint8_t)
+// @tvm_ffi binary_fcnmm_scatter_float_warp_bf16
+FFI_BSM_WARP(_float_warp_bf16,   __nv_bfloat16, __nv_bfloat16)
+// @tvm_ffi binary_fcnmm_scatter_float_basic_bf16
+FFI_BSM_BASIC(_float_basic_bf16, __nv_bfloat16, __nv_bfloat16)

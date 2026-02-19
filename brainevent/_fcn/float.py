@@ -294,7 +294,12 @@ def _fcnmv_cuda_kernel(
 
     out_info = kwargs['outs']
     n_conn = indices_info.shape[1]
-    _dtype_sfx = {np.dtype('float16'): '_f16', np.dtype('float32'): '_f32', np.dtype('float64'): '_f64'}
+    _dtype_sfx = {
+        np.dtype('float16'): '_f16',
+        np.dtype('float32'): '_f32',
+        np.dtype('float64'): '_f64',
+        np.dtype('bfloat16'): '_bf16'
+    }
     sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
 
     if transpose:
@@ -823,7 +828,12 @@ def _fcnmm_cuda_kernel(
     out_info = kwargs['outs']
     n_conn = indices_info.shape[1]
     n_col = matrix_info.shape[1]
-    _dtype_sfx = {np.dtype('float16'): '_f16', np.dtype('float32'): '_f32', np.dtype('float64'): '_f64'}
+    _dtype_sfx = {
+        np.dtype('float16'): '_f16',
+        np.dtype('float32'): '_f32',
+        np.dtype('float64'): '_f64',
+        np.dtype('bfloat16'): '_bf16'
+    }
     sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
 
     if transpose:
