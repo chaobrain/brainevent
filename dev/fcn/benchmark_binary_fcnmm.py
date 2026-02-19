@@ -36,8 +36,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from brainevent import BenchmarkConfig
-from brainevent._fcn.binary import binary_fcnmm_p
+from brainevent import BenchmarkConfig, binary_fcnmm_p
 
 # Problem sizes: (n_pre, n_post, n_conn)
 CONFIGS = [
