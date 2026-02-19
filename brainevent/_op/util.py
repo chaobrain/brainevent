@@ -254,10 +254,23 @@ def register_tvm_cuda_kernels(
 def _parse_tvm_entry_functions(source_code: str) -> list:
     """Parse TVM FFI entry function names from CUDA source code.
 
-    Finds all top-level ``void`` functions whose parameter list contains
-    ``tvm::ffi::TensorView``.  These are the TVM FFI entry points.
-    ``__device__`` and ``__global__`` functions are excluded automatically
-    because they begin with a kernel qualifier rather than plain ``void``.
+    Discovers entry points via two mechanisms (results are merged,
+    duplicates removed, source order preserved):
+
+    1. **Explicit functions** -- top-level ``void`` functions whose
+       parameter list contains ``tvm::ffi::TensorView``.
+       ``__device__`` and ``__global__`` functions are excluded
+       automatically because they begin with a kernel qualifier rather
+       than plain ``void``.
+
+    2. **Annotation comments** -- lines of the form::
+
+           // @tvm_ffi function_name
+
+       This allows macro-generated FFI entry points to be registered
+       without writing the function signature explicitly in the source.
+       The macro expands the ``void function_name(...)`` body, and the
+       annotation tells the parser about it.
 
     Parameters
     ----------
@@ -282,9 +295,11 @@ def _parse_tvm_entry_functions(source_code: str) -> list:
             f"source_code must be a str, got {type(source_code).__name__}"
         )
 
-    # Match 'void' at the start of a line (column 0) followed by a C identifier.
-    func_pattern = re.compile(r'^void\s+(\w+)\s*\(', re.MULTILINE)
     functions = []
+    seen = set()
+
+    # --- Method 1: explicit void functions at column 0 ---
+    func_pattern = re.compile(r'^void\s+(\w+)\s*\(', re.MULTILINE)
     for match in func_pattern.finditer(source_code):
         func_name = match.group(1)
         # Walk forward from '(' to find the matching ')' and inspect params.
@@ -307,7 +322,18 @@ def _parse_tvm_entry_functions(source_code: str) -> list:
             )
         params = source_code[paren_start:pos + 1]
         if 'tvm::ffi::TensorView' in params:
+            if func_name not in seen:
+                functions.append(func_name)
+                seen.add(func_name)
+
+    # --- Method 2: annotation comments  // @tvm_ffi name ---
+    annot_pattern = re.compile(r'^\s*//\s*@tvm_ffi\s+(\w+)', re.MULTILINE)
+    for match in annot_pattern.finditer(source_code):
+        func_name = match.group(1)
+        if func_name not in seen:
             functions.append(func_name)
+            seen.add(func_name)
+
     return functions
 
 
@@ -365,12 +391,19 @@ def register_tvm_cuda_from_file(
 
     Notes
     -----
-    Entry-point detection scans for top-level ``void`` functions (i.e.
-    functions that start with ``void`` at column 0, not preceded by
-    ``__device__`` or ``__global__``) whose parameter lists contain the
-    marker ``tvm::ffi::TensorView``.  The discovered names are passed to
-    :func:`register_tvm_cuda_kernels` in the order they appear in the
-    source file.
+    Entry-point detection uses two mechanisms (see
+    :func:`_parse_tvm_entry_functions`):
+
+    1. **Explicit functions** -- top-level ``void`` functions (at column 0)
+       whose parameter lists contain ``tvm::ffi::TensorView``.
+
+    2. **Annotation comments** -- lines matching ``// @tvm_ffi name``.
+       This allows macro-generated FFI entry points to be registered::
+
+           // @tvm_ffi binary_densemv_gather_auto_f32_bool
+           FFI_GATHER_AUTO(_f32_bool, float, int8_t)
+
+    Both mechanisms are applied; duplicates are removed automatically.
     """
     if not isinstance(module, str):
         raise TypeError(f"module must be a str, got {type(module).__name__}")

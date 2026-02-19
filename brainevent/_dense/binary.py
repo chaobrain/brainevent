@@ -278,10 +278,18 @@ def _binary_densemv_cuda_kernel(
     out_info = kwargs['outs']
     spk_suffix = '_bool' if spk_info.dtype == jnp.bool_ else '_float'
 
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(kwargs['weight_info'].dtype), '_f32')
+
     if transpose:
-        kernel_name = f'binary_densemv.binary_densemv_scatter_f32{spk_suffix}'
+        kernel_name = f'binary_densemv.binary_densemv_scatter{wt_sfx}{spk_suffix}'
     else:
-        kernel_name = f'binary_densemv.binary_densemv_gather_auto_f32{spk_suffix}'
+        kernel_name = f'binary_densemv.binary_densemv_gather_auto{wt_sfx}{spk_suffix}'
 
     def kernel(weights, spikes):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, spikes)

@@ -161,6 +161,56 @@ brainunit.sparse.SparseMatrix  (sets self.shape)
   // Launch with: <<<grid, 256, 32*sizeof(float), stream>>>
   ```
 
+- **Existing TVM FFI bugs (jax_tvm_ffi<=0.1.2)**: 
+  Float64 is not handled during dtype mapping (https://github.com/NVIDIA/jax-tvm-ffi/issues/13).
+  This means that if you use float64 weights with GPU backends, the TVM FFI will fail to compile 
+  the kernel due to an unsupported dtype. However, for jax_tvm_ffi>0.1.2, this will be fixed.
+
+
+- **TVM FFI entry-point discovery is regex-based on raw source text**: `register_tvm_cuda_from_file` discovers FFI entry
+  points by scanning the `.cu` source for `^void\s+(\w+)\s*\(` at column 0 with `tvm::ffi::TensorView` parameters.
+  **C preprocessor macros are NOT expanded** — the scanner sees the raw text. If you use macros to generate FFI entry
+  points (e.g. `FFI_GATHER_AUTO(_f32_bool, ...)`), the scanner will not find them. Two solutions:
+  1. **Annotation comments** (preferred): place `// @tvm_ffi function_name` before each macro invocation:
+     ```c
+     // @tvm_ffi binary_densemv_gather_auto_f32_bool
+     FFI_GATHER_AUTO(_f32_bool, float, int8_t, 32 * sizeof(float))
+     ```
+  2. **Explicit functions**: write the `void function_name(tvm::ffi::TensorView ...)` signatures directly (verbose but
+     always works).
+
+  Both mechanisms coexist — the parser merges results from explicit functions and `@tvm_ffi` annotations, deduplicating
+  automatically. Existing `.cu` files with explicit functions continue to work unchanged.
+
+- **Multi-dtype CUDA kernel pattern**: To support multiple weight dtypes (f16, bf16, f32, f64) in a single `.cu` file,
+  use parameterized macros with `READ_W`/`WRITE_W` conversion functions and an `ACC_T` accumulator type:
+  ```c
+  #define READ_F16(x)   __half2float(x)
+  #define WRITE_F16(x)  __float2half(x)
+
+  #define DEFINE_GATHER_WARP(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
+                             READ_W, WRITE_W, WARP_RED, ACC_ZERO) ...
+
+  // Instantiate: f16 accumulates in f32 for stability
+  DEFINE_GATHER_WARP(_f16_bool, int8_t, IS_ACTIVE_BOOL, __half, float,
+                     READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
+  ```
+  Float16 (`__half`) and bfloat16 (`__nv_bfloat16`) must accumulate in float32 for numerical stability. Float64
+  (`double`) uses its own `warp_reduce_sum_f64` and accumulates natively. The Python-side dtype dispatch uses:
+  ```python
+  _dtype_sfx = {
+      jnp.dtype('float16'): '_f16', jnp.dtype('float32'): '_f32',
+      jnp.dtype('float64'): '_f64', jnp.dtype('bfloat16'): '_bf16',
+  }
+  wt_sfx = _dtype_sfx.get(jnp.dtype(kwargs['weight_info'].dtype), '_f32')
+  ```
+
+- **`extern __shared__` with multi-dtype block reduction**: When the accumulator type varies across dtype
+  instantiations, use `extern __shared__ char _smem_bytes[]` with `reinterpret_cast<ACC_T*>` instead of declaring
+  `extern __shared__ float/double`. This works universally across all accumulator types and avoids type conflicts
+  in macro-generated kernels. Launch with the correct shared memory size: `32 * sizeof(ACC_T)`.
+
+
 ## Dev Script Path Fix
 
 When running benchmark/dev scripts directly (e.g. `python dev/fcn/benchmark_fcnmv.py`), Python adds the **script's
@@ -235,11 +285,6 @@ Never embed large CUDA source strings inline in Python files. Instead:
 - This keeps Python files readable, allows the CUDA to be edited/compiled independently, and is bundled in wheels via
   `pyproject.toml` (see below).
 
-### Existing TVM FFI bugs (jax_tvm_ffi<=0.1.2)
-
-Float64 is not handled during dtype mapping (https://github.com/NVIDIA/jax-tvm-ffi/issues/13).
-This means that if you use float64 weights with GPU backends, the TVM FFI will fail to compile the kernel due to an
-unsupported dtype. However, for jax_tvm_ffi>0.1.2, this will be fixed.
 
 ## Linter
 
