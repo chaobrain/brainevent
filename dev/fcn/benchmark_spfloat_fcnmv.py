@@ -26,6 +26,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+import brainstate
+
 from brainevent import BenchmarkConfig, spfloat_fcnmv_p
 
 # (n_pre, n_post, n_conn) configurations
@@ -46,7 +48,7 @@ def _make_benchmark_data(*, platform, spike_rates=None):
     if spike_rates is None:
         spike_rates = DEFAULT_SPIKE_RATES
     rng = np.random.default_rng(42)
-    dtype = jnp.float32
+    dtype = brainstate.environ.dftype()
     for n_pre, n_post, n_conn in CONFIGS:
         indices = jnp.asarray(rng.integers(0, n_post, (n_pre, n_conn), dtype=np.int32))
         for transpose in (False, True):
@@ -54,15 +56,13 @@ def _make_benchmark_data(*, platform, spike_rates=None):
                 if homo:
                     weights = jnp.ones(1, dtype=dtype)
                 else:
-                    weights = jnp.asarray(
-                        rng.standard_normal((n_pre, n_conn)).astype(np.float32)
-                    )
+                    weights = jnp.asarray(rng.standard_normal((n_pre, n_conn)), dtype=dtype)
                 v_size = n_post if not transpose else n_pre
                 for rate in spike_rates:
                     # Sparse-float vector: draw from N(0,1) but zero out (1-rate) fraction
-                    v_raw = rng.standard_normal(v_size).astype(np.float32)
+                    v_raw = rng.standard_normal(v_size)
                     mask = rng.random(v_size) < rate
-                    vector = jnp.asarray(v_raw * mask)
+                    vector = jnp.asarray(v_raw * mask, dtype=dtype)
                     name = (
                         f"{'T' if transpose else 'NT'},"
                         f"{'homo' if homo else 'hetero'},"

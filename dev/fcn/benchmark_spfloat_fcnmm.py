@@ -18,6 +18,7 @@ Usage
     python dev/fcn/benchmark_spfloat_fcnmm.py --spike_rates 0.01 0.05 0.10 0.50
 """
 
+
 import argparse
 import sys
 from pathlib import Path
@@ -30,6 +31,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+import brainstate
 from brainevent import BenchmarkConfig, spfloat_fcnmm_p
 
 # (n_pre, n_post, n_conn, n_col)
@@ -54,7 +56,7 @@ def _make_benchmark_data(*, platform, spike_rates=None):
     if spike_rates is None:
         spike_rates = DEFAULT_SPIKE_RATES
     rng = np.random.default_rng(42)
-    dtype = jnp.float32
+    dtype = brainstate.environ.dftype()
     for n_pre, n_post, n_conn, n_col in CONFIGS:
         indices = jnp.asarray(rng.integers(0, n_post, (n_pre, n_conn), dtype=np.int32))
         for transpose in (False, True):
@@ -62,17 +64,15 @@ def _make_benchmark_data(*, platform, spike_rates=None):
                 if homo:
                     weights = jnp.ones(1, dtype=dtype)
                 else:
-                    weights = jnp.asarray(
-                        rng.standard_normal((n_pre, n_conn)).astype(np.float32)
-                    )
+                    weights = jnp.asarray(rng.standard_normal((n_pre, n_conn)), dtype=dtype)
                 # Number of rows in M depends on which dimension W contracts over:
                 #   transpose=False: Y[n_pre, n_col] = W[n_pre,n_post] @ M[n_post, n_col]
                 #   transpose=True:  Y[n_post,n_col] = W^T[n_post,n_pre] @ M[n_pre, n_col]
                 m_rows = n_post if not transpose else n_pre
                 for rate in spike_rates:
-                    m_raw = rng.standard_normal((m_rows, n_col)).astype(np.float32)
-                    mask = (rng.random((m_rows, n_col)) < rate).astype(np.float32)
-                    matrix = jnp.asarray(m_raw * mask)
+                    m_raw = rng.standard_normal((m_rows, n_col))
+                    mask = (rng.random((m_rows, n_col)) < rate)
+                    matrix = jnp.asarray(m_raw * mask, dtype=dtype)
                     name = (
                         f"{'T' if transpose else 'NT'},"
                         f"{'homo' if homo else 'hetero'},"

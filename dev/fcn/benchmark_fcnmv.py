@@ -23,6 +23,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+import brainstate
+
 from brainevent import fcnmv_p, BenchmarkConfig
 
 CONFIGS = [
@@ -38,7 +40,7 @@ CONFIGS = [
 
 def _make_benchmark_data(*, platform):
     rng = np.random.default_rng(42)
-    dtype = jnp.float32
+    dtype = brainstate.environ.dftype()
     for n_pre, n_post, n_conn in CONFIGS:
         indices = jnp.asarray(rng.integers(0, n_post, (n_pre, n_conn), dtype=np.int32))
         for transpose in (False, True):
@@ -46,9 +48,9 @@ def _make_benchmark_data(*, platform):
                 if homo:
                     weights = jnp.ones(1, dtype=dtype)
                 else:
-                    weights = jnp.asarray(rng.standard_normal((n_pre, n_conn)).astype(np.float32))
+                    weights = jnp.asarray(rng.standard_normal((n_pre, n_conn)), dtype=dtype)
                 v_size = n_post if not transpose else n_pre
-                vector = jnp.asarray(rng.standard_normal(v_size).astype(np.float32))
+                vector = jnp.asarray(rng.standard_normal(v_size), dtype=dtype)
                 name = (
                     f"{'T' if transpose else 'NT'},"
                     f"{'homo' if homo else 'hetero'},"

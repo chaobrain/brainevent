@@ -23,26 +23,28 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+import brainstate
+
 from brainevent import fcnmm_p, BenchmarkConfig
 
 # (n_pre, n_post, n_conn, n_col)
 CONFIGS = [
-    (1000, 1000,  50,  10),
+    (1000, 1000, 50, 10),
     (1000, 1000, 100, 128),
-    (1000, 1000, 128,  64),
+    (1000, 1000, 128, 64),
     (1000, 1000, 200, 256),
     (5000, 5000, 100, 128),
-    (5000, 5000, 200,  64),
-    (5000, 5000,  50, 512),
+    (5000, 5000, 200, 64),
+    (5000, 5000, 50, 512),
     (10000, 10000, 100, 128),
-    (10000, 10000,  50,  32),
-    (10000, 10000, 200,  64),
+    (10000, 10000, 50, 32),
+    (10000, 10000, 200, 64),
 ]
 
 
 def _make_benchmark_data(*, platform):
     rng = np.random.default_rng(42)
-    dtype = jnp.float32
+    dtype = brainstate.environ.dftype()
     for n_pre, n_post, n_conn, n_col in CONFIGS:
         indices = jnp.asarray(rng.integers(0, n_post, (n_pre, n_conn), dtype=np.int32))
         for transpose in (False, True):
@@ -50,13 +52,9 @@ def _make_benchmark_data(*, platform):
                 if homo:
                     weights = jnp.ones(1, dtype=dtype)
                 else:
-                    weights = jnp.asarray(
-                        rng.standard_normal((n_pre, n_conn)).astype(np.float32)
-                    )
+                    weights = jnp.asarray(rng.standard_normal((n_pre, n_conn)), dtype=dtype)
                 b_rows = n_post if not transpose else n_pre
-                matrix = jnp.asarray(
-                    rng.standard_normal((b_rows, n_col)).astype(np.float32)
-                )
+                matrix = jnp.asarray(rng.standard_normal((b_rows, n_col)), dtype=dtype)
                 name = (
                     f"{'T' if transpose else 'NT'},"
                     f"{'homo' if homo else 'hetero'},"
@@ -76,7 +74,7 @@ def _make_benchmark_data(*, platform):
 def main():
     parser = argparse.ArgumentParser(description="fcnmm backend benchmark")
     parser.add_argument("--n_warmup", type=int, default=10)
-    parser.add_argument("--n_runs",   type=int, default=1)
+    parser.add_argument("--n_runs", type=int, default=1)
     args = parser.parse_args()
 
     try:

@@ -36,6 +36,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+import brainstate
 from brainevent import BenchmarkConfig, binary_fcnmv_p
 
 # Problem sizes: (n_pre, n_post, n_conn)
@@ -54,7 +55,7 @@ CONFIGS = [
 
 def _make_benchmark_data(*, platform, spike_rate=None):
     rng = np.random.default_rng(42)
-    dtype = jnp.float32
+    dtype = brainstate.environ.dftype()
     spike_rates = (spike_rate,) if spike_rate is not None else (0.01, 0.05, 0.1)
     for spike_rate in spike_rates:
         for n_pre, n_post, n_conn in CONFIGS:
@@ -65,16 +66,16 @@ def _make_benchmark_data(*, platform, spike_rate=None):
                         if homo:
                             weights = jnp.ones(1, dtype=dtype)
                         else:
-                            weights = jnp.asarray(rng.standard_normal((n_pre, n_conn)).astype(np.float32))
+                            weights = jnp.asarray(rng.standard_normal((n_pre, n_conn)), dtype=dtype)
                         v_size = n_post if not transpose else n_pre
                         if bool_event:
                             spikes = jnp.asarray(rng.random(v_size) < spike_rate, dtype=jnp.bool_)
                         else:
                             # Float spikes: positive values are active
-                            raw = rng.standard_normal(v_size).astype(np.float32)
+                            raw = rng.standard_normal(v_size)
                             # Zero out ~(1-spike_rate) fraction to mimic sparse events
                             mask = rng.random(v_size) < spike_rate
-                            spikes = jnp.asarray(np.where(mask, np.abs(raw), 0.0))
+                            spikes = jnp.asarray(np.where(mask, np.abs(raw), 0.0), dtype=dtype)
 
                         name = (
                             f"{'T' if transpose else 'NT'},"

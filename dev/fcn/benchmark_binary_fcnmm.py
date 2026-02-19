@@ -36,17 +36,18 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+import brainstate
 from brainevent import BenchmarkConfig, binary_fcnmm_p
 
 # Problem sizes: (n_pre, n_post, n_conn)
 CONFIGS = [
-    (500,   1000,  10),
-    (1000,  1000,  32),
-    (1000,  1000,  50),
-    (1000,  1000, 100),
-    (1000,  1000, 128),
-    (5000,  5000, 100),
-    (5000,  5000, 200),
+    (500, 1000, 10),
+    (1000, 1000, 32),
+    (1000, 1000, 50),
+    (1000, 1000, 100),
+    (1000, 1000, 128),
+    (5000, 5000, 100),
+    (5000, 5000, 200),
     (10000, 10000, 500),
     (10000, 10000, 1000),
 ]
@@ -54,9 +55,9 @@ CONFIGS = [
 
 def _make_benchmark_data(*, platform, spike_rate=None, n_batch=None):
     rng = np.random.default_rng(42)
-    dtype = jnp.float32
+    dtype = brainstate.environ.dftype()
     spike_rates = (spike_rate,) if spike_rate is not None else (0.01, 0.05, 0.1)
-    n_batches   = (n_batch,)    if n_batch   is not None else (16, 64)
+    n_batches = (n_batch,) if n_batch is not None else (16, 64)
     for spike_rate in spike_rates:
         for n_b in n_batches:
             for n_pre, n_post, n_conn in CONFIGS:
@@ -69,9 +70,7 @@ def _make_benchmark_data(*, platform, spike_rate=None, n_batch=None):
                             if homo:
                                 weights = jnp.ones(1, dtype=dtype)
                             else:
-                                weights = jnp.asarray(
-                                    rng.standard_normal((n_pre, n_conn)).astype(np.float32)
-                                )
+                                weights = jnp.asarray(rng.standard_normal((n_pre, n_conn)), dtype=dtype)
                             m_rows = n_post if not transpose else n_pre
                             if bool_event:
                                 mat = jnp.asarray(
@@ -79,9 +78,9 @@ def _make_benchmark_data(*, platform, spike_rate=None, n_batch=None):
                                     dtype=jnp.bool_,
                                 )
                             else:
-                                raw  = rng.standard_normal((m_rows, n_b)).astype(np.float32)
+                                raw = rng.standard_normal((m_rows, n_b))
                                 mask = rng.random((m_rows, n_b)) < spike_rate
-                                mat  = jnp.asarray(np.where(mask, np.abs(raw), 0.0))
+                                mat = jnp.asarray(np.where(mask, np.abs(raw), 0.0), dtype=dtype)
 
                             name = (
                                 f"{'T' if transpose else 'NT'},"
@@ -108,13 +107,13 @@ def _make_benchmark_data(*, platform, spike_rate=None, n_batch=None):
 
 def main():
     parser = argparse.ArgumentParser(description="binary_fcnmm backend benchmark")
-    parser.add_argument("--n_warmup",   type=int,   default=10,
+    parser.add_argument("--n_warmup", type=int, default=10,
                         help="Number of warmup iterations (default: 10)")
-    parser.add_argument("--n_runs",     type=int,   default=50,
+    parser.add_argument("--n_runs", type=int, default=50,
                         help="Number of timed iterations (default: 50)")
     parser.add_argument("--spike_rate", type=float, default=0.1,
                         help="Fraction of active matrix entries (default: 0.1 = 10%%)")
-    parser.add_argument("--n_batch",    type=int,   default=32,
+    parser.add_argument("--n_batch", type=int, default=32,
                         help="Batch (n) dimension of the input matrix (default: 32)")
     args = parser.parse_args()
 
