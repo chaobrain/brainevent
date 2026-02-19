@@ -369,7 +369,7 @@ __global__ void _bs_float_basic_kern(
 
 // ---- Gather / Bool ----
 
-void binary_fcnmv_gather_bool_warp(
+void binary_fcnmv_gather_bool_warp_f32(
     tvm::ffi::TensorView weights,
     tvm::ffi::TensorView indices,
     tvm::ffi::TensorView spikes,
@@ -387,7 +387,7 @@ void binary_fcnmv_gather_bool_warp(
     _bg_bool_warp_kern<<<n_pre, 32, 0, s>>>(d_idx, d_spk, d_out, d_w, n_pre, n_conn, is_homo);
 }
 
-void binary_fcnmv_gather_bool_basic(
+void binary_fcnmv_gather_bool_basic_f32(
     tvm::ffi::TensorView weights,
     tvm::ffi::TensorView indices,
     tvm::ffi::TensorView spikes,
@@ -408,7 +408,7 @@ void binary_fcnmv_gather_bool_basic(
 
 // ---- Gather / Float ----
 
-void binary_fcnmv_gather_float_warp(
+void binary_fcnmv_gather_float_warp_f32(
     tvm::ffi::TensorView weights,
     tvm::ffi::TensorView indices,
     tvm::ffi::TensorView spikes,
@@ -426,7 +426,7 @@ void binary_fcnmv_gather_float_warp(
     _bg_float_warp_kern<<<n_pre, 32, 0, s>>>(d_idx, d_spk, d_out, d_w, n_pre, n_conn, is_homo);
 }
 
-void binary_fcnmv_gather_float_basic(
+void binary_fcnmv_gather_float_basic_f32(
     tvm::ffi::TensorView weights,
     tvm::ffi::TensorView indices,
     tvm::ffi::TensorView spikes,
@@ -447,7 +447,7 @@ void binary_fcnmv_gather_float_basic(
 
 // ---- Scatter / Bool (output pre-zeroed via cudaMemsetAsync) ----
 
-void binary_fcnmv_scatter_bool_warp(
+void binary_fcnmv_scatter_bool_warp_f32(
     tvm::ffi::TensorView weights,
     tvm::ffi::TensorView indices,
     tvm::ffi::TensorView spikes,
@@ -468,7 +468,7 @@ void binary_fcnmv_scatter_bool_warp(
     _bs_bool_warp_kern<<<blocks, 256, 0, s>>>(d_idx, d_spk, d_out, d_w, n_pre, n_conn, is_homo);
 }
 
-void binary_fcnmv_scatter_bool_basic(
+void binary_fcnmv_scatter_bool_basic_f32(
     tvm::ffi::TensorView weights,
     tvm::ffi::TensorView indices,
     tvm::ffi::TensorView spikes,
@@ -490,7 +490,7 @@ void binary_fcnmv_scatter_bool_basic(
 
 // ---- Scatter / Float ----
 
-void binary_fcnmv_scatter_float_warp(
+void binary_fcnmv_scatter_float_warp_f32(
     tvm::ffi::TensorView weights,
     tvm::ffi::TensorView indices,
     tvm::ffi::TensorView spikes,
@@ -511,7 +511,7 @@ void binary_fcnmv_scatter_float_warp(
     _bs_float_warp_kern<<<blocks, 256, 0, s>>>(d_idx, d_spk, d_out, d_w, n_pre, n_conn, is_homo);
 }
 
-void binary_fcnmv_scatter_float_basic(
+void binary_fcnmv_scatter_float_basic_f32(
     tvm::ffi::TensorView weights,
     tvm::ffi::TensorView indices,
     tvm::ffi::TensorView spikes,

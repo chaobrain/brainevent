@@ -297,8 +297,8 @@ def _fcnmv_cuda_kernel(
 
     out_info = kwargs['outs']
     n_conn = indices_info.shape[1]
-    _dtype_sfx = {np.dtype('float16'): '_f16', np.dtype('float32'): '', np.dtype('float64'): '_f64'}
-    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '')
+    _dtype_sfx = {np.dtype('float16'): '_f16', np.dtype('float32'): '_f32', np.dtype('float64'): '_f64'}
+    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
 
     if transpose:
         # Scatter mode: y[idx[i,k]] += w[i,k] * v[i]
@@ -307,21 +307,18 @@ def _fcnmv_cuda_kernel(
         else:
             kernel_name = f'fcnmv.fcnmv_scatter_auto{sfx}'
 
-        def kernel(weights, indices, vector):
-            return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, vector)
-
     else:
         # Gather mode: y[i] = sum_k w[i,k] * v[idx[i,k]]
         # vec4 only for float32 (uses float4 vectorized loads)
-        if sfx == '' and n_conn % 4 == 0 and n_conn >= 128:
-            kernel_name = 'fcnmv.fcnmv_gather_vec4'
+        if sfx == '_f32' and n_conn % 4 == 0 and n_conn >= 128:
+            kernel_name = 'fcnmv.fcnmv_gather_vec4_f32'
         elif n_conn <= 32:
             kernel_name = f'fcnmv.fcnmv_gather_warp{sfx}'
         else:
             kernel_name = f'fcnmv.fcnmv_gather_auto{sfx}'
 
-        def kernel(weights, indices, vector):
-            return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, vector)
+    def kernel(weights, indices, vector):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, vector)
 
     return kernel
 
@@ -832,28 +829,25 @@ def _fcnmm_cuda_kernel(
     out_info = kwargs['outs']
     n_conn = indices_info.shape[1]
     n_col = matrix_info.shape[1]
-    _dtype_sfx = {np.dtype('float16'): '_f16', np.dtype('float32'): '', np.dtype('float64'): '_f64'}
-    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '')
+    _dtype_sfx = {np.dtype('float16'): '_f16', np.dtype('float32'): '_f32', np.dtype('float64'): '_f64'}
+    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
 
     if transpose:
         # Scatter mode: Y[idx[i,k], j] += w[i,k] * M[i, j]
         kernel_name = f'fcnmm.fcnmm_scatter_auto{sfx}'
 
-        def kernel(weights, indices, matrix):
-            return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, matrix)
-
     else:
         # Gather mode: Y[i, j] = sum_k w[i,k] * M[idx[i,k], j]
         # vec4 and shared only for float32
-        if sfx == '' and n_col % 4 == 0 and n_col >= 64:
-            kernel_name = 'fcnmm.fcnmm_gather_vec4'
-        elif sfx == '' and n_conn > 128:
-            kernel_name = 'fcnmm.fcnmm_gather_shared'
+        if sfx == '_f32' and n_col % 4 == 0 and n_col >= 64:
+            kernel_name = 'fcnmm.fcnmm_gather_vec4_f32'
+        elif sfx == '_f32' and n_conn > 128:
+            kernel_name = 'fcnmm.fcnmm_gather_shared_f32'
         else:
             kernel_name = f'fcnmm.fcnmm_gather_auto{sfx}'
 
-        def kernel(weights, indices, matrix):
-            return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, matrix)
+    def kernel(weights, indices, matrix):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, matrix)
 
     return kernel
 

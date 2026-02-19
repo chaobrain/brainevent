@@ -335,8 +335,8 @@ def _spfloat_fcnmv_cuda_kernel(
 
     out_info = kwargs['outs']
     n_conn = indices_info.shape[1]
-    _dtype_sfx = {np.dtype('float16'): '_f16', np.dtype('float32'): '', np.dtype('float64'): '_f64'}
-    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '')
+    _dtype_sfx = {np.dtype('float16'): '_f16', np.dtype('float32'): '_f32', np.dtype('float64'): '_f64'}
+    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
 
     if transpose:
         # Scatter mode: y[idx[i,k]] += w[i,k] * s[i]  (skip when s[i] == 0)
@@ -345,21 +345,19 @@ def _spfloat_fcnmv_cuda_kernel(
         else:
             kernel_name = f'spfloat_fcnmv.spfloat_fcnmv_scatter_auto{sfx}'
 
-        def kernel(weights, indices, vector):
-            return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, vector)
 
     else:
         # Gather mode: y[i] = sum_k w[i,k] * s[idx[i,k]]  (skip when s == 0)
         # shared kernel only for float32; for f64/f16 fall back to basic/warp
-        if sfx == '' and n_conn > 512:
-            kernel_name = 'spfloat_fcnmv.spfloat_fcnmv_gather_shared'
+        if sfx == '_f32' and n_conn > 512:
+            kernel_name = 'spfloat_fcnmv.spfloat_fcnmv_gather_shared_f32'
         elif n_conn <= 64:
             kernel_name = f'spfloat_fcnmv.spfloat_fcnmv_gather_warp{sfx}'
         else:
             kernel_name = f'spfloat_fcnmv.spfloat_fcnmv_gather_basic{sfx}'
 
-        def kernel(weights, indices, vector):
-            return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, vector)
+    def kernel(weights, indices, vector):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, vector)
 
     return kernel
 
@@ -888,8 +886,8 @@ def _spfloat_fcnmm_cuda_kernel(
     out_info = kwargs['outs']
     n_conn = indices_info.shape[1]
     n_col = matrix_info.shape[1]
-    _dtype_sfx = {np.dtype('float16'): '_f16', np.dtype('float32'): '', np.dtype('float64'): '_f64'}
-    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '')
+    _dtype_sfx = {np.dtype('float16'): '_f16', np.dtype('float32'): '_f32', np.dtype('float64'): '_f64'}
+    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
 
     if transpose:
         # Scatter mode: Y[idx[i,k],j] += w[i,k] * M[i,j]  (skip when M[i,j]==0)
@@ -897,21 +895,18 @@ def _spfloat_fcnmm_cuda_kernel(
         # for f64/f16 fall back to scatter_auto which uses block/warp variants.
         kernel_name = f'spfloat_fcnmm.spfloat_fcnmm_scatter_auto{sfx}'
 
-        def kernel(weights, indices, matrix):
-            return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, matrix)
-
     else:
         # Gather mode: Y[i,j] = sum_k w[i,k] * M[idx[i,k],j]  (skip M==0)
         # vec4 and shared only for float32
-        if sfx == '' and n_col % 4 == 0 and n_col >= 64:
-            kernel_name = 'spfloat_fcnmm.spfloat_fcnmm_gather_vec4'
-        elif sfx == '' and n_conn > 128:
-            kernel_name = 'spfloat_fcnmm.spfloat_fcnmm_gather_shared'
+        if sfx == '_f32' and n_col % 4 == 0 and n_col >= 64:
+            kernel_name = 'spfloat_fcnmm.spfloat_fcnmm_gather_vec4_f32'
+        elif sfx == '_f32' and n_conn > 128:
+            kernel_name = 'spfloat_fcnmm.spfloat_fcnmm_gather_shared_f32'
         else:
             kernel_name = f'spfloat_fcnmm.spfloat_fcnmm_gather_auto{sfx}'
 
-        def kernel(weights, indices, matrix):
-            return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, matrix)
+    def kernel(weights, indices, matrix):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, matrix)
 
     return kernel
 

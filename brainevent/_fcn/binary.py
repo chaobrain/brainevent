@@ -411,8 +411,8 @@ def _binary_fcnmv_cuda_kernel(
     out_info = kwargs['outs']
     n_conn = indices_info.shape[1]
     is_bool_spike = (spike_info.dtype == jnp.bool_)
-    _dtype_sfx = {jnp.dtype('float16'): '_f16', jnp.dtype('float32'): '', jnp.dtype('float64'): '_f64'}
-    sfx = _dtype_sfx.get(jnp.dtype(kwargs['weight_info'].dtype), '')
+    _dtype_sfx = {jnp.dtype('float16'): '_f16', jnp.dtype('float32'): '_f32', jnp.dtype('float64'): '_f64'}
+    sfx = _dtype_sfx.get(jnp.dtype(kwargs['weight_info'].dtype), '_f32')
 
     if transpose:
         # Scatter mode: if is_active(spikes[i]) → output[indices[i,k]] += weights[i,k]
@@ -1205,8 +1205,8 @@ def _binary_fcnmm_cuda_kernel(
     out_info = kwargs['outs']
     n_conn = indices_info.shape[1]
     is_bool_matrix = (matrix_info.dtype == jnp.bool_)
-    _dtype_sfx = {np.dtype('float16'): '_f16', np.dtype('float32'): '', np.dtype('float64'): '_f64'}
-    sfx = _dtype_sfx.get(np.dtype(weight_info.dtype), '')
+    _dtype_sfx = {np.dtype('float16'): '_f16', np.dtype('float32'): '_f32', np.dtype('float64'): '_f64'}
+    sfx = _dtype_sfx.get(np.dtype(weight_info.dtype), '_f32')
 
     if transpose:
         # Scatter mode

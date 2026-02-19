@@ -367,7 +367,7 @@ __global__ void _bgm_float_scatter_basic_kern(
 
 // ---- Gather / Bool ----
 
-void binary_fcnmm_gather_bool_warp(
+void binary_fcnmm_gather_bool_warp_f32(
     tvm::ffi::TensorView weights,
     tvm::ffi::TensorView indices,
     tvm::ffi::TensorView matrix,
@@ -388,7 +388,7 @@ void binary_fcnmm_gather_bool_warp(
     _bgm_bool_gather_warp_kern<<<grid, 32, 0, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
 }
 
-void binary_fcnmm_gather_bool_basic(
+void binary_fcnmm_gather_bool_basic_f32(
     tvm::ffi::TensorView weights,
     tvm::ffi::TensorView indices,
     tvm::ffi::TensorView matrix,
@@ -411,7 +411,7 @@ void binary_fcnmm_gather_bool_basic(
 
 // ---- Gather / Float ----
 
-void binary_fcnmm_gather_float_warp(
+void binary_fcnmm_gather_float_warp_f32(
     tvm::ffi::TensorView weights,
     tvm::ffi::TensorView indices,
     tvm::ffi::TensorView matrix,
@@ -432,7 +432,7 @@ void binary_fcnmm_gather_float_warp(
     _bgm_float_gather_warp_kern<<<grid, 32, 0, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
 }
 
-void binary_fcnmm_gather_float_basic(
+void binary_fcnmm_gather_float_basic_f32(
     tvm::ffi::TensorView weights,
     tvm::ffi::TensorView indices,
     tvm::ffi::TensorView matrix,
@@ -455,7 +455,7 @@ void binary_fcnmm_gather_float_basic(
 
 // ---- Scatter / Bool (output pre-zeroed via cudaMemsetAsync) ----
 
-void binary_fcnmm_scatter_bool_warp(
+void binary_fcnmm_scatter_bool_warp_f32(
     tvm::ffi::TensorView weights,
     tvm::ffi::TensorView indices,
     tvm::ffi::TensorView matrix,
@@ -478,7 +478,7 @@ void binary_fcnmm_scatter_bool_warp(
     _bgm_bool_scatter_warp_kern<<<grid, 32, 0, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
 }
 
-void binary_fcnmm_scatter_bool_basic(
+void binary_fcnmm_scatter_bool_basic_f32(
     tvm::ffi::TensorView weights,
     tvm::ffi::TensorView indices,
     tvm::ffi::TensorView matrix,
@@ -502,7 +502,7 @@ void binary_fcnmm_scatter_bool_basic(
 
 // ---- Scatter / Float ----
 
-void binary_fcnmm_scatter_float_warp(
+void binary_fcnmm_scatter_float_warp_f32(
     tvm::ffi::TensorView weights,
     tvm::ffi::TensorView indices,
     tvm::ffi::TensorView matrix,
@@ -525,7 +525,7 @@ void binary_fcnmm_scatter_float_warp(
     _bgm_float_scatter_warp_kern<<<grid, 32, 0, s>>>(d_idx, d_mat, d_out, d_w, n_pre, n_conn, n_batch, is_homo);
 }
 
-void binary_fcnmm_scatter_float_basic(
+void binary_fcnmm_scatter_float_basic_f32(
     tvm::ffi::TensorView weights,
     tvm::ffi::TensorView indices,
     tvm::ffi::TensorView matrix,

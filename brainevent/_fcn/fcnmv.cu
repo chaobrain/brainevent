@@ -289,7 +289,7 @@ __global__ void _scatter_gs_kern(
 
 // --- Gather entry points ---
 
-void fcnmv_gather_warp(
+void fcnmv_gather_warp_f32(
     tvm::ffi::TensorView weights,
     tvm::ffi::TensorView indices,
     tvm::ffi::TensorView vector,
@@ -307,47 +307,7 @@ void fcnmv_gather_warp(
     _gather_warp_kern<<<n_pre, 32, 0, s>>>(d_idx, d_vec, d_out, d_weights, n_pre, n_conn, is_homo);
 }
 
-void fcnmv_gather_basic(
-    tvm::ffi::TensorView weights,
-    tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView vector,
-    tvm::ffi::TensorView output,
-    int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre  = static_cast<int>(indices.size(0));
-    int n_conn = static_cast<int>(indices.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const float*   d_weights = static_cast<const float*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const float*   d_vec = static_cast<const float*>(vector.data_ptr());
-    float*         d_out = static_cast<float*>(output.data_ptr());
-    size_t shm = 32 * sizeof(float);
-    _gather_basic_kern<<<n_pre, 256, shm, s>>>(d_idx, d_vec, d_out, d_weights, n_pre, n_conn, is_homo);
-}
-
-void fcnmv_gather_shared(
-    tvm::ffi::TensorView weights,
-    tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView vector,
-    tvm::ffi::TensorView output,
-    int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre  = static_cast<int>(indices.size(0));
-    int n_conn = static_cast<int>(indices.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const float*   d_weights = static_cast<const float*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const float*   d_vec = static_cast<const float*>(vector.data_ptr());
-    float*         d_out = static_cast<float*>(output.data_ptr());
-    int threads = 256;
-    // Dynamic shared mem: s_idx[threads] + s_wt[threads] + s_red[32]
-    size_t shm = (size_t)threads * (sizeof(int32_t) + sizeof(float)) + 32 * sizeof(float);
-    _gather_shared_kern<<<n_pre, threads, shm, s>>>(d_idx, d_vec, d_out, d_weights, n_pre, n_conn, is_homo);
-}
-
-void fcnmv_gather_vec4(
+void fcnmv_gather_vec4_f32(
     tvm::ffi::TensorView weights,
     tvm::ffi::TensorView indices,
     tvm::ffi::TensorView vector,
@@ -367,7 +327,7 @@ void fcnmv_gather_vec4(
 }
 
 // Auto-selects the best gather kernel based on n_conn.
-void fcnmv_gather_auto(
+void fcnmv_gather_auto_f32(
     tvm::ffi::TensorView weights,
     tvm::ffi::TensorView indices,
     tvm::ffi::TensorView vector,
@@ -399,27 +359,7 @@ void fcnmv_gather_auto(
 
 // --- Scatter entry points (output zeroed before kernel launch) ---
 
-void fcnmv_scatter_basic(
-    tvm::ffi::TensorView weights,
-    tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView vector,
-    tvm::ffi::TensorView output,
-    int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre  = static_cast<int>(indices.size(0));
-    int n_conn = static_cast<int>(indices.size(1));
-    int n_post = static_cast<int>(output.size(0));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const float*   d_weights = static_cast<const float*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const float*   d_vec = static_cast<const float*>(vector.data_ptr());
-    float*         d_out = static_cast<float*>(output.data_ptr());
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * sizeof(float), s);
-    _scatter_basic_kern<<<n_pre, 256, 0, s>>>(d_idx, d_vec, d_out, d_weights, n_pre, n_conn, is_homo);
-}
-
-void fcnmv_scatter_warp(
+void fcnmv_scatter_warp_f32(
     tvm::ffi::TensorView weights,
     tvm::ffi::TensorView indices,
     tvm::ffi::TensorView vector,
@@ -441,29 +381,8 @@ void fcnmv_scatter_warp(
     _scatter_warp_kern<<<blocks, 256, 0, s>>>(d_idx, d_vec, d_out, d_weights, n_pre, n_conn, is_homo);
 }
 
-void fcnmv_scatter_gridstride(
-    tvm::ffi::TensorView weights,
-    tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView vector,
-    tvm::ffi::TensorView output,
-    int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre  = static_cast<int>(indices.size(0));
-    int n_conn = static_cast<int>(indices.size(1));
-    int n_post = static_cast<int>(output.size(0));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const float*   d_weights = static_cast<const float*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const float*   d_vec = static_cast<const float*>(vector.data_ptr());
-    float*         d_out = static_cast<float*>(output.data_ptr());
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * sizeof(float), s);
-    int blocks = min(1024, (n_pre * n_conn + 255) / 256);
-    _scatter_gs_kern<<<blocks, 256, 0, s>>>(d_idx, d_vec, d_out, d_weights, n_pre, n_conn, is_homo);
-}
-
 // Auto-selects the best scatter kernel based on problem size.
-void fcnmv_scatter_auto(
+void fcnmv_scatter_auto_f32(
     tvm::ffi::TensorView weights,
     tvm::ffi::TensorView indices,
     tvm::ffi::TensorView vector,
@@ -601,22 +520,6 @@ void fcnmv_gather_warp_f64(
     _gather_warp_kern_f64<<<n_pre, 32, 0, s>>>(d_idx, d_vec, d_out, d_w, n_pre, n_conn, is_homo);
 }
 
-void fcnmv_gather_basic_f64(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView vector, tvm::ffi::TensorView output, int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre  = static_cast<int>(indices.size(0));
-    int n_conn = static_cast<int>(indices.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const double*  d_w   = static_cast<const double*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const double*  d_vec = static_cast<const double*>(vector.data_ptr());
-    double*        d_out = static_cast<double*>(output.data_ptr());
-    size_t shm = 32 * sizeof(double);
-    _gather_basic_kern_f64<<<n_pre, 256, shm, s>>>(d_idx, d_vec, d_out, d_w, n_pre, n_conn, is_homo);
-}
-
 void fcnmv_gather_auto_f64(
     tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
     tvm::ffi::TensorView vector, tvm::ffi::TensorView output, int64_t stream
@@ -635,23 +538,6 @@ void fcnmv_gather_auto_f64(
         size_t shm = 32 * sizeof(double);
         _gather_basic_kern_f64<<<n_pre, 256, shm, s>>>(d_idx, d_vec, d_out, d_w, n_pre, n_conn, is_homo);
     }
-}
-
-void fcnmv_scatter_basic_f64(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView vector, tvm::ffi::TensorView output, int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre  = static_cast<int>(indices.size(0));
-    int n_conn = static_cast<int>(indices.size(1));
-    int n_post = static_cast<int>(output.size(0));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const double*  d_w   = static_cast<const double*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const double*  d_vec = static_cast<const double*>(vector.data_ptr());
-    double*        d_out = static_cast<double*>(output.data_ptr());
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * sizeof(double), s);
-    _scatter_basic_kern_f64<<<n_pre, 256, 0, s>>>(d_idx, d_vec, d_out, d_w, n_pre, n_conn, is_homo);
 }
 
 void fcnmv_scatter_warp_f64(
@@ -805,22 +691,6 @@ void fcnmv_gather_warp_f16(
     _gather_warp_kern_f16<<<n_pre, 32, 0, s>>>(d_idx, d_vec, d_out, d_w, n_pre, n_conn, is_homo);
 }
 
-void fcnmv_gather_basic_f16(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView vector, tvm::ffi::TensorView output, int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre  = static_cast<int>(indices.size(0));
-    int n_conn = static_cast<int>(indices.size(1));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const __half*  d_w   = static_cast<const __half*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const __half*  d_vec = static_cast<const __half*>(vector.data_ptr());
-    __half*        d_out = static_cast<__half*>(output.data_ptr());
-    size_t shm = 32 * sizeof(float);
-    _gather_basic_kern_f16<<<n_pre, 256, shm, s>>>(d_idx, d_vec, d_out, d_w, n_pre, n_conn, is_homo);
-}
-
 void fcnmv_gather_auto_f16(
     tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
     tvm::ffi::TensorView vector, tvm::ffi::TensorView output, int64_t stream
@@ -839,23 +709,6 @@ void fcnmv_gather_auto_f16(
         size_t shm = 32 * sizeof(float);
         _gather_basic_kern_f16<<<n_pre, 256, shm, s>>>(d_idx, d_vec, d_out, d_w, n_pre, n_conn, is_homo);
     }
-}
-
-void fcnmv_scatter_basic_f16(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView vector, tvm::ffi::TensorView output, int64_t stream
-) {
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    int n_pre  = static_cast<int>(indices.size(0));
-    int n_conn = static_cast<int>(indices.size(1));
-    int n_post = static_cast<int>(output.size(0));
-    int is_homo = (weights.ndim() == 1) ? 1 : 0;
-    const __half*  d_w   = static_cast<const __half*>(weights.data_ptr());
-    const int32_t* d_idx = static_cast<const int32_t*>(indices.data_ptr());
-    const __half*  d_vec = static_cast<const __half*>(vector.data_ptr());
-    __half*        d_out = static_cast<__half*>(output.data_ptr());
-    cudaMemsetAsync(d_out, 0, (size_t)n_post * sizeof(__half), s);
-    _scatter_basic_kern_f16<<<n_pre, 256, 0, s>>>(d_idx, d_vec, d_out, d_w, n_pre, n_conn, is_homo);
 }
 
 void fcnmv_scatter_warp_f16(
