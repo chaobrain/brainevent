@@ -16,7 +16,9 @@
 # -*- coding: utf-8 -*-
 
 import functools
+import hashlib
 import importlib.util
+import re
 from typing import Protocol, Union, Tuple, Sequence
 
 import jax
@@ -49,6 +51,7 @@ if warp_installed:
 
 __all__ = [
     'register_tvm_cuda_kernels',
+    'register_tvm_cuda_from_file',
     'defjvp',
     'general_batching_rule',
     'jaxtype_to_warptype',
@@ -59,11 +62,18 @@ __all__ = [
 
 _MIN_JAX_VERSION_FOR_PALLAS = (0, 7, 1)
 
-# Global cache: tracks module names already compiled and registered via
-# register_tvm_cuda_kernels.  Subsequent calls with the same module name
-# are silently skipped so each CUDA module is compiled only once per
-# process.
+# Global cache: tracks compiled CUDA modules and the registration signature
+# (source hash + function names) associated with each module name.
 _registered_tvm_modules: dict = dict()
+_registered_tvm_module_signatures: dict = dict()
+
+
+def _make_tvm_module_signature(source_code: str, functions: Sequence[str]) -> tuple[str, tuple[str, ...]]:
+    """Create a stable signature for TVM module registration requests."""
+    source_hash = hashlib.sha256(source_code.encode('utf-8')).hexdigest()
+    # Function order does not change the logical FFI target set.
+    function_names = tuple(sorted(functions))
+    return source_hash, function_names
 
 
 def check_pallas_jax_version():
@@ -137,9 +147,11 @@ def register_tvm_cuda_kernels(
     to compile inline CUDA source and register each resulting function as
     a JAX FFI target on the GPU platform.
 
-    A per-process cache tracks registered module names.  If *module* has
-    already been registered, this function returns the previously compiled
-    module from cache and skips recompilation/re-registration.
+    A per-process cache tracks registered module signatures.  If *module*
+    has already been registered with the same source/function signature,
+    this function returns the cached module and skips recompilation.
+    If the same *module* name is requested with a different signature,
+    :class:`~brainevent._error.TVMModuleAlreadyRegisteredError` is raised.
 
     Parameters
     ----------
@@ -157,12 +169,16 @@ def register_tvm_cuda_kernels(
     -------
     object
         The compiled CUDA module object.  If *module* has already been
-        registered in this process, the cached module is returned.
+        registered with an identical signature in this process, the
+        cached module is returned.
 
     Raises
     ------
     TVMFFINotInstalledError
         If ``jax_tvm_ffi`` or ``tvm_ffi.cpp`` is not installed.
+    TVMModuleAlreadyRegisteredError
+        If *module* was already registered in this process with different
+        CUDA source code or a different set of function names.
     ValueError
         If *source_code* is not a string, *module* is not a string, or
         *functions* is not a sequence of strings.
@@ -197,16 +213,24 @@ def register_tvm_cuda_kernels(
             "Install it with: pip install jax-tvm-ffi"
         )
 
-    # Return cached module if this name is already registered.
-    if module in _registered_tvm_modules:
-        return _registered_tvm_modules[module]
-
     if not isinstance(source_code, str):
         raise ValueError("source_code must be a string")
     if not isinstance(module, str):
         raise ValueError("module must be a string")
     if not isinstance(functions, Sequence) or not all(isinstance(f, str) for f in functions):
         raise ValueError("functions must be a sequence of strings")
+
+    requested_signature = _make_tvm_module_signature(source_code, functions)
+
+    # Return cached module only when the registration signature matches.
+    if module in _registered_tvm_modules:
+        cached_signature = _registered_tvm_module_signatures[module]
+        if cached_signature != requested_signature:
+            raise TVMModuleAlreadyRegisteredError(
+                f"TVM CUDA module '{module}' is already registered with a different "
+                f"source/functions signature. Use a unique module name per kernel definition."
+            )
+        return _registered_tvm_modules[module]
 
     # Compile CUDA module
     _cuda_module = tvm_ffi.cpp.load_inline(name=module, cuda_sources=source_code, functions=functions)
@@ -220,9 +244,144 @@ def register_tvm_cuda_kernels(
             platform="gpu",
         )
 
-    # Mark this module as registered so future calls are no-ops.
+    # Mark this module as registered so future calls can safely reuse it.
     _registered_tvm_modules[module] = _cuda_module
+    _registered_tvm_module_signatures[module] = requested_signature
     return _cuda_module
+
+
+def _parse_tvm_entry_functions(source_code: str) -> list:
+    """Parse TVM FFI entry function names from CUDA source code.
+
+    Finds all top-level ``void`` functions whose parameter list contains
+    ``tvm::ffi::TensorView``.  These are the TVM FFI entry points.
+    ``__device__`` and ``__global__`` functions are excluded automatically
+    because they begin with a kernel qualifier rather than plain ``void``.
+
+    Parameters
+    ----------
+    source_code : str
+        CUDA C/C++ source code to scan.
+
+    Returns
+    -------
+    list of str
+        Discovered entry-point function names, in source order.
+
+    Raises
+    ------
+    TypeError
+        If *source_code* is not a string.
+    ValueError
+        If a ``void funcname(`` pattern is found but the opening
+        parenthesis is unmatched (malformed CUDA source).
+    """
+    if not isinstance(source_code, str):
+        raise TypeError(
+            f"source_code must be a str, got {type(source_code).__name__}"
+        )
+
+    # Match 'void' at the start of a line (column 0) followed by a C identifier.
+    func_pattern = re.compile(r'^void\s+(\w+)\s*\(', re.MULTILINE)
+    functions = []
+    for match in func_pattern.finditer(source_code):
+        func_name = match.group(1)
+        # Walk forward from '(' to find the matching ')' and inspect params.
+        paren_start = match.end() - 1  # index of the opening '('
+        depth = 0
+        pos = paren_start
+        while pos < len(source_code):
+            if source_code[pos] == '(':
+                depth += 1
+            elif source_code[pos] == ')':
+                depth -= 1
+                if depth == 0:
+                    break
+            pos += 1
+        if depth != 0:
+            raise ValueError(
+                f"Unmatched parenthesis in CUDA source while parsing "
+                f"function '{func_name}' near offset {paren_start}. "
+                "The source file may be truncated or malformed."
+            )
+        params = source_code[paren_start:pos + 1]
+        if 'tvm::ffi::TensorView' in params:
+            functions.append(func_name)
+    return functions
+
+
+def register_tvm_cuda_from_file(
+    module: str,
+    source_code: str,
+):
+    """Compile a CUDA source and auto-register all TVM FFI entry points.
+
+    Like :func:`register_tvm_cuda_kernels` but **automatically discovers**
+    the entry-point function names by parsing the CUDA source code.  Any
+    top-level ``void`` function whose parameter list contains
+    ``tvm::ffi::TensorView`` is treated as a TVM FFI entry point and
+    registered as ``"<module>.<function_name>"``.
+
+    No explicit ``functions`` argument is required — the list is derived
+    directly from the source, so adding or removing entry points in the
+    ``.cu`` file is immediately reflected without touching the Python side.
+
+    Parameters
+    ----------
+    module : str
+        Module name under which the compiled kernels are registered.
+        Must be unique within the process.
+    source_code : str
+        CUDA C/C++ source code, typically loaded from a ``.cu`` file::
+
+            source_code = Path(__file__).parent.joinpath('mykernels.cu').read_text()
+            register_tvm_cuda_from_file('mykernels', source_code)
+
+    Returns
+    -------
+    object
+        The compiled CUDA module object.
+
+    Raises
+    ------
+    TVMFFINotInstalledError
+        If ``jax_tvm_ffi`` or ``tvm_ffi.cpp`` is not installed.
+    TVMModuleAlreadyRegisteredError
+        If *module* was already registered with a different source or
+        a different set of discovered entry functions.
+    ValueError
+        If no TVM FFI entry functions are found in *source_code*.
+
+    See Also
+    --------
+    register_tvm_cuda_kernels : Lower-level variant that requires an
+        explicit ``functions`` list.
+
+    Notes
+    -----
+    Entry-point detection scans for top-level ``void`` functions (i.e.
+    functions that start with ``void`` at column 0, not preceded by
+    ``__device__`` or ``__global__``) whose parameter lists contain the
+    marker ``tvm::ffi::TensorView``.  The discovered names are passed to
+    :func:`register_tvm_cuda_kernels` in the order they appear in the
+    source file.
+    """
+    if not isinstance(module, str):
+        raise TypeError(f"module must be a str, got {type(module).__name__}")
+    if not isinstance(source_code, str):
+        raise TypeError(f"source_code must be a str, got {type(source_code).__name__}")
+    if not source_code.strip():
+        raise ValueError(f"source_code for module '{module}' is empty.")
+
+    functions = _parse_tvm_entry_functions(source_code)
+
+    if not functions:
+        raise ValueError(
+            f"No TVM FFI entry functions found in the CUDA source for module '{module}'. "
+            "Entry functions must be top-level 'void' functions (at column 0) "
+            "with 'tvm::ffi::TensorView' parameters."
+        )
+    return register_tvm_cuda_kernels(source_code=source_code, module=module, functions=functions)
 
 
 def defjvp(primitive, *jvp_rules):

@@ -43,6 +43,7 @@ CONFIGS = [
 
 
 def _make_benchmark_data(*, platform):
+    brainstate.environ.set(precision=32)  # change to 16 or 64 for other precisions
     rng = np.random.default_rng(42)
     dtype = brainstate.environ.dftype()
     for n_pre, n_post, n_conn, n_col in CONFIGS:

@@ -53,6 +53,7 @@ DEFAULT_SPIKE_RATES = [0.01, 0.05, 0.10, 0.50]
 
 
 def _make_benchmark_data(*, platform, spike_rates=None):
+    brainstate.environ.set(precision=32)  # change to 16 or 64 for other precisions
     if spike_rates is None:
         spike_rates = DEFAULT_SPIKE_RATES
     rng = np.random.default_rng(42)

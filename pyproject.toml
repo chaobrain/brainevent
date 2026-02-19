@@ -3,6 +3,13 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 
+[tool.setuptools.package-data]
+# Include CUDA source files (.cu) so they are bundled in the wheel and
+# available at runtime via Path(__file__).parent / 'name.cu'.read_text().
+# The wildcard key "*" applies to every discovered package/subpackage.
+"*" = ["*.cu"]
+
+
 [tool.setuptools.packages.find]
 exclude = [
     "dev*",
