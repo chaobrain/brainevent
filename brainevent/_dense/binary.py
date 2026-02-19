@@ -672,6 +672,9 @@ def _binary_densemm_pallas_kernel(
             )
 
         def run(weights, spikes):
+            # Convert bool to float to avoid Pallas Triton boolean buffer corruption
+            if spikes.dtype == jnp.bool_:
+                spikes = jnp.asarray(spikes, dtype=weights.dtype)
             fn = pl.pallas_call(kernel, grid=(n, m), out_shape=kwargs['outs'], backend='triton')
             return fn(weights, spikes)
 
@@ -699,6 +702,9 @@ def _binary_densemm_pallas_kernel(
             )
 
         def run(weights, spikes):
+            # Convert bool to float to avoid Pallas Triton boolean buffer corruption
+            if spikes.dtype == jnp.bool_:
+                spikes = jnp.asarray(spikes, dtype=weights.dtype)
             fn = pl.pallas_call(kernel, grid=(n, m), out_shape=kwargs['outs'], backend='triton')
             return fn(weights, spikes)
 
@@ -892,9 +898,8 @@ def binary_densemm_p_call(weights, spikes, *, transpose, backend: Optional[str] 
     """
     Low-level primitive call for binary dense matrix-matrix multiplication.
 
-    This function validates input shapes, converts boolean spikes to float
-    to avoid Pallas Triton boolean buffer corruption, constructs the output
-    shape descriptor, and invokes the ``binary_densemm_p`` JAX primitive.
+    This function validates input shapes, constructs the output shape
+    descriptor, and invokes the ``binary_densemm_p`` JAX primitive.
     Unlike :func:`binary_densemm`, this function operates on raw numerical
     arrays without ``brainunit`` unit handling.
 
@@ -905,7 +910,9 @@ def binary_densemm_p_call(weights, spikes, *, transpose, backend: Optional[str] 
         or ``(k, m)`` when ``transpose=True``.
     spikes : jax.Array
         The binary matrix with shape ``(k, n)``. Can be boolean or float.
-        Boolean inputs are automatically cast to ``weights.dtype``.
+        Boolean inputs are passed through to backends that support them
+        natively (tvmffi, numba) for better performance; Pallas converts
+        internally.
     transpose : bool
         If False, compute ``weights @ spikes`` producing shape ``(m, n)``.
         If True, compute ``weights.T @ spikes`` producing shape ``(m, n)``.
@@ -941,9 +948,9 @@ def binary_densemm_p_call(weights, spikes, *, transpose, backend: Optional[str] 
 
     ``out[i, j] = sum_{k where s[k, j] active} weights[k, i]``
 
-    Boolean spikes are automatically cast to ``weights.dtype`` before
-    invoking the primitive to prevent Pallas Triton boolean buffer
-    corruption. The function returns a single-element list to conform to
+    Boolean spikes are passed through to the primitive unchanged. Backends
+    that require float spikes (Pallas, jax_raw) handle the conversion
+    internally. The function returns a single-element list to conform to
     the JAX primitive output convention.
 
     Examples
@@ -957,10 +964,6 @@ def binary_densemm_p_call(weights, spikes, *, transpose, backend: Optional[str] 
         ...                     [1., 1.], [0., 0.]], dtype=jnp.float32)
         >>> binary_densemm_p_call(weights, spikes, transpose=False)
     """
-    # Convert bool spikes to float before primitive call to avoid
-    # Pallas Triton boolean buffer corruption
-    if spikes.dtype == jnp.bool_:
-        spikes = jnp.asarray(spikes, dtype=weights.dtype)
     if transpose:
         # weights[k,m].T @ spikes[k,n] -> out[m,n]
         assert weights.shape[0] == spikes.shape[0], (
@@ -984,6 +987,107 @@ def binary_densemm_p_call(weights, spikes, *, transpose, backend: Optional[str] 
         weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
         backend=backend,
     )
+
+
+def _binary_densemm_jax_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    spk_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs
+):
+    if transpose:
+        def run(weights, spikes):
+            s = spikes.astype(weights.dtype) if spikes.dtype == jnp.bool_ else spikes
+            return [weights.T @ s]
+        return run
+    else:
+        def run(weights, spikes):
+            s = spikes.astype(weights.dtype) if spikes.dtype == jnp.bool_ else spikes
+            return [weights @ s]
+        return run
+
+
+def _binary_densemm_cuda_kernel(
+    spk_info: jax.ShapeDtypeStruct,
+    weight_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs
+):
+    """
+    CUDA TVM FFI kernel generator for ``binary_densemm``.
+
+    Registers and selects optimised CUDA kernels from ``binary_densemm.cu``
+    for the binary dense matrix-matrix multiply. The kernel variant is chosen
+    based on the weight dtype, spike dtype, and transpose mode.
+
+    Parameters
+    ----------
+    spk_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the spike matrix.
+    weight_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the weight matrix.
+    transpose : bool
+        If False, gather mode. If True, scatter mode.
+    **kwargs
+        Must include ``outs`` (list of jax.ShapeDtypeStruct for output).
+
+    Returns
+    -------
+    kernel : callable
+        A function ``kernel(weights, spikes) -> output`` that invokes the
+        selected CUDA kernel via ``jax.ffi.ffi_call``.
+
+    Performance notes (RTX 3080 Ti Laptop, f32, bool spikes, vs cuBLAS)
+    --------------------------------------------------------------------
+    The event-driven CUDA kernel matches or slightly beats cuBLAS at
+    moderate sizes (<=5000) with low spike density:
+
+    ==============================  =======  =======  =======
+    Config (m x k x n)             density  gather   scatter
+    ==============================  =======  =======  =======
+    5000 x 5000 x 100              0.1%     1.08x    --
+    5000 x 5000 x 100              1%       1.00x    1.06x
+    5000 x 5000 x 100              10%      0.71x    0.86x
+    10000 x 10000 x 100            0.1%     0.44x    --
+    10000 x 10000 x 100            1%       0.41x    0.35x
+    20000 x 20000 x 100            0.1%     0.61x    --
+    ==============================  =======  =======  =======
+
+    At large sizes (>=10000), cuBLAS wins by 2-4x because weight reads
+    (O(m*k)) dominate bandwidth and cannot be skipped by the event-driven
+    approach.  cuBLAS achieves ~80% of peak memory bandwidth through
+    tensor cores, software pipelining, and vectorised loads, while the
+    tiled kernel achieves ~33%.  The ``jax_raw`` backend (cuBLAS) should
+    be preferred for large matrices.
+    """
+    register_tvm_cuda_from_file(
+        module='binary_densemm',
+        source=Path(__file__).parent.joinpath('binary_densemm.cu'),
+    )
+
+    out_info = kwargs['outs']
+
+    # Spike type suffix
+    spk_suffix = '_bool' if spk_info.dtype == jnp.bool_ else '_float'
+
+    # Weight dtype suffix
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+
+    if transpose:
+        kernel_name = f'binary_densemm.binary_densemm_scatter_auto{wt_sfx}{spk_suffix}'
+    else:
+        kernel_name = f'binary_densemm.binary_densemm_gather_auto{wt_sfx}{spk_suffix}'
+
+    def kernel(weights, spikes):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, spikes)
+
+    return kernel
 
 
 binary_densemm_p = XLACustomKernel(
@@ -1013,6 +1117,8 @@ binary_densemm : High-level user-facing function wrapper.
 )
 binary_densemm_p.def_numba_kernel(_binary_densemm_numba_kernel)
 binary_densemm_p.def_pallas_kernel('gpu', _binary_densemm_pallas_kernel)
+binary_densemm_p.def_tvmffi_kernel('gpu', _binary_densemm_cuda_kernel)
+binary_densemm_p.def_kernel('jax_raw', 'gpu', _binary_densemm_jax_kernel)
 binary_densemm_p.def_jvp_rule2(_binary_densemm_jvp_weights, _binary_densemm_jvp_spikes)
 binary_densemm_p.def_transpose_rule(_binary_densemm_transpose_rule)
 binary_densemm_p.def_batching_rule(_binary_densemm_batching)
