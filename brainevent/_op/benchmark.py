@@ -1550,16 +1550,20 @@ def benchmark_function(
 
     @jax.jit
     def run_fn(*args):
-        return jax.lax.fori_loop(0, n_batch_per_run, lambda i, carry: fn(*args), output)
+        if n_batch_per_run == 1:
+            res = fn(*args)
+        else:
+            res = jax.lax.fori_loop(0, n_batch_per_run, lambda i, carry: fn(*args), output)
+        return jax.tree.leaves(res)[0]  # Return a single leaf for timing
 
     # Warmup runs
     for _ in range(n_warmup):
-        jax.block_until_ready(run_fn(*data))
+        run_fn(*data).block_until_ready()
 
     times = []
     for _ in range(n_runs):
         start = time.perf_counter()
-        jax.block_until_ready(run_fn(*data))
+        run_fn(*data).block_until_ready()
         end = time.perf_counter()
         times.append((end - start) / n_batch_per_run)
 

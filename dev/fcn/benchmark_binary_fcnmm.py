@@ -142,7 +142,7 @@ def main():
         platform='gpu',
         n_warmup=args.n_warmup,
         n_runs=args.n_runs,
-        n_batch_per_run=10,
+        n_batch_per_run=1,
         compare_results=True,
         verbose=True,
     )
