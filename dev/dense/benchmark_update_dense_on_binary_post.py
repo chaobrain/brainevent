@@ -243,7 +243,7 @@ def main():
     parser = argparse.ArgumentParser(description="update_dense_on_binary_post benchmark")
     parser.add_argument("--n_warmup", type=int, default=10)
     parser.add_argument("--n_runs", type=int, default=30)
-    parser.add_argument("--manual", action="store_true", default=True,
+    parser.add_argument("--manual", action="store_true", default=False,
                         help="Run manual micro-benchmark for precise kernel timing")
     args = parser.parse_args()
 

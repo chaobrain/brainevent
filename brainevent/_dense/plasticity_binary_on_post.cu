@@ -36,16 +36,19 @@
  *             bool  (int8): active when != 0.
  *             float (f32):  active when != 0.0f.
  *
- * Kernel variant: Tiled Column-Parallel (_on_post_tiled_kern)
- * -----------------------------------------------------------
+ * Kernel variant: 2D-Tiled Column-Parallel (_on_post_tiled_kern)
+ * ---------------------------------------------------------------
  * Tile size: TILE_COLS = 32 columns (one warp-width per row-group).
+ * Row tile:  ON_POST_ROW_TILE rows per block in the Y dimension.
  *
- *   grid  = (ceil(n_post / 32),)   — one block per 32-column tile
+ *   grid  = (ceil(n_post / 32), ceil(n_pre / ON_POST_ROW_TILE))
  *   block = (256,) = 8 row-groups × 32 column-lanes
  *
  *   col_in_tile = threadIdx.x & 31   (0..31, column offset within tile)
  *   row_group   = threadIdx.x >> 5   (0..7,  row striding group)
  *   col         = blockIdx.x * 32 + col_in_tile
+ *   row_start   = blockIdx.y * ON_POST_ROW_TILE
+ *   row_end     = min(row_start + ON_POST_ROW_TILE, n_pre)
  *
  * Spike activity pre-fetch (shared memory):
  *   Threads 0..31 each load one spike value into spk_active[32].
@@ -54,7 +57,7 @@
  *   with a single shared-memory load rather than per-row global reads.
  *
  * Row iteration (coalesced writes):
- *   for row = row_group; row < n_pre; row += 8:
+ *   for row = row_start + row_group; row < row_end; row += 8:
  *     out_w[row * n_post + col] += trace[row]
  *
  *   Memory access pattern:
@@ -64,6 +67,12 @@
  *   All 8 warps simultaneously update 8 different rows of the same 32-col
  *   tile → 8 × 32 = 256 elements updated per kernel iteration with
  *   maximum memory-level parallelism.
+ *
+ * 2D grid advantage over 1D:
+ *   The 1D grid (ceil(n_post/32),) gives very few blocks for large n_pre.
+ *   Example: 10000×10000 → 313 blocks, each looping over all 10000 rows.
+ *   The 2D grid splits the row dimension into tiles of ON_POST_ROW_TILE
+ *   rows, giving 313×79 = ~25K blocks → much better GPU occupancy.
  *
  * Float16 and bfloat16 kernels accumulate in float32 for numerical stability.
  * Bfloat16 requires CUDA 11.0+.
@@ -105,16 +114,27 @@
 #define WRITE_BF16(x) __float2bfloat16(x)
 
 // =========================================================================
-// Tiled column-parallel on_post kernel macro
+// Row-tile size for 2D grid Y-dimension.
+// Each block handles ON_POST_ROW_TILE rows × 32 columns.
+// 128 rows per tile: balances GPU occupancy (many blocks) against
+// per-block amortization (16 row iterations per row_group).
+// =========================================================================
+
+#define ON_POST_ROW_TILE 128
+
+// =========================================================================
+// 2D-tiled column-parallel on_post kernel macro
 //
 // TILE_COLS = 32  (one warp width)
 // BLOCK_SIZE = 256 = 8 row_groups × 32 col_lanes
 //
-// grid  = (ceil(n_post / 32),)
+// grid  = (ceil(n_post / 32), ceil(n_pre / ON_POST_ROW_TILE))
 // block = (256,)
 //
 // Layout: col_in_tile = tx & 31,  row_group = tx >> 5
-//   col = blockIdx.x * 32 + col_in_tile
+//   col       = blockIdx.x * 32 + col_in_tile
+//   row_start = blockIdx.y * ON_POST_ROW_TILE
+//   row_end   = min(row_start + ON_POST_ROW_TILE, n_pre)
 //
 // Shared memory: spk_active[32]
 //   Loaded in parallel by the first warp (tx < 32).
@@ -140,6 +160,10 @@ __global__ void _on_post_tiled_kern##SUFFIX(                                \
     int col_in_tile = threadIdx.x & 31;   /* 0..31 */                      \
     int row_group   = threadIdx.x >> 5;   /* 0..7  */                      \
     int col = blockIdx.x * 32 + col_in_tile;                               \
+    /* 2D grid: blockIdx.y selects the row tile */                          \
+    int row_start = blockIdx.y * ON_POST_ROW_TILE;                          \
+    int row_end   = row_start + ON_POST_ROW_TILE;                           \
+    if (row_end > n_pre) row_end = n_pre;                                   \
     /* Load spike flags for this tile's 32 columns into shared memory */   \
     if (threadIdx.x < 32) {                                                \
         int c = blockIdx.x * 32 + threadIdx.x;                            \
@@ -148,9 +172,9 @@ __global__ void _on_post_tiled_kern##SUFFIX(                                \
     __syncthreads();                                                        \
     /* Early exit: this column is out-of-bounds or its spike is inactive */ \
     if (col >= n_post || !spk_active[col_in_tile]) return;                 \
-    /* Stride over all rows: each row_group handles rows row_group, */     \
-    /* row_group+8, row_group+16, ...  Coalesced within each warp. */      \
-    for (int row = row_group; row < n_pre; row += 8) {                     \
+    /* Stride over rows in [row_start, row_end): each row_group handles */ \
+    /* rows row_start+row_group, +8, +16, ...  Coalesced within warp. */   \
+    for (int row = row_start + row_group; row < row_end; row += 8) {       \
         ACC_T updated = READ_W(out_w[(size_t)row * n_post + col])          \
                       + READ_W(trace[row]);                                 \
         out_w[(size_t)row * n_post + col] = WRITE_W(updated);             \
@@ -196,7 +220,7 @@ DEFINE_ON_POST_TILED(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float,
 // IMPORTANT: data_ptr() returns GPU device pointers.
 // NEVER dereference on the host.  Pass to kernels unchanged.
 //
-// Grid = (ceil(n_post / 32),), block = 256.
+// Grid = (ceil(n_post / 32), ceil(n_pre / ON_POST_ROW_TILE)), block = 256.
 // =========================================================================
 
 #define FFI_ON_POST(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                         \
@@ -215,7 +239,9 @@ void update_dense_on_post##SUFFIX(                                          \
     const WEIGHT_C_T* d_trace = static_cast<const WEIGHT_C_T*>(trace.data_ptr()); \
     const SPIKE_C_T*  d_spk   = static_cast<const SPIKE_C_T*>(spike.data_ptr()); \
     int n_col_blocks = (n_post + 31) / 32;                                 \
-    _on_post_tiled_kern##SUFFIX<<<n_col_blocks, 256, 0, s>>>(               \
+    int n_row_blocks = (n_pre + ON_POST_ROW_TILE - 1) / ON_POST_ROW_TILE;  \
+    dim3 grid(n_col_blocks, n_row_blocks);                                  \
+    _on_post_tiled_kern##SUFFIX<<<grid, 256, 0, s>>>(                       \
         d_w, d_trace, d_spk, n_pre, n_post);                               \
 }
 
