@@ -158,13 +158,17 @@ class TestXLACustomKernelTags:
 
 class TestMultiBenchmarkData:
     def test_def_benchmark_data_stores_fn(self):
-        """def_benchmark_data(fn) stores the function."""
+        """def_benchmark_data(fn) stores a callable that returns the same configs."""
         from brainevent._op.main import XLACustomKernel
         from brainevent._op.benchmark import BenchmarkConfig
         prim = XLACustomKernel('_test_stores_fn')
         fn = lambda *, platform: [BenchmarkConfig("default", ())]
         prim.def_benchmark_data(fn)
-        assert prim._benchmark_data_fn is fn
+        assert prim._benchmark_data_fn is not None
+        assert callable(prim._benchmark_data_fn)
+        result = prim._benchmark_data_fn(platform='cpu')
+        assert isinstance(result, list)
+        assert result[0].name == "default"
 
     def test_def_benchmark_data_none_initially(self):
         """_benchmark_data_fn is None when no fn registered."""
@@ -181,7 +185,9 @@ class TestMultiBenchmarkData:
         fn2 = lambda *, platform: [BenchmarkConfig("b", ())]
         prim.def_benchmark_data(fn1)
         prim.def_benchmark_data(fn2)
-        assert prim._benchmark_data_fn is fn2
+        result = prim._benchmark_data_fn(platform='cpu')
+        assert isinstance(result, list)
+        assert result[0].name == "b"
 
     def test_benchmark_fn_returns_list(self):
         """Benchmark data fn should return list of BenchmarkConfig instances."""
