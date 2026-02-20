@@ -124,7 +124,6 @@ def update_dense_on_binary_pre(
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent._dense.plasticity import update_dense_on_binary_pre
         >>> weight = jnp.zeros((3, 4), dtype=jnp.float32)
         >>> pre_spike = jnp.array([True, False, True])
         >>> post_trace = jnp.ones(4, dtype=jnp.float32) * 0.1
@@ -292,7 +291,6 @@ def _dense_on_pre_prim_call(weight, pre_spike, post_trace, backend: Optional[str
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent._dense.plasticity import _dense_on_pre_prim_call
         >>> weight = jnp.zeros((3, 4), dtype=jnp.float32)
         >>> pre_spike = jnp.array([True, False, True])
         >>> post_trace = jnp.ones(4, dtype=jnp.float32)
@@ -486,7 +484,6 @@ def update_dense_on_binary_post(
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent._dense.plasticity import update_dense_on_binary_post
         >>> weight = jnp.zeros((3, 4), dtype=jnp.float32)
         >>> pre_trace = jnp.ones(3, dtype=jnp.float32) * 0.1
         >>> post_spike = jnp.array([True, False, True, False])
@@ -654,7 +651,6 @@ def _dense_on_post_prim_call(weight, pre_trace, post_spike, backend: Optional[st
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent._dense.plasticity import _dense_on_post_prim_call
         >>> weight = jnp.zeros((3, 4), dtype=jnp.float32)
         >>> pre_trace = jnp.ones(3, dtype=jnp.float32)
         >>> post_spike = jnp.array([True, False, True, False])
