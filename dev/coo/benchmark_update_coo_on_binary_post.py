@@ -144,7 +144,7 @@ def main():
         compare_results=not args.no_compare,
         verbose=True,
     )
-    result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw')
+    result.print(vary_by='backend', highlight_best=True, speedup_vs='cusparse')
 
 
 if __name__ == "__main__":

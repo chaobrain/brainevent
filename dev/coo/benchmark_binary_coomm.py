@@ -202,7 +202,7 @@ def run_automated(n_warmup: int = 10, n_runs: int = 50, configs=None, spike_rate
         n_runs=n_runs,
         verbose=True,
     )
-    result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw')
+    result.print(vary_by='backend', highlight_best=True, speedup_vs='cusparse')
     return result
 
 

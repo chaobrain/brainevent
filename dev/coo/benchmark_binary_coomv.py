@@ -138,7 +138,7 @@ def run_default(n_warmup, n_runs, spike_rate):
         compare_results=True,
         verbose=True,
     )
-    result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw')
+    result.print(vary_by='backend', highlight_best=True, speedup_vs='cusparse')
 
 
 def run_density(n_warmup, n_runs):
@@ -167,7 +167,7 @@ def run_density(n_warmup, n_runs):
         compare_results=True,
         verbose=True,
     )
-    result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw',
+    result.print(vary_by='backend', highlight_best=True, speedup_vs='cusparse',
                  group_by='spike_rate')
 
 
@@ -196,7 +196,7 @@ def run_size(n_warmup, n_runs):
         compare_results=True,
         verbose=True,
     )
-    result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw',
+    result.print(vary_by='backend', highlight_best=True, speedup_vs='cusparse',
                  group_by='nnz')
 
 
