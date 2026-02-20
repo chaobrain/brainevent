@@ -31,9 +31,9 @@
 #include <cuda_bf16.h>
 #include <cstdint>
 
-// =========================================================================
+// ============================================================================
 // Warp-level reduction helpers
-// =========================================================================
+// ============================================================================
 
 __device__ __inline__ float warp_reduce_sum_f32(float val) {
     for (int offset = 16; offset > 0; offset >>= 1)
@@ -47,9 +47,63 @@ __device__ __inline__ double warp_reduce_sum_f64(double val) {
     return val;
 }
 
-// =========================================================================
+// ============================================================================
+// Per-dtype atomic-add helpers (ACC_T value -> WEIGHT_T memory)
+// ============================================================================
+
+__device__ __inline__ void atomic_add_f32(float* addr, float val) {
+    atomicAdd(addr, val);
+}
+
+__device__ __inline__ void atomic_add_f64(double* addr, double val) {
+    atomicAdd(addr, val);
+}
+
+__device__ __inline__ void atomic_add_f16(__half* addr, float val) {
+#if __CUDA_ARCH__ >= 700
+    atomicAdd(addr, __float2half(val));
+#else
+    unsigned int* base = reinterpret_cast<unsigned int*>(
+        reinterpret_cast<size_t>(addr) & ~(size_t)2
+    );
+    int shift = ((reinterpret_cast<size_t>(addr) & 2) != 0) ? 16 : 0;
+    unsigned int assumed, old_val = *base, updated;
+    do {
+        assumed = old_val;
+        unsigned short h = static_cast<unsigned short>((assumed >> shift) & 0xFFFF);
+        float cur = __half2float(*reinterpret_cast<__half*>(&h));
+        __half new_h = __float2half(cur + val);
+        unsigned short new_us = *reinterpret_cast<unsigned short*>(&new_h);
+        updated = (assumed & ~(0xFFFFu << shift)) | (static_cast<unsigned int>(new_us) << shift);
+        old_val = atomicCAS(base, assumed, updated);
+    } while (assumed != old_val);
+#endif
+}
+
+__device__ __inline__ void atomic_add_bf16(__nv_bfloat16* addr, float val) {
+#if __CUDA_ARCH__ >= 800
+    atomicAdd(addr, __float2bfloat16(val));
+#else
+    unsigned int* base = reinterpret_cast<unsigned int*>(
+        reinterpret_cast<size_t>(addr) & ~(size_t)2
+    );
+    int shift = ((reinterpret_cast<size_t>(addr) & 2) != 0) ? 16 : 0;
+    unsigned int assumed, old_val = *base, updated;
+    do {
+        assumed = old_val;
+        unsigned short h = static_cast<unsigned short>((assumed >> shift) & 0xFFFF);
+        float cur = __bfloat162float(*reinterpret_cast<__nv_bfloat16*>(&h));
+        __nv_bfloat16 new_h = __float2bfloat16(cur + val);
+        unsigned short new_us = *reinterpret_cast<unsigned short*>(&new_h);
+        updated = (assumed & ~(0xFFFFu << shift)) | (static_cast<unsigned int>(new_us) << shift);
+        old_val = atomicCAS(base, assumed, updated);
+    } while (assumed != old_val);
+#endif
+}
+
+// ============================================================================
 // Spike active predicates
-// =========================================================================
+// ============================================================================
 
 #define IS_ACTIVE_BOOL(s)       ((s) != 0)
 #define IS_ACTIVE_FLOAT_F32(s)  ((s) > 0.0f)
@@ -57,9 +111,9 @@ __device__ __inline__ double warp_reduce_sum_f64(double val) {
 #define IS_ACTIVE_FLOAT_F16(s)  (__half2float(s) > 0.0f)
 #define IS_ACTIVE_FLOAT_BF16(s) (__bfloat162float(s) > 0.0f)
 
-// =========================================================================
+// ============================================================================
 // Per-dtype conversion macros
-// =========================================================================
+// ============================================================================
 
 #define READ_F32(x)   (x)
 #define WRITE_F32(x)  (x)
@@ -70,9 +124,9 @@ __device__ __inline__ double warp_reduce_sum_f64(double val) {
 #define READ_BF16(x)  __bfloat162float(x)
 #define WRITE_BF16(x) __float2bfloat16(x)
 
-// =========================================================================
+// ============================================================================
 // FCN Matrix-Vector Multiplication (fcnmv)
-// =========================================================================
+// ============================================================================
 
 #define DEFINE_BG_WARP(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
                        READ_W, WRITE_W, WARP_RED, ACC_ZERO) \
@@ -136,7 +190,7 @@ __global__ void _bg_basic_kern##SUFFIX( \
         output[row] = WRITE_W(is_homo ? (READ_W(weights[0]) * val) : val); \
 }
 
-#define DEFINE_BS_WARP(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T) \
+#define DEFINE_BS_WARP(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, READ_W, ATOMIC_ADD_W) \
 __global__ void _bs_warp_kern##SUFFIX( \
     const int32_t* __restrict__ indices, \
     const SPIKE_T* __restrict__ spikes, \
@@ -151,13 +205,13 @@ __global__ void _bs_warp_kern##SUFFIX( \
         if (!IS_ACTIVE(spikes[row])) continue; \
         const int32_t* i_row = indices + (size_t)row * n_conn; \
         const WEIGHT_T* w_row = is_homo ? nullptr : weights + (size_t)row * n_conn; \
-        WEIGHT_T w0 = is_homo ? weights[0] : (WEIGHT_T)0; \
+        float w0 = is_homo ? READ_W(weights[0]) : 0.0f; \
         for (int k = lane_id; k < n_conn; k += 32) \
-            atomicAdd(&output[i_row[k]], is_homo ? w0 : w_row[k]); \
+            ATOMIC_ADD_W(&output[i_row[k]], is_homo ? w0 : READ_W(w_row[k])); \
     } \
 }
 
-#define DEFINE_BS_BASIC(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T) \
+#define DEFINE_BS_BASIC(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, READ_W, ATOMIC_ADD_W) \
 __global__ void _bs_basic_kern##SUFFIX( \
     const int32_t* __restrict__ indices, \
     const SPIKE_T* __restrict__ spikes, \
@@ -170,9 +224,9 @@ __global__ void _bs_basic_kern##SUFFIX( \
     if (!IS_ACTIVE(spikes[row])) return; \
     const int32_t* i_row = indices + (size_t)row * n_conn; \
     const WEIGHT_T* w_row = is_homo ? nullptr : weights + (size_t)row * n_conn; \
-    WEIGHT_T w0 = is_homo ? weights[0] : (WEIGHT_T)0; \
+    float w0 = is_homo ? READ_W(weights[0]) : 0.0f; \
     for (int k = threadIdx.x; k < n_conn; k += blockDim.x) \
-        atomicAdd(&output[i_row[k]], is_homo ? w0 : w_row[k]); \
+        ATOMIC_ADD_W(&output[i_row[k]], is_homo ? w0 : READ_W(w_row[k])); \
 }
 
 // SpMV Instantiations
@@ -180,34 +234,34 @@ DEFINE_BG_WARP(_bool_warp_f32,   uint8_t, IS_ACTIVE_BOOL,      float,          f
 DEFINE_BG_WARP(_float_warp_f32,  float,   IS_ACTIVE_FLOAT_F32, float,          float,  READ_F32,  WRITE_F32,  warp_reduce_sum_f32, 0.0f)
 DEFINE_BG_BASIC(_bool_basic_f32,  uint8_t, IS_ACTIVE_BOOL,      float,          float,  READ_F32,  WRITE_F32,  warp_reduce_sum_f32, 0.0f)
 DEFINE_BG_BASIC(_float_basic_f32, float,   IS_ACTIVE_FLOAT_F32, float,          float,  READ_F32,  WRITE_F32,  warp_reduce_sum_f32, 0.0f)
-DEFINE_BS_WARP(_bool_warp_f32,   uint8_t, IS_ACTIVE_BOOL,      float)
-DEFINE_BS_WARP(_float_warp_f32,  float,   IS_ACTIVE_FLOAT_F32, float)
-DEFINE_BS_BASIC(_bool_basic_f32,  uint8_t, IS_ACTIVE_BOOL,      float)
-DEFINE_BS_BASIC(_float_basic_f32, float,   IS_ACTIVE_FLOAT_F32, float)
+DEFINE_BS_WARP(_bool_warp_f32,   uint8_t, IS_ACTIVE_BOOL,      float,  READ_F32,  atomic_add_f32)
+DEFINE_BS_WARP(_float_warp_f32,  float,   IS_ACTIVE_FLOAT_F32, float,  READ_F32,  atomic_add_f32)
+DEFINE_BS_BASIC(_bool_basic_f32,  uint8_t, IS_ACTIVE_BOOL,      float,  READ_F32,  atomic_add_f32)
+DEFINE_BS_BASIC(_float_basic_f32, float,   IS_ACTIVE_FLOAT_F32, float,  READ_F32,  atomic_add_f32)
 DEFINE_BG_WARP(_bool_warp_f64,   uint8_t, IS_ACTIVE_BOOL,      double,         double, READ_F64,  WRITE_F64,  warp_reduce_sum_f64, 0.0)
 DEFINE_BG_WARP(_float_warp_f64,  double,  IS_ACTIVE_FLOAT_F64, double,         double, READ_F64,  WRITE_F64,  warp_reduce_sum_f64, 0.0)
 DEFINE_BG_BASIC(_bool_basic_f64,  uint8_t, IS_ACTIVE_BOOL,      double,         double, READ_F64,  WRITE_F64,  warp_reduce_sum_f64, 0.0)
 DEFINE_BG_BASIC(_float_basic_f64, double,  IS_ACTIVE_FLOAT_F64, double,         double, READ_F64,  WRITE_F64,  warp_reduce_sum_f64, 0.0)
-DEFINE_BS_WARP(_bool_warp_f64,   uint8_t, IS_ACTIVE_BOOL,      double)
-DEFINE_BS_WARP(_float_warp_f64,  double,  IS_ACTIVE_FLOAT_F64, double)
-DEFINE_BS_BASIC(_bool_basic_f64,  uint8_t, IS_ACTIVE_BOOL,      double)
-DEFINE_BS_BASIC(_float_basic_f64, double,  IS_ACTIVE_FLOAT_F64, double)
+DEFINE_BS_WARP(_bool_warp_f64,   uint8_t, IS_ACTIVE_BOOL,      double, READ_F64,  atomic_add_f64)
+DEFINE_BS_WARP(_float_warp_f64,  double,  IS_ACTIVE_FLOAT_F64, double, READ_F64,  atomic_add_f64)
+DEFINE_BS_BASIC(_bool_basic_f64,  uint8_t, IS_ACTIVE_BOOL,      double, READ_F64,  atomic_add_f64)
+DEFINE_BS_BASIC(_float_basic_f64, double,  IS_ACTIVE_FLOAT_F64, double, READ_F64,  atomic_add_f64)
 DEFINE_BG_WARP(_bool_warp_f16,   uint8_t, IS_ACTIVE_BOOL,      __half,         float,  READ_F16,  WRITE_F16,  warp_reduce_sum_f32, 0.0f)
 DEFINE_BG_WARP(_float_warp_f16,  __half,  IS_ACTIVE_FLOAT_F16, __half,         float,  READ_F16,  WRITE_F16,  warp_reduce_sum_f32, 0.0f)
 DEFINE_BG_BASIC(_bool_basic_f16,  uint8_t, IS_ACTIVE_BOOL,      __half,         float,  READ_F16,  WRITE_F16,  warp_reduce_sum_f32, 0.0f)
 DEFINE_BG_BASIC(_float_basic_f16, __half,  IS_ACTIVE_FLOAT_F16, __half,         float,  READ_F16,  WRITE_F16,  warp_reduce_sum_f32, 0.0f)
-DEFINE_BS_WARP(_bool_warp_f16,   uint8_t, IS_ACTIVE_BOOL,      __half)
-DEFINE_BS_WARP(_float_warp_f16,  __half,  IS_ACTIVE_FLOAT_F16, __half)
-DEFINE_BS_BASIC(_bool_basic_f16,  uint8_t, IS_ACTIVE_BOOL,      __half)
-DEFINE_BS_BASIC(_float_basic_f16, __half,  IS_ACTIVE_FLOAT_F16, __half)
+DEFINE_BS_WARP(_bool_warp_f16,   uint8_t, IS_ACTIVE_BOOL,      __half,  READ_F16,  atomic_add_f16)
+DEFINE_BS_WARP(_float_warp_f16,  __half,  IS_ACTIVE_FLOAT_F16, __half,  READ_F16,  atomic_add_f16)
+DEFINE_BS_BASIC(_bool_basic_f16,  uint8_t, IS_ACTIVE_BOOL,      __half,  READ_F16,  atomic_add_f16)
+DEFINE_BS_BASIC(_float_basic_f16, __half,  IS_ACTIVE_FLOAT_F16, __half,  READ_F16,  atomic_add_f16)
 DEFINE_BG_WARP(_bool_warp_bf16,   uint8_t,        IS_ACTIVE_BOOL,       __nv_bfloat16,  float,  READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
 DEFINE_BG_WARP(_float_warp_bf16,  __nv_bfloat16,  IS_ACTIVE_FLOAT_BF16, __nv_bfloat16,  float,  READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
 DEFINE_BG_BASIC(_bool_basic_bf16,  uint8_t,        IS_ACTIVE_BOOL,       __nv_bfloat16,  float,  READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
 DEFINE_BG_BASIC(_float_basic_bf16, __nv_bfloat16,  IS_ACTIVE_FLOAT_BF16, __nv_bfloat16,  float,  READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
-DEFINE_BS_WARP(_bool_warp_bf16,   uint8_t,        IS_ACTIVE_BOOL,       __nv_bfloat16)
-DEFINE_BS_WARP(_float_warp_bf16,  __nv_bfloat16,  IS_ACTIVE_FLOAT_BF16, __nv_bfloat16)
-DEFINE_BS_BASIC(_bool_basic_bf16,  uint8_t,        IS_ACTIVE_BOOL,       __nv_bfloat16)
-DEFINE_BS_BASIC(_float_basic_bf16, __nv_bfloat16,  IS_ACTIVE_FLOAT_BF16, __nv_bfloat16)
+DEFINE_BS_WARP(_bool_warp_bf16,   uint8_t,        IS_ACTIVE_BOOL,       __nv_bfloat16,  READ_BF16, atomic_add_bf16)
+DEFINE_BS_WARP(_float_warp_bf16,  __nv_bfloat16,  IS_ACTIVE_FLOAT_BF16, __nv_bfloat16,  READ_BF16, atomic_add_bf16)
+DEFINE_BS_BASIC(_bool_basic_bf16,  uint8_t,        IS_ACTIVE_BOOL,       __nv_bfloat16,  READ_BF16, atomic_add_bf16)
+DEFINE_BS_BASIC(_float_basic_bf16, __nv_bfloat16,  IS_ACTIVE_FLOAT_BF16, __nv_bfloat16,  READ_BF16, atomic_add_bf16)
 
 // FFI Macros for SpMV
 #define FFI_BG_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T) \
@@ -349,9 +403,9 @@ FFI_BS_WARP(_float_warp_bf16,   __nv_bfloat16, __nv_bfloat16)
 FFI_BS_BASIC(_float_basic_bf16, __nv_bfloat16, __nv_bfloat16)
 
 
-// =========================================================================
+// ============================================================================
 // FCN Matrix-Matrix Multiplication (fcnmm)
-// =========================================================================
+// ============================================================================
 
 #define DEFINE_BGM_WARP(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, WRITE_W) \
 __global__ void _bgm_warp_kern##SUFFIX( \
@@ -410,7 +464,7 @@ __global__ void _bgm_basic_kern##SUFFIX( \
             WRITE_W(is_homo ? (READ_W(weights[0]) * accum) : accum); \
 }
 
-#define DEFINE_BSM_WARP(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T) \
+#define DEFINE_BSM_WARP(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, READ_W, ATOMIC_ADD_W) \
 __global__ void _bsm_warp_kern##SUFFIX( \
     const int32_t* __restrict__ indices, \
     const SPIKE_T* __restrict__ matrix, \
@@ -429,12 +483,13 @@ __global__ void _bsm_warp_kern##SUFFIX( \
     if (!active) return; \
     const int32_t*  i_row = indices + (size_t)row * n_conn; \
     const WEIGHT_T* w_row = is_homo ? nullptr : weights + (size_t)row * n_conn; \
-    WEIGHT_T w0 = is_homo ? weights[0] : (WEIGHT_T)0; \
+    float w0 = is_homo ? READ_W(weights[0]) : 0.0f; \
     for (int k = 0; k < n_conn; k++) \
-        atomicAdd(&output[(size_t)i_row[k] * n_batch + j], is_homo ? w0 : w_row[k]); \
+        ATOMIC_ADD_W(&output[(size_t)i_row[k] * n_batch + j], \
+                     is_homo ? w0 : READ_W(w_row[k])); \
 }
 
-#define DEFINE_BSM_BASIC(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T) \
+#define DEFINE_BSM_BASIC(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, READ_W, ATOMIC_ADD_W) \
 __global__ void _bsm_basic_kern##SUFFIX( \
     const int32_t* __restrict__ indices, \
     const SPIKE_T* __restrict__ matrix, \
@@ -455,11 +510,12 @@ __global__ void _bsm_basic_kern##SUFFIX( \
     if (_smem_flag[0] == 0) return; \
     const int32_t*  i_row = indices + (size_t)row * n_conn; \
     const WEIGHT_T* w_row = is_homo ? nullptr : weights + (size_t)row * n_conn; \
-    WEIGHT_T w0 = is_homo ? weights[0] : (WEIGHT_T)0; \
+    float w0 = is_homo ? READ_W(weights[0]) : 0.0f; \
     for (int j = 0; j < n_batch; j++) { \
         if (!IS_ACTIVE(matrix[(size_t)row * n_batch + j])) continue; \
         for (int k = threadIdx.x; k < n_conn; k += blockDim.x) \
-            atomicAdd(&output[(size_t)i_row[k] * n_batch + j], is_homo ? w0 : w_row[k]); \
+            ATOMIC_ADD_W(&output[(size_t)i_row[k] * n_batch + j], \
+                         is_homo ? w0 : READ_W(w_row[k])); \
     } \
 }
 
@@ -468,34 +524,34 @@ DEFINE_BGM_WARP(_bool_warp_f32,   uint8_t, IS_ACTIVE_BOOL,      float,          
 DEFINE_BGM_WARP(_float_warp_f32,  float,   IS_ACTIVE_FLOAT_F32, float,          float,  READ_F32,  WRITE_F32)
 DEFINE_BGM_BASIC(_bool_basic_f32,  uint8_t, IS_ACTIVE_BOOL,      float,          float,  READ_F32,  WRITE_F32)
 DEFINE_BGM_BASIC(_float_basic_f32, float,   IS_ACTIVE_FLOAT_F32, float,          float,  READ_F32,  WRITE_F32)
-DEFINE_BSM_WARP(_bool_warp_f32,   uint8_t, IS_ACTIVE_BOOL,      float)
-DEFINE_BSM_WARP(_float_warp_f32,  float,   IS_ACTIVE_FLOAT_F32, float)
-DEFINE_BSM_BASIC(_bool_basic_f32,  uint8_t, IS_ACTIVE_BOOL,      float)
-DEFINE_BSM_BASIC(_float_basic_f32, float,   IS_ACTIVE_FLOAT_F32, float)
+DEFINE_BSM_WARP(_bool_warp_f32,   uint8_t, IS_ACTIVE_BOOL,      float,  READ_F32,  atomic_add_f32)
+DEFINE_BSM_WARP(_float_warp_f32,  float,   IS_ACTIVE_FLOAT_F32, float,  READ_F32,  atomic_add_f32)
+DEFINE_BSM_BASIC(_bool_basic_f32,  uint8_t, IS_ACTIVE_BOOL,      float,  READ_F32,  atomic_add_f32)
+DEFINE_BSM_BASIC(_float_basic_f32, float,   IS_ACTIVE_FLOAT_F32, float,  READ_F32,  atomic_add_f32)
 DEFINE_BGM_WARP(_bool_warp_f64,   uint8_t, IS_ACTIVE_BOOL,      double,         double, READ_F64,  WRITE_F64)
 DEFINE_BGM_WARP(_float_warp_f64,  double,  IS_ACTIVE_FLOAT_F64, double,         double, READ_F64,  WRITE_F64)
 DEFINE_BGM_BASIC(_bool_basic_f64,  uint8_t, IS_ACTIVE_BOOL,      double,         double, READ_F64,  WRITE_F64)
 DEFINE_BGM_BASIC(_float_basic_f64, double,  IS_ACTIVE_FLOAT_F64, double,         double, READ_F64,  WRITE_F64)
-DEFINE_BSM_WARP(_bool_warp_f64,   uint8_t, IS_ACTIVE_BOOL,      double)
-DEFINE_BSM_WARP(_float_warp_f64,  double,  IS_ACTIVE_FLOAT_F64, double)
-DEFINE_BSM_BASIC(_bool_basic_f64,  uint8_t, IS_ACTIVE_BOOL,      double)
-DEFINE_BSM_BASIC(_float_basic_f64, double,  IS_ACTIVE_FLOAT_F64, double)
+DEFINE_BSM_WARP(_bool_warp_f64,   uint8_t, IS_ACTIVE_BOOL,      double, READ_F64,  atomic_add_f64)
+DEFINE_BSM_WARP(_float_warp_f64,  double,  IS_ACTIVE_FLOAT_F64, double, READ_F64,  atomic_add_f64)
+DEFINE_BSM_BASIC(_bool_basic_f64,  uint8_t, IS_ACTIVE_BOOL,      double, READ_F64,  atomic_add_f64)
+DEFINE_BSM_BASIC(_float_basic_f64, double,  IS_ACTIVE_FLOAT_F64, double, READ_F64,  atomic_add_f64)
 DEFINE_BGM_WARP(_bool_warp_f16,   uint8_t, IS_ACTIVE_BOOL,      __half,         float,  READ_F16,  WRITE_F16)
 DEFINE_BGM_WARP(_float_warp_f16,  __half,  IS_ACTIVE_FLOAT_F16, __half,         float,  READ_F16,  WRITE_F16)
 DEFINE_BGM_BASIC(_bool_basic_f16,  uint8_t, IS_ACTIVE_BOOL,      __half,         float,  READ_F16,  WRITE_F16)
 DEFINE_BGM_BASIC(_float_basic_f16, __half,  IS_ACTIVE_FLOAT_F16, __half,         float,  READ_F16,  WRITE_F16)
-DEFINE_BSM_WARP(_bool_warp_f16,   uint8_t, IS_ACTIVE_BOOL,      __half)
-DEFINE_BSM_WARP(_float_warp_f16,  __half,  IS_ACTIVE_FLOAT_F16, __half)
-DEFINE_BSM_BASIC(_bool_basic_f16,  uint8_t, IS_ACTIVE_BOOL,      __half)
-DEFINE_BSM_BASIC(_float_basic_f16, __half,  IS_ACTIVE_FLOAT_F16, __half)
+DEFINE_BSM_WARP(_bool_warp_f16,   uint8_t, IS_ACTIVE_BOOL,      __half,  READ_F16,  atomic_add_f16)
+DEFINE_BSM_WARP(_float_warp_f16,  __half,  IS_ACTIVE_FLOAT_F16, __half,  READ_F16,  atomic_add_f16)
+DEFINE_BSM_BASIC(_bool_basic_f16,  uint8_t, IS_ACTIVE_BOOL,      __half,  READ_F16,  atomic_add_f16)
+DEFINE_BSM_BASIC(_float_basic_f16, __half,  IS_ACTIVE_FLOAT_F16, __half,  READ_F16,  atomic_add_f16)
 DEFINE_BGM_WARP(_bool_warp_bf16,   uint8_t,        IS_ACTIVE_BOOL,       __nv_bfloat16, float, READ_BF16, WRITE_BF16)
 DEFINE_BGM_WARP(_float_warp_bf16,  __nv_bfloat16,  IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16)
 DEFINE_BGM_BASIC(_bool_basic_bf16,  uint8_t,        IS_ACTIVE_BOOL,       __nv_bfloat16, float, READ_BF16, WRITE_BF16)
 DEFINE_BGM_BASIC(_float_basic_bf16, __nv_bfloat16,  IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16)
-DEFINE_BSM_WARP(_bool_warp_bf16,   uint8_t,        IS_ACTIVE_BOOL,       __nv_bfloat16)
-DEFINE_BSM_WARP(_float_warp_bf16,  __nv_bfloat16,  IS_ACTIVE_FLOAT_BF16, __nv_bfloat16)
-DEFINE_BSM_BASIC(_bool_basic_bf16,  uint8_t,        IS_ACTIVE_BOOL,       __nv_bfloat16)
-DEFINE_BSM_BASIC(_float_basic_bf16, __nv_bfloat16,  IS_ACTIVE_FLOAT_BF16, __nv_bfloat16)
+DEFINE_BSM_WARP(_bool_warp_bf16,   uint8_t,        IS_ACTIVE_BOOL,       __nv_bfloat16,  READ_BF16, atomic_add_bf16)
+DEFINE_BSM_WARP(_float_warp_bf16,  __nv_bfloat16,  IS_ACTIVE_FLOAT_BF16, __nv_bfloat16,  READ_BF16, atomic_add_bf16)
+DEFINE_BSM_BASIC(_bool_basic_bf16,  uint8_t,        IS_ACTIVE_BOOL,       __nv_bfloat16,  READ_BF16, atomic_add_bf16)
+DEFINE_BSM_BASIC(_float_basic_bf16, __nv_bfloat16,  IS_ACTIVE_FLOAT_BF16, __nv_bfloat16,  READ_BF16, atomic_add_bf16)
 
 // FFI Macros for SpMM
 #define FFI_BGM_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T) \
