@@ -14,6 +14,7 @@
 # ==============================================================================
 # -*- coding: utf-8 -*-
 
+from pathlib import Path
 from typing import Optional
 
 import brainunit as u
@@ -25,7 +26,7 @@ from jax.interpreters import ad
 from brainevent._data import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_uniform
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, register_tvm_cuda_from_file
 from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
 
@@ -887,6 +888,29 @@ def jitu_p_call(
     )
 
 
+_dtype_sfx = {
+    np.dtype('float16'): '_f16',
+    np.dtype('float32'): '_f32',
+    np.dtype('float64'): '_f64',
+    np.dtype('bfloat16'): '_bf16',
+}
+
+
+def _jitu_cuda_kernel(
+    corder: bool = True,
+    **kwargs
+):
+    register_tvm_cuda_from_file(module='jit_uniform', source=Path(__file__).parent.joinpath('jit_uniform.cu'))
+    sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
+    variant = 'corder_true' if corder else 'corder_false'
+    kernel_name = f'jit_uniform.jitu_{variant}{sfx}'
+
+    def kernel(w_low, w_high, clen, seed):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed)
+
+    return kernel
+
+
 jitu_p = XLACustomKernel(
     'float_jitu',
     doc="""
@@ -914,6 +938,7 @@ jitu : High-level user-facing function wrapper.
 )
 jitu_p.def_numba_kernel(_jitu_numba_kernel_generator)
 jitu_p.def_pallas_kernel('gpu', _jitu_pallas_kernel_generator)
+jitu_p.def_tvmffi_kernel('gpu', _jitu_cuda_kernel)
 jitu_p.def_jvp_rule2(_jitu_jvp_wlow, _jitu_jvp_whigh, None, None)
 jitu_p.def_transpose_rule(_jitu_transpose)
 jitu_p.def_batching_rule(_jitu_batching)
@@ -1508,6 +1533,21 @@ def jitumv_p_call(
     )
 
 
+def _jitumv_cuda_kernel(
+    corder: bool = True,
+    **kwargs
+):
+    register_tvm_cuda_from_file(module='jit_uniform', source=Path(__file__).parent.joinpath('jit_uniform.cu'))
+    sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
+    variant = 'gather' if corder else 'scatter'
+    kernel_name = f'jit_uniform.jitumv_{variant}{sfx}'
+
+    def kernel(w_low, w_high, clen, vector, seed):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed, vector)
+
+    return kernel
+
+
 jitumv_p = XLACustomKernel(
     'float_jitumv',
     doc="""
@@ -1536,6 +1576,7 @@ jitumv : High-level user-facing function wrapper.
 )
 jitumv_p.def_numba_kernel(_jitumv_numba_kernel_generator)
 jitumv_p.def_pallas_kernel('gpu', _jitumv_pallas_kernel_generator)
+jitumv_p.def_tvmffi_kernel('gpu', _jitumv_cuda_kernel)
 jitumv_p.def_jvp_rule2(_jitumv_jvp_wlow, _jitumv_jvp_whigh, None, _jitumv_jvp_v, None)
 jitumv_p.def_transpose_rule(_jitumv_transpose_rules)
 jitumv_p.def_batching_rule(_jitumv_batching)
@@ -2188,6 +2229,21 @@ def jitumm_p_call(
     )
 
 
+def _jitumm_cuda_kernel(
+    corder: bool = True,
+    **kwargs
+):
+    register_tvm_cuda_from_file(module='jit_uniform', source=Path(__file__).parent.joinpath('jit_uniform.cu'))
+    sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
+    variant = 'gather' if corder else 'scatter'
+    kernel_name = f'jit_uniform.jitumm_{variant}{sfx}'
+
+    def kernel(w_low, w_high, clen, B, seed):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed, B)
+
+    return kernel
+
+
 jitumm_p = XLACustomKernel(
     'float_jitumm',
     doc="""
@@ -2216,6 +2272,7 @@ jitumm : High-level user-facing function wrapper.
 )
 jitumm_p.def_numba_kernel(_jitumm_numba_kernel_generator)
 jitumm_p.def_pallas_kernel('gpu', _jitumm_pallas_kernel_generator)
+jitumm_p.def_tvmffi_kernel('gpu', _jitumm_cuda_kernel)
 jitumm_p.def_jvp_rule2(_jitumm_jvp_wlow, _jitumm_jvp_whigh, None, _jitumm_jvp_B, None)
 jitumm_p.def_transpose_rule(_jitumm_transpose_rules)
 jitumm_p.def_batching_rule(_jitumm_batching)

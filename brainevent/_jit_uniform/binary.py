@@ -14,6 +14,7 @@
 # ==============================================================================
 # -*- coding: utf-8 -*-
 
+from pathlib import Path
 from typing import Optional, Sequence
 
 import brainunit as u
@@ -25,10 +26,10 @@ from jax.interpreters import ad
 from brainevent._data import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_uniform
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, register_tvm_cuda_from_file
 from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
-from .float import jitumv_p_call, jitumm_p_call
+from .float import jitumv_p_call, jitumm_p_call, _dtype_sfx
 
 __all__ = [
     "binary_jitumv",
@@ -933,6 +934,36 @@ def binary_jitumv_p_call(
     )
 
 
+_spike_sfx = {
+    np.dtype('bool'): '_bool',
+    np.dtype('int8'): '_bool',
+    np.dtype('float32'): '_float',
+    np.dtype('float16'): '_float',
+    np.dtype('float64'): '_float',
+    np.dtype('bfloat16'): '_float',
+}
+
+
+def _binary_jitumv_cuda_kernel(
+    corder: bool,
+    vector_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    register_tvm_cuda_from_file(
+        module='jit_uniform',
+        source=Path(__file__).parent.joinpath('jit_uniform.cu'),
+    )
+    wt_sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
+    sp_sfx = _spike_sfx.get(np.dtype(vector_info.dtype), '_float')
+    variant = 'gather' if corder else 'scatter'
+    kernel_name = f'jit_uniform.binary_jitumv_{variant}{wt_sfx}{sp_sfx}'
+
+    def kernel(w_low, w_high, clen, vector, seed):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed, vector)
+
+    return kernel
+
+
 binary_jitumv_p = XLACustomKernel(
     'binary_jitumv',
     doc="""
@@ -960,6 +991,7 @@ binary_jitumv : High-level user-facing function wrapper.
 )
 binary_jitumv_p.def_numba_kernel(_jitumv_numba_kernel_generator)
 binary_jitumv_p.def_pallas_kernel('gpu', _jitumv_pallas_kernel_generator)
+binary_jitumv_p.def_tvmffi_kernel('gpu', _binary_jitumv_cuda_kernel)
 binary_jitumv_p.def_jvp_rule2(_jitumv_jvp_wloc, _jitumv_jvp_wscale, None, _jitumv_jvp_v, None)
 binary_jitumv_p.def_transpose_rule(_jitumv_transpose_rules)
 binary_jitumv_p.def_batching_rule(_jitumv_batching)
@@ -1662,6 +1694,26 @@ def binary_jitumm_p_call(
     )
 
 
+def _binary_jitumm_cuda_kernel(
+    corder: bool,
+    B_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    register_tvm_cuda_from_file(
+        module='jit_uniform',
+        source=Path(__file__).parent.joinpath('jit_uniform.cu'),
+    )
+    wt_sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
+    sp_sfx = _spike_sfx.get(np.dtype(B_info.dtype), '_float')
+    variant = 'gather' if corder else 'scatter'
+    kernel_name = f'jit_uniform.binary_jitumm_{variant}{wt_sfx}{sp_sfx}'
+
+    def kernel(w_low, w_high, clen, B, seed):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed, B)
+
+    return kernel
+
+
 binary_jitumm_p = XLACustomKernel(
     'binary_jitumm',
     doc="""
@@ -1689,6 +1741,7 @@ binary_jitumm : High-level user-facing function wrapper.
 )
 binary_jitumm_p.def_numba_kernel(_jitumm_numba_kernel_generator)
 binary_jitumm_p.def_pallas_kernel('gpu', _jitumm_pallas_kernel_generator)
+binary_jitumm_p.def_tvmffi_kernel('gpu', _binary_jitumm_cuda_kernel)
 binary_jitumm_p.def_jvp_rule2(_jitumm_jvp_wloc, _jitumm_jvp_wscale, None, _jitumm_jvp_B, None)
 binary_jitumm_p.def_transpose_rule(_jitumm_transpose_rules)
 binary_jitumm_p.def_batching_rule(_jitumm_batching)
