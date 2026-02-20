@@ -168,7 +168,7 @@ def run_automated(n_warmup: int = 10, n_runs: int = 50, configs=None):
         compare_results=True,
         verbose=True,
     )
-    result.print(vary_by='backend', highlight_best=True, speedup_vs='jax')
+    result.print(vary_by='backend', highlight_best=True, speedup_vs='jax_raw')
     return result
 
 
