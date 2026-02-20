@@ -79,9 +79,8 @@ def main():
         n_runs=args.n_runs,
         compare_results=False,
         verbose=True,
-        backends=['tvmffi'],
     )
-    result.print(vary_by='backend', highlight_best=True)
+    result.print(vary_by='backend', highlight_best=True, speedup_vs='pallas')
 
 
 if __name__ == "__main__":
