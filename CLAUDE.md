@@ -290,3 +290,26 @@ Never embed large CUDA source strings inline in Python files. Instead:
 
 A linter runs on file save and may revert changes. When making many edits to a single file, prefer writing the entire
 file at once rather than incremental edits.
+
+
+## Lessons Learned
+
+### 1. Always `cudaMemsetAsync` Output Buffers Before CUDA Kernel Launch
+
+**Mistake**: Launching CUDA kernels that accumulate into an output buffer (via `atomicAdd` or `+=`) without first zeroing
+it. The output tensor allocated by `jax.ffi.ffi_call` is **NOT guaranteed to be zeroed** — it may contain garbage or NaN
+values from prior allocations.
+
+```c
+// WRONG — output may contain NaN/garbage, atomicAdd will propagate it
+my_scatter_kernel<<<grid, block, 0, stream>>>(input, output, ...);
+
+// CORRECT — zero the output buffer before any accumulating kernel
+cudaMemsetAsync(output.data_ptr(), 0, (size_t)m * n * sizeof(float), (cudaStream_t)stream);
+my_scatter_kernel<<<grid, block, 0, stream>>>(input, output, ...);
+```
+
+This applies to:
+- **All scatter kernels** that use `atomicAdd` to accumulate results
+- **All gather kernels** that read-modify-write the output (e.g., `out[i] += val`)
+- **Dense generation kernels** (like `jits`) where only connected positions are written — unconnected positions must be 0
