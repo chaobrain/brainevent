@@ -459,7 +459,7 @@ def _jitumv_pallas_kernel_generator(
             i_cols = i_col_block * block_size + jnp.arange(block_size)
             i_col_mask = i_cols < dim
 
-            def body(data):
+            def body(_step, data):
                 i_rows, i_row_mask, rng, res = data
                 safe_rows = jnp.where(i_row_mask, i_rows, 0)
                 v = vector_ref[safe_rows]
@@ -474,11 +474,10 @@ def _jitumv_pallas_kernel_generator(
             rng = _PallasLFSRRNG(seed + i_cols * num_row)
             i_rows = rng.random_integers(0, clen)
             i_row_mask = i_rows < num_row
-            out = jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
+            _, _, _, out = jax.lax.fori_loop(
+                0, num_row, body,
                 (i_rows, i_row_mask, rng, jnp.zeros(block_size, dtype=post_ref.dtype))
-            )[-1]
+            )
             post_ref[i_cols] = jnp.where(i_col_mask, out, post_ref[i_cols])
 
     else:
@@ -494,13 +493,14 @@ def _jitumv_pallas_kernel_generator(
             i_row_block = pl.program_id(0)
             i_rows = i_row_block * block_size + jnp.arange(block_size)
             i_row_mask = i_rows < dim
-            v = vector_ref[i_rows]
+            safe_rows = jnp.where(i_row_mask, i_rows, 0)
+            v = vector_ref[safe_rows]
             if vector_info.dtype != jnp.bool_:
                 v = v > 0.
             # event_mask: only active lanes where the vector element is an event
             event_mask = i_row_mask & v
 
-            def body(data):
+            def body(_step, data):
                 i_cols, i_col_mask, rng = data
                 w = rng.uniform(w_low, w_high)
                 atomic_add(post_ref, (i_cols,), w, mask=event_mask & i_col_mask)
@@ -510,11 +510,7 @@ def _jitumv_pallas_kernel_generator(
             rng = _PallasLFSRRNG(seed + i_rows * num_col)
             i_cols = rng.random_integers(0, clen)
             i_col_mask = i_cols < num_col
-            jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_cols, i_col_mask, rng)
-            )
+            jax.lax.fori_loop(0, num_col, body, (i_cols, i_col_mask, rng))
 
     def run(w_low, w_high, clen, vector, seed):
         fn = pl.pallas_call(
@@ -1192,7 +1188,7 @@ def _jitumm_pallas_kernel_generator(
 
             out = jnp.zeros(row_block, dtype=post_ref.dtype)
 
-            def body(data):
+            def body(_step, data):
                 i_cols, i_col_mask, rng, out = data
                 w = rng.uniform(w_low0, w_high0)
                 safe_cols = jnp.where(i_col_mask, i_cols, 0)
@@ -1206,11 +1202,7 @@ def _jitumm_pallas_kernel_generator(
                 i_cols += rng.random_integers(1, clen0)
                 return i_cols, i_cols < k, rng, out
 
-            _, _, _, out = jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_cols, i_col_mask, rng, out)
-            )
+            _, _, _, out = jax.lax.fori_loop(0, k, body, (i_cols, i_col_mask, rng, out))
             atomic_add(post_ref, (safe_rows, col_j), out, mask=i_row_mask)
 
     else:
@@ -1245,7 +1237,7 @@ def _jitumm_pallas_kernel_generator(
             i_rows = rng.random_integers(0, clen0)
             i_row_mask = i_rows < m
 
-            def body(data):
+            def body(_step, data):
                 i_rows, i_row_mask, rng = data
                 w = rng.uniform(w_low0, w_high0)
                 vals = jnp.where(i_k_mask & i_row_mask, w * b_events, 0.)
@@ -1255,11 +1247,7 @@ def _jitumm_pallas_kernel_generator(
                 i_rows += rng.random_integers(1, clen0)
                 return i_rows, i_rows < m, rng
 
-            jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_rows, i_row_mask, rng)
-            )
+            jax.lax.fori_loop(0, m, body, (i_rows, i_row_mask, rng))
 
     def run(w_low, w_high, clen, B, seed):
         fn = pl.pallas_call(

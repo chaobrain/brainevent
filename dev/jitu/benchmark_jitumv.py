@@ -63,7 +63,7 @@ def main():
     parser = argparse.ArgumentParser(description="jitumv backend benchmark")
     parser.add_argument("--n_warmup", type=int, default=10)
     parser.add_argument("--n_runs", type=int, default=1)
-    parser.add_argument("--backends", nargs="+", default=["tvmffi", ],
+    parser.add_argument("--backends", nargs="+", default=["pallas", 'tvmffi'],
                         help="Backends to benchmark (default: tvmffi pallas)")
     args = parser.parse_args()
 

@@ -504,7 +504,7 @@ def _jitu_pallas_kernel_generator(
             i_row_mask = i_rows < dim
             safe_rows = jnp.where(i_row_mask, i_rows, 0)
 
-            def body(data):
+            def body(_step, data):
                 i_cols, i_col_mask, rng = data
                 val = rng.uniform(w_low, w_high)
                 safe_cols = jnp.where(i_col_mask, i_cols, 0)
@@ -515,11 +515,7 @@ def _jitu_pallas_kernel_generator(
             rng = _PallasLFSRRNG(seed0 + i_rows * m)
             i_cols = rng.random_integers(0, clen0)
             i_col_mask = i_cols < m
-            jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_cols, i_col_mask, rng)
-            )
+            jax.lax.fori_loop(0, m, body, (i_cols, i_col_mask, rng))
 
     else:
         def kernel(w_low_ref, w_high_ref, clen_ref, seed_ref, _, post_ref):
@@ -533,7 +529,7 @@ def _jitu_pallas_kernel_generator(
             i_col_mask = i_cols < dim
             safe_cols = jnp.where(i_col_mask, i_cols, 0)
 
-            def body(data):
+            def body(_step, data):
                 i_rows, i_row_mask, rng = data
                 val = rng.uniform(w_low, w_high)
                 safe_rows = jnp.where(i_row_mask, i_rows, 0)
@@ -544,11 +540,7 @@ def _jitu_pallas_kernel_generator(
             rng = _PallasLFSRRNG(seed0 + i_cols * n)
             i_rows = rng.random_integers(0, clen0)
             i_row_mask = i_rows < n
-            jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_rows, i_row_mask, rng)
-            )
+            jax.lax.fori_loop(0, n, body, (i_rows, i_row_mask, rng))
 
     def run(w_low, w_high, clen, seed):
         fn = pl.pallas_call(
@@ -1073,10 +1065,11 @@ def _jitumv_pallas_kernel_generator(
             i_cols = i_col_block * block_size + jnp.arange(block_size)
             i_col_mask = i_cols < dim
 
-            def body(data):
+            def body(_step, data):
                 i_rows, i_row_mask, rng, out = data
-                v = jnp.where(i_row_mask, vector_ref[i_rows], 0.)
-                out += v * rng.uniform(w_low, w_high)
+                safe_rows = jnp.where(i_row_mask, i_rows, 0)
+                v = jnp.where(i_row_mask, vector_ref[safe_rows], 0.)
+                out += jnp.where(i_row_mask, v * rng.uniform(w_low, w_high), 0.)
                 i_rows += rng.random_integers(1, clen)
                 return i_rows, i_rows < num_row, rng, out
 
@@ -1084,11 +1077,7 @@ def _jitumv_pallas_kernel_generator(
             i_rows = rng.random_integers(0, clen)
             i_row_mask = i_rows < num_row
             out = jnp.zeros(block_size, dtype=post_ref.dtype)
-            out = jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_rows, i_row_mask, rng, out)
-            )[-1]
+            _, _, _, out = jax.lax.fori_loop(0, num_row, body, (i_rows, i_row_mask, rng, out))
             post_ref[i_cols] = jnp.where(i_col_mask, out, post_ref[i_cols])
 
     else:
@@ -1103,7 +1092,7 @@ def _jitumv_pallas_kernel_generator(
             i_row_mask = i_rows < dim
             vector = jnp.where(i_row_mask, vector_ref[i_rows], 0.)
 
-            def body(data):
+            def body(_step, data):
                 i_cols, i_col_mask, rng = data
                 atomic_add(post_ref, (i_cols,), vector * rng.uniform(w_low, w_high), mask=i_row_mask & i_col_mask)
                 i_cols += rng.random_integers(1, clen)
@@ -1112,11 +1101,7 @@ def _jitumv_pallas_kernel_generator(
             rng = _PallasLFSRRNG(seed + i_rows * num_col)
             i_cols = rng.random_integers(0, clen)
             i_col_mask = i_cols < num_col
-            jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_cols, i_col_mask, rng)
-            )
+            jax.lax.fori_loop(0, num_col, body, (i_cols, i_col_mask, rng))
 
     def run(w_low, w_high, clen, vector, seed):
         fn = pl.pallas_call(
@@ -1731,7 +1716,7 @@ def _jitumm_pallas_kernel_generator(
 
             out = jnp.zeros(row_block, dtype=post_ref.dtype)
 
-            def body(data):
+            def body(_step, data):
                 i_cols, i_col_mask, rng, out = data
                 w = rng.uniform(w_low0, w_high0)  # [row_block]
                 safe_cols = jnp.where(i_col_mask, i_cols, 0)
@@ -1740,11 +1725,7 @@ def _jitumm_pallas_kernel_generator(
                 i_cols += rng.random_integers(1, clen0)
                 return i_cols, i_cols < k, rng, out
 
-            _, _, _, out = jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_cols, i_col_mask, rng, out)
-            )
+            _, _, _, out = jax.lax.fori_loop(0, k, body, (i_cols, i_col_mask, rng, out))
             atomic_add(post_ref, (safe_rows, col_j), out, mask=i_row_mask)
 
     else:
@@ -1774,7 +1755,7 @@ def _jitumm_pallas_kernel_generator(
             i_rows = rng.random_integers(0, clen0)
             i_row_mask = i_rows < m
 
-            def body(data):
+            def body(_step, data):
                 i_rows, i_row_mask, rng = data
                 w = rng.uniform(w_low0, w_high0)  # [k_block]
                 vals = jnp.where(i_k_mask & i_row_mask, w * b_vals, 0.)
@@ -1784,11 +1765,7 @@ def _jitumm_pallas_kernel_generator(
                 i_rows += rng.random_integers(1, clen0)
                 return i_rows, i_rows < m, rng
 
-            jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_rows, i_row_mask, rng)
-            )
+            jax.lax.fori_loop(0, m, body, (i_rows, i_row_mask, rng))
 
     def run(w_low, w_high, clen, B, seed):
         fn = pl.pallas_call(
