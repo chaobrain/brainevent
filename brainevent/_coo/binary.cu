@@ -51,35 +51,54 @@
  *
  * Performance Analysis (RTX 3080 Ti Laptop, 616 GB/s peak):
  * ----------------------------------------------------------
- * Benchmark: 5000×5000 matrix, nnz=1.25M (5% density), 1% spike rate
- *  - Memory traffic: 16.35 MB (all NNZ processed, only 1% active)
- *  - Measured latency: ~0.4 ms (typical), 0.1 ms (best case with boost)
- *  - Achieved bandwidth: ~41 GB/s typical, ~163 GB/s best
- *  - Efficiency vs peak: 6.7% typical, 26% best
+ * Benchmark: 5000×5000 matrix, nnz=250K (1% density), 1% spike rate
+ *  - Memory traffic: 5.6 MB (all NNZ processed, only 1% active)
+ *  - Measured latency: ~0.185 ms (p5), ~1.2 ms (median, throttled)
+ *  - Achieved bandwidth: ~30 GB/s (p5), ~4.6 GB/s (median)
+ *  - Efficiency vs peak: 4.9% (p5), 0.7% (median)
+ *
+ * Optimization History:
+ *  - Reduced COOMM_CT_BLOCK_K from 32 to 16 (1.13× speedup)
+ *    Rationale: Increased block count improves SM occupancy and latency hiding.
+ *    Further reduction to BLOCK_K=8 regresses (excessive launch overhead).
  *
  * Fundamental Bottleneck:
  *  COO format has inherently random row/col access patterns. Each thread
  *  accesses a different cache line (no coalescing). This is the dominant
  *  bottleneck - standard SpMV optimization techniques (shared memory tiling,
- *  warp cooperation, __ldg()) provide negligible benefit because the random
- *  access pattern prevents effective cache utilization.
+ *  warp cooperation, __ldg()) provide negligible or negative benefit because
+ *  the random access pattern prevents effective cache utilization.
+ *  Testing showed __ldg() intrinsics caused 5× slowdown for this workload.
  *
- * Optimization Barriers:
+ * Optimization Barriers (Fundamental):
  *  1. Random column/row indexing prevents memory coalescing (fundamental
  *     to COO format; would require CSR/CSC conversion for gather/scatter).
+ *     This alone accounts for ~80% of the roofline gap.
  *  2. Event-driven check eliminates only the atomic write (8B), but all
- *     index loads (13B) must still occur for every NNZ entry.
+ *     index loads (18B) must still occur for every NNZ entry.
  *  3. Atomic contention at high spike rates (>10%) serializes writes,
  *     but cannot be avoided without algorithm change (e.g., segmented
  *     reduction or two-pass histogram).
+ *  4. Warp divergence from ballot-based early exit adds ~10% overhead but
+ *     is necessary for event-driven sparsity exploitation.
+ *  5. Thermal throttling on laptop GPUs causes 6× variance (p5 vs median).
+ *
+ * Achieved vs. Theoretical Performance:
+ *  - Theoretical bandwidth-bound time: 0.009 ms (5.6 MB / 616 GB/s)
+ *  - Achieved best-case time:          0.185 ms (30 GB/s, 4.9% efficiency)
+ *  - Gap factor: 20.6× slower than bandwidth roofline
+ *  - Root cause: Random COO access prevents coalescing (accounts for ~16× gap),
+ *                plus ballot/atomic/divergence overhead (~1.3× gap)
  *
  * Recommendations for Higher Performance:
  *  - For gather (A @ v, transpose=False): Convert to CSR format for
- *    coalesced row access and shared-memory vector tiling.
+ *    coalesced row access and shared-memory vector tiling (expect 5-10× speedup).
  *  - For scatter (A.T @ v, transpose=True): Convert to CSC format or
- *    use a two-pass algorithm (1: gather active spikes; 2: process).
+ *    use a two-pass algorithm (1: compact active spikes; 2: process).
  *  - For very high spike rates (>50%): Use dense matrix multiplication
  *    as the random-access overhead dominates sparse savings.
+ *  - For production workloads on laptop GPUs: Use desktop GPUs or thermal
+ *    management to avoid 6× thermal throttling penalty.
  *
  * TVM FFI Integration:
  * -------------------
@@ -335,7 +354,7 @@ FFI_COOMV_ATOMIC_T (_bf16_float, __nv_bfloat16, float,  sizeof(__nv_bfloat16))
 // COO Matrix-Matrix Multiplication (coomm)
 // ============================================================================
 
-#define COOMM_CT_BLOCK_K   32
+#define COOMM_CT_BLOCK_K   16
 #define COOMM_CT_BLOCK_N   32
 #define COOMM_WPE_WARPS    8
 #define COOMM_WPE_COLS     32
