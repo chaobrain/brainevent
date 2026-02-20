@@ -32,7 +32,7 @@ SLICE_IMPLEMENTATIONS = tuple(csr_slice_rows_p.available_backends(platform))
 
 def _make_csr_and_dense(m, n, prob=0.3):
     """Create a CSR matrix and its dense equivalent for testing."""
-    indptr, indices = get_csr(m, n, prob)
+    indptr, indices = get_csr(m, n, prob, replace=False)
     data = jnp.asarray(np.random.randn(indices.shape[0]).astype(np.float32))
     dense = np.zeros((m, n), dtype=np.float32)
     indptr_np = np.asarray(indptr)
@@ -115,7 +115,7 @@ class TestCSRSliceRows:
 
 def _make_homo_csr_and_dense(m, n, prob=0.3):
     """Create a homogeneous-weight CSR matrix and its dense equivalent."""
-    indptr, indices = get_csr(m, n, prob)
+    indptr, indices = get_csr(m, n, prob, replace=False)
     data = jnp.array([1.5], dtype=jnp.float32)
     dense = np.zeros((m, n), dtype=np.float32)
     indptr_np = np.asarray(indptr)

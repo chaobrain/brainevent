@@ -567,7 +567,7 @@ def _coomv_tvmffi_kernel(
     """TVM FFI CUDA kernel for float COO SpMV.
 
     Dispatches to one of the ``coomv_atomic_{nt,t}`` kernels compiled from
-    ``coomv.cu`` via ``register_tvm_cuda_from_file``.
+    ``float.cu`` via ``register_tvm_cuda_from_file``.
 
     Both directions use a grid-stride atomic-scatter kernel (256 threads/block):
 
@@ -587,8 +587,8 @@ def _coomv_tvmffi_kernel(
     ensures both are the same dtype before dispatch.
     """
     register_tvm_cuda_from_file(
-        module='coomv',
-        source=Path(__file__).parent.joinpath('coomv.cu'),
+        module='coo_float',
+        source=Path(__file__).parent.joinpath('float.cu'),
     )
 
     out_info = kwargs['outs']
@@ -600,7 +600,7 @@ def _coomv_tvmffi_kernel(
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
     direction = '_t' if transpose else '_nt'
-    kernel_name = f'coomv.coomv_atomic{direction}{wt_sfx}'
+    kernel_name = f'coo_float.coomv_atomic{direction}{wt_sfx}'
 
     def kernel(weights, row, col, v):
         v_cast = v.astype(weight_info.dtype) if v.dtype != weight_info.dtype else v
@@ -1179,7 +1179,7 @@ def _coomm_tvmffi_kernel(
     """TVM FFI CUDA kernel for float COO SpMM.
 
     Dispatches to one of the ``coomm_{variant}_{nt,t}`` kernels compiled
-    from ``coomm.cu`` via ``register_tvm_cuda_from_file``.
+    from ``float.cu`` via ``register_tvm_cuda_from_file``.
 
     Kernel variant selection (based on n = number of output columns):
     - CT (Column-Tiled, n ≤ 64): One warp per block serializes over 32 NNZ
@@ -1201,8 +1201,8 @@ def _coomm_tvmffi_kernel(
     ensures B is promoted to ``weights.dtype`` before dispatch when necessary.
     """
     register_tvm_cuda_from_file(
-        module='coomm',
-        source=Path(__file__).parent.joinpath('coomm.cu'),
+        module='coo_float',
+        source=Path(__file__).parent.joinpath('float.cu'),
     )
 
     out_info = kwargs['outs']
@@ -1219,7 +1219,7 @@ def _coomm_tvmffi_kernel(
     # in the nnz dimension); WPE is better for large n (maximum parallelism).
     n = matrix_info.shape[1]
     variant = 'ct' if n <= 64 else 'wpe'
-    kernel_name = f'coomm.coomm_{variant}{direction}{wt_sfx}'
+    kernel_name = f'coo_float.coomm_{variant}{direction}{wt_sfx}'
 
     def kernel(weights, row, col, B):
         # Cast B to weights.dtype so the CUDA kernel receives matching types.

@@ -14,64 +14,29 @@
 // ==============================================================================
 
 /*
- * coomm.cu -- Float-Weighted COO Sparse Matrix-Matrix CUDA Kernels
- * ================================================================
+ * float.cu -- Float-Weighted COO Sparse Matrix-Vector and Matrix-Matrix CUDA Kernels
+ * =================================================================================
  *
- * Python API: brainevent.coomm(data, row, col, B, *, shape, transpose, backend)
+ * This module provides high-performance CUDA kernels for standard (non-event-driven)
+ * sparse matrix-vector (SpMV) and sparse matrix-matrix (SpMM) multiplications
+ * where the sparse matrix is in Coordinate (COO) format.
  *
- * Standard (non-event-driven) COO sparse matrix-matrix product where the
- * dense matrix ``B`` contains continuous floating-point values.  Every NNZ
- * entry contributes to the output; there is no activity predicate.
+ * Supported Operations:
+ * --------------------
+ * 1. coomv (SpMV): out = A @ v  or  out = A.T @ v
+ *    - Uses a grid-stride loop with atomic additions.
+ *    - Every NNZ entry contributes to the output.
  *
- * Parameters
- * ----------
- * data   : 1-D float tensor of shape [1] (homogeneous) or [nnz] (heterogeneous).
- * row    : 1-D int32 tensor of shape [nnz] -- row indices of the sparse matrix.
- * col    : 1-D int32 tensor of shape [nnz] -- column indices of the sparse matrix.
- * B      : 2-D float tensor of shape [k, n] (NT) or [m, n] (T).
- * output : 2-D float tensor of shape [m, n] (NT) or [k, n] (T).
+ * 2. coomm (SpMM): out = A @ B  or  out = A.T @ B
+ *    - Column-Tiled (CT) Variant: Optimized for small number of columns (n <= 64).
+ *    - Warp-Per-Entry (WPE) Variant: Optimized for large number of columns (n > 64).
  *
- * Semantics
- * ---------
- * NT mode (transpose=False):
- *   out[row[s], j] += data[s] * B[col[s], j]
- *   Sparse A: [m, k].  B: [k, n].  Output: [m, n].
- *
- * T mode (transpose=True):
- *   out[col[s], j] += data[s] * B[row[s], j]
- *   Sparse A: [m, k].  B: [m, n].  Output: [k, n].
- *
- * Kernel Variants
- * ---------------
- * Two complementary kernel families cover the parameter space:
- *
- * Variant 1 — Column-Tiled (CT):
- *   Grid: (ceil(nnz/BLOCK_K), ceil(n/BLOCK_N))    Block: (BLOCK_N=32)
- *   One warp per thread block.  Serializes over BLOCK_K=32 NNZ entries;
- *   all 32 threads handle BLOCK_N=32 output columns simultaneously.
- *   Coalesced reads of B[src, n_tile].
- *   Best for: large nnz, small/moderate n (n ≤ 64).
- *
- * Variant 2 — Warp-Per-Entry (WPE):
- *   Grid: (ceil(nnz/WARPS_PER_BLOCK), ceil(n/32))   Block: (256=8 warps)
- *   Each warp handles a single NNZ entry and 32 consecutive output columns.
- *   No serial loop over NNZ: maximum parallelism.
- *   Best for: large n (n > 64), moderate or large nnz.
- *
- * Homogeneous vs. Heterogeneous weights:
- *   Detected at runtime via data.size(0)==1.  Warp-uniform branch: no divergence.
- *
- * Dtype support:
- *   B and weights: float32, float64, float16 (sm_70+), bfloat16 (sm_80+).
- *   f16 and bf16 accumulate in float32; final atomic write back to f16/bf16.
- *
- * Output initialization:
- *   The output buffer is zeroed via cudaMemsetAsync before the kernel launches.
- *
- * Index safety:
- *   All strides involving large dimensions use int64_t to avoid int32 overflow.
- *
- * IMPORTANT: data_ptr() returns GPU device pointers.  NEVER dereference on the host.
+ * Data Types and Numerical Stability:
+ * ----------------------------------
+ * - Supports float32, float64, float16 (sm_70+), and bfloat16 (sm_80+).
+ * - For reduced-precision types (f16, bf16), accumulation is performed in 
+ *   float32 to maintain numerical precision, with results written back 
+ *   atomically.
  */
 
 #include <cuda_runtime.h>
@@ -90,10 +55,6 @@
 
 // ============================================================================
 // Per-dtype atomic-add helpers (ACC_T value -> WEIGHT_T memory)
-//
-// f32 / f64 : native atomicAdd, universally available.
-// f16       : native on sm_70+; CAS-based fallback for older arches.
-// bf16      : native on sm_80+; CAS-based fallback.
 // ============================================================================
 
 __device__ __inline__ void atomic_add_f32(float* addr, float val) {
@@ -147,38 +108,148 @@ __device__ __inline__ void atomic_add_bf16(__nv_bfloat16* addr, float val) {
 }
 
 // ============================================================================
-// Tiling constants (match binary_coomm.cu for consistency)
+// COO Matrix-Vector Multiplication (coomv)
 // ============================================================================
 
-#define COOMM_CT_BLOCK_K   32   // NNZ entries serialized per CT block
-#define COOMM_CT_BLOCK_N   32   // Output columns per CT block (= warp width)
-#define COOMM_WPE_WARPS    8    // Warps per block in WPE variant (8×32 = 256 threads)
-#define COOMM_WPE_COLS     32   // Output columns per warp in WPE variant
+#define DEFINE_COOMV_ATOMIC_NT(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W)     \
+__global__ void _coomv_atomic_nt_kern##SUFFIX(                                     \
+    const WEIGHT_T* __restrict__ data,                                             \
+    const int32_t*  __restrict__ row,                                              \
+    const int32_t*  __restrict__ col,                                              \
+    const WEIGHT_T* __restrict__ v,                                                \
+    WEIGHT_T*                    out,                                              \
+    int nnz, int is_homo                                                           \
+) {                                                                                \
+    ACC_T homo_w = READ_W(data[0]);                                                \
+    int k = blockIdx.x * blockDim.x + threadIdx.x;                                \
+    const int stride = gridDim.x * blockDim.x;                                    \
+    while (k < nnz) {                                                              \
+        ACC_T v_val = READ_W(v[col[k]]);                                           \
+        ACC_T w = is_homo ? homo_w : READ_W(data[k]);                              \
+        ATOMIC_ADD_W(out + row[k], w * v_val);                                     \
+        k += stride;                                                               \
+    }                                                                              \
+}
+
+#define DEFINE_COOMV_ATOMIC_T(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W)      \
+__global__ void _coomv_atomic_t_kern##SUFFIX(                                      \
+    const WEIGHT_T* __restrict__ data,                                             \
+    const int32_t*  __restrict__ row,                                              \
+    const int32_t*  __restrict__ col,                                              \
+    const WEIGHT_T* __restrict__ v,                                                \
+    WEIGHT_T*                    out,                                              \
+    int nnz, int is_homo                                                           \
+) {                                                                                \
+    ACC_T homo_w = READ_W(data[0]);                                                \
+    int k = blockIdx.x * blockDim.x + threadIdx.x;                                \
+    const int stride = gridDim.x * blockDim.x;                                    \
+    while (k < nnz) {                                                              \
+        ACC_T v_val = READ_W(v[row[k]]);                                           \
+        ACC_T w = is_homo ? homo_w : READ_W(data[k]);                              \
+        ATOMIC_ADD_W(out + col[k], w * v_val);                                     \
+        k += stride;                                                               \
+    }                                                                              \
+}
+
+// Instantiations
+DEFINE_COOMV_ATOMIC_NT(_f32, float,          float,  READ_F32,  atomic_add_f32)
+DEFINE_COOMV_ATOMIC_T (_f32, float,          float,  READ_F32,  atomic_add_f32)
+DEFINE_COOMV_ATOMIC_NT(_f64, double,         double, READ_F64,  atomic_add_f64)
+DEFINE_COOMV_ATOMIC_T (_f64, double,         double, READ_F64,  atomic_add_f64)
+DEFINE_COOMV_ATOMIC_NT(_f16, __half,          float,  READ_F16,  atomic_add_f16)
+DEFINE_COOMV_ATOMIC_T (_f16, __half,          float,  READ_F16,  atomic_add_f16)
+DEFINE_COOMV_ATOMIC_NT(_bf16, __nv_bfloat16,  float,  READ_BF16, atomic_add_bf16)
+DEFINE_COOMV_ATOMIC_T (_bf16, __nv_bfloat16,  float,  READ_BF16, atomic_add_bf16)
+
+// FFI Macros for SpMV
+#define FFI_COOMV_ATOMIC_NT(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM)         \
+void coomv_atomic_nt##SUFFIX(                                                \
+    tvm::ffi::TensorView data,                                               \
+    tvm::ffi::TensorView row_idx,                                            \
+    tvm::ffi::TensorView col_idx,                                            \
+    tvm::ffi::TensorView v,                                                  \
+    tvm::ffi::TensorView output,                                             \
+    int64_t stream                                                           \
+) {                                                                          \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                \
+    int nnz = static_cast<int>(row_idx.size(0));                            \
+    int m   = static_cast<int>(output.size(0));                             \
+    int is_homo = (data.size(0) == 1) ? 1 : 0;                             \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());       \
+    cudaMemsetAsync(d_out, 0, (size_t)m * OUT_BYTES_PER_ELEM, s);          \
+    if (nnz == 0) return;                                                    \
+    int block = 256;                                                         \
+    int grid  = (nnz + block - 1) / block;                                  \
+    _coomv_atomic_nt_kern##SUFFIX<<<grid, block, 0, s>>>(                   \
+        static_cast<const WEIGHT_C_T*>(data.data_ptr()),                    \
+        static_cast<const int32_t*>(row_idx.data_ptr()),                    \
+        static_cast<const int32_t*>(col_idx.data_ptr()),                    \
+        static_cast<const WEIGHT_C_T*>(v.data_ptr()),                       \
+        d_out, nnz, is_homo                                                  \
+    );                                                                       \
+}
+
+#define FFI_COOMV_ATOMIC_T(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM)          \
+void coomv_atomic_t##SUFFIX(                                                 \
+    tvm::ffi::TensorView data,                                               \
+    tvm::ffi::TensorView row_idx,                                            \
+    tvm::ffi::TensorView col_idx,                                            \
+    tvm::ffi::TensorView v,                                                  \
+    tvm::ffi::TensorView output,                                             \
+    int64_t stream                                                           \
+) {                                                                          \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                \
+    int nnz = static_cast<int>(row_idx.size(0));                            \
+    int k   = static_cast<int>(output.size(0));                             \
+    int is_homo = (data.size(0) == 1) ? 1 : 0;                             \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());       \
+    cudaMemsetAsync(d_out, 0, (size_t)k * OUT_BYTES_PER_ELEM, s);          \
+    if (nnz == 0) return;                                                    \
+    int block = 256;                                                         \
+    int grid  = (nnz + block - 1) / block;                                  \
+    _coomv_atomic_t_kern##SUFFIX<<<grid, block, 0, s>>>(                    \
+        static_cast<const WEIGHT_C_T*>(data.data_ptr()),                    \
+        static_cast<const int32_t*>(row_idx.data_ptr()),                    \
+        static_cast<const int32_t*>(col_idx.data_ptr()),                    \
+        static_cast<const WEIGHT_C_T*>(v.data_ptr()),                       \
+        d_out, nnz, is_homo                                                  \
+    );                                                                       \
+}
+
+// @tvm_ffi coomv_atomic_nt_f32
+FFI_COOMV_ATOMIC_NT(_f32, float,          sizeof(float))
+// @tvm_ffi coomv_atomic_t_f32
+FFI_COOMV_ATOMIC_T (_f32, float,          sizeof(float))
+// @tvm_ffi coomv_atomic_nt_f64
+FFI_COOMV_ATOMIC_NT(_f64, double,         sizeof(double))
+// @tvm_ffi coomv_atomic_t_f64
+FFI_COOMV_ATOMIC_T (_f64, double,         sizeof(double))
+// @tvm_ffi coomv_atomic_nt_f16
+FFI_COOMV_ATOMIC_NT(_f16, __half,         sizeof(__half))
+// @tvm_ffi coomv_atomic_t_f16
+FFI_COOMV_ATOMIC_T (_f16, __half,         sizeof(__half))
+// @tvm_ffi coomv_atomic_nt_bf16
+FFI_COOMV_ATOMIC_NT(_bf16, __nv_bfloat16, sizeof(__nv_bfloat16))
+// @tvm_ffi coomv_atomic_t_bf16
+FFI_COOMV_ATOMIC_T (_bf16, __nv_bfloat16, sizeof(__nv_bfloat16))
+
 
 // ============================================================================
-// Variant 1: Column-Tiled (CT) — NT direction
-//
-// out[row[s], j] += data[s] * B[col[s], j]
-//
-// Grid:  (ceil(nnz / BLOCK_K), ceil(n / BLOCK_N))
-// Block: (BLOCK_N=32,)  — one warp
-//
-// Thread t covers output column (blockIdx.y * BLOCK_N + t).
-// Each block serializes over up to BLOCK_K NNZ entries.
-// For each NNZ entry:
-//   - All 32 threads coalesce-read 32 consecutive B[src, *] values.
-//   - Each active thread atomicAdds weight * B[src, my_col] into out[dst, my_col].
-//
-// The weight read is warp-uniform (same value for all 32 threads, cached in L1).
+// COO Matrix-Matrix Multiplication (coomm)
 // ============================================================================
+
+#define COOMM_CT_BLOCK_K   32
+#define COOMM_CT_BLOCK_N   32
+#define COOMM_WPE_WARPS    8
+#define COOMM_WPE_COLS     32
 
 #define DEFINE_COOMM_CT_NT(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W)             \
 __global__ void _coomm_ct_nt_kern##SUFFIX(                                             \
     const WEIGHT_T* __restrict__ data,                                                 \
     const int32_t*  __restrict__ row,                                                  \
     const int32_t*  __restrict__ col,                                                  \
-    const WEIGHT_T* __restrict__ B,    /* [k, n] row-major */                         \
-    WEIGHT_T*                    out,  /* [m, n] row-major */                         \
+    const WEIGHT_T* __restrict__ B,                                                    \
+    WEIGHT_T*                    out,                                                  \
     int nnz, int n, int is_homo                                                        \
 ) {                                                                                    \
     int nnz_start = blockIdx.x * COOMM_CT_BLOCK_K;                                    \
@@ -186,34 +257,26 @@ __global__ void _coomm_ct_nt_kern##SUFFIX(                                      
     int t         = threadIdx.x;                                                       \
     int my_col    = col_start + t;                                                     \
     bool col_valid = (my_col < n);                                                     \
-    /* Pre-load homo weight (warp-uniform, hits L1) */                                 \
     ACC_T homo_w = READ_W(data[0]);                                                    \
     int nnz_end = nnz_start + COOMM_CT_BLOCK_K;                                       \
     if (nnz_end > nnz) nnz_end = nnz;                                                 \
     for (int s = nnz_start; s < nnz_end; s++) {                                       \
-        int src = col[s];   /* source row in B (NT mode) */                            \
-        int dst = row[s];   /* dest   row in out */                                    \
+        int src = col[s];                                                              \
+        int dst = row[s];                                                              \
         if (!col_valid) continue;                                                      \
-        /* Coalesced read: 32 threads load 32 consecutive B columns */                 \
         ACC_T b_val = READ_W(B[(int64_t)src * n + my_col]);                           \
         ACC_T w = is_homo ? homo_w : READ_W(data[s]);                                  \
         ATOMIC_ADD_W(out + (int64_t)dst * n + my_col, w * b_val);                     \
     }                                                                                  \
 }
-
-// ============================================================================
-// Variant 1: Column-Tiled (CT) — T direction
-//
-// out[col[s], j] += data[s] * B[row[s], j]
-// ============================================================================
 
 #define DEFINE_COOMM_CT_T(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W)              \
 __global__ void _coomm_ct_t_kern##SUFFIX(                                              \
     const WEIGHT_T* __restrict__ data,                                                 \
     const int32_t*  __restrict__ row,                                                  \
     const int32_t*  __restrict__ col,                                                  \
-    const WEIGHT_T* __restrict__ B,    /* [m, n] row-major */                         \
-    WEIGHT_T*                    out,  /* [k, n] row-major */                         \
+    const WEIGHT_T* __restrict__ B,                                                    \
+    WEIGHT_T*                    out,                                                  \
     int nnz, int n, int is_homo                                                        \
 ) {                                                                                    \
     int nnz_start = blockIdx.x * COOMM_CT_BLOCK_K;                                    \
@@ -225,8 +288,8 @@ __global__ void _coomm_ct_t_kern##SUFFIX(                                       
     int nnz_end = nnz_start + COOMM_CT_BLOCK_K;                                       \
     if (nnz_end > nnz) nnz_end = nnz;                                                 \
     for (int s = nnz_start; s < nnz_end; s++) {                                       \
-        int src = row[s];   /* source row in B (T mode) */                             \
-        int dst = col[s];   /* dest   row in out (T mode) */                           \
+        int src = row[s];                                                              \
+        int dst = col[s];                                                              \
         if (!col_valid) continue;                                                      \
         ACC_T b_val = READ_W(B[(int64_t)src * n + my_col]);                           \
         ACC_T w = is_homo ? homo_w : READ_W(data[s]);                                  \
@@ -234,26 +297,13 @@ __global__ void _coomm_ct_t_kern##SUFFIX(                                       
     }                                                                                  \
 }
 
-// ============================================================================
-// Variant 2: Warp-Per-Entry (WPE) — NT direction
-//
-// out[row[s], j] += data[s] * B[col[s], j]
-//
-// Grid:  (ceil(nnz / WARPS_PER_BLOCK), ceil(n / COLS_PER_WARP))
-// Block: (WARPS_PER_BLOCK * 32 = 256,)  — 8 warps
-//
-// Each warp handles exactly one NNZ entry and 32 consecutive output columns.
-// All 32 lanes coalesce-read B[src, n_tile] and write out[dst, n_tile] atomically.
-// No serial loop: maximum GPU utilisation for large nnz and large n.
-// ============================================================================
-
 #define DEFINE_COOMM_WPE_NT(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W)            \
 __global__ void _coomm_wpe_nt_kern##SUFFIX(                                            \
     const WEIGHT_T* __restrict__ data,                                                 \
     const int32_t*  __restrict__ row,                                                  \
     const int32_t*  __restrict__ col,                                                  \
-    const WEIGHT_T* __restrict__ B,    /* [k, n] row-major */                         \
-    WEIGHT_T*                    out,  /* [m, n] row-major */                         \
+    const WEIGHT_T* __restrict__ B,                                                    \
+    WEIGHT_T*                    out,                                                  \
     int nnz, int n, int is_homo                                                        \
 ) {                                                                                    \
     int warp_id   = (int)(blockIdx.x * COOMM_WPE_WARPS) + (int)(threadIdx.x >> 5);   \
@@ -263,29 +313,21 @@ __global__ void _coomm_wpe_nt_kern##SUFFIX(                                     
     if (warp_id >= nnz) return;                                                        \
     bool col_valid = (my_col < n);                                                     \
     int s   = warp_id;                                                                 \
-    int src = col[s];   /* source row in B */                                          \
-    int dst = row[s];   /* dest   row in out */                                        \
+    int src = col[s];                                                                  \
+    int dst = row[s];                                                                  \
     if (!col_valid) return;                                                            \
-    /* Coalesced read: 32 consecutive B columns per warp */                            \
     ACC_T b_val = READ_W(B[(int64_t)src * n + my_col]);                               \
     ACC_T w = is_homo ? READ_W(data[0]) : READ_W(data[s]);                             \
-    /* Coalesced write: 32 consecutive out columns per warp */                         \
     ATOMIC_ADD_W(out + (int64_t)dst * n + my_col, w * b_val);                         \
 }
-
-// ============================================================================
-// Variant 2: Warp-Per-Entry (WPE) — T direction
-//
-// out[col[s], j] += data[s] * B[row[s], j]
-// ============================================================================
 
 #define DEFINE_COOMM_WPE_T(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W)             \
 __global__ void _coomm_wpe_t_kern##SUFFIX(                                             \
     const WEIGHT_T* __restrict__ data,                                                 \
     const int32_t*  __restrict__ row,                                                  \
     const int32_t*  __restrict__ col,                                                  \
-    const WEIGHT_T* __restrict__ B,    /* [m, n] row-major */                         \
-    WEIGHT_T*                    out,  /* [k, n] row-major */                         \
+    const WEIGHT_T* __restrict__ B,                                                    \
+    WEIGHT_T*                    out,                                                  \
     int nnz, int n, int is_homo                                                        \
 ) {                                                                                    \
     int warp_id   = (int)(blockIdx.x * COOMM_WPE_WARPS) + (int)(threadIdx.x >> 5);   \
@@ -295,62 +337,33 @@ __global__ void _coomm_wpe_t_kern##SUFFIX(                                      
     if (warp_id >= nnz) return;                                                        \
     bool col_valid = (my_col < n);                                                     \
     int s   = warp_id;                                                                 \
-    int src = row[s];   /* source row in B (T mode) */                                 \
-    int dst = col[s];   /* dest   row in out (T mode) */                               \
+    int src = row[s];                                                                  \
+    int dst = col[s];                                                                  \
     if (!col_valid) return;                                                            \
     ACC_T b_val = READ_W(B[(int64_t)src * n + my_col]);                               \
     ACC_T w = is_homo ? READ_W(data[0]) : READ_W(data[s]);                             \
     ATOMIC_ADD_W(out + (int64_t)dst * n + my_col, w * b_val);                         \
 }
 
-// ============================================================================
-// Kernel instantiations: 4 dtypes × 4 variants = 16 kernels
-// ============================================================================
-
-// ---- Float32 ----
+// Instantiations
 DEFINE_COOMM_CT_NT (_f32, float,          float,  READ_F32,  atomic_add_f32)
 DEFINE_COOMM_CT_T  (_f32, float,          float,  READ_F32,  atomic_add_f32)
 DEFINE_COOMM_WPE_NT(_f32, float,          float,  READ_F32,  atomic_add_f32)
 DEFINE_COOMM_WPE_T (_f32, float,          float,  READ_F32,  atomic_add_f32)
-
-// ---- Float64 ----
 DEFINE_COOMM_CT_NT (_f64, double,         double, READ_F64,  atomic_add_f64)
 DEFINE_COOMM_CT_T  (_f64, double,         double, READ_F64,  atomic_add_f64)
 DEFINE_COOMM_WPE_NT(_f64, double,         double, READ_F64,  atomic_add_f64)
 DEFINE_COOMM_WPE_T (_f64, double,         double, READ_F64,  atomic_add_f64)
-
-// ---- Float16 (accumulate in f32 for numerical stability) ----
 DEFINE_COOMM_CT_NT (_f16, __half,          float,  READ_F16,  atomic_add_f16)
 DEFINE_COOMM_CT_T  (_f16, __half,          float,  READ_F16,  atomic_add_f16)
 DEFINE_COOMM_WPE_NT(_f16, __half,          float,  READ_F16,  atomic_add_f16)
 DEFINE_COOMM_WPE_T (_f16, __half,          float,  READ_F16,  atomic_add_f16)
-
-// ---- BFloat16 (accumulate in f32 for numerical stability) ----
 DEFINE_COOMM_CT_NT (_bf16, __nv_bfloat16,  float,  READ_BF16, atomic_add_bf16)
 DEFINE_COOMM_CT_T  (_bf16, __nv_bfloat16,  float,  READ_BF16, atomic_add_bf16)
 DEFINE_COOMM_WPE_NT(_bf16, __nv_bfloat16,  float,  READ_BF16, atomic_add_bf16)
 DEFINE_COOMM_WPE_T (_bf16, __nv_bfloat16,  float,  READ_BF16, atomic_add_bf16)
 
-
-// ============================================================================
-// TVM FFI Entry Point Macros
-// ============================================================================
-//
-// Convention: args = (data, row_idx, col_idx, B, output, stream)
-//   data    : [1] (homo) or [nnz] (hetero) -- weight values
-//   row_idx : [nnz], int32 -- row indices
-//   col_idx : [nnz], int32 -- column indices
-//   B       : [k, n] (NT) or [m, n] (T)
-//   output  : [m, n] (NT) or [k, n] (T) -- zero-initialized here
-//   stream  : CUDA stream handle (int64)
-//
-// IMPORTANT: data_ptr() returns GPU device pointers. Never dereference on host.
-//
-// CT dispatch:  block=(32,), grid=(ceil(nnz/32), ceil(n/32)).
-// WPE dispatch: block=(256,), grid=(ceil(nnz/8), ceil(n/32)).
-// ============================================================================
-
-// ---- FFI macro: CT-NT ----
+// FFI Macros for SpMM
 #define FFI_COOMM_CT_NT(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM)                       \
 void coomm_ct_nt##SUFFIX(                                                              \
     tvm::ffi::TensorView data,                                                         \
@@ -383,7 +396,6 @@ void coomm_ct_nt##SUFFIX(                                                       
     );                                                                                 \
 }
 
-// ---- FFI macro: CT-T ----
 #define FFI_COOMM_CT_T(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM)                        \
 void coomm_ct_t##SUFFIX(                                                               \
     tvm::ffi::TensorView data,                                                         \
@@ -416,7 +428,6 @@ void coomm_ct_t##SUFFIX(                                                        
     );                                                                                 \
 }
 
-// ---- FFI macro: WPE-NT ----
 #define FFI_COOMM_WPE_NT(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM)                      \
 void coomm_wpe_nt##SUFFIX(                                                             \
     tvm::ffi::TensorView data,                                                         \
@@ -434,7 +445,7 @@ void coomm_wpe_nt##SUFFIX(                                                      
     WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                 \
     cudaMemsetAsync(d_out, 0, (size_t)m * n * OUT_BYTES_PER_ELEM, s);                \
     if (nnz == 0) return;                                                              \
-    dim3 block(COOMM_WPE_WARPS * 32, 1, 1);    /* 256 threads = 8 warps */           \
+    dim3 block(COOMM_WPE_WARPS * 32, 1, 1);                                           \
     dim3 grid(                                                                         \
         (nnz + COOMM_WPE_WARPS - 1) / COOMM_WPE_WARPS,                               \
         (n   + COOMM_WPE_COLS  - 1) / COOMM_WPE_COLS,                                \
@@ -449,7 +460,6 @@ void coomm_wpe_nt##SUFFIX(                                                      
     );                                                                                 \
 }
 
-// ---- FFI macro: WPE-T ----
 #define FFI_COOMM_WPE_T(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM)                       \
 void coomm_wpe_t##SUFFIX(                                                              \
     tvm::ffi::TensorView data,                                                         \
@@ -482,20 +492,8 @@ void coomm_wpe_t##SUFFIX(                                                       
     );                                                                                 \
 }
 
-// ============================================================================
-// Instantiate TVM FFI entry points
-// ============================================================================
-// Naming convention:
-//   coomm_{variant}_{direction}_{weight_dtype}
-//   variant:   ct (column-tiled) | wpe (warp-per-entry)
-//   direction: nt (transpose=False) | t (transpose=True)
-//   dtype:     f32 | f64 | f16 | bf16
-// ============================================================================
-
-// ============================================================================
-// CT-NT: Column-Tiled, Non-Transpose
-// ============================================================================
-
+// SpMM Instantiations
+// CT-NT
 // @tvm_ffi coomm_ct_nt_f32
 FFI_COOMM_CT_NT(_f32, float,          sizeof(float))
 // @tvm_ffi coomm_ct_nt_f64
@@ -505,10 +503,7 @@ FFI_COOMM_CT_NT(_f16, __half,         sizeof(__half))
 // @tvm_ffi coomm_ct_nt_bf16
 FFI_COOMM_CT_NT(_bf16, __nv_bfloat16, sizeof(__nv_bfloat16))
 
-// ============================================================================
-// CT-T: Column-Tiled, Transpose
-// ============================================================================
-
+// CT-T
 // @tvm_ffi coomm_ct_t_f32
 FFI_COOMM_CT_T(_f32, float,          sizeof(float))
 // @tvm_ffi coomm_ct_t_f64
@@ -518,10 +513,7 @@ FFI_COOMM_CT_T(_f16, __half,         sizeof(__half))
 // @tvm_ffi coomm_ct_t_bf16
 FFI_COOMM_CT_T(_bf16, __nv_bfloat16, sizeof(__nv_bfloat16))
 
-// ============================================================================
-// WPE-NT: Warp-Per-Entry, Non-Transpose
-// ============================================================================
-
+// WPE-NT
 // @tvm_ffi coomm_wpe_nt_f32
 FFI_COOMM_WPE_NT(_f32, float,          sizeof(float))
 // @tvm_ffi coomm_wpe_nt_f64
@@ -531,10 +523,7 @@ FFI_COOMM_WPE_NT(_f16, __half,         sizeof(__half))
 // @tvm_ffi coomm_wpe_nt_bf16
 FFI_COOMM_WPE_NT(_bf16, __nv_bfloat16, sizeof(__nv_bfloat16))
 
-// ============================================================================
-// WPE-T: Warp-Per-Entry, Transpose
-// ============================================================================
-
+// WPE-T
 // @tvm_ffi coomm_wpe_t_f32
 FFI_COOMM_WPE_T(_f32, float,          sizeof(float))
 // @tvm_ffi coomm_wpe_t_f64

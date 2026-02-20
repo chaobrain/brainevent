@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+from pathlib import Path
 from typing import Optional
 
 import brainunit as u
@@ -289,8 +290,8 @@ def _csrmv_yw2y_benchmark_data(*, platform):
     dtype = jnp.float32
     configs = []
     sizes = [
-        (1_000,  1_000),
-        (5_000,  5_000),
+        (1_000, 1_000),
+        (5_000, 5_000),
         (20_000, 20_000),
     ]
     probs = [0.001, 0.01, 0.1]
@@ -342,66 +343,22 @@ def _csrmv_yw2y_jax_kernel(
 
 
 def _csrmv_yw2y_cuda_kernel(
-    shape: MatrixShape,
     transpose: bool,
     w_info: jax.ShapeDtypeStruct,
     **kwargs,
 ):
-    """
-    TVM FFI (CUDA) kernel generator for ``csrmv_yw2y``.
-
-    Dispatches to optimised CUDA kernels compiled from ``csrmv_yw2y.cu``
-    via the TVM FFI compilation pipeline.
-
-    Non-transpose (NT) kernels are auto-selected based on ``avg_nnz``:
-
-    * ``avg_nnz < 8``   → ``NT_row_thread`` (1 thread/row, serial)
-    * ``avg_nnz < 512`` → ``NT_row_warp``   (1 warp/row, stride-32)
-    * ``avg_nnz >= 512``→ ``NT_nz_thread``  (1 thread/nz, binary-search row)
-
-    The transpose (T) variant always uses ``T_nz_thread`` (1 thread/nz,
-    direct column gather), which is embarrassingly parallel and needs no
-    atomic operations.
-
-    Parameters
-    ----------
-    shape : tuple of int
-        ``(m, k)`` logical shape of the CSR matrix.
-    transpose : bool
-        ``False`` → NT (gather from rows);  ``True`` → T (gather from cols).
-    w_info : jax.ShapeDtypeStruct
-        Shape and dtype of the weight array ``w`` (always ``(nse,)``).
-    **kwargs
-        Must contain ``outs`` (list of ``jax.ShapeDtypeStruct`` for output).
-
-    Returns
-    -------
-    kernel : callable
-        ``kernel(y, w, indices, indptr) -> (output,)``
-
-    Notes
-    -----
-    This backend requires ``int32`` column indices and row pointers.  The
-    Python-side ``csrmv_yw2y_p_call`` asserts this before dispatching.
-
-    Unlike ``binary_csrmv``, the transpose variant does **not** use
-    ``atomicAdd`` because each output element ``out[j]`` is owned by
-    exactly one thread.
-    """
-    from pathlib import Path
-
     register_tvm_cuda_from_file(
         module='csrmv_yw2y',
-        source=Path(__file__).parent.joinpath('csrmv_yw2y.cu'),
+        source=Path(__file__).parent.joinpath('yw2y.cu'),
     )
 
     out_info = kwargs['outs']
 
     # Weight dtype suffix
     _dtype_sfx = {
-        jnp.dtype('float16'):  '_f16',
-        jnp.dtype('float32'):  '_f32',
-        jnp.dtype('float64'):  '_f64',
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
         jnp.dtype('bfloat16'): '_bf16',
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(w_info.dtype), '_f32')

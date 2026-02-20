@@ -315,22 +315,9 @@ def _spfloat_fcnmv_cuda_kernel(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    """
-    TVM FFI CUDA kernels for sparse-float FCN matrix-vector multiplication.
-
-    Optimization strategy over the dense fcnmv:
-      Gather (transpose=False):
-        y[i] = sum_k w[i,k] * s[idx[i,k]]  (skip when s[idx[i,k]] == 0)
-        - __ballot_sync detects all-zero 32-connection chunks → skip weight load
-        - At 5% SNN firing rate: ~95% fewer FMA operations
-      Scatter (transpose=True):
-        y[idx[i,k]] += w[i,k] * s[i]  (entire row skipped when s[i] == 0)
-        - Per-pre-neuron early exit: 95% of neurons inactive → 95% skip
-        - __shfl_sync broadcasts s[i] to all 32 lanes in warp scatter variant
-    """
     register_tvm_cuda_from_file(
-        module='spfloat_fcnmv',
-        source=Path(__file__).parent.joinpath('spfloat_fcnmv.cu'),
+        module='fcn_sparse_float',
+        source=Path(__file__).parent.joinpath('sparse_float.cu'),
     )
 
     out_info = kwargs['outs']
@@ -341,20 +328,20 @@ def _spfloat_fcnmv_cuda_kernel(
     if transpose:
         # Scatter mode: y[idx[i,k]] += w[i,k] * s[i]  (skip when s[i] == 0)
         if n_conn <= 32:
-            kernel_name = f'spfloat_fcnmv.spfloat_fcnmv_scatter_warp{sfx}'
+            kernel_name = f'fcn_sparse_float.spfloat_fcnmv_scatter_warp{sfx}'
         else:
-            kernel_name = f'spfloat_fcnmv.spfloat_fcnmv_scatter_auto{sfx}'
+            kernel_name = f'fcn_sparse_float.spfloat_fcnmv_scatter_auto{sfx}'
 
 
     else:
         # Gather mode: y[i] = sum_k w[i,k] * s[idx[i,k]]  (skip when s == 0)
         # shared kernel only for float32; for f64/f16 fall back to basic/warp
         if sfx == '_f32' and n_conn > 512:
-            kernel_name = 'spfloat_fcnmv.spfloat_fcnmv_gather_shared_f32'
+            kernel_name = 'fcn_sparse_float.spfloat_fcnmv_gather_shared_f32'
         elif n_conn <= 64:
-            kernel_name = f'spfloat_fcnmv.spfloat_fcnmv_gather_warp{sfx}'
+            kernel_name = f'fcn_sparse_float.spfloat_fcnmv_gather_warp{sfx}'
         else:
-            kernel_name = f'spfloat_fcnmv.spfloat_fcnmv_gather_basic{sfx}'
+            kernel_name = f'fcn_sparse_float.spfloat_fcnmv_gather_basic{sfx}'
 
     def kernel(weights, indices, vector):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, vector)
@@ -864,46 +851,21 @@ def _spfloat_fcnmm_cuda_kernel(
     matrix_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    """
-    TVM FFI CUDA kernels for sparse-float FCN matrix-matrix multiplication.
-
-    Optimization strategy over the dense fcnmm:
-      Gather (transpose=False):
-        Y[i,j] = sum_k w[i,k] * M[idx[i,k],j]  (skip when M[...] == 0)
-        - Per-element zero check avoids FMA when M entry is zero
-        - Shared-memory tiling reduces index/weight bandwidth for large n_conn
-      Scatter (transpose=True):
-        Y[idx[i,k],j] += w[i,k] * M[i,j]  (skip when M[i,j] == 0)
-        - Cached scatter: loads M[i,j_tile] into shmem once, then uses warp
-          ballot to detect all-zero tiles and skip ALL n_conn atomic scatter
-          ops for that tile → 95% savings at 5% SNN firing rate
-    """
     register_tvm_cuda_from_file(
-        module='spfloat_fcnmm',
-        source=Path(__file__).parent.joinpath('spfloat_fcnmm.cu'),
+        module='fcn_sparse_float',
+        source=Path(__file__).parent.joinpath('sparse_float.cu'),
     )
 
     out_info = kwargs['outs']
-    n_conn = indices_info.shape[1]
-    n_col = matrix_info.shape[1]
     _dtype_sfx = {np.dtype('float16'): '_f16', np.dtype('float32'): '_f32', np.dtype('float64'): '_f64'}
     sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
 
     if transpose:
-        # Scatter mode: Y[idx[i,k],j] += w[i,k] * M[i,j]  (skip when M[i,j]==0)
-        # Cached scatter with tile-level early exit is the default for float32;
-        # for f64/f16 fall back to scatter_auto which uses block/warp variants.
-        kernel_name = f'spfloat_fcnmm.spfloat_fcnmm_scatter_auto{sfx}'
-
+        # Scatter mode: Y[idx[i,k],j] += w[i,k] * M[i,j]  (skip when M[i,j] == 0)
+        kernel_name = f'fcn_sparse_float.spfloat_fcnmm_scatter_auto{sfx}'
     else:
-        # Gather mode: Y[i,j] = sum_k w[i,k] * M[idx[i,k],j]  (skip M==0)
-        # vec4 and shared only for float32
-        if sfx == '_f32' and n_col % 4 == 0 and n_col >= 64:
-            kernel_name = 'spfloat_fcnmm.spfloat_fcnmm_gather_vec4_f32'
-        elif sfx == '_f32' and n_conn > 128:
-            kernel_name = 'spfloat_fcnmm.spfloat_fcnmm_gather_shared_f32'
-        else:
-            kernel_name = f'spfloat_fcnmm.spfloat_fcnmm_gather_auto{sfx}'
+        # Gather mode: Y[i,j] = sum_k w[i,k] * M[idx[i,k],j]  (skip when M[...] == 0)
+        kernel_name = f'fcn_sparse_float.spfloat_fcnmm_gather_auto{sfx}'
 
     def kernel(weights, indices, matrix):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, matrix)

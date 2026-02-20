@@ -124,7 +124,6 @@ def update_dense_on_binary_pre(
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent._dense.plasticity import update_dense_on_binary_pre
         >>> weight = jnp.zeros((3, 4), dtype=jnp.float32)
         >>> pre_spike = jnp.array([True, False, True])
         >>> post_trace = jnp.ones(4, dtype=jnp.float32) * 0.1
@@ -171,18 +170,17 @@ def _dense_on_pre_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, *
     def kernel(weight_ref, spike_ref, trace_ref, out_w_ref):
         i_block = pl.program_id(0)
         col_start = i_block * block_dim
-        cols = col_start + jnp.arange(block_dim)
-        mask = cols < weight_info.shape[1]
-        safe_cols = jnp.where(mask, cols, 0)
-        trace_block = jnp.where(mask, trace_ref[safe_cols], 0.0)
+        mask = col_start + jnp.arange(block_dim) < weight_info.shape[1]
+        trace_block = trace_ref[pl.ds(col_start, block_dim)]
+        trace_block = jnp.where(mask, trace_block, 0.0).astype(out_w_ref.dtype)
 
         def loop_fn(i, _):
             spike = spike_ref[i]
 
             @pl.when(spike if spike_info.dtype == jnp.bool_ else spike != 0.)
             def run():
-                row_val = out_w_ref[i, safe_cols]
-                out_w_ref[i, safe_cols] = jnp.where(mask, row_val + trace_block, row_val)
+                row_val = out_w_ref[i, pl.ds(col_start, block_dim)]
+                out_w_ref[i, pl.ds(col_start, block_dim)] = jnp.where(mask, row_val + trace_block, row_val)
 
         jax.lax.fori_loop(0, spike_ref.shape[0], loop_fn, None)
 
@@ -201,8 +199,8 @@ def _dense_on_pre_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, *
 
 def _dense_on_pre_cuda_kernel(weight_info, spike_info, **kwargs):
     register_tvm_cuda_from_file(
-        module='plasticity_on_pre',
-        source=Path(__file__).parent.joinpath('plasticity_binary_on_pre.cu'),
+        module='dense_plasticity',
+        source=Path(__file__).parent.joinpath('plasticity_binary.cu'),
     )
 
     out_info = kwargs['outs']
@@ -215,7 +213,7 @@ def _dense_on_pre_cuda_kernel(weight_info, spike_info, **kwargs):
         jnp.dtype('bfloat16'): '_bf16',
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
-    kernel_name = f'plasticity_on_pre.update_dense_on_pre{wt_sfx}{spk_suffix}'
+    kernel_name = f'dense_plasticity.update_dense_on_pre{wt_sfx}{spk_suffix}'
 
     def kernel(weight, spike, trace):
         return jax.ffi.ffi_call(
@@ -293,7 +291,6 @@ def _dense_on_pre_prim_call(weight, pre_spike, post_trace, backend: Optional[str
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent._dense.plasticity import _dense_on_pre_prim_call
         >>> weight = jnp.zeros((3, 4), dtype=jnp.float32)
         >>> pre_spike = jnp.array([True, False, True])
         >>> post_trace = jnp.ones(4, dtype=jnp.float32)
@@ -487,7 +484,6 @@ def update_dense_on_binary_post(
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent._dense.plasticity import update_dense_on_binary_post
         >>> weight = jnp.zeros((3, 4), dtype=jnp.float32)
         >>> pre_trace = jnp.ones(3, dtype=jnp.float32) * 0.1
         >>> post_spike = jnp.array([True, False, True, False])
@@ -534,18 +530,17 @@ def _dense_on_post_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, 
     def kernel(weight_ref, trace_ref, spike_ref, out_w_ref):
         i_block = pl.program_id(0)
         row_start = i_block * block_dim
-        rows = row_start + jnp.arange(block_dim)
-        mask = rows < weight_info.shape[0]
-        safe_rows = jnp.where(mask, rows, 0)
-        trace_block = jnp.where(mask, trace_ref[safe_rows], 0.0)
+        mask = row_start + jnp.arange(block_dim) < weight_info.shape[0]
+        trace_block = trace_ref[pl.ds(row_start, block_dim)]
+        trace_block = jnp.where(mask, trace_block, 0.0).astype(out_w_ref.dtype)
 
         def loop_fn(i, _):
             spike = spike_ref[i]
 
             @pl.when(spike if spike_info.dtype == jnp.bool_ else spike != 0.)
             def run():
-                col_val = out_w_ref[safe_rows, i]
-                out_w_ref[safe_rows, i] = jnp.where(mask, col_val + trace_block, col_val)
+                col_val = out_w_ref[pl.ds(row_start, block_dim), i]
+                out_w_ref[pl.ds(row_start, block_dim), i] = jnp.where(mask, col_val + trace_block, col_val)
 
         jax.lax.fori_loop(0, spike_ref.shape[0], loop_fn, None)
 
@@ -564,8 +559,8 @@ def _dense_on_post_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, 
 
 def _dense_on_post_cuda_kernel(weight_info, spike_info, **kwargs):
     register_tvm_cuda_from_file(
-        module='plasticity_on_post',
-        source=Path(__file__).parent.joinpath('plasticity_binary_on_post.cu'),
+        module='dense_plasticity',
+        source=Path(__file__).parent.joinpath('plasticity_binary.cu'),
     )
 
     out_info = kwargs['outs']
@@ -578,7 +573,7 @@ def _dense_on_post_cuda_kernel(weight_info, spike_info, **kwargs):
         jnp.dtype('bfloat16'): '_bf16',
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
-    kernel_name = f'plasticity_on_post.update_dense_on_post{wt_sfx}{spk_suffix}'
+    kernel_name = f'dense_plasticity.update_dense_on_post{wt_sfx}{spk_suffix}'
 
     def kernel(weight, trace, spike):
         return jax.ffi.ffi_call(
@@ -656,7 +651,6 @@ def _dense_on_post_prim_call(weight, pre_trace, post_spike, backend: Optional[st
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent._dense.plasticity import _dense_on_post_prim_call
         >>> weight = jnp.zeros((3, 4), dtype=jnp.float32)
         >>> pre_trace = jnp.ones(3, dtype=jnp.float32)
         >>> post_spike = jnp.array([True, False, True, False])

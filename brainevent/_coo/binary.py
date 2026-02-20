@@ -722,7 +722,7 @@ def _coomv_tvmffi_kernel(
     """TVM FFI CUDA kernel for binary COO SpMV.
 
     Dispatches to one of the ``binary_coomv_atomic_{nt,t}`` kernels compiled
-    from ``binary_coomv.cu`` via ``register_tvm_cuda_from_file``.
+    from ``binary.cu`` via ``register_tvm_cuda_from_file``.
 
     Kernel selection:
     - Direction: ``_nt`` (transpose=False) or ``_t`` (transpose=True).
@@ -734,8 +734,8 @@ def _coomv_tvmffi_kernel(
     (via ``cudaMemsetAsync``) before the atomic-scatter kernel runs.
     """
     register_tvm_cuda_from_file(
-        module='binary_coomv',
-        source=Path(__file__).parent.joinpath('binary_coomv.cu'),
+        module='coo_binary',
+        source=Path(__file__).parent.joinpath('binary.cu'),
     )
 
     out_info = kwargs['outs']
@@ -749,7 +749,7 @@ def _coomv_tvmffi_kernel(
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
     direction = '_t' if transpose else '_nt'
-    kernel_name = f'binary_coomv.binary_coomv_atomic{direction}{wt_sfx}{spk_suffix}'
+    kernel_name = f'coo_binary.binary_coomv_atomic{direction}{wt_sfx}{spk_suffix}'
 
     def kernel(weights, row, col, v):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, row, col, v)
@@ -1569,7 +1569,7 @@ def _coomm_tvmffi_kernel(
     """TVM FFI CUDA kernel for binary COO SpMM.
 
     Dispatches to one of the ``binary_coomm_{variant}_{nt,t}`` kernels compiled
-    from ``binary_coomm.cu`` via ``register_tvm_cuda_from_file``.
+    from ``binary.cu`` via ``register_tvm_cuda_from_file``.
 
     Kernel variant selection (based on n = number of output columns):
     - CT (Column-Tiled, n ≤ 64): One warp per block serially iterates over
@@ -1589,8 +1589,8 @@ def _coomm_tvmffi_kernel(
     (via ``cudaMemsetAsync``) before the atomic-scatter kernel runs.
     """
     register_tvm_cuda_from_file(
-        module='binary_coomm',
-        source=Path(__file__).parent.joinpath('binary_coomm.cu'),
+        module='coo_binary',
+        source=Path(__file__).parent.joinpath('binary.cu'),
     )
 
     out_info = kwargs['outs']
@@ -1610,7 +1610,7 @@ def _coomm_tvmffi_kernel(
     # (each warp independently covers one NNZ entry with no serial loop).
     n = matrix_info.shape[1]
     variant = 'ct' if n <= 64 else 'wpe'
-    kernel_name = f'binary_coomm.binary_coomm_{variant}{direction}{wt_sfx}{spk_suffix}'
+    kernel_name = f'coo_binary.binary_coomm_{variant}{direction}{wt_sfx}{spk_suffix}'
 
     def kernel(weights, row, col, B):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, row, col, B)

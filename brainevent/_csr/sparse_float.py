@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-
+from pathlib import Path
 from typing import Optional
 
 import brainunit as u
@@ -705,11 +705,13 @@ def _spfloat_csrmv_cusparse_kernel(
         if is_homo:
             def kernel(weights, indices, indptr, vector):
                 ones = jnp.ones(nse, dtype=out_dtype)
-                mat = jsparse.BCSR((ones, indices, indptr), shape=(m, k))
+                row, col = _csr_to_coo(indices, indptr)
+                mat = jsparse.BCOO((ones, jnp.stack([row, col], axis=1)), shape=(m, k))
                 return ((mat.T @ vector.astype(out_dtype)) * weights[0].astype(out_dtype),)
         else:
             def kernel(weights, indices, indptr, vector):
-                mat = jsparse.BCSR((weights.astype(out_dtype), indices, indptr), shape=(m, k))
+                row, col = _csr_to_coo(indices, indptr)
+                mat = jsparse.BCOO((weights.astype(out_dtype), jnp.stack([row, col], axis=1)), shape=(m, k))
                 return (mat.T @ vector.astype(out_dtype),)
     else:
         if is_homo:
@@ -726,59 +728,9 @@ def _spfloat_csrmv_cusparse_kernel(
 
 def _spfloat_csrmv_cuda_kernel(
     weight_info: jax.ShapeDtypeStruct,
-    vector_info: jax.ShapeDtypeStruct,
-    shape: MatrixShape,
     transpose: bool,
     **kwargs,
 ):
-    """CUDA TVM FFI kernel generator for ``spfloat_csrmv``.
-
-    Registers and selects optimised CUDA kernels from ``spfloat_csrmv.cu``
-    for the sparse-float CSR sparse matrix-vector multiply.
-
-    Non-transpose (NT) mode uses an auto-dispatch entry point that selects
-    the thread, warp, or block variant based on the average number of
-    nonzeros per row:
-
-    * ``avg_nnz < 8``    → NT_thread (256 threads/block, 1 thread per row)
-    * ``avg_nnz < 512``  → NT_warp   (32  threads/block, 1 warp  per row)
-    * ``avg_nnz >= 512`` → NT_block  (256 threads/block, 1 block per row)
-
-    Transpose (T) mode uses the warp-scatter variant which skips entire
-    rows when the corresponding vector element is zero (event-driven).
-
-    Parameters
-    ----------
-    weight_info : jax.ShapeDtypeStruct
-        Shape and dtype of the weight array (``[1]`` homo or ``[nse]`` hetero).
-    vector_info : jax.ShapeDtypeStruct
-        Shape and dtype of the sparse float input vector.
-    shape : tuple of int
-        ``(m, k)`` logical shape of the sparse matrix.
-    transpose : bool
-        ``False`` → ``A @ v`` (gather); ``True`` → ``A.T @ v`` (scatter).
-    **kwargs
-        Must contain ``outs`` (list of ``jax.ShapeDtypeStruct`` for output)
-        and ``indices_info`` (``jax.ShapeDtypeStruct`` for column indices).
-
-    Returns
-    -------
-    kernel : callable
-        Function ``kernel(weights, indices, indptr, vector) -> (output,)``
-        that dispatches to the selected CUDA entry point.
-
-    Notes
-    -----
-    This backend requires ``int32`` column indices and row pointers.
-    The caller (``sparse_float_csrmv_p_call``) must ensure ``int32`` dtype
-    for ``indices`` and ``indptr`` before selecting this backend.
-
-    Both the weight array and the input vector must share the same dtype
-    (float32, float64, float16, or bfloat16).  The output dtype matches
-    the weight dtype.
-    """
-    from pathlib import Path
-
     indices_info = kwargs.get('indices_info')
     if indices_info is not None and indices_info.dtype != jnp.int32:
         raise ValueError(
@@ -788,8 +740,8 @@ def _spfloat_csrmv_cuda_kernel(
         )
 
     register_tvm_cuda_from_file(
-        module='spfloat_csrmv',
-        source=Path(__file__).parent.joinpath('spfloat_csrmv.cu'),
+        module='csr_sparse_float',
+        source=Path(__file__).parent.joinpath('sparse_float.cu'),
     )
 
     out_info = kwargs['outs']
@@ -803,9 +755,9 @@ def _spfloat_csrmv_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
     if transpose:
-        kernel_name = f'spfloat_csrmv.spfloat_csrmv_t_warp{wt_sfx}'
+        kernel_name = f'csr_sparse_float.spfloat_csrmv_t_warp{wt_sfx}'
     else:
-        kernel_name = f'spfloat_csrmv.spfloat_csrmv_nt_auto{wt_sfx}'
+        kernel_name = f'csr_sparse_float.spfloat_csrmv_nt_auto{wt_sfx}'
 
     def kernel(weights, indices, indptr, vector):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, vector)
@@ -1414,58 +1366,9 @@ def _sparse_float_csrmm_pallas_kernel(
 
 def _spfloat_csrmm_cuda_kernel(
     weight_info: jax.ShapeDtypeStruct,
-    vector_info: jax.ShapeDtypeStruct,
-    shape: MatrixShape,
     transpose: bool,
     **kwargs,
 ):
-    """CUDA TVM FFI kernel generator for ``spfloat_csrmm``.
-
-    Registers and selects optimised CUDA kernels from ``spfloat_csrmm.cu``
-    for the sparse-float CSR sparse matrix-matrix multiply.
-
-    Non-transpose (NT) mode uses an auto-dispatch entry point that selects
-    the warp or block variant based on the average number of nonzeros per row:
-
-    * ``avg_nnz <= 256``  → NT_warp  (32  threads/block, 1 warp  per (row, col-block))
-    * ``avg_nnz >  256``  → NT_block (256 threads/block, 1 block per (row, col-block))
-
-    Transpose (T) mode uses the warp-scatter variant which skips entire
-    (row, col) entries when the corresponding B element is zero (event-driven).
-
-    Parameters
-    ----------
-    weight_info : jax.ShapeDtypeStruct
-        Shape and dtype of the weight array (``[1]`` homo or ``[nse]`` hetero).
-    vector_info : jax.ShapeDtypeStruct
-        Shape and dtype of the sparse float input matrix B, shape ``(k, n)``
-        or ``(m, n)`` depending on transpose mode.
-    shape : tuple of int
-        ``(m, k)`` logical shape of the sparse matrix.
-    transpose : bool
-        ``False`` → ``A @ B`` (gather); ``True`` → ``A.T @ B`` (scatter).
-    **kwargs
-        Must contain ``outs`` (list of ``jax.ShapeDtypeStruct`` for output)
-        and ``indices_info`` (``jax.ShapeDtypeStruct`` for column indices).
-
-    Returns
-    -------
-    kernel : callable
-        Function ``kernel(weights, indices, indptr, B) -> (output,)``
-        that dispatches to the selected CUDA entry point.
-
-    Notes
-    -----
-    This backend requires ``int32`` column indices and row pointers.
-    The caller (``sparse_float_csrmm_p_call``) must ensure ``int32`` dtype
-    for ``indices`` and ``indptr`` before selecting this backend.
-
-    Both the weight array and the input matrix B must share the same dtype
-    (float32, float64, float16, or bfloat16).  The output dtype matches
-    the weight dtype.
-    """
-    from pathlib import Path
-
     indices_info = kwargs.get('indices_info')
     if indices_info is not None and indices_info.dtype != jnp.int32:
         raise ValueError(
@@ -1475,8 +1378,8 @@ def _spfloat_csrmm_cuda_kernel(
         )
 
     register_tvm_cuda_from_file(
-        module='spfloat_csrmm',
-        source=Path(__file__).parent.joinpath('spfloat_csrmm.cu'),
+        module='csr_sparse_float',
+        source=Path(__file__).parent.joinpath('sparse_float.cu'),
     )
 
     out_info = kwargs['outs']
@@ -1490,9 +1393,9 @@ def _spfloat_csrmm_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
     if transpose:
-        kernel_name = f'spfloat_csrmm.spfloat_csrmm_t_warp{wt_sfx}'
+        kernel_name = f'csr_sparse_float.spfloat_csrmm_t_warp{wt_sfx}'
     else:
-        kernel_name = f'spfloat_csrmm.spfloat_csrmm_nt_auto{wt_sfx}'
+        kernel_name = f'csr_sparse_float.spfloat_csrmm_nt_auto{wt_sfx}'
 
     def kernel(weights, indices, indptr, B):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, B)
@@ -1562,11 +1465,13 @@ def _spfloat_csrmm_cusparse_kernel(
         if is_homo:
             def kernel(weights, indices, indptr, B):
                 ones = jnp.ones(nse, dtype=out_dtype)
-                mat = jsparse.BCSR((ones, indices, indptr), shape=(m, k))
+                row, col = _csr_to_coo(indices, indptr)
+                mat = jsparse.BCOO((ones, jnp.stack([row, col], axis=1)), shape=(m, k))
                 return ((mat.T @ B.astype(out_dtype)) * weights[0].astype(out_dtype),)
         else:
             def kernel(weights, indices, indptr, B):
-                mat = jsparse.BCSR((weights.astype(out_dtype), indices, indptr), shape=(m, k))
+                row, col = _csr_to_coo(indices, indptr)
+                mat = jsparse.BCOO((weights.astype(out_dtype), jnp.stack([row, col], axis=1)), shape=(m, k))
                 return (mat.T @ B.astype(out_dtype),)
     else:
         if is_homo:

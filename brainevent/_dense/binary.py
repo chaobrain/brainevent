@@ -271,8 +271,8 @@ def _binary_densemv_cuda_kernel(
     **kwargs
 ):
     register_tvm_cuda_from_file(
-        module='binary_densemv',
-        source=Path(__file__).parent.joinpath('binary_densemv.cu'),
+        module='dense_binary',
+        source=Path(__file__).parent.joinpath('binary.cu'),
     )
 
     out_info = kwargs['outs']
@@ -287,9 +287,9 @@ def _binary_densemv_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(kwargs['weight_info'].dtype), '_f32')
 
     if transpose:
-        kernel_name = f'binary_densemv.binary_densemv_scatter{wt_sfx}{spk_suffix}'
+        kernel_name = f'dense_binary.binary_densemv_scatter{wt_sfx}{spk_suffix}'
     else:
-        kernel_name = f'binary_densemv.binary_densemv_gather_auto{wt_sfx}{spk_suffix}'
+        kernel_name = f'dense_binary.binary_densemv_gather_auto{wt_sfx}{spk_suffix}'
 
     def kernel(weights, spikes):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, spikes)
@@ -1063,8 +1063,8 @@ def _binary_densemm_cuda_kernel(
     be preferred for large matrices.
     """
     register_tvm_cuda_from_file(
-        module='binary_densemm',
-        source=Path(__file__).parent.joinpath('binary_densemm.cu'),
+        module='dense_binary',
+        source=Path(__file__).parent.joinpath('binary.cu'),
     )
 
     out_info = kwargs['outs']
@@ -1082,9 +1082,9 @@ def _binary_densemm_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
     if transpose:
-        kernel_name = f'binary_densemm.binary_densemm_scatter_auto{wt_sfx}{spk_suffix}'
+        kernel_name = f'dense_binary.binary_densemm_scatter_auto{wt_sfx}{spk_suffix}'
     else:
-        kernel_name = f'binary_densemm.binary_densemm_gather_auto{wt_sfx}{spk_suffix}'
+        kernel_name = f'dense_binary.binary_densemm_gather_auto{wt_sfx}{spk_suffix}'
 
     def kernel(weights, spikes):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, spikes)
@@ -1118,7 +1118,7 @@ binary_densemm : High-level user-facing function wrapper.
 """
 )
 binary_densemm_p.def_numba_kernel(_binary_densemm_numba_kernel)
-# binary_densemm_p.def_pallas_kernel('gpu', _binary_densemm_pallas_kernel)
+binary_densemm_p.def_pallas_kernel('gpu', _binary_densemm_pallas_kernel)
 binary_densemm_p.def_tvmffi_kernel('gpu', _binary_densemm_cuda_kernel)
 binary_densemm_p.def_kernel('jax_raw', 'cpu', _binary_densemm_jax_kernel)
 binary_densemm_p.def_kernel('jax_raw', 'gpu', _binary_densemm_jax_kernel)

@@ -290,7 +290,7 @@ def _fcnmv_cuda_kernel(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='fcnmv', source=Path(__file__).parent.joinpath('fcnmv.cu'))
+    register_tvm_cuda_from_file(module='fcn_float', source=Path(__file__).parent.joinpath('float.cu'))
 
     out_info = kwargs['outs']
     n_conn = indices_info.shape[1]
@@ -305,19 +305,19 @@ def _fcnmv_cuda_kernel(
     if transpose:
         # Scatter mode: y[idx[i,k]] += w[i,k] * v[i]
         if n_conn <= 32:
-            kernel_name = f'fcnmv.fcnmv_scatter_warp{sfx}'
+            kernel_name = f'fcn_float.fcnmv_scatter_warp{sfx}'
         else:
-            kernel_name = f'fcnmv.fcnmv_scatter_auto{sfx}'
+            kernel_name = f'fcn_float.fcnmv_scatter_auto{sfx}'
 
     else:
         # Gather mode: y[i] = sum_k w[i,k] * v[idx[i,k]]
         # vec4 only for float32 (uses float4 vectorized loads)
         if sfx == '_f32' and n_conn % 4 == 0 and n_conn >= 128:
-            kernel_name = 'fcnmv.fcnmv_gather_vec4_f32'
+            kernel_name = 'fcn_float.fcnmv_gather_vec4_f32'
         elif n_conn <= 32:
-            kernel_name = f'fcnmv.fcnmv_gather_warp{sfx}'
+            kernel_name = f'fcn_float.fcnmv_gather_warp{sfx}'
         else:
-            kernel_name = f'fcnmv.fcnmv_gather_auto{sfx}'
+            kernel_name = f'fcn_float.fcnmv_gather_auto{sfx}'
 
     def kernel(weights, indices, vector):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, vector)
@@ -823,7 +823,7 @@ def _fcnmm_cuda_kernel(
     matrix_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='fcnmm', source=Path(__file__).parent.joinpath('fcnmm.cu'))
+    register_tvm_cuda_from_file(module='fcn_float', source=Path(__file__).parent.joinpath('float.cu'))
 
     out_info = kwargs['outs']
     n_conn = indices_info.shape[1]
@@ -838,17 +838,17 @@ def _fcnmm_cuda_kernel(
 
     if transpose:
         # Scatter mode: Y[idx[i,k], j] += w[i,k] * M[i, j]
-        kernel_name = f'fcnmm.fcnmm_scatter_auto{sfx}'
+        kernel_name = f'fcn_float.fcnmm_scatter_auto{sfx}'
 
     else:
         # Gather mode: Y[i, j] = sum_k w[i,k] * M[idx[i,k], j]
         # vec4 and shared only for float32
         if sfx == '_f32' and n_col % 4 == 0 and n_col >= 64:
-            kernel_name = 'fcnmm.fcnmm_gather_vec4_f32'
+            kernel_name = 'fcn_float.fcnmm_gather_vec4_f32'
         elif sfx == '_f32' and n_conn > 128:
-            kernel_name = 'fcnmm.fcnmm_gather_shared_f32'
+            kernel_name = 'fcn_float.fcnmm_gather_shared_f32'
         else:
-            kernel_name = f'fcnmm.fcnmm_gather_auto{sfx}'
+            kernel_name = f'fcn_float.fcnmm_gather_auto{sfx}'
 
     def kernel(weights, indices, matrix):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, matrix)
