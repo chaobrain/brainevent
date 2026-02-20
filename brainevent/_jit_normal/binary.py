@@ -14,6 +14,7 @@
 # ==============================================================================
 # -*- coding: utf-8 -*-
 
+from pathlib import Path
 from typing import Optional, Sequence
 
 import brainunit as u
@@ -25,7 +26,7 @@ from jax.interpreters import ad
 from brainevent._data import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_normal
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, register_tvm_cuda_from_file
 from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
 from .float import jitnmv_p_call, jitnmm_p_call
@@ -437,7 +438,7 @@ def _jitc_mv_normal_pallas_kernel_generator(
             i_cols = i_col_block * block_size + jnp.arange(block_size)
             i_col_mask = i_cols < dim
 
-            def body(data):
+            def body(_step, data):
                 i_rows, i_row_mask, rng, out = data
                 v = vector_ref[i_rows]
                 if vector_ref.dtype != jnp.bool_:
@@ -451,11 +452,7 @@ def _jitc_mv_normal_pallas_kernel_generator(
             i_rows = rng.random_integers(0, clen)
             i_row_mask = i_rows < num_row
             out = jnp.zeros(block_size, dtype=post_ref.dtype)
-            out = jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_rows, i_row_mask, rng, out)
-            )[-1]
+            out = jax.lax.fori_loop(0, num_row, body, (i_rows, i_row_mask, rng, out))[-1]
             post_ref[i_cols] = jnp.where(i_col_mask, out, post_ref[i_cols])
 
     else:
@@ -477,7 +474,7 @@ def _jitc_mv_normal_pallas_kernel_generator(
             # event_mask: only active lanes where the vector element is an event
             event_mask = i_row_mask & v
 
-            def body(data):
+            def body(_step, data):
                 i_cols, i_col_mask, rng = data
                 w = rng.normal(w_loc, w_scale)
                 atomic_add(post_ref, (i_cols,), w, mask=event_mask & i_col_mask)
@@ -487,11 +484,7 @@ def _jitc_mv_normal_pallas_kernel_generator(
             rng = _PallasLFSRRNG(seed + i_rows * num_col)
             i_cols = rng.random_integers(0, clen)
             i_col_mask = i_cols < num_col
-            jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_cols, i_col_mask, rng)
-            )
+            jax.lax.fori_loop(0, num_col, body, (i_cols, i_col_mask, rng))
 
     def run(w_loc, w_scale, clen, vector, seed):
         fn = pl.pallas_call(
@@ -733,6 +726,46 @@ def binary_jitnmv_p_call(
     )
 
 
+_dtype_sfx = {
+    np.dtype('float16'): '_f16',
+    np.dtype('float32'): '_f32',
+    np.dtype('float64'): '_f64',
+    np.dtype('bfloat16'): '_bf16',
+}
+
+
+def _binary_jitnmv_cuda_kernel(
+    corder: bool = True,
+    **kwargs
+):
+    register_tvm_cuda_from_file(module='jit_normal', source=Path(__file__).parent.joinpath('jit_normal.cu'))
+    sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
+    stype = '_bool' if kwargs['vector_info'].dtype == jnp.bool_ else '_float'
+    variant = 'gather' if corder else 'scatter'
+    kernel_name = f'jit_normal.binary_jitnmv_{variant}{sfx}{stype}'
+
+    def kernel(w_loc, w_scale, clen, vector, seed):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_loc, w_scale, clen, seed, vector)
+
+    return kernel
+
+
+def _binary_jitnmm_cuda_kernel(
+    corder: bool = True,
+    **kwargs
+):
+    register_tvm_cuda_from_file(module='jit_normal', source=Path(__file__).parent.joinpath('jit_normal.cu'))
+    sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
+    stype = '_bool' if kwargs['B_info'].dtype == jnp.bool_ else '_float'
+    variant = 'gather' if corder else 'scatter'
+    kernel_name = f'jit_normal.binary_jitnmm_{variant}{sfx}{stype}'
+
+    def kernel(w_loc, w_scale, clen, B, seed):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_loc, w_scale, clen, seed, B)
+
+    return kernel
+
+
 binary_jitnmv_p = XLACustomKernel(
     'event_jitc_mv_normal',
     doc="""
@@ -760,9 +793,11 @@ binary_jitnmv : High-level user-facing function wrapper.
 )
 binary_jitnmv_p.def_numba_kernel(_jitc_mv_normal_numba_kernel_generator)
 binary_jitnmv_p.def_pallas_kernel('gpu', _jitc_mv_normal_pallas_kernel_generator)
+binary_jitnmv_p.def_tvmffi_kernel('gpu', _binary_jitnmv_cuda_kernel)
 binary_jitnmv_p.def_jvp_rule2(_jitc_mv_normal_jvp_wloc, _jitc_mv_normal_jvp_wscale, None, _jitc_mv_normal_jvp_v, None)
 binary_jitnmv_p.def_transpose_rule(_jitc_mv_normal_transpose_rules)
 binary_jitnmv_p.def_batching_rule(_jitc_mv_normal_batching)
+binary_jitnmv_p.def_call(binary_jitnmv_p_call)
 binary_jitnmv_p.def_tags('jit_normal', 'binary')
 binary_jitnmv_p.def_benchmark_data(_binary_jitnmv_benchmark_data)
 
@@ -924,7 +959,7 @@ def _jitc_mm_normal_pallas_kernel_generator(
 
             out = jnp.zeros(row_block, dtype=post_ref.dtype)
 
-            def body(data):
+            def body(_step, data):
                 i_cols, i_col_mask, rng, out = data
                 w = rng.normal(w_loc0, w_scale0)
                 safe_cols = jnp.where(i_col_mask, i_cols, 0)
@@ -938,11 +973,7 @@ def _jitc_mm_normal_pallas_kernel_generator(
                 i_cols += rng.random_integers(1, clen0)
                 return i_cols, i_cols < k, rng, out
 
-            _, _, _, out = jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_cols, i_col_mask, rng, out)
-            )
+            _, _, _, out = jax.lax.fori_loop(0, k, body, (i_cols, i_col_mask, rng, out))
             atomic_add(post_ref, (safe_rows, col_j), out, mask=i_row_mask)
 
     else:
@@ -977,7 +1008,7 @@ def _jitc_mm_normal_pallas_kernel_generator(
             i_rows = rng.random_integers(0, clen0)
             i_row_mask = i_rows < m
 
-            def body(data):
+            def body(_step, data):
                 i_rows, i_row_mask, rng = data
                 w = rng.normal(w_loc0, w_scale0)
                 vals = jnp.where(i_k_mask & i_row_mask, w * b_events, 0.)
@@ -987,11 +1018,7 @@ def _jitc_mm_normal_pallas_kernel_generator(
                 i_rows += rng.random_integers(1, clen0)
                 return i_rows, i_rows < m, rng
 
-            jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_rows, i_row_mask, rng)
-            )
+            jax.lax.fori_loop(0, m, body, (i_rows, i_row_mask, rng))
 
     def run(w_loc, w_scale, clen, B, seed):
         fn = pl.pallas_call(
@@ -1267,8 +1294,10 @@ binary_jitnmm : High-level user-facing function wrapper.
 )
 binary_jitnmm_p.def_numba_kernel(_jitc_mm_normal_numba_kernel_generator)
 binary_jitnmm_p.def_pallas_kernel('gpu', _jitc_mm_normal_pallas_kernel_generator)
+binary_jitnmm_p.def_tvmffi_kernel('gpu', _binary_jitnmm_cuda_kernel)
 binary_jitnmm_p.def_jvp_rule2(_jitc_mm_normal_jvp_wloc, _jitc_mm_normal_jvp_wscale, None, _jitc_mm_normal_jvp_B, None)
 binary_jitnmm_p.def_transpose_rule(_jitc_mm_normal_transpose_rules)
 binary_jitnmm_p.def_batching_rule(_jitc_mm_normal_batching)
+binary_jitnmm_p.def_call(binary_jitnmm_p_call)
 binary_jitnmm_p.def_tags('jit_normal', 'binary')
 binary_jitnmm_p.def_benchmark_data(_binary_jitnmm_benchmark_data)
