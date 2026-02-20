@@ -86,7 +86,7 @@ def main():
         verbose=True,
         backends=args.backends,
     )
-    result.print(vary_by='backend', highlight_best=True)
+    result.print(vary_by='backend', highlight_best=True, speedup_vs='pallas')
 
 
 if __name__ == "__main__":
