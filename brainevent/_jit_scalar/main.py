@@ -26,15 +26,8 @@ from brainevent._compatible_import import Tracer
 from brainevent._data import JITCMatrix
 from brainevent._event.binary import BinaryArray
 from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
-from .binary import (
-    binary_jitsmv,
-    binary_jitsmm,
-)
-from .float import (
-    jits,
-    jitsmv,
-    jitsmm,
-)
+from .binary import binary_jitsmv, binary_jitsmm
+from .float import jits, jitsmv, jitsmm
 
 __all__ = [
     'JITCScalarR',
