@@ -14,6 +14,7 @@
 # ==============================================================================
 # -*- coding: utf-8 -*-
 
+from pathlib import Path
 from typing import Optional, Sequence
 
 import brainunit as u
@@ -25,7 +26,7 @@ from jax.interpreters import ad
 from brainevent._data import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, register_tvm_cuda_from_file
 from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
 from .float import jitsmv_p_call, jitsmm_p_call
@@ -848,6 +849,63 @@ def binary_jitsmv_p_call(
     )
 
 
+_dtype_sfx = {
+    np.dtype('float16'): '_f16',
+    np.dtype('float32'): '_f32',
+    np.dtype('float64'): '_f64',
+    np.dtype('bfloat16'): '_bf16',
+}
+
+_spike_sfx = {
+    np.dtype('bool'): '_bool',
+    np.dtype('int8'): '_bool',
+    np.dtype('float32'): '_float',
+    np.dtype('float16'): '_float',
+    np.dtype('float64'): '_float',
+    np.dtype('bfloat16'): '_float',
+}
+
+
+def _binary_jitsmv_cuda_kernel(
+    corder: bool,
+    vector_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    register_tvm_cuda_from_file(
+        module='jit_scalar',
+        source=Path(__file__).parent.joinpath('jit_scalar.cu'),
+    )
+    wt_sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
+    sp_sfx = _spike_sfx.get(np.dtype(vector_info.dtype), '_float')
+    variant = 'gather' if corder else 'scatter'
+    kernel_name = f'jit_scalar.binary_jitsmv_{variant}{wt_sfx}{sp_sfx}'
+
+    def kernel(weight, clen, vector, seed, _):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(weight, clen, seed, vector)
+
+    return kernel
+
+
+def _binary_jitsmm_cuda_kernel(
+    corder: bool,
+    B_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    register_tvm_cuda_from_file(
+        module='jit_scalar',
+        source=Path(__file__).parent.joinpath('jit_scalar.cu'),
+    )
+    wt_sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
+    sp_sfx = _spike_sfx.get(np.dtype(B_info.dtype), '_float')
+    variant = 'gather' if corder else 'scatter'
+    kernel_name = f'jit_scalar.binary_jitsmm_{variant}{wt_sfx}{sp_sfx}'
+
+    def kernel(weight, clen, B, seed, _):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(weight, clen, seed, B)
+
+    return kernel
+
+
 binary_jitsmv_p = XLACustomKernel(
     'binary_jitsmv',
     doc="""
@@ -875,6 +933,7 @@ binary_jitsmv : High-level user-facing function wrapper.
 )
 binary_jitsmv_p.def_numba_kernel(_jitsmv_numba_kernel)
 binary_jitsmv_p.def_pallas_kernel('gpu', _jitsmv_pallas_kernel)
+binary_jitsmv_p.def_tvmffi_kernel('gpu', _binary_jitsmv_cuda_kernel)
 binary_jitsmv_p.def_jvp_rule2(_jitsmv_jvp_weights, None, _jitsmv_jvp_v, None, None)
 binary_jitsmv_p.def_transpose_rule(_jitsmv_transpose_rules)
 binary_jitsmv_p.def_batching_rule(_jitsmv_batching)
@@ -1492,6 +1551,7 @@ binary_jitsmm : High-level user-facing function wrapper.
 )
 binary_jitsmm_p.def_numba_kernel(_jitsmm_numba_kernel)
 binary_jitsmm_p.def_pallas_kernel('gpu', _jitsmm_pallas_kernel)
+binary_jitsmm_p.def_tvmffi_kernel('gpu', _binary_jitsmm_cuda_kernel)
 binary_jitsmm_p.def_jvp_rule2(_jitsmm_jvp_w, None, _jitsmm_jvp_B, None, None)
 binary_jitsmm_p.def_transpose_rule(_jitsmm_transpose_rules)
 binary_jitsmm_p.def_batching_rule(_jitsmm_batching)

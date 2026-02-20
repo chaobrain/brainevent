@@ -14,6 +14,7 @@
 # ==============================================================================
 # -*- coding: utf-8 -*-
 
+from pathlib import Path
 from typing import Optional, Sequence
 
 import brainunit as u
@@ -25,7 +26,7 @@ from jax.interpreters import ad
 from brainevent._data import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, register_tvm_cuda_from_file
 from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
 
@@ -749,6 +750,59 @@ def jits_p_call(
     )
 
 
+_dtype_sfx = {
+    np.dtype('float16'): '_f16',
+    np.dtype('float32'): '_f32',
+    np.dtype('float64'): '_f64',
+    np.dtype('bfloat16'): '_bf16',
+}
+
+
+def _jits_cuda_kernel(
+    corder: bool = True,
+    **kwargs
+):
+    register_tvm_cuda_from_file(module='jit_scalar', source=Path(__file__).parent.joinpath('jit_scalar.cu'))
+    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
+    variant = 'corder_true' if corder else 'corder_false'
+    kernel_name = f'jit_scalar.jits_{variant}{sfx}'
+
+    def kernel(weight, clen, seed):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(weight, clen, seed)
+
+    return kernel
+
+
+def _jitsmv_cuda_kernel(
+    corder: bool = True,
+    **kwargs
+):
+    register_tvm_cuda_from_file(module='jit_scalar', source=Path(__file__).parent.joinpath('jit_scalar.cu'))
+    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
+    variant = 'gather' if corder else 'scatter'
+    kernel_name = f'jit_scalar.jitsmv_{variant}{sfx}'
+
+    def kernel(weight, clen, vector, seed, _):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(weight, clen, seed, vector)
+
+    return kernel
+
+
+def _jitsmm_cuda_kernel(
+    corder: bool = True,
+    **kwargs
+):
+    register_tvm_cuda_from_file(module='jit_scalar', source=Path(__file__).parent.joinpath('jit_scalar.cu'))
+    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
+    variant = 'gather' if corder else 'scatter'
+    kernel_name = f'jit_scalar.jitsmm_{variant}{sfx}'
+
+    def kernel(weight, clen, B, seed, _):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(weight, clen, seed, B)
+
+    return kernel
+
+
 jits_p = XLACustomKernel(
     'float_jitc_homo_matrix',
     doc="""
@@ -776,6 +830,7 @@ jits : High-level user-facing function wrapper.
 )
 jits_p.def_numba_kernel(_jitc_homo_matrix_numba_kernel)
 jits_p.def_pallas_kernel('gpu', _jitc_homo_matrix_pallas_kernel)
+jits_p.def_tvmffi_kernel('gpu', _jits_cuda_kernel)
 jits_p.def_jvp_rule2(_jitc_homo_matrix_jvp_weight, None, None)
 jits_p.def_transpose_rule(_jitc_homo_matrix_transpose)
 jits_p.def_batching_rule(_jitc_homo_matrix_batching)
@@ -1339,6 +1394,7 @@ jitsmv : High-level user-facing function wrapper.
 )
 jitsmv_p.def_numba_kernel(_jitsmv_numba_kernel)
 jitsmv_p.def_pallas_kernel('gpu', _jitsmv_pallas_kernel)
+jitsmv_p.def_tvmffi_kernel('gpu', _jitsmv_cuda_kernel)
 jitsmv_p.def_jvp_rule2(_jitsmv_jvp_weights, None, _jitsmv_jvp_v, None, None)
 jitsmv_p.def_transpose_rule(_jitsmv_transpose_rules)
 jitsmv_p.def_batching_rule(_jitsmv_batching)
@@ -1897,6 +1953,7 @@ jitsmm : High-level user-facing function wrapper.
 )
 jitsmm_p.def_numba_kernel(_jitsmm_numba_kernel)
 jitsmm_p.def_pallas_kernel('gpu', _jitsmm_pallas_kernel)
+jitsmm_p.def_tvmffi_kernel('gpu', _jitsmm_cuda_kernel)
 jitsmm_p.def_jvp_rule2(_jitsmm_jvp_w, None, _jitsmm_jvp_B, None, None)
 jitsmm_p.def_transpose_rule(_jitsmm_transpose_rules)
 jitsmm_p.def_batching_rule(_jitsmm_batching)
