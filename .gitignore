@@ -236,5 +236,4 @@ cython_debug/
 /benchmark/benchmark/
 /docs/apis/changelog.md
 /ai-coding/
-/claude_logs_fcn/
 /analysis/
