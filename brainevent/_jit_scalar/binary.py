@@ -440,7 +440,7 @@ def _jitsmv_pallas_kernel(
             i_cols = i_col_block * block_size + jnp.arange(block_size)
             i_col_mask = i_cols < dim
 
-            def body(data):
+            def body(_step, data):
                 i_rows, i_row_mask, rng, res = data
                 safe_rows = jnp.where(i_row_mask, i_rows, 0)
                 v = vector_ref[safe_rows]
@@ -454,11 +454,10 @@ def _jitsmv_pallas_kernel(
             rng = _PallasLFSRRNG(seed + i_cols * num_row)
             i_rows = rng.random_integers(0, clen)
             i_row_mask = i_rows < num_row
-            out = jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
+            _, _, _, out = jax.lax.fori_loop(
+                0, num_row, body,
                 (i_rows, i_row_mask, rng, jnp.zeros(block_size, dtype=post_ref.dtype))
-            )[-1]
+            )
             post_ref[i_cols] = jnp.where(i_col_mask, out, post_ref[i_cols])
 
         def kernel(weight, clen, vector, seed, _):
@@ -485,7 +484,7 @@ def _jitsmv_pallas_kernel(
                 v = v > 0.
             event_mask = i_row_mask & v
 
-            def body(data):
+            def body(_step, data):
                 i_cols, i_col_mask, rng = data
                 vals = jnp.full(block_size, weight, dtype=post_ref.dtype)
                 atomic_add(post_ref, (i_cols,), vals, mask=event_mask & i_col_mask)
@@ -495,11 +494,7 @@ def _jitsmv_pallas_kernel(
             rng = _PallasLFSRRNG(seed0 + i_rows * num_col)
             i_cols = rng.random_integers(0, clen0)
             i_col_mask = i_cols < num_col
-            jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_cols, i_col_mask, rng)
-            )
+            jax.lax.fori_loop(0, num_col, body, (i_cols, i_col_mask, rng))
 
         def kernel(weight, clen, vector, seed, _):
             fn = pl.pallas_call(
@@ -1114,7 +1109,7 @@ def _jitsmm_pallas_kernel(
             i_col_mask = i_cols < k
             out = jnp.zeros(row_block, dtype=post_ref.dtype)
 
-            def body(data):
+            def body(_step, data):
                 i_cols, i_col_mask, rng, out = data
                 safe_cols = jnp.where(i_col_mask, i_cols, 0)
                 events = B_ref[safe_cols, col_j]
@@ -1124,11 +1119,7 @@ def _jitsmm_pallas_kernel(
                 i_cols = i_cols + rng.random_integers(1, clen0)
                 return i_cols, i_cols < k, rng, out
 
-            _, _, _, out = jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_cols, i_col_mask, rng, out)
-            )
+            _, _, _, out = jax.lax.fori_loop(0, k, body, (i_cols, i_col_mask, rng, out))
             atomic_add(post_ref, (safe_rows, col_j), out, mask=i_row_mask)
     else:
         # Match jits corder=False RNG pattern:
@@ -1155,7 +1146,7 @@ def _jitsmm_pallas_kernel(
             i_rows = rng.random_integers(0, clen0)
             i_row_mask = i_rows < m
 
-            def body(data):
+            def body(_step, data):
                 i_rows, i_row_mask, rng = data
                 vals = jnp.where(i_k_mask & i_row_mask & events, weight, 0.)
                 safe_rows = jnp.where(i_row_mask, i_rows, 0)
@@ -1163,11 +1154,7 @@ def _jitsmm_pallas_kernel(
                 i_rows = i_rows + rng.random_integers(1, clen0)
                 return i_rows, i_rows < m, rng
 
-            jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_rows, i_row_mask, rng)
-            )
+            jax.lax.fori_loop(0, m, body, (i_rows, i_row_mask, rng))
 
     def kernel(weight, clen, B, seed, _):
         fn = pl.pallas_call(

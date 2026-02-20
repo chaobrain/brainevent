@@ -473,18 +473,16 @@ def _jitc_homo_matrix_pallas_kernel(
             seed0 = seed_ref[0]
             i_row = pl.program_id(0)
 
-            def body(data):
+            def body(_step, data):
                 i_col, rng = data
-                post_ref[i_row, i_col] = weight
+                i_col_mask = i_col < m
+                safe_col = jnp.where(i_col_mask, i_col, 0)
+                post_ref[i_row, safe_col] = jnp.where(i_col_mask, weight, post_ref[i_row, safe_col])
                 i_col = i_col + rng.random_integers(1, clen0)
                 return i_col, rng
 
             rng = _PallasLFSRRNG(seed0 + i_row * m)
-            jax.lax.while_loop(
-                lambda data: data[0] < m,
-                body,
-                (rng.random_integers(0, clen0), rng)
-            )
+            jax.lax.fori_loop(0, m, body, (rng.random_integers(0, clen0), rng))
     else:
         def pallas_kernel_fn(weight_ref, clen_ref, seed_ref, _, post_ref):
             n = post_ref.shape[0]
@@ -493,18 +491,16 @@ def _jitc_homo_matrix_pallas_kernel(
             seed0 = seed_ref[0]
             i_col = pl.program_id(0)
 
-            def body(data):
+            def body(_step, data):
                 i_row, rng = data
-                post_ref[i_row, i_col] = weight
+                i_row_mask = i_row < n
+                safe_row = jnp.where(i_row_mask, i_row, 0)
+                post_ref[safe_row, i_col] = jnp.where(i_row_mask, weight, post_ref[safe_row, i_col])
                 i_row = i_row + rng.random_integers(1, clen0)
                 return i_row, rng
 
             rng = _PallasLFSRRNG(seed0 + i_col * n)
-            jax.lax.while_loop(
-                lambda data: data[0] < n,
-                body,
-                (rng.random_integers(0, clen0), rng)
-            )
+            jax.lax.fori_loop(0, n, body, (rng.random_integers(0, clen0), rng))
 
     def kernel(weight, clen, seed):
         fn = pl.pallas_call(
@@ -951,7 +947,7 @@ def _jitsmv_pallas_kernel(
             i_cols = i_col_block * block_size + jnp.arange(block_size)
             i_col_mask = i_cols < dim
 
-            def body(data):
+            def body(_step, data):
                 i_rows, i_row_mask, rng, out = data
                 safe_rows = jnp.where(i_row_mask, i_rows, 0)
                 v = vector_ref[safe_rows]
@@ -964,11 +960,7 @@ def _jitsmv_pallas_kernel(
             i_rows = rng.random_integers(0, clen)
             i_row_mask = i_rows < num_row
             out = jnp.zeros(block_size, dtype=post_ref.dtype)
-            out = jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_rows, i_row_mask, rng, out)
-            )[-1]
+            _, _, _, out = jax.lax.fori_loop(0, num_row, body, (i_rows, i_row_mask, rng, out))
             post_ref[i_cols] = jnp.where(i_col_mask, out, post_ref[i_cols])
 
         def run(weights, clen, vector, seed, _):
@@ -992,18 +984,17 @@ def _jitsmv_pallas_kernel(
                 seed0 = seed_ref[0]
                 i_col = pl.program_id(0)
 
-                def body(data):
+                def body(_step, data):
                     i, rng, res = data
-                    res += vector_ref[i] * weight
+                    i_mask = i < num_row
+                    safe_i = jnp.where(i_mask, i, 0)
+                    v = jnp.where(i_mask, vector_ref[safe_i], 0.)
+                    res += v * weight
                     i += rng.random_integers(1, clen0)
                     return i, rng, res
 
                 rng = _PallasLFSRRNG(seed0 + i_col * num_row)
-                _, _, r = jax.lax.while_loop(
-                    lambda data: data[0] < num_row,
-                    body,
-                    (rng.random_integers(0, clen0), rng, 0.0)
-                )
+                _, _, r = jax.lax.fori_loop(0, num_row, body, (rng.random_integers(0, clen0), rng, 0.0))
                 post_ref[i_col] = r
 
         else:
@@ -1015,18 +1006,14 @@ def _jitsmv_pallas_kernel(
                 i_row = pl.program_id(0)
                 v = vector_ref[i_row] * weight
 
-                def body(data):
+                def body(_step, data):
                     i, rng = data
-                    atomic_add(post_ref, (i,), v)
+                    atomic_add(post_ref, (i,), v, mask=i < num_col)
                     i += rng.random_integers(1, clen0)
                     return i, rng
 
                 rng = _PallasLFSRRNG(seed0 + i_row * num_col)
-                jax.lax.while_loop(
-                    lambda data: data[0] < num_col,
-                    body,
-                    (rng.random_integers(0, clen0), rng)
-                )
+                jax.lax.fori_loop(0, num_col, body, (rng.random_integers(0, clen0), rng))
 
         def run(weights, clen, vector, seed, _):
             fn = pl.pallas_call(
@@ -1529,7 +1516,7 @@ def _jitsmm_pallas_kernel(
             i_col_mask = i_cols < k
             out = jnp.zeros(row_block, dtype=post_ref.dtype)
 
-            def body(data):
+            def body(_step, data):
                 i_cols, i_col_mask, rng, out = data
                 safe_cols = jnp.where(i_col_mask, i_cols, 0)
                 b_vals = B_ref[safe_cols, col_j]
@@ -1537,11 +1524,7 @@ def _jitsmm_pallas_kernel(
                 i_cols += rng.random_integers(1, clen0)
                 return i_cols, i_cols < k, rng, out
 
-            _, _, _, out = jax.lax.while_loop(
-                lambda data: jnp.sum(data[1] & i_row_mask) > 0,
-                body,
-                (i_cols, i_col_mask, rng, out)
-            )
+            _, _, _, out = jax.lax.fori_loop(0, k, body, (i_cols, i_col_mask, rng, out))
             atomic_add(post_ref, (safe_rows, col_j), out, mask=i_row_mask)
 
     else:
@@ -1562,17 +1545,14 @@ def _jitsmm_pallas_kernel(
             rng = _PallasLFSRRNG(seed0 + i_k * m)
             i_rows = rng.random_integers(0, clen0)
 
-            def body(data):
+            def body(_step, data):
                 i_rows, rng = data
-                atomic_add(post_ref, (i_rows, col_j), val)
+                i_row_mask = i_rows < m
+                atomic_add(post_ref, (i_rows, col_j), val, mask=i_row_mask)
                 i_rows += rng.random_integers(1, clen0)
                 return i_rows, rng
 
-            jax.lax.while_loop(
-                lambda data: data[0] < m,
-                body,
-                (i_rows, rng)
-            )
+            jax.lax.fori_loop(0, m, body, (i_rows, rng))
 
     def run(weights, clen, B, seed, _):
         fn = pl.pallas_call(
