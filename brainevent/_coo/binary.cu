@@ -17,17 +17,17 @@
  * binary.cu -- Event-Driven Binary COO Sparse Matrix-Vector and Matrix-Matrix CUDA Kernels
  * =======================================================================================
  *
- * This module provides high-performance, event-driven CUDA kernels for sparse 
- * matrix-vector (SpMV) and sparse matrix-matrix (SpMM) multiplications where the 
- * sparse matrix is in Coordinate (COO) format and the dense operand (vector or 
+ * This module provides high-performance, event-driven CUDA kernels for sparse
+ * matrix-vector (SpMV) and sparse matrix-matrix (SpMM) multiplications where the
+ * sparse matrix is in Coordinate (COO) format and the dense operand (vector or
  * matrix) contains binary events (spikes).
  *
  * Event-Driven Optimization:
  * -------------------------
- * In SNN simulations, dense vectors/matrices are often very sparse in time 
- * (most elements are zero/inactive). These kernels exploit this by checking 
- * the activity of the dense operand before performing expensive atomic 
- * accumulations. This "event-driven" approach significantly reduces memory 
+ * In SNN simulations, dense vectors/matrices are often very sparse in time
+ * (most elements are zero/inactive). These kernels exploit this by checking
+ * the activity of the dense operand before performing expensive atomic
+ * accumulations. This "event-driven" approach significantly reduces memory
  * traffic and contention on the output buffer.
  *
  * Supported Operations:
@@ -45,9 +45,41 @@
  * Data Types and Numerical Stability:
  * ----------------------------------
  * - Supports float32, float64, float16 (sm_70+), and bfloat16 (sm_80+).
- * - For reduced-precision types (f16, bf16), accumulation is performed in 
- *   float32 to maintain numerical precision, with results written back 
+ * - For reduced-precision types (f16, bf16), accumulation is performed in
+ *   float32 to maintain numerical precision, with results written back
  *   atomically.
+ *
+ * Performance Analysis (RTX 3080 Ti Laptop, 616 GB/s peak):
+ * ----------------------------------------------------------
+ * Benchmark: 5000×5000 matrix, nnz=1.25M (5% density), 1% spike rate
+ *  - Memory traffic: 16.35 MB (all NNZ processed, only 1% active)
+ *  - Measured latency: ~0.4 ms (typical), 0.1 ms (best case with boost)
+ *  - Achieved bandwidth: ~41 GB/s typical, ~163 GB/s best
+ *  - Efficiency vs peak: 6.7% typical, 26% best
+ *
+ * Fundamental Bottleneck:
+ *  COO format has inherently random row/col access patterns. Each thread
+ *  accesses a different cache line (no coalescing). This is the dominant
+ *  bottleneck - standard SpMV optimization techniques (shared memory tiling,
+ *  warp cooperation, __ldg()) provide negligible benefit because the random
+ *  access pattern prevents effective cache utilization.
+ *
+ * Optimization Barriers:
+ *  1. Random column/row indexing prevents memory coalescing (fundamental
+ *     to COO format; would require CSR/CSC conversion for gather/scatter).
+ *  2. Event-driven check eliminates only the atomic write (8B), but all
+ *     index loads (13B) must still occur for every NNZ entry.
+ *  3. Atomic contention at high spike rates (>10%) serializes writes,
+ *     but cannot be avoided without algorithm change (e.g., segmented
+ *     reduction or two-pass histogram).
+ *
+ * Recommendations for Higher Performance:
+ *  - For gather (A @ v, transpose=False): Convert to CSR format for
+ *    coalesced row access and shared-memory vector tiling.
+ *  - For scatter (A.T @ v, transpose=True): Convert to CSC format or
+ *    use a two-pass algorithm (1: gather active spikes; 2: process).
+ *  - For very high spike rates (>50%): Use dense matrix multiplication
+ *    as the random-access overhead dominates sparse savings.
  *
  * TVM FFI Integration:
  * -------------------
