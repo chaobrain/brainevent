@@ -350,7 +350,7 @@ def _csrmv_yw2y_cuda_kernel(
     """
     TVM FFI (CUDA) kernel generator for ``csrmv_yw2y``.
 
-    Dispatches to optimised CUDA kernels compiled from ``csrmv_yw2y.cu``
+    Dispatches to optimised CUDA kernels compiled from ``yw2y.cu``
     via the TVM FFI compilation pipeline.
 
     Non-transpose (NT) kernels are auto-selected based on ``avg_nnz``:
@@ -392,7 +392,7 @@ def _csrmv_yw2y_cuda_kernel(
 
     register_tvm_cuda_from_file(
         module='csrmv_yw2y',
-        source=Path(__file__).parent.joinpath('csrmv_yw2y.cu'),
+        source=Path(__file__).parent.joinpath('yw2y.cu'),
     )
 
     out_info = kwargs['outs']

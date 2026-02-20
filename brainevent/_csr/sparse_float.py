@@ -705,11 +705,13 @@ def _spfloat_csrmv_cusparse_kernel(
         if is_homo:
             def kernel(weights, indices, indptr, vector):
                 ones = jnp.ones(nse, dtype=out_dtype)
-                mat = jsparse.BCSR((ones, indices, indptr), shape=(m, k))
+                row, col = _csr_to_coo(indices, indptr)
+                mat = jsparse.BCOO((ones, jnp.stack([row, col], axis=1)), shape=(m, k))
                 return ((mat.T @ vector.astype(out_dtype)) * weights[0].astype(out_dtype),)
         else:
             def kernel(weights, indices, indptr, vector):
-                mat = jsparse.BCSR((weights.astype(out_dtype), indices, indptr), shape=(m, k))
+                row, col = _csr_to_coo(indices, indptr)
+                mat = jsparse.BCOO((weights.astype(out_dtype), jnp.stack([row, col], axis=1)), shape=(m, k))
                 return (mat.T @ vector.astype(out_dtype),)
     else:
         if is_homo:
@@ -733,7 +735,7 @@ def _spfloat_csrmv_cuda_kernel(
 ):
     """CUDA TVM FFI kernel generator for ``spfloat_csrmv``.
 
-    Registers and selects optimised CUDA kernels from ``spfloat_csrmv.cu``
+    Registers and selects optimised CUDA kernels from ``sparse_float.cu``
     for the sparse-float CSR sparse matrix-vector multiply.
 
     Non-transpose (NT) mode uses an auto-dispatch entry point that selects
@@ -788,8 +790,8 @@ def _spfloat_csrmv_cuda_kernel(
         )
 
     register_tvm_cuda_from_file(
-        module='spfloat_csrmv',
-        source=Path(__file__).parent.joinpath('spfloat_csrmv.cu'),
+        module='csr_sparse_float',
+        source=Path(__file__).parent.joinpath('sparse_float.cu'),
     )
 
     out_info = kwargs['outs']
@@ -803,9 +805,9 @@ def _spfloat_csrmv_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
     if transpose:
-        kernel_name = f'spfloat_csrmv.spfloat_csrmv_t_warp{wt_sfx}'
+        kernel_name = f'csr_sparse_float.spfloat_csrmv_t_warp{wt_sfx}'
     else:
-        kernel_name = f'spfloat_csrmv.spfloat_csrmv_nt_auto{wt_sfx}'
+        kernel_name = f'csr_sparse_float.spfloat_csrmv_nt_auto{wt_sfx}'
 
     def kernel(weights, indices, indptr, vector):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, vector)
@@ -1421,7 +1423,7 @@ def _spfloat_csrmm_cuda_kernel(
 ):
     """CUDA TVM FFI kernel generator for ``spfloat_csrmm``.
 
-    Registers and selects optimised CUDA kernels from ``spfloat_csrmm.cu``
+    Registers and selects optimised CUDA kernels from ``sparse_float.cu``
     for the sparse-float CSR sparse matrix-matrix multiply.
 
     Non-transpose (NT) mode uses an auto-dispatch entry point that selects
@@ -1475,8 +1477,8 @@ def _spfloat_csrmm_cuda_kernel(
         )
 
     register_tvm_cuda_from_file(
-        module='spfloat_csrmm',
-        source=Path(__file__).parent.joinpath('spfloat_csrmm.cu'),
+        module='csr_sparse_float',
+        source=Path(__file__).parent.joinpath('sparse_float.cu'),
     )
 
     out_info = kwargs['outs']
@@ -1490,9 +1492,9 @@ def _spfloat_csrmm_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
     if transpose:
-        kernel_name = f'spfloat_csrmm.spfloat_csrmm_t_warp{wt_sfx}'
+        kernel_name = f'csr_sparse_float.spfloat_csrmm_t_warp{wt_sfx}'
     else:
-        kernel_name = f'spfloat_csrmm.spfloat_csrmm_nt_auto{wt_sfx}'
+        kernel_name = f'csr_sparse_float.spfloat_csrmm_nt_auto{wt_sfx}'
 
     def kernel(weights, indices, indptr, B):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, B)
@@ -1562,11 +1564,13 @@ def _spfloat_csrmm_cusparse_kernel(
         if is_homo:
             def kernel(weights, indices, indptr, B):
                 ones = jnp.ones(nse, dtype=out_dtype)
-                mat = jsparse.BCSR((ones, indices, indptr), shape=(m, k))
+                row, col = _csr_to_coo(indices, indptr)
+                mat = jsparse.BCOO((ones, jnp.stack([row, col], axis=1)), shape=(m, k))
                 return ((mat.T @ B.astype(out_dtype)) * weights[0].astype(out_dtype),)
         else:
             def kernel(weights, indices, indptr, B):
-                mat = jsparse.BCSR((weights.astype(out_dtype), indices, indptr), shape=(m, k))
+                row, col = _csr_to_coo(indices, indptr)
+                mat = jsparse.BCOO((weights.astype(out_dtype), jnp.stack([row, col], axis=1)), shape=(m, k))
                 return (mat.T @ B.astype(out_dtype),)
     else:
         if is_homo:

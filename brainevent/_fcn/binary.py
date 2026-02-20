@@ -357,55 +357,9 @@ def _binary_fcnmv_cuda_kernel(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    """
-    CUDA TVM FFI kernel generator for ``binary_fcnmv``.
-
-    Implements the event-driven sparse matrix--vector product on GPU via
-    NVRTC-compiled CUDA kernels registered through the TVM FFI infrastructure.
-
-    Kernel variants
-    ---------------
-    **Gather mode** (``transpose=False``):
-    y[i] = sum_k weights[i,k] * is_active(spikes[indices[i,k]])
-
-    - ``_bool_warp``  : bool spikes, one warp (32 threads) per row — best for n_conn ≤ 32
-    - ``_bool_basic`` : bool spikes, one block (256 threads) per row + block reduction — best for n_conn > 32
-    - ``_float_warp`` : float spikes, one warp per row — best for n_conn ≤ 32
-    - ``_float_basic``: float spikes, one block per row + block reduction — best for n_conn > 32
-
-    **Scatter mode** (``transpose=True``):
-    if is_active(spikes[i]):  output[indices[i,k]] += weights[i,k]  for all k
-
-    - ``_bool_warp``  : bool spikes, 8-warps-per-block layout — best for n_conn ≤ 32
-    - ``_bool_basic`` : bool spikes, one block per pre-neuron — best for n_conn > 32
-    - ``_float_warp`` : float spikes, 8-warps-per-block layout — best for n_conn ≤ 32
-    - ``_float_basic``: float spikes, one block per pre-neuron — best for n_conn > 32
-
-    Optimization notes
-    ------------------
-    - Gather **basic** variant (n_conn > 32) uses ``__ballot_sync`` per
-      32-element chunk: if no spike in the chunk is active the entire chunk
-      is skipped, avoiding loading a 128-byte weight tile and the associated
-      FP adds.  At 5 % firing rate this eliminates ~95 % of weight-tile loads.
-    - Gather **warp** variant (n_conn ≤ 32) does NOT use ``__ballot_sync``:
-      the entire row fits in one or two cache lines so skipping it saves only
-      ~15 cycles, while the ballot instruction adds ~3 cycles of overhead to
-      every row regardless.  The break-even is below 1 % firing rate, which
-      is outside the typical SNN operating range.  The branchless formulation
-      (inactive lanes contribute 0) is simpler and faster in practice.
-    - Scatter kernels use **early block exit** (return/continue if spike inactive)
-      to skip all-inactive pre-neurons, which is highly effective at the typical
-      1–5 % firing rates found in spiking neural networks.
-    - Shared memory is used for block reduction in ``_basic`` gather variants
-      (``extern __shared__``, never static in ``__device__`` functions per
-      NVRTC constraints).
-    - Host C++ entry functions only read metadata (``ndim()``, ``size()``).
-      ``data_ptr()`` is passed unchanged to device kernels and never
-      dereferenced on the host.
-    """
     register_tvm_cuda_from_file(
-        module='binary_fcnmv',
-        source=Path(__file__).parent.joinpath('binary_fcnmv.cu'),
+        module='fcn_binary',
+        source=Path(__file__).parent.joinpath('binary.cu'),
     )
 
     out_info = kwargs['outs']
@@ -423,29 +377,29 @@ def _binary_fcnmv_cuda_kernel(
         # Scatter mode: if is_active(spikes[i]) → output[indices[i,k]] += weights[i,k]
         if is_bool_spike:
             kernel_name = (
-                f'binary_fcnmv.binary_fcnmv_scatter_bool_warp{sfx}'
+                f'fcn_binary.binary_fcnmv_scatter_bool_warp{sfx}'
                 if n_conn <= 32
-                else f'binary_fcnmv.binary_fcnmv_scatter_bool_basic{sfx}'
+                else f'fcn_binary.binary_fcnmv_scatter_bool_basic{sfx}'
             )
         else:
             kernel_name = (
-                f'binary_fcnmv.binary_fcnmv_scatter_float_warp{sfx}'
+                f'fcn_binary.binary_fcnmv_scatter_float_warp{sfx}'
                 if n_conn <= 32
-                else f'binary_fcnmv.binary_fcnmv_scatter_float_basic{sfx}'
+                else f'fcn_binary.binary_fcnmv_scatter_float_basic{sfx}'
             )
     else:
         # Gather mode: y[i] = sum_k weights[i,k] * is_active(spikes[indices[i,k]])
         if is_bool_spike:
             kernel_name = (
-                f'binary_fcnmv.binary_fcnmv_gather_bool_warp{sfx}'
+                f'fcn_binary.binary_fcnmv_gather_bool_warp{sfx}'
                 if n_conn <= 32
-                else f'binary_fcnmv.binary_fcnmv_gather_bool_basic{sfx}'
+                else f'fcn_binary.binary_fcnmv_gather_bool_basic{sfx}'
             )
         else:
             kernel_name = (
-                f'binary_fcnmv.binary_fcnmv_gather_float_warp{sfx}'
+                f'fcn_binary.binary_fcnmv_gather_float_warp{sfx}'
                 if n_conn <= 32
-                else f'binary_fcnmv.binary_fcnmv_gather_float_basic{sfx}'
+                else f'fcn_binary.binary_fcnmv_gather_float_basic{sfx}'
             )
 
     def kernel(weights, indices, spikes):
@@ -1155,56 +1109,9 @@ def _binary_fcnmm_cuda_kernel(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    """
-    CUDA TVM FFI kernel generator for ``binary_fcnmm``.
-
-    Implements the event-driven sparse matrix--matrix product on GPU via
-    NVRTC-compiled CUDA kernels registered through the TVM FFI infrastructure.
-
-    Kernel variants
-    ---------------
-    **Gather mode** (``transpose=False``):
-    Y[i, j] = sum_k weights[i,k] * is_active(M[indices[i,k], j])
-
-    - ``_bool_gather_warp``  : bool matrix, one warp per (row, batch-tile) — n_conn ≤ 32, branchless
-    - ``_bool_gather_basic`` : bool matrix, ballot per-k across batch-tile — n_conn > 32
-    - ``_float_gather_warp`` : float matrix, one warp per (row, batch-tile) — n_conn ≤ 32
-    - ``_float_gather_basic``: float matrix, ballot per-k — n_conn > 32
-
-    **Scatter mode** (``transpose=True``):
-    if is_active(M[i, j]):  Y[indices[i,k], j] += weights[i,k]  for all k
-
-    - ``_bool_scatter_warp``  : bool matrix, per-tile ballot → n_conn ≤ 32
-    - ``_bool_scatter_basic`` : bool matrix, row-level early exit → n_conn > 32
-    - ``_float_scatter_warp`` : float matrix, per-tile ballot → n_conn ≤ 32
-    - ``_float_scatter_basic``: float matrix, row-level early exit → n_conn > 32
-
-    Optimization notes
-    ------------------
-    - **Gather warp** (n_conn ≤ 32): branchless, no ``__ballot_sync``.
-      Each of the 32 threads handles one output column j and loops over all k
-      connections. The per-tile savings of skipping all-inactive source rows
-      are outweighed by the ballot overhead at typical SNN firing rates (5–10 %).
-    - **Gather basic** (n_conn > 32): ``__ballot_sync`` per k across the 32
-      batch-column threads. If no column in the current tile is active for
-      source row ``indices[i,k]``, the weight load is skipped. Effective when
-      many source rows are entirely zero in the batch.
-    - **Scatter warp** (n_conn ≤ 32): tile-level ``__ballot_sync`` across 32
-      batch-column threads. If none are active the block exits immediately.
-      Active threads each loop over k ≤ 32 connections → ``atomicAdd``.
-    - **Scatter basic** (n_conn > 32): shared-memory flag for row-level early
-      exit (skip entire block if ``M[i, :]`` is all-zero). For active rows,
-      a sequential j-loop selects active columns while 256 threads parallelize
-      the inner k-loop via ``atomicAdd``.
-    - ``extern __shared__`` is used (never static in ``__device__`` functions per
-      NVRTC constraints). Only scatter basic uses shared memory (1 int flag).
-    - Host C++ entry functions only read metadata (``ndim()``, ``size()``).
-      ``data_ptr()`` is passed unchanged to device kernels and never
-      dereferenced on the host.
-    """
     register_tvm_cuda_from_file(
-        module='binary_fcnmm',
-        source=Path(__file__).parent.joinpath('binary_fcnmm.cu'),
+        module='fcn_binary',
+        source=Path(__file__).parent.joinpath('binary.cu'),
     )
 
     out_info = kwargs['outs']
@@ -1222,29 +1129,29 @@ def _binary_fcnmm_cuda_kernel(
         # Scatter mode
         if is_bool_matrix:
             kernel_name = (
-                f'binary_fcnmm.binary_fcnmm_scatter_bool_warp{sfx}'
+                f'fcn_binary.binary_fcnmm_scatter_bool_warp{sfx}'
                 if n_conn <= 32
-                else f'binary_fcnmm.binary_fcnmm_scatter_bool_basic{sfx}'
+                else f'fcn_binary.binary_fcnmm_scatter_bool_basic{sfx}'
             )
         else:
             kernel_name = (
-                f'binary_fcnmm.binary_fcnmm_scatter_float_warp{sfx}'
+                f'fcn_binary.binary_fcnmm_scatter_float_warp{sfx}'
                 if n_conn <= 32
-                else f'binary_fcnmm.binary_fcnmm_scatter_float_basic{sfx}'
+                else f'fcn_binary.binary_fcnmm_scatter_float_basic{sfx}'
             )
     else:
         # Gather mode
         if is_bool_matrix:
             kernel_name = (
-                f'binary_fcnmm.binary_fcnmm_gather_bool_warp{sfx}'
+                f'fcn_binary.binary_fcnmm_gather_bool_warp{sfx}'
                 if n_conn <= 32
-                else f'binary_fcnmm.binary_fcnmm_gather_bool_basic{sfx}'
+                else f'fcn_binary.binary_fcnmm_gather_bool_basic{sfx}'
             )
         else:
             kernel_name = (
-                f'binary_fcnmm.binary_fcnmm_gather_float_warp{sfx}'
+                f'fcn_binary.binary_fcnmm_gather_float_warp{sfx}'
                 if n_conn <= 32
-                else f'binary_fcnmm.binary_fcnmm_gather_float_basic{sfx}'
+                else f'fcn_binary.binary_fcnmm_gather_float_basic{sfx}'
             )
 
     def kernel(weights, indices, matrix):

@@ -14,50 +14,17 @@
 // ==============================================================================
 
 /*
- * binary_densemv.cu -- Event-Driven Binary Dense Matrix-Vector CUDA Kernels
- * ==========================================================================
+ * binary.cu -- Event-Driven Binary Dense Matrix-Vector and Matrix-Matrix CUDA Kernels
+ * ===================================================================================
  *
- * Python API: brainevent.binary_densemv(weights, spikes, *, transpose, backend)
+ * This module provides optimized CUDA kernels for event-driven dense operations.
+ * It includes:
+ * 1. Sparse Matrix-Vector Product (SpMV): binary_densemv
+ * 2. Sparse Matrix-Matrix Product (SpMM): binary_densemm
  *
- * Event-driven dense matrix-vector product where spikes are boolean (0/1)
- * or float (>0 = active). Only columns/rows corresponding to active spikes
- * contribute, allowing the kernel to skip work for inactive entries.
- *
- * Parameters
- * ----------
- * weights : dense matrix of float16, bfloat16, float32, or float64.
- *     transpose=False (gather): shape (m, k)  =>  out[m]
- *     transpose=True  (scatter): shape (k, n)  =>  out[n]
- * spikes : 1-D vector of shape (k,).
- *     bool  (int8): active when != 0.
- *     float (f32):  active when  > 0.
- *
- * Gather mode (transpose=False):
- *   out[i] = sum_{j where spikes[j] active} weights[i, j]
- *
- * Scatter mode (transpose=True):
- *   out[j] = sum_{i where spikes[i] active} weights[i, j]
- *
- * Kernel variants
- * ---------------
- * Gather:
- *   _gather_warp:  one warp  (32 threads) per output row. Best for k <= 1024.
- *   _gather_block: one block (256 threads) per output row. Best for k > 1024.
- *   _gather_auto:  auto-selects warp vs block based on k.
- *
- * Scatter:
- *   _scatter:      each thread handles one output element j, iterates over all
- *                  k spikes. All threads in a warp evaluate the SAME spike,
- *                  so there is zero warp divergence. Coalesced weight reads.
- *
- * Each variant has _bool and _float suffixes for the two spike types,
- * and _f32, _f64, _f16, _bf16 suffixes for the weight dtype.
- *
- * Float16 and bfloat16 kernels accumulate in float32 for numerical stability.
- * Bfloat16 requires CUDA 11.0+.
- *
- * IMPORTANT: weights.data_ptr() is a GPU device pointer -- NEVER dereference
- * on host. Pass it to kernels unchanged. GPU threads read from device memory.
+ * These kernels exploit event-driven sparsity: only entries corresponding to
+ * active (nonzero) elements in the dense input (vector or matrix) contribute
+ * to the output.
  */
 
 #include <cuda_runtime.h>
@@ -89,27 +56,20 @@ __device__ __inline__ double warp_reduce_sum_f64(double val) {
 #define IS_ACTIVE_FLOAT(s) ((s) > 0.0f)
 
 // =========================================================================
-// Per-dtype conversion macros: READ converts WEIGHT_T -> ACC_T,
-//                              WRITE converts ACC_T -> WEIGHT_T.
+// Per-dtype conversion macros
 // =========================================================================
 
 #define READ_F32(x)   (x)
 #define WRITE_F32(x)  (x)
-
 #define READ_F64(x)   (x)
 #define WRITE_F64(x)  (x)
-
 #define READ_F16(x)   __half2float(x)
 #define WRITE_F16(x)  __float2half(x)
-
 #define READ_BF16(x)  __bfloat162float(x)
 #define WRITE_BF16(x) __float2bfloat16(x)
 
 // =========================================================================
-// Gather warp kernel macro (one warp per output row, k <= 1024)
-//
-// out[i] = sum_{j where spikes[j] active} weights[i, j]
-// weights: [m, k] row-major.  spikes: [k].  output: [m].
+// Dense Matrix-Vector Multiplication (densemv)
 // =========================================================================
 
 #define DEFINE_GATHER_WARP(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T,    \
@@ -133,10 +93,6 @@ __global__ void _gather_warp_kern##SUFFIX(                                  \
     if (threadIdx.x == 0) output[row] = WRITE_W(acc);                     \
 }
 
-// =========================================================================
-// Gather block kernel macro (one block per output row, large k)
-// =========================================================================
-
 #define DEFINE_GATHER_BLOCK(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T,   \
                             READ_W, WRITE_W, WARP_RED, ACC_ZERO)            \
 __global__ void _gather_block_kern##SUFFIX(                                 \
@@ -156,7 +112,6 @@ __global__ void _gather_block_kern##SUFFIX(                                 \
             acc += READ_W(w_row[j]);                                       \
         }                                                                   \
     }                                                                       \
-    /* Block reduction: warp shuffle + shared memory */                    \
     int lane   = threadIdx.x & 31;                                         \
     int warpid = threadIdx.x >> 5;                                         \
     acc = WARP_RED(acc);                                                   \
@@ -167,13 +122,6 @@ __global__ void _gather_block_kern##SUFFIX(                                 \
     if (warpid == 0) acc = WARP_RED(acc);                                  \
     if (threadIdx.x == 0) output[row] = WRITE_W(acc);                     \
 }
-
-// =========================================================================
-// Scatter kernel macro (transpose=True)
-//
-// out[j] = sum_{i where spikes[i] active} weights[i, j]
-// weights: [k, n] row-major.  spikes: [k].  output: [n].
-// =========================================================================
 
 #define DEFINE_SCATTER(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T,        \
                        READ_W, WRITE_W, ACC_ZERO)                           \
@@ -194,36 +142,25 @@ __global__ void _scatter_kern##SUFFIX(                                      \
     output[j] = WRITE_W(acc);                                              \
 }
 
-// =========================================================================
-// Instantiate device kernels: 4 weight dtypes x 2 spike types = 8 combos,
-//                             3 kernel shapes each = 24 kernels
-// =========================================================================
-
-// ---- Float32 (identity conversion, accumulate in float32) ----
+// SpMV Instantiations
 DEFINE_GATHER_WARP(_f32_bool,   int8_t, IS_ACTIVE_BOOL,  float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
 DEFINE_GATHER_WARP(_f32_float,  float,  IS_ACTIVE_FLOAT, float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
 DEFINE_GATHER_BLOCK(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
 DEFINE_GATHER_BLOCK(_f32_float, float,  IS_ACTIVE_FLOAT, float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
 DEFINE_SCATTER(_f32_bool,       int8_t, IS_ACTIVE_BOOL,  float, float, READ_F32, WRITE_F32, 0.0f)
 DEFINE_SCATTER(_f32_float,      float,  IS_ACTIVE_FLOAT, float, float, READ_F32, WRITE_F32, 0.0f)
-
-// ---- Float64 (identity conversion, accumulate in float64) ----
 DEFINE_GATHER_WARP(_f64_bool,   int8_t, IS_ACTIVE_BOOL,  double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
 DEFINE_GATHER_WARP(_f64_float,  float,  IS_ACTIVE_FLOAT, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
 DEFINE_GATHER_BLOCK(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
 DEFINE_GATHER_BLOCK(_f64_float, float,  IS_ACTIVE_FLOAT, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
 DEFINE_SCATTER(_f64_bool,       int8_t, IS_ACTIVE_BOOL,  double, double, READ_F64, WRITE_F64, 0.0)
 DEFINE_SCATTER(_f64_float,      float,  IS_ACTIVE_FLOAT, double, double, READ_F64, WRITE_F64, 0.0)
-
-// ---- Float16 (accumulate in float32 for stability) ----
 DEFINE_GATHER_WARP(_f16_bool,   int8_t, IS_ACTIVE_BOOL,  __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
 DEFINE_GATHER_WARP(_f16_float,  float,  IS_ACTIVE_FLOAT, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
 DEFINE_GATHER_BLOCK(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
 DEFINE_GATHER_BLOCK(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
 DEFINE_SCATTER(_f16_bool,       int8_t, IS_ACTIVE_BOOL,  __half, float, READ_F16, WRITE_F16, 0.0f)
 DEFINE_SCATTER(_f16_float,      float,  IS_ACTIVE_FLOAT, __half, float, READ_F16, WRITE_F16, 0.0f)
-
-// ---- BFloat16 (accumulate in float32 for stability; requires CUDA 11.0+) ----
 DEFINE_GATHER_WARP(_bf16_bool,   int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
 DEFINE_GATHER_WARP(_bf16_float,  float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
 DEFINE_GATHER_BLOCK(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
@@ -231,24 +168,7 @@ DEFINE_GATHER_BLOCK(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float, 
 DEFINE_SCATTER(_bf16_bool,       int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
 DEFINE_SCATTER(_bf16_float,      float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
 
-
-// =========================================================================
-// TVM FFI Entry Point Macros
-// =========================================================================
-//
-// Convention: args = (weights, spikes, output, stream)
-//   Gather: weights [m, k], spikes [k], output [m]
-//   Scatter: weights [k, n], spikes [k], output [n]
-//
-// IMPORTANT: data_ptr() returns GPU device pointers.
-// NEVER dereference on the host. Pass to kernels unchanged.
-//
-// These macros generate the TVM FFI entry functions. The Python-side
-// parser discovers them via  // @tvm_ffi  annotation comments placed
-// before each macro invocation.
-// =========================================================================
-
-// ---- FFI macro: gather_warp ----
+// FFI Macros for SpMV
 #define FFI_GATHER_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                    \
 void binary_densemv_gather_warp##SUFFIX(                                   \
     tvm::ffi::TensorView weights, tvm::ffi::TensorView spikes,            \
@@ -263,7 +183,6 @@ void binary_densemv_gather_warp##SUFFIX(                                   \
         static_cast<WEIGHT_C_T*>(output.data_ptr()), m, k);               \
 }
 
-// ---- FFI macro: gather_block ----
 #define FFI_GATHER_BLOCK(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE)         \
 void binary_densemv_gather_block##SUFFIX(                                  \
     tvm::ffi::TensorView weights, tvm::ffi::TensorView spikes,            \
@@ -278,7 +197,6 @@ void binary_densemv_gather_block##SUFFIX(                                  \
         static_cast<WEIGHT_C_T*>(output.data_ptr()), m, k);               \
 }
 
-// ---- FFI macro: gather_auto (warp for k<=1024, block otherwise) ----
 #define FFI_GATHER_AUTO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE)          \
 void binary_densemv_gather_auto##SUFFIX(                                   \
     tvm::ffi::TensorView weights, tvm::ffi::TensorView spikes,            \
@@ -297,7 +215,6 @@ void binary_densemv_gather_auto##SUFFIX(                                   \
     }                                                                       \
 }
 
-// ---- FFI macro: scatter ----
 #define FFI_SCATTER(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                         \
 void binary_densemv_scatter##SUFFIX(                                       \
     tvm::ffi::TensorView weights, tvm::ffi::TensorView spikes,            \
@@ -313,11 +230,7 @@ void binary_densemv_scatter##SUFFIX(                                       \
         static_cast<WEIGHT_C_T*>(output.data_ptr()), k, n);               \
 }
 
-// =========================================================================
-// Instantiate TVM FFI entry points via macros + @tvm_ffi annotations
-// =========================================================================
-
-// ---- Float32 (shm: 32 * sizeof(float) = 128 bytes) ----
+// SpMV FFI Instantiations
 // @tvm_ffi binary_densemv_gather_warp_f32_bool
 FFI_GATHER_WARP(_f32_bool,    float,   int8_t)
 // @tvm_ffi binary_densemv_gather_warp_f32_float
@@ -334,8 +247,6 @@ FFI_GATHER_AUTO(_f32_float,   float,   float,  32 * sizeof(float))
 FFI_SCATTER(_f32_bool,        float,   int8_t)
 // @tvm_ffi binary_densemv_scatter_f32_float
 FFI_SCATTER(_f32_float,       float,   float)
-
-// ---- Float64 (shm: 32 * sizeof(double) = 256 bytes) ----
 // @tvm_ffi binary_densemv_gather_auto_f64_bool
 FFI_GATHER_AUTO(_f64_bool,    double,  int8_t, 32 * sizeof(double))
 // @tvm_ffi binary_densemv_gather_auto_f64_float
@@ -344,8 +255,6 @@ FFI_GATHER_AUTO(_f64_float,   double,  float,  32 * sizeof(double))
 FFI_SCATTER(_f64_bool,        double,  int8_t)
 // @tvm_ffi binary_densemv_scatter_f64_float
 FFI_SCATTER(_f64_float,       double,  float)
-
-// ---- Float16 (shm: 32 * sizeof(float) = 128 bytes; accumulates in f32) ----
 // @tvm_ffi binary_densemv_gather_auto_f16_bool
 FFI_GATHER_AUTO(_f16_bool,    __half,  int8_t, 32 * sizeof(float))
 // @tvm_ffi binary_densemv_gather_auto_f16_float
@@ -354,8 +263,6 @@ FFI_GATHER_AUTO(_f16_float,   __half,  float,  32 * sizeof(float))
 FFI_SCATTER(_f16_bool,        __half,  int8_t)
 // @tvm_ffi binary_densemv_scatter_f16_float
 FFI_SCATTER(_f16_float,       __half,  float)
-
-// ---- BFloat16 (shm: 32 * sizeof(float) = 128 bytes; accumulates in f32) ----
 // @tvm_ffi binary_densemv_gather_auto_bf16_bool
 FFI_GATHER_AUTO(_bf16_bool,   __nv_bfloat16, int8_t, 32 * sizeof(float))
 // @tvm_ffi binary_densemv_gather_auto_bf16_float
@@ -364,3 +271,216 @@ FFI_GATHER_AUTO(_bf16_float,  __nv_bfloat16, float,  32 * sizeof(float))
 FFI_SCATTER(_bf16_bool,       __nv_bfloat16, int8_t)
 // @tvm_ffi binary_densemv_scatter_bf16_float
 FFI_SCATTER(_bf16_float,      __nv_bfloat16, float)
+
+
+// =========================================================================
+// Dense Matrix-Matrix Multiplication (densemm)
+// =========================================================================
+
+#define BN  128
+#define BM  32
+#define RPT 16
+#define BK  64
+
+#define DEFINE_GATHER_TILED(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T,   \
+                            READ_W, WRITE_W, ACC_ZERO, ACC_SIZE)             \
+__global__ void _gather_tiled_kern##SUFFIX(                                 \
+    const WEIGHT_T* __restrict__ weights,                                   \
+    const SPIKE_T*  __restrict__ spikes,                                    \
+    WEIGHT_T*       __restrict__ output,                                    \
+    int m, int k, int n                                                     \
+) {                                                                         \
+    int j0 = blockIdx.x * BN;                                               \
+    int i0 = blockIdx.y * BM;                                               \
+    int tx = threadIdx.x;                                                   \
+    int ty = threadIdx.y;                                                   \
+    int j = j0 + tx;                                                        \
+    int i_base = i0 + ty * RPT;                                              \
+    int tid = ty * BN + tx;                                                  \
+    int nthreads = BN * (BM / RPT);                                         \
+    ACC_T acc[RPT];                                                          \
+    for (int ri = 0; ri < RPT; ri++) acc[ri] = ACC_ZERO;                    \
+    extern __shared__ char _smem_bytes[];                                   \
+    ACC_T* s_W = reinterpret_cast<ACC_T*>(_smem_bytes);                     \
+    const int SW_STRIDE = BM + 1;                                            \
+    for (int k0 = 0; k0 < k; k0 += BK) {                                   \
+        int krem = k - k0;                                                   \
+        int bk_end = (krem < BK) ? krem : BK;                               \
+        for (int idx = tid; idx < BM * BK; idx += nthreads) {               \
+            int bm = idx / BK;                                               \
+            int bk = idx % BK;                                               \
+            int gi = i0 + bm;                                               \
+            int gk = k0 + bk;                                               \
+            ACC_T val = ACC_ZERO;                                            \
+            if (gi < m && gk < k) {                                          \
+                val = READ_W(weights[(size_t)gi * k + gk]);                  \
+            }                                                                \
+            s_W[bk * SW_STRIDE + bm] = val;                                 \
+        }                                                                    \
+        __syncthreads();                                                     \
+        if (j < n) {                                                         \
+            for (int bk = 0; bk < bk_end; bk++) {                           \
+                SPIKE_T spk = spikes[(size_t)(k0 + bk) * n + j];            \
+                if (IS_ACTIVE(spk)) {                                        \
+                    for (int ri = 0; ri < RPT; ri++) {                       \
+                        acc[ri] += s_W[bk * SW_STRIDE + (ty * RPT + ri)];   \
+                    }                                                        \
+                }                                                            \
+            }                                                                \
+        }                                                                    \
+        __syncthreads();                                                     \
+    }                                                                        \
+    if (j < n) {                                                             \
+        for (int ri = 0; ri < RPT; ri++) {                                   \
+            int gi = i_base + ri;                                            \
+            if (gi < m) {                                                    \
+                output[(size_t)gi * n + j] = WRITE_W(acc[ri]);               \
+            }                                                                \
+        }                                                                    \
+    }                                                                        \
+}
+
+#define DEFINE_SCATTER_TILED(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T,  \
+                             READ_W, WRITE_W, ACC_ZERO, ACC_SIZE)            \
+__global__ void _scatter_tiled_kern##SUFFIX(                                \
+    const WEIGHT_T* __restrict__ weights,                                   \
+    const SPIKE_T*  __restrict__ spikes,                                    \
+    WEIGHT_T*       __restrict__ output,                                    \
+    int k, int m, int n                                                     \
+) {                                                                         \
+    int j0 = blockIdx.x * BN;                                               \
+    int i0 = blockIdx.y * BM;                                               \
+    int tx = threadIdx.x;                                                   \
+    int ty = threadIdx.y;                                                   \
+    int j = j0 + tx;                                                        \
+    int i_base = i0 + ty * RPT;                                              \
+    int tid = ty * BN + tx;                                                  \
+    int nthreads = BN * (BM / RPT);                                         \
+    ACC_T acc[RPT];                                                          \
+    for (int ri = 0; ri < RPT; ri++) acc[ri] = ACC_ZERO;                    \
+    extern __shared__ char _smem_bytes[];                                   \
+    ACC_T* s_W = reinterpret_cast<ACC_T*>(_smem_bytes);                     \
+    const int SW_STRIDE = BM + 1;                                            \
+    for (int k0 = 0; k0 < k; k0 += BK) {                                   \
+        int krem = k - k0;                                                   \
+        int bk_end = (krem < BK) ? krem : BK;                               \
+        for (int idx = tid; idx < BM * BK; idx += nthreads) {               \
+            int bm = idx % BM;                                               \
+            int bk = idx / BM;                                               \
+            int gi = i0 + bm;                                               \
+            int gk = k0 + bk;                                               \
+            ACC_T val = ACC_ZERO;                                            \
+            if (gi < m && gk < k) {                                          \
+                val = READ_W(weights[(size_t)gk * m + gi]);                  \
+            }                                                                \
+            s_W[bk * SW_STRIDE + bm] = val;                                 \
+        }                                                                    \
+        __syncthreads();                                                     \
+        if (j < n) {                                                         \
+            for (int bk = 0; bk < bk_end; bk++) {                           \
+                SPIKE_T spk = spikes[(size_t)(k0 + bk) * n + j];            \
+                if (IS_ACTIVE(spk)) {                                        \
+                    for (int ri = 0; ri < RPT; ri++) {                       \
+                        acc[ri] += s_W[bk * SW_STRIDE + (ty * RPT + ri)];   \
+                    }                                                        \
+                }                                                            \
+            }                                                                \
+        }                                                                    \
+        __syncthreads();                                                     \
+    }                                                                        \
+    if (j < n) {                                                             \
+        for (int ri = 0; ri < RPT; ri++) {                                   \
+            int gi = i_base + ri;                                            \
+            if (gi < m) {                                                    \
+                output[(size_t)gi * n + j] = WRITE_W(acc[ri]);               \
+            }                                                                \
+        }                                                                    \
+    }                                                                        \
+}
+
+// SpMM Instantiations
+DEFINE_GATHER_TILED(_f32_bool,   int8_t, IS_ACTIVE_BOOL,  float, float, READ_F32, WRITE_F32, 0.0f, 4)
+DEFINE_GATHER_TILED(_f32_float,  float,  IS_ACTIVE_FLOAT, float, float, READ_F32, WRITE_F32, 0.0f, 4)
+DEFINE_SCATTER_TILED(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float, READ_F32, WRITE_F32, 0.0f, 4)
+DEFINE_SCATTER_TILED(_f32_float, float,  IS_ACTIVE_FLOAT, float, float, READ_F32, WRITE_F32, 0.0f, 4)
+DEFINE_GATHER_TILED(_f64_bool,   int8_t, IS_ACTIVE_BOOL,  double, double, READ_F64, WRITE_F64, 0.0, 8)
+DEFINE_GATHER_TILED(_f64_float,  float,  IS_ACTIVE_FLOAT, double, double, READ_F64, WRITE_F64, 0.0, 8)
+DEFINE_SCATTER_TILED(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double, READ_F64, WRITE_F64, 0.0, 8)
+DEFINE_SCATTER_TILED(_f64_float, float,  IS_ACTIVE_FLOAT, double, double, READ_F64, WRITE_F64, 0.0, 8)
+DEFINE_GATHER_TILED(_f16_bool,   int8_t, IS_ACTIVE_BOOL,  __half, float, READ_F16, WRITE_F16, 0.0f, 4)
+DEFINE_GATHER_TILED(_f16_float,  float,  IS_ACTIVE_FLOAT, __half, float, READ_F16, WRITE_F16, 0.0f, 4)
+DEFINE_SCATTER_TILED(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float, READ_F16, WRITE_F16, 0.0f, 4)
+DEFINE_SCATTER_TILED(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float, READ_F16, WRITE_F16, 0.0f, 4)
+DEFINE_GATHER_TILED(_bf16_bool,   int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f, 4)
+DEFINE_GATHER_TILED(_bf16_float,  float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f, 4)
+DEFINE_SCATTER_TILED(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f, 4)
+DEFINE_SCATTER_TILED(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f, 4)
+
+// FFI Macros for SpMM
+#define FFI_GATHER_MM(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE)                \
+void binary_densemm_gather_auto##SUFFIX(                                    \
+    tvm::ffi::TensorView weights, tvm::ffi::TensorView spikes,             \
+    tvm::ffi::TensorView output, int64_t stream                             \
+) {                                                                         \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                \
+    int m = static_cast<int>(weights.size(0));                              \
+    int k = static_cast<int>(weights.size(1));                              \
+    int n = static_cast<int>(spikes.size(1));                               \
+    dim3 grid((n + BN - 1) / BN, (m + BM - 1) / BM);                      \
+    dim3 block(BN, BM / RPT);                                               \
+    _gather_tiled_kern##SUFFIX<<<grid, block, SHM_SIZE, s>>>(               \
+        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),                 \
+        static_cast<const SPIKE_C_T*>(spikes.data_ptr()),                   \
+        static_cast<WEIGHT_C_T*>(output.data_ptr()), m, k, n);             \
+}
+
+#define FFI_SCATTER_MM(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE)               \
+void binary_densemm_scatter_auto##SUFFIX(                                   \
+    tvm::ffi::TensorView weights, tvm::ffi::TensorView spikes,             \
+    tvm::ffi::TensorView output, int64_t stream                             \
+) {                                                                         \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                \
+    int k = static_cast<int>(weights.size(0));                              \
+    int m = static_cast<int>(weights.size(1));                              \
+    int n = static_cast<int>(spikes.size(1));                               \
+    dim3 grid((n + BN - 1) / BN, (m + BM - 1) / BM);                      \
+    dim3 block(BN, BM / RPT);                                               \
+    _scatter_tiled_kern##SUFFIX<<<grid, block, SHM_SIZE, s>>>(              \
+        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),                 \
+        static_cast<const SPIKE_C_T*>(spikes.data_ptr()),                   \
+        static_cast<WEIGHT_C_T*>(output.data_ptr()), k, m, n);             \
+}
+
+// SpMM FFI Instantiations
+// @tvm_ffi binary_densemm_gather_auto_f32_bool
+FFI_GATHER_MM(_f32_bool,     float,   int8_t, BK * (BM + 1) * sizeof(float))
+// @tvm_ffi binary_densemm_gather_auto_f32_float
+FFI_GATHER_MM(_f32_float,    float,   float,  BK * (BM + 1) * sizeof(float))
+// @tvm_ffi binary_densemm_scatter_auto_f32_bool
+FFI_SCATTER_MM(_f32_bool,    float,   int8_t, BK * (BM + 1) * sizeof(float))
+// @tvm_ffi binary_densemm_scatter_auto_f32_float
+FFI_SCATTER_MM(_f32_float,   float,   float,  BK * (BM + 1) * sizeof(float))
+// @tvm_ffi binary_densemm_gather_auto_f64_bool
+FFI_GATHER_MM(_f64_bool,     double,  int8_t, BK * (BM + 1) * sizeof(double))
+// @tvm_ffi binary_densemm_gather_auto_f64_float
+FFI_GATHER_MM(_f64_float,    double,  float,  BK * (BM + 1) * sizeof(double))
+// @tvm_ffi binary_densemm_scatter_auto_f64_bool
+FFI_SCATTER_MM(_f64_bool,    double,  int8_t, BK * (BM + 1) * sizeof(double))
+// @tvm_ffi binary_densemm_scatter_auto_f64_float
+FFI_SCATTER_MM(_f64_float,   double,  float,  BK * (BM + 1) * sizeof(double))
+// @tvm_ffi binary_densemm_gather_auto_f16_bool
+FFI_GATHER_MM(_f16_bool,     __half,  int8_t, BK * (BM + 1) * sizeof(float))
+// @tvm_ffi binary_densemm_gather_auto_f16_float
+FFI_GATHER_MM(_f16_float,    __half,  float,  BK * (BM + 1) * sizeof(float))
+// @tvm_ffi binary_densemm_scatter_auto_f16_bool
+FFI_SCATTER_MM(_f16_bool,    __half,  int8_t, BK * (BM + 1) * sizeof(float))
+// @tvm_ffi binary_densemm_scatter_auto_f16_float
+FFI_SCATTER_MM(_f16_float,   __half,  float,  BK * (BM + 1) * sizeof(float))
+// @tvm_ffi binary_densemm_gather_auto_bf16_bool
+FFI_GATHER_MM(_bf16_bool,    __nv_bfloat16, int8_t, BK * (BM + 1) * sizeof(float))
+// @tvm_ffi binary_densemm_gather_auto_bf16_float
+FFI_GATHER_MM(_bf16_float,   __nv_bfloat16, float,  BK * (BM + 1) * sizeof(float))
+// @tvm_ffi binary_densemm_scatter_auto_bf16_bool
+FFI_SCATTER_MM(_bf16_bool,   __nv_bfloat16, int8_t, BK * (BM + 1) * sizeof(float))
+// @tvm_ffi binary_densemm_scatter_auto_bf16_float
+FFI_SCATTER_MM(_bf16_float,  __nv_bfloat16, float,  BK * (BM + 1) * sizeof(float))

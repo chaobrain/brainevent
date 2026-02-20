@@ -301,7 +301,7 @@ def _csr_on_pre_cuda_kernel(
     """TVM FFI CUDA kernel for CSR pre-synaptic plasticity update.
 
     Dispatches to ``update_csr_on_pre{wt_sfx}{spk_sfx}`` compiled from
-    ``plasticity_binary_on_pre.cu``.  The auto-variant selects among
+    ``plasticity_binary.cu``.  The auto-variant selects among
     thread-per-row, warp-per-row, and block-per-row sub-kernels at runtime
     based on avg_nnz = nse / n_pre.
 
@@ -316,8 +316,8 @@ def _csr_on_pre_cuda_kernel(
         )
 
     register_tvm_cuda_from_file(
-        module='csr_plasticity_on_pre',
-        source=Path(__file__).parent.joinpath('plasticity_binary_on_pre.cu'),
+        module='csr_plasticity',
+        source=Path(__file__).parent.joinpath('plasticity_binary.cu'),
     )
 
     out_info = kwargs['outs']
@@ -330,7 +330,7 @@ def _csr_on_pre_cuda_kernel(
         jnp.dtype('bfloat16'): '_bf16',
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
-    kernel_name = f'csr_plasticity_on_pre.update_csr_on_pre{wt_sfx}{spk_suffix}'
+    kernel_name = f'csr_plasticity.update_csr_on_pre{wt_sfx}{spk_suffix}'
 
     def kernel(weight, indices, indptr, pre_spike, post_trace):
         return jax.ffi.ffi_call(
@@ -759,7 +759,7 @@ def _csr2csc_on_post_cuda_kernel(
     """TVM FFI CUDA kernel for CSR post-synaptic plasticity update.
 
     Dispatches to ``update_csr_on_post{wt_sfx}{spk_sfx}`` compiled from
-    ``plasticity_binary_on_post.cu``.  The auto-variant selects among
+    ``plasticity_binary.cu``.  The auto-variant selects among
     thread-per-column, warp-per-column, and block-per-column sub-kernels at
     runtime based on avg_nnz = nse / n_post.
 
@@ -778,8 +778,8 @@ def _csr2csc_on_post_cuda_kernel(
         )
 
     register_tvm_cuda_from_file(
-        module='csr_plasticity_on_post',
-        source=Path(__file__).parent.joinpath('plasticity_binary_on_post.cu'),
+        module='csr_plasticity',
+        source=Path(__file__).parent.joinpath('plasticity_binary.cu'),
     )
 
     out_info = kwargs['outs']
@@ -792,7 +792,7 @@ def _csr2csc_on_post_cuda_kernel(
         jnp.dtype('bfloat16'): '_bf16',
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
-    kernel_name = f'csr_plasticity_on_post.update_csr_on_post{wt_sfx}{spk_suffix}'
+    kernel_name = f'csr_plasticity.update_csr_on_post{wt_sfx}{spk_suffix}'
 
     def kernel(weight, indices, indptr, weight_indices, pre_trace, post_spike):
         return jax.ffi.ffi_call(

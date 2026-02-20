@@ -244,7 +244,7 @@ def _csr_slice_rows_cuda_kernel_generator(
 ):
     """CUDA TVM FFI kernel generator for ``csr_slice_rows`` (forward pass).
 
-    Registers and selects optimised CUDA kernels from ``csr_slice_rows.cu``
+    Registers and selects optimised CUDA kernels from ``slice.cu``
     for extracting selected rows from a CSR sparse matrix into a dense output.
 
     The auto-dispatch entry point selects the thread, warp, or block variant
@@ -282,7 +282,7 @@ def _csr_slice_rows_cuda_kernel_generator(
 
     register_tvm_cuda_from_file(
         module='csr_slice_rows',
-        source=Path(__file__).parent.joinpath('csr_slice_rows.cu'),
+        source=Path(__file__).parent.joinpath('slice.cu'),
     )
 
     out_info = kwargs['outs']
@@ -543,7 +543,7 @@ def _csr_slice_rows_grad_cuda_kernel_generator(
 ):
     """CUDA TVM FFI kernel generator for ``csr_slice_rows_grad`` (backward pass).
 
-    Registers and selects optimised CUDA kernels from ``csr_slice_rows.cu``
+    Registers and selects optimised CUDA kernels from ``slice.cu``
     for computing the gradient of the CSR row-slicing operation with respect
     to the weight data array.
 
@@ -576,7 +576,7 @@ def _csr_slice_rows_grad_cuda_kernel_generator(
 
     register_tvm_cuda_from_file(
         module='csr_slice_rows',
-        source=Path(__file__).parent.joinpath('csr_slice_rows.cu'),
+        source=Path(__file__).parent.joinpath('slice.cu'),
     )
 
     out_info = kwargs['outs']

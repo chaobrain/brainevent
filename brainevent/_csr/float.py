@@ -475,11 +475,13 @@ def _csrmv_cusparse_kernel(
         if is_homo:
             def kernel(weights, indices, indptr, vector):
                 ones = jnp.ones(nse, dtype=out_dtype)
-                mat = jsparse.BCSR((ones, indices, indptr), shape=(m, k))
+                row, col = _csr_to_coo(indices, indptr)
+                mat = jsparse.BCOO((ones, jnp.stack([row, col], axis=1)), shape=(m, k))
                 return ((mat.T @ vector.astype(out_dtype)) * weights[0].astype(out_dtype),)
         else:
             def kernel(weights, indices, indptr, vector):
-                mat = jsparse.BCSR((weights.astype(out_dtype), indices, indptr), shape=(m, k))
+                row, col = _csr_to_coo(indices, indptr)
+                mat = jsparse.BCOO((weights.astype(out_dtype), jnp.stack([row, col], axis=1)), shape=(m, k))
                 return (mat.T @ vector.astype(out_dtype),)
     else:
         if is_homo:
@@ -535,8 +537,8 @@ def _csrmv_cuda_kernel(
     from pathlib import Path
 
     register_tvm_cuda_from_file(
-        module='csrmv',
-        source=Path(__file__).parent.joinpath('csrmv.cu'),
+        module='csr_float',
+        source=Path(__file__).parent.joinpath('float.cu'),
     )
 
     out_info = kwargs['outs']
@@ -550,9 +552,9 @@ def _csrmv_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
     if transpose:
-        kernel_name = f'csrmv.csrmv_t_warp{wt_sfx}'
+        kernel_name = f'csr_float.csrmv_t_warp{wt_sfx}'
     else:
-        kernel_name = f'csrmv.csrmv_nt_auto{wt_sfx}'
+        kernel_name = f'csr_float.csrmv_nt_auto{wt_sfx}'
 
     def kernel(weights, indices, indptr, vector):
         v_cast = vector.astype(weight_info.dtype) if vector.dtype != weight_info.dtype else vector
@@ -1317,11 +1319,13 @@ def _csrmm_cusparse_kernel(
         if is_homo:
             def kernel(weights, indices, indptr, B):
                 ones = jnp.ones(nse, dtype=out_dtype)
-                mat = jsparse.BCSR((ones, indices, indptr), shape=(m, k))
+                row, col = _csr_to_coo(indices, indptr)
+                mat = jsparse.BCOO((ones, jnp.stack([row, col], axis=1)), shape=(m, k))
                 return ((mat.T @ B.astype(out_dtype)) * weights[0].astype(out_dtype),)
         else:
             def kernel(weights, indices, indptr, B):
-                mat = jsparse.BCSR((weights.astype(out_dtype), indices, indptr), shape=(m, k))
+                row, col = _csr_to_coo(indices, indptr)
+                mat = jsparse.BCOO((weights.astype(out_dtype), jnp.stack([row, col], axis=1)), shape=(m, k))
                 return (mat.T @ B.astype(out_dtype),)
     else:
         if is_homo:
@@ -1479,8 +1483,8 @@ def _csrmm_cuda_kernel(
     from pathlib import Path
 
     register_tvm_cuda_from_file(
-        module='csrmm',
-        source=Path(__file__).parent.joinpath('csrmm.cu'),
+        module='csr_float',
+        source=Path(__file__).parent.joinpath('float.cu'),
     )
 
     out_info = kwargs['outs']
@@ -1494,9 +1498,9 @@ def _csrmm_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
     if transpose:
-        kernel_name = f'csrmm.csrmm_t_warp{wt_sfx}'
+        kernel_name = f'csr_float.csrmm_t_warp{wt_sfx}'
     else:
-        kernel_name = f'csrmm.csrmm_nt_auto{wt_sfx}'
+        kernel_name = f'csr_float.csrmm_nt_auto{wt_sfx}'
 
     def kernel(weights, indices, indptr, B):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, B)

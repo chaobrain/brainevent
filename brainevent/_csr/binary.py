@@ -652,12 +652,14 @@ def _binary_csrmv_cusparse_kernel(
             def kernel(weights, indices, indptr, vector):
                 events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
                 ones = jnp.ones(nse, dtype=out_dtype)
-                mat = jsparse.BCSR((ones, indices, indptr), shape=(m, k))
+                row, col = _csr_to_coo(indices, indptr)
+                mat = jsparse.BCOO((ones, jnp.stack([row, col], axis=1)), shape=(m, k))
                 return ((mat.T @ events) * weights[0].astype(out_dtype),)
         else:
             def kernel(weights, indices, indptr, vector):
                 events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
-                mat = jsparse.BCSR((weights.astype(out_dtype), indices, indptr), shape=(m, k))
+                row, col = _csr_to_coo(indices, indptr)
+                mat = jsparse.BCOO((weights.astype(out_dtype), jnp.stack([row, col], axis=1)), shape=(m, k))
                 return (mat.T @ events,)
     else:
         if is_homo:
@@ -726,8 +728,8 @@ def _binary_csrmv_cuda_kernel(
     from pathlib import Path
 
     register_tvm_cuda_from_file(
-        module='binary_csrmv',
-        source=Path(__file__).parent.joinpath('binary_csrmv.cu'),
+        module='csr_binary',
+        source=Path(__file__).parent.joinpath('binary.cu'),
     )
 
     out_info = kwargs['outs']
@@ -745,9 +747,9 @@ def _binary_csrmv_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
     if transpose:
-        kernel_name = f'binary_csrmv.binary_csrmv_t_warp{wt_sfx}{spk_suffix}'
+        kernel_name = f'csr_binary.binary_csrmv_t_warp{wt_sfx}{spk_suffix}'
     else:
-        kernel_name = f'binary_csrmv.binary_csrmv_nt_auto{wt_sfx}{spk_suffix}'
+        kernel_name = f'csr_binary.binary_csrmv_nt_auto{wt_sfx}{spk_suffix}'
 
     def kernel(weights, indices, indptr, vector):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, vector)
@@ -1560,12 +1562,14 @@ def _binary_csrmm_cusparse_kernel(
             def kernel(weights, indices, indptr, B):
                 events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
                 ones = jnp.ones(nse, dtype=out_dtype)
-                mat = jsparse.BCSR((ones, indices, indptr), shape=(m, k))
+                row, col = _csr_to_coo(indices, indptr)
+                mat = jsparse.BCOO((ones, jnp.stack([row, col], axis=1)), shape=(m, k))
                 return ((mat.T @ events) * weights[0].astype(out_dtype),)
         else:
             def kernel(weights, indices, indptr, B):
                 events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
-                mat = jsparse.BCSR((weights.astype(out_dtype), indices, indptr), shape=(m, k))
+                row, col = _csr_to_coo(indices, indptr)
+                mat = jsparse.BCOO((weights.astype(out_dtype), jnp.stack([row, col], axis=1)), shape=(m, k))
                 return (mat.T @ events,)
     else:
         if is_homo:
@@ -1635,8 +1639,8 @@ def _binary_csrmm_cuda_kernel(
     from pathlib import Path
 
     register_tvm_cuda_from_file(
-        module='binary_csrmm',
-        source=Path(__file__).parent.joinpath('binary_csrmm.cu'),
+        module='csr_binary',
+        source=Path(__file__).parent.joinpath('binary.cu'),
     )
 
     out_info = kwargs['outs']
@@ -1654,9 +1658,9 @@ def _binary_csrmm_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
     if transpose:
-        kernel_name = f'binary_csrmm.binary_csrmm_t_warp{wt_sfx}{spk_suffix}'
+        kernel_name = f'csr_binary.binary_csrmm_t_warp{wt_sfx}{spk_suffix}'
     else:
-        kernel_name = f'binary_csrmm.binary_csrmm_nt_auto{wt_sfx}{spk_suffix}'
+        kernel_name = f'csr_binary.binary_csrmm_nt_auto{wt_sfx}{spk_suffix}'
 
     def kernel(weights, indices, indptr, B):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, B)
