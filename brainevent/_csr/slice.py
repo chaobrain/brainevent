@@ -22,7 +22,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import namescope
-from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
+from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, register_tvm_cuda_from_file
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
 
@@ -237,6 +237,72 @@ def _csr_slice_rows_benchmark_data(*, platform):
     ]
 
 
+def _csr_slice_rows_cuda_kernel_generator(
+    row_indices_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    **kwargs,
+):
+    """CUDA TVM FFI kernel generator for ``csr_slice_rows`` (forward pass).
+
+    Registers and selects optimised CUDA kernels from ``csr_slice_rows.cu``
+    for extracting selected rows from a CSR sparse matrix into a dense output.
+
+    The auto-dispatch entry point selects the thread, warp, or block variant
+    based on the average number of nonzeros per row:
+
+    * ``avg_nnz < 8``    → fwd_thread (256 threads/block, 1 thread per row)
+    * ``avg_nnz < 512``  → fwd_warp   (32  threads/block, 1 warp  per row)
+    * ``avg_nnz >= 512`` → fwd_block  (256 threads/block, 1 block per row)
+
+    The output is zeroed by ``cudaMemsetAsync`` inside the FFI entry before
+    the scatter kernel runs, so unwritten positions are guaranteed to be zero.
+
+    Parameters
+    ----------
+    row_indices_info : jax.ShapeDtypeStruct
+        Shape and dtype of the ``row_indices`` array.
+    shape : tuple of int
+        ``(m, n_cols)`` logical shape of the CSR matrix.
+    **kwargs
+        Must contain ``outs`` (list of ``jax.ShapeDtypeStruct`` for output)
+        and ``data_info`` (shape/dtype of the weight array).
+
+    Returns
+    -------
+    kernel : callable
+        Function ``kernel(data, indices, indptr, row_indices) -> (output,)``
+        that dispatches to the selected CUDA entry point.
+
+    Notes
+    -----
+    Requires ``int32`` column indices and row pointers (asserted by the
+    Python-side ``csr_slice_rows_p_call``).
+    """
+    from pathlib import Path
+
+    register_tvm_cuda_from_file(
+        module='csr_slice_rows',
+        source=Path(__file__).parent.joinpath('csr_slice_rows.cu'),
+    )
+
+    out_info = kwargs['outs']
+    data_info = kwargs['data_info']
+
+    _dtype_sfx = {
+        jnp.dtype('float16'):  '_f16',
+        jnp.dtype('float32'):  '_f32',
+        jnp.dtype('float64'):  '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(data_info.dtype), '_f32')
+    kernel_name = f'csr_slice_rows.csr_slice_rows_fwd_auto{wt_sfx}'
+
+    def kernel(data, indices, indptr, row_indices):
+        return jax.ffi.ffi_call(kernel_name, out_info)(data, indices, indptr, row_indices)
+
+    return kernel
+
+
 def csr_slice_rows_p_call(
     data, indices, indptr, row_indices,
     *, shape: MatrixShape, backend: Optional[str] = None,
@@ -323,6 +389,7 @@ csr_slice_rows_grad_p : Companion gradient primitive used by the transpose rule.
 )
 csr_slice_rows_p.def_numba_kernel(_csr_slice_rows_numba_kernel_generator)
 csr_slice_rows_p.def_pallas_kernel('gpu', _csr_slice_rows_pallas_kernel_generator)
+csr_slice_rows_p.def_tvmffi_kernel('gpu', _csr_slice_rows_cuda_kernel_generator)
 csr_slice_rows_p.def_jvp_rule2(_csr_slice_rows_jvp_data, None, None, None)
 csr_slice_rows_p.def_transpose_rule(_csr_slice_rows_transpose_rule)
 csr_slice_rows_p.def_batching_rule(_csr_slice_rows_batching)
@@ -469,6 +536,67 @@ def _csr_slice_rows_grad_benchmark_data(*, platform):
     ]
 
 
+def _csr_slice_rows_grad_cuda_kernel_generator(
+    row_indices_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    **kwargs,
+):
+    """CUDA TVM FFI kernel generator for ``csr_slice_rows_grad`` (backward pass).
+
+    Registers and selects optimised CUDA kernels from ``csr_slice_rows.cu``
+    for computing the gradient of the CSR row-slicing operation with respect
+    to the weight data array.
+
+    The auto-dispatch entry selects the thread or warp variant based on the
+    average number of nonzeros per CSR row:
+
+    * ``avg_nnz < 8``  → grad_thread (256 threads/block, 1 thread per row)
+    * ``avg_nnz >= 8`` → grad_warp   (32  threads/block, 1 warp  per row)
+
+    The output ``ct_data`` is zeroed by ``cudaMemsetAsync`` inside the FFI
+    entry before accumulation, so the caller does not need to pre-zero it.
+
+    Parameters
+    ----------
+    row_indices_info : jax.ShapeDtypeStruct
+        Shape and dtype of the ``row_indices`` array.
+    shape : tuple of int
+        ``(m, n_cols)`` logical shape of the CSR matrix.
+    **kwargs
+        Must contain ``outs`` (list of ``jax.ShapeDtypeStruct`` for ct_data)
+        and ``ct_info`` (shape/dtype of the cotangent matrix).
+
+    Returns
+    -------
+    kernel : callable
+        Function ``kernel(ct, indices, indptr, row_indices) -> (ct_data,)``
+        that dispatches to the selected CUDA entry point.
+    """
+    from pathlib import Path
+
+    register_tvm_cuda_from_file(
+        module='csr_slice_rows',
+        source=Path(__file__).parent.joinpath('csr_slice_rows.cu'),
+    )
+
+    out_info = kwargs['outs']
+    ct_info = kwargs['ct_info']
+
+    _dtype_sfx = {
+        jnp.dtype('float16'):  '_f16',
+        jnp.dtype('float32'):  '_f32',
+        jnp.dtype('float64'):  '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(ct_info.dtype), '_f32')
+    kernel_name = f'csr_slice_rows.csr_slice_rows_grad_auto{wt_sfx}'
+
+    def kernel(ct, indices, indptr, row_indices):
+        return jax.ffi.ffi_call(kernel_name, out_info)(ct, indices, indptr, row_indices)
+
+    return kernel
+
+
 def _csr_slice_rows_grad_transpose_rule(ct, ct_input, indices, indptr, row_indices, *, shape, **kwargs):
     """Transpose of G^T is G (the forward slice operation).
 
@@ -574,6 +702,7 @@ csr_slice_rows : High-level user-facing function wrapper.
 )
 csr_slice_rows_grad_p.def_numba_kernel(_csr_slice_rows_grad_numba_kernel_generator)
 csr_slice_rows_grad_p.def_pallas_kernel('gpu', _csr_slice_rows_grad_pallas_kernel_generator)
+csr_slice_rows_grad_p.def_tvmffi_kernel('gpu', _csr_slice_rows_grad_cuda_kernel_generator)
 csr_slice_rows_grad_p.def_jvp_rule2(_csr_slice_rows_grad_jvp_ct, None, None, None)
 csr_slice_rows_grad_p.def_transpose_rule(_csr_slice_rows_grad_transpose_rule)
 csr_slice_rows_grad_p.def_batching_rule(_csr_slice_rows_grad_batching)

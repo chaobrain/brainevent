@@ -14,6 +14,7 @@
 # ==============================================================================
 import numbers
 from functools import partial
+from pathlib import Path
 from typing import Union, Optional
 
 import brainunit as u
@@ -22,7 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._misc import namescope
-from brainevent._op import XLACustomKernel, numba_kernel
+from brainevent._op import XLACustomKernel, numba_kernel, register_tvm_cuda_from_file
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
 
@@ -291,6 +292,56 @@ def _csr_on_pre_jax_kernel(
     return kernel
 
 
+def _csr_on_pre_cuda_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    spike_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    **kwargs,
+):
+    """TVM FFI CUDA kernel for CSR pre-synaptic plasticity update.
+
+    Dispatches to ``update_csr_on_pre{wt_sfx}{spk_sfx}`` compiled from
+    ``plasticity_binary_on_pre.cu``.  The auto-variant selects among
+    thread-per-row, warp-per-row, and block-per-row sub-kernels at runtime
+    based on avg_nnz = nse / n_pre.
+
+    Only int32 index arrays are supported.  Callers with int64 indices should
+    explicitly select ``backend='pallas'`` or ``backend='jax'``.
+    """
+    if indices_info.dtype == jnp.int64:
+        raise TypeError(
+            "update_csr_on_binary_pre: the 'tvmffi' backend only supports "
+            "int32 index arrays (indices / indptr).  "
+            "Use backend='pallas' or backend='jax' for int64 indices."
+        )
+
+    register_tvm_cuda_from_file(
+        module='csr_plasticity_on_pre',
+        source=Path(__file__).parent.joinpath('plasticity_binary_on_pre.cu'),
+    )
+
+    out_info = kwargs['outs']
+    spk_suffix = '_bool' if spike_info.dtype == jnp.bool_ else '_float'
+
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    kernel_name = f'csr_plasticity_on_pre.update_csr_on_pre{wt_sfx}{spk_suffix}'
+
+    def kernel(weight, indices, indptr, pre_spike, post_trace):
+        return jax.ffi.ffi_call(
+            kernel_name,
+            out_info,
+            input_output_aliases={0: 0},
+        )(weight, indices, indptr, pre_spike, post_trace)
+
+    return kernel
+
+
 def csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, shape, backend: Optional[str] = None):
     """Invoke the low-level XLA custom kernel for presynaptic plasticity updates.
 
@@ -414,11 +465,13 @@ update_csr_on_binary_pre : High-level user-facing function wrapper.
 update_csr_on_binary_pre_p.def_numba_kernel(_csr_on_pre_numba_kernel_generator)
 update_csr_on_binary_pre_p.def_pallas_kernel('gpu', partial(_csr_on_pre_pallas_kernel_generator, 'triton'))
 update_csr_on_binary_pre_p.def_pallas_kernel('tpu', partial(_csr_on_pre_pallas_kernel_generator, 'mosaic_tpu'))
-update_csr_on_binary_pre_p.def_kernel('jax', 'cpu', _csr_on_pre_jax_kernel)
-update_csr_on_binary_pre_p.def_kernel('jax', 'gpu', _csr_on_pre_jax_kernel)
-update_csr_on_binary_pre_p.def_kernel('jax', 'tpu', _csr_on_pre_jax_kernel)
+update_csr_on_binary_pre_p.def_tvmffi_kernel('gpu', _csr_on_pre_cuda_kernel)
+update_csr_on_binary_pre_p.def_kernel('jax_raw', 'cpu', _csr_on_pre_jax_kernel)
+update_csr_on_binary_pre_p.def_kernel('jax_raw', 'gpu', _csr_on_pre_jax_kernel)
+update_csr_on_binary_pre_p.def_kernel('jax_raw', 'tpu', _csr_on_pre_jax_kernel)
 update_csr_on_binary_pre_p.def_tags('csr', 'plasticity')
 update_csr_on_binary_pre_p.def_benchmark_data(_csr_on_pre_benchmark_data)
+update_csr_on_binary_pre_p.def_call(csr_on_pre_prim_call)
 
 
 @namescope(static_argnames=['shape'])
@@ -697,6 +750,60 @@ def _csr2csc_on_post_jax_kernel(
     return kernel
 
 
+def _csr2csc_on_post_cuda_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    spike_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    **kwargs,
+):
+    """TVM FFI CUDA kernel for CSR post-synaptic plasticity update.
+
+    Dispatches to ``update_csr_on_post{wt_sfx}{spk_sfx}`` compiled from
+    ``plasticity_binary_on_post.cu``.  The auto-variant selects among
+    thread-per-column, warp-per-column, and block-per-column sub-kernels at
+    runtime based on avg_nnz = nse / n_post.
+
+    Uses atomicAdd for scattered writes to the weight array.  Since
+    weight_indices is injective by CSC construction, no actual race conditions
+    occur; atomicAdd provides a safety guarantee against malformed inputs.
+
+    Only int32 index arrays are supported.  Callers with int64 indices should
+    explicitly select ``backend='pallas'`` or ``backend='jax'``.
+    """
+    if indices_info.dtype == jnp.int64:
+        raise TypeError(
+            "update_csr_on_binary_post: the 'tvmffi' backend only supports "
+            "int32 index arrays (indices / indptr / weight_indices).  "
+            "Use backend='pallas' or backend='jax' for int64 indices."
+        )
+
+    register_tvm_cuda_from_file(
+        module='csr_plasticity_on_post',
+        source=Path(__file__).parent.joinpath('plasticity_binary_on_post.cu'),
+    )
+
+    out_info = kwargs['outs']
+    spk_suffix = '_bool' if spike_info.dtype == jnp.bool_ else '_float'
+
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    kernel_name = f'csr_plasticity_on_post.update_csr_on_post{wt_sfx}{spk_suffix}'
+
+    def kernel(weight, indices, indptr, weight_indices, pre_trace, post_spike):
+        return jax.ffi.ffi_call(
+            kernel_name,
+            out_info,
+            input_output_aliases={0: 0},
+        )(weight, indices, indptr, weight_indices, pre_trace, post_spike)
+
+    return kernel
+
+
 def csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace, post_spike, *, shape,
                               backend: Optional[str] = None):
     """Invoke the low-level XLA custom kernel for postsynaptic plasticity updates.
@@ -830,8 +937,10 @@ update_csr_on_binary_post : High-level user-facing function wrapper.
 update_csr_on_binary_post_p.def_numba_kernel(_csr2csc_on_post_numba_kernel_generator)
 update_csr_on_binary_post_p.def_pallas_kernel('gpu', partial(_csr2csc_on_post_pallas_kernel_generator, 'triton'))
 update_csr_on_binary_post_p.def_pallas_kernel('tpu', partial(_csr2csc_on_post_pallas_kernel_generator, 'mosaic_tpu'))
-update_csr_on_binary_post_p.def_kernel('jax', 'cpu', _csr2csc_on_post_jax_kernel)
-update_csr_on_binary_post_p.def_kernel('jax', 'gpu', _csr2csc_on_post_jax_kernel)
-update_csr_on_binary_post_p.def_kernel('jax', 'tpu', _csr2csc_on_post_jax_kernel)
+update_csr_on_binary_post_p.def_tvmffi_kernel('gpu', _csr2csc_on_post_cuda_kernel)
+update_csr_on_binary_post_p.def_kernel('jax_raw', 'cpu', _csr2csc_on_post_jax_kernel)
+update_csr_on_binary_post_p.def_kernel('jax_raw', 'gpu', _csr2csc_on_post_jax_kernel)
+update_csr_on_binary_post_p.def_kernel('jax_raw', 'tpu', _csr2csc_on_post_jax_kernel)
 update_csr_on_binary_post_p.def_tags('csr', 'plasticity')
 update_csr_on_binary_post_p.def_benchmark_data(_csr2csc_on_post_benchmark_data)
+update_csr_on_binary_post_p.def_call(csr2csc_on_post_prim_call)

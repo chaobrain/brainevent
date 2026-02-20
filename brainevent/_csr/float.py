@@ -22,7 +22,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescope
-from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
+from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, register_tvm_cuda_from_file
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
@@ -494,6 +494,73 @@ def _csrmv_cusparse_kernel(
     return kernel
 
 
+def _csrmv_cuda_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs,
+):
+    """
+    CUDA TVM FFI kernel generator for ``csrmv``.
+
+    Registers and selects optimised CUDA kernels from ``csrmm.cu`` for the
+    float-weighted CSR sparse matrix-vector multiply.  The kernel variant is
+    chosen based on weight dtype and transpose mode.
+
+    Non-transpose (NT) mode uses an auto-dispatch entry point that selects
+    between thread, warp, and block variants based on the average number of
+    nonzeros per row:
+
+    * ``avg_nnz < 8``   → NT_thread  (1 thread/row)
+    * ``avg_nnz < 512`` → NT_warp    (1 warp/row, warp-reduce)
+    * ``avg_nnz >= 512``→ NT_block   (1 block/row, 2-level reduction)
+
+    Transpose (T) mode always uses the warp-scatter variant with
+    ``cudaMemsetAsync`` to zero the output before atomicAdd scatter.
+
+    Parameters
+    ----------
+    weight_info : jax.ShapeDtypeStruct
+        Shape and dtype of the weight array (``[1]`` homo or ``[nse]`` hetero).
+    transpose : bool
+        ``False`` → ``A @ v`` (gather); ``True`` → ``A.T @ v`` (scatter).
+    **kwargs
+        Must contain ``outs`` (list of ``jax.ShapeDtypeStruct`` for output).
+
+    Returns
+    -------
+    kernel : callable
+        Function ``kernel(weights, indices, indptr, v) -> (output,)``
+        that dispatches to the selected CUDA entry point.
+    """
+    from pathlib import Path
+
+    register_tvm_cuda_from_file(
+        module='csrmv',
+        source=Path(__file__).parent.joinpath('csrmv.cu'),
+    )
+
+    out_info = kwargs['outs']
+
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+
+    if transpose:
+        kernel_name = f'csrmv.csrmv_t_warp{wt_sfx}'
+    else:
+        kernel_name = f'csrmv.csrmv_nt_auto{wt_sfx}'
+
+    def kernel(weights, indices, indptr, vector):
+        v_cast = vector.astype(weight_info.dtype) if vector.dtype != weight_info.dtype else vector
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, v_cast)
+
+    return kernel
+
+
 def _csrmv_jvp_v(v_dot, data, indices, indptr, v, *, shape, transpose, **kwargs):
     return [csrmv(data, indices, indptr, v_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
@@ -756,9 +823,10 @@ csrmv : High-level user-facing function wrapper.
 )
 csrmv_p.def_numba_kernel(_csrmv_numba_kernel_generator)
 csrmv_p.def_pallas_kernel('gpu', _csrmv_pallas_kernel_generator)
-csrmv_p.def_kernel('jax', 'cpu', _csrmv_jax_kernel)
-csrmv_p.def_kernel('jax', 'gpu', _csrmv_jax_kernel)
-csrmv_p.def_kernel('jax', 'tpu', _csrmv_jax_kernel)
+csrmv_p.def_tvmffi_kernel('gpu', _csrmv_cuda_kernel)
+csrmv_p.def_kernel('jax_raw', 'cpu', _csrmv_jax_kernel)
+csrmv_p.def_kernel('jax_raw', 'gpu', _csrmv_jax_kernel)
+csrmv_p.def_kernel('jax_raw', 'tpu', _csrmv_jax_kernel)
 csrmv_p.def_kernel('cusparse', 'gpu', _csrmv_cusparse_kernel)
 csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
 csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
@@ -1360,6 +1428,82 @@ def _csrmm_batching(args, axes, **kwargs):
         return general_batching_rule(csrmm_p, args, axes, **kwargs)
 
 
+def _csrmm_cuda_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs,
+):
+    """
+    CUDA TVM FFI kernel generator for ``csrmm``.
+
+    Registers and selects optimised CUDA kernels from ``csrmm.cu`` for the
+    float-weighted CSR sparse matrix-matrix multiply.  The kernel variant is
+    chosen based on weight dtype and transpose mode.
+
+    Non-transpose (NT) mode uses an auto-dispatch entry point that selects
+    the warp or block variant based on the average number of nonzeros per row:
+
+    * ``avg_nnz <= 256`` → NT_warp  (1 warp/col-block, serial nnz scan)
+    * ``avg_nnz >  256`` → NT_block (256 threads/col-block, 8-strip reduction)
+
+    Transpose (T) mode always uses the warp-scatter variant.  Each thread
+    reads its assigned B column value and scatters the weighted contribution
+    via ``atomicAdd`` to all connected output rows.
+
+    Both modes decompose the output along 32-wide column blocks aligned to
+    warp width, giving coalesced reads of B and writes/adds to C.
+
+    Parameters
+    ----------
+    weight_info : jax.ShapeDtypeStruct
+        Shape and dtype of the weight array (``[1]`` homo or ``[nse]`` hetero).
+    vector_info : jax.ShapeDtypeStruct
+        Shape and dtype of the dense matrix B.
+    shape : tuple of int
+        ``(m, k)`` logical shape of the sparse matrix A.
+    transpose : bool
+        ``False`` → ``A @ B`` (gather); ``True`` → ``A.T @ B`` (scatter).
+    **kwargs
+        Must contain ``outs`` (list of ``jax.ShapeDtypeStruct`` for output).
+
+    Returns
+    -------
+    kernel : callable
+        Function ``kernel(weights, indices, indptr, B) -> (output,)``
+        that dispatches to the selected CUDA entry point.
+
+    Notes
+    -----
+    This backend requires ``int32`` column indices and row pointers.
+    """
+    from pathlib import Path
+
+    register_tvm_cuda_from_file(
+        module='csrmm',
+        source=Path(__file__).parent.joinpath('csrmm.cu'),
+    )
+
+    out_info = kwargs['outs']
+
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+
+    if transpose:
+        kernel_name = f'csrmm.csrmm_t_warp{wt_sfx}'
+    else:
+        kernel_name = f'csrmm.csrmm_nt_auto{wt_sfx}'
+
+    def kernel(weights, indices, indptr, B):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, B)
+
+    return kernel
+
+
 def _csrmm_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
@@ -1543,9 +1687,10 @@ csrmm : High-level user-facing function wrapper.
 )
 csrmm_p.def_numba_kernel(_csrmm_numba_kernel_generator)
 csrmm_p.def_pallas_kernel('gpu', _csrmm_pallas_kernel_generator)
-csrmm_p.def_kernel('jax', 'cpu', _csrmm_jax_kernel)
-csrmm_p.def_kernel('jax', 'gpu', _csrmm_jax_kernel)
-csrmm_p.def_kernel('jax', 'tpu', _csrmm_jax_kernel)
+csrmm_p.def_tvmffi_kernel('gpu', _csrmm_cuda_kernel)
+csrmm_p.def_kernel('jax_raw', 'cpu', _csrmm_jax_kernel)
+csrmm_p.def_kernel('jax_raw', 'gpu', _csrmm_jax_kernel)
+csrmm_p.def_kernel('jax_raw', 'tpu', _csrmm_jax_kernel)
 csrmm_p.def_kernel('cusparse', 'gpu', _csrmm_cusparse_kernel)
 csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 csrmm_p.def_transpose_rule(_csrmm_transpose_rule)

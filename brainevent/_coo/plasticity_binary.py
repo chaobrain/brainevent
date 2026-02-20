@@ -15,6 +15,7 @@
 
 # -*- coding: utf-8 -*-
 
+from pathlib import Path
 from typing import Union, Optional
 
 import brainunit as u
@@ -23,7 +24,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._misc import generate_block_dim, namescope
-from brainevent._op import XLACustomKernel, numba_kernel
+from brainevent._op import XLACustomKernel, numba_kernel, register_tvm_cuda_from_file
 from brainevent._op.benchmark import BenchmarkConfig
 
 __all__ = [
@@ -250,6 +251,49 @@ def _coo_on_pre_jax_kernel(
     return kernel
 
 
+def _coo_on_pre_cuda_kernel(weight_info, spike_info, pre_ids_info, **kwargs):
+    """TVM FFI CUDA kernel for presynaptic COO plasticity update.
+
+    Dispatches to ``update_coo_on_pre{wt_sfx}{spk_sfx}`` compiled from
+    ``plasticity_binary_on_pre.cu``.
+
+    Only int32 index dtype is supported.  Callers with int64 pre_ids should
+    explicitly select ``backend='pallas'`` or ``backend='jax'``.
+    """
+    if pre_ids_info.dtype == jnp.int64:
+        raise TypeError(
+            "update_coo_on_binary_pre: the 'tvmffi' backend only supports "
+            "int32 index arrays (pre_ids / post_ids).  "
+            "Use backend='pallas' or backend='jax' for int64 indices."
+        )
+
+    register_tvm_cuda_from_file(
+        module='coo_plasticity_on_pre',
+        source=Path(__file__).parent.joinpath('plasticity_binary_on_pre.cu'),
+    )
+
+    out_info = kwargs['outs']
+    spk_suffix = '_bool' if spike_info.dtype == jnp.bool_ else '_float'
+
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    kernel_name = f'coo_plasticity_on_pre.update_coo_on_pre{wt_sfx}{spk_suffix}'
+
+    def kernel(weight, pre_ids, post_ids, pre_spike, post_trace):
+        return jax.ffi.ffi_call(
+            kernel_name,
+            out_info,
+            input_output_aliases={0: 0},
+        )(weight, pre_ids, post_ids, pre_spike, post_trace)
+
+    return kernel
+
+
 def _coo_on_pre_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
@@ -394,9 +438,10 @@ update_coo_on_binary_pre : High-level user-facing function wrapper.
 )
 update_coo_on_binary_pre_p.def_numba_kernel(_coo_on_pre_numba_kernel)
 update_coo_on_binary_pre_p.def_pallas_kernel('gpu', _coo_on_pre_pallas_kernel)
-update_coo_on_binary_pre_p.def_kernel('jax', 'cpu', _coo_on_pre_jax_kernel)
-update_coo_on_binary_pre_p.def_kernel('jax', 'gpu', _coo_on_pre_jax_kernel)
-update_coo_on_binary_pre_p.def_kernel('jax', 'tpu', _coo_on_pre_jax_kernel)
+update_coo_on_binary_pre_p.def_tvmffi_kernel('gpu', _coo_on_pre_cuda_kernel)
+update_coo_on_binary_pre_p.def_kernel('jax_raw', 'cpu', _coo_on_pre_jax_kernel)
+update_coo_on_binary_pre_p.def_kernel('jax_raw', 'gpu', _coo_on_pre_jax_kernel)
+update_coo_on_binary_pre_p.def_kernel('jax_raw', 'tpu', _coo_on_pre_jax_kernel)
 update_coo_on_binary_pre_p.def_call(_coo_on_pre_prim_call)
 update_coo_on_binary_pre_p.def_tags('coo', 'plasticity')
 update_coo_on_binary_pre_p.def_benchmark_data(_coo_on_pre_benchmark_data)
@@ -623,6 +668,49 @@ def _coo_on_post_jax_kernel(
     return kernel
 
 
+def _coo_on_post_cuda_kernel(weight_info, spike_info, pre_ids_info, **kwargs):
+    """TVM FFI CUDA kernel for postsynaptic COO plasticity update.
+
+    Dispatches to ``update_coo_on_post{wt_sfx}{spk_sfx}`` compiled from
+    ``plasticity_binary_on_post.cu``.
+
+    Only int32 index dtype is supported.  Callers with int64 post_ids should
+    explicitly select ``backend='pallas'`` or ``backend='jax'``.
+    """
+    if pre_ids_info.dtype == jnp.int64:
+        raise TypeError(
+            "update_coo_on_binary_post: the 'tvmffi' backend only supports "
+            "int32 index arrays (pre_ids / post_ids).  "
+            "Use backend='pallas' or backend='jax' for int64 indices."
+        )
+
+    register_tvm_cuda_from_file(
+        module='coo_plasticity_on_post',
+        source=Path(__file__).parent.joinpath('plasticity_binary_on_post.cu'),
+    )
+
+    out_info = kwargs['outs']
+    spk_suffix = '_bool' if spike_info.dtype == jnp.bool_ else '_float'
+
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    kernel_name = f'coo_plasticity_on_post.update_coo_on_post{wt_sfx}{spk_suffix}'
+
+    def kernel(weight, pre_ids, post_ids, pre_trace, post_spike):
+        return jax.ffi.ffi_call(
+            kernel_name,
+            out_info,
+            input_output_aliases={0: 0},
+        )(weight, pre_ids, post_ids, pre_trace, post_spike)
+
+    return kernel
+
+
 def _coo_on_post_benchmark_data(*, platform):
     n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
     configs = []
@@ -768,9 +856,10 @@ update_coo_on_binary_post : High-level user-facing function wrapper.
 )
 update_coo_on_binary_post_p.def_numba_kernel(_coo_on_post_numba_kernel)
 update_coo_on_binary_post_p.def_pallas_kernel('gpu', _coo_on_post_pallas_kernel)
-update_coo_on_binary_post_p.def_kernel('jax', 'cpu', _coo_on_post_jax_kernel)
-update_coo_on_binary_post_p.def_kernel('jax', 'gpu', _coo_on_post_jax_kernel)
-update_coo_on_binary_post_p.def_kernel('jax', 'tpu', _coo_on_post_jax_kernel)
+update_coo_on_binary_post_p.def_tvmffi_kernel('gpu', _coo_on_post_cuda_kernel)
+update_coo_on_binary_post_p.def_kernel('jax_raw', 'cpu', _coo_on_post_jax_kernel)
+update_coo_on_binary_post_p.def_kernel('jax_raw', 'gpu', _coo_on_post_jax_kernel)
+update_coo_on_binary_post_p.def_kernel('jax_raw', 'tpu', _coo_on_post_jax_kernel)
 update_coo_on_binary_post_p.def_call(_coo_on_post_prim_call)
 update_coo_on_binary_post_p.def_tags('coo', 'plasticity')
 update_coo_on_binary_post_p.def_benchmark_data(_coo_on_post_benchmark_data)

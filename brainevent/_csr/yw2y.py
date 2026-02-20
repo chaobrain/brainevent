@@ -21,7 +21,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._misc import generate_block_dim, namescope
-from brainevent._op import numba_kernel, XLACustomKernel
+from brainevent._op import numba_kernel, XLACustomKernel, register_tvm_cuda_from_file
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 
@@ -116,7 +116,7 @@ def csrmv_yw2y(
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent._csr.float import csrmv_yw2y
+        >>> from brainevent import csrmv_yw2y
         >>> y = jnp.array([1.0, 2.0])
         >>> w = jnp.array([0.5, 0.3, 0.7, 0.1])
         >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
@@ -269,23 +269,51 @@ def _csrmv_yw2y_transpose_rule(ct, y, w, indices, indptr, *, shape, transpose, *
 
 
 def _csrmv_yw2y_benchmark_data(*, platform):
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    """
+    Benchmark configurations for ``csrmv_yw2y``.
+
+    Covers a range of matrix sizes and connection densities representative
+    of typical spiking neural network workloads:
+
+    * Small (1K×1K):   fast iteration; useful for overhead measurement.
+    * Medium (5K×5K):  common SNN scale; balances rows vs. non-zeros.
+    * Large (20K×20K): large-scale simulation benchmark.
+
+    Each size is tested at three structural densities:
+    * Low   (0.1%): avg_nnz ≈ 1–20;  favours NT_row_thread.
+    * Medium (1%): avg_nnz ≈ 10–200; favours NT_row_warp.
+    * High  (10%): avg_nnz ≈ 100–2000; favours NT_nz_thread.
+
+    Both transpose=False and transpose=True are included.
+    """
+    dtype = jnp.float32
     configs = []
-    for transpose in (False, True):
+    sizes = [
+        (1_000,  1_000),
+        (5_000,  5_000),
+        (20_000, 20_000),
+    ]
+    probs = [0.001, 0.01, 0.1]
+
+    for (n_pre, n_post), prob in zip(sizes, probs):
         n_conn = max(1, int(n_post * prob))
         indptr = np.arange(n_pre + 1, dtype=np.int32) * n_conn
         indices = np.random.randint(0, n_post, (n_pre * n_conn,), dtype=np.int32)
-        w = jnp.ones(n_pre * n_conn, dtype=dtype)
-        y_size = n_pre if not transpose else n_post
-        y = jnp.asarray(np.random.randn(y_size), dtype=dtype)
-        name = f"{'T' if transpose else 'NT'}"
-        configs.append(
-            BenchmarkConfig(
-                name,
-                (y, w, indices, jnp.asarray(indptr)),
-                {'shape': (n_pre, n_post), 'transpose': transpose}
+        w = jnp.asarray(np.random.randn(n_pre * n_conn), dtype=dtype)
+        indptr_jax = jnp.asarray(indptr)
+
+        for transpose in (False, True):
+            y_size = n_post if transpose else n_pre
+            y = jnp.asarray(np.random.randn(y_size), dtype=dtype)
+            tag = 'T' if transpose else 'NT'
+            name = f"{tag},n={n_pre},nnz={n_conn}"
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (y, w, jnp.asarray(indices), indptr_jax),
+                    {'shape': (n_pre, n_post), 'transpose': transpose}
+                )
             )
-        )
     return configs
 
 
@@ -310,6 +338,82 @@ def _csrmv_yw2y_jax_kernel(
                 total_repeat_length=nse,
             )
             return (w * y[row_ids],)
+    return kernel
+
+
+def _csrmv_yw2y_cuda_kernel(
+    shape: MatrixShape,
+    transpose: bool,
+    w_info: jax.ShapeDtypeStruct,
+    **kwargs,
+):
+    """
+    TVM FFI (CUDA) kernel generator for ``csrmv_yw2y``.
+
+    Dispatches to optimised CUDA kernels compiled from ``csrmv_yw2y.cu``
+    via the TVM FFI compilation pipeline.
+
+    Non-transpose (NT) kernels are auto-selected based on ``avg_nnz``:
+
+    * ``avg_nnz < 8``   → ``NT_row_thread`` (1 thread/row, serial)
+    * ``avg_nnz < 512`` → ``NT_row_warp``   (1 warp/row, stride-32)
+    * ``avg_nnz >= 512``→ ``NT_nz_thread``  (1 thread/nz, binary-search row)
+
+    The transpose (T) variant always uses ``T_nz_thread`` (1 thread/nz,
+    direct column gather), which is embarrassingly parallel and needs no
+    atomic operations.
+
+    Parameters
+    ----------
+    shape : tuple of int
+        ``(m, k)`` logical shape of the CSR matrix.
+    transpose : bool
+        ``False`` → NT (gather from rows);  ``True`` → T (gather from cols).
+    w_info : jax.ShapeDtypeStruct
+        Shape and dtype of the weight array ``w`` (always ``(nse,)``).
+    **kwargs
+        Must contain ``outs`` (list of ``jax.ShapeDtypeStruct`` for output).
+
+    Returns
+    -------
+    kernel : callable
+        ``kernel(y, w, indices, indptr) -> (output,)``
+
+    Notes
+    -----
+    This backend requires ``int32`` column indices and row pointers.  The
+    Python-side ``csrmv_yw2y_p_call`` asserts this before dispatching.
+
+    Unlike ``binary_csrmv``, the transpose variant does **not** use
+    ``atomicAdd`` because each output element ``out[j]`` is owned by
+    exactly one thread.
+    """
+    from pathlib import Path
+
+    register_tvm_cuda_from_file(
+        module='csrmv_yw2y',
+        source=Path(__file__).parent.joinpath('csrmv_yw2y.cu'),
+    )
+
+    out_info = kwargs['outs']
+
+    # Weight dtype suffix
+    _dtype_sfx = {
+        jnp.dtype('float16'):  '_f16',
+        jnp.dtype('float32'):  '_f32',
+        jnp.dtype('float64'):  '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(w_info.dtype), '_f32')
+
+    if transpose:
+        kernel_name = f'csrmv_yw2y.csrmv_yw2y_t_nz_thread{wt_sfx}'
+    else:
+        kernel_name = f'csrmv_yw2y.csrmv_yw2y_nt_auto{wt_sfx}'
+
+    def kernel(y, w, indices, indptr):
+        return jax.ffi.ffi_call(kernel_name, out_info)(y, w, indices, indptr)
+
     return kernel
 
 
@@ -463,9 +567,10 @@ csrmv_yw2y : High-level user-facing function wrapper.
 )
 csrmv_yw2y_p.def_numba_kernel(_csrmv_yw2y_numba_kernels)
 csrmv_yw2y_p.def_pallas_kernel('gpu', _csrmv_yw2y_pallas_kernels)
-csrmv_yw2y_p.def_kernel('jax', 'cpu', _csrmv_yw2y_jax_kernel)
-csrmv_yw2y_p.def_kernel('jax', 'gpu', _csrmv_yw2y_jax_kernel)
-csrmv_yw2y_p.def_kernel('jax', 'tpu', _csrmv_yw2y_jax_kernel)
+csrmv_yw2y_p.def_tvmffi_kernel('gpu', _csrmv_yw2y_cuda_kernel)
+csrmv_yw2y_p.def_kernel('jax_raw', 'cpu', _csrmv_yw2y_jax_kernel)
+csrmv_yw2y_p.def_kernel('jax_raw', 'gpu', _csrmv_yw2y_jax_kernel)
+csrmv_yw2y_p.def_kernel('jax_raw', 'tpu', _csrmv_yw2y_jax_kernel)
 csrmv_yw2y_p.def_jvp_rule2(_csrmv_yw2y_jvp_y, _csrmv_yw2y_jvp_w, None, None)
 csrmv_yw2y_p.def_call(csrmv_yw2y_p_call)
 csrmv_yw2y_p.def_tags('csr', 'float')

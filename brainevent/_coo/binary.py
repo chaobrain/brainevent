@@ -16,6 +16,7 @@
 # -*- coding: utf-8 -*-
 
 
+from pathlib import Path
 from typing import Sequence, Optional
 
 import brainunit as u
@@ -25,7 +26,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, namescope
-from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule
+from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, register_tvm_cuda_from_file
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Row, Col, MatrixShape
@@ -712,6 +713,50 @@ def _binary_coomv_cusparse_kernel(
     return kernel
 
 
+def _coomv_tvmffi_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs,
+):
+    """TVM FFI CUDA kernel for binary COO SpMV.
+
+    Dispatches to one of the ``binary_coomv_atomic_{nt,t}`` kernels compiled
+    from ``binary_coomv.cu`` via ``register_tvm_cuda_from_file``.
+
+    Kernel selection:
+    - Direction: ``_nt`` (transpose=False) or ``_t`` (transpose=True).
+    - Weight dtype: ``_f32``, ``_f64``, ``_f16``, or ``_bf16``.
+    - Spike type: ``_bool`` (int8) or ``_float`` (float32).
+    - Homo vs. hetero: detected at runtime from ``data.size(0) == 1``.
+
+    The output buffer is zero-initialized inside the CUDA entry function
+    (via ``cudaMemsetAsync``) before the atomic-scatter kernel runs.
+    """
+    register_tvm_cuda_from_file(
+        module='binary_coomv',
+        source=Path(__file__).parent.joinpath('binary_coomv.cu'),
+    )
+
+    out_info = kwargs['outs']
+    spk_suffix = '_bool' if vector_info.dtype == jnp.bool_ else '_float'
+
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    direction = '_t' if transpose else '_nt'
+    kernel_name = f'binary_coomv.binary_coomv_atomic{direction}{wt_sfx}{spk_suffix}'
+
+    def kernel(weights, row, col, v):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, row, col, v)
+
+    return kernel
+
+
 def _coomv_jvp_vector(v_dot, data, row, col, v, *, shape, transpose, **kwargs):
     return [coomv(data, row, col, v_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
@@ -988,9 +1033,10 @@ binary_coomv : High-level user-facing function wrapper.
 binary_coomv_p.def_numba_kernel(_coomv_numba_kernel)
 binary_coomv_p.def_pallas_kernel('gpu', _coomv_pallas_gpu_kernel)
 binary_coomv_p.def_pallas_kernel('tpu', _coomv_pallas_tpu_kernel)
-binary_coomv_p.def_kernel('jax', 'cpu', _binary_coomv_jax_kernel)
-binary_coomv_p.def_kernel('jax', 'gpu', _binary_coomv_jax_kernel)
-binary_coomv_p.def_kernel('jax', 'tpu', _binary_coomv_jax_kernel)
+binary_coomv_p.def_tvmffi_kernel('gpu', _coomv_tvmffi_kernel)
+binary_coomv_p.def_kernel('jax_raw', 'cpu', _binary_coomv_jax_kernel)
+binary_coomv_p.def_kernel('jax_raw', 'gpu', _binary_coomv_jax_kernel)
+binary_coomv_p.def_kernel('jax_raw', 'tpu', _binary_coomv_jax_kernel)
 binary_coomv_p.def_kernel('cusparse', 'gpu', _binary_coomv_cusparse_kernel)
 binary_coomv_p.def_jvp_rule2(_coomv_jvp_weights, None, None, _coomv_jvp_vector)
 binary_coomv_p.def_transpose_rule(_coomv_transpose_rule)
@@ -1514,6 +1560,64 @@ def _binary_coomm_cusparse_kernel(
     return kernel
 
 
+def _coomm_tvmffi_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    matrix_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs,
+):
+    """TVM FFI CUDA kernel for binary COO SpMM.
+
+    Dispatches to one of the ``binary_coomm_{variant}_{nt,t}`` kernels compiled
+    from ``binary_coomm.cu`` via ``register_tvm_cuda_from_file``.
+
+    Kernel variant selection (based on n = number of output columns):
+    - CT (Column-Tiled, n ≤ 64): One warp per block serially iterates over
+      32 NNZ entries while all 32 threads process a 32-column output tile.
+      Uses ``__ballot_sync`` to skip atomics for inactive spike tiles.
+      Block=(32,), Grid=(ceil(nnz/32), ceil(n/32)).
+    - WPE (Warp-Per-Entry, n > 64): Each of 8 warps in a 256-thread block
+      handles a single NNZ entry and 32 consecutive output columns.
+      Block=(256,), Grid=(ceil(nnz/8), ceil(n/32)).
+
+    Direction suffix: ``_nt`` (transpose=False) or ``_t`` (transpose=True).
+    Weight dtype suffix: ``_f32``, ``_f64``, ``_f16``, or ``_bf16``.
+    Spike type suffix: ``_bool`` (int8) or ``_float`` (float32).
+    Homo vs. hetero: detected at runtime from ``data.size(0) == 1``.
+
+    The output buffer is zero-initialized inside the CUDA entry function
+    (via ``cudaMemsetAsync``) before the atomic-scatter kernel runs.
+    """
+    register_tvm_cuda_from_file(
+        module='binary_coomm',
+        source=Path(__file__).parent.joinpath('binary_coomm.cu'),
+    )
+
+    out_info = kwargs['outs']
+    spk_suffix = '_bool' if matrix_info.dtype == jnp.bool_ else '_float'
+
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    direction = '_t' if transpose else '_nt'
+
+    # Dispatch heuristic: CT is better for small n (serial NNZ loop amortised
+    # across many CUDA blocks in the nnz dimension); WPE is better for large n
+    # (each warp independently covers one NNZ entry with no serial loop).
+    n = matrix_info.shape[1]
+    variant = 'ct' if n <= 64 else 'wpe'
+    kernel_name = f'binary_coomm.binary_coomm_{variant}{direction}{wt_sfx}{spk_suffix}'
+
+    def kernel(weights, row, col, B):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, row, col, B)
+
+    return kernel
+
+
 def _coomm_jvp_left(data_dot, data, row, col, B, *, shape, transpose, **kwargs):
     return [coomm(data_dot, row, col, B, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
@@ -1789,9 +1893,10 @@ binary_coomm : High-level user-facing function wrapper.
 binary_coomm_p.def_numba_kernel(_coomm_numba_kernel)
 binary_coomm_p.def_pallas_kernel('gpu', _coomm_pallas_gpu_kernel)
 binary_coomm_p.def_pallas_kernel('tpu', _coomm_pallas_tpu_kernel)
-binary_coomm_p.def_kernel('jax', 'cpu', _binary_coomm_jax_kernel)
-binary_coomm_p.def_kernel('jax', 'gpu', _binary_coomm_jax_kernel)
-binary_coomm_p.def_kernel('jax', 'tpu', _binary_coomm_jax_kernel)
+binary_coomm_p.def_tvmffi_kernel('gpu', _coomm_tvmffi_kernel)
+binary_coomm_p.def_kernel('jax_raw', 'cpu', _binary_coomm_jax_kernel)
+binary_coomm_p.def_kernel('jax_raw', 'gpu', _binary_coomm_jax_kernel)
+binary_coomm_p.def_kernel('jax_raw', 'tpu', _binary_coomm_jax_kernel)
 binary_coomm_p.def_kernel('cusparse', 'gpu', _binary_coomm_cusparse_kernel)
 binary_coomm_p.def_jvp_rule2(_coomm_jvp_left, None, None, _coomm_jvp_right)
 binary_coomm_p.def_transpose_rule(_coomm_transpose_rule)
