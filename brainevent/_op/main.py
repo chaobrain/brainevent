@@ -1093,6 +1093,7 @@ class XLACustomKernel:
         atol: float = 1e-3,
         verbose: bool = False,
         catch_errors: bool = True,
+        backends: Optional[List[str]] = None,
     ) -> BenchmarkResult:
         """Benchmark all registered backends across every configured data config.
 
@@ -1181,7 +1182,10 @@ class XLACustomKernel:
                 "Use def_benchmark_data() to register one before benchmarking."
             )
 
-        backends_to_test = self.available_backends(platform)
+        if backends is not None:
+            backends_to_test = backends
+        else:
+            backends_to_test = self.available_backends(platform)
         if not backends_to_test:
             raise ValueError(
                 f"No backends registered for platform '{platform}' in primitive '{self.name}'."
