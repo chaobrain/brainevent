@@ -171,18 +171,17 @@ def _dense_on_pre_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, *
     def kernel(weight_ref, spike_ref, trace_ref, out_w_ref):
         i_block = pl.program_id(0)
         col_start = i_block * block_dim
-        cols = col_start + jnp.arange(block_dim)
-        mask = cols < weight_info.shape[1]
-        safe_cols = jnp.where(mask, cols, col_start)
-        trace_block = trace_ref[safe_cols]
+        mask = col_start + jnp.arange(block_dim) < weight_info.shape[1]
+        trace_block = trace_ref[pl.ds(col_start, block_dim)]
+        trace_block = jnp.where(mask, trace_block, 0.0).astype(out_w_ref.dtype)
 
         def loop_fn(i, _):
             spike = spike_ref[i]
 
             @pl.when(spike if spike_info.dtype == jnp.bool_ else spike != 0.)
             def run():
-                row_val = out_w_ref[i, safe_cols]
-                out_w_ref[i, safe_cols] = row_val + trace_block
+                row_val = out_w_ref[i, pl.ds(col_start, block_dim)]
+                out_w_ref[i, pl.ds(col_start, block_dim)] = jnp.where(mask, row_val + trace_block, row_val)
 
         jax.lax.fori_loop(0, spike_ref.shape[0], loop_fn, None)
 
@@ -534,18 +533,17 @@ def _dense_on_post_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, 
     def kernel(weight_ref, trace_ref, spike_ref, out_w_ref):
         i_block = pl.program_id(0)
         row_start = i_block * block_dim
-        rows = row_start + jnp.arange(block_dim)
-        mask = rows < weight_info.shape[0]
-        safe_rows = jnp.where(mask, rows, row_start)
-        trace_block = trace_ref[safe_rows]
+        mask = row_start + jnp.arange(block_dim) < weight_info.shape[0]
+        trace_block = trace_ref[pl.ds(row_start, block_dim)]
+        trace_block = jnp.where(mask, trace_block, 0.0).astype(out_w_ref.dtype)
 
         def loop_fn(i, _):
             spike = spike_ref[i]
 
             @pl.when(spike if spike_info.dtype == jnp.bool_ else spike != 0.)
             def run():
-                col_val = out_w_ref[safe_rows, i]
-                out_w_ref[safe_rows, i] = col_val + trace_block
+                col_val = out_w_ref[pl.ds(row_start, block_dim), i]
+                out_w_ref[pl.ds(row_start, block_dim), i] = jnp.where(mask, col_val + trace_block, col_val)
 
         jax.lax.fori_loop(0, spike_ref.shape[0], loop_fn, None)
 
