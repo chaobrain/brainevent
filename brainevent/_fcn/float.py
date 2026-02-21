@@ -311,10 +311,9 @@ def _fcnmv_cuda_kernel(
 
     else:
         # Gather mode: y[i] = sum_k w[i,k] * v[idx[i,k]]
-        # vec4 only for float32 (uses float4 vectorized loads)
-        if sfx == '_f32' and n_conn % 4 == 0 and n_conn >= 128:
-            kernel_name = 'fcn_float.fcnmv_gather_vec4_f32'
-        elif n_conn <= 32:
+        # For f32: auto dispatch handles vec4/basic selection with optimal thresholds.
+        # For other dtypes: warp for small n_conn, auto for larger.
+        if n_conn <= 32:
             kernel_name = f'fcn_float.fcnmv_gather_warp{sfx}'
         else:
             kernel_name = f'fcn_float.fcnmv_gather_auto{sfx}'
