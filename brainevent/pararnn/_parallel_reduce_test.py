@@ -230,14 +230,7 @@ def _sequential_reduce_block2(jac, rhs):
 class TestCUDAReduceDiag:
     """Tests for CUDA diagonal parallel reduction."""
 
-    @pytest.mark.parametrize('T', [
-        1,
-        pytest.param(4, marks=pytest.mark.xfail(reason="Pre-existing CUDA kernel bug for T>1")),
-        pytest.param(16, marks=pytest.mark.xfail(reason="Pre-existing CUDA kernel bug for T>1")),
-        pytest.param(64, marks=pytest.mark.xfail(reason="Pre-existing CUDA kernel bug for T>1")),
-        pytest.param(256, marks=pytest.mark.xfail(reason="Pre-existing CUDA kernel bug for T>1")),
-        pytest.param(1024, marks=pytest.mark.xfail(reason="Pre-existing CUDA kernel bug for T>1")),
-    ])
+    @pytest.mark.parametrize('T', [1, 4, 16, 64, 256, 1024])
     def test_forward_matches_sequential(self, T):
         key = jr.PRNGKey(42)
         B, N = 2, 8
@@ -251,7 +244,6 @@ class TestCUDAReduceDiag:
         assert jnp.allclose(h_seq, h_cuda, atol=1e-4, rtol=1e-4), \
             f"T={T}, Max diff: {jnp.max(jnp.abs(h_seq - h_cuda))}"
 
-    @pytest.mark.xfail(reason="Pre-existing CUDA kernel bug for T>1")
     def test_matches_jax_native(self):
         """CUDA result should match JAX associative_scan result."""
         B, T, N = 4, 64, 16
@@ -266,13 +258,7 @@ class TestCUDAReduceDiag:
         assert jnp.allclose(h_jax, h_cuda, atol=1e-4, rtol=1e-4), \
             f"Max diff: {jnp.max(jnp.abs(h_jax - h_cuda))}"
 
-    @pytest.mark.parametrize('T', [
-        pytest.param(3, marks=pytest.mark.xfail(reason="Pre-existing CUDA kernel bug for T>1")),
-        pytest.param(7, marks=pytest.mark.xfail(reason="Pre-existing CUDA kernel bug for T>1")),
-        pytest.param(13, marks=pytest.mark.xfail(reason="Pre-existing CUDA kernel bug for T>1")),
-        pytest.param(33, marks=pytest.mark.xfail(reason="Pre-existing CUDA kernel bug for T>1")),
-        pytest.param(100, marks=pytest.mark.xfail(reason="Pre-existing CUDA kernel bug for T>1")),
-    ])
+    @pytest.mark.parametrize('T', [3, 7, 13, 33, 100])
     def test_non_power_of_2(self, T):
         """Test with sequence lengths that are not powers of 2."""
         B, N = 2, 8
@@ -296,7 +282,7 @@ class TestCUDAReduceDiag:
         h = parallel_reduce_diag(jac, rhs, backend='tvmffi')
         assert jnp.allclose(h, rhs)
 
-    @pytest.mark.xfail(reason="Pre-existing CUDA kernel bug for T>1")
+    @pytest.mark.xfail(reason="Multi-block path not implemented; T=4096 exceeds single-block capacity")
     def test_large_sequence(self):
         """Test with large T to exercise multi-block path."""
         B, T, N = 1, 4096, 8
@@ -315,13 +301,7 @@ class TestCUDAReduceDiag:
 class TestCUDAReduceBlock2:
     """Tests for CUDA 2x2 block-diagonal parallel reduction."""
 
-    @pytest.mark.parametrize('T', [
-        1,
-        pytest.param(4, marks=pytest.mark.xfail(reason="Pre-existing CUDA kernel bug for T>1")),
-        pytest.param(16, marks=pytest.mark.xfail(reason="Pre-existing CUDA kernel bug for T>1")),
-        pytest.param(64, marks=pytest.mark.xfail(reason="Pre-existing CUDA kernel bug for T>1")),
-        pytest.param(256, marks=pytest.mark.xfail(reason="Pre-existing CUDA kernel bug for T>1")),
-    ])
+    @pytest.mark.parametrize('T', [1, 4, 16, 64, 256])
     def test_forward_matches_sequential(self, T):
         key = jr.PRNGKey(42)
         B, N, K = 2, 4, 2
@@ -335,7 +315,6 @@ class TestCUDAReduceBlock2:
         assert jnp.allclose(h_seq, h_cuda, atol=1e-4, rtol=1e-4), \
             f"T={T}, Max diff: {jnp.max(jnp.abs(h_seq - h_cuda))}"
 
-    @pytest.mark.xfail(reason="Pre-existing CUDA kernel bug for T>1")
     def test_matches_jax_native(self):
         """CUDA result should match JAX associative_scan result."""
         B, T, N, K = 2, 32, 8, 2
@@ -350,12 +329,7 @@ class TestCUDAReduceBlock2:
         assert jnp.allclose(h_jax, h_cuda, atol=1e-4, rtol=1e-4), \
             f"Max diff: {jnp.max(jnp.abs(h_jax - h_cuda))}"
 
-    @pytest.mark.parametrize('T', [
-        pytest.param(3, marks=pytest.mark.xfail(reason="Pre-existing CUDA kernel bug for T>1")),
-        pytest.param(7, marks=pytest.mark.xfail(reason="Pre-existing CUDA kernel bug for T>1")),
-        pytest.param(15, marks=pytest.mark.xfail(reason="Pre-existing CUDA kernel bug for T>1")),
-        pytest.param(33, marks=pytest.mark.xfail(reason="Pre-existing CUDA kernel bug for T>1")),
-    ])
+    @pytest.mark.parametrize('T', [3, 7, 15, 33])
     def test_non_power_of_2(self, T):
         """Test with sequence lengths that are not powers of 2."""
         B, N, K = 2, 4, 2
@@ -370,7 +344,7 @@ class TestCUDAReduceBlock2:
         assert jnp.allclose(h_seq, h_cuda, atol=1e-4, rtol=1e-4), \
             f"T={T}, Max diff: {jnp.max(jnp.abs(h_seq - h_cuda))}"
 
-    @pytest.mark.xfail(reason="Pre-existing CUDA kernel bug for T>1")
+    @pytest.mark.xfail(reason="Multi-block path not implemented; T=2048 exceeds single-block capacity")
     def test_large_sequence(self):
         """Test with large T to exercise multi-block path."""
         B, T, N, K = 1, 2048, 4, 2

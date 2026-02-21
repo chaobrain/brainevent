@@ -23,8 +23,8 @@
  * where J[t] is a 2x2 matrix and h[t], rhs[t] are 2-vectors, per (batch, block_dim).
  * Used for LSTM-CIFG which has block-diagonal [c, h] Jacobians.
  *
- * Monoid: (J_b, r_b) ⊗ (J_a, r_a) = (J_b @ J_a, J_b @ r_a + r_b)
- *   where @ is 2x2 matrix multiplication.
+ * Monoid: (J_b, r_b) @ (J_a, r_a) = (J_b @ J_a, J_b @ r_a + r_b)
+ * Identity: (I, 0) where I is the 2x2 identity matrix
  *
  * Data layout:
  *   jac: (batch_size, seq_len, block_dim, 2, 2) contiguous
@@ -110,39 +110,39 @@ _pararnn_reduce_block2_single##SUFFIX(                                         \
             rr0[c] = rhs_in[ro + 0]; rr1[c] = rhs_in[ro + 1];                \
             num_valid++;                                                       \
         } else {                                                               \
-            /* Neutral: J = -I, rhs = 0 */                                     \
-            rj00[c] = (SCALAR_T)(-1.0); rj01[c] = (SCALAR_T)(0.0);           \
-            rj10[c] = (SCALAR_T)(0.0);  rj11[c] = (SCALAR_T)(-1.0);          \
-            rr0[c] = (SCALAR_T)(0.0);   rr1[c] = (SCALAR_T)(0.0);            \
+            /* Identity: J = I, rhs = 0 */                                     \
+            rj00[c] = (SCALAR_T)(1.0); rj01[c] = (SCALAR_T)(0.0);            \
+            rj10[c] = (SCALAR_T)(0.0); rj11[c] = (SCALAR_T)(1.0);            \
+            rr0[c] = (SCALAR_T)(0.0);  rr1[c] = (SCALAR_T)(0.0);             \
         }                                                                      \
     }                                                                          \
-    /* Zero first Jacobian */                                                  \
+    /* Zero first Jacobian (boundary: h[-1] = 0) */                            \
     if (tid == 0) {                                                            \
         rj00[0] = (SCALAR_T)(0.0); rj01[0] = (SCALAR_T)(0.0);                \
         rj10[0] = (SCALAR_T)(0.0); rj11[0] = (SCALAR_T)(0.0);                \
     }                                                                          \
                                                                                \
     /* ============================================================== */       \
-    /* Step 1: Thomas reduction within chunk                          */       \
-    /* reduceEqs: rhs -= J @ rhsPrev; J = -(J @ Jprev)               */       \
+    /* Step 1: Sequential prefix scan within chunk                    */       \
+    /* Monoid: (J_b @ J_a, J_b @ r_a + r_b)                          */       \
     /* ============================================================== */       \
     for (int c = 1; c < CHUNK_SIZE; c++) {                                     \
-        /* rhs[c] -= J[c] @ rhs[c-1] */                                       \
+        /* rhs[c] += J[c] @ rhs[c-1] */                                       \
         SCALAR_T mv0, mv1;                                                     \
         MAT2_VEC(rj00[c],rj01[c],rj10[c],rj11[c],                            \
                  rr0[c-1],rr1[c-1], mv0,mv1);                                 \
-        rr0[c] -= mv0; rr1[c] -= mv1;                                         \
-        /* J[c] = -(J[c] @ J[c-1]) */                                         \
+        rr0[c] += mv0; rr1[c] += mv1;                                         \
+        /* J[c] = J[c] @ J[c-1] */                                            \
         SCALAR_T m00,m01,m10,m11;                                              \
         MAT2_MUL(rj00[c],rj01[c],rj10[c],rj11[c],                            \
                  rj00[c-1],rj01[c-1],rj10[c-1],rj11[c-1],                    \
                  m00,m01,m10,m11);                                             \
-        rj00[c] = -m00; rj01[c] = -m01;                                       \
-        rj10[c] = -m10; rj11[c] = -m11;                                       \
+        rj00[c] = m00; rj01[c] = m01;                                         \
+        rj10[c] = m10; rj11[c] = m11;                                         \
     }                                                                          \
                                                                                \
     /* ============================================================== */       \
-    /* Step 2: Warp-level PCR for last element of each chunk          */       \
+    /* Step 2: Warp-level prefix scan for last element of each chunk  */       \
     /* ============================================================== */       \
     int lc = CHUNK_SIZE - 1;                                                   \
     for (int d = 1; d < THREADS_PER_WARP; d <<= 1) {                          \
@@ -154,23 +154,23 @@ _pararnn_reduce_block2_single##SUFFIX(                                         \
         SCALAR_T pr0  = __shfl_up_sync(0xffffffff, rr0[lc], d);               \
         SCALAR_T pr1  = __shfl_up_sync(0xffffffff, rr1[lc], d);               \
         if (lane >= d) {                                                       \
-            /* rhs -= J @ prev_rhs */                                          \
+            /* rhs += J @ prev_rhs */                                          \
             SCALAR_T mv0, mv1;                                                 \
             MAT2_VEC(rj00[lc],rj01[lc],rj10[lc],rj11[lc],                    \
                      pr0,pr1, mv0,mv1);                                        \
-            rr0[lc] -= mv0; rr1[lc] -= mv1;                                   \
-            /* J = -(J @ prev_J) */                                            \
+            rr0[lc] += mv0; rr1[lc] += mv1;                                   \
+            /* J = J @ prev_J */                                               \
             SCALAR_T m00,m01,m10,m11;                                          \
             MAT2_MUL(rj00[lc],rj01[lc],rj10[lc],rj11[lc],                    \
                      pj00,pj01,pj10,pj11, m00,m01,m10,m11);                   \
-            rj00[lc] = -m00; rj01[lc] = -m01;                                 \
-            rj10[lc] = -m10; rj11[lc] = -m11;                                 \
+            rj00[lc] = m00; rj01[lc] = m01;                                   \
+            rj10[lc] = m10; rj11[lc] = m11;                                   \
         }                                                                      \
     }                                                                          \
                                                                                \
     /* ============================================================== */       \
-    /* Step 3: Block-level PCR via shared memory                      */       \
-    /* Each warp's last thread writes to shared, then PCR across      */       \
+    /* Step 3: Block-level prefix scan via shared memory               */       \
+    /* Each warp's last thread writes to shared, then prefix across   */       \
     /* ============================================================== */       \
     extern __shared__ char _smem_bytes[];                                       \
     /* shared: warps_per_block * (4 jac scalars + 2 rhs scalars) */            \
@@ -192,17 +192,17 @@ _pararnn_reduce_block2_single##SUFFIX(                                         \
             SCALAR_T pj00_ = smem[poff+0], pj01_ = smem[poff+1];              \
             SCALAR_T pj10_ = smem[poff+2], pj11_ = smem[poff+3];              \
             SCALAR_T pr0_ = smem[poff+4], pr1_ = smem[poff+5];                \
-            /* rhs -= J @ prev_rhs */                                          \
+            /* rhs += J @ prev_rhs */                                          \
             SCALAR_T mv0, mv1;                                                 \
             MAT2_VEC(rj00[lc],rj01[lc],rj10[lc],rj11[lc],                    \
                      pr0_,pr1_, mv0,mv1);                                      \
-            rr0[lc] -= mv0; rr1[lc] -= mv1;                                   \
-            /* J = -(J @ prev_J) */                                            \
+            rr0[lc] += mv0; rr1[lc] += mv1;                                   \
+            /* J = J @ prev_J */                                               \
             SCALAR_T m00,m01,m10,m11;                                          \
             MAT2_MUL(rj00[lc],rj01[lc],rj10[lc],rj11[lc],                    \
                      pj00_,pj01_,pj10_,pj11_, m00,m01,m10,m11);               \
-            rj00[lc] = -m00; rj01[lc] = -m01;                                 \
-            rj10[lc] = -m10; rj11[lc] = -m11;                                 \
+            rj00[lc] = m00; rj01[lc] = m01;                                   \
+            rj10[lc] = m10; rj11[lc] = m11;                                   \
         }                                                                      \
         __syncthreads();                                                       \
         if (lane == (THREADS_PER_WARP - 1) && num_valid > 0) {                 \
@@ -224,21 +224,22 @@ _pararnn_reduce_block2_single##SUFFIX(                                         \
         sp_j10 = smem[poff+2]; sp_j11 = smem[poff+3];                         \
         sp_r0  = smem[poff+4]; sp_r1  = smem[poff+5];                         \
     } else {                                                                   \
-        sp_j00 = (SCALAR_T)(-1.0); sp_j01 = (SCALAR_T)(0.0);                 \
-        sp_j10 = (SCALAR_T)(0.0);  sp_j11 = (SCALAR_T)(-1.0);                \
-        sp_r0  = (SCALAR_T)(0.0);  sp_r1  = (SCALAR_T)(0.0);                 \
+        /* Identity: J = I, rhs = 0 */                                         \
+        sp_j00 = (SCALAR_T)(1.0); sp_j01 = (SCALAR_T)(0.0);                  \
+        sp_j10 = (SCALAR_T)(0.0); sp_j11 = (SCALAR_T)(1.0);                  \
+        sp_r0  = (SCALAR_T)(0.0); sp_r1  = (SCALAR_T)(0.0);                  \
     }                                                                          \
     /* Reduce last chunk element using previous warp solution */                \
     {                                                                          \
         SCALAR_T mv0, mv1;                                                     \
         MAT2_VEC(rj00[lc],rj01[lc],rj10[lc],rj11[lc],                        \
                  sp_r0,sp_r1, mv0,mv1);                                        \
-        rr0[lc] -= mv0; rr1[lc] -= mv1;                                       \
+        rr0[lc] += mv0; rr1[lc] += mv1;                                       \
         SCALAR_T m00,m01,m10,m11;                                              \
         MAT2_MUL(rj00[lc],rj01[lc],rj10[lc],rj11[lc],                        \
                  sp_j00,sp_j01,sp_j10,sp_j11, m00,m01,m10,m11);               \
-        rj00[lc] = -m00; rj01[lc] = -m01;                                     \
-        rj10[lc] = -m10; rj11[lc] = -m11;                                     \
+        rj00[lc] = m00; rj01[lc] = m01;                                       \
+        rj10[lc] = m10; rj11[lc] = m11;                                       \
     }                                                                          \
     /* Shuffle to get previous thread's last solution */                        \
     {                                                                          \
@@ -262,12 +263,7 @@ _pararnn_reduce_block2_single##SUFFIX(                                         \
         SCALAR_T mv0, mv1;                                                     \
         MAT2_VEC(rj00[c],rj01[c],rj10[c],rj11[c],                            \
                  sp_r0,sp_r1, mv0,mv1);                                        \
-        rr0[c] -= mv0; rr1[c] -= mv1;                                         \
-        SCALAR_T m00,m01,m10,m11;                                              \
-        MAT2_MUL(rj00[c],rj01[c],rj10[c],rj11[c],                            \
-                 sp_j00,sp_j01,sp_j10,sp_j11, m00,m01,m10,m11);               \
-        rj00[c] = -m00; rj01[c] = -m01;                                       \
-        rj10[c] = -m10; rj11[c] = -m11;                                       \
+        rr0[c] += mv0; rr1[c] += mv1;                                         \
     }                                                                          \
                                                                                \
     /* Write output */                                                         \
