@@ -123,7 +123,7 @@ parallel_reduce_diag_p = XLACustomKernel('pararnn_reduce_diag')
 parallel_reduce_diag_p.def_kernel('jax_raw', 'cpu', _reduce_diag_jax_kernel)
 parallel_reduce_diag_p.def_kernel('jax_raw', 'gpu', _reduce_diag_jax_kernel)
 parallel_reduce_diag_p.def_kernel('jax_raw', 'tpu', _reduce_diag_jax_kernel)
-parallel_reduce_diag_p.def_tvmffi_kernel('gpu', _reduce_diag_cuda_kernel)
+parallel_reduce_diag_p.def_tvmffi_kernel('gpu', _reduce_diag_cuda_kernel, asdefault=True)
 parallel_reduce_diag_p.def_tags('pararnn', 'reduce')
 
 
@@ -156,7 +156,7 @@ parallel_reduce_block_diag_p = XLACustomKernel('pararnn_reduce_block_diag')
 parallel_reduce_block_diag_p.def_kernel('jax_raw', 'cpu', _reduce_block_diag_jax_kernel)
 parallel_reduce_block_diag_p.def_kernel('jax_raw', 'gpu', _reduce_block_diag_jax_kernel)
 parallel_reduce_block_diag_p.def_kernel('jax_raw', 'tpu', _reduce_block_diag_jax_kernel)
-parallel_reduce_block_diag_p.def_tvmffi_kernel('gpu', _reduce_block_diag_cuda_kernel)
+parallel_reduce_block_diag_p.def_tvmffi_kernel('gpu', _reduce_block_diag_cuda_kernel, asdefault=True)
 parallel_reduce_block_diag_p.def_tags('pararnn', 'reduce')
 
 

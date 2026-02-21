@@ -276,10 +276,16 @@ if __name__ == '__main__':
 
     # benchmark_parallel_reduce()
     benchmark_gru(
-        batch_sizes=(8, 16, 32, 64),
-        hidden_dims=(128, 256, 512, 1024),
+        # batch_sizes=(8, 16, 32, 64),
+        # hidden_dims=(128, 256, 512, 1024),
+        batch_sizes=(64,),
+        seq_lengths=(1024, 2048,),
+        hidden_dims=(1024,),
     )
     benchmark_lstm(
-        batch_sizes=(8, 16, 32, 64),
-        hidden_dims=(128, 256, 512, 1024),
+        # batch_sizes=(8, 16, 32, 64),
+        # hidden_dims=(128, 256, 512, 1024),
+        batch_sizes=(64,),
+        seq_lengths=(1024, 2048,),
+        hidden_dims=(1024,),
     )

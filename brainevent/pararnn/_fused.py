@@ -352,7 +352,7 @@ fused_gru_diag_fwd_p = XLACustomKernel('fused_gru_diag_fwd')
 fused_gru_diag_fwd_p.def_kernel('jax_raw', 'cpu', _fused_gru_fwd_jax_kernel)
 fused_gru_diag_fwd_p.def_kernel('jax_raw', 'gpu', _fused_gru_fwd_jax_kernel)
 fused_gru_diag_fwd_p.def_kernel('jax_raw', 'tpu', _fused_gru_fwd_jax_kernel)
-fused_gru_diag_fwd_p.def_tvmffi_kernel('gpu', _fused_gru_fwd_cuda_kernel)
+fused_gru_diag_fwd_p.def_tvmffi_kernel('gpu', _fused_gru_fwd_cuda_kernel, asdefault=True)
 fused_gru_diag_fwd_p.def_tags('pararnn', 'fused')
 
 
@@ -424,7 +424,7 @@ fused_gru_diag_bwd_p = XLACustomKernel('fused_gru_diag_bwd')
 fused_gru_diag_bwd_p.def_kernel('jax_raw', 'cpu', _fused_gru_bwd_jax_kernel)
 fused_gru_diag_bwd_p.def_kernel('jax_raw', 'gpu', _fused_gru_bwd_jax_kernel)
 fused_gru_diag_bwd_p.def_kernel('jax_raw', 'tpu', _fused_gru_bwd_jax_kernel)
-fused_gru_diag_bwd_p.def_tvmffi_kernel('gpu', _fused_gru_bwd_cuda_kernel)
+fused_gru_diag_bwd_p.def_tvmffi_kernel('gpu', _fused_gru_bwd_cuda_kernel, asdefault=True)
 fused_gru_diag_bwd_p.def_tags('pararnn', 'fused')
 
 
@@ -519,7 +519,7 @@ fused_lstm_cifg_diag_fwd_p = XLACustomKernel('fused_lstm_cifg_diag_fwd')
 fused_lstm_cifg_diag_fwd_p.def_kernel('jax_raw', 'cpu', _fused_lstm_fwd_jax_kernel)
 fused_lstm_cifg_diag_fwd_p.def_kernel('jax_raw', 'gpu', _fused_lstm_fwd_jax_kernel)
 fused_lstm_cifg_diag_fwd_p.def_kernel('jax_raw', 'tpu', _fused_lstm_fwd_jax_kernel)
-fused_lstm_cifg_diag_fwd_p.def_tvmffi_kernel('gpu', _fused_lstm_fwd_cuda_kernel)
+fused_lstm_cifg_diag_fwd_p.def_tvmffi_kernel('gpu', _fused_lstm_fwd_cuda_kernel, asdefault=True)
 fused_lstm_cifg_diag_fwd_p.def_tags('pararnn', 'fused')
 
 
@@ -605,7 +605,7 @@ fused_lstm_cifg_diag_bwd_p = XLACustomKernel('fused_lstm_cifg_diag_bwd')
 fused_lstm_cifg_diag_bwd_p.def_kernel('jax_raw', 'cpu', _fused_lstm_bwd_jax_kernel)
 fused_lstm_cifg_diag_bwd_p.def_kernel('jax_raw', 'gpu', _fused_lstm_bwd_jax_kernel)
 fused_lstm_cifg_diag_bwd_p.def_kernel('jax_raw', 'tpu', _fused_lstm_bwd_jax_kernel)
-fused_lstm_cifg_diag_bwd_p.def_tvmffi_kernel('gpu', _fused_lstm_bwd_cuda_kernel)
+fused_lstm_cifg_diag_bwd_p.def_tvmffi_kernel('gpu', _fused_lstm_bwd_cuda_kernel, asdefault=True)
 fused_lstm_cifg_diag_bwd_p.def_tags('pararnn', 'fused')
 
 
