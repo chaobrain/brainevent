@@ -25,13 +25,10 @@ system is solved (in reversed time) to propagate gradients, avoiding
 differentiation through Newton iterations.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable
 
 import jax
-import jax.numpy as jnp
 
 __all__ = ['NewtonConfig', 'newton_solve']
 

@@ -33,9 +33,6 @@ Parameters A, B, b are stored in collated form:
 - b: shape ``(3, state_dim)`` — biases for [z, r, h]
 """
 
-from __future__ import annotations
-
-import math
 from typing import Optional
 
 import brainstate
@@ -158,13 +155,13 @@ class GRUDiagMHImpl(BaseRNNCell):
     @staticmethod
     def backprop_post_process(grad_y, x, h, A, B, b, *rest):
         return (
-            grad_y,              # grad_h
-            jnp.zeros_like(x),   # grad_x
-            jnp.zeros_like(A),   # grad_A
-            jnp.zeros_like(B),   # grad_B
-            jnp.zeros_like(b),   # grad_b
-            None, None, None,    # nonlin fns (not differentiable)
-            None, None, None,    # deriv fns
+            grad_y,  # grad_h
+            jnp.zeros_like(x),  # grad_x
+            jnp.zeros_like(A),  # grad_A
+            jnp.zeros_like(B),  # grad_B
+            jnp.zeros_like(b),  # grad_b
+            None, None, None,  # nonlin fns (not differentiable)
+            None, None, None,  # deriv fns
         )
 
     @staticmethod
@@ -214,8 +211,8 @@ class GRUDiagMHImpl(BaseRNNCell):
         return (
             grad_x,
             grad_A, grad_B, grad_b,
-            None, None, None,    # nonlin fns
-            None, None, None,    # deriv fns
+            None, None, None,  # nonlin fns
+            None, None, None,  # deriv fns
         )
 
     @staticmethod

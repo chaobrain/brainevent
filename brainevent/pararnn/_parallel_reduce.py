@@ -28,8 +28,6 @@ Three Jacobian structures are supported:
 - **Block-diagonal 3x3**: jac is (B, T, N, 3, 3), batched 3x3 matmul.
 """
 
-from __future__ import annotations
-
 import jax
 import jax.numpy as jnp
 

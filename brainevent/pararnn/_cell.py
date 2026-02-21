@@ -32,20 +32,13 @@ All params are split into array params (differentiable) and static params
 (callables like nonlinearities) to work correctly with ``jax.custom_vjp``.
 """
 
-from __future__ import annotations
-
 import abc
 from enum import Enum
-from typing import Tuple
 
 import jax
 import jax.numpy as jnp
 
 from ._newton import NewtonConfig, newton_solve
-from ._parallel_reduce import (
-    parallel_reduce_diag,
-    parallel_reduce_block_diag,
-)
 
 __all__ = ['BaseRNNCell', 'ApplicationMode', 'apply_rnn']
 
@@ -178,6 +171,7 @@ def _apply_sequential(cell_cls, x, state_dim, array_params, static_params):
 def _apply_parallel(cell_cls, x, state_dim, newton_config,
                     array_params, static_params):
     """Parallel RNN via Newton + associative_scan with custom_vjp."""
+
     # static_params are closed over, not passed through custom_vjp
 
     @jax.custom_vjp

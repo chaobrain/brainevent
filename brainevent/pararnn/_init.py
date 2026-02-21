@@ -20,8 +20,6 @@ Each initializer takes a JAX PRNG key, shape, and fan_in/fan_out dimensions,
 and returns a JAX array with the initialized weights.
 """
 
-from __future__ import annotations
-
 import math
 from typing import Callable, Dict, Optional, Tuple
 

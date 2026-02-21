@@ -37,10 +37,7 @@ Jacobians. Parameters:
 - b: shape ``(3, state_dim)`` — biases for [f, o, c]
 """
 
-from __future__ import annotations
-
-import math
-from typing import Optional, Tuple
+from typing import Optional
 
 import brainstate
 import jax

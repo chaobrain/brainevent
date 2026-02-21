@@ -21,8 +21,6 @@ is computed analytically (not via AD) because it is needed for Jacobian assembly
 in the Newton solver, where we want explicit control over the computation.
 """
 
-from __future__ import annotations
-
 from typing import Callable, Dict, Tuple
 
 import jax

@@ -20,11 +20,11 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-from brainevent.pararnn._lstm import LSTMCIFGDiagMH, LSTMCIFGDiagMHImpl
 from brainevent.pararnn._cell import apply_rnn
+from brainevent.pararnn._init import INITIALIZERS
+from brainevent.pararnn._lstm import LSTMCIFGDiagMH, LSTMCIFGDiagMHImpl
 from brainevent.pararnn._newton import NewtonConfig
 from brainevent.pararnn._nonlinearities import get_nonlinearity
-from brainevent.pararnn._init import INITIALIZERS
 
 
 def _make_lstm_params(key, input_dim=8, state_dim=16, num_heads=2):
