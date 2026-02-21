@@ -18,9 +18,9 @@ Performance benchmarks for parallel RNN training modes.
 
 Compares:
 - Sequential (jax.lax.scan)
-- Parallel (jax.lax.associative_scan)
-- CUDA parallel reduction (TVM FFI)
-- Fused CUDA (TVM FFI)
+- Parallel (jax.lax.associative_scan via jax_raw)
+- CUDA parallel reduction (tvmffi)
+- Fused CUDA (tvmffi)
 
 Usage:
     python brainevent/pararnn/_benchmark.py
@@ -41,13 +41,7 @@ import jax.random as jr
 
 from brainevent.pararnn._gru import GRUDiagMH
 from brainevent.pararnn._lstm import LSTMCIFGDiagMH
-from brainevent.pararnn._parallel_reduce import parallel_reduce_diag, parallel_reduce_block_diag
-from brainevent.pararnn._fused_cuda import fused_cuda_available
-from brainevent.pararnn._parallel_reduce_cuda import (
-    parallel_reduce_diag_cuda,
-    parallel_reduce_block2_cuda,
-    cuda_available,
-)
+from brainevent.pararnn._parallel_reduce import parallel_reduce_diag, parallel_reduce_diag_p, parallel_reduce_block_diag
 
 
 def _time_fn(fn, x, n_warmup=5, n_runs=20):
@@ -97,19 +91,13 @@ def benchmark_gru(
     seq_lengths=(64, 256, 1024),
     hidden_dims=(32, 128),
     input_dim=32,
-    num_heads=2
+    num_heads=2,
+    modes=('parallel', 'fused')
 ):
     """Benchmark GRU across modes."""
     print("=" * 80)
     print("GRU Benchmark")
     print("=" * 80)
-
-    modes = ['sequential', 'parallel']
-    modes = ['parallel']
-
-    # Check for fused CUDA
-    if fused_cuda_available():
-        modes.append('fused')
 
     header = f"{'B':>4} {'T':>6} {'N':>5} | "
     header += " | ".join(f"{m:>12}" for m in modes)
@@ -160,17 +148,12 @@ def benchmark_lstm(
     hidden_dims=(32, 128),
     input_dim=32,
     num_heads=2,
+    modes=('parallel', 'fused')
 ):
     """Benchmark LSTM-CIFG across modes."""
     print("=" * 80)
     print("LSTM-CIFG Benchmark")
     print("=" * 80)
-
-    modes = ['sequential', 'parallel']
-    modes = ['parallel']
-
-    if fused_cuda_available():
-        modes.append('fused')
 
     header = f"{'B':>4} {'T':>6} {'N':>5} | "
     header += " | ".join(f"{m:>12}" for m in modes)
@@ -221,7 +204,7 @@ def benchmark_parallel_reduce():
     print("Standalone Parallel Reduction Benchmark")
     print("=" * 80)
 
-    has_cuda = cuda_available()
+    has_cuda = 'tvmffi' in parallel_reduce_diag_p.available_backends('gpu')
 
     print("\nDiagonal reduction:")
     print(f"{'B':>4} {'T':>6} {'N':>5} | {'JAX':>12} | {'CUDA':>12}")
@@ -235,18 +218,16 @@ def benchmark_parallel_reduce():
                 jac = jr.normal(k1, (B, T, N)) * 0.5
                 rhs = jr.normal(k2, (B, T, N))
 
-                fn_jax = jax.jit(parallel_reduce_diag)
-                _, avg_jax = _time_fn(
-                    lambda x: fn_jax(jac, x), rhs,
-                    n_warmup=3, n_runs=10,
+                fn_jax = jax.jit(
+                    lambda r: parallel_reduce_diag(jac, r, backend='jax_raw')
                 )
+                _, avg_jax = _time_fn(fn_jax, rhs, n_warmup=3, n_runs=10)
 
                 if has_cuda:
-                    fn_cuda = jax.jit(parallel_reduce_diag_cuda)
-                    _, avg_cuda = _time_fn(
-                        lambda x: fn_cuda(jac, x), rhs,
-                        n_warmup=3, n_runs=10,
+                    fn_cuda = jax.jit(
+                        lambda r: parallel_reduce_diag(jac, r, backend='tvmffi')
                     )
+                    _, avg_cuda = _time_fn(fn_cuda, rhs, n_warmup=3, n_runs=10)
                     cuda_str = f"{avg_cuda:8.2f}ms"
                 else:
                     cuda_str = "N/A"
@@ -266,17 +247,19 @@ def benchmark_parallel_reduce():
                     jac = jr.normal(k1, (B, T, N, 2, 2)) * 0.3
                     rhs = jr.normal(k2, (B, T, N, 2))
 
-                    fn_jax = jax.jit(parallel_reduce_block_diag)
-                    _, avg_jax = _time_fn(
-                        lambda x: fn_jax(jac, x), rhs,
-                        n_warmup=3, n_runs=10,
+                    fn_jax = jax.jit(
+                        lambda r: parallel_reduce_block_diag(
+                            jac, r, backend='jax_raw'
+                        )
                     )
+                    _, avg_jax = _time_fn(fn_jax, rhs, n_warmup=3, n_runs=10)
 
-                    fn_cuda = jax.jit(parallel_reduce_block2_cuda)
-                    _, avg_cuda = _time_fn(
-                        lambda x: fn_cuda(jac, x), rhs,
-                        n_warmup=3, n_runs=10,
+                    fn_cuda = jax.jit(
+                        lambda r: parallel_reduce_block_diag(
+                            jac, r, backend='tvmffi'
+                        )
                     )
+                    _, avg_cuda = _time_fn(fn_cuda, rhs, n_warmup=3, n_runs=10)
 
                     print(
                         f"{B:>4} {T:>6} {N:>5} | "

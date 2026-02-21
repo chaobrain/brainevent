@@ -41,6 +41,7 @@ import jax.numpy as jnp
 import jax.random as jr
 
 from ._cell import BaseRNNCell, apply_rnn, _roll_state
+from ._fused import fused_gru_diag_forward, fused_gru_diag_backward
 from ._init import INITIALIZERS
 from ._newton import NewtonConfig
 from ._nonlinearities import get_nonlinearity
@@ -331,7 +332,6 @@ class GRUDiagMH(brainstate.nn.Module):
         Backward pass uses fused backward kernel for dl/dh, followed by
         Python-side parameter gradient computation.
         """
-        from ._fused_cuda import fused_gru_diag_forward, fused_gru_diag_backward
 
         A = self.A.value
         B = self.B.value

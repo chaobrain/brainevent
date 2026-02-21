@@ -33,15 +33,6 @@ _has_gpu = any(d.platform == 'gpu' for d in jax.devices())
 if not _has_gpu:
     pytest.skip("No GPU available", allow_module_level=True)
 
-try:
-    from brainevent.pararnn._fused_cuda import fused_cuda_available
-    _has_fused = fused_cuda_available()
-except Exception:
-    _has_fused = False
-
-if not _has_fused:
-    pytest.skip("Fused CUDA kernels not available", allow_module_level=True)
-
 
 class TestFusedGRU:
     """Tests for fused GRU CUDA forward pass."""
