@@ -212,7 +212,7 @@ def benchmark_function(
     output = None
     for _ in range(n_warmup):
         output = fn()
-        jax.block_until_ready(output)
+    jax.block_until_ready(output)
 
     if batch_mode:
         # Batch mode: run all n_runs, then block once at the end

@@ -16,15 +16,15 @@
 # -*- coding: utf-8 -*-
 
 
-from typing import Union, Tuple, Optional
+from typing import Union, Tuple, Optional, Dict
 
 import brainunit as u
 import jax
 import numpy as np
 
 from brainevent._compatible_import import Tracer
+from brainevent._data import JITCMatrix
 from brainevent._event.binary import BinaryArray
-from brainevent._jitc_matrix import JITCMatrix
 from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
 from .binary import binary_jitumv, binary_jitumm
 from .float import jitu, jitumv, jitumm
@@ -35,7 +35,7 @@ __all__ = [
 ]
 
 
-class JITUniformMatrix(JITCMatrix):
+class JITCUniformMatrix(JITCMatrix):
     """
     Base class for Just-In-Time Connectivity Uniform Distribution matrices.
 
@@ -136,6 +136,7 @@ class JITUniformMatrix(JITCMatrix):
         shape: MatrixShape,
         corder: bool = False,
         backend: Optional[str] = None,
+        buffers: Optional[Dict] = None,
     ):
         """
         Initialize a uniform distribution sparse matrix.
@@ -194,7 +195,7 @@ class JITUniformMatrix(JITCMatrix):
         self.whigh = u.math.asarray(high)
         self.corder = corder
         self.backend = backend
-        super().__init__(data, shape=shape)
+        super().__init__(data, shape=shape, buffers=buffers)
 
     def __repr__(self):
         """
@@ -208,7 +209,7 @@ class JITUniformMatrix(JITCMatrix):
 
         Examples
         --------
-        >>> matrix = JITUniformMatrix((0.1, 0.5, 0.2, 42), shape=(10, 10))
+        >>> matrix = JITCUniformMatrix((0.1, 0.5, 0.2, 42), shape=(10, 10))
         >>> repr(matrix)
         'JITUniformMatrix(shape=(10, 10), wlow=0.1, whigh=0.5, prob=0.2, seed=42, corder=False)'
         """
@@ -282,7 +283,7 @@ class JITUniformMatrix(JITCMatrix):
 
         Returns
         -------
-        JITUniformMatrix
+        JITCUniformMatrix
             A new matrix instance of the same type as the original, with updated
             lower and upper bounds but identical connectivity structure.
 
@@ -320,6 +321,7 @@ class JITUniformMatrix(JITCMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
+            buffers=self.buffers,
         )
 
     def tree_flatten(self):
@@ -339,7 +341,7 @@ class JITUniformMatrix(JITCMatrix):
         for transformations such as ``jax.jit``, ``jax.grad``, and ``jax.vmap``.
         """
         aux = {'shape': self.shape, 'corder': self.corder, 'backend': self.backend}
-        return (self.wlow, self.whigh, self.prob, self.seed), aux
+        return (self.wlow, self.whigh, self.prob, self.seed), (aux, self.buffers)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
@@ -355,7 +357,7 @@ class JITUniformMatrix(JITCMatrix):
 
         Returns
         -------
-        JITUniformMatrix
+        JITCUniformMatrix
             A reconstructed matrix instance.
 
         Notes
@@ -366,7 +368,11 @@ class JITUniformMatrix(JITCMatrix):
         """
         obj = object.__new__(cls)
         obj.wlow, obj.whigh, obj.prob, obj.seed = children
+        aux_data, buffer = aux_data
+        obj._buffer_registry = set(buffer.keys())
         for k, v in aux_data.items():
+            setattr(obj, k, v)
+        for k, v in buffer.items():
             setattr(obj, k, v)
         return obj
 
@@ -376,7 +382,7 @@ class JITUniformMatrix(JITCMatrix):
 
         Parameters
         ----------
-        other : JITUniformMatrix
+        other : JITCUniformMatrix
             The other matrix to check compatibility with.
         op : str
             Name of the binary operation being performed, used in error messages.
@@ -409,7 +415,7 @@ class JITUniformMatrix(JITCMatrix):
 
 
 @jax.tree_util.register_pytree_node_class
-class JITCUniformR(JITUniformMatrix):
+class JITCUniformR(JITCUniformMatrix):
     """
     Just-In-Time Connectivity matrix with Row-oriented representation for uniform weight distributions.
 
@@ -639,6 +645,7 @@ class JITCUniformR(JITUniformMatrix):
             shape=(self.shape[1], self.shape[0]),
             corder=not self.corder,
             backend=self.backend,
+            buffers=self.buffers,
         )
 
     def _new_mat(self, wlow, whigh, prob=None, seed=None):
@@ -671,6 +678,7 @@ class JITCUniformR(JITUniformMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
+            buffers=self.buffers,
         )
 
     def _unitary_op(self, op) -> 'JITCUniformR':
@@ -976,7 +984,7 @@ class JITCUniformR(JITUniformMatrix):
 
 
 @jax.tree_util.register_pytree_node_class
-class JITCUniformC(JITUniformMatrix):
+class JITCUniformC(JITCUniformMatrix):
     """
     Just-In-Time Connectivity matrix with Column-oriented representation for uniform weight distributions.
 
@@ -1210,6 +1218,7 @@ class JITCUniformC(JITUniformMatrix):
             shape=(self.shape[1], self.shape[0]),
             corder=not self.corder,
             backend=self.backend,
+            buffers=self.buffers,
         )
 
     def _new_mat(self, wlow, whigh, prob=None, seed=None):
@@ -1242,6 +1251,7 @@ class JITCUniformC(JITUniformMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
+            buffers=self.buffers,
         )
 
     def _unitary_op(self, op) -> 'JITCUniformC':

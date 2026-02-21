@@ -32,6 +32,11 @@ from ._csr import (
     update_csr_on_binary_pre, update_csr_on_binary_pre_p,
     update_csr_on_binary_post, update_csr_on_binary_post_p,
     spfloat_csrmv, spfloat_csrmv_p, spfloat_csrmm, spfloat_csrmm_p,
+    csr_slice_rows, csr_slice_rows_p,
+)
+from ._data import (
+    DataRepresentation,
+    JITCMatrix,
 )
 from ._dense import (
     binary_densemv, binary_densemv_p,
@@ -60,7 +65,6 @@ from ._event import (
     IndexedSpFloat1d,
     IndexedSpFloat2d,
     binary_array_index,
-
 )
 from ._fcn import (
     FixedNumConn, FixedPreNumConn, FixedPostNumConn,
@@ -74,7 +78,7 @@ from ._jit_normal import (
     jitn, jitn_p, jitnmv, jitnmv_p, jitnmm, jitnmm_p,
 )
 from ._jit_scalar import (
-    JITScalarMatrix, JITCScalarR, JITCScalarC,
+    JITCScalarMatrix, JITCScalarR, JITCScalarC,
     binary_jitsmv, binary_jitsmv_p, binary_jitsmm, binary_jitsmm_p,
     jits, jits_p, jitsmv, jitsmv_p, jitsmm, jitsmm_p,
 )
@@ -83,7 +87,6 @@ from ._jit_uniform import (
     binary_jitumv, binary_jitumv_p, binary_jitumm, binary_jitumm_p,
     jitu, jitu_p, jitumv, jitumv_p, jitumm, jitumm_p,
 )
-from ._jitc_matrix import JITCMatrix
 from ._misc import (
     csr_to_coo_index, coo_to_csc_index, csr_to_csc_index,
 )
@@ -103,7 +106,8 @@ from ._registry import (
 )
 
 __all__ = [
-    # --- data representing events --- #
+
+    # --- representing events --- #
     'EventRepresentation',
     'IndexedEventRepresentation',
     'BinaryArray',
@@ -113,6 +117,9 @@ __all__ = [
     'IndexedSpFloat1d',
     'IndexedSpFloat2d',
     'binary_array_index',
+
+    # --- representing sparse data --- #
+    'DataRepresentation',
 
     # --- COO --- #
     'COO',
@@ -147,7 +154,7 @@ __all__ = [
 
     # --- Just-In-Time Connectivity matrix --- #
     'JITCMatrix',
-    'JITScalarMatrix', 'JITCScalarR', 'JITCScalarC',
+    'JITCScalarMatrix', 'JITCScalarR', 'JITCScalarC',
     'binary_jitsmv', 'binary_jitsmv_p',
     'binary_jitsmm', 'binary_jitsmm_p',
     'jits', 'jits_p',
@@ -202,7 +209,6 @@ __all__ = [
 
 
 def __getattr__(name):
-    import warnings
     if name == 'EventArray':
         # warnings.warn(f'EventArray is deprecated, use {BinaryArray.__name__} instead')
         return BinaryArray

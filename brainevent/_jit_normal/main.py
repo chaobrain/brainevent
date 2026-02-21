@@ -16,14 +16,14 @@
 # -*- coding: utf-8 -*-
 
 
-from typing import Union, Tuple, Optional
+from typing import Union, Tuple, Optional, Dict
 
 import brainunit as u
 import jax
 
 from brainevent._compatible_import import Tracer
+from brainevent._data import JITCMatrix
 from brainevent._event.binary import BinaryArray
-from brainevent._jitc_matrix import JITCMatrix
 from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
 from .binary import (
     binary_jitnmv,
@@ -41,7 +41,7 @@ __all__ = [
 ]
 
 
-class JITNormalMatrix(JITCMatrix):
+class JITCNormalMatrix(JITCMatrix):
     """
     Base class for Just-In-Time Connectivity Normal Distribution matrices.
 
@@ -70,7 +70,7 @@ class JITNormalMatrix(JITCMatrix):
 
     Returns
     -------
-    JITNormalMatrix
+    JITCNormalMatrix
         A new normal-weight JIT connectivity matrix instance.
 
     Raises
@@ -160,6 +160,7 @@ class JITNormalMatrix(JITCMatrix):
         shape: MatrixShape,
         corder: bool = False,
         backend: Optional[str] = None,
+        buffers: Optional[Dict] = None,
     ):
         """
         Initialize a normal distribution sparse matrix.
@@ -201,7 +202,7 @@ class JITNormalMatrix(JITCMatrix):
         self.wscale = u.math.asarray(scale)
         self.corder = corder
         self.backend = backend
-        super().__init__(data, shape=shape)
+        super().__init__(data, shape=shape, buffers=buffers)
 
     def __repr__(self):
         """
@@ -215,7 +216,7 @@ class JITNormalMatrix(JITCMatrix):
 
         Examples
         --------
-        >>> matrix = JITNormalMatrix((0.5, 0.1, 0.2, 42), shape=(10, 10))
+        >>> matrix = JITCNormalMatrix((0.5, 0.1, 0.2, 42), shape=(10, 10))
         >>> repr(matrix)
         'JITNormalMatrix(shape=(10, 10), wloc=0.5, wscale=0.1, prob=0.2, seed=42, corder=False)'
         """
@@ -288,7 +289,7 @@ class JITNormalMatrix(JITCMatrix):
 
         Returns
         -------
-        JITNormalMatrix
+        JITCNormalMatrix
             A new instance of the same class with updated weight parameters.
 
         Raises
@@ -311,6 +312,7 @@ class JITNormalMatrix(JITCMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
+            buffers=self.buffers,
         )
 
     def tree_flatten(self):
@@ -329,7 +331,7 @@ class JITNormalMatrix(JITCMatrix):
         tree_unflatten : Reconstruct the matrix from flattened data.
         """
         aux = {'shape': self.shape, 'corder': self.corder, 'backend': self.backend}
-        return (self.wloc, self.wscale, self.prob, self.seed), aux
+        return (self.wloc, self.wscale, self.prob, self.seed), (aux, self.buffers)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
@@ -345,7 +347,7 @@ class JITNormalMatrix(JITCMatrix):
 
         Returns
         -------
-        JITNormalMatrix
+        JITCNormalMatrix
             A reconstructed instance of the matrix class.
 
         See Also
@@ -354,7 +356,11 @@ class JITNormalMatrix(JITCMatrix):
         """
         obj = object.__new__(cls)
         obj.wloc, obj.wscale, obj.prob, obj.seed = children
+        aux_data, buffer = aux_data
+        obj._buffer_registry = set(buffer.keys())
         for k, v in aux_data.items():
+            setattr(obj, k, v)
+        for k, v in buffer.items():
             setattr(obj, k, v)
         return obj
 
@@ -364,7 +370,7 @@ class JITNormalMatrix(JITCMatrix):
 
         Parameters
         ----------
-        other : JITNormalMatrix
+        other : JITCNormalMatrix
             The other matrix to check compatibility with.
         op : str
             Name of the operation being performed, used in error messages.
@@ -397,7 +403,7 @@ class JITNormalMatrix(JITCMatrix):
 
 
 @jax.tree_util.register_pytree_node_class
-class JITCNormalR(JITNormalMatrix):
+class JITCNormalR(JITCNormalMatrix):
     """
     Just-In-Time Connectivity Normal distribution matrix with Row-oriented representation.
 
@@ -588,6 +594,7 @@ class JITCNormalR(JITNormalMatrix):
             shape=(self.shape[1], self.shape[0]),
             corder=not self.corder,
             backend=self.backend,
+            buffers = self.buffers,
         )
 
     def _new_mat(self, loc, scale, prob=None, seed=None):
@@ -620,6 +627,7 @@ class JITCNormalR(JITNormalMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
+            buffers=self.buffers,
         )
 
     def _unitary_op(self, op) -> 'JITCNormalR':
@@ -927,7 +935,7 @@ class JITCNormalR(JITNormalMatrix):
 
 
 @jax.tree_util.register_pytree_node_class
-class JITCNormalC(JITNormalMatrix):
+class JITCNormalC(JITCNormalMatrix):
     """
     Just-In-Time Connectivity Normal distribution matrix with Column-oriented representation.
 
@@ -1119,6 +1127,7 @@ class JITCNormalC(JITNormalMatrix):
             shape=(self.shape[1], self.shape[0]),
             corder=not self.corder,
             backend=self.backend,
+            buffers=self.buffers,
         )
 
     def _new_mat(self, loc, scale, prob=None, seed=None):
@@ -1151,6 +1160,7 @@ class JITCNormalC(JITNormalMatrix):
             shape=self.shape,
             corder=self.corder,
             backend=self.backend,
+            buffers=self.buffers,
         )
 
     def _unitary_op(self, op) -> 'JITCNormalC':

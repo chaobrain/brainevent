@@ -61,7 +61,7 @@ class TestCSRDiagPosition:
         """Test the v2 version of diagonal position finding."""
         m, n = 5, 5
         indptr, indices = get_csr(m, n, 0.5)
-        csr_pos, diag_pos = csr_diag_position_v2(indptr, indices, (m, n))
+        csr_pos, diag_pos = csr_diag_position_v2(indptr, indices, shape=(m, n))
 
         assert csr_pos.ndim == 1
         if diag_pos is not None:
@@ -121,7 +121,7 @@ class TestCSRDiagAdd:
         nse = indices.shape[0]
 
         csr_value = brainstate.random.rand(nse).astype(jnp.float32)
-        positions = csr_diag_position_v2(indptr, indices, (m, n))
+        positions = csr_diag_position_v2(indptr, indices, shape=(m, n))
         diag_value = brainstate.random.rand(m).astype(jnp.float32)
 
         result = csr_diag_add_v2(csr_value, positions, diag_value)
