@@ -773,7 +773,90 @@ FFI_SPFLOAT_MM_T(_f16, __half, 32)
 // These kernels handle Y = W_fcn @ M (gather) or Y = W_fcn^T @ M (scatter)
 // where W_fcn is a fixed-connection-number sparse matrix with indices, and
 // M is a sparse-float dense matrix.  Zero entries in M are skipped.
+//
+// ── spfloat_fcnmm gather kernel ──────────────────────────────────────────
+//
+// Roofline analysis (gather, hetero, f32, 5Kx5Kx500, ncol=64):
+//   Per output element (row i, col j):
+//     - n_conn matrix reads: n_conn * 4B (random row, coalesced across j)
+//     - n_conn index reads from smem: ~0B global (tiled, shared by all j threads)
+//     - n_conn weight reads from smem: ~0B global (tiled, shared by all j threads)
+//     - 1 output write: 4B
+//   Amortized smem fills per tile: TILE_K * (4B idx + 4B wt) / blockDim.x per thread
+//   FLOPs per element: 2 * n_conn (1 FMA per connection)
+//   Arithmetic intensity: ~0.5 FLOP/byte → bandwidth-bound
+//
+// Optimizations applied:
+//   1. Shared-memory tiling of indices and weights → eliminates redundant
+//      global loads across threads in the same block (reduction = blockDim.x)
+//   2. __ldg() for matrix reads → L1 texture cache
+//   3. Adaptive block size → matches thread count to output columns
+//   4. Sparsity check on matrix values → skips zero-entry FMAs
+//   5. Homo path: skip weight smem, accumulate raw values, multiply once at end
+//
+// Achieved throughput (RTX 3080 Ti Laptop, f32, tvmffi vs jax_raw):
+//   Hetero gather (dominant case):
+//     5Kx5Kx500,ncol=64:   1.16-1.30ms → 2.8-3.4x vs jax_raw (3.5-4.2ms)
+//     5Kx5Kx200,ncol=128:  1.17-1.30ms → 1.9-2.0x vs jax_raw (2.4-2.5ms)
+//     5Kx5Kx50,ncol=512:   1.17-1.23ms → 2.8-3.1x vs jax_raw (3.3-3.8ms)
+//     10Kx10Kx200,ncol=64:  1.17-1.21ms → 2.9-3.1x vs jax_raw (3.4-3.7ms)
+//     10Kx10Kx100,ncol=128: 1.18-1.30ms → 2.7-3.0x vs jax_raw (3.4-3.5ms)
+//   Homo gather: matches jax_raw (no weight data to tile → minimal benefit)
+//
+// Fundamental barriers:
+//   1. Random matrix row access: matrix[col_idx * n_col + j] with col_idx
+//      varying per connection. 4B read may pull 128B L2 cacheline (~32x amp
+//      when matrix exceeds L2). Index/weight loads are only ~3% of traffic;
+//      ~97% is random matrix access which cannot be optimized without a
+//      format change (e.g., reordering matrix rows by index locality).
+//   2. Per-connection serial dependency in the inner loop (accumulator chain).
+//   3. Homo path already near-optimal: no weight reads, only matrix + index
+//      loads; __ldg broadcasts index reads within warps via L1 texture cache.
+//
+// Future directions:
+//   - Index-aware matrix reordering (sort indices per row for spatial locality)
+//   - Software-pipelined double-buffering of smem tiles
+//   - Warp specialization: separate warps for smem fill vs compute
+//
+// ── spfloat_fcnmm scatter kernel ─────────────────────────────────────────
+//
+// Optimizations applied:
+//   1. Shared-memory caching of matrix row → eliminates n_conn redundant
+//      global reads of the same row (reduction factor = n_conn)
+//   2. Row-level early exit via __syncthreads_count → skips all-zero rows
+//      (At 1% spike rate with ncol=64, ~53% of rows are all-zero.)
+//   3. Adaptive block size → matches thread count to output columns
+//
+// Achieved throughput (RTX 3080 Ti Laptop, f32, tvmffi vs jax_raw):
+//   Low spike rate (1-10%):
+//     5Kx5Kx500,ncol=64,1%:   1.22ms → 2.1-2.4x vs jax_raw (2.5-2.9ms)
+//     5Kx5Kx200,ncol=128,1%:  1.23-1.28ms → 1.8-1.9x vs jax_raw (2.3-2.4ms)
+//     5Kx5Kx50,ncol=512,1%:   1.23-1.27ms → 2.5-3.0x vs jax_raw (3.1-3.6ms)
+//     10Kx10Kx200,ncol=64,1%: 1.21-1.23ms → 2.0-2.3x vs jax_raw (2.4-2.8ms)
+//     10Kx10Kx50,ncol=256,1%: 1.25-1.27ms → 2.6-2.8x vs jax_raw (3.3-3.5ms)
+//   High spike rate (50%): ~1.2-1.4x (early exit rarely triggers)
+//
+// Fundamental barriers:
+//   1. Atomic contention: multiple pre-synaptic neurons may target the same
+//      post-synaptic neuron, causing atomicAdd serialization.
+//   2. Per-connection serial outer loop: each connection issues separate atomics.
+//   3. At high spike rates (≥50%), all-zero row skip provides no benefit, and
+//      atomic contention dominates latency.
+//
+// Future directions:
+//   - Segment-sorted indices + shared-memory accumulation before atomics
+//   - Connection tiling with warp-cooperative atomics
+//   - Per-target histogram to reorder connections by output row
 
+#define FCN_MM_GATHER_TILE_K 128
+
+// ---------------------------------------------------------------------------
+// Gather tiled: shared-memory tiling of indices (and weights for hetero).
+// All threads cooperatively load a tile of indices into shared memory,
+// then each thread gathers its column j from the matrix.
+// Homo path: accumulates raw matrix values, multiplies by homo_w at the end.
+// Hetero path: also tiles weights into smem, accumulates weighted values.
+// ---------------------------------------------------------------------------
 #define DEFINE_SPFLOAT_FCN_MM_GATHER(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, ACC_ZERO) \
 __global__ void _spfloat_fcnmm_gather_kern##SUFFIX( \
     const int32_t* __restrict__ indices, \
@@ -782,23 +865,60 @@ __global__ void _spfloat_fcnmm_gather_kern##SUFFIX( \
     const WEIGHT_T* __restrict__ weights, \
     int n_pre, int n_conn, int n_col, int is_homo \
 ) { \
-    int i = blockIdx.x; \
-    int j = blockIdx.y * blockDim.x + threadIdx.x; \
-    if (i >= n_pre || j >= n_col) return; \
-    const int32_t*  idx_row = indices + (size_t)i * n_conn; \
-    const WEIGHT_T* w_row   = is_homo ? nullptr : weights + (size_t)i * n_conn; \
+    extern __shared__ char _smem_raw[]; \
+    int32_t* s_idx = reinterpret_cast<int32_t*>(_smem_raw); \
+    ACC_T*   s_wt  = reinterpret_cast<ACC_T*>( \
+        _smem_raw + FCN_MM_GATHER_TILE_K * sizeof(int32_t)); \
+    \
+    int row = blockIdx.x; \
+    int j   = blockIdx.y * blockDim.x + threadIdx.x; \
+    if (row >= n_pre) return; \
+    \
+    const int32_t*  idx_row = indices + (size_t)row * n_conn; \
+    const WEIGHT_T* w_row = is_homo ? nullptr : weights + (size_t)row * n_conn; \
+    ACC_T homo_w = is_homo ? READ_W(__ldg(&weights[0])) : ACC_ZERO; \
     ACC_T acc = ACC_ZERO; \
-    for (int k = 0; k < n_conn; k++) { \
-        int32_t col_idx = __ldg(&idx_row[k]); \
-        ACC_T m_val = READ_W(__ldg(&matrix[(size_t)col_idx * n_col + j])); \
-        if (m_val != ACC_ZERO) { \
-            ACC_T w = is_homo ? (ACC_T)1 : READ_W(__ldg(&w_row[k])); \
-            acc += w * m_val; \
+    \
+    for (int base = 0; base < n_conn; base += FCN_MM_GATHER_TILE_K) { \
+        int tile_size = n_conn - base; \
+        if (tile_size > FCN_MM_GATHER_TILE_K) tile_size = FCN_MM_GATHER_TILE_K; \
+        /* Cooperative load: indices always, weights only for hetero */ \
+        for (int t = threadIdx.x; t < tile_size; t += blockDim.x) { \
+            s_idx[t] = __ldg(&idx_row[base + t]); \
+            if (!is_homo) \
+                s_wt[t] = READ_W(__ldg(&w_row[base + t])); \
         } \
+        __syncthreads(); \
+        \
+        if (j < n_col) { \
+            if (is_homo) { \
+                /* Homo: accumulate raw matrix values, no weight multiply */ \
+                for (int k = 0; k < tile_size; k++) { \
+                    ACC_T m_val = READ_W(__ldg(&matrix[(size_t)s_idx[k] * n_col + j])); \
+                    if (m_val != ACC_ZERO) \
+                        acc += m_val; \
+                } \
+            } else { \
+                /* Hetero: accumulate weighted matrix values from smem */ \
+                for (int k = 0; k < tile_size; k++) { \
+                    ACC_T m_val = READ_W(__ldg(&matrix[(size_t)s_idx[k] * n_col + j])); \
+                    if (m_val != ACC_ZERO) \
+                        acc += s_wt[k] * m_val; \
+                } \
+            } \
+        } \
+        __syncthreads(); \
     } \
-    output[(size_t)i * n_col + j] = WRITE_W(is_homo ? READ_W(__ldg(&weights[0])) * acc : acc); \
+    \
+    if (j < n_col) \
+        output[(size_t)row * n_col + j] = WRITE_W(is_homo ? homo_w * acc : acc); \
 }
 
+// ---------------------------------------------------------------------------
+// Scatter with smem caching: loads the matrix row once into shared memory,
+// then reuses it for all n_conn connections.  Includes row-level early exit
+// via __syncthreads_count to skip entirely-zero rows.
+// ---------------------------------------------------------------------------
 #define DEFINE_SPFLOAT_FCN_MM_SCATTER(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, \
                                        ATOMIC_ADD_W, ACC_ZERO) \
 __global__ void _spfloat_fcnmm_scatter_kern##SUFFIX( \
@@ -808,17 +928,35 @@ __global__ void _spfloat_fcnmm_scatter_kern##SUFFIX( \
     const WEIGHT_T* __restrict__ weights, \
     int n_pre, int n_conn, int n_col, int is_homo \
 ) { \
+    extern __shared__ char _smem_raw[]; \
+    WEIGHT_T* s_mrow = reinterpret_cast<WEIGHT_T*>(_smem_raw); \
+    \
     int i = blockIdx.x; \
     if (i >= n_pre) return; \
-    const WEIGHT_T* m_row   = matrix + (size_t)i * n_col; \
+    \
+    /* Load matrix row into shared memory (one global read per element) */ \
+    const WEIGHT_T* m_row = matrix + (size_t)i * n_col; \
+    for (int j = threadIdx.x; j < n_col; j += blockDim.x) \
+        s_mrow[j] = __ldg(&m_row[j]); \
+    __syncthreads(); \
+    \
+    /* Row-level early exit: skip if entire row is zero */ \
+    int has_nz = 0; \
+    for (int j = threadIdx.x; j < n_col; j += blockDim.x) { \
+        if (READ_W(s_mrow[j]) != ACC_ZERO) { has_nz = 1; break; } \
+    } \
+    if (__syncthreads_count(has_nz) == 0) return; \
+    \
     const int32_t*  idx_row = indices + (size_t)i * n_conn; \
-    const WEIGHT_T* w_row   = is_homo ? nullptr : weights + (size_t)i * n_conn; \
+    const WEIGHT_T* w_row = is_homo ? nullptr : weights + (size_t)i * n_conn; \
+    ACC_T homo_w = is_homo ? READ_W(__ldg(&weights[0])) : ACC_ZERO; \
+    \
     for (int k = 0; k < n_conn; k++) { \
         int tgt = __ldg(&idx_row[k]); \
-        ACC_T w_val = is_homo ? READ_W(__ldg(&weights[0])) : READ_W(__ldg(&w_row[k])); \
+        ACC_T w_val = is_homo ? homo_w : READ_W(__ldg(&w_row[k])); \
         WEIGHT_T* out_row = output + (size_t)tgt * n_col; \
         for (int j = threadIdx.x; j < n_col; j += blockDim.x) { \
-            ACC_T m_val = READ_W(__ldg(&m_row[j])); \
+            ACC_T m_val = READ_W(s_mrow[j]); \
             if (m_val != ACC_ZERO) \
                 ATOMIC_ADD_W(&out_row[j], w_val * m_val); \
         } \
@@ -844,7 +982,14 @@ void spfloat_fcnmm_gather_auto##SUFFIX(                                         
     int n_conn      = static_cast<int>(indices.size(1));                                     \
     int n_col       = static_cast<int>(matrix.size(1));                                      \
     int is_homo     = (weights.ndim() == 1) ? 1 : 0;                                        \
-    _spfloat_fcnmm_gather_kern##SUFFIX<<<dim3(n_pre, (n_col + 63) / 64), 64, 0, s>>>(       \
+    /* Adaptive block size: round n_col up to warp multiple, clamp [32,256] */               \
+    int block_x = ((n_col + 31) >> 5) << 5;                                                 \
+    block_x = block_x < 32 ? 32 : block_x > 256 ? 256 : block_x;                           \
+    int y_blocks = (n_col + block_x - 1) / block_x;                                         \
+    /* ACC_T size: float (4B) for f16/bf16, else sizeof(WEIGHT_C_T) */                       \
+    int acc_sz = (sizeof(WEIGHT_C_T) < 4) ? 4 : static_cast<int>(sizeof(WEIGHT_C_T));       \
+    size_t smem = FCN_MM_GATHER_TILE_K * (sizeof(int32_t) + acc_sz);                         \
+    _spfloat_fcnmm_gather_kern##SUFFIX<<<dim3(n_pre, y_blocks), block_x, smem, s>>>(         \
         static_cast<const int32_t*>(indices.data_ptr()),                                     \
         static_cast<const WEIGHT_C_T*>(matrix.data_ptr()),                                   \
         static_cast<WEIGHT_C_T*>(output.data_ptr()),                                         \
@@ -865,7 +1010,11 @@ void spfloat_fcnmm_scatter_auto##SUFFIX(                                        
     int is_homo     = (weights.ndim() == 1) ? 1 : 0;                                        \
     cudaMemsetAsync(output.data_ptr(), 0,                                                    \
                     (size_t)n_post * n_col * sizeof(WEIGHT_C_T), s);                         \
-    _spfloat_fcnmm_scatter_kern##SUFFIX<<<n_pre, 256, 0, s>>>(                               \
+    /* Adaptive block size: round n_col up to warp multiple, clamp [32,256] */               \
+    int block_x = ((n_col + 31) >> 5) << 5;                                                 \
+    block_x = block_x < 32 ? 32 : block_x > 256 ? 256 : block_x;                           \
+    size_t smem = static_cast<size_t>(n_col) * sizeof(WEIGHT_C_T);                           \
+    _spfloat_fcnmm_scatter_kern##SUFFIX<<<n_pre, block_x, smem, s>>>(                        \
         static_cast<const int32_t*>(indices.data_ptr()),                                     \
         static_cast<const WEIGHT_C_T*>(matrix.data_ptr()),                                   \
         static_cast<WEIGHT_C_T*>(output.data_ptr()),                                         \
