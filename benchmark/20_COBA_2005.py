@@ -135,3 +135,18 @@ for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
 # scale=60, size=240000, time = 125.44037556648254 s, firing rate = 50.613094329833984 Hz
 # scale=80, size=320000, time = 171.20458459854126 s, firing rate = 50.613365173339844 Hz
 # scale=100, size=400000, time = 215.4547393321991 s, firing rate = 50.6129150390625 Hz
+
+
+# 2026/02/13, AMD Ryzen 7 7840HS, brainevent 0.0.6, Numba 0.63.1, jax 0.9.0, 小新Win11野兽模式
+#
+# scale=1, size=4000, time = 7.121581077575684 s, firing rate = 59.563377380371094 Hz
+# scale=2, size=8000, time = 11.442655324935913 s, firing rate = 59.57026672363281 Hz
+# scale=4, size=16000, time = 15.775666236877441 s, firing rate = 59.571495056152344 Hz
+# scale=6, size=24000, time = 19.378953218460083 s, firing rate = 59.57106018066406 Hz
+# scale=8, size=32000, time = 22.951914310455322 s, firing rate = 59.57032775878906 Hz
+# scale=10, size=40000, time = 26.57138180732727 s, firing rate = 59.57281494140625 Hz
+# scale=20, size=80000, time = 39.93744134902954 s, firing rate = 59.56884765625 Hz
+# scale=40, size=160000, time = 72.9319748878479 s, firing rate = 59.570556640625 Hz
+# scale=60, size=240000, time = 105.03494596481323 s, firing rate = 59.57072067260742 Hz
+# scale=80, size=320000, time = 127.52736496925354 s, firing rate = 59.57038879394531 Hz
+# scale=100, size=400000, time = 159.3613338470459 s, firing rate = 59.569969177246094 Hz
