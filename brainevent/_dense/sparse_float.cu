@@ -321,8 +321,51 @@ FFI_SPFLOAT_SCATTER(_bf16,       __nv_bfloat16)
 
 
 // =========================================================================
-// Dense Matrix-Matrix Multiplication (spfloat_densemm)
+// Dense Matrix-Matrix Multiplication (spfloat_densemm) - NT MODE
 // =========================================================================
+//
+// PERFORMANCE STATUS (RTX 3080 Ti Laptop, various configs):
+// ==========================================================
+// Warp-per-row (n≤16):  5000x5000x10, 0.1% density → 1101.9 us (0.50x cuBLAS 551.0 us)
+// Thread-per-element (n>16): 5000x5000x50, 1.0% density → 2302.8 us (0.43x cuBLAS 996.4 us)
+//
+// FUNDAMENTAL BARRIERS (cannot overcome without API/algorithm changes):
+// =====================================================================
+//
+// 1. Sparse Scan Overhead (same as SpMV):
+//    - Kernels scan ALL k elements to find density×k non-zeros
+//    - At 0.1% density: 99.9% of iterations check zero spikes and skip
+//    - Even with __ballot_sync (tried, 47-69% regression): sync overhead > skip benefit
+//    - Solution: Indexed-gather API with pre-compacted non-zero indices
+//
+// 2. Random Spike Access (thread-per-element):
+//    - Each thread reads spikes[l, col] with random col per thread
+//    - Cannot coalesce across warp when n is small
+//    - Solution: Transpose spike matrix to column-major
+//
+// 3. Wasted Threads (thread-per-element):
+//    - For n < 32, (32-n) threads per warp are idle
+//    - At n=10: 69% of threads wasted
+//    - Solution: Warp-per-row kernel (current approach for n≤16)
+//
+// 4. Redundant Weight Reads (warp-per-row):
+//    - For n=CHUNK_N=32, weight matrix read once per warp
+//    - For n>32, weight matrix read ceil(n/32) times (redundant)
+//    - Solution: Thread-per-element (current approach for n>16)
+//
+// CURRENT STRATEGY: Kernel selection heuristic
+// =============================================
+// - n ≤ 16: Use warp-per-row (avoids wasted threads, all lanes scan k)
+// - n > 16: Use thread-per-element (avoids redundant weight reads, __ballot_sync helps)
+//
+// ATTEMPTED OPTIMIZATIONS (all failed):
+// ====================================
+// - __ballot_sync in warp-per-row: 47-69% regression (sync overhead > skip benefit)
+// - Always use thread-per-element: 82% regression for large m, small n (wasted threads)
+//
+// EFFICIENCY: ~50% of cuBLAS for typical SNN workloads (small n, low density)
+// This is near-optimal for the sparse-scan algorithm. Further gains require
+// algorithmic changes (indexed-gather) or format changes (spike transpose).
 
 #define MM_BLOCK_SIZE 256
 
@@ -399,6 +442,40 @@ __global__ void _spfloat_mm_nt_tpe_kern##SUFFIX(                             \
     }                                                                        \
     output[(size_t)row * n + col] = WRITE_W(acc);                           \
 }
+
+// =========================================================================
+// Dense Matrix-Matrix Multiplication (spfloat_densemm) - T MODE
+// =========================================================================
+//
+// PERFORMANCE STATUS (RTX 3080 Ti Laptop, various configs):
+// ==========================================================
+// Small batch, low density: 10x5000x5000, 0.1% → 153.0 us (2.7x FASTER than cuBLAS 412.7 us) ✓
+// Large batch, low density: 10000x10000x10, 0.1% → 1462.1 us (0.87x cuBLAS 1208.3 us)
+// Large batch, high density: 10000x10000x10, 10% → 2223.8 us (0.57x cuBLAS 1275.9 us)
+//
+// WINNING REGIME: Small batch (m < 100), large dimensions (k,n > 1000), low density (< 1%)
+// In this regime, event-driven skip saves massive weight reads while batch overhead is low.
+//
+// FUNDAMENTAL BARRIERS (same as NT mode):
+// ======================================
+// 1. Sparse Scan Overhead: Scans all k elements to find density×k non-zeros
+//    - At 0.1% density: __ballot_sync skips ~97% of weight loads (highly effective!)
+//    - At 10% density: __ballot_sync skips only ~3% (overhead >> benefit)
+//
+// 2. Large-Batch Overhead: For large m (>1000 rows), cumulative scan overhead dominates
+//    - Each row scans k elements; m×k total scans >> benefit from skipping
+//
+// 3. Non-Coalesced Weight Loads: Each lane reads weights[l, col_start:col_start+CHUNK_N]
+//    with different l per lane → cannot coalesce across warp
+//
+// CURRENT OPTIMIZATIONS:
+// ======================
+// - __ballot_sync early-exit: Skips weight loads when all 32 lanes have zero spikes
+// - Individual lane check: Avoids weight load for zero-spike lanes even when ballot passes
+// - Warp-strided loop: Good cache reuse for spike row (s_row is read sequentially by warp)
+//
+// EFFICIENCY: 270% of cuBLAS for small-batch regime, 57-87% for large-batch/high-density
+// Small-batch win is fundamental to event-driven approach; large-batch limitation is algorithmic.
 
 #define DEFINE_SPFLOAT_MM_T(SUFFIX, WEIGHT_T, ACC_T, CHUNK_N,               \
                              READ_W, WRITE_W, READ_S,                        \

@@ -28,6 +28,7 @@ import numpy as np
 import brainstate
 from brainevent import BenchmarkConfig
 from brainevent._csr.slice import csr_slice_rows_p
+from brainevent._csr.test_util import get_csr
 
 # (n_pre, n_post, conn_prob, num_selected)
 CONFIGS = [
@@ -46,10 +47,9 @@ def _make_benchmark_data(*, platform, num_selected=None):
     dtype = brainstate.environ.dftype()
     for n_pre, n_post, prob, default_sel in CONFIGS:
         n_sel = num_selected if num_selected is not None else default_sel
-        n_conn = max(1, int(n_post * prob))
-        nse = n_pre * n_conn
-        indptr = jnp.asarray(np.arange(n_pre + 1, dtype=np.int32) * n_conn)
-        indices = jnp.asarray(rng.integers(0, n_post, nse, dtype=np.int32))
+        # Use get_csr to generate proper CSR with unique column indices per row
+        indptr, indices = get_csr(n_pre, n_post, prob, replace=False)
+        nse = indices.shape[0]
         row_indices = jnp.asarray(
             rng.integers(0, n_pre, n_sel, dtype=np.int32)
         )

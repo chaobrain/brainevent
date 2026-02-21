@@ -160,6 +160,7 @@ __all__ = [
     'update_csr_on_binary_post', 'update_csr_on_binary_post_p',
     'spfloat_csrmv', 'spfloat_csrmv_p',
     'spfloat_csrmm', 'spfloat_csrmm_p',
+    'csr_slice_rows', 'csr_slice_rows_p',
 
     # --- dense matrix --- #
     'binary_densemv', 'binary_densemv_p',

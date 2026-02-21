@@ -721,13 +721,16 @@ def _spfloat_densemm_cuda_kernel(
         kernel_name = f'dense_sparse_float.spfloat_densemm_t{wt_sfx}'
     else:
         # NT: select warp-per-row (small n) vs thread-per-element (large n).
-        # WPR reads weight matrix ceil(n/CHUNK_N) times; TPE reads it once.
-        # CHUNK_N = 32 for f32/f16/bf16, 16 for f64.
-        chunk_n = 16 if jnp.dtype(weight_info.dtype) == jnp.float64 else 32
+        # WPR: Better for small n (uses all 32 threads to scan k dimension in parallel).
+        # TPE: Better for large n (has __ballot_sync, avoids redundant weight reads).
+        # Threshold: n ≤ 16 favors WPR (avoids wasted threads); n > 16 favors TPE.
         n_cols = spk_info.shape[1]
-        if n_cols <= chunk_n:
+        if n_cols <= 16:
+            # For n ≤ 16, use warp-per-row (wpr) kernel
+            chunk_n = 16 if jnp.dtype(weight_info.dtype) == jnp.float64 else 32
             kernel_name = f'dense_sparse_float.spfloat_densemm_nt{wt_sfx}'
         else:
+            # For n > 16, use thread-per-element (tpe) kernel
             kernel_name = f'dense_sparse_float.spfloat_densemm_nt_tpe{wt_sfx}'
 
     def kernel(weights, spikes):
