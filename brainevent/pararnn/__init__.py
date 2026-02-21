@@ -46,6 +46,18 @@ from ._parallel_reduce import (
     parallel_reduce_block_diag,
     parallel_reduce_block_diag_bwd,
 )
+from ._parallel_reduce_cuda import (
+    parallel_reduce_diag_cuda,
+    parallel_reduce_block2_cuda,
+    cuda_available,
+)
+from ._fused_cuda import (
+    fused_gru_diag_forward,
+    fused_gru_diag_backward,
+    fused_lstm_cifg_diag_forward,
+    fused_lstm_cifg_diag_backward,
+    fused_cuda_available,
+)
 
 __all__ = [
     # Modules
@@ -63,11 +75,23 @@ __all__ = [
     'NewtonConfig',
     'newton_solve',
 
-    # Parallel reduction
+    # Parallel reduction (JAX native)
     'parallel_reduce_diag',
     'parallel_reduce_diag_bwd',
     'parallel_reduce_block_diag',
     'parallel_reduce_block_diag_bwd',
+
+    # Parallel reduction (CUDA)
+    'parallel_reduce_diag_cuda',
+    'parallel_reduce_block2_cuda',
+    'cuda_available',
+
+    # Fused CUDA kernels
+    'fused_gru_diag_forward',
+    'fused_gru_diag_backward',
+    'fused_lstm_cifg_diag_forward',
+    'fused_lstm_cifg_diag_backward',
+    'fused_cuda_available',
 
     # Registries
     'NONLINEARITIES',

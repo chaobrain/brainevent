@@ -418,6 +418,8 @@ class LSTMCIFGDiagMH(brainstate.nn.Module):
             Hidden states ``h``, shape ``(B, T, state_dim)``.
             (Cell states ``c`` are internal and not returned.)
         """
+        if self.mode == 'fused':
+            return self._apply_fused(x)
         return apply_rnn(
             LSTMCIFGDiagMHImpl, x, self.internal_state_dim,
             self.mode, self.newton_config,
@@ -425,3 +427,86 @@ class LSTMCIFGDiagMH(brainstate.nn.Module):
             self.nonlin_f, self.nonlin_o, self.nonlin_c, self.nonlin_state,
             self.deriv_f, self.deriv_o, self.deriv_c, self.deriv_state,
         )
+
+    def _apply_fused(self, x: jax.Array) -> jax.Array:
+        """Apply LSTM-CIFG using fused CUDA kernels.
+
+        Precomputes Bxpb = B @ x + b, then runs the fused forward kernel.
+        Backward pass uses fused backward kernel for dl/d[c,h], followed by
+        Python-side parameter gradient computation.
+        """
+        from ._fused_cuda import (
+            fused_lstm_cifg_diag_forward,
+            fused_lstm_cifg_diag_backward,
+        )
+
+        A = self.A.value
+        B = self.B.value
+        C = self.C.value
+        b = self.b.value
+        num_heads = B.shape[0]
+
+        # Static params (closed over, not differentiable)
+        nonlin_f = self.nonlin_f
+        nonlin_o = self.nonlin_o
+        nonlin_c = self.nonlin_c
+        nonlin_state = self.nonlin_state
+        deriv_f = self.deriv_f
+        deriv_o = self.deriv_o
+        deriv_c = self.deriv_c
+        deriv_state = self.deriv_state
+
+        @jax.custom_vjp
+        def _fused_fwd(x, A, B, C, b):
+            # Precompute Bxpb = B @ x + b: (B_batch, T, 3, state_dim)
+            x_heads = x.reshape((*x.shape[:-1], num_heads, -1))
+            Bxpb = jnp.einsum('...hi,hivj->...vhj', x_heads, B)
+            Bxpb = Bxpb.reshape((*Bxpb.shape[:-2], -1)) + b
+            # Fused kernel returns full_state (B, T, 2, state_dim)
+            full_state = fused_lstm_cifg_diag_forward(A, Bxpb, C)
+            # Extract h from [c, h]
+            return full_state[..., 1, :]
+
+        def _fused_fwd_fwd(x, A, B, C, b):
+            x_heads = x.reshape((*x.shape[:-1], num_heads, -1))
+            Bxpb = jnp.einsum('...hi,hivj->...vhj', x_heads, B)
+            Bxpb = Bxpb.reshape((*Bxpb.shape[:-2], -1)) + b
+            full_state = fused_lstm_cifg_diag_forward(A, Bxpb, C)
+            h = full_state[..., 1, :]
+            # Save full_state for backward (need both c and h)
+            return h, (x, full_state, A, B, C, b, Bxpb)
+
+        def _fused_fwd_bwd(res, grad_y):
+            x_res, full_state, A_res, B_res, C_res, b_res, Bxpb_res = res
+
+            # 1. Backward solve for dl/d[c,h] via fused CUDA kernel
+            # grad_y is (B, T, state_dim) — gradient w.r.t. h only
+            dl_d_ch = fused_lstm_cifg_diag_backward(
+                grad_y, full_state, A_res, Bxpb_res, C_res
+            )
+            # dl_d_ch: (B, T, 2, state_dim) -> concatenate to (B, T, 2*state_dim)
+            dl_dh = jnp.concatenate(
+                [dl_d_ch[..., 0, :], dl_d_ch[..., 1, :]], axis=-1
+            )
+
+            # Reconstruct h in [c, h] concatenated form for backprop_to_params
+            h = jnp.concatenate(
+                [full_state[..., 0, :], full_state[..., 1, :]], axis=-1
+            )
+
+            # 2. Compute parameter gradients (reuse existing method)
+            all_grads = LSTMCIFGDiagMHImpl.backprop_to_params(
+                dl_dh, x_res, h, A_res, B_res, C_res, b_res,
+                nonlin_f, nonlin_o, nonlin_c, nonlin_state,
+                deriv_f, deriv_o, deriv_c, deriv_state,
+            )
+            grad_x = all_grads[0]
+            grad_A = all_grads[1]
+            grad_B = all_grads[2]
+            grad_C = all_grads[3]
+            grad_b = all_grads[4]
+
+            return (grad_x, grad_A, grad_B, grad_C, grad_b)
+
+        _fused_fwd.defvjp(_fused_fwd_fwd, _fused_fwd_bwd)
+        return _fused_fwd(x, A, B, C, b)

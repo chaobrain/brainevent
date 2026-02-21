@@ -315,9 +315,70 @@ class GRUDiagMH(brainstate.nn.Module):
         Returns:
             Hidden states, shape ``(B, T, state_dim)``.
         """
+        if self.mode == 'fused':
+            return self._apply_fused(x)
         return apply_rnn(
             GRUDiagMHImpl, x, self.state_dim, self.mode, self.newton_config,
             self.A.value, self.B.value, self.b.value,
             self.nonlin_update, self.nonlin_reset, self.nonlin_state,
             self.deriv_update, self.deriv_reset, self.deriv_state,
         )
+
+    def _apply_fused(self, x: jax.Array) -> jax.Array:
+        """Apply GRU using fused CUDA kernels.
+
+        Precomputes Bxpb = B @ x + b, then runs the fused forward kernel.
+        Backward pass uses fused backward kernel for dl/dh, followed by
+        Python-side parameter gradient computation.
+        """
+        from ._fused_cuda import fused_gru_diag_forward, fused_gru_diag_backward
+
+        A = self.A.value
+        B = self.B.value
+        b = self.b.value
+        num_heads = B.shape[0]
+
+        # Static params (closed over, not differentiable)
+        nonlin_update = self.nonlin_update
+        nonlin_reset = self.nonlin_reset
+        nonlin_state = self.nonlin_state
+        deriv_update = self.deriv_update
+        deriv_reset = self.deriv_reset
+        deriv_state = self.deriv_state
+
+        @jax.custom_vjp
+        def _fused_fwd(x, A, B, b):
+            # Precompute Bxpb = B @ x + b: (B_batch, T, 3, state_dim)
+            x_heads = x.reshape((*x.shape[:-1], num_heads, -1))
+            Bxpb = jnp.einsum('...hi,hivj->...vhj', x_heads, B)
+            Bxpb = Bxpb.reshape((*Bxpb.shape[:-2], -1)) + b
+            return fused_gru_diag_forward(A, Bxpb)
+
+        def _fused_fwd_fwd(x, A, B, b):
+            x_heads = x.reshape((*x.shape[:-1], num_heads, -1))
+            Bxpb = jnp.einsum('...hi,hivj->...vhj', x_heads, B)
+            Bxpb = Bxpb.reshape((*Bxpb.shape[:-2], -1)) + b
+            h = fused_gru_diag_forward(A, Bxpb)
+            return h, (x, h, A, B, b, Bxpb)
+
+        def _fused_fwd_bwd(res, grad_y):
+            x_res, h, A_res, B_res, b_res, Bxpb_res = res
+
+            # 1. Backward solve for dl/dh via fused CUDA kernel
+            dl_dh = fused_gru_diag_backward(grad_y, h, A_res, Bxpb_res)
+
+            # 2. Compute parameter gradients (reuse existing method)
+            all_grads = GRUDiagMHImpl.backprop_to_params(
+                dl_dh, x_res, h, A_res, B_res, b_res,
+                nonlin_update, nonlin_reset, nonlin_state,
+                deriv_update, deriv_reset, deriv_state,
+            )
+            grad_x = all_grads[0]
+            grad_A = all_grads[1]
+            grad_B = all_grads[2]
+            grad_b = all_grads[3]
+
+            return (grad_x, grad_A, grad_B, grad_b)
+
+        _fused_fwd.defvjp(_fused_fwd_fwd, _fused_fwd_bwd)
+        return _fused_fwd(x, A, B, b)

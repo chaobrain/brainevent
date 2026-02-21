@@ -44,9 +44,16 @@ __all__ = ['BaseRNNCell', 'ApplicationMode', 'apply_rnn']
 
 
 class ApplicationMode(str, Enum):
-    """Application modes for RNN cell evaluation."""
+    """Application modes for RNN cell evaluation.
+
+    - ``SEQUENTIAL``: O(T) sequential scan via ``jax.lax.scan``.
+    - ``PARALLEL``: O(log T) parallel via Newton + ``jax.lax.associative_scan``.
+    - ``FUSED``: Single CUDA kernel combining Newton + parallel reduction.
+      Requires TVM FFI and a GPU. Falls back to ``PARALLEL`` if unavailable.
+    """
     SEQUENTIAL = "sequential"
     PARALLEL = "parallel"
+    FUSED = "fused"
 
 
 def _roll_state(h: jax.Array) -> jax.Array:
@@ -147,9 +154,14 @@ def apply_rnn(cell_cls, x, state_dim, mode='parallel',
     elif mode == 'parallel':
         return _apply_parallel(cell_cls, x, state_dim, newton_config,
                                array_params, static_params)
+    elif mode == 'fused':
+        # Fused mode is handled by the cell's Module class (GRUDiagMH, etc.)
+        # If called directly here, fall back to parallel mode.
+        return _apply_parallel(cell_cls, x, state_dim, newton_config,
+                               array_params, static_params)
     else:
         raise ValueError(
-            f"Unknown mode '{mode}'. Available: 'sequential', 'parallel'."
+            f"Unknown mode '{mode}'. Available: 'sequential', 'parallel', 'fused'."
         )
 
 
