@@ -41,6 +41,13 @@ import jax.random as jr
 
 from brainevent.pararnn._gru import GRUDiagMH
 from brainevent.pararnn._lstm import LSTMCIFGDiagMH
+from brainevent.pararnn._parallel_reduce import parallel_reduce_diag, parallel_reduce_block_diag
+from brainevent.pararnn._fused_cuda import fused_cuda_available
+from brainevent.pararnn._parallel_reduce_cuda import (
+    parallel_reduce_diag_cuda,
+    parallel_reduce_block2_cuda,
+    cuda_available,
+)
 
 
 def _time_fn(fn, x, n_warmup=5, n_runs=20):
@@ -63,6 +70,7 @@ def _time_fn(fn, x, n_warmup=5, n_runs=20):
 
 def _time_fn_with_grad(fn, x, n_warmup=5, n_runs=20):
     """Time forward + backward with warmup."""
+
     def loss(x):
         return jnp.sum(fn(x) ** 2)
 
@@ -84,27 +92,29 @@ def _time_fn_with_grad(fn, x, n_warmup=5, n_runs=20):
     return min(times), sum(times) / len(times)
 
 
-def benchmark_gru(batch_sizes=(1, 4), seq_lengths=(64, 256, 1024),
-                  hidden_dims=(32, 128), input_dim=32, num_heads=2):
+def benchmark_gru(
+    batch_sizes=(1, 4),
+    seq_lengths=(64, 256, 1024),
+    hidden_dims=(32, 128),
+    input_dim=32,
+    num_heads=2
+):
     """Benchmark GRU across modes."""
     print("=" * 80)
     print("GRU Benchmark")
     print("=" * 80)
 
     modes = ['sequential', 'parallel']
+    modes = ['parallel']
 
     # Check for fused CUDA
-    try:
-        from brainevent.pararnn._fused_cuda import fused_cuda_available
-        if fused_cuda_available():
-            modes.append('fused')
-    except Exception:
-        pass
+    if fused_cuda_available():
+        modes.append('fused')
 
     header = f"{'B':>4} {'T':>6} {'N':>5} | "
     header += " | ".join(f"{m:>12}" for m in modes)
     header += " | "
-    header += " | ".join(f"{m+'+bwd':>12}" for m in modes)
+    header += " | ".join(f"{m + '+bwd':>12}" for m in modes)
     print(header)
     print("-" * len(header))
 
@@ -144,26 +154,28 @@ def benchmark_gru(batch_sizes=(1, 4), seq_lengths=(64, 256, 1024),
     print()
 
 
-def benchmark_lstm(batch_sizes=(1, 4), seq_lengths=(64, 256, 1024),
-                   hidden_dims=(32, 128), input_dim=32, num_heads=2):
+def benchmark_lstm(
+    batch_sizes=(1, 4),
+    seq_lengths=(64, 256, 1024),
+    hidden_dims=(32, 128),
+    input_dim=32,
+    num_heads=2,
+):
     """Benchmark LSTM-CIFG across modes."""
     print("=" * 80)
     print("LSTM-CIFG Benchmark")
     print("=" * 80)
 
     modes = ['sequential', 'parallel']
+    modes = ['parallel']
 
-    try:
-        from brainevent.pararnn._fused_cuda import fused_cuda_available
-        if fused_cuda_available():
-            modes.append('fused')
-    except Exception:
-        pass
+    if fused_cuda_available():
+        modes.append('fused')
 
     header = f"{'B':>4} {'T':>6} {'N':>5} | "
     header += " | ".join(f"{m:>12}" for m in modes)
     header += " | "
-    header += " | ".join(f"{m+'+bwd':>12}" for m in modes)
+    header += " | ".join(f"{m + '+bwd':>12}" for m in modes)
     print(header)
     print("-" * len(header))
 
@@ -209,21 +221,7 @@ def benchmark_parallel_reduce():
     print("Standalone Parallel Reduction Benchmark")
     print("=" * 80)
 
-    from brainevent.pararnn._parallel_reduce import (
-        parallel_reduce_diag,
-        parallel_reduce_block_diag,
-    )
-
-    has_cuda = False
-    try:
-        from brainevent.pararnn._parallel_reduce_cuda import (
-            parallel_reduce_diag_cuda,
-            parallel_reduce_block2_cuda,
-            cuda_available,
-        )
-        has_cuda = cuda_available()
-    except Exception:
-        pass
+    has_cuda = cuda_available()
 
     print("\nDiagonal reduction:")
     print(f"{'B':>4} {'T':>6} {'N':>5} | {'JAX':>12} | {'CUDA':>12}")
@@ -293,6 +291,12 @@ if __name__ == '__main__':
     print(f"Devices: {jax.devices()}")
     print()
 
-    benchmark_parallel_reduce()
-    benchmark_gru()
-    benchmark_lstm()
+    # benchmark_parallel_reduce()
+    benchmark_gru(
+        batch_sizes=(8, 16, 32, 64),
+        hidden_dims=(128, 256, 512, 1024),
+    )
+    benchmark_lstm(
+        batch_sizes=(8, 16, 32, 64),
+        hidden_dims=(128, 256, 512, 1024),
+    )
