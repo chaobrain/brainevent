@@ -16,17 +16,47 @@
 # -*- coding: utf-8 -*-
 
 import operator
-from typing import Union
+from typing import Union, Sequence, Optional, Dict
 
 import brainunit as u
 import jax
 import numpy as np
 from jax import numpy as jnp
 
-__all__ = ['JITCMatrix']
+__all__ = [
+    'DataRepresentation',
+    'JITCMatrix',
+]
 
 
-class JITCMatrix(u.sparse.SparseMatrix):
+class DataRepresentation(u.sparse.SparseMatrix):
+    def __init__(self, *args, shape: Sequence[int], buffers: Optional[Dict] = None):
+        super().__init__(*args, shape=shape)
+        self._buffer_registry = set()
+        if buffers is not None:
+            assert isinstance(buffers, dict), "buffers must be a dictionary of name-value pairs."
+            self._buffer_registry.update(buffers.keys())
+            for name, value in buffers.items():
+                self.register_buffer(name, value)
+
+    def register_buffer(self, name, value=None):
+        """Register a named buffer with a default value."""
+        self._buffer_registry.add(name)
+        setattr(self, name, value)
+
+    def set_buffer(self, name, value):
+        """Update the value of a previously registered buffer."""
+        if name not in self._buffer_registry:
+            raise ValueError(f"Buffer '{name}' not registered. Call register_buffer first.")
+        setattr(self, name, value)
+
+    @property
+    def buffers(self):
+        """Dict of all registered buffer names to their current values."""
+        return {name: getattr(self, name, None) for name in self._buffer_registry}
+
+
+class JITCMatrix(DataRepresentation):
     """
     Just-in-time Connectivity (JITC) matrix.
 

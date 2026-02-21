@@ -203,7 +203,6 @@ def _csr_on_pre_warp_kernel_generator(
     import warp
     from warp.jax_experimental import jax_kernel
 
-    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
     indices_warp_info = jaxinfo_to_warpinfo(indices_info)
     indptr_warp_info = jaxinfo_to_warpinfo(indptr_info)
     spike_warp_info = jaxinfo_to_warpinfo(spike_info)

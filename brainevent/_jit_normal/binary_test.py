@@ -20,6 +20,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from brainevent._data import _initialize_conn_length, _initialize_seed
 from brainevent._jit_normal.binary import (
     binary_jitnmv,
     binary_jitnmv_p,
@@ -27,7 +28,6 @@ from brainevent._jit_normal.binary import (
     binary_jitnmm_p_call,
 )
 from brainevent._jit_normal.float import jitnmv, jitnmm
-from brainevent._jitc_matrix import _initialize_conn_length, _initialize_seed
 from brainevent._test_util import allclose
 
 platform = jax.default_backend()
