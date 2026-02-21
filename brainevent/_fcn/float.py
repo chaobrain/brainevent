@@ -841,13 +841,9 @@ def _fcnmm_cuda_kernel(
 
     else:
         # Gather mode: Y[i, j] = sum_k w[i,k] * M[idx[i,k], j]
-        # vec4 and shared only for float32
-        if sfx == '_f32' and n_col % 4 == 0 and n_col >= 64:
-            kernel_name = 'fcn_float.fcnmm_gather_vec4_f32'
-        elif sfx == '_f32' and n_conn > 128:
-            kernel_name = 'fcn_float.fcnmm_gather_shared_f32'
-        else:
-            kernel_name = f'fcn_float.fcnmm_gather_auto{sfx}'
+        # The C++ auto dispatch selects the best kernel variant
+        # (vec4+shm, shared, or basic) based on n_col and n_conn.
+        kernel_name = f'fcn_float.fcnmm_gather_auto{sfx}'
 
     def kernel(weights, indices, matrix):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, matrix)
