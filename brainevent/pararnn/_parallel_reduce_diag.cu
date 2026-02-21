@@ -29,6 +29,14 @@
  *   4. Warp-level forward substitution
  *   5. Chunk-level forward substitution
  *
+ * For sequences exceeding single-block capacity, a 3-phase multi-block
+ * scheme is used:
+ *   Phase 1 (_local): Intra-block prefix scan, write partial results
+ *           and per-element accumulated Jacobians, extract block boundaries.
+ *   Phase 2 (_boundary): Prefix scan over block boundary elements.
+ *   Phase 3 (_final): Correct partial results using solved boundaries:
+ *           output[t] += accum_jac[t] * boundary_solution[prev_block].
+ *
  * Monoid: (J_b, r_b) @ (J_a, r_a) = (J_b * J_a, J_b * r_a + r_b)
  * Identity: (1, 0)
  *
@@ -52,13 +60,6 @@
 #define THREADS_PER_BLOCK 1024
 
 // ============================================================================
-// Chunk-size per dtype (tuned for register pressure)
-// ============================================================================
-
-// float32: chunk_size = 2 (spills at >= 32)
-// float64: chunk_size = 4 (spills at >= 8)
-
-// ============================================================================
 // Diagonal Reduction Kernel (parameterized by SCALAR_T, CHUNK_SIZE)
 // ============================================================================
 
@@ -72,7 +73,6 @@ _pararnn_reduce_diag_single##SUFFIX(                                           \
     SCALAR_T* __restrict__ output,                                             \
     int seq_len, int hidden_dim, int batch_size                                \
 ) {                                                                            \
-    /* Thread mapping: blockIdx.x = hidden_dim idx, blockIdx.y = batch idx */  \
     const int h_idx = blockIdx.x;                                              \
     const int b_idx = blockIdx.y;                                              \
     if (h_idx >= hidden_dim || b_idx >= batch_size) return;                    \
@@ -83,10 +83,8 @@ _pararnn_reduce_diag_single##SUFFIX(                                           \
     const int warps_per_block = (THREADS_PER_BLOCK + THREADS_PER_WARP - 1)     \
                                 / THREADS_PER_WARP;                            \
                                                                                \
-    /* Base offset for this (batch, hidden_dim) element */                     \
-    /* Data layout: (batch_size, seq_len, hidden_dim) */                       \
     const int base = b_idx * seq_len * hidden_dim + h_idx;                     \
-    const int stride = hidden_dim;  /* stride between consecutive timesteps */ \
+    const int stride = hidden_dim;                                             \
                                                                                \
     /* Load chunk into registers */                                            \
     SCALAR_T reg_jac[CHUNK_SIZE];                                              \
@@ -100,30 +98,21 @@ _pararnn_reduce_diag_single##SUFFIX(                                           \
             reg_rhs[c] = rhs_in[base + t * stride];                            \
             num_valid++;                                                       \
         } else {                                                               \
-            /* Identity element: jac=1, rhs=0 */                               \
             reg_jac[c] = (SCALAR_T)(1.0);                                     \
             reg_rhs[c] = (SCALAR_T)(0.0);                                     \
         }                                                                      \
     }                                                                          \
-    /* Zero the first Jacobian (boundary condition: h[-1] = 0) */              \
     if (tid == 0) {                                                            \
         reg_jac[0] = (SCALAR_T)(0.0);                                         \
     }                                                                          \
                                                                                \
-    /* ================================================================ */     \
-    /* Step 1: Sequential prefix scan within chunk                      */     \
-    /* Monoid: (j_b*j_a, j_b*r_a + r_b)                                */     \
-    /* ================================================================ */     \
+    /* Step 1: Sequential prefix scan within chunk */                          \
     for (int c = 1; c < CHUNK_SIZE; c++) {                                     \
         reg_rhs[c] += reg_jac[c] * reg_rhs[c - 1];                            \
         reg_jac[c] *= reg_jac[c - 1];                                         \
     }                                                                          \
-    /* Now all vars in chunk depend on last var of previous chunk */            \
                                                                                \
-    /* ================================================================ */     \
-    /* Step 2: Warp-level prefix scan (Hillis-Steele)                   */     \
-    /* Uses __shfl_up_sync for intra-warp communication                 */     \
-    /* ================================================================ */     \
+    /* Step 2: Warp-level prefix scan */                                       \
     SCALAR_T jac_last = reg_jac[CHUNK_SIZE - 1];                               \
     SCALAR_T rhs_last = reg_rhs[CHUNK_SIZE - 1];                               \
     for (int d = 1; d < THREADS_PER_WARP; d <<= 1) {                          \
@@ -136,23 +125,16 @@ _pararnn_reduce_diag_single##SUFFIX(                                           \
     }                                                                          \
     reg_jac[CHUNK_SIZE - 1] = jac_last;                                        \
     reg_rhs[CHUNK_SIZE - 1] = rhs_last;                                        \
-    /* Now last vars in each chunk depend on last var of previous warp */       \
                                                                                \
-    /* ================================================================ */     \
-    /* Step 3: Block-level prefix scan via shared memory                */     \
-    /* ================================================================ */     \
+    /* Step 3: Block-level prefix scan via shared memory */                    \
     extern __shared__ char _smem_bytes[];                                       \
     SCALAR_T* smem_jac = reinterpret_cast<SCALAR_T*>(_smem_bytes);             \
     SCALAR_T* smem_rhs = smem_jac + warps_per_block;                           \
-                                                                               \
-    /* Last thread of each warp writes to shared memory */                     \
     if (lane == (THREADS_PER_WARP - 1) && num_valid > 0) {                     \
         smem_jac[warp_id] = reg_jac[CHUNK_SIZE - 1];                           \
         smem_rhs[warp_id] = reg_rhs[CHUNK_SIZE - 1];                           \
     }                                                                          \
     __syncthreads();                                                           \
-                                                                               \
-    /* Prefix scan across warps (only last thread of each warp) */             \
     for (int d = 1; d < warps_per_block; d <<= 1) {                           \
         int prev_warp = warp_id - d;                                           \
         if (lane == (THREADS_PER_WARP - 1) && prev_warp >= 0                   \
@@ -169,27 +151,15 @@ _pararnn_reduce_diag_single##SUFFIX(                                           \
         }                                                                      \
         __syncthreads();                                                       \
     }                                                                          \
-    /* Now last var of last chunk in each warp is solved */                     \
                                                                                \
-    /* ================================================================ */     \
-    /* Step 4: Warp-level forward substitution                          */     \
-    /* Non-last threads in each warp apply previous warp boundary       */     \
-    /* ================================================================ */     \
+    /* Step 4: Warp-level forward substitution */                              \
     SCALAR_T sol_prev;                                                         \
-    SCALAR_T jac_prev;                                                         \
     if (warp_id > 0 && lane != (THREADS_PER_WARP - 1)) {                       \
-        jac_prev = smem_jac[warp_id - 1];                                     \
         sol_prev = smem_rhs[warp_id - 1];                                     \
     } else {                                                                   \
-        jac_prev = (SCALAR_T)(1.0);                                           \
         sol_prev = (SCALAR_T)(0.0);                                            \
     }                                                                          \
-                                                                               \
-    /* Apply composition for last chunk element */                             \
     reg_rhs[CHUNK_SIZE - 1] += reg_jac[CHUNK_SIZE - 1] * sol_prev;            \
-    reg_jac[CHUNK_SIZE - 1] *= jac_prev;                                       \
-                                                                               \
-    /* Shuffle within warp to propagate solutions */                            \
     {                                                                          \
         SCALAR_T prev_rhs = __shfl_up_sync(                                    \
             0xffffffff, reg_rhs[CHUNK_SIZE - 1], 1);                           \
@@ -198,12 +168,7 @@ _pararnn_reduce_diag_single##SUFFIX(                                           \
         }                                                                      \
     }                                                                          \
                                                                                \
-    /* ================================================================ */     \
-    /* Step 5: Chunk-level forward substitution                         */     \
-    /* Each thread substitutes within its chunk using the solution from */     \
-    /* the previous thread's last chunk element                         */     \
-    /* h_actual[c] = reg_rhs[c] + reg_jac[c] * sol_prev                */     \
-    /* ================================================================ */     \
+    /* Step 5: Chunk-level forward substitution */                             \
     for (int c = 0; c < CHUNK_SIZE - 1; c++) {                                 \
         reg_rhs[c] += reg_jac[c] * sol_prev;                                  \
     }                                                                          \
@@ -217,19 +182,24 @@ _pararnn_reduce_diag_single##SUFFIX(                                           \
     }                                                                          \
 }                                                                              \
                                                                                \
-/* Multi-block: block-local reduction (stores boundary to temp buffers) */     \
+/* ================================================================== */      \
+/* Multi-block Phase 1: Local reduction within each block              */      \
+/* Writes partial rhs to output, accumulated jac to accum_jac buffer,  */      \
+/* and block boundary (jac, rhs) to bnd_jac/bnd_rhs.                   */      \
+/* ================================================================== */      \
 __global__ void __launch_bounds__(THREADS_PER_BLOCK, 1)                        \
 _pararnn_reduce_diag_local##SUFFIX(                                            \
     const SCALAR_T* __restrict__ jac_in,                                       \
     const SCALAR_T* __restrict__ rhs_in,                                       \
     SCALAR_T* __restrict__ output,                                             \
+    SCALAR_T* __restrict__ accum_jac,                                          \
     SCALAR_T* __restrict__ bnd_jac,                                            \
     SCALAR_T* __restrict__ bnd_rhs,                                            \
     int seq_len, int hidden_dim, int batch_size, int block_stride              \
 ) {                                                                            \
+    const int blk_seq = blockIdx.x;                                            \
     const int h_idx = blockIdx.y;                                              \
     const int b_idx = blockIdx.z;                                              \
-    const int blk_seq = blockIdx.x;                                            \
     if (h_idx >= hidden_dim || b_idx >= batch_size) return;                    \
                                                                                \
     const int tid = threadIdx.x;                                               \
@@ -262,12 +232,12 @@ _pararnn_reduce_diag_local##SUFFIX(                                            \
         reg_jac[0] = (SCALAR_T)(0.0);                                         \
     }                                                                          \
                                                                                \
-    /* Steps 1-5: same as single-block */                                      \
     /* Step 1: Sequential prefix scan within chunk */                          \
     for (int c = 1; c < CHUNK_SIZE; c++) {                                     \
         reg_rhs[c] += reg_jac[c] * reg_rhs[c - 1];                            \
         reg_jac[c] *= reg_jac[c - 1];                                         \
     }                                                                          \
+                                                                               \
     /* Step 2: Warp prefix scan */                                             \
     SCALAR_T jac_last = reg_jac[CHUNK_SIZE - 1];                               \
     SCALAR_T rhs_last = reg_rhs[CHUNK_SIZE - 1];                               \
@@ -281,6 +251,7 @@ _pararnn_reduce_diag_local##SUFFIX(                                            \
     }                                                                          \
     reg_jac[CHUNK_SIZE - 1] = jac_last;                                        \
     reg_rhs[CHUNK_SIZE - 1] = rhs_last;                                        \
+                                                                               \
     /* Step 3: Block prefix scan */                                            \
     extern __shared__ char _smem_bytes[];                                       \
     SCALAR_T* smem_jac = reinterpret_cast<SCALAR_T*>(_smem_bytes);             \
@@ -305,7 +276,8 @@ _pararnn_reduce_diag_local##SUFFIX(                                            \
         }                                                                      \
         __syncthreads();                                                       \
     }                                                                          \
-    /* Step 4: Warp forward substitution */                                    \
+                                                                               \
+    /* Step 4: Warp forward substitution (tracks both jac and rhs) */          \
     SCALAR_T sol_prev, jac_prev_v;                                             \
     if (warp_id > 0 && lane != (THREADS_PER_WARP - 1)) {                       \
         jac_prev_v = smem_jac[warp_id - 1];                                   \
@@ -319,23 +291,31 @@ _pararnn_reduce_diag_local##SUFFIX(                                            \
     {                                                                          \
         SCALAR_T pr = __shfl_up_sync(                                          \
             0xffffffff, reg_rhs[CHUNK_SIZE - 1], 1);                           \
-        if (lane > 0) { sol_prev = pr; }                                       \
-    }                                                                          \
-    /* Step 5: Chunk forward substitution */                                   \
-    for (int c = 0; c < CHUNK_SIZE - 1; c++) {                                 \
-        reg_rhs[c] += reg_jac[c] * sol_prev;                                  \
+        SCALAR_T pj = __shfl_up_sync(                                          \
+            0xffffffff, reg_jac[CHUNK_SIZE - 1], 1);                           \
+        if (lane > 0) {                                                        \
+            sol_prev = pr;                                                     \
+            jac_prev_v = pj;                                                   \
+        }                                                                      \
     }                                                                          \
                                                                                \
-    /* Write to output */                                                      \
+    /* Step 5: Chunk forward substitution (both jac and rhs) */                \
+    for (int c = 0; c < CHUNK_SIZE - 1; c++) {                                 \
+        reg_rhs[c] += reg_jac[c] * sol_prev;                                  \
+        reg_jac[c] *= jac_prev_v;                                              \
+    }                                                                          \
+                                                                               \
+    /* Write partial rhs to output, accumulated jac to accum_jac */            \
     for (int c = 0; c < CHUNK_SIZE; c++) {                                     \
         int t = t_start + c;                                                   \
         if (t < seq_len) {                                                     \
             output[base + t * stride] = reg_rhs[c];                            \
+            accum_jac[base + t * stride] = reg_jac[c];                         \
         }                                                                      \
     }                                                                          \
                                                                                \
-    /* Store boundary (last thread in block) for inter-block reduction */      \
-    if (tid == THREADS_PER_BLOCK - 1 || t_start + CHUNK_SIZE - 1 >= seq_len - 1) { \
+    /* Store block boundary from last thread */                                \
+    if (tid == THREADS_PER_BLOCK - 1) {                                        \
         int bnd_idx = blk_seq * batch_size * hidden_dim                        \
                       + b_idx * hidden_dim + h_idx;                            \
         bnd_jac[bnd_idx] = reg_jac[CHUNK_SIZE - 1];                            \
@@ -343,7 +323,11 @@ _pararnn_reduce_diag_local##SUFFIX(                                            \
     }                                                                          \
 }                                                                              \
                                                                                \
-/* Multi-block: boundary element reduction (single block) */                   \
+/* ================================================================== */      \
+/* Multi-block Phase 2: Boundary prefix scan                           */      \
+/* Solves the boundary elements via prefix scan, giving the true       */      \
+/* solution at the end of each block.                                  */      \
+/* ================================================================== */      \
 __global__ void __launch_bounds__(1024, 1)                                     \
 _pararnn_reduce_diag_boundary##SUFFIX(                                         \
     SCALAR_T* __restrict__ bnd_jac,                                            \
@@ -369,7 +353,8 @@ _pararnn_reduce_diag_boundary##SUFFIX(                                         \
         my_jac = (SCALAR_T)(1.0);                                             \
         my_rhs = (SCALAR_T)(0.0);                                             \
     }                                                                          \
-    /* Zero first boundary jac */                                              \
+    /* Block 0 boundary: jac[0] was zeroed in _local, so bnd_jac[0]=0 */      \
+    /* Explicitly zero to be safe */                                           \
     if (tid == 0) my_jac = (SCALAR_T)(0.0);                                   \
                                                                                \
     /* Warp-level prefix scan */                                               \
@@ -423,22 +408,24 @@ _pararnn_reduce_diag_boundary##SUFFIX(                                         \
         }                                                                      \
     }                                                                          \
                                                                                \
-    /* Write back boundary solutions */                                        \
+    /* Write back solved boundary values */                                    \
     if (tid < num_blocks) {                                                    \
-        bnd_jac[tid * hb_stride + hb_off] = my_jac;                            \
         bnd_rhs[tid * hb_stride + hb_off] = my_rhs;                            \
     }                                                                          \
 }                                                                              \
                                                                                \
-/* Multi-block: forward substitution using solved boundaries */                \
+/* ================================================================== */      \
+/* Multi-block Phase 3: Final correction using solved boundaries       */      \
+/* For each block b > 0: output[t] += accum_jac[t] * bnd_rhs[b-1]     */      \
+/* ================================================================== */      \
 __global__ void __launch_bounds__(THREADS_PER_BLOCK, 1)                        \
 _pararnn_reduce_diag_final##SUFFIX(                                            \
     SCALAR_T* __restrict__ output,                                             \
-    const SCALAR_T* __restrict__ jac_in,                                       \
+    const SCALAR_T* __restrict__ accum_jac,                                    \
     const SCALAR_T* __restrict__ bnd_rhs,                                      \
     int seq_len, int hidden_dim, int batch_size, int block_stride              \
 ) {                                                                            \
-    const int blk_seq = blockIdx.x + 1;  /* skip first block (already done) */ \
+    const int blk_seq = blockIdx.x + 1;  /* skip first block */                \
     const int h_idx = blockIdx.y;                                              \
     const int b_idx = blockIdx.z;                                              \
     if (h_idx >= hidden_dim || b_idx >= batch_size) return;                    \
@@ -450,17 +437,15 @@ _pararnn_reduce_diag_final##SUFFIX(                                            \
     const int hb_stride = batch_size * hidden_dim;                             \
     const int hb_off = b_idx * hidden_dim + h_idx;                             \
                                                                                \
-    /* Read previous block's boundary solution */                              \
+    /* Read previous block's solved boundary solution */                       \
     SCALAR_T prev_sol = bnd_rhs[(blk_seq - 1) * hb_stride + hb_off];          \
                                                                                \
-    /* Forward substitute: output[t] += jac_accum[t] * prev_sol */             \
-    /* The local output has the partial result; the accumulated Jacobian */     \
-    /* encodes the dependency on the previous block boundary. */               \
+    /* Correct each element: h[t] = partial_rhs[t] + accum_jac[t]*prev_sol */  \
     for (int c = 0; c < CHUNK_SIZE; c++) {                                     \
         int t = t_offset + tid * CHUNK_SIZE + c;                               \
         if (t < seq_len) {                                                     \
-            SCALAR_T j = jac_in[base + t * stride];                            \
-            output[base + t * stride] += j * prev_sol;                         \
+            int idx = base + t * stride;                                       \
+            output[idx] += accum_jac[idx] * prev_sol;                          \
         }                                                                      \
     }                                                                          \
 }
@@ -485,7 +470,6 @@ void pararnn_reduce_diag##SUFFIX(                                              \
     int64_t stream                                                             \
 ) {                                                                            \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                   \
-    /* Data layout: (batch_size, seq_len, hidden_dim) */                       \
     int batch_size = static_cast<int>(jac_tv.size(0));                         \
     int seq_len    = static_cast<int>(jac_tv.size(1));                         \
     int hidden_dim = static_cast<int>(jac_tv.size(2));                         \
@@ -508,14 +492,49 @@ void pararnn_reduce_diag##SUFFIX(                                              \
         _pararnn_reduce_diag_single##SUFFIX<<<grid, block, smem_size, s>>>(    \
             d_jac, d_rhs, d_out, seq_len, hidden_dim, batch_size);             \
     } else {                                                                   \
-        /* Multi-block path: not yet implemented, fall through to single */    \
-        /* TODO: implement multi-block scheme with boundary reduction */        \
-        /* For now, use the single-block kernel (handles up to */              \
-        /* THREADS_PER_BLOCK * CHUNK_SIZE timesteps) */                        \
-        dim3 grid(hidden_dim, batch_size);                                     \
-        dim3 block(THREADS_PER_BLOCK);                                         \
-        _pararnn_reduce_diag_single##SUFFIX<<<grid, block, smem_size, s>>>(    \
-            d_jac, d_rhs, d_out, seq_len, hidden_dim, batch_size);             \
+        /* Multi-block path */                                                 \
+        size_t hb_elems = (size_t)batch_size * hidden_dim;                     \
+        size_t bnd_bytes = (size_t)num_seq_blocks * hb_elems * sizeof(SCALAR_T);\
+        size_t accum_bytes = (size_t)batch_size * seq_len * hidden_dim         \
+                             * sizeof(SCALAR_T);                               \
+        size_t total_bytes = 2 * bnd_bytes + accum_bytes;                      \
+                                                                               \
+        char* temp = nullptr;                                                  \
+        cudaMalloc((void**)&temp, total_bytes);                                \
+        SCALAR_T* bnd_jac_d   = reinterpret_cast<SCALAR_T*>(temp);            \
+        SCALAR_T* bnd_rhs_d   = reinterpret_cast<SCALAR_T*>(                  \
+                                    temp + bnd_bytes);                         \
+        SCALAR_T* accum_jac_d = reinterpret_cast<SCALAR_T*>(                  \
+                                    temp + 2 * bnd_bytes);                     \
+                                                                               \
+        /* Phase 1: Local reduction per block */                               \
+        dim3 grid1(num_seq_blocks, hidden_dim, batch_size);                    \
+        dim3 block1(THREADS_PER_BLOCK);                                        \
+        _pararnn_reduce_diag_local##SUFFIX<<<grid1, block1, smem_size, s>>>(   \
+            d_jac, d_rhs, d_out, accum_jac_d, bnd_jac_d, bnd_rhs_d,           \
+            seq_len, hidden_dim, batch_size, block_stride);                    \
+                                                                               \
+        /* Phase 2: Boundary prefix scan */                                    \
+        int bnd_threads = num_seq_blocks;                                      \
+        if (bnd_threads > 1024) bnd_threads = 1024;                            \
+        int bnd_warps = (bnd_threads + THREADS_PER_WARP - 1)                   \
+                        / THREADS_PER_WARP;                                    \
+        unsigned int bnd_smem = 2 * bnd_warps * sizeof(SCALAR_T);             \
+        dim3 grid2(hidden_dim, batch_size);                                    \
+        dim3 block2(bnd_threads);                                              \
+        _pararnn_reduce_diag_boundary##SUFFIX<<<grid2, block2,                 \
+                                                bnd_smem, s>>>(               \
+            bnd_jac_d, bnd_rhs_d, num_seq_blocks, hidden_dim, batch_size);     \
+                                                                               \
+        /* Phase 3: Final correction (blocks > 0) */                           \
+        dim3 grid3(num_seq_blocks - 1, hidden_dim, batch_size);                \
+        dim3 block3(THREADS_PER_BLOCK);                                        \
+        _pararnn_reduce_diag_final##SUFFIX<<<grid3, block3, 0, s>>>(           \
+            d_out, accum_jac_d, bnd_rhs_d,                                     \
+            seq_len, hidden_dim, batch_size, block_stride);                    \
+                                                                               \
+        /* Free temp memory (stream-ordered) */                                \
+        cudaFreeAsync(temp, s);                                                \
     }                                                                          \
 }
 

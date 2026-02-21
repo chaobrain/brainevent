@@ -282,10 +282,10 @@ class TestCUDAReduceDiag:
         h = parallel_reduce_diag(jac, rhs, backend='tvmffi')
         assert jnp.allclose(h, rhs)
 
-    @pytest.mark.xfail(reason="Multi-block path not implemented; T=4096 exceeds single-block capacity")
-    def test_large_sequence(self):
+    @pytest.mark.parametrize('T', [4096, 8192])
+    def test_large_sequence(self, T):
         """Test with large T to exercise multi-block path."""
-        B, T, N = 1, 4096, 8
+        B, N = 1, 8
         key = jr.PRNGKey(42)
         k1, k2 = jr.split(key)
         jac = jr.normal(k1, (B, T, N)) * 0.3
@@ -295,7 +295,7 @@ class TestCUDAReduceDiag:
         h_cuda = parallel_reduce_diag(jac, rhs, backend='tvmffi')
 
         assert jnp.allclose(h_jax, h_cuda, atol=1e-3, rtol=1e-3), \
-            f"Max diff: {jnp.max(jnp.abs(h_jax - h_cuda))}"
+            f"T={T}, Max diff: {jnp.max(jnp.abs(h_jax - h_cuda))}"
 
 
 class TestCUDAReduceBlock2:
@@ -344,10 +344,10 @@ class TestCUDAReduceBlock2:
         assert jnp.allclose(h_seq, h_cuda, atol=1e-4, rtol=1e-4), \
             f"T={T}, Max diff: {jnp.max(jnp.abs(h_seq - h_cuda))}"
 
-    @pytest.mark.xfail(reason="Multi-block path not implemented; T=2048 exceeds single-block capacity")
-    def test_large_sequence(self):
+    @pytest.mark.parametrize('T', [2048, 4096])
+    def test_large_sequence(self, T):
         """Test with large T to exercise multi-block path."""
-        B, T, N, K = 1, 2048, 4, 2
+        B, N, K = 1, 4, 2
         key = jr.PRNGKey(42)
         k1, k2 = jr.split(key)
         jac = jr.normal(k1, (B, T, N, K, K)) * 0.2
@@ -357,4 +357,4 @@ class TestCUDAReduceBlock2:
         h_cuda = parallel_reduce_block_diag(jac, rhs, backend='tvmffi')
 
         assert jnp.allclose(h_jax, h_cuda, atol=1e-3, rtol=1e-3), \
-            f"Max diff: {jnp.max(jnp.abs(h_jax - h_cuda))}"
+            f"T={T}, Max diff: {jnp.max(jnp.abs(h_jax - h_cuda))}"
