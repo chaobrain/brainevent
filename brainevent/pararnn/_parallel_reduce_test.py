@@ -358,3 +358,242 @@ class TestCUDAReduceBlock2:
 
         assert jnp.allclose(h_jax, h_cuda, atol=1e-3, rtol=1e-3), \
             f"T={T}, Max diff: {jnp.max(jnp.abs(h_jax - h_cuda))}"
+
+
+# =============================================================================
+# AD (JVP / transpose / grad) tests for primitives
+# =============================================================================
+
+from brainevent.pararnn._parallel_reduce import (
+    parallel_reduce_diag_p,
+    parallel_reduce_block_diag_p,
+)
+
+
+def _diag_via_primitive(jac, rhs):
+    """Call diagonal reduce through the XLACustomKernel primitive."""
+    return parallel_reduce_diag_p(
+        jac, rhs,
+        rhs_info=jax.ShapeDtypeStruct(rhs.shape, rhs.dtype),
+        outs=[jax.ShapeDtypeStruct(rhs.shape, rhs.dtype)],
+        backend='jax_raw',
+    )[0]
+
+
+def _block_diag_via_primitive(jac, rhs):
+    """Call block-diagonal reduce through the XLACustomKernel primitive."""
+    return parallel_reduce_block_diag_p(
+        jac, rhs,
+        rhs_info=jax.ShapeDtypeStruct(rhs.shape, rhs.dtype),
+        outs=[jax.ShapeDtypeStruct(rhs.shape, rhs.dtype)],
+        backend='jax_raw',
+    )[0]
+
+
+class TestDiagPrimitiveAD:
+    """Tests for JVP/transpose/grad of parallel_reduce_diag_p."""
+
+    def test_grad_wrt_rhs(self):
+        """jax.grad through diagonal reduce primitive w.r.t. rhs."""
+        B, T, N = 2, 16, 4
+        key = jr.PRNGKey(0)
+        k1, k2 = jr.split(key)
+        jac = jr.normal(k1, (B, T, N)) * 0.3
+        rhs = jr.normal(k2, (B, T, N))
+
+        def loss(rhs):
+            return jnp.sum(_diag_via_primitive(jac, rhs) ** 2)
+
+        g = jax.grad(loss)(rhs)
+        assert g.shape == rhs.shape
+        assert jnp.all(jnp.isfinite(g))
+
+    def test_grad_wrt_jac(self):
+        """jax.grad through diagonal reduce primitive w.r.t. jac."""
+        B, T, N = 2, 8, 4
+        key = jr.PRNGKey(0)
+        k1, k2 = jr.split(key)
+        jac = jr.normal(k1, (B, T, N)) * 0.3
+        rhs = jr.normal(k2, (B, T, N))
+
+        def loss(jac):
+            return jnp.sum(_diag_via_primitive(jac, rhs) ** 2)
+
+        g = jax.grad(loss)(jac)
+        assert g.shape == jac.shape
+        assert jnp.all(jnp.isfinite(g))
+
+    def test_jvp_rhs_matches_native(self):
+        """JVP w.r.t. rhs via primitive matches JAX native AD."""
+        B, T, N = 1, 8, 4
+        key = jr.PRNGKey(42)
+        k1, k2, k3 = jr.split(key, 3)
+        jac = jr.normal(k1, (B, T, N)) * 0.3
+        rhs = jr.normal(k2, (B, T, N))
+        rhs_dot = jr.normal(k3, (B, T, N))
+
+        # Via primitive (exercises our JVP rule)
+        def f_prim(rhs):
+            return _diag_via_primitive(jac, rhs)
+        _, h_dot_prim = jax.jvp(f_prim, (rhs,), (rhs_dot,))
+
+        # Via native JAX (ground truth: associative_scan is natively differentiable)
+        def f_native(rhs):
+            return parallel_reduce_diag(jac, rhs)
+        _, h_dot_native = jax.jvp(f_native, (rhs,), (rhs_dot,))
+
+        assert jnp.allclose(h_dot_prim, h_dot_native, atol=1e-5), \
+            f"Max diff: {jnp.max(jnp.abs(h_dot_prim - h_dot_native))}"
+
+    def test_jvp_jac_matches_native(self):
+        """JVP w.r.t. jac via primitive matches JAX native AD."""
+        B, T, N = 1, 8, 4
+        key = jr.PRNGKey(42)
+        k1, k2, k3 = jr.split(key, 3)
+        jac = jr.normal(k1, (B, T, N)) * 0.3
+        rhs = jr.normal(k2, (B, T, N))
+        jac_dot = jr.normal(k3, (B, T, N))
+
+        def f_prim(jac):
+            return _diag_via_primitive(jac, rhs)
+        _, h_dot_prim = jax.jvp(f_prim, (jac,), (jac_dot,))
+
+        def f_native(jac):
+            return parallel_reduce_diag(jac, rhs)
+        _, h_dot_native = jax.jvp(f_native, (jac,), (jac_dot,))
+
+        assert jnp.allclose(h_dot_prim, h_dot_native, atol=1e-5), \
+            f"Max diff: {jnp.max(jnp.abs(h_dot_prim - h_dot_native))}"
+
+    def test_grad_matches_native(self):
+        """VJP via primitive matches JAX native AD for both inputs."""
+        B, T, N = 1, 8, 4
+        key = jr.PRNGKey(42)
+        k1, k2 = jr.split(key)
+        jac = jr.normal(k1, (B, T, N)) * 0.3
+        rhs = jr.normal(k2, (B, T, N))
+
+        def loss_prim(jac, rhs):
+            return jnp.sum(_diag_via_primitive(jac, rhs) ** 2)
+
+        def loss_native(jac, rhs):
+            return jnp.sum(parallel_reduce_diag(jac, rhs) ** 2)
+
+        g_prim = jax.grad(loss_prim, argnums=(0, 1))(jac, rhs)
+        g_native = jax.grad(loss_native, argnums=(0, 1))(jac, rhs)
+
+        assert jnp.allclose(g_prim[0], g_native[0], atol=1e-5), \
+            f"jac grad max diff: {jnp.max(jnp.abs(g_prim[0] - g_native[0]))}"
+        assert jnp.allclose(g_prim[1], g_native[1], atol=1e-5), \
+            f"rhs grad max diff: {jnp.max(jnp.abs(g_prim[1] - g_native[1]))}"
+
+
+class TestBlockDiagPrimitiveAD:
+    """Tests for JVP/transpose/grad of parallel_reduce_block_diag_p."""
+
+    def test_grad_wrt_rhs(self):
+        """jax.grad through block-diagonal reduce primitive w.r.t. rhs."""
+        B, T, N, K = 2, 8, 4, 2
+        key = jr.PRNGKey(0)
+        k1, k2 = jr.split(key)
+        jac = jr.normal(k1, (B, T, N, K, K)) * 0.3
+        rhs = jr.normal(k2, (B, T, N, K))
+
+        def loss(rhs):
+            return jnp.sum(_block_diag_via_primitive(jac, rhs) ** 2)
+
+        g = jax.grad(loss)(rhs)
+        assert g.shape == rhs.shape
+        assert jnp.all(jnp.isfinite(g))
+
+    def test_grad_wrt_jac(self):
+        """jax.grad through block-diagonal reduce primitive w.r.t. jac."""
+        B, T, N, K = 2, 8, 4, 2
+        key = jr.PRNGKey(0)
+        k1, k2 = jr.split(key)
+        jac = jr.normal(k1, (B, T, N, K, K)) * 0.3
+        rhs = jr.normal(k2, (B, T, N, K))
+
+        def loss(jac):
+            return jnp.sum(_block_diag_via_primitive(jac, rhs) ** 2)
+
+        g = jax.grad(loss)(jac)
+        assert g.shape == jac.shape
+        assert jnp.all(jnp.isfinite(g))
+
+    def test_jvp_rhs_matches_native(self):
+        """JVP w.r.t. rhs via primitive matches JAX native AD."""
+        B, T, N, K = 1, 8, 4, 2
+        key = jr.PRNGKey(42)
+        k1, k2, k3 = jr.split(key, 3)
+        jac = jr.normal(k1, (B, T, N, K, K)) * 0.3
+        rhs = jr.normal(k2, (B, T, N, K))
+        rhs_dot = jr.normal(k3, (B, T, N, K))
+
+        def f_prim(rhs):
+            return _block_diag_via_primitive(jac, rhs)
+        _, h_dot_prim = jax.jvp(f_prim, (rhs,), (rhs_dot,))
+
+        def f_native(rhs):
+            return parallel_reduce_block_diag(jac, rhs)
+        _, h_dot_native = jax.jvp(f_native, (rhs,), (rhs_dot,))
+
+        assert jnp.allclose(h_dot_prim, h_dot_native, atol=1e-5), \
+            f"Max diff: {jnp.max(jnp.abs(h_dot_prim - h_dot_native))}"
+
+    def test_jvp_jac_matches_native(self):
+        """JVP w.r.t. jac via primitive matches JAX native AD."""
+        B, T, N, K = 1, 8, 4, 2
+        key = jr.PRNGKey(42)
+        k1, k2, k3 = jr.split(key, 3)
+        jac = jr.normal(k1, (B, T, N, K, K)) * 0.3
+        rhs = jr.normal(k2, (B, T, N, K))
+        jac_dot = jr.normal(k3, (B, T, N, K, K))
+
+        def f_prim(jac):
+            return _block_diag_via_primitive(jac, rhs)
+        _, h_dot_prim = jax.jvp(f_prim, (jac,), (jac_dot,))
+
+        def f_native(jac):
+            return parallel_reduce_block_diag(jac, rhs)
+        _, h_dot_native = jax.jvp(f_native, (jac,), (jac_dot,))
+
+        assert jnp.allclose(h_dot_prim, h_dot_native, atol=1e-5), \
+            f"Max diff: {jnp.max(jnp.abs(h_dot_prim - h_dot_native))}"
+
+    def test_grad_matches_native(self):
+        """VJP via primitive matches JAX native AD for both inputs."""
+        B, T, N, K = 1, 8, 4, 2
+        key = jr.PRNGKey(42)
+        k1, k2 = jr.split(key)
+        jac = jr.normal(k1, (B, T, N, K, K)) * 0.3
+        rhs = jr.normal(k2, (B, T, N, K))
+
+        def loss_prim(jac, rhs):
+            return jnp.sum(_block_diag_via_primitive(jac, rhs) ** 2)
+
+        def loss_native(jac, rhs):
+            return jnp.sum(parallel_reduce_block_diag(jac, rhs) ** 2)
+
+        g_prim = jax.grad(loss_prim, argnums=(0, 1))(jac, rhs)
+        g_native = jax.grad(loss_native, argnums=(0, 1))(jac, rhs)
+
+        assert jnp.allclose(g_prim[0], g_native[0], atol=1e-5), \
+            f"jac grad max diff: {jnp.max(jnp.abs(g_prim[0] - g_native[0]))}"
+        assert jnp.allclose(g_prim[1], g_native[1], atol=1e-5), \
+            f"rhs grad max diff: {jnp.max(jnp.abs(g_prim[1] - g_native[1]))}"
+
+    def test_3x3_grad_wrt_rhs(self):
+        """jax.grad for K=3 block-diagonal reduce via primitive."""
+        B, T, N, K = 1, 8, 4, 3
+        key = jr.PRNGKey(0)
+        k1, k2 = jr.split(key)
+        jac = jr.normal(k1, (B, T, N, K, K)) * 0.2
+        rhs = jr.normal(k2, (B, T, N, K))
+
+        def loss(rhs):
+            return jnp.sum(_block_diag_via_primitive(jac, rhs) ** 2)
+
+        g = jax.grad(loss)(rhs)
+        assert g.shape == rhs.shape
+        assert jnp.all(jnp.isfinite(g))

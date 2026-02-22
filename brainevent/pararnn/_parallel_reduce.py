@@ -40,6 +40,7 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.interpreters import ad
 
 from brainevent._op import XLACustomKernel, register_tvm_cuda_from_file
 
@@ -127,6 +128,71 @@ parallel_reduce_diag_p.def_tvmffi_kernel('gpu', _reduce_diag_cuda_kernel, asdefa
 parallel_reduce_diag_p.def_tags('pararnn', 'reduce')
 
 
+# -- JVP / transpose for diagonal reduction ----------------------------------
+
+def _adjoint_reduce_diag(jac, ct):
+    """Adjoint (transpose) of the diagonal forward solve.
+
+    Given the forward system ``h[t] = jac[t]*h[t-1] + rhs[t]``, the adjoint
+    system is ``λ[t] = jac[t+1]*λ[t+1] + ct[t]`` (backward in time).
+
+    Implemented as a forward scan on time-reversed arrays.
+    """
+    # jac_bwd[s] = jac[T-s] for s>=1, jac_bwd[0] = 0
+    # Equivalently: shift jac left by 1, zero last, then flip.
+    jac_shifted = jnp.roll(jac, -1, axis=-2)
+    jac_shifted = jac_shifted.at[..., -1:, :].set(0.0)
+    jac_bwd = jnp.flip(jac_shifted, axis=-2)
+    ct_rev = jnp.flip(ct, axis=-2)
+    lambda_rev = _parallel_reduce_diag_jax(jac_bwd, ct_rev)
+    return jnp.flip(lambda_rev, axis=-2)
+
+
+def _reduce_diag_jvp_jac(jac_dot, jac, rhs, **kwargs):
+    """JVP of diagonal reduction w.r.t. jac.
+
+    ``h_dot[t] = jac[t]*h_dot[t-1] + jac_dot[t]*h[t-1]``
+    """
+    h = _parallel_reduce_diag_jax(jac, rhs)
+    h_prev = jnp.roll(h, shift=1, axis=-2)
+    h_prev = h_prev.at[..., 0, :].set(0.0)
+    return (_parallel_reduce_diag_jax(jac, jac_dot * h_prev),)
+
+
+def _reduce_diag_jvp_rhs(rhs_dot, jac, rhs, **kwargs):
+    """JVP of diagonal reduction w.r.t. rhs.
+
+    ``h_dot = S(jac, rhs_dot)`` — same system, different RHS.
+    """
+    return (_parallel_reduce_diag_jax(jac, rhs_dot),)
+
+
+def _reduce_diag_transpose(ct, jac, rhs, **kwargs):
+    """Transpose rule for diagonal reduction.
+
+    The forward solve is linear in ``rhs`` (not in ``jac``).
+    """
+    ct_h = ct[0]
+
+    if ad.is_undefined_primal(jac):
+        raise ValueError(
+            "Cannot transpose pararnn_reduce_diag w.r.t. jac "
+            "(the solve is nonlinear in jac)."
+        )
+
+    if ad.is_undefined_primal(rhs):
+        if type(ct_h) is ad.Zero:
+            return jac, ad.Zero(rhs)
+        ct_rhs = _adjoint_reduce_diag(jac, ct_h)
+        return jac, ct_rhs
+
+    return jac, rhs
+
+
+parallel_reduce_diag_p.def_jvp_rule2(_reduce_diag_jvp_jac, _reduce_diag_jvp_rhs)
+parallel_reduce_diag_p.def_transpose_rule(_reduce_diag_transpose)
+
+
 def _reduce_block_diag_jax_kernel(**kwargs):
     """jax_raw kernel generator for block-diagonal parallel reduction."""
 
@@ -158,6 +224,68 @@ parallel_reduce_block_diag_p.def_kernel('jax_raw', 'gpu', _reduce_block_diag_jax
 parallel_reduce_block_diag_p.def_kernel('jax_raw', 'tpu', _reduce_block_diag_jax_kernel)
 parallel_reduce_block_diag_p.def_tvmffi_kernel('gpu', _reduce_block_diag_cuda_kernel, asdefault=True)
 parallel_reduce_block_diag_p.def_tags('pararnn', 'reduce')
+
+
+# -- JVP / transpose for block-diagonal reduction ----------------------------
+
+def _adjoint_reduce_block_diag(jac, ct):
+    """Adjoint of the block-diagonal forward solve.
+
+    The adjoint system uses *transposed* KxK blocks:
+    ``λ[t] = J[t+1]^T @ λ[t+1] + ct[t]``.
+    """
+    T_axis = 1  # (B, T, N, K, K)
+    jac_T = jnp.swapaxes(jac, -1, -2)
+    jac_shifted = jnp.roll(jac_T, -1, axis=T_axis)
+    jac_shifted = jac_shifted.at[:, -1:].set(0.0)
+    jac_bwd = jnp.flip(jac_shifted, axis=T_axis)
+    ct_rev = jnp.flip(ct, axis=T_axis)
+    lambda_rev = _parallel_reduce_block_diag_jax(jac_bwd, ct_rev)
+    return jnp.flip(lambda_rev, axis=T_axis)
+
+
+def _reduce_block_diag_jvp_jac(jac_dot, jac, rhs, **kwargs):
+    """JVP of block-diagonal reduction w.r.t. jac.
+
+    ``h_dot[t] = J[t] @ h_dot[t-1] + J_dot[t] @ h[t-1]``
+    """
+    h = _parallel_reduce_block_diag_jax(jac, rhs)
+    h_prev = jnp.roll(h, shift=1, axis=1)
+    h_prev = h_prev.at[:, 0].set(0.0)
+    # J_dot @ h_prev: einsum(...ij,...j->...i)
+    new_rhs = jnp.einsum('...ij,...j->...i', jac_dot, h_prev)
+    return (_parallel_reduce_block_diag_jax(jac, new_rhs),)
+
+
+def _reduce_block_diag_jvp_rhs(rhs_dot, jac, rhs, **kwargs):
+    """JVP of block-diagonal reduction w.r.t. rhs."""
+    return (_parallel_reduce_block_diag_jax(jac, rhs_dot),)
+
+
+def _reduce_block_diag_transpose(ct, jac, rhs, **kwargs):
+    """Transpose rule for block-diagonal reduction.
+
+    The forward solve is linear in ``rhs`` (not in ``jac``).
+    """
+    ct_h = ct[0]
+
+    if ad.is_undefined_primal(jac):
+        raise ValueError(
+            "Cannot transpose pararnn_reduce_block_diag w.r.t. jac "
+            "(the solve is nonlinear in jac)."
+        )
+
+    if ad.is_undefined_primal(rhs):
+        if type(ct_h) is ad.Zero:
+            return jac, ad.Zero(rhs)
+        ct_rhs = _adjoint_reduce_block_diag(jac, ct_h)
+        return jac, ct_rhs
+
+    return jac, rhs
+
+
+parallel_reduce_block_diag_p.def_jvp_rule2(_reduce_block_diag_jvp_jac, _reduce_block_diag_jvp_rhs)
+parallel_reduce_block_diag_p.def_transpose_rule(_reduce_block_diag_transpose)
 
 
 # =============================================================================

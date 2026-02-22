@@ -37,8 +37,10 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.interpreters import ad
 
 from brainevent._op import XLACustomKernel, register_tvm_cuda_from_file
+from ._parallel_reduce import _adjoint_reduce_diag
 
 __all__ = [
     'fused_gru_diag_forward',
@@ -356,6 +358,127 @@ fused_gru_diag_fwd_p.def_tvmffi_kernel('gpu', _fused_gru_fwd_cuda_kernel, asdefa
 fused_gru_diag_fwd_p.def_tags('pararnn', 'fused')
 
 
+# -- JVP / transpose for fused GRU forward -----------------------------------
+#
+# At convergence h satisfies h[t] = gru_step(h[t-1], A, Bxpb[t]).
+# By the implicit function theorem:
+#   h_dot[t] = J[t]*h_dot[t-1] + (∂step/∂A)·A_dot + (∂step/∂Bxpb)·Bxpb_dot
+# where J[t] = ∂gru_step/∂h_prev = -jac_neg[t].
+# This is a forward linear recurrence solved via parallel_reduce_diag.
+
+def _fused_gru_fwd_jvp_A(A_dot, A, Bxpb, **kwargs):
+    """JVP of fused GRU forward w.r.t. A (implicit differentiation)."""
+    h = _fused_gru_fwd_compute(A, Bxpb, kwargs)
+    return _fused_gru_fwd_tangent(h, A, Bxpb, A_dot=A_dot, Bxpb_dot=None)
+
+
+def _fused_gru_fwd_jvp_Bxpb(Bxpb_dot, A, Bxpb, **kwargs):
+    """JVP of fused GRU forward w.r.t. Bxpb (implicit differentiation)."""
+    h = _fused_gru_fwd_compute(A, Bxpb, kwargs)
+    return _fused_gru_fwd_tangent(h, A, Bxpb, A_dot=None, Bxpb_dot=Bxpb_dot)
+
+
+def _fused_gru_fwd_compute(A, Bxpb, kwargs):
+    """Recompute forward hidden states from primals."""
+    batch_size, seq_len = Bxpb.shape[0], Bxpb.shape[1]
+    hidden_dim = A.shape[1]
+    out = fused_gru_diag_fwd_p.primitive.bind(A, Bxpb, **kwargs)
+    return out[0]
+
+
+def _fused_gru_fwd_tangent(h, A, Bxpb, A_dot, Bxpb_dot):
+    """Compute tangent of fused GRU forward via implicit differentiation."""
+    h_prev = _roll_state(h)
+
+    # Cell Jacobian (un-negated): ∂gru_step/∂h_prev
+    jac_neg = _gru_jacobian_batched(h, A, Bxpb)
+    J = -jac_neg  # un-negate
+
+    # ∂step/∂A · A_dot + ∂step/∂Bxpb · Bxpb_dot
+    primals = []
+    tangents = []
+    if A_dot is not None:
+        primals.append(A)
+        tangents.append(A_dot)
+    else:
+        primals.append(A)
+        tangents.append(jnp.zeros_like(A))
+    if Bxpb_dot is not None:
+        primals.append(Bxpb)
+        tangents.append(Bxpb_dot)
+    else:
+        primals.append(Bxpb)
+        tangents.append(jnp.zeros_like(Bxpb))
+
+    def step_params(A_p, Bxpb_p):
+        return _gru_step_batched(h_prev, A_p, Bxpb_p)
+
+    _, s = jax.jvp(step_params, tuple(primals), tuple(tangents))
+
+    # Solve linear recurrence: h_dot[t] = J[t]*h_dot[t-1] + s[t]
+    h_dot = _parallel_reduce_diag_inline(J, s)
+    return (h_dot,)
+
+
+def _fused_gru_fwd_transpose(ct, A, Bxpb, **kwargs):
+    """Transpose of fused GRU forward (VJP via adjoint solve)."""
+    ct_h = ct[0]
+
+    if type(ct_h) is ad.Zero:
+        ct_A = ad.Zero(A) if ad.is_undefined_primal(A) else A
+        ct_Bxpb = ad.Zero(Bxpb) if ad.is_undefined_primal(Bxpb) else Bxpb
+        return ct_A, ct_Bxpb
+
+    # Need concrete A and Bxpb for Jacobian and vjp computation.
+    # In JAX's AD pipeline, at least one of A/Bxpb is undefined (tangent).
+    # The JVP created a linear map from (A_dot, Bxpb_dot) to h_dot;
+    # transpose of that map requires concrete A, Bxpb (known from forward).
+    if ad.is_undefined_primal(A) and ad.is_undefined_primal(Bxpb):
+        raise ValueError(
+            "Cannot transpose fused_gru_diag_fwd w.r.t. both A and Bxpb "
+            "simultaneously."
+        )
+
+    # Recompute h from whichever primals are concrete
+    if not ad.is_undefined_primal(A) and not ad.is_undefined_primal(Bxpb):
+        h = _fused_gru_fwd_compute(A, Bxpb, kwargs)
+    elif ad.is_undefined_primal(A):
+        # A is tangent, Bxpb is concrete — but we need A to compute h.
+        # This shouldn't happen in standard AD (JVP creates linear map w.r.t. A,
+        # needing concrete A). Raise error.
+        raise ValueError(
+            "Cannot transpose fused_gru_diag_fwd: A is undefined but needed "
+            "for Jacobian computation."
+        )
+    else:
+        raise ValueError(
+            "Cannot transpose fused_gru_diag_fwd: Bxpb is undefined but needed "
+            "for Jacobian computation."
+        )
+
+    h_prev = _roll_state(h)
+    jac_neg = _gru_jacobian_batched(h, A, Bxpb)
+    J = -jac_neg
+
+    # Adjoint solve: λ[t] = J[t+1]*λ[t+1] + ct_h[t]
+    lam = _adjoint_reduce_diag(J, ct_h)
+
+    # Parameter gradients via vjp of cell step
+    def step_params(A_p, Bxpb_p):
+        return _gru_step_batched(h_prev, A_p, Bxpb_p)
+
+    _, vjp_fn = jax.vjp(step_params, A, Bxpb)
+    ct_A_val, ct_Bxpb_val = vjp_fn(lam)
+
+    ct_A = ct_A_val if ad.is_undefined_primal(A) else A
+    ct_Bxpb = ct_Bxpb_val if ad.is_undefined_primal(Bxpb) else Bxpb
+    return ct_A, ct_Bxpb
+
+
+fused_gru_diag_fwd_p.def_jvp_rule2(_fused_gru_fwd_jvp_A, _fused_gru_fwd_jvp_Bxpb)
+fused_gru_diag_fwd_p.def_transpose_rule(_fused_gru_fwd_transpose)
+
+
 def fused_gru_diag_forward(
     A: jax.Array,
     Bxpb: jax.Array,
@@ -426,6 +549,60 @@ fused_gru_diag_bwd_p.def_kernel('jax_raw', 'gpu', _fused_gru_bwd_jax_kernel)
 fused_gru_diag_bwd_p.def_kernel('jax_raw', 'tpu', _fused_gru_bwd_jax_kernel)
 fused_gru_diag_bwd_p.def_tvmffi_kernel('gpu', _fused_gru_bwd_cuda_kernel, asdefault=True)
 fused_gru_diag_bwd_p.def_tags('pararnn', 'fused')
+
+
+# -- JVP / transpose for fused GRU backward ----------------------------------
+#
+# The backward primitive computes:
+#   dl_dh = flip(S(jac_bwd, flip(grad_y)))
+# where jac_bwd depends nonlinearly on (h, A, Bxpb) and S is a forward solve.
+# The output is LINEAR in grad_y but NONLINEAR in (h, A, Bxpb).
+
+def _fused_gru_bwd_jvp_grad_y(grad_y_dot, grad_y, h, A, Bxpb, **kwargs):
+    """JVP w.r.t. grad_y (linear): run backward solve on perturbed gradient."""
+    jac_bwd = _gru_jacobian_bwd_batched(h, A, Bxpb)
+    rhs_dot = jnp.flip(grad_y_dot, axis=-2)
+    dl_dh_dot = jnp.flip(
+        _parallel_reduce_diag_inline(jac_bwd, rhs_dot), axis=-2
+    )
+    return (dl_dh_dot,)
+
+
+def _fused_gru_bwd_transpose(ct, grad_y, h, A, Bxpb, **kwargs):
+    """Transpose of fused GRU backward.
+
+    Only supports transposing w.r.t. grad_y (the linear input).
+    """
+    ct_dl = ct[0]
+
+    for name, val in [('h', h), ('A', A), ('Bxpb', Bxpb)]:
+        if ad.is_undefined_primal(val):
+            raise ValueError(
+                f"Cannot transpose fused_gru_diag_bwd w.r.t. {name} "
+                f"(nonlinear dependency through Jacobian computation)."
+            )
+
+    if ad.is_undefined_primal(grad_y):
+        if type(ct_dl) is ad.Zero:
+            return ad.Zero(grad_y), h, A, Bxpb
+        # Transpose of: dl_dh = flip(S(jac_bwd, flip(grad_y)))
+        # = flip(S(jac_bwd, flip(·)))
+        # Adjoint: ct_grad_y = flip(S^T(jac_bwd, flip(ct_dl)))
+        jac_bwd = _gru_jacobian_bwd_batched(h, A, Bxpb)
+        from ._parallel_reduce import _adjoint_reduce_diag
+        ct_grad_y = jnp.flip(
+            _adjoint_reduce_diag(jac_bwd, jnp.flip(ct_dl, axis=-2)),
+            axis=-2,
+        )
+        return ct_grad_y, h, A, Bxpb
+
+    return grad_y, h, A, Bxpb
+
+
+fused_gru_diag_bwd_p.def_jvp_rule2(
+    _fused_gru_bwd_jvp_grad_y, None, None, None
+)
+fused_gru_diag_bwd_p.def_transpose_rule(_fused_gru_bwd_transpose)
 
 
 def fused_gru_diag_backward(
@@ -523,6 +700,116 @@ fused_lstm_cifg_diag_fwd_p.def_tvmffi_kernel('gpu', _fused_lstm_fwd_cuda_kernel,
 fused_lstm_cifg_diag_fwd_p.def_tags('pararnn', 'fused')
 
 
+# -- JVP / transpose for fused LSTM-CIFG forward -----------------------------
+#
+# At convergence ch satisfies ch[t] = lstm_step(ch[t-1], A, Bxpb[t], C).
+# Implicit differentiation gives a 2x2 block-diagonal linear recurrence
+# for the tangent.
+
+def _fused_lstm_fwd_jvp_A(A_dot, A, Bxpb, C, **kwargs):
+    """JVP of fused LSTM-CIFG forward w.r.t. A."""
+    ch = _fused_lstm_fwd_compute(A, Bxpb, C, kwargs)
+    return _fused_lstm_fwd_tangent(ch, A, Bxpb, C,
+                                   A_dot=A_dot, Bxpb_dot=None, C_dot=None)
+
+
+def _fused_lstm_fwd_jvp_Bxpb(Bxpb_dot, A, Bxpb, C, **kwargs):
+    """JVP of fused LSTM-CIFG forward w.r.t. Bxpb."""
+    ch = _fused_lstm_fwd_compute(A, Bxpb, C, kwargs)
+    return _fused_lstm_fwd_tangent(ch, A, Bxpb, C,
+                                   A_dot=None, Bxpb_dot=Bxpb_dot, C_dot=None)
+
+
+def _fused_lstm_fwd_jvp_C(C_dot, A, Bxpb, C, **kwargs):
+    """JVP of fused LSTM-CIFG forward w.r.t. C."""
+    ch = _fused_lstm_fwd_compute(A, Bxpb, C, kwargs)
+    return _fused_lstm_fwd_tangent(ch, A, Bxpb, C,
+                                   A_dot=None, Bxpb_dot=None, C_dot=C_dot)
+
+
+def _fused_lstm_fwd_compute(A, Bxpb, C, kwargs):
+    """Recompute forward full state from primals."""
+    out = fused_lstm_cifg_diag_fwd_p.primitive.bind(A, Bxpb, C, **kwargs)
+    return out[0]
+
+
+def _fused_lstm_fwd_tangent(ch, A, Bxpb, C, A_dot, Bxpb_dot, C_dot):
+    """Compute tangent of fused LSTM forward via implicit differentiation."""
+    ch_prev = _roll_state(ch, axis=-3)
+
+    # Cell Jacobian (negated): shape (B, T, N, 2, 2)
+    jac_neg = _lstm_jacobian_batched(ch, A, Bxpb, C)
+    J = -jac_neg  # un-negate: ∂lstm_step/∂ch_prev
+
+    # ∂step/∂params · params_dot
+    primals = (A, Bxpb, C)
+    tangents = (
+        A_dot if A_dot is not None else jnp.zeros_like(A),
+        Bxpb_dot if Bxpb_dot is not None else jnp.zeros_like(Bxpb),
+        C_dot if C_dot is not None else jnp.zeros_like(C),
+    )
+
+    def step_params(A_p, Bxpb_p, C_p):
+        return _lstm_step_batched(ch_prev, A_p, Bxpb_p, C_p)
+
+    _, s = jax.jvp(step_params, primals, tangents)
+    # s has shape (B, T, 2, N) — move to (B, T, N, 2) for block reduce
+    s_blocked = jnp.moveaxis(s, -2, -1)
+
+    # Solve: ch_dot[t] = J[t] @ ch_dot[t-1] + s[t]
+    ch_dot_blocked = _parallel_reduce_block_diag_inline(J, s_blocked)
+    ch_dot = jnp.moveaxis(ch_dot_blocked, -1, -2)
+    return (ch_dot,)
+
+
+def _fused_lstm_fwd_transpose(ct, A, Bxpb, C, **kwargs):
+    """Transpose of fused LSTM-CIFG forward (VJP via adjoint solve)."""
+    ct_ch = ct[0]
+
+    if type(ct_ch) is ad.Zero:
+        ct_A = ad.Zero(A) if ad.is_undefined_primal(A) else A
+        ct_Bxpb = ad.Zero(Bxpb) if ad.is_undefined_primal(Bxpb) else Bxpb
+        ct_C = ad.Zero(C) if ad.is_undefined_primal(C) else C
+        return ct_A, ct_Bxpb, ct_C
+
+    for name, val in [('A', A), ('Bxpb', Bxpb), ('C', C)]:
+        if ad.is_undefined_primal(val):
+            raise ValueError(
+                f"Cannot transpose fused_lstm_cifg_diag_fwd: {name} is "
+                f"undefined but needed for Jacobian computation."
+            )
+
+    ch = _fused_lstm_fwd_compute(A, Bxpb, C, kwargs)
+    ch_prev = _roll_state(ch, axis=-3)
+    jac_neg = _lstm_jacobian_batched(ch, A, Bxpb, C)
+    J = -jac_neg
+
+    # Adjoint solve: λ[t] = J[t+1]^T @ λ[t+1] + ct_ch[t]
+    # ct_ch shape (B, T, 2, N) → (B, T, N, 2)
+    ct_blocked = jnp.moveaxis(ct_ch, -2, -1)
+    from ._parallel_reduce import _adjoint_reduce_block_diag
+    lam_blocked = _adjoint_reduce_block_diag(J, ct_blocked)
+    lam = jnp.moveaxis(lam_blocked, -1, -2)
+
+    # Parameter gradients
+    def step_params(A_p, Bxpb_p, C_p):
+        return _lstm_step_batched(ch_prev, A_p, Bxpb_p, C_p)
+
+    _, vjp_fn = jax.vjp(step_params, A, Bxpb, C)
+    ct_A_val, ct_Bxpb_val, ct_C_val = vjp_fn(lam)
+
+    ct_A = ct_A_val if ad.is_undefined_primal(A) else A
+    ct_Bxpb = ct_Bxpb_val if ad.is_undefined_primal(Bxpb) else Bxpb
+    ct_C = ct_C_val if ad.is_undefined_primal(C) else C
+    return ct_A, ct_Bxpb, ct_C
+
+
+fused_lstm_cifg_diag_fwd_p.def_jvp_rule2(
+    _fused_lstm_fwd_jvp_A, _fused_lstm_fwd_jvp_Bxpb, _fused_lstm_fwd_jvp_C
+)
+fused_lstm_cifg_diag_fwd_p.def_transpose_rule(_fused_lstm_fwd_transpose)
+
+
 def fused_lstm_cifg_diag_forward(
     A: jax.Array,
     Bxpb: jax.Array,
@@ -607,6 +894,70 @@ fused_lstm_cifg_diag_bwd_p.def_kernel('jax_raw', 'gpu', _fused_lstm_bwd_jax_kern
 fused_lstm_cifg_diag_bwd_p.def_kernel('jax_raw', 'tpu', _fused_lstm_bwd_jax_kernel)
 fused_lstm_cifg_diag_bwd_p.def_tvmffi_kernel('gpu', _fused_lstm_bwd_cuda_kernel, asdefault=True)
 fused_lstm_cifg_diag_bwd_p.def_tags('pararnn', 'fused')
+
+
+# -- JVP / transpose for fused LSTM-CIFG backward ----------------------------
+#
+# The backward primitive computes:
+#   dl_ch = flip(S_block(jac_bwd, flip(grad_ch)))
+# where grad_ch = [0, grad_y], jac_bwd depends nonlinearly on
+# (full_state, A, Bxpb, C), and S_block is a 2x2 block-diagonal solve.
+# The output is LINEAR in grad_y but NONLINEAR in the other inputs.
+
+def _fused_lstm_bwd_jvp_grad_y(grad_y_dot, grad_y, full_state, A, Bxpb, C,
+                               **kwargs):
+    """JVP w.r.t. grad_y (linear): run backward solve on perturbed gradient."""
+    grad_ch_dot = jnp.stack([
+        jnp.zeros_like(grad_y_dot), grad_y_dot
+    ], axis=-2)
+    rhs_dot = jnp.flip(grad_ch_dot, axis=-3)
+    rhs_dot_blocked = jnp.moveaxis(rhs_dot, -2, -1)
+
+    jac_bwd = _lstm_jacobian_bwd_batched(full_state, A, Bxpb, C)
+    dl_blocked = _parallel_reduce_block_diag_inline(jac_bwd, rhs_dot_blocked)
+    dl_ch_dot = jnp.moveaxis(dl_blocked, -1, -2)
+    dl_ch_dot = jnp.flip(dl_ch_dot, axis=-3)
+    return (dl_ch_dot,)
+
+
+def _fused_lstm_bwd_transpose(ct, grad_y, full_state, A, Bxpb, C, **kwargs):
+    """Transpose of fused LSTM-CIFG backward.
+
+    Only supports transposing w.r.t. grad_y (the linear input).
+    """
+    ct_dl = ct[0]
+
+    for name, val in [('full_state', full_state), ('A', A),
+                      ('Bxpb', Bxpb), ('C', C)]:
+        if ad.is_undefined_primal(val):
+            raise ValueError(
+                f"Cannot transpose fused_lstm_cifg_diag_bwd w.r.t. {name} "
+                f"(nonlinear dependency through Jacobian computation)."
+            )
+
+    if ad.is_undefined_primal(grad_y):
+        if type(ct_dl) is ad.Zero:
+            return ad.Zero(grad_y), full_state, A, Bxpb, C
+        # Transpose of: dl_ch = flip(S_block(jac_bwd, moveaxis(flip(grad_ch))))
+        # Adjoint: flip → S^T → moveaxis_back → flip → extract h component
+        jac_bwd = _lstm_jacobian_bwd_batched(full_state, A, Bxpb, C)
+        ct_flipped = jnp.flip(ct_dl, axis=-3)
+        ct_blocked = jnp.moveaxis(ct_flipped, -2, -1)
+        from ._parallel_reduce import _adjoint_reduce_block_diag
+        lam_blocked = _adjoint_reduce_block_diag(jac_bwd, ct_blocked)
+        lam = jnp.moveaxis(lam_blocked, -1, -2)
+        lam = jnp.flip(lam, axis=-3)
+        # grad_ch = [0, grad_y] → ct_grad_y = lam[..., 1, :]
+        ct_grad_y = lam[..., 1, :]
+        return ct_grad_y, full_state, A, Bxpb, C
+
+    return grad_y, full_state, A, Bxpb, C
+
+
+fused_lstm_cifg_diag_bwd_p.def_jvp_rule2(
+    _fused_lstm_bwd_jvp_grad_y, None, None, None, None
+)
+fused_lstm_cifg_diag_bwd_p.def_transpose_rule(_fused_lstm_bwd_transpose)
 
 
 def fused_lstm_cifg_diag_backward(
