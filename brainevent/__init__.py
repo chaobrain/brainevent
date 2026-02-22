@@ -123,6 +123,7 @@ from ._pallas_random import (
 from ._registry import (
     get_registry, get_primitives_by_tags, get_all_primitive_names,
 )
+from . import pararnn
 
 __all__ = [
 
@@ -227,6 +228,9 @@ __all__ = [
 
     # --- config & registry --- #
     'config', 'get_registry', 'get_primitives_by_tags', 'get_all_primitive_names',
+
+    # --- parallel RNN --- #
+    'pararnn',
 ]
 
 
@@ -247,3 +251,4 @@ def __getattr__(name):
         # warnings.warn(f'dense_on_post is deprecated, use {update_dense_on_binary_post.__name__} instead')
         return update_dense_on_binary_post
     raise AttributeError(name)
+
