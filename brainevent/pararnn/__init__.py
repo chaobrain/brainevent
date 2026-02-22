@@ -40,6 +40,7 @@ from ._init import INITIALIZERS, initialize
 from ._lstm import LSTMCIFGDiagMH
 from ._newton import NewtonConfig, newton_solve
 from ._nonlinearities import NONLINEARITIES, get_nonlinearity
+from ._auto_cell import AutoRNNCell, parallel_rnn
 from ._parallel_reduce import (
     parallel_reduce_diag,
     parallel_reduce_diag_bwd,
@@ -47,6 +48,8 @@ from ._parallel_reduce import (
     parallel_reduce_block_diag,
     parallel_reduce_block_diag_bwd,
     parallel_reduce_block_diag_p,
+    parallel_reduce_dense,
+    parallel_reduce_dense_p,
 )
 from ._fused import (
     fused_gru_diag_forward,
@@ -63,6 +66,10 @@ __all__ = [
     # Modules
     'GRUDiagMH',
     'LSTMCIFGDiagMH',
+
+    # General-purpose API
+    'parallel_rnn',
+    'AutoRNNCell',
 
     # Base classes
     'BaseRNNCell',
@@ -82,6 +89,8 @@ __all__ = [
     'parallel_reduce_block_diag',
     'parallel_reduce_block_diag_bwd',
     'parallel_reduce_block_diag_p',
+    'parallel_reduce_dense',
+    'parallel_reduce_dense_p',
 
     # Fused kernels (XLACustomKernel primitives)
     'fused_gru_diag_forward',

@@ -152,13 +152,11 @@ def apply_rnn(cell_cls, x, state_dim, mode='parallel',
     if mode == 'sequential':
         return _apply_sequential(cell_cls, x, state_dim, array_params, static_params)
     elif mode == 'parallel':
-        return _apply_parallel(cell_cls, x, state_dim, newton_config,
-                               array_params, static_params)
+        return _apply_parallel(cell_cls, x, state_dim, newton_config, array_params, static_params)
     elif mode == 'fused':
         # Fused mode is handled by the cell's Module class (GRUDiagMH, etc.)
         # If called directly here, fall back to parallel mode.
-        return _apply_parallel(cell_cls, x, state_dim, newton_config,
-                               array_params, static_params)
+        return _apply_parallel(cell_cls, x, state_dim, newton_config, array_params, static_params)
     else:
         raise ValueError(
             f"Unknown mode '{mode}'. Available: 'sequential', 'parallel', 'fused'."
@@ -180,8 +178,7 @@ def _apply_sequential(cell_cls, x, state_dim, array_params, static_params):
     return cell_cls.post_process(h, x, *all_params)
 
 
-def _apply_parallel(cell_cls, x, state_dim, newton_config,
-                    array_params, static_params):
+def _apply_parallel(cell_cls, x, state_dim, newton_config, array_params, static_params):
     """Parallel RNN via Newton + associative_scan with custom_vjp."""
 
     # static_params are closed over, not passed through custom_vjp
@@ -203,9 +200,7 @@ def _apply_parallel(cell_cls, x, state_dim, newton_config,
         n_arr = len(arr_params_res)
 
         # 1. Backprop through post-processing
-        all_grads_pp = cell_cls.backprop_post_process(
-            grad_y, x_res, h, *all_params
-        )
+        all_grads_pp = cell_cls.backprop_post_process(grad_y, x_res, h, *all_params)
         grad_h = all_grads_pp[0]
         grad_x_pp = all_grads_pp[1]
         grad_all_params_pp = all_grads_pp[2:]
@@ -213,15 +208,10 @@ def _apply_parallel(cell_cls, x, state_dim, newton_config,
         # 2. Solve transposed system for dl/dh
         rhs = jnp.flip(grad_h, axis=-2)
         jac_bwd = cell_cls.compute_jacobians_bwd(h, x_res, *all_params)
-        dl_dh = jnp.flip(
-            cell_cls.linear_solve(jac_bwd, rhs),
-            axis=-2,
-        )
+        dl_dh = jnp.flip(cell_cls.linear_solve(jac_bwd, rhs), axis=-2)
 
         # 3. Backprop to parameters
-        all_grads_rec = cell_cls.backprop_to_params(
-            dl_dh, x_res, h, *all_params,
-        )
+        all_grads_rec = cell_cls.backprop_to_params(dl_dh, x_res, h, *all_params)
         grad_x_rec = all_grads_rec[0]
         grad_all_params_rec = all_grads_rec[1:]
 

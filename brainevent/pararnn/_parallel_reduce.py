@@ -51,6 +51,8 @@ __all__ = [
     'parallel_reduce_block_diag',
     'parallel_reduce_block_diag_bwd',
     'parallel_reduce_block_diag_p',
+    'parallel_reduce_dense',
+    'parallel_reduce_dense_p',
 ]
 
 
@@ -81,6 +83,28 @@ def _parallel_reduce_block_diag_jax(jac, rhs):
         return (j_new, r_new)
 
     # axis=1 is the T axis for both jac (B,T,N,K,K) and rhs (B,T,N,K)
+    _, h = jax.lax.associative_scan(combine, (jac, rhs), axis=1)
+    return h
+
+
+def _parallel_reduce_dense_jax(jac, rhs):
+    """JAX-native dense N×N reduction via associative_scan.
+
+    Args:
+        jac: Dense Jacobian matrices, shape ``(B, T, N, N)``.
+        rhs: Right-hand side vectors, shape ``(B, T, N)``.
+
+    Returns:
+        Solution ``h`` with shape ``(B, T, N)``.
+    """
+
+    def combine(a, b):
+        j_a, r_a = a
+        j_b, r_b = b
+        j_new = j_b @ j_a
+        r_new = (j_b @ r_a[..., None]).squeeze(-1) + r_b
+        return (j_new, r_new)
+
     _, h = jax.lax.associative_scan(combine, (jac, rhs), axis=1)
     return h
 
@@ -284,6 +308,79 @@ parallel_reduce_block_diag_p.def_jvp_rule2(_reduce_block_diag_jvp_jac, _reduce_b
 parallel_reduce_block_diag_p.def_transpose_rule(_reduce_block_diag_transpose)
 
 
+# -- Dense N×N reduction primitive --------------------------------------------
+
+def _reduce_dense_jax_kernel(**kwargs):
+    """jax_raw kernel generator for dense parallel reduction."""
+
+    def kernel(jac, rhs):
+        return (_parallel_reduce_dense_jax(jac, rhs),)
+
+    return kernel
+
+
+def _adjoint_reduce_dense(jac, ct):
+    """Adjoint of the dense forward solve.
+
+    The adjoint system uses *transposed* N×N matrices:
+    ``λ[t] = J[t+1]^T @ λ[t+1] + ct[t]``.
+    """
+    T_axis = 1  # (B, T, N, N)
+    jac_T = jnp.swapaxes(jac, -1, -2)
+    jac_shifted = jnp.roll(jac_T, -1, axis=T_axis)
+    jac_shifted = jac_shifted.at[:, -1:].set(0.0)
+    jac_bwd = jnp.flip(jac_shifted, axis=T_axis)
+    ct_rev = jnp.flip(ct, axis=T_axis)
+    lambda_rev = _parallel_reduce_dense_jax(jac_bwd, ct_rev)
+    return jnp.flip(lambda_rev, axis=T_axis)
+
+
+def _reduce_dense_jvp_jac(jac_dot, jac, rhs, **kwargs):
+    """JVP of dense reduction w.r.t. jac.
+
+    ``h_dot[t] = J[t] @ h_dot[t-1] + J_dot[t] @ h[t-1]``
+    """
+    h = _parallel_reduce_dense_jax(jac, rhs)
+    h_prev = jnp.roll(h, shift=1, axis=1)
+    h_prev = h_prev.at[:, 0].set(0.0)
+    # J_dot @ h_prev: (..., N, N) @ (..., N) -> (..., N)
+    new_rhs = (jac_dot @ h_prev[..., None]).squeeze(-1)
+    return (_parallel_reduce_dense_jax(jac, new_rhs),)
+
+
+def _reduce_dense_jvp_rhs(rhs_dot, jac, rhs, **kwargs):
+    """JVP of dense reduction w.r.t. rhs."""
+    return (_parallel_reduce_dense_jax(jac, rhs_dot),)
+
+
+def _reduce_dense_transpose(ct, jac, rhs, **kwargs):
+    """Transpose rule for dense reduction."""
+    ct_h = ct[0]
+
+    if ad.is_undefined_primal(jac):
+        raise ValueError(
+            "Cannot transpose pararnn_reduce_dense w.r.t. jac "
+            "(the solve is nonlinear in jac)."
+        )
+
+    if ad.is_undefined_primal(rhs):
+        if type(ct_h) is ad.Zero:
+            return jac, ad.Zero(rhs)
+        ct_rhs = _adjoint_reduce_dense(jac, ct_h)
+        return jac, ct_rhs
+
+    return jac, rhs
+
+
+parallel_reduce_dense_p = XLACustomKernel('pararnn_reduce_dense')
+parallel_reduce_dense_p.def_kernel('jax_raw', 'cpu', _reduce_dense_jax_kernel)
+parallel_reduce_dense_p.def_kernel('jax_raw', 'gpu', _reduce_dense_jax_kernel)
+parallel_reduce_dense_p.def_kernel('jax_raw', 'tpu', _reduce_dense_jax_kernel)
+parallel_reduce_dense_p.def_tags('pararnn', 'reduce')
+parallel_reduce_dense_p.def_jvp_rule2(_reduce_dense_jvp_jac, _reduce_dense_jvp_rhs)
+parallel_reduce_dense_p.def_transpose_rule(_reduce_dense_transpose)
+
+
 # =============================================================================
 # Public API — default path uses JAX directly (differentiable)
 # =============================================================================
@@ -390,3 +487,31 @@ def parallel_reduce_block_diag_bwd(
         Solution with shape ``(B, T, N, K)``.
     """
     return parallel_reduce_block_diag(jac, rhs, backend=backend)
+
+
+def parallel_reduce_dense(
+    jac: jax.Array,
+    rhs: jax.Array,
+    backend: str = None,
+) -> jax.Array:
+    """Solve h[t] = jac[t] @ h[t-1] + rhs[t] with dense N×N Jacobians.
+
+    Uses ``jax.lax.associative_scan`` for O(log T) parallel depth with
+    O(N^3) matrix multiply cost per step.
+
+    Args:
+        jac: Dense Jacobian matrices, shape ``(B, T, N, N)``.
+        rhs: Right-hand side, shape ``(B, T, N)``.
+        backend: ``None`` for JAX native (default).
+
+    Returns:
+        Solution ``h`` with shape ``(B, T, N)``.
+    """
+    if backend is not None and backend != 'jax_raw':
+        return parallel_reduce_dense_p(
+            jac, rhs,
+            rhs_info=jax.ShapeDtypeStruct(rhs.shape, rhs.dtype),
+            outs=[jax.ShapeDtypeStruct(rhs.shape, rhs.dtype)],
+            backend=backend,
+        )[0]
+    return _parallel_reduce_dense_jax(jac, rhs)
