@@ -259,10 +259,13 @@ def _lstm_jacobian_bwd_batched(ch, A, Bxpb, C):
     Jhh = -(scc * (Jh_o - Jc_o * Jch) - o_sdercc * Jch)
 
     # Transposed: swap off-diag
-    jacobians = jnp.stack([
-        jnp.stack([Jcc, Jhc], axis=-1),
-        jnp.stack([Jch, Jhh], axis=-1),
-    ], axis=-2)
+    jacobians = jnp.stack(
+        [
+            jnp.stack([Jcc, Jhc], axis=-1),
+            jnp.stack([Jch, Jhh], axis=-1),
+        ],
+        axis=-2
+    )
 
     # Flip time, roll, zero first
     jacobians = jnp.flip(jacobians, axis=-4)
@@ -516,10 +519,7 @@ def _fused_gru_bwd_jax_kernel(**kwargs):
     def kernel(grad_y, h, A, Bxpb):
         rhs = jnp.flip(grad_y, axis=-2)
         jac_bwd = _gru_jacobian_bwd_batched(h, A, Bxpb)
-        dl_dh = jnp.flip(
-            _parallel_reduce_diag_inline(jac_bwd, rhs),
-            axis=-2,
-        )
+        dl_dh = jnp.flip(_parallel_reduce_diag_inline(jac_bwd, rhs), axis=-2)
         return (dl_dh,)
 
     return kernel
@@ -552,9 +552,7 @@ def _fused_gru_bwd_jvp_grad_y(grad_y_dot, grad_y, h, A, Bxpb, **kwargs):
     """JVP w.r.t. grad_y (linear): run backward solve on perturbed gradient."""
     jac_bwd = _gru_jacobian_bwd_batched(h, A, Bxpb)
     rhs_dot = jnp.flip(grad_y_dot, axis=-2)
-    dl_dh_dot = jnp.flip(
-        _parallel_reduce_diag_inline(jac_bwd, rhs_dot), axis=-2
-    )
+    dl_dh_dot = jnp.flip(_parallel_reduce_diag_inline(jac_bwd, rhs_dot), axis=-2)
     return (dl_dh_dot,)
 
 
@@ -580,10 +578,7 @@ def _fused_gru_bwd_transpose(ct, grad_y, h, A, Bxpb, **kwargs):
         # Adjoint: ct_grad_y = flip(S^T(jac_bwd, flip(ct_dl)))
         jac_bwd = _gru_jacobian_bwd_batched(h, A, Bxpb)
         from ._parallel_reduce import _adjoint_reduce_diag
-        ct_grad_y = jnp.flip(
-            _adjoint_reduce_diag(jac_bwd, jnp.flip(ct_dl, axis=-2)),
-            axis=-2,
-        )
+        ct_grad_y = jnp.flip(_adjoint_reduce_diag(jac_bwd, jnp.flip(ct_dl, axis=-2)), axis=-2)
         return ct_grad_y, h, A, Bxpb
 
     return grad_y, h, A, Bxpb
@@ -645,9 +640,7 @@ def _fused_lstm_fwd_jax_kernel(**kwargs):
         # Initial guess: one recurrence step from zeros
         # ch shape: (B, T, 2, N) where 2 = [c, h]
         ch0 = jnp.zeros((batch_size, seq_len, 2, state_dim), dtype=A.dtype)
-        ch = _lstm_step_batched(
-            _roll_state(ch0, axis=-3), A, Bxpb, C
-        )
+        ch = _lstm_step_batched(_roll_state(ch0, axis=-3), A, Bxpb, C)
 
         # Newton iterations
         def body(_, ch):
@@ -695,22 +688,19 @@ def _fused_lstm_fwd_cuda_kernel(**kwargs):
 def _fused_lstm_fwd_jvp_A(A_dot, A, Bxpb, C, **kwargs):
     """JVP of fused LSTM-CIFG forward w.r.t. A."""
     ch = _fused_lstm_fwd_compute(A, Bxpb, C, kwargs)
-    return _fused_lstm_fwd_tangent(ch, A, Bxpb, C,
-                                   A_dot=A_dot, Bxpb_dot=None, C_dot=None)
+    return _fused_lstm_fwd_tangent(ch, A, Bxpb, C, A_dot=A_dot, Bxpb_dot=None, C_dot=None)
 
 
 def _fused_lstm_fwd_jvp_Bxpb(Bxpb_dot, A, Bxpb, C, **kwargs):
     """JVP of fused LSTM-CIFG forward w.r.t. Bxpb."""
     ch = _fused_lstm_fwd_compute(A, Bxpb, C, kwargs)
-    return _fused_lstm_fwd_tangent(ch, A, Bxpb, C,
-                                   A_dot=None, Bxpb_dot=Bxpb_dot, C_dot=None)
+    return _fused_lstm_fwd_tangent(ch, A, Bxpb, C, A_dot=None, Bxpb_dot=Bxpb_dot, C_dot=None)
 
 
 def _fused_lstm_fwd_jvp_C(C_dot, A, Bxpb, C, **kwargs):
     """JVP of fused LSTM-CIFG forward w.r.t. C."""
     ch = _fused_lstm_fwd_compute(A, Bxpb, C, kwargs)
-    return _fused_lstm_fwd_tangent(ch, A, Bxpb, C,
-                                   A_dot=None, Bxpb_dot=None, C_dot=C_dot)
+    return _fused_lstm_fwd_tangent(ch, A, Bxpb, C, A_dot=None, Bxpb_dot=None, C_dot=C_dot)
 
 
 def _fused_lstm_fwd_compute(A, Bxpb, C, kwargs):
@@ -871,9 +861,7 @@ def _fused_lstm_bwd_cuda_kernel(**kwargs):
     kernel_name = f'fused_lstm_cifg_diag.fused_bwd_lstm_cifg_diag{sfx}'
 
     def kernel(grad_y, full_state, A, Bxpb, C):
-        return jax.ffi.ffi_call(kernel_name, out_info)(
-            grad_y, full_state, A, Bxpb, C
-        )
+        return jax.ffi.ffi_call(kernel_name, out_info)(grad_y, full_state, A, Bxpb, C)
 
     return kernel
 
@@ -889,9 +877,7 @@ def _fused_lstm_bwd_cuda_kernel(**kwargs):
 def _fused_lstm_bwd_jvp_grad_y(grad_y_dot, grad_y, full_state, A, Bxpb, C,
                                **kwargs):
     """JVP w.r.t. grad_y (linear): run backward solve on perturbed gradient."""
-    grad_ch_dot = jnp.stack([
-        jnp.zeros_like(grad_y_dot), grad_y_dot
-    ], axis=-2)
+    grad_ch_dot = jnp.stack([jnp.zeros_like(grad_y_dot), grad_y_dot], axis=-2)
     rhs_dot = jnp.flip(grad_ch_dot, axis=-3)
     rhs_dot_blocked = jnp.moveaxis(rhs_dot, -2, -1)
 
