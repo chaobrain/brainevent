@@ -22,8 +22,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import cdiv, generate_block_dim, namescope
-from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
-from brainevent._op.benchmark import BenchmarkConfig
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig
 from brainevent.config import get_numba_parallel
 
 __all__ = [
@@ -80,7 +79,7 @@ def indexed_binary_densemv(weights, binary_index, *, transpose, backend: Optiona
         If False, accumulate selected columns of ``weights``.
         If True, accumulate selected rows of ``weights``.
     backend : str, optional
-        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        Backend to use for the computation. One of ``'numba'``,
         ``'pallas'``, or ``None`` (auto-select).
 
     Returns
@@ -165,80 +164,6 @@ def _mv_numba_kernel(transpose: bool, **kwargs):
 
     def run(spikes, indices, count, weights):
         return numba_kernel(kernel, outs=kwargs['outs'])(indices, count, weights)
-
-    return run
-
-
-def _mv_warp_kernel(
-    spikes_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    count_info: jax.ShapeDtypeStruct,
-    weights_info: jax.ShapeDtypeStruct,
-    transpose: bool,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
-    count_warp_info = jaxinfo_to_warpinfo(count_info)
-    weight_warp_info = jaxinfo_to_warpinfo(weights_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if transpose:
-        # weights[k,n], select rows -> out[n]
-        n = weights_info.shape[1]
-
-        @warp.kernel
-        def kernel(
-            indices: indices_warp_info,
-            count: count_warp_info,
-            weights: weight_warp_info,
-            out: out_warp_info,
-        ):
-            j = warp.tid()
-            r = weights.dtype(0.)
-            nnz = count[0]
-            max_i = indices.shape[0]
-            if nnz > max_i:
-                nnz = max_i
-            for i in range(nnz):
-                idx = indices[i]
-                if 0 <= idx < weights.shape[0]:
-                    r += weights[idx, j]
-            out[j] = r
-
-        def run(spikes, indices, count, weights):
-            out_info = kwargs['outs'][0]
-            fn = jax_kernel(kernel, launch_dims=[n], num_outputs=1, output_dims={'out': out_info.shape})
-            return fn(indices, count, weights)
-    else:
-        # weights[m,k], select columns -> out[m]
-        m = weights_info.shape[0]
-
-        @warp.kernel
-        def kernel(
-            indices: indices_warp_info,
-            count: count_warp_info,
-            weights: weight_warp_info,
-            out: out_warp_info,
-        ):
-            i = warp.tid()
-            r = weights.dtype(0.)
-            nnz = count[0]
-            max_k = indices.shape[0]
-            if nnz > max_k:
-                nnz = max_k
-            for k in range(nnz):
-                idx = indices[k]
-                if 0 <= idx < weights.shape[1]:
-                    r += weights[i, idx]
-            out[i] = r
-
-        def run(spikes, indices, count, weights):
-            out_info = kwargs['outs'][0]
-            fn = jax_kernel(kernel, launch_dims=[m], num_outputs=1, output_dims={'out': out_info.shape})
-            return fn(indices, count, weights)
 
     return run
 
@@ -413,7 +338,7 @@ def indexed_binary_densemv_p_call(spikes, indices, count, weights, *, transpose,
         shape ``(m,)``. If True, accumulate selected rows of ``weights``
         producing shape ``(n,)``.
     backend : str, optional
-        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        Backend to use for the computation. One of ``'numba'``,
         ``'pallas'``, or ``None`` (auto-select).
 
     Returns
@@ -500,7 +425,7 @@ indexed_binary_densemv_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``indexed_binary_densemv``.
 
 This ``XLACustomKernel`` instance dispatches the indexed binary (event-driven) dense
-matrix-vector multiplication operation to registered backends (``numba``, ``warp``,
+matrix-vector multiplication operation to registered backends (``numba``,
 ``pallas``), using runtime shape/dtype metadata provided by the high-level wrapper.
 
 The operation accumulates rows or columns of a dense weight matrix selected by
@@ -521,7 +446,6 @@ indexed_binary_densemv : High-level user-facing function wrapper.
 """
 )
 indexed_binary_densemv_p.def_numba_kernel(_mv_numba_kernel)
-indexed_binary_densemv_p.def_warp_kernel(_mv_warp_kernel)
 indexed_binary_densemv_p.def_pallas_kernel('gpu', _mv_pallas_kernel)
 indexed_binary_densemv_p.def_jvp_rule2(_mv_jvp_spikes, None, None, _mv_jvp_weights)
 indexed_binary_densemv_p.def_transpose_rule(_mv_transpose)
@@ -578,7 +502,7 @@ def indexed_binary_densemm(weights, binary_arr, *, transpose, backend: Optional[
         If False, accumulate selected columns of ``weights``.
         If True, accumulate selected rows of ``weights``.
     backend : str, optional
-        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        Backend to use for the computation. One of ``'numba'``,
         ``'pallas'``, or ``None`` (auto-select).
 
     Returns
@@ -666,81 +590,6 @@ def _mm_numba_kernel(transpose: bool, **kwargs):
 
     def run(spikes, indices, count, weights):
         return numba_kernel(kernel, outs=kwargs['outs'])(indices, count, weights)
-
-    return run
-
-
-def _mm_warp_kernel(
-    spikes_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    count_info: jax.ShapeDtypeStruct,
-    weights_info: jax.ShapeDtypeStruct,
-    transpose: bool,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    batch = indices_info.shape[0]
-    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
-    count_warp_info = jaxinfo_to_warpinfo(count_info)
-    weight_warp_info = jaxinfo_to_warpinfo(weights_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if transpose:
-        # weights[k,n], select rows -> out[batch, n]
-        n_out = weights_info.shape[1]
-
-        @warp.kernel
-        def kernel(
-            indices: indices_warp_info,
-            count: count_warp_info,
-            weights: weight_warp_info,
-            out: out_warp_info,
-        ):
-            i_row, j = warp.tid()
-            r = weights.dtype(0.)
-            nnz = count[i_row]
-            max_k = indices.shape[1]
-            if nnz > max_k:
-                nnz = max_k
-            for k in range(nnz):
-                idx = indices[i_row, k]
-                if 0 <= idx < weights.shape[0]:
-                    r += weights[idx, j]
-            out[i_row, j] = r
-
-        def run(spikes, indices, count, weights):
-            out_info = kwargs['outs'][0]
-            fn = jax_kernel(kernel, launch_dims=(batch, n_out), num_outputs=1, output_dims={'out': out_info.shape})
-            return fn(indices, count, weights)
-    else:
-        # weights[m,k], select columns -> out[batch, m]
-        n_out = weights_info.shape[0]
-
-        @warp.kernel
-        def kernel(
-            indices: indices_warp_info,
-            count: count_warp_info,
-            weights: weight_warp_info,
-            out: out_warp_info,
-        ):
-            i_row, j = warp.tid()
-            r = weights.dtype(0.)
-            nnz = count[i_row]
-            max_k = indices.shape[1]
-            if nnz > max_k:
-                nnz = max_k
-            for k in range(nnz):
-                idx = indices[i_row, k]
-                if 0 <= idx < weights.shape[1]:
-                    r += weights[j, idx]
-            out[i_row, j] = r
-
-        def run(spikes, indices, count, weights):
-            out_info = kwargs['outs'][0]
-            fn = jax_kernel(kernel, launch_dims=(batch, n_out), num_outputs=1, output_dims={'out': out_info.shape})
-            return fn(indices, count, weights)
 
     return run
 
@@ -908,7 +757,7 @@ def indexed_binary_densemm_p_call(spikes, indices, count, weights, *, transpose,
         shape ``(batch, m)``. If True, accumulate selected rows of
         ``weights`` producing shape ``(batch, n)``.
     backend : str, optional
-        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        Backend to use for the computation. One of ``'numba'``,
         ``'pallas'``, or ``None`` (auto-select).
 
     Returns
@@ -997,7 +846,7 @@ indexed_binary_densemm_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``indexed_binary_densemm``.
 
 This ``XLACustomKernel`` instance dispatches the indexed binary (event-driven) dense
-matrix-matrix multiplication operation to registered backends (``numba``, ``warp``,
+matrix-matrix multiplication operation to registered backends (``numba``,
 ``pallas``), using runtime shape/dtype metadata provided by the high-level wrapper.
 
 The operation accumulates rows or columns of a dense weight matrix selected by
@@ -1019,7 +868,6 @@ indexed_binary_densemm : High-level user-facing function wrapper.
 """
 )
 indexed_binary_densemm_p.def_numba_kernel(_mm_numba_kernel)
-indexed_binary_densemm_p.def_warp_kernel(_mm_warp_kernel)
 indexed_binary_densemm_p.def_pallas_kernel('gpu', _mm_pallas_kernel)
 indexed_binary_densemm_p.def_jvp_rule2(_mm_jvp_spikes, None, None, _mm_jvp_weights)
 indexed_binary_densemm_p.def_transpose_rule(_mm_transpose)

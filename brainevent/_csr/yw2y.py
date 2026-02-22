@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+from pathlib import Path
 from typing import Optional
 
 import brainunit as u
@@ -21,7 +22,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._misc import generate_block_dim, namescope
-from brainevent._op import numba_kernel, jaxinfo_to_warpinfo, XLACustomKernel
+from brainevent._op import numba_kernel, XLACustomKernel, register_tvm_cuda_from_file
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 
@@ -116,7 +117,7 @@ def csrmv_yw2y(
     .. code-block:: python
 
         >>> import jax.numpy as jnp
-        >>> from brainevent._csr.float import csrmv_yw2y
+        >>> from brainevent import csrmv_yw2y
         >>> y = jnp.array([1.0, 2.0])
         >>> w = jnp.array([0.5, 0.3, 0.7, 0.1])
         >>> indices = jnp.array([0, 2, 1, 2], dtype=jnp.int32)
@@ -256,65 +257,6 @@ def _csrmv_yw2y_pallas_kernels(
     return kernel
 
 
-def _csrmv_yw2y_warp_kernel_generator(
-    y_info: jax.ShapeDtypeStruct,
-    w_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    indptr_info: jax.ShapeDtypeStruct,
-    transpose: bool,
-    shape: MatrixShape,
-    **kwargs
-):
-    import warp  # pylint: disable=import-outside-toplevel
-    from warp.jax_experimental import jax_kernel
-
-    y_warp_info = jaxinfo_to_warpinfo(y_info)
-    w_warp_info = jaxinfo_to_warpinfo(w_info)
-    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
-    indptr_warp_info = jaxinfo_to_warpinfo(indptr_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if transpose:
-        @warp.kernel
-        def yw2y(
-            y: y_warp_info,
-            w: w_warp_info,
-            indices: indices_warp_info,
-            indptr: indptr_warp_info,
-            posts: out_warp_info,
-        ):
-            i_row = warp.tid()
-            for j in range(indptr[i_row], indptr[i_row + 1]):
-                posts[j] = w[j] * y[indices[j]]
-
-        def kernel(y, w, indices, indptr):
-            out_info = kwargs['outs'][0]
-            dim = shape[0]
-            fn = jax_kernel(yw2y, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
-            return fn(y, w, indices, indptr)
-
-    else:
-        @warp.kernel
-        def yw2y(
-            y: y_warp_info,
-            w: w_warp_info,
-            indptr: indptr_warp_info,
-            posts: out_warp_info,
-        ):
-            i_row = warp.tid()
-            y_val = y[i_row]
-            for j in range(indptr[i_row], indptr[i_row + 1]):
-                posts[j] = w[j] * y_val
-
-        def kernel(y, w, indices, indptr):
-            out_info = kwargs['outs'][0]
-            dim = shape[0]
-            fn = jax_kernel(yw2y, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
-            return fn(y, w, indptr)
-
-    return kernel
-
-
 def _csrmv_yw2y_jvp_y(y_dot, y, w, indices, indptr, *, shape, transpose, **kwargs):
     return csrmv_yw2y_p_call(y_dot, w, indices, indptr, shape=shape, transpose=transpose, backend=kwargs['backend'])
 
@@ -328,24 +270,108 @@ def _csrmv_yw2y_transpose_rule(ct, y, w, indices, indptr, *, shape, transpose, *
 
 
 def _csrmv_yw2y_benchmark_data(*, platform):
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    """
+    Benchmark configurations for ``csrmv_yw2y``.
+
+    Covers a range of matrix sizes and connection densities representative
+    of typical spiking neural network workloads:
+
+    * Small (1K×1K):   fast iteration; useful for overhead measurement.
+    * Medium (5K×5K):  common SNN scale; balances rows vs. non-zeros.
+    * Large (20K×20K): large-scale simulation benchmark.
+
+    Each size is tested at three structural densities:
+    * Low   (0.1%): avg_nnz ≈ 1–20;  favours NT_row_thread.
+    * Medium (1%): avg_nnz ≈ 10–200; favours NT_row_warp.
+    * High  (10%): avg_nnz ≈ 100–2000; favours NT_nz_thread.
+
+    Both transpose=False and transpose=True are included.
+    """
+    dtype = jnp.float32
     configs = []
-    for transpose in (False, True):
+    sizes = [
+        (1_000, 1_000),
+        (5_000, 5_000),
+        (20_000, 20_000),
+    ]
+    probs = [0.001, 0.01, 0.1]
+
+    for (n_pre, n_post), prob in zip(sizes, probs):
         n_conn = max(1, int(n_post * prob))
         indptr = np.arange(n_pre + 1, dtype=np.int32) * n_conn
         indices = np.random.randint(0, n_post, (n_pre * n_conn,), dtype=np.int32)
-        w = jnp.ones(n_pre * n_conn, dtype=dtype)
-        y_size = n_pre if not transpose else n_post
-        y = jnp.asarray(np.random.randn(y_size), dtype=dtype)
-        name = f"{'T' if transpose else 'NT'}"
-        configs.append(
-            BenchmarkConfig(
-                name,
-                (y, w, indices, jnp.asarray(indptr)),
-                {'shape': (n_pre, n_post), 'transpose': transpose}
+        w = jnp.asarray(np.random.randn(n_pre * n_conn), dtype=dtype)
+        indptr_jax = jnp.asarray(indptr)
+
+        for transpose in (False, True):
+            y_size = n_post if transpose else n_pre
+            y = jnp.asarray(np.random.randn(y_size), dtype=dtype)
+            tag = 'T' if transpose else 'NT'
+            name = f"{tag},n={n_pre},nnz={n_conn}"
+            configs.append(
+                BenchmarkConfig(
+                    name,
+                    (y, w, jnp.asarray(indices), indptr_jax),
+                    {'shape': (n_pre, n_post), 'transpose': transpose}
+                )
             )
-        )
     return configs
+
+
+def _csrmv_yw2y_jax_kernel(
+    shape: MatrixShape,
+    transpose: bool,
+    **kwargs,
+):
+    """Pure-JAX kernel for CSR yw2y (out[j] = w[j] * y[row/col]) (all platforms)."""
+    m, k = shape
+    nse = kwargs['indices_info'].size
+
+    if transpose:
+        # col index is directly in `indices`
+        def kernel(y, w, indices, indptr):
+            return (w * y[indices],)
+    else:
+        def kernel(y, w, indices, indptr):
+            row_ids = jnp.repeat(
+                jnp.arange(m, dtype=indptr.dtype),
+                jnp.diff(indptr),
+                total_repeat_length=nse,
+            )
+            return (w * y[row_ids],)
+    return kernel
+
+
+def _csrmv_yw2y_cuda_kernel(
+    transpose: bool,
+    w_info: jax.ShapeDtypeStruct,
+    **kwargs,
+):
+    register_tvm_cuda_from_file(
+        module='csrmv_yw2y',
+        source=Path(__file__).parent.joinpath('yw2y.cu'),
+    )
+
+    out_info = kwargs['outs']
+
+    # Weight dtype suffix
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(w_info.dtype), '_f32')
+
+    if transpose:
+        kernel_name = f'csrmv_yw2y.csrmv_yw2y_t_nz_thread{wt_sfx}'
+    else:
+        kernel_name = f'csrmv_yw2y.csrmv_yw2y_nt_auto{wt_sfx}'
+
+    def kernel(y, w, indices, indptr):
+        return jax.ffi.ffi_call(kernel_name, out_info)(y, w, indices, indptr)
+
+    return kernel
 
 
 def csrmv_yw2y_p_call(
@@ -477,7 +503,7 @@ csrmv_yw2y_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``csrmv_yw2y``.
 
 This ``XLACustomKernel`` instance dispatches the CSR sparse matrix-vector multiplication with element-wise product (y * W -> y)
-operation to registered backends (``numba``, ``warp``, ``pallas``),
+operation to registered backends (``numba``, ``pallas``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 For each non-zero entry at position (row, col) in the CSR matrix, computes
@@ -497,8 +523,11 @@ csrmv_yw2y : High-level user-facing function wrapper.
 """
 )
 csrmv_yw2y_p.def_numba_kernel(_csrmv_yw2y_numba_kernels)
-csrmv_yw2y_p.def_warp_kernel(_csrmv_yw2y_warp_kernel_generator)
 csrmv_yw2y_p.def_pallas_kernel('gpu', _csrmv_yw2y_pallas_kernels)
+csrmv_yw2y_p.def_tvmffi_kernel('gpu', _csrmv_yw2y_cuda_kernel)
+csrmv_yw2y_p.def_kernel('jax_raw', 'cpu', _csrmv_yw2y_jax_kernel)
+csrmv_yw2y_p.def_kernel('jax_raw', 'gpu', _csrmv_yw2y_jax_kernel)
+csrmv_yw2y_p.def_kernel('jax_raw', 'tpu', _csrmv_yw2y_jax_kernel)
 csrmv_yw2y_p.def_jvp_rule2(_csrmv_yw2y_jvp_y, _csrmv_yw2y_jvp_w, None, None)
 csrmv_yw2y_p.def_call(csrmv_yw2y_p_call)
 csrmv_yw2y_p.def_tags('csr', 'float')

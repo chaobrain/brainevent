@@ -155,6 +155,7 @@ class FixedNumConn(DataRepresentation):
     data: Data
     indices: Index
     shape: MatrixShape
+    backend: Optional[str]
 
     def tree_flatten(self):
         """

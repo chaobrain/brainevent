@@ -322,7 +322,7 @@ def get_user_default(primitive_name: str, platform_name: str) -> Optional[str]:
     Returns
     -------
     str or None
-        The backend name string (e.g., ``"pallas"``, ``"numba"``, ``"warp"``),
+        The backend name string (e.g., ``"pallas"``, ``"numba"``),
         or ``None`` if no default has been set for this primitive/platform pair.
 
     See Also
@@ -355,8 +355,7 @@ def set_user_default(primitive_name: str, platform_name: str, backend: str):
     platform_name : str
         JAX platform name (``"cpu"``, ``"gpu"``, or ``"tpu"``).
     backend : str
-        Backend name to set as the default (e.g., ``"pallas"``, ``"numba"``,
-        ``"warp"``).
+        Backend name to set as the default (e.g., ``"pallas"``, ``"numba"``).
 
     See Also
     --------

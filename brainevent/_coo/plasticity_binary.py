@@ -15,6 +15,7 @@
 
 # -*- coding: utf-8 -*-
 
+from pathlib import Path
 from typing import Union, Optional
 
 import brainunit as u
@@ -23,7 +24,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._misc import generate_block_dim, namescope
-from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
+from brainevent._op import XLACustomKernel, numba_kernel, register_tvm_cuda_from_file
 from brainevent._op.benchmark import BenchmarkConfig
 
 __all__ = [
@@ -83,7 +84,7 @@ def update_coo_on_binary_pre(
         when units are used. Default is ``None`` (no upper bound).
     backend : str or None, optional
         Compute backend to use for the underlying kernel. Accepted values
-        depend on the platform (e.g., ``'numba'``, ``'warp'``, ``'pallas'``).
+        depend on the platform (e.g., ``'numba'``, ``'pallas'``).
         When ``None``, the default backend for the current platform is used.
 
     Returns
@@ -127,7 +128,7 @@ def update_coo_on_binary_pre(
 
     The kernel is dispatched through ``update_coo_on_binary_pre_p``, an
     :class:`~brainevent._op.XLACustomKernel` instance that selects among
-    Numba (CPU), Warp (GPU), and Pallas/Triton (GPU) implementations
+    Numba (CPU) and Pallas/Triton (GPU) implementations
     according to *backend* and the runtime platform.
 
     Examples
@@ -170,72 +171,6 @@ def _coo_on_pre_numba_kernel(**kwargs):
 
     def run(weight, pre_ids, post_ids, pre_spike, post_trace):
         return numba_kernel(kernel, outs=kwargs['outs'])(weight, pre_ids, post_ids, pre_spike, post_trace)
-
-    return run
-
-
-def _coo_on_pre_warp_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    pre_ids_info: jax.ShapeDtypeStruct,
-    post_ids_info: jax.ShapeDtypeStruct,
-    spike_info: jax.ShapeDtypeStruct,
-    trace_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    pre_ids_warp_info = jaxinfo_to_warpinfo(pre_ids_info)
-    post_ids_warp_info = jaxinfo_to_warpinfo(post_ids_info)
-    spike_warp_info = jaxinfo_to_warpinfo(spike_info)
-    trace_warp_info = jaxinfo_to_warpinfo(trace_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if spike_info.dtype == jnp.bool_:
-        @warp.kernel
-        def update_kernel(
-            pre_ids: pre_ids_warp_info,
-            post_ids: post_ids_warp_info,
-            pre_spike: spike_warp_info,
-            post_trace: trace_warp_info,
-            out_w: out_warp_info,
-        ):
-            i = warp.tid()
-            if pre_spike[pre_ids[i]]:
-                out_w[i] += post_trace[post_ids[i]]
-    else:
-        if spike_info.dtype == jnp.float16:
-            @warp.kernel
-            def update_kernel(
-                pre_ids: pre_ids_warp_info,
-                post_ids: post_ids_warp_info,
-                pre_spike: spike_warp_info,
-                post_trace: trace_warp_info,
-                out_w: out_warp_info,
-            ):
-                i = warp.tid()
-                if pre_spike[pre_ids[i]] != warp.float16(0.0):
-                    out_w[i] += post_trace[post_ids[i]]
-        else:
-            @warp.kernel
-            def update_kernel(
-                pre_ids: pre_ids_warp_info,
-                post_ids: post_ids_warp_info,
-                pre_spike: spike_warp_info,
-                post_trace: trace_warp_info,
-                out_w: out_warp_info,
-            ):
-                i = warp.tid()
-                if pre_spike[pre_ids[i]] != 0.:
-                    out_w[i] += post_trace[post_ids[i]]
-
-    n_syn = weight_info.shape[0]
-
-    def run(weight, pre_ids, post_ids, pre_spike, post_trace):
-        if n_syn == 0:
-            return (weight,)
-        fn = jax_kernel(update_kernel, launch_dims=[n_syn], num_outputs=1, in_out_argnames=['out_w'])
-        return fn(pre_ids, post_ids, pre_spike, post_trace, weight)
 
     return run
 
@@ -295,6 +230,68 @@ def _coo_on_pre_pallas_kernel(
         return fn(weight, pre_ids, post_ids, pre_spike, post_trace)
 
     return run
+
+
+def _coo_on_pre_jax_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    spike_info: jax.ShapeDtypeStruct,
+    **kwargs,
+):
+    """Pure-JAX kernel for presynaptic COO plasticity update (all platforms)."""
+    is_bool = (spike_info.dtype == jnp.bool_)
+
+    def kernel(weight, pre_ids, post_ids, pre_spike, post_trace):
+        if is_bool:
+            active = pre_spike[pre_ids]
+        else:
+            active = pre_spike[pre_ids] != 0.
+        delta = jnp.where(active, post_trace[post_ids], jnp.zeros_like(post_trace[post_ids]))
+        return [weight + delta]
+
+    return kernel
+
+
+def _coo_on_pre_cuda_kernel(weight_info, spike_info, pre_ids_info, **kwargs):
+    """TVM FFI CUDA kernel for presynaptic COO plasticity update.
+
+    Dispatches to ``update_coo_on_pre{wt_sfx}{spk_sfx}`` compiled from
+    ``plasticity_binary.cu``.
+
+    Only int32 index dtype is supported.  Callers with int64 pre_ids should
+    explicitly select ``backend='pallas'`` or ``backend='jax'``.
+    """
+    if pre_ids_info.dtype == jnp.int64:
+        raise TypeError(
+            "update_coo_on_binary_pre: the 'tvmffi' backend only supports "
+            "int32 index arrays (pre_ids / post_ids).  "
+            "Use backend='pallas' or backend='jax' for int64 indices."
+        )
+
+    register_tvm_cuda_from_file(
+        module='coo_plasticity_binary',
+        source=Path(__file__).parent.joinpath('plasticity_binary.cu'),
+    )
+
+    out_info = kwargs['outs']
+    spk_suffix = '_bool' if spike_info.dtype == jnp.bool_ else '_float'
+
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    kernel_name = f'coo_plasticity_binary.update_coo_on_pre{wt_sfx}{spk_suffix}'
+
+    def kernel(weight, pre_ids, post_ids, pre_spike, post_trace):
+        return jax.ffi.ffi_call(
+            kernel_name,
+            out_info,
+            input_output_aliases={0: 0},
+        )(weight, pre_ids, post_ids, pre_spike, post_trace)
+
+    return kernel
 
 
 def _coo_on_pre_benchmark_data(*, platform):
@@ -418,7 +415,7 @@ Low-level XLA custom-kernel primitive for ``update_coo_on_binary_pre``.
 
 This ``XLACustomKernel`` instance dispatches the COO weight update for
 pre-synaptic binary plasticity operation to registered backends (``numba``,
-``warp``, ``pallas``), using runtime shape/dtype metadata provided by the
+``pallas``), using runtime shape/dtype metadata provided by the
 high-level wrapper.
 
 For each synapse ``i`` in COO format, if the presynaptic neuron fires
@@ -440,8 +437,11 @@ update_coo_on_binary_pre : High-level user-facing function wrapper.
 """
 )
 update_coo_on_binary_pre_p.def_numba_kernel(_coo_on_pre_numba_kernel)
-update_coo_on_binary_pre_p.def_warp_kernel(_coo_on_pre_warp_kernel)
 update_coo_on_binary_pre_p.def_pallas_kernel('gpu', _coo_on_pre_pallas_kernel)
+update_coo_on_binary_pre_p.def_tvmffi_kernel('gpu', _coo_on_pre_cuda_kernel)
+update_coo_on_binary_pre_p.def_kernel('jax_raw', 'cpu', _coo_on_pre_jax_kernel)
+update_coo_on_binary_pre_p.def_kernel('jax_raw', 'gpu', _coo_on_pre_jax_kernel)
+update_coo_on_binary_pre_p.def_kernel('jax_raw', 'tpu', _coo_on_pre_jax_kernel)
 update_coo_on_binary_pre_p.def_call(_coo_on_pre_prim_call)
 update_coo_on_binary_pre_p.def_tags('coo', 'plasticity')
 update_coo_on_binary_pre_p.def_benchmark_data(_coo_on_pre_benchmark_data)
@@ -502,7 +502,7 @@ def update_coo_on_binary_post(
         when units are used. Default is ``None`` (no upper bound).
     backend : str or None, optional
         Compute backend to use for the underlying kernel. Accepted values
-        depend on the platform (e.g., ``'numba'``, ``'warp'``, ``'pallas'``).
+        depend on the platform (e.g., ``'numba'``, ``'pallas'``).
         When ``None``, the default backend for the current platform is used.
 
     Returns
@@ -546,7 +546,7 @@ def update_coo_on_binary_post(
 
     The kernel is dispatched through ``update_coo_on_binary_post_p``, an
     :class:`~brainevent._op.XLACustomKernel` instance that selects among
-    Numba (CPU), Warp (GPU), and Pallas/Triton (GPU) implementations
+    Numba (CPU) and Pallas/Triton (GPU) implementations
     according to *backend* and the runtime platform.
 
     Examples
@@ -588,72 +588,6 @@ def _coo_on_post_numba_kernel(**kwargs):
 
     def run(weight, pre_ids, post_ids, pre_trace, post_spike):
         return numba_kernel(kernel, outs=kwargs['outs'])(weight, pre_ids, post_ids, pre_trace, post_spike)
-
-    return run
-
-
-def _coo_on_post_warp_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    pre_ids_info: jax.ShapeDtypeStruct,
-    post_ids_info: jax.ShapeDtypeStruct,
-    trace_info: jax.ShapeDtypeStruct,
-    spike_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    pre_ids_warp_info = jaxinfo_to_warpinfo(pre_ids_info)
-    post_ids_warp_info = jaxinfo_to_warpinfo(post_ids_info)
-    trace_warp_info = jaxinfo_to_warpinfo(trace_info)
-    spike_warp_info = jaxinfo_to_warpinfo(spike_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if spike_info.dtype == jnp.bool_:
-        @warp.kernel
-        def update_kernel(
-            pre_ids: pre_ids_warp_info,
-            post_ids: post_ids_warp_info,
-            pre_trace: trace_warp_info,
-            post_spike: spike_warp_info,
-            out_w: out_warp_info,
-        ):
-            i = warp.tid()
-            if post_spike[post_ids[i]]:
-                out_w[i] += pre_trace[pre_ids[i]]
-    else:
-        if spike_info.dtype == jnp.float16:
-            @warp.kernel
-            def update_kernel(
-                pre_ids: pre_ids_warp_info,
-                post_ids: post_ids_warp_info,
-                pre_trace: trace_warp_info,
-                post_spike: spike_warp_info,
-                out_w: out_warp_info,
-            ):
-                i = warp.tid()
-                if post_spike[post_ids[i]] != warp.float16(0.0):
-                    out_w[i] += pre_trace[pre_ids[i]]
-        else:
-            @warp.kernel
-            def update_kernel(
-                pre_ids: pre_ids_warp_info,
-                post_ids: post_ids_warp_info,
-                pre_trace: trace_warp_info,
-                post_spike: spike_warp_info,
-                out_w: out_warp_info,
-            ):
-                i = warp.tid()
-                if post_spike[post_ids[i]] != 0.:
-                    out_w[i] += pre_trace[pre_ids[i]]
-
-    n_syn = weight_info.shape[0]
-
-    def run(weight, pre_ids, post_ids, pre_trace, post_spike):
-        if n_syn == 0:
-            return (weight,)
-        fn = jax_kernel(update_kernel, launch_dims=[n_syn], num_outputs=1, in_out_argnames=['out_w'])
-        return fn(pre_ids, post_ids, pre_trace, post_spike, weight)
 
     return run
 
@@ -713,6 +647,68 @@ def _coo_on_post_pallas_kernel(
         return fn(weight, pre_ids, post_ids, pre_trace, post_spike)
 
     return run
+
+
+def _coo_on_post_jax_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    spike_info: jax.ShapeDtypeStruct,
+    **kwargs,
+):
+    """Pure-JAX kernel for postsynaptic COO plasticity update (all platforms)."""
+    is_bool = (spike_info.dtype == jnp.bool_)
+
+    def kernel(weight, pre_ids, post_ids, pre_trace, post_spike):
+        if is_bool:
+            active = post_spike[post_ids]
+        else:
+            active = post_spike[post_ids] != 0.
+        delta = jnp.where(active, pre_trace[pre_ids], jnp.zeros_like(pre_trace[pre_ids]))
+        return [weight + delta]
+
+    return kernel
+
+
+def _coo_on_post_cuda_kernel(weight_info, spike_info, pre_ids_info, **kwargs):
+    """TVM FFI CUDA kernel for postsynaptic COO plasticity update.
+
+    Dispatches to ``update_coo_on_post{wt_sfx}{spk_sfx}`` compiled from
+    ``plasticity_binary.cu``.
+
+    Only int32 index dtype is supported.  Callers with int64 post_ids should
+    explicitly select ``backend='pallas'`` or ``backend='jax'``.
+    """
+    if pre_ids_info.dtype == jnp.int64:
+        raise TypeError(
+            "update_coo_on_binary_post: the 'tvmffi' backend only supports "
+            "int32 index arrays (pre_ids / post_ids).  "
+            "Use backend='pallas' or backend='jax' for int64 indices."
+        )
+
+    register_tvm_cuda_from_file(
+        module='coo_plasticity_binary',
+        source=Path(__file__).parent.joinpath('plasticity_binary.cu'),
+    )
+
+    out_info = kwargs['outs']
+    spk_suffix = '_bool' if spike_info.dtype == jnp.bool_ else '_float'
+
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    kernel_name = f'coo_plasticity_binary.update_coo_on_post{wt_sfx}{spk_suffix}'
+
+    def kernel(weight, pre_ids, post_ids, pre_trace, post_spike):
+        return jax.ffi.ffi_call(
+            kernel_name,
+            out_info,
+            input_output_aliases={0: 0},
+        )(weight, pre_ids, post_ids, pre_trace, post_spike)
+
+    return kernel
 
 
 def _coo_on_post_benchmark_data(*, platform):
@@ -837,7 +833,7 @@ Low-level XLA custom-kernel primitive for ``update_coo_on_binary_post``.
 
 This ``XLACustomKernel`` instance dispatches the COO weight update for
 post-synaptic binary plasticity operation to registered backends (``numba``,
-``warp``, ``pallas``), using runtime shape/dtype metadata provided by the
+``pallas``), using runtime shape/dtype metadata provided by the
 high-level wrapper.
 
 For each synapse ``i`` in COO format, if the postsynaptic neuron fires
@@ -859,8 +855,11 @@ update_coo_on_binary_post : High-level user-facing function wrapper.
 """
 )
 update_coo_on_binary_post_p.def_numba_kernel(_coo_on_post_numba_kernel)
-update_coo_on_binary_post_p.def_warp_kernel(_coo_on_post_warp_kernel)
 update_coo_on_binary_post_p.def_pallas_kernel('gpu', _coo_on_post_pallas_kernel)
+update_coo_on_binary_post_p.def_tvmffi_kernel('gpu', _coo_on_post_cuda_kernel)
+update_coo_on_binary_post_p.def_kernel('jax_raw', 'cpu', _coo_on_post_jax_kernel)
+update_coo_on_binary_post_p.def_kernel('jax_raw', 'gpu', _coo_on_post_jax_kernel)
+update_coo_on_binary_post_p.def_kernel('jax_raw', 'tpu', _coo_on_post_jax_kernel)
 update_coo_on_binary_post_p.def_call(_coo_on_post_prim_call)
 update_coo_on_binary_post_p.def_tags('coo', 'plasticity')
 update_coo_on_binary_post_p.def_benchmark_data(_coo_on_post_benchmark_data)

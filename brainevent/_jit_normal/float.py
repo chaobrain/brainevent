@@ -14,6 +14,7 @@
 # ==============================================================================
 # -*- coding: utf-8 -*-
 
+from pathlib import Path
 from typing import Optional
 
 import brainunit as u
@@ -24,10 +25,9 @@ from jax.interpreters import ad
 
 from brainevent._compatible_import import Tracer
 from brainevent._data import _initialize_seed, _initialize_conn_length
-from brainevent._misc import generate_block_dim
+from brainevent._misc import generate_block_dim, namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_normal
-from brainevent._op import XLACustomKernel, jaxinfo_to_warpinfo, numba_kernel, general_batching_rule
-from brainevent._op.benchmark import BenchmarkConfig
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, register_tvm_cuda_from_file
 from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
 
@@ -55,6 +55,7 @@ def _is_static_zero_prob(prob: float, *, op_name: str) -> bool:
     return prob_scalar == 0.
 
 
+@namescope(static_argnames=("shape", "transpose", "corder"))
 def jitn(
     w_loc: Data,
     w_scale: Data,
@@ -91,7 +92,7 @@ def jitn(
     corder : bool, optional
         If ``True`` (default), iterate in column-major order internally.
     backend : str or None, optional
-        Compute backend (e.g. ``'numba'``, ``'warp'``, ``'pallas'``).
+        Compute backend (e.g. ``'numba'``, ``'pallas'``).
 
     Returns
     -------
@@ -163,6 +164,7 @@ def jitn(
     return u.maybe_decimal(res * unitd)
 
 
+@namescope(static_argnames=("shape", "transpose", "corder"))
 def jitnmv(
     w_loc: Data,
     w_scale: Data,
@@ -284,6 +286,7 @@ def jitnmv(
     return u.maybe_decimal(res * unitd * unitv)
 
 
+@namescope(static_argnames=("shape", "transpose", "corder"))
 def jitnmm(
     w_loc: Data,
     w_scale: Data,
@@ -457,77 +460,6 @@ def _jitn_numba_kernel_generator(corder: bool = True, **kwargs):
     return run
 
 
-def _jitn_warp_kernel_generator(
-    w_loc_info: jax.ShapeDtypeStruct,
-    w_scale_info: jax.ShapeDtypeStruct,
-    clen_info: jax.ShapeDtypeStruct,
-    seed_info: jax.ShapeDtypeStruct,
-    out_info: jax.ShapeDtypeStruct,
-    corder: bool = True,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    w_loc_warp_info = jaxinfo_to_warpinfo(w_loc_info)
-    w_scale_warp_info = jaxinfo_to_warpinfo(w_scale_info)
-    clen_warp_info = jaxinfo_to_warpinfo(clen_info)
-    seed_warp_info = jaxinfo_to_warpinfo(seed_info)
-    out_warp_info = jaxinfo_to_warpinfo(out_info)
-
-    if corder:
-        # JIT matrix - JIT matrix shape = [m, n]
-        @warp.kernel
-        def kernel(
-            w_loc: w_loc_warp_info,
-            w_scale: w_scale_warp_info,
-            clen: clen_warp_info,
-            seed: seed_warp_info,
-            posts: out_warp_info,
-        ):
-            n = posts.shape[1]
-            w_loc0 = w_loc[0]
-            w_scale0 = w_scale[0]
-            clen0 = clen[0]
-            seed0 = seed[0]
-            i_row = warp.tid()
-            state = warp.rand_init(seed0 + i_row * n)
-            i_col = warp.randi(state, 0, clen0)
-            while i_col < n:
-                posts[i_row, i_col] = warp.randn(state) * w_scale0 + w_loc0
-                i_col += warp.randi(state, 1, clen0)
-
-
-    else:
-        # JIT matrix - JIT matrix shape = [m, n]
-        @warp.kernel
-        def kernel(
-            w_loc: w_loc_warp_info,
-            w_scale: w_scale_warp_info,
-            clen: clen_warp_info,
-            seed: seed_warp_info,
-            posts: out_warp_info,
-        ):
-            m = posts.shape[0]
-            w_loc0 = w_loc[0]
-            w_scale0 = w_scale[0]
-            clen0 = clen[0]
-            seed0 = seed[0]
-            i_col = warp.tid()
-            state = warp.rand_init(seed0 + i_col * m)
-            i_row = warp.randi(state, 0, clen0)
-            while i_row < m:
-                posts[i_row, i_col] = warp.randn(state) * w_scale0 + w_loc0
-                i_row += warp.randi(state, 1, clen0)
-
-    def run(w_loc, w_scale, clen, seed):
-        dim = out_info.shape[0] if corder else out_info.shape[1]
-        fn = jax_kernel(kernel, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
-        return fn(w_loc, w_scale, clen, seed, jnp.zeros(out_info.shape, out_info.dtype))
-
-    return run
-
-
 def _jitn_pallas_kernel_generator(
     out_info: jax.ShapeDtypeStruct,
     corder: bool = True,
@@ -551,7 +483,7 @@ def _jitn_pallas_kernel_generator(
             i_rows = i_row_block * block_size + jnp.arange(block_size)
             i_row_mask = i_rows < dim
 
-            def body(data):
+            def body(_step, data):
                 i_cols, i_col_mask, rng = data
                 val = rng.normal(w_loc, w_scale)
                 safe_cols = jnp.where(i_col_mask, i_cols, 0)
@@ -562,11 +494,7 @@ def _jitn_pallas_kernel_generator(
             rng = _PallasLFSRRNG(seed0 + i_rows * m)
             i_cols = rng.random_integers(0, clen0)
             i_col_mask = i_cols < m
-            jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_cols, i_col_mask, rng)
-            )
+            jax.lax.fori_loop(0, m, body, (i_cols, i_col_mask, rng))
 
     else:
         def kernel(w_loc_ref, w_scale_ref, clen_ref, seed_ref, _, post_ref):
@@ -579,7 +507,7 @@ def _jitn_pallas_kernel_generator(
             i_cols = i_col_block * block_size + jnp.arange(block_size)
             i_col_mask = i_cols < dim
 
-            def body(data):
+            def body(_step, data):
                 i_rows, i_row_mask, rng = data
                 val = rng.normal(w_loc, w_scale)
                 safe_rows = jnp.where(i_row_mask, i_rows, 0)
@@ -590,11 +518,7 @@ def _jitn_pallas_kernel_generator(
             rng = _PallasLFSRRNG(seed0 + i_cols * n)
             i_rows = rng.random_integers(0, clen0)
             i_row_mask = i_rows < n
-            jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_rows, i_row_mask, rng)
-            )
+            jax.lax.fori_loop(0, n, body, (i_rows, i_row_mask, rng))
 
     def run(w_loc, w_scale, clen, seed):
         fn = pl.pallas_call(kernel, grid=(n_block,), input_output_aliases={4: 0}, out_shape=kwargs['outs'],
@@ -749,13 +673,66 @@ def jitn_p_call(
     )
 
 
+_dtype_sfx = {
+    np.dtype('float16'): '_f16',
+    np.dtype('float32'): '_f32',
+    np.dtype('float64'): '_f64',
+    np.dtype('bfloat16'): '_bf16',
+}
+
+
+def _jitn_cuda_kernel(
+    corder: bool = True,
+    **kwargs
+):
+    register_tvm_cuda_from_file(module='jit_normal', source=Path(__file__).parent.joinpath('jit_normal.cu'))
+    sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
+    variant = 'corder_true' if corder else 'corder_false'
+    kernel_name = f'jit_normal.jitn_{variant}{sfx}'
+
+    def kernel(w_loc, w_scale, clen, seed):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_loc, w_scale, clen, seed)
+
+    return kernel
+
+
+def _jitnmv_cuda_kernel(
+    corder: bool = True,
+    **kwargs
+):
+    register_tvm_cuda_from_file(module='jit_normal', source=Path(__file__).parent.joinpath('jit_normal.cu'))
+    sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
+    variant = 'gather' if corder else 'scatter'
+    kernel_name = f'jit_normal.jitnmv_{variant}{sfx}'
+
+    def kernel(w_loc, w_scale, clen, vector, seed):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_loc, w_scale, clen, seed, vector)
+
+    return kernel
+
+
+def _jitnmm_cuda_kernel(
+    corder: bool = True,
+    **kwargs
+):
+    register_tvm_cuda_from_file(module='jit_normal', source=Path(__file__).parent.joinpath('jit_normal.cu'))
+    sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
+    variant = 'gather' if corder else 'scatter'
+    kernel_name = f'jit_normal.jitnmm_{variant}{sfx}'
+
+    def kernel(w_loc, w_scale, clen, B, seed):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_loc, w_scale, clen, seed, B)
+
+    return kernel
+
+
 jitn_p = XLACustomKernel(
     'float_jitn',
     doc="""
 Low-level XLA custom-kernel primitive for ``jitn``.
 
 This ``XLACustomKernel`` instance dispatches the JIT normal connectivity matrix generation
-operation to registered backends (``numba``, ``warp``, ``pallas``),
+operation to registered backends (``numba``, ``pallas``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 This operation generates a sparse connectivity matrix where weights are normally distributed
@@ -775,11 +752,12 @@ jitn : High-level user-facing function wrapper.
 """
 )
 jitn_p.def_numba_kernel(_jitn_numba_kernel_generator)
-jitn_p.def_warp_kernel(_jitn_warp_kernel_generator)
 jitn_p.def_pallas_kernel('gpu', _jitn_pallas_kernel_generator)
+jitn_p.def_tvmffi_kernel('gpu', _jitn_cuda_kernel)
 jitn_p.def_jvp_rule2(_jitn_jvp_wlow, _jitn_jvp_whigh, None, None)
 jitn_p.def_transpose_rule(_jitn_transpose)
 jitn_p.def_batching_rule(_jitn_batching)
+jitn_p.def_call(jitn_p_call)
 jitn_p.def_tags('jit_normal', 'float')
 jitn_p.def_benchmark_data(_jitn_benchmark_data)
 
@@ -837,86 +815,6 @@ def _jitnmv_numba_kernel_generator(
     return run
 
 
-def _jitnmv_warp_kernel_generator(
-    w_loc_info: jax.ShapeDtypeStruct,
-    w_scale_info: jax.ShapeDtypeStruct,
-    clen_info: jax.ShapeDtypeStruct,
-    vector_info: jax.ShapeDtypeStruct,
-    seed_info: jax.ShapeDtypeStruct,
-    out_info: jax.ShapeDtypeStruct,
-    corder: bool = True,
-    **kwargs
-):
-    r"""
-    Generate the GPU kernel for the :func:`_jitc_matvec_normal` operation.
-    """
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    w_loc_warp_info = jaxinfo_to_warpinfo(w_loc_info)
-    w_scale_warp_info = jaxinfo_to_warpinfo(w_scale_info)
-    clen_warp_info = jaxinfo_to_warpinfo(clen_info)
-    v_warp_info = jaxinfo_to_warpinfo(vector_info)
-    seed_warp_info = jaxinfo_to_warpinfo(seed_info)
-    out_warp_info = jaxinfo_to_warpinfo(out_info)
-
-    if corder:
-        @warp.kernel
-        def kernel(
-            w_loc: w_loc_warp_info,
-            w_scale: w_scale_warp_info,
-            clen: clen_warp_info,
-            vector: v_warp_info,
-            seed: seed_warp_info,
-            posts: out_warp_info,
-        ):
-            num_col = vector.shape[0]
-            w_loc0 = w_loc[0]
-            w_scale0 = w_scale[0]
-            clen0 = clen[0]
-            seed0 = seed[0]
-            i_row = warp.tid()
-            r = float(0.0)
-            state = warp.rand_init(seed0 + i_row * num_col)
-            i_col = warp.randi(state, 0, clen0)
-            while i_col < num_col:
-                w = warp.randn(state) * w_scale0 + w_loc0
-                r += vector[i_col] * w
-                i_col += warp.randi(state, 1, clen0)
-            posts[i_row] = r
-
-    else:
-        @warp.kernel
-        def kernel(
-            w_loc: w_loc_warp_info,
-            w_scale: w_scale_warp_info,
-            clen: clen_warp_info,
-            vector: v_warp_info,
-            seed: seed_warp_info,
-            posts: out_warp_info,
-        ):
-            num_row = posts.shape[0]
-            w_loc0 = w_loc[0]
-            w_scale0 = w_scale[0]
-            clen0 = clen[0]
-            seed0 = seed[0]
-            i_col = warp.tid()
-            v = vector[i_col]
-            state = warp.rand_init(seed0 + i_col * num_row)
-            i_row = warp.randi(state, 0, clen0)
-            while i_row < num_row:
-                w = warp.randn(state) * w_scale0 + w_loc0
-                warp.atomic_add(posts, i_row, v * w)
-                i_row += warp.randi(state, 1, clen0)
-
-    def run(w_loc, w_scale, clen, vector, seed):
-        dim = out_info.shape[0] if corder else vector_info.shape[0]
-        fn = jax_kernel(kernel, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
-        return fn(w_loc, w_scale, clen, vector, seed, jnp.zeros(out_info.shape, out_info.dtype))
-
-    return run
-
-
 def _jitnmv_pallas_kernel_generator(
     vector_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
@@ -941,7 +839,7 @@ def _jitnmv_pallas_kernel_generator(
             i_cols = i_col_block * block_size + jnp.arange(block_size)
             i_col_mask = i_cols < dim
 
-            def body(data):
+            def body(_step, data):
                 i_rows, i_row_mask, rng, out = data
                 v = jnp.where(i_row_mask, vector_ref[i_rows], 0.)
                 out += v * rng.normal(w_loc, w_scale)
@@ -952,11 +850,7 @@ def _jitnmv_pallas_kernel_generator(
             i_rows = rng.random_integers(0, clen)
             i_row_mask = i_rows < num_row
             out = jnp.zeros(block_size, dtype=post_ref.dtype)
-            out = jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_rows, i_row_mask, rng, out)
-            )[-1]
+            out = jax.lax.fori_loop(0, num_row, body, (i_rows, i_row_mask, rng, out))[-1]
             post_ref[i_cols] = jnp.where(i_col_mask, out, post_ref[i_cols])
 
     else:
@@ -971,7 +865,7 @@ def _jitnmv_pallas_kernel_generator(
             i_row_mask = i_rows < dim
             vector = jnp.where(i_row_mask, vector_ref[i_rows], 0.)
 
-            def body(data):
+            def body(_step, data):
                 i_cols, i_col_mask, rng = data
                 atomic_add(post_ref, (i_cols,), vector * rng.normal(w_loc, w_scale), mask=i_row_mask & i_col_mask)
                 i_cols += rng.random_integers(1, clen)
@@ -980,11 +874,7 @@ def _jitnmv_pallas_kernel_generator(
             rng = _PallasLFSRRNG(seed + i_rows * num_col)
             i_cols = rng.random_integers(0, clen)
             i_col_mask = i_cols < num_col
-            jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_cols, i_col_mask, rng)
-            )
+            jax.lax.fori_loop(0, num_col, body, (i_cols, i_col_mask, rng))
 
     def run(w_loc, w_scale, clen, vector, seed):
         fn = pl.pallas_call(
@@ -1251,7 +1141,7 @@ Low-level XLA custom-kernel primitive for ``jitnmv``.
 
 This ``XLACustomKernel`` instance dispatches the JIT normal connectivity matrix-vector
 multiplication with floating-point weights operation to registered backends
-(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata provided by
+(``numba``, ``pallas``), using runtime shape/dtype metadata provided by
 the high-level wrapper.
 
 In this operation, the connectivity matrix has weights normally distributed with specified
@@ -1271,11 +1161,12 @@ jitnmv : High-level user-facing function wrapper.
 """
 )
 jitnmv_p.def_numba_kernel(_jitnmv_numba_kernel_generator)
-jitnmv_p.def_warp_kernel(_jitnmv_warp_kernel_generator)
 jitnmv_p.def_pallas_kernel('gpu', _jitnmv_pallas_kernel_generator)
+jitnmv_p.def_tvmffi_kernel('gpu', _jitnmv_cuda_kernel)
 jitnmv_p.def_jvp_rule2(_jitnmv_jvp_wloc, _jitnmv_jvp_wscale, None, _jitnmv_jvp_v, None)
 jitnmv_p.def_transpose_rule(_jitnmv_transpose_rules)
 jitnmv_p.def_batching_rule(_jitnmv_batching)
+jitnmv_p.def_call(jitnmv_p_call)
 jitnmv_p.def_tags('jit_normal', 'float')
 jitnmv_p.def_benchmark_data(_jitnmv_benchmark_data)
 
@@ -1339,157 +1230,6 @@ def _jitnmm_numba_kernel_generator(
     return run
 
 
-def _jitnmm_warp_kernel_generator(
-    w_loc_info: jax.ShapeDtypeStruct,
-    w_scale_info: jax.ShapeDtypeStruct,
-    clen_info: jax.ShapeDtypeStruct,
-    B_info: jax.ShapeDtypeStruct,
-    out_info: jax.ShapeDtypeStruct,
-    seed_info: jax.ShapeDtypeStruct,
-    corder: bool,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    w_loc_warp_info = jaxinfo_to_warpinfo(w_loc_info)
-    w_scale_warp_info = jaxinfo_to_warpinfo(w_scale_info)
-    clen_warp_info = jaxinfo_to_warpinfo(clen_info)
-    B_warp_info = jaxinfo_to_warpinfo(B_info)
-    seed_warp_info = jaxinfo_to_warpinfo(seed_info)
-    out_warp_info = jaxinfo_to_warpinfo(out_info)
-
-    # TILE_SIZE = generate_block_dim(B_info.shape[1], maximum=512)
-    #
-    # if corder:
-    #     # JIT Matrix @ B, corder=True
-    #     # Each thread i_m generates one row of the JITC matrix and
-    #     # multiplies it with B, accumulating into posts[i_m, :].
-    #     @warp.kernel
-    #     def kernel(
-    #         w_loc: w_loc_warp_info,
-    #         w_scale: w_scale_warp_info,
-    #         clen: clen_warp_info,
-    #         B: B_warp_info,
-    #         seed: seed_warp_info,
-    #         posts: out_warp_info,
-    #     ):
-    #         k = B.shape[0]
-    #         n = B.shape[1]
-    #         w_loc0 = w_loc[0]
-    #         w_scale0 = w_scale[0]
-    #         clen0 = clen[0]
-    #         seed0 = seed[0]
-    #
-    #         i_m = warp.tid()
-    #         state = warp.rand_init(seed0 + i_m * k)
-    #         i_k = warp.randi(state, 0, clen0)
-    #         while i_k < k:
-    #             w = warp.randn(state) * w_scale0 + w_loc0
-    #             for j in range(n):
-    #                 posts[i_m, j] += B[i_k, j] * w
-    #             i_k += warp.randi(state, 1, clen0)
-    #
-    # else:
-    #     # JIT Matrix @ B, corder=False
-    #     # Each thread i_k generates one column of the JITC matrix and
-    #     # scatters B[i_k, :] scaled by weight into output rows via atomic adds.
-    #     @warp.kernel
-    #     def kernel(
-    #         w_loc: w_loc_warp_info,
-    #         w_scale: w_scale_warp_info,
-    #         clen: clen_warp_info,
-    #         B: B_warp_info,
-    #         seed: seed_warp_info,
-    #         posts: out_warp_info,
-    #     ):
-    #         m = posts.shape[0]
-    #         n = B.shape[1]
-    #         w_loc0 = w_loc[0]
-    #         w_scale0 = w_scale[0]
-    #         clen0 = clen[0]
-    #         seed0 = seed[0]
-    #
-    #         i_k = warp.tid()
-    #         state = warp.rand_init(seed0 + i_k * m)
-    #         i_m = warp.randi(state, 0, clen0)
-    #         while i_m < m:
-    #             w = warp.randn(state) * w_scale0 + w_loc0
-    #             for j in range(n):
-    #                 warp.atomic_add(posts, i_m, j, B[i_k, j] * w)
-    #             i_m += warp.randi(state, 1, clen0)
-    #
-    # def run(w_loc, w_scale, clen, B, seed):
-    #     dim = out_info.shape[0] if corder else B_info.shape[0]
-    #     fn = jax_kernel(kernel, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
-    #     return fn(w_loc, w_scale, clen, B, seed, jnp.zeros(out_info.shape, out_info.dtype))
-
-    if corder:
-        # JIT Matrix @ B, corder=True
-        # Each thread i_m generates one row of the JITC matrix and
-        # multiplies it with B, accumulating into posts[i_m, :].
-        @warp.kernel
-        def kernel(
-            w_loc: w_loc_warp_info,
-            w_scale: w_scale_warp_info,
-            clen: clen_warp_info,
-            B: B_warp_info,
-            seed: seed_warp_info,
-            posts: out_warp_info,
-        ):
-            k = B.shape[0]
-            n = B.shape[1]
-            w_loc0 = w_loc[0]
-            w_scale0 = w_scale[0]
-            clen0 = clen[0]
-            seed0 = seed[0]
-
-            i_m = warp.tid()
-            state = warp.rand_init(seed0 + i_m * k)
-            i_k = warp.randi(state, 0, clen0)
-            while i_k < k:
-                w = warp.randn(state) * w_scale0 + w_loc0
-                for j in range(n):
-                    posts[i_m, j] += B[i_k, j] * w
-                i_k += warp.randi(state, 1, clen0)
-
-    else:
-        # JIT Matrix @ B, corder=False
-        # Each thread i_k generates one column of the JITC matrix and
-        # scatters B[i_k, :] scaled by weight into output rows via atomic adds.
-        @warp.kernel
-        def kernel(
-            w_loc: w_loc_warp_info,
-            w_scale: w_scale_warp_info,
-            clen: clen_warp_info,
-            B: B_warp_info,
-            seed: seed_warp_info,
-            posts: out_warp_info,
-        ):
-            m = posts.shape[0]
-            n = B.shape[1]
-            w_loc0 = w_loc[0]
-            w_scale0 = w_scale[0]
-            clen0 = clen[0]
-            seed0 = seed[0]
-
-            i_k = warp.tid()
-            state = warp.rand_init(seed0 + i_k * m)
-            i_m = warp.randi(state, 0, clen0)
-            while i_m < m:
-                w = warp.randn(state) * w_scale0 + w_loc0
-                for j in range(n):
-                    warp.atomic_add(posts, i_m, j, B[i_k, j] * w)
-                i_m += warp.randi(state, 1, clen0)
-
-    def run(w_loc, w_scale, clen, B, seed):
-        dim = out_info.shape[0] if corder else B_info.shape[0]
-        fn = jax_kernel(kernel, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
-        return fn(w_loc, w_scale, clen, B, seed, jnp.zeros(out_info.shape, out_info.dtype))
-
-    return run
-
-
 def _jitnmm_pallas_kernel_generator(
     B_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
@@ -1532,7 +1272,7 @@ def _jitnmm_pallas_kernel_generator(
 
             out = jnp.zeros(row_block, dtype=post_ref.dtype)
 
-            def body(data):
+            def body(_step, data):
                 i_cols, i_col_mask, rng, out = data
                 w = rng.normal(w_loc0, w_scale0)  # [row_block]
                 safe_cols = jnp.where(i_col_mask, i_cols, 0)
@@ -1541,11 +1281,7 @@ def _jitnmm_pallas_kernel_generator(
                 i_cols += rng.random_integers(1, clen0)
                 return i_cols, i_cols < k, rng, out
 
-            _, _, _, out = jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_cols, i_col_mask, rng, out)
-            )
+            _, _, _, out = jax.lax.fori_loop(0, k, body, (i_cols, i_col_mask, rng, out))
             atomic_add(post_ref, (safe_rows, col_j), out, mask=i_row_mask)
 
     else:
@@ -1576,7 +1312,7 @@ def _jitnmm_pallas_kernel_generator(
             i_rows = rng.random_integers(0, clen0)
             i_row_mask = i_rows < m
 
-            def body(data):
+            def body(_step, data):
                 i_rows, i_row_mask, rng = data
                 w = rng.normal(w_loc0, w_scale0)  # [k_block]
                 vals = jnp.where(i_k_mask & i_row_mask, w * b_vals, 0.)
@@ -1586,11 +1322,7 @@ def _jitnmm_pallas_kernel_generator(
                 i_rows += rng.random_integers(1, clen0)
                 return i_rows, i_rows < m, rng
 
-            jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_rows, i_row_mask, rng)
-            )
+            jax.lax.fori_loop(0, m, body, (i_rows, i_row_mask, rng))
 
     def run(w_loc, w_scale, clen, B, seed):
         fn = pl.pallas_call(
@@ -1843,7 +1575,7 @@ Low-level XLA custom-kernel primitive for ``jitnmm``.
 
 This ``XLACustomKernel`` instance dispatches the JIT normal connectivity matrix-matrix
 multiplication with floating-point weights operation to registered backends
-(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata provided by
+(``numba``, ``pallas``), using runtime shape/dtype metadata provided by
 the high-level wrapper.
 
 In this operation, the connectivity matrix has weights normally distributed with specified
@@ -1863,10 +1595,11 @@ jitnmm : High-level user-facing function wrapper.
 """
 )
 jitnmm_p.def_numba_kernel(_jitnmm_numba_kernel_generator)
-jitnmm_p.def_warp_kernel(_jitnmm_warp_kernel_generator)
 jitnmm_p.def_pallas_kernel('gpu', _jitnmm_pallas_kernel_generator)
+jitnmm_p.def_tvmffi_kernel('gpu', _jitnmm_cuda_kernel)
 jitnmm_p.def_jvp_rule2(_jitnmm_jvp_wloc, _jitnmm_jvp_wscale, None, _jitnmm_jvp_B, None)
 jitnmm_p.def_transpose_rule(_jitnmm_transpose_rules)
 jitnmm_p.def_batching_rule(_jitnmm_batching)
+jitnmm_p.def_call(jitnmm_p_call)
 jitnmm_p.def_tags('jit_normal', 'float')
 jitnmm_p.def_benchmark_data(_jitnmm_benchmark_data)
