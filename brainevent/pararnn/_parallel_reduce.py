@@ -120,14 +120,6 @@ def _reduce_diag_cuda_kernel(**kwargs):
     return kernel
 
 
-parallel_reduce_diag_p = XLACustomKernel('pararnn_reduce_diag')
-parallel_reduce_diag_p.def_kernel('jax_raw', 'cpu', _reduce_diag_jax_kernel)
-parallel_reduce_diag_p.def_kernel('jax_raw', 'gpu', _reduce_diag_jax_kernel)
-parallel_reduce_diag_p.def_kernel('jax_raw', 'tpu', _reduce_diag_jax_kernel)
-parallel_reduce_diag_p.def_tvmffi_kernel('gpu', _reduce_diag_cuda_kernel, asdefault=True)
-parallel_reduce_diag_p.def_tags('pararnn', 'reduce')
-
-
 # -- JVP / transpose for diagonal reduction ----------------------------------
 
 def _adjoint_reduce_diag(jac, ct):
@@ -189,6 +181,12 @@ def _reduce_diag_transpose(ct, jac, rhs, **kwargs):
     return jac, rhs
 
 
+parallel_reduce_diag_p = XLACustomKernel('pararnn_reduce_diag')
+parallel_reduce_diag_p.def_kernel('jax_raw', 'cpu', _reduce_diag_jax_kernel)
+parallel_reduce_diag_p.def_kernel('jax_raw', 'gpu', _reduce_diag_jax_kernel)
+parallel_reduce_diag_p.def_kernel('jax_raw', 'tpu', _reduce_diag_jax_kernel)
+parallel_reduce_diag_p.def_tvmffi_kernel('gpu', _reduce_diag_cuda_kernel, asdefault=True)
+parallel_reduce_diag_p.def_tags('pararnn', 'reduce')
 parallel_reduce_diag_p.def_jvp_rule2(_reduce_diag_jvp_jac, _reduce_diag_jvp_rhs)
 parallel_reduce_diag_p.def_transpose_rule(_reduce_diag_transpose)
 
@@ -216,14 +214,6 @@ def _reduce_block_diag_cuda_kernel(**kwargs):
         return jax.ffi.ffi_call(kernel_name, out_info)(jac, rhs)
 
     return kernel
-
-
-parallel_reduce_block_diag_p = XLACustomKernel('pararnn_reduce_block_diag')
-parallel_reduce_block_diag_p.def_kernel('jax_raw', 'cpu', _reduce_block_diag_jax_kernel)
-parallel_reduce_block_diag_p.def_kernel('jax_raw', 'gpu', _reduce_block_diag_jax_kernel)
-parallel_reduce_block_diag_p.def_kernel('jax_raw', 'tpu', _reduce_block_diag_jax_kernel)
-parallel_reduce_block_diag_p.def_tvmffi_kernel('gpu', _reduce_block_diag_cuda_kernel, asdefault=True)
-parallel_reduce_block_diag_p.def_tags('pararnn', 'reduce')
 
 
 # -- JVP / transpose for block-diagonal reduction ----------------------------
@@ -284,6 +274,12 @@ def _reduce_block_diag_transpose(ct, jac, rhs, **kwargs):
     return jac, rhs
 
 
+parallel_reduce_block_diag_p = XLACustomKernel('pararnn_reduce_block_diag')
+parallel_reduce_block_diag_p.def_kernel('jax_raw', 'cpu', _reduce_block_diag_jax_kernel)
+parallel_reduce_block_diag_p.def_kernel('jax_raw', 'gpu', _reduce_block_diag_jax_kernel)
+parallel_reduce_block_diag_p.def_kernel('jax_raw', 'tpu', _reduce_block_diag_jax_kernel)
+parallel_reduce_block_diag_p.def_tvmffi_kernel('gpu', _reduce_block_diag_cuda_kernel, asdefault=True)
+parallel_reduce_block_diag_p.def_tags('pararnn', 'reduce')
 parallel_reduce_block_diag_p.def_jvp_rule2(_reduce_block_diag_jvp_jac, _reduce_block_diag_jvp_rhs)
 parallel_reduce_block_diag_p.def_transpose_rule(_reduce_block_diag_transpose)
 

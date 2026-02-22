@@ -350,14 +350,6 @@ def _fused_gru_fwd_cuda_kernel(**kwargs):
     return kernel
 
 
-fused_gru_diag_fwd_p = XLACustomKernel('fused_gru_diag_fwd')
-fused_gru_diag_fwd_p.def_kernel('jax_raw', 'cpu', _fused_gru_fwd_jax_kernel)
-fused_gru_diag_fwd_p.def_kernel('jax_raw', 'gpu', _fused_gru_fwd_jax_kernel)
-fused_gru_diag_fwd_p.def_kernel('jax_raw', 'tpu', _fused_gru_fwd_jax_kernel)
-fused_gru_diag_fwd_p.def_tvmffi_kernel('gpu', _fused_gru_fwd_cuda_kernel, asdefault=True)
-fused_gru_diag_fwd_p.def_tags('pararnn', 'fused')
-
-
 # -- JVP / transpose for fused GRU forward -----------------------------------
 #
 # At convergence h satisfies h[t] = gru_step(h[t-1], A, Bxpb[t]).
@@ -475,6 +467,12 @@ def _fused_gru_fwd_transpose(ct, A, Bxpb, **kwargs):
     return ct_A, ct_Bxpb
 
 
+fused_gru_diag_fwd_p = XLACustomKernel('fused_gru_diag_fwd')
+fused_gru_diag_fwd_p.def_kernel('jax_raw', 'cpu', _fused_gru_fwd_jax_kernel)
+fused_gru_diag_fwd_p.def_kernel('jax_raw', 'gpu', _fused_gru_fwd_jax_kernel)
+fused_gru_diag_fwd_p.def_kernel('jax_raw', 'tpu', _fused_gru_fwd_jax_kernel)
+fused_gru_diag_fwd_p.def_tvmffi_kernel('gpu', _fused_gru_fwd_cuda_kernel, asdefault=True)
+fused_gru_diag_fwd_p.def_tags('pararnn', 'fused')
 fused_gru_diag_fwd_p.def_jvp_rule2(_fused_gru_fwd_jvp_A, _fused_gru_fwd_jvp_Bxpb)
 fused_gru_diag_fwd_p.def_transpose_rule(_fused_gru_fwd_transpose)
 
@@ -543,14 +541,6 @@ def _fused_gru_bwd_cuda_kernel(**kwargs):
     return kernel
 
 
-fused_gru_diag_bwd_p = XLACustomKernel('fused_gru_diag_bwd')
-fused_gru_diag_bwd_p.def_kernel('jax_raw', 'cpu', _fused_gru_bwd_jax_kernel)
-fused_gru_diag_bwd_p.def_kernel('jax_raw', 'gpu', _fused_gru_bwd_jax_kernel)
-fused_gru_diag_bwd_p.def_kernel('jax_raw', 'tpu', _fused_gru_bwd_jax_kernel)
-fused_gru_diag_bwd_p.def_tvmffi_kernel('gpu', _fused_gru_bwd_cuda_kernel, asdefault=True)
-fused_gru_diag_bwd_p.def_tags('pararnn', 'fused')
-
-
 # -- JVP / transpose for fused GRU backward ----------------------------------
 #
 # The backward primitive computes:
@@ -599,9 +589,13 @@ def _fused_gru_bwd_transpose(ct, grad_y, h, A, Bxpb, **kwargs):
     return grad_y, h, A, Bxpb
 
 
-fused_gru_diag_bwd_p.def_jvp_rule2(
-    _fused_gru_bwd_jvp_grad_y, None, None, None
-)
+fused_gru_diag_bwd_p = XLACustomKernel('fused_gru_diag_bwd')
+fused_gru_diag_bwd_p.def_kernel('jax_raw', 'cpu', _fused_gru_bwd_jax_kernel)
+fused_gru_diag_bwd_p.def_kernel('jax_raw', 'gpu', _fused_gru_bwd_jax_kernel)
+fused_gru_diag_bwd_p.def_kernel('jax_raw', 'tpu', _fused_gru_bwd_jax_kernel)
+fused_gru_diag_bwd_p.def_tvmffi_kernel('gpu', _fused_gru_bwd_cuda_kernel, asdefault=True)
+fused_gru_diag_bwd_p.def_tags('pararnn', 'fused')
+fused_gru_diag_bwd_p.def_jvp_rule2(_fused_gru_bwd_jvp_grad_y, None, None, None)
 fused_gru_diag_bwd_p.def_transpose_rule(_fused_gru_bwd_transpose)
 
 
@@ -690,14 +684,6 @@ def _fused_lstm_fwd_cuda_kernel(**kwargs):
         return jax.ffi.ffi_call(kernel_name, out_info)(A, Bxpb, C)
 
     return kernel
-
-
-fused_lstm_cifg_diag_fwd_p = XLACustomKernel('fused_lstm_cifg_diag_fwd')
-fused_lstm_cifg_diag_fwd_p.def_kernel('jax_raw', 'cpu', _fused_lstm_fwd_jax_kernel)
-fused_lstm_cifg_diag_fwd_p.def_kernel('jax_raw', 'gpu', _fused_lstm_fwd_jax_kernel)
-fused_lstm_cifg_diag_fwd_p.def_kernel('jax_raw', 'tpu', _fused_lstm_fwd_jax_kernel)
-fused_lstm_cifg_diag_fwd_p.def_tvmffi_kernel('gpu', _fused_lstm_fwd_cuda_kernel, asdefault=True)
-fused_lstm_cifg_diag_fwd_p.def_tags('pararnn', 'fused')
 
 
 # -- JVP / transpose for fused LSTM-CIFG forward -----------------------------
@@ -804,9 +790,13 @@ def _fused_lstm_fwd_transpose(ct, A, Bxpb, C, **kwargs):
     return ct_A, ct_Bxpb, ct_C
 
 
-fused_lstm_cifg_diag_fwd_p.def_jvp_rule2(
-    _fused_lstm_fwd_jvp_A, _fused_lstm_fwd_jvp_Bxpb, _fused_lstm_fwd_jvp_C
-)
+fused_lstm_cifg_diag_fwd_p = XLACustomKernel('fused_lstm_cifg_diag_fwd')
+fused_lstm_cifg_diag_fwd_p.def_kernel('jax_raw', 'cpu', _fused_lstm_fwd_jax_kernel)
+fused_lstm_cifg_diag_fwd_p.def_kernel('jax_raw', 'gpu', _fused_lstm_fwd_jax_kernel)
+fused_lstm_cifg_diag_fwd_p.def_kernel('jax_raw', 'tpu', _fused_lstm_fwd_jax_kernel)
+fused_lstm_cifg_diag_fwd_p.def_tvmffi_kernel('gpu', _fused_lstm_fwd_cuda_kernel, asdefault=True)
+fused_lstm_cifg_diag_fwd_p.def_tags('pararnn', 'fused')
+fused_lstm_cifg_diag_fwd_p.def_jvp_rule2(_fused_lstm_fwd_jvp_A, _fused_lstm_fwd_jvp_Bxpb, _fused_lstm_fwd_jvp_C)
 fused_lstm_cifg_diag_fwd_p.def_transpose_rule(_fused_lstm_fwd_transpose)
 
 
@@ -888,14 +878,6 @@ def _fused_lstm_bwd_cuda_kernel(**kwargs):
     return kernel
 
 
-fused_lstm_cifg_diag_bwd_p = XLACustomKernel('fused_lstm_cifg_diag_bwd')
-fused_lstm_cifg_diag_bwd_p.def_kernel('jax_raw', 'cpu', _fused_lstm_bwd_jax_kernel)
-fused_lstm_cifg_diag_bwd_p.def_kernel('jax_raw', 'gpu', _fused_lstm_bwd_jax_kernel)
-fused_lstm_cifg_diag_bwd_p.def_kernel('jax_raw', 'tpu', _fused_lstm_bwd_jax_kernel)
-fused_lstm_cifg_diag_bwd_p.def_tvmffi_kernel('gpu', _fused_lstm_bwd_cuda_kernel, asdefault=True)
-fused_lstm_cifg_diag_bwd_p.def_tags('pararnn', 'fused')
-
-
 # -- JVP / transpose for fused LSTM-CIFG backward ----------------------------
 #
 # The backward primitive computes:
@@ -954,9 +936,13 @@ def _fused_lstm_bwd_transpose(ct, grad_y, full_state, A, Bxpb, C, **kwargs):
     return grad_y, full_state, A, Bxpb, C
 
 
-fused_lstm_cifg_diag_bwd_p.def_jvp_rule2(
-    _fused_lstm_bwd_jvp_grad_y, None, None, None, None
-)
+fused_lstm_cifg_diag_bwd_p = XLACustomKernel('fused_lstm_cifg_diag_bwd')
+fused_lstm_cifg_diag_bwd_p.def_kernel('jax_raw', 'cpu', _fused_lstm_bwd_jax_kernel)
+fused_lstm_cifg_diag_bwd_p.def_kernel('jax_raw', 'gpu', _fused_lstm_bwd_jax_kernel)
+fused_lstm_cifg_diag_bwd_p.def_kernel('jax_raw', 'tpu', _fused_lstm_bwd_jax_kernel)
+fused_lstm_cifg_diag_bwd_p.def_tvmffi_kernel('gpu', _fused_lstm_bwd_cuda_kernel, asdefault=True)
+fused_lstm_cifg_diag_bwd_p.def_tags('pararnn', 'fused')
+fused_lstm_cifg_diag_bwd_p.def_jvp_rule2(_fused_lstm_bwd_jvp_grad_y, None, None, None, None)
 fused_lstm_cifg_diag_bwd_p.def_transpose_rule(_fused_lstm_bwd_transpose)
 
 
