@@ -251,3 +251,4 @@ def __getattr__(name):
         # warnings.warn(f'dense_on_post is deprecated, use {update_dense_on_binary_post.__name__} instead')
         return update_dense_on_binary_post
     raise AttributeError(name)
+
