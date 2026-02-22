@@ -233,5 +233,7 @@ cython_debug/
 /dev/replace_all.py
 /dev/prompt/
 /old/
-/CLAUDE.md
 /benchmark/benchmark/
+/docs/apis/changelog.md
+/ai-coding/
+/analysis/

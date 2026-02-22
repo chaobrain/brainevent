@@ -460,7 +460,7 @@ class COO(DataRepresentation):
             If ``True``, mutate ``self.data`` in place and return ``None``.
             If ``False`` (default), return the updated weight array.
         backend : str or None, optional
-            Compute backend (e.g. ``'numba'``, ``'warp'``).
+            Compute backend (e.g. ``'numba'``, ``'pallas'``).
 
         Returns
         -------

@@ -26,15 +26,8 @@ from brainevent._compatible_import import Tracer
 from brainevent._data import JITCMatrix
 from brainevent._event.binary import BinaryArray
 from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
-from .binary import (
-    binary_jitsmv,
-    binary_jitsmm,
-)
-from .float import (
-    jits,
-    jitsmv,
-    jitsmm,
-)
+from .binary import binary_jitsmv, binary_jitsmm
+from .float import jits, jitsmv, jitsmm
 
 __all__ = [
     'JITCScalarR',
@@ -131,7 +124,7 @@ class JITCScalarMatrix(JITCMatrix):
         Flag indicating the memory layout order of the matrix.
         False (default) for Fortran-order (column-major), True for C-order (row-major).
     backend : str or None
-        The computation backend to use (e.g., ``'warp'``, ``'pallas'``). If ``None``,
+        The computation backend to use (e.g., ``'numba'``, ``'pallas'``). If ``None``,
         the default backend is selected automatically.
     """
     __module__ = 'brainevent'
