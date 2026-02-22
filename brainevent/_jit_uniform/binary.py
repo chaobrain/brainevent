@@ -26,7 +26,7 @@ from jax.interpreters import ad
 from brainevent._data import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_uniform
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, register_tvm_cuda_from_file
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
 from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
 from .float import jitumv_p_call, jitumm_p_call, _dtype_sfx
@@ -985,7 +985,342 @@ See Also
 binary_jitumv : High-level user-facing function wrapper.
 """
 )
+def _jitumv_warp_kernel_generator(
+    w_low_info: jax.ShapeDtypeStruct,
+    w_high_info: jax.ShapeDtypeStruct,
+    clen_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    seed_info: jax.ShapeDtypeStruct,
+    out_info: jax.ShapeDtypeStruct,
+    corder: bool = True,
+    **kwargs
+):
+    """
+    Generate a Warp GPU kernel for binary event JIT-uniform matrix-vector product.
+
+    Parameters
+    ----------
+    w_low_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the lower weight bound.
+    w_high_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the upper weight bound.
+    clen_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the connection length parameter.
+    vector_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the input event vector.
+    seed_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the random seed.
+    out_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the output array.
+    corder : bool, optional
+        If True, each GPU thread handles one output element. If False, each
+        thread handles one input element using atomic adds. Default is True.
+    **kwargs
+        Additional keyword arguments, must include ``outs`` specifying
+        output shape/dtype information.
+
+    Returns
+    -------
+    callable
+        A function ``kernel(w_low, w_high, clen, vector, seed)`` that
+        launches the Warp kernel on GPU and returns the result.
+    """
+    import warp
+    from warp.jax_experimental import jax_kernel
+
+    w_low_warp = jaxinfo_to_warpinfo(w_low_info)
+    w_high_warp = jaxinfo_to_warpinfo(w_high_info)
+    clen_warp = jaxinfo_to_warpinfo(clen_info)
+    vector_warp = jaxinfo_to_warpinfo(vector_info)
+    seed_warp = jaxinfo_to_warpinfo(seed_info)
+    out_warp = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    if corder:
+        if vector_info.dtype == jnp.bool_:
+            @warp.kernel
+            def kernel_impl(
+                w_low: w_low_warp,
+                w_high: w_high_warp,
+                clen: clen_warp,
+                vector: vector_warp,
+                seed: seed_warp,
+                posts: out_warp,
+            ):
+                num_row = vector.shape[0]
+                w_low0 = w_low[0]
+                w_high0 = w_high[0]
+                w_diff = w_high0 - w_low0
+                clen0 = clen[0]
+                seed0 = seed[0]
+                i_col = warp.tid()
+                r = float(0.0)
+                state = warp.rand_init(seed0 + i_col * num_row)
+                i_row = warp.randi(state, 0, clen0)
+                while i_row < num_row:
+                    w = warp.randf(state) * w_diff + w_low0
+                    r = warp.where(vector[i_row], r + w, r)
+                    i_row += warp.randi(state, 1, clen0)
+                posts[i_col] = r
+
+        else:
+            @warp.kernel
+            def kernel_impl(
+                w_low: w_low_warp,
+                w_high: w_high_warp,
+                clen: clen_warp,
+                vector: vector_warp,
+                seed: seed_warp,
+                posts: out_warp,
+            ):
+                num_row = vector.shape[0]
+                w_low0 = w_low[0]
+                w_high0 = w_high[0]
+                w_diff = w_high0 - w_low0
+                clen0 = clen[0]
+                seed0 = seed[0]
+                i_col = warp.tid()
+                r = float(0.0)
+                state = warp.rand_init(seed0 + i_col * num_row)
+                i_row = warp.randi(state, 0, clen0)
+                while i_row < num_row:
+                    w = warp.randf(state) * w_diff + w_low0
+                    if vector[i_row] > float(0.0):
+                        r += w
+                    i_row += warp.randi(state, 1, clen0)
+                posts[i_col] = r
+
+    else:
+        if vector_info.dtype == jnp.bool_:
+            @warp.kernel
+            def kernel_impl(
+                w_low: w_low_warp,
+                w_high: w_high_warp,
+                clen: clen_warp,
+                vector: vector_warp,
+                seed: seed_warp,
+                posts: out_warp,
+            ):
+                num_col = posts.shape[0]
+                w_low0 = w_low[0]
+                w_high0 = w_high[0]
+                w_diff = w_high0 - w_low0
+                clen0 = clen[0]
+                seed0 = seed[0]
+                i_row = warp.tid()
+                v = vector[i_row]
+                if v:
+                    state = warp.rand_init(seed0 + i_row * num_col)
+                    i_col = warp.randi(state, 0, clen0)
+                    while i_col < num_col:
+                        w = warp.randf(state) * w_diff + w_low0
+                        warp.atomic_add(posts, i_col, w)
+                        i_col += warp.randi(state, 1, clen0)
+        else:
+            @warp.kernel
+            def kernel_impl(
+                w_low: w_low_warp,
+                w_high: w_high_warp,
+                clen: clen_warp,
+                vector: vector_warp,
+                seed: seed_warp,
+                posts: out_warp,
+            ):
+                num_col = posts.shape[0]
+                w_low0 = w_low[0]
+                w_high0 = w_high[0]
+                w_diff = w_high0 - w_low0
+                clen0 = clen[0]
+                seed0 = seed[0]
+                i_row = warp.tid()
+                v = vector[i_row] > 0.
+                if v:
+                    state = warp.rand_init(seed0 + i_row * num_col)
+                    i_col = warp.randi(state, 0, clen0)
+                    while i_col < num_col:
+                        w = warp.randf(state) * w_diff + w_low0
+                        warp.atomic_add(posts, i_col, w)
+                        i_col += warp.randi(state, 1, clen0)
+
+    def kernel(w_low, w_high, clen, vector, seed):
+        dim = out_info.shape[0] if corder else vector_info.shape[0]
+        fn = jax_kernel(kernel_impl, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
+        return fn(w_low, w_high, clen, vector, seed, jnp.zeros(out_info.shape, out_info.dtype))
+
+    return kernel
+
+
+def _jitumm_warp_kernel_generator(
+    w_low_info: jax.ShapeDtypeStruct,
+    w_high_info: jax.ShapeDtypeStruct,
+    clen_info: jax.ShapeDtypeStruct,
+    B_info: jax.ShapeDtypeStruct,
+    out_info: jax.ShapeDtypeStruct,
+    seed_info: jax.ShapeDtypeStruct,
+    corder: bool = True,
+    **kwargs
+):
+    """
+    Generate a Warp GPU kernel for binary event JIT-uniform matrix-matrix product.
+
+    Parameters
+    ----------
+    w_low_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the lower weight bound.
+    w_high_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the upper weight bound.
+    clen_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the connection length parameter.
+    B_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the input event matrix ``B``.
+    out_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the output matrix.
+    seed_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the random seed.
+    corder : bool, optional
+        If True, each GPU thread handles one output row. If False, each
+        thread handles one ``B`` row using atomic adds. Default is True.
+    **kwargs
+        Additional keyword arguments.
+
+    Returns
+    -------
+    callable
+        A function ``kernel(w_low, w_high, clen, B, seed)`` that
+        launches the Warp kernel on GPU and returns the result.
+    """
+    import warp
+    from warp.jax_experimental import jax_kernel
+
+    w_low_warp = jaxinfo_to_warpinfo(w_low_info)
+    w_high_warp = jaxinfo_to_warpinfo(w_high_info)
+    clen_warp = jaxinfo_to_warpinfo(clen_info)
+    B_warp = jaxinfo_to_warpinfo(B_info)
+    seed_warp = jaxinfo_to_warpinfo(seed_info)
+    out_warp = jaxinfo_to_warpinfo(out_info)
+
+    if corder:
+        # Each thread i_m generates one row of the JITC matrix and
+        # multiplies it with B, accumulating into posts[i_m, :].
+        if B_info.dtype == jnp.bool_:
+            @warp.kernel
+            def kernel_impl(
+                w_low: w_low_warp,
+                w_high: w_high_warp,
+                clen: clen_warp,
+                B: B_warp,
+                seed: seed_warp,
+                posts: out_warp,
+            ):
+                k = B.shape[0]
+                n = B.shape[1]
+                w_low0 = w_low[0]
+                w_high0 = w_high[0]
+                w_diff = w_high0 - w_low0
+                clen0 = clen[0]
+                seed0 = seed[0]
+                i_m = warp.tid()
+                state = warp.rand_init(seed0 + i_m * k)
+                i_k = warp.randi(state, 0, clen0)
+                while i_k < k:
+                    w = warp.randf(state) * w_diff + w_low0
+                    for j in range(n):
+                        if B[i_k, j]:
+                            posts[i_m, j] += w
+                    i_k += warp.randi(state, 1, clen0)
+
+        else:
+            @warp.kernel
+            def kernel_impl(
+                w_low: w_low_warp,
+                w_high: w_high_warp,
+                clen: clen_warp,
+                B: B_warp,
+                seed: seed_warp,
+                posts: out_warp,
+            ):
+                k = B.shape[0]
+                n = B.shape[1]
+                w_low0 = w_low[0]
+                w_high0 = w_high[0]
+                w_diff = w_high0 - w_low0
+                clen0 = clen[0]
+                seed0 = seed[0]
+                i_m = warp.tid()
+                state = warp.rand_init(seed0 + i_m * k)
+                i_k = warp.randi(state, 0, clen0)
+                while i_k < k:
+                    w = warp.randf(state) * w_diff + w_low0
+                    for j in range(n):
+                        if B[i_k, j] > float(0.0):
+                            posts[i_m, j] += w
+                    i_k += warp.randi(state, 1, clen0)
+
+    else:
+        # Each thread i_k generates one column of the JITC matrix and
+        # scatters B[i_k, :] scaled by weight into output rows via atomic adds.
+        if B_info.dtype == jnp.bool_:
+            @warp.kernel
+            def kernel_impl(
+                w_low: w_low_warp,
+                w_high: w_high_warp,
+                clen: clen_warp,
+                B: B_warp,
+                seed: seed_warp,
+                posts: out_warp,
+            ):
+                m = posts.shape[0]
+                n = B.shape[1]
+                w_low0 = w_low[0]
+                w_high0 = w_high[0]
+                w_diff = w_high0 - w_low0
+                clen0 = clen[0]
+                seed0 = seed[0]
+                i_k = warp.tid()
+                state = warp.rand_init(seed0 + i_k * m)
+                i_m = warp.randi(state, 0, clen0)
+                while i_m < m:
+                    w = warp.randf(state) * w_diff + w_low0
+                    for j in range(n):
+                        if B[i_k, j]:
+                            warp.atomic_add(posts, i_m, j, w)
+                    i_m += warp.randi(state, 1, clen0)
+
+        else:
+            @warp.kernel
+            def kernel_impl(
+                w_low: w_low_warp,
+                w_high: w_high_warp,
+                clen: clen_warp,
+                B: B_warp,
+                seed: seed_warp,
+                posts: out_warp,
+            ):
+                m = posts.shape[0]
+                n = B.shape[1]
+                w_low0 = w_low[0]
+                w_high0 = w_high[0]
+                w_diff = w_high0 - w_low0
+                clen0 = clen[0]
+                seed0 = seed[0]
+                i_k = warp.tid()
+                state = warp.rand_init(seed0 + i_k * m)
+                i_m = warp.randi(state, 0, clen0)
+                while i_m < m:
+                    w = warp.randf(state) * w_diff + w_low0
+                    for j in range(n):
+                        if B[i_k, j] > float(0.0):
+                            warp.atomic_add(posts, i_m, j, w)
+                    i_m += warp.randi(state, 1, clen0)
+
+    def kernel(w_low, w_high, clen, B, seed):
+        dim = out_info.shape[0] if corder else B_info.shape[0]
+        fn = jax_kernel(kernel_impl, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
+        return fn(w_low, w_high, clen, B, seed, jnp.zeros(out_info.shape, out_info.dtype))
+
+    return kernel
+
 binary_jitumv_p.def_numba_kernel(_jitumv_numba_kernel_generator)
+binary_jitumv_p.def_warp_kernel(_jitumv_warp_kernel_generator)
 binary_jitumv_p.def_pallas_kernel('gpu', _jitumv_pallas_kernel_generator)
 binary_jitumv_p.def_tvmffi_kernel('gpu', _binary_jitumv_cuda_kernel)
 binary_jitumv_p.def_jvp_rule2(_jitumv_jvp_wloc, _jitumv_jvp_wscale, None, _jitumv_jvp_v, None)
@@ -1728,6 +2063,7 @@ binary_jitumm : High-level user-facing function wrapper.
 """
 )
 binary_jitumm_p.def_numba_kernel(_jitumm_numba_kernel_generator)
+binary_jitumm_p.def_warp_kernel(_jitumm_warp_kernel_generator)
 binary_jitumm_p.def_pallas_kernel('gpu', _jitumm_pallas_kernel_generator)
 binary_jitumm_p.def_tvmffi_kernel('gpu', _binary_jitumm_cuda_kernel)
 binary_jitumm_p.def_jvp_rule2(_jitumm_jvp_wloc, _jitumm_jvp_wscale, None, _jitumm_jvp_B, None)
