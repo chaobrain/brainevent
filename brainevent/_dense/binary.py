@@ -25,7 +25,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import cdiv, generate_block_dim, namescope
-from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, register_tvm_cuda_from_file
+from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent.config import get_numba_parallel
 
@@ -476,7 +476,209 @@ See Also
 binary_densemv : High-level user-facing function wrapper.
 """
 )
+def _binary_densemv_warp_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    spk_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs
+):
+    import warp
+    from warp.jax_experimental import jax_kernel
+
+    spike_length = spk_info.shape[0]
+    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
+    spike_warp_info = jaxinfo_to_warpinfo(spk_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    if transpose:
+        # weights[k,n], spikes[k] -> out[n]
+        n = weight_info.shape[1]
+
+        if spk_info.dtype == jnp.bool_:
+            @warp.kernel
+            def kernel(
+                weights: weight_warp_info,
+                spikes: spike_warp_info,
+                out: out_warp_info,
+            ):
+                j = warp.tid()
+                r = weights.dtype(0.)
+                for i in range(spike_length):
+                    if spikes[i]:
+                        r += weights[i, j]
+                out[j] = r
+        else:
+            @warp.kernel
+            def kernel(
+                weights: weight_warp_info,
+                spikes: spike_warp_info,
+                out: out_warp_info,
+            ):
+                j = warp.tid()
+                r = weights.dtype(0.)
+                for i in range(spike_length):
+                    if spikes[i] > 0.:
+                        r += weights[i, j]
+                out[j] = r
+
+        def run(weights, spikes):
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=[n], num_outputs=1, output_dims={'out': out_info.shape})
+            return fn(weights, spikes)
+
+    else:
+        # weights[m,k], spikes[k] -> out[m]
+        m = weight_info.shape[0]
+
+        if spk_info.dtype == jnp.bool_:
+            @warp.kernel
+            def kernel(
+                weights: weight_warp_info,
+                spikes: spike_warp_info,
+                out: out_warp_info,
+            ):
+                i = warp.tid()
+                r = weights.dtype(0.)
+                for j in range(spike_length):
+                    if spikes[j]:
+                        r += weights[i, j]
+                out[i] = r
+        else:
+            @warp.kernel
+            def kernel(
+                weights: weight_warp_info,
+                spikes: spike_warp_info,
+                out: out_warp_info,
+            ):
+                i = warp.tid()
+                r = weights.dtype(0.)
+                for j in range(spike_length):
+                    if spikes[j] > 0.:
+                        r += weights[i, j]
+                out[i] = r
+
+        def run(weights, spikes):
+            out_info = kwargs['outs'][0]
+            fn = jax_kernel(kernel, launch_dims=[m], num_outputs=1, output_dims={'out': out_info.shape})
+            return fn(weights, spikes)
+
+    return run
+
+
+def _binary_densemm_warp_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    spk_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs
+):
+    import warp
+    from warp.jax_experimental import jax_kernel
+
+    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    if transpose:
+        # weights[k,m].T @ spikes[k,n] -> out[m,n]
+        k = weight_info.shape[0]
+        m = weight_info.shape[1]
+        n = spk_info.shape[1]
+
+        if spk_info.dtype == jnp.bool_:
+            spk_float_info = jax.ShapeDtypeStruct(spk_info.shape, jnp.float32)
+            spike_warp_info = jaxinfo_to_warpinfo(spk_float_info)
+
+            @warp.kernel
+            def kernel(
+                weights: weight_warp_info,
+                spikes: spike_warp_info,
+                out: out_warp_info,
+            ):
+                i_m, i_n = warp.tid()
+                r = weights.dtype(0.)
+                for i_k in range(k):
+                    if spikes[i_k, i_n] > 0.:
+                        r += weights[i_k, i_m]
+                out[i_m, i_n] = r
+
+            def run(weights, spikes):
+                spikes = spikes.astype(jnp.float32)
+                out_info = kwargs['outs'][0]
+                fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out': out_info.shape})
+                return fn(weights, spikes)
+        else:
+            spike_warp_info = jaxinfo_to_warpinfo(spk_info)
+
+            @warp.kernel
+            def kernel(
+                weights: weight_warp_info,
+                spikes: spike_warp_info,
+                out: out_warp_info,
+            ):
+                i_m, i_n = warp.tid()
+                r = weights.dtype(0.)
+                for i_k in range(k):
+                    if spikes[i_k, i_n] > 0.:
+                        r += weights[i_k, i_m]
+                out[i_m, i_n] = r
+
+            def run(weights, spikes):
+                out_info = kwargs['outs'][0]
+                fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out': out_info.shape})
+                return fn(weights, spikes)
+
+    else:
+        # weights[m,k] @ spikes[k,n] -> out[m,n]
+        k = spk_info.shape[0]
+        n = spk_info.shape[1]
+        m = weight_info.shape[0]
+
+        if spk_info.dtype == jnp.bool_:
+            spk_float_info = jax.ShapeDtypeStruct(spk_info.shape, jnp.float32)
+            spike_warp_info = jaxinfo_to_warpinfo(spk_float_info)
+
+            @warp.kernel
+            def kernel(
+                weights: weight_warp_info,
+                spikes: spike_warp_info,
+                out: out_warp_info
+            ):
+                i_m, i_n = warp.tid()
+                r = weights.dtype(0.)
+                for i_k in range(k):
+                    if spikes[i_k, i_n] > 0.:
+                        r += weights[i_m, i_k]
+                out[i_m, i_n] = r
+
+            def run(weights, spikes):
+                spikes = spikes.astype(jnp.float32)
+                out_info = kwargs['outs'][0]
+                fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out': out_info.shape})
+                return fn(weights, spikes)
+        else:
+            spike_warp_info = jaxinfo_to_warpinfo(spk_info)
+
+            @warp.kernel
+            def kernel(
+                weights: weight_warp_info,
+                spikes: spike_warp_info,
+                out: out_warp_info
+            ):
+                i_m, i_n = warp.tid()
+                r = weights.dtype(0.)
+                for i_k in range(k):
+                    if spikes[i_k, i_n] > 0.:
+                        r += weights[i_m, i_k]
+                out[i_m, i_n] = r
+
+            def run(weights, spikes):
+                out_info = kwargs['outs'][0]
+                fn = jax_kernel(kernel, launch_dims=(m, n), num_outputs=1, output_dims={'out': out_info.shape})
+                return fn(weights, spikes)
+
+    return run
+
 binary_densemv_p.def_numba_kernel(_binary_densemv_numba_kernel)
+binary_densemv_p.def_warp_kernel(_binary_densemv_warp_kernel)
 binary_densemv_p.def_pallas_kernel('gpu', _binary_densemv_pallas_kernel)
 binary_densemv_p.def_tvmffi_kernel('gpu', _binary_densemv_cuda_kernel)
 binary_densemv_p.def_kernel('jax_raw', 'cpu', _binary_densemv_jax_kernel)
@@ -1118,6 +1320,7 @@ binary_densemm : High-level user-facing function wrapper.
 """
 )
 binary_densemm_p.def_numba_kernel(_binary_densemm_numba_kernel)
+binary_densemm_p.def_warp_kernel(_binary_densemm_warp_kernel)
 binary_densemm_p.def_pallas_kernel('gpu', _binary_densemm_pallas_kernel)
 binary_densemm_p.def_tvmffi_kernel('gpu', _binary_densemm_cuda_kernel)
 binary_densemm_p.def_kernel('jax_raw', 'cpu', _binary_densemm_jax_kernel)

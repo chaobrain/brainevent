@@ -25,7 +25,8 @@ from jax import numpy as jnp
 from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, namescope
-from brainevent._op import XLACustomKernel, general_batching_rule, numba_kernel, register_tvm_cuda_from_file
+from brainevent._op import XLACustomKernel, general_batching_rule, numba_kernel, register_tvm_cuda_from_file, \
+    jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Row, Col, MatrixShape
@@ -270,6 +271,199 @@ def _coomv_numba_kernel(
     def kernel(weights, row, col, v):
         # row_ptr is unused for numba backend; present for signature parity
         return numba_kernel(mv, outs=kwargs['outs'])(weights, row, col, v)
+
+    return kernel
+
+
+def _coomv_warp_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    row_info: jax.ShapeDtypeStruct,
+    col_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs
+):
+    import warp
+    from warp.jax_experimental import jax_kernel
+
+    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
+    row_warp_info = jaxinfo_to_warpinfo(row_info)
+    col_warp_info = jaxinfo_to_warpinfo(col_info)
+    vector_warp_info = jaxinfo_to_warpinfo(vector_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    # Process multiple nnz per thread to cut the number of global atomics. Each thread
+    # walks a small, contiguous chunk and locally accumulates runs of identical output
+    # indices before issuing a single atomic_add. This preserves correctness for
+    # duplicate indices while reducing contention on popular rows/cols.
+    WORK_PER_THREAD = 4
+
+    # ------------------------------------------------------------------
+    # Unsorted path: chunked processing + atomics.
+    # ------------------------------------------------------------------
+    if transpose:
+        if weight_info.size == 1:
+            # transpose=True, homogeneous
+            @warp.kernel
+            def mv(
+                weights: weight_warp_info,
+                row: row_warp_info,
+                col: col_warp_info,
+                v: vector_warp_info,
+                posts: out_warp_info,
+            ):
+                tid = warp.tid()
+                start = tid * WORK_PER_THREAD
+                nnz = row.shape[0]
+                if start >= nnz:
+                    return
+
+                w = weights[0]
+                acc = weights[0] - weights[0]
+                dst = int(0)
+
+                for k in range(WORK_PER_THREAD):
+                    idx = start + k
+                    if idx >= nnz:
+                        break
+                    dst_idx = col[idx]
+                    val = w * v[row[idx]]
+
+                    if k == 0:
+                        dst = dst_idx
+                        acc = val
+                    else:
+                        if dst_idx == dst:
+                            acc += val
+                        else:
+                            warp.atomic_add(posts, dst, acc)
+                            dst = dst_idx
+                            acc = val
+
+                warp.atomic_add(posts, dst, acc)
+        else:
+            # transpose=True, heterogeneous
+            @warp.kernel
+            def mv(
+                weights: weight_warp_info,
+                row: row_warp_info,
+                col: col_warp_info,
+                v: vector_warp_info,
+                posts: out_warp_info,
+            ):
+                tid = warp.tid()
+                start = tid * WORK_PER_THREAD
+                nnz = row.shape[0]
+                if start >= nnz:
+                    return
+
+                acc = weights[start] - weights[start]
+                dst = int(0)
+
+                for k in range(WORK_PER_THREAD):
+                    idx = start + k
+                    if idx >= nnz:
+                        break
+                    dst_idx = col[idx]
+                    val = weights[idx] * v[row[idx]]
+
+                    if k == 0:
+                        dst = dst_idx
+                        acc = val
+                    else:
+                        if dst_idx == dst:
+                            acc += val
+                        else:
+                            warp.atomic_add(posts, dst, acc)
+                            dst = dst_idx
+                            acc = val
+
+                warp.atomic_add(posts, dst, acc)
+    else:
+        if weight_info.size == 1:
+            # transpose=False, homogeneous
+            @warp.kernel
+            def mv(
+                weights: weight_warp_info,
+                row: row_warp_info,
+                col: col_warp_info,
+                v: vector_warp_info,
+                posts: out_warp_info,
+            ):
+                tid = warp.tid()
+                start = tid * WORK_PER_THREAD
+                nnz = row.shape[0]
+                if start >= nnz:
+                    return
+
+                w = weights[0]
+                acc = weights[0] - weights[0]
+                dst = int(0)
+
+                for k in range(WORK_PER_THREAD):
+                    idx = start + k
+                    if idx >= nnz:
+                        break
+                    dst_idx = row[idx]
+                    val = w * v[col[idx]]
+
+                    if k == 0:
+                        dst = dst_idx
+                        acc = val
+                    else:
+                        if dst_idx == dst:
+                            acc += val
+                        else:
+                            warp.atomic_add(posts, dst, acc)
+                            dst = dst_idx
+                            acc = val
+
+                warp.atomic_add(posts, dst, acc)
+        else:
+            # transpose=False, heterogeneous
+            @warp.kernel
+            def mv(
+                weights: weight_warp_info,
+                row: row_warp_info,
+                col: col_warp_info,
+                v: vector_warp_info,
+                posts: out_warp_info,
+            ):
+                tid = warp.tid()
+                start = tid * WORK_PER_THREAD
+                nnz = row.shape[0]
+                if start >= nnz:
+                    return
+
+                acc = weights[start] - weights[start]
+                dst = int(0)
+
+                for k in range(WORK_PER_THREAD):
+                    idx = start + k
+                    if idx >= nnz:
+                        break
+                    dst_idx = row[idx]
+                    val = weights[idx] * v[col[idx]]
+
+                    if k == 0:
+                        dst = dst_idx
+                        acc = val
+                    else:
+                        if dst_idx == dst:
+                            acc += val
+                        else:
+                            warp.atomic_add(posts, dst, acc)
+                            dst = dst_idx
+                            acc = val
+
+                warp.atomic_add(posts, dst, acc)
+
+    dim = (row_info.shape[0] + WORK_PER_THREAD - 1) // WORK_PER_THREAD
+    out_info = kwargs['outs'][0]
+
+    def kernel(weights, row, col, v):
+        fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
+        return fn(weights, row, col, v, jnp.zeros(out_info.shape, out_info.dtype))
 
     return kernel
 
@@ -593,9 +787,9 @@ def _coomv_tvmffi_kernel(
 
     out_info = kwargs['outs']
     _dtype_sfx = {
-        jnp.dtype('float16'):  '_f16',
-        jnp.dtype('float32'):  '_f32',
-        jnp.dtype('float64'):  '_f64',
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
         jnp.dtype('bfloat16'): '_bf16',
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
@@ -825,7 +1019,9 @@ See Also
 coomv : High-level user-facing function wrapper.
 """
 )
+
 coomv_p.def_numba_kernel(_coomv_numba_kernel)
+coomv_p.def_warp_kernel(_coomv_warp_kernel)
 coomv_p.def_pallas_kernel('gpu', _coomv_pallas_gpu_kernel)
 coomv_p.def_pallas_kernel('tpu', _coomv_pallas_tpu_kernel)
 coomv_p.def_tvmffi_kernel('gpu', _coomv_tvmffi_kernel)
@@ -888,6 +1084,86 @@ def _coomm_numba_kernel(
 
     def kernel(weights, row, col, B):
         return numba_kernel(mm, outs=kwargs['outs'])(weights, row, col, B)
+
+    return kernel
+
+
+def _coomm_warp_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    matrix_info: jax.ShapeDtypeStruct,
+    row_info: jax.ShapeDtypeStruct,
+    col_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs
+):
+    import warp
+    from warp.jax_experimental import jax_kernel
+
+    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
+    row_warp_info = jaxinfo_to_warpinfo(row_info)
+    col_warp_info = jaxinfo_to_warpinfo(col_info)
+    matrix_warp_info = jaxinfo_to_warpinfo(matrix_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    if transpose:
+        if weight_info.size == 1:
+            # transpose=True, weight.size==1
+            @warp.kernel
+            def mm(
+                weights: weight_warp_info,
+                row: row_warp_info,
+                col: col_warp_info,
+                B: matrix_warp_info,
+                posts: out_warp_info
+            ):
+                i, j = warp.tid()
+                w = weights[0]
+                warp.atomic_add(posts, col[i], j, w * B[row[i], j])
+        else:
+            # transpose=True, weight.size!=1
+            @warp.kernel
+            def mm(
+                weights: weight_warp_info,
+                row: row_warp_info,
+                col: col_warp_info,
+                B: matrix_warp_info,
+                posts: out_warp_info
+            ):
+                i, j = warp.tid()
+                warp.atomic_add(posts, col[i], j, weights[i] * B[row[i], j])
+    else:
+        if weight_info.size == 1:
+            # transpose=False, weight.size==1
+            @warp.kernel
+            def mm(
+                weights: weight_warp_info,
+                row: row_warp_info,
+                col: col_warp_info,
+                B: matrix_warp_info,
+                posts: out_warp_info
+            ):
+                i, j = warp.tid()
+                w = weights[0]
+                warp.atomic_add(posts, row[i], j, w * B[col[i], j])
+        else:
+            # transpose=False, weight.size!=1
+            @warp.kernel
+            def mm(
+                weights: weight_warp_info,
+                row: row_warp_info,
+                col: col_warp_info,
+                B: matrix_warp_info,
+                posts: out_warp_info
+            ):
+                i, j = warp.tid()
+                warp.atomic_add(posts, row[i], j, weights[i] * B[col[i], j])
+
+    dim = (row_info.shape[0], matrix_info.shape[1])
+    out_info = kwargs['outs'][0]
+
+    def kernel(weights, row, col, B):
+        fn = jax_kernel(mm, launch_dims=dim, num_outputs=1, in_out_argnames=['posts'])
+        return fn(weights, row, col, B, jnp.zeros(out_info.shape, out_info.dtype))
 
     return kernel
 
@@ -1524,6 +1800,7 @@ coomm : High-level user-facing function wrapper.
 """
 )
 coomm_p.def_numba_kernel(_coomm_numba_kernel)
+coomm_p.def_warp_kernel(_coomm_warp_kernel)
 coomm_p.def_pallas_kernel('gpu', _coomm_pallas_gpu_kernel)
 coomm_p.def_pallas_kernel('tpu', _coomm_pallas_tpu_kernel)
 coomm_p.def_tvmffi_kernel('gpu', _coomm_tvmffi_kernel)

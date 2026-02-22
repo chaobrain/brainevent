@@ -26,7 +26,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, register_tvm_cuda_from_file
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
 from brainevent.config import get_numba_parallel
@@ -564,7 +564,190 @@ See Also
 spfloat_fcnmv : High-level user-facing function wrapper.
 """
 )
+def _spfloat_fcnmv_warp_kernel(
+    transpose: bool,
+    weight_info: jax.ShapeDtypeStruct,
+    spike_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    shape: Tuple[int, int],
+    **kwargs
+):
+    import warp
+    from warp.jax_experimental import jax_kernel
+
+    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
+    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
+    spike_warp_info = jaxinfo_to_warpinfo(spike_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    if transpose:
+        if weight_info.size == 1:
+            @warp.kernel
+            def ell_mv(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                spikes: spike_warp_info,
+                posts: out_warp_info
+            ):
+                i = warp.tid()
+                w = weights[0]
+                sp = spikes[i]
+                if sp != 0.:
+                    wsp = w * sp
+                    for j in range(indices.shape[1]):
+                        warp.atomic_add(posts, indices[i, j], wsp)
+        else:
+            @warp.kernel
+            def ell_mv(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                spikes: spike_warp_info,
+                posts: out_warp_info
+            ):
+                i = warp.tid()
+                sp = spikes[i]
+                if sp != 0.:
+                    for j in range(indices.shape[1]):
+                        warp.atomic_add(posts, indices[i, j], weights[i, j] * sp)
+
+        def kernel(weights, indices, spikes):
+            out_info = kwargs['outs'][0]
+            dim = spike_info.shape[0]
+            fn = jax_kernel(ell_mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
+            return fn(weights, indices, spikes, jnp.zeros(out_info.shape, out_info.dtype))
+
+    else:
+        if weight_info.size == 1:
+            @warp.kernel
+            def ell_mv(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                spikes: spike_warp_info,
+                posts: out_warp_info
+            ):
+                i = warp.tid()
+                w = weights[0]
+                r = weights.dtype(0.)
+                for j in range(indices.shape[1]):
+                    r += spikes[indices[i, j]]
+                posts[i] = r * w
+        else:
+            @warp.kernel
+            def ell_mv(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                spikes: spike_warp_info,
+                posts: out_warp_info
+            ):
+                i = warp.tid()
+                r = weights.dtype(0.)
+                for j in range(indices.shape[1]):
+                    r += weights[i, j] * spikes[indices[i, j]]
+                posts[i] = r
+
+        def kernel(weights, indices, spikes):
+            out_info = kwargs['outs'][0]
+            dim = indices_info.shape[0]
+            fn = jax_kernel(ell_mv, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
+            return fn(weights, indices, spikes)
+
+    return kernel
+
+
+def _spfloat_fcnmm_warp_kernel(
+    transpose: bool,
+    weight_info: jax.ShapeDtypeStruct,
+    matrix_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    import warp
+    from warp.jax_experimental import jax_kernel
+
+    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
+    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
+    B_warp_info = jaxinfo_to_warpinfo(matrix_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    if transpose:
+        if weight_info.size == 1:
+            @warp.kernel
+            def mm(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                B: B_warp_info,
+                posts: out_warp_info,
+            ):
+                i_k, i_n = warp.tid()
+                sp = B[i_k, i_n]
+                if sp != weights.dtype(0.):
+                    v = sp * weights[0]
+                    for j in range(indices.shape[1]):
+                        i_m = indices[i_k, j]
+                        warp.atomic_add(posts, i_m, i_n, v)
+        else:
+            @warp.kernel
+            def mm(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                B: B_warp_info,
+                posts: out_warp_info,
+            ):
+                i_k, i_n = warp.tid()
+                b = B[i_k, i_n]
+                if b != weights.dtype(0.):
+                    for j in range(indices.shape[1]):
+                        i_m = indices[i_k, j]
+                        w = weights[i_k, j]
+                        warp.atomic_add(posts, i_m, i_n, w * b)
+
+        def kernel(weights, indices, matrix):
+            out_info = kwargs['outs'][0]
+            dim = (matrix_info.shape[0], matrix_info.shape[1])
+            fn = jax_kernel(mm, launch_dims=dim, num_outputs=1, in_out_argnames=['posts'])
+            return fn(weights, indices, matrix, jnp.zeros(out_info.shape, out_info.dtype))
+
+    else:
+        if weight_info.size == 1:
+            @warp.kernel
+            def mm(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                B: B_warp_info,
+                posts: out_warp_info,
+            ):
+                i_m, i_n = warp.tid()
+                r = weights.dtype(0.)
+                for j in range(indices.shape[1]):
+                    i_k = indices[i_m, j]
+                    r += B[i_k, i_n]
+                posts[i_m, i_n] = r * weights[0]
+        else:
+            @warp.kernel
+            def mm(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                B: B_warp_info,
+                posts: out_warp_info,
+            ):
+                i_m, i_n = warp.tid()
+                r = weights.dtype(0.)
+                for j in range(indices.shape[1]):
+                    i_k = indices[i_m, j]
+                    w = weights[i_m, j]
+                    r += w * B[i_k, i_n]
+                posts[i_m, i_n] = r
+
+        def kernel(weights, indices, matrix):
+            out_info = kwargs['outs'][0]
+            dim = (indices_info.shape[0], matrix_info.shape[1])
+            fn = jax_kernel(mm, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
+            return fn(weights, indices, matrix)
+
+    return kernel
+
 spfloat_fcnmv_p.def_numba_kernel(_spfloat_fcnmv_numba_kernel)
+spfloat_fcnmv_p.def_warp_kernel(_spfloat_fcnmv_warp_kernel)
 spfloat_fcnmv_p.def_pallas_kernel('gpu', _spfloat_fcnmv_pallas_kernel)
 spfloat_fcnmv_p.def_tvmffi_kernel('gpu', _spfloat_fcnmv_cuda_kernel)
 spfloat_fcnmv_p.def_kernel('jax_raw', 'cpu', _spfloat_fcnmv_jax_kernel)
@@ -1116,6 +1299,7 @@ spfloat_fcnmm : High-level user-facing function wrapper.
 """
 )
 spfloat_fcnmm_p.def_numba_kernel(_spfloat_fcnmm_numba_kernel)
+spfloat_fcnmm_p.def_warp_kernel(_spfloat_fcnmm_warp_kernel)
 spfloat_fcnmm_p.def_pallas_kernel('gpu', _spfloat_fcnmm_pallas_kernel)
 spfloat_fcnmm_p.def_tvmffi_kernel('gpu', _spfloat_fcnmm_cuda_kernel)
 spfloat_fcnmm_p.def_kernel('jax_raw', 'cpu', _spfloat_fcnmm_jax_kernel)

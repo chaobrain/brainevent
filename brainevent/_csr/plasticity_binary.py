@@ -23,7 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._misc import namescope
-from brainevent._op import XLACustomKernel, numba_kernel, register_tvm_cuda_from_file
+from brainevent._op import XLACustomKernel, numba_kernel, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
 
@@ -462,7 +462,119 @@ See Also
 update_csr_on_binary_pre : High-level user-facing function wrapper.
 """
 )
+def _csr_on_pre_warp_kernel_generator(
+    weight_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    indptr_info: jax.ShapeDtypeStruct,
+    spike_info: jax.ShapeDtypeStruct,
+    trace_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    **kwargs
+):
+    import warp
+    from warp.jax_experimental import jax_kernel
+
+    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
+    indptr_warp_info = jaxinfo_to_warpinfo(indptr_info)
+    spike_warp_info = jaxinfo_to_warpinfo(spike_info)
+    trace_warp_info = jaxinfo_to_warpinfo(trace_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    if spike_info.dtype == jnp.bool_:
+        @warp.kernel
+        def plasticity_kernel(
+            indices: indices_warp_info,
+            indptr: indptr_warp_info,
+            pre_spike: spike_warp_info,
+            post_trace: trace_warp_info,
+            out_w: out_warp_info,
+        ):
+            i = warp.tid()
+            if pre_spike[i]:
+                for j in range(indptr[i], indptr[i + 1]):
+                    out_w[j] += post_trace[indices[j]]
+    else:
+        @warp.kernel
+        def plasticity_kernel(
+            indices: indices_warp_info,
+            indptr: indptr_warp_info,
+            pre_spike: spike_warp_info,
+            post_trace: trace_warp_info,
+            out_w: out_warp_info,
+        ):
+            i = warp.tid()
+            if pre_spike[i] != 0.:
+                for j in range(indptr[i], indptr[i + 1]):
+                    out_w[j] += post_trace[indices[j]]
+
+    def kernel(weight, indices, indptr, pre_spike, post_trace):
+        fn = jax_kernel(plasticity_kernel, launch_dims=[shape[0]], num_outputs=1, in_out_argnames=['out_w'])
+        return fn(indices, indptr, pre_spike, post_trace, weight)
+
+    return kernel
+
+
+def _csr2csc_on_post_warp_kernel_generator(
+    weight_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    indptr_info: jax.ShapeDtypeStruct,
+    weight_indices_info: jax.ShapeDtypeStruct,
+    trace_info: jax.ShapeDtypeStruct,
+    spike_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    **kwargs
+):
+    import warp
+    from warp.jax_experimental import jax_kernel
+
+    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
+    indptr_warp_info = jaxinfo_to_warpinfo(indptr_info)
+    weight_indices_warp_info = jaxinfo_to_warpinfo(weight_indices_info)
+    trace_warp_info = jaxinfo_to_warpinfo(trace_info)
+    spike_warp_info = jaxinfo_to_warpinfo(spike_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    if spike_info.dtype == jnp.bool_:
+        @warp.kernel
+        def plasticity_kernel(
+            indices: indices_warp_info,
+            indptr: indptr_warp_info,
+            weight_indices: weight_indices_warp_info,
+            pre_trace: trace_warp_info,
+            post_spike: spike_warp_info,
+            out_w: out_warp_info,
+        ):
+            i = warp.tid()
+            if post_spike[i]:
+                for j in range(indptr[i], indptr[i + 1]):
+                    weight_id = weight_indices[j]
+                    pre_id = indices[j]
+                    out_w[weight_id] += pre_trace[pre_id]
+    else:
+        @warp.kernel
+        def plasticity_kernel(
+            indices: indices_warp_info,
+            indptr: indptr_warp_info,
+            weight_indices: weight_indices_warp_info,
+            pre_trace: trace_warp_info,
+            post_spike: spike_warp_info,
+            out_w: out_warp_info,
+        ):
+            i = warp.tid()
+            if post_spike[i] != 0.:
+                for j in range(indptr[i], indptr[i + 1]):
+                    weight_id = weight_indices[j]
+                    pre_id = indices[j]
+                    out_w[weight_id] += pre_trace[pre_id]
+
+    def kernel(weight, indices, indptr, weight_indices, pre_trace, post_spike):
+        fn = jax_kernel(plasticity_kernel, launch_dims=[shape[1]], num_outputs=1, in_out_argnames=['out_w'])
+        return fn(indices, indptr, weight_indices, pre_trace, post_spike, weight)
+
+    return kernel
+
 update_csr_on_binary_pre_p.def_numba_kernel(_csr_on_pre_numba_kernel_generator)
+update_csr_on_binary_pre_p.def_warp_kernel(_csr_on_pre_warp_kernel_generator)
 update_csr_on_binary_pre_p.def_pallas_kernel('gpu', partial(_csr_on_pre_pallas_kernel_generator, 'triton'))
 update_csr_on_binary_pre_p.def_pallas_kernel('tpu', partial(_csr_on_pre_pallas_kernel_generator, 'mosaic_tpu'))
 update_csr_on_binary_pre_p.def_tvmffi_kernel('gpu', _csr_on_pre_cuda_kernel)
@@ -935,6 +1047,7 @@ update_csr_on_binary_post : High-level user-facing function wrapper.
 """
 )
 update_csr_on_binary_post_p.def_numba_kernel(_csr2csc_on_post_numba_kernel_generator)
+update_csr_on_binary_post_p.def_warp_kernel(_csr2csc_on_post_warp_kernel_generator)
 update_csr_on_binary_post_p.def_pallas_kernel('gpu', partial(_csr2csc_on_post_pallas_kernel_generator, 'triton'))
 update_csr_on_binary_post_p.def_pallas_kernel('tpu', partial(_csr2csc_on_post_pallas_kernel_generator, 'mosaic_tpu'))
 update_csr_on_binary_post_p.def_tvmffi_kernel('gpu', _csr2csc_on_post_cuda_kernel)

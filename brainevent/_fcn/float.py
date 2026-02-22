@@ -27,7 +27,7 @@ from jax.interpreters import ad
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
 from brainevent._op import (
     general_batching_rule, XLACustomKernel, numba_kernel, register_tvm_cuda_from_file,
-    BenchmarkConfig
+    BenchmarkConfig, jaxinfo_to_warpinfo
 )
 from brainevent.config import get_numba_parallel
 
@@ -540,7 +540,199 @@ See Also
 fcnmv : High-level user-facing function wrapper.
 """
 )
+def _fcnmv_warp_kernel(
+    transpose: bool,
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    import warp
+    from warp.jax_experimental import jax_kernel
+
+    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
+    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
+    vector_warp_info = jaxinfo_to_warpinfo(vector_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    if transpose:
+        # Sparse Matrix: [k, m]
+        # vector: [k]
+
+        # fixed pre connection number
+        if weight_info.size == 1:
+            @warp.kernel
+            def ell_mv(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                vector: vector_warp_info,
+                posts: out_warp_info
+            ):
+                i_k = warp.tid()
+                w = weights[0]
+                wv = w * vector[i_k]
+                for j in range(indices.shape[1]):
+                    warp.atomic_add(posts, indices[i_k, j], wv)
+        else:
+            @warp.kernel
+            def ell_mv(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                vector: vector_warp_info,
+                posts: out_warp_info
+            ):
+                i = warp.tid()
+                v = vector[i]
+                for j in range(indices.shape[1]):
+                    warp.atomic_add(posts, indices[i, j], weights[i, j] * v)
+
+        def kernel(weights, indices, vector):
+            out_info = kwargs['outs'][0]
+            dim = vector_info.shape[0]
+            fn = jax_kernel(ell_mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
+            return fn(weights, indices, vector, jnp.zeros(out_info.shape, out_info.dtype))
+
+    else:
+        # fixed post connection number
+        # Sparse Matrix: [m, k]
+        # vector: [k]
+
+        if weight_info.size == 1:
+            @warp.kernel
+            def ell_mv(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                vector: vector_warp_info,
+                posts: out_warp_info
+            ):
+                i_m = warp.tid()
+                w = weights[0]
+                r = weights.dtype(0.)
+                for j in range(indices.shape[1]):
+                    r += vector[indices[i_m, j]]
+                posts[i_m] = w * r
+        else:
+            @warp.kernel
+            def ell_mv(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                vector: vector_warp_info,
+                posts: out_warp_info
+            ):
+                i_m = warp.tid()
+                r = weights.dtype(0.)
+                for j in range(indices.shape[1]):
+                    r += weights[i_m, j] * vector[indices[i_m, j]]
+                posts[i_m] = r
+
+        def kernel(weights, indices, vector):
+            out_info = kwargs['outs'][0]
+            dim = indices_info.shape[0]
+            fn = jax_kernel(ell_mv, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
+            return fn(weights, indices, vector)
+
+    return kernel
+
+
+def _fcnmm_warp_kernel(
+    transpose: bool,
+    weight_info: jax.ShapeDtypeStruct,
+    matrix_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    import warp
+    from warp.jax_experimental import jax_kernel
+
+    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
+    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
+    B_warp_info = jaxinfo_to_warpinfo(matrix_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    if transpose:
+        # fixed pre connection number
+        # Sparse Matrix: [k, m]
+        # matrix: [k, n]
+
+        if weight_info.size == 1:
+            @warp.kernel
+            def mm(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                B: B_warp_info,
+                posts: out_warp_info,
+            ):
+                i_k, i_n = warp.tid()
+                v = B[i_k, i_n] * weights[0]
+                for j in range(indices.shape[1]):
+                    i_m = indices[i_k, j]
+                    warp.atomic_add(posts, i_m, i_n, v)
+        else:
+            @warp.kernel
+            def mm(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                B: B_warp_info,
+                posts: out_warp_info,
+            ):
+                i_k, i_n = warp.tid()
+                b = B[i_k, i_n]
+                for j in range(indices.shape[1]):
+                    i_m = indices[i_k, j]
+                    w = weights[i_k, j]
+                    warp.atomic_add(posts, i_m, i_n, w * b)
+
+        def kernel(weights, indices, matrix):
+            out_info = kwargs['outs'][0]
+            dim = (matrix_info.shape[0], matrix_info.shape[1])
+            fn = jax_kernel(mm, launch_dims=dim, num_outputs=1, in_out_argnames=['posts'])
+            return fn(weights, indices, matrix, jnp.zeros(out_info.shape, out_info.dtype))
+
+    else:
+        # fixed post connection number
+        # Sparse Matrix: [m, k]
+        # matrix: [k, n]
+
+        if weight_info.size == 1:
+            @warp.kernel
+            def mm(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                B: B_warp_info,
+                posts: out_warp_info,
+            ):
+                i_m, i_n = warp.tid()
+                r = weights.dtype(0.)
+                for j in range(indices.shape[1]):
+                    i_k = indices[i_m, j]
+                    r += B[i_k, i_n]
+                posts[i_m, i_n] = r * weights[0]
+        else:
+            @warp.kernel
+            def mm(
+                weights: weight_warp_info,
+                indices: indices_warp_info,
+                B: B_warp_info,
+                posts: out_warp_info,
+            ):
+                i_m, i_n = warp.tid()
+                r = weights.dtype(0.)
+                for j in range(indices.shape[1]):
+                    i_k = indices[i_m, j]
+                    w = weights[i_m, j]
+                    r += w * B[i_k, i_n]
+                posts[i_m, i_n] = r
+
+        def kernel(weights, indices, matrix):
+            out_info = kwargs['outs'][0]
+            dim = (indices_info.shape[0], matrix_info.shape[1])
+            fn = jax_kernel(mm, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
+            return fn(weights, indices, matrix)
+
+    return kernel
+
 fcnmv_p.def_numba_kernel(_fcnmv_numba_kernel)
+fcnmv_p.def_warp_kernel(_fcnmv_warp_kernel)
 fcnmv_p.def_pallas_kernel('gpu', _fcnmv_pallas_kernel)
 fcnmv_p.def_tvmffi_kernel('gpu', _fcnmv_cuda_kernel)
 fcnmv_p.def_kernel('jax_raw', 'cpu', _fcnmv_jax_kernel)
@@ -1094,6 +1286,7 @@ fcnmm : High-level user-facing function wrapper.
 """
 )
 fcnmm_p.def_numba_kernel(_fcnmm_numba_kernel)
+fcnmm_p.def_warp_kernel(_fcnmm_warp_kernel)
 fcnmm_p.def_pallas_kernel('gpu', _fcnmm_pallas_kernel)
 fcnmm_p.def_tvmffi_kernel('gpu', _fcnmm_cuda_kernel)
 fcnmm_p.def_kernel('jax_raw', 'cpu', _fcnmm_jax_kernel)
