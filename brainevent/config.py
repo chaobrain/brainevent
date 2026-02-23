@@ -45,6 +45,9 @@ __all__ = [
     'get_numba_num_threads',
     'set_lfsr_algorithm',
     'get_lfsr_algorithm',
+    'set_backend',
+    'get_backend',
+    'clear_backends',
 ]
 
 _SCHEMA_VERSION = 1
@@ -583,3 +586,113 @@ def get_lfsr_algorithm() -> str:
         'lfsr88'
     """
     return _lfsr_algorithm
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Global backend configuration
+# ──────────────────────────────────────────────────────────────────────
+
+_global_backends: Dict[str, str] = {}
+
+
+def set_backend(platform: str, backend: Optional[str]):
+    """Set the global default backend for a platform across all primitives.
+
+    After this call, every primitive that has a kernel registered for
+    *backend* on *platform* will use it by default, unless overridden by
+    an explicit ``backend=`` keyword argument at call time.
+
+    Parameters
+    ----------
+    platform : str
+        The platform name (e.g., ``'cpu'``, ``'gpu'``, ``'tpu'``).
+    backend : str or None
+        The backend name (e.g., ``'warp'``, ``'pallas'``, ``'numba'``).
+        Pass ``None`` to clear the global default for this platform,
+        reverting to per-primitive defaults.
+
+    Raises
+    ------
+    ValueError
+        If *backend* is an empty string.
+
+    See Also
+    --------
+    get_backend : Query the current global backend for a platform.
+    clear_backends : Clear all global backend defaults.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import brainevent
+        >>> brainevent.set_backend('gpu', 'warp')
+        >>> brainevent.get_backend('gpu')
+        'warp'
+        >>> brainevent.set_backend('gpu', None)  # clear
+        >>> brainevent.get_backend('gpu') is None
+        True
+    """
+    if isinstance(backend, str) and backend == '':
+        raise ValueError("backend cannot be an empty string.")
+    if backend is None:
+        _global_backends.pop(platform, None)
+    else:
+        _global_backends[platform] = backend
+
+
+def get_backend(platform: str) -> Optional[str]:
+    """Get the global default backend for a platform.
+
+    Parameters
+    ----------
+    platform : str
+        The platform name (e.g., ``'cpu'``, ``'gpu'``, ``'tpu'``).
+
+    Returns
+    -------
+    str or None
+        The globally configured backend name, or ``None`` if no global
+        default has been set for this platform.
+
+    See Also
+    --------
+    set_backend : Set the global backend for a platform.
+    clear_backends : Clear all global backend defaults.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import brainevent
+        >>> brainevent.get_backend('cpu')  # None by default
+        >>> brainevent.set_backend('cpu', 'numba')
+        >>> brainevent.get_backend('cpu')
+        'numba'
+    """
+    return _global_backends.get(platform)
+
+
+def clear_backends():
+    """Clear all global backend defaults.
+
+    After calling this function, all primitives revert to their
+    per-primitive defaults (set via ``XLACustomKernel.set_default``,
+    user config file, or registration order).
+
+    See Also
+    --------
+    set_backend : Set the global backend for a platform.
+    get_backend : Query the current global backend for a platform.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import brainevent
+        >>> brainevent.set_backend('gpu', 'warp')
+        >>> brainevent.clear_backends()
+        >>> brainevent.get_backend('gpu') is None
+        True
+    """
+    _global_backends.clear()

@@ -24,7 +24,7 @@ from jax.interpreters import xla, batching, ad, mlir
 from brainevent._compatible_import import Primitive
 from brainevent._error import KernelFallbackExhaustedError
 from brainevent._typing import KernelGenerator
-from brainevent.config import load_user_defaults
+from brainevent.config import load_user_defaults, get_backend
 from .benchmark import BenchmarkRecord, BenchmarkResult, benchmark_function
 from .util import (
     general_batching_rule, defjvp, OutType,
@@ -388,15 +388,25 @@ class XLACustomKernel:
                 )
 
             # Determine which backend to use
+            # Priority: per-call > global > per-primitive > first registered
             backend_to_use = kwargs.pop('backend', None)
             if backend_to_use is not None:
+                if isinstance(backend_to_use, str) and backend_to_use == '':
+                    raise ValueError(
+                        f"backend cannot be an empty string in primitive '{self.name}'."
+                    )
                 if backend_to_use not in kernels:
                     raise KernelFallbackExhaustedError(
                         f'{backend_to_use} not available for platform {platform} in primitive '
                         f'{self.name}.'
                     )
             else:
-                backend_to_use = self._defaults.get(platform)
+                # Check global backend setting
+                global_be = get_backend(platform)
+                if global_be is not None and global_be in kernels:
+                    backend_to_use = global_be
+                else:
+                    backend_to_use = self._defaults.get(platform)
 
             # Get the kernel entry
             if backend_to_use and backend_to_use in kernels:
