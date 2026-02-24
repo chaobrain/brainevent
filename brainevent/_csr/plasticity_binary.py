@@ -316,8 +316,8 @@ def _csr_on_pre_cuda_kernel(
         )
 
     register_tvm_cuda_from_file(
-        module='csr_plasticity',
-        source=Path(__file__).parent.joinpath('plasticity_binary.cu'),
+        module='csr_plasticity_binary_pre',
+        source=Path(__file__).parent.joinpath('plasticity_binary_update_csr_on_binary_pre.cu'),
     )
 
     out_info = kwargs['outs']
@@ -330,7 +330,7 @@ def _csr_on_pre_cuda_kernel(
         jnp.dtype('bfloat16'): '_bf16',
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
-    kernel_name = f'csr_plasticity.update_csr_on_pre{wt_sfx}{spk_suffix}'
+    kernel_name = f'csr_plasticity_binary_pre.update_csr_on_pre{wt_sfx}{spk_suffix}'
 
     def kernel(weight, indices, indptr, pre_spike, post_trace):
         return jax.ffi.ffi_call(
@@ -890,8 +890,8 @@ def _csr2csc_on_post_cuda_kernel(
         )
 
     register_tvm_cuda_from_file(
-        module='csr_plasticity',
-        source=Path(__file__).parent.joinpath('plasticity_binary.cu'),
+        module='csr_plasticity_binary_post',
+        source=Path(__file__).parent.joinpath('plasticity_binary_update_csr_on_binary_post.cu'),
     )
 
     out_info = kwargs['outs']
@@ -904,7 +904,7 @@ def _csr2csc_on_post_cuda_kernel(
         jnp.dtype('bfloat16'): '_bf16',
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
-    kernel_name = f'csr_plasticity.update_csr_on_post{wt_sfx}{spk_suffix}'
+    kernel_name = f'csr_plasticity_binary_post.update_csr_on_post{wt_sfx}{spk_suffix}'
 
     def kernel(weight, indices, indptr, weight_indices, pre_trace, post_spike):
         return jax.ffi.ffi_call(
