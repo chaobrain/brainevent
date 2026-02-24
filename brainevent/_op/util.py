@@ -141,6 +141,7 @@ def register_tvm_cuda_kernels(
     source_code: str,
     module: str,
     functions: Sequence[str],
+    arg_spec: Sequence[str] = ("args", "rets", "ctx.stream"),
 ):
     """Compile CUDA source code and register the resulting kernels with JAX FFI.
 
@@ -239,10 +240,13 @@ def register_tvm_cuda_kernels(
     # Register each kernel with JAX FFI
     for name in functions:
         jax_tvm_ffi.register_ffi_target(
-            f"{module}.{name}",
-            getattr(_cuda_module, name),
-            ["args", "rets", "ctx.stream"],
+            name=f"{module}.{name}",
+            function=getattr(_cuda_module, name),
+            arg_spec=list(arg_spec),
             platform="gpu",
+            allow_cuda_graph=True,
+            pass_owned_tensor=False,
+            use_last_output_for_alloc_workspace=False,
         )
 
     # Mark this module as registered so future calls can safely reuse it.
