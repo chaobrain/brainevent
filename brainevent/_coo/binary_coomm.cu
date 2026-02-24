@@ -14,33 +14,28 @@
 // ==============================================================================
 
 /*
- * binary.cu -- Event-Driven Binary COO Sparse Matrix-Vector and Matrix-Matrix CUDA Kernels
- * =======================================================================================
+ * binary_coomm.cu -- Event-Driven Binary COO Sparse Matrix-Matrix CUDA Kernels
+ * =============================================================================
  *
  * This module provides high-performance, event-driven CUDA kernels for sparse
- * matrix-vector (SpMV) and sparse matrix-matrix (SpMM) multiplications where the
- * sparse matrix is in Coordinate (COO) format and the dense operand (vector or
- * matrix) contains binary events (spikes).
+ * matrix-matrix (SpMM) multiplication where the sparse matrix is in Coordinate
+ * (COO) format and the dense matrix contains binary events (spikes).
  *
  * Event-Driven Optimization:
  * -------------------------
- * In SNN simulations, dense vectors/matrices are often very sparse in time
+ * In SNN simulations, dense matrices are often very sparse in time
  * (most elements are zero/inactive). These kernels exploit this by checking
- * the activity of the dense operand before performing expensive atomic
+ * the activity of the dense matrix before performing expensive atomic
  * accumulations. This "event-driven" approach significantly reduces memory
  * traffic and contention on the output buffer.
  *
  * Supported Operations:
  * --------------------
- * 1. binary_coomv (SpMV): out = A @ v  or  out = A.T @ v
- *    - Uses a grid-stride loop with atomic additions.
- *    - Optimized for various data types (f32, f64, f16, bf16).
- *
- * 2. binary_coomm (SpMM): out = A @ B  or  out = A.T @ B
- *    - Column-Tiled (CT) Variant: Optimized for small number of columns (n <= 64).
- *      Uses warp-level voting (__ballot_sync) to skip entire tiles of inactive events.
- *    - Warp-Per-Entry (WPE) Variant: Optimized for large number of columns (n > 64).
- *      Assigns one warp per NNZ entry to maximize parallelism.
+ * binary_coomm (SpMM): out = A @ B  or  out = A.T @ B
+ *   - Column-Tiled (CT) Variant: Optimized for small number of columns (n <= 64).
+ *     Uses warp-level voting (__ballot_sync) to skip entire tiles of inactive events.
+ *   - Warp-Per-Entry (WPE) Variant: Optimized for large number of columns (n > 64).
+ *     Assigns one warp per NNZ entry to maximize parallelism.
  *
  * Data Types and Numerical Stability:
  * ----------------------------------
@@ -49,376 +44,6 @@
  *   float32 to maintain numerical precision, with results written back
  *   atomically.
  *
- * ``binary_coomv``
- * ================
- *
- * Performance Analysis (RTX 3080 Ti Laptop, 616 GB/s peak):
- * ----------------------------------------------------------
- * Benchmark: 5000×5000 matrix, nnz=1.25M (5% density), 1% spike rate
- *
- * OPTIMIZED (after ballot early-exit + tuning, Feb 2026):
- *  - Memory traffic per active warp: ~160B (col+v reads for 32 threads)
- *  - Memory traffic per active thread: 16B (row+data+atomic RMW)
- *  - Active warps at 1% spike: 27% (10,664 warps, ~1.9 MB total traffic)
- *  - Measured latency: ~0.11-0.14 ms (min), ~0.8 ms (mean, thermally throttled)
- *  - Achieved bandwidth: ~14-17 GB/s (min), ~2.4 GB/s (mean)
- *  - **Efficiency vs roofline: 2.2% (min), 0.5% (mean)**
- *  - Speedup vs baseline (no ballot): **8-11× faster**
- *
- * Optimization History:
- *  1. Added warp-level __ballot_sync() early exit to COOMV kernels (8-11× speedup)
- *     - Inactive warps skip col/row/data reads and atomic operations entirely
- *     - At 1% spike rate, 73% of warps are completely inactive and exit early
- *     - Eliminates branch divergence within warps (all threads take same path)
- *  2. Tested block sizes: 128 (regression), 256 (optimal), 512 (6× regression)
- *     - Block=256 (8 warps) balances SM occupancy vs register pressure
- *     - Larger blocks reduce grid parallelism; smaller blocks increase overhead
- *  3. COOMM_CT_BLOCK_K=16 (previously optimized, 1.13× speedup over BLOCK_K=32)
- *
- * FUNDAMENTAL PERFORMANCE BARRIERS (cannot improve further without format change):
- * ---------------------------------------------------------------------------------
- *  COO format performance is limited by inherent random memory access patterns.
- *  We have reached ~2.2% of the theoretical bandwidth roofline (616 GB/s).
- *  The remaining 98% gap is due to architectural barriers:
- *
- *  1. **Random column/row indexing** (accounts for 90-95% of the roofline gap):
- *     - Each thread reads col[k], row[k] at a random stride-based index k
- *     - Each warp generates 32 separate, non-coalesced memory transactions
- *     - Effective bandwidth: ~15 GB/s (2.4% of peak 616 GB/s)
- *     - Cache hit rate is minimal due to random access pattern
- *     - **Cannot be fixed without converting to CSR/CSC format**
- *
- *  2. **Inactive warp overhead** (2-5% of gap):
- *     - Even with ballot early-exit, inactive warps still execute loop control
- *     - 73% of warps (at 1% spike) perform bounds checks and loop increment
- *     - Could be eliminated with a two-pass compaction algorithm (complexity cost)
- *
- *  3. **Atomic serialization at high spike rates** (1-3% of gap at 10% spike):
- *     - Multiple threads writing to the same output row serialize on atomicAdd
- *     - COO format has no row ordering, so collisions are unpredictable
- *     - **Cannot be fixed without CSR format + segmented reduction**
- *
- *  4. **Grid-stride loop overhead** (1-2% of gap):
- *     - Each thread processes multiple NNZ entries via stride loop
- *     - Adds loop control, index arithmetic, and divergence at loop tail
- *     - **Cannot be eliminated with current launch strategy**
- *
- *  5. **Thermal throttling on laptop GPUs** (4-6× variance from min to mean):
- *     - GPU downclocks from thermal limits during sustained workloads
- *     - Batch benchmarks show 0.14 ms (best) → 0.8 ms (throttled mean)
- *     - Not a kernel issue; requires hardware thermal management
- *
- * Achieved vs. Theoretical Performance (1% spike rate, hetero weights):
- *  - Theoretical bandwidth-bound time: 0.0031 ms (1.9 MB / 616 GB/s)
- *  - Achieved best-case time:          0.14 ms (13.6 GB/s, **2.2% efficiency**)
- *  - **Gap factor: 45× slower than bandwidth roofline**
- *  - Root cause breakdown:
- *     • Random COO access (no coalescing): ~40× of the gap (95%)
- *     • Inactive warp overhead: ~1.2× of the gap (2%)
- *     • Atomic + loop overhead: ~1.2× of the gap (2%)
- *     • Microarchitectural (scheduler, etc.): ~1.1× of the gap (1%)
- *
- * STOPPING CRITERION MET: Fundamental architectural barrier (criterion b)
- *  - Further COO-level optimizations cannot improve beyond ~2-3% roofline efficiency
- *  - The 98% gap is inherent to the COO random-access pattern
- *  - Reaching 85% efficiency requires algorithmic/format changes (see below)
- *
- * Recommendations for Higher Performance:
- * ---------------------------------------
- *  **Algorithmic changes:**
- *   - Two-pass sparse processing: (1) compact active entries with prefix sum,
- *     (2) process compacted list with better locality [expect 2-3× speedup]
- *   - Segmented reduction: sort by output row, use warp-level segmented scan
- *     to eliminate atomics [expect 1.5-2× speedup at high spike rates]
- *
- *  **Format changes (most impactful):**
- *   - Convert to **CSR format** for non-transpose (A @ v) operations:
- *     • Enables coalesced memory access within each row
- *     • Allows shared memory caching of input vector v
- *     • Expected performance: 20-40× speedup → 50-80% roofline efficiency
- *   - Convert to **CSC format** for transpose (A.T @ v) operations:
- *     • Enables coalesced scatter to output vector
- *     • Expected performance: 15-30× speedup → 40-60% roofline efficiency
- *   - Use **ELL or SELL-C-σ** for matrices with regular sparsity patterns
- *     • Enables fully coalesced access for both reads and writes
- *     • Expected performance: 30-50× speedup → 70-90% roofline efficiency
- *
- *  **Hardware features (sm_80+):**
- *   - Persistent kernels with grid-persistent thread blocks
- *   - CUDA Graphs to amortize launch overhead across batches
- *   - Tensor Memory Accelerator (TMA, sm_90) for asynchronous global→shared loads
- *
- *  **Spike rate regime recommendations:**
- *   - 0.1-5% spike rate: Current optimized COO is competitive with alternatives
- *   - 5-20% spike rate: CSR/CSC format is 5-15× faster
- *   - >20% spike rate: Dense matrix multiplication is faster (avoids sparse overhead)
- *
- * TVM FFI Integration:
- * -------------------
- * All kernels are exposed via TVM FFI with @tvm_ffi annotations for seamless
- * integration with JAX.
- */
-
-#include <cuda_runtime.h>
-#include <cuda_fp16.h>
-#include <cuda_bf16.h>
-#include <cstdint>
-
-// ============================================================================
-// Warp-level reduction helpers
-// ============================================================================
-
-__device__ __inline__ float warp_reduce_sum_f32(float val) {
-    for (int offset = 16; offset > 0; offset >>= 1)
-        val += __shfl_down_sync(0xffffffff, val, offset);
-    return val;
-}
-
-__device__ __inline__ double warp_reduce_sum_f64(double val) {
-    for (int offset = 16; offset > 0; offset >>= 1)
-        val += __shfl_down_sync(0xffffffff, val, offset);
-    return val;
-}
-
-// ============================================================================
-// Active-check predicates
-// ============================================================================
-
-#define IS_ACTIVE_BOOL(s)  ((s) != 0)
-#define IS_ACTIVE_FLOAT(s) ((s) > 0.0f)
-
-// ============================================================================
-// Per-dtype conversion macros: READ converts WEIGHT_T -> ACC_T
-// ============================================================================
-
-#define READ_F32(x)   (x)
-#define READ_F64(x)   (x)
-#define READ_F16(x)   __half2float(x)
-#define READ_BF16(x)  __bfloat162float(x)
-
-// ============================================================================
-// Per-dtype atomic-add helpers (accumulator value -> weight memory)
-// ============================================================================
-
-__device__ __inline__ void atomic_add_f32(float* addr, float val) {
-    atomicAdd(addr, val);
-}
-
-__device__ __inline__ void atomic_add_f64(double* addr, double val) {
-    atomicAdd(addr, val);
-}
-
-__device__ __inline__ void atomic_add_f16(__half* addr, float val) {
-#if __CUDA_ARCH__ >= 700
-    atomicAdd(addr, __float2half(val));
-#else
-    unsigned int* base = reinterpret_cast<unsigned int*>(
-        reinterpret_cast<size_t>(addr) & ~(size_t)2
-    );
-    int shift = ((reinterpret_cast<size_t>(addr) & 2) != 0) ? 16 : 0;
-    unsigned int assumed, old_val = *base, updated;
-    do {
-        assumed = old_val;
-        unsigned short h = static_cast<unsigned short>((assumed >> shift) & 0xFFFF);
-        float cur = __half2float(*reinterpret_cast<__half*>(&h));
-        __half new_h = __float2half(cur + val);
-        unsigned short new_us = *reinterpret_cast<unsigned short*>(&new_h);
-        updated = (assumed & ~(0xFFFFu << shift)) | (static_cast<unsigned int>(new_us) << shift);
-        old_val = atomicCAS(base, assumed, updated);
-    } while (assumed != old_val);
-#endif
-}
-
-__device__ __inline__ void atomic_add_bf16(__nv_bfloat16* addr, float val) {
-#if __CUDA_ARCH__ >= 800
-    atomicAdd(addr, __float2bfloat16(val));
-#else
-    unsigned int* base = reinterpret_cast<unsigned int*>(
-        reinterpret_cast<size_t>(addr) & ~(size_t)2
-    );
-    int shift = ((reinterpret_cast<size_t>(addr) & 2) != 0) ? 16 : 0;
-    unsigned int assumed, old_val = *base, updated;
-    do {
-        assumed = old_val;
-        unsigned short h = static_cast<unsigned short>((assumed >> shift) & 0xFFFF);
-        float cur = __bfloat162float(*reinterpret_cast<__nv_bfloat16*>(&h));
-        __nv_bfloat16 new_h = __float2bfloat16(cur + val);
-        unsigned short new_us = *reinterpret_cast<unsigned short*>(&new_h);
-        updated = (assumed & ~(0xFFFFu << shift)) | (static_cast<unsigned int>(new_us) << shift);
-        old_val = atomicCAS(base, assumed, updated);
-    } while (assumed != old_val);
-#endif
-}
-
-// ============================================================================
-// COO Matrix-Vector Multiplication (coomv)
-// ============================================================================
-
-#define DEFINE_COOMV_ATOMIC_NT(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _coomv_atomic_nt_kern##SUFFIX(                                                      \
-    const WEIGHT_T* __restrict__ data,                                                              \
-    const int32_t*  __restrict__ row,                                                               \
-    const int32_t*  __restrict__ col,                                                               \
-    const SPIKE_T*  __restrict__ v,                                                                 \
-    WEIGHT_T*                    out,                                                               \
-    int nnz, int is_homo                                                                            \
-) {                                                                                                 \
-    ACC_T homo_w = READ_W(data[0]);                                                                 \
-    int k = blockIdx.x * blockDim.x + threadIdx.x;                                                 \
-    const int stride = gridDim.x * blockDim.x;                                                     \
-    while (k < nnz) {                                                                               \
-        bool active = IS_ACTIVE(v[col[k]]);                                                         \
-        uint32_t ballot = __ballot_sync(0xffffffff, active);                                        \
-        if (ballot == 0u) {                                                                         \
-            k += stride;                                                                            \
-            continue;                                                                               \
-        }                                                                                           \
-        if (active) {                                                                               \
-            ACC_T w = is_homo ? homo_w : READ_W(data[k]);                                           \
-            ATOMIC_ADD_W(out + row[k], w);                                                          \
-        }                                                                                           \
-        k += stride;                                                                                \
-    }                                                                                               \
-}
-
-#define DEFINE_COOMV_ATOMIC_T(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _coomv_atomic_t_kern##SUFFIX(                                                      \
-    const WEIGHT_T* __restrict__ data,                                                             \
-    const int32_t*  __restrict__ row,                                                              \
-    const int32_t*  __restrict__ col,                                                              \
-    const SPIKE_T*  __restrict__ v,                                                                \
-    WEIGHT_T*                    out,                                                              \
-    int nnz, int is_homo                                                                           \
-) {                                                                                                \
-    ACC_T homo_w = READ_W(data[0]);                                                                \
-    int k = blockIdx.x * blockDim.x + threadIdx.x;                                                \
-    const int stride = gridDim.x * blockDim.x;                                                    \
-    while (k < nnz) {                                                                              \
-        bool active = IS_ACTIVE(v[row[k]]);                                                        \
-        uint32_t ballot = __ballot_sync(0xffffffff, active);                                       \
-        if (ballot == 0u) {                                                                        \
-            k += stride;                                                                           \
-            continue;                                                                              \
-        }                                                                                          \
-        if (active) {                                                                              \
-            ACC_T w = is_homo ? homo_w : READ_W(data[k]);                                          \
-            ATOMIC_ADD_W(out + col[k], w);                                                         \
-        }                                                                                          \
-        k += stride;                                                                               \
-    }                                                                                              \
-}
-
-// Instantiations
-DEFINE_COOMV_ATOMIC_NT(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float,  float,  READ_F32,  atomic_add_f32)
-DEFINE_COOMV_ATOMIC_NT(_f32_float, float,  IS_ACTIVE_FLOAT, float,  float,  READ_F32,  atomic_add_f32)
-DEFINE_COOMV_ATOMIC_T (_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float,  float,  READ_F32,  atomic_add_f32)
-DEFINE_COOMV_ATOMIC_T (_f32_float, float,  IS_ACTIVE_FLOAT, float,  float,  READ_F32,  atomic_add_f32)
-DEFINE_COOMV_ATOMIC_NT(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double, READ_F64,  atomic_add_f64)
-DEFINE_COOMV_ATOMIC_NT(_f64_float, float,  IS_ACTIVE_FLOAT, double, double, READ_F64,  atomic_add_f64)
-DEFINE_COOMV_ATOMIC_T (_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double, READ_F64,  atomic_add_f64)
-DEFINE_COOMV_ATOMIC_T (_f64_float, float,  IS_ACTIVE_FLOAT, double, double, READ_F64,  atomic_add_f64)
-DEFINE_COOMV_ATOMIC_NT(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float,  READ_F16,  atomic_add_f16)
-DEFINE_COOMV_ATOMIC_NT(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float,  READ_F16,  atomic_add_f16)
-DEFINE_COOMV_ATOMIC_T (_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float,  READ_F16,  atomic_add_f16)
-DEFINE_COOMV_ATOMIC_T (_f16_float, float,  IS_ACTIVE_FLOAT, __half, float,  READ_F16,  atomic_add_f16)
-DEFINE_COOMV_ATOMIC_NT(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_COOMV_ATOMIC_NT(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_COOMV_ATOMIC_T (_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-DEFINE_COOMV_ATOMIC_T (_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
-
-// FFI Macros for SpMV
-#define FFI_COOMV_ATOMIC_NT(SUFFIX, WEIGHT_C_T, SPIKE_C_T, OUT_BYTES_PER_ELEM)              \
-void binary_coomv_atomic_nt##SUFFIX(                                                          \
-    tvm::ffi::TensorView data,                                                                \
-    tvm::ffi::TensorView row_idx,                                                             \
-    tvm::ffi::TensorView col_idx,                                                             \
-    tvm::ffi::TensorView v,                                                                   \
-    tvm::ffi::TensorView output,                                                              \
-    int64_t stream                                                                            \
-) {                                                                                           \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                 \
-    int nnz = static_cast<int>(row_idx.size(0));                                             \
-    int m   = static_cast<int>(output.size(0));                                              \
-    int is_homo = (data.size(0) == 1) ? 1 : 0;                                              \
-    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                        \
-    cudaMemsetAsync(d_out, 0, (size_t)m * OUT_BYTES_PER_ELEM, s);                           \
-    if (nnz == 0) return;                                                                     \
-    int block = 256;                                                                          \
-    int grid  = (nnz + block - 1) / block;                                                  \
-    _coomv_atomic_nt_kern##SUFFIX<<<grid, block, 0, s>>>(                                    \
-        static_cast<const WEIGHT_C_T*>(data.data_ptr()),                                     \
-        static_cast<const int32_t*>(row_idx.data_ptr()),                                     \
-        static_cast<const int32_t*>(col_idx.data_ptr()),                                     \
-        static_cast<const SPIKE_C_T*>(v.data_ptr()),                                         \
-        d_out, nnz, is_homo                                                                  \
-    );                                                                                        \
-}
-
-#define FFI_COOMV_ATOMIC_T(SUFFIX, WEIGHT_C_T, SPIKE_C_T, OUT_BYTES_PER_ELEM)               \
-void binary_coomv_atomic_t##SUFFIX(                                                           \
-    tvm::ffi::TensorView data,                                                                \
-    tvm::ffi::TensorView row_idx,                                                             \
-    tvm::ffi::TensorView col_idx,                                                             \
-    tvm::ffi::TensorView v,                                                                   \
-    tvm::ffi::TensorView output,                                                              \
-    int64_t stream                                                                            \
-) {                                                                                           \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                 \
-    int nnz = static_cast<int>(row_idx.size(0));                                             \
-    int k   = static_cast<int>(output.size(0));                                              \
-    int is_homo = (data.size(0) == 1) ? 1 : 0;                                              \
-    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                        \
-    cudaMemsetAsync(d_out, 0, (size_t)k * OUT_BYTES_PER_ELEM, s);                           \
-    if (nnz == 0) return;                                                                     \
-    int block = 256;                                                                          \
-    int grid  = (nnz + block - 1) / block;                                                  \
-    _coomv_atomic_t_kern##SUFFIX<<<grid, block, 0, s>>>(                                     \
-        static_cast<const WEIGHT_C_T*>(data.data_ptr()),                                     \
-        static_cast<const int32_t*>(row_idx.data_ptr()),                                     \
-        static_cast<const int32_t*>(col_idx.data_ptr()),                                     \
-        static_cast<const SPIKE_C_T*>(v.data_ptr()),                                         \
-        d_out, nnz, is_homo                                                                  \
-    );                                                                                        \
-}
-
-// @tvm_ffi binary_coomv_atomic_nt_f32_bool
-FFI_COOMV_ATOMIC_NT(_f32_bool,  float,  int8_t, sizeof(float))
-// @tvm_ffi binary_coomv_atomic_nt_f32_float
-FFI_COOMV_ATOMIC_NT(_f32_float, float,  float,  sizeof(float))
-// @tvm_ffi binary_coomv_atomic_t_f32_bool
-FFI_COOMV_ATOMIC_T (_f32_bool,  float,  int8_t, sizeof(float))
-// @tvm_ffi binary_coomv_atomic_t_f32_float
-FFI_COOMV_ATOMIC_T (_f32_float, float,  float,  sizeof(float))
-// @tvm_ffi binary_coomv_atomic_nt_f64_bool
-FFI_COOMV_ATOMIC_NT(_f64_bool,  double, int8_t, sizeof(double))
-// @tvm_ffi binary_coomv_atomic_nt_f64_float
-FFI_COOMV_ATOMIC_NT(_f64_float, double, float,  sizeof(double))
-// @tvm_ffi binary_coomv_atomic_t_f64_bool
-FFI_COOMV_ATOMIC_T (_f64_bool,  double, int8_t, sizeof(double))
-// @tvm_ffi binary_coomv_atomic_t_f64_float
-FFI_COOMV_ATOMIC_T (_f64_float, double, float,  sizeof(double))
-// @tvm_ffi binary_coomv_atomic_nt_f16_bool
-FFI_COOMV_ATOMIC_NT(_f16_bool,  __half, int8_t, sizeof(__half))
-// @tvm_ffi binary_coomv_atomic_nt_f16_float
-FFI_COOMV_ATOMIC_NT(_f16_float, __half, float,  sizeof(__half))
-// @tvm_ffi binary_coomv_atomic_t_f16_bool
-FFI_COOMV_ATOMIC_T (_f16_bool,  __half, int8_t, sizeof(__half))
-// @tvm_ffi binary_coomv_atomic_t_f16_float
-FFI_COOMV_ATOMIC_T (_f16_float, __half, float,  sizeof(__half))
-// @tvm_ffi binary_coomv_atomic_nt_bf16_bool
-FFI_COOMV_ATOMIC_NT(_bf16_bool,  __nv_bfloat16, int8_t, sizeof(__nv_bfloat16))
-// @tvm_ffi binary_coomv_atomic_nt_bf16_float
-FFI_COOMV_ATOMIC_NT(_bf16_float, __nv_bfloat16, float,  sizeof(__nv_bfloat16))
-// @tvm_ffi binary_coomv_atomic_t_bf16_bool
-FFI_COOMV_ATOMIC_T (_bf16_bool,  __nv_bfloat16, int8_t, sizeof(__nv_bfloat16))
-// @tvm_ffi binary_coomv_atomic_t_bf16_float
-FFI_COOMV_ATOMIC_T (_bf16_float, __nv_bfloat16, float,  sizeof(__nv_bfloat16))
-
-
-// ============================================================================
-// COO Matrix-Matrix Multiplication (coomm)
-// ============================================================================
-/*
  * Performance Analysis for ``binary_coomm`` (RTX 3080 Ti Laptop, 616 GB/s peak):
  * -------------------------------------------------------------------------------
  * Benchmark: 5000×5000 matrix, nnz=1.25M (5% density), n=32 cols, 1% spike rate
@@ -521,7 +146,107 @@ FFI_COOMV_ATOMIC_T (_bf16_float, __nv_bfloat16, float,  sizeof(__nv_bfloat16))
  *   - 1-5% spike rate: CSR/CSC format is 3-8× faster (ballot less effective)
  *   - 5-20% spike rate: CSR/CSC format is 8-15× faster
  *   - >20% spike rate: Consider dense matrix multiplication (avoids sparse overhead)
+ *
+ * TVM FFI Integration:
+ * -------------------
+ * All kernels are exposed via TVM FFI with @tvm_ffi annotations for seamless
+ * integration with JAX.
  */
+
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#include <cuda_bf16.h>
+#include <cstdint>
+
+// ============================================================================
+// Warp-level reduction helpers
+// ============================================================================
+
+__device__ __inline__ float warp_reduce_sum_f32(float val) {
+    for (int offset = 16; offset > 0; offset >>= 1)
+        val += __shfl_down_sync(0xffffffff, val, offset);
+    return val;
+}
+
+__device__ __inline__ double warp_reduce_sum_f64(double val) {
+    for (int offset = 16; offset > 0; offset >>= 1)
+        val += __shfl_down_sync(0xffffffff, val, offset);
+    return val;
+}
+
+// ============================================================================
+// Active-check predicates
+// ============================================================================
+
+#define IS_ACTIVE_BOOL(s)  ((s) != 0)
+#define IS_ACTIVE_FLOAT(s) ((s) > 0.0f)
+
+// ============================================================================
+// Per-dtype conversion macros: READ converts WEIGHT_T -> ACC_T
+// ============================================================================
+
+#define READ_F32(x)   (x)
+#define READ_F64(x)   (x)
+#define READ_F16(x)   __half2float(x)
+#define READ_BF16(x)  __bfloat162float(x)
+
+// ============================================================================
+// Per-dtype atomic-add helpers (accumulator value -> weight memory)
+// ============================================================================
+
+__device__ __inline__ void atomic_add_f32(float* addr, float val) {
+    atomicAdd(addr, val);
+}
+
+__device__ __inline__ void atomic_add_f64(double* addr, double val) {
+    atomicAdd(addr, val);
+}
+
+__device__ __inline__ void atomic_add_f16(__half* addr, float val) {
+#if __CUDA_ARCH__ >= 700
+    atomicAdd(addr, __float2half(val));
+#else
+    unsigned int* base = reinterpret_cast<unsigned int*>(
+        reinterpret_cast<size_t>(addr) & ~(size_t)2
+    );
+    int shift = ((reinterpret_cast<size_t>(addr) & 2) != 0) ? 16 : 0;
+    unsigned int assumed, old_val = *base, updated;
+    do {
+        assumed = old_val;
+        unsigned short h = static_cast<unsigned short>((assumed >> shift) & 0xFFFF);
+        float cur = __half2float(*reinterpret_cast<__half*>(&h));
+        __half new_h = __float2half(cur + val);
+        unsigned short new_us = *reinterpret_cast<unsigned short*>(&new_h);
+        updated = (assumed & ~(0xFFFFu << shift)) | (static_cast<unsigned int>(new_us) << shift);
+        old_val = atomicCAS(base, assumed, updated);
+    } while (assumed != old_val);
+#endif
+}
+
+__device__ __inline__ void atomic_add_bf16(__nv_bfloat16* addr, float val) {
+#if __CUDA_ARCH__ >= 800
+    atomicAdd(addr, __float2bfloat16(val));
+#else
+    unsigned int* base = reinterpret_cast<unsigned int*>(
+        reinterpret_cast<size_t>(addr) & ~(size_t)2
+    );
+    int shift = ((reinterpret_cast<size_t>(addr) & 2) != 0) ? 16 : 0;
+    unsigned int assumed, old_val = *base, updated;
+    do {
+        assumed = old_val;
+        unsigned short h = static_cast<unsigned short>((assumed >> shift) & 0xFFFF);
+        float cur = __bfloat162float(*reinterpret_cast<__nv_bfloat16*>(&h));
+        __nv_bfloat16 new_h = __float2bfloat16(cur + val);
+        unsigned short new_us = *reinterpret_cast<unsigned short*>(&new_h);
+        updated = (assumed & ~(0xFFFFu << shift)) | (static_cast<unsigned int>(new_us) << shift);
+        old_val = atomicCAS(base, assumed, updated);
+    } while (assumed != old_val);
+#endif
+}
+
+// ============================================================================
+// COO Matrix-Matrix Multiplication (coomm)
+// ============================================================================
 
 #define COOMM_CT_BLOCK_K   16
 #define COOMM_CT_BLOCK_N   32
