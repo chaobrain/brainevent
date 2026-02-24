@@ -24,7 +24,7 @@ from jax.interpreters import xla, batching, ad, mlir
 from brainevent._compatible_import import Primitive
 from brainevent._error import KernelFallbackExhaustedError
 from brainevent._typing import KernelGenerator
-from brainevent.config import load_user_defaults, get_backend
+from brainevent.config import get_backend
 from .benchmark import BenchmarkRecord, BenchmarkResult, benchmark_function
 from .util import (
     general_batching_rule, defjvp, OutType,
@@ -187,9 +187,6 @@ class XLACustomKernel:
         self._tags: set = set()
         # benchmark data generator function
         self._benchmark_data_fn: Optional[Callable] = None
-        # lazy flag for user defaults from config file
-        self._user_defaults_applied: bool = False
-
         # Auto-register in global registry
         from brainevent._registry import register_primitive
         register_primitive(name, self)
@@ -377,9 +374,6 @@ class XLACustomKernel:
         """
 
         def fallback_kernel_fn(*args, **kwargs):
-            # Apply user defaults lazily on first dispatch
-            self._apply_user_defaults()
-
             # Get kernels dict for this platform
             kernels = self._kernels.get(platform, {})
             if not kernels:
@@ -652,7 +646,7 @@ class XLACustomKernel:
         """
         self.def_kernel(backend='numba_cuda', platform='gpu', kg=kg, asdefault=asdefault)
 
-    def set_default(self, platform: str, backend: str, persist: bool = False):
+    def set_default(self, platform: str, backend: str):
         """Set the default backend for a platform.
 
         After this call, all subsequent dispatches on the given
@@ -666,9 +660,6 @@ class XLACustomKernel:
         backend : str
             The backend name to set as default.  Must already be
             registered for the given platform.
-        persist : bool, optional
-            If ``True``, save the default to the user configuration
-            file so it persists across sessions.  Default is ``False``.
 
         Raises
         ------
@@ -700,9 +691,6 @@ class XLACustomKernel:
                 f"Available: {available}"
             )
         self._defaults[platform] = backend
-        if persist:
-            from brainevent.config import set_user_default
-            set_user_default(self.name, platform, backend)
 
     def get_default(self, platform: str) -> Optional[str]:
         """Get the current default backend for a platform.
@@ -1042,22 +1030,6 @@ class XLACustomKernel:
             >>> kernel.def_benchmark_data(my_data_gen)  # doctest: +SKIP
         """
         self._benchmark_data_fn = fn
-
-    def _apply_user_defaults(self):
-        """Lazily apply user defaults from the configuration file.
-
-        Called once before the first kernel dispatch.  Reads the user
-        configuration and sets defaults for any platforms that have a
-        user preference matching a registered backend.  Subsequent calls
-        are no-ops.
-        """
-        if self._user_defaults_applied:
-            return
-        self._user_defaults_applied = True
-        prim_defaults = load_user_defaults().get(self.name, {})
-        for plat, backend in prim_defaults.items():
-            if plat in self._kernels and backend in self._kernels[plat]:
-                self._defaults[plat] = backend
 
     def available_backends(self, platform: str) -> List[str]:
         """Return the list of registered backend names for a platform.
