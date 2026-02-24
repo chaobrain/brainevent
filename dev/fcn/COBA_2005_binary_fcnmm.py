@@ -26,16 +26,83 @@
 
 
 import time
+from typing import Union, Callable, Optional
 
 import brainpy
 import brainstate
 import braintools
 import brainunit as u
 import jax
+import numpy as np
 
 import brainevent
 
 brainevent.config.set_backend('gpu', 'tvmffi')
+
+
+class FixedNumConn(brainstate.nn.Module):
+    def __init__(
+        self,
+        in_size,
+        out_size,
+        conn_num: Union[int, float],
+        conn_weight: Union[Callable, brainstate.typing.ArrayLike],
+        efferent_target: str = 'post',  # 'pre' or 'post'
+        allow_multi_conn: bool = True,
+        seed: Optional[int] = None,
+        name: Optional[str] = None,
+    ):
+        super().__init__(name=name)
+
+        # network parameters
+        self.in_size = in_size
+        self.out_size = out_size
+        self.efferent_target = efferent_target
+        if efferent_target not in ('pre', 'post'):
+            raise ValueError('The target of the connection must be either "pre" or "post".')
+        if isinstance(conn_num, float):
+            assert 0. <= conn_num <= 1., 'Connection probability must be in [0, 1].'
+            conn_num = (
+                int(self.out_size[-1] * conn_num)
+                if efferent_target == 'post' else
+                int(self.in_size[-1] * conn_num)
+            )
+        assert isinstance(conn_num, int), 'Connection number must be an integer.'
+        self.conn_num = conn_num
+        self.seed = seed
+        self.allow_multi_conn = allow_multi_conn
+
+        # connections
+        if self.efferent_target == 'post':
+            n_post = self.out_size[-1]
+            n_pre = self.in_size[-1]
+        else:
+            n_post = self.in_size[-1]
+            n_pre = self.out_size[-1]
+
+        with jax.ensure_compile_time_eval():
+            rng = np.random if seed is None else np.random.RandomState(seed)
+            indices = rng.randint(0, n_post, size=(n_pre, self.conn_num))
+            conn_weight = braintools.init.param(conn_weight, (n_pre, self.conn_num))
+            self.weight = u.math.asarray(conn_weight, dtype=brainstate.environ.dftype())
+            self.indices = u.math.asarray(indices, dtype=brainstate.environ.ditype())
+            self.shape = (n_pre, n_post)
+            csr = (
+                brainevent.FixedPostNumConn((conn_weight, indices), shape=(n_pre, n_post))
+                if self.efferent_target == 'post' else
+                brainevent.FixedPreNumConn((conn_weight, indices), shape=(n_pre, n_post))
+            )
+            self.conn = csr
+
+    def update(self, x) -> Union[jax.Array, u.Quantity]:
+        if x.ndim == 1:
+            fn = brainevent.binary_fcnmv
+        elif x.ndim == 2:
+            fn = brainevent.binary_fcnmm
+        else:
+            raise ValueError
+        transpose = (self.efferent_target == 'post')
+        return fn(self.weight, self.indices, x, shape=self.shape, transpose=transpose)
 
 
 class EINet(brainstate.nn.Module):
@@ -50,13 +117,13 @@ class EINet(brainstate.nn.Module):
             V_initializer=braintools.init.Normal(-55., 2., unit=u.mV)
         )
         self.E = brainpy.state.AlignPostProj(
-            comm=brainstate.nn.EventFixedProb(self.n_exc, self.num, conn_num=80 / self.num, conn_weight=0.6 * u.mS),
+            comm=FixedNumConn(self.n_exc, self.num, conn_num=80 / self.num, conn_weight=0.6 * u.mS),
             syn=brainpy.state.Expon.desc(self.num, tau=5. * u.ms),
             out=brainpy.state.COBA.desc(E=0. * u.mV),
             post=self.N
         )
         self.I = brainpy.state.AlignPostProj(
-            comm=brainstate.nn.EventFixedProb(self.n_inh, self.num, conn_num=80 / self.num, conn_weight=6.7 * u.mS),
+            comm=FixedNumConn(self.n_inh, self.num, conn_num=80 / self.num, conn_weight=6.7 * u.mS),
             syn=brainpy.state.Expon.desc(self.num, tau=10. * u.ms),
             out=brainpy.state.COBA.desc(E=-80. * u.mV),
             post=self.N
@@ -97,7 +164,8 @@ def run(scale: float):
     return net.num, net.rate.value.sum() / net.num / duration.to_decimal(u.second) / batch_size
 
 
-for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
+# for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
+for s in [1, ]:
     jax.block_until_ready(run(s))
 
     t0 = time.time()
