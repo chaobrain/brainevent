@@ -781,8 +781,8 @@ def _coomv_tvmffi_kernel(
     ensures both are the same dtype before dispatch.
     """
     register_tvm_cuda_from_file(
-        module='coo_float',
-        source=Path(__file__).parent.joinpath('float.cu'),
+        module='coo_float_coomv',
+        source=Path(__file__).parent.joinpath('float_coomv.cu'),
     )
 
     out_info = kwargs['outs']
@@ -794,7 +794,7 @@ def _coomv_tvmffi_kernel(
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
     direction = '_t' if transpose else '_nt'
-    kernel_name = f'coo_float.coomv_atomic{direction}{wt_sfx}'
+    kernel_name = f'coo_float_coomv.coomv_atomic{direction}{wt_sfx}'
 
     def kernel(weights, row, col, v):
         v_cast = v.astype(weight_info.dtype) if v.dtype != weight_info.dtype else v
@@ -1477,8 +1477,8 @@ def _coomm_tvmffi_kernel(
     ensures B is promoted to ``weights.dtype`` before dispatch when necessary.
     """
     register_tvm_cuda_from_file(
-        module='coo_float',
-        source=Path(__file__).parent.joinpath('float.cu'),
+        module='coo_float_coomm',
+        source=Path(__file__).parent.joinpath('float_coomm.cu'),
     )
 
     out_info = kwargs['outs']
@@ -1495,7 +1495,7 @@ def _coomm_tvmffi_kernel(
     # in the nnz dimension); WPE is better for large n (maximum parallelism).
     n = matrix_info.shape[1]
     variant = 'ct' if n <= 64 else 'wpe'
-    kernel_name = f'coo_float.coomm_{variant}{direction}{wt_sfx}'
+    kernel_name = f'coo_float_coomm.coomm_{variant}{direction}{wt_sfx}'
 
     def kernel(weights, row, col, B):
         # Cast B to weights.dtype so the CUDA kernel receives matching types.
