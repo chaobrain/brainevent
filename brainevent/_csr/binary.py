@@ -690,6 +690,10 @@ def _binary_csrmv_cuda_kernel(
 
     out_info = kwargs['outs']
 
+    # Determine if weights are homogeneous or heterogeneous
+    is_homo = (weight_info.size == 1)
+    homo_suffix = '_homo' if is_homo else '_hetero'
+
     # Spike type suffix
     spk_suffix = '_bool' if vector_info.dtype == jnp.bool_ else '_float'
 
@@ -703,9 +707,9 @@ def _binary_csrmv_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
     if transpose:
-        kernel_name = f'csr_binary_csrmv.binary_csrmv_t_warp{wt_sfx}{spk_suffix}'
+        kernel_name = f'csr_binary_csrmv.binary_csrmv_t_warp{homo_suffix}{wt_sfx}{spk_suffix}'
     else:
-        kernel_name = f'csr_binary_csrmv.binary_csrmv_nt_auto{wt_sfx}{spk_suffix}'
+        kernel_name = f'csr_binary_csrmv.binary_csrmv_nt_auto{homo_suffix}{wt_sfx}{spk_suffix}'
 
     def kernel(weights, indices, indptr, vector):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, vector)

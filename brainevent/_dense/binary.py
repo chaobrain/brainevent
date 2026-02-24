@@ -1282,11 +1282,12 @@ def _binary_densemm_cuda_kernel(
         jnp.dtype('bfloat16'): '_bf16',
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    weight_mode = 'homo' if weight_info.size == 1 else 'hetero'
 
     if transpose:
-        kernel_name = f'dense_binary_mm.binary_densemm_scatter_auto{wt_sfx}{spk_suffix}'
+        kernel_name = f'dense_binary_mm.binary_densemm_scatter_auto_{weight_mode}{wt_sfx}{spk_suffix}'
     else:
-        kernel_name = f'dense_binary_mm.binary_densemm_gather_auto{wt_sfx}{spk_suffix}'
+        kernel_name = f'dense_binary_mm.binary_densemm_gather_auto_{weight_mode}{wt_sfx}{spk_suffix}'
 
     def kernel(weights, spikes):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, spikes)

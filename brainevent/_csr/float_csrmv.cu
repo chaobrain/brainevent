@@ -43,39 +43,7 @@
  * ======================================================================================
  */
 
-#include <cuda_runtime.h>
-#include <cuda_fp16.h>
-#include <cuda_bf16.h>
-#include <cstdint>
-
-// =========================================================================
-// Warp-level reduction helpers
-// =========================================================================
-
-__device__ __inline__ float warp_reduce_sum_f32(float val) {
-    for (int offset = 16; offset > 0; offset >>= 1)
-        val += __shfl_down_sync(0xffffffff, val, offset);
-    return val;
-}
-
-__device__ __inline__ double warp_reduce_sum_f64(double val) {
-    for (int offset = 16; offset > 0; offset >>= 1)
-        val += __shfl_down_sync(0xffffffff, val, offset);
-    return val;
-}
-
-// =========================================================================
-// Per-dtype conversion macros
-// =========================================================================
-
-#define READ_F32(x)   (x)
-#define WRITE_F32(x)  (x)
-#define READ_F64(x)   (x)
-#define WRITE_F64(x)  (x)
-#define READ_F16(x)   __half2float(x)
-#define WRITE_F16(x)  __float2half(x)
-#define READ_BF16(x)  __bfloat162float(x)
-#define WRITE_BF16(x) __float2bfloat16(x)
+#include "../cuda_common.h"
 
 // =========================================================================
 // CSR Matrix-Vector Multiplication (csrmv)

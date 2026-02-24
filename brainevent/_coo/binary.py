@@ -863,14 +863,15 @@ def _coomv_tvmffi_kernel(
 ):
     """TVM FFI CUDA kernel for binary COO SpMV.
 
-    Dispatches to one of the ``binary_coomv_atomic_{nt,t}`` kernels compiled
-    from ``binary.cu`` via ``register_tvm_cuda_from_file``.
+    Dispatches to one of the ``binary_coomv_{homo,hetero}_atomic_{nt,t}``
+    kernels compiled from ``binary_coomv.cu`` via ``register_tvm_cuda_from_file``.
 
     Kernel selection:
+    - Weight mode: ``homo`` (weight_info.size == 1) or ``hetero`` (per-connection),
+      resolved at compile time on the Python side.
     - Direction: ``_nt`` (transpose=False) or ``_t`` (transpose=True).
     - Weight dtype: ``_f32``, ``_f64``, ``_f16``, or ``_bf16``.
     - Spike type: ``_bool`` (int8) or ``_float`` (float32).
-    - Homo vs. hetero: detected at runtime from ``data.size(0) == 1``.
 
     The output buffer is zero-initialized inside the CUDA entry function
     (via ``cudaMemsetAsync``) before the atomic-scatter kernel runs.
@@ -891,7 +892,8 @@ def _coomv_tvmffi_kernel(
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
     direction = '_t' if transpose else '_nt'
-    kernel_name = f'coo_binary_coomv.binary_coomv_atomic{direction}{wt_sfx}{spk_suffix}'
+    weight_mode = 'homo' if weight_info.size == 1 else 'hetero'
+    kernel_name = f'coo_binary_coomv.binary_coomv_{weight_mode}_atomic{direction}{wt_sfx}{spk_suffix}'
 
     def kernel(weights, row, col, v):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, row, col, v)
@@ -1852,14 +1854,14 @@ def _coomm_tvmffi_kernel(
 ):
     """TVM FFI CUDA kernel for binary COO SpMM.
 
-    Dispatches to one of the ``binary_coomm_{variant}_{nt,t}`` kernels compiled
-    from ``binary.cu`` via ``register_tvm_cuda_from_file``.
+    Dispatches to one of the ``binary_coomm_{homo,hetero}_{variant}_{nt,t}``
+    kernels compiled from ``binary_coomm.cu`` via ``register_tvm_cuda_from_file``.
 
     Kernel variant selection (based on n = number of output columns):
-    - CT (Column-Tiled, n ≤ 64): One warp per block serially iterates over
-      32 NNZ entries while all 32 threads process a 32-column output tile.
+    - CT (Column-Tiled, n <= 64): One warp per block serially iterates over
+      16 NNZ entries while all 32 threads process a 32-column output tile.
       Uses ``__ballot_sync`` to skip atomics for inactive spike tiles.
-      Block=(32,), Grid=(ceil(nnz/32), ceil(n/32)).
+      Block=(32,), Grid=(ceil(nnz/16), ceil(n/32)).
     - WPE (Warp-Per-Entry, n > 64): Each of 8 warps in a 256-thread block
       handles a single NNZ entry and 32 consecutive output columns.
       Block=(256,), Grid=(ceil(nnz/8), ceil(n/32)).
@@ -1867,7 +1869,8 @@ def _coomm_tvmffi_kernel(
     Direction suffix: ``_nt`` (transpose=False) or ``_t`` (transpose=True).
     Weight dtype suffix: ``_f32``, ``_f64``, ``_f16``, or ``_bf16``.
     Spike type suffix: ``_bool`` (int8) or ``_float`` (float32).
-    Homo vs. hetero: detected at runtime from ``data.size(0) == 1``.
+    Weight mode: ``homo`` (weight_info.size == 1) or ``hetero`` (per-connection),
+    resolved at compile time on the Python side.
 
     The output buffer is zero-initialized inside the CUDA entry function
     (via ``cudaMemsetAsync``) before the atomic-scatter kernel runs.
@@ -1888,13 +1891,14 @@ def _coomm_tvmffi_kernel(
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
     direction = '_t' if transpose else '_nt'
+    weight_mode = 'homo' if weight_info.size == 1 else 'hetero'
 
     # Dispatch heuristic: CT is better for small n (serial NNZ loop amortised
     # across many CUDA blocks in the nnz dimension); WPE is better for large n
     # (each warp independently covers one NNZ entry with no serial loop).
     n = matrix_info.shape[1]
     variant = 'ct' if n <= 64 else 'wpe'
-    kernel_name = f'coo_binary_coomm.binary_coomm_{variant}{direction}{wt_sfx}{spk_suffix}'
+    kernel_name = f'coo_binary_coomm.binary_coomm_{weight_mode}_{variant}{direction}{wt_sfx}{spk_suffix}'
 
     def kernel(weights, row, col, B):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, row, col, B)
