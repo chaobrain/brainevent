@@ -43,6 +43,14 @@
 // Warp-level Reduction Primitives
 // =========================================================================
 
+/*
+ * NOTE ON FP16/BF16 REDUCTIONS:
+ * Reduction helpers are defined for accumulator types (f32/f64), not storage
+ * types. fp16/bf16 kernels upcast with READ_F16/READ_BF16 and use float
+ * accumulators (ACC_T_F16/ACC_T_BF16), so they intentionally call f32
+ * reductions (warp_reduce_*_f32).
+ */
+
 /**
  * Warp-level sum reduction for float32.
  *
@@ -234,6 +242,8 @@ __device__ __inline__ double warp_reduce_min_f64(double val) {
  *
  * float16 (__half) is converted to float32 for accumulation to maintain
  * numerical stability. Results are converted back to float16 for storage.
+ * Consequently, fp16 paths use float warp reductions instead of a dedicated
+ * warp_reduce_*_f16 implementation.
  */
 #define READ_F16(x)   __half2float(x)
 #define WRITE_F16(x)  __float2half(x)
@@ -243,7 +253,8 @@ __device__ __inline__ double warp_reduce_min_f64(double val) {
  *
  * bfloat16 (__nv_bfloat16) is converted to float32 for accumulation to
  * maintain numerical stability. Results are converted back to bfloat16
- * for storage.
+ * for storage. Consequently, bf16 paths use float warp reductions instead of
+ * a dedicated warp_reduce_*_bf16 implementation.
  */
 #define READ_BF16(x)  __bfloat162float(x)
 #define WRITE_BF16(x) __float2bfloat16(x)
