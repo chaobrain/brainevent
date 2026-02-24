@@ -684,8 +684,8 @@ def _binary_csrmv_cuda_kernel(
     **kwargs,
 ):
     register_tvm_cuda_from_file(
-        module='csr_binary',
-        source=Path(__file__).parent.joinpath('binary.cu'),
+        module='csr_binary_csrmv',
+        source=Path(__file__).parent.joinpath('binary_csrmv.cu'),
     )
 
     out_info = kwargs['outs']
@@ -703,9 +703,9 @@ def _binary_csrmv_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
     if transpose:
-        kernel_name = f'csr_binary.binary_csrmv_t_warp{wt_sfx}{spk_suffix}'
+        kernel_name = f'csr_binary_csrmv.binary_csrmv_t_warp{wt_sfx}{spk_suffix}'
     else:
-        kernel_name = f'csr_binary.binary_csrmv_nt_auto{wt_sfx}{spk_suffix}'
+        kernel_name = f'csr_binary_csrmv.binary_csrmv_nt_auto{wt_sfx}{spk_suffix}'
 
     def kernel(weights, indices, indptr, vector):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, vector)
@@ -1895,8 +1895,8 @@ def _binary_csrmm_cuda_kernel(
     **kwargs,
 ):
     register_tvm_cuda_from_file(
-        module='csr_binary',
-        source=Path(__file__).parent.joinpath('binary.cu'),
+        module='csr_binary_csrmm',
+        source=Path(__file__).parent.joinpath('binary_csrmm.cu'),
     )
 
     out_info = kwargs['outs']
@@ -1914,9 +1914,9 @@ def _binary_csrmm_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
     if transpose:
-        kernel_name = f'csr_binary.binary_csrmm_t_warp{wt_sfx}{spk_suffix}'
+        kernel_name = f'csr_binary_csrmm.binary_csrmm_t_warp{wt_sfx}{spk_suffix}'
     else:
-        kernel_name = f'csr_binary.binary_csrmm_nt_auto{wt_sfx}{spk_suffix}'
+        kernel_name = f'csr_binary_csrmm.binary_csrmm_nt_auto{wt_sfx}{spk_suffix}'
 
     def kernel(weights, indices, indptr, B):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, B)
