@@ -867,13 +867,13 @@ def _binary_jitsmv_cuda_kernel(
     **kwargs
 ):
     register_tvm_cuda_from_file(
-        module='jit_scalar',
-        source=Path(__file__).parent.joinpath('jit_scalar.cu'),
+        module='jit_scalar_binary_jitsmv',
+        source=Path(__file__).parent.joinpath('binary_jitsmv.cu'),
     )
     wt_sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
     sp_sfx = _spike_sfx.get(np.dtype(vector_info.dtype), '_float')
     variant = 'gather' if corder else 'scatter'
-    kernel_name = f'jit_scalar.binary_jitsmv_{variant}{wt_sfx}{sp_sfx}'
+    kernel_name = f'jit_scalar_binary_jitsmv.binary_jitsmv_{variant}{wt_sfx}{sp_sfx}'
 
     def kernel(weight, clen, vector, seed, _):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(weight, clen, seed, vector)
@@ -887,13 +887,13 @@ def _binary_jitsmm_cuda_kernel(
     **kwargs
 ):
     register_tvm_cuda_from_file(
-        module='jit_scalar',
-        source=Path(__file__).parent.joinpath('jit_scalar.cu'),
+        module='jit_scalar_binary_jitsmm',
+        source=Path(__file__).parent.joinpath('binary_jitsmm.cu'),
     )
     wt_sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
     sp_sfx = _spike_sfx.get(np.dtype(B_info.dtype), '_float')
     variant = 'gather' if corder else 'scatter'
-    kernel_name = f'jit_scalar.binary_jitsmm_{variant}{wt_sfx}{sp_sfx}'
+    kernel_name = f'jit_scalar_binary_jitsmm.binary_jitsmm_{variant}{wt_sfx}{sp_sfx}'
 
     def kernel(weight, clen, B, seed, _):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(weight, clen, seed, B)
