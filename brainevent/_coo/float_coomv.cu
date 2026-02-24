@@ -41,73 +41,8 @@
  * coomv_hetero_atomic_t_{f32,f64,f16,bf16}  -- transposed SpMV (hetero weights)
  */
 
-#include <cuda_runtime.h>
-#include <cuda_fp16.h>
-#include <cuda_bf16.h>
-#include <cstdint>
+#include "../cuda_common.h"
 
-// ============================================================================
-// Per-dtype conversion macros: READ converts WEIGHT_T -> ACC_T
-// ============================================================================
-
-#define READ_F32(x)   (x)
-#define READ_F64(x)   (x)
-#define READ_F16(x)   __half2float(x)
-#define READ_BF16(x)  __bfloat162float(x)
-
-// ============================================================================
-// Per-dtype atomic-add helpers (ACC_T value -> WEIGHT_T memory)
-// ============================================================================
-
-__device__ __inline__ void atomic_add_f32(float* addr, float val) {
-    atomicAdd(addr, val);
-}
-
-__device__ __inline__ void atomic_add_f64(double* addr, double val) {
-    atomicAdd(addr, val);
-}
-
-__device__ __inline__ void atomic_add_f16(__half* addr, float val) {
-#if __CUDA_ARCH__ >= 700
-    atomicAdd(addr, __float2half(val));
-#else
-    unsigned int* base = reinterpret_cast<unsigned int*>(
-        reinterpret_cast<size_t>(addr) & ~(size_t)2
-    );
-    int shift = ((reinterpret_cast<size_t>(addr) & 2) != 0) ? 16 : 0;
-    unsigned int assumed, old_val = *base, updated;
-    do {
-        assumed = old_val;
-        unsigned short h = static_cast<unsigned short>((assumed >> shift) & 0xFFFF);
-        float cur = __half2float(*reinterpret_cast<__half*>(&h));
-        __half new_h = __float2half(cur + val);
-        unsigned short new_us = *reinterpret_cast<unsigned short*>(&new_h);
-        updated = (assumed & ~(0xFFFFu << shift)) | (static_cast<unsigned int>(new_us) << shift);
-        old_val = atomicCAS(base, assumed, updated);
-    } while (assumed != old_val);
-#endif
-}
-
-__device__ __inline__ void atomic_add_bf16(__nv_bfloat16* addr, float val) {
-#if __CUDA_ARCH__ >= 800
-    atomicAdd(addr, __float2bfloat16(val));
-#else
-    unsigned int* base = reinterpret_cast<unsigned int*>(
-        reinterpret_cast<size_t>(addr) & ~(size_t)2
-    );
-    int shift = ((reinterpret_cast<size_t>(addr) & 2) != 0) ? 16 : 0;
-    unsigned int assumed, old_val = *base, updated;
-    do {
-        assumed = old_val;
-        unsigned short h = static_cast<unsigned short>((assumed >> shift) & 0xFFFF);
-        float cur = __bfloat162float(*reinterpret_cast<__nv_bfloat16*>(&h));
-        __nv_bfloat16 new_h = __float2bfloat16(cur + val);
-        unsigned short new_us = *reinterpret_cast<unsigned short*>(&new_h);
-        updated = (assumed & ~(0xFFFFu << shift)) | (static_cast<unsigned int>(new_us) << shift);
-        old_val = atomicCAS(base, assumed, updated);
-    } while (assumed != old_val);
-#endif
-}
 
 // ============================================================================
 // Homo COO SpMV kernels (scalar weight broadcast to all connections)

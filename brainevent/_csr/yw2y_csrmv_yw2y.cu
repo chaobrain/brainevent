@@ -94,26 +94,7 @@
  *            (size(), ndim()) on the host side.
  */
 
-#include <cuda_runtime.h>
-#include <cuda_fp16.h>
-#include <cuda_bf16.h>
-#include <cstdint>
-
-// =========================================================================
-// Per-dtype conversion macros (READ: WEIGHT_T -> ACC_T, WRITE: ACC_T -> WEIGHT_T)
-// =========================================================================
-
-#define READ_F32(x)   (x)
-#define WRITE_F32(x)  (x)
-
-#define READ_F64(x)   (x)
-#define WRITE_F64(x)  (x)
-
-#define READ_F16(x)   __half2float(x)
-#define WRITE_F16(x)  __float2half(x)
-
-#define READ_BF16(x)  __bfloat162float(x)
-#define WRITE_BF16(x) __float2bfloat16(x)
+#include "../cuda_common.h"
 
 // =========================================================================
 // Binary search helper: find the CSR row that owns non-zero index j

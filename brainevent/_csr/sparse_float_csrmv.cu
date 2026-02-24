@@ -41,23 +41,7 @@
  *   stream   -- CUDA stream handle (int64)
  */
 
-#include <cuda_runtime.h>
-#include <cuda_fp16.h>
-#include <cuda_bf16.h>
-#include <cstdint>
-
-// =========================================================================
-// Warp-level reduction helpers (optimized with XOR shuffle pattern)
-// =========================================================================
-
-__device__ __inline__ float warp_reduce_sum_f32(float val) {
-    #pragma unroll
-    for (int offset = 16; offset > 0; offset >>= 1)
-        val += __shfl_xor_sync(0xffffffff, val, offset);
-    return val;
-}
-
-__device__ __inline__ double warp_reduce_sum_f64(double val) {
+#include "../cuda_common.h"
     #pragma unroll
     for (int offset = 16; offset > 0; offset >>= 1)
         val += __shfl_xor_sync(0xffffffff, val, offset);

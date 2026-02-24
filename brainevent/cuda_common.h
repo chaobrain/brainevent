@@ -156,7 +156,7 @@ __device__ __inline__ double warp_reduce_min_f64(double val) {
 #define IS_ACTIVE_BOOL(s)  ((s) != 0)
 
 /**
- * Check if a float spike is active.
+ * Check if a float32 spike is active.
  *
  * For event-driven computation, a float spike is considered active
  * if it is strictly positive.
@@ -165,6 +165,49 @@ __device__ __inline__ double warp_reduce_min_f64(double val) {
  * @return   1 if active, 0 otherwise
  */
 #define IS_ACTIVE_FLOAT(s) ((s) > 0.0f)
+
+/**
+ * Check if a float32 spike is active (explicit).
+ *
+ * Alias for IS_ACTIVE_FLOAT for consistency with dtype naming.
+ *
+ * @param s  Spike value (float)
+ * @return   1 if active, 0 otherwise
+ */
+#define IS_ACTIVE_F32(s) ((s) > 0.0f)
+
+/**
+ * Check if a float64 spike is active.
+ *
+ * For event-driven computation, a double spike is considered active
+ * if it is strictly positive.
+ *
+ * @param s  Spike value (double)
+ * @return   1 if active, 0 otherwise
+ */
+#define IS_ACTIVE_F64(s) ((s) > 0.0)
+
+/**
+ * Check if a float16 spike is active.
+ *
+ * For event-driven computation, a half spike is considered active
+ * if it is strictly positive. Converts to float for comparison.
+ *
+ * @param s  Spike value (__half)
+ * @return   1 if active, 0 otherwise
+ */
+#define IS_ACTIVE_F16(s) (__half2float(s) > 0.0f)
+
+/**
+ * Check if a bfloat16 spike is active.
+ *
+ * For event-driven computation, a bfloat16 spike is considered active
+ * if it is strictly positive. Converts to float for comparison.
+ *
+ * @param s  Spike value (__nv_bfloat16)
+ * @return   1 if active, 0 otherwise
+ */
+#define IS_ACTIVE_BF16(s) (__bfloat162float(s) > 0.0f)
 
 // =========================================================================
 // Per-Dtype Conversion Macros
@@ -245,5 +288,95 @@ __device__ __inline__ double warp_reduce_min_f64(double val) {
 #define ZERO_F64  0.0
 #define ZERO_F16  0.0f  // accumulator is float32
 #define ZERO_BF16 0.0f  // accumulator is float32
+
+// =========================================================================
+// Atomic Add Helpers (with CUDA arch guards)
+// =========================================================================
+
+/**
+ * Atomic add for float32.
+ *
+ * Native atomic operation supported on all CUDA architectures.
+ *
+ * @param addr  Pointer to memory location
+ * @param val   Value to add
+ */
+__device__ __inline__ void atomic_add_f32(float* addr, float val) {
+    atomicAdd(addr, val);
+}
+
+/**
+ * Atomic add for float64.
+ *
+ * Native atomic operation supported on all CUDA architectures.
+ *
+ * @param addr  Pointer to memory location
+ * @param val   Value to add
+ */
+__device__ __inline__ void atomic_add_f64(double* addr, double val) {
+    atomicAdd(addr, val);
+}
+
+/**
+ * Atomic add for float16.
+ *
+ * Uses native atomicAdd on sm_70+ (Volta and newer).
+ * Falls back to CAS-based emulation on older architectures.
+ *
+ * @param addr  Pointer to memory location
+ * @param val   Value to add (float32, will be converted to float16)
+ */
+__device__ __inline__ void atomic_add_f16(__half* addr, float val) {
+#if __CUDA_ARCH__ >= 700
+    atomicAdd(addr, __float2half(val));
+#else
+    // Emulate with CAS on older architectures
+    unsigned int* base = reinterpret_cast<unsigned int*>(
+        reinterpret_cast<size_t>(addr) & ~(size_t)2
+    );
+    int shift = ((reinterpret_cast<size_t>(addr) & 2) != 0) ? 16 : 0;
+    unsigned int assumed, old_val = *base, updated;
+    do {
+        assumed = old_val;
+        unsigned short h = static_cast<unsigned short>((assumed >> shift) & 0xFFFF);
+        float cur = __half2float(*reinterpret_cast<__half*>(&h));
+        __half new_h = __float2half(cur + val);
+        unsigned short new_us = *reinterpret_cast<unsigned short*>(&new_h);
+        updated = (assumed & ~(0xFFFFu << shift)) | (static_cast<unsigned int>(new_us) << shift);
+        old_val = atomicCAS(base, assumed, updated);
+    } while (assumed != old_val);
+#endif
+}
+
+/**
+ * Atomic add for bfloat16.
+ *
+ * Uses native atomicAdd on sm_80+ (Ampere and newer).
+ * Falls back to CAS-based emulation on older architectures.
+ *
+ * @param addr  Pointer to memory location
+ * @param val   Value to add (float32, will be converted to bfloat16)
+ */
+__device__ __inline__ void atomic_add_bf16(__nv_bfloat16* addr, float val) {
+#if __CUDA_ARCH__ >= 800
+    atomicAdd(addr, __float2bfloat16(val));
+#else
+    // Emulate with CAS on older architectures
+    unsigned int* base = reinterpret_cast<unsigned int*>(
+        reinterpret_cast<size_t>(addr) & ~(size_t)2
+    );
+    int shift = ((reinterpret_cast<size_t>(addr) & 2) != 0) ? 16 : 0;
+    unsigned int assumed, old_val = *base, updated;
+    do {
+        assumed = old_val;
+        unsigned short h = static_cast<unsigned short>((assumed >> shift) & 0xFFFF);
+        float cur = __bfloat162float(*reinterpret_cast<__nv_bfloat16*>(&h));
+        __nv_bfloat16 new_h = __float2bfloat16(cur + val);
+        unsigned short new_us = *reinterpret_cast<unsigned short*>(&new_h);
+        updated = (assumed & ~(0xFFFFu << shift)) | (static_cast<unsigned int>(new_us) << shift);
+        old_val = atomicCAS(base, assumed, updated);
+    } while (assumed != old_val);
+#endif
+}
 
 #endif  // BRAINEVENT_CUDA_COMMON_H_
