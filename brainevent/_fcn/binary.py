@@ -505,8 +505,8 @@ def _binary_fcnmv_cuda_kernel(
     **kwargs
 ):
     register_tvm_cuda_from_file(
-        module='fcn_binary',
-        source=Path(__file__).parent.joinpath('binary.cu'),
+        module='fcn_binary_mv',
+        source=Path(__file__).parent.joinpath('binary_fcnmv.cu'),
     )
 
     out_info = kwargs['outs']
@@ -524,29 +524,29 @@ def _binary_fcnmv_cuda_kernel(
         # Scatter mode: if is_active(spikes[i]) → output[indices[i,k]] += weights[i,k]
         if is_bool_spike:
             kernel_name = (
-                f'fcn_binary.binary_fcnmv_scatter_bool_warp{sfx}'
+                f'fcn_binary_mv.binary_fcnmv_scatter_bool_warp{sfx}'
                 if n_conn <= 32
-                else f'fcn_binary.binary_fcnmv_scatter_bool_basic{sfx}'
+                else f'fcn_binary_mv.binary_fcnmv_scatter_bool_basic{sfx}'
             )
         else:
             kernel_name = (
-                f'fcn_binary.binary_fcnmv_scatter_float_warp{sfx}'
+                f'fcn_binary_mv.binary_fcnmv_scatter_float_warp{sfx}'
                 if n_conn <= 32
-                else f'fcn_binary.binary_fcnmv_scatter_float_basic{sfx}'
+                else f'fcn_binary_mv.binary_fcnmv_scatter_float_basic{sfx}'
             )
     else:
         # Gather mode: y[i] = sum_k weights[i,k] * is_active(spikes[indices[i,k]])
         if is_bool_spike:
             kernel_name = (
-                f'fcn_binary.binary_fcnmv_gather_bool_warp{sfx}'
+                f'fcn_binary_mv.binary_fcnmv_gather_bool_warp{sfx}'
                 if n_conn <= 32
-                else f'fcn_binary.binary_fcnmv_gather_bool_basic{sfx}'
+                else f'fcn_binary_mv.binary_fcnmv_gather_bool_basic{sfx}'
             )
         else:
             kernel_name = (
-                f'fcn_binary.binary_fcnmv_gather_float_warp{sfx}'
+                f'fcn_binary_mv.binary_fcnmv_gather_float_warp{sfx}'
                 if n_conn <= 32
-                else f'fcn_binary.binary_fcnmv_gather_float_basic{sfx}'
+                else f'fcn_binary_mv.binary_fcnmv_gather_float_basic{sfx}'
             )
 
     def kernel(weights, indices, spikes):
@@ -995,8 +995,8 @@ def _binary_fcnmm_cuda_kernel(
     **kwargs
 ):
     register_tvm_cuda_from_file(
-        module='fcn_binary',
-        source=Path(__file__).parent.joinpath('binary.cu'),
+        module='fcn_binary_mm',
+        source=Path(__file__).parent.joinpath('binary_fcnmm.cu'),
     )
 
     out_info = kwargs['outs']
@@ -1014,29 +1014,29 @@ def _binary_fcnmm_cuda_kernel(
         # Scatter mode
         if is_bool_matrix:
             kernel_name = (
-                f'fcn_binary.binary_fcnmm_scatter_bool_warp{sfx}'
+                f'fcn_binary_mm.binary_fcnmm_scatter_bool_warp{sfx}'
                 if n_conn <= 32
-                else f'fcn_binary.binary_fcnmm_scatter_bool_basic{sfx}'
+                else f'fcn_binary_mm.binary_fcnmm_scatter_bool_basic{sfx}'
             )
         else:
             kernel_name = (
-                f'fcn_binary.binary_fcnmm_scatter_float_warp{sfx}'
+                f'fcn_binary_mm.binary_fcnmm_scatter_float_warp{sfx}'
                 if n_conn <= 32
-                else f'fcn_binary.binary_fcnmm_scatter_float_basic{sfx}'
+                else f'fcn_binary_mm.binary_fcnmm_scatter_float_basic{sfx}'
             )
     else:
         # Gather mode
         if is_bool_matrix:
             kernel_name = (
-                f'fcn_binary.binary_fcnmm_gather_bool_warp{sfx}'
+                f'fcn_binary_mm.binary_fcnmm_gather_bool_warp{sfx}'
                 if n_conn <= 32
-                else f'fcn_binary.binary_fcnmm_gather_bool_basic{sfx}'
+                else f'fcn_binary_mm.binary_fcnmm_gather_bool_basic{sfx}'
             )
         else:
             kernel_name = (
-                f'fcn_binary.binary_fcnmm_gather_float_warp{sfx}'
+                f'fcn_binary_mm.binary_fcnmm_gather_float_warp{sfx}'
                 if n_conn <= 32
-                else f'fcn_binary.binary_fcnmm_gather_float_basic{sfx}'
+                else f'fcn_binary_mm.binary_fcnmm_gather_float_basic{sfx}'
             )
 
     def kernel(weights, indices, matrix):
