@@ -316,8 +316,8 @@ def _spfloat_fcnmv_cuda_kernel(
     **kwargs
 ):
     register_tvm_cuda_from_file(
-        module='fcn_sparse_float',
-        source=Path(__file__).parent.joinpath('sparse_float.cu'),
+        module='fcn_sparse_float_mv',
+        source=Path(__file__).parent.joinpath('sparse_float_fcnmv.cu'),
     )
 
     out_info = kwargs['outs']
@@ -328,20 +328,20 @@ def _spfloat_fcnmv_cuda_kernel(
     if transpose:
         # Scatter mode: y[idx[i,k]] += w[i,k] * s[i]  (skip when s[i] == 0)
         if n_conn <= 32:
-            kernel_name = f'fcn_sparse_float.spfloat_fcnmv_scatter_warp{sfx}'
+            kernel_name = f'fcn_sparse_float_mv.spfloat_fcnmv_scatter_warp{sfx}'
         else:
-            kernel_name = f'fcn_sparse_float.spfloat_fcnmv_scatter_auto{sfx}'
+            kernel_name = f'fcn_sparse_float_mv.spfloat_fcnmv_scatter_auto{sfx}'
 
 
     else:
         # Gather mode: y[i] = sum_k w[i,k] * s[idx[i,k]]  (skip when s == 0)
         # shared kernel only for float32; for f64/f16 fall back to basic/warp
         if sfx == '_f32' and n_conn > 512:
-            kernel_name = 'fcn_sparse_float.spfloat_fcnmv_gather_shared_f32'
+            kernel_name = 'fcn_sparse_float_mv.spfloat_fcnmv_gather_shared_f32'
         elif n_conn <= 64:
-            kernel_name = f'fcn_sparse_float.spfloat_fcnmv_gather_warp{sfx}'
+            kernel_name = f'fcn_sparse_float_mv.spfloat_fcnmv_gather_warp{sfx}'
         else:
-            kernel_name = f'fcn_sparse_float.spfloat_fcnmv_gather_basic{sfx}'
+            kernel_name = f'fcn_sparse_float_mv.spfloat_fcnmv_gather_basic{sfx}'
 
     def kernel(weights, indices, vector):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, vector)
@@ -1035,8 +1035,8 @@ def _spfloat_fcnmm_cuda_kernel(
     **kwargs
 ):
     register_tvm_cuda_from_file(
-        module='fcn_sparse_float',
-        source=Path(__file__).parent.joinpath('sparse_float.cu'),
+        module='fcn_sparse_float_mm',
+        source=Path(__file__).parent.joinpath('sparse_float_fcnmm.cu'),
     )
 
     out_info = kwargs['outs']
@@ -1045,10 +1045,10 @@ def _spfloat_fcnmm_cuda_kernel(
 
     if transpose:
         # Scatter mode: Y[idx[i,k],j] += w[i,k] * M[i,j]  (skip when M[i,j] == 0)
-        kernel_name = f'fcn_sparse_float.spfloat_fcnmm_scatter_auto{sfx}'
+        kernel_name = f'fcn_sparse_float_mm.spfloat_fcnmm_scatter_auto{sfx}'
     else:
         # Gather mode: Y[i,j] = sum_k w[i,k] * M[idx[i,k],j]  (skip when M[...] == 0)
-        kernel_name = f'fcn_sparse_float.spfloat_fcnmm_gather_auto{sfx}'
+        kernel_name = f'fcn_sparse_float_mm.spfloat_fcnmm_gather_auto{sfx}'
 
     def kernel(weights, indices, matrix):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, matrix)
