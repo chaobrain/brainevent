@@ -892,10 +892,10 @@ def _jitu_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='jit_uniform', source=Path(__file__).parent.joinpath('jit_uniform.cu'))
+    register_tvm_cuda_from_file(module='float_jitu', source=Path(__file__).parent.joinpath('float_jitu.cu'))
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
     variant = 'corder_true' if corder else 'corder_false'
-    kernel_name = f'jit_uniform.jitu_{variant}{sfx}'
+    kernel_name = f'float_jitu.jitu_{variant}{sfx}'
 
     def kernel(w_low, w_high, clen, seed):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed)
@@ -1849,10 +1849,10 @@ def _jitumv_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='jit_uniform', source=Path(__file__).parent.joinpath('jit_uniform.cu'))
+    register_tvm_cuda_from_file(module='float_jitumv', source=Path(__file__).parent.joinpath('float_jitumv.cu'))
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
     variant = 'gather' if corder else 'scatter'
-    kernel_name = f'jit_uniform.jitumv_{variant}{sfx}'
+    kernel_name = f'float_jitumv.jitumv_{variant}{sfx}'
 
     def kernel(w_low, w_high, clen, vector, seed):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed, vector)
@@ -2538,10 +2538,10 @@ def _jitumm_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='jit_uniform', source=Path(__file__).parent.joinpath('jit_uniform.cu'))
+    register_tvm_cuda_from_file(module='float_jitumm', source=Path(__file__).parent.joinpath('float_jitumm.cu'))
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
     variant = 'gather' if corder else 'scatter'
-    kernel_name = f'jit_uniform.jitumm_{variant}{sfx}'
+    kernel_name = f'float_jitumm.jitumm_{variant}{sfx}'
 
     def kernel(w_low, w_high, clen, B, seed):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed, B)
