@@ -740,8 +740,8 @@ def _spfloat_csrmv_cuda_kernel(
         )
 
     register_tvm_cuda_from_file(
-        module='csr_sparse_float',
-        source=Path(__file__).parent.joinpath('sparse_float.cu'),
+        module='csr_sparse_float_csrmv',
+        source=Path(__file__).parent.joinpath('sparse_float_csrmv.cu'),
     )
 
     out_info = kwargs['outs']
@@ -755,9 +755,9 @@ def _spfloat_csrmv_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
     if transpose:
-        kernel_name = f'csr_sparse_float.spfloat_csrmv_t_warp{wt_sfx}'
+        kernel_name = f'csr_sparse_float_csrmv.spfloat_csrmv_t_warp{wt_sfx}'
     else:
-        kernel_name = f'csr_sparse_float.spfloat_csrmv_nt_auto{wt_sfx}'
+        kernel_name = f'csr_sparse_float_csrmv.spfloat_csrmv_nt_auto{wt_sfx}'
 
     def kernel(weights, indices, indptr, vector):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, vector)
@@ -1378,8 +1378,8 @@ def _spfloat_csrmm_cuda_kernel(
         )
 
     register_tvm_cuda_from_file(
-        module='csr_sparse_float',
-        source=Path(__file__).parent.joinpath('sparse_float.cu'),
+        module='csr_sparse_float_csrmm',
+        source=Path(__file__).parent.joinpath('sparse_float_csrmm.cu'),
     )
 
     out_info = kwargs['outs']
@@ -1393,9 +1393,9 @@ def _spfloat_csrmm_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
     if transpose:
-        kernel_name = f'csr_sparse_float.spfloat_csrmm_t_warp{wt_sfx}'
+        kernel_name = f'csr_sparse_float_csrmm.spfloat_csrmm_t_warp{wt_sfx}'
     else:
-        kernel_name = f'csr_sparse_float.spfloat_csrmm_nt_auto{wt_sfx}'
+        kernel_name = f'csr_sparse_float_csrmm.spfloat_csrmm_nt_auto{wt_sfx}'
 
     def kernel(weights, indices, indptr, B):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, B)
