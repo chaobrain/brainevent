@@ -685,10 +685,10 @@ def _jitn_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='jit_normal', source=Path(__file__).parent.joinpath('jit_normal.cu'))
+    register_tvm_cuda_from_file(module='jit_normal_jitn', source=Path(__file__).parent.joinpath('float_jitn.cu'))
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
     variant = 'corder_true' if corder else 'corder_false'
-    kernel_name = f'jit_normal.jitn_{variant}{sfx}'
+    kernel_name = f'jit_normal_jitn.jitn_{variant}{sfx}'
 
     def kernel(w_loc, w_scale, clen, seed):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_loc, w_scale, clen, seed)
@@ -700,10 +700,10 @@ def _jitnmv_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='jit_normal', source=Path(__file__).parent.joinpath('jit_normal.cu'))
+    register_tvm_cuda_from_file(module='jit_normal_jitnmv', source=Path(__file__).parent.joinpath('float_jitnmv.cu'))
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
     variant = 'gather' if corder else 'scatter'
-    kernel_name = f'jit_normal.jitnmv_{variant}{sfx}'
+    kernel_name = f'jit_normal_jitnmv.jitnmv_{variant}{sfx}'
 
     def kernel(w_loc, w_scale, clen, vector, seed):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_loc, w_scale, clen, seed, vector)
@@ -715,10 +715,10 @@ def _jitnmm_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='jit_normal', source=Path(__file__).parent.joinpath('jit_normal.cu'))
+    register_tvm_cuda_from_file(module='jit_normal_jitnmm', source=Path(__file__).parent.joinpath('float_jitnmm.cu'))
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
     variant = 'gather' if corder else 'scatter'
-    kernel_name = f'jit_normal.jitnmm_{variant}{sfx}'
+    kernel_name = f'jit_normal_jitnmm.jitnmm_{variant}{sfx}'
 
     def kernel(w_loc, w_scale, clen, B, seed):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_loc, w_scale, clen, seed, B)

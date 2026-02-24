@@ -738,11 +738,11 @@ def _binary_jitnmv_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='jit_normal', source=Path(__file__).parent.joinpath('jit_normal.cu'))
+    register_tvm_cuda_from_file(module='jit_normal_binary_jitnmv', source=Path(__file__).parent.joinpath('binary_jitnmv.cu'))
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
     stype = '_bool' if kwargs['vector_info'].dtype == jnp.bool_ else '_float'
     variant = 'gather' if corder else 'scatter'
-    kernel_name = f'jit_normal.binary_jitnmv_{variant}{sfx}{stype}'
+    kernel_name = f'jit_normal_binary_jitnmv.binary_jitnmv_{variant}{sfx}{stype}'
 
     def kernel(w_loc, w_scale, clen, vector, seed):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_loc, w_scale, clen, seed, vector)
@@ -754,11 +754,11 @@ def _binary_jitnmm_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='jit_normal', source=Path(__file__).parent.joinpath('jit_normal.cu'))
+    register_tvm_cuda_from_file(module='jit_normal_binary_jitnmm', source=Path(__file__).parent.joinpath('binary_jitnmm.cu'))
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
     stype = '_bool' if kwargs['B_info'].dtype == jnp.bool_ else '_float'
     variant = 'gather' if corder else 'scatter'
-    kernel_name = f'jit_normal.binary_jitnmm_{variant}{sfx}{stype}'
+    kernel_name = f'jit_normal_binary_jitnmm.binary_jitnmm_{variant}{sfx}{stype}'
 
     def kernel(w_loc, w_scale, clen, B, seed):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_loc, w_scale, clen, seed, B)
