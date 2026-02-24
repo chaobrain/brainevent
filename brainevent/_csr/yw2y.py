@@ -349,7 +349,7 @@ def _csrmv_yw2y_cuda_kernel(
 ):
     register_tvm_cuda_from_file(
         module='csrmv_yw2y',
-        source=Path(__file__).parent.joinpath('yw2y.cu'),
+        source=Path(__file__).parent.joinpath('yw2y_csrmv_yw2y.cu'),
     )
 
     out_info = kwargs['outs']
