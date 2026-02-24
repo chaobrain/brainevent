@@ -98,418 +98,626 @@
 //   - NT,hetero,bool: 2.6 ms (baseline: 9.5 ms) — 3.7× improvement
 //   - NT,homo,float:  1.4 ms (baseline: 2.0 ms) — 1.4× improvement
 //   - Theoretical:    0.86 ms (memory-bound, assuming perfect coalescing)
-//   - **Efficiency:   33%** of theoretical bandwidth peak
+//   - Efficiency:     ~30% of theoretical (up from 9%)
 //
-// ## Stopping Criterion Met: Fundamental Algorithmic Barrier
+// ## Stopping Criterion Met
 //
-// **Current efficiency: 33%** of roofline bound.
-// **Speedup vs cuSPARSE: 4.2×** (NT,hetero,bool,10K case).
-// All in-kernel micro-optimizations exhausted.
-//
-// ## Why 33% Efficiency is the Practical Limit
-//
-// 1. **Random row access** (fundamental bottleneck, ~3× BW penalty):
-//    Each iteration accesses B[indices[j]*n + c] where indices[j] is random.
-//    Although the column span c...c+31 is coalesced, the row index jumps to
-//    a random cache line every iteration. On Ampere (128-byte L2 cache lines),
-//    we fetch 128 bytes but use only 32 bytes (bool) or 128 bytes (float).
-//    Even in the best case (float, perfectly aligned), we get 1 useful
-//    transaction per iteration, but the random access defeats prefetching
-//    and cache reuse across iterations.
-//
-// 2. **Cannot exploit input sparsity** (10% spike rate = 90% wasted work):
-//    With 10% spike density, 90% of B elements are zero. But CSR format stores
-//    by row, not by column, so we must load all indices[j] and weights[j] to
-//    determine which columns are active. There's no way to skip inactive
-//    columns without preprocessing the spike matrix (O(n) cost per frame).
-//
-// 3. **Comparison with csrmv** (SpMV, same format):
-//    The csrmv kernels achieved 14-20% efficiency before hitting
-//    a documented "fundamental barrier". The csrmm kernels achieve **33%** —
-//    2× better than csrmv! This suggests we've successfully applied additional
-//    optimizations (manual ILP, better unrolling) that weren't possible in csrmv.
-//
-// 4. **Why further optimizations don't help**:
-//    - Shared memory caching: With random row access, each warp hits ~200
-//      different rows. Caching them in smem requires 200 uncoalesced loads — no
-//      better than direct access. Full matrix caching exceeds smem capacity.
-//    - Texture cache: Already implicitly used via __restrict__ on Ampere.
-//    - Warp ballot early-exit: At 10% spike rate, P(all 32 threads inactive) =
-//      (0.9)^32 ≈ 2%. Ballot overhead costs more than it saves.
-//    - Vectorized loads: Already coalescing 32 consecutive columns per warp.
-//      Using float4/int4 wouldn't improve efficiency given the random row access.
-//
-// ## Achieved vs. Theoretical — Why the 3× Gap is Fundamental
-//
-// Measured time: 2.6 ms
-// Theoretical time (perfect coalescing + zero latency): 0.86 ms
-// Gap: 1.74 ms (3×)
-//
-// The gap is caused by:
-//   - Cache miss latency: ~200-400 cycles per uncached global load
-//   - Memory controller queuing: Contention from multiple warps
-//   - Warp scheduling overhead: Occupancy limits due to register pressure
-//   - Alignment penalties: Some accesses may not be perfectly coalesced
-//
-// These overheads are **irreducible** for random access patterns. Even
-// state-of-the-art libraries (cuSPARSE) face the same bottleneck: we achieve
-// 4.2× speedup over cuSPARSE, indicating the format/algorithm is the limit.
-//
-// ## Future Directions (require algorithmic or format changes)
-//
-// Further optimization requires changes beyond in-kernel tuning:
-//
-// 1. **Format change (CSR → CSC for NT path)**:
-//    CSC would store by column, enabling column-wise early exit like the
-//    transpose (T) path. But this requires:
-//      - Format conversion (expensive, O(nnz))
-//      - Storing two copies of the matrix (CSR for T, CSC for NT)
-//      - Breaking API compatibility (callers expect CSR)
-//    The T path already achieves 4-6× speedup over NT by using early-exit,
-//    demonstrating the potential benefit.
-//
-// 2. **Sparse-sparse multiplication** (event-driven preprocessing):
-//    Preprocess the spike matrix to extract active column indices (O(n) scan),
-//    then iterate only over rows connected to active columns:
-//      (a) Extract active_cols = {j | spike[j] > 0} — O(n) pass
-//      (b) For each row i, check if any indices[i,k] ∈ active_cols
-//    Benefit: Skip 90% of rows when spike_rate=10%. But adds O(n) overhead
-//    per frame, which may exceed the kernel savings for small n.
-//
-// 3. **Format change (CSR → ELL / SELL-C-σ)**:
-//    Ellpack (ELL) enables coalesced access for regular sparsity (uniform nnz/row).
-//    SELL-C-σ handles irregular sparsity via row sorting and blocking.
-//    But conversion cost is prohibitive for dynamic connectivity (synaptic
-//    plasticity), and static reordering is impossible for changing topology.
-//
-// 4. **Two-pass algorithm**:
-//    Pass 1: Scan sparse matrix + spike vector to identify active rows (bitmap)
-//    Pass 2: Process only active rows
-//    This requires auxiliary data structures and adds kernel launch overhead.
-//    Benefit unclear for 10% sparsity.
-//
-// 5. **Hybrid sparse-dense switching**:
-//    Use dense matmul for high spike rates (>50%), sparse for low rates (<10%).
-//    Requires runtime dispatch and maintaining both code paths.
-//
-// 6. **Hardware features** (requires newer GPUs / SW stack):
-//    - Persistent kernels with dynamic parallelism (Hopper+ sm_90)
-//    - TMA (Tensor Memory Accelerator) for async global→smem transfers (Hopper+)
-//    - CUDA Graphs to amortize launch overhead over batched operations
-//
-// ## Final Recommendation
-//
-// The current CUDA kernels achieve **4.2× speedup over cuSPARSE** and pass all
-// correctness tests across tiny/small/medium/large matrix sizes (64 to 10K rows).
-// The gap between achieved (2.6 ms) and theoretical (0.86 ms) performance is a
-// **fundamental property of the CSR gather pattern with random access**, not a
-// kernel bug or missed optimization.
-//
-// **Optimization effort complete at 33% roofline efficiency** — 2× better than
-// the csrmv kernels (14-20%) for the same format. Further gains require
-// algorithmic or architectural changes listed above, which are beyond the scope
-// of in-kernel optimization.
-//
-// For >3× additional speedup, consider:
-// - **Transpose path (CSR^T @ x)**: Already 4-6× faster due to row-level early exit.
-// - **Pre-transposed matrices**: Store both CSR and CSC for forward/backward passes.
-// - **Event-driven preprocessing**: Extract active indices per frame (if cost < savings).
-// - **Hybrid sparse-dense**: Use dense matmul for spike_rate > 50%, sparse for < 10%.
+// Further optimization requires algorithmic changes:
+// - Pre-transpose B to enable row-major access
+// - Tile B in shared memory (requires large smem, limits occupancy)
+// - Switch to CSC format for better cache locality
 // =========================================================================
 
-#define DEFINE_CSRMM_NT_WARP(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T,  \
-                              READ_W, WRITE_W, ACC_ZERO)                     \
-__global__ void _csrmm_nt_warp_kern##SUFFIX(                                 \
-    const WEIGHT_T* __restrict__ weights,                                    \
-    const int32_t*  __restrict__ indices,                                    \
-    const int32_t*  __restrict__ indptr,                                     \
-    const SPIKE_T*  __restrict__ B,                                          \
-    WEIGHT_T*       __restrict__ C,                                          \
-    int m, int n, int is_homo                                                \
-) {                                                                           \
-    int row       = blockIdx.x;                                              \
-    int col_start = blockIdx.y * 32;                                         \
-    int c         = col_start + (int)threadIdx.x;                            \
-    if (row >= m || c >= n) return;                                          \
-    int start = indptr[row], end = indptr[row + 1];                          \
-    ACC_T acc0 = ACC_ZERO, acc1 = ACC_ZERO;                                 \
-    if (is_homo) {                                                           \
-        ACC_T w = READ_W(weights[0]);                                        \
-        int j = start;                                                       \
-        _Pragma("unroll 4")                                                  \
-        for (; j + 1 < end; j += 2) {                                        \
-            ACC_T mask0 = (ACC_T)IS_ACTIVE(B[indices[j]   * n + c]);        \
-            ACC_T mask1 = (ACC_T)IS_ACTIVE(B[indices[j+1] * n + c]);        \
-            acc0 += w * mask0;                                               \
-            acc1 += w * mask1;                                               \
-        }                                                                     \
-        for (; j < end; j++) {                                               \
-            ACC_T mask = (ACC_T)IS_ACTIVE(B[indices[j] * n + c]);           \
-            acc0 += w * mask;                                                \
-        }                                                                     \
-    } else {                                                                 \
-        int j = start;                                                       \
-        _Pragma("unroll 4")                                                  \
-        for (; j + 1 < end; j += 2) {                                        \
-            ACC_T mask0 = (ACC_T)IS_ACTIVE(B[indices[j]   * n + c]);        \
-            ACC_T mask1 = (ACC_T)IS_ACTIVE(B[indices[j+1] * n + c]);        \
-            acc0 += READ_W(weights[j])   * mask0;                            \
-            acc1 += READ_W(weights[j+1]) * mask1;                            \
-        }                                                                     \
-        for (; j < end; j++) {                                               \
-            ACC_T mask = (ACC_T)IS_ACTIVE(B[indices[j] * n + c]);           \
-            acc0 += READ_W(weights[j]) * mask;                               \
-        }                                                                     \
-    }                                                                         \
-    C[row * n + c] = WRITE_W(acc0 + acc1);                                   \
+// =========================================================================
+// Homogeneous Weight Kernels (weights.size == 1)
+// =========================================================================
+
+#define DEFINE_CSRMM_NT_WARP_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T,   \
+                                   READ_W, WRITE_W, ACC_ZERO)                     \
+__global__ void _csrmm_nt_warp_homo_kern##SUFFIX(                                 \
+    const WEIGHT_T* __restrict__ weights,                                         \
+    const int32_t*  __restrict__ indices,                                         \
+    const int32_t*  __restrict__ indptr,                                          \
+    const SPIKE_T*  __restrict__ B,                                               \
+    WEIGHT_T*       __restrict__ C,                                               \
+    int m, int n                                                                  \
+) {                                                                                \
+    int row       = blockIdx.x;                                                   \
+    int col_start = blockIdx.y * 32;                                              \
+    int c         = col_start + (int)threadIdx.x;                                 \
+    if (row >= m || c >= n) return;                                               \
+    int start = indptr[row], end = indptr[row + 1];                               \
+    ACC_T acc0 = ACC_ZERO, acc1 = ACC_ZERO;                                      \
+    ACC_T w = READ_W(weights[0]);                                                 \
+    int j = start;                                                                \
+    _Pragma("unroll 4")                                                           \
+    for (; j + 1 < end; j += 2) {                                                 \
+        ACC_T mask0 = (ACC_T)IS_ACTIVE(B[indices[j]   * n + c]);                 \
+        ACC_T mask1 = (ACC_T)IS_ACTIVE(B[indices[j+1] * n + c]);                 \
+        acc0 += w * mask0;                                                        \
+        acc1 += w * mask1;                                                        \
+    }                                                                              \
+    for (; j < end; j++) {                                                        \
+        ACC_T mask = (ACC_T)IS_ACTIVE(B[indices[j] * n + c]);                    \
+        acc0 += w * mask;                                                         \
+    }                                                                              \
+    C[row * n + c] = WRITE_W(acc0 + acc1);                                        \
 }
 
-#define DEFINE_CSRMM_NT_BLOCK(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T,  \
-                               READ_W, WRITE_W, ACC_ZERO)                    \
-__global__ void _csrmm_nt_block_kern##SUFFIX(                                \
-    const WEIGHT_T* __restrict__ weights,                                    \
-    const int32_t*  __restrict__ indices,                                    \
-    const int32_t*  __restrict__ indptr,                                     \
-    const SPIKE_T*  __restrict__ B,                                          \
-    WEIGHT_T*       __restrict__ C,                                          \
-    int m, int n, int is_homo                                                \
-) {                                                                           \
-    extern __shared__ char _smem_bytes[];                                    \
-    ACC_T* smem = reinterpret_cast<ACC_T*>(_smem_bytes);                     \
-    int row       = blockIdx.x;                                              \
-    int col_start = blockIdx.y * 32;                                         \
-    int lane      = threadIdx.x & 31;                                        \
-    int strip     = threadIdx.x >> 5;                                        \
-    int c         = col_start + lane;                                        \
-    if (row >= m) return;                                                    \
-    int start = indptr[row], end = indptr[row + 1];                          \
-    ACC_T acc0 = ACC_ZERO, acc1 = ACC_ZERO;                                 \
-    if (c < n) {                                                             \
-        if (is_homo) {                                                       \
-            ACC_T w = READ_W(weights[0]);                                    \
-            int j = start + strip;                                           \
-            _Pragma("unroll 4")                                              \
-            for (; j + 8 < end; j += 16) {                                   \
-                ACC_T mask0 = (ACC_T)IS_ACTIVE(B[indices[j]   * n + c]);    \
-                ACC_T mask1 = (ACC_T)IS_ACTIVE(B[indices[j+8] * n + c]);    \
-                acc0 += w * mask0;                                           \
-                acc1 += w * mask1;                                           \
-            }                                                                 \
-            for (; j < end; j += 8) {                                        \
-                ACC_T mask = (ACC_T)IS_ACTIVE(B[indices[j] * n + c]);       \
-                acc0 += w * mask;                                            \
-            }                                                                 \
-        } else {                                                             \
-            int j = start + strip;                                           \
-            _Pragma("unroll 4")                                              \
-            for (; j + 8 < end; j += 16) {                                   \
-                ACC_T mask0 = (ACC_T)IS_ACTIVE(B[indices[j]   * n + c]);    \
-                ACC_T mask1 = (ACC_T)IS_ACTIVE(B[indices[j+8] * n + c]);    \
-                acc0 += READ_W(weights[j])   * mask0;                        \
-                acc1 += READ_W(weights[j+8]) * mask1;                        \
-            }                                                                 \
-            for (; j < end; j += 8) {                                        \
-                ACC_T mask = (ACC_T)IS_ACTIVE(B[indices[j] * n + c]);       \
-                acc0 += READ_W(weights[j]) * mask;                           \
-            }                                                                 \
-        }                                                                     \
-    }                                                                         \
-    smem[strip * 32 + lane] = acc0 + acc1;                                   \
-    __syncthreads();                                                          \
-    if (strip == 0 && c < n) {                                              \
-        ACC_T sum = ACC_ZERO;                                                \
-        _Pragma("unroll 8")                                                  \
-        for (int s = 0; s < 8; s++) sum += smem[s * 32 + lane];             \
-        C[row * n + c] = WRITE_W(sum);                                       \
-    }                                                                         \
+#define DEFINE_CSRMM_NT_BLOCK_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T,  \
+                                    READ_W, WRITE_W, ACC_ZERO)                    \
+__global__ void _csrmm_nt_block_homo_kern##SUFFIX(                                \
+    const WEIGHT_T* __restrict__ weights,                                         \
+    const int32_t*  __restrict__ indices,                                         \
+    const int32_t*  __restrict__ indptr,                                          \
+    const SPIKE_T*  __restrict__ B,                                               \
+    WEIGHT_T*       __restrict__ C,                                               \
+    int m, int n                                                                  \
+) {                                                                                \
+    extern __shared__ char _smem_bytes[];                                         \
+    ACC_T* smem = reinterpret_cast<ACC_T*>(_smem_bytes);                          \
+    int row       = blockIdx.x;                                                   \
+    int col_start = blockIdx.y * 32;                                              \
+    int lane      = threadIdx.x & 31;                                             \
+    int strip     = threadIdx.x >> 5;                                             \
+    int c         = col_start + lane;                                             \
+    if (row >= m) return;                                                         \
+    int start = indptr[row], end = indptr[row + 1];                               \
+    ACC_T acc0 = ACC_ZERO, acc1 = ACC_ZERO;                                      \
+    if (c < n) {                                                                  \
+        ACC_T w = READ_W(weights[0]);                                             \
+        int j = start + strip;                                                    \
+        _Pragma("unroll 4")                                                       \
+        for (; j + 8 < end; j += 16) {                                            \
+            ACC_T mask0 = (ACC_T)IS_ACTIVE(B[indices[j]   * n + c]);             \
+            ACC_T mask1 = (ACC_T)IS_ACTIVE(B[indices[j+8] * n + c]);             \
+            acc0 += w * mask0;                                                    \
+            acc1 += w * mask1;                                                    \
+        }                                                                          \
+        for (; j < end; j += 8) {                                                 \
+            ACC_T mask = (ACC_T)IS_ACTIVE(B[indices[j] * n + c]);                \
+            acc0 += w * mask;                                                     \
+        }                                                                          \
+    }                                                                              \
+    smem[strip * 32 + lane] = acc0 + acc1;                                        \
+    __syncthreads();                                                               \
+    if (strip == 0 && c < n) {                                                    \
+        ACC_T sum = ACC_ZERO;                                                     \
+        _Pragma("unroll 8")                                                       \
+        for (int s = 0; s < 8; s++) sum += smem[s * 32 + lane];                  \
+        C[row * n + c] = WRITE_W(sum);                                            \
+    }                                                                              \
 }
 
-#define DEFINE_CSRMM_T_WARP(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T,   \
-                             READ_W, WRITE_W, ACC_ZERO)                      \
-__global__ void _csrmm_t_warp_kern##SUFFIX(                                  \
-    const WEIGHT_T* __restrict__ weights,                                    \
-    const int32_t*  __restrict__ indices,                                    \
-    const int32_t*  __restrict__ indptr,                                     \
-    const SPIKE_T*  __restrict__ B,                                          \
-    WEIGHT_T*       __restrict__ C,                                          \
-    int m, int n, int is_homo                                                \
-) {                                                                           \
-    int row       = blockIdx.x;                                              \
-    int col_start = blockIdx.y * 32;                                         \
-    int c         = col_start + (int)threadIdx.x;                            \
-    if (row >= m || c >= n) return;                                          \
-    if (!IS_ACTIVE(B[row * n + c])) return;                                  \
-    int start = indptr[row], end = indptr[row + 1];                          \
-    if (is_homo) {                                                           \
-        WEIGHT_T w_out = weights[0];                                         \
-        for (int j = start; j < end; j++) {                                  \
-            atomicAdd(&C[indices[j] * n + c], w_out);                        \
-        }                                                                     \
-    } else {                                                                 \
-        for (int j = start; j < end; j++) {                                  \
-            atomicAdd(&C[indices[j] * n + c], weights[j]);                   \
-        }                                                                     \
-    }                                                                         \
+#define DEFINE_CSRMM_T_WARP_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T,    \
+                                  READ_W, WRITE_W, ACC_ZERO)                      \
+__global__ void _csrmm_t_warp_homo_kern##SUFFIX(                                  \
+    const WEIGHT_T* __restrict__ weights,                                         \
+    const int32_t*  __restrict__ indices,                                         \
+    const int32_t*  __restrict__ indptr,                                          \
+    const SPIKE_T*  __restrict__ B,                                               \
+    WEIGHT_T*       __restrict__ C,                                               \
+    int m, int n                                                                  \
+) {                                                                                \
+    int row       = blockIdx.x;                                                   \
+    int col_start = blockIdx.y * 32;                                              \
+    int c         = col_start + (int)threadIdx.x;                                 \
+    if (row >= m || c >= n) return;                                               \
+    if (!IS_ACTIVE(B[row * n + c])) return;                                       \
+    int start = indptr[row], end = indptr[row + 1];                               \
+    WEIGHT_T w_out = weights[0];                                                  \
+    for (int j = start; j < end; j++) {                                           \
+        atomicAdd(&C[indices[j] * n + c], w_out);                                 \
+    }                                                                              \
 }
 
-// SpMM Instantiations
-DEFINE_CSRMM_NT_WARP(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float, READ_F32, WRITE_F32, 0.0f)
-DEFINE_CSRMM_NT_WARP(_f32_float, float,  IS_ACTIVE_FLOAT, float, float, READ_F32, WRITE_F32, 0.0f)
-DEFINE_CSRMM_NT_BLOCK(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float, READ_F32, WRITE_F32, 0.0f)
-DEFINE_CSRMM_NT_BLOCK(_f32_float, float,  IS_ACTIVE_FLOAT, float, float, READ_F32, WRITE_F32, 0.0f)
-DEFINE_CSRMM_T_WARP(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float, READ_F32, WRITE_F32, 0.0f)
-DEFINE_CSRMM_T_WARP(_f32_float, float,  IS_ACTIVE_FLOAT, float, float, READ_F32, WRITE_F32, 0.0f)
-DEFINE_CSRMM_NT_WARP(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double, READ_F64, WRITE_F64, 0.0)
-DEFINE_CSRMM_NT_WARP(_f64_float, float,  IS_ACTIVE_FLOAT, double, double, READ_F64, WRITE_F64, 0.0)
-DEFINE_CSRMM_NT_BLOCK(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double, READ_F64, WRITE_F64, 0.0)
-DEFINE_CSRMM_NT_BLOCK(_f64_float, float,  IS_ACTIVE_FLOAT, double, double, READ_F64, WRITE_F64, 0.0)
-DEFINE_CSRMM_T_WARP(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double, READ_F64, WRITE_F64, 0.0)
-DEFINE_CSRMM_T_WARP(_f64_float, float,  IS_ACTIVE_FLOAT, double, double, READ_F64, WRITE_F64, 0.0)
-DEFINE_CSRMM_NT_WARP(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float, READ_F16, WRITE_F16, 0.0f)
-DEFINE_CSRMM_NT_WARP(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float, READ_F16, WRITE_F16, 0.0f)
-DEFINE_CSRMM_NT_BLOCK(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float, READ_F16, WRITE_F16, 0.0f)
-DEFINE_CSRMM_NT_BLOCK(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float, READ_F16, WRITE_F16, 0.0f)
-DEFINE_CSRMM_T_WARP(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float, READ_F16, WRITE_F16, 0.0f)
-DEFINE_CSRMM_T_WARP(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float, READ_F16, WRITE_F16, 0.0f)
-DEFINE_CSRMM_NT_WARP(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
-DEFINE_CSRMM_NT_WARP(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
-DEFINE_CSRMM_NT_BLOCK(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
-DEFINE_CSRMM_NT_BLOCK(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
-DEFINE_CSRMM_T_WARP(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
-DEFINE_CSRMM_T_WARP(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
+// =========================================================================
+// Heterogeneous Weight Kernels (weights.size == nnz)
+// =========================================================================
 
-// FFI Macros for SpMM
-#define FFI_CSRMM_NT_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                    \
-void binary_csrmm_nt_warp##SUFFIX(                                           \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,              \
-    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView B,                   \
-    tvm::ffi::TensorView C,       int64_t stream                             \
-) {                                                                           \
-    cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);               \
-    int m        = static_cast<int>(indptr.size(0)) - 1;                     \
-    int n        = static_cast<int>(B.size(1));                              \
-    int is_homo  = (weights.size(0) == 1) ? 1 : 0;                          \
-    int c_blocks = (n + 31) / 32;                                            \
-    dim3 grid(m, c_blocks);                                                  \
-    _csrmm_nt_warp_kern##SUFFIX<<<grid, 32, 0, s>>>(                         \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),                  \
-        static_cast<const int32_t*>(indices.data_ptr()),                     \
-        static_cast<const int32_t*>(indptr.data_ptr()),                      \
-        static_cast<const SPIKE_C_T*>(B.data_ptr()),                         \
-        static_cast<WEIGHT_C_T*>(C.data_ptr()),                              \
-        m, n, is_homo);                                                       \
+#define DEFINE_CSRMM_NT_WARP_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
+                                     READ_W, WRITE_W, ACC_ZERO)                   \
+__global__ void _csrmm_nt_warp_hetero_kern##SUFFIX(                               \
+    const WEIGHT_T* __restrict__ weights,                                         \
+    const int32_t*  __restrict__ indices,                                         \
+    const int32_t*  __restrict__ indptr,                                          \
+    const SPIKE_T*  __restrict__ B,                                               \
+    WEIGHT_T*       __restrict__ C,                                               \
+    int m, int n                                                                  \
+) {                                                                                \
+    int row       = blockIdx.x;                                                   \
+    int col_start = blockIdx.y * 32;                                              \
+    int c         = col_start + (int)threadIdx.x;                                 \
+    if (row >= m || c >= n) return;                                               \
+    int start = indptr[row], end = indptr[row + 1];                               \
+    ACC_T acc0 = ACC_ZERO, acc1 = ACC_ZERO;                                      \
+    int j = start;                                                                \
+    _Pragma("unroll 4")                                                           \
+    for (; j + 1 < end; j += 2) {                                                 \
+        ACC_T mask0 = (ACC_T)IS_ACTIVE(B[indices[j]   * n + c]);                 \
+        ACC_T mask1 = (ACC_T)IS_ACTIVE(B[indices[j+1] * n + c]);                 \
+        acc0 += READ_W(weights[j])   * mask0;                                     \
+        acc1 += READ_W(weights[j+1]) * mask1;                                     \
+    }                                                                              \
+    for (; j < end; j++) {                                                        \
+        ACC_T mask = (ACC_T)IS_ACTIVE(B[indices[j] * n + c]);                    \
+        acc0 += READ_W(weights[j]) * mask;                                        \
+    }                                                                              \
+    C[row * n + c] = WRITE_W(acc0 + acc1);                                        \
 }
 
-#define FFI_CSRMM_NT_BLOCK(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE)         \
-void binary_csrmm_nt_block##SUFFIX(                                          \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,              \
-    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView B,                   \
-    tvm::ffi::TensorView C,       int64_t stream                             \
-) {                                                                           \
-    cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);               \
-    int m        = static_cast<int>(indptr.size(0)) - 1;                     \
-    int n        = static_cast<int>(B.size(1));                              \
-    int is_homo  = (weights.size(0) == 1) ? 1 : 0;                          \
-    int c_blocks = (n + 31) / 32;                                            \
-    dim3 grid(m, c_blocks);                                                  \
-    _csrmm_nt_block_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>(                \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),                  \
-        static_cast<const int32_t*>(indices.data_ptr()),                     \
-        static_cast<const int32_t*>(indptr.data_ptr()),                      \
-        static_cast<const SPIKE_C_T*>(B.data_ptr()),                         \
-        static_cast<WEIGHT_C_T*>(C.data_ptr()),                              \
-        m, n, is_homo);                                                       \
+#define DEFINE_CSRMM_NT_BLOCK_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
+                                      READ_W, WRITE_W, ACC_ZERO)                   \
+__global__ void _csrmm_nt_block_hetero_kern##SUFFIX(                               \
+    const WEIGHT_T* __restrict__ weights,                                          \
+    const int32_t*  __restrict__ indices,                                          \
+    const int32_t*  __restrict__ indptr,                                           \
+    const SPIKE_T*  __restrict__ B,                                                \
+    WEIGHT_T*       __restrict__ C,                                                \
+    int m, int n                                                                   \
+) {                                                                                 \
+    extern __shared__ char _smem_bytes[];                                          \
+    ACC_T* smem = reinterpret_cast<ACC_T*>(_smem_bytes);                           \
+    int row       = blockIdx.x;                                                    \
+    int col_start = blockIdx.y * 32;                                               \
+    int lane      = threadIdx.x & 31;                                              \
+    int strip     = threadIdx.x >> 5;                                              \
+    int c         = col_start + lane;                                              \
+    if (row >= m) return;                                                          \
+    int start = indptr[row], end = indptr[row + 1];                                \
+    ACC_T acc0 = ACC_ZERO, acc1 = ACC_ZERO;                                       \
+    if (c < n) {                                                                   \
+        int j = start + strip;                                                     \
+        _Pragma("unroll 4")                                                        \
+        for (; j + 8 < end; j += 16) {                                             \
+            ACC_T mask0 = (ACC_T)IS_ACTIVE(B[indices[j]   * n + c]);              \
+            ACC_T mask1 = (ACC_T)IS_ACTIVE(B[indices[j+8] * n + c]);              \
+            acc0 += READ_W(weights[j])   * mask0;                                  \
+            acc1 += READ_W(weights[j+8]) * mask1;                                  \
+        }                                                                           \
+        for (; j < end; j += 8) {                                                  \
+            ACC_T mask = (ACC_T)IS_ACTIVE(B[indices[j] * n + c]);                 \
+            acc0 += READ_W(weights[j]) * mask;                                     \
+        }                                                                           \
+    }                                                                               \
+    smem[strip * 32 + lane] = acc0 + acc1;                                         \
+    __syncthreads();                                                                \
+    if (strip == 0 && c < n) {                                                     \
+        ACC_T sum = ACC_ZERO;                                                      \
+        _Pragma("unroll 8")                                                        \
+        for (int s = 0; s < 8; s++) sum += smem[s * 32 + lane];                   \
+        C[row * n + c] = WRITE_W(sum);                                             \
+    }                                                                               \
 }
 
-#define FFI_CSRMM_NT_AUTO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE)          \
-void binary_csrmm_nt_auto##SUFFIX(                                           \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,              \
-    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView B,                   \
-    tvm::ffi::TensorView C,       int64_t stream                             \
-) {                                                                           \
-    cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);               \
-    int m        = static_cast<int>(indptr.size(0)) - 1;                     \
-    int nse      = static_cast<int>(indices.size(0));                        \
-    int n        = static_cast<int>(B.size(1));                              \
-    int is_homo  = (weights.size(0) == 1) ? 1 : 0;                          \
-    int avg_nnz  = (m > 0) ? (nse / m) : 0;                                 \
-    int c_blocks = (n + 31) / 32;                                            \
-    dim3 grid(m, c_blocks);                                                  \
-    const WEIGHT_C_T* d_w = static_cast<const WEIGHT_C_T*>(weights.data_ptr()); \
-    const int32_t*    d_i = static_cast<const int32_t*>(indices.data_ptr()); \
-    const int32_t*    d_p = static_cast<const int32_t*>(indptr.data_ptr());  \
-    const SPIKE_C_T*  d_b = static_cast<const SPIKE_C_T*>(B.data_ptr());    \
-    WEIGHT_C_T*       d_c = static_cast<WEIGHT_C_T*>(C.data_ptr());         \
-    if (avg_nnz <= 256) {                                                    \
-        _csrmm_nt_warp_kern##SUFFIX<<<grid, 32, 0, s>>>(                     \
-            d_w, d_i, d_p, d_b, d_c, m, n, is_homo);                        \
-    } else {                                                                 \
-        _csrmm_nt_block_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>(            \
-            d_w, d_i, d_p, d_b, d_c, m, n, is_homo);                        \
-    }                                                                         \
+#define DEFINE_CSRMM_T_WARP_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T,   \
+                                    READ_W, WRITE_W, ACC_ZERO)                     \
+__global__ void _csrmm_t_warp_hetero_kern##SUFFIX(                                 \
+    const WEIGHT_T* __restrict__ weights,                                          \
+    const int32_t*  __restrict__ indices,                                          \
+    const int32_t*  __restrict__ indptr,                                           \
+    const SPIKE_T*  __restrict__ B,                                                \
+    WEIGHT_T*       __restrict__ C,                                                \
+    int m, int n                                                                   \
+) {                                                                                 \
+    int row       = blockIdx.x;                                                    \
+    int col_start = blockIdx.y * 32;                                               \
+    int c         = col_start + (int)threadIdx.x;                                  \
+    if (row >= m || c >= n) return;                                                \
+    if (!IS_ACTIVE(B[row * n + c])) return;                                        \
+    int start = indptr[row], end = indptr[row + 1];                                \
+    for (int j = start; j < end; j++) {                                            \
+        atomicAdd(&C[indices[j] * n + c], weights[j]);                             \
+    }                                                                               \
 }
 
-#define FFI_CSRMM_T_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                     \
-void binary_csrmm_t_warp##SUFFIX(                                            \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,              \
-    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView B,                   \
-    tvm::ffi::TensorView C,       int64_t stream                             \
-) {                                                                           \
-    cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                \
-    int m        = static_cast<int>(indptr.size(0)) - 1;                     \
-    int n        = static_cast<int>(B.size(1));                              \
-    int k        = static_cast<int>(C.size(0));                              \
-    int is_homo  = (weights.size(0) == 1) ? 1 : 0;                          \
-    WEIGHT_C_T* d_c = static_cast<WEIGHT_C_T*>(C.data_ptr());               \
-    cudaMemsetAsync(d_c, 0, (size_t)k * (size_t)n * sizeof(WEIGHT_C_T), s); \
-    int c_blocks = (n + 31) / 32;                                            \
-    dim3 grid(m, c_blocks);                                                  \
-    _csrmm_t_warp_kern##SUFFIX<<<grid, 32, 0, s>>>(                          \
-        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),                  \
-        static_cast<const int32_t*>(indices.data_ptr()),                     \
-        static_cast<const int32_t*>(indptr.data_ptr()),                      \
-        static_cast<const SPIKE_C_T*>(B.data_ptr()),                         \
-        d_c, m, n, is_homo);                                                 \
+// =========================================================================
+// Kernel Instantiations — Homogeneous Weights
+// =========================================================================
+
+// float32 homogeneous
+DEFINE_CSRMM_NT_WARP_HOMO(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float, \
+                           READ_F32, WRITE_F32, 0.0f)
+DEFINE_CSRMM_NT_WARP_HOMO(_f32_float, float,  IS_ACTIVE_FLOAT, float, float, \
+                           READ_F32, WRITE_F32, 0.0f)
+DEFINE_CSRMM_NT_BLOCK_HOMO(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float, \
+                            READ_F32, WRITE_F32, 0.0f)
+DEFINE_CSRMM_NT_BLOCK_HOMO(_f32_float, float,  IS_ACTIVE_FLOAT, float, float, \
+                            READ_F32, WRITE_F32, 0.0f)
+DEFINE_CSRMM_T_WARP_HOMO(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float,   \
+                          READ_F32, WRITE_F32, 0.0f)
+DEFINE_CSRMM_T_WARP_HOMO(_f32_float, float,  IS_ACTIVE_FLOAT, float, float,   \
+                          READ_F32, WRITE_F32, 0.0f)
+
+// float64 homogeneous
+DEFINE_CSRMM_NT_WARP_HOMO(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double, \
+                           READ_F64, WRITE_F64, 0.0)
+DEFINE_CSRMM_NT_WARP_HOMO(_f64_float, float,  IS_ACTIVE_FLOAT, double, double, \
+                           READ_F64, WRITE_F64, 0.0)
+DEFINE_CSRMM_NT_BLOCK_HOMO(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double, \
+                            READ_F64, WRITE_F64, 0.0)
+DEFINE_CSRMM_NT_BLOCK_HOMO(_f64_float, float,  IS_ACTIVE_FLOAT, double, double, \
+                            READ_F64, WRITE_F64, 0.0)
+DEFINE_CSRMM_T_WARP_HOMO(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double,   \
+                          READ_F64, WRITE_F64, 0.0)
+DEFINE_CSRMM_T_WARP_HOMO(_f64_float, float,  IS_ACTIVE_FLOAT, double, double,   \
+                          READ_F64, WRITE_F64, 0.0)
+
+// float16 homogeneous
+DEFINE_CSRMM_NT_WARP_HOMO(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float, \
+                           READ_F16, WRITE_F16, 0.0f)
+DEFINE_CSRMM_NT_WARP_HOMO(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float, \
+                           READ_F16, WRITE_F16, 0.0f)
+DEFINE_CSRMM_NT_BLOCK_HOMO(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float, \
+                            READ_F16, WRITE_F16, 0.0f)
+DEFINE_CSRMM_NT_BLOCK_HOMO(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float, \
+                            READ_F16, WRITE_F16, 0.0f)
+DEFINE_CSRMM_T_WARP_HOMO(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float,   \
+                          READ_F16, WRITE_F16, 0.0f)
+DEFINE_CSRMM_T_WARP_HOMO(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float,   \
+                          READ_F16, WRITE_F16, 0.0f)
+
+// bfloat16 homogeneous
+DEFINE_CSRMM_NT_WARP_HOMO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float, \
+                           READ_BF16, WRITE_BF16, 0.0f)
+DEFINE_CSRMM_NT_WARP_HOMO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float, \
+                           READ_BF16, WRITE_BF16, 0.0f)
+DEFINE_CSRMM_NT_BLOCK_HOMO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float, \
+                            READ_BF16, WRITE_BF16, 0.0f)
+DEFINE_CSRMM_NT_BLOCK_HOMO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float, \
+                            READ_BF16, WRITE_BF16, 0.0f)
+DEFINE_CSRMM_T_WARP_HOMO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float,   \
+                          READ_BF16, WRITE_BF16, 0.0f)
+DEFINE_CSRMM_T_WARP_HOMO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float,   \
+                          READ_BF16, WRITE_BF16, 0.0f)
+
+// =========================================================================
+// Kernel Instantiations — Heterogeneous Weights
+// =========================================================================
+
+// float32 heterogeneous
+DEFINE_CSRMM_NT_WARP_HETERO(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float, \
+                             READ_F32, WRITE_F32, 0.0f)
+DEFINE_CSRMM_NT_WARP_HETERO(_f32_float, float,  IS_ACTIVE_FLOAT, float, float, \
+                             READ_F32, WRITE_F32, 0.0f)
+DEFINE_CSRMM_NT_BLOCK_HETERO(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float, \
+                              READ_F32, WRITE_F32, 0.0f)
+DEFINE_CSRMM_NT_BLOCK_HETERO(_f32_float, float,  IS_ACTIVE_FLOAT, float, float, \
+                              READ_F32, WRITE_F32, 0.0f)
+DEFINE_CSRMM_T_WARP_HETERO(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float, float,   \
+                            READ_F32, WRITE_F32, 0.0f)
+DEFINE_CSRMM_T_WARP_HETERO(_f32_float, float,  IS_ACTIVE_FLOAT, float, float,   \
+                            READ_F32, WRITE_F32, 0.0f)
+
+// float64 heterogeneous
+DEFINE_CSRMM_NT_WARP_HETERO(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double, \
+                             READ_F64, WRITE_F64, 0.0)
+DEFINE_CSRMM_NT_WARP_HETERO(_f64_float, float,  IS_ACTIVE_FLOAT, double, double, \
+                             READ_F64, WRITE_F64, 0.0)
+DEFINE_CSRMM_NT_BLOCK_HETERO(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double, \
+                              READ_F64, WRITE_F64, 0.0)
+DEFINE_CSRMM_NT_BLOCK_HETERO(_f64_float, float,  IS_ACTIVE_FLOAT, double, double, \
+                              READ_F64, WRITE_F64, 0.0)
+DEFINE_CSRMM_T_WARP_HETERO(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double, double,   \
+                            READ_F64, WRITE_F64, 0.0)
+DEFINE_CSRMM_T_WARP_HETERO(_f64_float, float,  IS_ACTIVE_FLOAT, double, double,   \
+                            READ_F64, WRITE_F64, 0.0)
+
+// float16 heterogeneous
+DEFINE_CSRMM_NT_WARP_HETERO(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float, \
+                             READ_F16, WRITE_F16, 0.0f)
+DEFINE_CSRMM_NT_WARP_HETERO(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float, \
+                             READ_F16, WRITE_F16, 0.0f)
+DEFINE_CSRMM_NT_BLOCK_HETERO(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float, \
+                              READ_F16, WRITE_F16, 0.0f)
+DEFINE_CSRMM_NT_BLOCK_HETERO(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float, \
+                              READ_F16, WRITE_F16, 0.0f)
+DEFINE_CSRMM_T_WARP_HETERO(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half, float,   \
+                            READ_F16, WRITE_F16, 0.0f)
+DEFINE_CSRMM_T_WARP_HETERO(_f16_float, float,  IS_ACTIVE_FLOAT, __half, float,   \
+                            READ_F16, WRITE_F16, 0.0f)
+
+// bfloat16 heterogeneous
+DEFINE_CSRMM_NT_WARP_HETERO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float, \
+                             READ_BF16, WRITE_BF16, 0.0f)
+DEFINE_CSRMM_NT_WARP_HETERO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float, \
+                             READ_BF16, WRITE_BF16, 0.0f)
+DEFINE_CSRMM_NT_BLOCK_HETERO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float, \
+                              READ_BF16, WRITE_BF16, 0.0f)
+DEFINE_CSRMM_NT_BLOCK_HETERO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float, \
+                              READ_BF16, WRITE_BF16, 0.0f)
+DEFINE_CSRMM_T_WARP_HETERO(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, float,   \
+                            READ_BF16, WRITE_BF16, 0.0f)
+DEFINE_CSRMM_T_WARP_HETERO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float,   \
+                            READ_BF16, WRITE_BF16, 0.0f)
+
+
+// =========================================================================
+// FFI Entry Points — Homogeneous Weights
+// =========================================================================
+
+#define FFI_CSRMM_NT_WARP_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                     \
+void binary_csrmm_nt_warp_homo##SUFFIX(                                           \
+    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                   \
+    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView B,                         \
+    tvm::ffi::TensorView C,       int64_t stream                                   \
+) {                                                                                 \
+    cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);                     \
+    int m        = static_cast<int>(indptr.size(0)) - 1;                           \
+    int n        = static_cast<int>(B.size(1));                                    \
+    int c_blocks = (n + 31) / 32;                                                  \
+    dim3 grid(m, c_blocks);                                                        \
+    _csrmm_nt_warp_homo_kern##SUFFIX<<<grid, 32, 0, s>>>(                          \
+        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),                        \
+        static_cast<const int32_t*>(indices.data_ptr()),                           \
+        static_cast<const int32_t*>(indptr.data_ptr()),                            \
+        static_cast<const SPIKE_C_T*>(B.data_ptr()),                               \
+        static_cast<WEIGHT_C_T*>(C.data_ptr()),                                    \
+        m, n);                                                                      \
 }
 
-// SpMM FFI Instantiations
-// @tvm_ffi binary_csrmm_nt_warp_f32_bool
-FFI_CSRMM_NT_WARP(_f32_bool,  float,  int8_t)
-// @tvm_ffi binary_csrmm_nt_warp_f32_float
-FFI_CSRMM_NT_WARP(_f32_float, float,  float)
-// @tvm_ffi binary_csrmm_nt_block_f32_bool
-FFI_CSRMM_NT_BLOCK(_f32_bool,  float,  int8_t, 8 * 32 * sizeof(float))
-// @tvm_ffi binary_csrmm_nt_block_f32_float
-FFI_CSRMM_NT_BLOCK(_f32_float, float,  float,  8 * 32 * sizeof(float))
-// @tvm_ffi binary_csrmm_nt_auto_f32_bool
-FFI_CSRMM_NT_AUTO(_f32_bool,  float,  int8_t, 8 * 32 * sizeof(float))
-// @tvm_ffi binary_csrmm_nt_auto_f32_float
-FFI_CSRMM_NT_AUTO(_f32_float, float,  float,  8 * 32 * sizeof(float))
-// @tvm_ffi binary_csrmm_t_warp_f32_bool
-FFI_CSRMM_T_WARP(_f32_bool,  float,  int8_t)
-// @tvm_ffi binary_csrmm_t_warp_f32_float
-FFI_CSRMM_T_WARP(_f32_float, float,  float)
-// @tvm_ffi binary_csrmm_nt_auto_f64_bool
-FFI_CSRMM_NT_AUTO(_f64_bool,  double, int8_t, 8 * 32 * sizeof(double))
-// @tvm_ffi binary_csrmm_nt_auto_f64_float
-FFI_CSRMM_NT_AUTO(_f64_float, double, float,  8 * 32 * sizeof(double))
-// @tvm_ffi binary_csrmm_t_warp_f64_bool
-FFI_CSRMM_T_WARP(_f64_bool,  double, int8_t)
-// @tvm_ffi binary_csrmm_t_warp_f64_float
-FFI_CSRMM_T_WARP(_f64_float, double, float)
-// @tvm_ffi binary_csrmm_nt_auto_f16_bool
-FFI_CSRMM_NT_AUTO(_f16_bool,  __half, int8_t, 8 * 32 * sizeof(float))
-// @tvm_ffi binary_csrmm_nt_auto_f16_float
-FFI_CSRMM_NT_AUTO(_f16_float, __half, float,  8 * 32 * sizeof(float))
-// @tvm_ffi binary_csrmm_t_warp_f16_bool
-FFI_CSRMM_T_WARP(_f16_bool,  __half, int8_t)
-// @tvm_ffi binary_csrmm_t_warp_f16_float
-FFI_CSRMM_T_WARP(_f16_float, __half, float)
-// @tvm_ffi binary_csrmm_nt_auto_bf16_bool
-FFI_CSRMM_NT_AUTO(_bf16_bool,  __nv_bfloat16, int8_t, 8 * 32 * sizeof(float))
-// @tvm_ffi binary_csrmm_nt_auto_bf16_float
-FFI_CSRMM_NT_AUTO(_bf16_float, __nv_bfloat16, float,  8 * 32 * sizeof(float))
-// @tvm_ffi binary_csrmm_t_warp_bf16_bool
-FFI_CSRMM_T_WARP(_bf16_bool,  __nv_bfloat16, int8_t)
-// @tvm_ffi binary_csrmm_t_warp_bf16_float
-FFI_CSRMM_T_WARP(_bf16_float, __nv_bfloat16, float)
+#define FFI_CSRMM_NT_BLOCK_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE)          \
+void binary_csrmm_nt_block_homo##SUFFIX(                                          \
+    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                   \
+    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView B,                         \
+    tvm::ffi::TensorView C,       int64_t stream                                   \
+) {                                                                                 \
+    cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);                     \
+    int m        = static_cast<int>(indptr.size(0)) - 1;                           \
+    int n        = static_cast<int>(B.size(1));                                    \
+    int c_blocks = (n + 31) / 32;                                                  \
+    dim3 grid(m, c_blocks);                                                        \
+    _csrmm_nt_block_homo_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>(                 \
+        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),                        \
+        static_cast<const int32_t*>(indices.data_ptr()),                           \
+        static_cast<const int32_t*>(indptr.data_ptr()),                            \
+        static_cast<const SPIKE_C_T*>(B.data_ptr()),                               \
+        static_cast<WEIGHT_C_T*>(C.data_ptr()),                                    \
+        m, n);                                                                      \
+}
+
+#define FFI_CSRMM_NT_AUTO_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE)           \
+void binary_csrmm_nt_auto_homo##SUFFIX(                                           \
+    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                   \
+    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView B,                         \
+    tvm::ffi::TensorView C,       int64_t stream                                   \
+) {                                                                                 \
+    cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);                     \
+    int m        = static_cast<int>(indptr.size(0)) - 1;                           \
+    int n        = static_cast<int>(B.size(1));                                    \
+    int nse      = static_cast<int>(indices.size(0));                              \
+    int avg_nnz  = (m > 0) ? (nse / m) : 0;                                        \
+    int c_blocks = (n + 31) / 32;                                                  \
+    dim3 grid(m, c_blocks);                                                        \
+    const WEIGHT_C_T* d_w = static_cast<const WEIGHT_C_T*>(weights.data_ptr());    \
+    const int32_t*    d_i = static_cast<const int32_t*>(indices.data_ptr());       \
+    const int32_t*    d_p = static_cast<const int32_t*>(indptr.data_ptr());        \
+    const SPIKE_C_T*  d_b = static_cast<const SPIKE_C_T*>(B.data_ptr());           \
+    WEIGHT_C_T*       d_c = static_cast<WEIGHT_C_T*>(C.data_ptr());                \
+    if (avg_nnz < 128) {                                                            \
+        _csrmm_nt_warp_homo_kern##SUFFIX<<<grid, 32, 0, s>>>(                      \
+            d_w, d_i, d_p, d_b, d_c, m, n);                                         \
+    } else {                                                                        \
+        _csrmm_nt_block_homo_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>(             \
+            d_w, d_i, d_p, d_b, d_c, m, n);                                         \
+    }                                                                               \
+}
+
+#define FFI_CSRMM_T_WARP_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                      \
+void binary_csrmm_t_warp_homo##SUFFIX(                                            \
+    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                   \
+    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView B,                         \
+    tvm::ffi::TensorView C,       int64_t stream                                   \
+) {                                                                                 \
+    cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);                     \
+    int m        = static_cast<int>(indptr.size(0)) - 1;                           \
+    int n        = static_cast<int>(B.size(1));                                    \
+    int k        = static_cast<int>(C.size(0));                                    \
+    int c_blocks = (n + 31) / 32;                                                  \
+    dim3 grid(m, c_blocks);                                                        \
+    WEIGHT_C_T* d_c = static_cast<WEIGHT_C_T*>(C.data_ptr());                      \
+    cudaMemsetAsync(d_c, 0, (size_t)k * n * sizeof(WEIGHT_C_T), s);                \
+    _csrmm_t_warp_homo_kern##SUFFIX<<<grid, 32, 0, s>>>(                           \
+        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),                        \
+        static_cast<const int32_t*>(indices.data_ptr()),                           \
+        static_cast<const int32_t*>(indptr.data_ptr()),                            \
+        static_cast<const SPIKE_C_T*>(B.data_ptr()),                               \
+        d_c, m, n);                                                                 \
+}
+
+// =========================================================================
+// FFI Entry Points — Heterogeneous Weights
+// =========================================================================
+
+#define FFI_CSRMM_NT_WARP_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                   \
+void binary_csrmm_nt_warp_hetero##SUFFIX(                                         \
+    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                   \
+    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView B,                         \
+    tvm::ffi::TensorView C,       int64_t stream                                   \
+) {                                                                                 \
+    cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);                     \
+    int m        = static_cast<int>(indptr.size(0)) - 1;                           \
+    int n        = static_cast<int>(B.size(1));                                    \
+    int c_blocks = (n + 31) / 32;                                                  \
+    dim3 grid(m, c_blocks);                                                        \
+    _csrmm_nt_warp_hetero_kern##SUFFIX<<<grid, 32, 0, s>>>(                        \
+        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),                        \
+        static_cast<const int32_t*>(indices.data_ptr()),                           \
+        static_cast<const int32_t*>(indptr.data_ptr()),                            \
+        static_cast<const SPIKE_C_T*>(B.data_ptr()),                               \
+        static_cast<WEIGHT_C_T*>(C.data_ptr()),                                    \
+        m, n);                                                                      \
+}
+
+#define FFI_CSRMM_NT_BLOCK_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE)        \
+void binary_csrmm_nt_block_hetero##SUFFIX(                                        \
+    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                   \
+    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView B,                         \
+    tvm::ffi::TensorView C,       int64_t stream                                   \
+) {                                                                                 \
+    cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);                     \
+    int m        = static_cast<int>(indptr.size(0)) - 1;                           \
+    int n        = static_cast<int>(B.size(1));                                    \
+    int c_blocks = (n + 31) / 32;                                                  \
+    dim3 grid(m, c_blocks);                                                        \
+    _csrmm_nt_block_hetero_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>(               \
+        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),                        \
+        static_cast<const int32_t*>(indices.data_ptr()),                           \
+        static_cast<const int32_t*>(indptr.data_ptr()),                            \
+        static_cast<const SPIKE_C_T*>(B.data_ptr()),                               \
+        static_cast<WEIGHT_C_T*>(C.data_ptr()),                                    \
+        m, n);                                                                      \
+}
+
+#define FFI_CSRMM_NT_AUTO_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE)         \
+void binary_csrmm_nt_auto_hetero##SUFFIX(                                         \
+    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                   \
+    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView B,                         \
+    tvm::ffi::TensorView C,       int64_t stream                                   \
+) {                                                                                 \
+    cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);                     \
+    int m        = static_cast<int>(indptr.size(0)) - 1;                           \
+    int n        = static_cast<int>(B.size(1));                                    \
+    int nse      = static_cast<int>(indices.size(0));                              \
+    int avg_nnz  = (m > 0) ? (nse / m) : 0;                                        \
+    int c_blocks = (n + 31) / 32;                                                  \
+    dim3 grid(m, c_blocks);                                                        \
+    const WEIGHT_C_T* d_w = static_cast<const WEIGHT_C_T*>(weights.data_ptr());    \
+    const int32_t*    d_i = static_cast<const int32_t*>(indices.data_ptr());       \
+    const int32_t*    d_p = static_cast<const int32_t*>(indptr.data_ptr());        \
+    const SPIKE_C_T*  d_b = static_cast<const SPIKE_C_T*>(B.data_ptr());           \
+    WEIGHT_C_T*       d_c = static_cast<WEIGHT_C_T*>(C.data_ptr());                \
+    if (avg_nnz < 128) {                                                            \
+        _csrmm_nt_warp_hetero_kern##SUFFIX<<<grid, 32, 0, s>>>(                    \
+            d_w, d_i, d_p, d_b, d_c, m, n);                                         \
+    } else {                                                                        \
+        _csrmm_nt_block_hetero_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>(           \
+            d_w, d_i, d_p, d_b, d_c, m, n);                                         \
+    }                                                                               \
+}
+
+#define FFI_CSRMM_T_WARP_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                    \
+void binary_csrmm_t_warp_hetero##SUFFIX(                                          \
+    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                   \
+    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView B,                         \
+    tvm::ffi::TensorView C,       int64_t stream                                   \
+) {                                                                                 \
+    cudaStream_t s   = reinterpret_cast<cudaStream_t>(stream);                     \
+    int m        = static_cast<int>(indptr.size(0)) - 1;                           \
+    int n        = static_cast<int>(B.size(1));                                    \
+    int k        = static_cast<int>(C.size(0));                                    \
+    int c_blocks = (n + 31) / 32;                                                  \
+    dim3 grid(m, c_blocks);                                                        \
+    WEIGHT_C_T* d_c = static_cast<WEIGHT_C_T*>(C.data_ptr());                      \
+    cudaMemsetAsync(d_c, 0, (size_t)k * n * sizeof(WEIGHT_C_T), s);                \
+    _csrmm_t_warp_hetero_kern##SUFFIX<<<grid, 32, 0, s>>>(                         \
+        static_cast<const WEIGHT_C_T*>(weights.data_ptr()),                        \
+        static_cast<const int32_t*>(indices.data_ptr()),                           \
+        static_cast<const int32_t*>(indptr.data_ptr()),                            \
+        static_cast<const SPIKE_C_T*>(B.data_ptr()),                               \
+        d_c, m, n);                                                                 \
+}
+
+// =========================================================================
+// FFI Instantiations — Homogeneous Weights
+// =========================================================================
+
+// float32 homogeneous
+// @tvm_ffi binary_csrmm_nt_warp_homo_f32_bool
+FFI_CSRMM_NT_WARP_HOMO(_f32_bool,  float,  int8_t)
+// @tvm_ffi binary_csrmm_nt_warp_homo_f32_float
+FFI_CSRMM_NT_WARP_HOMO(_f32_float, float,  float)
+// @tvm_ffi binary_csrmm_nt_block_homo_f32_bool
+FFI_CSRMM_NT_BLOCK_HOMO(_f32_bool,  float,  int8_t, 8 * sizeof(float))
+// @tvm_ffi binary_csrmm_nt_block_homo_f32_float
+FFI_CSRMM_NT_BLOCK_HOMO(_f32_float, float,  float,  8 * sizeof(float))
+// @tvm_ffi binary_csrmm_nt_auto_homo_f32_bool
+FFI_CSRMM_NT_AUTO_HOMO(_f32_bool,  float,  int8_t, 8 * sizeof(float))
+// @tvm_ffi binary_csrmm_nt_auto_homo_f32_float
+FFI_CSRMM_NT_AUTO_HOMO(_f32_float, float,  float,  8 * sizeof(float))
+// @tvm_ffi binary_csrmm_t_warp_homo_f32_bool
+FFI_CSRMM_T_WARP_HOMO(_f32_bool,  float,  int8_t)
+// @tvm_ffi binary_csrmm_t_warp_homo_f32_float
+FFI_CSRMM_T_WARP_HOMO(_f32_float, float,  float)
+
+// float64 homogeneous
+// @tvm_ffi binary_csrmm_nt_auto_homo_f64_bool
+FFI_CSRMM_NT_AUTO_HOMO(_f64_bool,  double, int8_t, 8 * sizeof(double))
+// @tvm_ffi binary_csrmm_nt_auto_homo_f64_float
+FFI_CSRMM_NT_AUTO_HOMO(_f64_float, double, float,  8 * sizeof(double))
+// @tvm_ffi binary_csrmm_t_warp_homo_f64_bool
+FFI_CSRMM_T_WARP_HOMO(_f64_bool,  double, int8_t)
+// @tvm_ffi binary_csrmm_t_warp_homo_f64_float
+FFI_CSRMM_T_WARP_HOMO(_f64_float, double, float)
+
+// float16 homogeneous
+// @tvm_ffi binary_csrmm_nt_auto_homo_f16_bool
+FFI_CSRMM_NT_AUTO_HOMO(_f16_bool,  __half, int8_t, 8 * sizeof(float))
+// @tvm_ffi binary_csrmm_nt_auto_homo_f16_float
+FFI_CSRMM_NT_AUTO_HOMO(_f16_float, __half, float,  8 * sizeof(float))
+// @tvm_ffi binary_csrmm_t_warp_homo_f16_bool
+FFI_CSRMM_T_WARP_HOMO(_f16_bool,  __half, int8_t)
+// @tvm_ffi binary_csrmm_t_warp_homo_f16_float
+FFI_CSRMM_T_WARP_HOMO(_f16_float, __half, float)
+
+// bfloat16 homogeneous
+// @tvm_ffi binary_csrmm_nt_auto_homo_bf16_bool
+FFI_CSRMM_NT_AUTO_HOMO(_bf16_bool,  __nv_bfloat16, int8_t, 8 * sizeof(float))
+// @tvm_ffi binary_csrmm_nt_auto_homo_bf16_float
+FFI_CSRMM_NT_AUTO_HOMO(_bf16_float, __nv_bfloat16, float,  8 * sizeof(float))
+// @tvm_ffi binary_csrmm_t_warp_homo_bf16_bool
+FFI_CSRMM_T_WARP_HOMO(_bf16_bool,  __nv_bfloat16, int8_t)
+// @tvm_ffi binary_csrmm_t_warp_homo_bf16_float
+FFI_CSRMM_T_WARP_HOMO(_bf16_float, __nv_bfloat16, float)
+
+// =========================================================================
+// FFI Instantiations — Heterogeneous Weights
+// =========================================================================
+
+// float32 heterogeneous
+// @tvm_ffi binary_csrmm_nt_warp_hetero_f32_bool
+FFI_CSRMM_NT_WARP_HETERO(_f32_bool,  float,  int8_t)
+// @tvm_ffi binary_csrmm_nt_warp_hetero_f32_float
+FFI_CSRMM_NT_WARP_HETERO(_f32_float, float,  float)
+// @tvm_ffi binary_csrmm_nt_block_hetero_f32_bool
+FFI_CSRMM_NT_BLOCK_HETERO(_f32_bool,  float,  int8_t, 8 * sizeof(float))
+// @tvm_ffi binary_csrmm_nt_block_hetero_f32_float
+FFI_CSRMM_NT_BLOCK_HETERO(_f32_float, float,  float,  8 * sizeof(float))
+// @tvm_ffi binary_csrmm_nt_auto_hetero_f32_bool
+FFI_CSRMM_NT_AUTO_HETERO(_f32_bool,  float,  int8_t, 8 * sizeof(float))
+// @tvm_ffi binary_csrmm_nt_auto_hetero_f32_float
+FFI_CSRMM_NT_AUTO_HETERO(_f32_float, float,  float,  8 * sizeof(float))
+// @tvm_ffi binary_csrmm_t_warp_hetero_f32_bool
+FFI_CSRMM_T_WARP_HETERO(_f32_bool,  float,  int8_t)
+// @tvm_ffi binary_csrmm_t_warp_hetero_f32_float
+FFI_CSRMM_T_WARP_HETERO(_f32_float, float,  float)
+
+// float64 heterogeneous
+// @tvm_ffi binary_csrmm_nt_auto_hetero_f64_bool
+FFI_CSRMM_NT_AUTO_HETERO(_f64_bool,  double, int8_t, 8 * sizeof(double))
+// @tvm_ffi binary_csrmm_nt_auto_hetero_f64_float
+FFI_CSRMM_NT_AUTO_HETERO(_f64_float, double, float,  8 * sizeof(double))
+// @tvm_ffi binary_csrmm_t_warp_hetero_f64_bool
+FFI_CSRMM_T_WARP_HETERO(_f64_bool,  double, int8_t)
+// @tvm_ffi binary_csrmm_t_warp_hetero_f64_float
+FFI_CSRMM_T_WARP_HETERO(_f64_float, double, float)
+
+// float16 heterogeneous
+// @tvm_ffi binary_csrmm_nt_auto_hetero_f16_bool
+FFI_CSRMM_NT_AUTO_HETERO(_f16_bool,  __half, int8_t, 8 * sizeof(float))
+// @tvm_ffi binary_csrmm_nt_auto_hetero_f16_float
+FFI_CSRMM_NT_AUTO_HETERO(_f16_float, __half, float,  8 * sizeof(float))
+// @tvm_ffi binary_csrmm_t_warp_hetero_f16_bool
+FFI_CSRMM_T_WARP_HETERO(_f16_bool,  __half, int8_t)
+// @tvm_ffi binary_csrmm_t_warp_hetero_f16_float
+FFI_CSRMM_T_WARP_HETERO(_f16_float, __half, float)
+
+// bfloat16 heterogeneous
+// @tvm_ffi binary_csrmm_nt_auto_hetero_bf16_bool
+FFI_CSRMM_NT_AUTO_HETERO(_bf16_bool,  __nv_bfloat16, int8_t, 8 * sizeof(float))
+// @tvm_ffi binary_csrmm_nt_auto_hetero_bf16_float
+FFI_CSRMM_NT_AUTO_HETERO(_bf16_float, __nv_bfloat16, float,  8 * sizeof(float))
+// @tvm_ffi binary_csrmm_t_warp_hetero_bf16_bool
+FFI_CSRMM_T_WARP_HETERO(_bf16_bool,  __nv_bfloat16, int8_t)
+// @tvm_ffi binary_csrmm_t_warp_hetero_bf16_float
+FFI_CSRMM_T_WARP_HETERO(_bf16_float, __nv_bfloat16, float)
