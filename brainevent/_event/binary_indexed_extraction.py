@@ -21,7 +21,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import namescope
-from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 
 
@@ -39,7 +39,7 @@ def binary_array_index(spikes, *, backend: Optional[str] = None):
         treated as active events.
     backend : str or None, optional
         Compute backend for the extraction kernel (e.g. ``'numba'``,
-        ``'warp'``, ``'pallas'``).  ``None`` selects the default.
+        ``'pallas'``).  ``None`` selects the default.
 
     Returns
     -------
@@ -93,72 +93,6 @@ def _binary_1d_array_index_numba_kernel(
 
     def kernel(spikes):
         return numba_kernel(mv, outs=kwargs['outs'])(spikes)
-
-    return kernel
-
-
-def _binary_1d_array_index_warp_kernel(
-    spikes_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    count_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    spikes_warp_info = jaxinfo_to_warpinfo(spikes_info)
-    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
-    count_warp_info = jaxinfo_to_warpinfo(count_info)
-
-    if spikes_info.dtype == jnp.bool_:
-        @warp.kernel
-        def mv(
-            spikes: spikes_warp_info,
-            indices: indices_warp_info,
-            count: count_warp_info,
-        ):
-            i_col_block = warp.tid()
-            if spikes[i_col_block]:
-                idx = warp.atomic_add(count, 0, 1)
-                indices[idx] = i_col_block
-
-    else:
-        @warp.kernel
-        def mv(
-            spikes: spikes_warp_info,
-            indices: indices_warp_info,
-            count: count_warp_info,
-        ):
-            i_col_block = warp.tid()
-            if spikes[i_col_block] != 0.:
-                idx = warp.atomic_add(count, 0, 1)
-                indices[idx] = i_col_block
-
-    def kernel(spikes):
-        dim = spikes_info.shape[0]
-        if dim == 0:
-            return (
-                jnp.zeros(indices_info.shape, dtype=indices_info.dtype),
-                jnp.zeros(count_info.shape, dtype=count_info.dtype),
-            )
-
-        indices = jnp.zeros(indices_info.shape, dtype=indices_info.dtype)
-        count = jnp.zeros(count_info.shape, dtype=count_info.dtype)
-        fn = jax_kernel(
-            mv,
-            launch_dims=[dim],
-            num_outputs=2,
-            in_out_argnames=['indices', 'count'],
-        )
-        indices, count = fn(spikes, indices, count)
-
-        # atomic_add-based writes are nondeterministic in order; enforce ascending
-        # order on the valid prefix so all backends match the reference behavior.
-        valid_mask = jnp.arange(dim) < count[0]
-        sentinel = jnp.asarray(dim, dtype=indices.dtype)
-        sorted_indices = jnp.sort(jnp.where(valid_mask, indices, sentinel))
-        indices = jnp.where(valid_mask, sorted_indices, 0)
-        return indices, count
 
     return kernel
 
@@ -276,7 +210,7 @@ def binary_1d_array_index_p_call(spikes, *, backend: Optional[str] = None):
     spikes : jax.Array
         A 1-D boolean or numeric array.
     backend : str or None, optional
-        Compute backend (e.g. ``'numba'``, ``'warp'``, ``'pallas'``).
+        Compute backend (e.g. ``'numba'``, ``'pallas'``).
 
     Returns
     -------
@@ -303,7 +237,7 @@ binary_1d_array_index_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``binary_array_index``.
 
 This ``XLACustomKernel`` instance dispatches the binary 1D array indexing
-operation to registered backends (``numba``, ``warp``, ``pallas``),
+operation to registered backends (``numba``, ``pallas``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 Extracts indices of non-zero elements from a binary event array, enabling
@@ -321,6 +255,71 @@ See Also
 binary_array_index : High-level user-facing function wrapper.
 """
 )
+def _binary_1d_array_index_warp_kernel(
+    spikes_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    count_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    import warp
+    from warp.jax_experimental import jax_kernel
+
+    spikes_warp_info = jaxinfo_to_warpinfo(spikes_info)
+    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
+    count_warp_info = jaxinfo_to_warpinfo(count_info)
+
+    if spikes_info.dtype == jnp.bool_:
+        @warp.kernel
+        def mv(
+            spikes: spikes_warp_info,
+            indices: indices_warp_info,
+            count: count_warp_info,
+        ):
+            i_col_block = warp.tid()
+            if spikes[i_col_block]:
+                idx = warp.atomic_add(count, 0, 1)
+                indices[idx] = i_col_block
+
+    else:
+        @warp.kernel
+        def mv(
+            spikes: spikes_warp_info,
+            indices: indices_warp_info,
+            count: count_warp_info,
+        ):
+            i_col_block = warp.tid()
+            if spikes[i_col_block] != 0.:
+                idx = warp.atomic_add(count, 0, 1)
+                indices[idx] = i_col_block
+
+    def kernel(spikes):
+        dim = spikes_info.shape[0]
+        if dim == 0:
+            return (
+                jnp.zeros(indices_info.shape, dtype=indices_info.dtype),
+                jnp.zeros(count_info.shape, dtype=count_info.dtype),
+            )
+
+        indices = jnp.zeros(indices_info.shape, dtype=indices_info.dtype)
+        count = jnp.zeros(count_info.shape, dtype=count_info.dtype)
+        fn = jax_kernel(
+            mv,
+            launch_dims=[dim],
+            num_outputs=2,
+            in_out_argnames=['indices', 'count'],
+        )
+        indices, count = fn(spikes, indices, count)
+
+        # atomic_add-based writes are nondeterministic in order; enforce ascending
+        # order on the valid prefix so all backends match the reference behavior.
+        valid_mask = jnp.arange(dim) < count[0]
+        sentinel = jnp.asarray(dim, dtype=indices.dtype)
+        sorted_indices = jnp.sort(jnp.where(valid_mask, indices, sentinel))
+        indices = jnp.where(valid_mask, sorted_indices, 0)
+        return indices, count
+
+    return kernel
+
 binary_1d_array_index_p.def_numba_kernel(_binary_1d_array_index_numba_kernel)
 binary_1d_array_index_p.def_warp_kernel(_binary_1d_array_index_warp_kernel)
 binary_1d_array_index_p.def_pallas_kernel('gpu', _binary_1d_array_index_pallas_kernel)

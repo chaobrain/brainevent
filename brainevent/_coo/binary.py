@@ -16,6 +16,7 @@
 # -*- coding: utf-8 -*-
 
 
+from pathlib import Path
 from typing import Sequence, Optional
 
 import brainunit as u
@@ -25,7 +26,8 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, namescope
-from brainevent._op import jaxinfo_to_warpinfo, numba_kernel, XLACustomKernel, general_batching_rule
+from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, register_tvm_cuda_from_file, \
+    jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Row, Col, MatrixShape
@@ -92,8 +94,8 @@ def binary_coomv(
         If ``True``, multiply by the transpose of the sparse matrix,
         i.e. ``A^T @ v``.  Default is ``False``.
     backend : str or None, optional
-        Compute backend to use (e.g. ``'numba'``, ``'warp'``,
-        ``'pallas'``).  When ``None`` the backend is chosen automatically.
+        Compute backend to use (e.g. ``'numba'``, ``'pallas'``).
+        When ``None`` the backend is chosen automatically.
 
     Returns
     -------
@@ -121,7 +123,7 @@ def binary_coomv(
 
     This function supports automatic differentiation (JVP and transpose
     rules), ``vmap`` batching, and multiple hardware backends (CPU via
-    Numba, GPU via Warp or Pallas/Triton, TPU via Pallas/Mosaic).
+    Numba, GPU via Pallas/Triton, TPU via Pallas/Mosaic).
 
     Examples
     --------
@@ -197,8 +199,8 @@ def binary_coomm(
         If ``True``, multiply by the transpose of the sparse matrix,
         i.e. ``A^T @ B``.  Default is ``False``.
     backend : str or None, optional
-        Compute backend to use (e.g. ``'numba'``, ``'warp'``,
-        ``'pallas'``).  When ``None`` the backend is chosen automatically.
+        Compute backend to use (e.g. ``'numba'``, ``'pallas'``).
+        When ``None`` the backend is chosen automatically.
 
     Returns
     -------
@@ -226,7 +228,7 @@ def binary_coomm(
 
     This function supports automatic differentiation (JVP and transpose
     rules), ``vmap`` batching, and multiple hardware backends (CPU via
-    Numba, GPU via Warp or Pallas/Triton, TPU via Pallas/Mosaic).
+    Numba, GPU via Pallas/Triton, TPU via Pallas/Mosaic).
 
     Examples
     --------
@@ -779,6 +781,124 @@ def _coomv_pallas_tpu_kernel(
     return kernel
 
 
+def _binary_coomv_jax_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    shape,
+    transpose: bool,
+    **kwargs,
+):
+    """Pure-JAX kernel for binary (event-driven) COO matrix-vector multiplication (all platforms)."""
+    m, k = shape
+    is_homo = (weight_info.size == 1)
+    is_bool = (vector_info.dtype == jnp.bool_)
+    out_dtype = kwargs['outs'][0].dtype
+
+    if transpose:
+        def kernel(weights, row, col, vector):
+            v_vals = vector[row]
+            events = v_vals.astype(out_dtype) if is_bool else (v_vals > 0.).astype(out_dtype)
+            w = weights[0] if is_homo else weights
+            return (jnp.zeros(k, dtype=out_dtype).at[col].add(w * events),)
+    else:
+        def kernel(weights, row, col, vector):
+            v_vals = vector[col]
+            events = v_vals.astype(out_dtype) if is_bool else (v_vals > 0.).astype(out_dtype)
+            w = weights[0] if is_homo else weights
+            return (jnp.zeros(m, dtype=out_dtype).at[row].add(w * events),)
+
+    return kernel
+
+
+def _binary_coomv_cusparse_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    shape,
+    transpose: bool,
+    **kwargs,
+):
+    """cuSPARSE-backed kernel for binary COO SpMV via jax.experimental.sparse (GPU only)."""
+    import jax.experimental.sparse as jsparse
+    m, k = shape
+    is_homo = (weight_info.size == 1)
+    is_bool = (vector_info.dtype == jnp.bool_)
+    out_dtype = kwargs['outs'][0].dtype
+
+    if transpose:
+        if is_homo:
+            def kernel(weights, row, col, vector):
+                events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
+                ones = jnp.ones_like(row, dtype=out_dtype)
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((ones, idx), shape=(m, k))
+                return ((mat.T @ events) * weights[0].astype(out_dtype),)
+        else:
+            def kernel(weights, row, col, vector):
+                events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((weights.astype(out_dtype), idx), shape=(m, k))
+                return (mat.T @ events,)
+    else:
+        if is_homo:
+            def kernel(weights, row, col, vector):
+                events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
+                ones = jnp.ones_like(row, dtype=out_dtype)
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((ones, idx), shape=(m, k))
+                return ((mat @ events) * weights[0].astype(out_dtype),)
+        else:
+            def kernel(weights, row, col, vector):
+                events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((weights.astype(out_dtype), idx), shape=(m, k))
+                return (mat @ events,)
+    return kernel
+
+
+def _coomv_tvmffi_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs,
+):
+    """TVM FFI CUDA kernel for binary COO SpMV.
+
+    Dispatches to one of the ``binary_coomv_atomic_{nt,t}`` kernels compiled
+    from ``binary.cu`` via ``register_tvm_cuda_from_file``.
+
+    Kernel selection:
+    - Direction: ``_nt`` (transpose=False) or ``_t`` (transpose=True).
+    - Weight dtype: ``_f32``, ``_f64``, ``_f16``, or ``_bf16``.
+    - Spike type: ``_bool`` (int8) or ``_float`` (float32).
+    - Homo vs. hetero: detected at runtime from ``data.size(0) == 1``.
+
+    The output buffer is zero-initialized inside the CUDA entry function
+    (via ``cudaMemsetAsync``) before the atomic-scatter kernel runs.
+    """
+    register_tvm_cuda_from_file(
+        module='coo_binary',
+        source=Path(__file__).parent.joinpath('binary.cu'),
+    )
+
+    out_info = kwargs['outs']
+    spk_suffix = '_bool' if vector_info.dtype == jnp.bool_ else '_float'
+
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    direction = '_t' if transpose else '_nt'
+    kernel_name = f'coo_binary.binary_coomv_atomic{direction}{wt_sfx}{spk_suffix}'
+
+    def kernel(weights, row, col, v):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, row, col, v)
+
+    return kernel
+
+
 def _coomv_jvp_vector(v_dot, data, row, col, v, *, shape, transpose, **kwargs):
     return [coomv(data, row, col, v_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
@@ -898,7 +1018,7 @@ def binary_coomv_p_call(
 
     Validates inputs, constructs output metadata, and dispatches to the
     registered ``XLACustomKernel`` (``binary_coomv_p``) which selects a
-    backend-specific kernel (Numba, Warp, Pallas GPU, or Pallas TPU).
+    backend-specific kernel (Numba, Pallas GPU, or Pallas TPU).
 
     Unlike :func:`binary_coomv`, this function does **not** handle physical
     units and returns a raw list of JAX arrays.
@@ -923,7 +1043,7 @@ def binary_coomv_p_call(
     transpose : bool
         If ``True``, compute ``A^T @ v`` instead of ``A @ v``.
     backend : str or None, optional
-        Compute backend override (``'numba'``, ``'warp'``, ``'pallas'``).
+        Compute backend override (``'numba'``, ``'pallas'``).
         When ``None`` the backend is selected automatically.
 
     Returns
@@ -1031,7 +1151,7 @@ Low-level XLA custom-kernel primitive for ``binary_coomv``.
 
 This ``XLACustomKernel`` instance dispatches the binary (event-driven) COO
 sparse matrix-vector multiplication operation to registered backends
-(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata
+(``numba``, ``pallas``), using runtime shape/dtype metadata
 provided by the high-level wrapper.
 
 The operation computes ``result[i] = sum_j A[i, j] * (v[j] > 0)`` when
@@ -1056,6 +1176,11 @@ binary_coomv_p.def_numba_kernel(_coomv_numba_kernel)
 binary_coomv_p.def_warp_kernel(_coomv_warp_kernel)
 binary_coomv_p.def_pallas_kernel('gpu', _coomv_pallas_gpu_kernel)
 binary_coomv_p.def_pallas_kernel('tpu', _coomv_pallas_tpu_kernel)
+binary_coomv_p.def_tvmffi_kernel('gpu', _coomv_tvmffi_kernel)
+binary_coomv_p.def_kernel('jax_raw', 'cpu', _binary_coomv_jax_kernel)
+binary_coomv_p.def_kernel('jax_raw', 'gpu', _binary_coomv_jax_kernel)
+binary_coomv_p.def_kernel('jax_raw', 'tpu', _binary_coomv_jax_kernel)
+binary_coomv_p.def_kernel('cusparse', 'gpu', _binary_coomv_cusparse_kernel)
 binary_coomv_p.def_jvp_rule2(_coomv_jvp_weights, None, None, _coomv_jvp_vector)
 binary_coomv_p.def_transpose_rule(_coomv_transpose_rule)
 binary_coomv_p.def_batching_rule(_coomv_batching)
@@ -1645,6 +1770,138 @@ def _coomm_pallas_tpu_kernel(
     return kernel
 
 
+def _binary_coomm_jax_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    matrix_info: jax.ShapeDtypeStruct,
+    shape,
+    transpose: bool,
+    **kwargs,
+):
+    """Pure-JAX kernel for binary (event-driven) COO matrix-matrix multiplication (all platforms)."""
+    m, k = shape
+    is_homo = (weight_info.size == 1)
+    is_bool = (matrix_info.dtype == jnp.bool_)
+    out_dtype = kwargs['outs'][0].dtype
+
+    if transpose:
+        def kernel(weights, row, col, B):
+            B_rows = B[row]  # [nse, n]
+            events = B_rows.astype(out_dtype) if is_bool else (B_rows > 0.).astype(out_dtype)
+            w = weights[0] if is_homo else weights[:, None]
+            return (jnp.zeros((k, B.shape[1]), dtype=out_dtype).at[col].add(w * events),)
+    else:
+        def kernel(weights, row, col, B):
+            B_rows = B[col]  # [nse, n]
+            events = B_rows.astype(out_dtype) if is_bool else (B_rows > 0.).astype(out_dtype)
+            w = weights[0] if is_homo else weights[:, None]
+            return (jnp.zeros((m, B.shape[1]), dtype=out_dtype).at[row].add(w * events),)
+
+    return kernel
+
+
+def _binary_coomm_cusparse_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    matrix_info: jax.ShapeDtypeStruct,
+    shape,
+    transpose: bool,
+    **kwargs,
+):
+    """cuSPARSE-backed kernel for binary COO SpMM via jax.experimental.sparse (GPU only)."""
+    import jax.experimental.sparse as jsparse
+    m, k = shape
+    is_homo = (weight_info.size == 1)
+    is_bool = (matrix_info.dtype == jnp.bool_)
+    out_dtype = kwargs['outs'][0].dtype
+
+    if transpose:
+        if is_homo:
+            def kernel(weights, row, col, B):
+                events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
+                ones = jnp.ones_like(row, dtype=out_dtype)
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((ones, idx), shape=(m, k))
+                return ((mat.T @ events) * weights[0].astype(out_dtype),)
+        else:
+            def kernel(weights, row, col, B):
+                events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((weights.astype(out_dtype), idx), shape=(m, k))
+                return (mat.T @ events,)
+    else:
+        if is_homo:
+            def kernel(weights, row, col, B):
+                events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
+                ones = jnp.ones_like(row, dtype=out_dtype)
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((ones, idx), shape=(m, k))
+                return ((mat @ events) * weights[0].astype(out_dtype),)
+        else:
+            def kernel(weights, row, col, B):
+                events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
+                idx = jnp.stack([row, col], axis=1)
+                mat = jsparse.BCOO((weights.astype(out_dtype), idx), shape=(m, k))
+                return (mat @ events,)
+    return kernel
+
+
+def _coomm_tvmffi_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    matrix_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs,
+):
+    """TVM FFI CUDA kernel for binary COO SpMM.
+
+    Dispatches to one of the ``binary_coomm_{variant}_{nt,t}`` kernels compiled
+    from ``binary.cu`` via ``register_tvm_cuda_from_file``.
+
+    Kernel variant selection (based on n = number of output columns):
+    - CT (Column-Tiled, n ≤ 64): One warp per block serially iterates over
+      32 NNZ entries while all 32 threads process a 32-column output tile.
+      Uses ``__ballot_sync`` to skip atomics for inactive spike tiles.
+      Block=(32,), Grid=(ceil(nnz/32), ceil(n/32)).
+    - WPE (Warp-Per-Entry, n > 64): Each of 8 warps in a 256-thread block
+      handles a single NNZ entry and 32 consecutive output columns.
+      Block=(256,), Grid=(ceil(nnz/8), ceil(n/32)).
+
+    Direction suffix: ``_nt`` (transpose=False) or ``_t`` (transpose=True).
+    Weight dtype suffix: ``_f32``, ``_f64``, ``_f16``, or ``_bf16``.
+    Spike type suffix: ``_bool`` (int8) or ``_float`` (float32).
+    Homo vs. hetero: detected at runtime from ``data.size(0) == 1``.
+
+    The output buffer is zero-initialized inside the CUDA entry function
+    (via ``cudaMemsetAsync``) before the atomic-scatter kernel runs.
+    """
+    register_tvm_cuda_from_file(
+        module='coo_binary',
+        source=Path(__file__).parent.joinpath('binary.cu'),
+    )
+
+    out_info = kwargs['outs']
+    spk_suffix = '_bool' if matrix_info.dtype == jnp.bool_ else '_float'
+
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    direction = '_t' if transpose else '_nt'
+
+    # Dispatch heuristic: CT is better for small n (serial NNZ loop amortised
+    # across many CUDA blocks in the nnz dimension); WPE is better for large n
+    # (each warp independently covers one NNZ entry with no serial loop).
+    n = matrix_info.shape[1]
+    variant = 'ct' if n <= 64 else 'wpe'
+    kernel_name = f'coo_binary.binary_coomm_{variant}{direction}{wt_sfx}{spk_suffix}'
+
+    def kernel(weights, row, col, B):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, row, col, B)
+
+    return kernel
+
+
 def _coomm_jvp_left(data_dot, data, row, col, B, *, shape, transpose, **kwargs):
     return [coomm(data_dot, row, col, B, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
@@ -1766,7 +2023,7 @@ def binary_coomm_p_call(
 
     Validates inputs, constructs output metadata, and dispatches to the
     registered ``XLACustomKernel`` (``binary_coomm_p``) which selects a
-    backend-specific kernel (Numba, Warp, Pallas GPU, or Pallas TPU).
+    backend-specific kernel (Numba, Pallas GPU, or Pallas TPU).
 
     Unlike :func:`binary_coomm`, this function does **not** handle physical
     units and returns a raw list of JAX arrays.
@@ -1791,7 +2048,7 @@ def binary_coomm_p_call(
     transpose : bool
         If ``True``, compute ``A^T @ B`` instead of ``A @ B``.
     backend : str or None, optional
-        Compute backend override (``'numba'``, ``'warp'``, ``'pallas'``).
+        Compute backend override (``'numba'``, ``'pallas'``).
         When ``None`` the backend is selected automatically.
 
     Returns
@@ -1896,7 +2153,7 @@ Low-level XLA custom-kernel primitive for ``binary_coomm``.
 
 This ``XLACustomKernel`` instance dispatches the binary (event-driven) COO
 sparse matrix-matrix multiplication operation to registered backends
-(``numba``, ``warp``, ``pallas``), using runtime shape/dtype metadata
+(``numba``, ``pallas``), using runtime shape/dtype metadata
 provided by the high-level wrapper.
 
 The operation computes ``result[i, n] = sum_j A[i, j] * (B[j, n] > 0)`` when
@@ -1921,6 +2178,11 @@ binary_coomm_p.def_numba_kernel(_coomm_numba_kernel)
 binary_coomm_p.def_warp_kernel(_coomm_warp_kernel)
 binary_coomm_p.def_pallas_kernel('gpu', _coomm_pallas_gpu_kernel)
 binary_coomm_p.def_pallas_kernel('tpu', _coomm_pallas_tpu_kernel)
+binary_coomm_p.def_tvmffi_kernel('gpu', _coomm_tvmffi_kernel)
+binary_coomm_p.def_kernel('jax_raw', 'cpu', _binary_coomm_jax_kernel)
+binary_coomm_p.def_kernel('jax_raw', 'gpu', _binary_coomm_jax_kernel)
+binary_coomm_p.def_kernel('jax_raw', 'tpu', _binary_coomm_jax_kernel)
+binary_coomm_p.def_kernel('cusparse', 'gpu', _binary_coomm_cusparse_kernel)
 binary_coomm_p.def_jvp_rule2(_coomm_jvp_left, None, None, _coomm_jvp_right)
 binary_coomm_p.def_transpose_rule(_coomm_transpose_rule)
 binary_coomm_p.def_batching_rule(_coomm_batching)

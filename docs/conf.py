@@ -31,7 +31,12 @@ import sys
 
 sys.path.insert(0, os.path.abspath('../'))
 
-import brainevent
+import shutil
+
+shutil.rmtree('_build', ignore_errors=True)
+shutil.rmtree('apis/generated', ignore_errors=True)
+shutil.rmtree('apis/changelog.md', ignore_errors=True)
+shutil.copy('../changelog.md', 'apis/')
 
 # -- Project information -----------------------------------------------------
 
@@ -40,6 +45,8 @@ copyright = '2024, brainevent'
 author = 'BrainX Ecosystem'
 
 # The full version, including alpha/beta/rc tags
+import brainevent
+
 release = brainevent.__version__
 
 # -- General configuration ---------------------------------------------------

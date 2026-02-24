@@ -3,6 +3,13 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 
+[tool.setuptools.package-data]
+# Include CUDA source files (.cu) so they are bundled in the wheel and
+# available at runtime via Path(__file__).parent / 'name.cu'.read_text().
+# The wildcard key "*" applies to every discovered package/subpackage.
+"*" = ["*.cu"]
+
+
 [tool.setuptools.packages.find]
 exclude = [
     "dev*",
@@ -77,7 +84,7 @@ brainevent = "brainevent._cli:main"
 
 [project.optional-dependencies]
 cpu = ['jax[cpu]>=0.5.0', 'numba']
-cuda12 = ['jax[cuda12]>=0.5.0']
-cuda13 = ['jax[cuda13]>=0.5.0']
+cuda12 = ['jax[cuda12]>=0.5.0', 'jax_tvm_ffi', 'ninja']
+cuda13 = ['jax[cuda13]>=0.5.0', 'jax_tvm_ffi', 'ninja']
 tpu = ['jax[tpu]>=0.5.0']
 testing = ['pytest']

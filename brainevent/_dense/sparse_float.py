@@ -15,6 +15,7 @@
 
 # -*- coding: utf-8 -*-
 
+from pathlib import Path
 from typing import Optional
 
 import brainunit as u
@@ -24,17 +25,14 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import cdiv, generate_block_dim, namescope
-from brainevent._op import XLACustomKernel, general_batching_rule, jaxinfo_to_warpinfo, numba_kernel
-from brainevent._op.benchmark import BenchmarkConfig
+from brainevent._op import XLACustomKernel, general_batching_rule, numba_kernel, BenchmarkConfig, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
 from brainevent.config import get_numba_parallel
 
 __all__ = [
     'spfloat_densemv',
     'spfloat_densemv_p',
-    'spfloat_densemv_p_call',
     'spfloat_densemm',
     'spfloat_densemm_p',
-    'spfloat_densemm_p_call',
 ]
 
 
@@ -72,7 +70,7 @@ def spfloat_densemv(weights, spikes, *, transpose, backend: Optional[str] = None
         If False, compute ``weights @ spikes``. If True, compute
         ``spikes @ weights``.
     backend : str, optional
-        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        Backend to use for the computation. One of ``'numba'``,
         ``'pallas'``, or ``None`` (auto-select).
 
     Returns
@@ -155,6 +153,309 @@ def _spfloat_densemv_numba_kernel(transpose: bool, **kwargs):
     return run
 
 
+def _spfloat_densemv_pallas_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs,
+):
+    from jax.experimental import pallas as pl
+
+    if transpose:
+        # spikes[k] @ weights[k,n] -> out[n]
+        n = weight_info.shape[1]
+        block_dim = generate_block_dim(n, maximum=1024)
+
+        def kernel(weight_ref, spike_ref, out_ref):
+            i_col_block = pl.program_id(0)
+            col_start = i_col_block * block_dim
+            cols = col_start + jnp.arange(block_dim)
+            mask = cols < weight_ref.shape[1]
+            safe_cols = jnp.where(mask, cols, 0)
+
+            def loop_fn(i_spike, temp):
+                spike = spike_ref[i_spike]
+                return jax.lax.cond(
+                    spike != 0.0,
+                    lambda out: out + jnp.where(
+                        mask,
+                        weight_ref[i_spike, safe_cols] * spike,
+                        0.0,
+                    ),
+                    lambda out: out,
+                    temp,
+                )
+
+            i_col_out = jax.lax.fori_loop(
+                0, spike_ref.shape[0], loop_fn, jnp.zeros((block_dim,), dtype=weight_ref.dtype)
+            )
+            out_ref[safe_cols] = jnp.where(mask, i_col_out, 0.0)
+
+        def run(weights, spikes):
+            fn = pl.pallas_call(kernel, grid=(cdiv(n, block_dim),), out_shape=kwargs['outs'], backend='triton')
+            return fn(weights, spikes)
+
+    else:
+        # weights[m,k] @ spikes[k] -> out[m]
+        m = weight_info.shape[0]
+        mat_block_dim = generate_block_dim(m, maximum=1024)
+
+        def kernel(weight_ref, spike_ref, out_ref):
+            i_row_block = pl.program_id(0)
+            row_start = i_row_block * mat_block_dim
+            rows = row_start + jnp.arange(mat_block_dim)
+            mask = rows < weight_ref.shape[0]
+            safe_rows = jnp.where(mask, rows, 0)
+
+            def loop_fn(i_spike, temp):
+                spike = spike_ref[i_spike]
+                return jax.lax.cond(
+                    spike != 0.0,
+                    lambda out: out + jnp.where(
+                        mask,
+                        weight_ref[safe_rows, i_spike] * spike,
+                        0.0,
+                    ),
+                    lambda out: out,
+                    temp,
+                )
+
+            i_row_out = jax.lax.fori_loop(
+                0, spike_ref.shape[0], loop_fn, jnp.zeros((mat_block_dim,), dtype=weight_ref.dtype)
+            )
+            out_ref[safe_rows] = jnp.where(mask, i_row_out, 0.0)
+
+        def run(weights, spikes):
+            fn = pl.pallas_call(kernel, grid=(cdiv(m, mat_block_dim),), out_shape=kwargs['outs'], backend='triton')
+            return fn(weights, spikes)
+
+    return run
+
+
+def _spfloat_densemv_jax_kernel(
+    transpose: bool,
+    **kwargs,
+):
+    def kernel(weights, spikes):
+        if transpose:
+            return spikes @ weights,
+        else:
+            return weights @ spikes,
+
+    return kernel
+
+
+def _spfloat_densemv_cuda_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs
+):
+    register_tvm_cuda_from_file(
+        module='dense_sparse_float',
+        source=Path(__file__).parent.joinpath('sparse_float.cu'),
+    )
+
+    out_info = kwargs['outs']
+
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+
+    if transpose:
+        kernel_name = f'dense_sparse_float.spfloat_densemv_scatter{wt_sfx}'
+    else:
+        kernel_name = f'dense_sparse_float.spfloat_densemv_gather_auto{wt_sfx}'
+
+    def kernel(weights, spikes):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, spikes)
+
+    return kernel
+
+
+def _spfloat_densemv_jvp_weights(w_dot, weights, spikes, *, transpose, **kwargs):
+    return spfloat_densemv_p_call(w_dot, spikes, transpose=transpose, backend=kwargs['backend'])
+
+
+def _spfloat_densemv_jvp_spikes(spk_dot, weights, spikes, *, transpose, **kwargs):
+    if transpose:
+        return [spk_dot @ weights]
+    else:
+        return [weights @ spk_dot]
+
+
+def _spfloat_densemv_transpose_rule(ct, weights, spikes, *, transpose, **kwargs):
+    ct = ct[0]
+    if ad.is_undefined_primal(spikes):
+        if transpose:
+            ct_spikes = jnp.matmul(weights, ct)
+        else:
+            ct_spikes = jnp.matmul(ct, weights)
+        return weights, (ad.Zero(spikes) if type(ct) is ad.Zero else ct_spikes)
+    else:
+        if transpose:
+            ct_weights = jnp.outer(spikes, ct)
+        else:
+            ct_weights = jnp.outer(ct, spikes)
+        return (ad.Zero(weights) if type(ct) is ad.Zero else ct_weights), spikes
+
+
+def _spfloat_densemv_batching(args, axes, *, transpose, **kwargs):
+    if transpose:
+        # spikes[k] @ weights[k,n] -> out[n]
+        if axes == (None, 0):
+            r = spfloat_densemm(args[0], args[1], transpose=True)
+            return [r], [0]
+        if axes == (None, 1):
+            r = spfloat_densemm(args[0], args[1].T, transpose=True)
+            return [r], [0]
+    else:
+        # weights[m,k] @ spikes[k] -> out[m]
+        if axes == (None, 0):
+            r = args[0] @ args[1].T
+            return [r], [1]
+        if axes == (None, 1):
+            r = args[0] @ args[1]
+            return [r], [1]
+    return general_batching_rule(spfloat_densemv_p, args, axes, transpose=transpose, **kwargs)
+
+
+def _spfloat_densemv_benchmark_data(*, platform):
+    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
+    configs = []
+    # transpose=False benchmark (dsfmv style)
+    weights = jnp.asarray(np.random.randn(n_pre, n_post), dtype=dtype)
+    spikes = jnp.asarray(np.random.randn(n_post), dtype=dtype)
+    configs.append(BenchmarkConfig('transpose=False', (weights, spikes)))
+    # transpose=True benchmark (sfdvm style)
+    weights = jnp.asarray(np.random.randn(n_post, n_pre), dtype=dtype)
+    spikes = jnp.asarray(np.random.randn(n_post), dtype=dtype)
+    configs.append(BenchmarkConfig('transpose=True', (weights, spikes)))
+    return configs
+
+
+def spfloat_densemv_p_call(weights, spikes, *, transpose, backend: Optional[str] = None):
+    """
+    Low-level primitive call for sparse-float dense matrix-vector multiplication.
+
+    This function validates input shapes, constructs the output shape
+    descriptor, and invokes the ``spfloat_densemv_p`` JAX primitive. Unlike
+    :func:`spfloat_densemv`, this function operates on raw numerical arrays
+    without ``brainunit`` unit handling.
+
+    Parameters
+    ----------
+    weights : jax.Array
+        The weight matrix. Shape ``(m, k)`` when ``transpose=False``,
+        or ``(k, n)`` when ``transpose=True``.
+    spikes : jax.Array
+        The sparse-float vector with shape ``(k,)``.
+    transpose : bool
+        If False, compute ``weights @ spikes`` producing shape ``(m,)``.
+        If True, compute ``spikes @ weights`` producing shape ``(n,)``.
+    backend : str, optional
+        Backend to use for the computation. One of ``'numba'``,
+        ``'pallas'``, or ``None`` (auto-select).
+
+    Returns
+    -------
+    result : list of jax.Array
+        A single-element list containing the result vector. Shape ``(m,)``
+        when ``transpose=False``, or ``(n,)`` when ``transpose=True``.
+
+    Raises
+    ------
+    AssertionError
+        If the inner dimensions of ``weights`` and ``spikes`` do not match.
+
+    See Also
+    --------
+    spfloat_densemv : High-level function with unit handling.
+
+    Notes
+    -----
+    This is the low-level entry point that bypasses unit handling. The
+    mathematical operation is identical to :func:`spfloat_densemv`:
+
+    When ``transpose=False``:
+
+    ``out[i] = sum_{j where s[j] != 0} weights[i, j] * s[j]``
+
+    When ``transpose=True``:
+
+    ``out[j] = sum_{i where s[i] != 0} s[i] * weights[i, j]``
+
+    The function returns a single-element list to conform to the JAX
+    primitive output convention.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.sparse_float import spfloat_densemv_p_call
+        >>> weights = jnp.eye(3, dtype=jnp.float32)
+        >>> spikes = jnp.array([2.0, 0.0, 3.0], dtype=jnp.float32)
+        >>> spfloat_densemv_p_call(weights, spikes, transpose=False)
+    """
+    # Convert bool spikes to float to match weight dtype for CUDA kernels
+    if spikes.dtype == jnp.bool_:
+        spikes = jnp.asarray(spikes, dtype=weights.dtype)
+    if transpose:
+        # spikes[k] @ weights[k,n] -> out[n]
+        assert spikes.shape[0] == weights.shape[0], (
+            f'shapes {spikes.shape} and {weights.shape} not aligned: '
+            f'{spikes.shape[0]} (dim 0) != {weights.shape[0]} (dim 0)'
+        )
+        out = jax.ShapeDtypeStruct([weights.shape[1]], weights.dtype)
+    else:
+        # weights[m,k] @ spikes[k] -> out[m]
+        assert spikes.shape[0] == weights.shape[1], (
+            f'spikes shape {spikes.shape} and weights shape {weights.shape} are not compatible'
+        )
+        out = jax.ShapeDtypeStruct([weights.shape[0]], weights.dtype)
+    return spfloat_densemv_p(
+        weights,
+        spikes,
+        outs=[out],
+        transpose=transpose,
+        spk_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
+        weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
+        backend=backend,
+    )
+
+
+spfloat_densemv_p = XLACustomKernel(
+    'spfloat_densemv',
+    doc="""
+Low-level XLA custom-kernel primitive for ``spfloat_densemv``.
+
+This ``XLACustomKernel`` instance dispatches the sparse-float dense matrix-vector
+multiplication operation to registered backends (``numba``, ``pallas``),
+using runtime shape/dtype metadata provided by the high-level wrapper.
+
+The primitive handles two transpose modes controlled by the ``transpose`` parameter:
+
+- **transpose=False**: Computes ``weights[m, k] @ spikes[k] -> out[m]``
+  (dense matrix multiplies sparse-float vector from the right).
+
+- **transpose=True**: Computes ``spikes[k] @ weights[k, n] -> out[n]``
+  (sparse-float vector multiplies dense matrix from the left).
+
+Beyond backend dispatch, the primitive stores JAX transformation bindings
+(JVP, transpose, batching, and call registration) so the operation integrates
+correctly with ``jit``, ``vmap``, and autodiff.
+
+Available backends can be queried with ``spfloat_densemv_p.available_backends(platform)``,
+and the default backend can be configured with ``spfloat_densemv_p.set_default(platform, backend)``.
+
+See Also
+--------
+spfloat_densemv : High-level user-facing function wrapper.
+"""
+)
 def _spfloat_densemv_warp_kernel(
     weight_info: jax.ShapeDtypeStruct,
     spk_info: jax.ShapeDtypeStruct,
@@ -267,410 +568,6 @@ def _spfloat_densemv_warp_kernel(
                 out_info = kwargs['outs'][0]
                 fn = jax_kernel(kernel, launch_dims=[m], num_outputs=1, output_dims={'out_ref': out_info.shape})
                 return fn(weights, spikes)
-
-    return run
-
-
-def _spfloat_densemv_pallas_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    transpose: bool,
-    **kwargs,
-):
-    from jax.experimental import pallas as pl
-
-    if transpose:
-        # spikes[k] @ weights[k,n] -> out[n]
-        n = weight_info.shape[1]
-        block_dim = generate_block_dim(n, maximum=1024)
-
-        def kernel(weight_ref, spike_ref, out_ref):
-            i_col_block = pl.program_id(0)
-            col_start = i_col_block * block_dim
-            cols = col_start + jnp.arange(block_dim)
-            mask = cols < weight_ref.shape[1]
-            safe_cols = jnp.where(mask, cols, 0)
-
-            def loop_fn(i_spike, temp):
-                spike = spike_ref[i_spike]
-                return jax.lax.cond(
-                    spike != 0.0,
-                    lambda out: out + jnp.where(
-                        mask,
-                        weight_ref[i_spike, safe_cols] * spike,
-                        0.0,
-                    ),
-                    lambda out: out,
-                    temp,
-                )
-
-            i_col_out = jax.lax.fori_loop(
-                0, spike_ref.shape[0], loop_fn, jnp.zeros((block_dim,), dtype=weight_ref.dtype)
-            )
-            out_ref[safe_cols] = jnp.where(mask, i_col_out, 0.0)
-
-        def run(weights, spikes):
-            fn = pl.pallas_call(kernel, grid=(cdiv(n, block_dim),), out_shape=kwargs['outs'], backend='triton')
-            return fn(weights, spikes)
-
-    else:
-        # weights[m,k] @ spikes[k] -> out[m]
-        m = weight_info.shape[0]
-        mat_block_dim = generate_block_dim(m, maximum=1024)
-
-        def kernel(weight_ref, spike_ref, out_ref):
-            i_row_block = pl.program_id(0)
-            row_start = i_row_block * mat_block_dim
-            rows = row_start + jnp.arange(mat_block_dim)
-            mask = rows < weight_ref.shape[0]
-            safe_rows = jnp.where(mask, rows, 0)
-
-            def loop_fn(i_spike, temp):
-                spike = spike_ref[i_spike]
-                return jax.lax.cond(
-                    spike != 0.0,
-                    lambda out: out + jnp.where(
-                        mask,
-                        weight_ref[safe_rows, i_spike] * spike,
-                        0.0,
-                    ),
-                    lambda out: out,
-                    temp,
-                )
-
-            i_row_out = jax.lax.fori_loop(
-                0, spike_ref.shape[0], loop_fn, jnp.zeros((mat_block_dim,), dtype=weight_ref.dtype)
-            )
-            out_ref[safe_rows] = jnp.where(mask, i_row_out, 0.0)
-
-        def run(weights, spikes):
-            fn = pl.pallas_call(kernel, grid=(cdiv(m, mat_block_dim),), out_shape=kwargs['outs'], backend='triton')
-            return fn(weights, spikes)
-
-    return run
-
-
-def _spfloat_densemv_jvp_weights(w_dot, weights, spikes, *, transpose, **kwargs):
-    return spfloat_densemv_p_call(w_dot, spikes, transpose=transpose, backend=kwargs['backend'])
-
-
-def _spfloat_densemv_jvp_spikes(spk_dot, weights, spikes, *, transpose, **kwargs):
-    if transpose:
-        return [spk_dot @ weights]
-    else:
-        return [weights @ spk_dot]
-
-
-def _spfloat_densemv_transpose_rule(ct, weights, spikes, *, transpose, **kwargs):
-    ct = ct[0]
-    if ad.is_undefined_primal(spikes):
-        if transpose:
-            ct_spikes = jnp.matmul(weights, ct)
-        else:
-            ct_spikes = jnp.matmul(ct, weights)
-        return weights, (ad.Zero(spikes) if type(ct) is ad.Zero else ct_spikes)
-    else:
-        if transpose:
-            ct_weights = jnp.outer(spikes, ct)
-        else:
-            ct_weights = jnp.outer(ct, spikes)
-        return (ad.Zero(weights) if type(ct) is ad.Zero else ct_weights), spikes
-
-
-def _spfloat_densemv_batching(args, axes, *, transpose, **kwargs):
-    if transpose:
-        # spikes[k] @ weights[k,n] -> out[n]
-        if axes == (None, 0):
-            r = spfloat_densemm(args[0], args[1], transpose=True)
-            return [r], [0]
-        if axes == (None, 1):
-            r = spfloat_densemm(args[0], args[1].T, transpose=True)
-            return [r], [0]
-    else:
-        # weights[m,k] @ spikes[k] -> out[m]
-        if axes == (None, 0):
-            r = args[0] @ args[1].T
-            return [r], [1]
-        if axes == (None, 1):
-            r = args[0] @ args[1]
-            return [r], [1]
-    return general_batching_rule(spfloat_densemv_p, args, axes, transpose=transpose, **kwargs)
-
-
-def _spfloat_densemv_benchmark_data(*, platform):
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    # transpose=False benchmark (dsfmv style)
-    weights = jnp.asarray(np.random.randn(n_pre, n_post), dtype=dtype)
-    spikes = jnp.asarray(np.random.randn(n_post), dtype=dtype)
-    configs.append(BenchmarkConfig('transpose=False', (weights, spikes)))
-    # transpose=True benchmark (sfdvm style)
-    weights = jnp.asarray(np.random.randn(n_post, n_pre), dtype=dtype)
-    spikes = jnp.asarray(np.random.randn(n_post), dtype=dtype)
-    configs.append(BenchmarkConfig('transpose=True', (weights, spikes)))
-    return configs
-
-
-def spfloat_densemv_p_call(weights, spikes, *, transpose, backend: Optional[str] = None):
-    """
-    Low-level primitive call for sparse-float dense matrix-vector multiplication.
-
-    This function validates input shapes, constructs the output shape
-    descriptor, and invokes the ``spfloat_densemv_p`` JAX primitive. Unlike
-    :func:`spfloat_densemv`, this function operates on raw numerical arrays
-    without ``brainunit`` unit handling.
-
-    Parameters
-    ----------
-    weights : jax.Array
-        The weight matrix. Shape ``(m, k)`` when ``transpose=False``,
-        or ``(k, n)`` when ``transpose=True``.
-    spikes : jax.Array
-        The sparse-float vector with shape ``(k,)``.
-    transpose : bool
-        If False, compute ``weights @ spikes`` producing shape ``(m,)``.
-        If True, compute ``spikes @ weights`` producing shape ``(n,)``.
-    backend : str, optional
-        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
-        ``'pallas'``, or ``None`` (auto-select).
-
-    Returns
-    -------
-    result : list of jax.Array
-        A single-element list containing the result vector. Shape ``(m,)``
-        when ``transpose=False``, or ``(n,)`` when ``transpose=True``.
-
-    Raises
-    ------
-    AssertionError
-        If the inner dimensions of ``weights`` and ``spikes`` do not match.
-
-    See Also
-    --------
-    spfloat_densemv : High-level function with unit handling.
-
-    Notes
-    -----
-    This is the low-level entry point that bypasses unit handling. The
-    mathematical operation is identical to :func:`spfloat_densemv`:
-
-    When ``transpose=False``:
-
-    ``out[i] = sum_{j where s[j] != 0} weights[i, j] * s[j]``
-
-    When ``transpose=True``:
-
-    ``out[j] = sum_{i where s[i] != 0} s[i] * weights[i, j]``
-
-    The function returns a single-element list to conform to the JAX
-    primitive output convention.
-
-    Examples
-    --------
-    .. code-block:: python
-
-        >>> import jax.numpy as jnp
-        >>> from brainevent._dense.sparse_float import spfloat_densemv_p_call
-        >>> weights = jnp.eye(3, dtype=jnp.float32)
-        >>> spikes = jnp.array([2.0, 0.0, 3.0], dtype=jnp.float32)
-        >>> spfloat_densemv_p_call(weights, spikes, transpose=False)
-    """
-    if transpose:
-        # spikes[k] @ weights[k,n] -> out[n]
-        assert spikes.shape[0] == weights.shape[0], (
-            f'shapes {spikes.shape} and {weights.shape} not aligned: '
-            f'{spikes.shape[0]} (dim 0) != {weights.shape[0]} (dim 0)'
-        )
-        out = jax.ShapeDtypeStruct([weights.shape[1]], weights.dtype)
-    else:
-        # weights[m,k] @ spikes[k] -> out[m]
-        assert spikes.shape[0] == weights.shape[1], (
-            f'spikes shape {spikes.shape} and weights shape {weights.shape} are not compatible'
-        )
-        out = jax.ShapeDtypeStruct([weights.shape[0]], weights.dtype)
-    return spfloat_densemv_p(
-        weights,
-        spikes,
-        outs=[out],
-        transpose=transpose,
-        spk_info=jax.ShapeDtypeStruct(spikes.shape, spikes.dtype),
-        weight_info=jax.ShapeDtypeStruct(weights.shape, weights.dtype),
-        backend=backend,
-    )
-
-
-spfloat_densemv_p = XLACustomKernel(
-    'spfloat_densemv',
-    doc="""
-Low-level XLA custom-kernel primitive for ``spfloat_densemv``.
-
-This ``XLACustomKernel`` instance dispatches the sparse-float dense matrix-vector
-multiplication operation to registered backends (``numba``, ``warp``, ``pallas``),
-using runtime shape/dtype metadata provided by the high-level wrapper.
-
-The primitive handles two transpose modes controlled by the ``transpose`` parameter:
-
-- **transpose=False**: Computes ``weights[m, k] @ spikes[k] -> out[m]``
-  (dense matrix multiplies sparse-float vector from the right).
-
-- **transpose=True**: Computes ``spikes[k] @ weights[k, n] -> out[n]``
-  (sparse-float vector multiplies dense matrix from the left).
-
-Beyond backend dispatch, the primitive stores JAX transformation bindings
-(JVP, transpose, batching, and call registration) so the operation integrates
-correctly with ``jit``, ``vmap``, and autodiff.
-
-Available backends can be queried with ``spfloat_densemv_p.available_backends(platform)``,
-and the default backend can be configured with ``spfloat_densemv_p.set_default(platform, backend)``.
-
-See Also
---------
-spfloat_densemv : High-level user-facing function wrapper.
-"""
-)
-"""
-Low-level XLA custom-kernel primitive for ``spfloat_densemv``.
-
-This ``XLACustomKernel`` instance dispatches the ``spfloat_densemv`` operation
-to the backend registered below (for example ``numba``, ``warp``, and
-``pallas``), using runtime shape/dtype metadata provided by the high-level
-wrapper.
-
-Beyond backend dispatch, the primitive stores JAX transformation bindings
-(JVP, transpose, batching, and call registration) so the operation
-integrates correctly with ``jit``, ``vmap``, and autodiff.
-"""
-spfloat_densemv_p.def_numba_kernel(_spfloat_densemv_numba_kernel)
-spfloat_densemv_p.def_warp_kernel(_spfloat_densemv_warp_kernel)
-spfloat_densemv_p.def_pallas_kernel('gpu', _spfloat_densemv_pallas_kernel)
-spfloat_densemv_p.def_jvp_rule2(_spfloat_densemv_jvp_weights, _spfloat_densemv_jvp_spikes)
-spfloat_densemv_p.def_transpose_rule(_spfloat_densemv_transpose_rule)
-spfloat_densemv_p.def_batching_rule(_spfloat_densemv_batching)
-spfloat_densemv_p.def_call(spfloat_densemv_p_call)
-spfloat_densemv_p.def_tags('dense', 'sparse_float')
-spfloat_densemv_p.def_benchmark_data(_spfloat_densemv_benchmark_data)
-
-
-# ==============================================================================
-# Unified sparse-float dense matrix-matrix product (spfloat_densemm)
-# ==============================================================================
-#
-# transpose=False: weights[m,k] @ spikes[k,n] -> out[m,n]  (old dsfmm)
-# transpose=True:  spikes[m,k] @ weights[k,n] -> out[m,n]  (old sfdmm)
-#
-# Argument order is always (weights, spikes).
-
-
-@namescope(static_argnames=['transpose'])
-def spfloat_densemm(weights, spikes, *, transpose, backend: Optional[str] = None):
-    """
-    Perform dense matrix-matrix multiplication with sparse-float spikes.
-
-    When ``transpose=False``, computes ``weights[m, k] @ spikes[k, n] -> out[m, n]``
-    (dense matrix times sparse-float matrix).
-
-    When ``transpose=True``, computes ``spikes[m, k] @ weights[k, n] -> out[m, n]``
-    (sparse-float matrix times dense matrix).
-
-    Parameters
-    ----------
-    weights : array_like
-        The weight matrix. Shape ``(m, k)`` when ``transpose=False``,
-        or ``(k, n)`` when ``transpose=True``. Can be a ``brainunit`` quantity.
-    spikes : array_like
-        The sparse-float matrix. Shape ``(k, n)`` when ``transpose=False``,
-        or ``(m, k)`` when ``transpose=True``. Can be boolean or float.
-        Can be a ``brainunit`` quantity.
-    transpose : bool
-        If False, compute ``weights @ spikes`` (dense left, sparse right).
-        If True, compute ``spikes @ weights`` (sparse left, dense right).
-    backend : str, optional
-        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
-        ``'pallas'``, or ``None`` (auto-select).
-
-    Returns
-    -------
-    result : array_like
-        Result matrix with shape ``(m, n)``. If inputs carry units, the
-        result carries the product of the weight and spike units.
-
-    Raises
-    ------
-    AssertionError
-        If the shared dimensions of ``weights`` and ``spikes`` do not match.
-
-    See Also
-    --------
-    spfloat_densemv : Matrix-vector variant of sparse-float dense multiplication.
-
-    Notes
-    -----
-    When ``transpose=False``, the operation computes:
-
-    ``out[i, j] = sum_{k where s[k, j] != 0} W[i, k] * s[k, j]``
-
-    where ``W`` is the dense weight matrix and ``s`` is the sparse-float spike matrix.
-
-    When ``transpose=True``, the operation computes:
-
-    ``out[i, j] = sum_{k where s[i, k] != 0} s[i, k] * W[k, j]``
-
-    where ``s`` is the sparse-float spike matrix and ``W`` is the dense weight matrix.
-
-    Examples
-    --------
-    .. code-block:: python
-
-        >>> import jax.numpy as jnp
-        >>> from brainevent._dense.sparse_float import spfloat_densemm
-        >>> weights = jnp.eye(3, dtype=jnp.float32)
-        >>> spikes = jnp.array([[2.0, 0.0],
-        ...                     [0.0, 3.0],
-        ...                     [1.0, 0.0]], dtype=jnp.float32)
-        >>> spfloat_densemm(weights, spikes, transpose=False)
-        Array([[2., 0.],
-               [0., 3.],
-               [1., 0.]], dtype=float32)
-    """
-    with jax.ensure_compile_time_eval():
-        weights = u.math.asarray(weights)
-        spikes = u.math.asarray(spikes)
-    weight_val, wunit = u.split_mantissa_unit(weights)
-    spk_val, spkunit = u.split_mantissa_unit(spikes)
-    r = spfloat_densemm_p_call(weight_val, spk_val, transpose=transpose, backend=backend)
-    return u.maybe_decimal(r[0] * wunit * spkunit)
-
-
-def _spfloat_densemm_numba_kernel(transpose: bool, **kwargs):
-    import numba
-
-    if transpose:
-        # spikes[m,k] @ weights[k,n] -> out[m,n]
-        @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
-        def kernel(weights, spikes, posts):
-            for i_m in numba.prange(spikes.shape[0]):
-                out = np.zeros(weights.shape[1], dtype=posts.dtype)
-                for i_n in range(weights.shape[1]):
-                    r = 0.0
-                    for i_k in range(spikes.shape[1]):
-                        spk = spikes[i_m, i_k]
-                        if spk != 0.0:
-                            r += weights[i_k, i_n] * spk
-                    out[i_n] = r
-                posts[i_m] = out
-    else:
-        # weights[m,k] @ spikes[k,n] -> out[m,n]
-        @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
-        def kernel(weights, spikes, posts):
-            for i_n in numba.prange(spikes.shape[1]):
-                out = np.zeros(weights.shape[0], dtype=weights.dtype)
-                for i_k in range(spikes.shape[0]):
-                    spk = spikes[i_k, i_n]
-                    if spk != 0.0:
-                        out += weights[:, i_k] * spk
-                posts[:, i_n] = out
-
-    def run(weights, spikes):
-        return numba_kernel(kernel, outs=kwargs['outs'])(weights, spikes)
 
     return run
 
@@ -792,6 +689,145 @@ def _spfloat_densemm_warp_kernel(
 
     return run
 
+spfloat_densemv_p.def_numba_kernel(_spfloat_densemv_numba_kernel)
+spfloat_densemv_p.def_warp_kernel(_spfloat_densemv_warp_kernel)
+spfloat_densemv_p.def_pallas_kernel('gpu', _spfloat_densemv_pallas_kernel)
+spfloat_densemv_p.def_tvmffi_kernel('gpu', _spfloat_densemv_cuda_kernel)
+spfloat_densemv_p.def_kernel('jax_raw', 'cpu', _spfloat_densemv_jax_kernel)
+spfloat_densemv_p.def_kernel('jax_raw', 'gpu', _spfloat_densemv_jax_kernel)
+spfloat_densemv_p.def_kernel('jax_raw', 'tpu', _spfloat_densemv_jax_kernel)
+spfloat_densemv_p.def_jvp_rule2(_spfloat_densemv_jvp_weights, _spfloat_densemv_jvp_spikes)
+spfloat_densemv_p.def_transpose_rule(_spfloat_densemv_transpose_rule)
+spfloat_densemv_p.def_batching_rule(_spfloat_densemv_batching)
+spfloat_densemv_p.def_call(spfloat_densemv_p_call)
+spfloat_densemv_p.def_tags('dense', 'sparse_float')
+spfloat_densemv_p.def_benchmark_data(_spfloat_densemv_benchmark_data)
+
+
+# ==============================================================================
+# Unified sparse-float dense matrix-matrix product (spfloat_densemm)
+# ==============================================================================
+#
+# transpose=False: weights[m,k] @ spikes[k,n] -> out[m,n]  (old dsfmm)
+# transpose=True:  spikes[m,k] @ weights[k,n] -> out[m,n]  (old sfdmm)
+#
+# Argument order is always (weights, spikes).
+
+
+@namescope(static_argnames=['transpose'])
+def spfloat_densemm(weights, spikes, *, transpose, backend: Optional[str] = None):
+    """
+    Perform dense matrix-matrix multiplication with sparse-float spikes.
+
+    When ``transpose=False``, computes ``weights[m, k] @ spikes[k, n] -> out[m, n]``
+    (dense matrix times sparse-float matrix).
+
+    When ``transpose=True``, computes ``spikes[m, k] @ weights[k, n] -> out[m, n]``
+    (sparse-float matrix times dense matrix).
+
+    Parameters
+    ----------
+    weights : array_like
+        The weight matrix. Shape ``(m, k)`` when ``transpose=False``,
+        or ``(k, n)`` when ``transpose=True``. Can be a ``brainunit`` quantity.
+    spikes : array_like
+        The sparse-float matrix. Shape ``(k, n)`` when ``transpose=False``,
+        or ``(m, k)`` when ``transpose=True``. Can be boolean or float.
+        Can be a ``brainunit`` quantity.
+    transpose : bool
+        If False, compute ``weights @ spikes`` (dense left, sparse right).
+        If True, compute ``spikes @ weights`` (sparse left, dense right).
+    backend : str, optional
+        Backend to use for the computation. One of ``'numba'``,
+        ``'pallas'``, or ``None`` (auto-select).
+
+    Returns
+    -------
+    result : array_like
+        Result matrix with shape ``(m, n)``. If inputs carry units, the
+        result carries the product of the weight and spike units.
+
+    Raises
+    ------
+    AssertionError
+        If the shared dimensions of ``weights`` and ``spikes`` do not match.
+
+    See Also
+    --------
+    spfloat_densemv : Matrix-vector variant of sparse-float dense multiplication.
+
+    Notes
+    -----
+    When ``transpose=False``, the operation computes:
+
+    ``out[i, j] = sum_{k where s[k, j] != 0} W[i, k] * s[k, j]``
+
+    where ``W`` is the dense weight matrix and ``s`` is the sparse-float spike matrix.
+
+    When ``transpose=True``, the operation computes:
+
+    ``out[i, j] = sum_{k where s[i, k] != 0} s[i, k] * W[k, j]``
+
+    where ``s`` is the sparse-float spike matrix and ``W`` is the dense weight matrix.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> import jax.numpy as jnp
+        >>> from brainevent._dense.sparse_float import spfloat_densemm
+        >>> weights = jnp.eye(3, dtype=jnp.float32)
+        >>> spikes = jnp.array([[2.0, 0.0],
+        ...                     [0.0, 3.0],
+        ...                     [1.0, 0.0]], dtype=jnp.float32)
+        >>> spfloat_densemm(weights, spikes, transpose=False)
+        Array([[2., 0.],
+               [0., 3.],
+               [1., 0.]], dtype=float32)
+    """
+    with jax.ensure_compile_time_eval():
+        weights = u.math.asarray(weights)
+        spikes = u.math.asarray(spikes)
+    weight_val, wunit = u.split_mantissa_unit(weights)
+    spk_val, spkunit = u.split_mantissa_unit(spikes)
+    r = spfloat_densemm_p_call(weight_val, spk_val, transpose=transpose, backend=backend)
+    return u.maybe_decimal(r[0] * wunit * spkunit)
+
+
+def _spfloat_densemm_numba_kernel(transpose: bool, **kwargs):
+    import numba
+
+    if transpose:
+        # spikes[m,k] @ weights[k,n] -> out[m,n]
+        @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+        def kernel(weights, spikes, posts):
+            for i_m in numba.prange(spikes.shape[0]):
+                out = np.zeros(weights.shape[1], dtype=posts.dtype)
+                for i_n in range(weights.shape[1]):
+                    r = 0.0
+                    for i_k in range(spikes.shape[1]):
+                        spk = spikes[i_m, i_k]
+                        if spk != 0.0:
+                            r += weights[i_k, i_n] * spk
+                    out[i_n] = r
+                posts[i_m] = out
+    else:
+        # weights[m,k] @ spikes[k,n] -> out[m,n]
+        @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+        def kernel(weights, spikes, posts):
+            for i_n in numba.prange(spikes.shape[1]):
+                out = np.zeros(weights.shape[0], dtype=weights.dtype)
+                for i_k in range(spikes.shape[0]):
+                    spk = spikes[i_k, i_n]
+                    if spk != 0.0:
+                        out += weights[:, i_k] * spk
+                posts[:, i_n] = out
+
+    def run(weights, spikes):
+        return numba_kernel(kernel, outs=kwargs['outs'])(weights, spikes)
+
+    return run
+
 
 def _spfloat_densemm_pallas_kernel(
     weight_info: jax.ShapeDtypeStruct,
@@ -881,6 +917,62 @@ def _spfloat_densemm_pallas_kernel(
     return run
 
 
+def _spfloat_densemm_jax_kernel(
+    transpose: bool,
+    **kwargs,
+):
+    def kernel(weights, spikes):
+        if transpose:
+            return spikes @ weights,
+        else:
+            return weights @ spikes,
+
+    return kernel
+
+
+def _spfloat_densemm_cuda_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    spk_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs
+):
+    register_tvm_cuda_from_file(
+        module='dense_sparse_float',
+        source=Path(__file__).parent.joinpath('sparse_float.cu'),
+    )
+
+    out_info = kwargs['outs']
+
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+
+    if transpose:
+        kernel_name = f'dense_sparse_float.spfloat_densemm_t{wt_sfx}'
+    else:
+        # NT: select warp-per-row (small n) vs thread-per-element (large n).
+        # WPR: Better for small n (uses all 32 threads to scan k dimension in parallel).
+        # TPE: Better for large n (has __ballot_sync, avoids redundant weight reads).
+        # Threshold: n ≤ 16 favors WPR (avoids wasted threads); n > 16 favors TPE.
+        n_cols = spk_info.shape[1]
+        if n_cols <= 16:
+            # For n ≤ 16, use warp-per-row (wpr) kernel
+            chunk_n = 16 if jnp.dtype(weight_info.dtype) == jnp.float64 else 32
+            kernel_name = f'dense_sparse_float.spfloat_densemm_nt{wt_sfx}'
+        else:
+            # For n > 16, use thread-per-element (tpe) kernel
+            kernel_name = f'dense_sparse_float.spfloat_densemm_nt_tpe{wt_sfx}'
+
+    def kernel(weights, spikes):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, spikes)
+
+    return kernel
+
+
 def _spfloat_densemm_jvp_weights(w_dot, weights, spikes, *, transpose, **kwargs):
     return spfloat_densemm_p_call(w_dot, spikes, transpose=transpose, backend=kwargs['backend'])
 
@@ -958,7 +1050,7 @@ def spfloat_densemm_p_call(weights, spikes, *, transpose, backend: Optional[str]
         If False, compute ``weights @ spikes`` producing shape ``(m, n)``.
         If True, compute ``spikes @ weights`` producing shape ``(m, n)``.
     backend : str, optional
-        Backend to use for the computation. One of ``'numba'``, ``'warp'``,
+        Backend to use for the computation. One of ``'numba'``,
         ``'pallas'``, or ``None`` (auto-select).
 
     Returns
@@ -1004,6 +1096,9 @@ def spfloat_densemm_p_call(weights, spikes, *, transpose, backend: Optional[str]
         ...                     [1.0, 0.0]], dtype=jnp.float32)
         >>> spfloat_densemm_p_call(weights, spikes, transpose=False)
     """
+    # Convert bool spikes to float to match weight dtype for CUDA kernels
+    if spikes.dtype == jnp.bool_:
+        spikes = jnp.asarray(spikes, dtype=weights.dtype)
     if transpose:
         # spikes[m,k] @ weights[k,n] -> out[m,n]
         assert spikes.shape[1] == weights.shape[0], (
@@ -1035,7 +1130,7 @@ spfloat_densemm_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``spfloat_densemm``.
 
 This ``XLACustomKernel`` instance dispatches the sparse-float dense matrix-matrix
-multiplication operation to registered backends (``numba``, ``warp``, ``pallas``),
+multiplication operation to registered backends (``numba``, ``pallas``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 The primitive handles two transpose modes controlled by the ``transpose`` parameter:
@@ -1061,6 +1156,10 @@ spfloat_densemm : High-level user-facing function wrapper.
 spfloat_densemm_p.def_numba_kernel(_spfloat_densemm_numba_kernel)
 spfloat_densemm_p.def_warp_kernel(_spfloat_densemm_warp_kernel)
 spfloat_densemm_p.def_pallas_kernel('gpu', _spfloat_densemm_pallas_kernel)
+spfloat_densemm_p.def_tvmffi_kernel('gpu', _spfloat_densemm_cuda_kernel)
+spfloat_densemm_p.def_kernel('jax_raw', 'cpu', _spfloat_densemm_jax_kernel)
+spfloat_densemm_p.def_kernel('jax_raw', 'gpu', _spfloat_densemm_jax_kernel)
+spfloat_densemm_p.def_kernel('jax_raw', 'tpu', _spfloat_densemm_jax_kernel)
 spfloat_densemm_p.def_jvp_rule2(_spfloat_densemm_jvp_weights, _spfloat_densemm_jvp_spikes)
 spfloat_densemm_p.def_transpose_rule(_spfloat_densemm_transpose_rule)
 spfloat_densemm_p.def_batching_rule(_spfloat_densemm_batching)

@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+from pathlib import Path
 from typing import Optional
 
 import brainunit as u
@@ -22,7 +23,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescope
-from brainevent._op import jaxinfo_to_warpinfo, numba_kernel, XLACustomKernel, general_batching_rule
+from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
@@ -88,7 +89,7 @@ def binary_csrmv(
         If ``True``, the sparse matrix is transposed before multiplication,
         i.e. compute ``A.T @ v``.  Default is ``False``.
     backend : str or None, optional
-        Compute backend to use.  One of ``'numba'``, ``'warp'``,
+        Compute backend to use.  One of ``'numba'``,
         ``'pallas'``, or ``None`` (auto-select).  Default is ``None``.
 
     Returns
@@ -211,7 +212,7 @@ def binary_csrmm(
         If ``True``, transpose ``A`` before multiplication.  Default is
         ``False``.
     backend : str or None, optional
-        Compute backend.  One of ``'numba'``, ``'warp'``, ``'pallas'``, or
+        Compute backend.  One of ``'numba'``, ``'pallas'``, or
         ``None`` (auto-select).  Default is ``None``.
 
     Returns
@@ -385,179 +386,6 @@ def _csrmv_numba_kernel(
 
     def kernel(weights, indices, indptr, vector):
         return numba_kernel(mv, outs=kwargs['outs'])(weights, indices, indptr, vector)
-
-    return kernel
-
-
-def _csrmv_warp_kernel(
-    weight_info: jax.ShapeDtypeStruct,
-    vector_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    indptr_info: jax.ShapeDtypeStruct,
-    transpose: bool,
-    shape: MatrixShape,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
-    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
-    indptr_warp_info = jaxinfo_to_warpinfo(indptr_info)
-    spike_warp_info = jaxinfo_to_warpinfo(vector_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if transpose:
-        if weight_info.size == 1:
-            if vector_info.dtype == jnp.bool_:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    i = warp.tid()
-                    w = weights[0]
-                    if v[i]:
-                        for j in range(indptr[i], indptr[i + 1]):
-                            posts[indices[j]] += w
-
-            else:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    i = warp.tid()
-                    w = weights[0]
-                    if v[i] > 0.:
-                        for j in range(indptr[i], indptr[i + 1]):
-                            posts[indices[j]] += w
-
-
-        else:
-            if vector_info.dtype == jnp.bool_:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    i = warp.tid()
-                    if v[i]:
-                        for j in range(indptr[i], indptr[i + 1]):
-                            posts[indices[j]] += weights[j]
-
-            else:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    i = warp.tid()
-                    if v[i] > 0.:
-                        for j in range(indptr[i], indptr[i + 1]):
-                            posts[indices[j]] += weights[j]
-
-        def kernel(weights, indices, indptr, v):
-            out_info = (
-                jax.ShapeDtypeStruct([shape[1]], weights.dtype)
-                if transpose else
-                jax.ShapeDtypeStruct([shape[0]], weights.dtype)
-            )
-            dim = vector_info.shape[0] if transpose else indptr_info.shape[0] - 1
-            fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
-            return fn(weights, indices, indptr, v, jnp.zeros(out_info.shape, out_info.dtype))
-
-
-    else:
-        if weight_info.size == 1:
-            if vector_info.dtype == jnp.bool_:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    i = warp.tid()
-                    w = weights[0]
-                    r = weights.dtype(0.)
-                    for j in range(indptr[i], indptr[i + 1]):
-                        if v[indices[j]]:
-                            r += w
-                    posts[i] = r
-
-            else:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    i = warp.tid()
-                    w = weights[0]
-                    r = weights.dtype(0.)
-                    for j in range(indptr[i], indptr[i + 1]):
-                        if v[indices[j]] > 0.:
-                            r += w
-                    posts[i] = r
-
-        else:
-            if vector_info.dtype == jnp.bool_:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    i = warp.tid()
-                    r = weights.dtype(0.)
-                    for j in range(indptr[i], indptr[i + 1]):
-                        if v[indices[j]]:
-                            r += weights[j]
-                    posts[i] = r
-
-            else:
-                @warp.kernel
-                def mv(
-                    weights: weight_warp_info,
-                    indices: indices_warp_info,
-                    indptr: indptr_warp_info,
-                    v: spike_warp_info,
-                    posts: out_warp_info,
-                ):
-                    i = warp.tid()
-                    r = weights.dtype(0.)
-                    for j in range(indptr[i], indptr[i + 1]):
-                        if v[indices[j]] > 0.:
-                            r += weights[j]
-                    posts[i] = r
-
-        def kernel(weights, indices, indptr, v):
-            out_info = (
-                jax.ShapeDtypeStruct([shape[1]], weights.dtype)
-                if transpose else
-                jax.ShapeDtypeStruct([shape[0]], weights.dtype)
-            )
-            dim = vector_info.shape[0] if transpose else indptr_info.shape[0] - 1
-            fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
-            return fn(weights, indices, indptr, v)
 
     return kernel
 
@@ -765,6 +593,126 @@ def _csrmv_pallas_gpu_kernel(
         )
 
 
+def _binary_csrmv_jax_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    transpose: bool,
+    **kwargs,
+):
+    """Pure-JAX kernel for binary (event-driven) CSR matrix-vector multiplication."""
+    m, k = shape
+    is_homo = (weight_info.size == 1)
+    is_bool = (vector_info.dtype == jnp.bool_)
+    nse = kwargs['indices_info'].size
+    out_dtype = kwargs['outs'][0].dtype
+
+    if transpose:
+        def kernel(weights, indices, indptr, vector):
+            row_ids = jnp.repeat(
+                jnp.arange(m, dtype=indptr.dtype),
+                jnp.diff(indptr),
+                total_repeat_length=nse,
+            )
+            v_row = vector[row_ids]
+            events = v_row.astype(out_dtype) if is_bool else (v_row > 0.).astype(out_dtype)
+            w = weights[0] if is_homo else weights
+            return (jnp.zeros(k, dtype=out_dtype).at[indices].add(w * events),)
+    else:
+        def kernel(weights, indices, indptr, vector):
+            row_ids = jnp.repeat(
+                jnp.arange(m, dtype=indptr.dtype),
+                jnp.diff(indptr),
+                total_repeat_length=nse,
+            )
+            v_col = vector[indices]
+            events = v_col.astype(out_dtype) if is_bool else (v_col > 0.).astype(out_dtype)
+            w = weights[0] if is_homo else weights
+            return (jnp.zeros(m, dtype=out_dtype).at[row_ids].add(w * events),)
+
+    return kernel
+
+
+def _binary_csrmv_cusparse_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    transpose: bool,
+    **kwargs,
+):
+    """cuSPARSE-backed kernel for binary CSR SpMV via jax.experimental.sparse (GPU only)."""
+    import jax.experimental.sparse as jsparse
+    m, k = shape
+    is_homo = (weight_info.size == 1)
+    is_bool = (vector_info.dtype == jnp.bool_)
+    nse = kwargs['indices_info'].size
+    out_dtype = kwargs['outs'][0].dtype
+
+    if transpose:
+        if is_homo:
+            def kernel(weights, indices, indptr, vector):
+                events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
+                ones = jnp.ones(nse, dtype=out_dtype)
+                row, col = _csr_to_coo(indices, indptr)
+                mat = jsparse.BCOO((ones, jnp.stack([row, col], axis=1)), shape=(m, k))
+                return ((mat.T @ events) * weights[0].astype(out_dtype),)
+        else:
+            def kernel(weights, indices, indptr, vector):
+                events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
+                row, col = _csr_to_coo(indices, indptr)
+                mat = jsparse.BCOO((weights.astype(out_dtype), jnp.stack([row, col], axis=1)), shape=(m, k))
+                return (mat.T @ events,)
+    else:
+        if is_homo:
+            def kernel(weights, indices, indptr, vector):
+                events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
+                ones = jnp.ones(nse, dtype=out_dtype)
+                mat = jsparse.BCSR((ones, indices, indptr), shape=(m, k))
+                return ((mat @ events) * weights[0].astype(out_dtype),)
+        else:
+            def kernel(weights, indices, indptr, vector):
+                events = vector.astype(out_dtype) if is_bool else (vector > 0.).astype(out_dtype)
+                mat = jsparse.BCSR((weights.astype(out_dtype), indices, indptr), shape=(m, k))
+                return (mat @ events,)
+    return kernel
+
+
+def _binary_csrmv_cuda_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs,
+):
+    register_tvm_cuda_from_file(
+        module='csr_binary',
+        source=Path(__file__).parent.joinpath('binary.cu'),
+    )
+
+    out_info = kwargs['outs']
+
+    # Spike type suffix
+    spk_suffix = '_bool' if vector_info.dtype == jnp.bool_ else '_float'
+
+    # Weight dtype suffix
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+
+    if transpose:
+        kernel_name = f'csr_binary.binary_csrmv_t_warp{wt_sfx}{spk_suffix}'
+    else:
+        kernel_name = f'csr_binary.binary_csrmv_nt_auto{wt_sfx}{spk_suffix}'
+
+    def kernel(weights, indices, indptr, vector):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, vector)
+
+    return kernel
+
+
 def _csrmv_jvp_v(v_dot, data, indices, indptr, v, *, shape, transpose, **kwargs):
     return [csrmv(data, indices, indptr, v_dot, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
@@ -842,29 +790,69 @@ def _csrmv_batching(args, axes, **kwargs):
 
 
 def _binary_csrmv_benchmark_data(*, platform):
-    n_pre, n_post, prob, dtype = 1000, 1000, 0.1, jnp.float32
-    configs = []
-    for transpose in (False, True):
-        for homo in (True, False):
-            for bool_event in (True, False):
-                n_conn = max(1, int(n_post * prob))
-                indptr = np.arange(n_pre + 1, dtype=np.int32) * n_conn
-                indices = np.random.randint(0, n_post, (n_pre * n_conn,), dtype=np.int32)
-                weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(n_pre * n_conn, dtype=dtype)
-                v_size = n_post if not transpose else n_pre
-                if bool_event:
-                    vector = jnp.asarray(np.random.rand(v_size) > 0.5, dtype=jnp.bool_)
-                else:
-                    vector = jnp.asarray(np.random.rand(v_size), dtype=dtype)
-                name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
-                configs.append(
-                    BenchmarkConfig(
-                        name,
-                        (weights, indices, jnp.asarray(indptr), vector),
-                        {'shape': (n_pre, n_post), 'transpose': transpose}
-                    )
-                )
-    return configs
+    rng = np.random.default_rng(0)
+    dtype = jnp.float32
+
+    # ── Sweep A: size × sparsity × variant sweep (square matrices) ───────────
+    for n in (1000, 5000, 10000):
+        for conn_prob in (0.01, 0.1):
+            n_conn = max(1, int(n * conn_prob))
+            nnz = n * n_conn
+            p_pct = int(round(conn_prob * 100))
+            for transpose in (False, True):
+                for homo in (True, False):
+                    for event_prob in [0.001, 0.01, 0.1]:
+                        for event_type in ('float', 'bool'):
+                            indptr = np.arange(n + 1, dtype=np.int32) * n_conn
+                            indices = rng.integers(0, n, size=nnz, dtype=np.int32)
+                            weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(nnz, dtype=dtype)
+                            v_size = n  # square: n_pre == n_post == n
+                            data = rng.random(v_size) > event_prob
+                            event_dtype = jnp.float32 if event_type == 'float' else jnp.bool_
+                            vector = jnp.asarray(data, dtype=event_dtype)
+                            name = (f"{n}x{n},p={p_pct}%,"
+                                    f"{'T' if transpose else 'NT'},"
+                                    f"{'homo' if homo else 'hetero'},"
+                                    f"{event_type}")
+                            yield BenchmarkConfig(
+                                name,
+                                jax.block_until_ready(
+                                    (weights, jnp.asarray(indices), jnp.asarray(indptr), vector)
+                                ),
+                                {'shape': (n, n), 'transpose': transpose},
+                                {'n_pre': n, 'n_post': n, 'nnz': nnz, 'csr_sparsity': conn_prob,
+                                 'event_sparsity': event_prob, 'event_dtype': event_type},
+                            )
+
+    # ── Sweep C: rectangular (n_pre ≠ n_post), p=0.1 ─────────────────────────
+    for n_pre, n_post in ((1000, 5000), (5000, 1000), (1000, 10000), (10000, 1000)):
+        conn_prob = 0.1
+        n_conn = max(1, int(n_post * conn_prob))
+        nnz = n_pre * n_conn
+        for transpose in (False, True):
+            for homo in (True, False):
+                for event_prob in [0.001, 0.01, 0.1]:
+                    for event_type in ('float', 'bool'):
+                        indptr = np.arange(n_pre + 1, dtype=np.int32) * n_conn
+                        indices = rng.integers(0, n_post, size=nnz, dtype=np.int32)
+                        weights = jnp.ones(1, dtype=dtype) if homo else jnp.ones(nnz, dtype=dtype)
+                        v_size = n_pre if transpose else n_post
+                        data = rng.random(v_size) > event_prob
+                        event_dtype = jnp.float32 if event_type == 'float' else jnp.bool_
+                        vector = jnp.asarray(data, dtype=event_dtype)
+                        name = (f"{n_pre}x{n_post},p=10%,"
+                                f"{'T' if transpose else 'NT'},"
+                                f"{'homo' if homo else 'hetero'},"
+                                f"{event_type}")
+                        yield BenchmarkConfig(
+                            name,
+                            jax.block_until_ready(
+                                (weights, jnp.asarray(indices), jnp.asarray(indptr), vector)
+                            ),
+                            {'shape': (n_pre, n_post), 'transpose': transpose},
+                            {'n_pre': n_pre, 'n_post': n_post, 'nnz': nnz, 'csr_sparsity': conn_prob,
+                             'event_sparsity': event_prob, 'event_dtype': event_type},
+                        )
 
 
 def binary_csrmv_p_call(
@@ -1017,7 +1005,7 @@ binary_csrmv_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``binary_csrmv``.
 
 This ``XLACustomKernel`` instance dispatches the binary (event-driven) CSR sparse matrix-vector multiplication
-operation to registered backends (``numba``, ``warp``, ``pallas``),
+operation to registered backends (``numba``, ``pallas``, ``tvmffi``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 Only entries of ``v`` that are ``True`` (boolean) or positive (float) are considered active events
@@ -1036,145 +1024,175 @@ See Also
 binary_csrmv : High-level user-facing function wrapper.
 """
 )
-binary_csrmv_p.def_numba_kernel(_csrmv_numba_kernel)
-binary_csrmv_p.def_warp_kernel(_csrmv_warp_kernel)
-binary_csrmv_p.def_pallas_kernel('gpu', _csrmv_pallas_gpu_kernel)
-binary_csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
-binary_csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
-binary_csrmv_p.def_batching_rule(_csrmv_batching)
-binary_csrmv_p.def_call(binary_csrmv_p_call)
-binary_csrmv_p.def_tags('csr', 'binary')
-binary_csrmv_p.def_benchmark_data(_binary_csrmv_benchmark_data)
-
-
-def _csrmm_numba_kernel(
+def _csrmv_warp_kernel(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    indptr_info: jax.ShapeDtypeStruct,
     transpose: bool,
+    shape: MatrixShape,
     **kwargs
 ):
-    import numba
+    import warp
+    from warp.jax_experimental import jax_kernel
 
-    if weight_info.size == 1:
-        if transpose:
-            #
-            # csr.T @ B
-            #
-            # [k, m] @ [k, n]
-            #
+    weight_warp_info = jaxinfo_to_warpinfo(weight_info)
+    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
+    indptr_warp_info = jaxinfo_to_warpinfo(indptr_info)
+    spike_warp_info = jaxinfo_to_warpinfo(vector_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    if transpose:
+        if weight_info.size == 1:
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
-                def mm(weights, indices, indptr, B, posts):
+                @warp.kernel
+                def mv(
+                    weights: weight_warp_info,
+                    indices: indices_warp_info,
+                    indptr: indptr_warp_info,
+                    v: spike_warp_info,
+                    posts: out_warp_info,
+                ):
+                    i = warp.tid()
                     w = weights[0]
-                    posts[:] = 0.
-                    for k in numba.prange(B.shape[1]):
-                        for i in range(B.shape[0]):
-                            if B[i, k]:
-                                for j in range(indptr[i], indptr[i + 1]):
-                                    posts[indices[j], k] += w
+                    if v[i]:
+                        for j in range(indptr[i], indptr[i + 1]):
+                            posts[indices[j]] += w
 
             else:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
-                def mm(weights, indices, indptr, B, posts):
-                    B = B > 0.
+                @warp.kernel
+                def mv(
+                    weights: weight_warp_info,
+                    indices: indices_warp_info,
+                    indptr: indptr_warp_info,
+                    v: spike_warp_info,
+                    posts: out_warp_info,
+                ):
+                    i = warp.tid()
                     w = weights[0]
-                    posts[:] = 0.
-                    for k in numba.prange(B.shape[1]):
-                        for i in range(B.shape[0]):
-                            if B[i, k]:
-                                for j in range(indptr[i], indptr[i + 1]):
-                                    posts[indices[j], k] += w
+                    if v[i] > 0.:
+                        for j in range(indptr[i], indptr[i + 1]):
+                            posts[indices[j]] += w
+
 
         else:
-            # csr @ B
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
-                def mm(weights, indices, indptr, B, posts):
-                    w = weights[0]
-                    posts[:] = 0.
-                    for i in numba.prange(indptr.shape[0] - 1):
-                        r = np.zeros(B.shape[1], dtype=weights.dtype)
+                @warp.kernel
+                def mv(
+                    weights: weight_warp_info,
+                    indices: indices_warp_info,
+                    indptr: indptr_warp_info,
+                    v: spike_warp_info,
+                    posts: out_warp_info,
+                ):
+                    i = warp.tid()
+                    if v[i]:
                         for j in range(indptr[i], indptr[i + 1]):
-                            index = indices[j]
-                            for k in range(B.shape[1]):
-                                if B[index, k]:
-                                    r[k] += w
-                        posts[i] = r
+                            posts[indices[j]] += weights[j]
 
             else:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
-                def mm(weights, indices, indptr, B, posts):
-                    w = weights[0]
-                    B = B > 0.
-                    for i in numba.prange(indptr.shape[0] - 1):
-                        r = np.zeros(B.shape[1], dtype=weights.dtype)
+                @warp.kernel
+                def mv(
+                    weights: weight_warp_info,
+                    indices: indices_warp_info,
+                    indptr: indptr_warp_info,
+                    v: spike_warp_info,
+                    posts: out_warp_info,
+                ):
+                    i = warp.tid()
+                    if v[i] > 0.:
                         for j in range(indptr[i], indptr[i + 1]):
-                            index = indices[j]
-                            for k in range(B.shape[1]):
-                                if B[index, k]:
-                                    r[k] += w
-                        posts[i] = r
+                            posts[indices[j]] += weights[j]
+
+        def kernel(weights, indices, indptr, v):
+            out_info = (
+                jax.ShapeDtypeStruct([shape[1]], weights.dtype)
+                if transpose else
+                jax.ShapeDtypeStruct([shape[0]], weights.dtype)
+            )
+            dim = vector_info.shape[0] if transpose else indptr_info.shape[0] - 1
+            fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
+            return fn(weights, indices, indptr, v, jnp.zeros(out_info.shape, out_info.dtype))
+
 
     else:
-        if transpose:
-            # csr.T @ B
-
+        if weight_info.size == 1:
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
-                def mm(weights, indices, indptr, B, posts):
-                    posts[:] = 0.
-                    for k in numba.prange(B.shape[1]):
-                        for i in range(B.shape[0]):
-                            if B[i, k]:
-                                for j in range(indptr[i], indptr[i + 1]):
-                                    posts[indices[j], k] += weights[j]
+                @warp.kernel
+                def mv(
+                    weights: weight_warp_info,
+                    indices: indices_warp_info,
+                    indptr: indptr_warp_info,
+                    v: spike_warp_info,
+                    posts: out_warp_info,
+                ):
+                    i = warp.tid()
+                    w = weights[0]
+                    r = weights.dtype(0.)
+                    for j in range(indptr[i], indptr[i + 1]):
+                        if v[indices[j]]:
+                            r += w
+                    posts[i] = r
 
             else:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
-                def mm(weights, indices, indptr, B, posts):
-                    B = B > 0.
-                    posts[:] = 0.
-                    for k in numba.prange(B.shape[1]):
-                        for i in range(B.shape[0]):
-                            if B[i, k]:
-                                for j in range(indptr[i], indptr[i + 1]):
-                                    posts[indices[j], k] += weights[j]
+                @warp.kernel
+                def mv(
+                    weights: weight_warp_info,
+                    indices: indices_warp_info,
+                    indptr: indptr_warp_info,
+                    v: spike_warp_info,
+                    posts: out_warp_info,
+                ):
+                    i = warp.tid()
+                    w = weights[0]
+                    r = weights.dtype(0.)
+                    for j in range(indptr[i], indptr[i + 1]):
+                        if v[indices[j]] > 0.:
+                            r += w
+                    posts[i] = r
 
         else:
-            # csr @ B
-            # Fixed: Changed range to prange for parallelization
-
             if vector_info.dtype == jnp.bool_:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
-                def mm(weights, indices, indptr, B, posts):
-                    n_cols = B.shape[1]
-                    for i in numba.prange(indptr.shape[0] - 1):
-                        r = np.zeros(n_cols, dtype=posts.dtype)
-                        for j in range(indptr[i], indptr[i + 1]):
-                            col_idx = indices[j]
-                            w = weights[j]
-                            B_row = B[col_idx]  # Load entire row once (cache-friendly)
-                            for k in range(n_cols):
-                                if B_row[k]:
-                                    r[k] += w
-                        posts[i] = r
+                @warp.kernel
+                def mv(
+                    weights: weight_warp_info,
+                    indices: indices_warp_info,
+                    indptr: indptr_warp_info,
+                    v: spike_warp_info,
+                    posts: out_warp_info,
+                ):
+                    i = warp.tid()
+                    r = weights.dtype(0.)
+                    for j in range(indptr[i], indptr[i + 1]):
+                        if v[indices[j]]:
+                            r += weights[j]
+                    posts[i] = r
 
             else:
-                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
-                def mm(weights, indices, indptr, B, posts):
-                    n_cols = B.shape[1]
-                    for i in numba.prange(indptr.shape[0] - 1):
-                        r = np.zeros(n_cols, dtype=posts.dtype)
-                        for j in range(indptr[i], indptr[i + 1]):
-                            col_idx = indices[j]
-                            w = weights[j]
-                            for k in range(n_cols):
-                                if B[col_idx, k] > 0.:
-                                    r[k] += w
-                        posts[i] = r
+                @warp.kernel
+                def mv(
+                    weights: weight_warp_info,
+                    indices: indices_warp_info,
+                    indptr: indptr_warp_info,
+                    v: spike_warp_info,
+                    posts: out_warp_info,
+                ):
+                    i = warp.tid()
+                    r = weights.dtype(0.)
+                    for j in range(indptr[i], indptr[i + 1]):
+                        if v[indices[j]] > 0.:
+                            r += weights[j]
+                    posts[i] = r
 
-    def kernel(weights, indices, indptr, B):
-        return numba_kernel(mm, kwargs['outs'])(weights, indices, indptr, B)
+        def kernel(weights, indices, indptr, v):
+            out_info = (
+                jax.ShapeDtypeStruct([shape[1]], weights.dtype)
+                if transpose else
+                jax.ShapeDtypeStruct([shape[0]], weights.dtype)
+            )
+            dim = vector_info.shape[0] if transpose else indptr_info.shape[0] - 1
+            fn = jax_kernel(mv, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
+            return fn(weights, indices, indptr, v)
 
     return kernel
 
@@ -1348,6 +1366,153 @@ def _csrmm_warp_kernel(
             dim = (vector_info.shape[1], indptr_info.shape[0] - 1)
             fn = jax_kernel(mm, launch_dims=dim, num_outputs=1, output_dims={'posts': out_info.shape})
             return fn(weights, indices, indptr, B)
+
+    return kernel
+
+binary_csrmv_p.def_numba_kernel(_csrmv_numba_kernel)
+binary_csrmv_p.def_warp_kernel(_csrmv_warp_kernel)
+binary_csrmv_p.def_pallas_kernel('gpu', _csrmv_pallas_gpu_kernel)
+binary_csrmv_p.def_tvmffi_kernel('gpu', _binary_csrmv_cuda_kernel)
+binary_csrmv_p.def_kernel('jax_raw', 'cpu', _binary_csrmv_jax_kernel)
+binary_csrmv_p.def_kernel('jax_raw', 'gpu', _binary_csrmv_jax_kernel)
+binary_csrmv_p.def_kernel('jax_raw', 'tpu', _binary_csrmv_jax_kernel)
+binary_csrmv_p.def_kernel('cusparse', 'gpu', _binary_csrmv_cusparse_kernel)
+binary_csrmv_p.def_jvp_rule2(_csrmv_jvp_weights, None, None, _csrmv_jvp_v)
+binary_csrmv_p.def_transpose_rule(_csrmv_transpose_rule)
+binary_csrmv_p.def_batching_rule(_csrmv_batching)
+binary_csrmv_p.def_call(binary_csrmv_p_call)
+binary_csrmv_p.def_tags('csr', 'binary')
+binary_csrmv_p.def_benchmark_data(_binary_csrmv_benchmark_data)
+
+
+def _csrmm_numba_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs
+):
+    import numba
+
+    if weight_info.size == 1:
+        if transpose:
+            #
+            # csr.T @ B
+            #
+            # [k, m] @ [k, n]
+            #
+            if vector_info.dtype == jnp.bool_:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                def mm(weights, indices, indptr, B, posts):
+                    w = weights[0]
+                    posts[:] = 0.
+                    for k in numba.prange(B.shape[1]):
+                        for i in range(B.shape[0]):
+                            if B[i, k]:
+                                for j in range(indptr[i], indptr[i + 1]):
+                                    posts[indices[j], k] += w
+
+            else:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                def mm(weights, indices, indptr, B, posts):
+                    B = B > 0.
+                    w = weights[0]
+                    posts[:] = 0.
+                    for k in numba.prange(B.shape[1]):
+                        for i in range(B.shape[0]):
+                            if B[i, k]:
+                                for j in range(indptr[i], indptr[i + 1]):
+                                    posts[indices[j], k] += w
+
+        else:
+            # csr @ B
+            if vector_info.dtype == jnp.bool_:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                def mm(weights, indices, indptr, B, posts):
+                    w = weights[0]
+                    posts[:] = 0.
+                    for i in numba.prange(indptr.shape[0] - 1):
+                        r = np.zeros(B.shape[1], dtype=weights.dtype)
+                        for j in range(indptr[i], indptr[i + 1]):
+                            index = indices[j]
+                            for k in range(B.shape[1]):
+                                if B[index, k]:
+                                    r[k] += w
+                        posts[i] = r
+
+            else:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                def mm(weights, indices, indptr, B, posts):
+                    w = weights[0]
+                    B = B > 0.
+                    for i in numba.prange(indptr.shape[0] - 1):
+                        r = np.zeros(B.shape[1], dtype=weights.dtype)
+                        for j in range(indptr[i], indptr[i + 1]):
+                            index = indices[j]
+                            for k in range(B.shape[1]):
+                                if B[index, k]:
+                                    r[k] += w
+                        posts[i] = r
+
+    else:
+        if transpose:
+            # csr.T @ B
+
+            if vector_info.dtype == jnp.bool_:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                def mm(weights, indices, indptr, B, posts):
+                    posts[:] = 0.
+                    for k in numba.prange(B.shape[1]):
+                        for i in range(B.shape[0]):
+                            if B[i, k]:
+                                for j in range(indptr[i], indptr[i + 1]):
+                                    posts[indices[j], k] += weights[j]
+
+            else:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                def mm(weights, indices, indptr, B, posts):
+                    B = B > 0.
+                    posts[:] = 0.
+                    for k in numba.prange(B.shape[1]):
+                        for i in range(B.shape[0]):
+                            if B[i, k]:
+                                for j in range(indptr[i], indptr[i + 1]):
+                                    posts[indices[j], k] += weights[j]
+
+        else:
+            # csr @ B
+            # Fixed: Changed range to prange for parallelization
+
+            if vector_info.dtype == jnp.bool_:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                def mm(weights, indices, indptr, B, posts):
+                    n_cols = B.shape[1]
+                    for i in numba.prange(indptr.shape[0] - 1):
+                        r = np.zeros(n_cols, dtype=posts.dtype)
+                        for j in range(indptr[i], indptr[i + 1]):
+                            col_idx = indices[j]
+                            w = weights[j]
+                            B_row = B[col_idx]  # Load entire row once (cache-friendly)
+                            for k in range(n_cols):
+                                if B_row[k]:
+                                    r[k] += w
+                        posts[i] = r
+
+            else:
+                @numba.njit(parallel=get_numba_parallel(), fastmath=True, nogil=True)
+                def mm(weights, indices, indptr, B, posts):
+                    n_cols = B.shape[1]
+                    for i in numba.prange(indptr.shape[0] - 1):
+                        r = np.zeros(n_cols, dtype=posts.dtype)
+                        for j in range(indptr[i], indptr[i + 1]):
+                            col_idx = indices[j]
+                            w = weights[j]
+                            for k in range(n_cols):
+                                if B[col_idx, k] > 0.:
+                                    r[k] += w
+                        posts[i] = r
+
+    def kernel(weights, indices, indptr, B):
+        return numba_kernel(mm, kwargs['outs'])(weights, indices, indptr, B)
 
     return kernel
 
@@ -1638,6 +1803,127 @@ def _csrmm_pallas_gpu_kernel(
         )
 
 
+def _binary_csrmm_jax_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    transpose: bool,
+    **kwargs,
+):
+    """Pure-JAX kernel for binary (event-driven) CSR matrix-matrix multiplication."""
+    m, k = shape
+    n = vector_info.shape[1]
+    is_homo = (weight_info.size == 1)
+    is_bool = (vector_info.dtype == jnp.bool_)
+    nse = kwargs['indices_info'].size
+    out_dtype = kwargs['outs'][0].dtype
+
+    if transpose:
+        def kernel(weights, indices, indptr, B):
+            row_ids = jnp.repeat(
+                jnp.arange(m, dtype=indptr.dtype),
+                jnp.diff(indptr),
+                total_repeat_length=nse,
+            )
+            B_rows = B[row_ids]  # [nse, n]
+            events = B_rows.astype(out_dtype) if is_bool else (B_rows > 0.).astype(out_dtype)
+            w = weights[0] if is_homo else weights[:, None]
+            return (jnp.zeros((k, n), dtype=out_dtype).at[indices].add(w * events),)
+    else:
+        def kernel(weights, indices, indptr, B):
+            row_ids = jnp.repeat(
+                jnp.arange(m, dtype=indptr.dtype),
+                jnp.diff(indptr),
+                total_repeat_length=nse,
+            )
+            B_rows = B[indices]  # [nse, n]
+            events = B_rows.astype(out_dtype) if is_bool else (B_rows > 0.).astype(out_dtype)
+            w = weights[0] if is_homo else weights[:, None]
+            return (jnp.zeros((m, n), dtype=out_dtype).at[row_ids].add(w * events),)
+
+    return kernel
+
+
+def _binary_csrmm_cusparse_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    transpose: bool,
+    **kwargs,
+):
+    """cuSPARSE-backed kernel for binary CSR SpMM via jax.experimental.sparse (GPU only)."""
+    import jax.experimental.sparse as jsparse
+    m, k = shape
+    is_homo = (weight_info.size == 1)
+    is_bool = (vector_info.dtype == jnp.bool_)
+    nse = kwargs['indices_info'].size
+    out_dtype = kwargs['outs'][0].dtype
+
+    if transpose:
+        if is_homo:
+            def kernel(weights, indices, indptr, B):
+                events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
+                ones = jnp.ones(nse, dtype=out_dtype)
+                row, col = _csr_to_coo(indices, indptr)
+                mat = jsparse.BCOO((ones, jnp.stack([row, col], axis=1)), shape=(m, k))
+                return ((mat.T @ events) * weights[0].astype(out_dtype),)
+        else:
+            def kernel(weights, indices, indptr, B):
+                events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
+                row, col = _csr_to_coo(indices, indptr)
+                mat = jsparse.BCOO((weights.astype(out_dtype), jnp.stack([row, col], axis=1)), shape=(m, k))
+                return (mat.T @ events,)
+    else:
+        if is_homo:
+            def kernel(weights, indices, indptr, B):
+                events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
+                ones = jnp.ones(nse, dtype=out_dtype)
+                mat = jsparse.BCSR((ones, indices, indptr), shape=(m, k))
+                return ((mat @ events) * weights[0].astype(out_dtype),)
+        else:
+            def kernel(weights, indices, indptr, B):
+                events = B.astype(out_dtype) if is_bool else (B > 0.).astype(out_dtype)
+                mat = jsparse.BCSR((weights.astype(out_dtype), indices, indptr), shape=(m, k))
+                return (mat @ events,)
+    return kernel
+
+
+def _binary_csrmm_cuda_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    **kwargs,
+):
+    register_tvm_cuda_from_file(
+        module='csr_binary',
+        source=Path(__file__).parent.joinpath('binary.cu'),
+    )
+
+    out_info = kwargs['outs']
+
+    # Spike type suffix
+    spk_suffix = '_bool' if vector_info.dtype == jnp.bool_ else '_float'
+
+    # Weight dtype suffix
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+
+    if transpose:
+        kernel_name = f'csr_binary.binary_csrmm_t_warp{wt_sfx}{spk_suffix}'
+    else:
+        kernel_name = f'csr_binary.binary_csrmm_nt_auto{wt_sfx}{spk_suffix}'
+
+    def kernel(weights, indices, indptr, B):
+        return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, B)
+
+    return kernel
+
+
 def _csrmm_jvp_data(data_dot, data, indices, indptr, B, *, shape, transpose, **kwargs):
     return [csrmm(data_dot, indices, indptr, B, shape=shape, transpose=transpose, backend=kwargs['backend'])]
 
@@ -1743,7 +2029,9 @@ def _binary_csrmm_benchmark_data(*, platform):
                     B = jnp.asarray(np.random.rand(b_rows, 10) > 0.5, dtype=jnp.bool_)
                 else:
                     B = jnp.asarray(np.random.rand(b_rows, 10), dtype=dtype)
-                name = f"{'T' if transpose else 'NT'},{'homo' if homo else 'hetero'},{'bool' if bool_event else 'float'}"
+                name = (f"{'T' if transpose else 'NT'},"
+                        f"{'homo' if homo else 'hetero'},"
+                        f"{'bool' if bool_event else 'float'}")
                 configs.append(
                     BenchmarkConfig(
                         name,
@@ -1905,7 +2193,7 @@ binary_csrmm_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``binary_csrmm``.
 
 This ``XLACustomKernel`` instance dispatches the binary (event-driven) CSR sparse matrix-matrix multiplication
-operation to registered backends (``numba``, ``warp``, ``pallas``),
+operation to registered backends (``numba``, ``pallas``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 Only entries of ``B`` that are ``True`` (boolean) or positive (float) are considered active events
@@ -1927,6 +2215,11 @@ binary_csrmm : High-level user-facing function wrapper.
 binary_csrmm_p.def_numba_kernel(_csrmm_numba_kernel)
 binary_csrmm_p.def_warp_kernel(_csrmm_warp_kernel)
 binary_csrmm_p.def_pallas_kernel('gpu', _csrmm_pallas_gpu_kernel)
+binary_csrmm_p.def_tvmffi_kernel('gpu', _binary_csrmm_cuda_kernel)
+binary_csrmm_p.def_kernel('jax_raw', 'cpu', _binary_csrmm_jax_kernel)
+binary_csrmm_p.def_kernel('jax_raw', 'gpu', _binary_csrmm_jax_kernel)
+binary_csrmm_p.def_kernel('jax_raw', 'tpu', _binary_csrmm_jax_kernel)
+binary_csrmm_p.def_kernel('cusparse', 'gpu', _binary_csrmm_cusparse_kernel)
 binary_csrmm_p.def_jvp_rule2(_csrmm_jvp_data, None, None, _csrmm_jvp_B)
 binary_csrmm_p.def_transpose_rule(_csrmm_transpose_rule)
 binary_csrmm_p.def_batching_rule(_csrmm_batching)

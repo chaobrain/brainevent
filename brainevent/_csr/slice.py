@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+from pathlib import Path
 from typing import Optional
 
 import brainunit as u
@@ -22,7 +23,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import namescope
-from brainevent._op import numba_kernel, jaxinfo_to_warpinfo, XLACustomKernel, general_batching_rule
+from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
 
@@ -113,73 +114,6 @@ def _csr_slice_rows_numba_kernel_generator(
 
     def kernel(data, indices, indptr, row_indices):
         return numba_kernel(slice_rows, outs=kwargs['outs'])(data, indices, indptr, row_indices)
-
-    return kernel
-
-
-def _csr_slice_rows_warp_kernel_generator(
-    data_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    indptr_info: jax.ShapeDtypeStruct,
-    row_indices_info: jax.ShapeDtypeStruct,
-    shape: MatrixShape,
-    **kwargs,
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    data_warp = jaxinfo_to_warpinfo(data_info)
-    indices_warp = jaxinfo_to_warpinfo(indices_info)
-    indptr_warp = jaxinfo_to_warpinfo(indptr_info)
-    row_indices_warp = jaxinfo_to_warpinfo(row_indices_info)
-    out_warp = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    m, n = shape
-    num_selected = row_indices_info.shape[0]
-    homo = data_info.shape[0] == 1
-
-    if homo:
-        @warp.kernel
-        def slice_rows_warp(
-            data: data_warp,
-            indices: indices_warp,
-            indptr: indptr_warp,
-            row_indices: row_indices_warp,
-            out: out_warp,
-        ):
-            k = warp.tid()
-            r = row_indices[k]
-            if 0 <= r < m:
-                w = data[0]
-                for j in range(indptr[r], indptr[r + 1]):
-                    col = indices[j]
-                    warp.atomic_add(out, k, col, w)
-    else:
-        @warp.kernel
-        def slice_rows_warp(
-            data: data_warp,
-            indices: indices_warp,
-            indptr: indptr_warp,
-            row_indices: row_indices_warp,
-            out: out_warp,
-        ):
-            k = warp.tid()
-            r = row_indices[k]
-            if 0 <= r < m:
-                for j in range(indptr[r], indptr[r + 1]):
-                    col = indices[j]
-                    warp.atomic_add(out, k, col, data[j])
-
-    def kernel(data, indices, indptr, row_indices):
-        out_info = kwargs['outs'][0]
-        zeros = jnp.zeros(out_info.shape, dtype=out_info.dtype)
-        fn = jax_kernel(
-            slice_rows_warp,
-            launch_dims=[num_selected],
-            num_outputs=1,
-            in_out_argnames=['out'],
-        )
-        return fn(data, indices, indptr, row_indices, zeros)
 
     return kernel
 
@@ -304,6 +238,32 @@ def _csr_slice_rows_benchmark_data(*, platform):
     ]
 
 
+def _csr_slice_rows_cuda_kernel_generator(
+    **kwargs,
+):
+    register_tvm_cuda_from_file(
+        module='csr_slice_rows',
+        source=Path(__file__).parent.joinpath('slice.cu'),
+    )
+
+    out_info = kwargs['outs']
+    data_info = kwargs['data_info']
+
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(data_info.dtype), '_f32')
+    kernel_name = f'csr_slice_rows.csr_slice_rows_fwd_auto{wt_sfx}'
+
+    def kernel(data, indices, indptr, row_indices):
+        return jax.ffi.ffi_call(kernel_name, out_info)(data, indices, indptr, row_indices)
+
+    return kernel
+
+
 def csr_slice_rows_p_call(
     data, indices, indptr, row_indices,
     *, shape: MatrixShape, backend: Optional[str] = None,
@@ -361,7 +321,7 @@ csr_slice_rows_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``csr_slice_rows``.
 
 This ``XLACustomKernel`` instance dispatches the CSR row slicing operation
-to registered backends (``numba``, ``warp``, ``pallas``),
+to registered backends (``numba``, ``pallas``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 Extracts selected rows from a CSR sparse matrix and returns a dense
@@ -388,9 +348,125 @@ csr_slice_rows : High-level user-facing function wrapper.
 csr_slice_rows_grad_p : Companion gradient primitive used by the transpose rule.
 """
 )
+def _csr_slice_rows_warp_kernel_generator(
+    data_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    indptr_info: jax.ShapeDtypeStruct,
+    row_indices_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    **kwargs,
+):
+    import warp
+    from warp.jax_experimental import jax_kernel
+
+    data_warp = jaxinfo_to_warpinfo(data_info)
+    indices_warp = jaxinfo_to_warpinfo(indices_info)
+    indptr_warp = jaxinfo_to_warpinfo(indptr_info)
+    row_indices_warp = jaxinfo_to_warpinfo(row_indices_info)
+    out_warp = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    m, n = shape
+    num_selected = row_indices_info.shape[0]
+    homo = data_info.shape[0] == 1
+
+    if homo:
+        @warp.kernel
+        def slice_rows_warp(
+            data: data_warp,
+            indices: indices_warp,
+            indptr: indptr_warp,
+            row_indices: row_indices_warp,
+            out: out_warp,
+        ):
+            k = warp.tid()
+            r = row_indices[k]
+            if 0 <= r < m:
+                w = data[0]
+                for j in range(indptr[r], indptr[r + 1]):
+                    col = indices[j]
+                    warp.atomic_add(out, k, col, w)
+    else:
+        @warp.kernel
+        def slice_rows_warp(
+            data: data_warp,
+            indices: indices_warp,
+            indptr: indptr_warp,
+            row_indices: row_indices_warp,
+            out: out_warp,
+        ):
+            k = warp.tid()
+            r = row_indices[k]
+            if 0 <= r < m:
+                for j in range(indptr[r], indptr[r + 1]):
+                    col = indices[j]
+                    warp.atomic_add(out, k, col, data[j])
+
+    def kernel(data, indices, indptr, row_indices):
+        out_info = kwargs['outs'][0]
+        zeros = jnp.zeros(out_info.shape, dtype=out_info.dtype)
+        fn = jax_kernel(
+            slice_rows_warp,
+            launch_dims=[num_selected],
+            num_outputs=1,
+            in_out_argnames=['out'],
+        )
+        return fn(data, indices, indptr, row_indices, zeros)
+
+    return kernel
+
+
+def _csr_slice_rows_grad_warp_kernel_generator(
+    ct_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    indptr_info: jax.ShapeDtypeStruct,
+    row_indices_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    **kwargs,
+):
+    import warp
+    from warp.jax_experimental import jax_kernel
+
+    ct_warp = jaxinfo_to_warpinfo(ct_info)
+    indices_warp = jaxinfo_to_warpinfo(indices_info)
+    indptr_warp = jaxinfo_to_warpinfo(indptr_info)
+    row_indices_warp = jaxinfo_to_warpinfo(row_indices_info)
+    out_warp = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    m, n = shape
+    num_selected = row_indices_info.shape[0]
+
+    @warp.kernel
+    def grad_slice_warp(
+        ct: ct_warp,
+        indices: indices_warp,
+        indptr: indptr_warp,
+        row_indices: row_indices_warp,
+        ct_data: out_warp,
+    ):
+        k = warp.tid()
+        r = row_indices[k]
+        if 0 <= r < m:
+            for j in range(indptr[r], indptr[r + 1]):
+                col = indices[j]
+                warp.atomic_add(ct_data, j, ct[k, col])
+
+    def kernel(ct, indices, indptr, row_indices):
+        out_info = kwargs['outs'][0]
+        zeros = jnp.zeros(out_info.shape, dtype=out_info.dtype)
+        fn = jax_kernel(
+            grad_slice_warp,
+            launch_dims=[num_selected],
+            num_outputs=1,
+            in_out_argnames=['ct_data'],
+        )
+        return fn(ct, indices, indptr, row_indices, zeros)
+
+    return kernel
+
 csr_slice_rows_p.def_numba_kernel(_csr_slice_rows_numba_kernel_generator)
 csr_slice_rows_p.def_warp_kernel(_csr_slice_rows_warp_kernel_generator)
 csr_slice_rows_p.def_pallas_kernel('gpu', _csr_slice_rows_pallas_kernel_generator)
+csr_slice_rows_p.def_tvmffi_kernel('gpu', _csr_slice_rows_cuda_kernel_generator)
 csr_slice_rows_p.def_jvp_rule2(_csr_slice_rows_jvp_data, None, None, None)
 csr_slice_rows_p.def_transpose_rule(_csr_slice_rows_transpose_rule)
 csr_slice_rows_p.def_batching_rule(_csr_slice_rows_batching)
@@ -468,55 +544,6 @@ def _csr_slice_rows_grad_numba_kernel_generator(
     return kernel
 
 
-def _csr_slice_rows_grad_warp_kernel_generator(
-    ct_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    indptr_info: jax.ShapeDtypeStruct,
-    row_indices_info: jax.ShapeDtypeStruct,
-    shape: MatrixShape,
-    **kwargs,
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    ct_warp = jaxinfo_to_warpinfo(ct_info)
-    indices_warp = jaxinfo_to_warpinfo(indices_info)
-    indptr_warp = jaxinfo_to_warpinfo(indptr_info)
-    row_indices_warp = jaxinfo_to_warpinfo(row_indices_info)
-    out_warp = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    m, n = shape
-    num_selected = row_indices_info.shape[0]
-
-    @warp.kernel
-    def grad_slice_warp(
-        ct: ct_warp,
-        indices: indices_warp,
-        indptr: indptr_warp,
-        row_indices: row_indices_warp,
-        ct_data: out_warp,
-    ):
-        k = warp.tid()
-        r = row_indices[k]
-        if 0 <= r < m:
-            for j in range(indptr[r], indptr[r + 1]):
-                col = indices[j]
-                warp.atomic_add(ct_data, j, ct[k, col])
-
-    def kernel(ct, indices, indptr, row_indices):
-        out_info = kwargs['outs'][0]
-        zeros = jnp.zeros(out_info.shape, dtype=out_info.dtype)
-        fn = jax_kernel(
-            grad_slice_warp,
-            launch_dims=[num_selected],
-            num_outputs=1,
-            in_out_argnames=['ct_data'],
-        )
-        return fn(ct, indices, indptr, row_indices, zeros)
-
-    return kernel
-
-
 def _csr_slice_rows_grad_pallas_kernel_generator(
     row_indices_info: jax.ShapeDtypeStruct,
     shape: MatrixShape,
@@ -584,6 +611,32 @@ def _csr_slice_rows_grad_benchmark_data(*, platform):
             {'shape': (n_pre, n_post)},
         )
     ]
+
+
+def _csr_slice_rows_grad_cuda_kernel_generator(
+    **kwargs,
+):
+    register_tvm_cuda_from_file(
+        module='csr_slice_rows',
+        source=Path(__file__).parent.joinpath('slice.cu'),
+    )
+
+    out_info = kwargs['outs']
+    ct_info = kwargs['ct_info']
+
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(ct_info.dtype), '_f32')
+    kernel_name = f'csr_slice_rows.csr_slice_rows_grad_auto{wt_sfx}'
+
+    def kernel(ct, indices, indptr, row_indices):
+        return jax.ffi.ffi_call(kernel_name, out_info)(ct, indices, indptr, row_indices)
+
+    return kernel
 
 
 def _csr_slice_rows_grad_transpose_rule(ct, ct_input, indices, indptr, row_indices, *, shape, **kwargs):
@@ -664,7 +717,7 @@ csr_slice_rows_grad_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for the gradient of ``csr_slice_rows``.
 
 This ``XLACustomKernel`` instance dispatches the backward pass of the CSR
-row slicing operation to registered backends (``numba``, ``warp``, ``pallas``),
+row slicing operation to registered backends (``numba``, ``pallas``),
 using runtime shape/dtype metadata provided by the calling transpose rule.
 
 Given a cotangent matrix ``ct`` of shape ``(num_selected, n_cols)`` (the
@@ -692,6 +745,7 @@ csr_slice_rows : High-level user-facing function wrapper.
 csr_slice_rows_grad_p.def_numba_kernel(_csr_slice_rows_grad_numba_kernel_generator)
 csr_slice_rows_grad_p.def_warp_kernel(_csr_slice_rows_grad_warp_kernel_generator)
 csr_slice_rows_grad_p.def_pallas_kernel('gpu', _csr_slice_rows_grad_pallas_kernel_generator)
+csr_slice_rows_grad_p.def_tvmffi_kernel('gpu', _csr_slice_rows_grad_cuda_kernel_generator)
 csr_slice_rows_grad_p.def_jvp_rule2(_csr_slice_rows_grad_jvp_ct, None, None, None)
 csr_slice_rows_grad_p.def_transpose_rule(_csr_slice_rows_grad_transpose_rule)
 csr_slice_rows_grad_p.def_batching_rule(_csr_slice_rows_grad_batching)

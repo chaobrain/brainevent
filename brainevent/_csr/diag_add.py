@@ -25,7 +25,7 @@ from jax.interpreters import ad
 from jax.interpreters.partial_eval import DynamicJaxprTracer
 
 from brainevent._misc import generate_block_dim, MatrixShape
-from brainevent._op import numba_kernel, jaxinfo_to_warpinfo, XLACustomKernel
+from brainevent._op import numba_kernel, XLACustomKernel, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 
 
@@ -357,7 +357,7 @@ def csr_diag_add(csr_value, diag_position, diag_value, backend: Optional[str] = 
         Values to add to the diagonal, with shape matching ``diag_position``.
         Must have the same units and dtype as ``csr_value``.
     backend : str or None, optional
-        Compute backend to use. One of ``'numba'``, ``'warp'``, ``'pallas'``, or
+        Compute backend to use. One of ``'numba'``, ``'pallas'``, or
         ``None`` for automatic selection.
 
     Returns
@@ -440,40 +440,6 @@ def _csr_diag_add_numba_kernel_generator(
     return kernel
 
 
-def _csr_diag_add_warp_kernel_generator(
-    csr_value_info: jax.ShapeDtypeStruct,
-    diag_pos_info: jax.ShapeDtypeStruct,
-    diag_value_info: jax.ShapeDtypeStruct,
-    **kwargs
-):
-    import warp  # pylint: disable=import-outside-toplevel
-    from warp.jax_experimental import jax_kernel
-
-    csr_value_warp_info = jaxinfo_to_warpinfo(csr_value_info)
-    diag_pos_warp_info = jaxinfo_to_warpinfo(diag_pos_info)
-    diag_value_warp_info = jaxinfo_to_warpinfo(diag_value_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    @warp.kernel
-    def diag_add_warp(
-        csr_value: csr_value_warp_info,
-        diag_position: diag_pos_warp_info,
-        diag_value: diag_value_warp_info,
-        out: out_warp_info
-    ):
-        i_diag = warp.tid()
-        pos = diag_position[i_diag]
-        if pos >= 0:
-            out[pos] += diag_value[i_diag]
-
-    def kernel(csr_value, diag_position, diag_value):
-        dim = diag_pos_info.shape[0]
-        fn = jax_kernel(diag_add_warp, launch_dims=[dim], num_outputs=1, in_out_argnames=['out'])
-        return fn(csr_value, diag_position, diag_value, jnp.array(csr_value))
-
-    return kernel
-
-
 def _csr_diag_add_pallas_kernel_generator(
     csr_value_info: jax.ShapeDtypeStruct,
     diag_pos_info: jax.ShapeDtypeStruct,
@@ -549,7 +515,7 @@ def csr_diag_add_call(csr_value, diag_position, diag_value, *, backend: Optional
         Values to add to the diagonal, with the same shape as ``diag_position``
         and the same dtype as ``csr_value``.
     backend : str or None, optional
-        Compute backend to use. One of ``'numba'``, ``'warp'``, ``'pallas'``, or
+        Compute backend to use. One of ``'numba'``, ``'pallas'``, or
         ``None`` for automatic selection.
 
     Returns
@@ -617,7 +583,7 @@ csr_diag_add_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``csr_diag_add``.
 
 This ``XLACustomKernel`` instance dispatches the CSR diagonal addition operation
-operation to registered backends (``numba``, ``warp``, ``pallas``),
+operation to registered backends (``numba``, ``pallas``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 Adds values to the diagonal elements of a CSR sparse matrix using a position array
@@ -636,6 +602,39 @@ See Also
 csr_diag_add : High-level user-facing function wrapper.
 """
 )
+def _csr_diag_add_warp_kernel_generator(
+    csr_value_info: jax.ShapeDtypeStruct,
+    diag_pos_info: jax.ShapeDtypeStruct,
+    diag_value_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    import warp  # pylint: disable=import-outside-toplevel
+    from warp.jax_experimental import jax_kernel
+
+    csr_value_warp_info = jaxinfo_to_warpinfo(csr_value_info)
+    diag_pos_warp_info = jaxinfo_to_warpinfo(diag_pos_info)
+    diag_value_warp_info = jaxinfo_to_warpinfo(diag_value_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    @warp.kernel
+    def diag_add_warp(
+        csr_value: csr_value_warp_info,
+        diag_position: diag_pos_warp_info,
+        diag_value: diag_value_warp_info,
+        out: out_warp_info
+    ):
+        i_diag = warp.tid()
+        pos = diag_position[i_diag]
+        if pos >= 0:
+            out[pos] += diag_value[i_diag]
+
+    def kernel(csr_value, diag_position, diag_value):
+        dim = diag_pos_info.shape[0]
+        fn = jax_kernel(diag_add_warp, launch_dims=[dim], num_outputs=1, in_out_argnames=['out'])
+        return fn(csr_value, diag_position, diag_value, jnp.array(csr_value))
+
+    return kernel
+
 csr_diag_add_p.def_numba_kernel(_csr_diag_add_numba_kernel_generator)
 csr_diag_add_p.def_warp_kernel(_csr_diag_add_warp_kernel_generator)
 csr_diag_add_p.def_pallas_kernel('gpu', _csr_diag_add_pallas_kernel_generator)
