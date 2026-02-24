@@ -14,6 +14,7 @@
 # ==============================================================================
 # -*- coding: utf-8 -*-
 
+from pathlib import Path
 from typing import Optional, Sequence
 
 import brainunit as u
@@ -25,11 +26,10 @@ from jax.interpreters import ad
 from brainevent._data import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_uniform
-from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo, general_batching_rule
-from brainevent._op.benchmark import BenchmarkConfig
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
 from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
-from .float import jitumv_p_call, jitumm_p_call
+from .float import jitumv_p_call, jitumm_p_call, _dtype_sfx
 
 __all__ = [
     "binary_jitumv",
@@ -91,7 +91,7 @@ def binary_jitumv(
         Memory layout order for the connectivity generation. True for C-order
         (row-major), False for Fortran-order (column-major). Default is True.
     backend : str, optional
-        Computation backend. One of ``'numba'``, ``'warp'``, or ``'pallas'``.
+        Computation backend. One of ``'numba'`` or ``'pallas'``.
         If None, the default backend is used.
 
     Returns
@@ -214,7 +214,7 @@ def binary_jitumm(
         Memory layout order for the connectivity generation. True for C-order
         (row-major), False for Fortran-order (column-major). Default is True.
     backend : str, optional
-        Computation backend. One of ``'numba'``, ``'warp'``, or ``'pallas'``.
+        Computation backend. One of ``'numba'`` or ``'pallas'``.
         If None, the default backend is used.
 
     Returns
@@ -405,170 +405,6 @@ def _jitumv_numba_kernel_generator(
     return kernel
 
 
-def _jitumv_warp_kernel_generator(
-    w_low_info: jax.ShapeDtypeStruct,
-    w_high_info: jax.ShapeDtypeStruct,
-    clen_info: jax.ShapeDtypeStruct,
-    vector_info: jax.ShapeDtypeStruct,
-    seed_info: jax.ShapeDtypeStruct,
-    out_info: jax.ShapeDtypeStruct,
-    corder: bool = True,
-    **kwargs
-):
-    """
-    Generate a Warp GPU kernel for binary event JIT-uniform matrix-vector product.
-
-    Parameters
-    ----------
-    w_low_info : jax.ShapeDtypeStruct
-        Shape and dtype metadata for the lower weight bound.
-    w_high_info : jax.ShapeDtypeStruct
-        Shape and dtype metadata for the upper weight bound.
-    clen_info : jax.ShapeDtypeStruct
-        Shape and dtype metadata for the connection length parameter.
-    vector_info : jax.ShapeDtypeStruct
-        Shape and dtype metadata for the input event vector.
-    seed_info : jax.ShapeDtypeStruct
-        Shape and dtype metadata for the random seed.
-    out_info : jax.ShapeDtypeStruct
-        Shape and dtype metadata for the output array.
-    corder : bool, optional
-        If True, each GPU thread handles one output element. If False, each
-        thread handles one input element using atomic adds. Default is True.
-    **kwargs
-        Additional keyword arguments, must include ``outs`` specifying
-        output shape/dtype information.
-
-    Returns
-    -------
-    callable
-        A function ``kernel(w_low, w_high, clen, vector, seed)`` that
-        launches the Warp kernel on GPU and returns the result.
-    """
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    w_low_warp = jaxinfo_to_warpinfo(w_low_info)
-    w_high_warp = jaxinfo_to_warpinfo(w_high_info)
-    clen_warp = jaxinfo_to_warpinfo(clen_info)
-    vector_warp = jaxinfo_to_warpinfo(vector_info)
-    seed_warp = jaxinfo_to_warpinfo(seed_info)
-    out_warp = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if corder:
-        if vector_info.dtype == jnp.bool_:
-            @warp.kernel
-            def kernel_impl(
-                w_low: w_low_warp,
-                w_high: w_high_warp,
-                clen: clen_warp,
-                vector: vector_warp,
-                seed: seed_warp,
-                posts: out_warp,
-            ):
-                num_row = vector.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                w_diff = w_high0 - w_low0
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_col = warp.tid()
-                r = float(0.0)
-                state = warp.rand_init(seed0 + i_col * num_row)
-                i_row = warp.randi(state, 0, clen0)
-                while i_row < num_row:
-                    w = warp.randf(state) * w_diff + w_low0
-                    r = warp.where(vector[i_row], r + w, r)
-                    i_row += warp.randi(state, 1, clen0)
-                posts[i_col] = r
-
-        else:
-            @warp.kernel
-            def kernel_impl(
-                w_low: w_low_warp,
-                w_high: w_high_warp,
-                clen: clen_warp,
-                vector: vector_warp,
-                seed: seed_warp,
-                posts: out_warp,
-            ):
-                num_row = vector.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                w_diff = w_high0 - w_low0
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_col = warp.tid()
-                r = float(0.0)
-                state = warp.rand_init(seed0 + i_col * num_row)
-                i_row = warp.randi(state, 0, clen0)
-                while i_row < num_row:
-                    w = warp.randf(state) * w_diff + w_low0
-                    if vector[i_row] > float(0.0):
-                        r += w
-                    i_row += warp.randi(state, 1, clen0)
-                posts[i_col] = r
-
-    else:
-        if vector_info.dtype == jnp.bool_:
-            @warp.kernel
-            def kernel_impl(
-                w_low: w_low_warp,
-                w_high: w_high_warp,
-                clen: clen_warp,
-                vector: vector_warp,
-                seed: seed_warp,
-                posts: out_warp,
-            ):
-                num_col = posts.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                w_diff = w_high0 - w_low0
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_row = warp.tid()
-                v = vector[i_row]
-                if v:
-                    state = warp.rand_init(seed0 + i_row * num_col)
-                    i_col = warp.randi(state, 0, clen0)
-                    while i_col < num_col:
-                        w = warp.randf(state) * w_diff + w_low0
-                        warp.atomic_add(posts, i_col, w)
-                        i_col += warp.randi(state, 1, clen0)
-        else:
-            @warp.kernel
-            def kernel_impl(
-                w_low: w_low_warp,
-                w_high: w_high_warp,
-                clen: clen_warp,
-                vector: vector_warp,
-                seed: seed_warp,
-                posts: out_warp,
-            ):
-                num_col = posts.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
-                w_diff = w_high0 - w_low0
-                clen0 = clen[0]
-                seed0 = seed[0]
-                i_row = warp.tid()
-                v = vector[i_row] > 0.
-                if v:
-                    state = warp.rand_init(seed0 + i_row * num_col)
-                    i_col = warp.randi(state, 0, clen0)
-                    while i_col < num_col:
-                        w = warp.randf(state) * w_diff + w_low0
-                        warp.atomic_add(posts, i_col, w)
-                        i_col += warp.randi(state, 1, clen0)
-
-    def kernel(w_low, w_high, clen, vector, seed):
-        dim = out_info.shape[0] if corder else vector_info.shape[0]
-        fn = jax_kernel(kernel_impl, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
-        return fn(w_low, w_high, clen, vector, seed, jnp.zeros(out_info.shape, out_info.dtype))
-
-    return kernel
-
-
 def _jitumv_pallas_kernel_generator(
     vector_info: jax.ShapeDtypeStruct,
     out_info: jax.ShapeDtypeStruct,
@@ -623,7 +459,7 @@ def _jitumv_pallas_kernel_generator(
             i_cols = i_col_block * block_size + jnp.arange(block_size)
             i_col_mask = i_cols < dim
 
-            def body(data):
+            def body(_step, data):
                 i_rows, i_row_mask, rng, res = data
                 safe_rows = jnp.where(i_row_mask, i_rows, 0)
                 v = vector_ref[safe_rows]
@@ -638,11 +474,10 @@ def _jitumv_pallas_kernel_generator(
             rng = _PallasLFSRRNG(seed + i_cols * num_row)
             i_rows = rng.random_integers(0, clen)
             i_row_mask = i_rows < num_row
-            out = jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
+            _, _, _, out = jax.lax.fori_loop(
+                0, num_row, body,
                 (i_rows, i_row_mask, rng, jnp.zeros(block_size, dtype=post_ref.dtype))
-            )[-1]
+            )
             post_ref[i_cols] = jnp.where(i_col_mask, out, post_ref[i_cols])
 
     else:
@@ -658,13 +493,14 @@ def _jitumv_pallas_kernel_generator(
             i_row_block = pl.program_id(0)
             i_rows = i_row_block * block_size + jnp.arange(block_size)
             i_row_mask = i_rows < dim
-            v = vector_ref[i_rows]
+            safe_rows = jnp.where(i_row_mask, i_rows, 0)
+            v = vector_ref[safe_rows]
             if vector_info.dtype != jnp.bool_:
                 v = v > 0.
             # event_mask: only active lanes where the vector element is an event
             event_mask = i_row_mask & v
 
-            def body(data):
+            def body(_step, data):
                 i_cols, i_col_mask, rng = data
                 w = rng.uniform(w_low, w_high)
                 atomic_add(post_ref, (i_cols,), w, mask=event_mask & i_col_mask)
@@ -674,11 +510,7 @@ def _jitumv_pallas_kernel_generator(
             rng = _PallasLFSRRNG(seed + i_rows * num_col)
             i_cols = rng.random_integers(0, clen)
             i_col_mask = i_cols < num_col
-            jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_cols, i_col_mask, rng)
-            )
+            jax.lax.fori_loop(0, num_col, body, (i_cols, i_col_mask, rng))
 
     def run(w_low, w_high, clen, vector, seed):
         fn = pl.pallas_call(
@@ -1037,7 +869,7 @@ def binary_jitumv_p_call(
     corder : bool
         Memory layout order flag for the connectivity generation.
     backend : str, optional
-        Computation backend (``'numba'``, ``'warp'``, or ``'pallas'``).
+        Computation backend (``'numba'`` or ``'pallas'``).
 
     Returns
     -------
@@ -1098,13 +930,43 @@ def binary_jitumv_p_call(
     )
 
 
+_spike_sfx = {
+    np.dtype('bool'): '_bool',
+    np.dtype('int8'): '_bool',
+    np.dtype('float32'): '_float',
+    np.dtype('float16'): '_float',
+    np.dtype('float64'): '_float',
+    np.dtype('bfloat16'): '_float',
+}
+
+
+def _binary_jitumv_cuda_kernel(
+    corder: bool,
+    vector_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    register_tvm_cuda_from_file(
+        module='jit_uniform',
+        source=Path(__file__).parent.joinpath('jit_uniform.cu'),
+    )
+    wt_sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
+    sp_sfx = _spike_sfx.get(np.dtype(vector_info.dtype), '_float')
+    variant = 'gather' if corder else 'scatter'
+    kernel_name = f'jit_uniform.binary_jitumv_{variant}{wt_sfx}{sp_sfx}'
+
+    def kernel(w_low, w_high, clen, vector, seed):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed, vector)
+
+    return kernel
+
+
 binary_jitumv_p = XLACustomKernel(
     'binary_jitumv',
     doc="""
 Low-level XLA custom-kernel primitive for ``binary_jitumv``.
 
 This ``XLACustomKernel`` instance dispatches the binary (event-driven) JIT uniform connectivity
-matrix-vector multiplication operation to registered backends (``numba``, ``warp``, ``pallas``),
+matrix-vector multiplication operation to registered backends (``numba``, ``pallas``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 In this operation, the connectivity matrix has weights uniformly distributed between specified
@@ -1123,32 +985,36 @@ See Also
 binary_jitumv : High-level user-facing function wrapper.
 """
 )
-binary_jitumv_p.def_numba_kernel(_jitumv_numba_kernel_generator)
-binary_jitumv_p.def_warp_kernel(_jitumv_warp_kernel_generator)
-binary_jitumv_p.def_pallas_kernel('gpu', _jitumv_pallas_kernel_generator)
-binary_jitumv_p.def_jvp_rule2(_jitumv_jvp_wloc, _jitumv_jvp_wscale, None, _jitumv_jvp_v, None)
-binary_jitumv_p.def_transpose_rule(_jitumv_transpose_rules)
-binary_jitumv_p.def_batching_rule(_jitumv_batching)
-binary_jitumv_p.def_call(binary_jitumv_p_call)
-binary_jitumv_p.def_tags('jit_uniform', 'binary')
-binary_jitumv_p.def_benchmark_data(_binary_jitumv_benchmark_data)
-
-
-def _jitumm_numba_kernel_generator(
-    B_info: jax.ShapeDtypeStruct,
+def _jitumv_warp_kernel_generator(
+    w_low_info: jax.ShapeDtypeStruct,
+    w_high_info: jax.ShapeDtypeStruct,
+    clen_info: jax.ShapeDtypeStruct,
+    vector_info: jax.ShapeDtypeStruct,
+    seed_info: jax.ShapeDtypeStruct,
+    out_info: jax.ShapeDtypeStruct,
     corder: bool = True,
     **kwargs
 ):
     """
-    Generate a Numba CPU kernel for binary event JIT-uniform matrix-matrix product.
+    Generate a Warp GPU kernel for binary event JIT-uniform matrix-vector product.
 
     Parameters
     ----------
-    B_info : jax.ShapeDtypeStruct
-        Shape and dtype metadata for the input event matrix ``B``.
+    w_low_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the lower weight bound.
+    w_high_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the upper weight bound.
+    clen_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the connection length parameter.
+    vector_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the input event vector.
+    seed_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the random seed.
+    out_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the output array.
     corder : bool, optional
-        If True, iterate over output rows in the outer loop. If False,
-        iterate over ``B`` rows in the outer loop. Default is True.
+        If True, each GPU thread handles one output element. If False, each
+        thread handles one input element using atomic adds. Default is True.
     **kwargs
         Additional keyword arguments, must include ``outs`` specifying
         output shape/dtype information.
@@ -1156,100 +1022,129 @@ def _jitumm_numba_kernel_generator(
     Returns
     -------
     callable
-        A function ``kernel(w_low, w_high, clen, B, seed)`` that
-        executes the Numba-compiled kernel and returns the result.
+        A function ``kernel(w_low, w_high, clen, vector, seed)`` that
+        launches the Warp kernel on GPU and returns the result.
     """
-    import numba
+    import warp
+    from warp.jax_experimental import jax_kernel
 
-    _lfsr_seed = get_numba_lfsr_seed()
-    _lfsr_random_integers = get_numba_lfsr_random_integers()
-    _lfsr_uniform = get_numba_lfsr_uniform()
+    w_low_warp = jaxinfo_to_warpinfo(w_low_info)
+    w_high_warp = jaxinfo_to_warpinfo(w_high_info)
+    clen_warp = jaxinfo_to_warpinfo(clen_info)
+    vector_warp = jaxinfo_to_warpinfo(vector_info)
+    seed_warp = jaxinfo_to_warpinfo(seed_info)
+    out_warp = jaxinfo_to_warpinfo(kwargs['outs'][0])
 
     if corder:
-        if B_info.dtype == jnp.bool_:
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                m = posts.shape[0]
-                n = posts.shape[1]
-                k = B.shape[0]
+        if vector_info.dtype == jnp.bool_:
+            @warp.kernel
+            def kernel_impl(
+                w_low: w_low_warp,
+                w_high: w_high_warp,
+                clen: clen_warp,
+                vector: vector_warp,
+                seed: seed_warp,
+                posts: out_warp,
+            ):
+                num_row = vector.shape[0]
                 w_low0 = w_low[0]
                 w_high0 = w_high[0]
-                seed0 = seed[0]
+                w_diff = w_high0 - w_low0
                 clen0 = clen[0]
-                for i_m in range(m):
-                    state = _lfsr_seed(seed0 + i_m * k)
-                    i_k = _lfsr_random_integers(state, 0, clen0 - 1)
-                    out = np.zeros(n, dtype=posts.dtype)
-                    while i_k < k:
-                        w = _lfsr_uniform(state, w_low0, w_high0)
-                        for j in range(B.shape[1]):
-                            if B[i_k, j]:
-                                out[j] += w
-                        i_k += _lfsr_random_integers(state, 1, clen0 - 1)
-                    posts[i_m] = out
-        else:
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                m = posts.shape[0]
-                n = posts.shape[1]
-                k = B.shape[0]
-                w_low0 = w_low[0]
-                w_high0 = w_high[0]
                 seed0 = seed[0]
-                clen0 = clen[0]
-                for i_m in range(m):
-                    state = _lfsr_seed(seed0 + i_m * k)
-                    i_k = _lfsr_random_integers(state, 0, clen0 - 1)
-                    out = np.zeros(n, dtype=posts.dtype)
-                    while i_k < k:
-                        w = _lfsr_uniform(state, w_low0, w_high0)
-                        for j in range(B.shape[1]):
-                            if B[i_k, j] > 0.:
-                                out[j] += w
-                        i_k += _lfsr_random_integers(state, 1, clen0 - 1)
-                    posts[i_m] = out
+                i_col = warp.tid()
+                r = float(0.0)
+                state = warp.rand_init(seed0 + i_col * num_row)
+                i_row = warp.randi(state, 0, clen0)
+                while i_row < num_row:
+                    w = warp.randf(state) * w_diff + w_low0
+                    r = warp.where(vector[i_row], r + w, r)
+                    i_row += warp.randi(state, 1, clen0)
+                posts[i_col] = r
 
+        else:
+            @warp.kernel
+            def kernel_impl(
+                w_low: w_low_warp,
+                w_high: w_high_warp,
+                clen: clen_warp,
+                vector: vector_warp,
+                seed: seed_warp,
+                posts: out_warp,
+            ):
+                num_row = vector.shape[0]
+                w_low0 = w_low[0]
+                w_high0 = w_high[0]
+                w_diff = w_high0 - w_low0
+                clen0 = clen[0]
+                seed0 = seed[0]
+                i_col = warp.tid()
+                r = float(0.0)
+                state = warp.rand_init(seed0 + i_col * num_row)
+                i_row = warp.randi(state, 0, clen0)
+                while i_row < num_row:
+                    w = warp.randf(state) * w_diff + w_low0
+                    if vector[i_row] > float(0.0):
+                        r += w
+                    i_row += warp.randi(state, 1, clen0)
+                posts[i_col] = r
 
     else:
-        if B_info.dtype == jnp.bool_:
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                posts[:] = 0.
-                m = posts.shape[0]
-                k = B.shape[0]
+        if vector_info.dtype == jnp.bool_:
+            @warp.kernel
+            def kernel_impl(
+                w_low: w_low_warp,
+                w_high: w_high_warp,
+                clen: clen_warp,
+                vector: vector_warp,
+                seed: seed_warp,
+                posts: out_warp,
+            ):
+                num_col = posts.shape[0]
                 w_low0 = w_low[0]
                 w_high0 = w_high[0]
-                seed0 = seed[0]
+                w_diff = w_high0 - w_low0
                 clen0 = clen[0]
-                for i_k in range(k):
-                    state = _lfsr_seed(seed0 + i_k * m)
-                    indices = np.where(B[i_k])[0]
-                    i_m = _lfsr_random_integers(state, 0, clen0 - 1)
-                    while i_m < m:
-                        w = _lfsr_uniform(state, w_low0, w_high0)
-                        posts[i_m, indices] += w
-                        i_m += _lfsr_random_integers(state, 1, clen0 - 1)
+                seed0 = seed[0]
+                i_row = warp.tid()
+                v = vector[i_row]
+                if v:
+                    state = warp.rand_init(seed0 + i_row * num_col)
+                    i_col = warp.randi(state, 0, clen0)
+                    while i_col < num_col:
+                        w = warp.randf(state) * w_diff + w_low0
+                        warp.atomic_add(posts, i_col, w)
+                        i_col += warp.randi(state, 1, clen0)
         else:
-            @numba.njit(fastmath=True)
-            def kernel_impl(w_low, w_high, clen, B, seed, posts):
-                posts[:] = 0.
-                m = posts.shape[0]
-                k = B.shape[0]
+            @warp.kernel
+            def kernel_impl(
+                w_low: w_low_warp,
+                w_high: w_high_warp,
+                clen: clen_warp,
+                vector: vector_warp,
+                seed: seed_warp,
+                posts: out_warp,
+            ):
+                num_col = posts.shape[0]
                 w_low0 = w_low[0]
                 w_high0 = w_high[0]
-                seed0 = seed[0]
+                w_diff = w_high0 - w_low0
                 clen0 = clen[0]
-                for i_k in range(k):
-                    state = _lfsr_seed(seed0 + i_k * m)
-                    indices = np.where(B[i_k] > 0.)[0]
-                    i_m = _lfsr_random_integers(state, 0, clen0 - 1)
-                    while i_m < m:
-                        w = _lfsr_uniform(state, w_low0, w_high0)
-                        posts[i_m, indices] += w
-                        i_m += _lfsr_random_integers(state, 1, clen0 - 1)
+                seed0 = seed[0]
+                i_row = warp.tid()
+                v = vector[i_row] > 0.
+                if v:
+                    state = warp.rand_init(seed0 + i_row * num_col)
+                    i_col = warp.randi(state, 0, clen0)
+                    while i_col < num_col:
+                        w = warp.randf(state) * w_diff + w_low0
+                        warp.atomic_add(posts, i_col, w)
+                        i_col += warp.randi(state, 1, clen0)
 
-    def kernel(w_low, w_high, clen, B, seed):
-        return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, B, seed)
+    def kernel(w_low, w_high, clen, vector, seed):
+        dim = out_info.shape[0] if corder else vector_info.shape[0]
+        fn = jax_kernel(kernel_impl, launch_dims=[dim], num_outputs=1, in_out_argnames=['posts'])
+        return fn(w_low, w_high, clen, vector, seed, jnp.zeros(out_info.shape, out_info.dtype))
 
     return kernel
 
@@ -1424,6 +1319,137 @@ def _jitumm_warp_kernel_generator(
 
     return kernel
 
+binary_jitumv_p.def_numba_kernel(_jitumv_numba_kernel_generator)
+binary_jitumv_p.def_warp_kernel(_jitumv_warp_kernel_generator)
+binary_jitumv_p.def_pallas_kernel('gpu', _jitumv_pallas_kernel_generator)
+binary_jitumv_p.def_tvmffi_kernel('gpu', _binary_jitumv_cuda_kernel)
+binary_jitumv_p.def_jvp_rule2(_jitumv_jvp_wloc, _jitumv_jvp_wscale, None, _jitumv_jvp_v, None)
+binary_jitumv_p.def_transpose_rule(_jitumv_transpose_rules)
+binary_jitumv_p.def_batching_rule(_jitumv_batching)
+binary_jitumv_p.def_call(binary_jitumv_p_call)
+binary_jitumv_p.def_tags('jit_uniform', 'binary')
+binary_jitumv_p.def_benchmark_data(_binary_jitumv_benchmark_data)
+
+
+def _jitumm_numba_kernel_generator(
+    B_info: jax.ShapeDtypeStruct,
+    corder: bool = True,
+    **kwargs
+):
+    """
+    Generate a Numba CPU kernel for binary event JIT-uniform matrix-matrix product.
+
+    Parameters
+    ----------
+    B_info : jax.ShapeDtypeStruct
+        Shape and dtype metadata for the input event matrix ``B``.
+    corder : bool, optional
+        If True, iterate over output rows in the outer loop. If False,
+        iterate over ``B`` rows in the outer loop. Default is True.
+    **kwargs
+        Additional keyword arguments, must include ``outs`` specifying
+        output shape/dtype information.
+
+    Returns
+    -------
+    callable
+        A function ``kernel(w_low, w_high, clen, B, seed)`` that
+        executes the Numba-compiled kernel and returns the result.
+    """
+    import numba
+
+    _lfsr_seed = get_numba_lfsr_seed()
+    _lfsr_random_integers = get_numba_lfsr_random_integers()
+    _lfsr_uniform = get_numba_lfsr_uniform()
+
+    if corder:
+        if B_info.dtype == jnp.bool_:
+            @numba.njit(fastmath=True)
+            def kernel_impl(w_low, w_high, clen, B, seed, posts):
+                m = posts.shape[0]
+                n = posts.shape[1]
+                k = B.shape[0]
+                w_low0 = w_low[0]
+                w_high0 = w_high[0]
+                seed0 = seed[0]
+                clen0 = clen[0]
+                for i_m in range(m):
+                    state = _lfsr_seed(seed0 + i_m * k)
+                    i_k = _lfsr_random_integers(state, 0, clen0 - 1)
+                    out = np.zeros(n, dtype=posts.dtype)
+                    while i_k < k:
+                        w = _lfsr_uniform(state, w_low0, w_high0)
+                        for j in range(B.shape[1]):
+                            if B[i_k, j]:
+                                out[j] += w
+                        i_k += _lfsr_random_integers(state, 1, clen0 - 1)
+                    posts[i_m] = out
+        else:
+            @numba.njit(fastmath=True)
+            def kernel_impl(w_low, w_high, clen, B, seed, posts):
+                m = posts.shape[0]
+                n = posts.shape[1]
+                k = B.shape[0]
+                w_low0 = w_low[0]
+                w_high0 = w_high[0]
+                seed0 = seed[0]
+                clen0 = clen[0]
+                for i_m in range(m):
+                    state = _lfsr_seed(seed0 + i_m * k)
+                    i_k = _lfsr_random_integers(state, 0, clen0 - 1)
+                    out = np.zeros(n, dtype=posts.dtype)
+                    while i_k < k:
+                        w = _lfsr_uniform(state, w_low0, w_high0)
+                        for j in range(B.shape[1]):
+                            if B[i_k, j] > 0.:
+                                out[j] += w
+                        i_k += _lfsr_random_integers(state, 1, clen0 - 1)
+                    posts[i_m] = out
+
+
+    else:
+        if B_info.dtype == jnp.bool_:
+            @numba.njit(fastmath=True)
+            def kernel_impl(w_low, w_high, clen, B, seed, posts):
+                posts[:] = 0.
+                m = posts.shape[0]
+                k = B.shape[0]
+                w_low0 = w_low[0]
+                w_high0 = w_high[0]
+                seed0 = seed[0]
+                clen0 = clen[0]
+                for i_k in range(k):
+                    state = _lfsr_seed(seed0 + i_k * m)
+                    indices = np.where(B[i_k])[0]
+                    i_m = _lfsr_random_integers(state, 0, clen0 - 1)
+                    while i_m < m:
+                        w = _lfsr_uniform(state, w_low0, w_high0)
+                        posts[i_m, indices] += w
+                        i_m += _lfsr_random_integers(state, 1, clen0 - 1)
+        else:
+            @numba.njit(fastmath=True)
+            def kernel_impl(w_low, w_high, clen, B, seed, posts):
+                posts[:] = 0.
+                m = posts.shape[0]
+                k = B.shape[0]
+                w_low0 = w_low[0]
+                w_high0 = w_high[0]
+                seed0 = seed[0]
+                clen0 = clen[0]
+                for i_k in range(k):
+                    state = _lfsr_seed(seed0 + i_k * m)
+                    indices = np.where(B[i_k] > 0.)[0]
+                    i_m = _lfsr_random_integers(state, 0, clen0 - 1)
+                    while i_m < m:
+                        w = _lfsr_uniform(state, w_low0, w_high0)
+                        posts[i_m, indices] += w
+                        i_m += _lfsr_random_integers(state, 1, clen0 - 1)
+
+    def kernel(w_low, w_high, clen, B, seed):
+        return numba_kernel(kernel_impl, outs=kwargs['outs'])(w_low, w_high, clen, B, seed)
+
+    return kernel
+
 
 def _jitumm_pallas_kernel_generator(
     B_info: jax.ShapeDtypeStruct,
@@ -1497,7 +1523,7 @@ def _jitumm_pallas_kernel_generator(
 
             out = jnp.zeros(row_block, dtype=post_ref.dtype)
 
-            def body(data):
+            def body(_step, data):
                 i_cols, i_col_mask, rng, out = data
                 w = rng.uniform(w_low0, w_high0)
                 safe_cols = jnp.where(i_col_mask, i_cols, 0)
@@ -1511,11 +1537,7 @@ def _jitumm_pallas_kernel_generator(
                 i_cols += rng.random_integers(1, clen0)
                 return i_cols, i_cols < k, rng, out
 
-            _, _, _, out = jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_cols, i_col_mask, rng, out)
-            )
+            _, _, _, out = jax.lax.fori_loop(0, k, body, (i_cols, i_col_mask, rng, out))
             atomic_add(post_ref, (safe_rows, col_j), out, mask=i_row_mask)
 
     else:
@@ -1550,7 +1572,7 @@ def _jitumm_pallas_kernel_generator(
             i_rows = rng.random_integers(0, clen0)
             i_row_mask = i_rows < m
 
-            def body(data):
+            def body(_step, data):
                 i_rows, i_row_mask, rng = data
                 w = rng.uniform(w_low0, w_high0)
                 vals = jnp.where(i_k_mask & i_row_mask, w * b_events, 0.)
@@ -1560,11 +1582,7 @@ def _jitumm_pallas_kernel_generator(
                 i_rows += rng.random_integers(1, clen0)
                 return i_rows, i_rows < m, rng
 
-            jax.lax.while_loop(
-                lambda data: jnp.sum(data[1]) > 0,
-                body,
-                (i_rows, i_row_mask, rng)
-            )
+            jax.lax.fori_loop(0, m, body, (i_rows, i_row_mask, rng))
 
     def run(w_low, w_high, clen, B, seed):
         fn = pl.pallas_call(
@@ -1935,7 +1953,7 @@ def binary_jitumm_p_call(
     corder : bool
         Memory layout order flag for the connectivity generation.
     backend : str, optional
-        Computation backend (``'numba'``, ``'warp'``, or ``'pallas'``).
+        Computation backend (``'numba'`` or ``'pallas'``).
 
     Returns
     -------
@@ -1999,13 +2017,33 @@ def binary_jitumm_p_call(
     )
 
 
+def _binary_jitumm_cuda_kernel(
+    corder: bool,
+    B_info: jax.ShapeDtypeStruct,
+    **kwargs
+):
+    register_tvm_cuda_from_file(
+        module='jit_uniform',
+        source=Path(__file__).parent.joinpath('jit_uniform.cu'),
+    )
+    wt_sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
+    sp_sfx = _spike_sfx.get(np.dtype(B_info.dtype), '_float')
+    variant = 'gather' if corder else 'scatter'
+    kernel_name = f'jit_uniform.binary_jitumm_{variant}{wt_sfx}{sp_sfx}'
+
+    def kernel(w_low, w_high, clen, B, seed):
+        return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(w_low, w_high, clen, seed, B)
+
+    return kernel
+
+
 binary_jitumm_p = XLACustomKernel(
     'binary_jitumm',
     doc="""
 Low-level XLA custom-kernel primitive for ``binary_jitumm``.
 
 This ``XLACustomKernel`` instance dispatches the binary (event-driven) JIT uniform connectivity
-matrix-matrix multiplication operation to registered backends (``numba``, ``warp``, ``pallas``),
+matrix-matrix multiplication operation to registered backends (``numba``, ``pallas``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 In this operation, the connectivity matrix has weights uniformly distributed between specified
@@ -2027,6 +2065,7 @@ binary_jitumm : High-level user-facing function wrapper.
 binary_jitumm_p.def_numba_kernel(_jitumm_numba_kernel_generator)
 binary_jitumm_p.def_warp_kernel(_jitumm_warp_kernel_generator)
 binary_jitumm_p.def_pallas_kernel('gpu', _jitumm_pallas_kernel_generator)
+binary_jitumm_p.def_tvmffi_kernel('gpu', _binary_jitumm_cuda_kernel)
 binary_jitumm_p.def_jvp_rule2(_jitumm_jvp_wloc, _jitumm_jvp_wscale, None, _jitumm_jvp_B, None)
 binary_jitumm_p.def_transpose_rule(_jitumm_transpose_rules)
 binary_jitumm_p.def_batching_rule(_jitumm_batching)

@@ -14,24 +14,30 @@
 # ==============================================================================
 
 
-__version__ = "0.0.6"
+__version__ = "0.0.7"
 __version_info__ = tuple(map(int, __version__.split(".")))
 
 from . import config
 from ._coo import (
     COO,
-    binary_coomv, binary_coomv_p, binary_coomm, binary_coomm_p,
-    coomv, coomv_p, coomm, coomm_p,
+    binary_coomv, binary_coomv_p,
+    binary_coomm, binary_coomm_p,
+    coomv, coomv_p,
+    coomm, coomm_p,
     update_coo_on_binary_pre, update_coo_on_binary_post,
     update_coo_on_binary_pre_p, update_coo_on_binary_post_p,
 )
 from ._csr import (
     CSR, CSC,
-    binary_csrmv, binary_csrmv_p, binary_csrmm, binary_csrmm_p,
-    csrmv, csrmv_p, csrmm, csrmm_p, csrmv_yw2y, csrmv_yw2y_p,
+    binary_csrmv, binary_csrmv_p,
+    binary_csrmm, binary_csrmm_p,
+    csrmv, csrmv_p,
+    csrmm, csrmm_p,
+    csrmv_yw2y, csrmv_yw2y_p,
     update_csr_on_binary_pre, update_csr_on_binary_pre_p,
     update_csr_on_binary_post, update_csr_on_binary_post_p,
-    spfloat_csrmv, spfloat_csrmv_p, spfloat_csrmm, spfloat_csrmm_p,
+    spfloat_csrmv, spfloat_csrmv_p,
+    spfloat_csrmm, spfloat_csrmm_p,
     csr_slice_rows, csr_slice_rows_p,
 )
 from ._data import (
@@ -54,6 +60,8 @@ from ._error import (
     KernelCompilationError,
     KernelFallbackExhaustedError,
     KernelExecutionError,
+    TVMFFINotInstalledError,
+    TVMModuleAlreadyRegisteredError,
 )
 from ._event import (
     EventRepresentation,
@@ -68,31 +76,42 @@ from ._event import (
 )
 from ._fcn import (
     FixedNumConn, FixedPreNumConn, FixedPostNumConn,
-    binary_fcnmv, binary_fcnmv_p, binary_fcnmm, binary_fcnmm_p,
+    binary_fcnmv, binary_fcnmv_p,
+    binary_fcnmm, binary_fcnmm_p,
     fcnmv, fcnmv_p, fcnmm, fcnmm_p,
-    spfloat_fcnmv, spfloat_fcnmv_p, spfloat_fcnmm, spfloat_fcnmm_p,
+    spfloat_fcnmv, spfloat_fcnmv_p,
+    spfloat_fcnmm, spfloat_fcnmm_p,
 )
 from ._jit_normal import (
     JITCNormalR, JITCNormalC,
-    binary_jitnmv, binary_jitnmv_p, binary_jitnmm, binary_jitnmm_p,
-    jitn, jitn_p, jitnmv, jitnmv_p, jitnmm, jitnmm_p,
+    binary_jitnmv, binary_jitnmv_p,
+    binary_jitnmm, binary_jitnmm_p,
+    jitn, jitn_p,
+    jitnmv, jitnmv_p,
+    jitnmm, jitnmm_p,
 )
 from ._jit_scalar import (
     JITCScalarMatrix, JITCScalarR, JITCScalarC,
-    binary_jitsmv, binary_jitsmv_p, binary_jitsmm, binary_jitsmm_p,
-    jits, jits_p, jitsmv, jitsmv_p, jitsmm, jitsmm_p,
+    binary_jitsmv, binary_jitsmv_p,
+    binary_jitsmm, binary_jitsmm_p,
+    jits, jits_p,
+    jitsmv, jitsmv_p,
+    jitsmm, jitsmm_p,
 )
 from ._jit_uniform import (
     JITCUniformR, JITCUniformC,
-    binary_jitumv, binary_jitumv_p, binary_jitumm, binary_jitumm_p,
-    jitu, jitu_p, jitumv, jitumv_p, jitumm, jitumm_p,
+    binary_jitumv, binary_jitumv_p,
+    binary_jitumm, binary_jitumm_p,
+    jitu, jitu_p,
+    jitumv, jitumv_p,
+    jitumm, jitumm_p,
 )
 from ._misc import (
     csr_to_coo_index, coo_to_csc_index, csr_to_csc_index,
 )
 from ._op import (
     XLACustomKernel, KernelEntry,
-    BenchmarkResult, BenchmarkReport, benchmark_function,
+    BenchmarkConfig, BenchmarkRecord, BenchmarkResult, benchmark_function,
     numba_kernel, numba_cuda_kernel, numba_cuda_callable,
     register_tvm_cuda_kernels, defjvp, general_batching_rule,
     jaxtype_to_warptype, jaxinfo_to_warpinfo,
@@ -104,6 +123,7 @@ from ._pallas_random import (
 from ._registry import (
     get_registry, get_primitives_by_tags, get_all_primitive_names,
 )
+from . import pararnn
 
 __all__ = [
 
@@ -141,6 +161,7 @@ __all__ = [
     'update_csr_on_binary_post', 'update_csr_on_binary_post_p',
     'spfloat_csrmv', 'spfloat_csrmv_p',
     'spfloat_csrmm', 'spfloat_csrmm_p',
+    'csr_slice_rows', 'csr_slice_rows_p',
 
     # --- dense matrix --- #
     'binary_densemv', 'binary_densemv_p',
@@ -184,7 +205,7 @@ __all__ = [
 
     # --- operator customization routines --- #
     'XLACustomKernel', 'KernelEntry',
-    'BenchmarkResult', 'BenchmarkReport', 'benchmark_function',
+    'BenchmarkConfig', 'BenchmarkRecord', 'BenchmarkResult', 'benchmark_function',
     'numba_kernel', 'numba_cuda_kernel', 'numba_cuda_callable',
     'register_tvm_cuda_kernels', 'defjvp', 'general_batching_rule',
     'jaxtype_to_warptype', 'jaxinfo_to_warpinfo',
@@ -199,12 +220,17 @@ __all__ = [
     'KernelCompilationError',
     'KernelFallbackExhaustedError',
     'KernelExecutionError',
+    'TVMFFINotInstalledError',
+    'TVMModuleAlreadyRegisteredError',
 
     # --- utilities --- #
     'csr_to_coo_index', 'coo_to_csc_index', 'csr_to_csc_index',
 
     # --- config & registry --- #
     'config', 'get_registry', 'get_primitives_by_tags', 'get_all_primitive_names',
+
+    # --- parallel RNN --- #
+    'pararnn',
 ]
 
 
@@ -225,3 +251,4 @@ def __getattr__(name):
         # warnings.warn(f'dense_on_post is deprecated, use {update_dense_on_binary_post.__name__} instead')
         return update_dense_on_binary_post
     raise AttributeError(name)
+

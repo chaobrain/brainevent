@@ -25,15 +25,8 @@ from brainevent._compatible_import import Tracer
 from brainevent._data import JITCMatrix
 from brainevent._event.binary import BinaryArray
 from brainevent._typing import MatrixShape, WeightScalar, Prob, Seed
-from .binary import (
-    binary_jitnmv,
-    binary_jitnmm,
-)
-from .float import (
-    jitn,
-    jitnmv,
-    jitnmm,
-)
+from .binary import binary_jitnmv, binary_jitnmm
+from .float import jitn, jitnmv, jitnmm
 
 __all__ = [
     'JITCNormalR',
@@ -594,7 +587,7 @@ class JITCNormalR(JITCNormalMatrix):
             shape=(self.shape[1], self.shape[0]),
             corder=not self.corder,
             backend=self.backend,
-            buffers = self.buffers,
+            buffers=self.buffers,
         )
 
     def _new_mat(self, loc, scale, prob=None, seed=None):

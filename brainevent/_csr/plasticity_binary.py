@@ -14,6 +14,7 @@
 # ==============================================================================
 import numbers
 from functools import partial
+from pathlib import Path
 from typing import Union, Optional
 
 import brainunit as u
@@ -22,7 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._misc import namescope
-from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
+from brainevent._op import XLACustomKernel, numba_kernel, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
 
@@ -87,7 +88,7 @@ def update_csr_on_binary_pre(
     shape : tuple of int
         Full matrix shape as ``(n_pre, n_post)``.
     backend : str or None, optional
-        Compute backend to use. One of ``'numba'``, ``'warp'``, ``'pallas'``, or
+        Compute backend to use. One of ``'numba'``, ``'pallas'``, or
         ``None`` for automatic selection.
 
     Returns
@@ -191,58 +192,6 @@ def _csr_on_pre_numba_kernel_generator(
     return fn
 
 
-def _csr_on_pre_warp_kernel_generator(
-    weight_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    indptr_info: jax.ShapeDtypeStruct,
-    spike_info: jax.ShapeDtypeStruct,
-    trace_info: jax.ShapeDtypeStruct,
-    shape: MatrixShape,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
-    indptr_warp_info = jaxinfo_to_warpinfo(indptr_info)
-    spike_warp_info = jaxinfo_to_warpinfo(spike_info)
-    trace_warp_info = jaxinfo_to_warpinfo(trace_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if spike_info.dtype == jnp.bool_:
-        @warp.kernel
-        def plasticity_kernel(
-            indices: indices_warp_info,
-            indptr: indptr_warp_info,
-            pre_spike: spike_warp_info,
-            post_trace: trace_warp_info,
-            out_w: out_warp_info,
-        ):
-            i = warp.tid()
-            if pre_spike[i]:
-                for j in range(indptr[i], indptr[i + 1]):
-                    out_w[j] += post_trace[indices[j]]
-    else:
-        @warp.kernel
-        def plasticity_kernel(
-            indices: indices_warp_info,
-            indptr: indptr_warp_info,
-            pre_spike: spike_warp_info,
-            post_trace: trace_warp_info,
-            out_w: out_warp_info,
-        ):
-            i = warp.tid()
-            if pre_spike[i] != 0.:
-                for j in range(indptr[i], indptr[i + 1]):
-                    out_w[j] += post_trace[indices[j]]
-
-    def kernel(weight, indices, indptr, pre_spike, post_trace):
-        fn = jax_kernel(plasticity_kernel, launch_dims=[shape[0]], num_outputs=1, in_out_argnames=['out_w'])
-        return fn(indices, indptr, pre_spike, post_trace, weight)
-
-    return kernel
-
-
 def _csr_on_pre_pallas_kernel_generator(
     impl_backend,
     spike_info: jax.ShapeDtypeStruct,
@@ -317,6 +266,82 @@ def _csr_on_pre_benchmark_data(*, platform):
     return configs
 
 
+def _csr_on_pre_jax_kernel(
+    spike_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    **kwargs,
+):
+    """Pure-JAX kernel for CSR pre-synaptic plasticity update (all platforms)."""
+    n_pre, n_post = shape
+    is_bool = (spike_info.dtype == jnp.bool_)
+    nse = kwargs['indices_info'].size
+
+    def kernel(weight, indices, indptr, pre_spike, post_trace):
+        row_ids = jnp.repeat(
+            jnp.arange(n_pre, dtype=indptr.dtype),
+            jnp.diff(indptr),
+            total_repeat_length=nse,
+        )
+        if is_bool:
+            active = pre_spike[row_ids]
+        else:
+            active = pre_spike[row_ids] != 0.
+        delta = jnp.where(active, post_trace[indices], jnp.zeros_like(post_trace[indices]))
+        return [weight + delta]
+
+    return kernel
+
+
+def _csr_on_pre_cuda_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    spike_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    **kwargs,
+):
+    """TVM FFI CUDA kernel for CSR pre-synaptic plasticity update.
+
+    Dispatches to ``update_csr_on_pre{wt_sfx}{spk_sfx}`` compiled from
+    ``plasticity_binary.cu``.  The auto-variant selects among
+    thread-per-row, warp-per-row, and block-per-row sub-kernels at runtime
+    based on avg_nnz = nse / n_pre.
+
+    Only int32 index arrays are supported.  Callers with int64 indices should
+    explicitly select ``backend='pallas'`` or ``backend='jax'``.
+    """
+    if indices_info.dtype == jnp.int64:
+        raise TypeError(
+            "update_csr_on_binary_pre: the 'tvmffi' backend only supports "
+            "int32 index arrays (indices / indptr).  "
+            "Use backend='pallas' or backend='jax' for int64 indices."
+        )
+
+    register_tvm_cuda_from_file(
+        module='csr_plasticity',
+        source=Path(__file__).parent.joinpath('plasticity_binary.cu'),
+    )
+
+    out_info = kwargs['outs']
+    spk_suffix = '_bool' if spike_info.dtype == jnp.bool_ else '_float'
+
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    kernel_name = f'csr_plasticity.update_csr_on_pre{wt_sfx}{spk_suffix}'
+
+    def kernel(weight, indices, indptr, pre_spike, post_trace):
+        return jax.ffi.ffi_call(
+            kernel_name,
+            out_info,
+            input_output_aliases={0: 0},
+        )(weight, indices, indptr, pre_spike, post_trace)
+
+    return kernel
+
+
 def csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, shape, backend: Optional[str] = None):
     """Invoke the low-level XLA custom kernel for presynaptic plasticity updates.
 
@@ -341,7 +366,7 @@ def csr_on_pre_prim_call(weight, indices, indptr, pre_spike, post_trace, *, shap
     shape : tuple of int
         Full matrix shape as ``(n_pre, n_post)``.
     backend : str or None, optional
-        Compute backend to use. One of ``'numba'``, ``'warp'``, ``'pallas'``, or
+        Compute backend to use. One of ``'numba'``, ``'pallas'``, or
         ``None`` for automatic selection.
 
     Returns
@@ -418,7 +443,7 @@ update_csr_on_binary_pre_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``update_csr_on_binary_pre``.
 
 This ``XLACustomKernel`` instance dispatches the CSR weight update for pre-synaptic binary plasticity
-operation to registered backends (``numba``, ``warp``, ``pallas``),
+operation to registered backends (``numba``, ``pallas``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 For each presynaptic neuron that fires, updates all outgoing synaptic weights
@@ -437,12 +462,128 @@ See Also
 update_csr_on_binary_pre : High-level user-facing function wrapper.
 """
 )
+def _csr_on_pre_warp_kernel_generator(
+    weight_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    indptr_info: jax.ShapeDtypeStruct,
+    spike_info: jax.ShapeDtypeStruct,
+    trace_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    **kwargs
+):
+    import warp
+    from warp.jax_experimental import jax_kernel
+
+    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
+    indptr_warp_info = jaxinfo_to_warpinfo(indptr_info)
+    spike_warp_info = jaxinfo_to_warpinfo(spike_info)
+    trace_warp_info = jaxinfo_to_warpinfo(trace_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    if spike_info.dtype == jnp.bool_:
+        @warp.kernel
+        def plasticity_kernel(
+            indices: indices_warp_info,
+            indptr: indptr_warp_info,
+            pre_spike: spike_warp_info,
+            post_trace: trace_warp_info,
+            out_w: out_warp_info,
+        ):
+            i = warp.tid()
+            if pre_spike[i]:
+                for j in range(indptr[i], indptr[i + 1]):
+                    out_w[j] += post_trace[indices[j]]
+    else:
+        @warp.kernel
+        def plasticity_kernel(
+            indices: indices_warp_info,
+            indptr: indptr_warp_info,
+            pre_spike: spike_warp_info,
+            post_trace: trace_warp_info,
+            out_w: out_warp_info,
+        ):
+            i = warp.tid()
+            if pre_spike[i] != 0.:
+                for j in range(indptr[i], indptr[i + 1]):
+                    out_w[j] += post_trace[indices[j]]
+
+    def kernel(weight, indices, indptr, pre_spike, post_trace):
+        fn = jax_kernel(plasticity_kernel, launch_dims=[shape[0]], num_outputs=1, in_out_argnames=['out_w'])
+        return fn(indices, indptr, pre_spike, post_trace, weight)
+
+    return kernel
+
+
+def _csr2csc_on_post_warp_kernel_generator(
+    weight_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    indptr_info: jax.ShapeDtypeStruct,
+    weight_indices_info: jax.ShapeDtypeStruct,
+    trace_info: jax.ShapeDtypeStruct,
+    spike_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    **kwargs
+):
+    import warp
+    from warp.jax_experimental import jax_kernel
+
+    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
+    indptr_warp_info = jaxinfo_to_warpinfo(indptr_info)
+    weight_indices_warp_info = jaxinfo_to_warpinfo(weight_indices_info)
+    trace_warp_info = jaxinfo_to_warpinfo(trace_info)
+    spike_warp_info = jaxinfo_to_warpinfo(spike_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    if spike_info.dtype == jnp.bool_:
+        @warp.kernel
+        def plasticity_kernel(
+            indices: indices_warp_info,
+            indptr: indptr_warp_info,
+            weight_indices: weight_indices_warp_info,
+            pre_trace: trace_warp_info,
+            post_spike: spike_warp_info,
+            out_w: out_warp_info,
+        ):
+            i = warp.tid()
+            if post_spike[i]:
+                for j in range(indptr[i], indptr[i + 1]):
+                    weight_id = weight_indices[j]
+                    pre_id = indices[j]
+                    out_w[weight_id] += pre_trace[pre_id]
+    else:
+        @warp.kernel
+        def plasticity_kernel(
+            indices: indices_warp_info,
+            indptr: indptr_warp_info,
+            weight_indices: weight_indices_warp_info,
+            pre_trace: trace_warp_info,
+            post_spike: spike_warp_info,
+            out_w: out_warp_info,
+        ):
+            i = warp.tid()
+            if post_spike[i] != 0.:
+                for j in range(indptr[i], indptr[i + 1]):
+                    weight_id = weight_indices[j]
+                    pre_id = indices[j]
+                    out_w[weight_id] += pre_trace[pre_id]
+
+    def kernel(weight, indices, indptr, weight_indices, pre_trace, post_spike):
+        fn = jax_kernel(plasticity_kernel, launch_dims=[shape[1]], num_outputs=1, in_out_argnames=['out_w'])
+        return fn(indices, indptr, weight_indices, pre_trace, post_spike, weight)
+
+    return kernel
+
 update_csr_on_binary_pre_p.def_numba_kernel(_csr_on_pre_numba_kernel_generator)
 update_csr_on_binary_pre_p.def_warp_kernel(_csr_on_pre_warp_kernel_generator)
 update_csr_on_binary_pre_p.def_pallas_kernel('gpu', partial(_csr_on_pre_pallas_kernel_generator, 'triton'))
 update_csr_on_binary_pre_p.def_pallas_kernel('tpu', partial(_csr_on_pre_pallas_kernel_generator, 'mosaic_tpu'))
+update_csr_on_binary_pre_p.def_tvmffi_kernel('gpu', _csr_on_pre_cuda_kernel)
+update_csr_on_binary_pre_p.def_kernel('jax_raw', 'cpu', _csr_on_pre_jax_kernel)
+update_csr_on_binary_pre_p.def_kernel('jax_raw', 'gpu', _csr_on_pre_jax_kernel)
+update_csr_on_binary_pre_p.def_kernel('jax_raw', 'tpu', _csr_on_pre_jax_kernel)
 update_csr_on_binary_pre_p.def_tags('csr', 'plasticity')
 update_csr_on_binary_pre_p.def_benchmark_data(_csr_on_pre_benchmark_data)
+update_csr_on_binary_pre_p.def_call(csr_on_pre_prim_call)
 
 
 @namescope(static_argnames=['shape'])
@@ -504,7 +645,7 @@ def update_csr_on_binary_post(
     shape : tuple of int
         Full matrix shape as ``(n_pre, n_post)``.
     backend : str or None, optional
-        Compute backend to use. One of ``'numba'``, ``'warp'``, ``'pallas'``, or
+        Compute backend to use. One of ``'numba'``, ``'pallas'``, or
         ``None`` for automatic selection.
 
     Returns
@@ -620,66 +761,6 @@ def _csr2csc_on_post_numba_kernel_generator(
     return fn
 
 
-def _csr2csc_on_post_warp_kernel_generator(
-    weight_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    indptr_info: jax.ShapeDtypeStruct,
-    weight_indices_info: jax.ShapeDtypeStruct,
-    trace_info: jax.ShapeDtypeStruct,
-    spike_info: jax.ShapeDtypeStruct,
-    shape: MatrixShape,
-    **kwargs
-):
-    import warp
-    from warp.jax_experimental import jax_kernel
-
-    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
-    indptr_warp_info = jaxinfo_to_warpinfo(indptr_info)
-    weight_indices_warp_info = jaxinfo_to_warpinfo(weight_indices_info)
-    trace_warp_info = jaxinfo_to_warpinfo(trace_info)
-    spike_warp_info = jaxinfo_to_warpinfo(spike_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if spike_info.dtype == jnp.bool_:
-        @warp.kernel
-        def plasticity_kernel(
-            indices: indices_warp_info,
-            indptr: indptr_warp_info,
-            weight_indices: weight_indices_warp_info,
-            pre_trace: trace_warp_info,
-            post_spike: spike_warp_info,
-            out_w: out_warp_info,
-        ):
-            i = warp.tid()
-            if post_spike[i]:
-                for j in range(indptr[i], indptr[i + 1]):
-                    weight_id = weight_indices[j]
-                    pre_id = indices[j]
-                    out_w[weight_id] += pre_trace[pre_id]
-    else:
-        @warp.kernel
-        def plasticity_kernel(
-            indices: indices_warp_info,
-            indptr: indptr_warp_info,
-            weight_indices: weight_indices_warp_info,
-            pre_trace: trace_warp_info,
-            post_spike: spike_warp_info,
-            out_w: out_warp_info,
-        ):
-            i = warp.tid()
-            if post_spike[i] != 0.:
-                for j in range(indptr[i], indptr[i + 1]):
-                    weight_id = weight_indices[j]
-                    pre_id = indices[j]
-                    out_w[weight_id] += pre_trace[pre_id]
-
-    def kernel(weight, indices, indptr, weight_indices, pre_trace, post_spike):
-        fn = jax_kernel(plasticity_kernel, launch_dims=[shape[1]], num_outputs=1, in_out_argnames=['out_w'])
-        return fn(indices, indptr, weight_indices, pre_trace, post_spike, weight)
-
-    return kernel
-
-
 def _csr2csc_on_post_pallas_kernel_generator(
     impl_backend,
     spike_info: jax.ShapeDtypeStruct,
@@ -755,6 +836,86 @@ def _csr2csc_on_post_benchmark_data(*, platform):
     return configs
 
 
+def _csr2csc_on_post_jax_kernel(
+    spike_info: jax.ShapeDtypeStruct,
+    shape: MatrixShape,
+    **kwargs,
+):
+    """Pure-JAX kernel for CSR post-synaptic plasticity update (all platforms)."""
+    n_pre, n_post = shape
+    is_bool = (spike_info.dtype == jnp.bool_)
+    nse = kwargs['indices_info'].size
+
+    def kernel(weight, indices, indptr, weight_indices, pre_trace, post_spike):
+        col_ids = jnp.repeat(
+            jnp.arange(n_post, dtype=indptr.dtype),
+            jnp.diff(indptr),
+            total_repeat_length=nse,
+        )
+        if is_bool:
+            active = post_spike[col_ids]
+        else:
+            active = post_spike[col_ids] != 0.
+        delta = jnp.where(active, pre_trace[indices], jnp.zeros_like(pre_trace[indices]))
+        return [weight.at[weight_indices].add(delta)]
+
+    return kernel
+
+
+def _csr2csc_on_post_cuda_kernel(
+    weight_info: jax.ShapeDtypeStruct,
+    spike_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    **kwargs,
+):
+    """TVM FFI CUDA kernel for CSR post-synaptic plasticity update.
+
+    Dispatches to ``update_csr_on_post{wt_sfx}{spk_sfx}`` compiled from
+    ``plasticity_binary.cu``.  The auto-variant selects among
+    thread-per-column, warp-per-column, and block-per-column sub-kernels at
+    runtime based on avg_nnz = nse / n_post.
+
+    Uses atomicAdd for scattered writes to the weight array.  Since
+    weight_indices is injective by CSC construction, no actual race conditions
+    occur; atomicAdd provides a safety guarantee against malformed inputs.
+
+    Only int32 index arrays are supported.  Callers with int64 indices should
+    explicitly select ``backend='pallas'`` or ``backend='jax'``.
+    """
+    if indices_info.dtype == jnp.int64:
+        raise TypeError(
+            "update_csr_on_binary_post: the 'tvmffi' backend only supports "
+            "int32 index arrays (indices / indptr / weight_indices).  "
+            "Use backend='pallas' or backend='jax' for int64 indices."
+        )
+
+    register_tvm_cuda_from_file(
+        module='csr_plasticity',
+        source=Path(__file__).parent.joinpath('plasticity_binary.cu'),
+    )
+
+    out_info = kwargs['outs']
+    spk_suffix = '_bool' if spike_info.dtype == jnp.bool_ else '_float'
+
+    _dtype_sfx = {
+        jnp.dtype('float16'): '_f16',
+        jnp.dtype('float32'): '_f32',
+        jnp.dtype('float64'): '_f64',
+        jnp.dtype('bfloat16'): '_bf16',
+    }
+    wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    kernel_name = f'csr_plasticity.update_csr_on_post{wt_sfx}{spk_suffix}'
+
+    def kernel(weight, indices, indptr, weight_indices, pre_trace, post_spike):
+        return jax.ffi.ffi_call(
+            kernel_name,
+            out_info,
+            input_output_aliases={0: 0},
+        )(weight, indices, indptr, weight_indices, pre_trace, post_spike)
+
+    return kernel
+
+
 def csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace, post_spike, *, shape,
                               backend: Optional[str] = None):
     """Invoke the low-level XLA custom kernel for postsynaptic plasticity updates.
@@ -783,7 +944,7 @@ def csr2csc_on_post_prim_call(weight, indices, indptr, weight_indices, pre_trace
     shape : tuple of int
         Full matrix shape as ``(n_pre, n_post)``.
     backend : str or None, optional
-        Compute backend to use. One of ``'numba'``, ``'warp'``, ``'pallas'``, or
+        Compute backend to use. One of ``'numba'``, ``'pallas'``, or
         ``None`` for automatic selection.
 
     Returns
@@ -865,7 +1026,7 @@ update_csr_on_binary_post_p = XLACustomKernel(
 Low-level XLA custom-kernel primitive for ``update_csr_on_binary_post``.
 
 This ``XLACustomKernel`` instance dispatches the CSR weight update for post-synaptic binary plasticity (CSR to CSC conversion)
-operation to registered backends (``numba``, ``warp``, ``pallas``),
+operation to registered backends (``numba``, ``pallas``),
 using runtime shape/dtype metadata provided by the high-level wrapper.
 
 For each postsynaptic neuron that fires, updates all incoming synaptic weights
@@ -889,5 +1050,10 @@ update_csr_on_binary_post_p.def_numba_kernel(_csr2csc_on_post_numba_kernel_gener
 update_csr_on_binary_post_p.def_warp_kernel(_csr2csc_on_post_warp_kernel_generator)
 update_csr_on_binary_post_p.def_pallas_kernel('gpu', partial(_csr2csc_on_post_pallas_kernel_generator, 'triton'))
 update_csr_on_binary_post_p.def_pallas_kernel('tpu', partial(_csr2csc_on_post_pallas_kernel_generator, 'mosaic_tpu'))
+update_csr_on_binary_post_p.def_tvmffi_kernel('gpu', _csr2csc_on_post_cuda_kernel)
+update_csr_on_binary_post_p.def_kernel('jax_raw', 'cpu', _csr2csc_on_post_jax_kernel)
+update_csr_on_binary_post_p.def_kernel('jax_raw', 'gpu', _csr2csc_on_post_jax_kernel)
+update_csr_on_binary_post_p.def_kernel('jax_raw', 'tpu', _csr2csc_on_post_jax_kernel)
 update_csr_on_binary_post_p.def_tags('csr', 'plasticity')
 update_csr_on_binary_post_p.def_benchmark_data(_csr2csc_on_post_benchmark_data)
+update_csr_on_binary_post_p.def_call(csr2csc_on_post_prim_call)
