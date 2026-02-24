@@ -745,6 +745,8 @@ def _spfloat_csrmv_cuda_kernel(
     )
 
     out_info = kwargs['outs']
+    homo = weight_info.shape[0] == 1
+    mode_sfx = '_homo' if homo else '_hetero'
 
     _dtype_sfx = {
         jnp.dtype('float16'): '_f16',
@@ -755,9 +757,9 @@ def _spfloat_csrmv_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
     if transpose:
-        kernel_name = f'csr_sparse_float_csrmv.spfloat_csrmv_t_warp{wt_sfx}'
+        kernel_name = f'csr_sparse_float_csrmv.spfloat_csrmv_t{mode_sfx}_warp{wt_sfx}'
     else:
-        kernel_name = f'csr_sparse_float_csrmv.spfloat_csrmv_nt_auto{wt_sfx}'
+        kernel_name = f'csr_sparse_float_csrmv.spfloat_csrmv_nt{mode_sfx}_auto{wt_sfx}'
 
     def kernel(weights, indices, indptr, vector):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, vector)
@@ -1365,9 +1367,9 @@ def _sparse_float_csrmm_pallas_kernel(
 
 
 def _spfloat_csrmm_cuda_kernel(
-    weight_info: jax.ShapeDtypeStruct,
     transpose: bool,
-    **kwargs,
+    weight_info: jax.ShapeDtypeStruct,
+    **kwargs
 ):
     indices_info = kwargs.get('indices_info')
     if indices_info is not None and indices_info.dtype != jnp.int32:
@@ -1383,6 +1385,8 @@ def _spfloat_csrmm_cuda_kernel(
     )
 
     out_info = kwargs['outs']
+    homo = weight_info.shape[0] == 1
+    mode_sfx = '_homo' if homo else '_hetero'
 
     _dtype_sfx = {
         jnp.dtype('float16'): '_f16',
@@ -1393,9 +1397,9 @@ def _spfloat_csrmm_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
     if transpose:
-        kernel_name = f'csr_sparse_float_csrmm.spfloat_csrmm_t_warp{wt_sfx}'
+        kernel_name = f'csr_sparse_float_csrmm.spfloat_csrmm_t{mode_sfx}_warp{wt_sfx}'
     else:
-        kernel_name = f'csr_sparse_float_csrmm.spfloat_csrmm_nt_auto{wt_sfx}'
+        kernel_name = f'csr_sparse_float_csrmm.spfloat_csrmm_nt{mode_sfx}_auto{wt_sfx}'
 
     def kernel(weights, indices, indptr, B):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, B)

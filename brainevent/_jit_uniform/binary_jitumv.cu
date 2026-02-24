@@ -50,27 +50,14 @@
 #include <cuda_bf16.h>
 #include <curand_kernel.h>
 #include <cstdint>
-
-// =========================================================================
-// Per-dtype read/write conversion macros
-// =========================================================================
-
-#define READ_F32(x)   (x)
-#define WRITE_F32(x)  (x)
-
-#define READ_F64(x)   (x)
-#define WRITE_F64(x)  (x)
-
-#define READ_F16(x)   __half2float(x)
-#define WRITE_F16(x)  __float2half(x)
-
-#define READ_BF16(x)  __bfloat162float(x)
-#define WRITE_BF16(x) __float2bfloat16(x)
+#include "../cuda_common.h"
 
 // =========================================================================
 // Spike activity checks (for binary kernels)
 // =========================================================================
 
+#undef IS_ACTIVE_BOOL
+#undef IS_ACTIVE_FLOAT
 #define IS_ACTIVE_BOOL(v, j)  ((v)[j] != 0)
 #define IS_ACTIVE_FLOAT(v, j) ((v)[j] > 0.0f)
 
@@ -79,45 +66,6 @@
 // =========================================================================
 
 #define SMEM_THRESHOLD 49152
-
-// =========================================================================
-// atomicAdd helpers for f16/bf16 (CAS-based for pre-Volta GPUs)
-// =========================================================================
-
-__device__ __inline__ void atomicAdd_f32(float* addr, float val) {
-    atomicAdd(addr, val);
-}
-
-__device__ __inline__ void atomicAdd_f64(double* addr, double val) {
-    atomicAdd(addr, val);
-}
-
-__device__ __inline__ void atomicAdd_f16(__half* addr, float val) {
-    unsigned short int* addr_as_usi = (unsigned short int*)addr;
-    unsigned short int old = *addr_as_usi;
-    unsigned short int assumed;
-    do {
-        assumed = old;
-        float old_f = __half2float(*reinterpret_cast<const __half*>(&assumed));
-        __half new_h = __float2half(old_f + val);
-        unsigned short int new_val = *reinterpret_cast<unsigned short int*>(&new_h);
-        old = atomicCAS(addr_as_usi, assumed, new_val);
-    } while (assumed != old);
-}
-
-__device__ __inline__ void atomicAdd_bf16(__nv_bfloat16* addr, float val) {
-    unsigned short int* addr_as_usi = (unsigned short int*)addr;
-    unsigned short int old = *addr_as_usi;
-    unsigned short int assumed;
-    do {
-        assumed = old;
-        float old_f = __bfloat162float(*reinterpret_cast<const __nv_bfloat16*>(&assumed));
-        __nv_bfloat16 new_h = __float2bfloat16(old_f + val);
-        unsigned short int new_val = *reinterpret_cast<unsigned short int*>(&new_h);
-        old = atomicCAS(addr_as_usi, assumed, new_val);
-    } while (assumed != old);
-}
-
 
 // #########################################################################
 // ##  binary_jitumv — Event-Driven Matrix-Vector Product                ##
@@ -132,34 +80,34 @@ __device__ __inline__ void atomicAdd_bf16(__nv_bfloat16* addr, float val) {
 // =========================================================================
 
 #define DEFINE_BINARY_JITUMV_GATHER(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, SPIKE_T, IS_ACTIVE, ACC_ZERO) \
-__global__ void _binary_jitumv_gather_kern##SUFFIX(                             \
-    const WEIGHT_T* __restrict__ w_low,                                         \
-    const WEIGHT_T* __restrict__ w_high,                                        \
-    const float*    __restrict__ clen,                                          \
-    const int*      __restrict__ seed,                                          \
-    const SPIKE_T*  __restrict__ vector,                                        \
-    WEIGHT_T*       __restrict__ output,                                        \
-    int m, int k                                                                \
-) {                                                                             \
-    int i = blockIdx.x * blockDim.x + threadIdx.x;                              \
-    if (i >= m) return;                                                         \
-    ACC_T wlo = READ_W(__ldg(&w_low[0]));                                        \
-    ACC_T range = READ_W(__ldg(&w_high[0])) - wlo;                               \
-    unsigned int cl = (unsigned int)__ldg(&clen[0]);                              \
-    if (cl < 2) cl = 2;                                                         \
-    curandStatePhilox4_32_10_t state;                                            \
-    curand_init((unsigned long long)__ldg(&seed[0]), (unsigned long long)i, 0ULL, &state); \
-    unsigned int j = curand(&state) % cl;                                        \
-    ACC_T acc = ACC_ZERO;                                                        \
-    while (j < (unsigned int)k) {                                                \
-        float u = curand_uniform(&state);                                        \
-        if (IS_ACTIVE(vector, j)) {                                              \
-            ACC_T w = wlo + (ACC_T)u * range;                                   \
-            acc += w;                                                            \
-        }                                                                        \
-        j += 1 + (curand(&state) % (cl - 1));                                   \
-    }                                                                            \
-    output[i] = WRITE_W(acc);                                                    \
+__global__ void _binary_jitumv_gather_kern##SUFFIX(                                                         \
+    const WEIGHT_T* __restrict__ w_low,                                                                     \
+    const WEIGHT_T* __restrict__ w_high,                                                                    \
+    const float*    __restrict__ clen,                                                                      \
+    const int*      __restrict__ seed,                                                                      \
+    const SPIKE_T*  __restrict__ vector,                                                                    \
+    WEIGHT_T*       __restrict__ output,                                                                    \
+    int m, int k                                                                                            \
+) {                                                                                                         \
+    int i = blockIdx.x * blockDim.x + threadIdx.x;                                                          \
+    if (i >= m) return;                                                                                     \
+    ACC_T wlo = READ_W(__ldg(&w_low[0]));                                                                   \
+    ACC_T range = READ_W(__ldg(&w_high[0])) - wlo;                                                          \
+    unsigned int cl = (unsigned int)__ldg(&clen[0]);                                                        \
+    if (cl < 2) cl = 2;                                                                                     \
+    curandStatePhilox4_32_10_t state;                                                                       \
+    curand_init((unsigned long long)__ldg(&seed[0]), (unsigned long long)i, 0ULL, &state);                  \
+    unsigned int j = curand(&state) % cl;                                                                   \
+    ACC_T acc = ACC_ZERO;                                                                                   \
+    while (j < (unsigned int)k) {                                                                           \
+        float u = curand_uniform(&state);                                                                   \
+        if (IS_ACTIVE(vector, j)) {                                                                         \
+            ACC_T w = wlo + (ACC_T)u * range;                                                               \
+            acc += w;                                                                                       \
+        }                                                                                                   \
+        j += 1 + (curand(&state) % (cl - 1));                                                               \
+    }                                                                                                       \
+    output[i] = WRITE_W(acc);                                                                               \
 }
 
 // f32 weight + bool/float spikes
@@ -182,40 +130,40 @@ DEFINE_BINARY_JITUMV_GATHER(_bf16_float,__nv_bfloat16, float,  READ_BF16, WRITE_
 // =========================================================================
 
 #define DEFINE_BINARY_JITUMV_GATHER_SMEM(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, SPIKE_T, IS_ACTIVE, ACC_ZERO) \
-__global__ void _binary_jitumv_gather_smem_kern##SUFFIX(                        \
-    const WEIGHT_T* __restrict__ w_low,                                         \
-    const WEIGHT_T* __restrict__ w_high,                                        \
-    const float*    __restrict__ clen,                                          \
-    const int*      __restrict__ seed,                                          \
-    const SPIKE_T*  __restrict__ vector,                                        \
-    WEIGHT_T*       __restrict__ output,                                        \
-    int m, int k                                                                \
-) {                                                                             \
-    extern __shared__ char _smem_bytes[];                                        \
-    SPIKE_T* sv = reinterpret_cast<SPIKE_T*>(_smem_bytes);                      \
-    for (int idx = threadIdx.x; idx < k; idx += blockDim.x) {                   \
-        sv[idx] = __ldg(&vector[idx]);                                           \
-    }                                                                           \
-    __syncthreads();                                                            \
-    int i = blockIdx.x * blockDim.x + threadIdx.x;                              \
-    if (i >= m) return;                                                         \
-    ACC_T wlo = READ_W(__ldg(&w_low[0]));                                        \
-    ACC_T range = READ_W(__ldg(&w_high[0])) - wlo;                               \
-    unsigned int cl = (unsigned int)__ldg(&clen[0]);                              \
-    if (cl < 2) cl = 2;                                                         \
-    curandStatePhilox4_32_10_t state;                                            \
-    curand_init((unsigned long long)__ldg(&seed[0]), (unsigned long long)i, 0ULL, &state); \
-    unsigned int j = curand(&state) % cl;                                        \
-    ACC_T acc = ACC_ZERO;                                                        \
-    while (j < (unsigned int)k) {                                                \
-        float u = curand_uniform(&state);                                        \
-        if (IS_ACTIVE(sv, j)) {                                                 \
-            ACC_T w = wlo + (ACC_T)u * range;                                   \
-            acc += w;                                                            \
-        }                                                                        \
-        j += 1 + (curand(&state) % (cl - 1));                                   \
-    }                                                                            \
-    output[i] = WRITE_W(acc);                                                    \
+__global__ void _binary_jitumv_gather_smem_kern##SUFFIX(                                                         \
+    const WEIGHT_T* __restrict__ w_low,                                                                          \
+    const WEIGHT_T* __restrict__ w_high,                                                                         \
+    const float*    __restrict__ clen,                                                                           \
+    const int*      __restrict__ seed,                                                                           \
+    const SPIKE_T*  __restrict__ vector,                                                                         \
+    WEIGHT_T*       __restrict__ output,                                                                         \
+    int m, int k                                                                                                 \
+) {                                                                                                              \
+    extern __shared__ char _smem_bytes[];                                                                        \
+    SPIKE_T* sv = reinterpret_cast<SPIKE_T*>(_smem_bytes);                                                       \
+    for (int idx = threadIdx.x; idx < k; idx += blockDim.x) {                                                    \
+        sv[idx] = __ldg(&vector[idx]);                                                                           \
+    }                                                                                                            \
+    __syncthreads();                                                                                             \
+    int i = blockIdx.x * blockDim.x + threadIdx.x;                                                               \
+    if (i >= m) return;                                                                                          \
+    ACC_T wlo = READ_W(__ldg(&w_low[0]));                                                                        \
+    ACC_T range = READ_W(__ldg(&w_high[0])) - wlo;                                                               \
+    unsigned int cl = (unsigned int)__ldg(&clen[0]);                                                             \
+    if (cl < 2) cl = 2;                                                                                          \
+    curandStatePhilox4_32_10_t state;                                                                            \
+    curand_init((unsigned long long)__ldg(&seed[0]), (unsigned long long)i, 0ULL, &state);                       \
+    unsigned int j = curand(&state) % cl;                                                                        \
+    ACC_T acc = ACC_ZERO;                                                                                        \
+    while (j < (unsigned int)k) {                                                                                \
+        float u = curand_uniform(&state);                                                                        \
+        if (IS_ACTIVE(sv, j)) {                                                                                  \
+            ACC_T w = wlo + (ACC_T)u * range;                                                                    \
+            acc += w;                                                                                            \
+        }                                                                                                        \
+        j += 1 + (curand(&state) % (cl - 1));                                                                    \
+    }                                                                                                            \
+    output[i] = WRITE_W(acc);                                                                                    \
 }
 
 // f32 weight + bool/float spikes
@@ -238,31 +186,31 @@ DEFINE_BINARY_JITUMV_GATHER_SMEM(_bf16_float,__nv_bfloat16, float,  READ_BF16, W
 // =========================================================================
 
 #define DEFINE_BINARY_JITUMV_SCATTER(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, SPIKE_T, IS_ACTIVE, ATOMIC_ADD) \
-__global__ void _binary_jitumv_scatter_kern##SUFFIX(                            \
-    const WEIGHT_T* __restrict__ w_low,                                         \
-    const WEIGHT_T* __restrict__ w_high,                                        \
-    const float*    __restrict__ clen,                                          \
-    const int*      __restrict__ seed,                                          \
-    const SPIKE_T*  __restrict__ vector,                                        \
-    WEIGHT_T*       __restrict__ output,                                        \
-    int m, int k                                                                \
-) {                                                                             \
-    int j = blockIdx.x * blockDim.x + threadIdx.x;                              \
-    if (j >= k) return;                                                         \
-    if (!IS_ACTIVE(vector, j)) return;                                          \
-    ACC_T wlo = READ_W(__ldg(&w_low[0]));                                        \
-    ACC_T range = READ_W(__ldg(&w_high[0])) - wlo;                               \
-    unsigned int cl = (unsigned int)__ldg(&clen[0]);                              \
-    if (cl < 2) cl = 2;                                                         \
-    curandStatePhilox4_32_10_t state;                                            \
-    curand_init((unsigned long long)__ldg(&seed[0]), (unsigned long long)j, 0ULL, &state); \
-    unsigned int i = curand(&state) % cl;                                        \
-    while (i < (unsigned int)m) {                                                \
-        float u = curand_uniform(&state);                                        \
-        ACC_T w = wlo + (ACC_T)u * range;                                       \
-        ATOMIC_ADD(&output[i], w);                                               \
-        i += 1 + (curand(&state) % (cl - 1));                                   \
-    }                                                                            \
+__global__ void _binary_jitumv_scatter_kern##SUFFIX(                                                           \
+    const WEIGHT_T* __restrict__ w_low,                                                                        \
+    const WEIGHT_T* __restrict__ w_high,                                                                       \
+    const float*    __restrict__ clen,                                                                         \
+    const int*      __restrict__ seed,                                                                         \
+    const SPIKE_T*  __restrict__ vector,                                                                       \
+    WEIGHT_T*       __restrict__ output,                                                                       \
+    int m, int k                                                                                               \
+) {                                                                                                            \
+    int j = blockIdx.x * blockDim.x + threadIdx.x;                                                             \
+    if (j >= k) return;                                                                                        \
+    if (!IS_ACTIVE(vector, j)) return;                                                                         \
+    ACC_T wlo = READ_W(__ldg(&w_low[0]));                                                                      \
+    ACC_T range = READ_W(__ldg(&w_high[0])) - wlo;                                                             \
+    unsigned int cl = (unsigned int)__ldg(&clen[0]);                                                           \
+    if (cl < 2) cl = 2;                                                                                        \
+    curandStatePhilox4_32_10_t state;                                                                          \
+    curand_init((unsigned long long)__ldg(&seed[0]), (unsigned long long)j, 0ULL, &state);                     \
+    unsigned int i = curand(&state) % cl;                                                                      \
+    while (i < (unsigned int)m) {                                                                              \
+        float u = curand_uniform(&state);                                                                      \
+        ACC_T w = wlo + (ACC_T)u * range;                                                                      \
+        ATOMIC_ADD(&output[i], w);                                                                             \
+        i += 1 + (curand(&state) % (cl - 1));                                                                  \
+    }                                                                                                          \
 }
 
 // f32 weight + bool/float spikes
@@ -282,43 +230,43 @@ DEFINE_BINARY_JITUMV_SCATTER(_bf16_float,__nv_bfloat16, float,  READ_BF16, WRITE
 // Dispatches to shared-memory kernel when spike vector fits in 48KB smem.
 // No memset needed: gather kernels write every output element exactly once.
 
-#define FFI_BINARY_JITUMV_GATHER(SUFFIX, WEIGHT_C_T, SPIKE_C_T)               \
-void binary_jitumv_gather##SUFFIX(                                              \
-    tvm::ffi::TensorView w_low,                                                 \
-    tvm::ffi::TensorView w_high,                                                \
-    tvm::ffi::TensorView clen,                                                  \
-    tvm::ffi::TensorView seed,                                                  \
-    tvm::ffi::TensorView vector,                                                \
-    tvm::ffi::TensorView output,                                                \
-    int64_t stream                                                              \
-) {                                                                             \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                    \
-    int m = static_cast<int>(output.size(0));                                   \
-    int k = static_cast<int>(vector.size(0));                                   \
-    int threads = 256;                                                          \
-    int blocks = (m + threads - 1) / threads;                                   \
-    size_t smem_bytes = (size_t)k * sizeof(SPIKE_C_T);                          \
-    if (smem_bytes <= SMEM_THRESHOLD) {                                         \
+#define FFI_BINARY_JITUMV_GATHER(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                      \
+void binary_jitumv_gather##SUFFIX(                                                   \
+    tvm::ffi::TensorView w_low,                                                      \
+    tvm::ffi::TensorView w_high,                                                     \
+    tvm::ffi::TensorView clen,                                                       \
+    tvm::ffi::TensorView seed,                                                       \
+    tvm::ffi::TensorView vector,                                                     \
+    tvm::ffi::TensorView output,                                                     \
+    int64_t stream                                                                   \
+) {                                                                                  \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                         \
+    int m = static_cast<int>(output.size(0));                                        \
+    int k = static_cast<int>(vector.size(0));                                        \
+    int threads = 256;                                                               \
+    int blocks = (m + threads - 1) / threads;                                        \
+    size_t smem_bytes = (size_t)k * sizeof(SPIKE_C_T);                               \
+    if (smem_bytes <= SMEM_THRESHOLD) {                                              \
         _binary_jitumv_gather_smem_kern##SUFFIX<<<blocks, threads, smem_bytes, s>>>( \
-            static_cast<const WEIGHT_C_T*>(w_low.data_ptr()),                   \
-            static_cast<const WEIGHT_C_T*>(w_high.data_ptr()),                  \
-            static_cast<const float*>(clen.data_ptr()),                         \
-            static_cast<const int*>(seed.data_ptr()),                           \
-            static_cast<const SPIKE_C_T*>(vector.data_ptr()),                   \
-            static_cast<WEIGHT_C_T*>(output.data_ptr()),                        \
-            m, k                                                                \
-        );                                                                      \
-    } else {                                                                    \
-        _binary_jitumv_gather_kern##SUFFIX<<<blocks, threads, 0, s>>>(          \
-            static_cast<const WEIGHT_C_T*>(w_low.data_ptr()),                   \
-            static_cast<const WEIGHT_C_T*>(w_high.data_ptr()),                  \
-            static_cast<const float*>(clen.data_ptr()),                         \
-            static_cast<const int*>(seed.data_ptr()),                           \
-            static_cast<const SPIKE_C_T*>(vector.data_ptr()),                   \
-            static_cast<WEIGHT_C_T*>(output.data_ptr()),                        \
-            m, k                                                                \
-        );                                                                      \
-    }                                                                           \
+            static_cast<const WEIGHT_C_T*>(w_low.data_ptr()),                        \
+            static_cast<const WEIGHT_C_T*>(w_high.data_ptr()),                       \
+            static_cast<const float*>(clen.data_ptr()),                              \
+            static_cast<const int*>(seed.data_ptr()),                                \
+            static_cast<const SPIKE_C_T*>(vector.data_ptr()),                        \
+            static_cast<WEIGHT_C_T*>(output.data_ptr()),                             \
+            m, k                                                                     \
+        );                                                                           \
+    } else {                                                                         \
+        _binary_jitumv_gather_kern##SUFFIX<<<blocks, threads, 0, s>>>(               \
+            static_cast<const WEIGHT_C_T*>(w_low.data_ptr()),                        \
+            static_cast<const WEIGHT_C_T*>(w_high.data_ptr()),                       \
+            static_cast<const float*>(clen.data_ptr()),                              \
+            static_cast<const int*>(seed.data_ptr()),                                \
+            static_cast<const SPIKE_C_T*>(vector.data_ptr()),                        \
+            static_cast<WEIGHT_C_T*>(output.data_ptr()),                             \
+            m, k                                                                     \
+        );                                                                           \
+    }                                                                                \
 }
 
 // @tvm_ffi binary_jitumv_gather_f32_bool
@@ -340,32 +288,32 @@ FFI_BINARY_JITUMV_GATHER(_bf16_float,__nv_bfloat16, float)
 
 // ---- TVM FFI: binary_jitumv scatter ----
 
-#define FFI_BINARY_JITUMV_SCATTER(SUFFIX, WEIGHT_C_T, SPIKE_C_T)             \
-void binary_jitumv_scatter##SUFFIX(                                           \
-    tvm::ffi::TensorView w_low,                                               \
-    tvm::ffi::TensorView w_high,                                              \
-    tvm::ffi::TensorView clen,                                                \
-    tvm::ffi::TensorView seed,                                                \
-    tvm::ffi::TensorView vector,                                              \
-    tvm::ffi::TensorView output,                                              \
-    int64_t stream                                                            \
-) {                                                                           \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                  \
-    int m = static_cast<int>(output.size(0));                                 \
-    int k = static_cast<int>(vector.size(0));                                 \
-    cudaMemsetAsync(output.data_ptr(), 0,                                     \
-        (size_t)m * sizeof(WEIGHT_C_T), s);                                   \
-    int threads = 256;                                                        \
-    int blocks = (k + threads - 1) / threads;                                 \
-    _binary_jitumv_scatter_kern##SUFFIX<<<blocks, threads, 0, s>>>(           \
-        static_cast<const WEIGHT_C_T*>(w_low.data_ptr()),                     \
-        static_cast<const WEIGHT_C_T*>(w_high.data_ptr()),                    \
-        static_cast<const float*>(clen.data_ptr()),                           \
-        static_cast<const int*>(seed.data_ptr()),                             \
-        static_cast<const SPIKE_C_T*>(vector.data_ptr()),                     \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()),                          \
-        m, k                                                                  \
-    );                                                                        \
+#define FFI_BINARY_JITUMV_SCATTER(SUFFIX, WEIGHT_C_T, SPIKE_C_T)    \
+void binary_jitumv_scatter##SUFFIX(                                 \
+    tvm::ffi::TensorView w_low,                                     \
+    tvm::ffi::TensorView w_high,                                    \
+    tvm::ffi::TensorView clen,                                      \
+    tvm::ffi::TensorView seed,                                      \
+    tvm::ffi::TensorView vector,                                    \
+    tvm::ffi::TensorView output,                                    \
+    int64_t stream                                                  \
+) {                                                                 \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);        \
+    int m = static_cast<int>(output.size(0));                       \
+    int k = static_cast<int>(vector.size(0));                       \
+    cudaMemsetAsync(output.data_ptr(), 0,                           \
+        (size_t)m * sizeof(WEIGHT_C_T), s);                         \
+    int threads = 256;                                              \
+    int blocks = (k + threads - 1) / threads;                       \
+    _binary_jitumv_scatter_kern##SUFFIX<<<blocks, threads, 0, s>>>( \
+        static_cast<const WEIGHT_C_T*>(w_low.data_ptr()),           \
+        static_cast<const WEIGHT_C_T*>(w_high.data_ptr()),          \
+        static_cast<const float*>(clen.data_ptr()),                 \
+        static_cast<const int*>(seed.data_ptr()),                   \
+        static_cast<const SPIKE_C_T*>(vector.data_ptr()),           \
+        static_cast<WEIGHT_C_T*>(output.data_ptr()),                \
+        m, k                                                        \
+    );                                                              \
 }
 
 // @tvm_ffi binary_jitumv_scatter_f32_bool

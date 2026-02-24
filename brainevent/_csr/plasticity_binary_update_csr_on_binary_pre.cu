@@ -48,7 +48,6 @@
  */
 
 #include "../cuda_common.h"
-#define WRITE_BF16(x)  __float2bfloat16(x)
 
 // =========================================================================
 // CSR Pre-Synaptic Plasticity Kernels
@@ -98,71 +97,9 @@
 // =========================================================================
 
 #define DEFINE_CSR_ON_PRE_THREAD(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
-                                  READ_W, WRITE_W)                              \
-__global__ void __launch_bounds__(256)                                          \
-_csr_on_pre_thread_kern##SUFFIX(                                                \
-    WEIGHT_T*        __restrict__ out_w,                                        \
-    const SPIKE_T*   __restrict__ spike,                                        \
-    const WEIGHT_T*  __restrict__ trace,                                        \
-    const int32_t*   __restrict__ indices,                                      \
-    const int32_t*   __restrict__ indptr,                                       \
-    int n_pre                                                                   \
-) {                                                                             \
-    int row = (int)(blockIdx.x * (uint32_t)blockDim.x) + threadIdx.x;          \
-    int safe_row = (row < n_pre) ? row : (n_pre - 1);                          \
-    bool my_active = (row < n_pre) && IS_ACTIVE(__ldg(&spike[safe_row]));      \
-    unsigned int ballot = __ballot_sync(0xFFFFFFFF, my_active);                 \
-    if (ballot == 0) return;                                                    \
-    if (!my_active) return;                                                     \
-    int start = __ldg(&indptr[row]);                                            \
-    int end   = __ldg(&indptr[row + 1]);                                        \
-    int pos = start;                                                            \
-    if (pos + 4 <= end) {                                                       \
-        int col0 = __ldg(&indices[pos]);                                        \
-        int col1 = __ldg(&indices[pos + 1]);                                    \
-        int col2 = __ldg(&indices[pos + 2]);                                    \
-        int col3 = __ldg(&indices[pos + 3]);                                    \
-        for (; pos + 8 <= end; pos += 4) {                                      \
-            ACC_T t0 = READ_W(__ldg(&trace[col0]));                             \
-            ACC_T t1 = READ_W(__ldg(&trace[col1]));                             \
-            int next_col0 = __ldg(&indices[pos + 4]);                           \
-            int next_col1 = __ldg(&indices[pos + 5]);                           \
-            ACC_T t2 = READ_W(__ldg(&trace[col2]));                             \
-            ACC_T t3 = READ_W(__ldg(&trace[col3]));                             \
-            int next_col2 = __ldg(&indices[pos + 6]);                           \
-            int next_col3 = __ldg(&indices[pos + 7]);                           \
-            ACC_T val0 = READ_W(out_w[pos]) + t0;                               \
-            ACC_T val1 = READ_W(out_w[pos + 1]) + t1;                           \
-            ACC_T val2 = READ_W(out_w[pos + 2]) + t2;                           \
-            ACC_T val3 = READ_W(out_w[pos + 3]) + t3;                           \
-            out_w[pos] = WRITE_W(val0);                                         \
-            out_w[pos + 1] = WRITE_W(val1);                                     \
-            out_w[pos + 2] = WRITE_W(val2);                                     \
-            out_w[pos + 3] = WRITE_W(val3);                                     \
-            col0 = next_col0; col1 = next_col1;                                 \
-            col2 = next_col2; col3 = next_col3;                                 \
-        }                                                                       \
-        ACC_T val0 = READ_W(out_w[pos]) + READ_W(__ldg(&trace[col0]));          \
-        ACC_T val1 = READ_W(out_w[pos + 1]) + READ_W(__ldg(&trace[col1]));      \
-        ACC_T val2 = READ_W(out_w[pos + 2]) + READ_W(__ldg(&trace[col2]));      \
-        ACC_T val3 = READ_W(out_w[pos + 3]) + READ_W(__ldg(&trace[col3]));      \
-        out_w[pos] = WRITE_W(val0);                                             \
-        out_w[pos + 1] = WRITE_W(val1);                                         \
-        out_w[pos + 2] = WRITE_W(val2);                                         \
-        out_w[pos + 3] = WRITE_W(val3);                                         \
-        pos += 4;                                                               \
-    }                                                                           \
-    for (; pos < end; ++pos) {                                                  \
-        int col = __ldg(&indices[pos]);                                         \
-        ACC_T val = READ_W(out_w[pos]) + READ_W(__ldg(&trace[col]));            \
-        out_w[pos] = WRITE_W(val);                                              \
-    }                                                                           \
-}
-
-#define DEFINE_CSR_ON_PRE_WARP(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
-                                READ_W, WRITE_W)                              \
+                                  READ_W, WRITE_W)                            \
 __global__ void __launch_bounds__(256)                                        \
-_csr_on_pre_warp_kern##SUFFIX(                                                \
+_csr_on_pre_thread_kern##SUFFIX(                                              \
     WEIGHT_T*        __restrict__ out_w,                                      \
     const SPIKE_T*   __restrict__ spike,                                      \
     const WEIGHT_T*  __restrict__ trace,                                      \
@@ -170,74 +107,136 @@ _csr_on_pre_warp_kern##SUFFIX(                                                \
     const int32_t*   __restrict__ indptr,                                     \
     int n_pre                                                                 \
 ) {                                                                           \
-    int warp_id = (int)(blockIdx.x * (blockDim.x / 32u))                     \
-                  + (int)(threadIdx.x / 32u);                                 \
-    int lane    = (int)(threadIdx.x & 31u);                                   \
-    if (warp_id >= n_pre) return;                                             \
-    bool active = IS_ACTIVE(__ldg(&spike[warp_id]));                          \
-    if (__ballot_sync(0xFFFFFFFF, active) == 0) return;                       \
-    if (!active) return;                                                      \
-    int start = __ldg(&indptr[warp_id]);                                      \
-    int end   = __ldg(&indptr[warp_id + 1]);                                  \
-    int pos = start + lane;                                                   \
-    for (; pos + 128 <= end; pos += 128) {                                    \
+    int row = (int)(blockIdx.x * (uint32_t)blockDim.x) + threadIdx.x;         \
+    int safe_row = (row < n_pre) ? row : (n_pre - 1);                         \
+    bool my_active = (row < n_pre) && IS_ACTIVE(__ldg(&spike[safe_row]));     \
+    unsigned int ballot = __ballot_sync(0xFFFFFFFF, my_active);               \
+    if (ballot == 0) return;                                                  \
+    if (!my_active) return;                                                   \
+    int start = __ldg(&indptr[row]);                                          \
+    int end   = __ldg(&indptr[row + 1]);                                      \
+    int pos = start;                                                          \
+    if (pos + 4 <= end) {                                                     \
         int col0 = __ldg(&indices[pos]);                                      \
-        int col1 = __ldg(&indices[pos + 32]);                                 \
-        int col2 = __ldg(&indices[pos + 64]);                                 \
-        int col3 = __ldg(&indices[pos + 96]);                                 \
+        int col1 = __ldg(&indices[pos + 1]);                                  \
+        int col2 = __ldg(&indices[pos + 2]);                                  \
+        int col3 = __ldg(&indices[pos + 3]);                                  \
+        for (; pos + 8 <= end; pos += 4) {                                    \
+            ACC_T t0 = READ_W(__ldg(&trace[col0]));                           \
+            ACC_T t1 = READ_W(__ldg(&trace[col1]));                           \
+            int next_col0 = __ldg(&indices[pos + 4]);                         \
+            int next_col1 = __ldg(&indices[pos + 5]);                         \
+            ACC_T t2 = READ_W(__ldg(&trace[col2]));                           \
+            ACC_T t3 = READ_W(__ldg(&trace[col3]));                           \
+            int next_col2 = __ldg(&indices[pos + 6]);                         \
+            int next_col3 = __ldg(&indices[pos + 7]);                         \
+            ACC_T val0 = READ_W(out_w[pos]) + t0;                             \
+            ACC_T val1 = READ_W(out_w[pos + 1]) + t1;                         \
+            ACC_T val2 = READ_W(out_w[pos + 2]) + t2;                         \
+            ACC_T val3 = READ_W(out_w[pos + 3]) + t3;                         \
+            out_w[pos] = WRITE_W(val0);                                       \
+            out_w[pos + 1] = WRITE_W(val1);                                   \
+            out_w[pos + 2] = WRITE_W(val2);                                   \
+            out_w[pos + 3] = WRITE_W(val3);                                   \
+            col0 = next_col0; col1 = next_col1;                               \
+            col2 = next_col2; col3 = next_col3;                               \
+        }                                                                     \
         ACC_T val0 = READ_W(out_w[pos]) + READ_W(__ldg(&trace[col0]));        \
-        ACC_T val1 = READ_W(out_w[pos + 32]) + READ_W(__ldg(&trace[col1]));   \
-        ACC_T val2 = READ_W(out_w[pos + 64]) + READ_W(__ldg(&trace[col2]));   \
-        ACC_T val3 = READ_W(out_w[pos + 96]) + READ_W(__ldg(&trace[col3]));   \
+        ACC_T val1 = READ_W(out_w[pos + 1]) + READ_W(__ldg(&trace[col1]));    \
+        ACC_T val2 = READ_W(out_w[pos + 2]) + READ_W(__ldg(&trace[col2]));    \
+        ACC_T val3 = READ_W(out_w[pos + 3]) + READ_W(__ldg(&trace[col3]));    \
         out_w[pos] = WRITE_W(val0);                                           \
-        out_w[pos + 32] = WRITE_W(val1);                                      \
-        out_w[pos + 64] = WRITE_W(val2);                                      \
-        out_w[pos + 96] = WRITE_W(val3);                                      \
+        out_w[pos + 1] = WRITE_W(val1);                                       \
+        out_w[pos + 2] = WRITE_W(val2);                                       \
+        out_w[pos + 3] = WRITE_W(val3);                                       \
+        pos += 4;                                                             \
     }                                                                         \
-    for (; pos < end; pos += 32) {                                            \
+    for (; pos < end; ++pos) {                                                \
         int col = __ldg(&indices[pos]);                                       \
         ACC_T val = READ_W(out_w[pos]) + READ_W(__ldg(&trace[col]));          \
         out_w[pos] = WRITE_W(val);                                            \
     }                                                                         \
 }
 
+#define DEFINE_CSR_ON_PRE_WARP(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
+                                READ_W, WRITE_W)                            \
+__global__ void __launch_bounds__(256)                                      \
+_csr_on_pre_warp_kern##SUFFIX(                                              \
+    WEIGHT_T*        __restrict__ out_w,                                    \
+    const SPIKE_T*   __restrict__ spike,                                    \
+    const WEIGHT_T*  __restrict__ trace,                                    \
+    const int32_t*   __restrict__ indices,                                  \
+    const int32_t*   __restrict__ indptr,                                   \
+    int n_pre                                                               \
+) {                                                                         \
+    int warp_id = (int)(blockIdx.x * (blockDim.x / 32u))                    \
+                  + (int)(threadIdx.x / 32u);                               \
+    int lane    = (int)(threadIdx.x & 31u);                                 \
+    if (warp_id >= n_pre) return;                                           \
+    bool active = IS_ACTIVE(__ldg(&spike[warp_id]));                        \
+    if (__ballot_sync(0xFFFFFFFF, active) == 0) return;                     \
+    if (!active) return;                                                    \
+    int start = __ldg(&indptr[warp_id]);                                    \
+    int end   = __ldg(&indptr[warp_id + 1]);                                \
+    int pos = start + lane;                                                 \
+    for (; pos + 128 <= end; pos += 128) {                                  \
+        int col0 = __ldg(&indices[pos]);                                    \
+        int col1 = __ldg(&indices[pos + 32]);                               \
+        int col2 = __ldg(&indices[pos + 64]);                               \
+        int col3 = __ldg(&indices[pos + 96]);                               \
+        ACC_T val0 = READ_W(out_w[pos]) + READ_W(__ldg(&trace[col0]));      \
+        ACC_T val1 = READ_W(out_w[pos + 32]) + READ_W(__ldg(&trace[col1])); \
+        ACC_T val2 = READ_W(out_w[pos + 64]) + READ_W(__ldg(&trace[col2])); \
+        ACC_T val3 = READ_W(out_w[pos + 96]) + READ_W(__ldg(&trace[col3])); \
+        out_w[pos] = WRITE_W(val0);                                         \
+        out_w[pos + 32] = WRITE_W(val1);                                    \
+        out_w[pos + 64] = WRITE_W(val2);                                    \
+        out_w[pos + 96] = WRITE_W(val3);                                    \
+    }                                                                       \
+    for (; pos < end; pos += 32) {                                          \
+        int col = __ldg(&indices[pos]);                                     \
+        ACC_T val = READ_W(out_w[pos]) + READ_W(__ldg(&trace[col]));        \
+        out_w[pos] = WRITE_W(val);                                          \
+    }                                                                       \
+}
+
 #define DEFINE_CSR_ON_PRE_BLOCK(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
-                                 READ_W, WRITE_W)                              \
-__global__ void __launch_bounds__(256)                                         \
-_csr_on_pre_block_kern##SUFFIX(                                                \
-    WEIGHT_T*        __restrict__ out_w,                                       \
-    const SPIKE_T*   __restrict__ spike,                                       \
-    const WEIGHT_T*  __restrict__ trace,                                       \
-    const int32_t*   __restrict__ indptr,                                      \
-    const int32_t*   __restrict__ indices,                                     \
-    int n_pre                                                                  \
-) {                                                                            \
-    int row = (int)blockIdx.x;                                                 \
-    if (row >= n_pre) return;                                                  \
-    if (!IS_ACTIVE(__ldg(&spike[row]))) return;                                \
-    int start = __ldg(&indptr[row]);                                           \
-    int end   = __ldg(&indptr[row + 1]);                                       \
-    int tid   = (int)threadIdx.x;                                              \
-    int pos = start + tid;                                                     \
-    for (; pos + 1024 <= end; pos += 1024) {                                   \
-        int col0 = __ldg(&indices[pos]);                                       \
-        int col1 = __ldg(&indices[pos + 256]);                                 \
-        int col2 = __ldg(&indices[pos + 512]);                                 \
-        int col3 = __ldg(&indices[pos + 768]);                                 \
-        ACC_T val0 = READ_W(out_w[pos]) + READ_W(__ldg(&trace[col0]));         \
-        ACC_T val1 = READ_W(out_w[pos + 256]) + READ_W(__ldg(&trace[col1]));   \
-        ACC_T val2 = READ_W(out_w[pos + 512]) + READ_W(__ldg(&trace[col2]));   \
-        ACC_T val3 = READ_W(out_w[pos + 768]) + READ_W(__ldg(&trace[col3]));   \
-        out_w[pos] = WRITE_W(val0);                                            \
-        out_w[pos + 256] = WRITE_W(val1);                                      \
-        out_w[pos + 512] = WRITE_W(val2);                                      \
-        out_w[pos + 768] = WRITE_W(val3);                                      \
-    }                                                                          \
-    for (; pos < end; pos += 256) {                                            \
-        int col = __ldg(&indices[pos]);                                        \
-        ACC_T val = READ_W(out_w[pos]) + READ_W(__ldg(&trace[col]));           \
-        out_w[pos] = WRITE_W(val);                                             \
-    }                                                                          \
+                                 READ_W, WRITE_W)                            \
+__global__ void __launch_bounds__(256)                                       \
+_csr_on_pre_block_kern##SUFFIX(                                              \
+    WEIGHT_T*        __restrict__ out_w,                                     \
+    const SPIKE_T*   __restrict__ spike,                                     \
+    const WEIGHT_T*  __restrict__ trace,                                     \
+    const int32_t*   __restrict__ indptr,                                    \
+    const int32_t*   __restrict__ indices,                                   \
+    int n_pre                                                                \
+) {                                                                          \
+    int row = (int)blockIdx.x;                                               \
+    if (row >= n_pre) return;                                                \
+    if (!IS_ACTIVE(__ldg(&spike[row]))) return;                              \
+    int start = __ldg(&indptr[row]);                                         \
+    int end   = __ldg(&indptr[row + 1]);                                     \
+    int tid   = (int)threadIdx.x;                                            \
+    int pos = start + tid;                                                   \
+    for (; pos + 1024 <= end; pos += 1024) {                                 \
+        int col0 = __ldg(&indices[pos]);                                     \
+        int col1 = __ldg(&indices[pos + 256]);                               \
+        int col2 = __ldg(&indices[pos + 512]);                               \
+        int col3 = __ldg(&indices[pos + 768]);                               \
+        ACC_T val0 = READ_W(out_w[pos]) + READ_W(__ldg(&trace[col0]));       \
+        ACC_T val1 = READ_W(out_w[pos + 256]) + READ_W(__ldg(&trace[col1])); \
+        ACC_T val2 = READ_W(out_w[pos + 512]) + READ_W(__ldg(&trace[col2])); \
+        ACC_T val3 = READ_W(out_w[pos + 768]) + READ_W(__ldg(&trace[col3])); \
+        out_w[pos] = WRITE_W(val0);                                          \
+        out_w[pos + 256] = WRITE_W(val1);                                    \
+        out_w[pos + 512] = WRITE_W(val2);                                    \
+        out_w[pos + 768] = WRITE_W(val3);                                    \
+    }                                                                        \
+    for (; pos < end; pos += 256) {                                          \
+        int col = __ldg(&indices[pos]);                                      \
+        ACC_T val = READ_W(out_w[pos]) + READ_W(__ldg(&trace[col]));         \
+        out_w[pos] = WRITE_W(val);                                           \
+    }                                                                        \
 }
 
 // Sp-Pre Instantiations
@@ -270,43 +269,43 @@ DEFINE_CSR_ON_PRE_BLOCK(_bf16_float,float,  IS_ACTIVE_FLOAT, __nv_bfloat16,  flo
 // TVM FFI Entry Points
 // =========================================================================
 
-#define FFI_CSR_ON_PRE(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                        \
-void update_csr_on_pre##SUFFIX(                                               \
-    tvm::ffi::TensorView weight,                                              \
-    tvm::ffi::TensorView indices,                                             \
-    tvm::ffi::TensorView indptr,                                              \
-    tvm::ffi::TensorView spike,                                               \
-    tvm::ffi::TensorView trace,                                               \
-    tvm::ffi::TensorView out_weight,                                          \
-    int64_t stream                                                            \
-) {                                                                           \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                  \
-    int nse   = static_cast<int>(out_weight.size(0));                         \
-    int n_pre = static_cast<int>(indptr.size(0)) - 1;                         \
-    if (n_pre <= 0 || nse == 0) return;                                       \
-    WEIGHT_C_T*       d_w   = static_cast<WEIGHT_C_T*>(                       \
-                                  out_weight.data_ptr());                     \
-    const SPIKE_C_T*  d_spk = static_cast<const SPIKE_C_T*>(                  \
-                                  spike.data_ptr());                          \
-    const WEIGHT_C_T* d_tr  = static_cast<const WEIGHT_C_T*>(                 \
-                                  trace.data_ptr());                          \
-    const int32_t*    d_idx = static_cast<const int32_t*>(                    \
-                                  indices.data_ptr());                        \
-    const int32_t*    d_ipt = static_cast<const int32_t*>(                    \
-                                  indptr.data_ptr());                         \
-    int avg_nnz = nse / n_pre;                                                \
-    if (avg_nnz < 32) {                                                       \
-        int grid = (n_pre + 255) / 256;                                       \
-        _csr_on_pre_thread_kern##SUFFIX<<<grid, 256, 0, s>>>(                 \
-            d_w, d_spk, d_tr, d_idx, d_ipt, n_pre);                          \
-    } else if (avg_nnz < 256) {                                               \
-        int grid = (n_pre + 7) / 8;                                           \
-        _csr_on_pre_warp_kern##SUFFIX<<<grid, 256, 0, s>>>(                   \
-            d_w, d_spk, d_tr, d_idx, d_ipt, n_pre);                          \
-    } else {                                                                  \
-        _csr_on_pre_block_kern##SUFFIX<<<n_pre, 256, 0, s>>>(                 \
-            d_w, d_spk, d_tr, d_idx, d_ipt, n_pre);                          \
-    }                                                                         \
+#define FFI_CSR_ON_PRE(SUFFIX, WEIGHT_C_T, SPIKE_C_T)         \
+void update_csr_on_pre##SUFFIX(                               \
+    tvm::ffi::TensorView weight,                              \
+    tvm::ffi::TensorView indices,                             \
+    tvm::ffi::TensorView indptr,                              \
+    tvm::ffi::TensorView spike,                               \
+    tvm::ffi::TensorView trace,                               \
+    tvm::ffi::TensorView out_weight,                          \
+    int64_t stream                                            \
+) {                                                           \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);  \
+    int nse   = static_cast<int>(out_weight.size(0));         \
+    int n_pre = static_cast<int>(indptr.size(0)) - 1;         \
+    if (n_pre <= 0 || nse == 0) return;                       \
+    WEIGHT_C_T*       d_w   = static_cast<WEIGHT_C_T*>(       \
+                                  out_weight.data_ptr());     \
+    const SPIKE_C_T*  d_spk = static_cast<const SPIKE_C_T*>(  \
+                                  spike.data_ptr());          \
+    const WEIGHT_C_T* d_tr  = static_cast<const WEIGHT_C_T*>( \
+                                  trace.data_ptr());          \
+    const int32_t*    d_idx = static_cast<const int32_t*>(    \
+                                  indices.data_ptr());        \
+    const int32_t*    d_ipt = static_cast<const int32_t*>(    \
+                                  indptr.data_ptr());         \
+    int avg_nnz = nse / n_pre;                                \
+    if (avg_nnz < 32) {                                       \
+        int grid = (n_pre + 255) / 256;                       \
+        _csr_on_pre_thread_kern##SUFFIX<<<grid, 256, 0, s>>>( \
+            d_w, d_spk, d_tr, d_idx, d_ipt, n_pre);           \
+    } else if (avg_nnz < 256) {                               \
+        int grid = (n_pre + 7) / 8;                           \
+        _csr_on_pre_warp_kern##SUFFIX<<<grid, 256, 0, s>>>(   \
+            d_w, d_spk, d_tr, d_idx, d_ipt, n_pre);           \
+    } else {                                                  \
+        _csr_on_pre_block_kern##SUFFIX<<<n_pre, 256, 0, s>>>( \
+            d_w, d_spk, d_tr, d_idx, d_ipt, n_pre);           \
+    }                                                         \
 }
 
 // @tvm_ffi update_csr_on_pre_f32_bool

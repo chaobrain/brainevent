@@ -47,52 +47,51 @@
  */
 
 #include "../cuda_common.h"
-#define WRITE_BF16(x) __float2bfloat16(x)
 
 // =========================================================================
 // COO Post-Synaptic Plasticity Kernel
 // =========================================================================
 
-#define DEFINE_COO_ON_POST(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T,    \
-                           READ_W, WRITE_W)                                 \
-__global__ void __launch_bounds__(512) _coo_on_post_kern##SUFFIX(           \
-    WEIGHT_T*         __restrict__ out_w,                                   \
-    const SPIKE_T*    __restrict__ spike,                                   \
-    const WEIGHT_T*   __restrict__ trace,                                   \
-    const int32_t*    __restrict__ pre_ids,                                 \
-    const int32_t*    __restrict__ post_ids,                                \
-    int n_syn                                                               \
-) {                                                                         \
-    int i = (int)(blockIdx.x * (uint32_t)blockDim.x) + threadIdx.x;        \
-    bool in_bounds = (i < n_syn);                                           \
-                                                                            \
-    /* Early exit for out-of-bounds warps */                                \
-    unsigned int bounds_ballot = __ballot_sync(0xFFFFFFFF, in_bounds);      \
-    if (bounds_ballot == 0) return;                                         \
-                                                                            \
-    bool my_active = false;                                                 \
-    int32_t pre_id, post_id;                                                \
-    WEIGHT_T trace_val;                                                     \
-                                                                            \
-    if (in_bounds) {                                                        \
-        post_id = __ldg(&post_ids[i]);                                      \
-        SPIKE_T spike_val = __ldg(&spike[post_id]);                         \
-        my_active = IS_ACTIVE(spike_val);                                   \
-                                                                            \
-        if (my_active) {                                                    \
-            pre_id = __ldg(&pre_ids[i]);                                    \
-            trace_val = __ldg(&trace[pre_id]);                              \
-        }                                                                   \
-    }                                                                       \
-                                                                            \
-    /* Early exit for inactive warps */                                     \
-    unsigned int active_ballot = __ballot_sync(0xFFFFFFFF, my_active);      \
-    if (active_ballot == 0) return;                                         \
-                                                                            \
-    if (my_active) {                                                        \
-        ACC_T val = READ_W(out_w[i]) + READ_W(trace_val);                  \
-        out_w[i] = WRITE_W(val);                                            \
-    }                                                                       \
+#define DEFINE_COO_ON_POST(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
+                           READ_W, WRITE_W)                             \
+__global__ void __launch_bounds__(512) _coo_on_post_kern##SUFFIX(       \
+    WEIGHT_T*         __restrict__ out_w,                               \
+    const SPIKE_T*    __restrict__ spike,                               \
+    const WEIGHT_T*   __restrict__ trace,                               \
+    const int32_t*    __restrict__ pre_ids,                             \
+    const int32_t*    __restrict__ post_ids,                            \
+    int n_syn                                                           \
+) {                                                                     \
+    int i = (int)(blockIdx.x * (uint32_t)blockDim.x) + threadIdx.x;     \
+    bool in_bounds = (i < n_syn);                                       \
+                                                                        \
+    /* Early exit for out-of-bounds warps */                            \
+    unsigned int bounds_ballot = __ballot_sync(0xFFFFFFFF, in_bounds);  \
+    if (bounds_ballot == 0) return;                                     \
+                                                                        \
+    bool my_active = false;                                             \
+    int32_t pre_id, post_id;                                            \
+    WEIGHT_T trace_val;                                                 \
+                                                                        \
+    if (in_bounds) {                                                    \
+        post_id = __ldg(&post_ids[i]);                                  \
+        SPIKE_T spike_val = __ldg(&spike[post_id]);                     \
+        my_active = IS_ACTIVE(spike_val);                               \
+                                                                        \
+        if (my_active) {                                                \
+            pre_id = __ldg(&pre_ids[i]);                                \
+            trace_val = __ldg(&trace[pre_id]);                          \
+        }                                                               \
+    }                                                                   \
+                                                                        \
+    /* Early exit for inactive warps */                                 \
+    unsigned int active_ballot = __ballot_sync(0xFFFFFFFF, my_active);  \
+    if (active_ballot == 0) return;                                     \
+                                                                        \
+    if (my_active) {                                                    \
+        ACC_T val = READ_W(out_w[i]) + READ_W(trace_val);               \
+        out_w[i] = WRITE_W(val);                                        \
+    }                                                                   \
 }
 
 // Instantiations
@@ -109,32 +108,32 @@ DEFINE_COO_ON_POST(_bf16_float,float,  IS_ACTIVE_FLOAT, __nv_bfloat16,  float,  
 // TVM FFI Entry Points
 // =========================================================================
 
-#define FFI_COO_ON_POST(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                     \
-void update_coo_on_post##SUFFIX(                                            \
-    tvm::ffi::TensorView weight,                                            \
-    tvm::ffi::TensorView pre_ids,                                           \
-    tvm::ffi::TensorView post_ids,                                          \
-    tvm::ffi::TensorView trace,                                             \
-    tvm::ffi::TensorView spike,                                             \
-    tvm::ffi::TensorView out_weight,                                        \
-    int64_t stream                                                          \
-) {                                                                         \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                \
-    int n_syn = static_cast<int>(out_weight.size(0));                       \
-    if (n_syn == 0) return;                                                 \
-    WEIGHT_C_T*        d_w    = static_cast<WEIGHT_C_T*>(                   \
-                                    out_weight.data_ptr());                 \
-    const SPIKE_C_T*   d_spk  = static_cast<const SPIKE_C_T*>(             \
-                                    spike.data_ptr());                      \
-    const WEIGHT_C_T*  d_tr   = static_cast<const WEIGHT_C_T*>(            \
-                                    trace.data_ptr());                      \
-    const int32_t*     d_pre  = static_cast<const int32_t*>(               \
-                                    pre_ids.data_ptr());                    \
-    const int32_t*     d_post = static_cast<const int32_t*>(               \
-                                    post_ids.data_ptr());                   \
-    int grid_size = (n_syn + 511) / 512;                                    \
-    _coo_on_post_kern##SUFFIX<<<grid_size, 512, 0, s>>>(                    \
-        d_w, d_spk, d_tr, d_pre, d_post, n_syn);                           \
+#define FFI_COO_ON_POST(SUFFIX, WEIGHT_C_T, SPIKE_C_T)          \
+void update_coo_on_post##SUFFIX(                                \
+    tvm::ffi::TensorView weight,                                \
+    tvm::ffi::TensorView pre_ids,                               \
+    tvm::ffi::TensorView post_ids,                              \
+    tvm::ffi::TensorView trace,                                 \
+    tvm::ffi::TensorView spike,                                 \
+    tvm::ffi::TensorView out_weight,                            \
+    int64_t stream                                              \
+) {                                                             \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);    \
+    int n_syn = static_cast<int>(out_weight.size(0));           \
+    if (n_syn == 0) return;                                     \
+    WEIGHT_C_T*        d_w    = static_cast<WEIGHT_C_T*>(       \
+                                    out_weight.data_ptr());     \
+    const SPIKE_C_T*   d_spk  = static_cast<const SPIKE_C_T*>(  \
+                                    spike.data_ptr());          \
+    const WEIGHT_C_T*  d_tr   = static_cast<const WEIGHT_C_T*>( \
+                                    trace.data_ptr());          \
+    const int32_t*     d_pre  = static_cast<const int32_t*>(    \
+                                    pre_ids.data_ptr());        \
+    const int32_t*     d_post = static_cast<const int32_t*>(    \
+                                    post_ids.data_ptr());       \
+    int grid_size = (n_syn + 511) / 512;                        \
+    _coo_on_post_kern##SUFFIX<<<grid_size, 512, 0, s>>>(        \
+        d_w, d_spk, d_tr, d_pre, d_post, n_syn);                \
 }
 
 // @tvm_ffi update_coo_on_post_f32_bool

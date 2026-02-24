@@ -321,27 +321,19 @@ def _spfloat_fcnmv_cuda_kernel(
     )
 
     out_info = kwargs['outs']
-    n_conn = indices_info.shape[1]
+    weight_info = kwargs['weight_info']
     _dtype_sfx = {np.dtype('float16'): '_f16', np.dtype('float32'): '_f32', np.dtype('float64'): '_f64'}
-    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
+    sfx = _dtype_sfx.get(np.dtype(weight_info.dtype), '_f32')
+    homo = weight_info.size == 1
+    mode_sfx = '_homo' if homo else '_hetero'
 
     if transpose:
         # Scatter mode: y[idx[i,k]] += w[i,k] * s[i]  (skip when s[i] == 0)
-        if n_conn <= 32:
-            kernel_name = f'fcn_sparse_float_mv.spfloat_fcnmv_scatter_warp{sfx}'
-        else:
-            kernel_name = f'fcn_sparse_float_mv.spfloat_fcnmv_scatter_auto{sfx}'
-
+        kernel_name = f'fcn_sparse_float_mv.spfloat_fcnmv_scatter{mode_sfx}_auto{sfx}'
 
     else:
         # Gather mode: y[i] = sum_k w[i,k] * s[idx[i,k]]  (skip when s == 0)
-        # shared kernel only for float32; for f64/f16 fall back to basic/warp
-        if sfx == '_f32' and n_conn > 512:
-            kernel_name = 'fcn_sparse_float_mv.spfloat_fcnmv_gather_shared_f32'
-        elif n_conn <= 64:
-            kernel_name = f'fcn_sparse_float_mv.spfloat_fcnmv_gather_warp{sfx}'
-        else:
-            kernel_name = f'fcn_sparse_float_mv.spfloat_fcnmv_gather_basic{sfx}'
+        kernel_name = f'fcn_sparse_float_mv.spfloat_fcnmv_gather{mode_sfx}_auto{sfx}'
 
     def kernel(weights, indices, vector):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, vector)
@@ -1040,15 +1032,18 @@ def _spfloat_fcnmm_cuda_kernel(
     )
 
     out_info = kwargs['outs']
+    weight_info = kwargs['weight_info']
     _dtype_sfx = {np.dtype('float16'): '_f16', np.dtype('float32'): '_f32', np.dtype('float64'): '_f64'}
-    sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
+    sfx = _dtype_sfx.get(np.dtype(weight_info.dtype), '_f32')
+    homo = weight_info.size == 1
+    mode_sfx = '_homo' if homo else '_hetero'
 
     if transpose:
         # Scatter mode: Y[idx[i,k],j] += w[i,k] * M[i,j]  (skip when M[i,j] == 0)
-        kernel_name = f'fcn_sparse_float_mm.spfloat_fcnmm_scatter_auto{sfx}'
+        kernel_name = f'fcn_sparse_float_mm.spfloat_fcnmm_scatter{mode_sfx}_auto{sfx}'
     else:
         # Gather mode: Y[i,j] = sum_k w[i,k] * M[idx[i,k],j]  (skip when M[...] == 0)
-        kernel_name = f'fcn_sparse_float_mm.spfloat_fcnmm_gather_auto{sfx}'
+        kernel_name = f'fcn_sparse_float_mm.spfloat_fcnmm_gather{mode_sfx}_auto{sfx}'
 
     def kernel(weights, indices, matrix):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, matrix)

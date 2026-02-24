@@ -61,103 +61,49 @@
 #include "../cuda_common.h"
 
 // ============================================================================
-// Per-dtype atomic-add helpers (accumulator value -> weight memory)
-// ============================================================================
-
-__device__ __inline__ void atomic_add_f32(float* addr, float val) {
-    atomicAdd(addr, val);
-}
-
-__device__ __inline__ void atomic_add_f64(double* addr, double val) {
-    atomicAdd(addr, val);
-}
-
-__device__ __inline__ void atomic_add_f16(__half* addr, float val) {
-#if __CUDA_ARCH__ >= 700
-    atomicAdd(addr, __float2half(val));
-#else
-    unsigned int* base = reinterpret_cast<unsigned int*>(
-        reinterpret_cast<size_t>(addr) & ~(size_t)2
-    );
-    int shift = ((reinterpret_cast<size_t>(addr) & 2) != 0) ? 16 : 0;
-    unsigned int assumed, old_val = *base, updated;
-    do {
-        assumed = old_val;
-        unsigned short h = static_cast<unsigned short>((assumed >> shift) & 0xFFFF);
-        float cur = __half2float(*reinterpret_cast<__half*>(&h));
-        __half new_h = __float2half(cur + val);
-        unsigned short new_us = *reinterpret_cast<unsigned short*>(&new_h);
-        updated = (assumed & ~(0xFFFFu << shift)) | (static_cast<unsigned int>(new_us) << shift);
-        old_val = atomicCAS(base, assumed, updated);
-    } while (assumed != old_val);
-#endif
-}
-
-__device__ __inline__ void atomic_add_bf16(__nv_bfloat16* addr, float val) {
-#if __CUDA_ARCH__ >= 800
-    atomicAdd(addr, __float2bfloat16(val));
-#else
-    unsigned int* base = reinterpret_cast<unsigned int*>(
-        reinterpret_cast<size_t>(addr) & ~(size_t)2
-    );
-    int shift = ((reinterpret_cast<size_t>(addr) & 2) != 0) ? 16 : 0;
-    unsigned int assumed, old_val = *base, updated;
-    do {
-        assumed = old_val;
-        unsigned short h = static_cast<unsigned short>((assumed >> shift) & 0xFFFF);
-        float cur = __bfloat162float(*reinterpret_cast<__nv_bfloat16*>(&h));
-        __nv_bfloat16 new_h = __float2bfloat16(cur + val);
-        unsigned short new_us = *reinterpret_cast<unsigned short*>(&new_h);
-        updated = (assumed & ~(0xFFFFu << shift)) | (static_cast<unsigned int>(new_us) << shift);
-        old_val = atomicCAS(base, assumed, updated);
-    } while (assumed != old_val);
-#endif
-}
-
-// ============================================================================
 // Homogeneous kernels — scalar weight data[0] broadcast to all connections
 // ============================================================================
 
 #define DEFINE_COOMV_HOMO_ATOMIC_NT(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _coomv_homo_atomic_nt_kern##SUFFIX(                                          \
-    const WEIGHT_T* __restrict__ data,                                                        \
-    const int32_t*  __restrict__ row,                                                         \
-    const int32_t*  __restrict__ col,                                                         \
-    const SPIKE_T*  __restrict__ v,                                                           \
-    WEIGHT_T*                    out,                                                         \
-    int nnz                                                                                   \
-) {                                                                                           \
-    ACC_T homo_w = READ_W(data[0]);                                                           \
-    int k = blockIdx.x * blockDim.x + threadIdx.x;                                           \
-    const int stride = gridDim.x * blockDim.x;                                               \
-    while (k < nnz) {                                                                         \
-        bool active = IS_ACTIVE(v[col[k]]);                                                   \
-        uint32_t ballot = __ballot_sync(0xffffffff, active);                                  \
-        if (ballot == 0u) { k += stride; continue; }                                          \
-        if (active) { ATOMIC_ADD_W(out + row[k], homo_w); }                                  \
-        k += stride;                                                                          \
-    }                                                                                         \
+__global__ void _coomv_homo_atomic_nt_kern##SUFFIX(                                                    \
+    const WEIGHT_T* __restrict__ data,                                                                 \
+    const int32_t*  __restrict__ row,                                                                  \
+    const int32_t*  __restrict__ col,                                                                  \
+    const SPIKE_T*  __restrict__ v,                                                                    \
+    WEIGHT_T*                    out,                                                                  \
+    int nnz                                                                                            \
+) {                                                                                                    \
+    ACC_T homo_w = READ_W(data[0]);                                                                    \
+    int k = blockIdx.x * blockDim.x + threadIdx.x;                                                     \
+    const int stride = gridDim.x * blockDim.x;                                                         \
+    while (k < nnz) {                                                                                  \
+        bool active = IS_ACTIVE(v[col[k]]);                                                            \
+        uint32_t ballot = __ballot_sync(0xffffffff, active);                                           \
+        if (ballot == 0u) { k += stride; continue; }                                                   \
+        if (active) { ATOMIC_ADD_W(out + row[k], homo_w); }                                            \
+        k += stride;                                                                                   \
+    }                                                                                                  \
 }
 
 #define DEFINE_COOMV_HOMO_ATOMIC_T(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _coomv_homo_atomic_t_kern##SUFFIX(                                           \
-    const WEIGHT_T* __restrict__ data,                                                        \
-    const int32_t*  __restrict__ row,                                                         \
-    const int32_t*  __restrict__ col,                                                         \
-    const SPIKE_T*  __restrict__ v,                                                           \
-    WEIGHT_T*                    out,                                                         \
-    int nnz                                                                                   \
-) {                                                                                           \
-    ACC_T homo_w = READ_W(data[0]);                                                           \
-    int k = blockIdx.x * blockDim.x + threadIdx.x;                                           \
-    const int stride = gridDim.x * blockDim.x;                                               \
-    while (k < nnz) {                                                                         \
-        bool active = IS_ACTIVE(v[row[k]]);                                                   \
-        uint32_t ballot = __ballot_sync(0xffffffff, active);                                  \
-        if (ballot == 0u) { k += stride; continue; }                                          \
-        if (active) { ATOMIC_ADD_W(out + col[k], homo_w); }                                  \
-        k += stride;                                                                          \
-    }                                                                                         \
+__global__ void _coomv_homo_atomic_t_kern##SUFFIX(                                                    \
+    const WEIGHT_T* __restrict__ data,                                                                \
+    const int32_t*  __restrict__ row,                                                                 \
+    const int32_t*  __restrict__ col,                                                                 \
+    const SPIKE_T*  __restrict__ v,                                                                   \
+    WEIGHT_T*                    out,                                                                 \
+    int nnz                                                                                           \
+) {                                                                                                   \
+    ACC_T homo_w = READ_W(data[0]);                                                                   \
+    int k = blockIdx.x * blockDim.x + threadIdx.x;                                                    \
+    const int stride = gridDim.x * blockDim.x;                                                        \
+    while (k < nnz) {                                                                                 \
+        bool active = IS_ACTIVE(v[row[k]]);                                                           \
+        uint32_t ballot = __ballot_sync(0xffffffff, active);                                          \
+        if (ballot == 0u) { k += stride; continue; }                                                  \
+        if (active) { ATOMIC_ADD_W(out + col[k], homo_w); }                                           \
+        k += stride;                                                                                  \
+    }                                                                                                 \
 }
 
 // ============================================================================
@@ -165,43 +111,43 @@ __global__ void _coomv_homo_atomic_t_kern##SUFFIX(                              
 // ============================================================================
 
 #define DEFINE_COOMV_HETERO_ATOMIC_NT(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _coomv_hetero_atomic_nt_kern##SUFFIX(                                        \
-    const WEIGHT_T* __restrict__ data,                                                        \
-    const int32_t*  __restrict__ row,                                                         \
-    const int32_t*  __restrict__ col,                                                         \
-    const SPIKE_T*  __restrict__ v,                                                           \
-    WEIGHT_T*                    out,                                                         \
-    int nnz                                                                                   \
-) {                                                                                           \
-    int k = blockIdx.x * blockDim.x + threadIdx.x;                                           \
-    const int stride = gridDim.x * blockDim.x;                                               \
-    while (k < nnz) {                                                                         \
-        bool active = IS_ACTIVE(v[col[k]]);                                                   \
-        uint32_t ballot = __ballot_sync(0xffffffff, active);                                  \
-        if (ballot == 0u) { k += stride; continue; }                                          \
-        if (active) { ATOMIC_ADD_W(out + row[k], READ_W(data[k])); }                         \
-        k += stride;                                                                          \
-    }                                                                                         \
+__global__ void _coomv_hetero_atomic_nt_kern##SUFFIX(                                                    \
+    const WEIGHT_T* __restrict__ data,                                                                   \
+    const int32_t*  __restrict__ row,                                                                    \
+    const int32_t*  __restrict__ col,                                                                    \
+    const SPIKE_T*  __restrict__ v,                                                                      \
+    WEIGHT_T*                    out,                                                                    \
+    int nnz                                                                                              \
+) {                                                                                                      \
+    int k = blockIdx.x * blockDim.x + threadIdx.x;                                                       \
+    const int stride = gridDim.x * blockDim.x;                                                           \
+    while (k < nnz) {                                                                                    \
+        bool active = IS_ACTIVE(v[col[k]]);                                                              \
+        uint32_t ballot = __ballot_sync(0xffffffff, active);                                             \
+        if (ballot == 0u) { k += stride; continue; }                                                     \
+        if (active) { ATOMIC_ADD_W(out + row[k], READ_W(data[k])); }                                     \
+        k += stride;                                                                                     \
+    }                                                                                                    \
 }
 
 #define DEFINE_COOMV_HETERO_ATOMIC_T(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _coomv_hetero_atomic_t_kern##SUFFIX(                                         \
-    const WEIGHT_T* __restrict__ data,                                                        \
-    const int32_t*  __restrict__ row,                                                         \
-    const int32_t*  __restrict__ col,                                                         \
-    const SPIKE_T*  __restrict__ v,                                                           \
-    WEIGHT_T*                    out,                                                         \
-    int nnz                                                                                   \
-) {                                                                                           \
-    int k = blockIdx.x * blockDim.x + threadIdx.x;                                           \
-    const int stride = gridDim.x * blockDim.x;                                               \
-    while (k < nnz) {                                                                         \
-        bool active = IS_ACTIVE(v[row[k]]);                                                   \
-        uint32_t ballot = __ballot_sync(0xffffffff, active);                                  \
-        if (ballot == 0u) { k += stride; continue; }                                          \
-        if (active) { ATOMIC_ADD_W(out + col[k], READ_W(data[k])); }                         \
-        k += stride;                                                                          \
-    }                                                                                         \
+__global__ void _coomv_hetero_atomic_t_kern##SUFFIX(                                                    \
+    const WEIGHT_T* __restrict__ data,                                                                  \
+    const int32_t*  __restrict__ row,                                                                   \
+    const int32_t*  __restrict__ col,                                                                   \
+    const SPIKE_T*  __restrict__ v,                                                                     \
+    WEIGHT_T*                    out,                                                                   \
+    int nnz                                                                                             \
+) {                                                                                                     \
+    int k = blockIdx.x * blockDim.x + threadIdx.x;                                                      \
+    const int stride = gridDim.x * blockDim.x;                                                          \
+    while (k < nnz) {                                                                                   \
+        bool active = IS_ACTIVE(v[row[k]]);                                                             \
+        uint32_t ballot = __ballot_sync(0xffffffff, active);                                            \
+        if (ballot == 0u) { k += stride; continue; }                                                    \
+        if (active) { ATOMIC_ADD_W(out + col[k], READ_W(data[k])); }                                    \
+        k += stride;                                                                                    \
+    }                                                                                                   \
 }
 
 // ============================================================================
@@ -250,112 +196,112 @@ DEFINE_COOMV_HETERO_ATOMIC_T (_bf16_float, float,         IS_ACTIVE_FLOAT, __nv_
 // FFI entry point macros — homogeneous
 // ============================================================================
 
-#define FFI_COOMV_HOMO_ATOMIC_NT(SUFFIX, WEIGHT_C_T, SPIKE_C_T, OUT_BYTES_PER_ELEM)         \
-void binary_coomv_homo_atomic_nt##SUFFIX(                                                     \
-    tvm::ffi::TensorView data,                                                                \
-    tvm::ffi::TensorView row_idx,                                                             \
-    tvm::ffi::TensorView col_idx,                                                             \
-    tvm::ffi::TensorView v,                                                                   \
-    tvm::ffi::TensorView output,                                                              \
-    int64_t stream                                                                            \
-) {                                                                                           \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                  \
-    int nnz = static_cast<int>(row_idx.size(0));                                              \
-    int m   = static_cast<int>(output.size(0));                                               \
-    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                         \
-    cudaMemsetAsync(d_out, 0, (size_t)m * OUT_BYTES_PER_ELEM, s);                            \
-    if (nnz == 0) return;                                                                     \
-    int block = 256;                                                                          \
-    int grid  = (nnz + block - 1) / block;                                                   \
-    _coomv_homo_atomic_nt_kern##SUFFIX<<<grid, block, 0, s>>>(                                \
-        static_cast<const WEIGHT_C_T*>(data.data_ptr()),                                      \
-        static_cast<const int32_t*>(row_idx.data_ptr()),                                      \
-        static_cast<const int32_t*>(col_idx.data_ptr()),                                      \
-        static_cast<const SPIKE_C_T*>(v.data_ptr()),                                          \
-        d_out, nnz                                                                            \
-    );                                                                                        \
+#define FFI_COOMV_HOMO_ATOMIC_NT(SUFFIX, WEIGHT_C_T, SPIKE_C_T, OUT_BYTES_PER_ELEM) \
+void binary_coomv_homo_atomic_nt##SUFFIX(                                           \
+    tvm::ffi::TensorView data,                                                      \
+    tvm::ffi::TensorView row_idx,                                                   \
+    tvm::ffi::TensorView col_idx,                                                   \
+    tvm::ffi::TensorView v,                                                         \
+    tvm::ffi::TensorView output,                                                    \
+    int64_t stream                                                                  \
+) {                                                                                 \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                        \
+    int nnz = static_cast<int>(row_idx.size(0));                                    \
+    int m   = static_cast<int>(output.size(0));                                     \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                \
+    cudaMemsetAsync(d_out, 0, (size_t)m * OUT_BYTES_PER_ELEM, s);                   \
+    if (nnz == 0) return;                                                           \
+    int block = 256;                                                                \
+    int grid  = (nnz + block - 1) / block;                                          \
+    _coomv_homo_atomic_nt_kern##SUFFIX<<<grid, block, 0, s>>>(                      \
+        static_cast<const WEIGHT_C_T*>(data.data_ptr()),                            \
+        static_cast<const int32_t*>(row_idx.data_ptr()),                            \
+        static_cast<const int32_t*>(col_idx.data_ptr()),                            \
+        static_cast<const SPIKE_C_T*>(v.data_ptr()),                                \
+        d_out, nnz                                                                  \
+    );                                                                              \
 }
 
-#define FFI_COOMV_HOMO_ATOMIC_T(SUFFIX, WEIGHT_C_T, SPIKE_C_T, OUT_BYTES_PER_ELEM)          \
-void binary_coomv_homo_atomic_t##SUFFIX(                                                      \
-    tvm::ffi::TensorView data,                                                                \
-    tvm::ffi::TensorView row_idx,                                                             \
-    tvm::ffi::TensorView col_idx,                                                             \
-    tvm::ffi::TensorView v,                                                                   \
-    tvm::ffi::TensorView output,                                                              \
-    int64_t stream                                                                            \
-) {                                                                                           \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                  \
-    int nnz = static_cast<int>(row_idx.size(0));                                              \
-    int k   = static_cast<int>(output.size(0));                                               \
-    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                         \
-    cudaMemsetAsync(d_out, 0, (size_t)k * OUT_BYTES_PER_ELEM, s);                            \
-    if (nnz == 0) return;                                                                     \
-    int block = 256;                                                                          \
-    int grid  = (nnz + block - 1) / block;                                                   \
-    _coomv_homo_atomic_t_kern##SUFFIX<<<grid, block, 0, s>>>(                                 \
-        static_cast<const WEIGHT_C_T*>(data.data_ptr()),                                      \
-        static_cast<const int32_t*>(row_idx.data_ptr()),                                      \
-        static_cast<const int32_t*>(col_idx.data_ptr()),                                      \
-        static_cast<const SPIKE_C_T*>(v.data_ptr()),                                          \
-        d_out, nnz                                                                            \
-    );                                                                                        \
+#define FFI_COOMV_HOMO_ATOMIC_T(SUFFIX, WEIGHT_C_T, SPIKE_C_T, OUT_BYTES_PER_ELEM) \
+void binary_coomv_homo_atomic_t##SUFFIX(                                           \
+    tvm::ffi::TensorView data,                                                     \
+    tvm::ffi::TensorView row_idx,                                                  \
+    tvm::ffi::TensorView col_idx,                                                  \
+    tvm::ffi::TensorView v,                                                        \
+    tvm::ffi::TensorView output,                                                   \
+    int64_t stream                                                                 \
+) {                                                                                \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                       \
+    int nnz = static_cast<int>(row_idx.size(0));                                   \
+    int k   = static_cast<int>(output.size(0));                                    \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());               \
+    cudaMemsetAsync(d_out, 0, (size_t)k * OUT_BYTES_PER_ELEM, s);                  \
+    if (nnz == 0) return;                                                          \
+    int block = 256;                                                               \
+    int grid  = (nnz + block - 1) / block;                                         \
+    _coomv_homo_atomic_t_kern##SUFFIX<<<grid, block, 0, s>>>(                      \
+        static_cast<const WEIGHT_C_T*>(data.data_ptr()),                           \
+        static_cast<const int32_t*>(row_idx.data_ptr()),                           \
+        static_cast<const int32_t*>(col_idx.data_ptr()),                           \
+        static_cast<const SPIKE_C_T*>(v.data_ptr()),                               \
+        d_out, nnz                                                                 \
+    );                                                                             \
 }
 
 // ============================================================================
 // FFI entry point macros — heterogeneous
 // ============================================================================
 
-#define FFI_COOMV_HETERO_ATOMIC_NT(SUFFIX, WEIGHT_C_T, SPIKE_C_T, OUT_BYTES_PER_ELEM)       \
-void binary_coomv_hetero_atomic_nt##SUFFIX(                                                   \
-    tvm::ffi::TensorView data,                                                                \
-    tvm::ffi::TensorView row_idx,                                                             \
-    tvm::ffi::TensorView col_idx,                                                             \
-    tvm::ffi::TensorView v,                                                                   \
-    tvm::ffi::TensorView output,                                                              \
-    int64_t stream                                                                            \
-) {                                                                                           \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                  \
-    int nnz = static_cast<int>(row_idx.size(0));                                              \
-    int m   = static_cast<int>(output.size(0));                                               \
-    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                         \
-    cudaMemsetAsync(d_out, 0, (size_t)m * OUT_BYTES_PER_ELEM, s);                            \
-    if (nnz == 0) return;                                                                     \
-    int block = 256;                                                                          \
-    int grid  = (nnz + block - 1) / block;                                                   \
-    _coomv_hetero_atomic_nt_kern##SUFFIX<<<grid, block, 0, s>>>(                              \
-        static_cast<const WEIGHT_C_T*>(data.data_ptr()),                                      \
-        static_cast<const int32_t*>(row_idx.data_ptr()),                                      \
-        static_cast<const int32_t*>(col_idx.data_ptr()),                                      \
-        static_cast<const SPIKE_C_T*>(v.data_ptr()),                                          \
-        d_out, nnz                                                                            \
-    );                                                                                        \
+#define FFI_COOMV_HETERO_ATOMIC_NT(SUFFIX, WEIGHT_C_T, SPIKE_C_T, OUT_BYTES_PER_ELEM) \
+void binary_coomv_hetero_atomic_nt##SUFFIX(                                           \
+    tvm::ffi::TensorView data,                                                        \
+    tvm::ffi::TensorView row_idx,                                                     \
+    tvm::ffi::TensorView col_idx,                                                     \
+    tvm::ffi::TensorView v,                                                           \
+    tvm::ffi::TensorView output,                                                      \
+    int64_t stream                                                                    \
+) {                                                                                   \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                          \
+    int nnz = static_cast<int>(row_idx.size(0));                                      \
+    int m   = static_cast<int>(output.size(0));                                       \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                  \
+    cudaMemsetAsync(d_out, 0, (size_t)m * OUT_BYTES_PER_ELEM, s);                     \
+    if (nnz == 0) return;                                                             \
+    int block = 256;                                                                  \
+    int grid  = (nnz + block - 1) / block;                                            \
+    _coomv_hetero_atomic_nt_kern##SUFFIX<<<grid, block, 0, s>>>(                      \
+        static_cast<const WEIGHT_C_T*>(data.data_ptr()),                              \
+        static_cast<const int32_t*>(row_idx.data_ptr()),                              \
+        static_cast<const int32_t*>(col_idx.data_ptr()),                              \
+        static_cast<const SPIKE_C_T*>(v.data_ptr()),                                  \
+        d_out, nnz                                                                    \
+    );                                                                                \
 }
 
-#define FFI_COOMV_HETERO_ATOMIC_T(SUFFIX, WEIGHT_C_T, SPIKE_C_T, OUT_BYTES_PER_ELEM)        \
-void binary_coomv_hetero_atomic_t##SUFFIX(                                                    \
-    tvm::ffi::TensorView data,                                                                \
-    tvm::ffi::TensorView row_idx,                                                             \
-    tvm::ffi::TensorView col_idx,                                                             \
-    tvm::ffi::TensorView v,                                                                   \
-    tvm::ffi::TensorView output,                                                              \
-    int64_t stream                                                                            \
-) {                                                                                           \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                  \
-    int nnz = static_cast<int>(row_idx.size(0));                                              \
-    int k   = static_cast<int>(output.size(0));                                               \
-    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                         \
-    cudaMemsetAsync(d_out, 0, (size_t)k * OUT_BYTES_PER_ELEM, s);                            \
-    if (nnz == 0) return;                                                                     \
-    int block = 256;                                                                          \
-    int grid  = (nnz + block - 1) / block;                                                   \
-    _coomv_hetero_atomic_t_kern##SUFFIX<<<grid, block, 0, s>>>(                               \
-        static_cast<const WEIGHT_C_T*>(data.data_ptr()),                                      \
-        static_cast<const int32_t*>(row_idx.data_ptr()),                                      \
-        static_cast<const int32_t*>(col_idx.data_ptr()),                                      \
-        static_cast<const SPIKE_C_T*>(v.data_ptr()),                                          \
-        d_out, nnz                                                                            \
-    );                                                                                        \
+#define FFI_COOMV_HETERO_ATOMIC_T(SUFFIX, WEIGHT_C_T, SPIKE_C_T, OUT_BYTES_PER_ELEM) \
+void binary_coomv_hetero_atomic_t##SUFFIX(                                           \
+    tvm::ffi::TensorView data,                                                       \
+    tvm::ffi::TensorView row_idx,                                                    \
+    tvm::ffi::TensorView col_idx,                                                    \
+    tvm::ffi::TensorView v,                                                          \
+    tvm::ffi::TensorView output,                                                     \
+    int64_t stream                                                                   \
+) {                                                                                  \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                         \
+    int nnz = static_cast<int>(row_idx.size(0));                                     \
+    int k   = static_cast<int>(output.size(0));                                      \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());                 \
+    cudaMemsetAsync(d_out, 0, (size_t)k * OUT_BYTES_PER_ELEM, s);                    \
+    if (nnz == 0) return;                                                            \
+    int block = 256;                                                                 \
+    int grid  = (nnz + block - 1) / block;                                           \
+    _coomv_hetero_atomic_t_kern##SUFFIX<<<grid, block, 0, s>>>(                      \
+        static_cast<const WEIGHT_C_T*>(data.data_ptr()),                             \
+        static_cast<const int32_t*>(row_idx.data_ptr()),                             \
+        static_cast<const int32_t*>(col_idx.data_ptr()),                             \
+        static_cast<const SPIKE_C_T*>(v.data_ptr()),                                 \
+        d_out, nnz                                                                   \
+    );                                                                               \
 }
 
 // ============================================================================

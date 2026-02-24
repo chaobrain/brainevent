@@ -48,54 +48,6 @@
  */
 
 #include "../cuda_common.h"
-#define WRITE_BF16(x)  __float2bfloat16(x)
-
-// =========================================================================
-// Atomic-add helpers
-// =========================================================================
-
-__device__ __forceinline__ void atomic_add_f32(float* addr, float val) {
-    atomicAdd(addr, val);
-}
-__device__ __forceinline__ void atomic_add_f64(double* addr, double val) {
-    atomicAdd(addr, val);
-}
-__device__ __forceinline__ void atomic_add_f16(__half* addr, float delta) {
-#if __CUDA_ARCH__ >= 700
-    atomicAdd(addr, __float2half(delta));
-#else
-    unsigned int* addr32 = reinterpret_cast<unsigned int*>(reinterpret_cast<uintptr_t>(addr) & ~3u);
-    unsigned int old32 = *addr32;
-    unsigned int assumed;
-    do {
-        assumed = old32;
-        unsigned int shift = (reinterpret_cast<uintptr_t>(addr) & 2u) ? 16u : 0u;
-        __half old_half = __ushort_as_half(static_cast<unsigned short>((assumed >> shift) & 0xFFFFu));
-        float new_f = __half2float(old_half) + delta;
-        unsigned short new_ush = __half_as_ushort(__float2half(new_f));
-        unsigned int new32 = (assumed & ~(0xFFFFu << shift)) | (static_cast<unsigned int>(new_ush) << shift);
-        old32 = atomicCAS(addr32, assumed, new32);
-    } while (old32 != assumed);
-#endif
-}
-__device__ __forceinline__ void atomic_add_bf16(__nv_bfloat16* addr, float delta) {
-#if __CUDA_ARCH__ >= 800
-    atomicAdd(addr, __float2bfloat16(delta));
-#else
-    unsigned int* addr32 = reinterpret_cast<unsigned int*>(reinterpret_cast<uintptr_t>(addr) & ~3u);
-    unsigned int old32 = *addr32;
-    unsigned int assumed;
-    do {
-        assumed = old32;
-        unsigned int shift = (reinterpret_cast<uintptr_t>(addr) & 2u) ? 16u : 0u;
-        __nv_bfloat16 old_bf = __ushort_as_bfloat16(static_cast<unsigned short>((assumed >> shift) & 0xFFFFu));
-        float new_f = __bfloat162float(old_bf) + delta;
-        unsigned short new_ush = __bfloat16_as_ushort(__float2bfloat16(new_f));
-        unsigned int new32 = (assumed & ~(0xFFFFu << shift)) | (static_cast<unsigned int>(new_ush) << shift);
-        old32 = atomicCAS(addr32, assumed, new32);
-    } while (old32 != assumed);
-#endif
-}
 
 // =========================================================================
 // CSR Post-Synaptic Plasticity Kernels
@@ -198,37 +150,66 @@ __device__ __forceinline__ void atomic_add_bf16(__nv_bfloat16* addr, float delta
 // =========================================================================
 
 #define DEFINE_CSR_ON_POST_THREAD(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
-                                   READ_W, WRITE_W, ATOMIC_ADD)                 \
-__global__ void __launch_bounds__(256)                                           \
-_csr_on_post_thread_kern##SUFFIX(                                                \
-    WEIGHT_T*        __restrict__ out_w,                                         \
-    const SPIKE_T*   __restrict__ spike,                                         \
-    const WEIGHT_T*  __restrict__ trace,                                         \
-    const int32_t*   __restrict__ indices,                                       \
-    const int32_t*   __restrict__ indptr,                                        \
-    const int32_t*   __restrict__ weight_indices,                                \
-    int n_post                                                                   \
-) {                                                                              \
-    int col = (int)(blockIdx.x * (uint32_t)blockDim.x) + threadIdx.x;           \
-    int safe_col = (col < n_post) ? col : (n_post - 1);                         \
-    bool my_active = (col < n_post) && IS_ACTIVE(__ldg(&spike[safe_col]));      \
-    unsigned int ballot = __ballot_sync(0xFFFFFFFF, my_active);                  \
-    if (ballot == 0) return;                                                     \
-    if (!my_active) return;                                                      \
-    int start = __ldg(&indptr[col]);                                             \
-    int end   = __ldg(&indptr[col + 1]);                                         \
-    for (int pos = start; pos < end; ++pos) {                                    \
-        int idx = __ldg(&indices[pos]);                                          \
-        int widx = __ldg(&weight_indices[pos]);                                  \
-        ACC_T delta = READ_W(__ldg(&trace[idx]));                                \
-        ATOMIC_ADD(&out_w[widx], delta);                                         \
-    }                                                                            \
+                                   READ_W, WRITE_W, ATOMIC_ADD)                \
+__global__ void __launch_bounds__(256)                                         \
+_csr_on_post_thread_kern##SUFFIX(                                              \
+    WEIGHT_T*        __restrict__ out_w,                                       \
+    const SPIKE_T*   __restrict__ spike,                                       \
+    const WEIGHT_T*  __restrict__ trace,                                       \
+    const int32_t*   __restrict__ indices,                                     \
+    const int32_t*   __restrict__ indptr,                                      \
+    const int32_t*   __restrict__ weight_indices,                              \
+    int n_post                                                                 \
+) {                                                                            \
+    int col = (int)(blockIdx.x * (uint32_t)blockDim.x) + threadIdx.x;          \
+    int safe_col = (col < n_post) ? col : (n_post - 1);                        \
+    bool my_active = (col < n_post) && IS_ACTIVE(__ldg(&spike[safe_col]));     \
+    unsigned int ballot = __ballot_sync(0xFFFFFFFF, my_active);                \
+    if (ballot == 0) return;                                                   \
+    if (!my_active) return;                                                    \
+    int start = __ldg(&indptr[col]);                                           \
+    int end   = __ldg(&indptr[col + 1]);                                       \
+    for (int pos = start; pos < end; ++pos) {                                  \
+        int idx = __ldg(&indices[pos]);                                        \
+        int widx = __ldg(&weight_indices[pos]);                                \
+        ACC_T delta = READ_W(__ldg(&trace[idx]));                              \
+        ATOMIC_ADD(&out_w[widx], delta);                                       \
+    }                                                                          \
 }
 
 #define DEFINE_CSR_ON_POST_WARP(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
-                                 READ_W, WRITE_W, ATOMIC_ADD)                 \
+                                 READ_W, WRITE_W, ATOMIC_ADD)                \
+__global__ void __launch_bounds__(256)                                       \
+_csr_on_post_warp_kern##SUFFIX(                                              \
+    WEIGHT_T*        __restrict__ out_w,                                     \
+    const SPIKE_T*   __restrict__ spike,                                     \
+    const WEIGHT_T*  __restrict__ trace,                                     \
+    const int32_t*   __restrict__ indices,                                   \
+    const int32_t*   __restrict__ indptr,                                    \
+    const int32_t*   __restrict__ weight_indices,                            \
+    int n_post                                                               \
+) {                                                                          \
+    int warp_id = (int)(blockIdx.x * (blockDim.x / 32u))                     \
+                  + (int)(threadIdx.x / 32u);                                \
+    int lane    = (int)(threadIdx.x & 31u);                                  \
+    if (warp_id >= n_post) return;                                           \
+    bool active = IS_ACTIVE(__ldg(&spike[warp_id]));                         \
+    if (__ballot_sync(0xFFFFFFFF, active) == 0) return;                      \
+    if (!active) return;                                                     \
+    int start = __ldg(&indptr[warp_id]);                                     \
+    int end   = __ldg(&indptr[warp_id + 1]);                                 \
+    for (int pos = start + lane; pos < end; pos += 32) {                     \
+        int idx = __ldg(&indices[pos]);                                      \
+        int widx = __ldg(&weight_indices[pos]);                              \
+        ACC_T delta = READ_W(__ldg(&trace[idx]));                            \
+        ATOMIC_ADD(&out_w[widx], delta);                                     \
+    }                                                                        \
+}
+
+#define DEFINE_CSR_ON_POST_BLOCK(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
+                                  READ_W, WRITE_W, ATOMIC_ADD)                \
 __global__ void __launch_bounds__(256)                                        \
-_csr_on_post_warp_kern##SUFFIX(                                               \
+_csr_on_post_block_kern##SUFFIX(                                              \
     WEIGHT_T*        __restrict__ out_w,                                      \
     const SPIKE_T*   __restrict__ spike,                                      \
     const WEIGHT_T*  __restrict__ trace,                                      \
@@ -237,49 +218,20 @@ _csr_on_post_warp_kern##SUFFIX(                                               \
     const int32_t*   __restrict__ weight_indices,                             \
     int n_post                                                                \
 ) {                                                                           \
-    int warp_id = (int)(blockIdx.x * (blockDim.x / 32u))                     \
-                  + (int)(threadIdx.x / 32u);                                 \
-    int lane    = (int)(threadIdx.x & 31u);                                   \
-    if (warp_id >= n_post) return;                                            \
-    bool active = IS_ACTIVE(__ldg(&spike[warp_id]));                          \
+    int col = (int)blockIdx.x;                                                \
+    if (col >= n_post) return;                                                \
+    bool active = IS_ACTIVE(__ldg(&spike[col]));                              \
     if (__ballot_sync(0xFFFFFFFF, active) == 0) return;                       \
     if (!active) return;                                                      \
-    int start = __ldg(&indptr[warp_id]);                                      \
-    int end   = __ldg(&indptr[warp_id + 1]);                                  \
-    for (int pos = start + lane; pos < end; pos += 32) {                      \
+    int start = __ldg(&indptr[col]);                                          \
+    int end   = __ldg(&indptr[col + 1]);                                      \
+    int tid   = (int)threadIdx.x;                                             \
+    for (int pos = start + tid; pos < end; pos += 256) {                      \
         int idx = __ldg(&indices[pos]);                                       \
         int widx = __ldg(&weight_indices[pos]);                               \
         ACC_T delta = READ_W(__ldg(&trace[idx]));                             \
         ATOMIC_ADD(&out_w[widx], delta);                                      \
     }                                                                         \
-}
-
-#define DEFINE_CSR_ON_POST_BLOCK(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, \
-                                  READ_W, WRITE_W, ATOMIC_ADD)                 \
-__global__ void __launch_bounds__(256)                                          \
-_csr_on_post_block_kern##SUFFIX(                                                \
-    WEIGHT_T*        __restrict__ out_w,                                        \
-    const SPIKE_T*   __restrict__ spike,                                        \
-    const WEIGHT_T*  __restrict__ trace,                                        \
-    const int32_t*   __restrict__ indices,                                      \
-    const int32_t*   __restrict__ indptr,                                       \
-    const int32_t*   __restrict__ weight_indices,                               \
-    int n_post                                                                  \
-) {                                                                             \
-    int col = (int)blockIdx.x;                                                  \
-    if (col >= n_post) return;                                                  \
-    bool active = IS_ACTIVE(__ldg(&spike[col]));                                \
-    if (__ballot_sync(0xFFFFFFFF, active) == 0) return;                         \
-    if (!active) return;                                                        \
-    int start = __ldg(&indptr[col]);                                            \
-    int end   = __ldg(&indptr[col + 1]);                                        \
-    int tid   = (int)threadIdx.x;                                               \
-    for (int pos = start + tid; pos < end; pos += 256) {                        \
-        int idx = __ldg(&indices[pos]);                                         \
-        int widx = __ldg(&weight_indices[pos]);                                 \
-        ACC_T delta = READ_W(__ldg(&trace[idx]));                               \
-        ATOMIC_ADD(&out_w[widx], delta);                                        \
-    }                                                                           \
 }
 
 // Sp-Post Instantiations
@@ -312,46 +264,46 @@ DEFINE_CSR_ON_POST_BLOCK(_bf16_float,float,  IS_ACTIVE_FLOAT, __nv_bfloat16, flo
 // TVM FFI Entry Points
 // =========================================================================
 
-#define FFI_CSR_ON_POST(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                       \
-void update_csr_on_post##SUFFIX(                                              \
-    tvm::ffi::TensorView weight,                                              \
-    tvm::ffi::TensorView indices,                                             \
-    tvm::ffi::TensorView indptr,                                              \
-    tvm::ffi::TensorView weight_indices,                                      \
-    tvm::ffi::TensorView trace,                                               \
-    tvm::ffi::TensorView spike,                                               \
-    tvm::ffi::TensorView out_weight,                                          \
-    int64_t stream                                                            \
-) {                                                                           \
-    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                  \
-    int nse    = static_cast<int>(out_weight.size(0));                        \
-    int n_post = static_cast<int>(indptr.size(0)) - 1;                        \
-    if (n_post <= 0 || nse == 0) return;                                      \
-    WEIGHT_C_T*       d_w    = static_cast<WEIGHT_C_T*>(                      \
-                                   out_weight.data_ptr());                    \
-    const SPIKE_C_T*  d_spk  = static_cast<const SPIKE_C_T*>(                 \
-                                   spike.data_ptr());                         \
-    const WEIGHT_C_T* d_tr   = static_cast<const WEIGHT_C_T*>(                \
-                                   trace.data_ptr());                         \
-    const int32_t*    d_idx  = static_cast<const int32_t*>(                   \
-                                   indices.data_ptr());                       \
-    const int32_t*    d_ipt  = static_cast<const int32_t*>(                   \
-                                   indptr.data_ptr());                        \
-    const int32_t*    d_widx = static_cast<const int32_t*>(                   \
-                                   weight_indices.data_ptr());                \
-    int avg_nnz = nse / n_post;                                               \
-    if (avg_nnz < 32) {                                                       \
-        int grid = (n_post + 255) / 256;                                      \
-        _csr_on_post_thread_kern##SUFFIX<<<grid, 256, 0, s>>>(                \
-            d_w, d_spk, d_tr, d_idx, d_ipt, d_widx, n_post);                 \
-    } else if (avg_nnz < 256) {                                               \
-        int grid = (n_post + 7) / 8;                                          \
-        _csr_on_post_warp_kern##SUFFIX<<<grid, 256, 0, s>>>(                  \
-            d_w, d_spk, d_tr, d_idx, d_ipt, d_widx, n_post);                 \
-    } else {                                                                  \
-        _csr_on_post_block_kern##SUFFIX<<<n_post, 256, 0, s>>>(               \
-            d_w, d_spk, d_tr, d_idx, d_ipt, d_widx, n_post);                 \
-    }                                                                         \
+#define FFI_CSR_ON_POST(SUFFIX, WEIGHT_C_T, SPIKE_C_T)          \
+void update_csr_on_post##SUFFIX(                                \
+    tvm::ffi::TensorView weight,                                \
+    tvm::ffi::TensorView indices,                               \
+    tvm::ffi::TensorView indptr,                                \
+    tvm::ffi::TensorView weight_indices,                        \
+    tvm::ffi::TensorView trace,                                 \
+    tvm::ffi::TensorView spike,                                 \
+    tvm::ffi::TensorView out_weight,                            \
+    int64_t stream                                              \
+) {                                                             \
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);    \
+    int nse    = static_cast<int>(out_weight.size(0));          \
+    int n_post = static_cast<int>(indptr.size(0)) - 1;          \
+    if (n_post <= 0 || nse == 0) return;                        \
+    WEIGHT_C_T*       d_w    = static_cast<WEIGHT_C_T*>(        \
+                                   out_weight.data_ptr());      \
+    const SPIKE_C_T*  d_spk  = static_cast<const SPIKE_C_T*>(   \
+                                   spike.data_ptr());           \
+    const WEIGHT_C_T* d_tr   = static_cast<const WEIGHT_C_T*>(  \
+                                   trace.data_ptr());           \
+    const int32_t*    d_idx  = static_cast<const int32_t*>(     \
+                                   indices.data_ptr());         \
+    const int32_t*    d_ipt  = static_cast<const int32_t*>(     \
+                                   indptr.data_ptr());          \
+    const int32_t*    d_widx = static_cast<const int32_t*>(     \
+                                   weight_indices.data_ptr());  \
+    int avg_nnz = nse / n_post;                                 \
+    if (avg_nnz < 32) {                                         \
+        int grid = (n_post + 255) / 256;                        \
+        _csr_on_post_thread_kern##SUFFIX<<<grid, 256, 0, s>>>(  \
+            d_w, d_spk, d_tr, d_idx, d_ipt, d_widx, n_post);    \
+    } else if (avg_nnz < 256) {                                 \
+        int grid = (n_post + 7) / 8;                            \
+        _csr_on_post_warp_kern##SUFFIX<<<grid, 256, 0, s>>>(    \
+            d_w, d_spk, d_tr, d_idx, d_ipt, d_widx, n_post);    \
+    } else {                                                    \
+        _csr_on_post_block_kern##SUFFIX<<<n_post, 256, 0, s>>>( \
+            d_w, d_spk, d_tr, d_idx, d_ipt, d_widx, n_post);    \
+    }                                                           \
 }
 
 // @tvm_ffi update_csr_on_post_f32_bool
