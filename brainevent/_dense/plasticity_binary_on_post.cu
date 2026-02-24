@@ -38,7 +38,7 @@
  * - Per-warp row partitioning to distribute work across 8 warps per block
  */
 
-#include "../cuda_common.h"
+#include "cuda_common.h"
 
 // =========================================================================
 // Warp-level primitives

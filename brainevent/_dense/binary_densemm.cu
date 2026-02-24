@@ -51,7 +51,7 @@
  * at high sparsity, or jax_raw backend (cuBLAS) for large dense matrices.
  */
 
-#include "../cuda_common.h"
+#include "cuda_common.h"
 
 // =========================================================================
 // Dense Matrix-Matrix Multiplication (densemm) -- tiling constants

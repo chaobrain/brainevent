@@ -38,7 +38,7 @@
  *   spfloat_densemm_t_{dtype}        (T mode)
  */
 
-#include "../cuda_common.h"
+#include "cuda_common.h"
 
 // =========================================================================
 // Dense Matrix-Matrix Multiplication (spfloat_densemm) - NT MODE

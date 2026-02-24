@@ -38,7 +38,7 @@
  * - 4-way manual loop unrolling for instruction-level parallelism
  */
 
-#include "../cuda_common.h"
+#include "cuda_common.h"
 
 // =========================================================================
 // Warp-level primitives

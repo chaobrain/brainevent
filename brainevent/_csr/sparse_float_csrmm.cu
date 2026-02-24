@@ -26,7 +26,7 @@
  *   B contribute to the result (sparse-float semantics).
  */
 
-#include "../cuda_common.h"
+#include "cuda_common.h"
 
 // =========================================================================
 // CSR Matrix-Matrix Multiplication (csrmm)

@@ -58,7 +58,7 @@
  * is_homo branch in the kernels.
  */
 
-#include "../cuda_common.h"
+#include "cuda_common.h"
 
 // ============================================================================
 // Homogeneous kernels — scalar weight data[0] broadcast to all connections

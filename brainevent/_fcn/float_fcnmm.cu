@@ -21,7 +21,7 @@
  * fixed connection number (FCN) and floating-point weights:
  * 1. Sparse Matrix-Matrix Product (SpMM): fcnmm
  */
-#include "../cuda_common.h"
+#include "cuda_common.h"
 
 // ============================================================================
 // FCN Matrix-Matrix Multiplication (fcnmm)

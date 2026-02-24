@@ -94,7 +94,7 @@
  *            (size(), ndim()) on the host side.
  */
 
-#include "../cuda_common.h"
+#include "cuda_common.h"
 
 // =========================================================================
 // Binary search helper: find the CSR row that owns non-zero index j

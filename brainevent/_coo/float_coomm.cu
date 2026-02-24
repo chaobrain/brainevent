@@ -46,7 +46,7 @@
  * coomm_hetero_wpe_t_{f32,f64,f16,bf16} -- WPE kernel, transposed SpMM (hetero weights)
  */
 
-#include "../cuda_common.h"
+#include "cuda_common.h"
 
 
 // ============================================================================

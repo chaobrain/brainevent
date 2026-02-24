@@ -41,7 +41,7 @@
 #include <cuda_bf16.h>
 #include <curand_kernel.h>
 #include <cstdint>
-#include "../cuda_common.h"
+#include "cuda_common.h"
 
 // #########################################################################
 // ##  jitn — Dense Matrix Generation                                      ##

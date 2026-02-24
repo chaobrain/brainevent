@@ -136,7 +136,7 @@
  *            NEVER dereference on the host. Extract only metadata (size, ndim).
  */
 
-#include "../cuda_common.h"
+#include "cuda_common.h"
 
 // =========================================================================
 // Vectorized load helpers (ITERATION 2 optimization)

@@ -34,7 +34,7 @@
  *   stream   -- CUDA stream handle (int64)
  */
 
-#include "../cuda_common.h"
+#include "cuda_common.h"
 
 // =========================================================================
 // CSR Matrix-Matrix Multiplication (csrmm) — Roofline Analysis & Optimizations

@@ -60,7 +60,7 @@
  * is_homo branch in the kernels.
  */
 
-#include "../cuda_common.h"
+#include "cuda_common.h"
 
 // ============================================================================
 // COO Matrix-Matrix Multiplication (coomm) — block size constants

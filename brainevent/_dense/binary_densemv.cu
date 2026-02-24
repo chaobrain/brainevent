@@ -39,7 +39,7 @@
  *   binary_densemv_scatter_{dtype}_{spike_dtype}
  */
 
-#include "../cuda_common.h"
+#include "cuda_common.h"
 
 // =========================================================================
 // Dense Matrix-Vector Multiplication (densemv) -- OPTIMIZED ITERATION 2

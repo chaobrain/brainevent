@@ -29,7 +29,7 @@
  * Supports homo (scalar weight) and hetero (per-connection weight array) modes.
  */
 
-#include "../cuda_common.h"
+#include "cuda_common.h"
 
 // ============================================================================
 // FCN Matrix-Matrix Multiplication (spfloat_fcnmm)

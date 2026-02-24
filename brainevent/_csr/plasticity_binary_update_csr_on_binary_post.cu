@@ -47,7 +47,7 @@
  *     spk in {bool, float}
  */
 
-#include "../cuda_common.h"
+#include "cuda_common.h"
 
 // =========================================================================
 // CSR Post-Synaptic Plasticity Kernels

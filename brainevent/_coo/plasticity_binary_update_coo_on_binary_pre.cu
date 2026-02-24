@@ -46,7 +46,7 @@
  *     spk in {bool, float}
  */
 
-#include "../cuda_common.h"
+#include "cuda_common.h"
 
 // =========================================================================
 // COO Pre-Synaptic Plasticity Kernel

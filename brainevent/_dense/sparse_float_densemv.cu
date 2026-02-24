@@ -39,7 +39,7 @@
  *   spfloat_densemv_scatter_{dtype}
  */
 
-#include "../cuda_common.h"
+#include "cuda_common.h"
 
 // =========================================================================
 // Dense Matrix-Vector Multiplication (spfloat_densemv) - GATHER (NT mode)
