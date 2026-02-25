@@ -270,6 +270,7 @@ def _coo_on_pre_cuda_kernel(weight_info, spike_info, pre_ids_info, **kwargs):
     register_tvm_cuda_from_file(
         module='coo_plasticity_binary_pre',
         source=Path(__file__).parent.joinpath('plasticity_binary_update_coo_on_binary_pre.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -819,6 +820,7 @@ def _coo_on_post_cuda_kernel(weight_info, spike_info, pre_ids_info, **kwargs):
     register_tvm_cuda_from_file(
         module='coo_plasticity_binary_post',
         source=Path(__file__).parent.joinpath('plasticity_binary_update_coo_on_binary_post.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']

@@ -244,6 +244,7 @@ def _csr_slice_rows_cuda_kernel_generator(
     register_tvm_cuda_from_file(
         module='csr_slice_rows',
         source=Path(__file__).parent.joinpath('slice_csr_slice_rows.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -621,6 +622,7 @@ def _csr_slice_rows_grad_cuda_kernel_generator(
     register_tvm_cuda_from_file(
         module='csr_slice_rows',
         source=Path(__file__).parent.joinpath('slice_csr_slice_rows.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']

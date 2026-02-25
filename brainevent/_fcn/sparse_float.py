@@ -318,6 +318,7 @@ def _spfloat_fcnmv_cuda_kernel(
     register_tvm_cuda_from_file(
         module='fcn_sparse_float_mv',
         source=Path(__file__).parent.joinpath('sparse_float_fcnmv.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -1029,6 +1030,7 @@ def _spfloat_fcnmm_cuda_kernel(
     register_tvm_cuda_from_file(
         module='fcn_sparse_float_mm',
         source=Path(__file__).parent.joinpath('sparse_float_fcnmm.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']

@@ -273,6 +273,7 @@ def _binary_densemv_cuda_kernel(
     register_tvm_cuda_from_file(
         module='dense_binary_mv',
         source=Path(__file__).parent.joinpath('binary_densemv.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -1267,6 +1268,7 @@ def _binary_densemm_cuda_kernel(
     register_tvm_cuda_from_file(
         module='dense_binary_mm',
         source=Path(__file__).parent.joinpath('binary_densemm.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']

@@ -742,6 +742,7 @@ def _spfloat_csrmv_cuda_kernel(
     register_tvm_cuda_from_file(
         module='csr_sparse_float_csrmv',
         source=Path(__file__).parent.joinpath('sparse_float_csrmv.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -1382,6 +1383,7 @@ def _spfloat_csrmm_cuda_kernel(
     register_tvm_cuda_from_file(
         module='csr_sparse_float_csrmm',
         source=Path(__file__).parent.joinpath('sparse_float_csrmm.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']

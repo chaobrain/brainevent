@@ -202,6 +202,7 @@ def _dense_on_pre_cuda_kernel(weight_info, spike_info, **kwargs):
     register_tvm_cuda_from_file(
         module='dense_plasticity_on_pre',
         source=Path(__file__).parent.joinpath('plasticity_binary_on_pre.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -642,6 +643,7 @@ def _dense_on_post_cuda_kernel(weight_info, spike_info, **kwargs):
     register_tvm_cuda_from_file(
         module='dense_plasticity_on_post',
         source=Path(__file__).parent.joinpath('plasticity_binary_on_post.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']

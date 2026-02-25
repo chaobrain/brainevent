@@ -505,6 +505,7 @@ def _csrmv_cuda_kernel(
     register_tvm_cuda_from_file(
         module='csr_float_csrmv',
         source=Path(__file__).parent.joinpath('float_csrmv.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -1617,6 +1618,7 @@ def _csrmm_cuda_kernel(
     register_tvm_cuda_from_file(
         module='csr_float_csrmm',
         source=Path(__file__).parent.joinpath('float_csrmm.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']

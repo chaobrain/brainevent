@@ -685,7 +685,11 @@ def _jitn_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='jit_normal_jitn', source=Path(__file__).parent.joinpath('float_jitn.cu'))
+    register_tvm_cuda_from_file(
+        module='jit_normal_jitn',
+        source=Path(__file__).parent.joinpath('float_jitn.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    )
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
     variant = 'corder_true' if corder else 'corder_false'
     kernel_name = f'jit_normal_jitn.jitn_{variant}{sfx}'
@@ -700,7 +704,11 @@ def _jitnmv_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='jit_normal_jitnmv', source=Path(__file__).parent.joinpath('float_jitnmv.cu'))
+    register_tvm_cuda_from_file(
+        module='jit_normal_jitnmv',
+        source=Path(__file__).parent.joinpath('float_jitnmv.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    )
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
     variant = 'gather' if corder else 'scatter'
     kernel_name = f'jit_normal_jitnmv.jitnmv_{variant}{sfx}'
@@ -715,7 +723,11 @@ def _jitnmm_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='jit_normal_jitnmm', source=Path(__file__).parent.joinpath('float_jitnmm.cu'))
+    register_tvm_cuda_from_file(
+        module='jit_normal_jitnmm',
+        source=Path(__file__).parent.joinpath('float_jitnmm.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    )
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
     variant = 'gather' if corder else 'scatter'
     kernel_name = f'jit_normal_jitnmm.jitnmm_{variant}{sfx}'

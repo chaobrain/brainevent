@@ -318,6 +318,7 @@ def _csr_on_pre_cuda_kernel(
     register_tvm_cuda_from_file(
         module='csr_plasticity_binary_pre',
         source=Path(__file__).parent.joinpath('plasticity_binary_update_csr_on_binary_pre.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -892,6 +893,7 @@ def _csr2csc_on_post_cuda_kernel(
     register_tvm_cuda_from_file(
         module='csr_plasticity_binary_post',
         source=Path(__file__).parent.joinpath('plasticity_binary_update_csr_on_binary_post.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']

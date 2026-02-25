@@ -869,6 +869,7 @@ def _binary_jitsmv_cuda_kernel(
     register_tvm_cuda_from_file(
         module='jit_scalar_binary_jitsmv',
         source=Path(__file__).parent.joinpath('binary_jitsmv.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
     wt_sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
     sp_sfx = _spike_sfx.get(np.dtype(vector_info.dtype), '_float')
@@ -889,6 +890,7 @@ def _binary_jitsmm_cuda_kernel(
     register_tvm_cuda_from_file(
         module='jit_scalar_binary_jitsmm',
         source=Path(__file__).parent.joinpath('binary_jitsmm.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
     wt_sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
     sp_sfx = _spike_sfx.get(np.dtype(B_info.dtype), '_float')

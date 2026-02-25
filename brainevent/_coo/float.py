@@ -783,6 +783,7 @@ def _coomv_tvmffi_kernel(
     register_tvm_cuda_from_file(
         module='coo_float_coomv',
         source=Path(__file__).parent.joinpath('float_coomv.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -1482,6 +1483,7 @@ def _coomm_tvmffi_kernel(
     register_tvm_cuda_from_file(
         module='coo_float_coomm',
         source=Path(__file__).parent.joinpath('float_coomm.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']

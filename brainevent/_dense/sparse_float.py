@@ -252,6 +252,7 @@ def _spfloat_densemv_cuda_kernel(
     register_tvm_cuda_from_file(
         module='dense_sparse_float',
         source=Path(__file__).parent.joinpath('sparse_float_densemv.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -939,6 +940,7 @@ def _spfloat_densemm_cuda_kernel(
     register_tvm_cuda_from_file(
         module='dense_sparse_float',
         source=Path(__file__).parent.joinpath('sparse_float_densemm.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']

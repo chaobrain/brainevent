@@ -892,7 +892,11 @@ def _jitu_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='float_jitu', source=Path(__file__).parent.joinpath('float_jitu.cu'))
+    register_tvm_cuda_from_file(
+        module='float_jitu',
+        source=Path(__file__).parent.joinpath('float_jitu.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    )
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
     variant = 'corder_true' if corder else 'corder_false'
     kernel_name = f'float_jitu.jitu_{variant}{sfx}'
@@ -1849,7 +1853,11 @@ def _jitumv_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='float_jitumv', source=Path(__file__).parent.joinpath('float_jitumv.cu'))
+    register_tvm_cuda_from_file(
+        module='float_jitumv',
+        source=Path(__file__).parent.joinpath('float_jitumv.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    )
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
     variant = 'gather' if corder else 'scatter'
     kernel_name = f'float_jitumv.jitumv_{variant}{sfx}'
@@ -2538,7 +2546,11 @@ def _jitumm_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='float_jitumm', source=Path(__file__).parent.joinpath('float_jitumm.cu'))
+    register_tvm_cuda_from_file(
+        module='float_jitumm',
+        source=Path(__file__).parent.joinpath('float_jitumm.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    )
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
     variant = 'gather' if corder else 'scatter'
     kernel_name = f'float_jitumm.jitumm_{variant}{sfx}'

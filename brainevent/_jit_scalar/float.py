@@ -758,7 +758,11 @@ def _jits_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='jit_scalar_jits', source=Path(__file__).parent.joinpath('float_jits.cu'))
+    register_tvm_cuda_from_file(
+        module='jit_scalar_jits',
+        source=Path(__file__).parent.joinpath('float_jits.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    )
     sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
     variant = 'corder_true' if corder else 'corder_false'
     kernel_name = f'jit_scalar_jits.jits_{variant}{sfx}'
@@ -773,7 +777,11 @@ def _jitsmv_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='jit_scalar_jitsmv', source=Path(__file__).parent.joinpath('float_jitsmv.cu'))
+    register_tvm_cuda_from_file(
+        module='jit_scalar_jitsmv',
+        source=Path(__file__).parent.joinpath('float_jitsmv.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    )
     sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
     variant = 'gather' if corder else 'scatter'
     kernel_name = f'jit_scalar_jitsmv.jitsmv_{variant}{sfx}'
@@ -788,7 +796,11 @@ def _jitsmm_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='jit_scalar_jitsmm', source=Path(__file__).parent.joinpath('float_jitsmm.cu'))
+    register_tvm_cuda_from_file(
+        module='jit_scalar_jitsmm',
+        source=Path(__file__).parent.joinpath('float_jitsmm.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    )
     sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
     variant = 'gather' if corder else 'scatter'
     kernel_name = f'jit_scalar_jitsmm.jitsmm_{variant}{sfx}'

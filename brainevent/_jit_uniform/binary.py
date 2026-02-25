@@ -948,6 +948,7 @@ def _binary_jitumv_cuda_kernel(
     register_tvm_cuda_from_file(
         module='binary_jitumv',
         source=Path(__file__).parent.joinpath('binary_jitumv.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
     wt_sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
     sp_sfx = _spike_sfx.get(np.dtype(vector_info.dtype), '_float')
@@ -2025,6 +2026,7 @@ def _binary_jitumm_cuda_kernel(
     register_tvm_cuda_from_file(
         module='binary_jitumm',
         source=Path(__file__).parent.joinpath('binary_jitumm.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
     wt_sfx = _dtype_sfx.get(np.dtype(kwargs['w_low_info'].dtype), '_f32')
     sp_sfx = _spike_sfx.get(np.dtype(B_info.dtype), '_float')

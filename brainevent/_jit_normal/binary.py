@@ -738,7 +738,11 @@ def _binary_jitnmv_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='jit_normal_binary_jitnmv', source=Path(__file__).parent.joinpath('binary_jitnmv.cu'))
+    register_tvm_cuda_from_file(
+        module='jit_normal_binary_jitnmv',
+        source=Path(__file__).parent.joinpath('binary_jitnmv.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    )
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
     stype = '_bool' if kwargs['vector_info'].dtype == jnp.bool_ else '_float'
     variant = 'gather' if corder else 'scatter'
@@ -754,7 +758,11 @@ def _binary_jitnmm_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='jit_normal_binary_jitnmm', source=Path(__file__).parent.joinpath('binary_jitnmm.cu'))
+    register_tvm_cuda_from_file(
+        module='jit_normal_binary_jitnmm',
+        source=Path(__file__).parent.joinpath('binary_jitnmm.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    )
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
     stype = '_bool' if kwargs['B_info'].dtype == jnp.bool_ else '_float'
     variant = 'gather' if corder else 'scatter'

@@ -163,6 +163,65 @@ def _csrmv_yw2y_numba_kernels(
     return kernel
 
 
+def _csrmv_yw2y_warp_kernel_generator(
+    y_info: jax.ShapeDtypeStruct,
+    w_info: jax.ShapeDtypeStruct,
+    indices_info: jax.ShapeDtypeStruct,
+    indptr_info: jax.ShapeDtypeStruct,
+    transpose: bool,
+    shape: MatrixShape,
+    **kwargs
+):
+    import warp  # pylint: disable=import-outside-toplevel
+    from warp.jax_experimental import jax_kernel
+
+    y_warp_info = jaxinfo_to_warpinfo(y_info)
+    w_warp_info = jaxinfo_to_warpinfo(w_info)
+    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
+    indptr_warp_info = jaxinfo_to_warpinfo(indptr_info)
+    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
+
+    if transpose:
+        @warp.kernel
+        def yw2y(
+            y: y_warp_info,
+            w: w_warp_info,
+            indices: indices_warp_info,
+            indptr: indptr_warp_info,
+            posts: out_warp_info,
+        ):
+            i_row = warp.tid()
+            for j in range(indptr[i_row], indptr[i_row + 1]):
+                posts[j] = w[j] * y[indices[j]]
+
+        def kernel(y, w, indices, indptr):
+            out_info = kwargs['outs'][0]
+            dim = shape[0]
+            fn = jax_kernel(yw2y, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
+            return fn(y, w, indices, indptr)
+
+    else:
+        @warp.kernel
+        def yw2y(
+            y: y_warp_info,
+            w: w_warp_info,
+            indptr: indptr_warp_info,
+            posts: out_warp_info,
+        ):
+            i_row = warp.tid()
+            y_val = y[i_row]
+            for j in range(indptr[i_row], indptr[i_row + 1]):
+                posts[j] = w[j] * y_val
+
+        def kernel(y, w, indices, indptr):
+            out_info = kwargs['outs'][0]
+            dim = shape[0]
+            fn = jax_kernel(yw2y, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
+            return fn(y, w, indptr)
+
+    return kernel
+
+
 def _csrmv_yw2y_pallas_kernels(
     shape: MatrixShape,
     transpose: bool,
@@ -350,6 +409,7 @@ def _csrmv_yw2y_cuda_kernel(
     register_tvm_cuda_from_file(
         module='csrmv_yw2y',
         source=Path(__file__).parent.joinpath('yw2y_csrmv_yw2y.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -522,64 +582,6 @@ See Also
 csrmv_yw2y : High-level user-facing function wrapper.
 """
 )
-def _csrmv_yw2y_warp_kernel_generator(
-    y_info: jax.ShapeDtypeStruct,
-    w_info: jax.ShapeDtypeStruct,
-    indices_info: jax.ShapeDtypeStruct,
-    indptr_info: jax.ShapeDtypeStruct,
-    transpose: bool,
-    shape: MatrixShape,
-    **kwargs
-):
-    import warp  # pylint: disable=import-outside-toplevel
-    from warp.jax_experimental import jax_kernel
-
-    y_warp_info = jaxinfo_to_warpinfo(y_info)
-    w_warp_info = jaxinfo_to_warpinfo(w_info)
-    indices_warp_info = jaxinfo_to_warpinfo(indices_info)
-    indptr_warp_info = jaxinfo_to_warpinfo(indptr_info)
-    out_warp_info = jaxinfo_to_warpinfo(kwargs['outs'][0])
-
-    if transpose:
-        @warp.kernel
-        def yw2y(
-            y: y_warp_info,
-            w: w_warp_info,
-            indices: indices_warp_info,
-            indptr: indptr_warp_info,
-            posts: out_warp_info,
-        ):
-            i_row = warp.tid()
-            for j in range(indptr[i_row], indptr[i_row + 1]):
-                posts[j] = w[j] * y[indices[j]]
-
-        def kernel(y, w, indices, indptr):
-            out_info = kwargs['outs'][0]
-            dim = shape[0]
-            fn = jax_kernel(yw2y, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
-            return fn(y, w, indices, indptr)
-
-    else:
-        @warp.kernel
-        def yw2y(
-            y: y_warp_info,
-            w: w_warp_info,
-            indptr: indptr_warp_info,
-            posts: out_warp_info,
-        ):
-            i_row = warp.tid()
-            y_val = y[i_row]
-            for j in range(indptr[i_row], indptr[i_row + 1]):
-                posts[j] = w[j] * y_val
-
-        def kernel(y, w, indices, indptr):
-            out_info = kwargs['outs'][0]
-            dim = shape[0]
-            fn = jax_kernel(yw2y, launch_dims=[dim], num_outputs=1, output_dims={'posts': out_info.shape})
-            return fn(y, w, indptr)
-
-    return kernel
-
 csrmv_yw2y_p.def_numba_kernel(_csrmv_yw2y_numba_kernels)
 csrmv_yw2y_p.def_warp_kernel(_csrmv_yw2y_warp_kernel_generator)
 csrmv_yw2y_p.def_pallas_kernel('gpu', _csrmv_yw2y_pallas_kernels)

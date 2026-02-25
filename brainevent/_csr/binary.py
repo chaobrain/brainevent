@@ -686,6 +686,7 @@ def _binary_csrmv_cuda_kernel(
     register_tvm_cuda_from_file(
         module='csr_binary_csrmv',
         source=Path(__file__).parent.joinpath('binary_csrmv.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -1901,6 +1902,7 @@ def _binary_csrmm_cuda_kernel(
     register_tvm_cuda_from_file(
         module='csr_binary_csrmm',
         source=Path(__file__).parent.joinpath('binary_csrmm.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
