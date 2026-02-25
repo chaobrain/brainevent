@@ -36,15 +36,15 @@ jax.config.update("jax_enable_x64", True)
 
 COPY_KERNEL_SRC = r"""
 #include <cuda_runtime.h>
-#include "jkb/common.h"
+#include "brainevent/common.h"
 
 __global__ void copy_kernel(const char* src, char* dst, int64_t nbytes) {
     int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < nbytes) dst[i] = src[i];
 }
 
-// @JKB copy_tensor
-void copy_tensor(const JKB::Tensor src, JKB::Tensor dst, int64_t stream) {
+// @BE copy_tensor
+void copy_tensor(const BE::Tensor src, BE::Tensor dst, int64_t stream) {
     int64_t n = src.nbytes();
     copy_kernel<<<(n + 255) / 256, 256, 0, (cudaStream_t)stream>>>(
         static_cast<const char*>(src.data_ptr()),
@@ -53,11 +53,11 @@ void copy_tensor(const JKB::Tensor src, JKB::Tensor dst, int64_t stream) {
 """
 
 
-# --- CUDA kernel using JKB_DISPATCH_ALL for dtype-aware add ---
+# --- CUDA kernel using BE_DISPATCH_ALL for dtype-aware add ---
 
 DISPATCH_ALL_SRC = r"""
 #include <cuda_runtime.h>
-#include "jkb/common.h"
+#include "brainevent/common.h"
 
 template <typename T>
 __global__ void add_kernel(const T* a, const T* b, T* out, int n) {
@@ -65,15 +65,15 @@ __global__ void add_kernel(const T* a, const T* b, T* out, int n) {
     if (idx < n) out[idx] = a[idx] + b[idx];
 }
 
-// @JKB typed_add
-void typed_add(const JKB::Tensor a, const JKB::Tensor b,
-               JKB::Tensor out, int64_t stream) {
+// @BE typed_add
+void typed_add(const BE::Tensor a, const BE::Tensor b,
+               BE::Tensor out, int64_t stream) {
     int n = a.numel();
     int threads = 256;
     int blocks = (n + threads - 1) / threads;
     auto s = (cudaStream_t)stream;
 
-    JKB_DISPATCH_ALL_TYPES(a.dtype(), scalar_t, {
+    BE_DISPATCH_ALL_TYPES(a.dtype(), scalar_t, {
         add_kernel<scalar_t><<<blocks, threads, 0, s>>>(
             static_cast<const scalar_t*>(a.data_ptr()),
             static_cast<const scalar_t*>(b.data_ptr()),
@@ -144,7 +144,7 @@ def test_copy_dtype(copy_module, dtype):
     "float32", "float64",
 ])
 def test_dispatch_add(dispatch_module, dtype):
-    """JKB_DISPATCH_ALL_TYPES correctly dispatches addition."""
+    """BE_DISPATCH_ALL_TYPES correctly dispatches addition."""
     import jax.numpy as jnp
 
     jnp_dtype = getattr(jnp, dtype)
@@ -162,7 +162,7 @@ def test_dispatch_add(dispatch_module, dtype):
 
 
 def test_dispatch_add_bool(dispatch_module):
-    """JKB_DISPATCH_ALL_TYPES handles bool (addition = logical OR)."""
+    """BE_DISPATCH_ALL_TYPES handles bool (addition = logical OR)."""
     import jax.numpy as jnp
 
     n = 64

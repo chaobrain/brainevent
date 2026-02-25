@@ -13,11 +13,9 @@
 # limitations under the License.
 # ==============================================================================
 
-"""jax-kernel-bridge: seamless bridge between native C++/CUDA kernels and JAX FFI."""
+"""brainevent.source2kernel: runtime C++/CUDA compilation bridge for JAX FFI."""
 
-from ._version import __version__
-
-__version_info__ = tuple(map(int, __version__.split(".")))
+from brainevent import __version__, __version_info__
 
 from ._pipeline import (
     clear_cache,
@@ -44,8 +42,8 @@ from ._runtime import (
     register_ffi_target,
 )
 from ._errors import (
+    BEError,
     CompilationError,
-    JKBError,
     RegistrationError,
     ToolchainError,
 )
@@ -76,7 +74,7 @@ __all__ = [
     "get_cache_dir",
     "print_diagnostics",
     # Exceptions
-    "JKBError",
+    "BEError",
     "CompilationError",
     "ToolchainError",
     "RegistrationError",

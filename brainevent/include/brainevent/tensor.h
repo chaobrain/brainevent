@@ -15,7 +15,7 @@
 
 #pragma once
 /// @file tensor.h
-/// @brief JKB::Tensor — lightweight, self-contained tensor descriptor.
+/// @brief BE::Tensor — lightweight, self-contained tensor descriptor.
 ///
 /// Tensor does NOT own the data it points to. It stores shape and
 /// C-contiguous strides internally (up to kMaxDim dimensions) so that a
@@ -24,7 +24,7 @@
 #include <cstdint>
 #include <cstddef>
 
-namespace JKB {
+namespace BE {
 
 /// Maximum number of dimensions supported.
 static constexpr int kMaxDim = 8;
@@ -207,4 +207,4 @@ private:
     DType    dtype_;
 };
 
-}  // namespace JKB
+}  // namespace BE

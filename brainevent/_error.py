@@ -311,3 +311,33 @@ class BenchmarkDataFnNotProvidedError(Exception):
         ... )  # doctest: +SKIP
     """
     __module__ = 'brainevent'
+
+
+class BEError(Exception):
+    """Base exception for brainevent."""
+    pass
+
+
+class ToolchainError(BEError):
+    """Compilation toolchain missing or incompatible."""
+    pass
+
+
+class CompilationError(BEError):
+    """CUDA or C++ compilation failed."""
+
+    def __init__(self, message: str, compiler_output: str = "",
+                 command: str = ""):
+        self.compiler_output = compiler_output
+        self.command = command
+        full_msg = message
+        if command:
+            full_msg += f"\n\nCommand:\n  {command}"
+        if compiler_output:
+            full_msg += f"\n\nCompiler output:\n{compiler_output}"
+        super().__init__(full_msg)
+
+
+class RegistrationError(BEError):
+    """JAX FFI target registration failed."""
+    pass

@@ -28,19 +28,19 @@ from pathlib import Path
 import jax
 import jaxlib
 
-from ._version import __version__
+from brainevent import __version__
 from ._cache import CompilationCache
 from ._codegen import (
     FunctionSpec,
     infer_arg_spec_from_source,
     normalize_tokens,
     parse_arg_spec,
-    parse_jkb_annotations,
+    parse_be_annotations,
     preprocess_source,
     resolve_bare_attr_types,
 )
 from ._compiler import CPPBackend, CUDABackend
-from ._errors import JKBError
+from ._errors import BEError
 from ._runtime import CompiledModule, _REGISTERED_TARGETS, register_ffi_target
 from ._toolchain import (
     detect_cpp_toolchain,
@@ -104,7 +104,7 @@ def load_cuda_inline(
         Mapping from function name to its arg_spec token list.
         Example: ``{"vector_add": ["arg", "arg", "ret", "stream"]}``
 
-        If ``None``, functions are discovered from ``// @JKB function_name``
+        If ``None``, functions are discovered from ``// @BE function_name``
         annotations in the source code.  The arg_spec is auto-inferred
         from the C++ signature.
     extra_cuda_cflags, extra_ldflags, extra_include_paths
@@ -152,7 +152,7 @@ def load_cuda_inline(
 
     # Discover functions from annotations if not provided
     if functions is None:
-        functions = parse_jkb_annotations(user_source)
+        functions = parse_be_annotations(user_source)
 
     # Parse arg_specs: normalize aliases → resolve bare attrs → parse
     specs: list[FunctionSpec] = []
@@ -236,7 +236,7 @@ def load_cuda_file(
         Path to the ``.cu`` file.
     functions : dict[str, list[str]] or None
         Function name → arg_spec mapping (same as ``load_cuda_inline``).
-        If ``None``, discovered from ``// @JKB`` annotations.
+        If ``None``, discovered from ``// @BE`` annotations.
     name : str, optional
         Module name.  Defaults to the file stem.
     **kwargs
@@ -265,7 +265,7 @@ def load_cuda_dir(
         Directory containing ``.cu`` / ``.cuh`` files.
     functions : dict[str, list[str]] or None
         Function name → arg_spec mapping.  If ``None``, discovered from
-        ``// @JKB`` annotations.
+        ``// @BE`` annotations.
     name : str, optional
         Module name.  Defaults to the directory name.
     file_patterns : list[str], optional
@@ -284,7 +284,7 @@ def load_cuda_dir(
             sources.append(path.read_text())
 
     if not sources:
-        raise JKBError(f"No source files matching {patterns} found in {directory}")
+        raise BEError(f"No source files matching {patterns} found in {directory}")
 
     return load_cuda_inline(name=name, cuda_sources=sources, functions=functions, **kwargs)
 
@@ -321,11 +321,11 @@ def load_cpp_inline(
         arg_spec tokens as :func:`load_cuda_inline`.
 
         *List form* (auto-detect): ``["func"]`` — the arg_spec is inferred
-        from the C++ signature.  ``const JKB::Tensor`` → ``"arg"``,
-        non-const ``JKB::Tensor`` → ``"ret"``.
+        from the C++ signature.  ``const BE::Tensor`` → ``"arg"``,
+        non-const ``BE::Tensor`` → ``"ret"``.
 
         *None* (annotation): functions are discovered from
-        ``// @JKB function_name`` annotations in the source code.
+        ``// @BE function_name`` annotations in the source code.
     extra_cflags, extra_ldflags, extra_include_paths
         Additional compiler / linker flags and include paths.
     build_directory : str, optional
@@ -355,7 +355,7 @@ def load_cpp_inline(
 
     # Resolve functions → dict[str, list[str]]
     if functions is None:
-        functions = parse_jkb_annotations(user_source)
+        functions = parse_be_annotations(user_source)
     elif isinstance(functions, list):
         func_dict: dict[str, list[str]] = {}
         for fn in functions:
@@ -455,7 +455,7 @@ def clear_cache(name: str | None = None) -> int:
 def print_diagnostics() -> None:
     """Print a summary of the jax-kernel-bridge environment."""
 
-    print(f"jax-kernel-bridge v{__version__}")
+    print(f"brainevent.source2kernel v{__version__}")
     print(f"Python: {sys.version}")
 
     # JAX / jaxlib

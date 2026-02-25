@@ -21,13 +21,13 @@
 #include <cstdlib>
 
 // ---------------------------------------------------------------------------
-// JKB_CHECK(cond) << "message";
+// BE_CHECK(cond) << "message";
 //
 // Abort with a diagnostic if @p cond is false.  The streaming operator
 // allows building the message lazily.
 // ---------------------------------------------------------------------------
 
-namespace JKB {
+namespace BE {
 namespace internal {
 
 class CheckFailMessageStream {
@@ -41,7 +41,7 @@ public:
 
     ~CheckFailMessageStream() {
         if (active_) {
-            fprintf(stderr, "[jkb] CHECK FAILED at %s:%d: %s", file_, line_, cond_);
+            fprintf(stderr, "[be] CHECK FAILED at %s:%d: %s", file_, line_, cond_);
             if (buf_[0] != '\0') {
                 fprintf(stderr, " — %s", buf_);
             }
@@ -102,23 +102,23 @@ private:
 };
 
 }  // namespace internal
-}  // namespace JKB
+}  // namespace BE
 
 /// General-purpose assertion with streaming message.
-///     JKB_CHECK(x.ndim() == 1) << "expected 1D, got " << x.ndim();
-#define JKB_CHECK(cond)                                                   \
-    (cond) ? ::JKB::internal::CheckFailMessageStream(nullptr)             \
-           : ::JKB::internal::CheckFailMessageStream(                     \
+///     BE_CHECK(x.ndim() == 1) << "expected 1D, got " << x.ndim();
+#define BE_CHECK(cond)                                                   \
+    (cond) ? ::BE::internal::CheckFailMessageStream(nullptr)             \
+           : ::BE::internal::CheckFailMessageStream(                     \
                  __FILE__, __LINE__, #cond)
 
 /// CUDA runtime API error check.
-///     JKB_CUDA_CHECK(cudaGetLastError());
-#define JKB_CUDA_CHECK(expr)                                              \
+///     BE_CUDA_CHECK(cudaGetLastError());
+#define BE_CUDA_CHECK(expr)                                              \
     do {                                                                  \
         cudaError_t __jkb_err = (expr);                                   \
         if (__jkb_err != cudaSuccess) {                                   \
             fprintf(stderr,                                               \
-                    "[jkb] CUDA error at %s:%d: %s (%s)\n",              \
+                    "[be] CUDA error at %s:%d: %s (%s)\n",              \
                     __FILE__, __LINE__,                                    \
                     cudaGetErrorString(__jkb_err),                         \
                     cudaGetErrorName(__jkb_err));                          \
@@ -128,4 +128,4 @@ private:
     } while (0)
 
 /// Check after kernel launch (catches configuration errors).
-#define JKB_CHECK_KERNEL_LAUNCH() JKB_CUDA_CHECK(cudaGetLastError())
+#define BE_CHECK_KERNEL_LAUNCH() BE_CUDA_CHECK(cudaGetLastError())

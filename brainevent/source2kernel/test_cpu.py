@@ -23,9 +23,9 @@ import pytest
 import brainevent.source2kernel as jkb
 
 ADD_ONE_SRC = r"""
-#include "jkb/common.h"
+#include "brainevent/common.h"
 
-void add_one_cpu(const JKB::Tensor x, JKB::Tensor y) {
+void add_one_cpu(const BE::Tensor x, BE::Tensor y) {
     int n = x.numel();
     const float* in_ptr = static_cast<const float*>(x.data_ptr());
     float* out_ptr = static_cast<float*>(y.data_ptr());
@@ -36,9 +36,9 @@ void add_one_cpu(const JKB::Tensor x, JKB::Tensor y) {
 """
 
 SCALE_SRC = r"""
-#include "jkb/common.h"
+#include "brainevent/common.h"
 
-void scale_cpu(const JKB::Tensor x, JKB::Tensor y) {
+void scale_cpu(const BE::Tensor x, BE::Tensor y) {
     int n = x.numel();
     const float* in_ptr = static_cast<const float*>(x.data_ptr());
     float* out_ptr = static_cast<float*>(y.data_ptr());
@@ -49,10 +49,10 @@ void scale_cpu(const JKB::Tensor x, JKB::Tensor y) {
 """
 
 MULTI_OUT_SRC = r"""
-#include "jkb/common.h"
+#include "brainevent/common.h"
 
-void split_cpu(const JKB::Tensor x,
-               JKB::Tensor lo, JKB::Tensor hi) {
+void split_cpu(const BE::Tensor x,
+               BE::Tensor lo, BE::Tensor hi) {
     int n = x.numel();
     int half = n / 2;
     const float* src = static_cast<const float*>(x.data_ptr());

@@ -34,7 +34,7 @@ jax.config.update("jax_enable_x64", True)
 
 CUDA_SRC = r"""
 #include <cuda_runtime.h>
-#include "jkb/common.h"
+#include "brainevent/common.h"
 
 template <typename T>
 __global__ void add_kernel(const T* a, const T* b, T* out, int n) {
@@ -42,8 +42,8 @@ __global__ void add_kernel(const T* a, const T* b, T* out, int n) {
     if (idx < n) out[idx] = a[idx] + b[idx];
 }
 
-void typed_add(JKB::Tensor a, JKB::Tensor b,
-               JKB::Tensor out, int64_t stream) {
+void typed_add(BE::Tensor a, BE::Tensor b,
+               BE::Tensor out, int64_t stream) {
     int n = a.numel();
     int threads = 256;
     int blocks = (n + threads - 1) / threads;
@@ -51,13 +51,13 @@ void typed_add(JKB::Tensor a, JKB::Tensor b,
 
     // Dispatch on dtype
     switch (a.dtype()) {
-        case JKB::DType::Float32:
+        case BE::DType::Float32:
             add_kernel<float><<<blocks, threads, 0, s>>>(
                 static_cast<const float*>(a.data_ptr()),
                 static_cast<const float*>(b.data_ptr()),
                 static_cast<float*>(out.data_ptr()), n);
             break;
-        case JKB::DType::Float64:
+        case BE::DType::Float64:
             add_kernel<double><<<blocks, threads, 0, s>>>(
                 static_cast<const double*>(a.data_ptr()),
                 static_cast<const double*>(b.data_ptr()),

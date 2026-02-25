@@ -18,9 +18,9 @@
 import re
 from dataclasses import dataclass, field
 
-from ._errors import JKBError
+from ._errors import BEError
 
-# C++ scalar type → JKB attr type name.
+# C++ scalar type → BE attr type name.
 # Only types that have a registered XLA_FFI_REGISTER_SCALAR_ATTR_DECODING
 # (or uint16_t stand-in for float16/bfloat16) are listed.
 _CPP_TYPE_TO_ATTR: dict[str, str] = {
@@ -62,15 +62,15 @@ _CPP_TYPE_TO_ATTR: dict[str, str] = {
 def _infer_attr_type_from_source(
     source: str, func_name: str, attr_name: str
 ) -> str:
-    """Return the JKB attr type for *attr_name* by parsing the C++ signature.
+    """Return the BE attr type for *attr_name* by parsing the C++ signature.
 
-    Raises JKBError if the parameter is not found or its type is not a
+    Raises BEError if the parameter is not found or its type is not a
     recognised scalar attr type.
     """
     pattern = rf'void\s+{re.escape(func_name)}\s*\(([^)]*)\)'
     m = re.search(pattern, source, re.DOTALL)
     if m is None:
-        raise JKBError(
+        raise BEError(
             f"Cannot find 'void {func_name}(...)' in source to infer "
             f"type of attr '{attr_name}'. "
             f"Use the explicit form 'attr.{attr_name}:<type>' instead."
@@ -96,9 +96,9 @@ def _infer_attr_type_from_source(
         is_ptr_or_ref = ('*' in cpp_type or '&' in cpp_type
                          or last_part != param_name)
         if is_ptr_or_ref:
-            raise JKBError(
+            raise BEError(
                 f"Cannot map C++ type '{cpp_type}' of '{attr_name}' in "
-                f"'{func_name}' to a JKB attr type. "
+                f"'{func_name}' to a BE attr type. "
                 f"Pointer and reference types cannot be passed as XLA FFI "
                 f"scalar attributes. "
                 f"Use the explicit form 'attr.{attr_name}:<type>' instead."
@@ -107,16 +107,16 @@ def _infer_attr_type_from_source(
         # Strip leading 'const' qualifier — scalars are passed by value.
         if cpp_type.startswith("const "):
             cpp_type = cpp_type[6:].strip()
-        jkb_type = _CPP_TYPE_TO_ATTR.get(cpp_type)
-        if jkb_type is None:
-            raise JKBError(
+        be_type = _CPP_TYPE_TO_ATTR.get(cpp_type)
+        if be_type is None:
+            raise BEError(
                 f"Cannot map C++ type '{cpp_type}' of '{attr_name}' in "
-                f"'{func_name}' to a JKB attr type. "
+                f"'{func_name}' to a BE attr type. "
                 f"Supported C++ types: {list(_CPP_TYPE_TO_ATTR)}. "
                 f"Use the explicit form 'attr.{attr_name}:<type>' instead."
             )
-        return jkb_type
-    raise JKBError(
+        return be_type
+    raise BEError(
         f"Parameter '{attr_name}' not found in signature of '{func_name}'. "
         f"Use the explicit form 'attr.{attr_name}:<type>' instead."
     )
@@ -146,21 +146,21 @@ def infer_arg_spec_from_source(source: str, func_name: str) -> list[str]:
 
     Recognised parameter patterns:
 
-    - ``const JKB::Tensor param`` → ``"arg"`` (read-only input)
-    - ``JKB::Tensor param``       → ``"ret"`` (pre-allocated output)
+    - ``const BE::Tensor param`` → ``"arg"`` (read-only input)
+    - ``BE::Tensor param``       → ``"ret"`` (pre-allocated output)
     - ``int64_t stream``          → ``"stream"`` (CUDA stream handle)
     - ``float / double / int32_t / int64_t / int / bool param``
       → ``"attr.<name>:<type>"`` (scalar attribute, auto-typed)
 
     Raises
     ------
-    JKBError
+    BEError
         If the signature cannot be found or no output (non-const) is detected.
     """
     pattern = rf'void\s+{re.escape(func_name)}\s*\(([^)]*)\)'
     m = re.search(pattern, source, re.DOTALL)
     if m is None:
-        raise JKBError(
+        raise BEError(
             f"Cannot find 'void {func_name}(...)' in source. "
             f"For explicit control use: functions={{'{func_name}': ['arg', 'ret', ...]}}"
         )
@@ -194,18 +194,18 @@ def infer_arg_spec_from_source(source: str, func_name: str) -> list[str]:
                 cpp_type = cpp_type.rstrip('*&')
                 if cpp_type.startswith("const "):
                     cpp_type = cpp_type[6:].strip()
-                jkb_type = _CPP_TYPE_TO_ATTR.get(cpp_type)
-                if jkb_type is not None:
-                    tokens.append(f'attr.{param_name}:{jkb_type}')
+                be_type = _CPP_TYPE_TO_ATTR.get(cpp_type)
+                if be_type is not None:
+                    tokens.append(f'attr.{param_name}:{be_type}')
                 # Unknown types are silently skipped.
 
     if not tokens:
-        raise JKBError(
+        raise BEError(
             f"No Tensor parameters found in '{func_name}'. "
             "Cannot auto-detect arg_spec."
         )
     if 'ret' not in tokens:
-        raise JKBError(
+        raise BEError(
             f"No non-const Tensor output found in '{func_name}'. "
             "Mark input Tensors with 'const' to distinguish inputs from "
             "outputs, or use the explicit dict form: "
@@ -216,20 +216,20 @@ def infer_arg_spec_from_source(source: str, func_name: str) -> list[str]:
 
 # -- Annotation-based function discovery -------------------------------------
 
-_JKB_ANNOTATION_RE = re.compile(r'//\s*@JKB\s+(\w+)')
+_BE_ANNOTATION_RE = re.compile(r'//\s*@BE\s+(\w+)')
 
 
-def parse_jkb_annotations(source: str) -> dict[str, list[str]]:
-    """Scan source for ``// @JKB function_name`` annotations.
+def parse_be_annotations(source: str) -> dict[str, list[str]]:
+    """Scan source for ``// @BE function_name`` annotations.
 
     Each annotation marks a user function for FFI export.  The arg_spec is
     auto-inferred from the C++ signature that follows the annotation.
 
     Example::
 
-        // @JKB vector_add
-        void vector_add(JKB::Tensor a, JKB::Tensor b,
-                         JKB::Tensor out, int64_t stream) { ... }
+        // @BE vector_add
+        void vector_add(BE::Tensor a, BE::Tensor b,
+                         BE::Tensor out, int64_t stream) { ... }
 
     Returns
     -------
@@ -238,14 +238,14 @@ def parse_jkb_annotations(source: str) -> dict[str, list[str]]:
 
     Raises
     ------
-    JKBError
+    BEError
         If no annotations are found, or if inference fails for any annotated
         function.
     """
-    names = _JKB_ANNOTATION_RE.findall(source)
+    names = _BE_ANNOTATION_RE.findall(source)
     if not names:
-        raise JKBError(
-            "No '// @JKB <function_name>' annotations found in source. "
+        raise BEError(
+            "No '// @BE <function_name>' annotations found in source. "
             "Either add annotations or pass an explicit 'functions' dict."
         )
 
@@ -253,14 +253,14 @@ def parse_jkb_annotations(source: str) -> dict[str, list[str]]:
     result: dict[str, list[str]] = {}
     for name in names:
         if name in seen:
-            raise JKBError(f"Duplicate @JKB annotation for '{name}'")
+            raise BEError(f"Duplicate @BE annotation for '{name}'")
         seen.add(name)
         result[name] = infer_arg_spec_from_source(source, name)
     return result
 
 
 # ---------------------------------------------------------------------------
-# jax-tvm-ffi token aliases — normalize to canonical JKB form
+# jax-tvm-ffi token aliases — normalize to canonical BE form
 # ---------------------------------------------------------------------------
 
 # Simple one-to-one aliases
@@ -275,12 +275,12 @@ _ATTRS_TVM_RE = re.compile(r"^attrs\.(\w+)$")
 
 
 def normalize_tokens(tokens: list[str]) -> list[str]:
-    """Normalise jax-tvm-ffi compatible tokens to canonical JKB form.
+    """Normalise jax-tvm-ffi compatible tokens to canonical BE form.
 
     The following aliases are accepted and converted transparently:
 
     +--------------------+------------------+
-    | jax-tvm-ffi token  | JKB canonical    |
+    | jax-tvm-ffi token  | BE canonical    |
     +====================+==================+
     | ``"args"``         | ``"arg"``        |
     | ``"rets"``         | ``"ret"``        |
@@ -299,7 +299,7 @@ def normalize_tokens(tokens: list[str]) -> list[str]:
     Returns
     -------
     list[str]
-        Tokens in canonical JKB form.
+        Tokens in canonical BE form.
     """
     result: list[str] = []
     for token in tokens:
@@ -358,8 +358,8 @@ def parse_arg_spec(func_name: str, tokens: list[str]) -> FunctionSpec:
     tokens : list[str]
         Per-parameter token list, e.g. ``["arg", "arg", "ret", "stream"]``.
         Each token maps to one parameter of the user C++ function:
-        - ``"arg"``   → input ``JKB::Tensor``
-        - ``"ret"``   → output ``JKB::Tensor``
+        - ``"arg"``   → input ``BE::Tensor``
+        - ``"ret"``   → output ``BE::Tensor``
         - ``"stream"`` → ``int64_t`` (CUDA stream handle)
         - ``"attr.<name>:<ctype>"`` → scalar attribute
 
@@ -382,7 +382,7 @@ def parse_arg_spec(func_name: str, tokens: list[str]) -> FunctionSpec:
             ret_idx += 1
         elif token == "stream":
             if spec.has_stream:
-                raise JKBError(
+                raise BEError(
                     f"Duplicate 'stream' token in arg_spec for {func_name}"
                 )
             spec.has_stream = True
@@ -394,14 +394,14 @@ def parse_arg_spec(func_name: str, tokens: list[str]) -> FunctionSpec:
                 spec.attrs.append((attr_name, attr_type))
                 spec.user_param_order.append(f"attr_{attr_name}")
             else:
-                raise JKBError(
+                raise BEError(
                     f"Invalid arg_spec token '{token}' for function "
                     f"'{func_name}'. Valid tokens: 'arg', 'ret', 'stream', "
                     f"'attr.<name>:<type>'"
                 )
 
     if spec.num_rets == 0:
-        raise JKBError(
+        raise BEError(
             f"arg_spec for '{func_name}' must contain at least one 'ret' token"
         )
 
@@ -409,8 +409,8 @@ def parse_arg_spec(func_name: str, tokens: list[str]) -> FunctionSpec:
 
 
 # -- Attribute C++ type mapping ------------------------------------------------
-# _ATTR_CPP_TYPE : JKB attr type → C++ type used in the generated impl function
-# _ATTR_FFI_TYPE : JKB attr type → C++ type used in the XLA FFI .Attr<T>() binding
+# _ATTR_CPP_TYPE : BE attr type → C++ type used in the generated impl function
+# _ATTR_FFI_TYPE : BE attr type → C++ type used in the XLA FFI .Attr<T>() binding
 #
 # For float16 / bfloat16 there is no registered XLA_FFI_REGISTER_SCALAR_ATTR_DECODING
 # for __half or __nv_bfloat16.  Both are stored as uint16_t raw bits.
@@ -454,8 +454,8 @@ def generate_ffi_wrapper(spec: FunctionSpec, allow_cuda_graph: bool = True) -> s
     """Generate the XLA FFI wrapper C++ source for a single function.
 
     The generated code:
-    1. Defines an ``extern "C"`` FFI handler symbol ``jkb_<name>``
-    2. Inside the handler, converts ``ffi::AnyBuffer`` to ``JKB::Tensor``
+    1. Defines an ``extern "C"`` FFI handler symbol ``be_<name>``
+    2. Inside the handler, converts ``ffi::AnyBuffer`` to ``BE::Tensor``
     3. Extracts the CUDA stream (if requested)
     4. Calls the user function with parameters in the order given by arg_spec
 
@@ -471,8 +471,8 @@ def generate_ffi_wrapper(spec: FunctionSpec, allow_cuda_graph: bool = True) -> s
         Set to ``False`` for kernels with host-side side effects during replay.
     """
     name = spec.name
-    impl_name = f"jkb_{name}_impl"
-    handler_name = f"jkb_{name}"
+    impl_name = f"be_{name}_impl"
+    handler_name = f"be_{name}"
 
     lines: list[str] = []
     lines.append(f"// ── FFI wrapper for {name} (auto-generated) ──")
@@ -512,13 +512,13 @@ def generate_ffi_wrapper(spec: FunctionSpec, allow_cuda_graph: bool = True) -> s
     # ------------------------------------------------------------------
     for i in range(spec.num_args):
         lines.append(
-            f"    JKB::Tensor tv_arg{i} = "
-            f"JKB::internal::buffer_to_tensor(arg{i});"
+            f"    BE::Tensor tv_arg{i} = "
+            f"BE::internal::buffer_to_tensor(arg{i});"
         )
     for i in range(spec.num_rets):
         lines.append(
-            f"    JKB::Tensor tv_ret{i} = "
-            f"JKB::internal::result_buffer_to_tensor(ret{i});"
+            f"    BE::Tensor tv_ret{i} = "
+            f"BE::internal::result_buffer_to_tensor(ret{i});"
         )
 
     # ------------------------------------------------------------------
@@ -597,14 +597,14 @@ def preprocess_source(
     parts: list[str] = []
 
     parts.append("// ════════════════════════════════════════════════════")
-    parts.append("// Auto-generated by jax-kernel-bridge. Do not edit.")
+    parts.append("// Auto-generated by brainevent.source2kernel. Do not edit.")
     parts.append("// ════════════════════════════════════════════════════")
     parts.append("")
     # Internal header: XLA FFI ↔ Tensor bridge (platform-agnostic).
     # ffi_compat.h includes <cuda_runtime_api.h> under __CUDACC__ so the
     # generated wrapper's cudaStream_t reference compiles without the user
     # needing to add it manually.
-    parts.append('#include "jkb/ffi_compat.h"')
+    parts.append('#include "brainevent/ffi_compat.h"')
     parts.append("")
 
     # User source

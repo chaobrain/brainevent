@@ -30,7 +30,7 @@ pytestmark = requires_gpu
 
 CUDA_SRC = r"""
 #include <cuda_runtime.h>
-#include "jkb/common.h"
+#include "brainevent/common.h"
 
 __global__ void vector_add_kernel(const float* a, const float* b, float* out, int n) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -39,8 +39,8 @@ __global__ void vector_add_kernel(const float* a, const float* b, float* out, in
     }
 }
 
-void vector_add(JKB::Tensor a, JKB::Tensor b,
-                JKB::Tensor out, int64_t stream) {
+void vector_add(BE::Tensor a, BE::Tensor b,
+                BE::Tensor out, int64_t stream) {
     int n = a.numel();
     int threads = 256;
     int blocks = (n + threads - 1) / threads;
@@ -48,7 +48,7 @@ void vector_add(JKB::Tensor a, JKB::Tensor b,
         static_cast<const float*>(a.data_ptr()),
         static_cast<const float*>(b.data_ptr()),
         static_cast<float*>(out.data_ptr()), n);
-    JKB_CUDA_CHECK(cudaGetLastError());
+    BE_CUDA_CHECK(cudaGetLastError());
 }
 """
 

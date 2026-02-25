@@ -19,7 +19,7 @@
 ///
 /// Include via ``jkb/common.h`` — this header is user-facing.
 
-#include "jkb/tensor.h"
+#include "brainevent/tensor.h"
 #include <cstdio>
 
 // ── Half-precision type aliases (CUDA only) ─────────────────────────────
@@ -29,7 +29,7 @@
 #include <cuda_bf16.h>
 #endif
 
-namespace JKB {
+namespace BE {
 
 // -- Type aliases ---------------------------------------------------------
 
@@ -58,12 +58,12 @@ struct complex128_t {
     double imag;
 };
 
-}  // namespace JKB
+}  // namespace BE
 
 // ── Dispatch macros ─────────────────────────────────────────────────────
 //
 // Usage:
-//   JKB_DISPATCH_FLOATING(tensor.dtype(), scalar_t, {
+//   BE_DISPATCH_FLOATING(tensor.dtype(), scalar_t, {
 //       my_kernel<scalar_t><<<...>>>(
 //           static_cast<const scalar_t*>(tensor.data_ptr()), ...);
 //   });
@@ -73,23 +73,23 @@ struct complex128_t {
 // inside the body block.
 
 /// Dispatch over common floating-point dtypes (float32, float64).
-#define JKB_DISPATCH_FLOATING(DTYPE, SCALAR_VAR, ...)                    \
+#define BE_DISPATCH_FLOATING(DTYPE, SCALAR_VAR, ...)                    \
     [&] {                                                                \
         switch (DTYPE) {                                                 \
-            case JKB::DType::Float32: {                                  \
+            case BE::DType::Float32: {                                  \
                 using SCALAR_VAR = float;                                \
                 __VA_ARGS__                                              \
                 break;                                                   \
             }                                                            \
-            case JKB::DType::Float64: {                                  \
+            case BE::DType::Float64: {                                  \
                 using SCALAR_VAR = double;                               \
                 __VA_ARGS__                                              \
                 break;                                                   \
             }                                                            \
             default:                                                     \
                 fprintf(stderr,                                          \
-                    "[jkb] JKB_DISPATCH_FLOATING: unsupported dtype %s\n", \
-                    JKB::dtype_name(DTYPE));                             \
+                    "[be] BE_DISPATCH_FLOATING: unsupported dtype %s\n", \
+                    BE::dtype_name(DTYPE));                             \
                 abort();                                                 \
         }                                                                \
     }()
@@ -97,157 +97,157 @@ struct complex128_t {
 /// Dispatch over all floating-point dtypes including half-precision.
 /// float16 and bfloat16 branches are only available in CUDA compilation.
 #if defined(__CUDACC__) || defined(__CUDA__)
-#define JKB_DISPATCH_FLOATING_AND_HALF(DTYPE, SCALAR_VAR, ...)           \
+#define BE_DISPATCH_FLOATING_AND_HALF(DTYPE, SCALAR_VAR, ...)           \
     [&] {                                                                \
         switch (DTYPE) {                                                 \
-            case JKB::DType::Float16: {                                  \
-                using SCALAR_VAR = JKB::float16_t;                       \
+            case BE::DType::Float16: {                                  \
+                using SCALAR_VAR = BE::float16_t;                       \
                 __VA_ARGS__                                              \
                 break;                                                   \
             }                                                            \
-            case JKB::DType::BFloat16: {                                 \
-                using SCALAR_VAR = JKB::bfloat16_t;                      \
+            case BE::DType::BFloat16: {                                 \
+                using SCALAR_VAR = BE::bfloat16_t;                      \
                 __VA_ARGS__                                              \
                 break;                                                   \
             }                                                            \
-            case JKB::DType::Float32: {                                  \
+            case BE::DType::Float32: {                                  \
                 using SCALAR_VAR = float;                                \
                 __VA_ARGS__                                              \
                 break;                                                   \
             }                                                            \
-            case JKB::DType::Float64: {                                  \
+            case BE::DType::Float64: {                                  \
                 using SCALAR_VAR = double;                               \
                 __VA_ARGS__                                              \
                 break;                                                   \
             }                                                            \
             default:                                                     \
                 fprintf(stderr,                                          \
-                    "[jkb] JKB_DISPATCH_FLOATING_AND_HALF: unsupported dtype %s\n", \
-                    JKB::dtype_name(DTYPE));                             \
+                    "[be] BE_DISPATCH_FLOATING_AND_HALF: unsupported dtype %s\n", \
+                    BE::dtype_name(DTYPE));                             \
                 abort();                                                 \
         }                                                                \
     }()
 #else
-#define JKB_DISPATCH_FLOATING_AND_HALF JKB_DISPATCH_FLOATING
+#define BE_DISPATCH_FLOATING_AND_HALF BE_DISPATCH_FLOATING
 #endif
 
 /// Dispatch over integer dtypes (signed, unsigned, and bool).
-#define JKB_DISPATCH_INTEGRAL(DTYPE, SCALAR_VAR, ...)                    \
+#define BE_DISPATCH_INTEGRAL(DTYPE, SCALAR_VAR, ...)                    \
     [&] {                                                                \
         switch (DTYPE) {                                                 \
-            case JKB::DType::Bool:   { using SCALAR_VAR = bool;     __VA_ARGS__ break; } \
-            case JKB::DType::Int8:   { using SCALAR_VAR = int8_t;   __VA_ARGS__ break; } \
-            case JKB::DType::Int16:  { using SCALAR_VAR = int16_t;  __VA_ARGS__ break; } \
-            case JKB::DType::Int32:  { using SCALAR_VAR = int32_t;  __VA_ARGS__ break; } \
-            case JKB::DType::Int64:  { using SCALAR_VAR = int64_t;  __VA_ARGS__ break; } \
-            case JKB::DType::UInt8:  { using SCALAR_VAR = uint8_t;  __VA_ARGS__ break; } \
-            case JKB::DType::UInt16: { using SCALAR_VAR = uint16_t; __VA_ARGS__ break; } \
-            case JKB::DType::UInt32: { using SCALAR_VAR = uint32_t; __VA_ARGS__ break; } \
-            case JKB::DType::UInt64: { using SCALAR_VAR = uint64_t; __VA_ARGS__ break; } \
+            case BE::DType::Bool:   { using SCALAR_VAR = bool;     __VA_ARGS__ break; } \
+            case BE::DType::Int8:   { using SCALAR_VAR = int8_t;   __VA_ARGS__ break; } \
+            case BE::DType::Int16:  { using SCALAR_VAR = int16_t;  __VA_ARGS__ break; } \
+            case BE::DType::Int32:  { using SCALAR_VAR = int32_t;  __VA_ARGS__ break; } \
+            case BE::DType::Int64:  { using SCALAR_VAR = int64_t;  __VA_ARGS__ break; } \
+            case BE::DType::UInt8:  { using SCALAR_VAR = uint8_t;  __VA_ARGS__ break; } \
+            case BE::DType::UInt16: { using SCALAR_VAR = uint16_t; __VA_ARGS__ break; } \
+            case BE::DType::UInt32: { using SCALAR_VAR = uint32_t; __VA_ARGS__ break; } \
+            case BE::DType::UInt64: { using SCALAR_VAR = uint64_t; __VA_ARGS__ break; } \
             default:                                                     \
                 fprintf(stderr,                                          \
-                    "[jkb] JKB_DISPATCH_INTEGRAL: unsupported dtype %s\n", \
-                    JKB::dtype_name(DTYPE));                             \
+                    "[be] BE_DISPATCH_INTEGRAL: unsupported dtype %s\n", \
+                    BE::dtype_name(DTYPE));                             \
                 abort();                                                 \
         }                                                                \
     }()
 
 /// Dispatch over complex dtypes.
-#define JKB_DISPATCH_COMPLEX(DTYPE, SCALAR_VAR, ...)                     \
+#define BE_DISPATCH_COMPLEX(DTYPE, SCALAR_VAR, ...)                     \
     [&] {                                                                \
         switch (DTYPE) {                                                 \
-            case JKB::DType::Complex64: {                                \
-                using SCALAR_VAR = JKB::complex64_t;                     \
+            case BE::DType::Complex64: {                                \
+                using SCALAR_VAR = BE::complex64_t;                     \
                 __VA_ARGS__                                              \
                 break;                                                   \
             }                                                            \
-            case JKB::DType::Complex128: {                               \
-                using SCALAR_VAR = JKB::complex128_t;                    \
+            case BE::DType::Complex128: {                               \
+                using SCALAR_VAR = BE::complex128_t;                    \
                 __VA_ARGS__                                              \
                 break;                                                   \
             }                                                            \
             default:                                                     \
                 fprintf(stderr,                                          \
-                    "[jkb] JKB_DISPATCH_COMPLEX: unsupported dtype %s\n", \
-                    JKB::dtype_name(DTYPE));                             \
+                    "[be] BE_DISPATCH_COMPLEX: unsupported dtype %s\n", \
+                    BE::dtype_name(DTYPE));                             \
                 abort();                                                 \
         }                                                                \
     }()
 
 /// Dispatch over floating-point and integer dtypes (no complex).
-#define JKB_DISPATCH_ALL_TYPES(DTYPE, SCALAR_VAR, ...)                   \
+#define BE_DISPATCH_ALL_TYPES(DTYPE, SCALAR_VAR, ...)                   \
     [&] {                                                                \
         switch (DTYPE) {                                                 \
-            case JKB::DType::Float32:  { using SCALAR_VAR = float;    __VA_ARGS__ break; } \
-            case JKB::DType::Float64:  { using SCALAR_VAR = double;   __VA_ARGS__ break; } \
-            case JKB::DType::Bool:     { using SCALAR_VAR = bool;     __VA_ARGS__ break; } \
-            case JKB::DType::Int8:     { using SCALAR_VAR = int8_t;   __VA_ARGS__ break; } \
-            case JKB::DType::Int16:    { using SCALAR_VAR = int16_t;  __VA_ARGS__ break; } \
-            case JKB::DType::Int32:    { using SCALAR_VAR = int32_t;  __VA_ARGS__ break; } \
-            case JKB::DType::Int64:    { using SCALAR_VAR = int64_t;  __VA_ARGS__ break; } \
-            case JKB::DType::UInt8:    { using SCALAR_VAR = uint8_t;  __VA_ARGS__ break; } \
-            case JKB::DType::UInt16:   { using SCALAR_VAR = uint16_t; __VA_ARGS__ break; } \
-            case JKB::DType::UInt32:   { using SCALAR_VAR = uint32_t; __VA_ARGS__ break; } \
-            case JKB::DType::UInt64:   { using SCALAR_VAR = uint64_t; __VA_ARGS__ break; } \
+            case BE::DType::Float32:  { using SCALAR_VAR = float;    __VA_ARGS__ break; } \
+            case BE::DType::Float64:  { using SCALAR_VAR = double;   __VA_ARGS__ break; } \
+            case BE::DType::Bool:     { using SCALAR_VAR = bool;     __VA_ARGS__ break; } \
+            case BE::DType::Int8:     { using SCALAR_VAR = int8_t;   __VA_ARGS__ break; } \
+            case BE::DType::Int16:    { using SCALAR_VAR = int16_t;  __VA_ARGS__ break; } \
+            case BE::DType::Int32:    { using SCALAR_VAR = int32_t;  __VA_ARGS__ break; } \
+            case BE::DType::Int64:    { using SCALAR_VAR = int64_t;  __VA_ARGS__ break; } \
+            case BE::DType::UInt8:    { using SCALAR_VAR = uint8_t;  __VA_ARGS__ break; } \
+            case BE::DType::UInt16:   { using SCALAR_VAR = uint16_t; __VA_ARGS__ break; } \
+            case BE::DType::UInt32:   { using SCALAR_VAR = uint32_t; __VA_ARGS__ break; } \
+            case BE::DType::UInt64:   { using SCALAR_VAR = uint64_t; __VA_ARGS__ break; } \
             default:                                                     \
                 fprintf(stderr,                                          \
-                    "[jkb] JKB_DISPATCH_ALL_TYPES: unsupported dtype %s\n", \
-                    JKB::dtype_name(DTYPE));                             \
+                    "[be] BE_DISPATCH_ALL_TYPES: unsupported dtype %s\n", \
+                    BE::dtype_name(DTYPE));                             \
                 abort();                                                 \
         }                                                                \
     }()
 
 /// Dispatch over every supported dtype including half-precision and complex.
 #if defined(__CUDACC__) || defined(__CUDA__)
-#define JKB_DISPATCH_ALL(DTYPE, SCALAR_VAR, ...)                         \
+#define BE_DISPATCH_ALL(DTYPE, SCALAR_VAR, ...)                         \
     [&] {                                                                \
         switch (DTYPE) {                                                 \
-            case JKB::DType::Float16:    { using SCALAR_VAR = JKB::float16_t;    __VA_ARGS__ break; } \
-            case JKB::DType::BFloat16:   { using SCALAR_VAR = JKB::bfloat16_t;   __VA_ARGS__ break; } \
-            case JKB::DType::Float32:    { using SCALAR_VAR = float;              __VA_ARGS__ break; } \
-            case JKB::DType::Float64:    { using SCALAR_VAR = double;             __VA_ARGS__ break; } \
-            case JKB::DType::Bool:       { using SCALAR_VAR = bool;               __VA_ARGS__ break; } \
-            case JKB::DType::Int8:       { using SCALAR_VAR = int8_t;             __VA_ARGS__ break; } \
-            case JKB::DType::Int16:      { using SCALAR_VAR = int16_t;            __VA_ARGS__ break; } \
-            case JKB::DType::Int32:      { using SCALAR_VAR = int32_t;            __VA_ARGS__ break; } \
-            case JKB::DType::Int64:      { using SCALAR_VAR = int64_t;            __VA_ARGS__ break; } \
-            case JKB::DType::UInt8:      { using SCALAR_VAR = uint8_t;            __VA_ARGS__ break; } \
-            case JKB::DType::UInt16:     { using SCALAR_VAR = uint16_t;           __VA_ARGS__ break; } \
-            case JKB::DType::UInt32:     { using SCALAR_VAR = uint32_t;           __VA_ARGS__ break; } \
-            case JKB::DType::UInt64:     { using SCALAR_VAR = uint64_t;           __VA_ARGS__ break; } \
-            case JKB::DType::Complex64:  { using SCALAR_VAR = JKB::complex64_t;  __VA_ARGS__ break; } \
-            case JKB::DType::Complex128: { using SCALAR_VAR = JKB::complex128_t; __VA_ARGS__ break; } \
+            case BE::DType::Float16:    { using SCALAR_VAR = BE::float16_t;    __VA_ARGS__ break; } \
+            case BE::DType::BFloat16:   { using SCALAR_VAR = BE::bfloat16_t;   __VA_ARGS__ break; } \
+            case BE::DType::Float32:    { using SCALAR_VAR = float;              __VA_ARGS__ break; } \
+            case BE::DType::Float64:    { using SCALAR_VAR = double;             __VA_ARGS__ break; } \
+            case BE::DType::Bool:       { using SCALAR_VAR = bool;               __VA_ARGS__ break; } \
+            case BE::DType::Int8:       { using SCALAR_VAR = int8_t;             __VA_ARGS__ break; } \
+            case BE::DType::Int16:      { using SCALAR_VAR = int16_t;            __VA_ARGS__ break; } \
+            case BE::DType::Int32:      { using SCALAR_VAR = int32_t;            __VA_ARGS__ break; } \
+            case BE::DType::Int64:      { using SCALAR_VAR = int64_t;            __VA_ARGS__ break; } \
+            case BE::DType::UInt8:      { using SCALAR_VAR = uint8_t;            __VA_ARGS__ break; } \
+            case BE::DType::UInt16:     { using SCALAR_VAR = uint16_t;           __VA_ARGS__ break; } \
+            case BE::DType::UInt32:     { using SCALAR_VAR = uint32_t;           __VA_ARGS__ break; } \
+            case BE::DType::UInt64:     { using SCALAR_VAR = uint64_t;           __VA_ARGS__ break; } \
+            case BE::DType::Complex64:  { using SCALAR_VAR = BE::complex64_t;  __VA_ARGS__ break; } \
+            case BE::DType::Complex128: { using SCALAR_VAR = BE::complex128_t; __VA_ARGS__ break; } \
             default:                                                     \
                 fprintf(stderr,                                          \
-                    "[jkb] JKB_DISPATCH_ALL: unsupported dtype %s\n",    \
-                    JKB::dtype_name(DTYPE));                             \
+                    "[be] BE_DISPATCH_ALL: unsupported dtype %s\n",    \
+                    BE::dtype_name(DTYPE));                             \
                 abort();                                                 \
         }                                                                \
     }()
 #else
 // CPU: half types use opaque storage; complex types are always available.
-#define JKB_DISPATCH_ALL(DTYPE, SCALAR_VAR, ...)                         \
+#define BE_DISPATCH_ALL(DTYPE, SCALAR_VAR, ...)                         \
     [&] {                                                                \
         switch (DTYPE) {                                                 \
-            case JKB::DType::Float16:    { using SCALAR_VAR = JKB::float16_t;    __VA_ARGS__ break; } \
-            case JKB::DType::BFloat16:   { using SCALAR_VAR = JKB::bfloat16_t;   __VA_ARGS__ break; } \
-            case JKB::DType::Float32:    { using SCALAR_VAR = float;              __VA_ARGS__ break; } \
-            case JKB::DType::Float64:    { using SCALAR_VAR = double;             __VA_ARGS__ break; } \
-            case JKB::DType::Bool:       { using SCALAR_VAR = bool;               __VA_ARGS__ break; } \
-            case JKB::DType::Int8:       { using SCALAR_VAR = int8_t;             __VA_ARGS__ break; } \
-            case JKB::DType::Int16:      { using SCALAR_VAR = int16_t;            __VA_ARGS__ break; } \
-            case JKB::DType::Int32:      { using SCALAR_VAR = int32_t;            __VA_ARGS__ break; } \
-            case JKB::DType::Int64:      { using SCALAR_VAR = int64_t;            __VA_ARGS__ break; } \
-            case JKB::DType::UInt8:      { using SCALAR_VAR = uint8_t;            __VA_ARGS__ break; } \
-            case JKB::DType::UInt16:     { using SCALAR_VAR = uint16_t;           __VA_ARGS__ break; } \
-            case JKB::DType::UInt32:     { using SCALAR_VAR = uint32_t;           __VA_ARGS__ break; } \
-            case JKB::DType::UInt64:     { using SCALAR_VAR = uint64_t;           __VA_ARGS__ break; } \
-            case JKB::DType::Complex64:  { using SCALAR_VAR = JKB::complex64_t;  __VA_ARGS__ break; } \
-            case JKB::DType::Complex128: { using SCALAR_VAR = JKB::complex128_t; __VA_ARGS__ break; } \
+            case BE::DType::Float16:    { using SCALAR_VAR = BE::float16_t;    __VA_ARGS__ break; } \
+            case BE::DType::BFloat16:   { using SCALAR_VAR = BE::bfloat16_t;   __VA_ARGS__ break; } \
+            case BE::DType::Float32:    { using SCALAR_VAR = float;              __VA_ARGS__ break; } \
+            case BE::DType::Float64:    { using SCALAR_VAR = double;             __VA_ARGS__ break; } \
+            case BE::DType::Bool:       { using SCALAR_VAR = bool;               __VA_ARGS__ break; } \
+            case BE::DType::Int8:       { using SCALAR_VAR = int8_t;             __VA_ARGS__ break; } \
+            case BE::DType::Int16:      { using SCALAR_VAR = int16_t;            __VA_ARGS__ break; } \
+            case BE::DType::Int32:      { using SCALAR_VAR = int32_t;            __VA_ARGS__ break; } \
+            case BE::DType::Int64:      { using SCALAR_VAR = int64_t;            __VA_ARGS__ break; } \
+            case BE::DType::UInt8:      { using SCALAR_VAR = uint8_t;            __VA_ARGS__ break; } \
+            case BE::DType::UInt16:     { using SCALAR_VAR = uint16_t;           __VA_ARGS__ break; } \
+            case BE::DType::UInt32:     { using SCALAR_VAR = uint32_t;           __VA_ARGS__ break; } \
+            case BE::DType::UInt64:     { using SCALAR_VAR = uint64_t;           __VA_ARGS__ break; } \
+            case BE::DType::Complex64:  { using SCALAR_VAR = BE::complex64_t;  __VA_ARGS__ break; } \
+            case BE::DType::Complex128: { using SCALAR_VAR = BE::complex128_t; __VA_ARGS__ break; } \
             default:                                                     \
                 fprintf(stderr,                                          \
-                    "[jkb] JKB_DISPATCH_ALL: unsupported dtype %s\n",    \
-                    JKB::dtype_name(DTYPE));                             \
+                    "[be] BE_DISPATCH_ALL: unsupported dtype %s\n",    \
+                    BE::dtype_name(DTYPE));                             \
                 abort();                                                 \
         }                                                                \
     }()

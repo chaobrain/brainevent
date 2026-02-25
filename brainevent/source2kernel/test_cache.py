@@ -29,14 +29,14 @@ pytestmark = requires_gpu
 
 CUDA_SRC = r"""
 #include <cuda_runtime.h>
-#include "jkb/common.h"
+#include "brainevent/common.h"
 
 __global__ void scale_kernel(const float* x, float* out, int n) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < n) out[idx] = x[idx] * 2.0f;
 }
 
-void scale2x(JKB::Tensor x, JKB::Tensor out, int64_t stream) {
+void scale2x(BE::Tensor x, BE::Tensor out, int64_t stream) {
     int n = x.numel();
     scale_kernel<<<(n+255)/256, 256, 0, (cudaStream_t)stream>>>(
         static_cast<const float*>(x.data_ptr()),

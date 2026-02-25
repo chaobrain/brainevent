@@ -8,8 +8,8 @@ build-backend = "setuptools.build_meta"
 # available at runtime via Path(__file__).parent / 'name.cu'.read_text().
 # The wildcard key "*" applies to every discovered package/subpackage.
 "*" = ["*.cu", "*.h"]
-# Explicitly include nested C++ headers for source2kernel (jkb/ is 2 levels deep).
-"brainevent.source2kernel" = ["include/jkb/*.h"]
+# Explicitly include nested C++ headers (brainevent/ subdir is 2 levels deep in include/).
+"brainevent" = ["include/brainevent/*.h"]
 
 
 [tool.setuptools.packages.find]

@@ -15,17 +15,17 @@
 
 #pragma once
 /// @file dtypes.h
-/// @brief XLA DataType ↔ JKB::DType conversion and dispatch macros.
+/// @brief XLA DataType ↔ BE::DType conversion and dispatch macros.
 ///
 /// INTERNAL HEADER — included only in auto-generated FFI wrappers,
 /// never directly by user CUDA code (it pulls in XLA FFI headers).
 
-#include "jkb/tensor.h"
+#include "brainevent/tensor.h"
 #include "xla/ffi/api/ffi.h"
 
-namespace JKB {
+namespace BE {
 
-/// Convert an XLA FFI DataType to JKB::DType.
+/// Convert an XLA FFI DataType to BE::DType.
 inline DType xla_to_jkb_dtype(xla::ffi::DataType dt) noexcept {
     using D = xla::ffi::DataType;
     switch (dt) {
@@ -50,6 +50,6 @@ inline DType xla_to_jkb_dtype(xla::ffi::DataType dt) noexcept {
 
 // Dispatch macros have moved to the user-facing header jkb/dispatch.h
 // (included via jkb/common.h).  This internal header only provides
-// the XLA DataType ↔ JKB::DType conversion.
+// the XLA DataType ↔ BE::DType conversion.
 
-}  // namespace JKB
+}  // namespace BE

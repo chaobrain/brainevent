@@ -43,10 +43,10 @@ def test_compilation_error():
 
 
 def test_invalid_arg_spec_token():
-    """Invalid arg_spec token raises JKBError."""
+    """Invalid arg_spec token raises BEError."""
     import brainevent.source2kernel as jkb
 
-    with pytest.raises(jkb.JKBError, match="Invalid arg_spec token"):
+    with pytest.raises(jkb.BEError, match="Invalid arg_spec token"):
         jkb.load_cuda_inline(
             name="test_bad_spec",
             cuda_sources="void f() {}",
@@ -56,10 +56,10 @@ def test_invalid_arg_spec_token():
 
 
 def test_missing_ret_in_arg_spec():
-    """arg_spec without 'ret' raises JKBError."""
+    """arg_spec without 'ret' raises BEError."""
     import brainevent.source2kernel as jkb
 
-    with pytest.raises(jkb.JKBError, match="at least one 'ret'"):
+    with pytest.raises(jkb.BEError, match="at least one 'ret'"):
         jkb.load_cuda_inline(
             name="test_no_ret",
             cuda_sources="void f() {}",
@@ -74,8 +74,8 @@ def test_duplicate_registration():
 
     CUDA_SRC = r"""
     #include <cuda_runtime.h>
-    #include "jkb/common.h"
-    void noop(JKB::Tensor out, int64_t stream) {}
+    #include "brainevent/common.h"
+    void noop(BE::Tensor out, int64_t stream) {}
     """
 
     mod = jkb.load_cuda_inline(

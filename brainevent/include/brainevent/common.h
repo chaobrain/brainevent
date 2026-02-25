@@ -17,6 +17,6 @@
 /// @file common.h
 /// @brief Convenience header — includes everything a user kernel needs.
 
-#include "jkb/tensor.h"
-#include "jkb/check.h"
-#include "jkb/dispatch.h"
+#include "brainevent/tensor.h"
+#include "brainevent/check.h"
+#include "brainevent/dispatch.h"

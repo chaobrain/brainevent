@@ -35,7 +35,7 @@ class CudaToolchain:
     cuda_home: str
     cuda_include_dir: str
     xla_ffi_include_dir: str
-    jkb_include_dir: str
+    be_include_dir: str
     nvcc_version: str = ""
 
 
@@ -44,7 +44,7 @@ class CppToolchain:
     """Immutable description of the CPU/C++ compilation tools (no CUDA required)."""
     cxx: str
     xla_ffi_include_dir: str
-    jkb_include_dir: str
+    be_include_dir: str
     cxx_version: str = ""
 
 
@@ -100,11 +100,11 @@ def detect_toolchain() -> CudaToolchain:
             f"jaxlib include dir: {xla_ffi_include}"
         )
 
-    # --- JKB include dir (shipped with this package) ---
-    jkb_include = str(Path(__file__).resolve().parent / "include")
-    if not os.path.isdir(jkb_include):
+    # --- BE include dir (brainevent/include/, shipped with this package) ---
+    be_include = str(Path(__file__).resolve().parent.parent / "include")
+    if not os.path.isdir(be_include):
         raise ToolchainError(
-            f"JKB include directory not found at {jkb_include}. "
+            f"BE include directory not found at {be_include}. "
             "Package may be installed incorrectly."
         )
 
@@ -114,7 +114,7 @@ def detect_toolchain() -> CudaToolchain:
         cuda_home=cuda_home,
         cuda_include_dir=cuda_include,
         xla_ffi_include_dir=xla_ffi_include,
-        jkb_include_dir=jkb_include,
+        be_include_dir=be_include,
         nvcc_version=nvcc_version,
     )
 
@@ -158,15 +158,15 @@ def detect_cpp_toolchain() -> CppToolchain:
             f"jaxlib include dir: {xla_ffi_include}"
         )
 
-    # --- JKB include dir ---
-    jkb_include = str(Path(__file__).resolve().parent / "include")
-    if not os.path.isdir(jkb_include):
-        raise ToolchainError(f"JKB include directory not found at {jkb_include}.")
+    # --- BE include dir ---
+    be_include = str(Path(__file__).resolve().parent.parent / "include")
+    if not os.path.isdir(be_include):
+        raise ToolchainError(f"BE include directory not found at {be_include}.")
 
     return CppToolchain(
         cxx=cxx,
         xla_ffi_include_dir=xla_ffi_include,
-        jkb_include_dir=jkb_include,
+        be_include_dir=be_include,
         cxx_version=cxx_version,
     )
 

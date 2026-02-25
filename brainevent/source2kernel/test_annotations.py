@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Test // @JKB annotation-based function discovery."""
+"""Test // @BE annotation-based function discovery."""
 
 import numpy as np
 import pytest
@@ -32,7 +32,7 @@ pytestmark = requires_gpu
 # --- Unit tests for normalize_tokens (no GPU needed) ---
 
 def test_normalize_tokens_tvm_aliases():
-    """normalize_tokens converts jax-tvm-ffi aliases to canonical JKB tokens."""
+    """normalize_tokens converts jax-tvm-ffi aliases to canonical BE tokens."""
     from brainevent.source2kernel._codegen import normalize_tokens
 
     assert normalize_tokens(["args", "rets", "ctx.stream"]) == ["arg", "ret", "stream"]
@@ -65,45 +65,45 @@ def test_normalize_tokens_mixed():
 # --- Unit tests for annotation parsing (no GPU needed, but in same file) ---
 
 def test_parse_annotations_basic():
-    """parse_jkb_annotations finds annotated functions."""
-    from brainevent.source2kernel._codegen import parse_jkb_annotations
+    """parse_be_annotations finds annotated functions."""
+    from brainevent.source2kernel._codegen import parse_be_annotations
 
     source = """
-    // @JKB my_add
-    void my_add(const JKB::Tensor a, const JKB::Tensor b,
-                JKB::Tensor out, int64_t stream) {
+    // @BE my_add
+    void my_add(const BE::Tensor a, const BE::Tensor b,
+                BE::Tensor out, int64_t stream) {
     }
     """
-    result = parse_jkb_annotations(source)
+    result = parse_be_annotations(source)
     assert "my_add" in result
     assert result["my_add"] == ["arg", "arg", "ret", "stream"]
 
 
 def test_parse_annotations_no_stream():
     """Annotation correctly infers arg_spec without stream."""
-    from brainevent.source2kernel._codegen import parse_jkb_annotations
+    from brainevent.source2kernel._codegen import parse_be_annotations
 
     source = """
-    // @JKB add_cpu
-    void add_cpu(const JKB::Tensor x, JKB::Tensor y) {}
+    // @BE add_cpu
+    void add_cpu(const BE::Tensor x, BE::Tensor y) {}
     """
-    result = parse_jkb_annotations(source)
+    result = parse_be_annotations(source)
     assert result["add_cpu"] == ["arg", "ret"]
 
 
 def test_parse_annotations_multiple():
     """Multiple annotations in the same source."""
-    from brainevent.source2kernel._codegen import parse_jkb_annotations
+    from brainevent.source2kernel._codegen import parse_be_annotations
 
     source = """
-    // @JKB func_a
-    void func_a(const JKB::Tensor x, JKB::Tensor out) {}
+    // @BE func_a
+    void func_a(const BE::Tensor x, BE::Tensor out) {}
 
-    // @JKB func_b
-    void func_b(const JKB::Tensor a, const JKB::Tensor b,
-                JKB::Tensor out, int64_t stream) {}
+    // @BE func_b
+    void func_b(const BE::Tensor a, const BE::Tensor b,
+                BE::Tensor out, int64_t stream) {}
     """
-    result = parse_jkb_annotations(source)
+    result = parse_be_annotations(source)
     assert set(result.keys()) == {"func_a", "func_b"}
     assert result["func_a"] == ["arg", "ret"]
     assert result["func_b"] == ["arg", "arg", "ret", "stream"]
@@ -111,42 +111,42 @@ def test_parse_annotations_multiple():
 
 def test_parse_annotations_no_annotations():
     """Raises when no annotations found."""
-    from brainevent.source2kernel._codegen import parse_jkb_annotations
-    from brainevent.source2kernel._errors import JKBError
+    from brainevent.source2kernel._codegen import parse_be_annotations
+    from brainevent.source2kernel._errors import BEError
 
-    with pytest.raises(JKBError, match="No '// @JKB"):
-        parse_jkb_annotations("void foo() {}")
+    with pytest.raises(BEError, match="No '// @BE"):
+        parse_be_annotations("void foo() {}")
 
 
 def test_parse_annotations_duplicate():
-    """Raises on duplicate @JKB annotation."""
-    from brainevent.source2kernel._codegen import parse_jkb_annotations
-    from brainevent.source2kernel._errors import JKBError
+    """Raises on duplicate @BE annotation."""
+    from brainevent.source2kernel._codegen import parse_be_annotations
+    from brainevent.source2kernel._errors import BEError
 
     source = """
-    // @JKB same_name
-    void same_name(const JKB::Tensor x, JKB::Tensor out) {}
-    // @JKB same_name
-    void same_name(const JKB::Tensor x, JKB::Tensor out) {}
+    // @BE same_name
+    void same_name(const BE::Tensor x, BE::Tensor out) {}
+    // @BE same_name
+    void same_name(const BE::Tensor x, BE::Tensor out) {}
     """
-    with pytest.raises(JKBError, match="Duplicate"):
-        parse_jkb_annotations(source)
+    with pytest.raises(BEError, match="Duplicate"):
+        parse_be_annotations(source)
 
 
 # --- Integration test: compile and run a CUDA kernel via annotations ---
 
 CUDA_SRC = r"""
 #include <cuda_runtime.h>
-#include "jkb/common.h"
+#include "brainevent/common.h"
 
 __global__ void add_k(const float* a, const float* b, float* o, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) o[i] = a[i] + b[i];
 }
 
-// @JKB vector_add
-void vector_add(const JKB::Tensor a, const JKB::Tensor b,
-                JKB::Tensor out, int64_t stream) {
+// @BE vector_add
+void vector_add(const BE::Tensor a, const BE::Tensor b,
+                BE::Tensor out, int64_t stream) {
     int n = a.numel();
     add_k<<<(n+255)/256, 256, 0, (cudaStream_t)stream>>>(
         static_cast<const float*>(a.data_ptr()),
@@ -162,7 +162,7 @@ def annotation_module():
     return jkb.load_cuda_inline(
         name="test_annotation_vadd",
         cuda_sources=CUDA_SRC,
-        # functions=None  →  discovered from // @JKB annotations
+        # functions=None  →  discovered from // @BE annotations
         force_rebuild=True,
     )
 

@@ -31,7 +31,7 @@ pytestmark = requires_gpu
 
 CUDA_SRC = r"""
 #include <cuda_runtime.h>
-#include "jkb/common.h"
+#include "brainevent/common.h"
 
 __global__ void split_kernel(const float* x, float* lo, float* hi,
                              int n, int split) {
@@ -40,8 +40,8 @@ __global__ void split_kernel(const float* x, float* lo, float* hi,
     if (idx < n - split) hi[idx] = x[split + idx];
 }
 
-void min_max(JKB::Tensor x, JKB::Tensor out_min,
-             JKB::Tensor out_max, int64_t stream) {
+void min_max(BE::Tensor x, BE::Tensor out_min,
+             BE::Tensor out_max, int64_t stream) {
     // Simple test: copy first half to out_min, second half to out_max
     int n = x.numel();
     int half = n / 2;

@@ -13,34 +13,18 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Custom exception hierarchy for jax-kernel-bridge."""
+"""Exceptions for brainevent.source2kernel — re-exported from brainevent._errors."""
 
+from brainevent._error import (
+    BEError,
+    ToolchainError,
+    CompilationError,
+    RegistrationError,
+)
 
-class JKBError(Exception):
-    """Base exception for jax-kernel-bridge."""
-    pass
-
-
-class ToolchainError(JKBError):
-    """Compilation toolchain missing or incompatible."""
-    pass
-
-
-class CompilationError(JKBError):
-    """CUDA compilation failed."""
-
-    def __init__(self, message: str, compiler_output: str = "",
-                 command: str = ""):
-        self.compiler_output = compiler_output
-        self.command = command
-        full_msg = message
-        if command:
-            full_msg += f"\n\nCommand:\n  {command}"
-        if compiler_output:
-            full_msg += f"\n\nCompiler output:\n{compiler_output}"
-        super().__init__(full_msg)
-
-
-class RegistrationError(JKBError):
-    """JAX FFI target registration failed."""
-    pass
+__all__ = [
+    "BEError",
+    "ToolchainError",
+    "CompilationError",
+    "RegistrationError",
+]

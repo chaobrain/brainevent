@@ -21,14 +21,14 @@ import jax
 import ml_dtypes
 import numpy as np
 
-from ._errors import JKBError, RegistrationError
+from ._errors import BEError, RegistrationError
 
 
 # ---------------------------------------------------------------------------
 # Dtype mapping
 # ---------------------------------------------------------------------------
 
-# Must match JKB::DType enum in tensor.h
+# Must match BE::DType enum in tensor.h
 _JAX_TO_JKB: dict[np.dtype, int] = {
     np.dtype("float16"): 0,  # Float16
     np.dtype("float32"): 1,  # Float32
@@ -47,7 +47,7 @@ _JAX_TO_JKB: dict[np.dtype, int] = {
     np.dtype("complex128"): 14,  # Complex128
 }
 
-_JKB_TO_JAX: dict[int, np.dtype] = {v: k for k, v in _JAX_TO_JKB.items()}
+_BE_TO_JAX: dict[int, np.dtype] = {v: k for k, v in _JAX_TO_JKB.items()}
 
 # Element byte widths (redundant with C++ side, but useful in Python)
 DTYPE_SIZES: dict[int, int] = {
@@ -59,25 +59,25 @@ DTYPE_SIZES: dict[int, int] = {
 
 
 def jax_dtype_to_jkb(dtype) -> int:
-    """Convert a JAX/NumPy dtype to a JKB DType enum value."""
+    """Convert a JAX/NumPy dtype to a BE DType enum value."""
     dtype = np.dtype(dtype)
     if dtype not in _JAX_TO_JKB:
         raise TypeError(f"Unsupported dtype: {dtype}")
     return _JAX_TO_JKB[dtype]
 
 
-def jkb_to_jax_dtype(jkb_dtype: int) -> np.dtype:
-    """Convert a JKB DType enum value to a NumPy dtype."""
-    if jkb_dtype not in _JKB_TO_JAX:
-        raise ValueError(f"Unknown JKB dtype enum value: {jkb_dtype}")
-    return _JKB_TO_JAX[jkb_dtype]
+def be_to_jax_dtype(jkb_dtype: int) -> np.dtype:
+    """Convert a BE DType enum value to a NumPy dtype."""
+    if jkb_dtype not in _BE_TO_JAX:
+        raise ValueError(f"Unknown BE dtype enum value: {jkb_dtype}")
+    return _BE_TO_JAX[jkb_dtype]
 
 
 # ---------------------------------------------------------------------------
 # Attribute type mapping
 # ---------------------------------------------------------------------------
 
-# Maps JKB attr type name → numpy dtype used when passing from Python.
+# Maps BE attr type name → numpy dtype used when passing from Python.
 # For float16/bfloat16 use numpy.uint16 containing the raw 16-bit pattern.
 ATTR_NUMPY_DTYPE: dict[str, type] = {
     "bool": bool,
@@ -135,7 +135,7 @@ class CompiledModule:
     """A compiled module loaded from a shared library.
 
     Each function listed at compilation time has a corresponding
-    ``extern "C"`` symbol ``jkb_<name>`` in the ``.so``.  These are
+    ``extern "C"`` symbol ``be_<name>`` in the ``.so``.  These are
     loaded via *ctypes* and wrapped for use with the JAX FFI system.
 
     Parameters
@@ -152,11 +152,11 @@ class CompiledModule:
         self._functions: dict[str, ctypes._CFuncPtr] = {}
 
         for fname in function_names:
-            symbol = f"jkb_{fname}"
+            symbol = f"be_{fname}"
             try:
                 fn = getattr(self._lib, symbol)
             except AttributeError:
-                raise JKBError(
+                raise BEError(
                     f"Symbol '{symbol}' not found in {so_path}. "
                     f"Available symbols may not include the FFI wrapper for "
                     f"'{fname}'. Did the compilation succeed?"
@@ -172,7 +172,7 @@ class CompiledModule:
         Parameters
         ----------
         name : str
-            User function name (without the ``jkb_`` prefix).
+            User function name (without the ``be_`` prefix).
         """
         if name not in self._functions:
             raise KeyError(

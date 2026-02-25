@@ -54,14 +54,14 @@ pytestmark = requires_gpu
 
 CUDA_SRC = r"""
 #include <cuda_runtime.h>
-#include "jkb/common.h"
+#include "brainevent/common.h"
 
 // ── float32 ───────────────────────────────────────────────────────────────
 __global__ void _scale_f32(const float* x, float* out, int n, float scale) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = x[i] * scale;
 }
-void scale_f32(JKB::Tensor x, JKB::Tensor out, float scale, int64_t stream) {
+void scale_f32(BE::Tensor x, BE::Tensor out, float scale, int64_t stream) {
     int n = (int)x.numel();
     _scale_f32<<<(n+255)/256, 256, 0, (cudaStream_t)stream>>>(
         static_cast<const float*>(x.data_ptr()),
@@ -73,7 +73,7 @@ __global__ void _scale_f64(const double* x, double* out, int n, double scale) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = x[i] * scale;
 }
-void scale_f64(JKB::Tensor x, JKB::Tensor out, double scale, int64_t stream) {
+void scale_f64(BE::Tensor x, BE::Tensor out, double scale, int64_t stream) {
     int n = (int)x.numel();
     _scale_f64<<<(n+255)/256, 256, 0, (cudaStream_t)stream>>>(
         static_cast<const double*>(x.data_ptr()),
@@ -85,7 +85,7 @@ __global__ void _add_i8(const int8_t* x, int8_t* out, int n, int8_t offset) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = x[i] + offset;
 }
-void add_i8(JKB::Tensor x, JKB::Tensor out, int8_t offset, int64_t stream) {
+void add_i8(BE::Tensor x, BE::Tensor out, int8_t offset, int64_t stream) {
     int n = (int)x.numel();
     _add_i8<<<(n+255)/256, 256, 0, (cudaStream_t)stream>>>(
         static_cast<const int8_t*>(x.data_ptr()),
@@ -98,7 +98,7 @@ __global__ void _add_u8(const uint8_t* x, uint8_t* out, int n,
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = x[i] + offset;
 }
-void add_u8(JKB::Tensor x, JKB::Tensor out, uint8_t offset, int64_t stream) {
+void add_u8(BE::Tensor x, BE::Tensor out, uint8_t offset, int64_t stream) {
     int n = (int)x.numel();
     _add_u8<<<(n+255)/256, 256, 0, (cudaStream_t)stream>>>(
         static_cast<const uint8_t*>(x.data_ptr()),
@@ -111,7 +111,7 @@ __global__ void _add_i16(const int16_t* x, int16_t* out, int n,
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = x[i] + offset;
 }
-void add_i16(JKB::Tensor x, JKB::Tensor out, int16_t offset,
+void add_i16(BE::Tensor x, BE::Tensor out, int16_t offset,
              int64_t stream) {
     int n = (int)x.numel();
     _add_i16<<<(n+255)/256, 256, 0, (cudaStream_t)stream>>>(
@@ -125,7 +125,7 @@ __global__ void _add_u16(const uint16_t* x, uint16_t* out, int n,
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = x[i] + offset;
 }
-void add_u16(JKB::Tensor x, JKB::Tensor out, uint16_t offset,
+void add_u16(BE::Tensor x, BE::Tensor out, uint16_t offset,
              int64_t stream) {
     int n = (int)x.numel();
     _add_u16<<<(n+255)/256, 256, 0, (cudaStream_t)stream>>>(
@@ -138,7 +138,7 @@ __global__ void _add_i32(const int* x, int* out, int n, int32_t offset) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = x[i] + offset;
 }
-void add_i32(JKB::Tensor x, JKB::Tensor out, int32_t offset, int64_t stream) {
+void add_i32(BE::Tensor x, BE::Tensor out, int32_t offset, int64_t stream) {
     int n = (int)x.numel();
     _add_i32<<<(n+255)/256, 256, 0, (cudaStream_t)stream>>>(
         static_cast<const int*>(x.data_ptr()),
@@ -151,7 +151,7 @@ __global__ void _add_u32(const uint32_t* x, uint32_t* out, int n,
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = x[i] + offset;
 }
-void add_u32(JKB::Tensor x, JKB::Tensor out, uint32_t offset,
+void add_u32(BE::Tensor x, BE::Tensor out, uint32_t offset,
              int64_t stream) {
     int n = (int)x.numel();
     _add_u32<<<(n+255)/256, 256, 0, (cudaStream_t)stream>>>(
@@ -165,7 +165,7 @@ __global__ void _add_i64(const long long* x, long long* out, int n,
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = x[i] + offset;
 }
-void add_i64(JKB::Tensor x, JKB::Tensor out, int64_t offset,
+void add_i64(BE::Tensor x, BE::Tensor out, int64_t offset,
              int64_t stream) {
     int n = (int)x.numel();
     _add_i64<<<(n+255)/256, 256, 0, (cudaStream_t)stream>>>(
@@ -179,7 +179,7 @@ __global__ void _add_u64(const unsigned long long* x,
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = x[i] + offset;
 }
-void add_u64(JKB::Tensor x, JKB::Tensor out, uint64_t offset,
+void add_u64(BE::Tensor x, BE::Tensor out, uint64_t offset,
              int64_t stream) {
     int n = (int)x.numel();
     _add_u64<<<(n+255)/256, 256, 0, (cudaStream_t)stream>>>(
@@ -192,7 +192,7 @@ __global__ void _maybe_negate(const float* x, float* out, int n, bool negate) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = negate ? -x[i] : x[i];
 }
-void maybe_negate(JKB::Tensor x, JKB::Tensor out, bool negate,
+void maybe_negate(BE::Tensor x, BE::Tensor out, bool negate,
                   int64_t stream) {
     int n = (int)x.numel();
     _maybe_negate<<<(n+255)/256, 256, 0, (cudaStream_t)stream>>>(
@@ -208,7 +208,7 @@ __global__ void _scale_c64(const float* x, float* out, int n,
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = x[i] * (re * re + im * im);
 }
-void scale_c64(JKB::Tensor x, JKB::Tensor out,
+void scale_c64(BE::Tensor x, BE::Tensor out,
                float re, float im, int64_t stream) {
     int n = (int)x.numel();
     _scale_c64<<<(n+255)/256, 256, 0, (cudaStream_t)stream>>>(
@@ -225,7 +225,7 @@ __global__ void _scale_c128(const double* x, double* out, int n,
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = x[i] * (re * re + im * im);
 }
-void scale_c128(JKB::Tensor x, JKB::Tensor out,
+void scale_c128(BE::Tensor x, BE::Tensor out,
                 double re, double im, int64_t stream) {
     int n = (int)x.numel();
     _scale_c128<<<(n+255)/256, 256, 0, (cudaStream_t)stream>>>(
@@ -240,7 +240,7 @@ __global__ void _scale_add(const float* x, float* out, int n,
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = x[i] * scale + (float)offset;
 }
-void scale_add(JKB::Tensor x, JKB::Tensor out,
+void scale_add(BE::Tensor x, BE::Tensor out,
                float scale, int32_t offset, int64_t stream) {
     int n = (int)x.numel();
     _scale_add<<<(n+255)/256, 256, 0, (cudaStream_t)stream>>>(
@@ -750,8 +750,8 @@ class TestFloat16Bits:
         import brainevent.source2kernel as jkb
         src = r"""
         #include <cuda_runtime.h>
-        #include "jkb/common.h"
-        void f16_bits(JKB::Tensor x, JKB::Tensor out,
+        #include "brainevent/common.h"
+        void f16_bits(BE::Tensor x, BE::Tensor out,
                       uint16_t bits, int64_t stream) {
             // kernel would reinterpret bits as __half; here just pass-through
             int n = (int)x.numel();
@@ -771,8 +771,8 @@ class TestFloat16Bits:
         import brainevent.source2kernel as jkb
         src = r"""
         #include <cuda_runtime.h>
-        #include "jkb/common.h"
-        void bf16_bits(JKB::Tensor x, JKB::Tensor out,
+        #include "brainevent/common.h"
+        void bf16_bits(BE::Tensor x, BE::Tensor out,
                        uint16_t bits, int64_t stream) {
             (void)bits;
             (void)stream;
@@ -825,16 +825,16 @@ class TestMultiAttr:
 
 class TestAttrErrors:
     def test_bare_unresolvable_type(self):
-        """Pointer-typed param → JKBError with helpful message."""
-        from brainevent.source2kernel._errors import JKBError
+        """Pointer-typed param → BEError with helpful message."""
+        from brainevent.source2kernel._errors import BEError
         import brainevent.source2kernel as jkb
         src = r"""
         #include <cuda_runtime.h>
-        #include "jkb/common.h"
-        void bad(JKB::Tensor x, JKB::Tensor out,
+        #include "brainevent/common.h"
+        void bad(BE::Tensor x, BE::Tensor out,
                  const float* ptr, int64_t stream) { (void)ptr; }
         """
-        with pytest.raises(JKBError, match="Cannot map C\\+\\+ type"):
+        with pytest.raises(BEError, match="Cannot map C\\+\\+ type"):
             jkb.load_cuda_inline(
                 name="test_attrs_err_ptr",
                 cuda_sources=src,
@@ -843,16 +843,16 @@ class TestAttrErrors:
             )
 
     def test_bare_param_not_found(self):
-        """Bare attr name that doesn't exist in C++ signature → JKBError."""
-        from brainevent.source2kernel._errors import JKBError
+        """Bare attr name that doesn't exist in C++ signature → BEError."""
+        from brainevent.source2kernel._errors import BEError
         import brainevent.source2kernel as jkb
         src = r"""
         #include <cuda_runtime.h>
-        #include "jkb/common.h"
-        void my(JKB::Tensor x, JKB::Tensor out, float scale,
+        #include "brainevent/common.h"
+        void my(BE::Tensor x, BE::Tensor out, float scale,
                 int64_t stream) { (void)scale; }
         """
-        with pytest.raises(JKBError, match="not found in signature"):
+        with pytest.raises(BEError, match="not found in signature"):
             jkb.load_cuda_inline(
                 name="test_attrs_err_name",
                 cuda_sources=src,
@@ -861,15 +861,15 @@ class TestAttrErrors:
             )
 
     def test_explicit_invalid_type_string(self):
-        """Unsupported type string in explicit token → JKBError."""
-        from brainevent.source2kernel._errors import JKBError
+        """Unsupported type string in explicit token → BEError."""
+        from brainevent.source2kernel._errors import BEError
         import brainevent.source2kernel as jkb
         src = r"""
         #include <cuda_runtime.h>
-        #include "jkb/common.h"
-        void my(JKB::Tensor x, JKB::Tensor out, float s, int64_t stream) {}
+        #include "brainevent/common.h"
+        void my(BE::Tensor x, BE::Tensor out, float s, int64_t stream) {}
         """
-        with pytest.raises(JKBError, match="Invalid arg_spec token"):
+        with pytest.raises(BEError, match="Invalid arg_spec token"):
             jkb.load_cuda_inline(
                 name="test_attrs_err_type",
                 cuda_sources=src,

@@ -15,14 +15,14 @@
 
 #pragma once
 /// @file ffi_compat.h
-/// @brief Converts XLA FFI buffer types to JKB::Tensor.
+/// @brief Converts XLA FFI buffer types to BE::Tensor.
 ///
 /// INTERNAL HEADER — included only in auto-generated FFI wrappers,
 /// never directly by user CUDA code.
 
 #include "xla/ffi/api/ffi.h"
-#include "jkb/tensor.h"
-#include "jkb/dtypes.h"
+#include "brainevent/tensor.h"
+#include "brainevent/dtypes.h"
 // cudaStream_t is provided automatically by nvcc for .cu files.
 // Include it explicitly here so the generated FFI wrapper compiles when
 // the user's source does not include <cuda_runtime.h>.
@@ -30,7 +30,7 @@
 #include <cuda_runtime_api.h>
 #endif
 
-namespace JKB {
+namespace BE {
 namespace internal {
 
 /// Build a Tensor from an XLA FFI input buffer.
@@ -50,4 +50,4 @@ inline Tensor result_buffer_to_tensor(
 }
 
 }  // namespace internal
-}  // namespace JKB
+}  // namespace BE

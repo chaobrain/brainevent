@@ -46,7 +46,7 @@ from ._toolchain import (
 # ---------------------------------------------------------------------------
 
 class CompilerBackend(ABC):
-    """Abstract base class for JKB compiler backends.
+    """Abstract base class for BE compiler backends.
 
     Each backend encapsulates one compilation toolchain (nvcc, g++, hipcc, …).
     The high-level pipeline in :mod:`brainevent.source2kernel._pipeline`
@@ -180,7 +180,7 @@ class NinjaBuild:
         flags += [
             "--std=c++17",
             f"-O{self.optimization_level}",
-            f"-I{self.toolchain.jkb_include_dir}",
+            f"-I{self.toolchain.be_include_dir}",
             f"-I{self.toolchain.xla_ffi_include_dir}",
             f"-I{self.toolchain.cuda_include_dir}",
         ]
@@ -346,7 +346,7 @@ class CUDABackend(CompilerBackend):
             "--std=c++17",
             f"-O{optimization_level}",
             # Include paths (order matters for override semantics)
-            "-I", self.toolchain.jkb_include_dir,
+            "-I", self.toolchain.be_include_dir,
             "-I", self.toolchain.xla_ffi_include_dir,
             "-I", self.toolchain.cuda_include_dir,
         ]
@@ -431,7 +431,7 @@ class CPPBackend(CompilerBackend):
             *cxx_shared_flags(toolchain.cxx),
             "-o", output_path,
             cxx_std_flag(toolchain.cxx),
-            "-I", toolchain.jkb_include_dir,
+            "-I", toolchain.be_include_dir,
             "-I", toolchain.xla_ffi_include_dir,
         ]
 
