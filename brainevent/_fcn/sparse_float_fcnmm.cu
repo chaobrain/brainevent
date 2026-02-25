@@ -143,7 +143,7 @@ __global__ void _spfloat_fcnmm_scatter_homo_kern##SUFFIX(                       
     for (int j = threadIdx.x; j < n_col; j += blockDim.x) { if (READ_W(s_mrow[j]) != ACC_ZERO) { has_nz = 1; break; } } \
     if (__syncthreads_count(has_nz) == 0) return;                                                                       \
     const int32_t*  idx_row = indices + (size_t)i * n_conn;                                                             \
-    float w0 = READ_W(__ldg(&weights[0]));                                                                              \
+    ACC_T w0 = READ_W(__ldg(&weights[0]));                                                                              \
     for (int k = 0; k < n_conn; k++) {                                                                                  \
         int tgt = __ldg(&idx_row[k]);                                                                                   \
         WEIGHT_T* out_row = output + (size_t)tgt * n_col;                                                               \
@@ -176,7 +176,7 @@ __global__ void _spfloat_fcnmm_scatter_hetero_kern##SUFFIX(                     
     const WEIGHT_T* w_row   = weights + (size_t)i * n_conn;                                                             \
     for (int k = 0; k < n_conn; k++) {                                                                                  \
         int tgt = __ldg(&idx_row[k]);                                                                                   \
-        float wk = READ_W(__ldg(&w_row[k]));                                                                            \
+        ACC_T wk = READ_W(__ldg(&w_row[k]));                                                                            \
         WEIGHT_T* out_row = output + (size_t)tgt * n_col;                                                               \
         for (int j = threadIdx.x; j < n_col; j += blockDim.x) {                                                         \
             ACC_T m_val = READ_W(s_mrow[j]);                                                                            \

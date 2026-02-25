@@ -68,129 +68,129 @@ __global__ void _mm_gather_basic_hetero_kern##SUFFIX(                           
     output[(size_t)i * n_col + j] = WRITE_W(acc);                                          \
 }
 
-#define DEFINE_MM_SCATTER_BLOCK_HOMO(SUFFIX, WEIGHT_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _mm_scatter_block_homo_kern##SUFFIX(                         \
-    const int32_t* __restrict__ indices,                                     \
-    const WEIGHT_T* __restrict__ matrix,                                     \
-    WEIGHT_T*       __restrict__ output,                                     \
-    const WEIGHT_T* __restrict__ weights,                                    \
-    int n_pre, int n_conn, int n_col                                         \
-) {                                                                          \
-    int i = blockIdx.x;                                                      \
-    if (i >= n_pre) return;                                                  \
-    const int32_t*  idx_row = indices + (size_t)i * n_conn;                  \
-    const WEIGHT_T* m_row   = matrix + (size_t)i * n_col;                    \
-    float w0 = READ_W(__ldg(&weights[0]));                                   \
-    for (int k = 0; k < n_conn; k++) {                                       \
-        int tgt = __ldg(&idx_row[k]);                                        \
-        WEIGHT_T* out_row = output + (size_t)tgt * n_col;                    \
-        for (int j = threadIdx.x; j < n_col; j += blockDim.x)                \
-            ATOMIC_ADD_W(&out_row[j], w0 * READ_W(__ldg(&m_row[j])));        \
-    }                                                                        \
+#define DEFINE_MM_SCATTER_BLOCK_HOMO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _mm_scatter_block_homo_kern##SUFFIX(                               \
+    const int32_t* __restrict__ indices,                                           \
+    const WEIGHT_T* __restrict__ matrix,                                           \
+    WEIGHT_T*       __restrict__ output,                                           \
+    const WEIGHT_T* __restrict__ weights,                                          \
+    int n_pre, int n_conn, int n_col                                               \
+) {                                                                                \
+    int i = blockIdx.x;                                                            \
+    if (i >= n_pre) return;                                                        \
+    const int32_t*  idx_row = indices + (size_t)i * n_conn;                        \
+    const WEIGHT_T* m_row   = matrix + (size_t)i * n_col;                          \
+    ACC_T w0 = READ_W(__ldg(&weights[0]));                                         \
+    for (int k = 0; k < n_conn; k++) {                                             \
+        int tgt = __ldg(&idx_row[k]);                                              \
+        WEIGHT_T* out_row = output + (size_t)tgt * n_col;                          \
+        for (int j = threadIdx.x; j < n_col; j += blockDim.x)                      \
+            ATOMIC_ADD_W(&out_row[j], w0 * READ_W(__ldg(&m_row[j])));              \
+    }                                                                              \
 }
 
-#define DEFINE_MM_SCATTER_BLOCK_HETERO(SUFFIX, WEIGHT_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _mm_scatter_block_hetero_kern##SUFFIX(                         \
-    const int32_t* __restrict__ indices,                                       \
-    const WEIGHT_T* __restrict__ matrix,                                       \
-    WEIGHT_T*       __restrict__ output,                                       \
-    const WEIGHT_T* __restrict__ weights,                                      \
-    int n_pre, int n_conn, int n_col                                           \
-) {                                                                            \
-    int i = blockIdx.x;                                                        \
-    if (i >= n_pre) return;                                                    \
-    const int32_t*  idx_row = indices + (size_t)i * n_conn;                    \
-    const WEIGHT_T* w_row   = weights + (size_t)i * n_conn;                    \
-    const WEIGHT_T* m_row   = matrix + (size_t)i * n_col;                      \
-    for (int k = 0; k < n_conn; k++) {                                         \
-        int tgt = __ldg(&idx_row[k]);                                          \
-        float wk = READ_W(__ldg(&w_row[k]));                                   \
-        WEIGHT_T* out_row = output + (size_t)tgt * n_col;                      \
-        for (int j = threadIdx.x; j < n_col; j += blockDim.x)                  \
-            ATOMIC_ADD_W(&out_row[j], wk * READ_W(__ldg(&m_row[j])));          \
-    }                                                                          \
+#define DEFINE_MM_SCATTER_BLOCK_HETERO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _mm_scatter_block_hetero_kern##SUFFIX(                               \
+    const int32_t* __restrict__ indices,                                             \
+    const WEIGHT_T* __restrict__ matrix,                                             \
+    WEIGHT_T*       __restrict__ output,                                             \
+    const WEIGHT_T* __restrict__ weights,                                            \
+    int n_pre, int n_conn, int n_col                                                 \
+) {                                                                                  \
+    int i = blockIdx.x;                                                              \
+    if (i >= n_pre) return;                                                          \
+    const int32_t*  idx_row = indices + (size_t)i * n_conn;                          \
+    const WEIGHT_T* w_row   = weights + (size_t)i * n_conn;                          \
+    const WEIGHT_T* m_row   = matrix + (size_t)i * n_col;                            \
+    for (int k = 0; k < n_conn; k++) {                                               \
+        int tgt = __ldg(&idx_row[k]);                                                \
+        ACC_T wk = READ_W(__ldg(&w_row[k]));                                         \
+        WEIGHT_T* out_row = output + (size_t)tgt * n_col;                            \
+        for (int j = threadIdx.x; j < n_col; j += blockDim.x)                        \
+            ATOMIC_ADD_W(&out_row[j], wk * READ_W(__ldg(&m_row[j])));               \
+    }                                                                                \
 }
 
-#define DEFINE_MM_SCATTER_WARP_HOMO(SUFFIX, WEIGHT_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _mm_scatter_warp_homo_kern##SUFFIX(                         \
-    const int32_t* __restrict__ indices,                                    \
-    const WEIGHT_T* __restrict__ matrix,                                    \
-    WEIGHT_T*       __restrict__ output,                                    \
-    const WEIGHT_T* __restrict__ weights,                                   \
-    int n_pre, int n_conn, int n_col                                        \
-) {                                                                         \
-    int wid     = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;             \
-    int lane    = threadIdx.x & 31;                                         \
-    int n_warps = (gridDim.x * blockDim.x) >> 5;                            \
-    int n_pairs = n_pre * n_conn;                                           \
-    float w0 = READ_W(__ldg(&weights[0]));                                  \
-    for (int pair = wid; pair < n_pairs; pair += n_warps) {                 \
-        int i = pair / n_conn;                                              \
-        int k = pair % n_conn;                                              \
-        int tgt = __ldg(&indices[(size_t)i * n_conn + k]);                  \
-        const WEIGHT_T* m_row   = matrix + (size_t)i * n_col;               \
-        WEIGHT_T*       out_row = output + (size_t)tgt * n_col;             \
-        for (int j = lane; j < n_col; j += 32)                              \
-            ATOMIC_ADD_W(&out_row[j], w0 * READ_W(__ldg(&m_row[j])));       \
-    }                                                                       \
+#define DEFINE_MM_SCATTER_WARP_HOMO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _mm_scatter_warp_homo_kern##SUFFIX(                               \
+    const int32_t* __restrict__ indices,                                          \
+    const WEIGHT_T* __restrict__ matrix,                                          \
+    WEIGHT_T*       __restrict__ output,                                          \
+    const WEIGHT_T* __restrict__ weights,                                         \
+    int n_pre, int n_conn, int n_col                                              \
+) {                                                                               \
+    int wid     = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;                   \
+    int lane    = threadIdx.x & 31;                                               \
+    int n_warps = (gridDim.x * blockDim.x) >> 5;                                  \
+    int n_pairs = n_pre * n_conn;                                                 \
+    ACC_T w0 = READ_W(__ldg(&weights[0]));                                        \
+    for (int pair = wid; pair < n_pairs; pair += n_warps) {                       \
+        int i = pair / n_conn;                                                    \
+        int k = pair % n_conn;                                                    \
+        int tgt = __ldg(&indices[(size_t)i * n_conn + k]);                        \
+        const WEIGHT_T* m_row   = matrix + (size_t)i * n_col;                     \
+        WEIGHT_T*       out_row = output + (size_t)tgt * n_col;                   \
+        for (int j = lane; j < n_col; j += 32)                                    \
+            ATOMIC_ADD_W(&out_row[j], w0 * READ_W(__ldg(&m_row[j])));             \
+    }                                                                             \
 }
 
-#define DEFINE_MM_SCATTER_WARP_HETERO(SUFFIX, WEIGHT_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _mm_scatter_warp_hetero_kern##SUFFIX(                         \
-    const int32_t* __restrict__ indices,                                      \
-    const WEIGHT_T* __restrict__ matrix,                                      \
-    WEIGHT_T*       __restrict__ output,                                      \
-    const WEIGHT_T* __restrict__ weights,                                     \
-    int n_pre, int n_conn, int n_col                                          \
-) {                                                                           \
-    int wid     = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;               \
-    int lane    = threadIdx.x & 31;                                           \
-    int n_warps = (gridDim.x * blockDim.x) >> 5;                              \
-    int n_pairs = n_pre * n_conn;                                             \
-    for (int pair = wid; pair < n_pairs; pair += n_warps) {                   \
-        int i = pair / n_conn;                                                \
-        int k = pair % n_conn;                                                \
-        int tgt = __ldg(&indices[(size_t)i * n_conn + k]);                    \
-        float wk = READ_W(__ldg(&weights[(size_t)i * n_conn + k]));           \
-        const WEIGHT_T* m_row   = matrix + (size_t)i * n_col;                 \
-        WEIGHT_T*       out_row = output + (size_t)tgt * n_col;               \
-        for (int j = lane; j < n_col; j += 32)                                \
-            ATOMIC_ADD_W(&out_row[j], wk * READ_W(__ldg(&m_row[j])));         \
-    }                                                                         \
+#define DEFINE_MM_SCATTER_WARP_HETERO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _mm_scatter_warp_hetero_kern##SUFFIX(                               \
+    const int32_t* __restrict__ indices,                                            \
+    const WEIGHT_T* __restrict__ matrix,                                            \
+    WEIGHT_T*       __restrict__ output,                                            \
+    const WEIGHT_T* __restrict__ weights,                                           \
+    int n_pre, int n_conn, int n_col                                                \
+) {                                                                                 \
+    int wid     = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;                     \
+    int lane    = threadIdx.x & 31;                                                 \
+    int n_warps = (gridDim.x * blockDim.x) >> 5;                                    \
+    int n_pairs = n_pre * n_conn;                                                   \
+    for (int pair = wid; pair < n_pairs; pair += n_warps) {                         \
+        int i = pair / n_conn;                                                      \
+        int k = pair % n_conn;                                                      \
+        int tgt = __ldg(&indices[(size_t)i * n_conn + k]);                          \
+        ACC_T wk = READ_W(__ldg(&weights[(size_t)i * n_conn + k]));                 \
+        const WEIGHT_T* m_row   = matrix + (size_t)i * n_col;                       \
+        WEIGHT_T*       out_row = output + (size_t)tgt * n_col;                     \
+        for (int j = lane; j < n_col; j += 32)                                      \
+            ATOMIC_ADD_W(&out_row[j], wk * READ_W(__ldg(&m_row[j])));               \
+    }                                                                               \
 }
 
 // SpMM Instantiations
 // ---- float32 ----
 DEFINE_MM_GATHER_BASIC_HOMO  (_f32, float, float, READ_F32, WRITE_F32)
 DEFINE_MM_GATHER_BASIC_HETERO(_f32, float, float, READ_F32, WRITE_F32)
-DEFINE_MM_SCATTER_BLOCK_HOMO (_f32, float, READ_F32, atomic_add_f32)
-DEFINE_MM_SCATTER_BLOCK_HETERO(_f32, float, READ_F32, atomic_add_f32)
-DEFINE_MM_SCATTER_WARP_HOMO  (_f32, float, READ_F32, atomic_add_f32)
-DEFINE_MM_SCATTER_WARP_HETERO(_f32, float, READ_F32, atomic_add_f32)
+DEFINE_MM_SCATTER_BLOCK_HOMO (_f32, float, float, READ_F32, atomic_add_f32)
+DEFINE_MM_SCATTER_BLOCK_HETERO(_f32, float, float, READ_F32, atomic_add_f32)
+DEFINE_MM_SCATTER_WARP_HOMO  (_f32, float, float, READ_F32, atomic_add_f32)
+DEFINE_MM_SCATTER_WARP_HETERO(_f32, float, float, READ_F32, atomic_add_f32)
 
 // ---- float64 ----
 DEFINE_MM_GATHER_BASIC_HOMO  (_f64, double, double, READ_F64, WRITE_F64)
 DEFINE_MM_GATHER_BASIC_HETERO(_f64, double, double, READ_F64, WRITE_F64)
-DEFINE_MM_SCATTER_BLOCK_HOMO (_f64, double, READ_F64, atomic_add_f64)
-DEFINE_MM_SCATTER_BLOCK_HETERO(_f64, double, READ_F64, atomic_add_f64)
-DEFINE_MM_SCATTER_WARP_HOMO  (_f64, double, READ_F64, atomic_add_f64)
-DEFINE_MM_SCATTER_WARP_HETERO(_f64, double, READ_F64, atomic_add_f64)
+DEFINE_MM_SCATTER_BLOCK_HOMO (_f64, double, double, READ_F64, atomic_add_f64)
+DEFINE_MM_SCATTER_BLOCK_HETERO(_f64, double, double, READ_F64, atomic_add_f64)
+DEFINE_MM_SCATTER_WARP_HOMO  (_f64, double, double, READ_F64, atomic_add_f64)
+DEFINE_MM_SCATTER_WARP_HETERO(_f64, double, double, READ_F64, atomic_add_f64)
 
 // ---- float16 ----
 DEFINE_MM_GATHER_BASIC_HOMO  (_f16, __half, float, READ_F16, WRITE_F16)
 DEFINE_MM_GATHER_BASIC_HETERO(_f16, __half, float, READ_F16, WRITE_F16)
-DEFINE_MM_SCATTER_BLOCK_HOMO (_f16, __half, READ_F16, atomic_add_f16)
-DEFINE_MM_SCATTER_BLOCK_HETERO(_f16, __half, READ_F16, atomic_add_f16)
-DEFINE_MM_SCATTER_WARP_HOMO  (_f16, __half, READ_F16, atomic_add_f16)
-DEFINE_MM_SCATTER_WARP_HETERO(_f16, __half, READ_F16, atomic_add_f16)
+DEFINE_MM_SCATTER_BLOCK_HOMO (_f16, __half, float, READ_F16, atomic_add_f16)
+DEFINE_MM_SCATTER_BLOCK_HETERO(_f16, __half, float, READ_F16, atomic_add_f16)
+DEFINE_MM_SCATTER_WARP_HOMO  (_f16, __half, float, READ_F16, atomic_add_f16)
+DEFINE_MM_SCATTER_WARP_HETERO(_f16, __half, float, READ_F16, atomic_add_f16)
 
 // ---- bfloat16 ----
 DEFINE_MM_GATHER_BASIC_HOMO  (_bf16, __nv_bfloat16, float, READ_BF16, WRITE_BF16)
 DEFINE_MM_GATHER_BASIC_HETERO(_bf16, __nv_bfloat16, float, READ_BF16, WRITE_BF16)
-DEFINE_MM_SCATTER_BLOCK_HOMO (_bf16, __nv_bfloat16, READ_BF16, atomic_add_bf16)
-DEFINE_MM_SCATTER_BLOCK_HETERO(_bf16, __nv_bfloat16, READ_BF16, atomic_add_bf16)
-DEFINE_MM_SCATTER_WARP_HOMO  (_bf16, __nv_bfloat16, READ_BF16, atomic_add_bf16)
-DEFINE_MM_SCATTER_WARP_HETERO(_bf16, __nv_bfloat16, READ_BF16, atomic_add_bf16)
+DEFINE_MM_SCATTER_BLOCK_HOMO (_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_MM_SCATTER_BLOCK_HETERO(_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_MM_SCATTER_WARP_HOMO  (_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_MM_SCATTER_WARP_HETERO(_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
 
 // SpMM Specializations (f32 only)
 #define MMTK 128

@@ -131,93 +131,93 @@ __global__ void _gather_basic_hetero_kern##SUFFIX(                              
         output[row] = WRITE_W(val);                                                              \
 }
 
-#define DEFINE_SCATTER_BASIC_HOMO(SUFFIX, WEIGHT_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _scatter_basic_homo_kern##SUFFIX(                         \
-    const int32_t* __restrict__ indices,                                  \
-    const WEIGHT_T* __restrict__ vector,                                  \
-    WEIGHT_T*       __restrict__ output,                                  \
-    const WEIGHT_T* __restrict__ weights,                                 \
-    int n_pre, int n_conn                                                 \
-) {                                                                       \
-    int row = blockIdx.x;                                                 \
-    if (row >= n_pre) return;                                             \
-    float v = READ_W(__ldg(&vector[row]));                                \
-    const int32_t* i_row = indices + (size_t)row * n_conn;                \
-    float w0 = READ_W(__ldg(&weights[0]));                                \
-    float wv = w0 * v;                                                    \
-    for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {              \
-        int32_t idx = __ldg(&i_row[k]);                                   \
-        ATOMIC_ADD_W(&output[idx], wv);                                   \
-    }                                                                     \
+#define DEFINE_SCATTER_BASIC_HOMO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _scatter_basic_homo_kern##SUFFIX(                               \
+    const int32_t* __restrict__ indices,                                        \
+    const WEIGHT_T* __restrict__ vector,                                        \
+    WEIGHT_T*       __restrict__ output,                                        \
+    const WEIGHT_T* __restrict__ weights,                                       \
+    int n_pre, int n_conn                                                       \
+) {                                                                             \
+    int row = blockIdx.x;                                                       \
+    if (row >= n_pre) return;                                                   \
+    ACC_T v = READ_W(__ldg(&vector[row]));                                      \
+    const int32_t* i_row = indices + (size_t)row * n_conn;                      \
+    ACC_T w0 = READ_W(__ldg(&weights[0]));                                      \
+    ACC_T wv = w0 * v;                                                          \
+    for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                    \
+        int32_t idx = __ldg(&i_row[k]);                                         \
+        ATOMIC_ADD_W(&output[idx], wv);                                         \
+    }                                                                           \
 }
 
-#define DEFINE_SCATTER_BASIC_HETERO(SUFFIX, WEIGHT_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _scatter_basic_hetero_kern##SUFFIX(                         \
-    const int32_t* __restrict__ indices,                                    \
-    const WEIGHT_T* __restrict__ vector,                                    \
-    WEIGHT_T*       __restrict__ output,                                    \
-    const WEIGHT_T* __restrict__ weights,                                   \
-    int n_pre, int n_conn                                                   \
-) {                                                                         \
-    int row = blockIdx.x;                                                   \
-    if (row >= n_pre) return;                                               \
-    float v = READ_W(__ldg(&vector[row]));                                  \
-    const int32_t* i_row = indices + (size_t)row * n_conn;                  \
-    const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                 \
-    for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                \
-        int32_t idx = __ldg(&i_row[k]);                                     \
-        float wk = READ_W(__ldg(&w_row[k]));                                \
-        ATOMIC_ADD_W(&output[idx], wk * v);                                 \
-    }                                                                       \
+#define DEFINE_SCATTER_BASIC_HETERO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _scatter_basic_hetero_kern##SUFFIX(                               \
+    const int32_t* __restrict__ indices,                                          \
+    const WEIGHT_T* __restrict__ vector,                                          \
+    WEIGHT_T*       __restrict__ output,                                          \
+    const WEIGHT_T* __restrict__ weights,                                         \
+    int n_pre, int n_conn                                                         \
+) {                                                                               \
+    int row = blockIdx.x;                                                         \
+    if (row >= n_pre) return;                                                     \
+    ACC_T v = READ_W(__ldg(&vector[row]));                                        \
+    const int32_t* i_row = indices + (size_t)row * n_conn;                        \
+    const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                       \
+    for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                      \
+        int32_t idx = __ldg(&i_row[k]);                                           \
+        ACC_T wk = READ_W(__ldg(&w_row[k]));                                      \
+        ATOMIC_ADD_W(&output[idx], wk * v);                                       \
+    }                                                                             \
 }
 
-#define DEFINE_SCATTER_WARP_HOMO(SUFFIX, WEIGHT_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _scatter_warp_homo_kern##SUFFIX(                         \
-    const int32_t* __restrict__ indices,                                 \
-    const WEIGHT_T* __restrict__ vector,                                 \
-    WEIGHT_T*       __restrict__ output,                                 \
-    const WEIGHT_T* __restrict__ weights,                                \
-    int n_pre, int n_conn                                                \
-) {                                                                      \
-    int warp_id   = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;        \
-    int lane_id   = threadIdx.x & 31;                                    \
-    int num_warps = (gridDim.x * blockDim.x) >> 5;                       \
-    float w0 = READ_W(__ldg(&weights[0]));                               \
-    for (int row = warp_id; row < n_pre; row += num_warps) {             \
-        float v = READ_W(__ldg(&vector[row]));                           \
-        const int32_t* i_row = indices + (size_t)row * n_conn;           \
-        float wv = w0 * v;                                               \
-        for (int k = lane_id; k < n_conn; k += 32) {                     \
-            int32_t idx = __ldg(&i_row[k]);                              \
-            ATOMIC_ADD_W(&output[idx], wv);                              \
-        }                                                                \
-    }                                                                    \
+#define DEFINE_SCATTER_WARP_HOMO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _scatter_warp_homo_kern##SUFFIX(                               \
+    const int32_t* __restrict__ indices,                                       \
+    const WEIGHT_T* __restrict__ vector,                                       \
+    WEIGHT_T*       __restrict__ output,                                       \
+    const WEIGHT_T* __restrict__ weights,                                      \
+    int n_pre, int n_conn                                                      \
+) {                                                                            \
+    int warp_id   = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;              \
+    int lane_id   = threadIdx.x & 31;                                          \
+    int num_warps = (gridDim.x * blockDim.x) >> 5;                             \
+    ACC_T w0 = READ_W(__ldg(&weights[0]));                                     \
+    for (int row = warp_id; row < n_pre; row += num_warps) {                   \
+        ACC_T v = READ_W(__ldg(&vector[row]));                                 \
+        const int32_t* i_row = indices + (size_t)row * n_conn;                 \
+        ACC_T wv = w0 * v;                                                     \
+        for (int k = lane_id; k < n_conn; k += 32) {                           \
+            int32_t idx = __ldg(&i_row[k]);                                    \
+            ATOMIC_ADD_W(&output[idx], wv);                                    \
+        }                                                                      \
+    }                                                                          \
 }
 
-#define DEFINE_SCATTER_WARP_HETERO(SUFFIX, WEIGHT_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _scatter_warp_hetero_kern##SUFFIX(                         \
-    const int32_t* __restrict__ indices,                                   \
-    const WEIGHT_T* __restrict__ vector,                                   \
-    WEIGHT_T*       __restrict__ output,                                   \
-    const WEIGHT_T* __restrict__ weights,                                  \
-    int n_pre, int n_conn                                                  \
-) {                                                                        \
-    int warp_id   = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;          \
-    int lane_id   = threadIdx.x & 31;                                      \
-    int num_warps = (gridDim.x * blockDim.x) >> 5;                         \
-    for (int row = warp_id; row < n_pre; row += num_warps) {               \
-        float v = READ_W(__ldg(&vector[row]));                             \
-        const int32_t* i_row = indices + (size_t)row * n_conn;             \
-        const WEIGHT_T* w_row = weights + (size_t)row * n_conn;            \
-        for (int k = lane_id; k < n_conn; k += 32) {                       \
-            int32_t idx = __ldg(&i_row[k]);                                \
-            float wk = READ_W(__ldg(&w_row[k]));                           \
-            ATOMIC_ADD_W(&output[idx], wk * v);                            \
-        }                                                                  \
-    }                                                                      \
+#define DEFINE_SCATTER_WARP_HETERO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _scatter_warp_hetero_kern##SUFFIX(                               \
+    const int32_t* __restrict__ indices,                                         \
+    const WEIGHT_T* __restrict__ vector,                                         \
+    WEIGHT_T*       __restrict__ output,                                         \
+    const WEIGHT_T* __restrict__ weights,                                        \
+    int n_pre, int n_conn                                                        \
+) {                                                                              \
+    int warp_id   = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;                \
+    int lane_id   = threadIdx.x & 31;                                            \
+    int num_warps = (gridDim.x * blockDim.x) >> 5;                               \
+    for (int row = warp_id; row < n_pre; row += num_warps) {                     \
+        ACC_T v = READ_W(__ldg(&vector[row]));                                   \
+        const int32_t* i_row = indices + (size_t)row * n_conn;                   \
+        const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                  \
+        for (int k = lane_id; k < n_conn; k += 32) {                             \
+            int32_t idx = __ldg(&i_row[k]);                                      \
+            ACC_T wk = READ_W(__ldg(&w_row[k]));                                 \
+            ATOMIC_ADD_W(&output[idx], wk * v);                                  \
+        }                                                                        \
+    }                                                                            \
 }
 
-#define DEFINE_SCATTER_GS_HOMO(SUFFIX, WEIGHT_T, READ_W, ATOMIC_ADD_W)                \
+#define DEFINE_SCATTER_GS_HOMO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W)          \
 __global__ void _scatter_gs_homo_kern##SUFFIX(                                        \
     const int32_t* __restrict__ indices,                                              \
     const WEIGHT_T* __restrict__ vector,                                              \
@@ -228,14 +228,14 @@ __global__ void _scatter_gs_homo_kern##SUFFIX(                                  
     int total  = n_pre * n_conn;                                                      \
     int tid    = blockIdx.x * blockDim.x + threadIdx.x;                               \
     int stride = blockDim.x * gridDim.x;                                              \
-    float w = READ_W(__ldg(&weights[0]));                                             \
+    ACC_T w = READ_W(__ldg(&weights[0]));                                             \
     for (int idx = tid; idx < total; idx += stride) {                                 \
         int row = idx / n_conn;                                                       \
         ATOMIC_ADD_W(&output[__ldg(&indices[idx])], w * READ_W(__ldg(&vector[row]))); \
     }                                                                                 \
 }
 
-#define DEFINE_SCATTER_GS_HETERO(SUFFIX, WEIGHT_T, READ_W, ATOMIC_ADD_W)              \
+#define DEFINE_SCATTER_GS_HETERO(SUFFIX, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W)        \
 __global__ void _scatter_gs_hetero_kern##SUFFIX(                                      \
     const int32_t* __restrict__ indices,                                              \
     const WEIGHT_T* __restrict__ vector,                                              \
@@ -248,7 +248,7 @@ __global__ void _scatter_gs_hetero_kern##SUFFIX(                                
     int stride = blockDim.x * gridDim.x;                                              \
     for (int idx = tid; idx < total; idx += stride) {                                 \
         int row = idx / n_conn;                                                       \
-        float w = READ_W(__ldg(&weights[idx]));                                       \
+        ACC_T w = READ_W(__ldg(&weights[idx]));                                       \
         ATOMIC_ADD_W(&output[__ldg(&indices[idx])], w * READ_W(__ldg(&vector[row]))); \
     }                                                                                 \
 }
@@ -259,48 +259,48 @@ DEFINE_GATHER_WARP_HOMO   (_f32, float, float, READ_F32, WRITE_F32, warp_reduce_
 DEFINE_GATHER_WARP_HETERO (_f32, float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
 DEFINE_GATHER_BASIC_HOMO  (_f32, float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
 DEFINE_GATHER_BASIC_HETERO(_f32, float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
-DEFINE_SCATTER_BASIC_HOMO (_f32, float, READ_F32, atomic_add_f32)
-DEFINE_SCATTER_BASIC_HETERO(_f32, float, READ_F32, atomic_add_f32)
-DEFINE_SCATTER_WARP_HOMO  (_f32, float, READ_F32, atomic_add_f32)
-DEFINE_SCATTER_WARP_HETERO(_f32, float, READ_F32, atomic_add_f32)
-DEFINE_SCATTER_GS_HOMO     (_f32, float, READ_F32, atomic_add_f32)
-DEFINE_SCATTER_GS_HETERO   (_f32, float, READ_F32, atomic_add_f32)
+DEFINE_SCATTER_BASIC_HOMO (_f32, float, float, READ_F32, atomic_add_f32)
+DEFINE_SCATTER_BASIC_HETERO(_f32, float, float, READ_F32, atomic_add_f32)
+DEFINE_SCATTER_WARP_HOMO  (_f32, float, float, READ_F32, atomic_add_f32)
+DEFINE_SCATTER_WARP_HETERO(_f32, float, float, READ_F32, atomic_add_f32)
+DEFINE_SCATTER_GS_HOMO     (_f32, float, float, READ_F32, atomic_add_f32)
+DEFINE_SCATTER_GS_HETERO   (_f32, float, float, READ_F32, atomic_add_f32)
 
 // ---- float64 ----
 DEFINE_GATHER_WARP_HOMO   (_f64, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
 DEFINE_GATHER_WARP_HETERO (_f64, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
 DEFINE_GATHER_BASIC_HOMO  (_f64, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
 DEFINE_GATHER_BASIC_HETERO(_f64, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
-DEFINE_SCATTER_BASIC_HOMO (_f64, double, READ_F64, atomic_add_f64)
-DEFINE_SCATTER_BASIC_HETERO(_f64, double, READ_F64, atomic_add_f64)
-DEFINE_SCATTER_WARP_HOMO  (_f64, double, READ_F64, atomic_add_f64)
-DEFINE_SCATTER_WARP_HETERO(_f64, double, READ_F64, atomic_add_f64)
-DEFINE_SCATTER_GS_HOMO     (_f64, double, READ_F64, atomic_add_f64)
-DEFINE_SCATTER_GS_HETERO   (_f64, double, READ_F64, atomic_add_f64)
+DEFINE_SCATTER_BASIC_HOMO (_f64, double, double, READ_F64, atomic_add_f64)
+DEFINE_SCATTER_BASIC_HETERO(_f64, double, double, READ_F64, atomic_add_f64)
+DEFINE_SCATTER_WARP_HOMO  (_f64, double, double, READ_F64, atomic_add_f64)
+DEFINE_SCATTER_WARP_HETERO(_f64, double, double, READ_F64, atomic_add_f64)
+DEFINE_SCATTER_GS_HOMO     (_f64, double, double, READ_F64, atomic_add_f64)
+DEFINE_SCATTER_GS_HETERO   (_f64, double, double, READ_F64, atomic_add_f64)
 
 // ---- float16 ----
 DEFINE_GATHER_WARP_HOMO   (_f16, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
 DEFINE_GATHER_WARP_HETERO (_f16, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
 DEFINE_GATHER_BASIC_HOMO  (_f16, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
 DEFINE_GATHER_BASIC_HETERO(_f16, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
-DEFINE_SCATTER_BASIC_HOMO (_f16, __half, READ_F16, atomic_add_f16)
-DEFINE_SCATTER_BASIC_HETERO(_f16, __half, READ_F16, atomic_add_f16)
-DEFINE_SCATTER_WARP_HOMO  (_f16, __half, READ_F16, atomic_add_f16)
-DEFINE_SCATTER_WARP_HETERO(_f16, __half, READ_F16, atomic_add_f16)
-DEFINE_SCATTER_GS_HOMO     (_f16, __half, READ_F16, atomic_add_f16)
-DEFINE_SCATTER_GS_HETERO   (_f16, __half, READ_F16, atomic_add_f16)
+DEFINE_SCATTER_BASIC_HOMO (_f16, __half, float, READ_F16, atomic_add_f16)
+DEFINE_SCATTER_BASIC_HETERO(_f16, __half, float, READ_F16, atomic_add_f16)
+DEFINE_SCATTER_WARP_HOMO  (_f16, __half, float, READ_F16, atomic_add_f16)
+DEFINE_SCATTER_WARP_HETERO(_f16, __half, float, READ_F16, atomic_add_f16)
+DEFINE_SCATTER_GS_HOMO     (_f16, __half, float, READ_F16, atomic_add_f16)
+DEFINE_SCATTER_GS_HETERO   (_f16, __half, float, READ_F16, atomic_add_f16)
 
 // ---- bfloat16 ----
 DEFINE_GATHER_WARP_HOMO   (_bf16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
 DEFINE_GATHER_WARP_HETERO (_bf16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
 DEFINE_GATHER_BASIC_HOMO  (_bf16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
 DEFINE_GATHER_BASIC_HETERO(_bf16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
-DEFINE_SCATTER_BASIC_HOMO (_bf16, __nv_bfloat16, READ_BF16, atomic_add_bf16)
-DEFINE_SCATTER_BASIC_HETERO(_bf16, __nv_bfloat16, READ_BF16, atomic_add_bf16)
-DEFINE_SCATTER_WARP_HOMO  (_bf16, __nv_bfloat16, READ_BF16, atomic_add_bf16)
-DEFINE_SCATTER_WARP_HETERO(_bf16, __nv_bfloat16, READ_BF16, atomic_add_bf16)
-DEFINE_SCATTER_GS_HOMO     (_bf16, __nv_bfloat16, READ_BF16, atomic_add_bf16)
-DEFINE_SCATTER_GS_HETERO   (_bf16, __nv_bfloat16, READ_BF16, atomic_add_bf16)
+DEFINE_SCATTER_BASIC_HOMO (_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_SCATTER_BASIC_HETERO(_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_SCATTER_WARP_HOMO  (_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_SCATTER_WARP_HETERO(_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_SCATTER_GS_HOMO     (_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
+DEFINE_SCATTER_GS_HETERO   (_bf16, __nv_bfloat16, float, READ_BF16, atomic_add_bf16)
 
 // SpMV Specializations (f32 only)
 __global__ void _gather_shared_homo_kern(const int32_t* __restrict__ indices, const float* __restrict__ vector, float* __restrict__ output, const float* __restrict__ weights, int n_pre, int n_conn) {

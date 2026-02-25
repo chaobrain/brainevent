@@ -127,18 +127,18 @@ __global__ void _bg_mr_hetero_kern##SUFFIX(                                     
         output[row] = WRITE_W(val);                                                                           \
 }
 
-#define DEFINE_BS_WARP_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _bs_warp_homo_kern##SUFFIX(                                             \
-    const int32_t* __restrict__ indices,                                                \
-    const SPIKE_T* __restrict__ spikes,                                                 \
-    WEIGHT_T*      __restrict__ output,                                                 \
-    const WEIGHT_T* __restrict__ weights,                                               \
-    int n_pre, int n_conn                                                               \
-) {                                                                                     \
-    int warp_id   = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;                       \
-    int lane_id   = threadIdx.x & 31;                                                   \
-    int num_warps = (gridDim.x * blockDim.x) >> 5;                                      \
-    float w0 = READ_W(weights[0]);                                                      \
+#define DEFINE_BS_WARP_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _bs_warp_homo_kern##SUFFIX(                                                   \
+    const int32_t* __restrict__ indices,                                                      \
+    const SPIKE_T* __restrict__ spikes,                                                       \
+    WEIGHT_T*      __restrict__ output,                                                       \
+    const WEIGHT_T* __restrict__ weights,                                                     \
+    int n_pre, int n_conn                                                                     \
+) {                                                                                           \
+    int warp_id   = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;                             \
+    int lane_id   = threadIdx.x & 31;                                                         \
+    int num_warps = (gridDim.x * blockDim.x) >> 5;                                            \
+    ACC_T w0 = READ_W(weights[0]);                                                            \
     for (int row = warp_id; row < n_pre; row += num_warps) {                            \
         if (!IS_ACTIVE(__ldg(&spikes[row]))) continue;                                  \
         const int32_t* i_row = indices + (size_t)row * n_conn;                          \
@@ -149,64 +149,64 @@ __global__ void _bs_warp_homo_kern##SUFFIX(                                     
     }                                                                                   \
 }
 
-#define DEFINE_BS_WARP_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _bs_warp_hetero_kern##SUFFIX(                                             \
-    const int32_t* __restrict__ indices,                                                  \
-    const SPIKE_T* __restrict__ spikes,                                                   \
-    WEIGHT_T*      __restrict__ output,                                                   \
-    const WEIGHT_T* __restrict__ weights,                                                 \
-    int n_pre, int n_conn                                                                 \
-) {                                                                                       \
-    int warp_id   = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;                         \
-    int lane_id   = threadIdx.x & 31;                                                     \
-    int num_warps = (gridDim.x * blockDim.x) >> 5;                                        \
-    for (int row = warp_id; row < n_pre; row += num_warps) {                              \
-        if (!IS_ACTIVE(__ldg(&spikes[row]))) continue;                                    \
-        const int32_t* i_row = indices + (size_t)row * n_conn;                            \
-        const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                           \
-        for (int k = lane_id; k < n_conn; k += 32) {                                      \
-            int idx = __ldg(&i_row[k]);                                                   \
-            float wk = READ_W(__ldg(&w_row[k]));                                          \
+#define DEFINE_BS_WARP_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _bs_warp_hetero_kern##SUFFIX(                                                  \
+    const int32_t* __restrict__ indices,                                                       \
+    const SPIKE_T* __restrict__ spikes,                                                        \
+    WEIGHT_T*      __restrict__ output,                                                        \
+    const WEIGHT_T* __restrict__ weights,                                                      \
+    int n_pre, int n_conn                                                                      \
+) {                                                                                            \
+    int warp_id   = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;                              \
+    int lane_id   = threadIdx.x & 31;                                                          \
+    int num_warps = (gridDim.x * blockDim.x) >> 5;                                             \
+    for (int row = warp_id; row < n_pre; row += num_warps) {                                   \
+        if (!IS_ACTIVE(__ldg(&spikes[row]))) continue;                                         \
+        const int32_t* i_row = indices + (size_t)row * n_conn;                                 \
+        const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                \
+        for (int k = lane_id; k < n_conn; k += 32) {                                           \
+            int idx = __ldg(&i_row[k]);                                                        \
+            ACC_T wk = READ_W(__ldg(&w_row[k]));                                               \
             ATOMIC_ADD_W(&output[idx], wk);                                               \
         }                                                                                 \
     }                                                                                     \
 }
 
-#define DEFINE_BS_BASIC_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _bs_basic_homo_kern##SUFFIX(                                             \
-    const int32_t* __restrict__ indices,                                                 \
-    const SPIKE_T* __restrict__ spikes,                                                  \
-    WEIGHT_T*      __restrict__ output,                                                  \
-    const WEIGHT_T* __restrict__ weights,                                                \
-    int n_pre, int n_conn                                                                \
-) {                                                                                      \
-    int row = blockIdx.x;                                                                \
-    if (row >= n_pre) return;                                                            \
-    if (!IS_ACTIVE(__ldg(&spikes[row]))) return;                                         \
-    const int32_t* i_row = indices + (size_t)row * n_conn;                               \
-    float w0 = READ_W(weights[0]);                                                       \
+#define DEFINE_BS_BASIC_HOMO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _bs_basic_homo_kern##SUFFIX(                                                   \
+    const int32_t* __restrict__ indices,                                                       \
+    const SPIKE_T* __restrict__ spikes,                                                        \
+    WEIGHT_T*      __restrict__ output,                                                        \
+    const WEIGHT_T* __restrict__ weights,                                                      \
+    int n_pre, int n_conn                                                                      \
+) {                                                                                            \
+    int row = blockIdx.x;                                                                      \
+    if (row >= n_pre) return;                                                                  \
+    if (!IS_ACTIVE(__ldg(&spikes[row]))) return;                                               \
+    const int32_t* i_row = indices + (size_t)row * n_conn;                                     \
+    ACC_T w0 = READ_W(weights[0]);                                                             \
     for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                             \
         int idx = __ldg(&i_row[k]);                                                      \
         ATOMIC_ADD_W(&output[idx], w0);                                                  \
     }                                                                                    \
 }
 
-#define DEFINE_BS_BASIC_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, READ_W, ATOMIC_ADD_W) \
-__global__ void _bs_basic_hetero_kern##SUFFIX(                                             \
-    const int32_t* __restrict__ indices,                                                   \
-    const SPIKE_T* __restrict__ spikes,                                                    \
-    WEIGHT_T*      __restrict__ output,                                                    \
-    const WEIGHT_T* __restrict__ weights,                                                  \
-    int n_pre, int n_conn                                                                  \
-) {                                                                                        \
-    int row = blockIdx.x;                                                                  \
-    if (row >= n_pre) return;                                                              \
-    if (!IS_ACTIVE(__ldg(&spikes[row]))) return;                                           \
-    const int32_t* i_row = indices + (size_t)row * n_conn;                                 \
-    const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                \
-    for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                               \
-        int idx = __ldg(&i_row[k]);                                                        \
-        float wk = READ_W(__ldg(&w_row[k]));                                               \
+#define DEFINE_BS_BASIC_HETERO(SUFFIX, SPIKE_T, IS_ACTIVE, WEIGHT_T, ACC_T, READ_W, ATOMIC_ADD_W) \
+__global__ void _bs_basic_hetero_kern##SUFFIX(                                                  \
+    const int32_t* __restrict__ indices,                                                        \
+    const SPIKE_T* __restrict__ spikes,                                                         \
+    WEIGHT_T*      __restrict__ output,                                                         \
+    const WEIGHT_T* __restrict__ weights,                                                       \
+    int n_pre, int n_conn                                                                       \
+) {                                                                                             \
+    int row = blockIdx.x;                                                                       \
+    if (row >= n_pre) return;                                                                   \
+    if (!IS_ACTIVE(__ldg(&spikes[row]))) return;                                                \
+    const int32_t* i_row = indices + (size_t)row * n_conn;                                      \
+    const WEIGHT_T* w_row = weights + (size_t)row * n_conn;                                     \
+    for (int k = threadIdx.x; k < n_conn; k += blockDim.x) {                                    \
+        int idx = __ldg(&i_row[k]);                                                             \
+        ACC_T wk = READ_W(__ldg(&w_row[k]));                                                    \
         ATOMIC_ADD_W(&output[idx], wk);                                                    \
     }                                                                                      \
 }
@@ -221,14 +221,14 @@ DEFINE_BG_MR_HOMO     (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F3
 DEFINE_BG_MR_HETERO   (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
 DEFINE_BG_MR_HOMO     (_float_f32, float, IS_ACTIVE_FLOAT_F32, float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
 DEFINE_BG_MR_HETERO   (_float_f32, float, IS_ACTIVE_FLOAT_F32, float, float, READ_F32, WRITE_F32, warp_reduce_sum_f32, 0.0f)
-DEFINE_BS_WARP_HOMO   (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, READ_F32, atomicAdd)
-DEFINE_BS_WARP_HETERO (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, READ_F32, atomicAdd)
-DEFINE_BS_WARP_HOMO   (_float_f32, float, IS_ACTIVE_FLOAT_F32, float, READ_F32, atomicAdd)
-DEFINE_BS_WARP_HETERO (_float_f32, float, IS_ACTIVE_FLOAT_F32, float, READ_F32, atomicAdd)
-DEFINE_BS_BASIC_HOMO  (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, READ_F32, atomicAdd)
-DEFINE_BS_BASIC_HETERO(_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, READ_F32, atomicAdd)
-DEFINE_BS_BASIC_HOMO  (_float_f32, float, IS_ACTIVE_FLOAT_F32, float, READ_F32, atomicAdd)
-DEFINE_BS_BASIC_HETERO(_float_f32, float, IS_ACTIVE_FLOAT_F32, float, READ_F32, atomicAdd)
+DEFINE_BS_WARP_HOMO   (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
+DEFINE_BS_WARP_HETERO (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
+DEFINE_BS_WARP_HOMO   (_float_f32, float, IS_ACTIVE_FLOAT_F32, float, float, READ_F32, atomicAdd)
+DEFINE_BS_WARP_HETERO (_float_f32, float, IS_ACTIVE_FLOAT_F32, float, float, READ_F32, atomicAdd)
+DEFINE_BS_BASIC_HOMO  (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
+DEFINE_BS_BASIC_HETERO(_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, atomicAdd)
+DEFINE_BS_BASIC_HOMO  (_float_f32, float, IS_ACTIVE_FLOAT_F32, float, float, READ_F32, atomicAdd)
+DEFINE_BS_BASIC_HETERO(_float_f32, float, IS_ACTIVE_FLOAT_F32, float, float, READ_F32, atomicAdd)
 
 // ---- float64 ----
 DEFINE_BG_WARP_HOMO   (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
@@ -239,14 +239,14 @@ DEFINE_BG_MR_HOMO     (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_
 DEFINE_BG_MR_HETERO   (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
 DEFINE_BG_MR_HOMO     (_float_f64, double, IS_ACTIVE_FLOAT_F64, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
 DEFINE_BG_MR_HETERO   (_float_f64, double, IS_ACTIVE_FLOAT_F64, double, double, READ_F64, WRITE_F64, warp_reduce_sum_f64, 0.0)
-DEFINE_BS_WARP_HOMO   (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, READ_F64, atomicAdd)
-DEFINE_BS_WARP_HETERO (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, READ_F64, atomicAdd)
-DEFINE_BS_WARP_HOMO   (_float_f64, double, IS_ACTIVE_FLOAT_F64, double, READ_F64, atomicAdd)
-DEFINE_BS_WARP_HETERO (_float_f64, double, IS_ACTIVE_FLOAT_F64, double, READ_F64, atomicAdd)
-DEFINE_BS_BASIC_HOMO  (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, READ_F64, atomicAdd)
-DEFINE_BS_BASIC_HETERO(_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, READ_F64, atomicAdd)
-DEFINE_BS_BASIC_HOMO  (_float_f64, double, IS_ACTIVE_FLOAT_F64, double, READ_F64, atomicAdd)
-DEFINE_BS_BASIC_HETERO(_float_f64, double, IS_ACTIVE_FLOAT_F64, double, READ_F64, atomicAdd)
+DEFINE_BS_WARP_HOMO   (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
+DEFINE_BS_WARP_HETERO (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
+DEFINE_BS_WARP_HOMO   (_float_f64, double, IS_ACTIVE_FLOAT_F64, double, double, READ_F64, atomic_add_f64)
+DEFINE_BS_WARP_HETERO (_float_f64, double, IS_ACTIVE_FLOAT_F64, double, double, READ_F64, atomic_add_f64)
+DEFINE_BS_BASIC_HOMO  (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
+DEFINE_BS_BASIC_HETERO(_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, atomic_add_f64)
+DEFINE_BS_BASIC_HOMO  (_float_f64, double, IS_ACTIVE_FLOAT_F64, double, double, READ_F64, atomic_add_f64)
+DEFINE_BS_BASIC_HETERO(_float_f64, double, IS_ACTIVE_FLOAT_F64, double, double, READ_F64, atomic_add_f64)
 
 // ---- float16 ----
 DEFINE_BG_WARP_HOMO   (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
@@ -257,14 +257,14 @@ DEFINE_BG_MR_HOMO     (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F
 DEFINE_BG_MR_HETERO   (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
 DEFINE_BG_MR_HOMO     (_float_f16, __half, IS_ACTIVE_FLOAT_F16, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
 DEFINE_BG_MR_HETERO   (_float_f16, __half, IS_ACTIVE_FLOAT_F16, __half, float, READ_F16, WRITE_F16, warp_reduce_sum_f32, 0.0f)
-DEFINE_BS_WARP_HOMO   (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, READ_F16, atomicAdd)
-DEFINE_BS_WARP_HETERO (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, READ_F16, atomicAdd)
-DEFINE_BS_WARP_HOMO   (_float_f16, __half, IS_ACTIVE_FLOAT_F16, __half, READ_F16, atomicAdd)
-DEFINE_BS_WARP_HETERO (_float_f16, __half, IS_ACTIVE_FLOAT_F16, __half, READ_F16, atomicAdd)
-DEFINE_BS_BASIC_HOMO  (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, READ_F16, atomicAdd)
-DEFINE_BS_BASIC_HETERO(_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, READ_F16, atomicAdd)
-DEFINE_BS_BASIC_HOMO  (_float_f16, __half, IS_ACTIVE_FLOAT_F16, __half, READ_F16, atomicAdd)
-DEFINE_BS_BASIC_HETERO(_float_f16, __half, IS_ACTIVE_FLOAT_F16, __half, READ_F16, atomicAdd)
+DEFINE_BS_WARP_HOMO   (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomicAdd_f16)
+DEFINE_BS_WARP_HETERO (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomicAdd_f16)
+DEFINE_BS_WARP_HOMO   (_float_f16, __half, IS_ACTIVE_FLOAT_F16, __half, float, READ_F16, atomicAdd_f16)
+DEFINE_BS_WARP_HETERO (_float_f16, __half, IS_ACTIVE_FLOAT_F16, __half, float, READ_F16, atomicAdd_f16)
+DEFINE_BS_BASIC_HOMO  (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomicAdd_f16)
+DEFINE_BS_BASIC_HETERO(_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, atomicAdd_f16)
+DEFINE_BS_BASIC_HOMO  (_float_f16, __half, IS_ACTIVE_FLOAT_F16, __half, float, READ_F16, atomicAdd_f16)
+DEFINE_BS_BASIC_HETERO(_float_f16, __half, IS_ACTIVE_FLOAT_F16, __half, float, READ_F16, atomicAdd_f16)
 
 // ---- bfloat16 ----
 DEFINE_BG_WARP_HOMO   (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
@@ -275,14 +275,14 @@ DEFINE_BG_MR_HOMO     (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float
 DEFINE_BG_MR_HETERO   (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
 DEFINE_BG_MR_HOMO     (_float_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
 DEFINE_BG_MR_HETERO   (_float_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, warp_reduce_sum_f32, 0.0f)
-DEFINE_BS_WARP_HOMO   (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, READ_BF16, atomicAdd)
-DEFINE_BS_WARP_HETERO (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, READ_BF16, atomicAdd)
-DEFINE_BS_WARP_HOMO   (_float_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, READ_BF16, atomicAdd)
-DEFINE_BS_WARP_HETERO (_float_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, READ_BF16, atomicAdd)
-DEFINE_BS_BASIC_HOMO  (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, READ_BF16, atomicAdd)
-DEFINE_BS_BASIC_HETERO(_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, READ_BF16, atomicAdd)
-DEFINE_BS_BASIC_HOMO  (_float_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, READ_BF16, atomicAdd)
-DEFINE_BS_BASIC_HETERO(_float_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, READ_BF16, atomicAdd)
+DEFINE_BS_WARP_HOMO   (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomicAdd_bf16)
+DEFINE_BS_WARP_HETERO (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomicAdd_bf16)
+DEFINE_BS_WARP_HOMO   (_float_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, float, READ_BF16, atomicAdd_bf16)
+DEFINE_BS_WARP_HETERO (_float_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, float, READ_BF16, atomicAdd_bf16)
+DEFINE_BS_BASIC_HOMO  (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomicAdd_bf16)
+DEFINE_BS_BASIC_HETERO(_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, atomicAdd_bf16)
+DEFINE_BS_BASIC_HOMO  (_float_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, float, READ_BF16, atomicAdd_bf16)
+DEFINE_BS_BASIC_HETERO(_float_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, float, READ_BF16, atomicAdd_bf16)
 
 // FFI Macros for SpMV
 // ---- FFI macro: gather homo warp ----
