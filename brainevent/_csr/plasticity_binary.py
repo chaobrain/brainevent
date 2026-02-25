@@ -299,7 +299,7 @@ def _csr_on_pre_cuda_kernel(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs,
 ):
-    """CUDA CUDA kernel for CSR pre-synaptic plasticity update.
+    """CUDA Raw kernel for CSR pre-synaptic plasticity update.
 
     Dispatches to ``update_csr_on_pre{wt_sfx}{spk_sfx}`` compiled from
     ``plasticity_binary.cu``.  The auto-variant selects among
@@ -869,7 +869,7 @@ def _csr2csc_on_post_cuda_kernel(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs,
 ):
-    """CUDA CUDA kernel for CSR post-synaptic plasticity update.
+    """CUDA Raw kernel for CSR post-synaptic plasticity update.
 
     Dispatches to ``update_csr_on_post{wt_sfx}{spk_sfx}`` compiled from
     ``plasticity_binary.cu``.  The auto-variant selects among

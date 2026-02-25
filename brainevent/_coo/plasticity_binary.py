@@ -253,7 +253,7 @@ def _coo_on_pre_jax_kernel(
 
 
 def _coo_on_pre_cuda_kernel(weight_info, spike_info, pre_ids_info, **kwargs):
-    """CUDA CUDA kernel for presynaptic COO plasticity update.
+    """CUDA Raw kernel for presynaptic COO plasticity update.
 
     Dispatches to ``update_coo_on_pre{wt_sfx}{spk_sfx}`` compiled from
     ``plasticity_binary.cu``.
@@ -802,7 +802,7 @@ def _coo_on_post_jax_kernel(
 
 
 def _coo_on_post_cuda_kernel(weight_info, spike_info, pre_ids_info, **kwargs):
-    """CUDA CUDA kernel for postsynaptic COO plasticity update.
+    """CUDA Raw kernel for postsynaptic COO plasticity update.
 
     Dispatches to ``update_coo_on_post{wt_sfx}{spk_sfx}`` compiled from
     ``plasticity_binary.cu``.

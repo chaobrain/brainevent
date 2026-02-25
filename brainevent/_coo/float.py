@@ -759,7 +759,7 @@ def _coomv_cuda_kernel(
     transpose: bool,
     **kwargs,
 ):
-    """CUDA CUDA kernel for float COO SpMV.
+    """CUDA Raw kernel for float COO SpMV.
 
     Dispatches to one of the ``coomv_{homo,hetero}_atomic_{nt,t}`` kernels
     compiled from ``float_coomv.cu`` via ``load_cuda_file``.
@@ -1454,7 +1454,7 @@ def _coomm_cuda_kernel(
     transpose: bool,
     **kwargs,
 ):
-    """CUDA CUDA kernel for float COO SpMM.
+    """CUDA Raw kernel for float COO SpMM.
 
     Dispatches to one of the ``coomm_{homo,hetero}_{variant}_{nt,t}`` kernels
     compiled from ``float_coomm.cu`` via ``load_cuda_file``.

@@ -1219,7 +1219,7 @@ def _binary_densemm_cuda_kernel(
     **kwargs
 ):
     """
-    CUDA CUDA kernel generator for ``binary_densemm``.
+    CUDA Raw kernel generator for ``binary_densemm``.
 
     Registers and selects optimised CUDA kernels from ``binary_densemm.cu``
     for the binary dense matrix-matrix multiply. The kernel variant is chosen
