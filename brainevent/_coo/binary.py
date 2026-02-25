@@ -964,12 +964,12 @@ def _coomv_batching(args, axes, **kwargs):
         return r, [1]
 
     elif tuple(axes) == (None, None, None, 1):
-        assert args[3].ndim == 2, 'Batching axis 0 requires 2D input.'
+        assert args[3].ndim == 2, 'Batching axis 1 requires 2D input.'
         r = binary_coomm_p_call(
             args[0],
             args[1],
             args[2],
-            args[3].T,
+            args[3],
             shape=kwargs['shape'],
             transpose=kwargs['transpose'],
             backend=kwargs['backend'],
@@ -1953,7 +1953,7 @@ def _coomm_batching(args, axes, **kwargs):
         return [r], [1]
 
     elif tuple(axes) == (None, None, None, 1):
-        assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
+        assert args[3].ndim == 3, 'Batching axis 1 requires 3D input.'
         m, batch_size, n = args[3].shape
         B = args[3].reshape(m, batch_size * n)
         r = binary_coomm_p_call(
@@ -1969,7 +1969,7 @@ def _coomm_batching(args, axes, **kwargs):
         return [r], [1]
 
     elif tuple(axes) == (None, None, None, 2):
-        assert args[3].ndim == 3, 'Batching axis 0 requires 3D input.'
+        assert args[3].ndim == 3, 'Batching axis 2 requires 3D input.'
         m, n, batch_size = args[3].shape
         B = args[3].reshape(m, batch_size * n)
         r = binary_coomm_p_call(
