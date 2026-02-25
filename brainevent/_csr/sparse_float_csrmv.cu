@@ -251,7 +251,7 @@ __global__ void _spfloat_csrmv_t_warp_homo_kern##SUFFIX(                        
 }
 
 #define DEFINE_SPFLOAT_CSRMV_T_WARP_HETERO(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, ACC_ZERO) \
-__global__ void _spfloat_csrmv_t_warp_hetero_kern##SUFFIX(                                     \
+__global__ void _spfloat_csrmv_t_hetero_warp_kern##SUFFIX(                                     \
     const WEIGHT_T* __restrict__ weights,                                                      \
     const int32_t*  __restrict__ indices,                                                      \
     const int32_t*  __restrict__ indptr,                                                       \

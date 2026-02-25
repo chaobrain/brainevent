@@ -268,76 +268,76 @@ __global__ void _bsm_basic_hetero_kern##SUFFIX(                                 
 
 // Instantiations
 // ---- float32 ----
-DEFINE_BGM_WARP_HOMO   (_bool_warp_homo_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, WRITE_F32)
-DEFINE_BGM_WARP_HETERO (_bool_warp_hetero_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, WRITE_F32)
-DEFINE_BGM_WARP_HOMO   (_float_warp_homo_f32, float, IS_ACTIVE_FLOAT_F32, float, float, READ_F32, WRITE_F32)
-DEFINE_BGM_WARP_HETERO (_float_warp_hetero_f32, float, IS_ACTIVE_FLOAT_F32, float, float, READ_F32, WRITE_F32)
-DEFINE_BGM_BASIC_HOMO  (_bool_basic_homo_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, WRITE_F32, 0.0f)
-DEFINE_BGM_BASIC_HETERO(_bool_basic_hetero_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, WRITE_F32, 0.0f)
-DEFINE_BGM_BASIC_HOMO  (_float_basic_homo_f32, float, IS_ACTIVE_FLOAT_F32, float, float, READ_F32, WRITE_F32, 0.0f)
-DEFINE_BGM_BASIC_HETERO(_float_basic_hetero_f32, float, IS_ACTIVE_FLOAT_F32, float, float, READ_F32, WRITE_F32, 0.0f)
-DEFINE_BSM_WARP_HOMO   (_bool_warp_homo_f32, uint8_t, IS_ACTIVE_BOOL, float, READ_F32, atomicAdd)
-DEFINE_BSM_WARP_HETERO (_bool_warp_hetero_f32, uint8_t, IS_ACTIVE_BOOL, float, READ_F32, atomicAdd)
-DEFINE_BSM_WARP_HOMO   (_float_warp_homo_f32, float, IS_ACTIVE_FLOAT_F32, float, READ_F32, atomicAdd)
-DEFINE_BSM_WARP_HETERO (_float_warp_hetero_f32, float, IS_ACTIVE_FLOAT_F32, float, READ_F32, atomicAdd)
-DEFINE_BSM_BASIC_HOMO  (_bool_basic_homo_f32, uint8_t, IS_ACTIVE_BOOL, float, READ_F32, atomicAdd)
-DEFINE_BSM_BASIC_HETERO(_bool_basic_hetero_f32, uint8_t, IS_ACTIVE_BOOL, float, READ_F32, atomicAdd)
-DEFINE_BSM_BASIC_HOMO  (_float_basic_homo_f32, float, IS_ACTIVE_FLOAT_F32, float, READ_F32, atomicAdd)
-DEFINE_BSM_BASIC_HETERO(_float_basic_hetero_f32, float, IS_ACTIVE_FLOAT_F32, float, READ_F32, atomicAdd)
+DEFINE_BGM_WARP_HOMO   (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, WRITE_F32)
+DEFINE_BGM_WARP_HETERO (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, WRITE_F32)
+DEFINE_BGM_WARP_HOMO   (_float_f32, float, IS_ACTIVE_FLOAT_F32, float, float, READ_F32, WRITE_F32)
+DEFINE_BGM_WARP_HETERO (_float_f32, float, IS_ACTIVE_FLOAT_F32, float, float, READ_F32, WRITE_F32)
+DEFINE_BGM_BASIC_HOMO  (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, WRITE_F32, 0.0f)
+DEFINE_BGM_BASIC_HETERO(_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, float, READ_F32, WRITE_F32, 0.0f)
+DEFINE_BGM_BASIC_HOMO  (_float_f32, float, IS_ACTIVE_FLOAT_F32, float, float, READ_F32, WRITE_F32, 0.0f)
+DEFINE_BGM_BASIC_HETERO(_float_f32, float, IS_ACTIVE_FLOAT_F32, float, float, READ_F32, WRITE_F32, 0.0f)
+DEFINE_BSM_WARP_HOMO   (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, READ_F32, atomicAdd)
+DEFINE_BSM_WARP_HETERO (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, READ_F32, atomicAdd)
+DEFINE_BSM_WARP_HOMO   (_float_f32, float, IS_ACTIVE_FLOAT_F32, float, READ_F32, atomicAdd)
+DEFINE_BSM_WARP_HETERO (_float_f32, float, IS_ACTIVE_FLOAT_F32, float, READ_F32, atomicAdd)
+DEFINE_BSM_BASIC_HOMO  (_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, READ_F32, atomicAdd)
+DEFINE_BSM_BASIC_HETERO(_bool_f32, uint8_t, IS_ACTIVE_BOOL, float, READ_F32, atomicAdd)
+DEFINE_BSM_BASIC_HOMO  (_float_f32, float, IS_ACTIVE_FLOAT_F32, float, READ_F32, atomicAdd)
+DEFINE_BSM_BASIC_HETERO(_float_f32, float, IS_ACTIVE_FLOAT_F32, float, READ_F32, atomicAdd)
 
 // ---- float64 ----
-DEFINE_BGM_WARP_HOMO   (_bool_warp_homo_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64)
-DEFINE_BGM_WARP_HETERO (_bool_warp_hetero_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64)
-DEFINE_BGM_WARP_HOMO   (_float_warp_homo_f64, double, IS_ACTIVE_FLOAT_F64, double, double, READ_F64, WRITE_F64)
-DEFINE_BGM_WARP_HETERO (_float_warp_hetero_f64, double, IS_ACTIVE_FLOAT_F64, double, double, READ_F64, WRITE_F64)
-DEFINE_BGM_BASIC_HOMO  (_bool_basic_homo_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64, 0.0)
-DEFINE_BGM_BASIC_HETERO(_bool_basic_hetero_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64, 0.0)
-DEFINE_BGM_BASIC_HOMO  (_float_basic_homo_f64, double, IS_ACTIVE_FLOAT_F64, double, double, READ_F64, WRITE_F64, 0.0)
-DEFINE_BGM_BASIC_HETERO(_float_basic_hetero_f64, double, IS_ACTIVE_FLOAT_F64, double, double, READ_F64, WRITE_F64, 0.0)
-DEFINE_BSM_WARP_HOMO   (_bool_warp_homo_f64, uint8_t, IS_ACTIVE_BOOL, double, READ_F64, atomicAdd)
-DEFINE_BSM_WARP_HETERO (_bool_warp_hetero_f64, uint8_t, IS_ACTIVE_BOOL, double, READ_F64, atomicAdd)
-DEFINE_BSM_WARP_HOMO   (_float_warp_homo_f64, double, IS_ACTIVE_FLOAT_F64, double, READ_F64, atomicAdd)
-DEFINE_BSM_WARP_HETERO (_float_warp_hetero_f64, double, IS_ACTIVE_FLOAT_F64, double, READ_F64, atomicAdd)
-DEFINE_BSM_BASIC_HOMO  (_bool_basic_homo_f64, uint8_t, IS_ACTIVE_BOOL, double, READ_F64, atomicAdd)
-DEFINE_BSM_BASIC_HETERO(_bool_basic_hetero_f64, uint8_t, IS_ACTIVE_BOOL, double, READ_F64, atomicAdd)
-DEFINE_BSM_BASIC_HOMO  (_float_basic_homo_f64, double, IS_ACTIVE_FLOAT_F64, double, READ_F64, atomicAdd)
-DEFINE_BSM_BASIC_HETERO(_float_basic_hetero_f64, double, IS_ACTIVE_FLOAT_F64, double, READ_F64, atomicAdd)
+DEFINE_BGM_WARP_HOMO   (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64)
+DEFINE_BGM_WARP_HETERO (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64)
+DEFINE_BGM_WARP_HOMO   (_float_f64, double, IS_ACTIVE_FLOAT_F64, double, double, READ_F64, WRITE_F64)
+DEFINE_BGM_WARP_HETERO (_float_f64, double, IS_ACTIVE_FLOAT_F64, double, double, READ_F64, WRITE_F64)
+DEFINE_BGM_BASIC_HOMO  (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64, 0.0)
+DEFINE_BGM_BASIC_HETERO(_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, double, READ_F64, WRITE_F64, 0.0)
+DEFINE_BGM_BASIC_HOMO  (_float_f64, double, IS_ACTIVE_FLOAT_F64, double, double, READ_F64, WRITE_F64, 0.0)
+DEFINE_BGM_BASIC_HETERO(_float_f64, double, IS_ACTIVE_FLOAT_F64, double, double, READ_F64, WRITE_F64, 0.0)
+DEFINE_BSM_WARP_HOMO   (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, READ_F64, atomicAdd)
+DEFINE_BSM_WARP_HETERO (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, READ_F64, atomicAdd)
+DEFINE_BSM_WARP_HOMO   (_float_f64, double, IS_ACTIVE_FLOAT_F64, double, READ_F64, atomicAdd)
+DEFINE_BSM_WARP_HETERO (_float_f64, double, IS_ACTIVE_FLOAT_F64, double, READ_F64, atomicAdd)
+DEFINE_BSM_BASIC_HOMO  (_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, READ_F64, atomicAdd)
+DEFINE_BSM_BASIC_HETERO(_bool_f64, uint8_t, IS_ACTIVE_BOOL, double, READ_F64, atomicAdd)
+DEFINE_BSM_BASIC_HOMO  (_float_f64, double, IS_ACTIVE_FLOAT_F64, double, READ_F64, atomicAdd)
+DEFINE_BSM_BASIC_HETERO(_float_f64, double, IS_ACTIVE_FLOAT_F64, double, READ_F64, atomicAdd)
 
 // ---- float16 ----
-DEFINE_BGM_WARP_HOMO   (_bool_warp_homo_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16)
-DEFINE_BGM_WARP_HETERO (_bool_warp_hetero_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16)
-DEFINE_BGM_WARP_HOMO   (_float_warp_homo_f16, __half, IS_ACTIVE_FLOAT_F16, __half, float, READ_F16, WRITE_F16)
-DEFINE_BGM_WARP_HETERO (_float_warp_hetero_f16, __half, IS_ACTIVE_FLOAT_F16, __half, float, READ_F16, WRITE_F16)
-DEFINE_BGM_BASIC_HOMO  (_bool_basic_homo_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16, 0.0f)
-DEFINE_BGM_BASIC_HETERO(_bool_basic_hetero_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16, 0.0f)
-DEFINE_BGM_BASIC_HOMO  (_float_basic_homo_f16, __half, IS_ACTIVE_FLOAT_F16, __half, float, READ_F16, WRITE_F16, 0.0f)
-DEFINE_BGM_BASIC_HETERO(_float_basic_hetero_f16, __half, IS_ACTIVE_FLOAT_F16, __half, float, READ_F16, WRITE_F16, 0.0f)
-DEFINE_BSM_WARP_HOMO   (_bool_warp_homo_f16, uint8_t, IS_ACTIVE_BOOL, __half, READ_F16, atomicAdd)
-DEFINE_BSM_WARP_HETERO (_bool_warp_hetero_f16, uint8_t, IS_ACTIVE_BOOL, __half, READ_F16, atomicAdd)
-DEFINE_BSM_WARP_HOMO   (_float_warp_homo_f16, __half, IS_ACTIVE_FLOAT_F16, __half, READ_F16, atomicAdd)
-DEFINE_BSM_WARP_HETERO (_float_warp_hetero_f16, __half, IS_ACTIVE_FLOAT_F16, __half, READ_F16, atomicAdd)
-DEFINE_BSM_BASIC_HOMO  (_bool_basic_homo_f16, uint8_t, IS_ACTIVE_BOOL, __half, READ_F16, atomicAdd)
-DEFINE_BSM_BASIC_HETERO(_bool_basic_hetero_f16, uint8_t, IS_ACTIVE_BOOL, __half, READ_F16, atomicAdd)
-DEFINE_BSM_BASIC_HOMO  (_float_basic_homo_f16, __half, IS_ACTIVE_FLOAT_F16, __half, READ_F16, atomicAdd)
-DEFINE_BSM_BASIC_HETERO(_float_basic_hetero_f16, __half, IS_ACTIVE_FLOAT_F16, __half, READ_F16, atomicAdd)
+DEFINE_BGM_WARP_HOMO   (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16)
+DEFINE_BGM_WARP_HETERO (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16)
+DEFINE_BGM_WARP_HOMO   (_float_f16, __half, IS_ACTIVE_FLOAT_F16, __half, float, READ_F16, WRITE_F16)
+DEFINE_BGM_WARP_HETERO (_float_f16, __half, IS_ACTIVE_FLOAT_F16, __half, float, READ_F16, WRITE_F16)
+DEFINE_BGM_BASIC_HOMO  (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16, 0.0f)
+DEFINE_BGM_BASIC_HETERO(_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, float, READ_F16, WRITE_F16, 0.0f)
+DEFINE_BGM_BASIC_HOMO  (_float_f16, __half, IS_ACTIVE_FLOAT_F16, __half, float, READ_F16, WRITE_F16, 0.0f)
+DEFINE_BGM_BASIC_HETERO(_float_f16, __half, IS_ACTIVE_FLOAT_F16, __half, float, READ_F16, WRITE_F16, 0.0f)
+DEFINE_BSM_WARP_HOMO   (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, READ_F16, atomicAdd)
+DEFINE_BSM_WARP_HETERO (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, READ_F16, atomicAdd)
+DEFINE_BSM_WARP_HOMO   (_float_f16, __half, IS_ACTIVE_FLOAT_F16, __half, READ_F16, atomicAdd)
+DEFINE_BSM_WARP_HETERO (_float_f16, __half, IS_ACTIVE_FLOAT_F16, __half, READ_F16, atomicAdd)
+DEFINE_BSM_BASIC_HOMO  (_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, READ_F16, atomicAdd)
+DEFINE_BSM_BASIC_HETERO(_bool_f16, uint8_t, IS_ACTIVE_BOOL, __half, READ_F16, atomicAdd)
+DEFINE_BSM_BASIC_HOMO  (_float_f16, __half, IS_ACTIVE_FLOAT_F16, __half, READ_F16, atomicAdd)
+DEFINE_BSM_BASIC_HETERO(_float_f16, __half, IS_ACTIVE_FLOAT_F16, __half, READ_F16, atomicAdd)
 
 // ---- bfloat16 ----
-DEFINE_BGM_WARP_HOMO   (_bool_warp_homo_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16)
-DEFINE_BGM_WARP_HETERO (_bool_warp_hetero_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16)
-DEFINE_BGM_WARP_HOMO   (_float_warp_homo_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16)
-DEFINE_BGM_WARP_HETERO (_float_warp_hetero_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16)
-DEFINE_BGM_BASIC_HOMO  (_bool_basic_homo_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
-DEFINE_BGM_BASIC_HETERO(_bool_basic_hetero_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
-DEFINE_BGM_BASIC_HOMO  (_float_basic_homo_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
-DEFINE_BGM_BASIC_HETERO(_float_basic_hetero_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
-DEFINE_BSM_WARP_HOMO   (_bool_warp_homo_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, READ_BF16, atomicAdd)
-DEFINE_BSM_WARP_HETERO (_bool_warp_hetero_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, READ_BF16, atomicAdd)
-DEFINE_BSM_WARP_HOMO   (_float_warp_homo_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, READ_BF16, atomicAdd)
-DEFINE_BSM_WARP_HETERO (_float_warp_hetero_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, READ_BF16, atomicAdd)
-DEFINE_BSM_BASIC_HOMO  (_bool_basic_homo_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, READ_BF16, atomicAdd)
-DEFINE_BSM_BASIC_HETERO(_bool_basic_hetero_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, READ_BF16, atomicAdd)
-DEFINE_BSM_BASIC_HOMO  (_float_basic_homo_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, READ_BF16, atomicAdd)
-DEFINE_BSM_BASIC_HETERO(_float_basic_hetero_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, READ_BF16, atomicAdd)
+DEFINE_BGM_WARP_HOMO   (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16)
+DEFINE_BGM_WARP_HETERO (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16)
+DEFINE_BGM_WARP_HOMO   (_float_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16)
+DEFINE_BGM_WARP_HETERO (_float_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16)
+DEFINE_BGM_BASIC_HOMO  (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
+DEFINE_BGM_BASIC_HETERO(_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
+DEFINE_BGM_BASIC_HOMO  (_float_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
+DEFINE_BGM_BASIC_HETERO(_float_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, float, READ_BF16, WRITE_BF16, 0.0f)
+DEFINE_BSM_WARP_HOMO   (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, READ_BF16, atomicAdd)
+DEFINE_BSM_WARP_HETERO (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, READ_BF16, atomicAdd)
+DEFINE_BSM_WARP_HOMO   (_float_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, READ_BF16, atomicAdd)
+DEFINE_BSM_WARP_HETERO (_float_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, READ_BF16, atomicAdd)
+DEFINE_BSM_BASIC_HOMO  (_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, READ_BF16, atomicAdd)
+DEFINE_BSM_BASIC_HETERO(_bool_bf16, uint8_t, IS_ACTIVE_BOOL, __nv_bfloat16, READ_BF16, atomicAdd)
+DEFINE_BSM_BASIC_HOMO  (_float_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, READ_BF16, atomicAdd)
+DEFINE_BSM_BASIC_HETERO(_float_bf16, __nv_bfloat16, IS_ACTIVE_FLOAT_BF16, __nv_bfloat16, READ_BF16, atomicAdd)
 
 // FFI Macros for SpMM
 // ---- FFI macro: gather homo warp ----
@@ -503,136 +503,136 @@ void binary_fcnmm_scatter_hetero_basic##SUFFIX(                                 
 // SpMM FFI Instantiations
 // ---- float32 ----
 // @tvm_ffi binary_fcnmm_gather_homo_warp_bool_f32
-FFI_BGM_HOMO_WARP  (_bool_warp_homo_f32, float, uint8_t)
+FFI_BGM_HOMO_WARP  (_bool_f32, float, uint8_t)
 // @tvm_ffi binary_fcnmm_gather_hetero_warp_bool_f32
-FFI_BGM_HETERO_WARP(_bool_warp_hetero_f32, float, uint8_t)
+FFI_BGM_HETERO_WARP(_bool_f32, float, uint8_t)
 // @tvm_ffi binary_fcnmm_gather_homo_warp_float_f32
-FFI_BGM_HOMO_WARP  (_float_warp_homo_f32, float, float)
+FFI_BGM_HOMO_WARP  (_float_f32, float, float)
 // @tvm_ffi binary_fcnmm_gather_hetero_warp_float_f32
-FFI_BGM_HETERO_WARP(_float_warp_hetero_f32, float, float)
+FFI_BGM_HETERO_WARP(_float_f32, float, float)
 // @tvm_ffi binary_fcnmm_gather_homo_basic_bool_f32
-FFI_BGM_HOMO_BASIC (_bool_basic_homo_f32, float, uint8_t, sizeof(float))
+FFI_BGM_HOMO_BASIC (_bool_f32, float, uint8_t, sizeof(float))
 // @tvm_ffi binary_fcnmm_gather_hetero_basic_bool_f32
-FFI_BGM_HETERO_BASIC(_bool_basic_hetero_f32, float, uint8_t, sizeof(float))
+FFI_BGM_HETERO_BASIC(_bool_f32, float, uint8_t, sizeof(float))
 // @tvm_ffi binary_fcnmm_gather_homo_basic_float_f32
-FFI_BGM_HOMO_BASIC (_float_basic_homo_f32, float, float, sizeof(float))
+FFI_BGM_HOMO_BASIC (_float_f32, float, float, sizeof(float))
 // @tvm_ffi binary_fcnmm_gather_hetero_basic_float_f32
-FFI_BGM_HETERO_BASIC(_float_basic_hetero_f32, float, float, sizeof(float))
+FFI_BGM_HETERO_BASIC(_float_f32, float, float, sizeof(float))
 // @tvm_ffi binary_fcnmm_scatter_homo_warp_bool_f32
-FFI_BSM_HOMO_WARP  (_bool_warp_homo_f32, float, uint8_t)
+FFI_BSM_HOMO_WARP  (_bool_f32, float, uint8_t)
 // @tvm_ffi binary_fcnmm_scatter_hetero_warp_bool_f32
-FFI_BSM_HETERO_WARP(_bool_warp_hetero_f32, float, uint8_t)
+FFI_BSM_HETERO_WARP(_bool_f32, float, uint8_t)
 // @tvm_ffi binary_fcnmm_scatter_homo_warp_float_f32
-FFI_BSM_HOMO_WARP  (_float_warp_homo_f32, float, float)
+FFI_BSM_HOMO_WARP  (_float_f32, float, float)
 // @tvm_ffi binary_fcnmm_scatter_hetero_warp_float_f32
-FFI_BSM_HETERO_WARP(_float_warp_hetero_f32, float, float)
+FFI_BSM_HETERO_WARP(_float_f32, float, float)
 // @tvm_ffi binary_fcnmm_scatter_homo_basic_bool_f32
-FFI_BSM_HOMO_BASIC (_bool_basic_homo_f32, float, uint8_t)
+FFI_BSM_HOMO_BASIC (_bool_f32, float, uint8_t)
 // @tvm_ffi binary_fcnmm_scatter_hetero_basic_bool_f32
-FFI_BSM_HETERO_BASIC(_bool_basic_hetero_f32, float, uint8_t)
+FFI_BSM_HETERO_BASIC(_bool_f32, float, uint8_t)
 // @tvm_ffi binary_fcnmm_scatter_homo_basic_float_f32
-FFI_BSM_HOMO_BASIC (_float_basic_homo_f32, float, float)
+FFI_BSM_HOMO_BASIC (_float_f32, float, float)
 // @tvm_ffi binary_fcnmm_scatter_hetero_basic_float_f32
-FFI_BSM_HETERO_BASIC(_float_basic_hetero_f32, float, float)
+FFI_BSM_HETERO_BASIC(_float_f32, float, float)
 
 // ---- float64 ----
 // @tvm_ffi binary_fcnmm_gather_homo_warp_bool_f64
-FFI_BGM_HOMO_WARP  (_bool_warp_homo_f64, double, uint8_t)
+FFI_BGM_HOMO_WARP  (_bool_f64, double, uint8_t)
 // @tvm_ffi binary_fcnmm_gather_hetero_warp_bool_f64
-FFI_BGM_HETERO_WARP(_bool_warp_hetero_f64, double, uint8_t)
+FFI_BGM_HETERO_WARP(_bool_f64, double, uint8_t)
 // @tvm_ffi binary_fcnmm_gather_homo_warp_float_f64
-FFI_BGM_HOMO_WARP  (_float_warp_homo_f64, double, double)
+FFI_BGM_HOMO_WARP  (_float_f64, double, double)
 // @tvm_ffi binary_fcnmm_gather_hetero_warp_float_f64
-FFI_BGM_HETERO_WARP(_float_warp_hetero_f64, double, double)
+FFI_BGM_HETERO_WARP(_float_f64, double, double)
 // @tvm_ffi binary_fcnmm_gather_homo_basic_bool_f64
-FFI_BGM_HOMO_BASIC (_bool_basic_homo_f64, double, uint8_t, sizeof(double))
+FFI_BGM_HOMO_BASIC (_bool_f64, double, uint8_t, sizeof(double))
 // @tvm_ffi binary_fcnmm_gather_hetero_basic_bool_f64
-FFI_BGM_HETERO_BASIC(_bool_basic_hetero_f64, double, uint8_t, sizeof(double))
+FFI_BGM_HETERO_BASIC(_bool_f64, double, uint8_t, sizeof(double))
 // @tvm_ffi binary_fcnmm_gather_homo_basic_float_f64
-FFI_BGM_HOMO_BASIC (_float_basic_homo_f64, double, double, sizeof(double))
+FFI_BGM_HOMO_BASIC (_float_f64, double, double, sizeof(double))
 // @tvm_ffi binary_fcnmm_gather_hetero_basic_float_f64
-FFI_BGM_HETERO_BASIC(_float_basic_hetero_f64, double, double, sizeof(double))
+FFI_BGM_HETERO_BASIC(_float_f64, double, double, sizeof(double))
 // @tvm_ffi binary_fcnmm_scatter_homo_warp_bool_f64
-FFI_BSM_HOMO_WARP  (_bool_warp_homo_f64, double, uint8_t)
+FFI_BSM_HOMO_WARP  (_bool_f64, double, uint8_t)
 // @tvm_ffi binary_fcnmm_scatter_hetero_warp_bool_f64
-FFI_BSM_HETERO_WARP(_bool_warp_hetero_f64, double, uint8_t)
+FFI_BSM_HETERO_WARP(_bool_f64, double, uint8_t)
 // @tvm_ffi binary_fcnmm_scatter_homo_warp_float_f64
-FFI_BSM_HOMO_WARP  (_float_warp_homo_f64, double, double)
+FFI_BSM_HOMO_WARP  (_float_f64, double, double)
 // @tvm_ffi binary_fcnmm_scatter_hetero_warp_float_f64
-FFI_BSM_HETERO_WARP(_float_warp_hetero_f64, double, double)
+FFI_BSM_HETERO_WARP(_float_f64, double, double)
 // @tvm_ffi binary_fcnmm_scatter_homo_basic_bool_f64
-FFI_BSM_HOMO_BASIC (_bool_basic_homo_f64, double, uint8_t)
+FFI_BSM_HOMO_BASIC (_bool_f64, double, uint8_t)
 // @tvm_ffi binary_fcnmm_scatter_hetero_basic_bool_f64
-FFI_BSM_HETERO_BASIC(_bool_basic_hetero_f64, double, uint8_t)
+FFI_BSM_HETERO_BASIC(_bool_f64, double, uint8_t)
 // @tvm_ffi binary_fcnmm_scatter_homo_basic_float_f64
-FFI_BSM_HOMO_BASIC (_float_basic_homo_f64, double, double)
+FFI_BSM_HOMO_BASIC (_float_f64, double, double)
 // @tvm_ffi binary_fcnmm_scatter_hetero_basic_float_f64
-FFI_BSM_HETERO_BASIC(_float_basic_hetero_f64, double, double)
+FFI_BSM_HETERO_BASIC(_float_f64, double, double)
 
 // ---- float16 ----
 // @tvm_ffi binary_fcnmm_gather_homo_warp_bool_f16
-FFI_BGM_HOMO_WARP  (_bool_warp_homo_f16, __half, uint8_t)
+FFI_BGM_HOMO_WARP  (_bool_f16, __half, uint8_t)
 // @tvm_ffi binary_fcnmm_gather_hetero_warp_bool_f16
-FFI_BGM_HETERO_WARP(_bool_warp_hetero_f16, __half, uint8_t)
+FFI_BGM_HETERO_WARP(_bool_f16, __half, uint8_t)
 // @tvm_ffi binary_fcnmm_gather_homo_warp_float_f16
-FFI_BGM_HOMO_WARP  (_float_warp_homo_f16, __half, __half)
+FFI_BGM_HOMO_WARP  (_float_f16, __half, __half)
 // @tvm_ffi binary_fcnmm_gather_hetero_warp_float_f16
-FFI_BGM_HETERO_WARP(_float_warp_hetero_f16, __half, __half)
+FFI_BGM_HETERO_WARP(_float_f16, __half, __half)
 // @tvm_ffi binary_fcnmm_gather_homo_basic_bool_f16
-FFI_BGM_HOMO_BASIC (_bool_basic_homo_f16, __half, uint8_t, sizeof(float))
+FFI_BGM_HOMO_BASIC (_bool_f16, __half, uint8_t, sizeof(float))
 // @tvm_ffi binary_fcnmm_gather_hetero_basic_bool_f16
-FFI_BGM_HETERO_BASIC(_bool_basic_hetero_f16, __half, uint8_t, sizeof(float))
+FFI_BGM_HETERO_BASIC(_bool_f16, __half, uint8_t, sizeof(float))
 // @tvm_ffi binary_fcnmm_gather_homo_basic_float_f16
-FFI_BGM_HOMO_BASIC (_float_basic_homo_f16, __half, __half, sizeof(float))
+FFI_BGM_HOMO_BASIC (_float_f16, __half, __half, sizeof(float))
 // @tvm_ffi binary_fcnmm_gather_hetero_basic_float_f16
-FFI_BGM_HETERO_BASIC(_float_basic_hetero_f16, __half, __half, sizeof(float))
+FFI_BGM_HETERO_BASIC(_float_f16, __half, __half, sizeof(float))
 // @tvm_ffi binary_fcnmm_scatter_homo_warp_bool_f16
-FFI_BSM_HOMO_WARP  (_bool_warp_homo_f16, __half, uint8_t)
+FFI_BSM_HOMO_WARP  (_bool_f16, __half, uint8_t)
 // @tvm_ffi binary_fcnmm_scatter_hetero_warp_bool_f16
-FFI_BSM_HETERO_WARP(_bool_warp_hetero_f16, __half, uint8_t)
+FFI_BSM_HETERO_WARP(_bool_f16, __half, uint8_t)
 // @tvm_ffi binary_fcnmm_scatter_homo_warp_float_f16
-FFI_BSM_HOMO_WARP  (_float_warp_homo_f16, __half, __half)
+FFI_BSM_HOMO_WARP  (_float_f16, __half, __half)
 // @tvm_ffi binary_fcnmm_scatter_hetero_warp_float_f16
-FFI_BSM_HETERO_WARP(_float_warp_hetero_f16, __half, __half)
+FFI_BSM_HETERO_WARP(_float_f16, __half, __half)
 // @tvm_ffi binary_fcnmm_scatter_homo_basic_bool_f16
-FFI_BSM_HOMO_BASIC (_bool_basic_homo_f16, __half, uint8_t)
+FFI_BSM_HOMO_BASIC (_bool_f16, __half, uint8_t)
 // @tvm_ffi binary_fcnmm_scatter_hetero_basic_bool_f16
-FFI_BSM_HETERO_BASIC(_bool_basic_hetero_f16, __half, uint8_t)
+FFI_BSM_HETERO_BASIC(_bool_f16, __half, uint8_t)
 // @tvm_ffi binary_fcnmm_scatter_homo_basic_float_f16
-FFI_BSM_HOMO_BASIC (_float_basic_homo_f16, __half, __half)
+FFI_BSM_HOMO_BASIC (_float_f16, __half, __half)
 // @tvm_ffi binary_fcnmm_scatter_hetero_basic_float_f16
-FFI_BSM_HETERO_BASIC(_float_basic_hetero_f16, __half, __half)
+FFI_BSM_HETERO_BASIC(_float_f16, __half, __half)
 
 // ---- bfloat16 ----
 // @tvm_ffi binary_fcnmm_gather_homo_warp_bool_bf16
-FFI_BGM_HOMO_WARP  (_bool_warp_homo_bf16, __nv_bfloat16, uint8_t)
+FFI_BGM_HOMO_WARP  (_bool_bf16, __nv_bfloat16, uint8_t)
 // @tvm_ffi binary_fcnmm_gather_hetero_warp_bool_bf16
-FFI_BGM_HETERO_WARP(_bool_warp_hetero_bf16, __nv_bfloat16, uint8_t)
+FFI_BGM_HETERO_WARP(_bool_bf16, __nv_bfloat16, uint8_t)
 // @tvm_ffi binary_fcnmm_gather_homo_warp_float_bf16
-FFI_BGM_HOMO_WARP  (_float_warp_homo_bf16, __nv_bfloat16, __nv_bfloat16)
+FFI_BGM_HOMO_WARP  (_float_bf16, __nv_bfloat16, __nv_bfloat16)
 // @tvm_ffi binary_fcnmm_gather_hetero_warp_float_bf16
-FFI_BGM_HETERO_WARP(_float_warp_hetero_bf16, __nv_bfloat16, __nv_bfloat16)
+FFI_BGM_HETERO_WARP(_float_bf16, __nv_bfloat16, __nv_bfloat16)
 // @tvm_ffi binary_fcnmm_gather_homo_basic_bool_bf16
-FFI_BGM_HOMO_BASIC (_bool_basic_homo_bf16, __nv_bfloat16, uint8_t, sizeof(float))
+FFI_BGM_HOMO_BASIC (_bool_bf16, __nv_bfloat16, uint8_t, sizeof(float))
 // @tvm_ffi binary_fcnmm_gather_hetero_basic_bool_bf16
-FFI_BGM_HETERO_BASIC(_bool_basic_hetero_bf16, __nv_bfloat16, uint8_t, sizeof(float))
+FFI_BGM_HETERO_BASIC(_bool_bf16, __nv_bfloat16, uint8_t, sizeof(float))
 // @tvm_ffi binary_fcnmm_gather_homo_basic_float_bf16
-FFI_BGM_HOMO_BASIC (_float_basic_homo_bf16, __nv_bfloat16, __nv_bfloat16, sizeof(float))
+FFI_BGM_HOMO_BASIC (_float_bf16, __nv_bfloat16, __nv_bfloat16, sizeof(float))
 // @tvm_ffi binary_fcnmm_gather_hetero_basic_float_bf16
-FFI_BGM_HETERO_BASIC(_float_basic_hetero_bf16, __nv_bfloat16, __nv_bfloat16, sizeof(float))
+FFI_BGM_HETERO_BASIC(_float_bf16, __nv_bfloat16, __nv_bfloat16, sizeof(float))
 // @tvm_ffi binary_fcnmm_scatter_homo_warp_bool_bf16
-FFI_BSM_HOMO_WARP  (_bool_warp_homo_bf16, __nv_bfloat16, uint8_t)
+FFI_BSM_HOMO_WARP  (_bool_bf16, __nv_bfloat16, uint8_t)
 // @tvm_ffi binary_fcnmm_scatter_hetero_warp_bool_bf16
-FFI_BSM_HETERO_WARP(_bool_warp_hetero_bf16, __nv_bfloat16, uint8_t)
+FFI_BSM_HETERO_WARP(_bool_bf16, __nv_bfloat16, uint8_t)
 // @tvm_ffi binary_fcnmm_scatter_homo_warp_float_bf16
-FFI_BSM_HOMO_WARP  (_float_warp_homo_bf16, __nv_bfloat16, __nv_bfloat16)
+FFI_BSM_HOMO_WARP  (_float_bf16, __nv_bfloat16, __nv_bfloat16)
 // @tvm_ffi binary_fcnmm_scatter_hetero_warp_float_bf16
-FFI_BSM_HETERO_WARP(_float_warp_hetero_bf16, __nv_bfloat16, __nv_bfloat16)
+FFI_BSM_HETERO_WARP(_float_bf16, __nv_bfloat16, __nv_bfloat16)
 // @tvm_ffi binary_fcnmm_scatter_homo_basic_bool_bf16
-FFI_BSM_HOMO_BASIC (_bool_basic_homo_bf16, __nv_bfloat16, uint8_t)
+FFI_BSM_HOMO_BASIC (_bool_bf16, __nv_bfloat16, uint8_t)
 // @tvm_ffi binary_fcnmm_scatter_hetero_basic_bool_bf16
-FFI_BSM_HETERO_BASIC(_bool_basic_hetero_bf16, __nv_bfloat16, uint8_t)
+FFI_BSM_HETERO_BASIC(_bool_bf16, __nv_bfloat16, uint8_t)
 // @tvm_ffi binary_fcnmm_scatter_homo_basic_float_bf16
-FFI_BSM_HOMO_BASIC (_float_basic_homo_bf16, __nv_bfloat16, __nv_bfloat16)
+FFI_BSM_HOMO_BASIC (_float_bf16, __nv_bfloat16, __nv_bfloat16)
 // @tvm_ffi binary_fcnmm_scatter_hetero_basic_float_bf16
-FFI_BSM_HETERO_BASIC(_float_basic_hetero_bf16, __nv_bfloat16, __nv_bfloat16)
+FFI_BSM_HETERO_BASIC(_float_bf16, __nv_bfloat16, __nv_bfloat16)

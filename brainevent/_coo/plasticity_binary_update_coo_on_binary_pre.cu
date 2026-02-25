@@ -99,10 +99,10 @@ DEFINE_COO_ON_PRE(_f32_bool,  int8_t, IS_ACTIVE_BOOL,  float,          float,  R
 DEFINE_COO_ON_PRE(_f32_float, float,  IS_ACTIVE_FLOAT, float,          float,  READ_F32,  WRITE_F32)
 DEFINE_COO_ON_PRE(_f64_bool,  int8_t, IS_ACTIVE_BOOL,  double,         double, READ_F64,  WRITE_F64)
 DEFINE_COO_ON_PRE(_f64_float, float,  IS_ACTIVE_FLOAT, double,         double, READ_F64,  WRITE_F64)
-DEFINE_COO_ON_PRE(_f16_bool,  int8_t, IS_ACTIVE_BOOL,  __half,         float,  READ_F16,  WRITE_F16)
-DEFINE_COO_ON_PRE(_f16_float, float,  IS_ACTIVE_FLOAT, __half,         float,  READ_F16,  WRITE_F16)
-DEFINE_COO_ON_PRE(_bf16_bool, int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16,  float,  READ_BF16, WRITE_BF16)
-DEFINE_COO_ON_PRE(_bf16_float,float,  IS_ACTIVE_FLOAT, __nv_bfloat16,  float,  READ_BF16, WRITE_BF16)
+DEFINE_COO_ON_PRE(_f16_bool,  int8_t,         IS_ACTIVE_BOOL,  __half,         float,  READ_F16,  WRITE_F16)
+DEFINE_COO_ON_PRE(_f16_float, __half,         IS_ACTIVE_F16,   __half,         float,  READ_F16,  WRITE_F16)
+DEFINE_COO_ON_PRE(_bf16_bool, int8_t,         IS_ACTIVE_BOOL,  __nv_bfloat16,  float,  READ_BF16, WRITE_BF16)
+DEFINE_COO_ON_PRE(_bf16_float,__nv_bfloat16,  IS_ACTIVE_BF16,  __nv_bfloat16,  float,  READ_BF16, WRITE_BF16)
 
 // =========================================================================
 // TVM FFI Entry Points
@@ -151,8 +151,8 @@ FFI_COO_ON_PRE(_f64_float, double,        float)
 // @tvm_ffi update_coo_on_pre_f16_bool
 FFI_COO_ON_PRE(_f16_bool,  __half,        int8_t)
 // @tvm_ffi update_coo_on_pre_f16_float
-FFI_COO_ON_PRE(_f16_float, __half,        float)
+FFI_COO_ON_PRE(_f16_float, __half,        __half)
 // @tvm_ffi update_coo_on_pre_bf16_bool
 FFI_COO_ON_PRE(_bf16_bool, __nv_bfloat16, int8_t)
 // @tvm_ffi update_coo_on_pre_bf16_float
-FFI_COO_ON_PRE(_bf16_float,__nv_bfloat16, float)
+FFI_COO_ON_PRE(_bf16_float,__nv_bfloat16, __nv_bfloat16)
