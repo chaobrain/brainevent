@@ -51,6 +51,7 @@
 
 #include <cuda_runtime.h>
 #include <cstdint>
+#include "brainevent/common.h"
 
 // ============================================================================
 // Constants
@@ -464,9 +465,9 @@ DEFINE_DIAG_REDUCE(_f64, double, 4)
 
 #define DEFINE_FFI_DIAG_REDUCE(SUFFIX, SCALAR_T, CHUNK_SIZE)                     \
 void pararnn_reduce_diag##SUFFIX(                                                \
-    tvm::ffi::TensorView jac_tv,                                                 \
-    tvm::ffi::TensorView rhs_tv,                                                 \
-    tvm::ffi::TensorView output_tv,                                              \
+    const BE::Tensor jac_tv,                                                 \
+    const BE::Tensor rhs_tv,                                                 \
+    BE::Tensor output_tv,                                              \
     int64_t stream                                                               \
 ) {                                                                              \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                     \
@@ -538,8 +539,8 @@ void pararnn_reduce_diag##SUFFIX(                                               
     }                                                                            \
 }
 
-// @tvm_ffi pararnn_reduce_diag_f32
+// @BE pararnn_reduce_diag_f32
 DEFINE_FFI_DIAG_REDUCE(_f32, float, 2)
 
-// @tvm_ffi pararnn_reduce_diag_f64
+// @BE pararnn_reduce_diag_f64
 DEFINE_FFI_DIAG_REDUCE(_f64, double, 4)

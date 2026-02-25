@@ -47,6 +47,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 
 
 // ============================================================================
@@ -316,11 +317,11 @@ DEFINE_COOMM_HETERO_WPE_T (_bf16, __nv_bfloat16,  float,  READ_BF16, atomic_add_
 
 #define FFI_COOMM_HOMO_CT_NT(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM)  \
 void coomm_homo_ct_nt##SUFFIX(                                        \
-    tvm::ffi::TensorView data,                                        \
-    tvm::ffi::TensorView row_idx,                                     \
-    tvm::ffi::TensorView col_idx,                                     \
-    tvm::ffi::TensorView B,                                           \
-    tvm::ffi::TensorView output,                                      \
+    const BE::Tensor data,                                        \
+    const BE::Tensor row_idx,                                     \
+    const BE::Tensor col_idx,                                     \
+    const BE::Tensor B,                                           \
+    BE::Tensor output,                                      \
     int64_t stream                                                    \
 ) {                                                                   \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);          \
@@ -347,11 +348,11 @@ void coomm_homo_ct_nt##SUFFIX(                                        \
 
 #define FFI_COOMM_HOMO_CT_T(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM)       \
 void coomm_homo_ct_t##SUFFIX(                                             \
-    tvm::ffi::TensorView data,                                            \
-    tvm::ffi::TensorView row_idx,                                         \
-    tvm::ffi::TensorView col_idx,                                         \
-    tvm::ffi::TensorView B,                                               \
-    tvm::ffi::TensorView output,                                          \
+    const BE::Tensor data,                                            \
+    const BE::Tensor row_idx,                                         \
+    const BE::Tensor col_idx,                                         \
+    const BE::Tensor B,                                               \
+    BE::Tensor output,                                          \
     int64_t stream                                                        \
 ) {                                                                       \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);              \
@@ -382,11 +383,11 @@ void coomm_homo_ct_t##SUFFIX(                                             \
 
 #define FFI_COOMM_HOMO_WPE_NT(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM) \
 void coomm_homo_wpe_nt##SUFFIX(                                       \
-    tvm::ffi::TensorView data,                                        \
-    tvm::ffi::TensorView row_idx,                                     \
-    tvm::ffi::TensorView col_idx,                                     \
-    tvm::ffi::TensorView B,                                           \
-    tvm::ffi::TensorView output,                                      \
+    const BE::Tensor data,                                        \
+    const BE::Tensor row_idx,                                     \
+    const BE::Tensor col_idx,                                     \
+    const BE::Tensor B,                                           \
+    BE::Tensor output,                                      \
     int64_t stream                                                    \
 ) {                                                                   \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);          \
@@ -413,11 +414,11 @@ void coomm_homo_wpe_nt##SUFFIX(                                       \
 
 #define FFI_COOMM_HOMO_WPE_T(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM)      \
 void coomm_homo_wpe_t##SUFFIX(                                            \
-    tvm::ffi::TensorView data,                                            \
-    tvm::ffi::TensorView row_idx,                                         \
-    tvm::ffi::TensorView col_idx,                                         \
-    tvm::ffi::TensorView B,                                               \
-    tvm::ffi::TensorView output,                                          \
+    const BE::Tensor data,                                            \
+    const BE::Tensor row_idx,                                         \
+    const BE::Tensor col_idx,                                         \
+    const BE::Tensor B,                                               \
+    BE::Tensor output,                                          \
     int64_t stream                                                        \
 ) {                                                                       \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);              \
@@ -448,11 +449,11 @@ void coomm_homo_wpe_t##SUFFIX(                                            \
 
 #define FFI_COOMM_HETERO_CT_NT(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM) \
 void coomm_hetero_ct_nt##SUFFIX(                                       \
-    tvm::ffi::TensorView data,                                         \
-    tvm::ffi::TensorView row_idx,                                      \
-    tvm::ffi::TensorView col_idx,                                      \
-    tvm::ffi::TensorView B,                                            \
-    tvm::ffi::TensorView output,                                       \
+    const BE::Tensor data,                                         \
+    const BE::Tensor row_idx,                                      \
+    const BE::Tensor col_idx,                                      \
+    const BE::Tensor B,                                            \
+    BE::Tensor output,                                       \
     int64_t stream                                                     \
 ) {                                                                    \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);           \
@@ -479,11 +480,11 @@ void coomm_hetero_ct_nt##SUFFIX(                                       \
 
 #define FFI_COOMM_HETERO_CT_T(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM)     \
 void coomm_hetero_ct_t##SUFFIX(                                           \
-    tvm::ffi::TensorView data,                                            \
-    tvm::ffi::TensorView row_idx,                                         \
-    tvm::ffi::TensorView col_idx,                                         \
-    tvm::ffi::TensorView B,                                               \
-    tvm::ffi::TensorView output,                                          \
+    const BE::Tensor data,                                            \
+    const BE::Tensor row_idx,                                         \
+    const BE::Tensor col_idx,                                         \
+    const BE::Tensor B,                                               \
+    BE::Tensor output,                                          \
     int64_t stream                                                        \
 ) {                                                                       \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);              \
@@ -514,11 +515,11 @@ void coomm_hetero_ct_t##SUFFIX(                                           \
 
 #define FFI_COOMM_HETERO_WPE_NT(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM) \
 void coomm_hetero_wpe_nt##SUFFIX(                                       \
-    tvm::ffi::TensorView data,                                          \
-    tvm::ffi::TensorView row_idx,                                       \
-    tvm::ffi::TensorView col_idx,                                       \
-    tvm::ffi::TensorView B,                                             \
-    tvm::ffi::TensorView output,                                        \
+    const BE::Tensor data,                                          \
+    const BE::Tensor row_idx,                                       \
+    const BE::Tensor col_idx,                                       \
+    const BE::Tensor B,                                             \
+    BE::Tensor output,                                        \
     int64_t stream                                                      \
 ) {                                                                     \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);            \
@@ -545,11 +546,11 @@ void coomm_hetero_wpe_nt##SUFFIX(                                       \
 
 #define FFI_COOMM_HETERO_WPE_T(SUFFIX, WEIGHT_C_T, OUT_BYTES_PER_ELEM)    \
 void coomm_hetero_wpe_t##SUFFIX(                                          \
-    tvm::ffi::TensorView data,                                            \
-    tvm::ffi::TensorView row_idx,                                         \
-    tvm::ffi::TensorView col_idx,                                         \
-    tvm::ffi::TensorView B,                                               \
-    tvm::ffi::TensorView output,                                          \
+    const BE::Tensor data,                                            \
+    const BE::Tensor row_idx,                                         \
+    const BE::Tensor col_idx,                                         \
+    const BE::Tensor B,                                               \
+    BE::Tensor output,                                          \
     int64_t stream                                                        \
 ) {                                                                       \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);              \
@@ -575,73 +576,73 @@ void coomm_hetero_wpe_t##SUFFIX(                                          \
 }
 
 // Homo CT instantiations
-// @tvm_ffi coomm_homo_ct_nt_f32
+// @BE coomm_homo_ct_nt_f32
 FFI_COOMM_HOMO_CT_NT(_f32,  float,          sizeof(float))
-// @tvm_ffi coomm_homo_ct_t_f32
+// @BE coomm_homo_ct_t_f32
 FFI_COOMM_HOMO_CT_T (_f32,  float,          sizeof(float))
-// @tvm_ffi coomm_homo_ct_nt_f64
+// @BE coomm_homo_ct_nt_f64
 FFI_COOMM_HOMO_CT_NT(_f64,  double,         sizeof(double))
-// @tvm_ffi coomm_homo_ct_t_f64
+// @BE coomm_homo_ct_t_f64
 FFI_COOMM_HOMO_CT_T (_f64,  double,         sizeof(double))
-// @tvm_ffi coomm_homo_ct_nt_f16
+// @BE coomm_homo_ct_nt_f16
 FFI_COOMM_HOMO_CT_NT(_f16,  __half,         sizeof(__half))
-// @tvm_ffi coomm_homo_ct_t_f16
+// @BE coomm_homo_ct_t_f16
 FFI_COOMM_HOMO_CT_T (_f16,  __half,         sizeof(__half))
-// @tvm_ffi coomm_homo_ct_nt_bf16
+// @BE coomm_homo_ct_nt_bf16
 FFI_COOMM_HOMO_CT_NT(_bf16, __nv_bfloat16,  sizeof(__nv_bfloat16))
-// @tvm_ffi coomm_homo_ct_t_bf16
+// @BE coomm_homo_ct_t_bf16
 FFI_COOMM_HOMO_CT_T (_bf16, __nv_bfloat16,  sizeof(__nv_bfloat16))
 
 // Homo WPE instantiations
-// @tvm_ffi coomm_homo_wpe_nt_f32
+// @BE coomm_homo_wpe_nt_f32
 FFI_COOMM_HOMO_WPE_NT(_f32,  float,          sizeof(float))
-// @tvm_ffi coomm_homo_wpe_t_f32
+// @BE coomm_homo_wpe_t_f32
 FFI_COOMM_HOMO_WPE_T (_f32,  float,          sizeof(float))
-// @tvm_ffi coomm_homo_wpe_nt_f64
+// @BE coomm_homo_wpe_nt_f64
 FFI_COOMM_HOMO_WPE_NT(_f64,  double,         sizeof(double))
-// @tvm_ffi coomm_homo_wpe_t_f64
+// @BE coomm_homo_wpe_t_f64
 FFI_COOMM_HOMO_WPE_T (_f64,  double,         sizeof(double))
-// @tvm_ffi coomm_homo_wpe_nt_f16
+// @BE coomm_homo_wpe_nt_f16
 FFI_COOMM_HOMO_WPE_NT(_f16,  __half,         sizeof(__half))
-// @tvm_ffi coomm_homo_wpe_t_f16
+// @BE coomm_homo_wpe_t_f16
 FFI_COOMM_HOMO_WPE_T (_f16,  __half,         sizeof(__half))
-// @tvm_ffi coomm_homo_wpe_nt_bf16
+// @BE coomm_homo_wpe_nt_bf16
 FFI_COOMM_HOMO_WPE_NT(_bf16, __nv_bfloat16,  sizeof(__nv_bfloat16))
-// @tvm_ffi coomm_homo_wpe_t_bf16
+// @BE coomm_homo_wpe_t_bf16
 FFI_COOMM_HOMO_WPE_T (_bf16, __nv_bfloat16,  sizeof(__nv_bfloat16))
 
 // Hetero CT instantiations
-// @tvm_ffi coomm_hetero_ct_nt_f32
+// @BE coomm_hetero_ct_nt_f32
 FFI_COOMM_HETERO_CT_NT(_f32,  float,          sizeof(float))
-// @tvm_ffi coomm_hetero_ct_t_f32
+// @BE coomm_hetero_ct_t_f32
 FFI_COOMM_HETERO_CT_T (_f32,  float,          sizeof(float))
-// @tvm_ffi coomm_hetero_ct_nt_f64
+// @BE coomm_hetero_ct_nt_f64
 FFI_COOMM_HETERO_CT_NT(_f64,  double,         sizeof(double))
-// @tvm_ffi coomm_hetero_ct_t_f64
+// @BE coomm_hetero_ct_t_f64
 FFI_COOMM_HETERO_CT_T (_f64,  double,         sizeof(double))
-// @tvm_ffi coomm_hetero_ct_nt_f16
+// @BE coomm_hetero_ct_nt_f16
 FFI_COOMM_HETERO_CT_NT(_f16,  __half,         sizeof(__half))
-// @tvm_ffi coomm_hetero_ct_t_f16
+// @BE coomm_hetero_ct_t_f16
 FFI_COOMM_HETERO_CT_T (_f16,  __half,         sizeof(__half))
-// @tvm_ffi coomm_hetero_ct_nt_bf16
+// @BE coomm_hetero_ct_nt_bf16
 FFI_COOMM_HETERO_CT_NT(_bf16, __nv_bfloat16,  sizeof(__nv_bfloat16))
-// @tvm_ffi coomm_hetero_ct_t_bf16
+// @BE coomm_hetero_ct_t_bf16
 FFI_COOMM_HETERO_CT_T (_bf16, __nv_bfloat16,  sizeof(__nv_bfloat16))
 
 // Hetero WPE instantiations
-// @tvm_ffi coomm_hetero_wpe_nt_f32
+// @BE coomm_hetero_wpe_nt_f32
 FFI_COOMM_HETERO_WPE_NT(_f32,  float,          sizeof(float))
-// @tvm_ffi coomm_hetero_wpe_t_f32
+// @BE coomm_hetero_wpe_t_f32
 FFI_COOMM_HETERO_WPE_T (_f32,  float,          sizeof(float))
-// @tvm_ffi coomm_hetero_wpe_nt_f64
+// @BE coomm_hetero_wpe_nt_f64
 FFI_COOMM_HETERO_WPE_NT(_f64,  double,         sizeof(double))
-// @tvm_ffi coomm_hetero_wpe_t_f64
+// @BE coomm_hetero_wpe_t_f64
 FFI_COOMM_HETERO_WPE_T (_f64,  double,         sizeof(double))
-// @tvm_ffi coomm_hetero_wpe_nt_f16
+// @BE coomm_hetero_wpe_nt_f16
 FFI_COOMM_HETERO_WPE_NT(_f16,  __half,         sizeof(__half))
-// @tvm_ffi coomm_hetero_wpe_t_f16
+// @BE coomm_hetero_wpe_t_f16
 FFI_COOMM_HETERO_WPE_T (_f16,  __half,         sizeof(__half))
-// @tvm_ffi coomm_hetero_wpe_nt_bf16
+// @BE coomm_hetero_wpe_nt_bf16
 FFI_COOMM_HETERO_WPE_NT(_bf16, __nv_bfloat16,  sizeof(__nv_bfloat16))
-// @tvm_ffi coomm_hetero_wpe_t_bf16
+// @BE coomm_hetero_wpe_t_bf16
 FFI_COOMM_HETERO_WPE_T (_bf16, __nv_bfloat16,  sizeof(__nv_bfloat16))

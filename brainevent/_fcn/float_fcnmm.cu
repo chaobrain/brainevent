@@ -22,6 +22,7 @@
  * 1. Sparse Matrix-Matrix Product (SpMM): fcnmm
  */
 #include "cuda_common.h"
+#include "brainevent/common.h"
 
 // ============================================================================
 // FCN Matrix-Matrix Multiplication (fcnmm)
@@ -353,8 +354,8 @@ __global__ void _mm_scatter_cached_hetero_kern(const int32_t* __restrict__ indic
 // ---- FFI macro: gather homo auto ----
 #define FFI_MM_GATHER_HOMO_AUTO(SUFFIX, WEIGHT_C_T)                                       \
 void fcnmm_gather_homo_auto##SUFFIX(                                                      \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                           \
-    tvm::ffi::TensorView matrix,  tvm::ffi::TensorView output, int64_t stream             \
+    const BE::Tensor weights, const BE::Tensor indices,                           \
+    const BE::Tensor matrix,  BE::Tensor output, int64_t stream             \
 ) {                                                                                       \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                             \
     int n_pre       = static_cast<int>(indices.size(0));                                  \
@@ -373,8 +374,8 @@ void fcnmm_gather_homo_auto##SUFFIX(                                            
 // ---- FFI macro: gather hetero auto ----
 #define FFI_MM_GATHER_HETERO_AUTO(SUFFIX, WEIGHT_C_T)                                       \
 void fcnmm_gather_hetero_auto##SUFFIX(                                                      \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                             \
-    tvm::ffi::TensorView matrix,  tvm::ffi::TensorView output, int64_t stream               \
+    const BE::Tensor weights, const BE::Tensor indices,                             \
+    const BE::Tensor matrix,  BE::Tensor output, int64_t stream               \
 ) {                                                                                         \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                               \
     int n_pre       = static_cast<int>(indices.size(0));                                    \
@@ -393,8 +394,8 @@ void fcnmm_gather_hetero_auto##SUFFIX(                                          
 // ---- FFI macro: scatter homo auto ----
 #define FFI_MM_SCATTER_HOMO_AUTO(SUFFIX, WEIGHT_C_T)                                       \
 void fcnmm_scatter_homo_auto##SUFFIX(                                                      \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                            \
-    tvm::ffi::TensorView matrix,  tvm::ffi::TensorView output, int64_t stream              \
+    const BE::Tensor weights, const BE::Tensor indices,                            \
+    const BE::Tensor matrix,  BE::Tensor output, int64_t stream              \
 ) {                                                                                        \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                              \
     int n_pre       = static_cast<int>(indices.size(0));                                   \
@@ -424,8 +425,8 @@ void fcnmm_scatter_homo_auto##SUFFIX(                                           
 // ---- FFI macro: scatter hetero auto ----
 #define FFI_MM_SCATTER_HETERO_AUTO(SUFFIX, WEIGHT_C_T)                                     \
 void fcnmm_scatter_hetero_auto##SUFFIX(                                                    \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                            \
-    tvm::ffi::TensorView matrix,  tvm::ffi::TensorView output, int64_t stream              \
+    const BE::Tensor weights, const BE::Tensor indices,                            \
+    const BE::Tensor matrix,  BE::Tensor output, int64_t stream              \
 ) {                                                                                        \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                              \
     int n_pre       = static_cast<int>(indices.size(0));                                   \
@@ -454,50 +455,50 @@ void fcnmm_scatter_hetero_auto##SUFFIX(                                         
 
 // SpMM FFI Instantiations
 // ---- float32 ----
-// @tvm_ffi fcnmm_gather_homo_auto_f32
+// @BE fcnmm_gather_homo_auto_f32
 FFI_MM_GATHER_HOMO_AUTO  (_f32, float)
-// @tvm_ffi fcnmm_gather_hetero_auto_f32
+// @BE fcnmm_gather_hetero_auto_f32
 FFI_MM_GATHER_HETERO_AUTO(_f32, float)
-// @tvm_ffi fcnmm_scatter_homo_auto_f32
+// @BE fcnmm_scatter_homo_auto_f32
 FFI_MM_SCATTER_HOMO_AUTO (_f32, float)
-// @tvm_ffi fcnmm_scatter_hetero_auto_f32
+// @BE fcnmm_scatter_hetero_auto_f32
 FFI_MM_SCATTER_HETERO_AUTO(_f32, float)
 
 // ---- float64 ----
-// @tvm_ffi fcnmm_gather_homo_auto_f64
+// @BE fcnmm_gather_homo_auto_f64
 FFI_MM_GATHER_HOMO_AUTO  (_f64, double)
-// @tvm_ffi fcnmm_gather_hetero_auto_f64
+// @BE fcnmm_gather_hetero_auto_f64
 FFI_MM_GATHER_HETERO_AUTO(_f64, double)
-// @tvm_ffi fcnmm_scatter_homo_auto_f64
+// @BE fcnmm_scatter_homo_auto_f64
 FFI_MM_SCATTER_HOMO_AUTO (_f64, double)
-// @tvm_ffi fcnmm_scatter_hetero_auto_f64
+// @BE fcnmm_scatter_hetero_auto_f64
 FFI_MM_SCATTER_HETERO_AUTO(_f64, double)
 
 // ---- float16 ----
-// @tvm_ffi fcnmm_gather_homo_auto_f16
+// @BE fcnmm_gather_homo_auto_f16
 FFI_MM_GATHER_HOMO_AUTO  (_f16, __half)
-// @tvm_ffi fcnmm_gather_hetero_auto_f16
+// @BE fcnmm_gather_hetero_auto_f16
 FFI_MM_GATHER_HETERO_AUTO(_f16, __half)
-// @tvm_ffi fcnmm_scatter_homo_auto_f16
+// @BE fcnmm_scatter_homo_auto_f16
 FFI_MM_SCATTER_HOMO_AUTO (_f16, __half)
-// @tvm_ffi fcnmm_scatter_hetero_auto_f16
+// @BE fcnmm_scatter_hetero_auto_f16
 FFI_MM_SCATTER_HETERO_AUTO(_f16, __half)
 
 // ---- bfloat16 ----
-// @tvm_ffi fcnmm_gather_homo_auto_bf16
+// @BE fcnmm_gather_homo_auto_bf16
 FFI_MM_GATHER_HOMO_AUTO  (_bf16, __nv_bfloat16)
-// @tvm_ffi fcnmm_gather_hetero_auto_bf16
+// @BE fcnmm_gather_hetero_auto_bf16
 FFI_MM_GATHER_HETERO_AUTO(_bf16, __nv_bfloat16)
-// @tvm_ffi fcnmm_scatter_homo_auto_bf16
+// @BE fcnmm_scatter_homo_auto_bf16
 FFI_MM_SCATTER_HOMO_AUTO (_bf16, __nv_bfloat16)
-// @tvm_ffi fcnmm_scatter_hetero_auto_bf16
+// @BE fcnmm_scatter_hetero_auto_bf16
 FFI_MM_SCATTER_HETERO_AUTO(_bf16, __nv_bfloat16)
 
 // SpMM f32-specific specializations
-// @tvm_ffi fcnmm_gather_vec4_homo_f32
+// @BE fcnmm_gather_vec4_homo_f32
 void fcnmm_gather_vec4_homo_f32(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix,  tvm::ffi::TensorView output, int64_t stream
+    const BE::Tensor weights, const BE::Tensor indices,
+    const BE::Tensor matrix,  BE::Tensor output, int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
     int n_pre  = static_cast<int>(indices.size(0));
@@ -512,10 +513,10 @@ void fcnmm_gather_vec4_homo_f32(
         n_pre, n_conn, n_col);
 }
 
-// @tvm_ffi fcnmm_gather_vec4_hetero_f32
+// @BE fcnmm_gather_vec4_hetero_f32
 void fcnmm_gather_vec4_hetero_f32(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix,  tvm::ffi::TensorView output, int64_t stream
+    const BE::Tensor weights, const BE::Tensor indices,
+    const BE::Tensor matrix,  BE::Tensor output, int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
     int n_pre  = static_cast<int>(indices.size(0));
@@ -530,10 +531,10 @@ void fcnmm_gather_vec4_hetero_f32(
         n_pre, n_conn, n_col);
 }
 
-// @tvm_ffi fcnmm_gather_shared_homo_f32
+// @BE fcnmm_gather_shared_homo_f32
 void fcnmm_gather_shared_homo_f32(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix,  tvm::ffi::TensorView output, int64_t stream
+    const BE::Tensor weights, const BE::Tensor indices,
+    const BE::Tensor matrix,  BE::Tensor output, int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
     int n_pre  = static_cast<int>(indices.size(0));
@@ -549,10 +550,10 @@ void fcnmm_gather_shared_homo_f32(
         n_pre, n_conn, n_col);
 }
 
-// @tvm_ffi fcnmm_gather_shared_hetero_f32
+// @BE fcnmm_gather_shared_hetero_f32
 void fcnmm_gather_shared_hetero_f32(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix,  tvm::ffi::TensorView output, int64_t stream
+    const BE::Tensor weights, const BE::Tensor indices,
+    const BE::Tensor matrix,  BE::Tensor output, int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
     int n_pre  = static_cast<int>(indices.size(0));
@@ -585,10 +586,10 @@ void fcnmm_gather_shared_hetero_f32(
  *   3. Scalar basic (_mm_gather_basic_kern_f32):
  *      Fallback for small n_conn (<= 64) where tiling overhead isn't worthwhile.
  */
-// @tvm_ffi fcnmm_gather_auto_f32
+// @BE fcnmm_gather_auto_f32
 void fcnmm_gather_auto_f32(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix,  tvm::ffi::TensorView output, int64_t stream
+    const BE::Tensor weights, const BE::Tensor indices,
+    const BE::Tensor matrix,  BE::Tensor output, int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
     int n_pre  = static_cast<int>(indices.size(0));
@@ -620,10 +621,10 @@ void fcnmm_gather_auto_f32(
     }
 }
 
-// @tvm_ffi fcnmm_scatter_auto_f32
+// @BE fcnmm_scatter_auto_f32
 void fcnmm_scatter_auto_f32(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView matrix,  tvm::ffi::TensorView output, int64_t stream
+    const BE::Tensor weights, const BE::Tensor indices,
+    const BE::Tensor matrix,  BE::Tensor output, int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
     int n_pre  = static_cast<int>(indices.size(0));

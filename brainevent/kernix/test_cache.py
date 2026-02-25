@@ -47,7 +47,7 @@ void scale2x(BE::Tensor x, BE::Tensor out, int64_t stream) {
 
 def test_cache_hit_is_faster():
     """Second load_cuda_inline with same source should be much faster (cache hit)."""
-    import brainevent.source2kernel as jkb
+    import brainevent.kernix as jkb
 
     # Clear any previous cache for this name
     jkb.clear_cache("test_cache_speed")
@@ -80,7 +80,7 @@ def test_cache_hit_is_faster():
 
 def test_force_rebuild():
     """force_rebuild=True should recompile even with cache."""
-    import brainevent.source2kernel as jkb
+    import brainevent.kernix as jkb
 
     mod = jkb.load_cuda_inline(
         name="test_force_rb",
@@ -104,7 +104,7 @@ def test_force_rebuild():
 
 def test_clear_cache():
     """clear_cache removes cached entries."""
-    import brainevent.source2kernel as jkb
+    import brainevent.kernix as jkb
 
     jkb.load_cuda_inline(
         name="test_clear",

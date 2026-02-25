@@ -23,9 +23,10 @@ import jax.numpy as jnp
 import numpy as np
 
 from brainevent._misc import namescope
-from brainevent._op import XLACustomKernel, numba_kernel, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
+from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
+from brainevent.kernix import load_cuda_file
 
 __all__ = [
     'update_csr_on_binary_pre',
@@ -315,10 +316,9 @@ def _csr_on_pre_cuda_kernel(
             "Use backend='pallas' or backend='jax' for int64 indices."
         )
 
-    register_tvm_cuda_from_file(
-        module='csr_plasticity_binary_pre',
-        source=Path(__file__).parent.joinpath('plasticity_binary_update_csr_on_binary_pre.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('plasticity_binary_update_csr_on_binary_pre.cu'),
+        name='csr_plasticity_binary_pre',
     )
 
     out_info = kwargs['outs']
@@ -890,10 +890,9 @@ def _csr2csc_on_post_cuda_kernel(
             "Use backend='pallas' or backend='jax' for int64 indices."
         )
 
-    register_tvm_cuda_from_file(
-        module='csr_plasticity_binary_post',
-        source=Path(__file__).parent.joinpath('plasticity_binary_update_csr_on_binary_post.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('plasticity_binary_update_csr_on_binary_post.cu'),
+        name='csr_plasticity_binary_post',
     )
 
     out_info = kwargs['outs']

@@ -25,8 +25,9 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import cdiv, generate_block_dim, namescope
-from brainevent._op import XLACustomKernel, general_batching_rule, numba_kernel, BenchmarkConfig, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
+from brainevent._op import XLACustomKernel, general_batching_rule, numba_kernel, BenchmarkConfig, jaxinfo_to_warpinfo
 from brainevent.config import get_numba_parallel
+from brainevent.kernix import load_cuda_file
 
 __all__ = [
     'spfloat_densemv',
@@ -249,10 +250,9 @@ def _spfloat_densemv_cuda_kernel(
     transpose: bool,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='dense_sparse_float',
-        source=Path(__file__).parent.joinpath('sparse_float_densemv.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('sparse_float_densemv.cu'),
+        name='dense_sparse_float',
     )
 
     out_info = kwargs['outs']
@@ -937,10 +937,9 @@ def _spfloat_densemm_cuda_kernel(
     transpose: bool,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='dense_sparse_float',
-        source=Path(__file__).parent.joinpath('sparse_float_densemm.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('sparse_float_densemm.cu'),
+        name='dense_sparse_float',
     )
 
     out_info = kwargs['outs']

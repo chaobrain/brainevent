@@ -56,7 +56,7 @@ void min_max(BE::Tensor x, BE::Tensor out_min,
 
 @pytest.fixture(scope="module")
 def multi_out_module():
-    import brainevent.source2kernel as jkb
+    import brainevent.kernix as jkb
     return jkb.load_cuda_inline(
         name="test_multi_out",
         cuda_sources=CUDA_SRC,

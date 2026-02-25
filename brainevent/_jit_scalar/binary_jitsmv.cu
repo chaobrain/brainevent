@@ -45,6 +45,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 #include "curand_common.h"
 
 // #########################################################################
@@ -142,11 +143,11 @@ DEFINE_BINARY_JITSMV_SCATTER(_bf16_float,__nv_bfloat16, float,  READ_BF16, WRITE
 
 #define FFI_BINARY_JITSMV_GATHER(SUFFIX, WEIGHT_C_T, SPIKE_C_T)    \
 void binary_jitsmv_gather##SUFFIX(                                 \
-    tvm::ffi::TensorView weight,                                   \
-    tvm::ffi::TensorView clen,                                     \
-    tvm::ffi::TensorView seed,                                     \
-    tvm::ffi::TensorView vector,                                   \
-    tvm::ffi::TensorView output,                                   \
+    const BE::Tensor weight,                                   \
+    const BE::Tensor clen,                                     \
+    const BE::Tensor seed,                                     \
+    const BE::Tensor vector,                                   \
+    BE::Tensor output,                                   \
     int64_t stream                                                 \
 ) {                                                                \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);       \
@@ -166,32 +167,32 @@ void binary_jitsmv_gather##SUFFIX(                                 \
     );                                                             \
 }
 
-// @tvm_ffi binary_jitsmv_gather_f32_bool
+// @BE binary_jitsmv_gather_f32_bool
 FFI_BINARY_JITSMV_GATHER(_f32_bool,  float,         int8_t)
-// @tvm_ffi binary_jitsmv_gather_f32_float
+// @BE binary_jitsmv_gather_f32_float
 FFI_BINARY_JITSMV_GATHER(_f32_float, float,         float)
-// @tvm_ffi binary_jitsmv_gather_f64_bool
+// @BE binary_jitsmv_gather_f64_bool
 FFI_BINARY_JITSMV_GATHER(_f64_bool,  double,        int8_t)
-// @tvm_ffi binary_jitsmv_gather_f64_float
+// @BE binary_jitsmv_gather_f64_float
 FFI_BINARY_JITSMV_GATHER(_f64_float, double,        float)
-// @tvm_ffi binary_jitsmv_gather_f16_bool
+// @BE binary_jitsmv_gather_f16_bool
 FFI_BINARY_JITSMV_GATHER(_f16_bool,  __half,        int8_t)
-// @tvm_ffi binary_jitsmv_gather_f16_float
+// @BE binary_jitsmv_gather_f16_float
 FFI_BINARY_JITSMV_GATHER(_f16_float, __half,        float)
-// @tvm_ffi binary_jitsmv_gather_bf16_bool
+// @BE binary_jitsmv_gather_bf16_bool
 FFI_BINARY_JITSMV_GATHER(_bf16_bool, __nv_bfloat16, int8_t)
-// @tvm_ffi binary_jitsmv_gather_bf16_float
+// @BE binary_jitsmv_gather_bf16_float
 FFI_BINARY_JITSMV_GATHER(_bf16_float,__nv_bfloat16, float)
 
 // ---- TVM FFI: binary_jitsmv scatter ----
 
 #define FFI_BINARY_JITSMV_SCATTER(SUFFIX, WEIGHT_C_T, SPIKE_C_T)    \
 void binary_jitsmv_scatter##SUFFIX(                                 \
-    tvm::ffi::TensorView weight,                                    \
-    tvm::ffi::TensorView clen,                                      \
-    tvm::ffi::TensorView seed,                                      \
-    tvm::ffi::TensorView vector,                                    \
-    tvm::ffi::TensorView output,                                    \
+    const BE::Tensor weight,                                    \
+    const BE::Tensor clen,                                      \
+    const BE::Tensor seed,                                      \
+    const BE::Tensor vector,                                    \
+    BE::Tensor output,                                    \
     int64_t stream                                                  \
 ) {                                                                 \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);        \
@@ -211,19 +212,19 @@ void binary_jitsmv_scatter##SUFFIX(                                 \
     );                                                              \
 }
 
-// @tvm_ffi binary_jitsmv_scatter_f32_bool
+// @BE binary_jitsmv_scatter_f32_bool
 FFI_BINARY_JITSMV_SCATTER(_f32_bool,  float,         int8_t)
-// @tvm_ffi binary_jitsmv_scatter_f32_float
+// @BE binary_jitsmv_scatter_f32_float
 FFI_BINARY_JITSMV_SCATTER(_f32_float, float,         float)
-// @tvm_ffi binary_jitsmv_scatter_f64_bool
+// @BE binary_jitsmv_scatter_f64_bool
 FFI_BINARY_JITSMV_SCATTER(_f64_bool,  double,        int8_t)
-// @tvm_ffi binary_jitsmv_scatter_f64_float
+// @BE binary_jitsmv_scatter_f64_float
 FFI_BINARY_JITSMV_SCATTER(_f64_float, double,        float)
-// @tvm_ffi binary_jitsmv_scatter_f16_bool
+// @BE binary_jitsmv_scatter_f16_bool
 FFI_BINARY_JITSMV_SCATTER(_f16_bool,  __half,        int8_t)
-// @tvm_ffi binary_jitsmv_scatter_f16_float
+// @BE binary_jitsmv_scatter_f16_float
 FFI_BINARY_JITSMV_SCATTER(_f16_float, __half,        float)
-// @tvm_ffi binary_jitsmv_scatter_bf16_bool
+// @BE binary_jitsmv_scatter_bf16_bool
 FFI_BINARY_JITSMV_SCATTER(_bf16_bool, __nv_bfloat16, int8_t)
-// @tvm_ffi binary_jitsmv_scatter_bf16_float
+// @BE binary_jitsmv_scatter_bf16_float
 FFI_BINARY_JITSMV_SCATTER(_bf16_float,__nv_bfloat16, float)

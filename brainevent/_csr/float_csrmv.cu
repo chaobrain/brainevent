@@ -44,6 +44,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 
 // =========================================================================
 // CSR Matrix-Vector Multiplication (csrmv)
@@ -184,9 +185,9 @@ DEFINE_CSRMV_T_WARP(_bf16,    __nv_bfloat16,  float,  READ_BF16, WRITE_BF16, 0.0
 // FFI Macros for SpMV
 #define FFI_CSRMV_NT_THREAD(SUFFIX, WEIGHT_C_T)                   \
 void csrmv_nt_thread##SUFFIX(                                     \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,   \
-    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView vector,    \
-    tvm::ffi::TensorView output,  int64_t stream                  \
+    const BE::Tensor weights, const BE::Tensor indices,   \
+    const BE::Tensor indptr,  const BE::Tensor vector,    \
+    BE::Tensor output,  int64_t stream                  \
 ) {                                                               \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);     \
     int m           = static_cast<int>(indptr.size(0)) - 1;       \
@@ -202,9 +203,9 @@ void csrmv_nt_thread##SUFFIX(                                     \
 
 #define FFI_CSRMV_NT_WARP(SUFFIX, WEIGHT_C_T)                     \
 void csrmv_nt_warp##SUFFIX(                                       \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,   \
-    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView vector,    \
-    tvm::ffi::TensorView output,  int64_t stream                  \
+    const BE::Tensor weights, const BE::Tensor indices,   \
+    const BE::Tensor indptr,  const BE::Tensor vector,    \
+    BE::Tensor output,  int64_t stream                  \
 ) {                                                               \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);     \
     int m           = static_cast<int>(indptr.size(0)) - 1;       \
@@ -219,9 +220,9 @@ void csrmv_nt_warp##SUFFIX(                                       \
 
 #define FFI_CSRMV_NT_BLOCK(SUFFIX, WEIGHT_C_T, SHM_SIZE)          \
 void csrmv_nt_block##SUFFIX(                                      \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,   \
-    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView vector,    \
-    tvm::ffi::TensorView output,  int64_t stream                  \
+    const BE::Tensor weights, const BE::Tensor indices,   \
+    const BE::Tensor indptr,  const BE::Tensor vector,    \
+    BE::Tensor output,  int64_t stream                  \
 ) {                                                               \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);     \
     int m           = static_cast<int>(indptr.size(0)) - 1;       \
@@ -236,9 +237,9 @@ void csrmv_nt_block##SUFFIX(                                      \
 
 #define FFI_CSRMV_NT_AUTO(SUFFIX, WEIGHT_C_T, SHM_SIZE)                         \
 void csrmv_nt_auto##SUFFIX(                                                     \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                 \
-    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView vector,                  \
-    tvm::ffi::TensorView output,  int64_t stream                                \
+    const BE::Tensor weights, const BE::Tensor indices,                 \
+    const BE::Tensor indptr,  const BE::Tensor vector,                  \
+    BE::Tensor output,  int64_t stream                                \
 ) {                                                                             \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                   \
     int m           = static_cast<int>(indptr.size(0)) - 1;                     \
@@ -265,9 +266,9 @@ void csrmv_nt_auto##SUFFIX(                                                     
 
 #define FFI_CSRMV_T_WARP(SUFFIX, WEIGHT_C_T)                         \
 void csrmv_t_warp##SUFFIX(                                           \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,      \
-    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView vector,       \
-    tvm::ffi::TensorView output,  int64_t stream                     \
+    const BE::Tensor weights, const BE::Tensor indices,      \
+    const BE::Tensor indptr,  const BE::Tensor vector,       \
+    BE::Tensor output,  int64_t stream                     \
 ) {                                                                  \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);        \
     int m           = static_cast<int>(indptr.size(0)) - 1;          \
@@ -284,43 +285,43 @@ void csrmv_t_warp##SUFFIX(                                           \
 }
 
 // SpMV FFI Instantiations
-// @tvm_ffi csrmv_nt_thread_f32
+// @BE csrmv_nt_thread_f32
 FFI_CSRMV_NT_THREAD(_f32, float)
-// @tvm_ffi csrmv_nt_warp_f32
+// @BE csrmv_nt_warp_f32
 FFI_CSRMV_NT_WARP(_f32, float)
-// @tvm_ffi csrmv_nt_block_f32
+// @BE csrmv_nt_block_f32
 FFI_CSRMV_NT_BLOCK(_f32, float, 8 * sizeof(float))
-// @tvm_ffi csrmv_nt_auto_f32
+// @BE csrmv_nt_auto_f32
 FFI_CSRMV_NT_AUTO(_f32, float, 8 * sizeof(float))
-// @tvm_ffi csrmv_t_warp_f32
+// @BE csrmv_t_warp_f32
 FFI_CSRMV_T_WARP(_f32, float)
-// @tvm_ffi csrmv_nt_thread_f64
+// @BE csrmv_nt_thread_f64
 FFI_CSRMV_NT_THREAD(_f64, double)
-// @tvm_ffi csrmv_nt_warp_f64
+// @BE csrmv_nt_warp_f64
 FFI_CSRMV_NT_WARP(_f64, double)
-// @tvm_ffi csrmv_nt_block_f64
+// @BE csrmv_nt_block_f64
 FFI_CSRMV_NT_BLOCK(_f64, double, 8 * sizeof(double))
-// @tvm_ffi csrmv_nt_auto_f64
+// @BE csrmv_nt_auto_f64
 FFI_CSRMV_NT_AUTO(_f64, double, 8 * sizeof(double))
-// @tvm_ffi csrmv_t_warp_f64
+// @BE csrmv_t_warp_f64
 FFI_CSRMV_T_WARP(_f64, double)
-// @tvm_ffi csrmv_nt_thread_f16
+// @BE csrmv_nt_thread_f16
 FFI_CSRMV_NT_THREAD(_f16, __half)
-// @tvm_ffi csrmv_nt_warp_f16
+// @BE csrmv_nt_warp_f16
 FFI_CSRMV_NT_WARP(_f16, __half)
-// @tvm_ffi csrmv_nt_block_f16
+// @BE csrmv_nt_block_f16
 FFI_CSRMV_NT_BLOCK(_f16, __half, 8 * sizeof(float))
-// @tvm_ffi csrmv_nt_auto_f16
+// @BE csrmv_nt_auto_f16
 FFI_CSRMV_NT_AUTO(_f16, __half, 8 * sizeof(float))
-// @tvm_ffi csrmv_t_warp_f16
+// @BE csrmv_t_warp_f16
 FFI_CSRMV_T_WARP(_f16, __half)
-// @tvm_ffi csrmv_nt_thread_bf16
+// @BE csrmv_nt_thread_bf16
 FFI_CSRMV_NT_THREAD(_bf16, __nv_bfloat16)
-// @tvm_ffi csrmv_nt_warp_bf16
+// @BE csrmv_nt_warp_bf16
 FFI_CSRMV_NT_WARP(_bf16, __nv_bfloat16)
-// @tvm_ffi csrmv_nt_block_bf16
+// @BE csrmv_nt_block_bf16
 FFI_CSRMV_NT_BLOCK(_bf16, __nv_bfloat16, 8 * sizeof(float))
-// @tvm_ffi csrmv_nt_auto_bf16
+// @BE csrmv_nt_auto_bf16
 FFI_CSRMV_NT_AUTO(_bf16, __nv_bfloat16, 8 * sizeof(float))
-// @tvm_ffi csrmv_t_warp_bf16
+// @BE csrmv_t_warp_bf16
 FFI_CSRMV_T_WARP(_bf16, __nv_bfloat16)

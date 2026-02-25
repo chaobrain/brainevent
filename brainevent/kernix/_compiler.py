@@ -49,7 +49,7 @@ class CompilerBackend(ABC):
     """Abstract base class for BE compiler backends.
 
     Each backend encapsulates one compilation toolchain (nvcc, g++, hipcc, …).
-    The high-level pipeline in :mod:`brainevent.source2kernel._pipeline`
+    The high-level pipeline in :mod:`brainevent.kernix._pipeline`
     selects the appropriate backend based on the requested platform.
 
     Subclasses must implement :meth:`compile_source`.  Optionally they can
@@ -79,7 +79,7 @@ class CompilerBackend(ABC):
         source : str
             Preprocessed C++/CUDA source (user code + auto-generated FFI
             wrappers, as produced by
-            :func:`~brainevent.source2kernel._codegen.preprocess_source`).
+            :func:`~brainevent.kernix._codegen.preprocess_source`).
         output_path : str
             Desired path for the output shared library.
         build_dir : str
@@ -477,7 +477,7 @@ class HIPBackend(CompilerBackend):
     1. Add ``detect_hip_toolchain()`` to :mod:`~._toolchain` that locates
        ``hipcc`` and the ROCm include directories.
     2. Implement HIP compilation logic in this class using ``hipcc``.
-    3. Update :func:`~brainevent.source2kernel._pipeline.load_cuda_inline` (or
+    3. Update :func:`~brainevent.kernix._pipeline.load_cuda_inline` (or
        add ``load_hip_inline``) to select :class:`HIPBackend` when
        ``platform="hip"`` is requested.
     """

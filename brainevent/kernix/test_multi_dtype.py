@@ -72,7 +72,7 @@ void typed_add(BE::Tensor a, BE::Tensor b,
 
 @pytest.fixture(scope="module")
 def typed_add_module():
-    import brainevent.source2kernel as jkb
+    import brainevent.kernix as jkb
     return jkb.load_cuda_inline(
         name="test_typed_add",
         cuda_sources=CUDA_SRC,

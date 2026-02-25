@@ -30,7 +30,7 @@ from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule,
     jaxinfo_to_warpinfo, BenchmarkConfig
 from brainevent._typing import MatrixShape
 from brainevent.config import get_numba_parallel
-from brainevent.source2kernel import load_cuda_file
+from brainevent.kernix import load_cuda_file
 from .float import fcnmv_p_call, fcnmm_p_call
 
 __all__ = [

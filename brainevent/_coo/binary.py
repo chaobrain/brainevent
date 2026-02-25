@@ -26,11 +26,12 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, namescope
-from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, register_tvm_cuda_from_file, \
+from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, \
     jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Row, Col, MatrixShape
+from brainevent.kernix import load_cuda_file
 from .float import coomv, coomm
 
 __all__ = [
@@ -876,10 +877,9 @@ def _coomv_tvmffi_kernel(
     The output buffer is zero-initialized inside the CUDA entry function
     (via ``cudaMemsetAsync``) before the atomic-scatter kernel runs.
     """
-    register_tvm_cuda_from_file(
-        module='coo_binary_coomv',
-        source=Path(__file__).parent.joinpath('binary_coomv.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_coomv.cu'),
+        name='coo_binary_coomv',
     )
 
     out_info = kwargs['outs']
@@ -1876,10 +1876,9 @@ def _coomm_tvmffi_kernel(
     The output buffer is zero-initialized inside the CUDA entry function
     (via ``cudaMemsetAsync``) before the atomic-scatter kernel runs.
     """
-    register_tvm_cuda_from_file(
-        module='coo_binary_coomm',
-        source=Path(__file__).parent.joinpath('binary_coomm.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_coomm.cu'),
+        name='coo_binary_coomm',
     )
 
     out_info = kwargs['outs']

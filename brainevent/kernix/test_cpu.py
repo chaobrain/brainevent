@@ -20,7 +20,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-import brainevent.source2kernel as jkb
+import brainevent.kernix as jkb
 
 ADD_ONE_SRC = r"""
 #include "brainevent/common.h"

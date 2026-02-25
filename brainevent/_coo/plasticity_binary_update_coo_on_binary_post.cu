@@ -47,6 +47,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 
 // =========================================================================
 // COO Post-Synaptic Plasticity Kernel
@@ -110,12 +111,12 @@ DEFINE_COO_ON_POST(_bf16_float,__nv_bfloat16,  IS_ACTIVE_BF16,  __nv_bfloat16,  
 
 #define FFI_COO_ON_POST(SUFFIX, WEIGHT_C_T, SPIKE_C_T)          \
 void update_coo_on_post##SUFFIX(                                \
-    tvm::ffi::TensorView weight,                                \
-    tvm::ffi::TensorView pre_ids,                               \
-    tvm::ffi::TensorView post_ids,                              \
-    tvm::ffi::TensorView trace,                                 \
-    tvm::ffi::TensorView spike,                                 \
-    tvm::ffi::TensorView out_weight,                            \
+    const BE::Tensor weight,                                \
+    const BE::Tensor pre_ids,                               \
+    const BE::Tensor post_ids,                              \
+    const BE::Tensor trace,                                 \
+    const BE::Tensor spike,                                 \
+    const BE::Tensor out_weight,                            \
     int64_t stream                                              \
 ) {                                                             \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);    \
@@ -140,19 +141,19 @@ void update_coo_on_post##SUFFIX(                                \
         d_w, d_spk, d_tr, d_pre, d_post, n_syn);                \
 }
 
-// @tvm_ffi update_coo_on_post_f32_bool
+// @BE update_coo_on_post_f32_bool
 FFI_COO_ON_POST(_f32_bool,  float,         int8_t)
-// @tvm_ffi update_coo_on_post_f32_float
+// @BE update_coo_on_post_f32_float
 FFI_COO_ON_POST(_f32_float, float,         float)
-// @tvm_ffi update_coo_on_post_f64_bool
+// @BE update_coo_on_post_f64_bool
 FFI_COO_ON_POST(_f64_bool,  double,        int8_t)
-// @tvm_ffi update_coo_on_post_f64_float
+// @BE update_coo_on_post_f64_float
 FFI_COO_ON_POST(_f64_float, double,        float)
-// @tvm_ffi update_coo_on_post_f16_bool
+// @BE update_coo_on_post_f16_bool
 FFI_COO_ON_POST(_f16_bool,  __half,        int8_t)
-// @tvm_ffi update_coo_on_post_f16_float
+// @BE update_coo_on_post_f16_float
 FFI_COO_ON_POST(_f16_float, __half,        __half)
-// @tvm_ffi update_coo_on_post_bf16_bool
+// @BE update_coo_on_post_bf16_bool
 FFI_COO_ON_POST(_bf16_bool, __nv_bfloat16, int8_t)
-// @tvm_ffi update_coo_on_post_bf16_float
+// @BE update_coo_on_post_bf16_float
 FFI_COO_ON_POST(_bf16_float,__nv_bfloat16, __nv_bfloat16)

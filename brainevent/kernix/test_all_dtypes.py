@@ -85,7 +85,7 @@ void typed_add(const BE::Tensor a, const BE::Tensor b,
 
 @pytest.fixture(scope="module")
 def copy_module():
-    import brainevent.source2kernel as jkb
+    import brainevent.kernix as jkb
     return jkb.load_cuda_inline(
         name="test_copy_all_dtypes",
         cuda_sources=COPY_KERNEL_SRC,
@@ -95,7 +95,7 @@ def copy_module():
 
 @pytest.fixture(scope="module")
 def dispatch_module():
-    import brainevent.source2kernel as jkb
+    import brainevent.kernix as jkb
     return jkb.load_cuda_inline(
         name="test_dispatch_all",
         cuda_sources=DISPATCH_ALL_SRC,

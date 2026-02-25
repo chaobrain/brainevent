@@ -26,9 +26,10 @@ from jax.interpreters import ad
 from brainevent._data import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, jaxinfo_to_warpinfo
 from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
+from brainevent.kernix import load_cuda_file
 from .float import jitsmv_p_call, jitsmm_p_call
 
 __all__ = [
@@ -866,10 +867,9 @@ def _binary_jitsmv_cuda_kernel(
     vector_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='jit_scalar_binary_jitsmv',
-        source=Path(__file__).parent.joinpath('binary_jitsmv.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_jitsmv.cu'),
+        name='jit_scalar_binary_jitsmv',
     )
     wt_sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
     sp_sfx = _spike_sfx.get(np.dtype(vector_info.dtype), '_float')
@@ -887,10 +887,9 @@ def _binary_jitsmm_cuda_kernel(
     B_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='jit_scalar_binary_jitsmm',
-        source=Path(__file__).parent.joinpath('binary_jitsmm.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_jitsmm.cu'),
+        name='jit_scalar_binary_jitsmm',
     )
     wt_sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
     sp_sfx = _spike_sfx.get(np.dtype(B_info.dtype), '_float')

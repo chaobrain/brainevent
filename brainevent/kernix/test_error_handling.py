@@ -26,12 +26,12 @@ requires_gpu = _pytest.mark.skipif(
 
 pytestmark = requires_gpu
 
-import brainevent.source2kernel as jkb
+import brainevent.kernix as jkb
 
 
 def test_compilation_error():
     """Invalid CUDA source raises CompilationError."""
-    import brainevent.source2kernel as jkb
+    import brainevent.kernix as jkb
 
     with pytest.raises(jkb.CompilationError, match="compilation failed"):
         jkb.load_cuda_inline(

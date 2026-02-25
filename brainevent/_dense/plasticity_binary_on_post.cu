@@ -39,6 +39,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 
 // =========================================================================
 // Dense Post-Synaptic Plasticity Kernels
@@ -109,10 +110,10 @@ DEFINE_ON_POST_WARP(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16,  float,
 
 #define FFI_ON_POST(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                \
 void update_dense_on_post##SUFFIX(                                                \
-    tvm::ffi::TensorView weight,                                                  \
-    tvm::ffi::TensorView trace,                                                   \
-    tvm::ffi::TensorView spike,                                                   \
-    tvm::ffi::TensorView out_weight,                                              \
+    const BE::Tensor weight,                                                  \
+    const BE::Tensor trace,                                                   \
+    const BE::Tensor spike,                                                   \
+    const BE::Tensor out_weight,                                              \
     int64_t stream                                                                \
 ) {                                                                               \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                      \
@@ -128,19 +129,19 @@ void update_dense_on_post##SUFFIX(                                              
         d_w, d_trace, d_spk, n_pre, n_post);                                      \
 }
 
-// @tvm_ffi update_dense_on_post_f32_bool
+// @BE update_dense_on_post_f32_bool
 FFI_ON_POST(_f32_bool,   float,          int8_t)
-// @tvm_ffi update_dense_on_post_f32_float
+// @BE update_dense_on_post_f32_float
 FFI_ON_POST(_f32_float,  float,          float)
-// @tvm_ffi update_dense_on_post_f64_bool
+// @BE update_dense_on_post_f64_bool
 FFI_ON_POST(_f64_bool,   double,         int8_t)
-// @tvm_ffi update_dense_on_post_f64_float
+// @BE update_dense_on_post_f64_float
 FFI_ON_POST(_f64_float,  double,         float)
-// @tvm_ffi update_dense_on_post_f16_bool
+// @BE update_dense_on_post_f16_bool
 FFI_ON_POST(_f16_bool,   __half,         int8_t)
-// @tvm_ffi update_dense_on_post_f16_float
+// @BE update_dense_on_post_f16_float
 FFI_ON_POST(_f16_float,  __half,         float)
-// @tvm_ffi update_dense_on_post_bf16_bool
+// @BE update_dense_on_post_bf16_bool
 FFI_ON_POST(_bf16_bool,  __nv_bfloat16,  int8_t)
-// @tvm_ffi update_dense_on_post_bf16_float
+// @BE update_dense_on_post_bf16_float
 FFI_ON_POST(_bf16_float, __nv_bfloat16,  float)

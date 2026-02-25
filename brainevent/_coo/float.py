@@ -25,11 +25,12 @@ from jax import numpy as jnp
 from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, namescope
-from brainevent._op import XLACustomKernel, general_batching_rule, numba_kernel, register_tvm_cuda_from_file, \
+from brainevent._op import XLACustomKernel, general_batching_rule, numba_kernel, \
     jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Row, Col, MatrixShape
+from brainevent.kernix import load_cuda_file
 
 __all__ = [
     "coomv",
@@ -780,10 +781,9 @@ def _coomv_tvmffi_kernel(
     v must have the same dtype as weights.  The Python caller (``coomv_p_call``)
     ensures both are the same dtype before dispatch.
     """
-    register_tvm_cuda_from_file(
-        module='coo_float_coomv',
-        source=Path(__file__).parent.joinpath('float_coomv.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_coomv.cu'),
+        name='coo_float_coomv',
     )
 
     out_info = kwargs['outs']
@@ -1480,10 +1480,9 @@ def _coomm_tvmffi_kernel(
     B must have the same dtype as weights.  The Python caller (``coomm_p_call``)
     ensures B is promoted to ``weights.dtype`` before dispatch when necessary.
     """
-    register_tvm_cuda_from_file(
-        module='coo_float_coomm',
-        source=Path(__file__).parent.joinpath('float_coomm.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_coomm.cu'),
+        name='coo_float_coomm',
     )
 
     out_info = kwargs['outs']

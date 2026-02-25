@@ -23,9 +23,10 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import namescope
-from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
+from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
+from brainevent.kernix import load_cuda_file
 
 __all__ = [
     'csr_slice_rows',
@@ -241,10 +242,9 @@ def _csr_slice_rows_benchmark_data(*, platform):
 def _csr_slice_rows_cuda_kernel_generator(
     **kwargs,
 ):
-    register_tvm_cuda_from_file(
-        module='csr_slice_rows',
-        source=Path(__file__).parent.joinpath('slice_csr_slice_rows.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('slice_csr_slice_rows.cu'),
+        name='csr_slice_rows',
     )
 
     out_info = kwargs['outs']
@@ -619,10 +619,9 @@ def _csr_slice_rows_grad_benchmark_data(*, platform):
 def _csr_slice_rows_grad_cuda_kernel_generator(
     **kwargs,
 ):
-    register_tvm_cuda_from_file(
-        module='csr_slice_rows',
-        source=Path(__file__).parent.joinpath('slice_csr_slice_rows.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('slice_csr_slice_rows.cu'),
+        name='csr_slice_rows',
     )
 
     out_info = kwargs['outs']

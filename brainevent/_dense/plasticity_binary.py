@@ -25,9 +25,10 @@ from jax.interpreters import ad
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import (
     XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig,
-    register_tvm_cuda_from_file, jaxinfo_to_warpinfo,
+    jaxinfo_to_warpinfo,
 )
 from brainevent.config import get_numba_parallel
+from brainevent.kernix import load_cuda_file
 
 __all__ = [
     'update_dense_on_binary_pre',
@@ -199,10 +200,9 @@ def _dense_on_pre_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, *
 
 
 def _dense_on_pre_cuda_kernel(weight_info, spike_info, **kwargs):
-    register_tvm_cuda_from_file(
-        module='dense_plasticity_on_pre',
-        source=Path(__file__).parent.joinpath('plasticity_binary_on_pre.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('plasticity_binary_on_pre.cu'),
+        name='dense_plasticity_on_pre',
     )
 
     out_info = kwargs['outs']
@@ -640,10 +640,9 @@ def _dense_on_post_pallas_kernel(weight_info, spike_info: jax.ShapeDtypeStruct, 
 
 
 def _dense_on_post_cuda_kernel(weight_info, spike_info, **kwargs):
-    register_tvm_cuda_from_file(
-        module='dense_plasticity_on_post',
-        source=Path(__file__).parent.joinpath('plasticity_binary_on_post.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('plasticity_binary_on_post.cu'),
+        name='dense_plasticity_on_post',
     )
 
     out_info = kwargs['outs']

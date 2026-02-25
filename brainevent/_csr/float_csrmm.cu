@@ -47,6 +47,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 
 // =========================================================================
 // atomicAdd wrappers
@@ -293,9 +294,9 @@ DEFINE_CSRMM_T_WARP_HETERO(_bf16,   __nv_bfloat16, float, READ_BF16, WRITE_BF16,
 
 #define FFI_CSRMM_NT_WARP_HOMO(SUFFIX, WEIGHT_C_T)              \
 void csrmm_nt_warp_homo##SUFFIX(                                \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices, \
-    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView B,       \
-    tvm::ffi::TensorView C,       int64_t stream                \
+    const BE::Tensor weights, const BE::Tensor indices, \
+    const BE::Tensor indptr,  const BE::Tensor B,       \
+    const BE::Tensor C,       int64_t stream                \
 ) {                                                             \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);   \
     int m           = static_cast<int>(indptr.size(0)) - 1;     \
@@ -313,9 +314,9 @@ void csrmm_nt_warp_homo##SUFFIX(                                \
 
 #define FFI_CSRMM_NT_BLOCK_HOMO(SUFFIX, WEIGHT_C_T, SHM_SIZE)      \
 void csrmm_nt_block_homo##SUFFIX(                                  \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,    \
-    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView B,          \
-    tvm::ffi::TensorView C,       int64_t stream                   \
+    const BE::Tensor weights, const BE::Tensor indices,    \
+    const BE::Tensor indptr,  const BE::Tensor B,          \
+    const BE::Tensor C,       int64_t stream                   \
 ) {                                                                \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);      \
     int m           = static_cast<int>(indptr.size(0)) - 1;        \
@@ -333,9 +334,9 @@ void csrmm_nt_block_homo##SUFFIX(                                  \
 
 #define FFI_CSRMM_NT_AUTO_HOMO(SUFFIX, WEIGHT_C_T, SHM_SIZE)                    \
 void csrmm_nt_auto_homo##SUFFIX(                                                \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                 \
-    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView B,                       \
-    tvm::ffi::TensorView C,       int64_t stream                                \
+    const BE::Tensor weights, const BE::Tensor indices,                 \
+    const BE::Tensor indptr,  const BE::Tensor B,                       \
+    const BE::Tensor C,       int64_t stream                                \
 ) {                                                                             \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                   \
     int m           = static_cast<int>(indptr.size(0)) - 1;                     \
@@ -360,9 +361,9 @@ void csrmm_nt_auto_homo##SUFFIX(                                                
 
 #define FFI_CSRMM_T_WARP_HOMO(SUFFIX, WEIGHT_C_T)                           \
 void csrmm_t_warp_homo##SUFFIX(                                             \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,             \
-    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView B,                   \
-    tvm::ffi::TensorView C,       int64_t stream                            \
+    const BE::Tensor weights, const BE::Tensor indices,             \
+    const BE::Tensor indptr,  const BE::Tensor B,                   \
+    const BE::Tensor C,       int64_t stream                            \
 ) {                                                                         \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);               \
     int m           = static_cast<int>(indptr.size(0)) - 1;                 \
@@ -386,9 +387,9 @@ void csrmm_t_warp_homo##SUFFIX(                                             \
 
 #define FFI_CSRMM_NT_WARP_HETERO(SUFFIX, WEIGHT_C_T)            \
 void csrmm_nt_warp_hetero##SUFFIX(                              \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices, \
-    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView B,       \
-    tvm::ffi::TensorView C,       int64_t stream                \
+    const BE::Tensor weights, const BE::Tensor indices, \
+    const BE::Tensor indptr,  const BE::Tensor B,       \
+    const BE::Tensor C,       int64_t stream                \
 ) {                                                             \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);   \
     int m           = static_cast<int>(indptr.size(0)) - 1;     \
@@ -406,9 +407,9 @@ void csrmm_nt_warp_hetero##SUFFIX(                              \
 
 #define FFI_CSRMM_NT_BLOCK_HETERO(SUFFIX, WEIGHT_C_T, SHM_SIZE)      \
 void csrmm_nt_block_hetero##SUFFIX(                                  \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,      \
-    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView B,            \
-    tvm::ffi::TensorView C,       int64_t stream                     \
+    const BE::Tensor weights, const BE::Tensor indices,      \
+    const BE::Tensor indptr,  const BE::Tensor B,            \
+    const BE::Tensor C,       int64_t stream                     \
 ) {                                                                  \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);        \
     int m           = static_cast<int>(indptr.size(0)) - 1;          \
@@ -426,9 +427,9 @@ void csrmm_nt_block_hetero##SUFFIX(                                  \
 
 #define FFI_CSRMM_NT_AUTO_HETERO(SUFFIX, WEIGHT_C_T, SHM_SIZE)                  \
 void csrmm_nt_auto_hetero##SUFFIX(                                              \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                 \
-    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView B,                       \
-    tvm::ffi::TensorView C,       int64_t stream                                \
+    const BE::Tensor weights, const BE::Tensor indices,                 \
+    const BE::Tensor indptr,  const BE::Tensor B,                       \
+    const BE::Tensor C,       int64_t stream                                \
 ) {                                                                             \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                   \
     int m           = static_cast<int>(indptr.size(0)) - 1;                     \
@@ -453,9 +454,9 @@ void csrmm_nt_auto_hetero##SUFFIX(                                              
 
 #define FFI_CSRMM_T_WARP_HETERO(SUFFIX, WEIGHT_C_T)                         \
 void csrmm_t_warp_hetero##SUFFIX(                                           \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,             \
-    tvm::ffi::TensorView indptr,  tvm::ffi::TensorView B,                   \
-    tvm::ffi::TensorView C,       int64_t stream                            \
+    const BE::Tensor weights, const BE::Tensor indices,             \
+    const BE::Tensor indptr,  const BE::Tensor B,                   \
+    const BE::Tensor C,       int64_t stream                            \
 ) {                                                                         \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);               \
     int m           = static_cast<int>(indptr.size(0)) - 1;                 \
@@ -477,79 +478,79 @@ void csrmm_t_warp_hetero##SUFFIX(                                           \
 // FFI Instantiations - Homogeneous
 // =========================================================================
 
-// @tvm_ffi csrmm_nt_warp_homo_f32
+// @BE csrmm_nt_warp_homo_f32
 FFI_CSRMM_NT_WARP_HOMO(_f32, float)
-// @tvm_ffi csrmm_nt_block_homo_f32
+// @BE csrmm_nt_block_homo_f32
 FFI_CSRMM_NT_BLOCK_HOMO(_f32, float, 8 * 32 * sizeof(float))
-// @tvm_ffi csrmm_nt_auto_homo_f32
+// @BE csrmm_nt_auto_homo_f32
 FFI_CSRMM_NT_AUTO_HOMO(_f32, float, 8 * 32 * sizeof(float))
-// @tvm_ffi csrmm_t_warp_homo_f32
+// @BE csrmm_t_warp_homo_f32
 FFI_CSRMM_T_WARP_HOMO(_f32, float)
 
-// @tvm_ffi csrmm_nt_warp_homo_f64
+// @BE csrmm_nt_warp_homo_f64
 FFI_CSRMM_NT_WARP_HOMO(_f64, double)
-// @tvm_ffi csrmm_nt_block_homo_f64
+// @BE csrmm_nt_block_homo_f64
 FFI_CSRMM_NT_BLOCK_HOMO(_f64, double, 8 * 32 * sizeof(double))
-// @tvm_ffi csrmm_nt_auto_homo_f64
+// @BE csrmm_nt_auto_homo_f64
 FFI_CSRMM_NT_AUTO_HOMO(_f64, double, 8 * 32 * sizeof(double))
-// @tvm_ffi csrmm_t_warp_homo_f64
+// @BE csrmm_t_warp_homo_f64
 FFI_CSRMM_T_WARP_HOMO(_f64, double)
 
-// @tvm_ffi csrmm_nt_warp_homo_f16
+// @BE csrmm_nt_warp_homo_f16
 FFI_CSRMM_NT_WARP_HOMO(_f16, __half)
-// @tvm_ffi csrmm_nt_block_homo_f16
+// @BE csrmm_nt_block_homo_f16
 FFI_CSRMM_NT_BLOCK_HOMO(_f16, __half, 8 * 32 * sizeof(float))
-// @tvm_ffi csrmm_nt_auto_homo_f16
+// @BE csrmm_nt_auto_homo_f16
 FFI_CSRMM_NT_AUTO_HOMO(_f16, __half, 8 * 32 * sizeof(float))
-// @tvm_ffi csrmm_t_warp_homo_f16
+// @BE csrmm_t_warp_homo_f16
 FFI_CSRMM_T_WARP_HOMO(_f16, __half)
 
-// @tvm_ffi csrmm_nt_warp_homo_bf16
+// @BE csrmm_nt_warp_homo_bf16
 FFI_CSRMM_NT_WARP_HOMO(_bf16, __nv_bfloat16)
-// @tvm_ffi csrmm_nt_block_homo_bf16
+// @BE csrmm_nt_block_homo_bf16
 FFI_CSRMM_NT_BLOCK_HOMO(_bf16, __nv_bfloat16, 8 * 32 * sizeof(float))
-// @tvm_ffi csrmm_nt_auto_homo_bf16
+// @BE csrmm_nt_auto_homo_bf16
 FFI_CSRMM_NT_AUTO_HOMO(_bf16, __nv_bfloat16, 8 * 32 * sizeof(float))
-// @tvm_ffi csrmm_t_warp_homo_bf16
+// @BE csrmm_t_warp_homo_bf16
 FFI_CSRMM_T_WARP_HOMO(_bf16, __nv_bfloat16)
 
 // =========================================================================
 // FFI Instantiations - Heterogeneous
 // =========================================================================
 
-// @tvm_ffi csrmm_nt_warp_hetero_f32
+// @BE csrmm_nt_warp_hetero_f32
 FFI_CSRMM_NT_WARP_HETERO(_f32, float)
-// @tvm_ffi csrmm_nt_block_hetero_f32
+// @BE csrmm_nt_block_hetero_f32
 FFI_CSRMM_NT_BLOCK_HETERO(_f32, float, 8 * 32 * sizeof(float))
-// @tvm_ffi csrmm_nt_auto_hetero_f32
+// @BE csrmm_nt_auto_hetero_f32
 FFI_CSRMM_NT_AUTO_HETERO(_f32, float, 8 * 32 * sizeof(float))
-// @tvm_ffi csrmm_t_warp_hetero_f32
+// @BE csrmm_t_warp_hetero_f32
 FFI_CSRMM_T_WARP_HETERO(_f32, float)
 
-// @tvm_ffi csrmm_nt_warp_hetero_f64
+// @BE csrmm_nt_warp_hetero_f64
 FFI_CSRMM_NT_WARP_HETERO(_f64, double)
-// @tvm_ffi csrmm_nt_block_hetero_f64
+// @BE csrmm_nt_block_hetero_f64
 FFI_CSRMM_NT_BLOCK_HETERO(_f64, double, 8 * 32 * sizeof(double))
-// @tvm_ffi csrmm_nt_auto_hetero_f64
+// @BE csrmm_nt_auto_hetero_f64
 FFI_CSRMM_NT_AUTO_HETERO(_f64, double, 8 * 32 * sizeof(double))
-// @tvm_ffi csrmm_t_warp_hetero_f64
+// @BE csrmm_t_warp_hetero_f64
 FFI_CSRMM_T_WARP_HETERO(_f64, double)
 
-// @tvm_ffi csrmm_nt_warp_hetero_f16
+// @BE csrmm_nt_warp_hetero_f16
 FFI_CSRMM_NT_WARP_HETERO(_f16, __half)
-// @tvm_ffi csrmm_nt_block_hetero_f16
+// @BE csrmm_nt_block_hetero_f16
 FFI_CSRMM_NT_BLOCK_HETERO(_f16, __half, 8 * 32 * sizeof(float))
-// @tvm_ffi csrmm_nt_auto_hetero_f16
+// @BE csrmm_nt_auto_hetero_f16
 FFI_CSRMM_NT_AUTO_HETERO(_f16, __half, 8 * 32 * sizeof(float))
-// @tvm_ffi csrmm_t_warp_hetero_f16
+// @BE csrmm_t_warp_hetero_f16
 FFI_CSRMM_T_WARP_HETERO(_f16, __half)
 
-// @tvm_ffi csrmm_nt_warp_hetero_bf16
+// @BE csrmm_nt_warp_hetero_bf16
 FFI_CSRMM_NT_WARP_HETERO(_bf16, __nv_bfloat16)
-// @tvm_ffi csrmm_nt_block_hetero_bf16
+// @BE csrmm_nt_block_hetero_bf16
 FFI_CSRMM_NT_BLOCK_HETERO(_bf16, __nv_bfloat16, 8 * 32 * sizeof(float))
-// @tvm_ffi csrmm_nt_auto_hetero_bf16
+// @BE csrmm_nt_auto_hetero_bf16
 FFI_CSRMM_NT_AUTO_HETERO(_bf16, __nv_bfloat16, 8 * 32 * sizeof(float))
-// @tvm_ffi csrmm_t_warp_hetero_bf16
+// @BE csrmm_t_warp_hetero_bf16
 FFI_CSRMM_T_WARP_HETERO(_bf16, __nv_bfloat16)
 

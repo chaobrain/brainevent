@@ -47,6 +47,7 @@
 
 #include <cuda_runtime.h>
 #include <cstdint>
+#include "brainevent/common.h"
 
 #define THREADS_PER_WARP 32
 #define THREADS_PER_BLOCK_B2 512
@@ -615,9 +616,9 @@ DEFINE_BLOCK2_REDUCE(_f64, double, 2)
 
 #define DEFINE_FFI_BLOCK2_REDUCE(SUFFIX, SCALAR_T, CHUNK_SIZE)                \
 void pararnn_reduce_block2##SUFFIX(                                           \
-    tvm::ffi::TensorView jac_tv,                                              \
-    tvm::ffi::TensorView rhs_tv,                                              \
-    tvm::ffi::TensorView output_tv,                                           \
+    const BE::Tensor jac_tv,                                              \
+    const BE::Tensor rhs_tv,                                              \
+    BE::Tensor output_tv,                                           \
     int64_t stream                                                            \
 ) {                                                                           \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                  \
@@ -694,8 +695,8 @@ void pararnn_reduce_block2##SUFFIX(                                           \
     }                                                                         \
 }
 
-// @tvm_ffi pararnn_reduce_block2_f32
+// @BE pararnn_reduce_block2_f32
 DEFINE_FFI_BLOCK2_REDUCE(_f32, float, 2)
 
-// @tvm_ffi pararnn_reduce_block2_f64
+// @BE pararnn_reduce_block2_f64
 DEFINE_FFI_BLOCK2_REDUCE(_f64, double, 2)

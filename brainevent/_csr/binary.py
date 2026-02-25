@@ -23,12 +23,13 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import _csr_to_coo, generate_block_dim, namescope
-from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, register_tvm_cuda_from_file, \
+from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, \
     jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Indptr, Index, MatrixShape
 from brainevent.config import get_numba_parallel
+from brainevent.kernix import load_cuda_file
 from .float import csrmv, csrmm
 
 __all__ = [
@@ -857,10 +858,9 @@ def _binary_csrmv_cuda_kernel(
     transpose: bool,
     **kwargs,
 ):
-    register_tvm_cuda_from_file(
-        module='csr_binary_csrmv',
-        source=Path(__file__).parent.joinpath('binary_csrmv.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_csrmv.cu'),
+        name='csr_binary_csrmv',
     )
 
     out_info = kwargs['outs']
@@ -1901,10 +1901,9 @@ def _binary_csrmm_cuda_kernel(
     transpose: bool,
     **kwargs,
 ):
-    register_tvm_cuda_from_file(
-        module='csr_binary_csrmm',
-        source=Path(__file__).parent.joinpath('binary_csrmm.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_csrmm.cu'),
+        name='csr_binary_csrmm',
     )
 
     out_info = kwargs['outs']

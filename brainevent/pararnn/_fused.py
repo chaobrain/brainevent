@@ -39,7 +39,8 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._op import XLACustomKernel, register_tvm_cuda_from_file
+from brainevent._op import XLACustomKernel
+from brainevent.kernix import load_cuda_file
 from ._parallel_reduce import _adjoint_reduce_diag
 
 __all__ = [
@@ -339,9 +340,9 @@ def _fused_gru_fwd_jax_kernel(**kwargs):
 
 def _fused_gru_fwd_cuda_kernel(**kwargs):
     """tvmffi kernel: fused GRU forward via CUDA."""
-    register_tvm_cuda_from_file(
-        module='fused_gru_diag',
-        source=Path(__file__).parent / '_fused_gru_diag.cu',
+    load_cuda_file(
+        Path(__file__).parent / '_fused_gru_diag.cu',
+        name='fused_gru_diag',
     )
     out_info = kwargs['outs']
     sfx = _dtype_sfx[np.dtype(kwargs['A_info'].dtype)]
@@ -527,9 +528,9 @@ def _fused_gru_bwd_jax_kernel(**kwargs):
 
 def _fused_gru_bwd_cuda_kernel(**kwargs):
     """tvmffi kernel: fused GRU backward via CUDA."""
-    register_tvm_cuda_from_file(
-        module='fused_gru_diag',
-        source=Path(__file__).parent / '_fused_gru_diag.cu',
+    load_cuda_file(
+        Path(__file__).parent / '_fused_gru_diag.cu',
+        name='fused_gru_diag',
     )
     out_info = kwargs['outs']
     sfx = _dtype_sfx[np.dtype(kwargs['A_info'].dtype)]
@@ -665,9 +666,9 @@ def _fused_lstm_fwd_jax_kernel(**kwargs):
 
 def _fused_lstm_fwd_cuda_kernel(**kwargs):
     """tvmffi kernel: fused LSTM-CIFG forward via CUDA."""
-    register_tvm_cuda_from_file(
-        module='fused_lstm_cifg_diag',
-        source=Path(__file__).parent / '_fused_lstm_cifg_diag.cu',
+    load_cuda_file(
+        Path(__file__).parent / '_fused_lstm_cifg_diag.cu',
+        name='fused_lstm_cifg_diag',
     )
     out_info = kwargs['outs']
     sfx = _dtype_sfx[np.dtype(kwargs['A_info'].dtype)]
@@ -852,9 +853,9 @@ def _fused_lstm_bwd_jax_kernel(**kwargs):
 
 def _fused_lstm_bwd_cuda_kernel(**kwargs):
     """tvmffi kernel: fused LSTM-CIFG backward via CUDA."""
-    register_tvm_cuda_from_file(
-        module='fused_lstm_cifg_diag',
-        source=Path(__file__).parent / '_fused_lstm_cifg_diag.cu',
+    load_cuda_file(
+        Path(__file__).parent / '_fused_lstm_cifg_diag.cu',
+        name='fused_lstm_cifg_diag',
     )
     out_info = kwargs['outs']
     sfx = _dtype_sfx[np.dtype(kwargs['A_info'].dtype)]

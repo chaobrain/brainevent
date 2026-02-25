@@ -56,7 +56,7 @@ void vector_add(BE::Tensor a, BE::Tensor b,
 @pytest.fixture(scope="module")
 def vadd_module():
     """Compile the vector_add kernel once for all tests in this module."""
-    import brainevent.source2kernel as jkb
+    import brainevent.kernix as jkb
     return jkb.load_cuda_inline(
         name="test_vadd",
         cuda_sources=CUDA_SRC,
@@ -128,6 +128,6 @@ def test_module_attributes(vadd_module):
 
 def test_list_registered_targets(vadd_module):
     """Targets appear in the global registry."""
-    import brainevent.source2kernel as jkb
+    import brainevent.kernix as jkb
     targets = jkb.list_registered_targets()
     assert "test_vadd.vector_add" in targets

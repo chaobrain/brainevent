@@ -54,6 +54,7 @@
 
 #include <cuda_runtime.h>
 #include <cstdint>
+#include "brainevent/common.h"
 
 #define THREADS_PER_WARP 32
 #define THREADS_PER_BLOCK_LSTM 512
@@ -692,12 +693,12 @@ DEFINE_FUSED_BWD_LSTM_CIFG(_f64, double, 1)
 // TVM FFI entry points
 // ============================================================================
 
-// @tvm_ffi fused_fwd_lstm_cifg_diag_f32
+// @BE fused_fwd_lstm_cifg_diag_f32
 void fused_fwd_lstm_cifg_diag_f32(
-    tvm::ffi::TensorView A_tv,
-    tvm::ffi::TensorView Bxpb_tv,
-    tvm::ffi::TensorView C_tv,
-    tvm::ffi::TensorView full_state_tv,
+    const BE::Tensor A_tv,
+    const BE::Tensor Bxpb_tv,
+    const BE::Tensor C_tv,
+    const BE::Tensor full_state_tv,
     int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
@@ -724,12 +725,12 @@ void fused_fwd_lstm_cifg_diag_f32(
         max_its, omega);
 }
 
-// @tvm_ffi fused_fwd_lstm_cifg_diag_f64
+// @BE fused_fwd_lstm_cifg_diag_f64
 void fused_fwd_lstm_cifg_diag_f64(
-    tvm::ffi::TensorView A_tv,
-    tvm::ffi::TensorView Bxpb_tv,
-    tvm::ffi::TensorView C_tv,
-    tvm::ffi::TensorView full_state_tv,
+    const BE::Tensor A_tv,
+    const BE::Tensor Bxpb_tv,
+    const BE::Tensor C_tv,
+    const BE::Tensor full_state_tv,
     int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
@@ -756,14 +757,14 @@ void fused_fwd_lstm_cifg_diag_f64(
         max_its, omega);
 }
 
-// @tvm_ffi fused_bwd_lstm_cifg_diag_f32
+// @BE fused_bwd_lstm_cifg_diag_f32
 void fused_bwd_lstm_cifg_diag_f32(
-    tvm::ffi::TensorView grad_tv,
-    tvm::ffi::TensorView full_state_tv,
-    tvm::ffi::TensorView A_tv,
-    tvm::ffi::TensorView Bxpb_tv,
-    tvm::ffi::TensorView C_tv,
-    tvm::ffi::TensorView dl_dh_tv,
+    const BE::Tensor grad_tv,
+    const BE::Tensor full_state_tv,
+    const BE::Tensor A_tv,
+    const BE::Tensor Bxpb_tv,
+    const BE::Tensor C_tv,
+    const BE::Tensor dl_dh_tv,
     int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
@@ -787,14 +788,14 @@ void fused_bwd_lstm_cifg_diag_f32(
         seq_len, state_dim, batch_size);
 }
 
-// @tvm_ffi fused_bwd_lstm_cifg_diag_f64
+// @BE fused_bwd_lstm_cifg_diag_f64
 void fused_bwd_lstm_cifg_diag_f64(
-    tvm::ffi::TensorView grad_tv,
-    tvm::ffi::TensorView full_state_tv,
-    tvm::ffi::TensorView A_tv,
-    tvm::ffi::TensorView Bxpb_tv,
-    tvm::ffi::TensorView C_tv,
-    tvm::ffi::TensorView dl_dh_tv,
+    const BE::Tensor grad_tv,
+    const BE::Tensor full_state_tv,
+    const BE::Tensor A_tv,
+    const BE::Tensor Bxpb_tv,
+    const BE::Tensor C_tv,
+    const BE::Tensor dl_dh_tv,
     int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);

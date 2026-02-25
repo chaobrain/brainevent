@@ -95,6 +95,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 
 // =========================================================================
 // Binary search helper: find the CSR row that owns non-zero index j
@@ -376,9 +377,9 @@ DEFINE_YW2Y_T_NZ_THREAD  (_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
 // ---- FFI macro: NT row-thread kernel ----
 #define FFI_YW2Y_NT_ROW_THREAD(SUFFIX, WEIGHT_C_T)             \
 void csrmv_yw2y_nt_row_thread##SUFFIX(                         \
-    tvm::ffi::TensorView y,       tvm::ffi::TensorView w,      \
-    tvm::ffi::TensorView indices, tvm::ffi::TensorView indptr, \
-    tvm::ffi::TensorView output,  int64_t stream               \
+    const BE::Tensor y,       const BE::Tensor w,      \
+    const BE::Tensor indices, const BE::Tensor indptr, \
+    BE::Tensor output,  int64_t stream               \
 ) {                                                            \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);   \
     int m     = static_cast<int>(indptr.size(0)) - 1;          \
@@ -393,9 +394,9 @@ void csrmv_yw2y_nt_row_thread##SUFFIX(                         \
 // ---- FFI macro: NT row-warp kernel ----
 #define FFI_YW2Y_NT_ROW_WARP(SUFFIX, WEIGHT_C_T)               \
 void csrmv_yw2y_nt_row_warp##SUFFIX(                           \
-    tvm::ffi::TensorView y,       tvm::ffi::TensorView w,      \
-    tvm::ffi::TensorView indices, tvm::ffi::TensorView indptr, \
-    tvm::ffi::TensorView output,  int64_t stream               \
+    const BE::Tensor y,       const BE::Tensor w,      \
+    const BE::Tensor indices, const BE::Tensor indptr, \
+    BE::Tensor output,  int64_t stream               \
 ) {                                                            \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);   \
     int m = static_cast<int>(indptr.size(0)) - 1;              \
@@ -409,9 +410,9 @@ void csrmv_yw2y_nt_row_warp##SUFFIX(                           \
 // ---- FFI macro: NT nz-thread kernel ----
 #define FFI_YW2Y_NT_NZ_THREAD(SUFFIX, WEIGHT_C_T)                  \
 void csrmv_yw2y_nt_nz_thread##SUFFIX(                              \
-    tvm::ffi::TensorView y,       tvm::ffi::TensorView w,          \
-    tvm::ffi::TensorView indices, tvm::ffi::TensorView indptr,     \
-    tvm::ffi::TensorView output,  int64_t stream                   \
+    const BE::Tensor y,       const BE::Tensor w,          \
+    const BE::Tensor indices, const BE::Tensor indptr,     \
+    BE::Tensor output,  int64_t stream                   \
 ) {                                                                \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);       \
     int m   = static_cast<int>(indptr.size(0)) - 1;                \
@@ -437,9 +438,9 @@ void csrmv_yw2y_nt_nz_thread##SUFFIX(                              \
 //
 #define FFI_YW2Y_NT_AUTO(SUFFIX, WEIGHT_C_T)                                                    \
 void csrmv_yw2y_nt_auto##SUFFIX(                                                                \
-    tvm::ffi::TensorView y,       tvm::ffi::TensorView w,                                       \
-    tvm::ffi::TensorView indices, tvm::ffi::TensorView indptr,                                  \
-    tvm::ffi::TensorView output,  int64_t stream                                                \
+    const BE::Tensor y,       const BE::Tensor w,                                       \
+    const BE::Tensor indices, const BE::Tensor indptr,                                  \
+    BE::Tensor output,  int64_t stream                                                \
 ) {                                                                                             \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                    \
     int m     = static_cast<int>(indptr.size(0)) - 1;                                           \
@@ -466,9 +467,9 @@ void csrmv_yw2y_nt_auto##SUFFIX(                                                
 // ---- FFI macro: T nz-thread kernel (transpose) ----
 #define FFI_YW2Y_T_NZ_THREAD(SUFFIX, WEIGHT_C_T)               \
 void csrmv_yw2y_t_nz_thread##SUFFIX(                           \
-    tvm::ffi::TensorView y,       tvm::ffi::TensorView w,      \
-    tvm::ffi::TensorView indices, tvm::ffi::TensorView indptr, \
-    tvm::ffi::TensorView output,  int64_t stream               \
+    const BE::Tensor y,       const BE::Tensor w,      \
+    const BE::Tensor indices, const BE::Tensor indptr, \
+    BE::Tensor output,  int64_t stream               \
 ) {                                                            \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);   \
     int nse = static_cast<int>(w.size(0));                     \
@@ -486,31 +487,31 @@ void csrmv_yw2y_t_nz_thread##SUFFIX(                           \
 // =========================================================================
 
 // ---- Float32 ----
-// @tvm_ffi csrmv_yw2y_nt_row_thread_f32
+// @BE csrmv_yw2y_nt_row_thread_f32
 FFI_YW2Y_NT_ROW_THREAD(_f32,  float)
-// @tvm_ffi csrmv_yw2y_nt_row_warp_f32
+// @BE csrmv_yw2y_nt_row_warp_f32
 FFI_YW2Y_NT_ROW_WARP(_f32,   float)
-// @tvm_ffi csrmv_yw2y_nt_nz_thread_f32
+// @BE csrmv_yw2y_nt_nz_thread_f32
 FFI_YW2Y_NT_NZ_THREAD(_f32,  float)
-// @tvm_ffi csrmv_yw2y_nt_auto_f32
+// @BE csrmv_yw2y_nt_auto_f32
 FFI_YW2Y_NT_AUTO(_f32,       float)
-// @tvm_ffi csrmv_yw2y_t_nz_thread_f32
+// @BE csrmv_yw2y_t_nz_thread_f32
 FFI_YW2Y_T_NZ_THREAD(_f32,   float)
 
 // ---- Float64 ----
-// @tvm_ffi csrmv_yw2y_nt_auto_f64
+// @BE csrmv_yw2y_nt_auto_f64
 FFI_YW2Y_NT_AUTO(_f64,       double)
-// @tvm_ffi csrmv_yw2y_t_nz_thread_f64
+// @BE csrmv_yw2y_t_nz_thread_f64
 FFI_YW2Y_T_NZ_THREAD(_f64,   double)
 
 // ---- Float16 (accumulates in float32) ----
-// @tvm_ffi csrmv_yw2y_nt_auto_f16
+// @BE csrmv_yw2y_nt_auto_f16
 FFI_YW2Y_NT_AUTO(_f16,       __half)
-// @tvm_ffi csrmv_yw2y_t_nz_thread_f16
+// @BE csrmv_yw2y_t_nz_thread_f16
 FFI_YW2Y_T_NZ_THREAD(_f16,   __half)
 
 // ---- BFloat16 (accumulates in float32) ----
-// @tvm_ffi csrmv_yw2y_nt_auto_bf16
+// @BE csrmv_yw2y_nt_auto_bf16
 FFI_YW2Y_NT_AUTO(_bf16,      __nv_bfloat16)
-// @tvm_ffi csrmv_yw2y_t_nz_thread_bf16
+// @BE csrmv_yw2y_t_nz_thread_bf16
 FFI_YW2Y_T_NZ_THREAD(_bf16,  __nv_bfloat16)

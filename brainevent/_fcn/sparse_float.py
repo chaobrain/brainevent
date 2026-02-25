@@ -26,10 +26,11 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
 from brainevent.config import get_numba_parallel
+from brainevent.kernix import load_cuda_file
 from .float import fcnmv_p_call, fcnmm_p_call
 
 __all__ = [
@@ -315,10 +316,9 @@ def _spfloat_fcnmv_cuda_kernel(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='fcn_sparse_float_mv',
-        source=Path(__file__).parent.joinpath('sparse_float_fcnmv.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('sparse_float_fcnmv.cu'),
+        name='fcn_sparse_float_mv',
     )
 
     out_info = kwargs['outs']
@@ -1027,10 +1027,9 @@ def _spfloat_fcnmm_cuda_kernel(
     matrix_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='fcn_sparse_float_mm',
-        source=Path(__file__).parent.joinpath('sparse_float_fcnmm.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('sparse_float_fcnmm.cu'),
+        name='fcn_sparse_float_mm',
     )
 
     out_info = kwargs['outs']

@@ -30,6 +30,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 
 // ============================================================================
 // FCN Matrix-Vector Multiplication (spfloat_fcnmv)
@@ -351,8 +352,8 @@ __global__ void _spfloat_gather_shared_hetero_kern(const int32_t* __restrict__ i
 // ---- FFI macro: gather homo auto ----
 #define FFI_SPFLOAT_GATHER_HOMO_AUTO(SUFFIX, WEIGHT_C_T, SHM_SIZE)                                                     \
 void spfloat_fcnmv_gather_homo_auto##SUFFIX(                                                                           \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                                                        \
-    tvm::ffi::TensorView vector,  tvm::ffi::TensorView output, int64_t stream                                          \
+    const BE::Tensor weights, const BE::Tensor indices,                                                        \
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream                                          \
 ) {                                                                                                                    \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                                                          \
     int n_pre       = static_cast<int>(indices.size(0));                                                               \
@@ -370,8 +371,8 @@ void spfloat_fcnmv_gather_homo_auto##SUFFIX(                                    
 // ---- FFI macro: gather hetero auto ----
 #define FFI_SPFLOAT_GATHER_HETERO_AUTO(SUFFIX, WEIGHT_C_T, SHM_SIZE)                                                     \
 void spfloat_fcnmv_gather_hetero_auto##SUFFIX(                                                                           \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                                                          \
-    tvm::ffi::TensorView vector,  tvm::ffi::TensorView output, int64_t stream                                            \
+    const BE::Tensor weights, const BE::Tensor indices,                                                          \
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream                                            \
 ) {                                                                                                                      \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                                                            \
     int n_pre       = static_cast<int>(indices.size(0));                                                                 \
@@ -389,8 +390,8 @@ void spfloat_fcnmv_gather_hetero_auto##SUFFIX(                                  
 // ---- FFI macro: scatter homo auto ----
 #define FFI_SPFLOAT_SCATTER_HOMO_AUTO(SUFFIX, WEIGHT_C_T)                                                        \
 void spfloat_fcnmv_scatter_homo_auto##SUFFIX(                                                                    \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                                                  \
-    tvm::ffi::TensorView vector,  tvm::ffi::TensorView output, int64_t stream                                    \
+    const BE::Tensor weights, const BE::Tensor indices,                                                  \
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream                                    \
 ) {                                                                                                              \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                                                    \
     int n_pre       = static_cast<int>(indices.size(0));                                                         \
@@ -411,8 +412,8 @@ void spfloat_fcnmv_scatter_homo_auto##SUFFIX(                                   
 // ---- FFI macro: scatter hetero auto ----
 #define FFI_SPFLOAT_SCATTER_HETERO_AUTO(SUFFIX, WEIGHT_C_T)                                                        \
 void spfloat_fcnmv_scatter_hetero_auto##SUFFIX(                                                                    \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                                                    \
-    tvm::ffi::TensorView vector,  tvm::ffi::TensorView output, int64_t stream                                      \
+    const BE::Tensor weights, const BE::Tensor indices,                                                    \
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream                                      \
 ) {                                                                                                                \
     cudaStream_t s  = reinterpret_cast<cudaStream_t>(stream);                                                      \
     int n_pre       = static_cast<int>(indices.size(0));                                                           \
@@ -432,50 +433,50 @@ void spfloat_fcnmv_scatter_hetero_auto##SUFFIX(                                 
 
 // SpMV FFI Instantiations
 // ---- float32 ----
-// @tvm_ffi spfloat_fcnmv_gather_homo_auto_f32
+// @BE spfloat_fcnmv_gather_homo_auto_f32
 FFI_SPFLOAT_GATHER_HOMO_AUTO  (_f32, float, 32 * sizeof(float))
-// @tvm_ffi spfloat_fcnmv_gather_hetero_auto_f32
+// @BE spfloat_fcnmv_gather_hetero_auto_f32
 FFI_SPFLOAT_GATHER_HETERO_AUTO(_f32, float, 32 * sizeof(float))
-// @tvm_ffi spfloat_fcnmv_scatter_homo_auto_f32
+// @BE spfloat_fcnmv_scatter_homo_auto_f32
 FFI_SPFLOAT_SCATTER_HOMO_AUTO (_f32, float)
-// @tvm_ffi spfloat_fcnmv_scatter_hetero_auto_f32
+// @BE spfloat_fcnmv_scatter_hetero_auto_f32
 FFI_SPFLOAT_SCATTER_HETERO_AUTO(_f32, float)
 
 // ---- float64 ----
-// @tvm_ffi spfloat_fcnmv_gather_homo_auto_f64
+// @BE spfloat_fcnmv_gather_homo_auto_f64
 FFI_SPFLOAT_GATHER_HOMO_AUTO  (_f64, double, 32 * sizeof(double))
-// @tvm_ffi spfloat_fcnmv_gather_hetero_auto_f64
+// @BE spfloat_fcnmv_gather_hetero_auto_f64
 FFI_SPFLOAT_GATHER_HETERO_AUTO(_f64, double, 32 * sizeof(double))
-// @tvm_ffi spfloat_fcnmv_scatter_homo_auto_f64
+// @BE spfloat_fcnmv_scatter_homo_auto_f64
 FFI_SPFLOAT_SCATTER_HOMO_AUTO (_f64, double)
-// @tvm_ffi spfloat_fcnmv_scatter_hetero_auto_f64
+// @BE spfloat_fcnmv_scatter_hetero_auto_f64
 FFI_SPFLOAT_SCATTER_HETERO_AUTO(_f64, double)
 
 // ---- float16 ----
-// @tvm_ffi spfloat_fcnmv_gather_homo_auto_f16
+// @BE spfloat_fcnmv_gather_homo_auto_f16
 FFI_SPFLOAT_GATHER_HOMO_AUTO  (_f16, __half, 32 * sizeof(float))
-// @tvm_ffi spfloat_fcnmv_gather_hetero_auto_f16
+// @BE spfloat_fcnmv_gather_hetero_auto_f16
 FFI_SPFLOAT_GATHER_HETERO_AUTO(_f16, __half, 32 * sizeof(float))
-// @tvm_ffi spfloat_fcnmv_scatter_homo_auto_f16
+// @BE spfloat_fcnmv_scatter_homo_auto_f16
 FFI_SPFLOAT_SCATTER_HOMO_AUTO (_f16, __half)
-// @tvm_ffi spfloat_fcnmv_scatter_hetero_auto_f16
+// @BE spfloat_fcnmv_scatter_hetero_auto_f16
 FFI_SPFLOAT_SCATTER_HETERO_AUTO(_f16, __half)
 
 // ---- bfloat16 ----
-// @tvm_ffi spfloat_fcnmv_gather_homo_auto_bf16
+// @BE spfloat_fcnmv_gather_homo_auto_bf16
 FFI_SPFLOAT_GATHER_HOMO_AUTO  (_bf16, __nv_bfloat16, 32 * sizeof(float))
-// @tvm_ffi spfloat_fcnmv_gather_hetero_auto_bf16
+// @BE spfloat_fcnmv_gather_hetero_auto_bf16
 FFI_SPFLOAT_GATHER_HETERO_AUTO(_bf16, __nv_bfloat16, 32 * sizeof(float))
-// @tvm_ffi spfloat_fcnmv_scatter_homo_auto_bf16
+// @BE spfloat_fcnmv_scatter_homo_auto_bf16
 FFI_SPFLOAT_SCATTER_HOMO_AUTO (_bf16, __nv_bfloat16)
-// @tvm_ffi spfloat_fcnmv_scatter_hetero_auto_bf16
+// @BE spfloat_fcnmv_scatter_hetero_auto_bf16
 FFI_SPFLOAT_SCATTER_HETERO_AUTO(_bf16, __nv_bfloat16)
 
 // SpMV f32-specific specializations
-// @tvm_ffi spfloat_fcnmv_gather_shared_homo_f32
+// @BE spfloat_fcnmv_gather_shared_homo_f32
 void spfloat_fcnmv_gather_shared_homo_f32(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView vector,  tvm::ffi::TensorView output, int64_t stream
+    const BE::Tensor weights, const BE::Tensor indices,
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
     int n_pre  = static_cast<int>(indices.size(0));
@@ -489,10 +490,10 @@ void spfloat_fcnmv_gather_shared_homo_f32(
         n_pre, n_conn);
 }
 
-// @tvm_ffi spfloat_fcnmv_gather_shared_hetero_f32
+// @BE spfloat_fcnmv_gather_shared_hetero_f32
 void spfloat_fcnmv_gather_shared_hetero_f32(
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,
-    tvm::ffi::TensorView vector,  tvm::ffi::TensorView output, int64_t stream
+    const BE::Tensor weights, const BE::Tensor indices,
+    const BE::Tensor vector,  BE::Tensor output, int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
     int n_pre  = static_cast<int>(indices.size(0));

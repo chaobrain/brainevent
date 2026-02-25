@@ -29,11 +29,11 @@ requires_gpu = _pytest.mark.skipif(
 
 pytestmark = requires_gpu
 
-from brainevent.source2kernel._codegen import normalize_tokens
+from brainevent.kernix._codegen import normalize_tokens
 
 from brainevent._error import KernelError
-from brainevent.source2kernel._codegen import parse_annotations
-from brainevent.source2kernel import load_cuda_inline
+from brainevent.kernix._codegen import parse_annotations
+from brainevent.kernix import load_cuda_inline
 
 
 # --- Unit tests for normalize_tokens (no GPU needed) ---

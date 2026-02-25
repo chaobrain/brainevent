@@ -26,9 +26,10 @@ from jax.interpreters import ad
 from brainevent._data import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, jaxinfo_to_warpinfo
 from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
+from brainevent.kernix import load_cuda_file
 
 __all__ = [
     "jits",
@@ -758,10 +759,9 @@ def _jits_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='jit_scalar_jits',
-        source=Path(__file__).parent.joinpath('float_jits.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_jits.cu'),
+        name='jit_scalar_jits',
     )
     sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
     variant = 'corder_true' if corder else 'corder_false'
@@ -777,10 +777,9 @@ def _jitsmv_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='jit_scalar_jitsmv',
-        source=Path(__file__).parent.joinpath('float_jitsmv.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_jitsmv.cu'),
+        name='jit_scalar_jitsmv',
     )
     sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
     variant = 'gather' if corder else 'scatter'
@@ -796,10 +795,9 @@ def _jitsmm_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='jit_scalar_jitsmm',
-        source=Path(__file__).parent.joinpath('float_jitsmm.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('float_jitsmm.cu'),
+        name='jit_scalar_jitsmm',
     )
     sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
     variant = 'gather' if corder else 'scatter'

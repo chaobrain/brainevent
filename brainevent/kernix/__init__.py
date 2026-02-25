@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-"""brainevent.source2kernel: runtime C++/CUDA compilation bridge for JAX FFI."""
+"""brainevent.kernix: runtime C++/CUDA compilation bridge for JAX FFI."""
 
 
 from ._pipeline import (

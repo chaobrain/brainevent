@@ -137,6 +137,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 
 // =========================================================================
 // Vectorized load helpers (ITERATION 2 optimization)
@@ -473,9 +474,9 @@ DEFINE_SLICE_GRAD_WARP        (_bf16, __nv_bfloat16, atomic_add_bf16)
 // ---- FFI macro: forward homo thread ----
 #define FFI_SLICE_FWD_HOMO_THREAD(SUFFIX, WEIGHT_C_T)                       \
 void csr_slice_rows_fwd_homo_thread##SUFFIX(                                \
-    tvm::ffi::TensorView data,  tvm::ffi::TensorView indices,               \
-    tvm::ffi::TensorView indptr, tvm::ffi::TensorView row_indices,          \
-    tvm::ffi::TensorView output, int64_t stream                             \
+    const BE::Tensor data,  const BE::Tensor indices,               \
+    const BE::Tensor indptr, const BE::Tensor row_indices,          \
+    BE::Tensor output, int64_t stream                             \
 ) {                                                                         \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);             \
     int m             = static_cast<int>(indptr.size(0)) - 1;               \
@@ -496,9 +497,9 @@ void csr_slice_rows_fwd_homo_thread##SUFFIX(                                \
 // ---- FFI macro: forward hetero thread ----
 #define FFI_SLICE_FWD_HETERO_THREAD(SUFFIX, WEIGHT_C_T)                     \
 void csr_slice_rows_fwd_hetero_thread##SUFFIX(                              \
-    tvm::ffi::TensorView data,  tvm::ffi::TensorView indices,               \
-    tvm::ffi::TensorView indptr, tvm::ffi::TensorView row_indices,          \
-    tvm::ffi::TensorView output, int64_t stream                             \
+    const BE::Tensor data,  const BE::Tensor indices,               \
+    const BE::Tensor indptr, const BE::Tensor row_indices,          \
+    BE::Tensor output, int64_t stream                             \
 ) {                                                                         \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);             \
     int m             = static_cast<int>(indptr.size(0)) - 1;               \
@@ -519,9 +520,9 @@ void csr_slice_rows_fwd_hetero_thread##SUFFIX(                              \
 // ---- FFI macro: forward homo warp ----
 #define FFI_SLICE_FWD_HOMO_WARP(SUFFIX, WEIGHT_C_T)                         \
 void csr_slice_rows_fwd_homo_warp##SUFFIX(                                  \
-    tvm::ffi::TensorView data,  tvm::ffi::TensorView indices,               \
-    tvm::ffi::TensorView indptr, tvm::ffi::TensorView row_indices,          \
-    tvm::ffi::TensorView output, int64_t stream                             \
+    const BE::Tensor data,  const BE::Tensor indices,               \
+    const BE::Tensor indptr, const BE::Tensor row_indices,          \
+    BE::Tensor output, int64_t stream                             \
 ) {                                                                         \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);             \
     int m             = static_cast<int>(indptr.size(0)) - 1;               \
@@ -541,9 +542,9 @@ void csr_slice_rows_fwd_homo_warp##SUFFIX(                                  \
 // ---- FFI macro: forward hetero warp ----
 #define FFI_SLICE_FWD_HETERO_WARP(SUFFIX, WEIGHT_C_T)                       \
 void csr_slice_rows_fwd_hetero_warp##SUFFIX(                                \
-    tvm::ffi::TensorView data,  tvm::ffi::TensorView indices,               \
-    tvm::ffi::TensorView indptr, tvm::ffi::TensorView row_indices,          \
-    tvm::ffi::TensorView output, int64_t stream                             \
+    const BE::Tensor data,  const BE::Tensor indices,               \
+    const BE::Tensor indptr, const BE::Tensor row_indices,          \
+    BE::Tensor output, int64_t stream                             \
 ) {                                                                         \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);             \
     int m             = static_cast<int>(indptr.size(0)) - 1;               \
@@ -563,9 +564,9 @@ void csr_slice_rows_fwd_hetero_warp##SUFFIX(                                \
 // ---- FFI macro: forward homo block ----
 #define FFI_SLICE_FWD_HOMO_BLOCK(SUFFIX, WEIGHT_C_T)                        \
 void csr_slice_rows_fwd_homo_block##SUFFIX(                                 \
-    tvm::ffi::TensorView data,  tvm::ffi::TensorView indices,               \
-    tvm::ffi::TensorView indptr, tvm::ffi::TensorView row_indices,          \
-    tvm::ffi::TensorView output, int64_t stream                             \
+    const BE::Tensor data,  const BE::Tensor indices,               \
+    const BE::Tensor indptr, const BE::Tensor row_indices,          \
+    BE::Tensor output, int64_t stream                             \
 ) {                                                                         \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);             \
     int m             = static_cast<int>(indptr.size(0)) - 1;               \
@@ -585,9 +586,9 @@ void csr_slice_rows_fwd_homo_block##SUFFIX(                                 \
 // ---- FFI macro: forward hetero block ----
 #define FFI_SLICE_FWD_HETERO_BLOCK(SUFFIX, WEIGHT_C_T)                      \
 void csr_slice_rows_fwd_hetero_block##SUFFIX(                               \
-    tvm::ffi::TensorView data,  tvm::ffi::TensorView indices,               \
-    tvm::ffi::TensorView indptr, tvm::ffi::TensorView row_indices,          \
-    tvm::ffi::TensorView output, int64_t stream                             \
+    const BE::Tensor data,  const BE::Tensor indices,               \
+    const BE::Tensor indptr, const BE::Tensor row_indices,          \
+    BE::Tensor output, int64_t stream                             \
 ) {                                                                         \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);             \
     int m             = static_cast<int>(indptr.size(0)) - 1;               \
@@ -607,9 +608,9 @@ void csr_slice_rows_fwd_hetero_block##SUFFIX(                               \
 // ---- FFI macro: forward homo auto (selects thread/warp/block by avg_nnz) ----
 #define FFI_SLICE_FWD_HOMO_AUTO(SUFFIX, WEIGHT_C_T)                                     \
 void csr_slice_rows_fwd_homo_auto##SUFFIX(                                              \
-    tvm::ffi::TensorView data,  tvm::ffi::TensorView indices,                           \
-    tvm::ffi::TensorView indptr, tvm::ffi::TensorView row_indices,                      \
-    tvm::ffi::TensorView output, int64_t stream                                         \
+    const BE::Tensor data,  const BE::Tensor indices,                           \
+    const BE::Tensor indptr, const BE::Tensor row_indices,                      \
+    BE::Tensor output, int64_t stream                                         \
 ) {                                                                                     \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);                         \
     int m             = static_cast<int>(indptr.size(0)) - 1;                           \
@@ -643,9 +644,9 @@ void csr_slice_rows_fwd_homo_auto##SUFFIX(                                      
 // ---- FFI macro: forward hetero auto (selects thread/warp/block by avg_nnz) ----
 #define FFI_SLICE_FWD_HETERO_AUTO(SUFFIX, WEIGHT_C_T)                                   \
 void csr_slice_rows_fwd_hetero_auto##SUFFIX(                                            \
-    tvm::ffi::TensorView data,  tvm::ffi::TensorView indices,                           \
-    tvm::ffi::TensorView indptr, tvm::ffi::TensorView row_indices,                      \
-    tvm::ffi::TensorView output, int64_t stream                                         \
+    const BE::Tensor data,  const BE::Tensor indices,                           \
+    const BE::Tensor indptr, const BE::Tensor row_indices,                      \
+    BE::Tensor output, int64_t stream                                         \
 ) {                                                                                     \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);                         \
     int m             = static_cast<int>(indptr.size(0)) - 1;                           \
@@ -679,9 +680,9 @@ void csr_slice_rows_fwd_hetero_auto##SUFFIX(                                    
 // ---- FFI macro: backward thread ----
 #define FFI_SLICE_GRAD_THREAD(SUFFIX, WEIGHT_C_T)                  \
 void csr_slice_rows_grad_thread##SUFFIX(                           \
-    tvm::ffi::TensorView ct,    tvm::ffi::TensorView indices,      \
-    tvm::ffi::TensorView indptr, tvm::ffi::TensorView row_indices, \
-    tvm::ffi::TensorView ct_data, int64_t stream                   \
+    const BE::Tensor ct,    const BE::Tensor indices,      \
+    const BE::Tensor indptr, const BE::Tensor row_indices, \
+    const BE::Tensor ct_data, int64_t stream                   \
 ) {                                                                \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);    \
     int m             = static_cast<int>(indptr.size(0)) - 1;      \
@@ -703,9 +704,9 @@ void csr_slice_rows_grad_thread##SUFFIX(                           \
 // ---- FFI macro: backward warp ----
 #define FFI_SLICE_GRAD_WARP(SUFFIX, WEIGHT_C_T)                    \
 void csr_slice_rows_grad_warp##SUFFIX(                             \
-    tvm::ffi::TensorView ct,    tvm::ffi::TensorView indices,      \
-    tvm::ffi::TensorView indptr, tvm::ffi::TensorView row_indices, \
-    tvm::ffi::TensorView ct_data, int64_t stream                   \
+    const BE::Tensor ct,    const BE::Tensor indices,      \
+    const BE::Tensor indptr, const BE::Tensor row_indices, \
+    const BE::Tensor ct_data, int64_t stream                   \
 ) {                                                                \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);    \
     int m             = static_cast<int>(indptr.size(0)) - 1;      \
@@ -726,9 +727,9 @@ void csr_slice_rows_grad_warp##SUFFIX(                             \
 // ---- FFI macro: backward auto (selects thread/warp by avg_nnz) ----
 #define FFI_SLICE_GRAD_AUTO(SUFFIX, WEIGHT_C_T)                                        \
 void csr_slice_rows_grad_auto##SUFFIX(                                                 \
-    tvm::ffi::TensorView ct,    tvm::ffi::TensorView indices,                          \
-    tvm::ffi::TensorView indptr, tvm::ffi::TensorView row_indices,                     \
-    tvm::ffi::TensorView ct_data, int64_t stream                                       \
+    const BE::Tensor ct,    const BE::Tensor indices,                          \
+    const BE::Tensor indptr, const BE::Tensor row_indices,                     \
+    const BE::Tensor ct_data, int64_t stream                                       \
 ) {                                                                                    \
     cudaStream_t s    = reinterpret_cast<cudaStream_t>(stream);                        \
     int m             = static_cast<int>(indptr.size(0)) - 1;                          \
@@ -765,97 +766,97 @@ void csr_slice_rows_grad_auto##SUFFIX(                                          
 // =========================================================================
 
 // ---- float32 ----
-// @tvm_ffi csr_slice_rows_fwd_homo_thread_f32
+// @BE csr_slice_rows_fwd_homo_thread_f32
 FFI_SLICE_FWD_HOMO_THREAD(_f32, float)
-// @tvm_ffi csr_slice_rows_fwd_hetero_thread_f32
+// @BE csr_slice_rows_fwd_hetero_thread_f32
 FFI_SLICE_FWD_HETERO_THREAD(_f32, float)
-// @tvm_ffi csr_slice_rows_fwd_homo_warp_f32
+// @BE csr_slice_rows_fwd_homo_warp_f32
 FFI_SLICE_FWD_HOMO_WARP(_f32, float)
-// @tvm_ffi csr_slice_rows_fwd_hetero_warp_f32
+// @BE csr_slice_rows_fwd_hetero_warp_f32
 FFI_SLICE_FWD_HETERO_WARP(_f32, float)
-// @tvm_ffi csr_slice_rows_fwd_homo_block_f32
+// @BE csr_slice_rows_fwd_homo_block_f32
 FFI_SLICE_FWD_HOMO_BLOCK(_f32, float)
-// @tvm_ffi csr_slice_rows_fwd_hetero_block_f32
+// @BE csr_slice_rows_fwd_hetero_block_f32
 FFI_SLICE_FWD_HETERO_BLOCK(_f32, float)
-// @tvm_ffi csr_slice_rows_fwd_homo_auto_f32
+// @BE csr_slice_rows_fwd_homo_auto_f32
 FFI_SLICE_FWD_HOMO_AUTO  (_f32, float)
-// @tvm_ffi csr_slice_rows_fwd_hetero_auto_f32
+// @BE csr_slice_rows_fwd_hetero_auto_f32
 FFI_SLICE_FWD_HETERO_AUTO(_f32, float)
-// @tvm_ffi csr_slice_rows_grad_thread_f32
+// @BE csr_slice_rows_grad_thread_f32
 FFI_SLICE_GRAD_THREAD(_f32, float)
-// @tvm_ffi csr_slice_rows_grad_warp_f32
+// @BE csr_slice_rows_grad_warp_f32
 FFI_SLICE_GRAD_WARP(_f32, float)
-// @tvm_ffi csr_slice_rows_grad_auto_f32
+// @BE csr_slice_rows_grad_auto_f32
 FFI_SLICE_GRAD_AUTO      (_f32, float)
 
 // ---- float64 ----
-// @tvm_ffi csr_slice_rows_fwd_homo_thread_f64
+// @BE csr_slice_rows_fwd_homo_thread_f64
 FFI_SLICE_FWD_HOMO_THREAD(_f64, double)
-// @tvm_ffi csr_slice_rows_fwd_hetero_thread_f64
+// @BE csr_slice_rows_fwd_hetero_thread_f64
 FFI_SLICE_FWD_HETERO_THREAD(_f64, double)
-// @tvm_ffi csr_slice_rows_fwd_homo_warp_f64
+// @BE csr_slice_rows_fwd_homo_warp_f64
 FFI_SLICE_FWD_HOMO_WARP(_f64, double)
-// @tvm_ffi csr_slice_rows_fwd_hetero_warp_f64
+// @BE csr_slice_rows_fwd_hetero_warp_f64
 FFI_SLICE_FWD_HETERO_WARP(_f64, double)
-// @tvm_ffi csr_slice_rows_fwd_homo_block_f64
+// @BE csr_slice_rows_fwd_homo_block_f64
 FFI_SLICE_FWD_HOMO_BLOCK(_f64, double)
-// @tvm_ffi csr_slice_rows_fwd_hetero_block_f64
+// @BE csr_slice_rows_fwd_hetero_block_f64
 FFI_SLICE_FWD_HETERO_BLOCK(_f64, double)
-// @tvm_ffi csr_slice_rows_fwd_homo_auto_f64
+// @BE csr_slice_rows_fwd_homo_auto_f64
 FFI_SLICE_FWD_HOMO_AUTO  (_f64, double)
-// @tvm_ffi csr_slice_rows_fwd_hetero_auto_f64
+// @BE csr_slice_rows_fwd_hetero_auto_f64
 FFI_SLICE_FWD_HETERO_AUTO(_f64, double)
-// @tvm_ffi csr_slice_rows_grad_thread_f64
+// @BE csr_slice_rows_grad_thread_f64
 FFI_SLICE_GRAD_THREAD(_f64, double)
-// @tvm_ffi csr_slice_rows_grad_warp_f64
+// @BE csr_slice_rows_grad_warp_f64
 FFI_SLICE_GRAD_WARP(_f64, double)
-// @tvm_ffi csr_slice_rows_grad_auto_f64
+// @BE csr_slice_rows_grad_auto_f64
 FFI_SLICE_GRAD_AUTO      (_f64, double)
 
 // ---- float16 (atomicAdd for grad requires sm_70+) ----
-// @tvm_ffi csr_slice_rows_fwd_homo_thread_f16
+// @BE csr_slice_rows_fwd_homo_thread_f16
 FFI_SLICE_FWD_HOMO_THREAD(_f16, __half)
-// @tvm_ffi csr_slice_rows_fwd_hetero_thread_f16
+// @BE csr_slice_rows_fwd_hetero_thread_f16
 FFI_SLICE_FWD_HETERO_THREAD(_f16, __half)
-// @tvm_ffi csr_slice_rows_fwd_homo_warp_f16
+// @BE csr_slice_rows_fwd_homo_warp_f16
 FFI_SLICE_FWD_HOMO_WARP(_f16, __half)
-// @tvm_ffi csr_slice_rows_fwd_hetero_warp_f16
+// @BE csr_slice_rows_fwd_hetero_warp_f16
 FFI_SLICE_FWD_HETERO_WARP(_f16, __half)
-// @tvm_ffi csr_slice_rows_fwd_homo_block_f16
+// @BE csr_slice_rows_fwd_homo_block_f16
 FFI_SLICE_FWD_HOMO_BLOCK(_f16, __half)
-// @tvm_ffi csr_slice_rows_fwd_hetero_block_f16
+// @BE csr_slice_rows_fwd_hetero_block_f16
 FFI_SLICE_FWD_HETERO_BLOCK(_f16, __half)
-// @tvm_ffi csr_slice_rows_fwd_homo_auto_f16
+// @BE csr_slice_rows_fwd_homo_auto_f16
 FFI_SLICE_FWD_HOMO_AUTO  (_f16, __half)
-// @tvm_ffi csr_slice_rows_fwd_hetero_auto_f16
+// @BE csr_slice_rows_fwd_hetero_auto_f16
 FFI_SLICE_FWD_HETERO_AUTO(_f16, __half)
-// @tvm_ffi csr_slice_rows_grad_thread_f16
+// @BE csr_slice_rows_grad_thread_f16
 FFI_SLICE_GRAD_THREAD(_f16, __half)
-// @tvm_ffi csr_slice_rows_grad_warp_f16
+// @BE csr_slice_rows_grad_warp_f16
 FFI_SLICE_GRAD_WARP(_f16, __half)
-// @tvm_ffi csr_slice_rows_grad_auto_f16
+// @BE csr_slice_rows_grad_auto_f16
 FFI_SLICE_GRAD_AUTO      (_f16, __half)
 
 // ---- bfloat16 (atomicAdd for grad requires sm_80+) ----
-// @tvm_ffi csr_slice_rows_fwd_homo_thread_bf16
+// @BE csr_slice_rows_fwd_homo_thread_bf16
 FFI_SLICE_FWD_HOMO_THREAD(_bf16, __nv_bfloat16)
-// @tvm_ffi csr_slice_rows_fwd_hetero_thread_bf16
+// @BE csr_slice_rows_fwd_hetero_thread_bf16
 FFI_SLICE_FWD_HETERO_THREAD(_bf16, __nv_bfloat16)
-// @tvm_ffi csr_slice_rows_fwd_homo_warp_bf16
+// @BE csr_slice_rows_fwd_homo_warp_bf16
 FFI_SLICE_FWD_HOMO_WARP(_bf16, __nv_bfloat16)
-// @tvm_ffi csr_slice_rows_fwd_hetero_warp_bf16
+// @BE csr_slice_rows_fwd_hetero_warp_bf16
 FFI_SLICE_FWD_HETERO_WARP(_bf16, __nv_bfloat16)
-// @tvm_ffi csr_slice_rows_fwd_homo_block_bf16
+// @BE csr_slice_rows_fwd_homo_block_bf16
 FFI_SLICE_FWD_HOMO_BLOCK(_bf16, __nv_bfloat16)
-// @tvm_ffi csr_slice_rows_fwd_hetero_block_bf16
+// @BE csr_slice_rows_fwd_hetero_block_bf16
 FFI_SLICE_FWD_HETERO_BLOCK(_bf16, __nv_bfloat16)
-// @tvm_ffi csr_slice_rows_fwd_homo_auto_bf16
+// @BE csr_slice_rows_fwd_homo_auto_bf16
 FFI_SLICE_FWD_HOMO_AUTO  (_bf16, __nv_bfloat16)
-// @tvm_ffi csr_slice_rows_fwd_hetero_auto_bf16
+// @BE csr_slice_rows_fwd_hetero_auto_bf16
 FFI_SLICE_FWD_HETERO_AUTO(_bf16, __nv_bfloat16)
-// @tvm_ffi csr_slice_rows_grad_thread_bf16
+// @BE csr_slice_rows_grad_thread_bf16
 FFI_SLICE_GRAD_THREAD(_bf16, __nv_bfloat16)
-// @tvm_ffi csr_slice_rows_grad_warp_bf16
+// @BE csr_slice_rows_grad_warp_bf16
 FFI_SLICE_GRAD_WARP(_bf16, __nv_bfloat16)
-// @tvm_ffi csr_slice_rows_grad_auto_bf16
+// @BE csr_slice_rows_grad_auto_bf16
 FFI_SLICE_GRAD_AUTO      (_bf16, __nv_bfloat16)

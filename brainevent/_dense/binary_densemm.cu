@@ -52,6 +52,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 
 // =========================================================================
 // Dense Matrix-Matrix Multiplication (densemm) -- tiling constants
@@ -350,8 +351,8 @@ DEFINE_SCATTER_TILED_HETERO(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16,
 
 #define FFI_GATHER_MM_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE) \
 void binary_densemm_gather_auto_homo##SUFFIX(                       \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView spikes,      \
-    tvm::ffi::TensorView output, int64_t stream                     \
+    const BE::Tensor weights, const BE::Tensor spikes,      \
+    BE::Tensor output, int64_t stream                     \
 ) {                                                                 \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);        \
     int m = static_cast<int>(output.size(0));                       \
@@ -371,8 +372,8 @@ void binary_densemm_gather_auto_homo##SUFFIX(                       \
 
 #define FFI_GATHER_MM_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE) \
 void binary_densemm_gather_auto_hetero##SUFFIX(                       \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView spikes,        \
-    tvm::ffi::TensorView output, int64_t stream                       \
+    const BE::Tensor weights, const BE::Tensor spikes,        \
+    BE::Tensor output, int64_t stream                       \
 ) {                                                                   \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);          \
     int m = static_cast<int>(weights.size(0));                        \
@@ -392,8 +393,8 @@ void binary_densemm_gather_auto_hetero##SUFFIX(                       \
 
 #define FFI_SCATTER_MM_HOMO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE) \
 void binary_densemm_scatter_auto_homo##SUFFIX(                       \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView spikes,       \
-    tvm::ffi::TensorView output, int64_t stream                      \
+    const BE::Tensor weights, const BE::Tensor spikes,       \
+    BE::Tensor output, int64_t stream                      \
 ) {                                                                  \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);         \
     int k = static_cast<int>(spikes.size(0));  /* spikes[k,n] */     \
@@ -413,8 +414,8 @@ void binary_densemm_scatter_auto_homo##SUFFIX(                       \
 
 #define FFI_SCATTER_MM_HETERO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE) \
 void binary_densemm_scatter_auto_hetero##SUFFIX(                       \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView spikes,         \
-    tvm::ffi::TensorView output, int64_t stream                        \
+    const BE::Tensor weights, const BE::Tensor spikes,         \
+    BE::Tensor output, int64_t stream                        \
 ) {                                                                    \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);           \
     int k = static_cast<int>(weights.size(0));                         \
@@ -429,73 +430,73 @@ void binary_densemm_scatter_auto_hetero##SUFFIX(                       \
 }
 
 // Homo gather FFI instantiations
-// @tvm_ffi binary_densemm_gather_auto_homo_f32_bool
+// @BE binary_densemm_gather_auto_homo_f32_bool
 FFI_GATHER_MM_HOMO(_f32_bool,    float,          int8_t, BK * (BM + 1) * sizeof(float))
-// @tvm_ffi binary_densemm_gather_auto_homo_f32_float
+// @BE binary_densemm_gather_auto_homo_f32_float
 FFI_GATHER_MM_HOMO(_f32_float,   float,          float,  BK * (BM + 1) * sizeof(float))
-// @tvm_ffi binary_densemm_gather_auto_homo_f64_bool
+// @BE binary_densemm_gather_auto_homo_f64_bool
 FFI_GATHER_MM_HOMO(_f64_bool,    double,         int8_t, BK * (BM + 1) * sizeof(double))
-// @tvm_ffi binary_densemm_gather_auto_homo_f64_float
+// @BE binary_densemm_gather_auto_homo_f64_float
 FFI_GATHER_MM_HOMO(_f64_float,   double,         float,  BK * (BM + 1) * sizeof(double))
-// @tvm_ffi binary_densemm_gather_auto_homo_f16_bool
+// @BE binary_densemm_gather_auto_homo_f16_bool
 FFI_GATHER_MM_HOMO(_f16_bool,    __half,         int8_t, BK * (BM + 1) * sizeof(float))
-// @tvm_ffi binary_densemm_gather_auto_homo_f16_float
+// @BE binary_densemm_gather_auto_homo_f16_float
 FFI_GATHER_MM_HOMO(_f16_float,   __half,         float,  BK * (BM + 1) * sizeof(float))
-// @tvm_ffi binary_densemm_gather_auto_homo_bf16_bool
+// @BE binary_densemm_gather_auto_homo_bf16_bool
 FFI_GATHER_MM_HOMO(_bf16_bool,   __nv_bfloat16,  int8_t, BK * (BM + 1) * sizeof(float))
-// @tvm_ffi binary_densemm_gather_auto_homo_bf16_float
+// @BE binary_densemm_gather_auto_homo_bf16_float
 FFI_GATHER_MM_HOMO(_bf16_float,  __nv_bfloat16,  float,  BK * (BM + 1) * sizeof(float))
 
 // Hetero gather FFI instantiations
-// @tvm_ffi binary_densemm_gather_auto_hetero_f32_bool
+// @BE binary_densemm_gather_auto_hetero_f32_bool
 FFI_GATHER_MM_HETERO(_f32_bool,    float,          int8_t, BK * (BM + 1) * sizeof(float))
-// @tvm_ffi binary_densemm_gather_auto_hetero_f32_float
+// @BE binary_densemm_gather_auto_hetero_f32_float
 FFI_GATHER_MM_HETERO(_f32_float,   float,          float,  BK * (BM + 1) * sizeof(float))
-// @tvm_ffi binary_densemm_gather_auto_hetero_f64_bool
+// @BE binary_densemm_gather_auto_hetero_f64_bool
 FFI_GATHER_MM_HETERO(_f64_bool,    double,         int8_t, BK * (BM + 1) * sizeof(double))
-// @tvm_ffi binary_densemm_gather_auto_hetero_f64_float
+// @BE binary_densemm_gather_auto_hetero_f64_float
 FFI_GATHER_MM_HETERO(_f64_float,   double,         float,  BK * (BM + 1) * sizeof(double))
-// @tvm_ffi binary_densemm_gather_auto_hetero_f16_bool
+// @BE binary_densemm_gather_auto_hetero_f16_bool
 FFI_GATHER_MM_HETERO(_f16_bool,    __half,         int8_t, BK * (BM + 1) * sizeof(float))
-// @tvm_ffi binary_densemm_gather_auto_hetero_f16_float
+// @BE binary_densemm_gather_auto_hetero_f16_float
 FFI_GATHER_MM_HETERO(_f16_float,   __half,         float,  BK * (BM + 1) * sizeof(float))
-// @tvm_ffi binary_densemm_gather_auto_hetero_bf16_bool
+// @BE binary_densemm_gather_auto_hetero_bf16_bool
 FFI_GATHER_MM_HETERO(_bf16_bool,   __nv_bfloat16,  int8_t, BK * (BM + 1) * sizeof(float))
-// @tvm_ffi binary_densemm_gather_auto_hetero_bf16_float
+// @BE binary_densemm_gather_auto_hetero_bf16_float
 FFI_GATHER_MM_HETERO(_bf16_float,  __nv_bfloat16,  float,  BK * (BM + 1) * sizeof(float))
 
 // Homo scatter FFI instantiations
-// @tvm_ffi binary_densemm_scatter_auto_homo_f32_bool
+// @BE binary_densemm_scatter_auto_homo_f32_bool
 FFI_SCATTER_MM_HOMO(_f32_bool,    float,          int8_t, BK * (BM + 1) * sizeof(float))
-// @tvm_ffi binary_densemm_scatter_auto_homo_f32_float
+// @BE binary_densemm_scatter_auto_homo_f32_float
 FFI_SCATTER_MM_HOMO(_f32_float,   float,          float,  BK * (BM + 1) * sizeof(float))
-// @tvm_ffi binary_densemm_scatter_auto_homo_f64_bool
+// @BE binary_densemm_scatter_auto_homo_f64_bool
 FFI_SCATTER_MM_HOMO(_f64_bool,    double,         int8_t, BK * (BM + 1) * sizeof(double))
-// @tvm_ffi binary_densemm_scatter_auto_homo_f64_float
+// @BE binary_densemm_scatter_auto_homo_f64_float
 FFI_SCATTER_MM_HOMO(_f64_float,   double,         float,  BK * (BM + 1) * sizeof(double))
-// @tvm_ffi binary_densemm_scatter_auto_homo_f16_bool
+// @BE binary_densemm_scatter_auto_homo_f16_bool
 FFI_SCATTER_MM_HOMO(_f16_bool,    __half,         int8_t, BK * (BM + 1) * sizeof(float))
-// @tvm_ffi binary_densemm_scatter_auto_homo_f16_float
+// @BE binary_densemm_scatter_auto_homo_f16_float
 FFI_SCATTER_MM_HOMO(_f16_float,   __half,         float,  BK * (BM + 1) * sizeof(float))
-// @tvm_ffi binary_densemm_scatter_auto_homo_bf16_bool
+// @BE binary_densemm_scatter_auto_homo_bf16_bool
 FFI_SCATTER_MM_HOMO(_bf16_bool,   __nv_bfloat16,  int8_t, BK * (BM + 1) * sizeof(float))
-// @tvm_ffi binary_densemm_scatter_auto_homo_bf16_float
+// @BE binary_densemm_scatter_auto_homo_bf16_float
 FFI_SCATTER_MM_HOMO(_bf16_float,  __nv_bfloat16,  float,  BK * (BM + 1) * sizeof(float))
 
 // Hetero scatter FFI instantiations
-// @tvm_ffi binary_densemm_scatter_auto_hetero_f32_bool
+// @BE binary_densemm_scatter_auto_hetero_f32_bool
 FFI_SCATTER_MM_HETERO(_f32_bool,    float,          int8_t, BK * (BM + 1) * sizeof(float))
-// @tvm_ffi binary_densemm_scatter_auto_hetero_f32_float
+// @BE binary_densemm_scatter_auto_hetero_f32_float
 FFI_SCATTER_MM_HETERO(_f32_float,   float,          float,  BK * (BM + 1) * sizeof(float))
-// @tvm_ffi binary_densemm_scatter_auto_hetero_f64_bool
+// @BE binary_densemm_scatter_auto_hetero_f64_bool
 FFI_SCATTER_MM_HETERO(_f64_bool,    double,         int8_t, BK * (BM + 1) * sizeof(double))
-// @tvm_ffi binary_densemm_scatter_auto_hetero_f64_float
+// @BE binary_densemm_scatter_auto_hetero_f64_float
 FFI_SCATTER_MM_HETERO(_f64_float,   double,         float,  BK * (BM + 1) * sizeof(double))
-// @tvm_ffi binary_densemm_scatter_auto_hetero_f16_bool
+// @BE binary_densemm_scatter_auto_hetero_f16_bool
 FFI_SCATTER_MM_HETERO(_f16_bool,    __half,         int8_t, BK * (BM + 1) * sizeof(float))
-// @tvm_ffi binary_densemm_scatter_auto_hetero_f16_float
+// @BE binary_densemm_scatter_auto_hetero_f16_float
 FFI_SCATTER_MM_HETERO(_f16_float,   __half,         float,  BK * (BM + 1) * sizeof(float))
-// @tvm_ffi binary_densemm_scatter_auto_hetero_bf16_bool
+// @BE binary_densemm_scatter_auto_hetero_bf16_bool
 FFI_SCATTER_MM_HETERO(_bf16_bool,   __nv_bfloat16,  int8_t, BK * (BM + 1) * sizeof(float))
-// @tvm_ffi binary_densemm_scatter_auto_hetero_bf16_float
+// @BE binary_densemm_scatter_auto_hetero_bf16_float
 FFI_SCATTER_MM_HETERO(_bf16_float,  __nv_bfloat16,  float,  BK * (BM + 1) * sizeof(float))

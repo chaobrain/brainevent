@@ -42,7 +42,8 @@ import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad
 
-from brainevent._op import XLACustomKernel, register_tvm_cuda_from_file
+from brainevent._op import XLACustomKernel
+from brainevent.kernix import load_cuda_file
 
 __all__ = [
     'parallel_reduce_diag',
@@ -130,9 +131,9 @@ def _reduce_diag_jax_kernel(**kwargs):
 
 def _reduce_diag_cuda_kernel(**kwargs):
     """tvmffi kernel generator for diagonal parallel reduction."""
-    register_tvm_cuda_from_file(
-        module='pararnn_reduce_diag',
-        source=Path(__file__).parent / '_parallel_reduce_diag.cu',
+    load_cuda_file(
+        Path(__file__).parent / '_parallel_reduce_diag.cu',
+        name='pararnn_reduce_diag',
     )
     out_info = kwargs['outs']
     sfx = _dtype_sfx[np.dtype(kwargs['rhs_info'].dtype)]
@@ -226,9 +227,9 @@ def _reduce_block_diag_jax_kernel(**kwargs):
 
 def _reduce_block_diag_cuda_kernel(**kwargs):
     """tvmffi kernel generator for 2x2 block-diagonal parallel reduction."""
-    register_tvm_cuda_from_file(
-        module='pararnn_reduce_block2',
-        source=Path(__file__).parent / '_parallel_reduce_block2.cu',
+    load_cuda_file(
+        Path(__file__).parent / '_parallel_reduce_block2.cu',
+        name='pararnn_reduce_block2',
     )
     out_info = kwargs['outs']
     sfx = _dtype_sfx[np.dtype(kwargs['rhs_info'].dtype)]

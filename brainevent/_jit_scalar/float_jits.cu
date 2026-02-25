@@ -43,6 +43,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 #include "curand_common.h"
 
 
@@ -118,10 +119,10 @@ DEFINE_JITS_CORDER_FALSE(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
 
 #define FFI_JITS_CORDER_TRUE(SUFFIX, WEIGHT_C_T)               \
 void jits_corder_true##SUFFIX(                                 \
-    tvm::ffi::TensorView weight,                               \
-    tvm::ffi::TensorView clen,                                 \
-    tvm::ffi::TensorView seed,                                 \
-    tvm::ffi::TensorView output,                               \
+    const BE::Tensor weight,                               \
+    const BE::Tensor clen,                                 \
+    const BE::Tensor seed,                                 \
+    BE::Tensor output,                               \
     int64_t stream                                             \
 ) {                                                            \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);   \
@@ -140,23 +141,23 @@ void jits_corder_true##SUFFIX(                                 \
     );                                                         \
 }
 
-// @tvm_ffi jits_corder_true_f32
+// @BE jits_corder_true_f32
 FFI_JITS_CORDER_TRUE(_f32, float)
-// @tvm_ffi jits_corder_true_f64
+// @BE jits_corder_true_f64
 FFI_JITS_CORDER_TRUE(_f64, double)
-// @tvm_ffi jits_corder_true_f16
+// @BE jits_corder_true_f16
 FFI_JITS_CORDER_TRUE(_f16, __half)
-// @tvm_ffi jits_corder_true_bf16
+// @BE jits_corder_true_bf16
 FFI_JITS_CORDER_TRUE(_bf16, __nv_bfloat16)
 
 // ---- TVM FFI: jits corder=false ----
 
 #define FFI_JITS_CORDER_FALSE(SUFFIX, WEIGHT_C_T)               \
 void jits_corder_false##SUFFIX(                                 \
-    tvm::ffi::TensorView weight,                                \
-    tvm::ffi::TensorView clen,                                  \
-    tvm::ffi::TensorView seed,                                  \
-    tvm::ffi::TensorView output,                                \
+    const BE::Tensor weight,                                \
+    const BE::Tensor clen,                                  \
+    const BE::Tensor seed,                                  \
+    BE::Tensor output,                                \
     int64_t stream                                              \
 ) {                                                             \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);    \
@@ -175,11 +176,11 @@ void jits_corder_false##SUFFIX(                                 \
     );                                                          \
 }
 
-// @tvm_ffi jits_corder_false_f32
+// @BE jits_corder_false_f32
 FFI_JITS_CORDER_FALSE(_f32, float)
-// @tvm_ffi jits_corder_false_f64
+// @BE jits_corder_false_f64
 FFI_JITS_CORDER_FALSE(_f64, double)
-// @tvm_ffi jits_corder_false_f16
+// @BE jits_corder_false_f16
 FFI_JITS_CORDER_FALSE(_f16, __half)
-// @tvm_ffi jits_corder_false_bf16
+// @BE jits_corder_false_bf16
 FFI_JITS_CORDER_FALSE(_bf16, __nv_bfloat16)

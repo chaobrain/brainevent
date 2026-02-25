@@ -43,6 +43,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 #include "curand_common.h"
 
 // #########################################################################
@@ -162,12 +163,12 @@ DEFINE_JITNMV_SCATTER(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, curan
 // --- FFI gather: dispatch to smem or global kernel ---
 #define FFI_JITNMV_GATHER(SUFFIX, WEIGHT_C_T, ACC_SIZEOF)                     \
 void jitnmv_gather##SUFFIX(                                                   \
-    tvm::ffi::TensorView w_loc,                                               \
-    tvm::ffi::TensorView w_scale,                                             \
-    tvm::ffi::TensorView clen,                                                \
-    tvm::ffi::TensorView seed,                                                \
-    tvm::ffi::TensorView vector,                                              \
-    tvm::ffi::TensorView output,                                              \
+    const BE::Tensor w_loc,                                               \
+    const BE::Tensor w_scale,                                             \
+    const BE::Tensor clen,                                                \
+    const BE::Tensor seed,                                                \
+    const BE::Tensor vector,                                              \
+    BE::Tensor output,                                              \
     int64_t stream                                                            \
 ) {                                                                           \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                  \
@@ -205,23 +206,23 @@ void jitnmv_gather##SUFFIX(                                                   \
     }                                                                         \
 }
 
-// @tvm_ffi jitnmv_gather_f32
+// @BE jitnmv_gather_f32
 FFI_JITNMV_GATHER(_f32, float, sizeof(float))
-// @tvm_ffi jitnmv_gather_f64
+// @BE jitnmv_gather_f64
 FFI_JITNMV_GATHER(_f64, double, sizeof(double))
-// @tvm_ffi jitnmv_gather_f16
+// @BE jitnmv_gather_f16
 FFI_JITNMV_GATHER(_f16, __half, sizeof(float))
-// @tvm_ffi jitnmv_gather_bf16
+// @BE jitnmv_gather_bf16
 FFI_JITNMV_GATHER(_bf16, __nv_bfloat16, sizeof(float))
 
 #define FFI_JITNMV_SCATTER(SUFFIX, WEIGHT_C_T)               \
 void jitnmv_scatter##SUFFIX(                                 \
-    tvm::ffi::TensorView w_loc,                              \
-    tvm::ffi::TensorView w_scale,                            \
-    tvm::ffi::TensorView clen,                               \
-    tvm::ffi::TensorView seed,                               \
-    tvm::ffi::TensorView vector,                             \
-    tvm::ffi::TensorView output,                             \
+    const BE::Tensor w_loc,                              \
+    const BE::Tensor w_scale,                            \
+    const BE::Tensor clen,                               \
+    const BE::Tensor seed,                               \
+    const BE::Tensor vector,                             \
+    BE::Tensor output,                             \
     int64_t stream                                           \
 ) {                                                          \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
@@ -242,11 +243,11 @@ void jitnmv_scatter##SUFFIX(                                 \
     );                                                       \
 }
 
-// @tvm_ffi jitnmv_scatter_f32
+// @BE jitnmv_scatter_f32
 FFI_JITNMV_SCATTER(_f32, float)
-// @tvm_ffi jitnmv_scatter_f64
+// @BE jitnmv_scatter_f64
 FFI_JITNMV_SCATTER(_f64, double)
-// @tvm_ffi jitnmv_scatter_f16
+// @BE jitnmv_scatter_f16
 FFI_JITNMV_SCATTER(_f16, __half)
-// @tvm_ffi jitnmv_scatter_bf16
+// @BE jitnmv_scatter_bf16
 FFI_JITNMV_SCATTER(_bf16, __nv_bfloat16)

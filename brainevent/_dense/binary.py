@@ -25,9 +25,10 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import cdiv, generate_block_dim, namescope
-from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
+from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent.config import get_numba_parallel
+from brainevent.kernix import load_cuda_file
 
 __all__ = [
     'binary_densemv', 'binary_densemv_p',
@@ -270,10 +271,9 @@ def _binary_densemv_cuda_kernel(
     transpose: bool,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='dense_binary_mv',
-        source=Path(__file__).parent.joinpath('binary_densemv.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_densemv.cu'),
+        name='dense_binary_mv',
     )
 
     out_info = kwargs['outs']
@@ -1265,10 +1265,9 @@ def _binary_densemm_cuda_kernel(
     tiled kernel achieves ~33%.  The ``jax_raw`` backend (cuBLAS) should
     be preferred for large matrices.
     """
-    register_tvm_cuda_from_file(
-        module='dense_binary_mm',
-        source=Path(__file__).parent.joinpath('binary_densemm.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_densemm.cu'),
+        name='dense_binary_mm',
     )
 
     out_info = kwargs['outs']

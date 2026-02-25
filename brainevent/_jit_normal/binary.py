@@ -26,9 +26,10 @@ from jax.interpreters import ad
 from brainevent._data import _initialize_seed, _initialize_conn_length
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_integers, get_numba_lfsr_normal
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, register_tvm_cuda_from_file, jaxinfo_to_warpinfo
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, jaxinfo_to_warpinfo
 from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
+from brainevent.kernix import load_cuda_file
 from .float import jitnmv_p_call, jitnmm_p_call
 
 __all__ = [
@@ -738,10 +739,9 @@ def _binary_jitnmv_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='jit_normal_binary_jitnmv',
-        source=Path(__file__).parent.joinpath('binary_jitnmv.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_jitnmv.cu'),
+        name='jit_normal_binary_jitnmv',
     )
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
     stype = '_bool' if kwargs['vector_info'].dtype == jnp.bool_ else '_float'
@@ -758,10 +758,9 @@ def _binary_jitnmm_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='jit_normal_binary_jitnmm',
-        source=Path(__file__).parent.joinpath('binary_jitnmm.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_jitnmm.cu'),
+        name='jit_normal_binary_jitnmm',
     )
     sfx = _dtype_sfx.get(np.dtype(kwargs['w_loc_info'].dtype), '_f32')
     stype = '_bool' if kwargs['B_info'].dtype == jnp.bool_ else '_float'

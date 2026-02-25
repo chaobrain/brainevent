@@ -40,6 +40,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 
 // =========================================================================
 // Dense Matrix-Vector Multiplication (densemv) -- OPTIMIZED ITERATION 2
@@ -212,8 +213,8 @@ DEFINE_SCATTER(_bf16_float,      float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float, 
 // FFI Macros for SpMV
 #define FFI_GATHER_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)         \
 void binary_densemv_gather_warp##SUFFIX(                       \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView spikes, \
-    tvm::ffi::TensorView output, int64_t stream                \
+    const BE::Tensor weights, const BE::Tensor spikes, \
+    BE::Tensor output, int64_t stream                \
 ) {                                                            \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);   \
     int m = static_cast<int>(weights.size(0));                 \
@@ -226,8 +227,8 @@ void binary_densemv_gather_warp##SUFFIX(                       \
 
 #define FFI_GATHER_BLOCK(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE) \
 void binary_densemv_gather_block##SUFFIX(                         \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView spikes,    \
-    tvm::ffi::TensorView output, int64_t stream                   \
+    const BE::Tensor weights, const BE::Tensor spikes,    \
+    BE::Tensor output, int64_t stream                   \
 ) {                                                               \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);      \
     int m = static_cast<int>(weights.size(0));                    \
@@ -240,8 +241,8 @@ void binary_densemv_gather_block##SUFFIX(                         \
 
 #define FFI_GATHER_AUTO(SUFFIX, WEIGHT_C_T, SPIKE_C_T, SHM_SIZE)                      \
 void binary_densemv_gather_auto##SUFFIX(                                              \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView spikes,                        \
-    tvm::ffi::TensorView output, int64_t stream                                       \
+    const BE::Tensor weights, const BE::Tensor spikes,                        \
+    BE::Tensor output, int64_t stream                                       \
 ) {                                                                                   \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                          \
     int m = static_cast<int>(weights.size(0));                                        \
@@ -258,8 +259,8 @@ void binary_densemv_gather_auto##SUFFIX(                                        
 
 #define FFI_SCATTER(SUFFIX, WEIGHT_C_T, SPIKE_C_T)             \
 void binary_densemv_scatter##SUFFIX(                           \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView spikes, \
-    tvm::ffi::TensorView output, int64_t stream                \
+    const BE::Tensor weights, const BE::Tensor spikes, \
+    BE::Tensor output, int64_t stream                \
 ) {                                                            \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);   \
     int k = static_cast<int>(weights.size(0));                 \
@@ -272,43 +273,43 @@ void binary_densemv_scatter##SUFFIX(                           \
 }
 
 // SpMV FFI Instantiations
-// @tvm_ffi binary_densemv_gather_warp_f32_bool
+// @BE binary_densemv_gather_warp_f32_bool
 FFI_GATHER_WARP(_f32_bool,    float,   int8_t)
-// @tvm_ffi binary_densemv_gather_warp_f32_float
+// @BE binary_densemv_gather_warp_f32_float
 FFI_GATHER_WARP(_f32_float,   float,   float)
-// @tvm_ffi binary_densemv_gather_block_f32_bool
+// @BE binary_densemv_gather_block_f32_bool
 FFI_GATHER_BLOCK(_f32_bool,   float,   int8_t, 64 * sizeof(float))
-// @tvm_ffi binary_densemv_gather_block_f32_float
+// @BE binary_densemv_gather_block_f32_float
 FFI_GATHER_BLOCK(_f32_float,  float,   float,  64 * sizeof(float))
-// @tvm_ffi binary_densemv_gather_auto_f32_bool
+// @BE binary_densemv_gather_auto_f32_bool
 FFI_GATHER_AUTO(_f32_bool,    float,   int8_t, 64 * sizeof(float))
-// @tvm_ffi binary_densemv_gather_auto_f32_float
+// @BE binary_densemv_gather_auto_f32_float
 FFI_GATHER_AUTO(_f32_float,   float,   float,  64 * sizeof(float))
-// @tvm_ffi binary_densemv_scatter_f32_bool
+// @BE binary_densemv_scatter_f32_bool
 FFI_SCATTER(_f32_bool,        float,   int8_t)
-// @tvm_ffi binary_densemv_scatter_f32_float
+// @BE binary_densemv_scatter_f32_float
 FFI_SCATTER(_f32_float,       float,   float)
-// @tvm_ffi binary_densemv_gather_auto_f64_bool
+// @BE binary_densemv_gather_auto_f64_bool
 FFI_GATHER_AUTO(_f64_bool,    double,  int8_t, 64 * sizeof(double))
-// @tvm_ffi binary_densemv_gather_auto_f64_float
+// @BE binary_densemv_gather_auto_f64_float
 FFI_GATHER_AUTO(_f64_float,   double,  float,  64 * sizeof(double))
-// @tvm_ffi binary_densemv_scatter_f64_bool
+// @BE binary_densemv_scatter_f64_bool
 FFI_SCATTER(_f64_bool,        double,  int8_t)
-// @tvm_ffi binary_densemv_scatter_f64_float
+// @BE binary_densemv_scatter_f64_float
 FFI_SCATTER(_f64_float,       double,  float)
-// @tvm_ffi binary_densemv_gather_auto_f16_bool
+// @BE binary_densemv_gather_auto_f16_bool
 FFI_GATHER_AUTO(_f16_bool,    __half,  int8_t, 64 * sizeof(float))
-// @tvm_ffi binary_densemv_gather_auto_f16_float
+// @BE binary_densemv_gather_auto_f16_float
 FFI_GATHER_AUTO(_f16_float,   __half,  float,  64 * sizeof(float))
-// @tvm_ffi binary_densemv_scatter_f16_bool
+// @BE binary_densemv_scatter_f16_bool
 FFI_SCATTER(_f16_bool,        __half,  int8_t)
-// @tvm_ffi binary_densemv_scatter_f16_float
+// @BE binary_densemv_scatter_f16_float
 FFI_SCATTER(_f16_float,       __half,  float)
-// @tvm_ffi binary_densemv_gather_auto_bf16_bool
+// @BE binary_densemv_gather_auto_bf16_bool
 FFI_GATHER_AUTO(_bf16_bool,   __nv_bfloat16, int8_t, 64 * sizeof(float))
-// @tvm_ffi binary_densemv_gather_auto_bf16_float
+// @BE binary_densemv_gather_auto_bf16_float
 FFI_GATHER_AUTO(_bf16_float,  __nv_bfloat16, float,  64 * sizeof(float))
-// @tvm_ffi binary_densemv_scatter_bf16_bool
+// @BE binary_densemv_scatter_bf16_bool
 FFI_SCATTER(_bf16_bool,       __nv_bfloat16, int8_t)
-// @tvm_ffi binary_densemv_scatter_bf16_float
+// @BE binary_densemv_scatter_bf16_float
 FFI_SCATTER(_bf16_float,      __nv_bfloat16, float)

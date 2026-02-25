@@ -42,6 +42,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 #include "curand_common.h"
 
 // #########################################################################
@@ -162,12 +163,12 @@ DEFINE_JITUMM_SCATTER(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, atomi
 
 #define FFI_JITUMM_GATHER(SUFFIX, WEIGHT_C_T)                \
 void jitumm_gather##SUFFIX(                                  \
-    tvm::ffi::TensorView w_low,                              \
-    tvm::ffi::TensorView w_high,                             \
-    tvm::ffi::TensorView clen,                               \
-    tvm::ffi::TensorView seed,                               \
-    tvm::ffi::TensorView B,                                  \
-    tvm::ffi::TensorView output,                             \
+    const BE::Tensor w_low,                              \
+    const BE::Tensor w_high,                             \
+    const BE::Tensor clen,                               \
+    const BE::Tensor seed,                               \
+    const BE::Tensor B,                                  \
+    BE::Tensor output,                             \
     int64_t stream                                           \
 ) {                                                          \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
@@ -187,25 +188,25 @@ void jitumm_gather##SUFFIX(                                  \
     );                                                       \
 }
 
-// @tvm_ffi jitumm_gather_f32
+// @BE jitumm_gather_f32
 FFI_JITUMM_GATHER(_f32, float)
-// @tvm_ffi jitumm_gather_f64
+// @BE jitumm_gather_f64
 FFI_JITUMM_GATHER(_f64, double)
-// @tvm_ffi jitumm_gather_f16
+// @BE jitumm_gather_f16
 FFI_JITUMM_GATHER(_f16, __half)
-// @tvm_ffi jitumm_gather_bf16
+// @BE jitumm_gather_bf16
 FFI_JITUMM_GATHER(_bf16, __nv_bfloat16)
 
 // ---- TVM FFI: jitumm scatter ----
 
 #define FFI_JITUMM_SCATTER(SUFFIX, WEIGHT_C_T)               \
 void jitumm_scatter##SUFFIX(                                 \
-    tvm::ffi::TensorView w_low,                              \
-    tvm::ffi::TensorView w_high,                             \
-    tvm::ffi::TensorView clen,                               \
-    tvm::ffi::TensorView seed,                               \
-    tvm::ffi::TensorView B,                                  \
-    tvm::ffi::TensorView output,                             \
+    const BE::Tensor w_low,                              \
+    const BE::Tensor w_high,                             \
+    const BE::Tensor clen,                               \
+    const BE::Tensor seed,                               \
+    const BE::Tensor B,                                  \
+    BE::Tensor output,                             \
     int64_t stream                                           \
 ) {                                                          \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream); \
@@ -227,11 +228,11 @@ void jitumm_scatter##SUFFIX(                                 \
     );                                                       \
 }
 
-// @tvm_ffi jitumm_scatter_f32
+// @BE jitumm_scatter_f32
 FFI_JITUMM_SCATTER(_f32, float)
-// @tvm_ffi jitumm_scatter_f64
+// @BE jitumm_scatter_f64
 FFI_JITUMM_SCATTER(_f64, double)
-// @tvm_ffi jitumm_scatter_f16
+// @BE jitumm_scatter_f16
 FFI_JITUMM_SCATTER(_f16, __half)
-// @tvm_ffi jitumm_scatter_bf16
+// @BE jitumm_scatter_bf16
 FFI_JITUMM_SCATTER(_bf16, __nv_bfloat16)
