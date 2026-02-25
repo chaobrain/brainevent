@@ -44,22 +44,8 @@
  * IMPORTANT: All data_ptr() returns are GPU device pointers — NEVER dereference on host.
  */
 
-#include <cuda_runtime.h>
-#include <cuda_fp16.h>
-#include <cuda_bf16.h>
-#include <curand_kernel.h>
-#include <cstdint>
 #include "cuda_common.h"
 #include "curand_common.h"
-
-// =========================================================================
-// Spike activity checks (for binary kernels)
-// =========================================================================
-
-#undef IS_ACTIVE_BOOL
-#undef IS_ACTIVE_FLOAT
-#define IS_ACTIVE_BOOL(v, j)  ((v)[j] != 0)
-#define IS_ACTIVE_FLOAT(v, j) ((v)[j] > 0.0f)
 
 // #########################################################################
 // ##  binary_jitsmv — Event-Driven Matrix-Vector Product                 ##
@@ -89,7 +75,7 @@ __global__ void _binary_jitsmv_gather_kern##SUFFIX(                             
     unsigned int j = curand(&state) % cl;                                                                   \
     ACC_T acc = ACC_ZERO;                                                                                   \
     while (j < (unsigned int)k) {                                                                           \
-        if (IS_ACTIVE(vector, j)) {                                                                         \
+        if (IS_ACTIVE(vector[j])) {                                                                         \
             acc += (ACC_T)1.0;                                                                              \
         }                                                                                                   \
         j += 1 + (curand(&state) % (cl - 1));                                                               \
@@ -126,7 +112,7 @@ __global__ void _binary_jitsmv_scatter_kern##SUFFIX(                            
 ) {                                                                                                            \
     int j = blockIdx.x * blockDim.x + threadIdx.x;                                                             \
     if (j >= k) return;                                                                                        \
-    if (!IS_ACTIVE(vector, j)) return;                                                                         \
+    if (!IS_ACTIVE(vector[j])) return;                                                                         \
     ACC_T w0 = READ_W(__ldg(&weight[0]));                                                                      \
     unsigned int cl = (unsigned int)__ldg(&clen[0]);                                                           \
     if (cl < 2) cl = 2;                                                                                        \
@@ -143,14 +129,14 @@ __global__ void _binary_jitsmv_scatter_kern##SUFFIX(                            
 DEFINE_BINARY_JITSMV_SCATTER(_f32_bool,  float,         float,  READ_F32,  WRITE_F32,  int8_t, IS_ACTIVE_BOOL,  atomic_add_f32)
 DEFINE_BINARY_JITSMV_SCATTER(_f32_float, float,         float,  READ_F32,  WRITE_F32,  float,  IS_ACTIVE_FLOAT, atomic_add_f32)
 // f64 weight + bool/float spikes
-DEFINE_BINARY_JITSMV_SCATTER(_f64_bool,  double,        double, READ_F64,  WRITE_F64,  int8_t, IS_ACTIVE_BOOL,  atomicAdd_f64)
-DEFINE_BINARY_JITSMV_SCATTER(_f64_float, double,        double, READ_F64,  WRITE_F64,  float,  IS_ACTIVE_FLOAT, atomicAdd_f64)
+DEFINE_BINARY_JITSMV_SCATTER(_f64_bool,  double,        double, READ_F64,  WRITE_F64,  int8_t, IS_ACTIVE_BOOL,  atomic_add_f64)
+DEFINE_BINARY_JITSMV_SCATTER(_f64_float, double,        double, READ_F64,  WRITE_F64,  float,  IS_ACTIVE_FLOAT, atomic_add_f64)
 // f16 weight + bool/float spikes
-DEFINE_BINARY_JITSMV_SCATTER(_f16_bool,  __half,        float,  READ_F16,  WRITE_F16,  int8_t, IS_ACTIVE_BOOL,  atomicAdd_f16)
-DEFINE_BINARY_JITSMV_SCATTER(_f16_float, __half,        float,  READ_F16,  WRITE_F16,  float,  IS_ACTIVE_FLOAT, atomicAdd_f16)
+DEFINE_BINARY_JITSMV_SCATTER(_f16_bool,  __half,        float,  READ_F16,  WRITE_F16,  int8_t, IS_ACTIVE_BOOL,  atomic_add_f16)
+DEFINE_BINARY_JITSMV_SCATTER(_f16_float, __half,        float,  READ_F16,  WRITE_F16,  float,  IS_ACTIVE_FLOAT, atomic_add_f16)
 // bf16 weight + bool/float spikes
-DEFINE_BINARY_JITSMV_SCATTER(_bf16_bool, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, int8_t, IS_ACTIVE_BOOL,  atomicAdd_bf16)
-DEFINE_BINARY_JITSMV_SCATTER(_bf16_float,__nv_bfloat16, float,  READ_BF16, WRITE_BF16, float,  IS_ACTIVE_FLOAT, atomicAdd_bf16)
+DEFINE_BINARY_JITSMV_SCATTER(_bf16_bool, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, int8_t, IS_ACTIVE_BOOL,  atomic_add_bf16)
+DEFINE_BINARY_JITSMV_SCATTER(_bf16_float,__nv_bfloat16, float,  READ_BF16, WRITE_BF16, float,  IS_ACTIVE_FLOAT, atomic_add_bf16)
 
 // ---- TVM FFI: binary_jitsmv gather ----
 

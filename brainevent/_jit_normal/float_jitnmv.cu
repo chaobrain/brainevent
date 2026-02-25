@@ -37,24 +37,13 @@
  * Optimizations
  * -------------
  * - __ldg() on all read-only global memory (routes through L1 texture cache)
- * - Shared memory vector caching for small vectors (k * sizeof(ACC_T) <= 4096 bytes)
+ * - Shared memory vector caching for small vectors that fit in device shared memory
  *
  * IMPORTANT: All data_ptr() returns are GPU device pointers — NEVER dereference on host.
  */
 
-#include <cuda_runtime.h>
-#include <cuda_fp16.h>
-#include <cuda_bf16.h>
-#include <curand_kernel.h>
-#include <cstdint>
 #include "cuda_common.h"
 #include "curand_common.h"
-
-// =========================================================================
-// Shared memory threshold: 4KB (1024 float32 elements).
-// =========================================================================
-
-#define SMEM_THRESHOLD 4096
 
 // #########################################################################
 // ##  jitnmv — Float Matrix-Vector Product                               ##
@@ -166,9 +155,9 @@ __global__ void _jitnmv_scatter_kern##SUFFIX(                                   
 }
 
 DEFINE_JITNMV_SCATTER(_f32,  float,         float,  READ_F32,  WRITE_F32,  curand_normal_f32, atomic_add_f32)
-DEFINE_JITNMV_SCATTER(_f64,  double,        double, READ_F64,  WRITE_F64,  curand_normal_f64, atomicAdd_f64)
-DEFINE_JITNMV_SCATTER(_f16,  __half,        float,  READ_F16,  WRITE_F16,  curand_normal_f32, atomicAdd_f16)
-DEFINE_JITNMV_SCATTER(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, curand_normal_f32, atomicAdd_bf16)
+DEFINE_JITNMV_SCATTER(_f64,  double,        double, READ_F64,  WRITE_F64,  curand_normal_f64, atomic_add_f64)
+DEFINE_JITNMV_SCATTER(_f16,  __half,        float,  READ_F16,  WRITE_F16,  curand_normal_f32, atomic_add_f16)
+DEFINE_JITNMV_SCATTER(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, curand_normal_f32, atomic_add_bf16)
 
 // --- FFI gather: dispatch to smem or global kernel ---
 #define FFI_JITNMV_GATHER(SUFFIX, WEIGHT_C_T, ACC_SIZEOF)                     \
@@ -189,7 +178,11 @@ void jitnmv_gather##SUFFIX(                                                   \
     int threads = 256;                                                        \
     int blocks = (m + threads - 1) / threads;                                 \
     size_t smem_bytes = (size_t)k * ACC_SIZEOF;                               \
-    if (smem_bytes <= SMEM_THRESHOLD) {                                       \
+    int _dev = 0; cudaGetDevice(&_dev);                                       \
+    int _max_smem = 0;                                                        \
+    cudaDeviceGetAttribute(&_max_smem,                                        \
+        cudaDevAttrMaxSharedMemoryPerBlock, _dev);                             \
+    if (smem_bytes <= (size_t)_max_smem) {                                    \
         _jitnmv_gather_smem_kern##SUFFIX<<<blocks, threads, smem_bytes, s>>>( \
             static_cast<const WEIGHT_C_T*>(w_loc.data_ptr()),                 \
             static_cast<const WEIGHT_C_T*>(w_scale.data_ptr()),               \

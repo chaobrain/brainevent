@@ -44,22 +44,8 @@
  * IMPORTANT: All data_ptr() returns are GPU device pointers — NEVER dereference on host.
  */
 
-#include <cuda_runtime.h>
-#include <cuda_fp16.h>
-#include <cuda_bf16.h>
-#include <curand_kernel.h>
-#include <cstdint>
 #include "cuda_common.h"
 #include "curand_common.h"
-
-// =========================================================================
-// Spike activity checks (for binary kernels)
-// =========================================================================
-
-#undef IS_ACTIVE_BOOL
-#undef IS_ACTIVE_FLOAT
-#define IS_ACTIVE_BOOL(v, j)  ((v)[j] != 0)
-#define IS_ACTIVE_FLOAT(v, j) ((v)[j] > 0.0f)
 
 // #########################################################################
 // ##  binary_jitsmm — Event-Driven Matrix-Matrix Product                 ##
@@ -92,7 +78,7 @@ __global__ void _binary_jitsmm_gather_regacc_kern##SUFFIX(                      
     while (j < (unsigned int)k) {                                                                                  \
         const SPIKE_T* br = B + (size_t)j * n;                                                                     \
         for (int c = 0; c < 16; c++) {                                                                             \
-            if (c < n && IS_ACTIVE(br, c)) acc[c] += (ACC_T)1.0;                                                   \
+            if (c < n && IS_ACTIVE(br[c])) acc[c] += (ACC_T)1.0;                                                   \
         }                                                                                                          \
         j += 1 + (curand(&state) % (cl - 1));                                                                      \
     }                                                                                                              \
@@ -141,7 +127,7 @@ __global__ void _binary_jitsmm_gather_kern##SUFFIX(                             
     while (j < (unsigned int)k) {                                                                           \
         const SPIKE_T* b_row = B + (size_t)j * n;                                                           \
         for (int col = 0; col < n; col++) {                                                                 \
-            if (IS_ACTIVE(b_row, col)) {                                                                    \
+            if (IS_ACTIVE(b_row[col])) {                                                                    \
                 ACC_T cur = READ_W(out_row[col]);                                                           \
                 out_row[col] = WRITE_W(cur + (ACC_T)1.0);                                                   \
             }                                                                                               \
@@ -194,7 +180,7 @@ __global__ void _binary_jitsmm_scatter_kern##SUFFIX(                            
     while (i < (unsigned int)m) {                                                                              \
         WEIGHT_T* out_row = output + (size_t)i * n;                                                            \
         for (int col = 0; col < n; col++) {                                                                    \
-            if (IS_ACTIVE(b_row, col)) {                                                                       \
+            if (IS_ACTIVE(b_row[col])) {                                                                       \
                 ATOMIC_ADD(&out_row[col], w0);                                                                 \
             }                                                                                                  \
         }                                                                                                      \
@@ -206,14 +192,14 @@ __global__ void _binary_jitsmm_scatter_kern##SUFFIX(                            
 DEFINE_BINARY_JITSMM_SCATTER(_f32_bool,  float,         float,  READ_F32,  WRITE_F32,  int8_t, IS_ACTIVE_BOOL,  atomic_add_f32)
 DEFINE_BINARY_JITSMM_SCATTER(_f32_float, float,         float,  READ_F32,  WRITE_F32,  float,  IS_ACTIVE_FLOAT, atomic_add_f32)
 // f64 + bool/float
-DEFINE_BINARY_JITSMM_SCATTER(_f64_bool,  double,        double, READ_F64,  WRITE_F64,  int8_t, IS_ACTIVE_BOOL,  atomicAdd_f64)
-DEFINE_BINARY_JITSMM_SCATTER(_f64_float, double,        double, READ_F64,  WRITE_F64,  float,  IS_ACTIVE_FLOAT, atomicAdd_f64)
+DEFINE_BINARY_JITSMM_SCATTER(_f64_bool,  double,        double, READ_F64,  WRITE_F64,  int8_t, IS_ACTIVE_BOOL,  atomic_add_f64)
+DEFINE_BINARY_JITSMM_SCATTER(_f64_float, double,        double, READ_F64,  WRITE_F64,  float,  IS_ACTIVE_FLOAT, atomic_add_f64)
 // f16 + bool/float
-DEFINE_BINARY_JITSMM_SCATTER(_f16_bool,  __half,        float,  READ_F16,  WRITE_F16,  int8_t, IS_ACTIVE_BOOL,  atomicAdd_f16)
-DEFINE_BINARY_JITSMM_SCATTER(_f16_float, __half,        float,  READ_F16,  WRITE_F16,  float,  IS_ACTIVE_FLOAT, atomicAdd_f16)
+DEFINE_BINARY_JITSMM_SCATTER(_f16_bool,  __half,        float,  READ_F16,  WRITE_F16,  int8_t, IS_ACTIVE_BOOL,  atomic_add_f16)
+DEFINE_BINARY_JITSMM_SCATTER(_f16_float, __half,        float,  READ_F16,  WRITE_F16,  float,  IS_ACTIVE_FLOAT, atomic_add_f16)
 // bf16 + bool/float
-DEFINE_BINARY_JITSMM_SCATTER(_bf16_bool, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, int8_t, IS_ACTIVE_BOOL,  atomicAdd_bf16)
-DEFINE_BINARY_JITSMM_SCATTER(_bf16_float,__nv_bfloat16, float,  READ_BF16, WRITE_BF16, float,  IS_ACTIVE_FLOAT, atomicAdd_bf16)
+DEFINE_BINARY_JITSMM_SCATTER(_bf16_bool, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, int8_t, IS_ACTIVE_BOOL,  atomic_add_bf16)
+DEFINE_BINARY_JITSMM_SCATTER(_bf16_float,__nv_bfloat16, float,  READ_BF16, WRITE_BF16, float,  IS_ACTIVE_FLOAT, atomic_add_bf16)
 
 // ---- TVM FFI: binary_jitsmm gather ----
 // Dispatches to register-accumulator kernel for n <= 16, fallback for n > 16.

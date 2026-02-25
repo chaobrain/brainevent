@@ -38,11 +38,6 @@
  * IMPORTANT: All data_ptr() returns are GPU device pointers — NEVER dereference on host.
  */
 
-#include <cuda_runtime.h>
-#include <cuda_fp16.h>
-#include <cuda_bf16.h>
-#include <curand_kernel.h>
-#include <cstdint>
 #include "cuda_common.h"
 #include "curand_common.h"
 

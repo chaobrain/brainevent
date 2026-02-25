@@ -40,34 +40,14 @@
  * Optimizations
  * -------------
  * - __ldg() on all read-only global memory (routes through L1 texture cache)
- * - Shared memory spike vector caching for small vectors (k*sizeof(SPIKE_T) <= 4096 bytes)
+ * - Shared memory spike vector caching for small vectors that fit in device shared memory
  * - Scatter kernel early-exits on inactive (zero) spike lanes
  *
  * IMPORTANT: All data_ptr() returns are GPU device pointers — NEVER dereference on host.
  */
 
-#include <cuda_runtime.h>
-#include <cuda_fp16.h>
-#include <cuda_bf16.h>
-#include <curand_kernel.h>
-#include <cstdint>
 #include "cuda_common.h"
 #include "curand_common.h"
-
-// =========================================================================
-// Spike activity checks (for binary kernels)
-// =========================================================================
-
-#undef IS_ACTIVE_BOOL
-#undef IS_ACTIVE_FLOAT
-#define IS_ACTIVE_BOOL(v, j)  ((v)[j] != 0)
-#define IS_ACTIVE_FLOAT(v, j) ((v)[j] > 0.0f)
-
-// =========================================================================
-// Shared memory threshold: 4KB (1024 float32 elements).
-// =========================================================================
-
-#define SMEM_THRESHOLD 4096
 
 // #########################################################################
 // ##  binary_jitnmv — Event-Driven Matrix-Vector Product                 ##
@@ -96,7 +76,7 @@ __global__ void _binary_jitnmv_gather_kern##SUFFIX(                             
     ACC_T acc = ACC_ZERO;                                                                                             \
     while (j < (unsigned int)k) {                                                                                     \
         ACC_T n = (ACC_T)RNG_FUNC(&state);                                                                            \
-        if (IS_ACTIVE(vector, j)) {                                                                                   \
+        if (IS_ACTIVE(vector[j])) {                                                                                   \
             ACC_T w = loc + n * scale;                                                                                \
             acc += w;                                                                                                 \
         }                                                                                                             \
@@ -143,7 +123,7 @@ __global__ void _binary_jitnmv_gather_smem_kern##SUFFIX(                        
     ACC_T acc = ACC_ZERO;                                                                                                  \
     while (j < (unsigned int)k) {                                                                                          \
         ACC_T n = (ACC_T)RNG_FUNC(&state);                                                                                 \
-        if (IS_ACTIVE(sv, j)) {                                                                                            \
+        if (IS_ACTIVE(sv[j])) {                                                                                            \
             ACC_T w = loc + n * scale;                                                                                     \
             acc += w;                                                                                                      \
         }                                                                                                                  \
@@ -174,7 +154,7 @@ __global__ void _binary_jitnmv_scatter_kern##SUFFIX(                            
 ) {                                                                                                                      \
     int j = blockIdx.x * blockDim.x + threadIdx.x;                                                                       \
     if (j >= k) return;                                                                                                  \
-    if (!IS_ACTIVE(vector, j)) return;                                                                                   \
+    if (!IS_ACTIVE(vector[j])) return;                                                                                   \
     ACC_T loc = READ_W(__ldg(&w_loc[0]));                                                                                \
     ACC_T scale = READ_W(__ldg(&w_scale[0]));                                                                            \
     unsigned int cl = (unsigned int)__ldg(&clen[0]);                                                                     \
@@ -192,12 +172,12 @@ __global__ void _binary_jitnmv_scatter_kern##SUFFIX(                            
 
 DEFINE_BINARY_JITNMV_SCATTER(_f32_bool,   float,         float,  READ_F32,  WRITE_F32,  curand_normal_f32, int8_t, IS_ACTIVE_BOOL,  atomic_add_f32)
 DEFINE_BINARY_JITNMV_SCATTER(_f32_float,  float,         float,  READ_F32,  WRITE_F32,  curand_normal_f32, float,  IS_ACTIVE_FLOAT, atomic_add_f32)
-DEFINE_BINARY_JITNMV_SCATTER(_f64_bool,   double,        double, READ_F64,  WRITE_F64,  curand_normal_f64, int8_t, IS_ACTIVE_BOOL,  atomicAdd_f64)
-DEFINE_BINARY_JITNMV_SCATTER(_f64_float,  double,        double, READ_F64,  WRITE_F64,  curand_normal_f64, float,  IS_ACTIVE_FLOAT, atomicAdd_f64)
-DEFINE_BINARY_JITNMV_SCATTER(_f16_bool,   __half,        float,  READ_F16,  WRITE_F16,  curand_normal_f32, int8_t, IS_ACTIVE_BOOL,  atomicAdd_f16)
-DEFINE_BINARY_JITNMV_SCATTER(_f16_float,  __half,        float,  READ_F16,  WRITE_F16,  curand_normal_f32, float,  IS_ACTIVE_FLOAT, atomicAdd_f16)
-DEFINE_BINARY_JITNMV_SCATTER(_bf16_bool,  __nv_bfloat16, float,  READ_BF16, WRITE_BF16, curand_normal_f32, int8_t, IS_ACTIVE_BOOL,  atomicAdd_bf16)
-DEFINE_BINARY_JITNMV_SCATTER(_bf16_float, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, curand_normal_f32, float,  IS_ACTIVE_FLOAT, atomicAdd_bf16)
+DEFINE_BINARY_JITNMV_SCATTER(_f64_bool,   double,        double, READ_F64,  WRITE_F64,  curand_normal_f64, int8_t, IS_ACTIVE_BOOL,  atomic_add_f64)
+DEFINE_BINARY_JITNMV_SCATTER(_f64_float,  double,        double, READ_F64,  WRITE_F64,  curand_normal_f64, float,  IS_ACTIVE_FLOAT, atomic_add_f64)
+DEFINE_BINARY_JITNMV_SCATTER(_f16_bool,   __half,        float,  READ_F16,  WRITE_F16,  curand_normal_f32, int8_t, IS_ACTIVE_BOOL,  atomic_add_f16)
+DEFINE_BINARY_JITNMV_SCATTER(_f16_float,  __half,        float,  READ_F16,  WRITE_F16,  curand_normal_f32, float,  IS_ACTIVE_FLOAT, atomic_add_f16)
+DEFINE_BINARY_JITNMV_SCATTER(_bf16_bool,  __nv_bfloat16, float,  READ_BF16, WRITE_BF16, curand_normal_f32, int8_t, IS_ACTIVE_BOOL,  atomic_add_bf16)
+DEFINE_BINARY_JITNMV_SCATTER(_bf16_float, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, curand_normal_f32, float,  IS_ACTIVE_FLOAT, atomic_add_bf16)
 
 // --- FFI gather: dispatch to smem or global kernel ---
 #define FFI_BINARY_JITNMV_GATHER(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                      \
@@ -218,7 +198,11 @@ void binary_jitnmv_gather##SUFFIX(                                              
     int threads = 256;                                                               \
     int blocks = (m + threads - 1) / threads;                                        \
     size_t smem_bytes = (size_t)k * sizeof(SPIKE_C_T);                               \
-    if (smem_bytes <= SMEM_THRESHOLD) {                                              \
+    int _dev = 0; cudaGetDevice(&_dev);                                              \
+    int _max_smem = 0;                                                               \
+    cudaDeviceGetAttribute(&_max_smem,                                               \
+        cudaDevAttrMaxSharedMemoryPerBlock, _dev);                                   \
+    if (smem_bytes <= (size_t)_max_smem) {                                           \
         _binary_jitnmv_gather_smem_kern##SUFFIX<<<blocks, threads, smem_bytes, s>>>( \
             static_cast<const WEIGHT_C_T*>(w_loc.data_ptr()),                        \
             static_cast<const WEIGHT_C_T*>(w_scale.data_ptr()),                      \

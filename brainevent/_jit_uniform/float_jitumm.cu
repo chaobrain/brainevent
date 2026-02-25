@@ -41,11 +41,6 @@
  * IMPORTANT: All data_ptr() returns are GPU device pointers — NEVER dereference on host.
  */
 
-#include <cuda_runtime.h>
-#include <cuda_fp16.h>
-#include <cuda_bf16.h>
-#include <curand_kernel.h>
-#include <cstdint>
 #include "cuda_common.h"
 #include "curand_common.h"
 
@@ -158,9 +153,9 @@ __global__ void _jitumm_scatter_kern##SUFFIX(                                   
 }
 
 DEFINE_JITUMM_SCATTER(_f32,  float,         float,  READ_F32,  WRITE_F32,  atomic_add_f32)
-DEFINE_JITUMM_SCATTER(_f64,  double,        double, READ_F64,  WRITE_F64,  atomicAdd_f64)
-DEFINE_JITUMM_SCATTER(_f16,  __half,        float,  READ_F16,  WRITE_F16,  atomicAdd_f16)
-DEFINE_JITUMM_SCATTER(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, atomicAdd_bf16)
+DEFINE_JITUMM_SCATTER(_f64,  double,        double, READ_F64,  WRITE_F64,  atomic_add_f64)
+DEFINE_JITUMM_SCATTER(_f16,  __half,        float,  READ_F16,  WRITE_F16,  atomic_add_f16)
+DEFINE_JITUMM_SCATTER(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, atomic_add_bf16)
 
 // ---- TVM FFI: jitumm gather ----
 // No memset needed: gather kernel zero-initializes output rows in-kernel.

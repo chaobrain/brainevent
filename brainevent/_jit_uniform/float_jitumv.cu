@@ -41,19 +41,8 @@
  * IMPORTANT: All data_ptr() returns are GPU device pointers — NEVER dereference on host.
  */
 
-#include <cuda_runtime.h>
-#include <cuda_fp16.h>
-#include <cuda_bf16.h>
-#include <curand_kernel.h>
-#include <cstdint>
 #include "cuda_common.h"
 #include "curand_common.h"
-
-// =========================================================================
-// Shared memory threshold: 48KB default max dynamic shared memory per block
-// =========================================================================
-
-#define SMEM_THRESHOLD 49152
 
 // #########################################################################
 // ##  jitumv — Float Matrix-Vector Product                               ##
@@ -104,7 +93,7 @@ DEFINE_JITUMV_GATHER(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, 0.0f)
 // Gather kernel with shared memory vector caching (corder=true)
 // Cooperatively loads the input vector into shared memory, then all
 // subsequent reads use smem (~20 cycle latency vs ~200 from L2).
-// Used when k * sizeof(ACC_T) <= 48KB.
+// Used when k * sizeof(ACC_T) fits in device shared memory.
 // =========================================================================
 
 #define DEFINE_JITUMV_GATHER_SMEM(SUFFIX, WEIGHT_T, ACC_T, READ_W, WRITE_W, ACC_ZERO)      \
@@ -182,12 +171,12 @@ __global__ void _jitumv_scatter_kern##SUFFIX(                                   
 }
 
 DEFINE_JITUMV_SCATTER(_f32,  float,         float,  READ_F32,  WRITE_F32,  atomic_add_f32)
-DEFINE_JITUMV_SCATTER(_f64,  double,        double, READ_F64,  WRITE_F64,  atomicAdd_f64)
-DEFINE_JITUMV_SCATTER(_f16,  __half,        float,  READ_F16,  WRITE_F16,  atomicAdd_f16)
-DEFINE_JITUMV_SCATTER(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, atomicAdd_bf16)
+DEFINE_JITUMV_SCATTER(_f64,  double,        double, READ_F64,  WRITE_F64,  atomic_add_f64)
+DEFINE_JITUMV_SCATTER(_f16,  __half,        float,  READ_F16,  WRITE_F16,  atomic_add_f16)
+DEFINE_JITUMV_SCATTER(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, atomic_add_bf16)
 
 // ---- TVM FFI: jitumv gather ----
-// Dispatches to shared-memory kernel when vector fits in 48KB smem,
+// Dispatches to shared-memory kernel when vector fits in device smem,
 // falls back to global-memory kernel for larger vectors.
 // No memset needed: gather kernels write every output element exactly once.
 
@@ -207,7 +196,11 @@ void jitumv_gather##SUFFIX(                                                   \
     int threads = 256;                                                        \
     int blocks = (m + threads - 1) / threads;                                 \
     size_t smem_bytes = (size_t)k * sizeof(ACC_C_T);                          \
-    if (smem_bytes <= SMEM_THRESHOLD) {                                       \
+    int _dev = 0; cudaGetDevice(&_dev);                                       \
+    int _max_smem = 0;                                                        \
+    cudaDeviceGetAttribute(&_max_smem,                                        \
+        cudaDevAttrMaxSharedMemoryPerBlock, _dev);                             \
+    if (smem_bytes <= (size_t)_max_smem) {                                    \
         _jitumv_gather_smem_kern##SUFFIX<<<blocks, threads, smem_bytes, s>>>( \
             static_cast<const WEIGHT_C_T*>(w_low.data_ptr()),                 \
             static_cast<const WEIGHT_C_T*>(w_high.data_ptr()),                \

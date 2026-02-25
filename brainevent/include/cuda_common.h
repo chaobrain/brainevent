@@ -396,12 +396,4 @@ __device__ __inline__ void atomic_add_bf16(__nv_bfloat16* addr, float val) {
 #endif
 }
 
-// =========================================================================
-// Aliases matching atomicAdd_* naming convention used in _jit_* kernels
-// =========================================================================
-
-#define atomicAdd_f64(addr, val)  atomic_add_f64(addr, val)
-#define atomicAdd_f16(addr, val)  atomic_add_f16(addr, val)
-#define atomicAdd_bf16(addr, val) atomic_add_bf16(addr, val)
-
 #endif  // BRAINEVENT_CUDA_COMMON_H_
