@@ -19,8 +19,8 @@ Performance benchmarks for parallel RNN training modes.
 Compares:
 - Sequential (jax.lax.scan)
 - Parallel (jax.lax.associative_scan via jax_raw)
-- CUDA parallel reduction (tvmffi)
-- Fused CUDA (tvmffi)
+- CUDA parallel reduction (cuda_raw)
+- Fused CUDA (cuda_raw)
 
 Usage:
     python brainevent/pararnn/_benchmark.py
@@ -204,7 +204,7 @@ def benchmark_parallel_reduce():
     print("Standalone Parallel Reduction Benchmark")
     print("=" * 80)
 
-    has_cuda = 'tvmffi' in parallel_reduce_diag_p.available_backends('gpu')
+    has_cuda = 'cuda_raw' in parallel_reduce_diag_p.available_backends('gpu')
 
     print("\nDiagonal reduction:")
     print(f"{'B':>4} {'T':>6} {'N':>5} | {'JAX':>12} | {'CUDA':>12}")
@@ -225,7 +225,7 @@ def benchmark_parallel_reduce():
 
                 if has_cuda:
                     fn_cuda = jax.jit(
-                        lambda r: parallel_reduce_diag(jac, r, backend='tvmffi')
+                        lambda r: parallel_reduce_diag(jac, r, backend='cuda_raw')
                     )
                     _, avg_cuda = _time_fn(fn_cuda, rhs, n_warmup=3, n_runs=10)
                     cuda_str = f"{avg_cuda:8.2f}ms"
@@ -256,7 +256,7 @@ def benchmark_parallel_reduce():
 
                     fn_cuda = jax.jit(
                         lambda r: parallel_reduce_block_diag(
-                            jac, r, backend='tvmffi'
+                            jac, r, backend='cuda_raw'
                         )
                     )
                     _, avg_cuda = _time_fn(fn_cuda, rhs, n_warmup=3, n_runs=10)
