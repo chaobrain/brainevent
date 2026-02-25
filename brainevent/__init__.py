@@ -14,8 +14,6 @@
 # ==============================================================================
 
 
-from ._version import __version__, __version_info__
-
 from . import config
 from ._coo import (
     COO,
@@ -112,7 +110,7 @@ from ._op import (
     XLACustomKernel, KernelEntry,
     BenchmarkConfig, BenchmarkRecord, BenchmarkResult, benchmark_function,
     numba_kernel, numba_cuda_kernel, numba_cuda_callable,
-    register_tvm_cuda_kernels, defjvp, general_batching_rule,
+    defjvp, general_batching_rule,
     jaxtype_to_warptype, jaxinfo_to_warpinfo,
 )
 from ._pallas_random import (
@@ -122,6 +120,7 @@ from ._pallas_random import (
 from ._registry import (
     get_registry, get_primitives_by_tags, get_all_primitive_names,
 )
+from ._version import __version__, __version_info__
 
 __all__ = [
 
@@ -205,7 +204,7 @@ __all__ = [
     'XLACustomKernel', 'KernelEntry',
     'BenchmarkConfig', 'BenchmarkRecord', 'BenchmarkResult', 'benchmark_function',
     'numba_kernel', 'numba_cuda_kernel', 'numba_cuda_callable',
-    'register_tvm_cuda_kernels', 'defjvp', 'general_batching_rule',
+    'defjvp', 'general_batching_rule',
     'jaxtype_to_warptype', 'jaxinfo_to_warpinfo',
 
     # --- Pallas kernel --- #
@@ -247,4 +246,3 @@ def __getattr__(name):
         # warnings.warn(f'dense_on_post is deprecated, use {update_dense_on_binary_post.__name__} instead')
         return update_dense_on_binary_post
     raise AttributeError(name)
-
