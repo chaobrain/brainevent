@@ -32,7 +32,7 @@
  *     spikes  : bool (int8) or float32 spike vector
  *     returns : output vector
  *
- * TVM FFI entry points:
+ * CUDA entry points:
  *   binary_densemv_gather_warp_{dtype}_{spike_dtype}
  *   binary_densemv_gather_block_{dtype}_{spike_dtype}
  *   binary_densemv_gather_auto_{dtype}_{spike_dtype}
@@ -87,7 +87,7 @@
  *    - Cache pressure: 10x over capacity
  *    -> FIX: Kernel fusion (reuse data) or blocked computation (L2-sized tiles)
  *
- * 4. TVM FFI dispatch overhead (~85 us) dominates small kernels:
+ * 4. CUDA dispatch overhead (~85 us) dominates small kernels:
  *    - 5K x 5K: 220 us kernel + 85 us dispatch = 38% overhead
  *    - 20K x 20K: 1126 us kernel + 85 us dispatch = 7% overhead
  *    -> FIX: CUDA Graphs (batch calls) or persistent kernels (stay resident)

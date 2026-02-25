@@ -44,7 +44,7 @@
 // ## Performance Summary (RTX 3080 Ti Laptop, ~380 GB/s peak BW)
 //
 // Test case: 10K×10K matrix, p=0.02 (avg 200 nnz/row), ncol=128, spike_rate=10%
-//   - Achieved (baseline):  ~9.5 ms (tvmffi NT_WARP, hetero bool)
+//   - Achieved (baseline):  ~9.5 ms (cuda NT_WARP, hetero bool)
 //   - Theoretical:          ~0.86 ms (memory-bound, assuming perfect coalescing)
 //   - Efficiency:           9% of theoretical bandwidth peak
 //

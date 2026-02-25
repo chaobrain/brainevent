@@ -25,7 +25,7 @@
  *   is a CSR sparse matrix and v is a dense vector.  Only non-zero entries in
  *   v contribute to the result (sparse-float semantics).
  *
- * TVM FFI entry points (per dtype × kernel variant):
+ * CUDA entry points (per dtype × kernel variant):
  *   spfloat_csrmv_nt_{homo,hetero}_thread_{f32,f64,f16,bf16}  -- one thread per row
  *   spfloat_csrmv_nt_{homo,hetero}_warp_{f32,f64,f16,bf16}    -- one warp per row
  *   spfloat_csrmv_nt_{homo,hetero}_block_{f32,f64,f16,bf16}   -- one block per row
@@ -51,7 +51,7 @@
  * OPTIMIZATION NOTES (spfloat_csrmv_nt kernels):
  *
  * Achieved Performance (10000×10000, p=0.05, density=10%):
- *   - Measured: 1.37 ms (tvmffi, hetero)
+ *   - Measured: 1.37 ms (cuda, hetero)
  *   - Theoretical: 0.067 ms (roofline bound)
  *   - Efficiency: ~5%
  *
@@ -64,7 +64,7 @@
  *    bandwidth-bound. Cannot use shared memory caching effectively because
  *    indices are unpredictable and vary per row.
  *
- * 3. TVM FFI per-call overhead dominates for small matrices (~0.2-0.5 ms).
+ * 3. CUDA per-call overhead dominates for small matrices (~0.2-0.5 ms).
  *    Irreducible without batching or kernel fusion at the Python dispatch layer.
  *
  * Optimizations Applied (this iteration):

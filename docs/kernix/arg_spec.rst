@@ -31,17 +31,17 @@ Token Reference
      - Scalar attribute — **type explicit** in the token
      - Depends on ``<type>``
 
-jax-tvm-ffi Compatible Aliases
+kernix Compatible Aliases
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-kernix also accepts tokens from the **jax-tvm-ffi** naming convention.  They
+kernix also accepts tokens from the **kernix** naming convention.  They
 are transparently normalised before parsing, so both styles can be mixed freely.
 
 .. list-table::
    :header-rows: 1
    :widths: 30 25 45
 
-   * - jax-tvm-ffi token
+   * - kernix token
      - Normalised to
      - Notes
    * - ``"args"``
@@ -194,7 +194,7 @@ Multiple attributes:
 
    functions={"scale_add": ["arg", "ret", "attr.scale", "attr.offset", "stream"]}
 
-jax-tvm-ffi style (equivalent to the above):
+kernix style (equivalent to the above):
 
 .. code-block:: python
 

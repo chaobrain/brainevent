@@ -40,7 +40,7 @@
  *                            post_trace, w_min=None, w_max=None,
  *                            backend=None)
  *
- * TVM FFI Entry Points (one per dtype combination):
+ * CUDA Entry Points (one per dtype combination):
  *   update_coo_on_pre_{wt}_{spk}  where
  *     wt  in {f16, bf16, f32, f64}
  *     spk in {bool, float}
@@ -106,7 +106,7 @@ DEFINE_COO_ON_PRE(_bf16_bool, int8_t,         IS_ACTIVE_BOOL,  __nv_bfloat16,  f
 DEFINE_COO_ON_PRE(_bf16_float,__nv_bfloat16,  IS_ACTIVE_BF16,  __nv_bfloat16,  float,  READ_BF16, WRITE_BF16)
 
 // =========================================================================
-// TVM FFI Entry Points
+// CUDA Entry Points
 // =========================================================================
 
 #define FFI_COO_ON_PRE(SUFFIX, WEIGHT_C_T, SPIKE_C_T)           \

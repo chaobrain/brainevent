@@ -123,7 +123,7 @@ DEFINE_JITSMV_SCATTER(_f64,  double,        double, READ_F64,  WRITE_F64,  atomi
 DEFINE_JITSMV_SCATTER(_f16,  __half,        float,  READ_F16,  WRITE_F16,  atomic_add_f16)
 DEFINE_JITSMV_SCATTER(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, atomic_add_bf16)
 
-// ---- TVM FFI: jitsmv gather ----
+// ---- CUDA: jitsmv gather ----
 
 #define FFI_JITSMV_GATHER(SUFFIX, WEIGHT_C_T)                \
 void jitsmv_gather##SUFFIX(                                  \
@@ -160,7 +160,7 @@ FFI_JITSMV_GATHER(_f16, __half)
 // @BE jitsmv_gather_bf16
 FFI_JITSMV_GATHER(_bf16, __nv_bfloat16)
 
-// ---- TVM FFI: jitsmv scatter ----
+// ---- CUDA: jitsmv scatter ----
 
 #define FFI_JITSMV_SCATTER(SUFFIX, WEIGHT_C_T)               \
 void jitsmv_scatter##SUFFIX(                                 \

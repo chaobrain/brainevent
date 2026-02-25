@@ -44,7 +44,7 @@
 // ## Performance Summary (RTX 3080 Ti Laptop, ~380 GB/s peak BW)
 //
 // Test case: 10K×10K matrix, p=0.01 (avg 100 nnz/row), spike_rate=10%
-//   - Achieved:       ~1.2-1.7 ms (tvmffi CUDA backend)
+//   - Achieved:       ~1.2-1.7 ms (cuda CUDA backend)
 //   - Theoretical:    ~2.4 μs (memory-bound, assuming perfect coalescing)
 //   - Efficiency:     0.14-0.20% of theoretical bandwidth peak
 //   - Speedup vs cuSPARSE: 1.6-2.4× (consistently faster)

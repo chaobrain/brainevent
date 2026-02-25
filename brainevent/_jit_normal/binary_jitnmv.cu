@@ -21,7 +21,7 @@
  * The connectivity matrix M[i,j] is never materialised; weights are generated
  * on the fly only for connected (j, i) pairs.
  *
- * TVM FFI entry points
+ * CUDA entry points
  * --------------------
  * binary_jitnmv_gather_{f32,f64,f16,bf16}_{bool,float}
  *     — gather (corder=True):  one thread per output row i

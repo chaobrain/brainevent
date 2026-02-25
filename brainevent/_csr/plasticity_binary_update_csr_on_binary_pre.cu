@@ -41,7 +41,7 @@
  *   update_csr_on_binary_pre(weight, indices, indptr, pre_spike, post_trace,
  *                            w_min=None, w_max=None, shape=..., backend=None)
  *
- * TVM FFI Entry Points (one per dtype combination):
+ * CUDA Entry Points (one per dtype combination):
  *   update_csr_on_pre_{wt}_{spk}  where
  *     wt  in {f16, bf16, f32, f64}
  *     spk in {bool, float}
@@ -76,12 +76,12 @@
 //    - Cannot be coalesced without changing to CSC format (transpose)
 //    - Would require Python layer changes to pre-transpose weight matrix
 //
-// 2. TVM FFI Per-Call Overhead:
+// 2. CUDA Per-Call Overhead:
 //    - FFI overhead ~2.2 ms dominates kernel execution (~0.1 ms actual)
 //    - Irreducible without infrastructure changes:
 //      * Batching multiple updates into single kernel call (higher-level fusion)
 //      * Persistent kernels or CUDA Graphs (requires JIT compilation changes)
-//      * Replacing TVM FFI with direct JAX custom calls (major refactor)
+//      * Replacing CUDA with direct JAX custom calls (major refactor)
 //
 // 3. Sparse Event Density:
 //    - At 10% spike density, only 459/5000 neurons active
@@ -267,7 +267,7 @@ DEFINE_CSR_ON_PRE_BLOCK(_bf16_bool, int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16,  flo
 DEFINE_CSR_ON_PRE_BLOCK(_bf16_float,float,  IS_ACTIVE_FLOAT, __nv_bfloat16,  float,  READ_BF16, WRITE_BF16)
 
 // =========================================================================
-// TVM FFI Entry Points
+// CUDA Entry Points
 // =========================================================================
 
 #define FFI_CSR_ON_PRE(SUFFIX, WEIGHT_C_T, SPIKE_C_T)         \

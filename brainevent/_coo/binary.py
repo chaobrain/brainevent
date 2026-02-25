@@ -856,16 +856,16 @@ def _binary_coomv_cusparse_kernel(
     return kernel
 
 
-def _coomv_tvmffi_kernel(
+def _coomv_cuda_kernel(
     weight_info: jax.ShapeDtypeStruct,
     vector_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs,
 ):
-    """TVM FFI CUDA kernel for binary COO SpMV.
+    """CUDA CUDA kernel for binary COO SpMV.
 
     Dispatches to one of the ``binary_coomv_{homo,hetero}_atomic_{nt,t}``
-    kernels compiled from ``binary_coomv.cu`` via ``register_tvm_cuda_from_file``.
+    kernels compiled from ``binary_coomv.cu`` via ``load_cuda_file``.
 
     Kernel selection:
     - Weight mode: ``homo`` (weight_info.size == 1) or ``hetero`` (per-connection),
@@ -1179,7 +1179,7 @@ binary_coomv_p.def_numba_kernel(_coomv_numba_kernel)
 binary_coomv_p.def_warp_kernel(_coomv_warp_kernel)
 binary_coomv_p.def_pallas_kernel('gpu', _coomv_pallas_gpu_kernel)
 binary_coomv_p.def_pallas_kernel('tpu', _coomv_pallas_tpu_kernel)
-binary_coomv_p.def_cuda_kernel(_coomv_tvmffi_kernel)
+binary_coomv_p.def_cuda_raw_kernel(_coomv_cuda_kernel)
 binary_coomv_p.def_kernel('jax_raw', 'cpu', _binary_coomv_jax_kernel)
 binary_coomv_p.def_kernel('jax_raw', 'gpu', _binary_coomv_jax_kernel)
 binary_coomv_p.def_kernel('jax_raw', 'tpu', _binary_coomv_jax_kernel)
@@ -1847,16 +1847,16 @@ def _binary_coomm_cusparse_kernel(
     return kernel
 
 
-def _coomm_tvmffi_kernel(
+def _coomm_cuda_kernel(
     weight_info: jax.ShapeDtypeStruct,
     matrix_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs,
 ):
-    """TVM FFI CUDA kernel for binary COO SpMM.
+    """CUDA CUDA kernel for binary COO SpMM.
 
     Dispatches to one of the ``binary_coomm_{homo,hetero}_{variant}_{nt,t}``
-    kernels compiled from ``binary_coomm.cu`` via ``register_tvm_cuda_from_file``.
+    kernels compiled from ``binary_coomm.cu`` via ``load_cuda_file``.
 
     Kernel variant selection (based on n = number of output columns):
     - CT (Column-Tiled, n <= 64): One warp per block serially iterates over
@@ -2183,7 +2183,7 @@ binary_coomm_p.def_numba_kernel(_coomm_numba_kernel)
 binary_coomm_p.def_warp_kernel(_coomm_warp_kernel)
 binary_coomm_p.def_pallas_kernel('gpu', _coomm_pallas_gpu_kernel)
 binary_coomm_p.def_pallas_kernel('tpu', _coomm_pallas_tpu_kernel)
-binary_coomm_p.def_cuda_kernel(_coomm_tvmffi_kernel)
+binary_coomm_p.def_cuda_raw_kernel(_coomm_cuda_kernel)
 binary_coomm_p.def_kernel('jax_raw', 'cpu', _binary_coomm_jax_kernel)
 binary_coomm_p.def_kernel('jax_raw', 'gpu', _binary_coomm_jax_kernel)
 binary_coomm_p.def_kernel('jax_raw', 'tpu', _binary_coomm_jax_kernel)

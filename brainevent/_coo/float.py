@@ -754,15 +754,15 @@ def _coomv_cusparse_kernel(
     return kernel
 
 
-def _coomv_tvmffi_kernel(
+def _coomv_cuda_kernel(
     weight_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs,
 ):
-    """TVM FFI CUDA kernel for float COO SpMV.
+    """CUDA CUDA kernel for float COO SpMV.
 
     Dispatches to one of the ``coomv_{homo,hetero}_atomic_{nt,t}`` kernels
-    compiled from ``float_coomv.cu`` via ``register_tvm_cuda_from_file``.
+    compiled from ``float_coomv.cu`` via ``load_cuda_file``.
 
     Both directions use a grid-stride atomic-scatter kernel (1024 threads/block):
 
@@ -1026,7 +1026,7 @@ coomv_p.def_numba_kernel(_coomv_numba_kernel)
 coomv_p.def_warp_kernel(_coomv_warp_kernel)
 coomv_p.def_pallas_kernel('gpu', _coomv_pallas_gpu_kernel)
 coomv_p.def_pallas_kernel('tpu', _coomv_pallas_tpu_kernel)
-coomv_p.def_cuda_kernel(_coomv_tvmffi_kernel)
+coomv_p.def_cuda_raw_kernel(_coomv_cuda_kernel)
 coomv_p.def_kernel('jax_raw', 'cpu', _coomv_jax_kernel)
 coomv_p.def_kernel('jax_raw', 'gpu', _coomv_jax_kernel)
 coomv_p.def_kernel('jax_raw', 'tpu', _coomv_jax_kernel)
@@ -1448,16 +1448,16 @@ def _coomm_pallas_tpu_kernel(
     return kernel
 
 
-def _coomm_tvmffi_kernel(
+def _coomm_cuda_kernel(
     weight_info: jax.ShapeDtypeStruct,
     matrix_info: jax.ShapeDtypeStruct,
     transpose: bool,
     **kwargs,
 ):
-    """TVM FFI CUDA kernel for float COO SpMM.
+    """CUDA CUDA kernel for float COO SpMM.
 
     Dispatches to one of the ``coomm_{homo,hetero}_{variant}_{nt,t}`` kernels
-    compiled from ``float_coomm.cu`` via ``register_tvm_cuda_from_file``.
+    compiled from ``float_coomm.cu`` via ``load_cuda_file``.
 
     Kernel variant selection (based on n = number of output columns):
     - CT (Column-Tiled, n ≤ 64): One warp per block serializes over 32 NNZ
@@ -1808,7 +1808,7 @@ coomm_p.def_numba_kernel(_coomm_numba_kernel)
 coomm_p.def_warp_kernel(_coomm_warp_kernel)
 coomm_p.def_pallas_kernel('gpu', _coomm_pallas_gpu_kernel)
 coomm_p.def_pallas_kernel('tpu', _coomm_pallas_tpu_kernel)
-coomm_p.def_cuda_kernel(_coomm_tvmffi_kernel)
+coomm_p.def_cuda_raw_kernel(_coomm_cuda_kernel)
 coomm_p.def_kernel('jax_raw', 'cpu', _coomm_jax_kernel)
 coomm_p.def_kernel('jax_raw', 'gpu', _coomm_jax_kernel)
 coomm_p.def_kernel('jax_raw', 'tpu', _coomm_jax_kernel)

@@ -32,7 +32,7 @@
  *     spikes  : float16/float32/float64/bfloat16 sparse-float vector
  *     returns : output vector
  *
- * TVM FFI entry points:
+ * CUDA entry points:
  *   spfloat_densemv_gather_warp_{dtype}
  *   spfloat_densemv_gather_block_{dtype}
  *   spfloat_densemv_gather_auto_{dtype}

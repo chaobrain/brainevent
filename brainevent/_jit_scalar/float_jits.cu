@@ -115,7 +115,7 @@ DEFINE_JITS_CORDER_FALSE(_f64,  double,        double, READ_F64,  WRITE_F64)
 DEFINE_JITS_CORDER_FALSE(_f16,  __half,        float,  READ_F16,  WRITE_F16)
 DEFINE_JITS_CORDER_FALSE(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
 
-// ---- TVM FFI: jits corder=true ----
+// ---- CUDA: jits corder=true ----
 
 #define FFI_JITS_CORDER_TRUE(SUFFIX, WEIGHT_C_T)               \
 void jits_corder_true##SUFFIX(                                 \
@@ -150,7 +150,7 @@ FFI_JITS_CORDER_TRUE(_f16, __half)
 // @BE jits_corder_true_bf16
 FFI_JITS_CORDER_TRUE(_bf16, __nv_bfloat16)
 
-// ---- TVM FFI: jits corder=false ----
+// ---- CUDA: jits corder=false ----
 
 #define FFI_JITS_CORDER_FALSE(SUFFIX, WEIGHT_C_T)               \
 void jits_corder_false##SUFFIX(                                 \

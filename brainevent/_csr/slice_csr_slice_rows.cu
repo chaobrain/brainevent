@@ -439,7 +439,7 @@ DEFINE_SLICE_GRAD_THREAD      (_bf16, __nv_bfloat16, atomic_add_bf16)
 DEFINE_SLICE_GRAD_WARP        (_bf16, __nv_bfloat16, atomic_add_bf16)
 
 // =========================================================================
-// TVM FFI Entry Point Macros
+// CUDA Entry Point Macros
 // =========================================================================
 //
 // Forward convention:
@@ -757,10 +757,10 @@ void csr_slice_rows_grad_auto##SUFFIX(                                          
 }
 
 // =========================================================================
-// TVM FFI entry point instantiations
+// CUDA entry point instantiations
 // =========================================================================
 //
-// Exported symbols (auto-discovered by register_tvm_cuda_from_file):
+// Exported symbols (auto-discovered by load_cuda_file):
 //   Forward:  csr_slice_rows_fwd_{homo,hetero}_{thread,warp,block,auto}_{f32,f64,f16,bf16}
 //   Backward: csr_slice_rows_grad_{thread,warp,auto}_{f32,f64,f16,bf16}
 // =========================================================================

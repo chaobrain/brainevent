@@ -357,7 +357,7 @@ DEFINE_YW2Y_NT_NZ_THREAD (_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
 DEFINE_YW2Y_T_NZ_THREAD  (_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16)
 
 // =========================================================================
-// TVM FFI Entry Point Macros
+// CUDA Entry Point Macros
 // =========================================================================
 //
 // All entry points share the same argument list:
@@ -483,7 +483,7 @@ void csrmv_yw2y_t_nz_thread##SUFFIX(                           \
 
 
 // =========================================================================
-// Instantiate TVM FFI entry points via macros + @tvm_ffi annotations
+// Instantiate CUDA entry points via macros + @cuda annotations
 // =========================================================================
 
 // ---- Float32 ----

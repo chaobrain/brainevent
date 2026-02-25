@@ -82,7 +82,7 @@ def spfloat_fcnmv(
         (fixed pre-synaptic connections, scatter mode).
     backend : str or None, optional
         Execution backend override (``'numba'``,
-        ``'pallas'``, ``'tvmffi'``, or ``None`` for automatic selection).
+        ``'pallas'``, ``'cuda_raw'``, or ``None`` for automatic selection).
 
     Returns
     -------
@@ -482,7 +482,7 @@ def spfloat_fcnmv_p_call(
     product with fixed connection number.
 
     This function validates shapes and dispatches to the registered XLA
-    custom kernel (Numba, Pallas, or TVM FFI) without performing any
+    custom kernel (Numba, Pallas, or CUDA) without performing any
     physical-unit bookkeeping.  It is typically called from
     :func:`spfloat_fcnmv` or from autodiff rules.
 
@@ -502,7 +502,7 @@ def spfloat_fcnmv_p_call(
         ``False`` for gather mode (fixed post-connections), ``True`` for
         scatter mode (fixed pre-connections).  Default is ``False``.
     backend : str or None, optional
-        Backend override (``'numba'``, ``'pallas'``, ``'tvmffi'``, or
+        Backend override (``'numba'``, ``'pallas'``, ``'cuda_raw'``, or
         ``None``).
 
     Returns
@@ -537,7 +537,7 @@ Low-level XLA custom-kernel primitive for ``spfloat_fcnmv``.
 
 This ``XLACustomKernel`` instance dispatches the fixed-connection matrix-vector
 multiplication operation with sparse-float inputs to registered backends
-(``numba``, ``pallas``, ``tvmffi``), using runtime shape/dtype metadata provided
+(``numba``, ``pallas``, ``cuda_raw``), using runtime shape/dtype metadata provided
 by the high-level wrapper.
 
 Fixed-connection format stores connectivity where each neuron has a fixed number
@@ -742,7 +742,7 @@ def _spfloat_fcnmm_warp_kernel(
 spfloat_fcnmv_p.def_numba_kernel(_spfloat_fcnmv_numba_kernel)
 spfloat_fcnmv_p.def_warp_kernel(_spfloat_fcnmv_warp_kernel)
 spfloat_fcnmv_p.def_pallas_kernel('gpu', _spfloat_fcnmv_pallas_kernel)
-spfloat_fcnmv_p.def_cuda_kernel(_spfloat_fcnmv_cuda_kernel)
+spfloat_fcnmv_p.def_cuda_raw_kernel(_spfloat_fcnmv_cuda_kernel)
 spfloat_fcnmv_p.def_kernel('jax_raw', 'cpu', _spfloat_fcnmv_jax_kernel)
 spfloat_fcnmv_p.def_kernel('jax_raw', 'gpu', _spfloat_fcnmv_jax_kernel)
 spfloat_fcnmv_p.def_kernel('jax_raw', 'tpu', _spfloat_fcnmv_jax_kernel)
@@ -1213,7 +1213,7 @@ def spfloat_fcnmm_p_call(
     product with fixed connection number.
 
     This function validates shapes and dispatches to the registered XLA
-    custom kernel (Numba, Pallas, or TVM FFI) without performing any
+    custom kernel (Numba, Pallas, or CUDA) without performing any
     physical-unit bookkeeping.  It is typically called from
     :func:`spfloat_fcnmm` or from autodiff rules.
 
@@ -1233,7 +1233,7 @@ def spfloat_fcnmm_p_call(
         ``False`` for gather mode (fixed post-connections), ``True`` for
         scatter mode (fixed pre-connections).
     backend : str or None, optional
-        Backend override (``'numba'``, ``'pallas'``, ``'tvmffi'``, or
+        Backend override (``'numba'``, ``'pallas'``, ``'cuda_raw'``, or
         ``None``).
 
     Returns
@@ -1274,7 +1274,7 @@ Low-level XLA custom-kernel primitive for ``spfloat_fcnmm``.
 
 This ``XLACustomKernel`` instance dispatches the fixed-connection matrix-matrix
 multiplication operation with sparse-float inputs to registered backends
-(``numba``, ``pallas``, ``tvmffi``), using runtime shape/dtype metadata provided
+(``numba``, ``pallas``, ``cuda_raw``), using runtime shape/dtype metadata provided
 by the high-level wrapper.
 
 Fixed-connection format stores connectivity where each neuron has a fixed number
@@ -1297,7 +1297,7 @@ spfloat_fcnmm : High-level user-facing function wrapper.
 spfloat_fcnmm_p.def_numba_kernel(_spfloat_fcnmm_numba_kernel)
 spfloat_fcnmm_p.def_warp_kernel(_spfloat_fcnmm_warp_kernel)
 spfloat_fcnmm_p.def_pallas_kernel('gpu', _spfloat_fcnmm_pallas_kernel)
-spfloat_fcnmm_p.def_cuda_kernel(_spfloat_fcnmm_cuda_kernel)
+spfloat_fcnmm_p.def_cuda_raw_kernel(_spfloat_fcnmm_cuda_kernel)
 spfloat_fcnmm_p.def_kernel('jax_raw', 'cpu', _spfloat_fcnmm_jax_kernel)
 spfloat_fcnmm_p.def_kernel('jax_raw', 'gpu', _spfloat_fcnmm_jax_kernel)
 spfloat_fcnmm_p.def_kernel('jax_raw', 'tpu', _spfloat_fcnmm_jax_kernel)

@@ -20,7 +20,7 @@ Benchmark: Event-Driven Binary COO Sparse Matrix-Matrix Multiplication
 Compares backend performance for ``binary_coomm``:
   - jax       : pure-JAX scatter-add reference
   - pallas    : JAX Pallas/Triton GPU kernels (2-D atomic grid)
-  - tvmffi    : custom CUDA kernels via TVM FFI
+  - cuda_raw    : custom CUDA kernels via CUDA
       - CT  (column-tiled, 1 warp/block):  n ≤ 64
       - WPE (warp-per-entry, 8 warps/blk): n > 64
 
@@ -227,7 +227,7 @@ def run_manual(
     n_runs: int = 100,
     configs=None,
     spike_rate: float = 0.1,
-    backends=('jax', 'pallas', 'tvmffi'),
+    backends=('jax', 'pallas', 'cuda_raw'),
 ):
     """Manual micro-benchmark comparing backends with stable timing statistics.
 
@@ -335,7 +335,7 @@ def run_ncols_sweep(n_warmup=20, n_runs=100, spike_rate=0.1):
 # ---------------------------------------------------------------------------
 
 def run_dtype_check():
-    """Verify numerical correctness of tvmffi vs. jax across all supported dtypes."""
+    """Verify numerical correctness of cuda_raw vs. jax across all supported dtypes."""
     print("\n" + "=" * 70)
     print("binary_coomm  — dtype correctness check")
     print("=" * 70)
@@ -369,14 +369,14 @@ def run_dtype_check():
             )[0]
 
             try:
-                tvm_out = binary_coomm_p_call(
-                    weights, row, col, B, shape=shape, transpose=False, backend='tvmffi',
+                cuda_out = binary_coomm_p_call(
+                    weights, row, col, B, shape=shape, transpose=False, backend='cuda_raw',
                 )[0]
                 ref32  = ref.astype(jnp.float32)
-                tvm32  = tvm_out.astype(jnp.float32)
+                cuda32 = cuda_out.astype(jnp.float32)
                 # f16/bf16 accumulate in f32 but final output is reduced precision
                 tol = 1e-2 if wt_dtype in (jnp.float16, jnp.bfloat16) else 1e-4
-                max_err = float(jnp.max(jnp.abs(ref32 - tvm32)))
+                max_err = float(jnp.max(jnp.abs(ref32 - cuda32)))
                 ok = max_err <= tol
                 status = f"PASS  max_err={max_err:.3e}"
             except Exception as exc:

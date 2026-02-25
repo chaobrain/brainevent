@@ -32,7 +32,7 @@ import jax
 import brainevent
 from COBA_2005_benchmark import make_simulation_run
 
-brainevent.config.set_backend('gpu', 'cuda')
+brainevent.config.set_backend('gpu', 'cuda_raw')
 
 
 def benchmark_post_conn():

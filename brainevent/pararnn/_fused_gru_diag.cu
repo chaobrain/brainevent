@@ -42,7 +42,7 @@
  * Grid: (hidden_dim, batch_size), Block: (threads_per_block).
  * Each thread handles CHUNK_SIZE consecutive timesteps.
  *
- * TVM FFI entry points:
+ * CUDA entry points:
  *   fused_fwd_gru_diag_f32(A, Bxpb, output, stream)
  *   fused_fwd_gru_diag_f64(A, Bxpb, output, stream)
  *   fused_bwd_gru_diag_f32(grad, h, A, Bxpb, dl_dh, stream)
@@ -461,7 +461,7 @@ DEFINE_FUSED_BWD_GRU(_f32, float, 4)
 DEFINE_FUSED_BWD_GRU(_f64, double, 1)
 
 // ============================================================================
-// TVM FFI entry points
+// CUDA entry points
 // ============================================================================
 
 // @BE fused_fwd_gru_diag_f32

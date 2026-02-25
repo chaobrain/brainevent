@@ -158,7 +158,7 @@ DEFINE_JITUMM_SCATTER(_f64,  double,        double, READ_F64,  WRITE_F64,  atomi
 DEFINE_JITUMM_SCATTER(_f16,  __half,        float,  READ_F16,  WRITE_F16,  atomic_add_f16)
 DEFINE_JITUMM_SCATTER(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, atomic_add_bf16)
 
-// ---- TVM FFI: jitumm gather ----
+// ---- CUDA: jitumm gather ----
 // No memset needed: gather kernel zero-initializes output rows in-kernel.
 
 #define FFI_JITUMM_GATHER(SUFFIX, WEIGHT_C_T)                \
@@ -197,7 +197,7 @@ FFI_JITUMM_GATHER(_f16, __half)
 // @BE jitumm_gather_bf16
 FFI_JITUMM_GATHER(_bf16, __nv_bfloat16)
 
-// ---- TVM FFI: jitumm scatter ----
+// ---- CUDA: jitumm scatter ----
 
 #define FFI_JITUMM_SCATTER(SUFFIX, WEIGHT_C_T)               \
 void jitumm_scatter##SUFFIX(                                 \

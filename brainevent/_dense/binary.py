@@ -681,7 +681,7 @@ def _binary_densemm_warp_kernel(
 binary_densemv_p.def_numba_kernel(_binary_densemv_numba_kernel)
 binary_densemv_p.def_warp_kernel(_binary_densemv_warp_kernel)
 binary_densemv_p.def_pallas_kernel('gpu', _binary_densemv_pallas_kernel)
-binary_densemv_p.def_cuda_kernel(_binary_densemv_cuda_kernel)
+binary_densemv_p.def_cuda_raw_kernel(_binary_densemv_cuda_kernel)
 binary_densemv_p.def_kernel('jax_raw', 'cpu', _binary_densemv_jax_kernel)
 binary_densemv_p.def_kernel('jax_raw', 'gpu', _binary_densemv_jax_kernel)
 binary_densemv_p.def_kernel('jax_raw', 'tpu', _binary_densemv_jax_kernel)
@@ -1116,7 +1116,7 @@ def binary_densemm_p_call(weights, spikes, *, transpose, backend: Optional[str] 
     spikes : jax.Array
         The binary matrix with shape ``(k, n)``. Can be boolean or float.
         Boolean inputs are passed through to backends that support them
-        natively (tvmffi, numba) for better performance; Pallas converts
+        natively (cuda_raw, numba) for better performance; Pallas converts
         internally.
     transpose : bool
         If False, compute ``weights @ spikes`` producing shape ``(m, n)``.
@@ -1219,7 +1219,7 @@ def _binary_densemm_cuda_kernel(
     **kwargs
 ):
     """
-    CUDA TVM FFI kernel generator for ``binary_densemm``.
+    CUDA CUDA kernel generator for ``binary_densemm``.
 
     Registers and selects optimised CUDA kernels from ``binary_densemm.cu``
     for the binary dense matrix-matrix multiply. The kernel variant is chosen
@@ -1324,7 +1324,7 @@ binary_densemm : High-level user-facing function wrapper.
 binary_densemm_p.def_numba_kernel(_binary_densemm_numba_kernel)
 binary_densemm_p.def_warp_kernel(_binary_densemm_warp_kernel)
 binary_densemm_p.def_pallas_kernel('gpu', _binary_densemm_pallas_kernel)
-binary_densemm_p.def_cuda_kernel(_binary_densemm_cuda_kernel)
+binary_densemm_p.def_cuda_raw_kernel(_binary_densemm_cuda_kernel)
 binary_densemm_p.def_kernel('jax_raw', 'cpu', _binary_densemm_jax_kernel)
 binary_densemm_p.def_kernel('jax_raw', 'gpu', _binary_densemm_jax_kernel)
 binary_densemm_p.def_kernel('jax_raw', 'tpu', _binary_densemm_jax_kernel)

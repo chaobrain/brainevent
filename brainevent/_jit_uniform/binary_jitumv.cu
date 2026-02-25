@@ -208,7 +208,7 @@ DEFINE_BINARY_JITUMV_SCATTER(_f16_float, __half,        float,  READ_F16,  WRITE
 DEFINE_BINARY_JITUMV_SCATTER(_bf16_bool, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, int8_t, IS_ACTIVE_BOOL,  atomic_add_bf16)
 DEFINE_BINARY_JITUMV_SCATTER(_bf16_float,__nv_bfloat16, float,  READ_BF16, WRITE_BF16, float,  IS_ACTIVE_FLOAT, atomic_add_bf16)
 
-// ---- TVM FFI: binary_jitumv gather ----
+// ---- CUDA: binary_jitumv gather ----
 // Dispatches to shared-memory kernel when spike vector fits in device smem.
 // No memset needed: gather kernels write every output element exactly once.
 
@@ -272,7 +272,7 @@ FFI_BINARY_JITUMV_GATHER(_bf16_bool, __nv_bfloat16, int8_t)
 // @BE binary_jitumv_gather_bf16_float
 FFI_BINARY_JITUMV_GATHER(_bf16_float,__nv_bfloat16, float)
 
-// ---- TVM FFI: binary_jitumv scatter ----
+// ---- CUDA: binary_jitumv scatter ----
 
 #define FFI_BINARY_JITUMV_SCATTER(SUFFIX, WEIGHT_C_T, SPIKE_C_T)    \
 void binary_jitumv_scatter##SUFFIX(                                 \

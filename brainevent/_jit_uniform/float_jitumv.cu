@@ -176,7 +176,7 @@ DEFINE_JITUMV_SCATTER(_f64,  double,        double, READ_F64,  WRITE_F64,  atomi
 DEFINE_JITUMV_SCATTER(_f16,  __half,        float,  READ_F16,  WRITE_F16,  atomic_add_f16)
 DEFINE_JITUMV_SCATTER(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, atomic_add_bf16)
 
-// ---- TVM FFI: jitumv gather ----
+// ---- CUDA: jitumv gather ----
 // Dispatches to shared-memory kernel when vector fits in device smem,
 // falls back to global-memory kernel for larger vectors.
 // No memset needed: gather kernels write every output element exactly once.
@@ -233,7 +233,7 @@ FFI_JITUMV_GATHER(_f16, __half, float)
 // @BE jitumv_gather_bf16
 FFI_JITUMV_GATHER(_bf16, __nv_bfloat16, float)
 
-// ---- TVM FFI: jitumv scatter ----
+// ---- CUDA: jitumv scatter ----
 
 #define FFI_JITUMV_SCATTER(SUFFIX, WEIGHT_C_T)               \
 void jitumv_scatter##SUFFIX(                                 \

@@ -32,7 +32,7 @@
  *     spikes  : bool (int8) or float32 spike matrix
  *     returns : output matrix
  *
- * TVM FFI entry points:
+ * CUDA entry points:
  *   binary_densemm_gather_auto_homo_{dtype}_{spike_dtype}
  *   binary_densemm_gather_auto_hetero_{dtype}_{spike_dtype}
  *   binary_densemm_scatter_auto_homo_{dtype}_{spike_dtype}
@@ -40,7 +40,7 @@
  *
  * PERFORMANCE NOTES (RTX 3080 Ti, f32, bool spikes):
  * ===================================================
- *  Config (m x k x n)         Density  tvmffi    cuBLAS   Speedup
+ *  Config (m x k x n)         Density  cuda    cuBLAS   Speedup
  *  5K x 5K x 100          1%       1.1ms     1.17ms   1.06x  ok
  *  10K x 10K x 100        1%       3.3ms     1.33ms   0.40x  slow
  *  20K x 20K x 100        1%       11ms      5ms      0.44x  slow

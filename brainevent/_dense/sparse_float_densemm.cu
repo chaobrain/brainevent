@@ -32,7 +32,7 @@
  *     spikes  : float16/float32/float64/bfloat16 sparse-float matrix
  *     returns : output matrix
  *
- * TVM FFI entry points:
+ * CUDA entry points:
  *   spfloat_densemm_nt_{dtype}       (warp-per-row NT)
  *   spfloat_densemm_nt_tpe_{dtype}   (thread-per-element NT)
  *   spfloat_densemm_t_{dtype}        (T mode)

@@ -253,7 +253,7 @@ def _coo_on_pre_jax_kernel(
 
 
 def _coo_on_pre_cuda_kernel(weight_info, spike_info, pre_ids_info, **kwargs):
-    """TVM FFI CUDA kernel for presynaptic COO plasticity update.
+    """CUDA CUDA kernel for presynaptic COO plasticity update.
 
     Dispatches to ``update_coo_on_pre{wt_sfx}{spk_sfx}`` compiled from
     ``plasticity_binary.cu``.
@@ -263,7 +263,7 @@ def _coo_on_pre_cuda_kernel(weight_info, spike_info, pre_ids_info, **kwargs):
     """
     if pre_ids_info.dtype == jnp.int64:
         raise TypeError(
-            "update_coo_on_binary_pre: the 'tvmffi' backend only supports "
+            "update_coo_on_binary_pre: the 'cuda_raw' backend only supports "
             "int32 index arrays (pre_ids / post_ids).  "
             "Use backend='pallas' or backend='jax' for int64 indices."
         )
@@ -571,7 +571,7 @@ def _coo_on_post_warp_kernel(
 update_coo_on_binary_pre_p.def_numba_kernel(_coo_on_pre_numba_kernel)
 update_coo_on_binary_pre_p.def_warp_kernel(_coo_on_pre_warp_kernel)
 update_coo_on_binary_pre_p.def_pallas_kernel('gpu', _coo_on_pre_pallas_kernel)
-update_coo_on_binary_pre_p.def_cuda_kernel(_coo_on_pre_cuda_kernel)
+update_coo_on_binary_pre_p.def_cuda_raw_kernel(_coo_on_pre_cuda_kernel)
 update_coo_on_binary_pre_p.def_kernel('jax_raw', 'cpu', _coo_on_pre_jax_kernel)
 update_coo_on_binary_pre_p.def_kernel('jax_raw', 'gpu', _coo_on_pre_jax_kernel)
 update_coo_on_binary_pre_p.def_kernel('jax_raw', 'tpu', _coo_on_pre_jax_kernel)
@@ -802,7 +802,7 @@ def _coo_on_post_jax_kernel(
 
 
 def _coo_on_post_cuda_kernel(weight_info, spike_info, pre_ids_info, **kwargs):
-    """TVM FFI CUDA kernel for postsynaptic COO plasticity update.
+    """CUDA CUDA kernel for postsynaptic COO plasticity update.
 
     Dispatches to ``update_coo_on_post{wt_sfx}{spk_sfx}`` compiled from
     ``plasticity_binary.cu``.
@@ -812,7 +812,7 @@ def _coo_on_post_cuda_kernel(weight_info, spike_info, pre_ids_info, **kwargs):
     """
     if pre_ids_info.dtype == jnp.int64:
         raise TypeError(
-            "update_coo_on_binary_post: the 'tvmffi' backend only supports "
+            "update_coo_on_binary_post: the 'cuda_raw' backend only supports "
             "int32 index arrays (pre_ids / post_ids).  "
             "Use backend='pallas' or backend='jax' for int64 indices."
         )
@@ -990,7 +990,7 @@ update_coo_on_binary_post : High-level user-facing function wrapper.
 update_coo_on_binary_post_p.def_numba_kernel(_coo_on_post_numba_kernel)
 update_coo_on_binary_post_p.def_warp_kernel(_coo_on_post_warp_kernel)
 update_coo_on_binary_post_p.def_pallas_kernel('gpu', _coo_on_post_pallas_kernel)
-update_coo_on_binary_post_p.def_cuda_kernel(_coo_on_post_cuda_kernel)
+update_coo_on_binary_post_p.def_cuda_raw_kernel(_coo_on_post_cuda_kernel)
 update_coo_on_binary_post_p.def_kernel('jax_raw', 'cpu', _coo_on_post_jax_kernel)
 update_coo_on_binary_post_p.def_kernel('jax_raw', 'gpu', _coo_on_post_jax_kernel)
 update_coo_on_binary_post_p.def_kernel('jax_raw', 'tpu', _coo_on_post_jax_kernel)

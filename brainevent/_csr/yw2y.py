@@ -585,7 +585,7 @@ csrmv_yw2y : High-level user-facing function wrapper.
 csrmv_yw2y_p.def_numba_kernel(_csrmv_yw2y_numba_kernels)
 csrmv_yw2y_p.def_warp_kernel(_csrmv_yw2y_warp_kernel_generator)
 csrmv_yw2y_p.def_pallas_kernel('gpu', _csrmv_yw2y_pallas_kernels)
-csrmv_yw2y_p.def_cuda_kernel(_csrmv_yw2y_cuda_kernel)
+csrmv_yw2y_p.def_cuda_raw_kernel(_csrmv_yw2y_cuda_kernel)
 csrmv_yw2y_p.def_kernel('jax_raw', 'cpu', _csrmv_yw2y_jax_kernel)
 csrmv_yw2y_p.def_kernel('jax_raw', 'gpu', _csrmv_yw2y_jax_kernel)
 csrmv_yw2y_p.def_kernel('jax_raw', 'tpu', _csrmv_yw2y_jax_kernel)

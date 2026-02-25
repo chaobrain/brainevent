@@ -33,7 +33,7 @@
  *   - csrmv_nt_auto_{f32,f64,f16,bf16}   : auto-selects thread/warp/block
  *   - csrmv_t_warp_{f32,f64,f16,bf16}    : transpose scatter, one warp per row
  *
- * Parameters (TVM FFI entry points):
+ * Parameters (CUDA entry points):
  *   weights  : [nnz] or [1] float array  (hetero or homo weights)
  *   indices  : [nnz] int32 column indices
  *   indptr   : [m+1] int32 row pointers

@@ -139,7 +139,7 @@ DEFINE_BINARY_JITSMV_SCATTER(_f16_float, __half,        float,  READ_F16,  WRITE
 DEFINE_BINARY_JITSMV_SCATTER(_bf16_bool, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, int8_t, IS_ACTIVE_BOOL,  atomic_add_bf16)
 DEFINE_BINARY_JITSMV_SCATTER(_bf16_float,__nv_bfloat16, float,  READ_BF16, WRITE_BF16, float,  IS_ACTIVE_FLOAT, atomic_add_bf16)
 
-// ---- TVM FFI: binary_jitsmv gather ----
+// ---- CUDA: binary_jitsmv gather ----
 
 #define FFI_BINARY_JITSMV_GATHER(SUFFIX, WEIGHT_C_T, SPIKE_C_T)    \
 void binary_jitsmv_gather##SUFFIX(                                 \
@@ -184,7 +184,7 @@ FFI_BINARY_JITSMV_GATHER(_bf16_bool, __nv_bfloat16, int8_t)
 // @BE binary_jitsmv_gather_bf16_float
 FFI_BINARY_JITSMV_GATHER(_bf16_float,__nv_bfloat16, float)
 
-// ---- TVM FFI: binary_jitsmv scatter ----
+// ---- CUDA: binary_jitsmv scatter ----
 
 #define FFI_BINARY_JITSMV_SCATTER(SUFFIX, WEIGHT_C_T, SPIKE_C_T)    \
 void binary_jitsmv_scatter##SUFFIX(                                 \

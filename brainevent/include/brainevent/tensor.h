@@ -129,7 +129,7 @@ public:
 
     // -- data access --------------------------------------------------
 
-    /// Raw data pointer (void*).  Compatible with ``tvm::ffi::TensorView::data_ptr()``.
+    /// Raw data pointer (void*), matching the XLA FFI TensorView access pattern.
     /// For a typed pointer, use the template overload: ``data_ptr<float>()``.
     void* data_ptr() const noexcept { return data_; }
 

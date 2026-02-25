@@ -44,7 +44,7 @@
  * Grid: (hidden_dim, batch_size), Block: (threads_per_block).
  * Each thread handles chunk_size consecutive timesteps.
  *
- * TVM FFI entry points:
+ * CUDA entry points:
  *   pararnn_reduce_diag_f32(jac, rhs, output, stream)
  *   pararnn_reduce_diag_f64(jac, rhs, output, stream)
  */
@@ -460,7 +460,7 @@ DEFINE_DIAG_REDUCE(_f32, float, 2)
 DEFINE_DIAG_REDUCE(_f64, double, 4)
 
 // ============================================================================
-// TVM FFI entry points
+// CUDA entry points
 // ============================================================================
 
 #define DEFINE_FFI_DIAG_REDUCE(SUFFIX, SCALAR_T, CHUNK_SIZE)                     \

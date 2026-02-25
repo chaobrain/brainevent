@@ -20,7 +20,7 @@
  * Generates a dense matrix M[i,j] = Normal(w_loc, w_scale) * Bernoulli(prob).
  * Connectivity pattern is determined by a geometric skip seeded by `seed`.
  *
- * TVM FFI entry points
+ * CUDA entry points
  * --------------------
  * jitn_corder_true_{f32,f64,f16,bf16}   — row-parallel gather (corder=True)
  * jitn_corder_false_{f32,f64,f16,bf16}  — col-parallel scatter (corder=False)

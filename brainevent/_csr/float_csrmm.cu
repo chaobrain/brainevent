@@ -33,10 +33,10 @@
  *   - csrmm_t_warp_{homo,hetero}_{f32,f64,f16,bf16}   : transpose scatter
  *
  * Performance (NT mode, hetero weights, 10K×10K @ 2% density, n=128):
- *   - tvmffi backend: 1.19-1.34ms (8.4-9.5× faster than cuSPARSE)
+ *   - cuda backend: 1.19-1.34ms (8.4-9.5× faster than cuSPARSE)
  *   - Threshold warp→block: avg_nnz > 64
  *
- * Parameters (TVM FFI entry points):
+ * Parameters (CUDA entry points):
  *   weights  : [nnz] or [1] float array  (hetero or homo weights)
  *   indices  : [nnz] int32 column indices
  *   indptr   : [m+1] int32 row pointers

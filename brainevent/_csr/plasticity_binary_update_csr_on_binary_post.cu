@@ -41,7 +41,7 @@
  *                             post_spike, pre_trace, w_min=None, w_max=None,
  *                             shape=..., backend=None)
  *
- * TVM FFI Entry Points (one per dtype combination):
+ * CUDA Entry Points (one per dtype combination):
  *   update_csr_on_post_{wt}_{spk}  where
  *     wt  in {f16, bf16, f32, f64}
  *     spk in {bool, float}
@@ -104,13 +104,13 @@
 //    - This kernel is 160× below the compute-bound threshold
 //    - Memory bandwidth (not compute) is the limiting factor
 //
-// 4. **TVM FFI Per-Call Overhead**:
+// 4. **CUDA Per-Call Overhead**:
 //    - Kernel launch overhead ~0.5-1.0 ms per call
 //    - Dominates small workloads (< 100 active neurons)
 //    - Irreducible without infrastructure changes:
 //      * Kernel batching/fusion at operator scheduler level
 //      * Persistent kernels (CUDA sm_70+) with device-side queuing
-//      * Replacing TVM FFI with direct JAX custom calls
+//      * Replacing CUDA with direct JAX custom calls
 //
 // 5. **Sparse Event Density** (limited parallelism):
 //    - At 10% spike density, only 486/5000 neurons active
@@ -262,7 +262,7 @@ DEFINE_CSR_ON_POST_BLOCK(_bf16_bool, int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16, flo
 DEFINE_CSR_ON_POST_BLOCK(_bf16_float,float,  IS_ACTIVE_FLOAT, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, atomic_add_bf16)
 
 // =========================================================================
-// TVM FFI Entry Points
+// CUDA Entry Points
 // =========================================================================
 
 #define FFI_CSR_ON_POST(SUFFIX, WEIGHT_C_T, SPIKE_C_T)          \

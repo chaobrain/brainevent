@@ -52,9 +52,9 @@
  *   float32 to maintain numerical precision, with results written back
  *   atomically.
  *
- * TVM FFI Integration:
+ * CUDA Integration:
  * -------------------
- * All kernels are exposed via TVM FFI with @tvm_ffi annotations for seamless
+ * All kernels are exposed via CUDA with @cuda annotations for seamless
  * integration with JAX.  Homo vs. hetero dispatch is resolved at compile time
  * on the Python side (based on weight_info.size), so there is no runtime
  * is_homo branch in the kernels.

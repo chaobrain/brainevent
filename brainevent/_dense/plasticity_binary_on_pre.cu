@@ -111,7 +111,7 @@ DEFINE_ON_PRE_FINAL(_bf16_bool,  int8_t, IS_ACTIVE_BOOL,  __nv_bfloat16,  float,
 DEFINE_ON_PRE_FINAL(_bf16_float, float,  IS_ACTIVE_FLOAT, __nv_bfloat16,  float,  READ_BF16, WRITE_BF16)
 
 // =========================================================================
-// TVM FFI Entry Points
+// CUDA Entry Points
 // =========================================================================
 
 #define FFI_ON_PRE(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                 \

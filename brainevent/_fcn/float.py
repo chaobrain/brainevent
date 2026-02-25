@@ -77,7 +77,7 @@ def fcnmv(
         pre-synaptic connections, scatter mode).
     backend : str or None, optional
         Execution backend override (``'numba'``,
-        ``'pallas'``, ``'tvmffi'``, or ``None`` for automatic selection).
+        ``'pallas'``, ``'cuda_raw'``, or ``None`` for automatic selection).
 
     Returns
     -------
@@ -465,7 +465,7 @@ def fcnmv_p_call(
     connection number.
 
     This function validates shapes and dispatches to the registered XLA
-    custom kernel (Numba, Pallas, or TVM FFI) without performing any
+    custom kernel (Numba, Pallas, or CUDA) without performing any
     physical-unit bookkeeping.  It is typically called from :func:`fcnmv`
     or from autodiff rules.
 
@@ -486,7 +486,7 @@ def fcnmv_p_call(
         scatter mode (fixed pre-connections).
     backend : str or None, optional
         Backend override (``'numba'``, ``'pallas'``,
-        ``'tvmffi'``, or ``None``).
+        ``'cuda_raw'``, or ``None``).
 
     Returns
     -------
@@ -520,7 +520,7 @@ Low-level XLA custom-kernel primitive for ``fcnmv``.
 
 This ``XLACustomKernel`` instance dispatches the fixed-connection matrix-vector
 multiplication operation with floating-point weights to registered backends
-(``numba``, ``pallas``, ``tvmffi``), using runtime shape/dtype metadata
+(``numba``, ``pallas``, ``cuda_raw``), using runtime shape/dtype metadata
 provided by the high-level wrapper.
 
 Fixed-connection format stores connectivity where each neuron has a fixed number
@@ -733,7 +733,7 @@ def _fcnmm_warp_kernel(
 fcnmv_p.def_numba_kernel(_fcnmv_numba_kernel)
 fcnmv_p.def_warp_kernel(_fcnmv_warp_kernel)
 fcnmv_p.def_pallas_kernel('gpu', _fcnmv_pallas_kernel)
-fcnmv_p.def_cuda_kernel(_fcnmv_cuda_kernel)
+fcnmv_p.def_cuda_raw_kernel(_fcnmv_cuda_kernel)
 fcnmv_p.def_kernel('jax_raw', 'cpu', _fcnmv_jax_kernel)
 fcnmv_p.def_kernel('jax_raw', 'gpu', _fcnmv_jax_kernel)
 fcnmv_p.def_kernel('jax_raw', 'tpu', _fcnmv_jax_kernel)
@@ -1293,7 +1293,7 @@ fcnmm : High-level user-facing function wrapper.
 fcnmm_p.def_numba_kernel(_fcnmm_numba_kernel)
 fcnmm_p.def_warp_kernel(_fcnmm_warp_kernel)
 fcnmm_p.def_pallas_kernel('gpu', _fcnmm_pallas_kernel)
-fcnmm_p.def_cuda_kernel(_fcnmm_cuda_kernel)
+fcnmm_p.def_cuda_raw_kernel(_fcnmm_cuda_kernel)
 fcnmm_p.def_kernel('jax_raw', 'cpu', _fcnmm_jax_kernel)
 fcnmm_p.def_kernel('jax_raw', 'gpu', _fcnmm_jax_kernel)
 fcnmm_p.def_kernel('jax_raw', 'tpu', _fcnmm_jax_kernel)

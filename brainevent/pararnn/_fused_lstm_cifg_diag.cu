@@ -45,7 +45,7 @@
  * Grid: (state_dim, batch_size), Block: (threads_per_block).
  * Each thread handles CHUNK_SIZE consecutive timesteps.
  *
- * TVM FFI entry points:
+ * CUDA entry points:
  *   fused_fwd_lstm_cifg_diag_f32(A, Bxpb, C, full_state, stream)
  *   fused_fwd_lstm_cifg_diag_f64(A, Bxpb, C, full_state, stream)
  *   fused_bwd_lstm_cifg_diag_f32(grad, full_state, A, Bxpb, C, dl_dh, stream)
@@ -690,7 +690,7 @@ DEFINE_FUSED_BWD_LSTM_CIFG(_f32, float, 2)
 DEFINE_FUSED_BWD_LSTM_CIFG(_f64, double, 1)
 
 // ============================================================================
-// TVM FFI entry points
+// CUDA entry points
 // ============================================================================
 
 // @BE fused_fwd_lstm_cifg_diag_f32

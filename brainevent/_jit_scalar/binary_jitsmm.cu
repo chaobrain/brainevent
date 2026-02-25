@@ -202,7 +202,7 @@ DEFINE_BINARY_JITSMM_SCATTER(_f16_float, __half,        float,  READ_F16,  WRITE
 DEFINE_BINARY_JITSMM_SCATTER(_bf16_bool, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, int8_t, IS_ACTIVE_BOOL,  atomic_add_bf16)
 DEFINE_BINARY_JITSMM_SCATTER(_bf16_float,__nv_bfloat16, float,  READ_BF16, WRITE_BF16, float,  IS_ACTIVE_FLOAT, atomic_add_bf16)
 
-// ---- TVM FFI: binary_jitsmm gather ----
+// ---- CUDA: binary_jitsmm gather ----
 // Dispatches to register-accumulator kernel for n <= 16, fallback for n > 16.
 
 #define FFI_BINARY_JITSMM_GATHER(SUFFIX, WEIGHT_C_T, SPIKE_C_T)               \
@@ -260,7 +260,7 @@ FFI_BINARY_JITSMM_GATHER(_bf16_bool, __nv_bfloat16, int8_t)
 // @BE binary_jitsmm_gather_bf16_float
 FFI_BINARY_JITSMM_GATHER(_bf16_float,__nv_bfloat16, float)
 
-// ---- TVM FFI: binary_jitsmm scatter ----
+// ---- CUDA: binary_jitsmm scatter ----
 
 #define FFI_BINARY_JITSMM_SCATTER(SUFFIX, WEIGHT_C_T, SPIKE_C_T)    \
 void binary_jitsmm_scatter##SUFFIX(                                 \

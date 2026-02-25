@@ -50,7 +50,7 @@ class KernelEntry:
     ----------
     backend : str
         The backend name (e.g., ``'numba'``, ``'warp'``, ``'pallas'``,
-        ``'triton'``, ``'tvmffi'``, ``'numba_cuda'``).
+        ``'triton'``, ``'cuda_raw'``, ``'numba_cuda'``).
     platform : str
         The hardware platform name (e.g., ``'cpu'``, ``'gpu'``, ``'tpu'``).
     kernel_generator : KernelGenerator
@@ -103,8 +103,8 @@ class XLACustomKernel:
 
     Supported backends by platform:
 
-    - **CPU**: Numba, TVM FFI
-    - **GPU**: Pallas, TVM FFI, Numba CUDA, Warp, Triton
+    - **CPU**: Numba, CUDA
+    - **GPU**: Pallas, CUDA, Numba CUDA, Warp, Triton
     - **TPU**: Pallas
 
     The workflow for using this class is:
@@ -301,7 +301,7 @@ class XLACustomKernel:
         ----------
         backend : str
             The backend name (e.g., ``'numba'``, ``'warp'``, ``'pallas'``,
-            ``'triton'``, ``'tvmffi'``, ``'numba_cuda'``).
+            ``'triton'``, ``'cuda_raw'``, ``'numba_cuda'``).
         platform : str
             The hardware platform (e.g., ``'cpu'``, ``'gpu'``, ``'tpu'``).
         kg : KernelGenerator
@@ -570,17 +570,17 @@ class XLACustomKernel:
         assert platform in ['gpu', 'tpu'], f'The `platform` should be either `gpu` or `tpu`, but got {platform}.'
         self.def_kernel(backend='pallas', platform=platform, kg=kg, asdefault=asdefault)
 
-    def def_cuda_kernel(
+    def def_cuda_raw_kernel(
         self,
         kg: KernelGenerator,
         asdefault: bool = False
     ):
-        """Register a cuda (nvcc-compiled) kernel for the CPU or GPU platform.
+        """Register a cuda_raw (nvcc-compiled) kernel for the CPU or GPU platform.
 
         Convenience wrapper around :meth:`def_kernel` with
-        ``backend='cuda'``.  The kernel generator function should
-        call :func:`brainevent.cuda.load_cuda_file` or
-        :func:`brainevent.cuda.load_cuda_inline` to compile and
+        ``backend='cuda_raw'``.  The kernel generator function should
+        call :func:`brainevent.kernix.load_cuda_file` or
+        :func:`brainevent.kernix.load_cuda_inline` to compile and
         register the CUDA kernel, then return a closure that calls it via
         ``jax.ffi.ffi_call``.
 
@@ -591,14 +591,14 @@ class XLACustomKernel:
         kg : KernelGenerator
             A callable that compiles and returns the kernel function.
         asdefault : bool, optional
-            If ``True``, set cuda as the default backend for the
+            If ``True``, set cuda_raw as the default backend for the
             given platform.  Default is ``False``.
 
         See Also
         --------
         def_kernel : General kernel registration method.
         """
-        self.def_kernel(backend='cuda', platform='gpu', kg=kg, asdefault=asdefault)
+        self.def_kernel(backend='cuda_raw', platform='gpu', kg=kg, asdefault=asdefault)
 
     def def_numba_cuda_kernel(
         self,

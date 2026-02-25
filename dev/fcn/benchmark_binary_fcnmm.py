@@ -6,14 +6,14 @@ Benchmarks all available GPU backends for ``binary_fcnmm``
 (gather and scatter modes, homo/hetero weights, bool/float matrix inputs)
 across a range of problem sizes.
 
-The key metric is the speedup of the CUDA ``tvmffi`` backend relative to the
+The key metric is the speedup of the CUDA ``cuda_raw`` backend relative to the
 ``jax_raw`` baseline.  For typical SNN firing rates (5–50 % spike density),
 the event-driven CUDA kernels avoid touching inactive entries and therefore
 outperform a dense computation.
 
 Backends compared
 -----------------
-- ``tvmffi``   : NVRTC-compiled CUDA kernels (gather: warp/basic; scatter: warp/basic)
+- ``cuda_raw``   : NVRTC-compiled CUDA kernels (gather: warp/basic; scatter: warp/basic)
 - ``pallas``   : JAX Pallas / Triton GPU kernels
 - ``jax_raw``  : Pure JAX reference (segment_sum / vmap)
 

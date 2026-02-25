@@ -34,7 +34,7 @@
  * - float32, float64, float16 (sm_70+), bfloat16 (sm_80+)
  * - For f16/bf16, accumulation is performed in float32 for numerical stability.
  *
- * TVM FFI Entry Points:
+ * CUDA Entry Points:
  * --------------------
  * coomm_homo_ct_nt_{f32,f64,f16,bf16}   -- CT kernel, non-transposed SpMM (homo weights)
  * coomm_homo_ct_t_{f32,f64,f16,bf16}    -- CT kernel, transposed SpMM (homo weights)

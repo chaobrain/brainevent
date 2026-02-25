@@ -40,7 +40,7 @@
  * Grid: (block_dim, batch_size), Block: (threads_per_block).
  * Each thread handles chunk_size consecutive timesteps.
  *
- * TVM FFI entry points:
+ * CUDA entry points:
  *   pararnn_reduce_block2_f32(jac, rhs, output, stream)
  *   pararnn_reduce_block2_f64(jac, rhs, output, stream)
  */
@@ -611,7 +611,7 @@ DEFINE_BLOCK2_REDUCE(_f32, float, 2)
 DEFINE_BLOCK2_REDUCE(_f64, double, 2)
 
 // ============================================================================
-// TVM FFI entry points
+// CUDA entry points
 // ============================================================================
 
 #define DEFINE_FFI_BLOCK2_REDUCE(SUFFIX, SCALAR_T, CHUNK_SIZE)                \

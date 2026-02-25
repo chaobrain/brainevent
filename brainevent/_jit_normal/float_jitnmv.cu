@@ -20,7 +20,7 @@
  * Computes y = M @ v where M[i,j] = Normal(w_loc, w_scale) * Bernoulli(prob).
  * The matrix M is never materialised; weights are generated on the fly.
  *
- * TVM FFI entry points
+ * CUDA entry points
  * --------------------
  * jitnmv_gather_{f32,f64,f16,bf16}  — gather (corder=True):  one thread per output row
  * jitnmv_scatter_{f32,f64,f16,bf16} — scatter (corder=False): one thread per input col
