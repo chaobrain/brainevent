@@ -16,10 +16,7 @@
 # -*- coding: utf-8 -*-
 
 import functools
-import hashlib
 import importlib.util
-import re
-from pathlib import Path
 from typing import Protocol, Union, Tuple, Sequence
 
 import jax
@@ -28,7 +25,6 @@ from jax import tree_util
 from jax.interpreters import ad
 
 from brainevent._compatible_import import Primitive
-from brainevent._error import TVMFFINotInstalledError, TVMModuleAlreadyRegisteredError
 
 warp_installed = importlib.util.find_spec('warp') is not None
 
@@ -125,6 +121,7 @@ def check_warp_installed():
         import_warp()
     except ImportError as exc:
         raise RuntimeError(_WARP_INSTALL_ERROR_MESSAGE) from exc
+
 
 def defjvp(primitive, *jvp_rules):
     """Define per-input JVP rules for a JAX primitive.
