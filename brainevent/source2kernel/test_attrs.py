@@ -29,12 +29,11 @@ For every dtype both forms are tested:
   - Explicit form ``"attr.name:T"``  — type specified in the arg_spec token
 """
 
-import pytest
-import numpy as np
 import jax
-import jax.numpy as jnp
-
 import jax as _jax
+import jax.numpy as jnp
+import numpy as np
+import pytest
 import pytest as _pytest
 
 requires_gpu = _pytest.mark.skipif(
@@ -47,6 +46,8 @@ jax.config.update("jax_enable_x64", True)
 
 pytestmark = requires_gpu
 
+from brainevent._error import KernelError
+import brainevent.source2kernel as jkb
 
 # ---------------------------------------------------------------------------
 # Shared CUDA source
@@ -251,38 +252,38 @@ void scale_add(BE::Tensor x, BE::Tensor out,
 
 # arg_spec token lists — used by both module fixtures
 _FUNCTIONS_BARE = {
-    "scale_f32":    ["arg", "ret", "attr.scale",  "stream"],
-    "scale_f64":    ["arg", "ret", "attr.scale",  "stream"],
-    "add_i8":       ["arg", "ret", "attr.offset", "stream"],
-    "add_u8":       ["arg", "ret", "attr.offset", "stream"],
-    "add_i16":      ["arg", "ret", "attr.offset", "stream"],
-    "add_u16":      ["arg", "ret", "attr.offset", "stream"],
-    "add_i32":      ["arg", "ret", "attr.offset", "stream"],
-    "add_u32":      ["arg", "ret", "attr.offset", "stream"],
-    "add_i64":      ["arg", "ret", "attr.offset", "stream"],
-    "add_u64":      ["arg", "ret", "attr.offset", "stream"],
+    "scale_f32": ["arg", "ret", "attr.scale", "stream"],
+    "scale_f64": ["arg", "ret", "attr.scale", "stream"],
+    "add_i8": ["arg", "ret", "attr.offset", "stream"],
+    "add_u8": ["arg", "ret", "attr.offset", "stream"],
+    "add_i16": ["arg", "ret", "attr.offset", "stream"],
+    "add_u16": ["arg", "ret", "attr.offset", "stream"],
+    "add_i32": ["arg", "ret", "attr.offset", "stream"],
+    "add_u32": ["arg", "ret", "attr.offset", "stream"],
+    "add_i64": ["arg", "ret", "attr.offset", "stream"],
+    "add_u64": ["arg", "ret", "attr.offset", "stream"],
     "maybe_negate": ["arg", "ret", "attr.negate", "stream"],
-    "scale_c64":    ["arg", "ret", "attr.re", "attr.im", "stream"],
-    "scale_c128":   ["arg", "ret", "attr.re", "attr.im", "stream"],
-    "scale_add":    ["arg", "ret", "attr.scale", "attr.offset", "stream"],
+    "scale_c64": ["arg", "ret", "attr.re", "attr.im", "stream"],
+    "scale_c128": ["arg", "ret", "attr.re", "attr.im", "stream"],
+    "scale_add": ["arg", "ret", "attr.scale", "attr.offset", "stream"],
 }
 
 _FUNCTIONS_EXPLICIT = {
-    "scale_f32":    ["arg", "ret", "attr.scale:float32",   "stream"],
-    "scale_f64":    ["arg", "ret", "attr.scale:float64",   "stream"],
-    "add_i8":       ["arg", "ret", "attr.offset:int8",     "stream"],
-    "add_u8":       ["arg", "ret", "attr.offset:uint8",    "stream"],
-    "add_i16":      ["arg", "ret", "attr.offset:int16",    "stream"],
-    "add_u16":      ["arg", "ret", "attr.offset:uint16",   "stream"],
-    "add_i32":      ["arg", "ret", "attr.offset:int32",    "stream"],
-    "add_u32":      ["arg", "ret", "attr.offset:uint32",   "stream"],
-    "add_i64":      ["arg", "ret", "attr.offset:int64",    "stream"],
-    "add_u64":      ["arg", "ret", "attr.offset:uint64",   "stream"],
-    "maybe_negate": ["arg", "ret", "attr.negate:bool",     "stream"],
-    "scale_c64":    ["arg", "ret", "attr.re:float32", "attr.im:float32", "stream"],
-    "scale_c128":   ["arg", "ret", "attr.re:float64", "attr.im:float64", "stream"],
-    "scale_add":    ["arg", "ret", "attr.scale:float32", "attr.offset:int32",
-                     "stream"],
+    "scale_f32": ["arg", "ret", "attr.scale:float32", "stream"],
+    "scale_f64": ["arg", "ret", "attr.scale:float64", "stream"],
+    "add_i8": ["arg", "ret", "attr.offset:int8", "stream"],
+    "add_u8": ["arg", "ret", "attr.offset:uint8", "stream"],
+    "add_i16": ["arg", "ret", "attr.offset:int16", "stream"],
+    "add_u16": ["arg", "ret", "attr.offset:uint16", "stream"],
+    "add_i32": ["arg", "ret", "attr.offset:int32", "stream"],
+    "add_u32": ["arg", "ret", "attr.offset:uint32", "stream"],
+    "add_i64": ["arg", "ret", "attr.offset:int64", "stream"],
+    "add_u64": ["arg", "ret", "attr.offset:uint64", "stream"],
+    "maybe_negate": ["arg", "ret", "attr.negate:bool", "stream"],
+    "scale_c64": ["arg", "ret", "attr.re:float32", "attr.im:float32", "stream"],
+    "scale_c128": ["arg", "ret", "attr.re:float64", "attr.im:float64", "stream"],
+    "scale_add": ["arg", "ret", "attr.scale:float32", "attr.offset:int32",
+                  "stream"],
 }
 
 
@@ -524,7 +525,7 @@ class TestInt32:
 
     def test_value_sweep(self, bare_mod):
         x = jnp.zeros(N, dtype=jnp.int32)
-        for v in [0, 1, -1, 2**16, -(2**16)]:
+        for v in [0, 1, -1, 2 ** 16, -(2 ** 16)]:
             out = _call("test_attrs_bare", "add_i32", jnp.int32, x,
                         offset=np.int32(v))
             np.testing.assert_array_equal(np.asarray(out),
@@ -540,20 +541,20 @@ class TestUint32:
     def test_bare(self, bare_mod):
         x = jnp.zeros(N, dtype=jnp.uint32)
         out = _call("test_attrs_bare", "add_u32", jnp.uint32, x,
-                    offset=np.uint32(2**31))
+                    offset=np.uint32(2 ** 31))
         np.testing.assert_array_equal(np.asarray(out),
-                                      np.full(N, 2**31, dtype=np.uint32))
+                                      np.full(N, 2 ** 31, dtype=np.uint32))
 
     def test_explicit(self, explicit_mod):
         x = jnp.zeros(N, dtype=jnp.uint32)
         out = _call("test_attrs_explicit", "add_u32", jnp.uint32, x,
-                    offset=np.uint32(2**31))
+                    offset=np.uint32(2 ** 31))
         np.testing.assert_array_equal(np.asarray(out),
-                                      np.full(N, 2**31, dtype=np.uint32))
+                                      np.full(N, 2 ** 31, dtype=np.uint32))
 
     def test_value_sweep(self, bare_mod):
         x = jnp.zeros(N, dtype=jnp.uint32)
-        for v in [0, 1, 2**16, 2**32 - 1]:
+        for v in [0, 1, 2 ** 16, 2 ** 32 - 1]:
             out = _call("test_attrs_bare", "add_u32", jnp.uint32, x,
                         offset=np.uint32(v))
             np.testing.assert_array_equal(np.asarray(out),
@@ -583,7 +584,7 @@ class TestInt64:
 
     def test_large_value(self, bare_mod):
         x = jnp.zeros(N, dtype=jnp.int64)
-        big = np.int64(2**40)
+        big = np.int64(2 ** 40)
         out = _call("test_attrs_bare", "add_i64", jnp.int64, x,
                     offset=big)
         np.testing.assert_array_equal(np.asarray(out),
@@ -598,20 +599,20 @@ class TestUint64:
     def test_bare(self, bare_mod):
         x = jnp.zeros(N, dtype=jnp.uint64)
         out = _call("test_attrs_bare", "add_u64", jnp.uint64, x,
-                    offset=np.uint64(2**40))
+                    offset=np.uint64(2 ** 40))
         np.testing.assert_array_equal(np.asarray(out),
-                                      np.full(N, 2**40, dtype=np.uint64))
+                                      np.full(N, 2 ** 40, dtype=np.uint64))
 
     def test_explicit(self, explicit_mod):
         x = jnp.zeros(N, dtype=jnp.uint64)
         out = _call("test_attrs_explicit", "add_u64", jnp.uint64, x,
-                    offset=np.uint64(2**40))
+                    offset=np.uint64(2 ** 40))
         np.testing.assert_array_equal(np.asarray(out),
-                                      np.full(N, 2**40, dtype=np.uint64))
+                                      np.full(N, 2 ** 40, dtype=np.uint64))
 
     def test_max_value(self, bare_mod):
         x = jnp.zeros(N, dtype=jnp.uint64)
-        big = np.uint64(2**63)
+        big = np.uint64(2 ** 63)
         out = _call("test_attrs_bare", "add_u64", jnp.uint64, x,
                     offset=big)
         np.testing.assert_array_equal(np.asarray(out),
@@ -693,7 +694,7 @@ class TestComplex64:
     def test_value_sweep(self, bare_mod):
         x = jnp.ones(N, dtype=jnp.float32)
         for re, im in [(1, 0), (0, 1), (3, 4), (-2, 0)]:
-            expected = float(re**2 + im**2)
+            expected = float(re ** 2 + im ** 2)
             out = _call("test_attrs_bare", "scale_c64", jnp.float32, x,
                         re=np.float32(re), im=np.float32(im))
             np.testing.assert_allclose(np.asarray(out),
@@ -726,7 +727,7 @@ class TestComplex128:
         """float64 re/im preserve more precision than float32 would."""
         re_val, im_val = 1.0 + 1e-12, 1e-12
         x = jnp.ones(N, dtype=jnp.float64)
-        expected = re_val**2 + im_val**2
+        expected = re_val ** 2 + im_val ** 2
         out = _call("test_attrs_bare", "scale_c128", jnp.float64, x,
                     re=np.float64(re_val), im=np.float64(im_val))
         np.testing.assert_allclose(np.asarray(out),
@@ -826,15 +827,13 @@ class TestMultiAttr:
 class TestAttrErrors:
     def test_bare_unresolvable_type(self):
         """Pointer-typed param → BEError with helpful message."""
-        from brainevent.source2kernel._errors import BEError
-        import brainevent.source2kernel as jkb
         src = r"""
         #include <cuda_runtime.h>
         #include "brainevent/common.h"
         void bad(BE::Tensor x, BE::Tensor out,
                  const float* ptr, int64_t stream) { (void)ptr; }
         """
-        with pytest.raises(BEError, match="Cannot map C\\+\\+ type"):
+        with pytest.raises(KernelError, match="Cannot map C\\+\\+ type"):
             jkb.load_cuda_inline(
                 name="test_attrs_err_ptr",
                 cuda_sources=src,
@@ -844,15 +843,13 @@ class TestAttrErrors:
 
     def test_bare_param_not_found(self):
         """Bare attr name that doesn't exist in C++ signature → BEError."""
-        from brainevent.source2kernel._errors import BEError
-        import brainevent.source2kernel as jkb
         src = r"""
         #include <cuda_runtime.h>
         #include "brainevent/common.h"
         void my(BE::Tensor x, BE::Tensor out, float scale,
                 int64_t stream) { (void)scale; }
         """
-        with pytest.raises(BEError, match="not found in signature"):
+        with pytest.raises(KernelError, match="not found in signature"):
             jkb.load_cuda_inline(
                 name="test_attrs_err_name",
                 cuda_sources=src,
@@ -862,14 +859,12 @@ class TestAttrErrors:
 
     def test_explicit_invalid_type_string(self):
         """Unsupported type string in explicit token → BEError."""
-        from brainevent.source2kernel._errors import BEError
-        import brainevent.source2kernel as jkb
         src = r"""
         #include <cuda_runtime.h>
         #include "brainevent/common.h"
         void my(BE::Tensor x, BE::Tensor out, float s, int64_t stream) {}
         """
-        with pytest.raises(BEError, match="Invalid arg_spec token"):
+        with pytest.raises(KernelError, match="Invalid arg_spec token"):
             jkb.load_cuda_inline(
                 name="test_attrs_err_type",
                 cuda_sources=src,

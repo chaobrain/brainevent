@@ -15,9 +15,8 @@
 
 """Test error handling and validation."""
 
-import pytest
-
 import jax as _jax
+import pytest
 import pytest as _pytest
 
 requires_gpu = _pytest.mark.skipif(
@@ -26,6 +25,8 @@ requires_gpu = _pytest.mark.skipif(
 )
 
 pytestmark = requires_gpu
+
+import brainevent.source2kernel as jkb
 
 
 def test_compilation_error():
@@ -44,9 +45,8 @@ def test_compilation_error():
 
 def test_invalid_arg_spec_token():
     """Invalid arg_spec token raises BEError."""
-    import brainevent.source2kernel as jkb
 
-    with pytest.raises(jkb.BEError, match="Invalid arg_spec token"):
+    with pytest.raises(jkb.KernelError, match="Invalid arg_spec token"):
         jkb.load_cuda_inline(
             name="test_bad_spec",
             cuda_sources="void f() {}",
@@ -57,9 +57,8 @@ def test_invalid_arg_spec_token():
 
 def test_missing_ret_in_arg_spec():
     """arg_spec without 'ret' raises BEError."""
-    import brainevent.source2kernel as jkb
 
-    with pytest.raises(jkb.BEError, match="at least one 'ret'"):
+    with pytest.raises(jkb.KernelError, match="at least one 'ret'"):
         jkb.load_cuda_inline(
             name="test_no_ret",
             cuda_sources="void f() {}",
@@ -70,7 +69,6 @@ def test_missing_ret_in_arg_spec():
 
 def test_duplicate_registration():
     """Registering the same target name twice raises RegistrationError."""
-    import brainevent.source2kernel as jkb
 
     CUDA_SRC = r"""
     #include <cuda_runtime.h>
@@ -88,12 +86,11 @@ def test_duplicate_registration():
 
     jkb.register_ffi_target("test_dup.noop", mod, "noop")
 
-    with pytest.raises(jkb.RegistrationError, match="already registered"):
+    with pytest.raises(jkb.KernelRegistrationError, match="already registered"):
         jkb.register_ffi_target("test_dup.noop", mod, "noop")
 
 
 def test_diagnostics_runs():
     """print_diagnostics() doesn't crash."""
-    import brainevent.source2kernel as jkb
     # Just ensure it runs without error
     jkb.print_diagnostics()

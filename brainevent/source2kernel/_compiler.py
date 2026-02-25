@@ -30,7 +30,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
-from ._errors import CompilationError, ToolchainError
+from brainevent._error import CompilationError, KernelToolchainError
 from ._toolchain import (
     CppToolchain,
     CudaToolchain,
@@ -243,7 +243,7 @@ default {so_file}
         """
         ninja = _find_ninja()
         if ninja is None:
-            raise ToolchainError(
+            raise KernelToolchainError(
                 "ninja not found. Install with: pip install ninja"
             )
 

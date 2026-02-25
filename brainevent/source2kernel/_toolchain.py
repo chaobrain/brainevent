@@ -24,7 +24,7 @@ from pathlib import Path
 
 import jax
 
-from ._errors import ToolchainError
+from brainevent._error import KernelToolchainError
 
 
 @dataclass(frozen=True)
@@ -61,7 +61,7 @@ def detect_toolchain() -> CudaToolchain:
         if os.path.isfile(candidate):
             nvcc = candidate
     if nvcc is None:
-        raise ToolchainError(
+        raise KernelToolchainError(
             "Cannot find nvcc. Ensure CUDA Toolkit is installed and nvcc is "
             "on PATH, or set JKB_NVCC_PATH / CUDA_HOME."
         )
@@ -87,7 +87,7 @@ def detect_toolchain() -> CudaToolchain:
     # --- C++ compiler ---
     cxx = os.environ.get("CXX") or shutil.which("g++") or shutil.which("c++")
     if cxx is None:
-        raise ToolchainError("Cannot find a C++ compiler. Install g++ or set CXX.")
+        raise KernelToolchainError("Cannot find a C++ compiler. Install g++ or set CXX.")
 
     # --- XLA FFI include dir (from jaxlib) ---
     xla_ffi_include = jax.ffi.include_dir()
@@ -95,7 +95,7 @@ def detect_toolchain() -> CudaToolchain:
     # Verify the critical header exists
     ffi_header = os.path.join(xla_ffi_include, "xla", "ffi", "api", "ffi.h")
     if not os.path.isfile(ffi_header):
-        raise ToolchainError(
+        raise KernelToolchainError(
             f"XLA FFI header not found at {ffi_header}. "
             f"jaxlib include dir: {xla_ffi_include}"
         )
@@ -103,7 +103,7 @@ def detect_toolchain() -> CudaToolchain:
     # --- BE include dir (brainevent/include/, shipped with this package) ---
     be_include = str(Path(__file__).resolve().parent.parent / "include")
     if not os.path.isdir(be_include):
-        raise ToolchainError(
+        raise KernelToolchainError(
             f"BE include directory not found at {be_include}. "
             "Package may be installed incorrectly."
         )
@@ -129,7 +129,7 @@ def detect_cpp_toolchain() -> CppToolchain:
     # --- C++ compiler ---
     cxx = os.environ.get("CXX") or shutil.which("g++") or shutil.which("clang++") or shutil.which("c++")
     if cxx is None:
-        raise ToolchainError("Cannot find a C++ compiler. Install g++ or clang++, or set CXX.")
+        raise KernelToolchainError("Cannot find a C++ compiler. Install g++ or clang++, or set CXX.")
 
     # --- cxx version string ---
     cxx_version = ""
@@ -146,14 +146,14 @@ def detect_cpp_toolchain() -> CppToolchain:
         import jax.ffi
         xla_ffi_include = jax.ffi.include_dir()
     except Exception as e:
-        raise ToolchainError(
+        raise KernelToolchainError(
             f"Cannot determine XLA FFI include directory: {e}. "
             "Ensure jax and jaxlib are installed."
         ) from e
 
     ffi_header = os.path.join(xla_ffi_include, "xla", "ffi", "api", "ffi.h")
     if not os.path.isfile(ffi_header):
-        raise ToolchainError(
+        raise KernelToolchainError(
             f"XLA FFI header not found at {ffi_header}. "
             f"jaxlib include dir: {xla_ffi_include}"
         )
@@ -161,7 +161,7 @@ def detect_cpp_toolchain() -> CppToolchain:
     # --- BE include dir ---
     be_include = str(Path(__file__).resolve().parent.parent / "include")
     if not os.path.isdir(be_include):
-        raise ToolchainError(f"BE include directory not found at {be_include}.")
+        raise KernelToolchainError(f"BE include directory not found at {be_include}.")
 
     return CppToolchain(
         cxx=cxx,
@@ -192,7 +192,7 @@ def so_ext() -> str:
         return ".dll"
     if sys.platform.startswith("linux"):
         return ".so"
-    raise ToolchainError('Unsupported platform: %s' % sys.platform)
+    raise KernelToolchainError('Unsupported platform: %s' % sys.platform)
 
 
 def _is_msvc(cxx: str) -> bool:
@@ -218,7 +218,7 @@ def cxx_shared_flags(cxx: str) -> list[str]:
         return ["-shared"]  # MinGW — PE format, no -fPIC needed
     if sys.platform.startswith("linux"):
         return ["-shared", "-fPIC"]  # Linux
-    raise ToolchainError('Unsupported platform: %s' % sys.platform)
+    raise KernelToolchainError('Unsupported platform: %s' % sys.platform)
 
 
 def cxx_std_flag(cxx: str) -> str:

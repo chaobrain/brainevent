@@ -15,10 +15,11 @@
 
 """Test // @BE annotation-based function discovery."""
 
+import jax
+import jax as _jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
-
-import jax as _jax
 import pytest as _pytest
 
 requires_gpu = _pytest.mark.skipif(
@@ -28,19 +29,23 @@ requires_gpu = _pytest.mark.skipif(
 
 pytestmark = requires_gpu
 
+from brainevent.source2kernel._codegen import normalize_tokens
+
+from brainevent._error import KernelError
+from brainevent.source2kernel._codegen import parse_annotations
+from brainevent.source2kernel import load_cuda_inline
+
 
 # --- Unit tests for normalize_tokens (no GPU needed) ---
 
 def test_normalize_tokens_tvm_aliases():
     """normalize_tokens converts jax-tvm-ffi aliases to canonical BE tokens."""
-    from brainevent.source2kernel._codegen import normalize_tokens
 
     assert normalize_tokens(["args", "rets", "ctx.stream"]) == ["arg", "ret", "stream"]
 
 
 def test_normalize_tokens_attrs_prefix():
     """attrs.name → attr.name (bare form)."""
-    from brainevent.source2kernel._codegen import normalize_tokens
 
     result = normalize_tokens(["attrs.scale", "attrs.offset"])
     assert result == ["attr.scale", "attr.offset"]
@@ -48,7 +53,6 @@ def test_normalize_tokens_attrs_prefix():
 
 def test_normalize_tokens_passthrough():
     """Already-canonical tokens are not modified."""
-    from brainevent.source2kernel._codegen import normalize_tokens
 
     tokens = ["arg", "ret", "stream", "attr.x:float32", "attr.y"]
     assert normalize_tokens(tokens) == tokens
@@ -56,7 +60,6 @@ def test_normalize_tokens_passthrough():
 
 def test_normalize_tokens_mixed():
     """Mixed JKB and jax-tvm-ffi tokens all normalise correctly."""
-    from brainevent.source2kernel._codegen import normalize_tokens
 
     result = normalize_tokens(["args", "rets", "attrs.scale", "ctx.stream"])
     assert result == ["arg", "ret", "attr.scale", "stream"]
@@ -66,7 +69,6 @@ def test_normalize_tokens_mixed():
 
 def test_parse_annotations_basic():
     """parse_be_annotations finds annotated functions."""
-    from brainevent.source2kernel._codegen import parse_annotations
 
     source = """
     // @BE my_add
@@ -81,7 +83,6 @@ def test_parse_annotations_basic():
 
 def test_parse_annotations_no_stream():
     """Annotation correctly infers arg_spec without stream."""
-    from brainevent.source2kernel._codegen import parse_annotations
 
     source = """
     // @BE add_cpu
@@ -93,7 +94,6 @@ def test_parse_annotations_no_stream():
 
 def test_parse_annotations_multiple():
     """Multiple annotations in the same source."""
-    from brainevent.source2kernel._codegen import parse_annotations
 
     source = """
     // @BE func_a
@@ -111,17 +111,13 @@ def test_parse_annotations_multiple():
 
 def test_parse_annotations_no_annotations():
     """Raises when no annotations found."""
-    from brainevent.source2kernel._codegen import parse_annotations
-    from brainevent.source2kernel._errors import BEError
 
-    with pytest.raises(BEError, match="No '// @BE"):
+    with pytest.raises(KernelError, match="No '// @BE"):
         parse_annotations("void foo() {}")
 
 
 def test_parse_annotations_duplicate():
     """Raises on duplicate @BE annotation."""
-    from brainevent.source2kernel._codegen import parse_annotations
-    from brainevent.source2kernel._errors import BEError
 
     source = """
     // @BE same_name
@@ -129,7 +125,7 @@ def test_parse_annotations_duplicate():
     // @BE same_name
     void same_name(const BE::Tensor x, BE::Tensor out) {}
     """
-    with pytest.raises(BEError, match="Duplicate"):
+    with pytest.raises(KernelError, match="Duplicate"):
         parse_annotations(source)
 
 
@@ -140,7 +136,6 @@ def test_parse_annotations_macro_generated():
     its full signature does not appear verbatim.  The fallback traces
     @BE annotation → macro call → #define body to extract the parameter list.
     """
-    from brainevent.source2kernel._codegen import parse_annotations
 
     source = r"""
     #define MY_KERNEL(SUFFIX, WEIGHT_T, SPIKE_T)    \
@@ -161,7 +156,6 @@ def test_parse_annotations_macro_generated():
 
 def test_parse_annotations_macro_multiple_instantiations():
     """Multiple macro instantiations each with their own @BE annotation."""
-    from brainevent.source2kernel._codegen import parse_annotations
 
     source = r"""
     #define KERNEL(SUFFIX, WT)         \
@@ -185,7 +179,6 @@ def test_parse_annotations_macro_multiple_instantiations():
 
 def test_parse_annotations_inline_spec():
     """// @BE func_name arg arg ret stream uses inline tokens as arg_spec."""
-    from brainevent.source2kernel._codegen import parse_annotations
 
     # The inline spec bypasses any C++ signature lookup entirely.
     source = """
@@ -199,7 +192,6 @@ def test_parse_annotations_inline_spec():
 
 def test_parse_annotations_inline_spec_no_stream():
     """Inline spec without stream token."""
-    from brainevent.source2kernel._codegen import parse_annotations
 
     source = """
     // @BE simple_kernel arg ret
@@ -211,7 +203,6 @@ def test_parse_annotations_inline_spec_no_stream():
 
 def test_parse_annotations_inline_spec_tvm_aliases():
     """Inline spec accepts jax-tvm-ffi token aliases and normalises them."""
-    from brainevent.source2kernel._codegen import parse_annotations
 
     source = """
     // @BE my_func args rets ctx.stream
@@ -224,7 +215,6 @@ def test_parse_annotations_inline_spec_tvm_aliases():
 
 def test_parse_annotations_inline_spec_macro_generated():
     """Inline spec on a macro-generated function (no C++ signature in source)."""
-    from brainevent.source2kernel._codegen import parse_annotations
 
     source = r"""
     #define GEN(SUFFIX, WT, ST)        \
@@ -268,8 +258,7 @@ void vector_add(const BE::Tensor a, const BE::Tensor b,
 
 @pytest.fixture(scope="module")
 def annotation_module():
-    import brainevent.source2kernel as jkb
-    return jkb.load_cuda_inline(
+    return load_cuda_inline(
         name="test_annotation_vadd",
         cuda_sources=CUDA_SRC,
         # functions=None  →  discovered from // @BE annotations
@@ -279,8 +268,6 @@ def annotation_module():
 
 def test_annotation_cuda_kernel(annotation_module):
     """CUDA kernel compiled via annotation produces correct result."""
-    import jax
-    import jax.numpy as jnp
 
     a = jnp.ones(512, dtype=jnp.float32)
     b = jnp.full(512, 2.0, dtype=jnp.float32)

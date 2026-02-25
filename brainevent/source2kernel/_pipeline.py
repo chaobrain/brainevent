@@ -40,7 +40,7 @@ from ._codegen import (
     resolve_bare_attr_types,
 )
 from ._compiler import CPPBackend, CUDABackend
-from ._errors import BEError
+from brainevent._error import KernelError
 from ._runtime import CompiledModule, _REGISTERED_TARGETS, register_ffi_target
 from ._toolchain import (
     detect_cpp_toolchain,
@@ -292,7 +292,7 @@ def load_cuda_dir(
             sources.append(path.read_text())
 
     if not sources:
-        raise BEError(f"No source files matching {patterns} found in {directory}")
+        raise KernelError(f"No source files matching {patterns} found in {directory}")
 
     return load_cuda_inline(name=name, cuda_sources=sources, functions=functions, **kwargs)
 

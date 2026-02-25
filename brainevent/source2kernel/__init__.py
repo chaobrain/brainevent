@@ -40,12 +40,6 @@ from ._runtime import (
     list_registered_targets,
     register_ffi_target,
 )
-from ._errors import (
-    BEError,
-    CompilationError,
-    RegistrationError,
-    ToolchainError,
-)
 
 __all__ = [
     # Core API — CUDA
@@ -70,9 +64,4 @@ __all__ = [
     "set_cache_dir",
     "get_cache_dir",
     "print_diagnostics",
-    # Exceptions
-    "BEError",
-    "CompilationError",
-    "ToolchainError",
-    "RegistrationError",
 ]

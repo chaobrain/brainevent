@@ -17,18 +17,27 @@
 
 
 __all__ = [
+    'BrainEventError',
     'MathError',
     'KernelNotAvailableError',
     'KernelCompilationError',
     'KernelFallbackExhaustedError',
     'KernelExecutionError',
+    'KernelError',
+    'KernelToolchainError',
+    'CompilationError',
+    'KernelRegistrationError',
     'BenchmarkDataFnNotProvidedError',
     'TVMFFINotInstalledError',
     'TVMModuleAlreadyRegisteredError',
 ]
 
 
-class MathError(Exception):
+class BrainEventError(Exception):
+    pass
+
+
+class MathError(BrainEventError):
     """Base exception for mathematical errors in brainevent operations.
 
     Raised when a mathematical operation fails due to invalid inputs,
@@ -62,7 +71,12 @@ class MathError(Exception):
     __module__ = 'brainevent'
 
 
-class KernelNotAvailableError(Exception):
+class KernelError(BrainEventError):
+    """Base exception for brainevent."""
+    pass
+
+
+class KernelNotAvailableError(KernelError):
     """Raised when a requested kernel backend is not installed or is version-incompatible.
 
     This exception signals that a specific backend (e.g., Warp, Pallas,
@@ -101,7 +115,7 @@ class KernelNotAvailableError(Exception):
     __module__ = 'brainevent'
 
 
-class KernelCompilationError(Exception):
+class KernelCompilationError(KernelError):
     """Raised when a kernel fails to compile on the target backend.
 
     This exception indicates that the backend is available but the
@@ -137,7 +151,7 @@ class KernelCompilationError(Exception):
     __module__ = 'brainevent'
 
 
-class KernelFallbackExhaustedError(Exception):
+class KernelFallbackExhaustedError(KernelError):
     """Raised when all fallback kernel backends have been exhausted.
 
     This exception is raised by :class:`~brainevent._op.main.XLACustomKernel`
@@ -175,7 +189,7 @@ class KernelFallbackExhaustedError(Exception):
     __module__ = 'brainevent'
 
 
-class KernelExecutionError(Exception):
+class KernelExecutionError(KernelError):
     """Raised when a compiled kernel fails during execution at runtime.
 
     This exception wraps runtime errors that occur after a kernel has
@@ -216,7 +230,7 @@ class KernelExecutionError(Exception):
     __module__ = 'brainevent'
 
 
-class TVMFFINotInstalledError(Exception):
+class TVMFFINotInstalledError(KernelError):
     """Raised when a TVM FFI operation is requested but the package is not installed.
 
     This exception is raised by :func:`~brainevent._op.util.register_tvm_cuda_kernels`
@@ -247,7 +261,7 @@ class TVMFFINotInstalledError(Exception):
     __module__ = 'brainevent'
 
 
-class TVMModuleAlreadyRegisteredError(Exception):
+class TVMModuleAlreadyRegisteredError(KernelError):
     """Raised when a TVM CUDA module name is registered more than once.
 
     :func:`~brainevent._op.util.register_tvm_cuda_kernels` maintains a
@@ -278,7 +292,7 @@ class TVMModuleAlreadyRegisteredError(Exception):
     __module__ = 'brainevent'
 
 
-class BenchmarkDataFnNotProvidedError(Exception):
+class BenchmarkDataFnNotProvidedError(BrainEventError):
     """Raised when ``benchmark()`` is called but no data function has been registered.
 
     :meth:`~brainevent._op.main.XLACustomKernel.benchmark` requires a
@@ -313,17 +327,12 @@ class BenchmarkDataFnNotProvidedError(Exception):
     __module__ = 'brainevent'
 
 
-class BEError(Exception):
-    """Base exception for brainevent."""
-    pass
-
-
-class ToolchainError(BEError):
+class KernelToolchainError(KernelError):
     """Compilation toolchain missing or incompatible."""
     pass
 
 
-class CompilationError(BEError):
+class CompilationError(KernelError):
     """CUDA or C++ compilation failed."""
 
     def __init__(self, message: str, compiler_output: str = "",
@@ -338,6 +347,6 @@ class CompilationError(BEError):
         super().__init__(full_msg)
 
 
-class RegistrationError(BEError):
+class KernelRegistrationError(KernelError):
     """JAX FFI target registration failed."""
     pass

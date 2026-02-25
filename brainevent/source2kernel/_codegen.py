@@ -18,7 +18,7 @@
 import re
 from dataclasses import dataclass, field
 
-from ._errors import BEError
+from brainevent._error import KernelError
 
 # C++ scalar type → BE attr type name.
 # Only types that have a registered XLA_FFI_REGISTER_SCALAR_ATTR_DECODING
@@ -70,7 +70,7 @@ def _infer_attr_type_from_source(
     pattern = rf'void\s+{re.escape(func_name)}\s*\(([^)]*)\)'
     m = re.search(pattern, source, re.DOTALL)
     if m is None:
-        raise BEError(
+        raise KernelError(
             f"Cannot find 'void {func_name}(...)' in source to infer "
             f"type of attr '{attr_name}'. "
             f"Use the explicit form 'attr.{attr_name}:<type>' instead."
@@ -96,7 +96,7 @@ def _infer_attr_type_from_source(
         is_ptr_or_ref = ('*' in cpp_type or '&' in cpp_type
                          or last_part != param_name)
         if is_ptr_or_ref:
-            raise BEError(
+            raise KernelError(
                 f"Cannot map C++ type '{cpp_type}' of '{attr_name}' in "
                 f"'{func_name}' to a BE attr type. "
                 f"Pointer and reference types cannot be passed as XLA FFI "
@@ -109,14 +109,14 @@ def _infer_attr_type_from_source(
             cpp_type = cpp_type[6:].strip()
         be_type = _CPP_TYPE_TO_ATTR.get(cpp_type)
         if be_type is None:
-            raise BEError(
+            raise KernelError(
                 f"Cannot map C++ type '{cpp_type}' of '{attr_name}' in "
                 f"'{func_name}' to a BE attr type. "
                 f"Supported C++ types: {list(_CPP_TYPE_TO_ATTR)}. "
                 f"Use the explicit form 'attr.{attr_name}:<type>' instead."
             )
         return be_type
-    raise BEError(
+    raise KernelError(
         f"Parameter '{attr_name}' not found in signature of '{func_name}'. "
         f"Use the explicit form 'attr.{attr_name}:<type>' instead."
     )
@@ -185,12 +185,12 @@ def _params_str_to_tokens(params_str: str, func_name: str) -> list[str]:
                     tokens.append(f'attr.{param_name}:{be_type}')
 
     if not tokens:
-        raise BEError(
+        raise KernelError(
             f"No Tensor parameters found in '{func_name}'. "
             "Cannot auto-detect arg_spec."
         )
     if 'ret' not in tokens:
-        raise BEError(
+        raise KernelError(
             f"No non-const Tensor output found in '{func_name}'. "
             "Mark input Tensors with 'const' to distinguish inputs from "
             "outputs, or use the explicit dict form: "
@@ -312,7 +312,7 @@ def infer_arg_spec_from_source(source: str, func_name: str) -> list[str]:
     if params_str is not None:
         return _params_str_to_tokens(params_str, func_name)
 
-    raise BEError(
+    raise KernelError(
         f"Cannot find 'void {func_name}(...)' in source — "
         f"neither as a direct definition nor as a macro-generated function.\n"
         f"Attempted:\n"
@@ -377,7 +377,7 @@ def parse_annotations(source: str) -> dict[str, list[str]]:
     """
     matches = list(_BE_ANNOTATION_RE.finditer(source))
     if not matches:
-        raise BEError(
+        raise KernelError(
             "No '// @BE <function_name>' annotations found in source. "
             "Either add annotations or pass an explicit 'functions' dict."
         )
@@ -387,7 +387,7 @@ def parse_annotations(source: str) -> dict[str, list[str]]:
     for m in matches:
         name = m.group(1)
         if name in seen:
-            raise BEError(f"Duplicate @BE annotation for '{name}'")
+            raise KernelError(f"Duplicate @BE annotation for '{name}'")
         seen.add(name)
 
         inline_spec_str = m.group(2).strip()
@@ -525,7 +525,7 @@ def parse_arg_spec(func_name: str, tokens: list[str]) -> FunctionSpec:
             ret_idx += 1
         elif token == "stream":
             if spec.has_stream:
-                raise BEError(
+                raise KernelError(
                     f"Duplicate 'stream' token in arg_spec for {func_name}"
                 )
             spec.has_stream = True
@@ -537,14 +537,14 @@ def parse_arg_spec(func_name: str, tokens: list[str]) -> FunctionSpec:
                 spec.attrs.append((attr_name, attr_type))
                 spec.user_param_order.append(f"attr_{attr_name}")
             else:
-                raise BEError(
+                raise KernelError(
                     f"Invalid arg_spec token '{token}' for function "
                     f"'{func_name}'. Valid tokens: 'arg', 'ret', 'stream', "
                     f"'attr.<name>:<type>'"
                 )
 
     if spec.num_rets == 0:
-        raise BEError(
+        raise KernelError(
             f"arg_spec for '{func_name}' must contain at least one 'ret' token"
         )
 

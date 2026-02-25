@@ -21,7 +21,7 @@ import jax
 import ml_dtypes
 import numpy as np
 
-from ._errors import BEError, RegistrationError
+from brainevent._error import KernelError, KernelRegistrationError
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +156,7 @@ class CompiledModule:
             try:
                 fn = getattr(self._lib, symbol)
             except AttributeError:
-                raise BEError(
+                raise KernelError(
                     f"Symbol '{symbol}' not found in {so_path}. "
                     f"Available symbols may not include the FFI wrapper for "
                     f"'{fname}'. Did the compilation succeed?"
@@ -231,7 +231,7 @@ def register_ffi_target(
         Target platform (``"CUDA"`` or ``"cpu"``).
     """
     if target_name in _REGISTERED_TARGETS:
-        raise RegistrationError(f"FFI target '{target_name}' is already registered.")
+        raise KernelRegistrationError(f"FFI target '{target_name}' is already registered.")
 
     fn_ptr = module.get_handler(func_name)
     capsule = jax.ffi.pycapsule(fn_ptr)
