@@ -57,8 +57,7 @@ from ._error import (
     KernelCompilationError,
     KernelFallbackExhaustedError,
     KernelExecutionError,
-    TVMFFINotInstalledError,
-    TVMModuleAlreadyRegisteredError,
+    CUDANotInstalledError,
 )
 from ._event import (
     EventRepresentation,
@@ -217,8 +216,7 @@ __all__ = [
     'KernelCompilationError',
     'KernelFallbackExhaustedError',
     'KernelExecutionError',
-    'TVMFFINotInstalledError',
-    'TVMModuleAlreadyRegisteredError',
+    'CUDANotInstalledError',
 
     # --- utilities --- #
     'csr_to_coo_index', 'coo_to_csc_index', 'csr_to_csc_index',
