@@ -41,16 +41,6 @@
 #include "cuda_common.h"
 
 // =========================================================================
-// Warp-level primitives
-// =========================================================================
-
-__device__ __forceinline__ float warp_reduce_sum_f32(float val) {
-    for (int mask = 16; mask > 0; mask >>= 1)
-        val += __shfl_xor_sync(0xFFFFFFFF, val, mask);
-    return val;
-}
-
-// =========================================================================
 // Dense Pre-Synaptic Plasticity Kernels
 // =========================================================================
 

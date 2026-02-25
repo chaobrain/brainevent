@@ -41,16 +41,6 @@
 #include "cuda_common.h"
 
 // =========================================================================
-// Warp-level primitives
-// =========================================================================
-
-__device__ __forceinline__ float warp_reduce_sum_f32(float val) {
-    for (int mask = 16; mask > 0; mask >>= 1)
-        val += __shfl_xor_sync(0xFFFFFFFF, val, mask);
-    return val;
-}
-
-// =========================================================================
 // Dense Post-Synaptic Plasticity Kernels
 // =========================================================================
 
@@ -90,9 +80,13 @@ __global__ void __launch_bounds__(256) _on_post_warp_kern##SUFFIX(              
     int my_row_end   = min(my_row_start + rows_per_warp, row_tile_end);                          \
     if (my_row_start >= my_row_end) return;                                                      \
     size_t stride = (size_t)n_post;                                                              \
-    for (int row = my_row_start + (tx / num_active); row < my_row_end; row += 32 / num_active) { \
+    int n_rows = my_row_end - my_row_start;                                                      \
+    int n_work = n_rows * num_active;                                                            \
+    for (int idx = tx; idx < n_work; idx += 32) {                                                \
+        int row_off = idx / num_active;                                                          \
+        int col_idx = idx % num_active;                                                          \
+        int row = my_row_start + row_off;                                                        \
         ACC_T trace_val = trace_cache[row - row_tile_start];                                     \
-        int col_idx = tx % num_active;                                                           \
         int global_col = active_cols[warp_in_block][col_idx];                                    \
         size_t offset = (size_t)row * stride + global_col;                                       \
         out_w[offset] = WRITE_W(READ_W(out_w[offset]) + trace_val);                              \
