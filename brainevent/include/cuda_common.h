@@ -37,7 +37,6 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
-#include <curand_kernel.h>
 #include <cstdint>
 
 // =========================================================================
@@ -390,21 +389,5 @@ __device__ __inline__ void atomic_add_bf16(__nv_bfloat16* addr, float val) {
     } while (assumed != old_val);
 #endif
 }
-
-// =========================================================================
-// Compatibility Helpers
-// =========================================================================
-
-/**
- * Normal RNG helpers shared by JIT-normal kernels.
- */
-__device__ __inline__ float curand_normal_f32(curandStatePhilox4_32_10_t* state) {
-    return curand_normal(state);
-}
-
-__device__ __inline__ double curand_normal_f64(curandStatePhilox4_32_10_t* state) {
-    return curand_normal_double(state);
-}
-
 
 #endif  // BRAINEVENT_CUDA_COMMON_H_

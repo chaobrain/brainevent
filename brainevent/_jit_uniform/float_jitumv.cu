@@ -47,6 +47,7 @@
 #include <curand_kernel.h>
 #include <cstdint>
 #include "cuda_common.h"
+#include "curand_common.h"
 
 // =========================================================================
 // Shared memory threshold: 48KB default max dynamic shared memory per block

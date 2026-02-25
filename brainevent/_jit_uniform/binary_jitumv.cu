@@ -51,6 +51,7 @@
 #include <curand_kernel.h>
 #include <cstdint>
 #include "cuda_common.h"
+#include "curand_common.h"
 
 // =========================================================================
 // Spike activity checks (for binary kernels)
