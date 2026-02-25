@@ -27,8 +27,7 @@ from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, register_tvm_cuda_from_file, \
-    jaxinfo_to_warpinfo
-from brainevent._op.benchmark import BenchmarkConfig
+    jaxinfo_to_warpinfo, BenchmarkConfig
 from brainevent._typing import MatrixShape
 from brainevent.config import get_numba_parallel
 from .float import fcnmv_p_call, fcnmm_p_call
