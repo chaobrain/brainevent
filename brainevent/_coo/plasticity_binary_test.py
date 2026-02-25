@@ -246,12 +246,11 @@ class Test_coo_gpu_backend_parity:
         pre_ids, post_ids = self._make_ids(n_syn, n_pre, n_post, seed=654)
         weight = jnp.asarray(rng.standard_normal(n_syn), dtype=dtype)
         pre_trace = jnp.asarray(rng.standard_normal(n_pre), dtype=dtype)
-        if bool_spike:
-            post_spike = jnp.asarray(rng.random(n_post) > 0.6, dtype=jnp.bool_)
-            spike_mask = post_spike[post_ids]
-        else:
-            post_spike = jnp.asarray(rng.standard_normal(n_post), dtype=dtype)
-            spike_mask = post_spike[post_ids] != 0.
+        spike = rng.random(n_post) > 0.6
+        post_spike = jnp.asarray(spike, dtype=jnp.bool_)
+        if not bool_spike:
+            post_spike = jnp.asarray(spike, dtype=dtype)
+        spike_mask = spike[post_ids]
 
         f = jax.jit(lambda: self._call_post_backend(weight, pre_ids, post_ids, pre_trace, post_spike, backend))
         out = f()
