@@ -358,6 +358,14 @@ See also the ecosystem
 
 .. toctree::
    :hidden:
+   :maxdepth: 1
+   :caption: FAQ
+
+   FQA.rst
+
+
+.. toctree::
+   :hidden:
    :maxdepth: 2
    :caption: API Reference
 
