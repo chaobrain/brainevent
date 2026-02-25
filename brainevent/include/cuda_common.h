@@ -217,12 +217,6 @@ __device__ __inline__ double warp_reduce_min_f64(double val) {
  */
 #define IS_ACTIVE_BF16(s) (__bfloat162float(s) > 0.0f)
 
-// Aliases with explicit FLOAT_ prefix for dtype-parameterized kernels
-#define IS_ACTIVE_FLOAT_F32(s)  IS_ACTIVE_F32(s)
-#define IS_ACTIVE_FLOAT_F64(s)  IS_ACTIVE_F64(s)
-#define IS_ACTIVE_FLOAT_F16(s)  IS_ACTIVE_F16(s)
-#define IS_ACTIVE_FLOAT_BF16(s) IS_ACTIVE_BF16(s)
-
 // =========================================================================
 // Per-Dtype Conversion Macros
 // =========================================================================
