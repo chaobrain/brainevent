@@ -25,18 +25,40 @@ from brainevent._error import TVMFFINotInstalledError, TVMModuleAlreadyRegistere
 
 tvmffi_installed = importlib.util.find_spec('jax_tvm_ffi') is not None
 
-# Try to import TVM FFI - will fail gracefully if not available
-if tvmffi_installed:
-    try:
-        import jax_tvm_ffi
-        import tvm_ffi.cpp
-    except:
-        tvmffi_installed = False
+# Cached lazy imports (initialized on first use by import_tvm_ffi()).
+jax_tvm_ffi = None
+tvm_ffi_cpp = None
 
 __all__ = [
     'register_tvm_cuda_kernels',
     'register_tvm_cuda_from_file',
 ]
+
+def import_tvm_ffi():
+    """Import TVM FFI modules, raising a clear error if not installed."""
+    global jax_tvm_ffi, tvm_ffi_cpp, tvmffi_installed
+    if jax_tvm_ffi is not None and tvm_ffi_cpp is not None:
+        return jax_tvm_ffi, tvm_ffi_cpp
+
+    if not tvmffi_installed:
+        raise TVMFFINotInstalledError(
+            "jax_tvm_ffi is not installed. "
+            "Install it with: pip install jax-tvm-ffi"
+        )
+    try:
+        import jax_tvm_ffi as _jax_tvm_ffi
+        import tvm_ffi.cpp as _tvm_ffi_cpp
+    except Exception as exc:
+        tvmffi_installed = False
+        raise TVMFFINotInstalledError(
+            "jax_tvm_ffi is not installed. "
+            "Install it with: pip install jax-tvm-ffi"
+        ) from exc
+
+    jax_tvm_ffi = _jax_tvm_ffi
+    tvm_ffi_cpp = _tvm_ffi_cpp
+    return jax_tvm_ffi, tvm_ffi_cpp
+
 
 # Global cache: tracks compiled CUDA modules and the registration signature
 # (source hash + function names) associated with each module name.
@@ -128,11 +150,7 @@ def register_tvm_cuda_kernels(
         >>> register_tvm_cuda_kernels(cuda_src, 'my_kernels', ['add_arrays'])
     """
 
-    if not tvmffi_installed:
-        raise TVMFFINotInstalledError(
-            "jax_tvm_ffi is not installed. "
-            "Install it with: pip install jax-tvm-ffi"
-        )
+    jax_tvm_ffi_mod, tvm_ffi_cpp_mod = import_tvm_ffi()
 
     if not isinstance(source_code, str):
         raise ValueError("source_code must be a string")
@@ -162,7 +180,7 @@ def register_tvm_cuda_kernels(
         compile_options['extra_include_paths'] = [str(include_dir_path)]
 
     # Compile CUDA module
-    _cuda_module = tvm_ffi.cpp.load_inline(
+    _cuda_module = tvm_ffi_cpp_mod.load_inline(
         name=module,
         cuda_sources=source_code,
         functions=functions,
@@ -171,7 +189,7 @@ def register_tvm_cuda_kernels(
 
     # Register each kernel with JAX FFI
     for name in functions:
-        jax_tvm_ffi.register_ffi_target(
+        jax_tvm_ffi_mod.register_ffi_target(
             name=f"{module}.{name}",
             function=getattr(_cuda_module, name),
             arg_spec=list(arg_spec),

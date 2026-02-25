@@ -612,6 +612,36 @@ class XLACustomKernel:
         assert platform in ['cpu', 'gpu'], f'The `platform` should be either `cpu` or `gpu`, but got {platform}.'
         self.def_kernel(backend='tvmffi', platform=platform, kg=kg, asdefault=asdefault)
 
+    def def_cuda_kernel(
+        self,
+        kg: KernelGenerator,
+        asdefault: bool = False
+    ):
+        """Register a cuda (nvcc-compiled) kernel for the CPU or GPU platform.
+
+        Convenience wrapper around :meth:`def_kernel` with
+        ``backend='cuda'``.  The kernel generator function should
+        call :func:`brainevent.cuda.load_cuda_file` or
+        :func:`brainevent.cuda.load_cuda_inline` to compile and
+        register the CUDA kernel, then return a closure that calls it via
+        ``jax.ffi.ffi_call``.
+
+        Parameters
+        ----------
+        platform : str
+            Target platform.  Must be ``'cpu'`` or ``'gpu'``.
+        kg : KernelGenerator
+            A callable that compiles and returns the kernel function.
+        asdefault : bool, optional
+            If ``True``, set cuda as the default backend for the
+            given platform.  Default is ``False``.
+
+        See Also
+        --------
+        def_kernel : General kernel registration method.
+        """
+        self.def_kernel(backend='cuda', platform='gpu', kg=kg, asdefault=asdefault)
+
     def def_numba_cuda_kernel(
         self,
         kg: KernelGenerator,

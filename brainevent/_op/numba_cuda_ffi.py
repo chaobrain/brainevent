@@ -41,16 +41,36 @@ __all__ = [
 
 numba_cuda_installed = importlib.util.find_spec('numba') is not None
 
-# Try to import numba.cuda - will fail gracefully if CUDA is not available
-if numba_cuda_installed:
-    try:
-        from numba import cuda
+# Cached lazy import, initialized by import_numba_cuda() on first use.
+cuda = None
 
-        # Check if CUDA is actually available
-        if not cuda.is_available():
+
+def import_numba_cuda():
+    """Import numba.cuda lazily and validate CUDA availability."""
+    global cuda, numba_cuda_installed
+    if cuda is not None:
+        return cuda
+    if not numba_cuda_installed:
+        raise ImportError(
+            'Numba with CUDA support is required. '
+            'Please install numba and ensure CUDA is available.'
+        )
+    try:
+        from numba import cuda as _cuda
+        if not _cuda.is_available():
             numba_cuda_installed = False
-    except:
+            raise ImportError(
+                'Numba with CUDA support is required. '
+                'Please install numba and ensure CUDA is available.'
+            )
+    except Exception as exc:
         numba_cuda_installed = False
+        raise ImportError(
+            'Numba with CUDA support is required. '
+            'Please install numba and ensure CUDA is available.'
+        ) from exc
+    cuda = _cuda
+    return cuda
 
 _NUMBA_CUDA_FFI_HANDLES: Dict[str, object] = {}
 _CUDA_FFI_CALLBACK_COUNTER = 0
@@ -180,7 +200,7 @@ def _numba_stream_from_ptr(stream_ptr: int):
         A Numba CUDA stream object wrapping the given pointer.  Kernel
         launches on this stream will execute on XLA's CUDA stream.
     """
-    return cuda.external_stream(stream_ptr)
+    return import_numba_cuda().external_stream(stream_ptr)
 
 
 def _device_array_from_buffer(data_ptr: int, shape: Tuple[int, ...], dtype: np.dtype):
@@ -229,7 +249,7 @@ def _device_array_from_buffer(data_ptr: int, shape: Tuple[int, ...], dtype: np.d
             }
 
     wrapper = DevicePointerWrapper(data_ptr, shape, dtype)
-    return cuda.as_cuda_array(wrapper)
+    return import_numba_cuda().as_cuda_array(wrapper)
 
 
 def _compute_launch_config(
@@ -512,11 +532,7 @@ def _register_numba_cuda_ffi_target(
     """
     global _CUDA_FFI_CALLBACK_COUNTER
 
-    if not numba_cuda_installed:
-        raise ImportError(
-            'Numba with CUDA support is required to compile the GPU kernel. '
-            'Please install numba and ensure CUDA is available.'
-        )
+    import_numba_cuda()
 
     target_name = f'brainevent_numba_cuda_ffi_{_CUDA_FFI_CALLBACK_COUNTER}'
     _CUDA_FFI_CALLBACK_COUNTER += 1
@@ -656,11 +672,7 @@ def numba_cuda_kernel(
         ...     return kernel_fn(a, b)
     """
 
-    if not numba_cuda_installed:
-        raise ImportError(
-            'Numba with CUDA support is required to compile the GPU kernel. '
-            'Please install numba and ensure CUDA is available.'
-        )
+    import_numba_cuda()
 
     from numba.cuda.dispatcher import CUDADispatcher
 
@@ -950,11 +962,7 @@ def _register_numba_cuda_callable_target(
     """
     global _CUDA_CALLABLE_CALLBACK_COUNTER
 
-    if not numba_cuda_installed:
-        raise ImportError(
-            'Numba with CUDA support is required. '
-            'Please install numba and ensure CUDA is available.'
-        )
+    import_numba_cuda()
 
     target_name = f'brainevent_numba_cuda_callable_{_CUDA_CALLABLE_CALLBACK_COUNTER}'
     _CUDA_CALLABLE_CALLBACK_COUNTER += 1
@@ -1088,11 +1096,7 @@ def numba_cuda_callable(
         ...     return fn(a, b)
     """
 
-    if not numba_cuda_installed:
-        raise ImportError(
-            'Numba with CUDA support is required to use numba_cuda_callable. '
-            'Please install numba and ensure CUDA is available.'
-        )
+    import_numba_cuda()
 
     if not callable(func):
         raise TypeError(
