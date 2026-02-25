@@ -26,10 +26,11 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._misc import generate_block_dim, check_fixed_conn_num_shape, namescope
-from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, register_tvm_cuda_from_file, \
+from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, \
     jaxinfo_to_warpinfo, BenchmarkConfig
 from brainevent._typing import MatrixShape
 from brainevent.config import get_numba_parallel
+from brainevent.source2kernel import load_cuda_file
 from .float import fcnmv_p_call, fcnmm_p_call
 
 __all__ = [
@@ -503,10 +504,9 @@ def _binary_fcnmv_cuda_kernel(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='fcn_binary_mv',
-        source=Path(__file__).parent.joinpath('binary_fcnmv.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_fcnmv.cu'),
+        name='fcn_binary_mv',
     )
 
     out_info = kwargs['outs']
@@ -766,7 +766,7 @@ binary_fcnmv : High-level user-facing function wrapper.
 binary_fcnmv_p.def_numba_kernel(_binary_fcnmv_numba_kernel)
 binary_fcnmv_p.def_warp_kernel(_binary_fcnmv_warp_kernel)
 binary_fcnmv_p.def_pallas_kernel('gpu', _binary_fcnmv_pallas_kernel)
-binary_fcnmv_p.def_tvmffi_kernel('gpu', _binary_fcnmv_cuda_kernel)
+binary_fcnmv_p.def_cuda_kernel(_binary_fcnmv_cuda_kernel)
 binary_fcnmv_p.def_kernel('jax_raw', 'cpu', _binary_fcnmv_jax_kernel)
 binary_fcnmv_p.def_kernel('jax_raw', 'gpu', _binary_fcnmv_jax_kernel)
 binary_fcnmv_p.def_kernel('jax_raw', 'tpu', _binary_fcnmv_jax_kernel)
@@ -984,10 +984,9 @@ def _binary_fcnmm_cuda_kernel(
     indices_info: jax.ShapeDtypeStruct,
     **kwargs
 ):
-    register_tvm_cuda_from_file(
-        module='fcn_binary_mm',
-        source=Path(__file__).parent.joinpath('binary_fcnmm.cu'),
-        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    load_cuda_file(
+        Path(__file__).parent.joinpath('binary_fcnmm.cu'),
+        name='fcn_binary_mm',
     )
 
     out_info = kwargs['outs']
@@ -1419,7 +1418,7 @@ binary_fcnmm : High-level user-facing function wrapper.
 )
 binary_fcnmm_p.def_numba_kernel(_binary_fcnmm_numba_kernel)
 binary_fcnmm_p.def_pallas_kernel('gpu', _binary_fcnmm_pallas_kernel)
-binary_fcnmm_p.def_tvmffi_kernel('gpu', _binary_fcnmm_cuda_kernel)
+binary_fcnmm_p.def_cuda_kernel(_binary_fcnmm_cuda_kernel)
 binary_fcnmm_p.def_kernel('jax_raw', 'cpu', _binary_fcnmm_jax_kernel)
 binary_fcnmm_p.def_kernel('jax_raw', 'gpu', _binary_fcnmm_jax_kernel)
 binary_fcnmm_p.def_kernel('jax_raw', 'tpu', _binary_fcnmm_jax_kernel)

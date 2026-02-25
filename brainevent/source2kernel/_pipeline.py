@@ -52,6 +52,13 @@ from ._toolchain import (
 # Shared cache instance
 _cache = CompilationCache()
 
+# In-process set of so_path values for which FFI targets have already been
+# registered.  When load_cuda_inline / load_cpp_inline resolves a cache hit,
+# the same so_path is returned on every subsequent call.  We only register
+# FFI targets the first time a given CompiledModule (identified by its so_path)
+# is instantiated; subsequent calls with the same so_path are no-ops.
+_registered_so_paths: set[str] = set()
+
 
 def set_cache_dir(path: str | Path) -> None:
     """Set the compilation cache directory.
@@ -146,20 +153,13 @@ def load_cuda_inline(
     """
     # Normalise sources
     if isinstance(cuda_sources, list):
-        user_source = "\n".join(cuda_sources)
+        user_source = "\n\n".join(cuda_sources)
     else:
         user_source = cuda_sources
 
     # Discover functions from annotations if not provided
     if functions is None:
         functions = parse_annotations(user_source)
-
-    # Parse arg_specs: normalize aliases → resolve bare attrs → parse
-    specs: list[FunctionSpec] = []
-    for func_name, tokens in functions.items():
-        tokens = normalize_tokens(tokens)
-        tokens = resolve_bare_attr_types(tokens, func_name, user_source)
-        specs.append(parse_arg_spec(func_name, tokens))
 
     # Detect toolchain
     toolchain = detect_toolchain()
@@ -178,6 +178,13 @@ def load_cuda_inline(
 
     # Check cache
     cached_so = None if force_rebuild else _cache.lookup(name, cache_key)
+
+    # Parse arg_specs: normalize aliases → resolve bare attrs → parse
+    specs: list[FunctionSpec] = []
+    for func_name, tokens in functions.items():
+        tokens = normalize_tokens(tokens)
+        tokens = resolve_bare_attr_types(tokens, func_name, user_source)
+        specs.append(parse_arg_spec(func_name, tokens))
 
     if cached_so is not None:
         so_path = str(cached_so)
@@ -211,12 +218,13 @@ def load_cuda_inline(
     func_names = list(functions.keys())
     module = CompiledModule(so_path, func_names)
 
-    # Auto-register with JAX FFI
-    if auto_register:
+    # Auto-register with JAX FFI — only on the first instantiation of this so.
+    if auto_register and so_path not in _registered_so_paths:
         prefix = target_prefix or name
         for spec in specs:
             target_name = f"{prefix}.{spec.name}"
             register_ffi_target(target_name, module, spec.name, platform="CUDA")
+        _registered_so_paths.add(so_path)
 
     return module
 
@@ -302,7 +310,6 @@ def load_cpp_inline(
     force_rebuild: bool = False,
     auto_register: bool = True,
     target_prefix: str | None = None,
-    platform: str = "cpu",
 ) -> CompiledModule:
     """Compile inline C++ source for **CPU** (or CUDA) and load the module.
 
@@ -349,7 +356,7 @@ def load_cpp_inline(
 
     # Normalise sources
     if isinstance(cpp_sources, list):
-        user_source = "\n".join(cpp_sources)
+        user_source = "\n\n".join(cpp_sources)
     else:
         user_source = cpp_sources
 
@@ -407,11 +414,12 @@ def load_cpp_inline(
     func_names = list(functions.keys())
     module = CompiledModule(so_path, func_names)
 
-    if auto_register:
+    if auto_register and so_path not in _registered_so_paths:
         prefix = target_prefix or name
         for spec in specs:
             target_name = f"{prefix}.{spec.name}"
-            register_ffi_target(target_name, module, spec.name, platform=platform)
+            register_ffi_target(target_name, module, spec.name, platform='cpu')
+        _registered_so_paths.add(so_path)
 
     return module
 

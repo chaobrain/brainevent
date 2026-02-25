@@ -30,6 +30,7 @@
  */
 
 #include "cuda_common.h"
+#include "brainevent/common.h"
 
 // ============================================================================
 // FCN Matrix-Vector Multiplication (fcnmv) — Optimized CUDA Kernels
@@ -288,8 +289,10 @@ DEFINE_BS_BASIC_HETERO(_float_bf16, __nv_bfloat16, IS_ACTIVE_BF16, __nv_bfloat16
 // ---- FFI macro: gather homo warp ----
 #define FFI_BG_HOMO_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                       \
 void binary_fcnmv_gather_homo_warp##SUFFIX(                                                   \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                               \
-    tvm::ffi::TensorView spikes,  tvm::ffi::TensorView output, int64_t stream                 \
+    const BE::Tensor weights,                                                                 \
+    const BE::Tensor indices,                                                                 \
+    const BE::Tensor spikes,                                                                  \
+    BE::Tensor output, int64_t stream                                                         \
 ) {                                                                                           \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                  \
     int n_pre  = static_cast<int>(indices.size(0));                                           \
@@ -304,8 +307,8 @@ void binary_fcnmv_gather_homo_warp##SUFFIX(                                     
 // ---- FFI macro: gather hetero warp ----
 #define FFI_BG_HETERO_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                       \
 void binary_fcnmv_gather_hetero_warp##SUFFIX(                                                   \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                                 \
-    tvm::ffi::TensorView spikes,  tvm::ffi::TensorView output, int64_t stream                   \
+    const BE::Tensor weights, const BE::Tensor indices,                                         \
+    const BE::Tensor spikes,  BE::Tensor output, int64_t stream                                 \
 ) {                                                                                             \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                    \
     int n_pre  = static_cast<int>(indices.size(0));                                             \
@@ -320,8 +323,8 @@ void binary_fcnmv_gather_hetero_warp##SUFFIX(                                   
 // ---- FFI macro: gather homo basic (multi-row) ----
 #define FFI_BG_HOMO_BASIC(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                        \
 void binary_fcnmv_gather_homo_basic##SUFFIX(                                                    \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                                 \
-    tvm::ffi::TensorView spikes,  tvm::ffi::TensorView output, int64_t stream                   \
+    const BE::Tensor weights, const BE::Tensor indices,                                         \
+    const BE::Tensor spikes,  BE::Tensor output, int64_t stream                                 \
 ) {                                                                                             \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                    \
     int n_pre  = static_cast<int>(indices.size(0));                                             \
@@ -337,8 +340,8 @@ void binary_fcnmv_gather_homo_basic##SUFFIX(                                    
 // ---- FFI macro: gather hetero basic (multi-row) ----
 #define FFI_BG_HETERO_BASIC(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                        \
 void binary_fcnmv_gather_hetero_basic##SUFFIX(                                                    \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                                   \
-    tvm::ffi::TensorView spikes,  tvm::ffi::TensorView output, int64_t stream                     \
+    const BE::Tensor weights, const BE::Tensor indices,                                           \
+    const BE::Tensor spikes,  BE::Tensor output, int64_t stream                                   \
 ) {                                                                                               \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                      \
     int n_pre  = static_cast<int>(indices.size(0));                                               \
@@ -354,8 +357,8 @@ void binary_fcnmv_gather_hetero_basic##SUFFIX(                                  
 // ---- FFI macro: scatter homo warp ----
 #define FFI_BS_HOMO_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                         \
 void binary_fcnmv_scatter_homo_warp##SUFFIX(                                                    \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                                 \
-    tvm::ffi::TensorView spikes,  tvm::ffi::TensorView output, int64_t stream                   \
+    const BE::Tensor weights, const BE::Tensor indices,                                         \
+    const BE::Tensor spikes,  BE::Tensor output, int64_t stream                                 \
 ) {                                                                                             \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                    \
     int n_pre  = static_cast<int>(indices.size(0));                                             \
@@ -373,8 +376,8 @@ void binary_fcnmv_scatter_homo_warp##SUFFIX(                                    
 // ---- FFI macro: scatter hetero warp ----
 #define FFI_BS_HETERO_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                         \
 void binary_fcnmv_scatter_hetero_warp##SUFFIX(                                                    \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                                   \
-    tvm::ffi::TensorView spikes,  tvm::ffi::TensorView output, int64_t stream                     \
+    const BE::Tensor weights, const BE::Tensor indices,                                           \
+    const BE::Tensor spikes,  BE::Tensor output, int64_t stream                                   \
 ) {                                                                                               \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                      \
     int n_pre  = static_cast<int>(indices.size(0));                                               \
@@ -392,8 +395,8 @@ void binary_fcnmv_scatter_hetero_warp##SUFFIX(                                  
 // ---- FFI macro: scatter homo basic ----
 #define FFI_BS_HOMO_BASIC(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                        \
 void binary_fcnmv_scatter_homo_basic##SUFFIX(                                                   \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                                 \
-    tvm::ffi::TensorView spikes,  tvm::ffi::TensorView output, int64_t stream                   \
+    const BE::Tensor weights, const BE::Tensor indices,                                 \
+    const BE::Tensor spikes,  BE::Tensor output, int64_t stream                   \
 ) {                                                                                             \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                    \
     int n_pre  = static_cast<int>(indices.size(0));                                             \
@@ -410,8 +413,8 @@ void binary_fcnmv_scatter_homo_basic##SUFFIX(                                   
 // ---- FFI macro: scatter hetero basic ----
 #define FFI_BS_HETERO_BASIC(SUFFIX, WEIGHT_C_T, SPIKE_C_T)                                        \
 void binary_fcnmv_scatter_hetero_basic##SUFFIX(                                                   \
-    tvm::ffi::TensorView weights, tvm::ffi::TensorView indices,                                   \
-    tvm::ffi::TensorView spikes,  tvm::ffi::TensorView output, int64_t stream                     \
+    const BE::Tensor weights, const BE::Tensor indices,                                   \
+    const BE::Tensor spikes,  BE::Tensor output, int64_t stream                     \
 ) {                                                                                               \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);                                      \
     int n_pre  = static_cast<int>(indices.size(0));                                               \
@@ -427,137 +430,137 @@ void binary_fcnmv_scatter_hetero_basic##SUFFIX(                                 
 
 // SpMV FFI Instantiations
 // ---- float32 ----
-// @tvm_ffi binary_fcnmv_gather_homo_warp_bool_f32
+// @BE binary_fcnmv_gather_homo_warp_bool_f32
 FFI_BG_HOMO_WARP  (_bool_f32, float, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_hetero_warp_bool_f32
+// @BE binary_fcnmv_gather_hetero_warp_bool_f32
 FFI_BG_HETERO_WARP(_bool_f32, float, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_homo_warp_float_f32
+// @BE binary_fcnmv_gather_homo_warp_float_f32
 FFI_BG_HOMO_WARP  (_float_f32, float, float)
-// @tvm_ffi binary_fcnmv_gather_hetero_warp_float_f32
+// @BE binary_fcnmv_gather_hetero_warp_float_f32
 FFI_BG_HETERO_WARP(_float_f32, float, float)
-// @tvm_ffi binary_fcnmv_gather_homo_basic_bool_f32
+// @BE binary_fcnmv_gather_homo_basic_bool_f32
 FFI_BG_HOMO_BASIC (_bool_f32, float, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_hetero_basic_bool_f32
+// @BE binary_fcnmv_gather_hetero_basic_bool_f32
 FFI_BG_HETERO_BASIC(_bool_f32, float, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_homo_basic_float_f32
+// @BE binary_fcnmv_gather_homo_basic_float_f32
 FFI_BG_HOMO_BASIC (_float_f32, float, float)
-// @tvm_ffi binary_fcnmv_gather_hetero_basic_float_f32
+// @BE binary_fcnmv_gather_hetero_basic_float_f32
 FFI_BG_HETERO_BASIC(_float_f32, float, float)
-// @tvm_ffi binary_fcnmv_scatter_homo_warp_bool_f32
+// @BE binary_fcnmv_scatter_homo_warp_bool_f32
 FFI_BS_HOMO_WARP  (_bool_f32, float, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_hetero_warp_bool_f32
+// @BE binary_fcnmv_scatter_hetero_warp_bool_f32
 FFI_BS_HETERO_WARP(_bool_f32, float, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_homo_warp_float_f32
+// @BE binary_fcnmv_scatter_homo_warp_float_f32
 FFI_BS_HOMO_WARP  (_float_f32, float, float)
-// @tvm_ffi binary_fcnmv_scatter_hetero_warp_float_f32
+// @BE binary_fcnmv_scatter_hetero_warp_float_f32
 FFI_BS_HETERO_WARP(_float_f32, float, float)
-// @tvm_ffi binary_fcnmv_scatter_homo_basic_bool_f32
+// @BE binary_fcnmv_scatter_homo_basic_bool_f32
 FFI_BS_HOMO_BASIC (_bool_f32, float, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_hetero_basic_bool_f32
+// @BE binary_fcnmv_scatter_hetero_basic_bool_f32
 FFI_BS_HETERO_BASIC(_bool_f32, float, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_homo_basic_float_f32
+// @BE binary_fcnmv_scatter_homo_basic_float_f32
 FFI_BS_HOMO_BASIC (_float_f32, float, float)
-// @tvm_ffi binary_fcnmv_scatter_hetero_basic_float_f32
+// @BE binary_fcnmv_scatter_hetero_basic_float_f32
 FFI_BS_HETERO_BASIC(_float_f32, float, float)
 
 // ---- float64 ----
-// @tvm_ffi binary_fcnmv_gather_homo_warp_bool_f64
+// @BE binary_fcnmv_gather_homo_warp_bool_f64
 FFI_BG_HOMO_WARP  (_bool_f64, double, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_hetero_warp_bool_f64
+// @BE binary_fcnmv_gather_hetero_warp_bool_f64
 FFI_BG_HETERO_WARP(_bool_f64, double, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_homo_warp_float_f64
+// @BE binary_fcnmv_gather_homo_warp_float_f64
 FFI_BG_HOMO_WARP  (_float_f64, double, double)
-// @tvm_ffi binary_fcnmv_gather_hetero_warp_float_f64
+// @BE binary_fcnmv_gather_hetero_warp_float_f64
 FFI_BG_HETERO_WARP(_float_f64, double, double)
-// @tvm_ffi binary_fcnmv_gather_homo_basic_bool_f64
+// @BE binary_fcnmv_gather_homo_basic_bool_f64
 FFI_BG_HOMO_BASIC (_bool_f64, double, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_hetero_basic_bool_f64
+// @BE binary_fcnmv_gather_hetero_basic_bool_f64
 FFI_BG_HETERO_BASIC(_bool_f64, double, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_homo_basic_float_f64
+// @BE binary_fcnmv_gather_homo_basic_float_f64
 FFI_BG_HOMO_BASIC (_float_f64, double, double)
-// @tvm_ffi binary_fcnmv_gather_hetero_basic_float_f64
+// @BE binary_fcnmv_gather_hetero_basic_float_f64
 FFI_BG_HETERO_BASIC(_float_f64, double, double)
-// @tvm_ffi binary_fcnmv_scatter_homo_warp_bool_f64
+// @BE binary_fcnmv_scatter_homo_warp_bool_f64
 FFI_BS_HOMO_WARP  (_bool_f64, double, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_hetero_warp_bool_f64
+// @BE binary_fcnmv_scatter_hetero_warp_bool_f64
 FFI_BS_HETERO_WARP(_bool_f64, double, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_homo_warp_float_f64
+// @BE binary_fcnmv_scatter_homo_warp_float_f64
 FFI_BS_HOMO_WARP  (_float_f64, double, double)
-// @tvm_ffi binary_fcnmv_scatter_hetero_warp_float_f64
+// @BE binary_fcnmv_scatter_hetero_warp_float_f64
 FFI_BS_HETERO_WARP(_float_f64, double, double)
-// @tvm_ffi binary_fcnmv_scatter_homo_basic_bool_f64
+// @BE binary_fcnmv_scatter_homo_basic_bool_f64
 FFI_BS_HOMO_BASIC (_bool_f64, double, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_hetero_basic_bool_f64
+// @BE binary_fcnmv_scatter_hetero_basic_bool_f64
 FFI_BS_HETERO_BASIC(_bool_f64, double, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_homo_basic_float_f64
+// @BE binary_fcnmv_scatter_homo_basic_float_f64
 FFI_BS_HOMO_BASIC (_float_f64, double, double)
-// @tvm_ffi binary_fcnmv_scatter_hetero_basic_float_f64
+// @BE binary_fcnmv_scatter_hetero_basic_float_f64
 FFI_BS_HETERO_BASIC(_float_f64, double, double)
 
 // ---- float16 ----
-// @tvm_ffi binary_fcnmv_gather_homo_warp_bool_f16
+// @BE binary_fcnmv_gather_homo_warp_bool_f16
 FFI_BG_HOMO_WARP  (_bool_f16, __half, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_hetero_warp_bool_f16
+// @BE binary_fcnmv_gather_hetero_warp_bool_f16
 FFI_BG_HETERO_WARP(_bool_f16, __half, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_homo_warp_float_f16
+// @BE binary_fcnmv_gather_homo_warp_float_f16
 FFI_BG_HOMO_WARP  (_float_f16, __half, __half)
-// @tvm_ffi binary_fcnmv_gather_hetero_warp_float_f16
+// @BE binary_fcnmv_gather_hetero_warp_float_f16
 FFI_BG_HETERO_WARP(_float_f16, __half, __half)
-// @tvm_ffi binary_fcnmv_gather_homo_basic_bool_f16
+// @BE binary_fcnmv_gather_homo_basic_bool_f16
 FFI_BG_HOMO_BASIC (_bool_f16, __half, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_hetero_basic_bool_f16
+// @BE binary_fcnmv_gather_hetero_basic_bool_f16
 FFI_BG_HETERO_BASIC(_bool_f16, __half, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_homo_basic_float_f16
+// @BE binary_fcnmv_gather_homo_basic_float_f16
 FFI_BG_HOMO_BASIC (_float_f16, __half, __half)
-// @tvm_ffi binary_fcnmv_gather_hetero_basic_float_f16
+// @BE binary_fcnmv_gather_hetero_basic_float_f16
 FFI_BG_HETERO_BASIC(_float_f16, __half, __half)
-// @tvm_ffi binary_fcnmv_scatter_homo_warp_bool_f16
+// @BE binary_fcnmv_scatter_homo_warp_bool_f16
 FFI_BS_HOMO_WARP  (_bool_f16, __half, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_hetero_warp_bool_f16
+// @BE binary_fcnmv_scatter_hetero_warp_bool_f16
 FFI_BS_HETERO_WARP(_bool_f16, __half, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_homo_warp_float_f16
+// @BE binary_fcnmv_scatter_homo_warp_float_f16
 FFI_BS_HOMO_WARP  (_float_f16, __half, __half)
-// @tvm_ffi binary_fcnmv_scatter_hetero_warp_float_f16
+// @BE binary_fcnmv_scatter_hetero_warp_float_f16
 FFI_BS_HETERO_WARP(_float_f16, __half, __half)
-// @tvm_ffi binary_fcnmv_scatter_homo_basic_bool_f16
+// @BE binary_fcnmv_scatter_homo_basic_bool_f16
 FFI_BS_HOMO_BASIC (_bool_f16, __half, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_hetero_basic_bool_f16
+// @BE binary_fcnmv_scatter_hetero_basic_bool_f16
 FFI_BS_HETERO_BASIC(_bool_f16, __half, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_homo_basic_float_f16
+// @BE binary_fcnmv_scatter_homo_basic_float_f16
 FFI_BS_HOMO_BASIC (_float_f16, __half, __half)
-// @tvm_ffi binary_fcnmv_scatter_hetero_basic_float_f16
+// @BE binary_fcnmv_scatter_hetero_basic_float_f16
 FFI_BS_HETERO_BASIC(_float_f16, __half, __half)
 
 // ---- bfloat16 ----
-// @tvm_ffi binary_fcnmv_gather_homo_warp_bool_bf16
+// @BE binary_fcnmv_gather_homo_warp_bool_bf16
 FFI_BG_HOMO_WARP  (_bool_bf16, __nv_bfloat16, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_hetero_warp_bool_bf16
+// @BE binary_fcnmv_gather_hetero_warp_bool_bf16
 FFI_BG_HETERO_WARP(_bool_bf16, __nv_bfloat16, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_homo_warp_float_bf16
+// @BE binary_fcnmv_gather_homo_warp_float_bf16
 FFI_BG_HOMO_WARP  (_float_bf16, __nv_bfloat16, __nv_bfloat16)
-// @tvm_ffi binary_fcnmv_gather_hetero_warp_float_bf16
+// @BE binary_fcnmv_gather_hetero_warp_float_bf16
 FFI_BG_HETERO_WARP(_float_bf16, __nv_bfloat16, __nv_bfloat16)
-// @tvm_ffi binary_fcnmv_gather_homo_basic_bool_bf16
+// @BE binary_fcnmv_gather_homo_basic_bool_bf16
 FFI_BG_HOMO_BASIC (_bool_bf16, __nv_bfloat16, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_hetero_basic_bool_bf16
+// @BE binary_fcnmv_gather_hetero_basic_bool_bf16
 FFI_BG_HETERO_BASIC(_bool_bf16, __nv_bfloat16, uint8_t)
-// @tvm_ffi binary_fcnmv_gather_homo_basic_float_bf16
+// @BE binary_fcnmv_gather_homo_basic_float_bf16
 FFI_BG_HOMO_BASIC (_float_bf16, __nv_bfloat16, __nv_bfloat16)
-// @tvm_ffi binary_fcnmv_gather_hetero_basic_float_bf16
+// @BE binary_fcnmv_gather_hetero_basic_float_bf16
 FFI_BG_HETERO_BASIC(_float_bf16, __nv_bfloat16, __nv_bfloat16)
-// @tvm_ffi binary_fcnmv_scatter_homo_warp_bool_bf16
+// @BE binary_fcnmv_scatter_homo_warp_bool_bf16
 FFI_BS_HOMO_WARP  (_bool_bf16, __nv_bfloat16, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_hetero_warp_bool_bf16
+// @BE binary_fcnmv_scatter_hetero_warp_bool_bf16
 FFI_BS_HETERO_WARP(_bool_bf16, __nv_bfloat16, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_homo_warp_float_bf16
+// @BE binary_fcnmv_scatter_homo_warp_float_bf16
 FFI_BS_HOMO_WARP  (_float_bf16, __nv_bfloat16, __nv_bfloat16)
-// @tvm_ffi binary_fcnmv_scatter_hetero_warp_float_bf16
+// @BE binary_fcnmv_scatter_hetero_warp_float_bf16
 FFI_BS_HETERO_WARP(_float_bf16, __nv_bfloat16, __nv_bfloat16)
-// @tvm_ffi binary_fcnmv_scatter_homo_basic_bool_bf16
+// @BE binary_fcnmv_scatter_homo_basic_bool_bf16
 FFI_BS_HOMO_BASIC (_bool_bf16, __nv_bfloat16, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_hetero_basic_bool_bf16
+// @BE binary_fcnmv_scatter_hetero_basic_bool_bf16
 FFI_BS_HETERO_BASIC(_bool_bf16, __nv_bfloat16, uint8_t)
-// @tvm_ffi binary_fcnmv_scatter_homo_basic_float_bf16
+// @BE binary_fcnmv_scatter_homo_basic_float_bf16
 FFI_BS_HOMO_BASIC (_float_bf16, __nv_bfloat16, __nv_bfloat16)
-// @tvm_ffi binary_fcnmv_scatter_hetero_basic_float_bf16
+// @BE binary_fcnmv_scatter_hetero_basic_float_bf16
 FFI_BS_HETERO_BASIC(_float_bf16, __nv_bfloat16, __nv_bfloat16)

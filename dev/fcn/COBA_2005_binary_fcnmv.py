@@ -32,7 +32,7 @@ import jax
 import brainevent
 from COBA_2005_benchmark import make_simulation_run
 
-brainevent.config.set_backend('gpu', 'tvmffi')
+brainevent.config.set_backend('gpu', 'cuda')
 
 
 def benchmark_post_conn():
@@ -65,4 +65,4 @@ def benchmark_pre_conn():
 
 if __name__ == '__main__':
     benchmark_post_conn()
-    benchmark_pre_conn()
+    # benchmark_pre_conn()

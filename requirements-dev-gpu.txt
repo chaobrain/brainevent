@@ -2,7 +2,6 @@
 warp-lang
 brainstate
 braintools
-jax_tvm_ffi
 ninja
 
 # test requirements
