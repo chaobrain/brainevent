@@ -36,25 +36,29 @@ brainevent.config.set_backend('gpu', 'tvmffi')
 
 
 def benchmark_post_conn():
-    for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
-        run = make_simulation_run(s, 'binary', 'post')
+    print('Benchmarking post-synaptic connection updates...')
 
-        jax.block_until_ready(run(s))
+    for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
+        run = make_simulation_run(scale=s, data_type='binary', efferent_target='post')
+
+        jax.block_until_ready(run())
 
         t0 = time.time()
-        n, rate = jax.block_until_ready(run(s))
+        n, rate = jax.block_until_ready(run())
         t1 = time.time()
         print(f'scale={s}, size={n}, time = {t1 - t0} s, firing rate = {rate} Hz')
 
 
 def benchmark_pre_conn():
-    for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
-        run = make_simulation_run(s, 'binary', 'pre')
+    print('Benchmarking pre-synaptic connection updates...')
 
-        jax.block_until_ready(run(s))
+    for s in [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100]:
+        run = make_simulation_run(scale=s, data_type='binary', efferent_target='pre')
+
+        jax.block_until_ready(run())
 
         t0 = time.time()
-        n, rate = jax.block_until_ready(run(s))
+        n, rate = jax.block_until_ready(run())
         t1 = time.time()
         print(f'scale={s}, size={n}, time = {t1 - t0} s, firing rate = {rate} Hz')
 

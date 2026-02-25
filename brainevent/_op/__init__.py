@@ -17,10 +17,8 @@ from .benchmark import BenchmarkConfig, BenchmarkRecord, BenchmarkResult, benchm
 from .main import XLACustomKernel, KernelEntry
 from .numba_cuda_ffi import numba_cuda_kernel, numba_cuda_callable
 from .numba_ffi import numba_kernel
-from .util import (
-    register_tvm_cuda_kernels, register_tvm_cuda_from_file,
-    defjvp, general_batching_rule, jaxinfo_to_warpinfo, jaxtype_to_warptype,
-)
+from .tvm_ffi import register_tvm_cuda_kernels, register_tvm_cuda_from_file
+from .util import defjvp, general_batching_rule, jaxinfo_to_warpinfo, jaxtype_to_warptype
 
 __all__ = [
     'XLACustomKernel', 'KernelEntry',

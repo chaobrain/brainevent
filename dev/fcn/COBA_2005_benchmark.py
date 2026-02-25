@@ -167,7 +167,7 @@ def make_simulation_run(
             times = u.math.arange(0. * u.ms, duration, brainstate.environ.get_dt())
             brainstate.transform.for_loop(fn, times)
 
-        return net.rate.value.sum() / net.num / duration.to_decimal(u.second)
+        return net.num, net.rate.value.sum() / net.num / duration.to_decimal(u.second)
 
     return run
 
@@ -221,7 +221,7 @@ def make_simulation_batch_run(
             times = u.math.arange(0. * u.ms, duration, brainstate.environ.get_dt())
             brainstate.transform.for_loop(fn, times)
 
-        return net.rate.value.sum() / net.num / duration.to_decimal(u.second) / batch_size
+        return net.num, net.rate.value.sum() / net.num / duration.to_decimal(u.second) / batch_size
 
     return run
 
