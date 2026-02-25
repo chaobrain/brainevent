@@ -111,6 +111,24 @@ from ._op import (
     numba_kernel, numba_cuda_kernel, numba_cuda_callable,
     defjvp, general_batching_rule,
     jaxtype_to_warptype, jaxinfo_to_warpinfo,
+    load_cuda_inline,
+    load_cuda_file,
+    load_cuda_dir,
+    load_cpp_inline,
+    load_cpp_file,
+    set_cache_dir,
+    get_cache_dir,
+    clear_cache,
+    print_diagnostics,
+    CompiledModule,
+    register_ffi_target,
+    list_registered_targets,
+    normalize_tokens,
+    so_ext,
+    CompilerBackend,
+    CUDABackend,
+    CPPBackend,
+    HIPBackend,
 )
 from ._pallas_random import (
     PallasLFSR88RNG, PallasLFSR113RNG, PallasLFSR128RNG,
@@ -205,6 +223,14 @@ __all__ = [
     'numba_kernel', 'numba_cuda_kernel', 'numba_cuda_callable',
     'defjvp', 'general_batching_rule',
     'jaxtype_to_warptype', 'jaxinfo_to_warpinfo',
+
+    # --- CUDA/C++ compilation API --- #
+    'load_cuda_inline', 'load_cuda_file', 'load_cuda_dir',
+    'load_cpp_inline', 'load_cpp_file',
+    'set_cache_dir', 'get_cache_dir', 'clear_cache', 'print_diagnostics',
+    'CompiledModule', 'register_ffi_target', 'list_registered_targets',
+    'normalize_tokens', 'so_ext',
+    'CompilerBackend', 'CUDABackend', 'CPPBackend', 'HIPBackend',
 
     # --- Pallas kernel --- #
     'PallasLFSR88RNG', 'PallasLFSR113RNG', 'PallasLFSR128RNG',

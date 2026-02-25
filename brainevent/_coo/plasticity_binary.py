@@ -26,7 +26,7 @@ import numpy as np
 from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
-from brainevent.kernix import load_cuda_file
+from brainevent._op._pipeline import load_cuda_file
 
 __all__ = [
     'update_coo_on_binary_pre',

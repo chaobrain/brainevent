@@ -1,7 +1,7 @@
 Compiler Options
 ================
 
-``brainevent.kernix`` exposes nvcc optimization options directly through
+``brainevent`` exposes nvcc optimization options directly through
 ``load_cuda_inline`` (and ``load_cuda_file`` / ``load_cuda_dir``, which
 forward all keyword arguments).
 
@@ -14,23 +14,23 @@ compiler) and device-side PTX generation.
 
 .. code-block:: python
 
-   from brainevent import kernix
+   import brainevent
 
    # Default: -O3 (recommended for production)
-   mod = kernix.load_cuda_inline(
+   mod = brainevent.load_cuda_inline(
        name="my_kernels",
        cuda_sources=CUDA_SRC,
        functions={"my_func": ["arg", "ret", "stream"]},
    )
 
    # Debug build: -O0 (preserves variable values for cuda-gdb / Nsight)
-   mod = kernix.load_cuda_inline(
+   mod = brainevent.load_cuda_inline(
        ...,
        optimization_level=0,
    )
 
    # Explicit production build: -O3
-   mod = kernix.load_cuda_inline(
+   mod = brainevent.load_cuda_inline(
        ...,
        optimization_level=3,
    )
@@ -70,7 +70,7 @@ on floating-point-heavy kernels (GEMM, reductions, activations).
 .. code-block:: python
 
    # Enable fast math — safe for most ML kernels
-   mod = kernix.load_cuda_inline(
+   mod = brainevent.load_cuda_inline(
        name="my_fast_kernels",
        cuda_sources=CUDA_SRC,
        functions={"my_func": ["arg", "ret", "stream"]},
@@ -91,7 +91,7 @@ For flags not covered by the named parameters, use ``extra_cuda_cflags``:
 
 .. code-block:: python
 
-   mod = kernix.load_cuda_inline(
+   mod = brainevent.load_cuda_inline(
        ...,
        extra_cuda_cflags=[
            "--generate-line-info",         # source-line info for Nsight profiling
@@ -114,7 +114,7 @@ Pass ``allow_cuda_graph=True`` to opt in (this is the **default**):
 
 .. code-block:: python
 
-   mod = kernix.load_cuda_inline(
+   mod = brainevent.load_cuda_inline(
        name="my_kernels",
        cuda_sources=CUDA_SRC,
        functions={"my_func": ["arg", "ret", "stream"]},
@@ -125,7 +125,7 @@ Opt out only for kernels with host-side side effects during replay:
 
 .. code-block:: python
 
-   mod = kernix.load_cuda_inline(
+   mod = brainevent.load_cuda_inline(
        ...,
        allow_cuda_graph=False,
    )
@@ -142,7 +142,7 @@ Combining All Options
 
 .. code-block:: python
 
-   mod = kernix.load_cuda_inline(
+   mod = brainevent.load_cuda_inline(
        name="peak_perf",
        cuda_sources=CUDA_SRC,
        functions={"my_func": ["arg", "ret", "stream"]},

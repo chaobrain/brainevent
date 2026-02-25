@@ -19,10 +19,38 @@ from .numba_cuda_ffi import numba_cuda_kernel, numba_cuda_callable
 from .numba_ffi import numba_kernel
 from .util import defjvp, general_batching_rule, jaxinfo_to_warpinfo, jaxtype_to_warptype
 
+# kernix CUDA/C++ compilation API
+from brainevent._op._pipeline import (
+    load_cuda_inline,
+    load_cuda_file,
+    load_cuda_dir,
+    load_cpp_inline,
+    load_cpp_file,
+    set_cache_dir,
+    get_cache_dir,
+    clear_cache,
+    print_diagnostics,
+)
+from brainevent._op._runtime import (
+    CompiledModule,
+    register_ffi_target,
+    list_registered_targets,
+)
+from brainevent._op._codegen import normalize_tokens
+from brainevent._op._toolchain import so_ext
+from brainevent._op._compiler import CompilerBackend, CUDABackend, CPPBackend, HIPBackend
+
 __all__ = [
     'XLACustomKernel', 'KernelEntry',
     'BenchmarkConfig', 'BenchmarkRecord', 'BenchmarkResult', 'benchmark_function',
     'numba_kernel', 'numba_cuda_kernel', 'numba_cuda_callable',
     'defjvp', 'general_batching_rule',
     'jaxinfo_to_warpinfo', 'jaxtype_to_warptype',
+    # kernix CUDA/C++ compilation API
+    'load_cuda_inline', 'load_cuda_file', 'load_cuda_dir',
+    'load_cpp_inline', 'load_cpp_file',
+    'set_cache_dir', 'get_cache_dir', 'clear_cache', 'print_diagnostics',
+    'CompiledModule', 'register_ffi_target', 'list_registered_targets',
+    'normalize_tokens', 'so_ext',
+    'CompilerBackend', 'CUDABackend', 'CPPBackend', 'HIPBackend',
 ]

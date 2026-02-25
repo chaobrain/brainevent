@@ -1,17 +1,17 @@
-brainevent.kernix
-=================
+CUDA/C++ Compilation API
+========================
 
 **Seamless bridge between native C++/CUDA kernels and JAX via XLA FFI.**
 
 Write kernels in plain C++ (CPU) or CUDA (GPU), and call them from JAX with
-zero boilerplate.  ``brainevent.kernix`` handles compilation, XLA FFI wrapper
+zero boilerplate.  ``brainevent`` handles compilation, XLA FFI wrapper
 generation, caching, and registration automatically.
 
 .. code-block:: python
 
-   from brainevent import kernix
+   import brainevent
 
-   mod = kernix.load_cuda_inline(
+   mod = brainevent.load_cuda_inline(
        name="my_kernels",
        cuda_sources=CUDA_SRC,
        functions={"vector_add": ["arg", "arg", "ret", "stream"]},

@@ -28,7 +28,7 @@ from brainevent._misc import cdiv, generate_block_dim, namescope
 from brainevent._op import numba_kernel, XLACustomKernel, general_batching_rule, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent.config import get_numba_parallel
-from brainevent.kernix import load_cuda_file
+from brainevent._op._pipeline import load_cuda_file
 
 __all__ = [
     'binary_densemv', 'binary_densemv_p',

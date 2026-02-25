@@ -9,14 +9,14 @@ Frequently Asked Questions
 Which CUDA backend should I use?
 --------------------------------
 
-Use ``brainevent.kernix`` for all custom CUDA kernels.
+Use ``brainevent`` for all custom CUDA kernels.
 
 It compiles CUDA sources via ``nvcc``, registers XLA FFI targets, and caches
 compiled artifacts on disk for fast reloads.
 
 
-How do I write a new CUDA kernel with ``kernix``?
--------------------------------------------------
+How do I write a new CUDA kernel?
+----------------------------------
 
 Place the kernel in a co-located ``.cu`` file and load it at import time:
 
@@ -24,7 +24,7 @@ Place the kernel in a co-located ``.cu`` file and load it at import time:
 
    # my_module/my_kernels.py
    from pathlib import Path
-   from brainevent.kernix import load_cuda_file
+   from brainevent import load_cuda_file
 
    _module = load_cuda_file(
        Path(__file__).parent / "my_kernels.cu",

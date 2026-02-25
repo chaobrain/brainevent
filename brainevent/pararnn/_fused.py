@@ -40,7 +40,7 @@ import numpy as np
 from jax.interpreters import ad
 
 from brainevent._op import XLACustomKernel
-from brainevent.kernix import load_cuda_file
+from brainevent._op._pipeline import load_cuda_file
 from ._parallel_reduce import _adjoint_reduce_diag
 
 __all__ = [

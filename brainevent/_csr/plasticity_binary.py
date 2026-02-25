@@ -26,7 +26,7 @@ from brainevent._misc import namescope
 from brainevent._op import XLACustomKernel, numba_kernel, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import MatrixShape
-from brainevent.kernix import load_cuda_file
+from brainevent._op._pipeline import load_cuda_file
 
 __all__ = [
     'update_csr_on_binary_pre',

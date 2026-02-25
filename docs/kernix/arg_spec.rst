@@ -1,9 +1,9 @@
 arg_spec System
 ===============
 
-Every function compiled by ``brainevent.kernix`` needs an **arg_spec** — a
+Every function compiled by ``brainevent`` needs an **arg_spec** — a
 list of tokens that describes the function's parameter types.  This tells
-kernix how to generate the XLA FFI wrapper code.
+brainevent how to generate the XLA FFI wrapper code.
 
 Token Reference
 ---------------

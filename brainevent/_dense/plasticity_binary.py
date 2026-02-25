@@ -28,7 +28,7 @@ from brainevent._op import (
     jaxinfo_to_warpinfo,
 )
 from brainevent.config import get_numba_parallel
-from brainevent.kernix import load_cuda_file
+from brainevent._op._pipeline import load_cuda_file
 
 __all__ = [
     'update_dense_on_binary_pre',

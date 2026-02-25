@@ -29,7 +29,7 @@ from brainevent._numba_random import get_numba_lfsr_seed, get_numba_lfsr_random_
 from brainevent._op import XLACustomKernel, numba_kernel, general_batching_rule, BenchmarkConfig, jaxinfo_to_warpinfo
 from brainevent._pallas_random import get_pallas_lfsr_rng_class
 from brainevent._typing import Data, MatrixShape
-from brainevent.kernix import load_cuda_file
+from brainevent._op._pipeline import load_cuda_file
 
 __all__ = [
     "jits",

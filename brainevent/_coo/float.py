@@ -30,7 +30,7 @@ from brainevent._op import XLACustomKernel, general_batching_rule, numba_kernel,
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._sddmm import sddmm_coo_indices
 from brainevent._typing import Data, Row, Col, MatrixShape
-from brainevent.kernix import load_cuda_file
+from brainevent._op._pipeline import load_cuda_file
 
 __all__ = [
     "coomv",

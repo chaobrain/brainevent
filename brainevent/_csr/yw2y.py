@@ -25,7 +25,7 @@ from brainevent._misc import generate_block_dim, namescope
 from brainevent._op import numba_kernel, XLACustomKernel, jaxinfo_to_warpinfo
 from brainevent._op.benchmark import BenchmarkConfig
 from brainevent._typing import Data, Indptr, Index, MatrixShape
-from brainevent.kernix import load_cuda_file
+from brainevent._op._pipeline import load_cuda_file
 
 __all__ = [
     'csrmv_yw2y',

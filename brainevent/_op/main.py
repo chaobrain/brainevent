@@ -579,8 +579,8 @@ class XLACustomKernel:
 
         Convenience wrapper around :meth:`def_kernel` with
         ``backend='cuda_raw'``.  The kernel generator function should
-        call :func:`brainevent.kernix.load_cuda_file` or
-        :func:`brainevent.kernix.load_cuda_inline` to compile and
+        call :func:`brainevent.load_cuda_file` or
+        :func:`brainevent.load_cuda_inline` to compile and
         register the CUDA kernel, then return a closure that calls it via
         ``jax.ffi.ffi_call``.
 

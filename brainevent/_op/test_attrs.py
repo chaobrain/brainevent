@@ -41,7 +41,7 @@ jax.config.update("jax_enable_x64", True)
 pytestmark = requires_gpu
 
 from brainevent._error import KernelError
-import brainevent.kernix as jkb
+import brainevent as jkb
 
 # ---------------------------------------------------------------------------
 # Shared CUDA source
@@ -288,7 +288,7 @@ _FUNCTIONS_EXPLICIT = {
 @pytest.fixture(scope="module")
 def bare_mod():
     """Compiled with bare ``attr.name`` tokens — types auto-inferred."""
-    import brainevent.kernix as jkb
+    import brainevent as jkb
     return jkb.load_cuda_inline(
         name="test_attrs_bare",
         cuda_sources=CUDA_SRC,
@@ -300,7 +300,7 @@ def bare_mod():
 @pytest.fixture(scope="module")
 def explicit_mod():
     """Compiled with explicit ``attr.name:type`` tokens."""
-    import brainevent.kernix as jkb
+    import brainevent as jkb
     return jkb.load_cuda_inline(
         name="test_attrs_explicit",
         cuda_sources=CUDA_SRC,
@@ -742,7 +742,7 @@ class TestFloat16Bits:
 
     def test_explicit_float16_token_compiles(self):
         """attr.x:float16 compiles without error (uint16_t binding)."""
-        import brainevent.kernix as jkb
+        import brainevent as jkb
         src = r"""
         #include <cuda_runtime.h>
         #include "brainevent/common.h"
@@ -763,7 +763,7 @@ class TestFloat16Bits:
 
     def test_explicit_bfloat16_token_compiles(self):
         """attr.x:bfloat16 compiles without error (uint16_t binding)."""
-        import brainevent.kernix as jkb
+        import brainevent as jkb
         src = r"""
         #include <cuda_runtime.h>
         #include "brainevent/common.h"

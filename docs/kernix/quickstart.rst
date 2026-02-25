@@ -10,7 +10,7 @@ Write a CUDA kernel, compile it, and call it from JAX:
 
    import jax
    import jax.numpy as jnp
-   from brainevent import kernix
+   import brainevent
 
    CUDA_SRC = r"""
    #include <cuda_runtime.h>
@@ -33,7 +33,7 @@ Write a CUDA kernel, compile it, and call it from JAX:
    """
 
    # Compile and register in one call
-   mod = kernix.load_cuda_inline(
+   mod = brainevent.load_cuda_inline(
        name="my_kernels",
        cuda_sources=CUDA_SRC,
        functions={"vector_add": ["arg", "arg", "ret", "stream"]},
@@ -51,7 +51,7 @@ Write a CUDA kernel, compile it, and call it from JAX:
    print(result)  # [3. 3. 3. ... 3.]
 
 The ``functions`` dict maps each function name to its :doc:`arg_spec <arg_spec>`
-token list.  ``kernix`` auto-generates the XLA FFI wrapper and registers the
+token list.  ``brainevent`` auto-generates the XLA FFI wrapper and registers the
 function as ``"my_kernels.vector_add"``.
 
 .. tip::
@@ -65,7 +65,7 @@ function as ``"my_kernels.vector_add"``.
       void vector_add(const BE::Tensor a, const BE::Tensor b,
                       BE::Tensor out, int64_t stream) { ... }
 
-   Then pass ``functions=None`` (the default) and kernix discovers them
+   Then pass ``functions=None`` (the default) and brainevent discovers them
    automatically.
 
 CPU (C++)
@@ -77,7 +77,7 @@ CPU kernels work the same way but use ``load_cpp_inline`` and don't need CUDA:
 
    import jax
    import jax.numpy as jnp
-   from brainevent import kernix
+   import brainevent
 
    CPP_SRC = r"""
    #include "brainevent/common.h"
@@ -91,7 +91,7 @@ CPU kernels work the same way but use ``load_cpp_inline`` and don't need CUDA:
    """
 
    # Auto-detects arg_spec from C++ signature (const -> arg, non-const -> ret)
-   mod = kernix.load_cpp_inline(
+   mod = brainevent.load_cpp_inline(
        name="my_cpu_ops",
        cpp_sources=CPP_SRC,
        functions=["add_one"],   # list form: auto-detect arg_spec
@@ -109,7 +109,7 @@ CPU kernels work the same way but use ``load_cpp_inline`` and don't need CUDA:
    print(result)  # [2. 3. 4.]
 
 For CPU functions you can pass a **list** of function names instead of a dict.
-kernix will parse the C++ signatures automatically: ``const BE::Tensor``
+brainevent will parse the C++ signatures automatically: ``const BE::Tensor``
 parameters become ``"arg"`` tokens and non-const ``BE::Tensor`` parameters
 become ``"ret"`` tokens.
 
@@ -137,16 +137,16 @@ Instead of inline source strings, compile directly from files on disk:
 .. code-block:: python
 
    # Single file — name defaults to the file stem
-   mod = kernix.load_cuda_file("kernels/my_kernel.cu")
+   mod = brainevent.load_cuda_file("kernels/my_kernel.cu")
 
    # Explicit functions dict if not using // @BE annotations
-   mod = kernix.load_cuda_file(
+   mod = brainevent.load_cuda_file(
        "kernels/my_kernel.cu",
        functions={"my_func": ["arg", "ret", "stream"]},
    )
 
    # Entire directory (uses ninja for parallel compilation when available)
-   mod = kernix.load_cuda_dir(
+   mod = brainevent.load_cuda_dir(
        "kernels/",
        functions={"func_a": ["arg", "ret", "stream"],
                   "func_b": ["arg", "arg", "ret", "stream"]},
