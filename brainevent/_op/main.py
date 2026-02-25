@@ -24,7 +24,7 @@ from jax.interpreters import xla, batching, ad, mlir
 from brainevent._compatible_import import Primitive
 from brainevent._error import KernelFallbackExhaustedError
 from brainevent._typing import KernelGenerator
-from brainevent.config import load_user_defaults
+from brainevent.config import get_backend
 from .benchmark import BenchmarkRecord, BenchmarkResult, benchmark_function
 from .util import (
     general_batching_rule, defjvp, OutType,
@@ -187,9 +187,6 @@ class XLACustomKernel:
         self._tags: set = set()
         # benchmark data generator function
         self._benchmark_data_fn: Optional[Callable] = None
-        # lazy flag for user defaults from config file
-        self._user_defaults_applied: bool = False
-
         # Auto-register in global registry
         from brainevent._registry import register_primitive
         register_primitive(name, self)
@@ -377,9 +374,6 @@ class XLACustomKernel:
         """
 
         def fallback_kernel_fn(*args, **kwargs):
-            # Apply user defaults lazily on first dispatch
-            self._apply_user_defaults()
-
             # Get kernels dict for this platform
             kernels = self._kernels.get(platform, {})
             if not kernels:
@@ -388,15 +382,25 @@ class XLACustomKernel:
                 )
 
             # Determine which backend to use
+            # Priority: per-call > global > per-primitive > first registered
             backend_to_use = kwargs.pop('backend', None)
             if backend_to_use is not None:
+                if isinstance(backend_to_use, str) and backend_to_use == '':
+                    raise ValueError(
+                        f"backend cannot be an empty string in primitive '{self.name}'."
+                    )
                 if backend_to_use not in kernels:
                     raise KernelFallbackExhaustedError(
                         f'{backend_to_use} not available for platform {platform} in primitive '
                         f'{self.name}.'
                     )
             else:
-                backend_to_use = self._defaults.get(platform)
+                # Check global backend setting
+                global_be = get_backend(platform)
+                if global_be is not None and global_be in kernels:
+                    backend_to_use = global_be
+                else:
+                    backend_to_use = self._defaults.get(platform)
 
             # Get the kernel entry
             if backend_to_use and backend_to_use in kernels:
@@ -642,7 +646,7 @@ class XLACustomKernel:
         """
         self.def_kernel(backend='numba_cuda', platform='gpu', kg=kg, asdefault=asdefault)
 
-    def set_default(self, platform: str, backend: str, persist: bool = False):
+    def set_default(self, platform: str, backend: str):
         """Set the default backend for a platform.
 
         After this call, all subsequent dispatches on the given
@@ -656,9 +660,6 @@ class XLACustomKernel:
         backend : str
             The backend name to set as default.  Must already be
             registered for the given platform.
-        persist : bool, optional
-            If ``True``, save the default to the user configuration
-            file so it persists across sessions.  Default is ``False``.
 
         Raises
         ------
@@ -690,9 +691,6 @@ class XLACustomKernel:
                 f"Available: {available}"
             )
         self._defaults[platform] = backend
-        if persist:
-            from brainevent.config import set_user_default
-            set_user_default(self.name, platform, backend)
 
     def get_default(self, platform: str) -> Optional[str]:
         """Get the current default backend for a platform.
@@ -1032,22 +1030,6 @@ class XLACustomKernel:
             >>> kernel.def_benchmark_data(my_data_gen)  # doctest: +SKIP
         """
         self._benchmark_data_fn = fn
-
-    def _apply_user_defaults(self):
-        """Lazily apply user defaults from the configuration file.
-
-        Called once before the first kernel dispatch.  Reads the user
-        configuration and sets defaults for any platforms that have a
-        user preference matching a registered backend.  Subsequent calls
-        are no-ops.
-        """
-        if self._user_defaults_applied:
-            return
-        self._user_defaults_applied = True
-        prim_defaults = load_user_defaults().get(self.name, {})
-        for plat, backend in prim_defaults.items():
-            if plat in self._kernels and backend in self._kernels[plat]:
-                self._defaults[plat] = backend
 
     def available_backends(self, platform: str) -> List[str]:
         """Return the list of registered backend names for a platform.

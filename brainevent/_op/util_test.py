@@ -29,8 +29,8 @@ class _FakeCpp:
     def __init__(self):
         self.load_calls = []
 
-    def load_inline(self, name, cuda_sources, functions):
-        self.load_calls.append((name, cuda_sources, tuple(functions)))
+    def load_inline(self, name, cuda_sources, functions, **kwargs):
+        self.load_calls.append((name, cuda_sources, tuple(functions), kwargs))
         return _FakeCudaModule(functions)
 
 
@@ -43,8 +43,8 @@ class _FakeJaxTVMFFI:
     def __init__(self):
         self.register_calls = []
 
-    def register_ffi_target(self, name, fn, args, platform):
-        self.register_calls.append((name, fn, tuple(args), platform))
+    def register_ffi_target(self, name, function, arg_spec, platform, **kwargs):
+        self.register_calls.append((name, function, tuple(arg_spec), platform, kwargs))
 
 
 def _setup_fake_tvm(monkeypatch):
@@ -96,3 +96,51 @@ def test_register_tvm_cuda_kernels_raises_on_same_name_different_source(monkeypa
 
     assert len(fake_tvm.cpp.load_calls) == 1
     assert len(fake_jax_tvm.register_calls) == 1
+
+
+def test_register_tvm_cuda_kernels_with_include_dir(monkeypatch, tmp_path):
+    fake_tvm, fake_jax_tvm = _setup_fake_tvm(monkeypatch)
+
+    # Create a temporary include directory
+    include_dir = tmp_path / "include"
+    include_dir.mkdir()
+
+    source = "__global__ void k() {}"
+
+    util.register_tvm_cuda_kernels(
+        source_code=source,
+        module="my_module",
+        functions=["k1"],
+        include_dir=str(include_dir),
+    )
+
+    assert len(fake_tvm.cpp.load_calls) == 1
+    # Check that extra_include_paths was passed to load_inline
+    _, _, _, kwargs = fake_tvm.cpp.load_calls[0]
+    assert 'extra_include_paths' in kwargs
+    assert kwargs['extra_include_paths'] == [str(include_dir)]
+
+
+def test_register_tvm_cuda_from_file_with_include_dir(monkeypatch, tmp_path):
+    fake_tvm, fake_jax_tvm = _setup_fake_tvm(monkeypatch)
+
+    # Create a temporary source file
+    source_file = tmp_path / "test.cu"
+    source_file.write_text("void test_func(tvm::ffi::TensorView a) {}")
+
+    # Create include directory
+    include_dir = tmp_path / "include"
+    include_dir.mkdir()
+
+    util.register_tvm_cuda_from_file(
+        module="my_module",
+        source=source_file,
+        include_dir=str(include_dir),
+    )
+
+    assert len(fake_tvm.cpp.load_calls) == 1
+    # Check that extra_include_paths was passed to load_inline
+    _, compiled_source, _, kwargs = fake_tvm.cpp.load_calls[0]
+    assert "void test_func(tvm::ffi::TensorView a)" in compiled_source
+    assert 'extra_include_paths' in kwargs
+    assert kwargs['extra_include_paths'] == [str(include_dir)]

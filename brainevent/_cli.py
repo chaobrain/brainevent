@@ -22,7 +22,6 @@ Usage:
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 __all__ = ['main']
@@ -77,8 +76,6 @@ def _run_benchmark(args) -> int:
     import brainevent  # noqa: F401
     from brainevent._error import BenchmarkDataFnNotProvidedError
     from brainevent._registry import get_registry
-    from brainevent.config import save_user_defaults
-
     registry = get_registry()
     filtered = _filter_primitives(registry, args.data)
 
@@ -137,15 +134,6 @@ def _run_benchmark(args) -> int:
         if backend_wins:
             best_backend = max(backend_wins, key=backend_wins.get)
             optimal_defaults.setdefault(name, {})[args.platform] = best_backend
-
-    # Always persist optimal defaults
-    if optimal_defaults:
-        metadata = {
-            'last_run': datetime.now(timezone.utc).isoformat(),
-            'platform': args.platform,
-        }
-        save_user_defaults(optimal_defaults, metadata=metadata)
-        print("Optimal defaults persisted to config file.")
 
     # Write JSON output if requested
     if args.output:

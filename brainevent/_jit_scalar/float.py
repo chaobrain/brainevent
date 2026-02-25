@@ -758,10 +758,14 @@ def _jits_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='jit_scalar', source=Path(__file__).parent.joinpath('jit_scalar.cu'))
+    register_tvm_cuda_from_file(
+        module='jit_scalar_jits',
+        source=Path(__file__).parent.joinpath('float_jits.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    )
     sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
     variant = 'corder_true' if corder else 'corder_false'
-    kernel_name = f'jit_scalar.jits_{variant}{sfx}'
+    kernel_name = f'jit_scalar_jits.jits_{variant}{sfx}'
 
     def kernel(weight, clen, seed):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(weight, clen, seed)
@@ -773,10 +777,14 @@ def _jitsmv_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='jit_scalar', source=Path(__file__).parent.joinpath('jit_scalar.cu'))
+    register_tvm_cuda_from_file(
+        module='jit_scalar_jitsmv',
+        source=Path(__file__).parent.joinpath('float_jitsmv.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    )
     sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
     variant = 'gather' if corder else 'scatter'
-    kernel_name = f'jit_scalar.jitsmv_{variant}{sfx}'
+    kernel_name = f'jit_scalar_jitsmv.jitsmv_{variant}{sfx}'
 
     def kernel(weight, clen, vector, seed, _):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(weight, clen, seed, vector)
@@ -788,10 +796,14 @@ def _jitsmm_cuda_kernel(
     corder: bool = True,
     **kwargs
 ):
-    register_tvm_cuda_from_file(module='jit_scalar', source=Path(__file__).parent.joinpath('jit_scalar.cu'))
+    register_tvm_cuda_from_file(
+        module='jit_scalar_jitsmm',
+        source=Path(__file__).parent.joinpath('float_jitsmm.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
+    )
     sfx = _dtype_sfx.get(np.dtype(kwargs['weight_info'].dtype), '_f32')
     variant = 'gather' if corder else 'scatter'
-    kernel_name = f'jit_scalar.jitsmm_{variant}{sfx}'
+    kernel_name = f'jit_scalar_jitsmm.jitsmm_{variant}{sfx}'
 
     def kernel(weight, clen, B, seed, _):
         return jax.ffi.ffi_call(kernel_name, kwargs['outs'])(weight, clen, seed, B)

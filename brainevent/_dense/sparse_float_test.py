@@ -41,12 +41,12 @@ def _as_float(x):
 @contextmanager
 def _primitive_backend(primitive, implementation):
     default_backend = primitive.get_default(platform)
-    primitive.set_default(platform, implementation, persist=False)
+    primitive.set_default(platform, implementation)
     try:
         yield
     finally:
         if default_backend is not None:
-            primitive.set_default(platform, default_backend, persist=False)
+            primitive.set_default(platform, default_backend)
 
 
 @pytest.mark.skipif(

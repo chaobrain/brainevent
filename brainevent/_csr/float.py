@@ -503,8 +503,9 @@ def _csrmv_cuda_kernel(
     **kwargs,
 ):
     register_tvm_cuda_from_file(
-        module='csr_float',
-        source=Path(__file__).parent.joinpath('float.cu'),
+        module='csr_float_csrmv',
+        source=Path(__file__).parent.joinpath('float_csrmv.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -518,9 +519,9 @@ def _csrmv_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
     if transpose:
-        kernel_name = f'csr_float.csrmv_t_warp{wt_sfx}'
+        kernel_name = f'csr_float_csrmv.csrmv_t_warp{wt_sfx}'
     else:
-        kernel_name = f'csr_float.csrmv_nt_auto{wt_sfx}'
+        kernel_name = f'csr_float_csrmv.csrmv_nt_auto{wt_sfx}'
 
     def kernel(weights, indices, indptr, vector):
         v_cast = vector.astype(weight_info.dtype) if vector.dtype != weight_info.dtype else vector
@@ -1615,8 +1616,9 @@ def _csrmm_cuda_kernel(
     **kwargs,
 ):
     register_tvm_cuda_from_file(
-        module='csr_float',
-        source=Path(__file__).parent.joinpath('float.cu'),
+        module='csr_float_csrmm',
+        source=Path(__file__).parent.joinpath('float_csrmm.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -1629,10 +1631,14 @@ def _csrmm_cuda_kernel(
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
 
+    # Homogeneous vs heterogeneous suffix
+    is_homo = (weight_info.size == 1)
+    homo_suffix = '_homo' if is_homo else '_hetero'
+
     if transpose:
-        kernel_name = f'csr_float.csrmm_t_warp{wt_sfx}'
+        kernel_name = f'csr_float_csrmm.csrmm_t_warp{homo_suffix}{wt_sfx}'
     else:
-        kernel_name = f'csr_float.csrmm_nt_auto{wt_sfx}'
+        kernel_name = f'csr_float_csrmm.csrmm_nt_auto{homo_suffix}{wt_sfx}'
 
     def kernel(weights, indices, indptr, B):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, indptr, B)

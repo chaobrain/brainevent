@@ -271,8 +271,9 @@ def _binary_densemv_cuda_kernel(
     **kwargs
 ):
     register_tvm_cuda_from_file(
-        module='dense_binary',
-        source=Path(__file__).parent.joinpath('binary.cu'),
+        module='dense_binary_mv',
+        source=Path(__file__).parent.joinpath('binary_densemv.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -287,9 +288,9 @@ def _binary_densemv_cuda_kernel(
     wt_sfx = _dtype_sfx.get(jnp.dtype(kwargs['weight_info'].dtype), '_f32')
 
     if transpose:
-        kernel_name = f'dense_binary.binary_densemv_scatter{wt_sfx}{spk_suffix}'
+        kernel_name = f'dense_binary_mv.binary_densemv_scatter{wt_sfx}{spk_suffix}'
     else:
-        kernel_name = f'dense_binary.binary_densemv_gather_auto{wt_sfx}{spk_suffix}'
+        kernel_name = f'dense_binary_mv.binary_densemv_gather_auto{wt_sfx}{spk_suffix}'
 
     def kernel(weights, spikes):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, spikes)
@@ -1265,8 +1266,9 @@ def _binary_densemm_cuda_kernel(
     be preferred for large matrices.
     """
     register_tvm_cuda_from_file(
-        module='dense_binary',
-        source=Path(__file__).parent.joinpath('binary.cu'),
+        module='dense_binary_mm',
+        source=Path(__file__).parent.joinpath('binary_densemm.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -1282,11 +1284,12 @@ def _binary_densemm_cuda_kernel(
         jnp.dtype('bfloat16'): '_bf16',
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    weight_mode = 'homo' if weight_info.size == 1 else 'hetero'
 
     if transpose:
-        kernel_name = f'dense_binary.binary_densemm_scatter_auto{wt_sfx}{spk_suffix}'
+        kernel_name = f'dense_binary_mm.binary_densemm_scatter_auto_{weight_mode}{wt_sfx}{spk_suffix}'
     else:
-        kernel_name = f'dense_binary.binary_densemm_gather_auto{wt_sfx}{spk_suffix}'
+        kernel_name = f'dense_binary_mm.binary_densemm_gather_auto_{weight_mode}{wt_sfx}{spk_suffix}'
 
     def kernel(weights, spikes):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, spikes)

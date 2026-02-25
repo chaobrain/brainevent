@@ -6,21 +6,6 @@ Configuration API
    :no-index:
 
 
-User Defaults
--------------
-
-.. autosummary::
-   :toctree: generated/
-
-   get_config_path
-   load_user_defaults
-   save_user_defaults
-   get_user_default
-   set_user_default
-   clear_user_defaults
-   invalidate_cache
-
-
 Numba Runtime Controls
 ----------------------
 
@@ -40,3 +25,14 @@ LFSR Algorithm Selection
 
    set_lfsr_algorithm
    get_lfsr_algorithm
+
+
+Global Backend Selection
+------------------------
+
+.. autosummary::
+   :toctree: generated/
+
+   set_backend
+   get_backend
+   clear_backends
