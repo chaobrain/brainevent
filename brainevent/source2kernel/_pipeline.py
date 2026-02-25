@@ -28,7 +28,7 @@ from pathlib import Path
 import jax
 import jaxlib
 
-from brainevent import __version__
+from brainevent._version import __version__
 from ._cache import CompilationCache
 from ._codegen import (
     FunctionSpec,
@@ -216,7 +216,7 @@ def load_cuda_inline(
         prefix = target_prefix or name
         for spec in specs:
             target_name = f"{prefix}.{spec.name}"
-            register_ffi_target(target_name, module, spec.name, allow_cuda_graph=allow_cuda_graph)
+            register_ffi_target(target_name, module, spec.name, platform="CUDA")
 
     return module
 

@@ -14,8 +14,7 @@
 # ==============================================================================
 
 
-__version__ = "0.0.7"
-__version_info__ = tuple(map(int, __version__.split(".")))
+from ._version import __version__, __version_info__
 
 from . import config
 from ._coo import (
