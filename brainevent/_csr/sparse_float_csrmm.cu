@@ -303,6 +303,8 @@ void spfloat_csrmm_nt_homo_warp##SUFFIX(                          \
     int n        = static_cast<int>(B.size(1));                   \
     int c_blocks = (n + 31) / 32;                                 \
     dim3 grid(m, c_blocks);                                       \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(C.data_ptr());             \
+    cudaMemsetAsync(d_out, 0, (size_t)m * n * sizeof(WEIGHT_C_T), s);       \
     _spfloat_csrmm_nt_warp_homo_kern##SUFFIX<<<grid, 32, 0, s>>>( \
         static_cast<const WEIGHT_C_T*>(weights.data_ptr()),       \
         static_cast<const int32_t*>(indices.data_ptr()),          \
@@ -324,6 +326,8 @@ void spfloat_csrmm_nt_hetero_warp##SUFFIX(                          \
     int n        = static_cast<int>(B.size(1));                     \
     int c_blocks = (n + 31) / 32;                                   \
     dim3 grid(m, c_blocks);                                         \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(C.data_ptr());             \
+    cudaMemsetAsync(d_out, 0, (size_t)m * n * sizeof(WEIGHT_C_T), s);       \
     _spfloat_csrmm_nt_warp_hetero_kern##SUFFIX<<<grid, 32, 0, s>>>( \
         static_cast<const WEIGHT_C_T*>(weights.data_ptr()),         \
         static_cast<const int32_t*>(indices.data_ptr()),            \
@@ -345,6 +349,8 @@ void spfloat_csrmm_nt_homo_block##SUFFIX(                                  \
     int n        = static_cast<int>(B.size(1));                            \
     int c_blocks = (n + 31) / 32;                                          \
     dim3 grid(m, c_blocks);                                                \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(C.data_ptr());             \
+    cudaMemsetAsync(d_out, 0, (size_t)m * n * sizeof(WEIGHT_C_T), s);       \
     _spfloat_csrmm_nt_block_homo_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>( \
         static_cast<const WEIGHT_C_T*>(weights.data_ptr()),                \
         static_cast<const int32_t*>(indices.data_ptr()),                   \
@@ -366,6 +372,8 @@ void spfloat_csrmm_nt_hetero_block##SUFFIX(                                  \
     int n        = static_cast<int>(B.size(1));                              \
     int c_blocks = (n + 31) / 32;                                            \
     dim3 grid(m, c_blocks);                                                  \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(C.data_ptr());             \
+    cudaMemsetAsync(d_out, 0, (size_t)m * n * sizeof(WEIGHT_C_T), s);       \
     _spfloat_csrmm_nt_block_hetero_kern##SUFFIX<<<grid, 256, SHM_SIZE, s>>>( \
         static_cast<const WEIGHT_C_T*>(weights.data_ptr()),                  \
         static_cast<const int32_t*>(indices.data_ptr()),                     \
@@ -394,6 +402,7 @@ void spfloat_csrmm_nt_homo_auto##SUFFIX(                                        
     const int32_t*    d_p = static_cast<const int32_t*>(indptr.data_ptr());     \
     const WEIGHT_C_T* d_b = static_cast<const WEIGHT_C_T*>(B.data_ptr());       \
     WEIGHT_C_T*       d_c = static_cast<WEIGHT_C_T*>(C.data_ptr());             \
+    cudaMemsetAsync(d_c, 0, (size_t)m * n * sizeof(WEIGHT_C_T), s);             \
     if (avg_nnz <= 256) {                                                       \
         _spfloat_csrmm_nt_warp_homo_kern##SUFFIX<<<grid, 32, 0, s>>>(           \
             d_w, d_i, d_p, d_b, d_c, m, n);                                     \
@@ -422,6 +431,7 @@ void spfloat_csrmm_nt_hetero_auto##SUFFIX(                                      
     const int32_t*    d_p = static_cast<const int32_t*>(indptr.data_ptr());      \
     const WEIGHT_C_T* d_b = static_cast<const WEIGHT_C_T*>(B.data_ptr());        \
     WEIGHT_C_T*       d_c = static_cast<WEIGHT_C_T*>(C.data_ptr());              \
+    cudaMemsetAsync(d_c, 0, (size_t)m * n * sizeof(WEIGHT_C_T), s);             \
     if (avg_nnz <= 256) {                                                        \
         _spfloat_csrmm_nt_warp_hetero_kern##SUFFIX<<<grid, 32, 0, s>>>(          \
             d_w, d_i, d_p, d_b, d_c, m, n);                                      \

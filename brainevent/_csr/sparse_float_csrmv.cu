@@ -320,13 +320,15 @@ void spfloat_csrmv_nt_homo_thread##SUFFIX(                             \
 ) {                                                                    \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);           \
     int m       = static_cast<int>(indptr.size(0)) - 1;                \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());   \
+    cudaMemsetAsync(d_out, 0, (size_t)m * sizeof(WEIGHT_C_T), s);      \
     int blocks  = (m + 255) / 256;                                     \
     _spfloat_csrmv_nt_thread_homo_kern##SUFFIX<<<blocks, 256, 0, s>>>( \
         static_cast<const WEIGHT_C_T*>(weights.data_ptr()),            \
         static_cast<const int32_t*>(indices.data_ptr()),               \
         static_cast<const int32_t*>(indptr.data_ptr()),                \
         static_cast<const WEIGHT_C_T*>(vector.data_ptr()),             \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m);               \
+        d_out, m);                                                     \
 }
 
 // ---- FFI macro: forward hetero thread ----
@@ -338,13 +340,15 @@ void spfloat_csrmv_nt_hetero_thread##SUFFIX(                             \
 ) {                                                                      \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);             \
     int m       = static_cast<int>(indptr.size(0)) - 1;                  \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());     \
+    cudaMemsetAsync(d_out, 0, (size_t)m * sizeof(WEIGHT_C_T), s);        \
     int blocks  = (m + 255) / 256;                                       \
     _spfloat_csrmv_nt_thread_hetero_kern##SUFFIX<<<blocks, 256, 0, s>>>( \
         static_cast<const WEIGHT_C_T*>(weights.data_ptr()),              \
         static_cast<const int32_t*>(indices.data_ptr()),                 \
         static_cast<const int32_t*>(indptr.data_ptr()),                  \
         static_cast<const WEIGHT_C_T*>(vector.data_ptr()),               \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m);                 \
+        d_out, m);                                                       \
 }
 
 // ---- FFI macro: forward homo warp ----
@@ -356,12 +360,14 @@ void spfloat_csrmv_nt_homo_warp##SUFFIX(                        \
 ) {                                                             \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);    \
     int m       = static_cast<int>(indptr.size(0)) - 1;         \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr()); \
+    cudaMemsetAsync(d_out, 0, (size_t)m * sizeof(WEIGHT_C_T), s); \
     _spfloat_csrmv_nt_warp_homo_kern##SUFFIX<<<m, 32, 0, s>>>(  \
         static_cast<const WEIGHT_C_T*>(weights.data_ptr()),     \
         static_cast<const int32_t*>(indices.data_ptr()),        \
         static_cast<const int32_t*>(indptr.data_ptr()),         \
         static_cast<const WEIGHT_C_T*>(vector.data_ptr()),      \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m);        \
+        d_out, m);                                              \
 }
 
 // ---- FFI macro: forward hetero warp ----
@@ -373,12 +379,14 @@ void spfloat_csrmv_nt_hetero_warp##SUFFIX(                       \
 ) {                                                              \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);     \
     int m       = static_cast<int>(indptr.size(0)) - 1;          \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr()); \
+    cudaMemsetAsync(d_out, 0, (size_t)m * sizeof(WEIGHT_C_T), s); \
     _spfloat_csrmv_nt_warp_hetero_kern##SUFFIX<<<m, 32, 0, s>>>( \
         static_cast<const WEIGHT_C_T*>(weights.data_ptr()),      \
         static_cast<const int32_t*>(indices.data_ptr()),         \
         static_cast<const int32_t*>(indptr.data_ptr()),          \
         static_cast<const WEIGHT_C_T*>(vector.data_ptr()),       \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m);         \
+        d_out, m);                                               \
 }
 
 // ---- FFI macro: forward homo block ----
@@ -390,12 +398,14 @@ void spfloat_csrmv_nt_homo_block##SUFFIX(                               \
 ) {                                                                     \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);            \
     int m       = static_cast<int>(indptr.size(0)) - 1;                 \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());    \
+    cudaMemsetAsync(d_out, 0, (size_t)m * sizeof(WEIGHT_C_T), s);       \
     _spfloat_csrmv_nt_block_homo_kern##SUFFIX<<<m, 256, SHM_SIZE, s>>>( \
         static_cast<const WEIGHT_C_T*>(weights.data_ptr()),             \
         static_cast<const int32_t*>(indices.data_ptr()),                \
         static_cast<const int32_t*>(indptr.data_ptr()),                 \
         static_cast<const WEIGHT_C_T*>(vector.data_ptr()),              \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m);                \
+        d_out, m);                                                      \
 }
 
 // ---- FFI macro: forward hetero block ----
@@ -407,12 +417,14 @@ void spfloat_csrmv_nt_hetero_block##SUFFIX(                               \
 ) {                                                                       \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);              \
     int m       = static_cast<int>(indptr.size(0)) - 1;                   \
+    WEIGHT_C_T* d_out = static_cast<WEIGHT_C_T*>(output.data_ptr());      \
+    cudaMemsetAsync(d_out, 0, (size_t)m * sizeof(WEIGHT_C_T), s);         \
     _spfloat_csrmv_nt_block_hetero_kern##SUFFIX<<<m, 256, SHM_SIZE, s>>>( \
         static_cast<const WEIGHT_C_T*>(weights.data_ptr()),               \
         static_cast<const int32_t*>(indices.data_ptr()),                  \
         static_cast<const int32_t*>(indptr.data_ptr()),                   \
         static_cast<const WEIGHT_C_T*>(vector.data_ptr()),                \
-        static_cast<WEIGHT_C_T*>(output.data_ptr()), m);                  \
+        d_out, m);                                                        \
 }
 
 // ---- FFI macro: forward homo auto ----
@@ -431,6 +443,7 @@ void spfloat_csrmv_nt_homo_auto##SUFFIX(                                        
     const int32_t*    d_p = static_cast<const int32_t*>(indptr.data_ptr());     \
     const WEIGHT_C_T* d_v = static_cast<const WEIGHT_C_T*>(vector.data_ptr());  \
     WEIGHT_C_T*       d_o = static_cast<WEIGHT_C_T*>(output.data_ptr());        \
+    cudaMemsetAsync(d_o, 0, (size_t)m * sizeof(WEIGHT_C_T), s);                 \
     if (avg_nnz < 8) {                                                          \
         int blocks = (m + 255) / 256;                                           \
         _spfloat_csrmv_nt_thread_homo_kern##SUFFIX<<<blocks, 256, 0, s>>>(      \
@@ -460,6 +473,7 @@ void spfloat_csrmv_nt_hetero_auto##SUFFIX(                                      
     const int32_t*    d_p = static_cast<const int32_t*>(indptr.data_ptr());     \
     const WEIGHT_C_T* d_v = static_cast<const WEIGHT_C_T*>(vector.data_ptr());  \
     WEIGHT_C_T*       d_o = static_cast<WEIGHT_C_T*>(output.data_ptr());        \
+    cudaMemsetAsync(d_o, 0, (size_t)m * sizeof(WEIGHT_C_T), s);                 \
     if (avg_nnz < 8) {                                                          \
         int blocks = (m + 255) / 256;                                           \
         _spfloat_csrmv_nt_thread_hetero_kern##SUFFIX<<<blocks, 256, 0, s>>>(    \

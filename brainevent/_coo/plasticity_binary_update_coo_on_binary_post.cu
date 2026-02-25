@@ -121,6 +121,8 @@ void update_coo_on_post##SUFFIX(                                \
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);    \
     int n_syn = static_cast<int>(out_weight.size(0));           \
     if (n_syn == 0) return;                                     \
+    const WEIGHT_C_T*  d_w_in = static_cast<const WEIGHT_C_T*>( \
+                                    weight.data_ptr());         \
     WEIGHT_C_T*        d_w    = static_cast<WEIGHT_C_T*>(       \
                                     out_weight.data_ptr());     \
     const SPIKE_C_T*   d_spk  = static_cast<const SPIKE_C_T*>(  \
@@ -131,6 +133,8 @@ void update_coo_on_post##SUFFIX(                                \
                                     pre_ids.data_ptr());        \
     const int32_t*     d_post = static_cast<const int32_t*>(    \
                                     post_ids.data_ptr());       \
+    cudaMemcpyAsync(d_w, d_w_in, (size_t)n_syn * sizeof(WEIGHT_C_T), \
+                    cudaMemcpyDeviceToDevice, s);               \
     int grid_size = (n_syn + 511) / 512;                        \
     _coo_on_post_kern##SUFFIX<<<grid_size, 512, 0, s>>>(        \
         d_w, d_spk, d_tr, d_pre, d_post, n_syn);                \
