@@ -180,7 +180,7 @@ __global__ void _jitumv_scatter_kern##SUFFIX(                                   
     }                                                                                      \
 }
 
-DEFINE_JITUMV_SCATTER(_f32,  float,         float,  READ_F32,  WRITE_F32,  atomicAdd_f32)
+DEFINE_JITUMV_SCATTER(_f32,  float,         float,  READ_F32,  WRITE_F32,  atomic_add_f32)
 DEFINE_JITUMV_SCATTER(_f64,  double,        double, READ_F64,  WRITE_F64,  atomicAdd_f64)
 DEFINE_JITUMV_SCATTER(_f16,  __half,        float,  READ_F16,  WRITE_F16,  atomicAdd_f16)
 DEFINE_JITUMV_SCATTER(_bf16, __nv_bfloat16, float,  READ_BF16, WRITE_BF16, atomicAdd_bf16)

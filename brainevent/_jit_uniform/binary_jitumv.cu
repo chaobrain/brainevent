@@ -214,8 +214,8 @@ __global__ void _binary_jitumv_scatter_kern##SUFFIX(                            
 }
 
 // f32 weight + bool/float spikes
-DEFINE_BINARY_JITUMV_SCATTER(_f32_bool,  float,         float,  READ_F32,  WRITE_F32,  int8_t, IS_ACTIVE_BOOL,  atomicAdd_f32)
-DEFINE_BINARY_JITUMV_SCATTER(_f32_float, float,         float,  READ_F32,  WRITE_F32,  float,  IS_ACTIVE_FLOAT, atomicAdd_f32)
+DEFINE_BINARY_JITUMV_SCATTER(_f32_bool,  float,         float,  READ_F32,  WRITE_F32,  int8_t, IS_ACTIVE_BOOL,  atomic_add_f32)
+DEFINE_BINARY_JITUMV_SCATTER(_f32_float, float,         float,  READ_F32,  WRITE_F32,  float,  IS_ACTIVE_FLOAT, atomic_add_f32)
 // f64 weight + bool/float spikes
 DEFINE_BINARY_JITUMV_SCATTER(_f64_bool,  double,        double, READ_F64,  WRITE_F64,  int8_t, IS_ACTIVE_BOOL,  atomicAdd_f64)
 DEFINE_BINARY_JITUMV_SCATTER(_f64_float, double,        double, READ_F64,  WRITE_F64,  float,  IS_ACTIVE_FLOAT, atomicAdd_f64)

@@ -406,23 +406,5 @@ __device__ __inline__ double curand_normal_f64(curandStatePhilox4_32_10_t* state
     return curand_normal_double(state);
 }
 
-/**
- * Backward-compatible atomic helper aliases.
- */
-__device__ __inline__ void atomicAdd_f32(float* addr, float val) {
-    atomic_add_f32(addr, val);
-}
-
-__device__ __inline__ void atomicAdd_f64(double* addr, double val) {
-    atomic_add_f64(addr, val);
-}
-
-__device__ __inline__ void atomicAdd_f16(__half* addr, float val) {
-    atomic_add_f16(addr, val);
-}
-
-__device__ __inline__ void atomicAdd_bf16(__nv_bfloat16* addr, float val) {
-    atomic_add_bf16(addr, val);
-}
 
 #endif  // BRAINEVENT_CUDA_COMMON_H_
