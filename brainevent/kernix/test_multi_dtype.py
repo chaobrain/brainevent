@@ -18,13 +18,7 @@
 import pytest
 import numpy as np
 
-import jax as _jax
-import pytest as _pytest
-
-requires_gpu = _pytest.mark.skipif(
-    not (bool(_jax.devices("gpu")) if True else False),
-    reason="No GPU detected via jax.devices('gpu')",
-)
+from brainevent._test_util import requires_gpu
 
 pytestmark = requires_gpu
 

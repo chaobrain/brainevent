@@ -128,7 +128,7 @@ def register_tvm_cuda_kernels(
 
     See Also
     --------
-    XLACustomKernel.def_tvmffi_kernel : Register a TVM FFI kernel with
+    XLACustomKernel.def_cuda_kernel : Register a TVM FFI kernel with
         an ``XLACustomKernel``.
 
     Notes

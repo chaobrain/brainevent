@@ -16,16 +16,10 @@
 """Test // @BE annotation-based function discovery."""
 
 import jax
-import jax as _jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-import pytest as _pytest
-
-requires_gpu = _pytest.mark.skipif(
-    not (bool(_jax.devices("gpu")) if True else False),
-    reason="No GPU detected via jax.devices('gpu')",
-)
+from brainevent._test_util import requires_gpu
 
 pytestmark = requires_gpu
 

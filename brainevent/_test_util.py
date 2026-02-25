@@ -22,8 +22,22 @@ from typing import Union
 import brainstate
 import jax
 import jax.numpy as jnp
+import pytest
 
 import brainevent
+
+
+def _has_gpu() -> bool:
+    try:
+        return len(jax.devices("gpu")) > 0
+    except RuntimeError:
+        return False
+
+
+requires_gpu = pytest.mark.skipif(
+    not _has_gpu(),
+    reason="No GPU detected via jax.devices('gpu')",
+)
 
 
 def generate_fixed_conn_num_indices(

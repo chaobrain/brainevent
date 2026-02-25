@@ -570,48 +570,6 @@ class XLACustomKernel:
         assert platform in ['gpu', 'tpu'], f'The `platform` should be either `gpu` or `tpu`, but got {platform}.'
         self.def_kernel(backend='pallas', platform=platform, kg=kg, asdefault=asdefault)
 
-    def def_tvmffi_kernel(
-        self,
-        platform: str,
-        kg: KernelGenerator,
-        asdefault: bool = False
-    ):
-        """Register a TVM FFI kernel for the CPU or GPU platform.
-
-        Convenience wrapper around :meth:`def_kernel` with
-        ``backend='tvmffi'``.
-
-        Parameters
-        ----------
-        platform : str
-            Target platform.  Must be ``'cpu'`` or ``'gpu'``.
-        kg : KernelGenerator
-            A callable that generates the TVM FFI kernel function.
-        asdefault : bool, optional
-            If ``True``, set TVM FFI as the default backend for the
-            given platform.  Default is ``False``.
-
-        Raises
-        ------
-        AssertionError
-            If *platform* is not ``'cpu'`` or ``'gpu'``.
-
-        See Also
-        --------
-        def_kernel : General kernel registration method.
-        register_tvm_cuda_kernels : Lower-level TVM CUDA kernel
-            registration utility.
-
-        Examples
-        --------
-        .. code-block:: python
-
-            >>> kernel = XLACustomKernel('my_op')
-            >>> kernel.def_tvmffi_kernel('gpu', my_tvm_gen)  # doctest: +SKIP
-        """
-        assert platform in ['cpu', 'gpu'], f'The `platform` should be either `cpu` or `gpu`, but got {platform}.'
-        self.def_kernel(backend='tvmffi', platform=platform, kg=kg, asdefault=asdefault)
-
     def def_cuda_kernel(
         self,
         kg: KernelGenerator,

@@ -30,16 +30,10 @@ For every dtype both forms are tested:
 """
 
 import jax
-import jax as _jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-import pytest as _pytest
-
-requires_gpu = _pytest.mark.skipif(
-    not (bool(_jax.devices("gpu")) if True else False),
-    reason="No GPU detected via jax.devices('gpu')",
-)
+from brainevent._test_util import requires_gpu
 
 # float64, uint64, int64, complex128 require x64 mode.
 jax.config.update("jax_enable_x64", True)
