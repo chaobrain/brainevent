@@ -15,7 +15,6 @@
 
 """brainevent.source2kernel: runtime C++/CUDA compilation bridge for JAX FFI."""
 
-from brainevent import __version__, __version_info__
 
 from ._pipeline import (
     clear_cache,
@@ -49,8 +48,6 @@ from ._errors import (
 )
 
 __all__ = [
-    "__version__",
-    "__version_info__",
     # Core API — CUDA
     "load_cuda_inline",
     "load_cuda_file",

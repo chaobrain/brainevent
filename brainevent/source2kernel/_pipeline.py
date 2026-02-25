@@ -35,7 +35,7 @@ from ._codegen import (
     infer_arg_spec_from_source,
     normalize_tokens,
     parse_arg_spec,
-    parse_be_annotations,
+    parse_annotations,
     preprocess_source,
     resolve_bare_attr_types,
 )
@@ -152,7 +152,7 @@ def load_cuda_inline(
 
     # Discover functions from annotations if not provided
     if functions is None:
-        functions = parse_be_annotations(user_source)
+        functions = parse_annotations(user_source)
 
     # Parse arg_specs: normalize aliases → resolve bare attrs → parse
     specs: list[FunctionSpec] = []
@@ -168,8 +168,8 @@ def load_cuda_inline(
     # Compute cache key (includes optimization settings so changing them rebuilds)
     cache_key = _cache.cache_key(
         source=user_source,
-        gpu_arch=gpu_arch,
-        nvcc_version=toolchain.nvcc_version,
+        arch=gpu_arch,
+        cxx_version=toolchain.nvcc_version,
         extra_cflags=(extra_cuda_cflags or [])
                      + [f"-O{optimization_level}"]
                      + (["--use_fast_math"] if use_fast_math else []),
@@ -355,7 +355,7 @@ def load_cpp_inline(
 
     # Resolve functions → dict[str, list[str]]
     if functions is None:
-        functions = parse_be_annotations(user_source)
+        functions = parse_annotations(user_source)
     elif isinstance(functions, list):
         func_dict: dict[str, list[str]] = {}
         for fn in functions:
@@ -375,8 +375,8 @@ def load_cpp_inline(
     # Cache key
     cache_key = _cache.cache_key(
         source=user_source,
-        gpu_arch="cpu",
-        nvcc_version=toolchain.cxx_version,
+        arch="cpu",
+        cxx_version=toolchain.cxx_version,
         extra_cflags=extra_cflags,
         extra_ldflags=extra_ldflags,
     )

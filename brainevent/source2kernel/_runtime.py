@@ -213,7 +213,6 @@ def register_ffi_target(
     func_name: str,
     *,
     platform: str = "CUDA",
-    allow_cuda_graph: bool = True,
 ) -> None:
     """Register a compiled function as a JAX FFI target.
 
@@ -230,17 +229,6 @@ def register_ffi_target(
         Function name within the module.
     platform : str
         Target platform (``"CUDA"`` or ``"cpu"``).
-    allow_cuda_graph : bool
-        Mark the kernel as safe to record into a CUDA graph (XLA command
-        buffer).  When ``True``, XLA registers the handler with the
-        ``COMMAND_BUFFER_COMPATIBLE`` trait so it can be captured and replayed
-        by JAX's CUDA-graph / command-buffer optimisation, eliminating
-        per-call CPU launch overhead.
-
-        Set to ``False`` only if the kernel has host-side side effects during
-        replay (dynamic memory allocation, host callbacks, or
-        non-deterministic resource usage).  Plain element-wise, reduction, and
-        GEMM kernels are all safe.  Default: ``True``.
     """
     if target_name in _REGISTERED_TARGETS:
         raise RegistrationError(f"FFI target '{target_name}' is already registered.")

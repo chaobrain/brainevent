@@ -141,31 +141,20 @@ def resolve_bare_attr_types(
     return resolved
 
 
-def infer_arg_spec_from_source(source: str, func_name: str) -> list[str]:
-    """Infer an arg_spec by parsing the C++ function signature.
+def _params_str_to_tokens(params_str: str, func_name: str) -> list[str]:
+    """Convert a C++ parameter-list string into an arg_spec token list.
 
-    Recognised parameter patterns:
+    Recognised patterns per parameter:
 
-    - ``const BE::Tensor param`` → ``"arg"`` (read-only input)
-    - ``BE::Tensor param``       → ``"ret"`` (pre-allocated output)
+    - ``const BE::Tensor param`` → ``"arg"`` (read-only input tensor)
+    - ``BE::Tensor param``       → ``"ret"`` (pre-allocated output tensor)
     - ``int64_t stream``          → ``"stream"`` (CUDA stream handle)
-    - ``float / double / int32_t / int64_t / int / bool param``
-      → ``"attr.<name>:<type>"`` (scalar attribute, auto-typed)
+    - ``float / double / int32_t / …``
+      → ``"attr.<name>:<type>"`` (scalar attribute)
 
-    Raises
-    ------
-    BEError
-        If the signature cannot be found or no output (non-const) is detected.
+    Raises ``BEError`` if no Tensor parameters are found, or if no non-const
+    (output) Tensor is present.
     """
-    pattern = rf'void\s+{re.escape(func_name)}\s*\(([^)]*)\)'
-    m = re.search(pattern, source, re.DOTALL)
-    if m is None:
-        raise BEError(
-            f"Cannot find 'void {func_name}(...)' in source. "
-            f"For explicit control use: functions={{'{func_name}': ['arg', 'ret', ...]}}"
-        )
-
-    params_str = m.group(1)
     tokens: list[str] = []
     for raw_param in params_str.split(','):
         param = raw_param.strip()
@@ -184,9 +173,6 @@ def infer_arg_spec_from_source(source: str, func_name: str) -> list[str]:
                 last_part = parts[-1]
                 param_name = last_part.lstrip('*&')
                 cpp_type = ' '.join(parts[:-1]).strip()
-                # Skip pointer / reference types — they cannot be XLA FFI
-                # scalar attrs.  A '*'/'&' may appear in the type token
-                # ("float*") or at the start of the variable token ("*ptr").
                 is_ptr_or_ref = ('*' in cpp_type or '&' in cpp_type
                                  or last_part != param_name)
                 if is_ptr_or_ref:
@@ -197,7 +183,6 @@ def infer_arg_spec_from_source(source: str, func_name: str) -> list[str]:
                 be_type = _CPP_TYPE_TO_ATTR.get(cpp_type)
                 if be_type is not None:
                     tokens.append(f'attr.{param_name}:{be_type}')
-                # Unknown types are silently skipped.
 
     if not tokens:
         raise BEError(
@@ -214,36 +199,184 @@ def infer_arg_spec_from_source(source: str, func_name: str) -> list[str]:
     return tokens
 
 
-# -- Annotation-based function discovery -------------------------------------
+def _extract_macro_params(source: str, func_name: str) -> str | None:
+    """Extract the C++ parameter-list string for a macro-generated function.
 
-_BE_ANNOTATION_RE = re.compile(r'//\s*@BE\s+(\w+)')
+    Many CUDA kernel files use token-pasting macros to generate multiple FFI
+    entry functions from a single template, e.g.::
+
+        #define FFI_BG_HOMO_WARP(SUFFIX, WEIGHT_C_T, SPIKE_C_T)  \\
+        void binary_fcnmv_gather_homo_warp##SUFFIX(               \\
+            const BE::Tensor weights, const BE::Tensor indices,   \\
+            const BE::Tensor spikes,  BE::Tensor output,          \\
+            int64_t stream                                         \\
+        ) { ... }
+
+        // @BE binary_fcnmv_gather_homo_warp_bool_f32
+        FFI_BG_HOMO_WARP(_bool_f32, float, uint8_t)
+
+    Because ``void binary_fcnmv_gather_homo_warp_bool_f32(...)`` does not
+    appear verbatim in the raw source, ``infer_arg_spec_from_source`` cannot
+    find it by direct regex.  This function bridges the gap by:
+
+    1. Locating the ``// @BE func_name`` annotation.
+    2. Reading the macro-call identifier on the next non-blank/non-comment line.
+    3. Finding the ``#define MacroName(...)`` in the source.
+    4. Collecting the full macro body (handling ``\\`` line continuations).
+    5. Extracting the parameter list from the ``void ...##...( params )``
+       pattern inside the body.
+
+    Returns the raw parameter-list string, or ``None`` if any step fails
+    (so the caller can fall through to a more informative error).
+    """
+    # 1. Find the @BE annotation for this specific function name.
+    ann_pattern = rf'//\s*@BE\s+{re.escape(func_name)}\b'
+    ann_m = re.search(ann_pattern, source)
+    if ann_m is None:
+        return None
+
+    # 2. Find the macro invocation on the next non-blank, non-comment line
+    #    after the annotation.
+    after_ann = source[ann_m.end():]
+    macro_name: str | None = None
+    for line in after_ann.split('\n'):
+        stripped = line.strip()
+        if not stripped or stripped.startswith('//'):
+            continue
+        call_m = re.match(r'(\w+)\s*\(', stripped)
+        if call_m:
+            macro_name = call_m.group(1)
+        break
+    if macro_name is None:
+        return None
+
+    # 3. Find the #define for that macro.
+    define_pat = rf'#\s*define\s+{re.escape(macro_name)}\b'
+    define_m = re.search(define_pat, source)
+    if define_m is None:
+        return None
+
+    # 4. Collect the full macro body, joining \-continuation lines.
+    body_parts: list[str] = []
+    for line in source[define_m.start():].split('\n'):
+        stripped = line.rstrip()
+        if stripped.endswith('\\'):
+            body_parts.append(stripped[:-1])
+        else:
+            body_parts.append(stripped)
+            break
+    macro_body = ' '.join(body_parts)
+
+    # 5. Extract the parameter list from `void <token-paste-name>( params )`.
+    #    The function name in the macro body uses ## token-paste, e.g.
+    #    `void binary_fcnmv_gather_homo_warp##SUFFIX(`.  Match any combination
+    #    of word characters and `#`.
+    sig_m = re.search(r'void\s+[\w#]+\s*\(([^)]*)\)', macro_body)
+    if sig_m is None:
+        return None
+
+    return sig_m.group(1)
 
 
-def parse_be_annotations(source: str) -> dict[str, list[str]]:
-    """Scan source for ``// @BE function_name`` annotations.
+def infer_arg_spec_from_source(source: str, func_name: str) -> list[str]:
+    """Infer an arg_spec by parsing the C++ function signature.
 
-    Each annotation marks a user function for FFI export.  The arg_spec is
-    auto-inferred from the C++ signature that follows the annotation.
+    Recognised parameter patterns:
 
-    Example::
+    - ``const BE::Tensor param`` → ``"arg"`` (read-only input)
+    - ``BE::Tensor param``       → ``"ret"`` (pre-allocated output)
+    - ``int64_t stream``          → ``"stream"`` (CUDA stream handle)
+    - ``float / double / int32_t / int64_t / int / bool param``
+      → ``"attr.<name>:<type>"`` (scalar attribute, auto-typed)
 
-        // @BE vector_add
-        void vector_add(BE::Tensor a, BE::Tensor b,
-                         BE::Tensor out, int64_t stream) { ... }
-
-    Returns
-    -------
-    dict[str, list[str]]
-        Mapping from function name to inferred arg_spec tokens.
+    When the function is not defined verbatim (e.g. it is generated by a
+    token-pasting macro), the function automatically falls back to
+    :func:`_extract_macro_params`, which traces the ``// @BE`` annotation
+    to the macro invocation and then to the ``#define`` body.
 
     Raises
     ------
     BEError
-        If no annotations are found, or if inference fails for any annotated
-        function.
+        If the signature cannot be found (directly or via macro expansion)
+        or if no output (non-const) Tensor is detected.
     """
-    names = _BE_ANNOTATION_RE.findall(source)
-    if not names:
+    # Primary path: look for a literal `void func_name(...)` definition.
+    pattern = rf'void\s+{re.escape(func_name)}\s*\(([^)]*)\)'
+    m = re.search(pattern, source, re.DOTALL)
+    if m is not None:
+        return _params_str_to_tokens(m.group(1), func_name)
+
+    # Fallback: the function is generated by a token-pasting macro.
+    # Trace @BE annotation → macro call → #define body → parameter list.
+    params_str = _extract_macro_params(source, func_name)
+    if params_str is not None:
+        return _params_str_to_tokens(params_str, func_name)
+
+    raise BEError(
+        f"Cannot find 'void {func_name}(...)' in source — "
+        f"neither as a direct definition nor as a macro-generated function.\n"
+        f"Attempted:\n"
+        f"  1. Direct regex search for 'void {func_name}('.\n"
+        f"  2. Tracing '// @BE {func_name}' annotation to macro definition.\n"
+        f"To resolve, either:\n"
+        f"  a) Add a '// @BE {func_name}' annotation directly above the "
+        f"     macro call that generates this function, or\n"
+        f"  b) Pass an explicit arg_spec: "
+        f"functions={{'{func_name}': ['arg', 'ret', ...]}}."
+    )
+
+
+# -- Annotation-based function discovery -------------------------------------
+
+_BE_ANNOTATION_RE = re.compile(r'//\s*@BE\s+(\w+)([^\n]*)')
+
+
+def parse_annotations(source: str) -> dict[str, list[str]]:
+    """Scan source for ``// @BE function_name [token ...]`` annotations.
+
+    Each annotation marks a user function for FFI export.  The arg_spec can
+    be specified in two ways:
+
+    **Inline spec** (jax-tvm-ffi-compatible)::
+
+        // @BE vector_add arg arg ret stream
+
+    The tokens after the function name are used directly as the arg_spec
+    (after alias normalisation via :func:`normalize_tokens`).  This is useful
+    for macro-generated functions where the C++ signature is not present
+    verbatim in the source::
+
+        // @BE gen_kernel_f32_bool arg arg ret stream
+        MY_MACRO(_f32_bool, float, uint8_t)
+
+    Accepted jax-tvm-ffi aliases are automatically normalised:
+    ``args`` → ``arg``, ``rets`` → ``ret``, ``ctx.stream`` → ``stream``,
+    ``attrs.name`` → ``attr.name``.
+
+    **Auto-inferred** (default when no inline tokens)::
+
+        // @BE vector_add
+        void vector_add(const BE::Tensor a, const BE::Tensor b,
+                        BE::Tensor out, int64_t stream) { ... }
+
+    The arg_spec is inferred from the C++ signature that follows the
+    annotation.  When the function is generated by a token-pasting macro,
+    :func:`_extract_macro_params` traces the annotation to the macro
+    definition and extracts the parameter list from the macro body.
+
+    Returns
+    -------
+    dict[str, list[str]]
+        Mapping from function name to arg_spec tokens (canonical BE form).
+
+    Raises
+    ------
+    BEError
+        If no annotations are found, if a duplicate is detected, or if
+        inference fails for any annotated function.
+    """
+    matches = list(_BE_ANNOTATION_RE.finditer(source))
+    if not matches:
         raise BEError(
             "No '// @BE <function_name>' annotations found in source. "
             "Either add annotations or pass an explicit 'functions' dict."
@@ -251,11 +384,21 @@ def parse_be_annotations(source: str) -> dict[str, list[str]]:
 
     seen: set[str] = set()
     result: dict[str, list[str]] = {}
-    for name in names:
+    for m in matches:
+        name = m.group(1)
         if name in seen:
             raise BEError(f"Duplicate @BE annotation for '{name}'")
         seen.add(name)
-        result[name] = infer_arg_spec_from_source(source, name)
+
+        inline_spec_str = m.group(2).strip()
+        if inline_spec_str:
+            # Inline arg_spec: "// @BE func_name arg arg ret stream"
+            # Normalise jax-tvm-ffi compatible aliases (args→arg, etc.)
+            result[name] = normalize_tokens(inline_spec_str.split())
+        else:
+            # No inline tokens: infer from C++ signature (direct or macro).
+            result[name] = infer_arg_spec_from_source(source, name)
+
     return result
 
 

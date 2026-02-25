@@ -21,7 +21,7 @@ import os
 import shutil
 from pathlib import Path
 
-from brainevent import __version__
+from brainevent._version import __version__
 
 
 class CompilationCache:
@@ -41,10 +41,7 @@ class CompilationCache:
     def __init__(self, base_dir: str | None = None):
         self.base_dir = Path(
             base_dir or
-            os.environ.get(
-                "BRAINEVENT_S2K_CACHE_DIR",
-                os.environ.get("JKB_CACHE_DIR", Path.home() / ".cache" / "brainevent" / "source2kernel")
-            )
+            os.environ.get("BRAINEVENT_CACHE_DIR", Path.home() / ".cache" / "brainevent")
         )
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -53,16 +50,16 @@ class CompilationCache:
     def cache_key(
         self,
         source: str,
-        gpu_arch: str,
-        nvcc_version: str = "",
+        arch: str,
+        cxx_version: str = "",
         extra_cflags: list[str] | None = None,
         extra_ldflags: list[str] | None = None,
     ) -> str:
         """Compute a deterministic cache key."""
         h = hashlib.sha256()
         h.update(source.encode())
-        h.update(gpu_arch.encode())
-        h.update(nvcc_version.encode())
+        h.update(arch.encode())
+        h.update(cxx_version.encode())
         h.update(__version__.encode())
         h.update(json.dumps(extra_cflags or [], sort_keys=True).encode())
         h.update(json.dumps(extra_ldflags or [], sort_keys=True).encode())
