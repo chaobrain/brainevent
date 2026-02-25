@@ -243,11 +243,13 @@ def _csr_slice_rows_cuda_kernel_generator(
 ):
     register_tvm_cuda_from_file(
         module='csr_slice_rows',
-        source=Path(__file__).parent.joinpath('slice.cu'),
+        source=Path(__file__).parent.joinpath('slice_csr_slice_rows.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
     data_info = kwargs['data_info']
+    homo = data_info.shape[0] == 1
 
     _dtype_sfx = {
         jnp.dtype('float16'): '_f16',
@@ -256,7 +258,8 @@ def _csr_slice_rows_cuda_kernel_generator(
         jnp.dtype('bfloat16'): '_bf16',
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(data_info.dtype), '_f32')
-    kernel_name = f'csr_slice_rows.csr_slice_rows_fwd_auto{wt_sfx}'
+    mode_sfx = '_homo' if homo else '_hetero'
+    kernel_name = f'csr_slice_rows.csr_slice_rows_fwd{mode_sfx}_auto{wt_sfx}'
 
     def kernel(data, indices, indptr, row_indices):
         return jax.ffi.ffi_call(kernel_name, out_info)(data, indices, indptr, row_indices)
@@ -618,7 +621,8 @@ def _csr_slice_rows_grad_cuda_kernel_generator(
 ):
     register_tvm_cuda_from_file(
         module='csr_slice_rows',
-        source=Path(__file__).parent.joinpath('slice.cu'),
+        source=Path(__file__).parent.joinpath('slice_csr_slice_rows.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']

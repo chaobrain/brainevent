@@ -505,8 +505,9 @@ def _binary_fcnmv_cuda_kernel(
     **kwargs
 ):
     register_tvm_cuda_from_file(
-        module='fcn_binary',
-        source=Path(__file__).parent.joinpath('binary.cu'),
+        module='fcn_binary_mv',
+        source=Path(__file__).parent.joinpath('binary_fcnmv.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -518,36 +519,26 @@ def _binary_fcnmv_cuda_kernel(
         jnp.dtype('float64'): '_f64',
         jnp.dtype('bfloat16'): '_bf16'
     }
-    sfx = _dtype_sfx.get(jnp.dtype(kwargs['weight_info'].dtype), '_f32')
+    weight_info = kwargs['weight_info']
+    sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
+    homo = weight_info.size == 1
+    mode_sfx = '_homo' if homo else '_hetero'
+    spike_sfx = '_bool' if is_bool_spike else '_float'
 
     if transpose:
         # Scatter mode: if is_active(spikes[i]) → output[indices[i,k]] += weights[i,k]
-        if is_bool_spike:
-            kernel_name = (
-                f'fcn_binary.binary_fcnmv_scatter_bool_warp{sfx}'
-                if n_conn <= 32
-                else f'fcn_binary.binary_fcnmv_scatter_bool_basic{sfx}'
-            )
-        else:
-            kernel_name = (
-                f'fcn_binary.binary_fcnmv_scatter_float_warp{sfx}'
-                if n_conn <= 32
-                else f'fcn_binary.binary_fcnmv_scatter_float_basic{sfx}'
-            )
+        kernel_name = (
+            f'fcn_binary_mv.binary_fcnmv_scatter{mode_sfx}_warp{spike_sfx}{sfx}'
+            if n_conn <= 32
+            else f'fcn_binary_mv.binary_fcnmv_scatter{mode_sfx}_basic{spike_sfx}{sfx}'
+        )
     else:
         # Gather mode: y[i] = sum_k weights[i,k] * is_active(spikes[indices[i,k]])
-        if is_bool_spike:
-            kernel_name = (
-                f'fcn_binary.binary_fcnmv_gather_bool_warp{sfx}'
-                if n_conn <= 32
-                else f'fcn_binary.binary_fcnmv_gather_bool_basic{sfx}'
-            )
-        else:
-            kernel_name = (
-                f'fcn_binary.binary_fcnmv_gather_float_warp{sfx}'
-                if n_conn <= 32
-                else f'fcn_binary.binary_fcnmv_gather_float_basic{sfx}'
-            )
+        kernel_name = (
+            f'fcn_binary_mv.binary_fcnmv_gather{mode_sfx}_warp{spike_sfx}{sfx}'
+            if n_conn <= 32
+            else f'fcn_binary_mv.binary_fcnmv_gather{mode_sfx}_basic{spike_sfx}{sfx}'
+        )
 
     def kernel(weights, indices, spikes):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, spikes)
@@ -995,8 +986,9 @@ def _binary_fcnmm_cuda_kernel(
     **kwargs
 ):
     register_tvm_cuda_from_file(
-        module='fcn_binary',
-        source=Path(__file__).parent.joinpath('binary.cu'),
+        module='fcn_binary_mm',
+        source=Path(__file__).parent.joinpath('binary_fcnmm.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -1009,35 +1001,24 @@ def _binary_fcnmm_cuda_kernel(
         np.dtype('bfloat16'): '_bf16'
     }
     sfx = _dtype_sfx.get(np.dtype(weight_info.dtype), '_f32')
+    homo = weight_info.size == 1
+    mode_sfx = '_homo' if homo else '_hetero'
+    spike_sfx = '_bool' if is_bool_matrix else '_float'
 
     if transpose:
         # Scatter mode
-        if is_bool_matrix:
-            kernel_name = (
-                f'fcn_binary.binary_fcnmm_scatter_bool_warp{sfx}'
-                if n_conn <= 32
-                else f'fcn_binary.binary_fcnmm_scatter_bool_basic{sfx}'
-            )
-        else:
-            kernel_name = (
-                f'fcn_binary.binary_fcnmm_scatter_float_warp{sfx}'
-                if n_conn <= 32
-                else f'fcn_binary.binary_fcnmm_scatter_float_basic{sfx}'
-            )
+        kernel_name = (
+            f'fcn_binary_mm.binary_fcnmm_scatter{mode_sfx}_warp{spike_sfx}{sfx}'
+            if n_conn <= 32
+            else f'fcn_binary_mm.binary_fcnmm_scatter{mode_sfx}_basic{spike_sfx}{sfx}'
+        )
     else:
         # Gather mode
-        if is_bool_matrix:
-            kernel_name = (
-                f'fcn_binary.binary_fcnmm_gather_bool_warp{sfx}'
-                if n_conn <= 32
-                else f'fcn_binary.binary_fcnmm_gather_bool_basic{sfx}'
-            )
-        else:
-            kernel_name = (
-                f'fcn_binary.binary_fcnmm_gather_float_warp{sfx}'
-                if n_conn <= 32
-                else f'fcn_binary.binary_fcnmm_gather_float_basic{sfx}'
-            )
+        kernel_name = (
+            f'fcn_binary_mm.binary_fcnmm_gather{mode_sfx}_warp{spike_sfx}{sfx}'
+            if n_conn <= 32
+            else f'fcn_binary_mm.binary_fcnmm_gather{mode_sfx}_basic{spike_sfx}{sfx}'
+        )
 
     def kernel(weights, indices, matrix):
         return jax.ffi.ffi_call(kernel_name, out_info)(weights, indices, matrix)

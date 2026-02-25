@@ -760,17 +760,17 @@ def _coomv_tvmffi_kernel(
 ):
     """TVM FFI CUDA kernel for float COO SpMV.
 
-    Dispatches to one of the ``coomv_atomic_{nt,t}`` kernels compiled from
-    ``float.cu`` via ``register_tvm_cuda_from_file``.
+    Dispatches to one of the ``coomv_{homo,hetero}_atomic_{nt,t}`` kernels
+    compiled from ``float_coomv.cu`` via ``register_tvm_cuda_from_file``.
 
-    Both directions use a grid-stride atomic-scatter kernel (256 threads/block):
+    Both directions use a grid-stride atomic-scatter kernel (1024 threads/block):
 
     * NT (transpose=False): ``out[row[k]] += data[k] * v[col[k]]``
     * T  (transpose=True):  ``out[col[k]] += data[k] * v[row[k]]``
 
     Weight dtype suffix: ``_f32``, ``_f64``, ``_f16``, or ``_bf16``.
-    Homo/hetero detection is done at runtime inside the CUDA entry function
-    via ``data.size(0) == 1``; no separate kernel variants are needed.
+    Homo/hetero selection is resolved at compile time from ``weight_info.size``:
+    size==1 → homo kernel (scalar broadcast), else → hetero kernel (per-connection).
 
     The output buffer is zero-initialized inside the CUDA entry function via
     ``cudaMemsetAsync`` before the kernel runs.
@@ -781,8 +781,9 @@ def _coomv_tvmffi_kernel(
     ensures both are the same dtype before dispatch.
     """
     register_tvm_cuda_from_file(
-        module='coo_float',
-        source=Path(__file__).parent.joinpath('float.cu'),
+        module='coo_float_coomv',
+        source=Path(__file__).parent.joinpath('float_coomv.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -794,7 +795,8 @@ def _coomv_tvmffi_kernel(
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
     direction = '_t' if transpose else '_nt'
-    kernel_name = f'coo_float.coomv_atomic{direction}{wt_sfx}'
+    weight_mode = 'homo' if weight_info.size == 1 else 'hetero'
+    kernel_name = f'coo_float_coomv.coomv_{weight_mode}_atomic{direction}{wt_sfx}'
 
     def kernel(weights, row, col, v):
         v_cast = v.astype(weight_info.dtype) if v.dtype != weight_info.dtype else v
@@ -1454,8 +1456,8 @@ def _coomm_tvmffi_kernel(
 ):
     """TVM FFI CUDA kernel for float COO SpMM.
 
-    Dispatches to one of the ``coomm_{variant}_{nt,t}`` kernels compiled
-    from ``float.cu`` via ``register_tvm_cuda_from_file``.
+    Dispatches to one of the ``coomm_{homo,hetero}_{variant}_{nt,t}`` kernels
+    compiled from ``float_coomm.cu`` via ``register_tvm_cuda_from_file``.
 
     Kernel variant selection (based on n = number of output columns):
     - CT (Column-Tiled, n ≤ 64): One warp per block serializes over 32 NNZ
@@ -1467,6 +1469,8 @@ def _coomm_tvmffi_kernel(
 
     Direction suffix: ``_nt`` (transpose=False) or ``_t`` (transpose=True).
     Weight dtype suffix: ``_f32``, ``_f64``, ``_f16``, or ``_bf16``.
+    Homo/hetero selection is resolved at compile time from ``weight_info.size``:
+    size==1 → homo kernel (scalar broadcast), else → hetero kernel (per-connection).
 
     The output buffer is zero-initialized inside the CUDA entry function
     (via ``cudaMemsetAsync``) before the atomic-scatter kernel runs.
@@ -1477,8 +1481,9 @@ def _coomm_tvmffi_kernel(
     ensures B is promoted to ``weights.dtype`` before dispatch when necessary.
     """
     register_tvm_cuda_from_file(
-        module='coo_float',
-        source=Path(__file__).parent.joinpath('float.cu'),
+        module='coo_float_coomm',
+        source=Path(__file__).parent.joinpath('float_coomm.cu'),
+        include_dir=Path(__file__).parent.parent.joinpath('include'),
     )
 
     out_info = kwargs['outs']
@@ -1490,12 +1495,13 @@ def _coomm_tvmffi_kernel(
     }
     wt_sfx = _dtype_sfx.get(jnp.dtype(weight_info.dtype), '_f32')
     direction = '_t' if transpose else '_nt'
+    weight_mode = 'homo' if weight_info.size == 1 else 'hetero'
 
     # CT is better for small n (serial NNZ loop amortized over many CUDA blocks
     # in the nnz dimension); WPE is better for large n (maximum parallelism).
     n = matrix_info.shape[1]
     variant = 'ct' if n <= 64 else 'wpe'
-    kernel_name = f'coo_float.coomm_{variant}{direction}{wt_sfx}'
+    kernel_name = f'coo_float_coomm.coomm_{weight_mode}_{variant}{direction}{wt_sfx}'
 
     def kernel(weights, row, col, B):
         # Cast B to weights.dtype so the CUDA kernel receives matching types.
